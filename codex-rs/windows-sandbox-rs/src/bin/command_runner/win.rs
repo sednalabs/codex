@@ -10,6 +10,9 @@
 #![allow(unsafe_op_in_unsafe_fn)]
 
 mod cwd_junction;
+#[cfg(test)]
+#[path = "win/input_loop_tests.rs"]
+mod input_loop_tests;
 
 use anyhow::Context;
 use anyhow::Result;
@@ -20,6 +23,7 @@ use codex_windows_sandbox::ErrorStage;
 use codex_windows_sandbox::ExitPayload;
 use codex_windows_sandbox::FramedMessage;
 use codex_windows_sandbox::IPC_PROTOCOL_VERSION;
+use codex_windows_sandbox::LaunchDesktop;
 use codex_windows_sandbox::LocalSid;
 use codex_windows_sandbox::Message;
 use codex_windows_sandbox::OutputPayload;
@@ -73,9 +77,6 @@ use windows_sys::Win32::System::Threading::PROCESS_INFORMATION;
 use windows_sys::Win32::System::Threading::TerminateProcess;
 use windows_sys::Win32::System::Threading::WaitForSingleObject;
 
-// Kept in sync with codex_exec_server::CODEX_FS_HELPER_ARG1 without introducing
-// a dependency cycle.
-const FS_HELPER_ARG: &str = "--codex-run-as-fs-helper";
 const READ_ACL_MUTEX_NAME: &str = "Local\\CodexSandboxReadAcl";
 const TERMINATION_WAIT_MS: u32 = 5_000;
 const WAIT_TIMEOUT: u32 = 0x0000_0102;
@@ -295,6 +296,15 @@ fn spawn_ipc_process(req: &SpawnRequest) -> Result<IpcSpawnedProcess> {
     }
 
     let effective_cwd = effective_cwd(&req.cwd, Some(log_dir.as_path()));
+    let desktop = if req.use_private_desktop {
+        LaunchDesktop::open_private(
+            req.private_desktop_name
+                .as_deref()
+                .context("runner: missing parent-owned private desktop")?,
+        )?
+    } else {
+        LaunchDesktop::prepare(/*use_private_desktop*/ false, Some(log_dir.as_path()))?
+    };
 
     let mut conpty_owner = None;
     let mut hpc_handle: Option<HANDLE> = None;
@@ -305,8 +315,7 @@ fn spawn_ipc_process(req: &SpawnRequest) -> Result<IpcSpawnedProcess> {
             &req.command,
             &effective_cwd,
             &req.env,
-            req.use_private_desktop,
-            Some(log_dir.as_path()),
+            desktop,
         )?;
         let job = conpty
             .job()
@@ -343,12 +352,8 @@ fn spawn_ipc_process(req: &SpawnRequest) -> Result<IpcSpawnedProcess> {
             &req.env,
             stdin_mode,
             StderrMode::Separate,
-            if req.command.get(1).is_some_and(|arg| arg == FS_HELPER_ARG) {
-                ConsoleMode::NoWindow
-            } else {
-                ConsoleMode::Inherit
-            },
-            req.use_private_desktop,
+            ConsoleMode::NoWindow,
+            desktop,
             Some(log_dir.as_path()),
         )?;
         let pi = spawned_pipes.process;
@@ -433,8 +438,10 @@ fn spawn_input_loop(
         loop {
             let msg = match read_frame(&mut reader) {
                 Ok(Some(v)) => v,
-                Ok(None) => break,
-                Err(_) => break,
+                Ok(None) | Err(_) => {
+                    terminate_job_or_process(&job, process, log_dir.as_deref());
+                    break;
+                }
             };
             match msg.message {
                 Message::Stdin { payload } => {

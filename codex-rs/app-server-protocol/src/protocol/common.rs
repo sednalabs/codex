@@ -1,19 +1,22 @@
+#[cfg(test)]
 use std::path::Path;
 use std::path::PathBuf;
 
 use crate::JSONRPCNotification;
 use crate::JSONRPCRequest;
+use crate::JsonSchema;
 use crate::RequestId;
+use crate::TS;
+#[cfg(test)]
 use crate::export::GeneratedSchema;
+#[cfg(test)]
 use crate::export::write_json_schema;
 use crate::protocol::v1;
 use crate::protocol::v2;
 use codex_experimental_api_macros::ExperimentalApi;
-use schemars::JsonSchema;
 use serde::Deserialize;
 use serde::Serialize;
 use strum_macros::Display;
-use ts_rs::TS;
 
 /// Authentication mode for OpenAI-backed providers.
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Display, JsonSchema, TS)]
@@ -51,6 +54,11 @@ pub enum AuthMode {
     #[ts(rename = "bedrockApiKey")]
     #[strum(serialize = "bedrockApiKey")]
     BedrockApiKey,
+    /// Amazon Bedrock AWS access keys managed by Codex.
+    #[serde(rename = "bedrockAccessKeys")]
+    #[ts(rename = "bedrockAccessKeys")]
+    #[strum(serialize = "bedrockAccessKeys")]
+    BedrockAccessKeys,
 }
 
 impl AuthMode {
@@ -58,7 +66,11 @@ impl AuthMode {
     pub fn has_chatgpt_account(self) -> bool {
         match self {
             Self::Chatgpt | Self::ChatgptAuthTokens | Self::PersonalAccessToken => true,
-            Self::ApiKey | Self::Headers | Self::AgentIdentity | Self::BedrockApiKey => false,
+            Self::ApiKey
+            | Self::Headers
+            | Self::AgentIdentity
+            | Self::BedrockApiKey
+            | Self::BedrockAccessKeys => false,
         }
     }
 
@@ -70,7 +82,7 @@ impl AuthMode {
             | Self::Headers
             | Self::AgentIdentity
             | Self::PersonalAccessToken => true,
-            Self::ApiKey | Self::BedrockApiKey => false,
+            Self::ApiKey | Self::BedrockApiKey | Self::BedrockAccessKeys => false,
         }
     }
 }
@@ -90,6 +102,7 @@ macro_rules! experimental_reason_expr {
     };
 }
 
+#[cfg(test)]
 macro_rules! experimental_method_entry {
     (#[experimental($reason:expr)] => $wire:literal) => {
         $wire
@@ -102,6 +115,7 @@ macro_rules! experimental_method_entry {
     };
 }
 
+#[cfg(test)]
 macro_rules! experimental_type_entry {
     (#[experimental($reason:expr)] $ty:ty) => {
         stringify!($ty)
@@ -315,7 +329,8 @@ macro_rules! client_request_definitions {
             }
         }
 
-        #[derive(Debug, Clone)]
+        #[derive(Debug, Clone, Serialize)]
+        #[serde(untagged)]
         #[allow(clippy::large_enum_variant)]
         pub enum ClientResponsePayload {
             $( $variant($response), )*
@@ -323,26 +338,6 @@ macro_rules! client_request_definitions {
         }
 
         impl ClientResponsePayload {
-            pub fn into_jsonrpc_parts_and_payload(
-                self,
-                request_id: RequestId,
-            ) -> std::result::Result<
-                (RequestId, crate::Result, Option<ClientResponsePayload>),
-                serde_json::Error,
-            > {
-                match self {
-                    $(
-                        Self::$variant(response) => {
-                            let result = serde_json::to_value(&response)?;
-                            Ok((request_id, result, Some(Self::$variant(response))))
-                        }
-                    )*
-                    Self::InterruptConversation(response) => {
-                        serde_json::to_value(response).map(|result| (request_id, result, None))
-                    }
-                }
-            }
-
             pub fn into_client_response(self, request_id: RequestId) -> Option<ClientResponse> {
                 match self {
                     $(
@@ -412,22 +407,26 @@ macro_rules! client_request_definitions {
             }
         }
 
+        #[cfg(test)]
         pub(crate) const EXPERIMENTAL_CLIENT_METHODS: &[&str] = &[
             $(
                 experimental_method_entry!($(#[experimental($reason)])? => $wire),
             )*
         ];
+        #[cfg(test)]
         pub(crate) const EXPERIMENTAL_CLIENT_METHOD_PARAM_TYPES: &[&str] = &[
             $(
                 experimental_type_entry!($(#[experimental($reason)])? $params),
             )*
         ];
+        #[cfg(test)]
         pub(crate) const EXPERIMENTAL_CLIENT_METHOD_RESPONSE_TYPES: &[&str] = &[
             $(
                 experimental_type_entry!($(#[experimental($reason)])? $response),
             )*
         ];
 
+        #[cfg(test)]
         pub fn export_client_responses(
             out_dir: &::std::path::Path,
         ) -> ::std::result::Result<(), ::ts_rs::ExportError> {
@@ -438,12 +437,14 @@ macro_rules! client_request_definitions {
             Ok(())
         }
 
+        #[cfg(test)]
         pub(crate) fn visit_client_response_types(v: &mut impl ::ts_rs::TypeVisitor) {
             $(
                 v.visit::<$response>();
             )*
         }
 
+        #[cfg(test)]
         #[allow(clippy::vec_init_then_push)]
         pub fn export_client_response_schemas(
             out_dir: &::std::path::Path,
@@ -455,6 +456,7 @@ macro_rules! client_request_definitions {
             Ok(schemas)
         }
 
+        #[cfg(test)]
         #[allow(clippy::vec_init_then_push)]
         pub fn export_client_param_schemas(
             out_dir: &::std::path::Path,
@@ -479,11 +481,77 @@ macro_rules! client_response_payload_from_impl {
     ($variant:ident, $response:ty, manual) => {};
 }
 
+/// Preserve explicit `undefined` accepted by the original stable usage request.
+///
+/// A Rust-based TypeScript proxy retains dependency discovery; a raw `#[ts(type = ...)]`
+/// override would silently omit the generated params import and schema fixture.
+#[allow(dead_code)]
+#[derive(TS)]
+#[ts(untagged)]
+enum GetAccountTokenUsageParamsTypeScript {
+    Params(v2::GetAccountTokenUsageParams),
+    #[ts(type = "undefined")]
+    Undefined,
+}
+
+/// Preserve omitted/undefined params while exporting the new usage capability type.
+#[allow(dead_code)]
+#[derive(TS)]
+#[ts(untagged)]
+enum GetAccountRateLimitsParamsTypeScript {
+    Params(v2::GetAccountRateLimitsParams),
+    #[ts(type = "undefined")]
+    Undefined,
+}
+
 client_request_definitions! {
     Initialize => "initialize" {
         params: v1::InitializeParams,
         serialization: None,
         response: v1::InitializeResponse,
+    },
+
+    #[experimental("server/diagnostics")]
+    /// Read content-free, process-local diagnostics.
+    ServerDiagnostics => "server/diagnostics" {
+        params: v2::ServerDiagnosticsParams,
+        serialization: None,
+        response: v2::ServerDiagnosticsResponse,
+    },
+
+    #[experimental("userVerification/status")]
+    UserVerificationStatus => "userVerification/status" {
+        params: v2::UserVerificationStatusParams,
+        serialization: None,
+        response: v2::UserVerificationStatusResponse,
+    },
+
+    #[experimental("userVerification/enroll")]
+    UserVerificationEnroll => "userVerification/enroll" {
+        params: v2::UserVerificationEnrollParams,
+        serialization: None,
+        response: v2::UserVerificationEnrollResponse,
+    },
+
+    #[experimental("userVerification/delete")]
+    UserVerificationDelete => "userVerification/delete" {
+        params: v2::UserVerificationDeleteParams,
+        serialization: None,
+        response: v2::UserVerificationDeleteResponse,
+    },
+
+    #[experimental("userVerification/verify")]
+    UserVerificationVerify => "userVerification/verify" {
+        params: v2::UserVerificationVerifyParams,
+        serialization: None,
+        response: v2::UserVerificationVerifyResponse,
+    },
+
+    #[experimental("userVerification/cancel")]
+    UserVerificationCancel => "userVerification/cancel" {
+        params: v2::UserVerificationCancelParams,
+        serialization: None,
+        response: v2::UserVerificationCancelResponse,
     },
 
     /// NEW APIs
@@ -561,10 +629,67 @@ client_request_definitions! {
         serialization: thread_id(params.thread_id),
         response: v2::ThreadGoalClearResponse,
     },
+    #[experimental("thread/queue/add")]
+    ThreadQueueAdd => "thread/queue/add" {
+        params: v2::ThreadQueueAddParams,
+        serialization: thread_id(params.thread_id),
+        response: v2::ThreadQueueAddResponse,
+    },
+    #[experimental("thread/queue/list")]
+    ThreadQueueList => "thread/queue/list" {
+        params: v2::ThreadQueueListParams,
+        serialization: thread_id(params.thread_id),
+        response: v2::ThreadQueueListResponse,
+    },
+    #[experimental("thread/queue/update")]
+    ThreadQueueUpdate => "thread/queue/update" {
+        params: v2::ThreadQueueUpdateParams,
+        serialization: thread_id(params.thread_id),
+        response: v2::ThreadQueueUpdateResponse,
+    },
+    #[experimental("thread/queue/delete")]
+    ThreadQueueDelete => "thread/queue/delete" {
+        params: v2::ThreadQueueDeleteParams,
+        serialization: thread_id(params.thread_id),
+        response: v2::ThreadQueueDeleteResponse,
+    },
+    #[experimental("thread/queue/reorder")]
+    ThreadQueueReorder => "thread/queue/reorder" {
+        params: v2::ThreadQueueReorderParams,
+        serialization: thread_id(params.thread_id),
+        response: v2::ThreadQueueReorderResponse,
+    },
+    #[experimental("thread/queue/start")]
+    ThreadQueueStart => "thread/queue/start" {
+        params: v2::ThreadQueueStartParams,
+        serialization: thread_id(params.thread_id),
+        response: v2::ThreadQueueStartResponse,
+    },
     ThreadMetadataUpdate => "thread/metadata/update" {
         params: v2::ThreadMetadataUpdateParams,
+        inspect_params: true,
         serialization: thread_id(params.thread_id),
         response: v2::ThreadMetadataUpdateResponse,
+    },
+    ThreadAttachmentAdd => "thread/attachment/add" {
+        params: v2::ThreadAttachmentAddParams,
+        serialization: thread_id(params.thread_id),
+        response: v2::ThreadAttachmentAddResponse,
+    },
+    ThreadAttachmentList => "thread/attachment/list" {
+        params: v2::ThreadAttachmentListParams,
+        serialization: None,
+        response: v2::ThreadAttachmentListResponse,
+    },
+    ThreadAttachmentRemove => "thread/attachment/remove" {
+        params: v2::ThreadAttachmentRemoveParams,
+        serialization: thread_id(params.thread_id),
+        response: v2::ThreadAttachmentRemoveResponse,
+    },
+    ThreadSectionMove => "thread/section/move" {
+        params: v2::ThreadSectionMoveParams,
+        serialization: thread_id(params.thread_id),
+        response: v2::ThreadSectionMoveResponse,
     },
     #[experimental("thread/settings/update")]
     ThreadSettingsUpdate => "thread/settings/update" {
@@ -578,6 +703,12 @@ client_request_definitions! {
         params: v2::ThreadMemoryModeSetParams,
         serialization: thread_id(params.thread_id),
         response: v2::ThreadMemoryModeSetResponse,
+    },
+    #[experimental("memory/status")]
+    MemoryStatus => "memory/status" {
+        params: v2::MemoryStatusParams,
+        serialization: global("memory"),
+        response: v2::MemoryStatusResponse,
     },
     #[experimental("memory/reset")]
     MemoryReset => "memory/reset" {
@@ -623,16 +754,78 @@ client_request_definitions! {
         serialization: thread_id(params.thread_id),
         response: v2::ThreadBackgroundTerminalsTerminateResponse,
     },
-    ThreadRollback => "thread/rollback" {
-        params: v2::ThreadRollbackParams,
+    ThreadRevert => "thread/revert" {
+        params: v2::ThreadRevertParams,
         serialization: thread_id(params.thread_id),
-        response: v2::ThreadRollbackResponse,
+        response: v2::ThreadRevertResponse,
     },
     ThreadList => "thread/list" {
         params: v2::ThreadListParams,
         inspect_params: true,
         serialization: None,
         response: v2::ThreadListResponse,
+    },
+    #[experimental("project/list")]
+    ProjectList => "project/list" {
+        params: v2::ProjectListParams,
+        serialization: global_shared_read("projects"),
+        response: v2::ProjectListResponse,
+    },
+    #[experimental("project/read")]
+    ProjectRead => "project/read" {
+        params: v2::ProjectReadParams,
+        serialization: global_shared_read("projects"),
+        response: v2::ProjectReadResponse,
+    },
+    #[experimental("project/create")]
+    ProjectCreate => "project/create" {
+        params: v2::ProjectCreateParams,
+        serialization: global("projects"),
+        response: v2::ProjectCreateResponse,
+    },
+    #[experimental("project/import")]
+    ProjectImport => "project/import" {
+        params: v2::ProjectImportParams,
+        serialization: global("projects"),
+        response: v2::ProjectImportResponse,
+    },
+    #[experimental("project/update")]
+    ProjectUpdate => "project/update" {
+        params: v2::ProjectUpdateParams,
+        serialization: global("projects"),
+        response: v2::ProjectUpdateResponse,
+    },
+    #[experimental("project/move")]
+    ProjectMove => "project/move" {
+        params: v2::ProjectMoveParams,
+        serialization: global("projects"),
+        response: v2::ProjectMoveResponse,
+    },
+    #[experimental("project/delete")]
+    ProjectDelete => "project/delete" {
+        params: v2::ProjectDeleteParams,
+        serialization: global("projects"),
+        response: v2::ProjectDeleteResponse,
+    },
+    ThreadSectionList => "threadSection/list" {
+        params: v2::ThreadSectionListParams,
+        serialization: global_shared_read("thread-sections"),
+        response: v2::ThreadSectionListResponse,
+    },
+    ThreadSectionCreate => "threadSection/create" {
+        params: v2::ThreadSectionCreateParams,
+        serialization: global("thread-sections"),
+        response: v2::ThreadSectionCreateResponse,
+    },
+    ThreadSectionUpdate => "threadSection/update" {
+        params: v2::ThreadSectionUpdateParams,
+        serialization: global("thread-sections"),
+        response: v2::ThreadSectionUpdateResponse,
+    },
+    ThreadSectionDelete => "threadSection/delete" {
+        params: v2::ThreadSectionDeleteParams,
+        serialization: global("thread-sections"),
+        response: v2::ThreadSectionDeleteResponse,
     },
     #[experimental("thread/search")]
     ThreadSearch => "thread/search" {
@@ -657,6 +850,7 @@ client_request_definitions! {
         serialization: thread_id(params.thread_id),
         response: v2::ThreadReadResponse,
     },
+<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
     #[experimental("thread/usageSummary")]
     ThreadUsageSummary => "thread/usageSummary" {
         params: v2::ThreadUsageSummaryParams,
@@ -664,13 +858,14 @@ client_request_definitions! {
         response: v2::ThreadUsageSummaryResponse,
     },
     #[experimental("thread/turns/list")]
+=======
+>>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
     ThreadTurnsList => "thread/turns/list" {
         params: v2::ThreadTurnsListParams,
         // Explicitly concurrent: this primarily reads append-only rollout storage.
         serialization: None,
         response: v2::ThreadTurnsListResponse,
     },
-    #[experimental("thread/items/list")]
     ThreadItemsList => "thread/items/list" {
         params: v2::ThreadItemsListParams,
         // Explicitly concurrent: this primarily reads append-only rollout storage.
@@ -695,7 +890,7 @@ client_request_definitions! {
     },
     HooksList => "hooks/list" {
         params: v2::HooksListParams,
-        serialization: global("config"),
+        serialization: global_shared_read("config"),
         response: v2::HooksListResponse,
     },
     MarketplaceAdd => "marketplace/add" {
@@ -718,10 +913,21 @@ client_request_definitions! {
         serialization: None,
         response: v2::PluginListResponse,
     },
+    #[experimental("plugin/search")]
+    PluginSearch => "plugin/search" {
+        params: v2::PluginSearchParams,
+        serialization: None,
+        response: v2::PluginSearchResponse,
+    },
     PluginInstalled => "plugin/installed" {
         params: v2::PluginInstalledParams,
         serialization: None,
         response: v2::PluginInstalledResponse,
+    },
+    PluginReconcile => "plugin/reconcile" {
+        params: v2::PluginReconcileParams,
+        serialization: None,
+        response: v2::PluginReconcileResponse,
     },
     PluginRead => "plugin/read" {
         params: v2::PluginReadParams,
@@ -841,6 +1047,12 @@ client_request_definitions! {
         serialization: thread_id(params.thread_id),
         response: v2::TurnStartResponse,
     },
+    #[experimental("turn/settings/update")]
+    TurnSettingsUpdate => "turn/settings/update" {
+        params: v2::TurnSettingsUpdateParams,
+        serialization: thread_id(params.thread_id),
+        response: v2::TurnSettingsUpdateResponse,
+    },
     TurnSteer => "turn/steer" {
         params: v2::TurnSteerParams,
         inspect_params: true,
@@ -881,6 +1093,12 @@ client_request_definitions! {
         params: v2::ThreadRealtimeStopParams,
         serialization: thread_id(params.thread_id),
         response: v2::ThreadRealtimeStopResponse,
+    },
+    #[experimental("thread/timeline/list")]
+    ThreadTimelineList => "thread/timeline/list" {
+        params: v2::ThreadTimelineListParams,
+        serialization: thread_id(params.thread_id),
+        response: v2::ThreadTimelineListResponse,
     },
     #[experimental("thread/realtime/listVoices")]
     ThreadRealtimeListVoices => "thread/realtime/listVoices" {
@@ -1021,6 +1239,20 @@ client_request_definitions! {
         response: v2::McpResourceReadResponse,
     },
 
+    #[experimental("mcpServer/event/stream/start")]
+    McpServerEventStreamStart => "mcpServer/event/stream/start" {
+        params: v2::McpServerEventStreamStartParams,
+        serialization: None,
+        response: v2::McpServerEventStreamStartResponse,
+    },
+
+    #[experimental("mcpServer/event/stream/stop")]
+    McpServerEventStreamStop => "mcpServer/event/stream/stop" {
+        params: v2::McpServerEventStreamStopParams,
+        serialization: None,
+        response: v2::McpServerEventStreamStopResponse,
+    },
+
     McpServerToolCall => "mcpServer/tool/call" {
         params: v2::McpServerToolCallParams,
         serialization: thread_id(params.thread_id),
@@ -1045,6 +1277,20 @@ client_request_definitions! {
         response: v2::LoginAccountResponse,
     },
 
+    #[experimental("account/bedrock/discover")]
+    BedrockDiscover => "account/bedrock/discover" {
+        params: v2::BedrockDiscoverParams,
+        serialization: global_shared_read("account-auth"),
+        response: v2::BedrockDiscoverResponse,
+    },
+
+    #[experimental("account/bedrock/setup")]
+    BedrockSetup => "account/bedrock/setup" {
+        params: v2::BedrockSetupParams,
+        serialization: global("account-auth"),
+        response: v2::BedrockSetupResponse,
+    },
+
     CancelLoginAccount => "account/login/cancel" {
         params: v2::CancelLoginAccountParams,
         serialization: global("account-auth"),
@@ -1058,7 +1304,7 @@ client_request_definitions! {
     },
 
     GetAccountRateLimits => "account/rateLimits/read" {
-        params: #[ts(type = "undefined")] #[serde(skip_serializing_if = "Option::is_none")] Option<()>,
+        params: #[ts(optional, as = "Option<GetAccountRateLimitsParamsTypeScript>", inline)] #[serde(default, skip_serializing_if = "Option::is_none")] v2::NullableGetAccountRateLimitsParams,
         serialization: None,
         response: v2::GetAccountRateLimitsResponse,
     },
@@ -1070,7 +1316,7 @@ client_request_definitions! {
     },
 
     GetAccountTokenUsage => "account/usage/read" {
-        params: #[ts(type = "undefined")] #[serde(skip_serializing_if = "Option::is_none")] Option<()>,
+        params: #[ts(optional, as = "Option<GetAccountTokenUsageParamsTypeScript>", inline)] #[serde(default, skip_serializing_if = "Option::is_none")] v2::NullableGetAccountTokenUsageParams,
         serialization: None,
         response: v2::GetAccountTokenUsageResponse,
     },
@@ -1154,7 +1400,7 @@ client_request_definitions! {
     },
     ExternalAgentConfigDetect => "externalAgentConfig/detect" {
         params: v2::ExternalAgentConfigDetectParams,
-        serialization: global("config"),
+        serialization: global("external-agent-detect"),
         response: v2::ExternalAgentConfigDetectResponse,
     },
     ExternalAgentConfigImport => "externalAgentConfig/import" {
@@ -1187,7 +1433,7 @@ client_request_definitions! {
 
     ConfigRequirementsRead => "configRequirements/read" {
         params: #[ts(type = "undefined")] #[serde(skip_serializing_if = "Option::is_none")] Option<()>,
-        serialization: global("config"),
+        serialization: global_shared_read("config"),
         response: v2::ConfigRequirementsReadResponse,
     },
 
@@ -1346,22 +1592,26 @@ macro_rules! server_request_definitions {
             }
         }
 
+        #[cfg(test)]
         pub(crate) const EXPERIMENTAL_SERVER_METHODS: &[&str] = &[
             $(
                 experimental_method_entry!($(#[experimental($reason)])? $(=> $wire)?),
             )*
         ];
+        #[cfg(test)]
         pub(crate) const EXPERIMENTAL_SERVER_METHOD_PARAM_TYPES: &[&str] = &[
             $(
                 experimental_type_entry!($(#[experimental($reason)])? $params),
             )*
         ];
+        #[cfg(test)]
         pub(crate) const EXPERIMENTAL_SERVER_METHOD_RESPONSE_TYPES: &[&str] = &[
             $(
                 experimental_type_entry!($(#[experimental($reason)])? $response),
             )*
         ];
 
+        #[cfg(test)]
         pub fn export_server_responses(
             out_dir: &::std::path::Path,
         ) -> ::std::result::Result<(), ::ts_rs::ExportError> {
@@ -1372,12 +1622,14 @@ macro_rules! server_request_definitions {
             Ok(())
         }
 
+        #[cfg(test)]
         pub(crate) fn visit_server_response_types(v: &mut impl ::ts_rs::TypeVisitor) {
             $(
                 v.visit::<$response>();
             )*
         }
 
+        #[cfg(test)]
         #[allow(clippy::vec_init_then_push)]
         pub fn export_server_response_schemas(
             out_dir: &Path,
@@ -1392,6 +1644,7 @@ macro_rules! server_request_definitions {
             Ok(schemas)
         }
 
+        #[cfg(test)]
         #[allow(clippy::vec_init_then_push)]
         pub fn export_server_param_schemas(
             out_dir: &Path,
@@ -1455,6 +1708,7 @@ macro_rules! server_notification_definitions {
             }
         }
 
+        #[cfg(test)]
         #[allow(clippy::vec_init_then_push)]
         pub fn export_server_notification_schemas(
             out_dir: &::std::path::Path,
@@ -1483,6 +1737,7 @@ macro_rules! client_notification_definitions {
             )*
         }
 
+        #[cfg(test)]
         pub fn export_client_notification_schemas(
             _out_dir: &::std::path::Path,
         ) -> ::anyhow::Result<Vec<GeneratedSchema>> {
@@ -1671,10 +1926,18 @@ server_notification_definitions! {
     ThreadDeleted => "thread/deleted" (v2::ThreadDeletedNotification),
     ThreadUnarchived => "thread/unarchived" (v2::ThreadUnarchivedNotification),
     ThreadClosed => "thread/closed" (v2::ThreadClosedNotification),
+    ThreadReverted => "thread/reverted" (v2::ThreadRevertedNotification),
     SkillsChanged => "skills/changed" (v2::SkillsChangedNotification),
     ThreadNameUpdated => "thread/name/updated" (v2::ThreadNameUpdatedNotification),
+    ThreadAttachmentUpdated => "thread/attachment/updated" (v2::ThreadAttachmentUpdatedNotification),
     ThreadGoalUpdated => "thread/goal/updated" (v2::ThreadGoalUpdatedNotification),
     ThreadGoalCleared => "thread/goal/cleared" (v2::ThreadGoalClearedNotification),
+    #[experimental("thread/queue/changed")]
+    ThreadQueueChanged => "thread/queue/changed" (v2::ThreadQueueChangedNotification),
+    #[experimental("project/changed")]
+    ProjectChanged => "project/changed" (v2::ProjectChangedNotification),
+    #[experimental("thread/project/updated")]
+    ThreadProjectUpdated => "thread/project/updated" (v2::ThreadProjectUpdatedNotification),
     #[experimental("thread/environment/connected")]
     EnvironmentConnected => "thread/environment/connected" (v2::EnvironmentConnectionNotification),
     #[experimental("thread/environment/disconnected")]
@@ -1691,6 +1954,8 @@ server_notification_definitions! {
     ItemStarted => "item/started" (v2::ItemStartedNotification),
     ItemGuardianApprovalReviewStarted => "item/autoApprovalReview/started" (v2::ItemGuardianApprovalReviewStartedNotification),
     ItemGuardianApprovalReviewCompleted => "item/autoApprovalReview/completed" (v2::ItemGuardianApprovalReviewCompletedNotification),
+    #[experimental("autoApprovalReview/strictReviewRequired")]
+    StrictReviewRequired => "autoApprovalReview/strictReviewRequired" (v2::StrictReviewRequiredNotification),
     ItemCompleted => "item/completed" (v2::ItemCompletedNotification),
     /// This event is internal-only. Used by Codex Cloud.
     RawResponseItemCompleted => "rawResponseItem/completed" (v2::RawResponseItemCompletedNotification),
@@ -1716,6 +1981,8 @@ server_notification_definitions! {
     McpToolCallProgress => "item/mcpToolCall/progress" (v2::McpToolCallProgressNotification),
     McpServerOauthLoginCompleted => "mcpServer/oauthLogin/completed" (v2::McpServerOauthLoginCompletedNotification),
     McpServerStatusUpdated => "mcpServer/startupStatus/updated" (v2::McpServerStatusUpdatedNotification),
+    #[experimental("mcpServer/event/stream/notification")]
+    McpServerEventStream => "mcpServer/event/stream/notification" (v2::McpServerEventStreamNotification),
     AccountUpdated => "account/updated" (v2::AccountUpdatedNotification),
     AccountRateLimitsUpdated => "account/rateLimits/updated" (v2::AccountRateLimitsUpdatedNotification),
     AppListUpdated => "app/list/updated" (v2::AppListUpdatedNotification),
@@ -1730,6 +1997,8 @@ server_notification_definitions! {
     ContextCompacted => "thread/compacted" (v2::ContextCompactedNotification),
     ModelRerouted => "model/rerouted" (v2::ModelReroutedNotification),
     ModelVerification => "model/verification" (v2::ModelVerificationNotification),
+    AuthRecoveryStarted => "modelProvider/authRecoveryStarted" (v2::AuthRecoveryNotification),
+    AuthRecoveryCompleted => "modelProvider/authRecoveryCompleted" (v2::AuthRecoveryNotification),
     #[experimental("turn/moderationMetadata")]
     TurnModerationMetadata => "turn/moderationMetadata" (v2::TurnModerationMetadataNotification),
     ModelSafetyBufferingUpdated => "model/safetyBuffering/updated" (v2::ModelSafetyBufferingUpdatedNotification),
@@ -1743,6 +2012,12 @@ server_notification_definitions! {
     ThreadRealtimeStarted => "thread/realtime/started" (v2::ThreadRealtimeStartedNotification),
     #[experimental("thread/realtime/itemAdded")]
     ThreadRealtimeItemAdded => "thread/realtime/itemAdded" (v2::ThreadRealtimeItemAddedNotification),
+    #[experimental("thread/realtime/item/started")]
+    ThreadRealtimeItemStarted => "thread/realtime/item/started" (v2::ThreadRealtimeItemStartedNotification),
+    #[experimental("thread/realtime/item/transcript/delta")]
+    ThreadRealtimeItemTranscriptDelta => "thread/realtime/item/transcript/delta" (v2::ThreadRealtimeItemTranscriptDeltaNotification),
+    #[experimental("thread/realtime/item/completed")]
+    ThreadRealtimeItemCompleted => "thread/realtime/item/completed" (v2::ThreadRealtimeItemCompletedNotification),
     #[experimental("thread/realtime/transcript/delta")]
     ThreadRealtimeTranscriptDelta => "thread/realtime/transcript/delta" (v2::ThreadRealtimeTranscriptDeltaNotification),
     #[experimental("thread/realtime/transcript/done")]
@@ -1902,6 +2177,92 @@ mod tests {
     }
 
     #[test]
+    fn thread_section_move_round_trips_and_serializes_by_thread() -> Result<()> {
+        assert_eq!(
+            serde_json::to_value(v2::ThreadSortKey::SectionPosition)?,
+            json!("section_position")
+        );
+        let request = ClientRequest::ThreadSectionMove {
+            request_id: request_id(),
+            params: v2::ThreadSectionMoveParams {
+                thread_id: "thread-1".to_string(),
+                section_id: Some("01984de2-8f74-7c91-a3b2-5c5e937cf318".to_string()),
+                before_thread_id: Some("thread-2".to_string()),
+            },
+        };
+        assert_eq!(
+            serde_json::to_value(&request)?,
+            json!({
+                "method": "thread/section/move",
+                "id": 1,
+                "params": {
+                    "threadId": "thread-1",
+                    "sectionId": "01984de2-8f74-7c91-a3b2-5c5e937cf318",
+                    "beforeThreadId": "thread-2"
+                }
+            })
+        );
+        assert_eq!(
+            request.serialization_scope(),
+            Some(ClientRequestSerializationScope::Thread {
+                thread_id: "thread-1".to_string()
+            })
+        );
+
+        let append_request = ClientRequest::try_from(JSONRPCRequest {
+            id: request_id(),
+            method: "thread/section/move".to_string(),
+            params: Some(json!({
+                "threadId": "thread-1",
+                "sectionId": "01984de2-8f74-7c91-a3b2-5c5e937cf318"
+            })),
+            trace: None,
+        })?;
+        assert_eq!(
+            append_request,
+            ClientRequest::ThreadSectionMove {
+                request_id: request_id(),
+                params: v2::ThreadSectionMoveParams {
+                    thread_id: "thread-1".to_string(),
+                    section_id: Some("01984de2-8f74-7c91-a3b2-5c5e937cf318".to_string()),
+                    before_thread_id: None,
+                },
+            }
+        );
+
+        let clear_request = ClientRequest::try_from(JSONRPCRequest {
+            id: request_id(),
+            method: "thread/section/move".to_string(),
+            params: Some(json!({
+                "threadId": "thread-1",
+                "sectionId": null
+            })),
+            trace: None,
+        })?;
+        assert_eq!(
+            clear_request,
+            ClientRequest::ThreadSectionMove {
+                request_id: request_id(),
+                params: v2::ThreadSectionMoveParams {
+                    thread_id: "thread-1".to_string(),
+                    section_id: None,
+                    before_thread_id: None,
+                },
+            }
+        );
+        assert!(
+            ClientRequest::try_from(JSONRPCRequest {
+                id: request_id(),
+                method: "thread/section/move".to_string(),
+                params: Some(json!({ "threadId": "thread-1" })),
+                trace: None,
+            })
+            .is_err()
+        );
+        Ok(())
+    }
+
+    #[test]
     fn client_request_serialization_scope_covers_keyed_families() {
         let thread_id = "thread-1".to_string();
         let thread_resume = ClientRequest::ThreadResume {
@@ -2005,6 +2366,7 @@ mod tests {
             params: v2::PluginInstallParams {
                 marketplace_path: Some(absolute_path("/tmp/marketplace")),
                 remote_marketplace_name: None,
+                install_attempt_id: None,
                 plugin_name: "plugin-a".to_string(),
             },
         };
@@ -2022,6 +2384,15 @@ mod tests {
         };
         assert_eq!(
             skills_list.serialization_scope(),
+            Some(ClientRequestSerializationScope::GlobalSharedRead("config"))
+        );
+
+        let hooks_list = ClientRequest::HooksList {
+            request_id: request_id(),
+            params: v2::HooksListParams { cwds: Vec::new() },
+        };
+        assert_eq!(
+            hooks_list.serialization_scope(),
             Some(ClientRequestSerializationScope::GlobalSharedRead("config"))
         );
 
@@ -2081,6 +2452,7 @@ mod tests {
             params: v2::McpServerOauthLoginParams {
                 name: "server-a".to_string(),
                 thread_id: None,
+                client_registration: None,
                 scopes: None,
                 timeout_secs: None,
             },
@@ -2096,8 +2468,10 @@ mod tests {
             request_id: request_id(),
             params: v2::McpResourceReadParams {
                 thread_id: Some("thread-1".to_string()),
+                origin_call_id: None,
                 server: "server-a".to_string(),
                 uri: "file:///tmp/resource".to_string(),
+                connector_id: None,
             },
         };
         assert_eq!(
@@ -2116,6 +2490,15 @@ mod tests {
         };
         assert_eq!(
             config_read.serialization_scope(),
+            Some(ClientRequestSerializationScope::GlobalSharedRead("config"))
+        );
+
+        let config_requirements_read = ClientRequest::ConfigRequirementsRead {
+            request_id: request_id(),
+            params: None,
+        };
+        assert_eq!(
+            config_requirements_read.serialization_scope(),
             Some(ClientRequestSerializationScope::GlobalSharedRead("config"))
         );
 
@@ -2274,8 +2657,10 @@ mod tests {
             request_id: request_id(),
             params: v2::McpResourceReadParams {
                 thread_id: None,
+                origin_call_id: None,
                 server: "server-a".to_string(),
                 uri: "file:///tmp/resource".to_string(),
+                connector_id: None,
             },
         };
         assert_eq!(mcp_resource_read.serialization_scope(), None);
@@ -2367,6 +2752,12 @@ mod tests {
                         "thread/started".to_string(),
                         "item/agentMessage/delta".to_string(),
                     ]),
+                    extensions: Some(std::collections::HashMap::from([(
+                        "io.modelcontextprotocol/ui".to_string(),
+                        json!({
+                            "mimeTypes": ["text/html;profile=mcp-app"],
+                        }),
+                    )])),
                 }),
             },
         };
@@ -2388,7 +2779,12 @@ mod tests {
                         "optOutNotificationMethods": [
                             "thread/started",
                             "item/agentMessage/delta"
-                        ]
+                        ],
+                        "extensions": {
+                            "io.modelcontextprotocol/ui": {
+                                "mimeTypes": ["text/html;profile=mcp-app"]
+                            }
+                        }
                     }
                 }
             }),
@@ -2415,7 +2811,12 @@ mod tests {
                     "optOutNotificationMethods": [
                         "thread/started",
                         "item/agentMessage/delta"
-                    ]
+                    ],
+                    "extensions": {
+                        "io.modelcontextprotocol/ui": {
+                            "mimeTypes": ["text/html;profile=mcp-app"]
+                        }
+                    }
                 }
             }
         }))?;
@@ -2438,6 +2839,12 @@ mod tests {
                             "thread/started".to_string(),
                             "item/agentMessage/delta".to_string(),
                         ]),
+                        extensions: Some(std::collections::HashMap::from([(
+                            "io.modelcontextprotocol/ui".to_string(),
+                            json!({
+                                "mimeTypes": ["text/html;profile=mcp-app"],
+                            }),
+                        )])),
                     }),
                 },
             }
@@ -2638,7 +3045,9 @@ mod tests {
             turn_id: Some("turn_123".to_string()),
             server_name: "codex_apps".to_string(),
             request: v2::McpServerElicitationRequest::Form {
-                meta: None,
+                meta: Some(json!({
+                    "suggestion_id": "request_plugin_install_install-github"
+                })),
                 message: "Allow this request?".to_string(),
                 requested_schema,
             },
@@ -2657,7 +3066,9 @@ mod tests {
                     "turnId": "turn_123",
                     "serverName": "codex_apps",
                     "mode": "form",
-                    "_meta": null,
+                    "_meta": {
+                        "suggestion_id": "request_plugin_install_install-github"
+                    },
                     "message": "Allow this request?",
                     "requestedSchema": {
                         "type": "object",
@@ -2714,6 +3125,56 @@ mod tests {
     }
 
     #[test]
+    fn serialize_get_account_thread_usage() -> Result<()> {
+        let request = ClientRequest::GetAccountTokenUsage {
+            request_id: RequestId::Integer(1),
+            params: Some(v2::GetAccountTokenUsageParams {
+                thread_id: Some("thread-123".to_string()),
+            }),
+        };
+        assert_eq!(
+            json!({
+                "method": "account/usage/read",
+                "id": 1,
+                "params": { "threadId": "thread-123" },
+            }),
+            serde_json::to_value(&request)?,
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn deserialize_legacy_get_account_token_usage_response() -> Result<()> {
+        let response: v2::GetAccountTokenUsageResponse = serde_json::from_value(json!({
+            "summary": {
+                "lifetimeTokens": null,
+                "peakDailyTokens": null,
+                "longestRunningTurnSec": null,
+                "currentStreakDays": null,
+                "longestStreakDays": null,
+            },
+            "dailyUsageBuckets": null,
+        }))?;
+
+        assert_eq!(
+            response,
+            v2::GetAccountTokenUsageResponse {
+                summary: v2::AccountTokenUsageSummary {
+                    lifetime_tokens: None,
+                    peak_daily_tokens: None,
+                    longest_running_turn_sec: None,
+                    current_streak_days: None,
+                    longest_streak_days: None,
+                },
+                daily_usage_buckets: None,
+                thread_usage: None,
+            },
+        );
+        assert_eq!(serde_json::to_value(response)?["threadUsage"], json!(null));
+        Ok(())
+    }
+
+    #[test]
     fn serialize_get_workspace_messages() -> Result<()> {
         let request = ClientRequest::GetWorkspaceMessages {
             request_id: RequestId::Integer(1),
@@ -2736,7 +3197,10 @@ mod tests {
         let response = ClientResponse::ThreadStart {
             request_id: RequestId::Integer(7),
             response: v2::ThreadStartResponse {
+                disabled_plugin_ids: Vec::new(),
                 thread: v2::Thread {
+                    originator: None,
+                    environments: None,
                     id: "67e55044-10b1-426f-9247-bb680e5fe0c8".to_string(),
                     extra: None,
                     session_id: "67e55044-10b1-426f-9247-bb680e5fe0c7".to_string(),
@@ -2744,7 +3208,9 @@ mod tests {
                     parent_thread_id: None,
                     preview: "first prompt".to_string(),
                     ephemeral: true,
-                    is_pinned: false,
+                    section: None,
+                    section_entered_at: None,
+                    project_id: None,
                     history_mode: Default::default(),
                     model_provider: "openai".to_string(),
                     model: None,
@@ -2763,6 +3229,7 @@ mod tests {
                     agent_role: None,
                     git_info: None,
                     name: None,
+                    daybreak_enabled: None,
                     turns: Vec::new(),
                 },
                 model: "gpt-5".to_string(),
@@ -2793,13 +3260,16 @@ mod tests {
                 "response": {
                     "thread": {
                         "id": "67e55044-10b1-426f-9247-bb680e5fe0c8",
+                        "environments": null,
                         "extra": null,
                         "sessionId": "67e55044-10b1-426f-9247-bb680e5fe0c7",
                         "forkedFromId": null,
                         "parentThreadId": null,
                         "preview": "first prompt",
                         "ephemeral": true,
-                        "isPinned": false,
+                        "section": null,
+                        "sectionEnteredAt": null,
+                        "projectId": null,
                         "historyMode": "legacy",
                         "modelProvider": "openai",
                         "model": null,
@@ -2813,6 +3283,7 @@ mod tests {
                         "path": null,
                         "cwd": absolute_path_string("tmp"),
                         "cliVersion": "0.0.0",
+                        "originator": null,
                         "source": "exec",
                         "canAcceptDirectInput": null,
                         "threadSource": null,
@@ -2820,11 +3291,13 @@ mod tests {
                         "agentRole": null,
                         "gitInfo": null,
                         "name": null,
+                        "daybreakEnabled": null,
                         "turns": []
                     },
                     "model": "gpt-5",
                     "modelProvider": "openai",
                     "serviceTier": null,
+                    "disabledPluginIds": [],
                     "cwd": absolute_path_string("tmp"),
                     "runtimeWorkspaceRoots": [],
                     "instructionSources": [absolute_path_string("tmp/AGENTS.md")],
@@ -2883,25 +3356,47 @@ mod tests {
 
     #[test]
     fn serialize_account_login_amazon_bedrock() -> Result<()> {
-        let request = ClientRequest::LoginAccount {
-            request_id: RequestId::Integer(2),
-            params: v2::LoginAccountParams::AmazonBedrock {
-                api_key: "secret".to_string(),
-                region: "us-west-2".to_string(),
-            },
-        };
-        assert_eq!(
-            json!({
-                "method": "account/login/start",
-                "id": 2,
-                "params": {
+        for (params, expected_params) in [
+            (
+                v2::LoginAccountParams::AmazonBedrock {
+                    api_key: "secret".to_string(),
+                    region: "us-west-2".to_string(),
+                },
+                json!({
                     "type": "amazonBedrock",
                     "apiKey": "secret",
                     "region": "us-west-2"
-                }
-            }),
-            serde_json::to_value(&request)?,
-        );
+                }),
+            ),
+            (
+                v2::LoginAccountParams::AmazonBedrockAccessKeys {
+                    access_key_id: "access-key-id".to_string(),
+                    secret_access_key: "secret-access-key".to_string(),
+                    session_token: Some("session-token".to_string()),
+                    region: "us-west-2".to_string(),
+                },
+                json!({
+                    "type": "amazonBedrockAccessKeys",
+                    "accessKeyId": "access-key-id",
+                    "secretAccessKey": "secret-access-key",
+                    "sessionToken": "session-token",
+                    "region": "us-west-2"
+                }),
+            ),
+        ] {
+            let request = ClientRequest::LoginAccount {
+                request_id: RequestId::Integer(2),
+                params,
+            };
+            assert_eq!(
+                json!({
+                    "method": "account/login/start",
+                    "id": 2,
+                    "params": expected_params,
+                }),
+                serde_json::to_value(&request)?,
+            );
+        }
         assert_eq!(
             json!({"type": "amazonBedrock"}),
             serde_json::to_value(v2::LoginAccountResponse::AmazonBedrock {})?,
@@ -3299,6 +3794,7 @@ mod tests {
             request_id: RequestId::Integer(9),
             params: v2::AppsReadParams {
                 app_ids: vec!["app-a".to_string(), "app-b".to_string()],
+                thread_id: None,
                 include_tools: true,
             },
         };
@@ -3306,7 +3802,11 @@ mod tests {
             json!({
                 "method": "app/read",
                 "id": 9,
-                "params": { "appIds": ["app-a", "app-b"], "includeTools": true }
+                "params": {
+                    "appIds": ["app-a", "app-b"],
+                    "threadId": null,
+                    "includeTools": true
+                }
             }),
             serde_json::to_value(&request)?,
         );
@@ -3503,6 +4003,7 @@ mod tests {
             request_id: RequestId::Integer(9),
             params: v2::ThreadRealtimeStartParams {
                 client_managed_handoffs: Some(true),
+                delegation_ack_filler: Some(false),
                 flush_transcript_tail_on_session_end: Some(true),
                 codex_responses_as_items: None,
                 codex_response_item_prefix: None,
@@ -3529,6 +4030,8 @@ mod tests {
                         text: "Understood.".to_string(),
                     },
                 ]),
+                realtime_start_instructions: Some("Use realtime output channels.".to_string()),
+                realtime_end_instructions: Some("Resume normal text responses.".to_string()),
                 prompt: Some(Some("You are on a call".to_string())),
                 realtime_session_id: Some("sess_456".to_string()),
                 transport: None,
@@ -3543,6 +4046,7 @@ mod tests {
                 "params": {
                     "threadId": "thr_123",
                     "clientManagedHandoffs": true,
+                    "delegationAckFiller": false,
                     "flushTranscriptTailOnSessionEnd": true,
                     "codexResponsesAsItems": null,
                     "codexResponseItemPrefix": null,
@@ -3565,6 +4069,8 @@ mod tests {
                             "text": "Understood."
                         }
                     ],
+                    "realtimeStartInstructions": "Use realtime output channels.",
+                    "realtimeEndInstructions": "Resume normal text responses.",
                     "prompt": "You are on a call",
                     "realtimeSessionId": "sess_456",
                     "transport": null,
@@ -3583,6 +4089,7 @@ mod tests {
             request_id: RequestId::Integer(9),
             params: v2::ThreadRealtimeStartParams {
                 client_managed_handoffs: None,
+                delegation_ack_filler: None,
                 flush_transcript_tail_on_session_end: None,
                 codex_responses_as_items: None,
                 codex_response_item_prefix: None,
@@ -3593,6 +4100,8 @@ mod tests {
                 output_modality: RealtimeOutputModality::Audio,
                 include_startup_context: None,
                 initial_items: None,
+                realtime_start_instructions: None,
+                realtime_end_instructions: None,
                 prompt: None,
                 realtime_session_id: None,
                 transport: None,
@@ -3607,6 +4116,7 @@ mod tests {
                 "params": {
                     "threadId": "thr_123",
                     "clientManagedHandoffs": null,
+                    "delegationAckFiller": null,
                     "flushTranscriptTailOnSessionEnd": null,
                     "codexResponsesAsItems": null,
                     "codexResponseItemPrefix": null,
@@ -3616,6 +4126,8 @@ mod tests {
                     "outputModality": "audio",
                     "includeStartupContext": null,
                     "initialItems": null,
+                    "realtimeStartInstructions": null,
+                    "realtimeEndInstructions": null,
                     "realtimeSessionId": null,
                     "transport": null,
                     "version": null,
@@ -3629,6 +4141,7 @@ mod tests {
             request_id: RequestId::Integer(9),
             params: v2::ThreadRealtimeStartParams {
                 client_managed_handoffs: None,
+                delegation_ack_filler: None,
                 flush_transcript_tail_on_session_end: None,
                 codex_responses_as_items: None,
                 codex_response_item_prefix: None,
@@ -3639,6 +4152,8 @@ mod tests {
                 output_modality: RealtimeOutputModality::Audio,
                 include_startup_context: None,
                 initial_items: None,
+                realtime_start_instructions: None,
+                realtime_end_instructions: None,
                 prompt: Some(None),
                 realtime_session_id: None,
                 transport: None,
@@ -3653,6 +4168,7 @@ mod tests {
                 "params": {
                     "threadId": "thr_123",
                     "clientManagedHandoffs": null,
+                    "delegationAckFiller": null,
                     "flushTranscriptTailOnSessionEnd": null,
                     "codexResponsesAsItems": null,
                     "codexResponseItemPrefix": null,
@@ -3662,6 +4178,8 @@ mod tests {
                     "outputModality": "audio",
                     "includeStartupContext": null,
                     "initialItems": null,
+                    "realtimeStartInstructions": null,
+                    "realtimeEndInstructions": null,
                     "prompt": null,
                     "realtimeSessionId": null,
                     "transport": null,
@@ -3875,6 +4393,7 @@ mod tests {
             request_id: RequestId::Integer(1),
             params: v2::ThreadRealtimeStartParams {
                 client_managed_handoffs: None,
+                delegation_ack_filler: None,
                 flush_transcript_tail_on_session_end: None,
                 codex_responses_as_items: None,
                 codex_response_item_prefix: None,
@@ -3885,6 +4404,8 @@ mod tests {
                 output_modality: RealtimeOutputModality::Audio,
                 include_startup_context: None,
                 initial_items: None,
+                realtime_start_instructions: None,
+                realtime_end_instructions: None,
                 prompt: Some(Some("You are on a call".to_string())),
                 realtime_session_id: None,
                 transport: None,
@@ -3971,6 +4492,7 @@ mod tests {
             ServerNotification::ThreadSettingsUpdated(v2::ThreadSettingsUpdatedNotification {
                 thread_id: "thr_123".to_string(),
                 thread_settings: v2::ThreadSettings {
+                    disabled_plugin_ids: Vec::new(),
                     cwd: absolute_path("/tmp/repo"),
                     approval_policy: v2::AskForApproval::Never,
                     approvals_reviewer: v2::ApprovalsReviewer::User,
@@ -4048,6 +4570,7 @@ mod tests {
     #[test]
     fn command_execution_request_approval_additional_permissions_is_marked_experimental() {
         let params = v2::CommandExecutionRequestApprovalParams {
+            kind: Default::default(),
             thread_id: "thr_123".to_string(),
             turn_id: "turn_123".to_string(),
             item_id: "call_123".to_string(),

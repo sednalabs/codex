@@ -25,6 +25,24 @@ fn context_with_fragment(fragment: &str) -> (TempDir, InlineVisualizationContext
 }
 
 #[test]
+fn unterminated_visualization_preview_uses_the_stream_context() {
+    let (codex_home, context) = context_with_fragment("<div>chart</div>");
+    let mut controller = StreamController::new_with_inline_visualizations(
+        Some(80),
+        codex_home.path(),
+        HistoryRenderMode::Rich,
+        Some(context),
+    );
+    controller.push("::codex-inline-vis{file=\"chart.html\"}");
+    let lines = crate::terminal_hyperlinks::visible_lines(controller.current_tail_lines());
+    assert_eq!(
+        line_text(&lines[0]),
+        "Open chart visualization in the browser"
+    );
+    assert_eq!(controller.queued_lines(), 0);
+}
+
+#[test]
 fn granted_visualization_root_overrides_thread_id_derived_root() {
     let codex_home = tempfile::tempdir().expect("temp codex home");
     let granted_context = InlineVisualizationContext::new(codex_home.path(), ThreadId::new())
@@ -126,6 +144,41 @@ fn hides_incomplete_streaming_directive() {
 }
 
 #[test]
+fn hides_incomplete_streaming_content_reference() {
+    for reference in [
+        "Before\n\u{e200}visualize\u{e202}{\"path\":\"/tmp/chart",
+        "Before\n\u{e200}visualize\u{e202}{\"path\":\"/tmp/chart.html\"}",
+    ] {
+        let rewritten = rewrite_inline_visualizations(reference, /*context*/ None);
+
+        assert_eq!(rewritten.markdown, "Before\n");
+        assert!(rewritten.trusted_file_links.is_empty());
+    }
+}
+
+#[test]
+fn unavailable_or_invalid_content_reference_has_explicit_fallback() {
+    let (_codex_home, context) = context_with_fragment("<div>chart</div>");
+    let outside = tempfile::tempdir().expect("outside visualization directory");
+    let outside_path = outside.path().join("chart.html");
+    fs::write(&outside_path, "<div>outside</div>").expect("write outside fragment");
+
+    let references = [
+        serde_json::json!({ "path": outside_path }).to_string(),
+        serde_json::json!({ "path": "chart.html" }).to_string(),
+        "{\"path\":".to_string(),
+    ];
+
+    for payload in references {
+        let reference = format!("\u{e200}visualize\u{e202}{payload}\u{e201}");
+        assert_eq!(
+            rewrite_inline_visualizations(&reference, Some(&context)).markdown,
+            "_Visualization unavailable on this device._"
+        );
+    }
+}
+
+#[test]
 fn unavailable_artifact_has_explicit_fallback() {
     let codex_home = tempfile::tempdir().expect("temp codex home");
     let context = InlineVisualizationContext::new(codex_home.path(), ThreadId::new())
@@ -211,11 +264,36 @@ fn viewer_reuses_path_and_refreshes_static_document() {
     let (_codex_home, context) = context_with_fragment("<div>first</div>");
     let first_url = context.link_for("chart.html").expect("first viewer link");
     let viewer_path = first_url.to_file_path().expect("viewer file path");
+    let original_viewer_metadata = fs::metadata(&viewer_path).expect("read viewer metadata");
     assert!(
         fs::read_to_string(&viewer_path)
             .expect("read first viewer")
             .contains("first")
     );
+
+    let reused_url = context.link_for("chart.html").expect("reused viewer link");
+
+    assert_eq!(reused_url, first_url);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        assert_eq!(
+            fs::metadata(&viewer_path)
+                .expect("read reused viewer metadata")
+                .ino(),
+            original_viewer_metadata.ino()
+        );
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        assert_eq!(
+            fs::metadata(&viewer_path)
+                .expect("read reused viewer metadata")
+                .creation_time(),
+            original_viewer_metadata.creation_time()
+        );
+    }
 
     fs::write(context.thread_dir.join("chart.html"), "<div>second</div>").expect("update fragment");
     let second_url = context.link_for("chart.html").expect("second viewer link");
@@ -229,8 +307,12 @@ fn viewer_reuses_path_and_refreshes_static_document() {
 #[test]
 fn finalized_agent_cell_replays_visualization_link() {
     let (_codex_home, context) = context_with_fragment("<div>chart</div>");
+    let fragment_path = context.thread_dir.join("chart.html");
     let cell = AgentMarkdownCell::new_with_inline_visualizations(
-        "Before\n\n::codex-inline-vis{file=\"chart.html\"}\n\nAfter".to_string(),
+        format!(
+            "Before\n\n\u{e200}visualize\u{e202}{}\u{e201}\n\nAfter",
+            serde_json::json!({ "path": fragment_path })
+        ),
         Path::new("/workspace"),
         Some(context),
     );

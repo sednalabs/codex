@@ -2,12 +2,13 @@ use codex_protocol::models::DEFAULT_IMAGE_DETAIL;
 use codex_protocol::models::FunctionCallOutputBody;
 use codex_protocol::models::FunctionCallOutputContentItem;
 use codex_protocol::models::FunctionCallOutputPayload;
+use codex_protocol::models::ImageReference;
 use codex_protocol::models::ResponseInputItem;
-use codex_utils_string::take_bytes_at_char_boundary;
 use serde_json::Value as JsonValue;
 
 use crate::ToolPayload;
 
+<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
 const TELEMETRY_PREVIEW_MAX_BYTES: usize = 2 * 1024;
 const TELEMETRY_PREVIEW_MAX_LINES: usize = 64;
 const TELEMETRY_PREVIEW_TRUNCATION_NOTICE: &str = "[... telemetry preview truncated ...]";
@@ -38,9 +39,15 @@ impl ToolExecutionStatus {
     }
 }
 
+=======
+>>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
 /// Model-facing output contract returned by executable tool runtimes.
 pub trait ToolOutput: Send {
-    fn log_preview(&self) -> String;
+    /// Returns a deliberately lossy diagnostic representation, before telemetry size limits.
+    /// Implementations may summarize results or omit media and encrypted content. This is not
+    /// the authoritative tool result; an untruncated log does not imply a complete result.
+    /// The logger owns the additional configurable byte limit.
+    fn log_output(&self) -> String;
 
     fn success_for_logging(&self) -> bool;
 
@@ -57,6 +64,12 @@ pub trait ToolOutput: Send {
     /// `memories.disable_on_external_context` is enabled.
     fn contains_external_context(&self) -> bool {
         false
+    }
+
+    /// Overrides history's fallback token limit after tool-specific truncation.
+    /// Include any serialization allowance; history uses this limit unchanged.
+    fn fallback_token_limit_override(&self) -> Option<usize> {
+        None
     }
 
     fn to_response_item(&self, call_id: &str, payload: &ToolPayload) -> ResponseInputItem;
@@ -85,14 +98,19 @@ pub trait ToolOutput: Send {
     fn code_mode_result(&self, payload: &ToolPayload) -> JsonValue {
         response_input_to_code_mode_result(self.to_response_item("", payload))
     }
+
+    /// Borrows original host-only metadata for recording, not for model output or logging.
+    fn tool_result_metadata(&self) -> Option<&JsonValue> {
+        None
+    }
 }
 
 impl<T> ToolOutput for Box<T>
 where
     T: ToolOutput + ?Sized,
 {
-    fn log_preview(&self) -> String {
-        (**self).log_preview()
+    fn log_output(&self) -> String {
+        (**self).log_output()
     }
 
     fn success_for_logging(&self) -> bool {
@@ -105,6 +123,10 @@ where
 
     fn contains_external_context(&self) -> bool {
         (**self).contains_external_context()
+    }
+
+    fn fallback_token_limit_override(&self) -> Option<usize> {
+        (**self).fallback_token_limit_override()
     }
 
     fn to_response_item(&self, call_id: &str, payload: &ToolPayload) -> ResponseInputItem {
@@ -125,6 +147,10 @@ where
 
     fn code_mode_result(&self, payload: &ToolPayload) -> JsonValue {
         (**self).code_mode_result(payload)
+    }
+
+    fn tool_result_metadata(&self) -> Option<&JsonValue> {
+        (**self).tool_result_metadata()
     }
 }
 
@@ -159,8 +185,8 @@ impl JsonToolOutput {
 }
 
 impl ToolOutput for JsonToolOutput {
-    fn log_preview(&self) -> String {
-        telemetry_preview(&self.value.to_string())
+    fn log_output(&self) -> String {
+        self.value.to_string()
     }
 
     fn success_for_logging(&self) -> bool {
@@ -201,10 +227,10 @@ impl ToolOutput for JsonToolOutput {
 }
 
 impl ToolOutput for codex_protocol::mcp::CallToolResult {
-    fn log_preview(&self) -> String {
+    fn log_output(&self) -> String {
         let output = self.as_function_call_output_payload();
-        let preview = output.body.to_text().unwrap_or_else(|| output.to_string());
-        telemetry_preview(&preview)
+        // Do not fall back to serializing media or encrypted content into logs.
+        output.body.to_text().unwrap_or_default()
     }
 
     fn success_for_logging(&self) -> bool {
@@ -219,9 +245,14 @@ impl ToolOutput for codex_protocol::mcp::CallToolResult {
     }
 
     fn code_mode_result(&self, _payload: &ToolPayload) -> JsonValue {
-        serde_json::to_value(self).unwrap_or_else(|err| {
+        let mut result = serde_json::to_value(self).unwrap_or_else(|err| {
             JsonValue::String(format!("failed to serialize mcp result: {err}"))
-        })
+        });
+        // MCP result metadata is private to clients and must not reach Code Mode.
+        if let JsonValue::Object(fields) = &mut result {
+            fields.remove("_meta");
+        }
+        result
     }
 }
 
@@ -235,9 +266,9 @@ fn response_input_to_code_mode_result(response: ResponseInputItem) -> JsonValue 
                     | codex_protocol::models::ContentItem::OutputText { text } => {
                         FunctionCallOutputContentItem::InputText { text }
                     }
-                    codex_protocol::models::ContentItem::InputImage { image_url, detail } => {
+                    codex_protocol::models::ContentItem::InputImage { image, detail } => {
                         FunctionCallOutputContentItem::InputImage {
-                            image_url,
+                            image,
                             detail: detail.or(Some(DEFAULT_IMAGE_DETAIL)),
                         }
                     }
@@ -270,11 +301,14 @@ fn content_items_to_code_mode_result(items: &[FunctionCallOutputContentItem]) ->
                 FunctionCallOutputContentItem::InputText { text } if !text.trim().is_empty() => {
                     Some(text.clone())
                 }
-                FunctionCallOutputContentItem::InputImage { image_url, .. }
-                    if !image_url.trim().is_empty() =>
-                {
-                    Some(image_url.clone())
-                }
+                FunctionCallOutputContentItem::InputImage {
+                    image: ImageReference::Inline { image_url },
+                    ..
+                } if !image_url.trim().is_empty() => Some(image_url.clone()),
+                FunctionCallOutputContentItem::InputImage {
+                    image: ImageReference::File { file_id },
+                    ..
+                } if !file_id.trim().is_empty() => Some(file_id.clone()),
                 FunctionCallOutputContentItem::InputAudio { audio_url }
                     if !audio_url.trim().is_empty() =>
                 {
@@ -290,42 +324,6 @@ fn content_items_to_code_mode_result(items: &[FunctionCallOutputContentItem]) ->
     )
 }
 
-fn telemetry_preview(content: &str) -> String {
-    let truncated_slice = take_bytes_at_char_boundary(content, TELEMETRY_PREVIEW_MAX_BYTES);
-    let truncated_by_bytes = truncated_slice.len() < content.len();
-
-    let mut preview = String::new();
-    let mut lines_iter = truncated_slice.lines();
-    for idx in 0..TELEMETRY_PREVIEW_MAX_LINES {
-        match lines_iter.next() {
-            Some(line) => {
-                if idx > 0 {
-                    preview.push('\n');
-                }
-                preview.push_str(line);
-            }
-            None => break,
-        }
-    }
-    let truncated_by_lines = lines_iter.next().is_some();
-
-    if !truncated_by_bytes && !truncated_by_lines {
-        return content.to_string();
-    }
-
-    if preview.len() < truncated_slice.len()
-        && truncated_slice
-            .as_bytes()
-            .get(preview.len())
-            .is_some_and(|byte| *byte == b'\n')
-    {
-        preview.push('\n');
-    }
-
-    if !preview.is_empty() && !preview.ends_with('\n') {
-        preview.push('\n');
-    }
-    preview.push_str(TELEMETRY_PREVIEW_TRUNCATION_NOTICE);
-
-    preview
-}
+#[cfg(test)]
+#[path = "tool_output_tests.rs"]
+mod tests;

@@ -1,6 +1,8 @@
 #![cfg(target_os = "windows")]
 
+use super::WindowsSandboxSessionRequest;
 use super::spawn_windows_sandbox_session_elevated_for_permission_profile;
+use super::spawn_windows_sandbox_session_for_level;
 use super::spawn_windows_sandbox_session_legacy;
 use crate::WindowsSandboxCancellationToken;
 use crate::acl::path_mask_allows;
@@ -17,9 +19,11 @@ use crate::winutil::to_wide;
 use anyhow::Result;
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as BASE64;
+use codex_protocol::config_types::WindowsSandboxLevel;
 use codex_protocol::models::PermissionProfile;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use codex_utils_pty::ProcessDriver;
+use codex_utils_pty::ProcessSignal;
 use pretty_assertions::assert_eq;
 use std::collections::HashMap;
 use std::ffi::c_void;
@@ -362,6 +366,43 @@ async fn collect_stdout_and_exit(
 }
 
 #[test]
+fn restricted_token_rejects_managed_network_before_spawn() {
+    current_thread_runtime().block_on(async {
+        let cwd = sandbox_cwd();
+        let codex_home = sandbox_home("restricted-token-managed-network");
+        let permission_profile = PermissionProfile::workspace_write();
+        let error = spawn_windows_sandbox_session_for_level(WindowsSandboxSessionRequest {
+            permission_profile: &permission_profile,
+            workspace_roots: &[],
+            codex_home: codex_home.path(),
+            command: Vec::new(),
+            cwd: cwd.as_path(),
+            env_map: HashMap::new(),
+            windows_sandbox_level: WindowsSandboxLevel::RestrictedToken,
+            proxy_enforced: true,
+            network_proxy_restricting_sid: None,
+            proxy_settings_mode: crate::WindowsSandboxProxySettingsMode::Preserve,
+            timeout_ms: None,
+            read_roots_override: None,
+            read_roots_include_platform_defaults: false,
+            write_roots_override: None,
+            deny_read_paths_override: &[],
+            deny_write_paths_override: &[],
+            tty: false,
+            stdin_open: false,
+            use_private_desktop: false,
+        })
+        .await
+        .expect_err("managed networking must fail before spawning an unelevated sandbox");
+
+        assert_eq!(
+            error.to_string(),
+            "managed networking requires the elevated Windows sandbox backend"
+        );
+    });
+}
+
+#[test]
 fn legacy_non_tty_cmd_emits_output() {
     let _guard = legacy_process_test_guard();
     let runtime = current_thread_runtime();
@@ -447,6 +488,61 @@ fn elevated_non_tty_cmd_forwards_env_output_and_exit() {
 }
 
 #[test]
+#[ignore = "requires this test binary in an installed test MSIX, launched with package identity, CODEX_WINDOWS_REGISTERED_CORE=1, and CODEX_HOME provisioned by that package's service in a disposable Windows VM"]
+fn registered_non_tty_cmd_forwards_env_output_and_exit() {
+    assert!(
+        crate::registered_core_requested(),
+        "registered Core opt-in is required"
+    );
+    let codex_home = PathBuf::from(std::env::var_os("CODEX_HOME").expect("fixture CODEX_HOME"));
+    assert!(
+        crate::app_package::registered_setup_is_ready(&codex_home)
+            .expect("validate the installed package and service receipt"),
+        "the test process must have package identity and completed service setup",
+    );
+    let cwd = tempfile::tempdir().expect("isolated command workspace");
+    current_thread_runtime().block_on(async {
+        let mut env_map: HashMap<String, String> = std::env::vars().collect();
+        env_map.insert("CODEX_REGISTERED_TEST".into(), "REGISTERED-ENV-OK".into());
+        let spawned = spawn_windows_sandbox_session_elevated_for_permission_profile(
+            &PermissionProfile::workspace_write(),
+            workspace_roots_for(cwd.path()).as_slice(),
+            &codex_home,
+            vec![
+                "C:\\Windows\\System32\\cmd.exe".into(),
+                "/d".into(),
+                "/c".into(),
+                "echo %CODEX_REGISTERED_TEST%& exit /b 23".into(),
+            ],
+            cwd.path(),
+            env_map,
+            /*proxy_enforced*/ false,
+            /*network_proxy_restricting_sid*/ None,
+            Some(5_000),
+            /*read_roots_override*/ None,
+            /*read_roots_include_platform_defaults*/ true,
+            /*write_roots_override*/ None,
+            &[],
+            &[],
+            /*tty*/ false,
+            /*stdin_open*/ false,
+            /*use_private_desktop*/ true,
+        )
+        .await
+        .expect("launch through the service-recorded alias and authenticated pipes");
+        let (stdout, exit_code) =
+            collect_stdout_and_exit(spawned, &codex_home, Duration::from_secs(10)).await;
+        assert_eq!(
+            (
+                String::from_utf8(stdout).expect("command output"),
+                exit_code
+            ),
+            ("REGISTERED-ENV-OK\r\n".to_owned(), 23),
+        );
+    });
+}
+
+#[test]
 fn legacy_non_tty_cmd_rejects_deny_read_overrides() {
     let _guard = legacy_process_test_guard();
     let runtime = current_thread_runtime();
@@ -486,7 +582,7 @@ fn legacy_non_tty_cmd_rejects_deny_read_overrides() {
 }
 
 #[test]
-fn legacy_non_tty_powershell_emits_output() {
+fn legacy_non_tty_powershell_interrupt_terminates_process() {
     let Some(pwsh) = pwsh_path() else {
         return;
     };
@@ -505,13 +601,19 @@ fn legacy_non_tty_powershell_emits_output() {
                 pwsh.display().to_string(),
                 "-NoProfile".to_string(),
                 "-Command".to_string(),
-                "Write-Output LEGACY-NONTTY-DIRECT".to_string(),
+                "Write-Output LEGACY-NONTTY-DIRECT; [System.Threading.ManualResetEvent]::new($false).WaitOne()".to_string(),
             ],
             cwd.as_path(),
             HashMap::new(),
+<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
             /*timeout_ms*/ Some(5_000),
             /*additional_deny_read_paths*/ &[],
             /*additional_deny_write_paths*/ &[],
+=======
+            /*timeout_ms*/ None,
+            &[],
+            &[],
+>>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
             /*tty*/ false,
             /*stdin_open*/ false,
             /*use_private_desktop*/ true,
@@ -519,12 +621,41 @@ fn legacy_non_tty_powershell_emits_output() {
         .await
         .expect("spawn legacy non-tty powershell session");
         println!("pwsh spawn returned");
-        let (stdout, exit_code) =
-            collect_stdout_and_exit(spawned, codex_home.path(), Duration::from_secs(10)).await;
-        println!("pwsh collect returned exit_code={exit_code}");
-        let stdout = String::from_utf8_lossy(&stdout);
-        assert_eq!(exit_code, 0, "stdout={stdout:?}");
-        assert!(stdout.contains("LEGACY-NONTTY-DIRECT"), "stdout={stdout:?}");
+        let codex_utils_pty::SpawnedProcess {
+            session,
+            mut stdout_rx,
+            stderr_rx: _stderr_rx,
+            exit_rx,
+        } = spawned;
+        timeout(Duration::from_secs(5), async {
+            let mut stdout = Vec::new();
+            while let Some(chunk) = stdout_rx.recv().await {
+                stdout.extend(chunk);
+                if String::from_utf8_lossy(&stdout).contains("LEGACY-NONTTY-DIRECT") {
+                    return;
+                }
+            }
+            panic!(
+                "PowerShell exited before emitting its readiness marker\n{}",
+                sandbox_log(codex_home.path())
+            );
+        })
+        .await
+        .unwrap_or_else(|_| {
+            panic!(
+                "timed out waiting for PowerShell readiness marker\n{}",
+                sandbox_log(codex_home.path())
+            )
+        });
+
+        session
+            .signal(ProcessSignal::Interrupt)
+            .expect("interrupt should terminate the restricted-token process job");
+        let exit_code = timeout(Duration::from_secs(5), exit_rx)
+            .await
+            .unwrap_or_else(|_| panic!("timed out waiting for exit\n{}", sandbox_log(codex_home.path())))
+            .expect("interrupted process should report an exit code");
+        assert_eq!(exit_code, 1);
     });
 }
 
@@ -546,6 +677,7 @@ fn finish_driver_spawn_keeps_stdin_open_when_requested() {
                 terminator: None,
                 writer_handle: None,
                 resizer: None,
+                tty: false,
             },
             /*stdin_open*/ true,
         );
@@ -578,6 +710,7 @@ fn finish_driver_spawn_closes_stdin_when_not_requested() {
                 terminator: None,
                 writer_handle: None,
                 resizer: None,
+                tty: false,
             },
             /*stdin_open*/ false,
         );

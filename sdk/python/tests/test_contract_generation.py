@@ -1,11 +1,16 @@
 from __future__ import annotations
 
-import importlib.metadata
 import os
+<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
 import re
+=======
+import runpy
+>>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
 import subprocess
 import sys
 from pathlib import Path
+
+import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 GENERATED_TARGETS = [
@@ -36,14 +41,10 @@ def _snapshot_targets(root: Path) -> dict[str, dict[str, bytes] | bytes | None]:
 
 
 def test_generated_files_are_up_to_date():
-    """Regenerating from the pinned runtime package should leave artifacts unchanged."""
+    """Regenerating from repository schemas should leave reviewed artifacts unchanged."""
     before = _snapshot_targets(ROOT)
 
-    # Regenerate contract artifacts via the pinned runtime package, not a local
-    # app-server binary from the checkout or CI environment.
-    assert importlib.metadata.version("openai-codex-cli-bin") == "0.144.4"
     env = os.environ.copy()
-    env.pop("CODEX_EXEC_PATH", None)
     python_bin = str(Path(sys.executable).parent)
     env["PATH"] = f"{python_bin}{os.pathsep}{env.get('PATH', '')}"
 
@@ -58,6 +59,7 @@ def test_generated_files_are_up_to_date():
     assert before == after, "Generated files drifted after regeneration"
 
 
+<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
 def test_generated_v2_all_has_no_redundant_pass_before_model_config():
     source = (ROOT / "src/openai_codex/generated/v2_all.py").read_text()
     assert not re.search(
@@ -65,3 +67,44 @@ def test_generated_v2_all_has_no_redundant_pass_before_model_config():
         source,
         re.MULTILINE,
     ), "Generated BaseModel classes should not include redundant pass before model_config"
+=======
+@pytest.mark.parametrize("mode", ["repository", "scratch", "experimental"])
+def test_schema_refresh_only_updates_python_for_repository_schemas(monkeypatch, tmp_path, mode):
+    script = ROOT.parents[1] / "codex-rs/app-server-protocol/scripts/write_schema_fixtures.py"
+    arguments = {
+        "repository": [],
+        "scratch": ["--schema-root", str(tmp_path / "schema")],
+        "experimental": ["--experimental"],
+    }[mode]
+    calls = []
+    monkeypatch.setattr(sys, "argv", [str(script), *arguments])
+    monkeypatch.setattr(subprocess, "run", lambda args, **kwargs: calls.append((args, kwargs)))
+
+    runpy.run_path(str(script), run_name="__main__")
+
+    assert [args[0] for args, _kwargs in calls] == (
+        ["cargo", "uv"] if mode == "repository" else ["cargo"]
+    )
+    assert all(kwargs["check"] for _args, kwargs in calls)
+    if mode == "repository":
+        assert calls[1][0][-3:] == [
+            "generate-types",
+            "--schema-dir",
+            str(ROOT.parents[1] / "codex-rs/app-server-protocol/schema/json"),
+        ]
+
+
+def test_schema_generation_failure_does_not_update_python(monkeypatch):
+    script = ROOT.parents[1] / "codex-rs/app-server-protocol/scripts/write_schema_fixtures.py"
+    calls = []
+
+    def fail(args, **_kwargs):
+        calls.append(args[0])
+        raise subprocess.CalledProcessError(1, args)
+
+    monkeypatch.setattr(sys, "argv", [str(script)])
+    monkeypatch.setattr(subprocess, "run", fail)
+    with pytest.raises(subprocess.CalledProcessError):
+        runpy.run_path(str(script), run_name="__main__")
+    assert calls == ["cargo"]
+>>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360

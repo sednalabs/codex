@@ -1,6 +1,7 @@
 use crate::app::app_server_requests::ResolvedAppServerRequest;
 use crate::bottom_pane::ApprovalRequest;
 use crate::bottom_pane::McpServerElicitationFormRequest;
+use crate::keymap::KeymapContextSet;
 use crate::render::renderable::Renderable;
 use codex_app_server_protocol::ToolRequestUserInputParams;
 use crossterm::event::KeyEvent;
@@ -20,6 +21,11 @@ pub(crate) trait BottomPaneView: Renderable {
     /// Handle a key event while the view is active. A redraw is always
     /// scheduled after this call.
     fn handle_key_event(&mut self, _key_event: KeyEvent) {}
+
+    /// Return the keymap contexts whose handlers are active in this view.
+    fn keymap_contexts(&self) -> KeymapContextSet {
+        KeymapContextSet::default()
+    }
 
     /// Return `true` if the view has finished and should be removed.
     fn is_complete(&self) -> bool {
@@ -50,9 +56,19 @@ pub(crate) trait BottomPaneView: Renderable {
         None
     }
 
+<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
     /// Current plain-text filter for a searchable list view.
     fn search_query(&self) -> Option<&str> {
         None
+=======
+    /// Apply a matching background suggestion when this view supports text prefills.
+    fn apply_text_suggestion(
+        &mut self,
+        _request_id: uuid::Uuid,
+        _suggestion: Option<&str>,
+    ) -> bool {
+        false
+>>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
     }
 
     /// Active tab id for tabbed list-based views.
@@ -132,6 +148,11 @@ pub(crate) trait BottomPaneView: Renderable {
         request: McpServerElicitationFormRequest,
     ) -> Option<McpServerElicitationFormRequest> {
         Some(request)
+    }
+
+    /// Return true when this view already presents the matching app-server request.
+    fn matches_app_server_request(&self, _request: &ResolvedAppServerRequest) -> bool {
+        false
     }
 
     /// Dismiss a request that was resolved by another client.

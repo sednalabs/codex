@@ -1,12 +1,14 @@
 use super::*;
 use codex_protocol::config_types::WindowsSandboxLevel;
 use codex_protocol::models::PermissionProfile;
+use codex_protocol::permissions::FileSystemSandboxPolicy;
 use codex_sandboxing::SandboxType;
 use core_test_support::PathBufExt;
 use core_test_support::PathExt;
 use pretty_assertions::assert_eq;
 use std::collections::HashMap;
 use std::time::Duration;
+use test_case::test_case;
 use tokio::io::AsyncWriteExt;
 use tokio::time::timeout;
 
@@ -330,8 +332,152 @@ async fn exec_full_buffer_capture_keeps_io_drain_timeout_when_descendant_holds_p
     Ok(())
 }
 
+#[cfg(unix)]
+#[derive(Clone, Copy)]
+enum CaptureDrainFailure {
+    Cancellation,
+    Timeout,
+    DrainTimeout,
+}
+
+#[cfg(unix)]
+#[test_case("stdout", CaptureDrainFailure::Cancellation, ExecCapturePolicy::FullBufferWithExpiration; "cancel_stdout")]
+#[test_case("stderr", CaptureDrainFailure::Cancellation, ExecCapturePolicy::FullBufferWithExpiration; "cancel_stderr")]
+#[test_case("stdout", CaptureDrainFailure::Timeout, ExecCapturePolicy::FullBufferWithExpiration; "timeout_stdout")]
+#[test_case("stderr", CaptureDrainFailure::Timeout, ExecCapturePolicy::FullBufferWithExpiration; "timeout_stderr")]
+#[test_case("stdout", CaptureDrainFailure::DrainTimeout, ExecCapturePolicy::FullBufferWithExpiration; "incomplete_stdout")]
+#[test_case("stderr", CaptureDrainFailure::DrainTimeout, ExecCapturePolicy::FullBufferWithExpiration; "incomplete_stderr")]
+#[test_case("stdout", CaptureDrainFailure::Cancellation, ExecCapturePolicy::SensitiveFullBuffer; "sensitive_cancel")]
+#[test_case("stderr", CaptureDrainFailure::Timeout, ExecCapturePolicy::SensitiveFullBuffer; "sensitive_timeout")]
+#[test_case("stdout", CaptureDrainFailure::DrainTimeout, ExecCapturePolicy::SensitiveFullBuffer; "sensitive_drain_timeout")]
 #[tokio::test]
-async fn process_exec_tool_call_preserves_full_buffer_capture_policy() -> Result<()> {
+async fn full_buffer_expiration_cleans_up_after_leader_exit(
+    pipe: &str,
+    failure: CaptureDrainFailure,
+    capture_policy: ExecCapturePolicy,
+) -> anyhow::Result<()> {
+    let dir = tempfile::tempdir()?;
+    let redirect = match pipe {
+        "stdout" => "2>/dev/null",
+        "stderr" => ">/dev/null",
+        _ => unreachable!("test specifies stdout or stderr"),
+    };
+    let mut command = tokio::process::Command::new("/bin/sh");
+    command
+        .args(["-c", &format!(
+            "printf complete; (while [ ! -f release ]; do sleep 0.01; done; printf survived > late_write) {redirect} &"
+        )])
+        .current_dir(dir.path())
+        .process_group(/*pgroup*/ 0)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .kill_on_drop(true);
+    let child = command.spawn()?;
+    let process_group_id = child.id().expect("running child");
+    let cancellation = CancellationToken::new();
+    let expiration = match failure {
+        CaptureDrainFailure::Cancellation => ExecExpiration::Cancellation(cancellation.clone()),
+        CaptureDrainFailure::Timeout => ExecExpiration::Timeout(Duration::from_millis(250)),
+        CaptureDrainFailure::DrainTimeout => ExecExpiration::Timeout(Duration::from_secs(30)),
+    };
+    let capture = consume_output(
+        child,
+        expiration,
+        capture_policy,
+        /*stdout_stream*/ None,
+    );
+    let after_leader_exit = async {
+        timeout(Duration::from_secs(5), async {
+            while unsafe {
+                libc::kill(process_group_id as libc::pid_t, /*sig*/ 0)
+            } == 0
+            {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("capture should reap the direct child before cancellation");
+        if matches!(failure, CaptureDrainFailure::Cancellation) {
+            cancellation.cancel();
+        }
+    };
+    let (result, ()) = timeout(Duration::from_secs(6), async {
+        tokio::join!(capture, after_leader_exit)
+    })
+    .await?;
+    std::fs::write(dir.path().join("release"), "")?;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    let survived = dir.path().join("late_write").exists();
+    codex_utils_pty::process_group::kill_process_group(process_group_id)?;
+    assert!(
+        !survived,
+        "pipe-holding descendant survived capture failure"
+    );
+    match failure {
+        CaptureDrainFailure::Cancellation | CaptureDrainFailure::Timeout => {
+            let output = result?;
+            assert_eq!(
+                (
+                    output.timed_out,
+                    output.exit_status.success(),
+                    output.stdout.text,
+                    output.stderr.text
+                ),
+                (
+                    matches!(failure, CaptureDrainFailure::Timeout),
+                    false,
+                    Vec::new(),
+                    Vec::new()
+                ),
+            );
+        }
+        CaptureDrainFailure::DrainTimeout => {
+            assert!(result.is_err(), "incomplete capture must fail");
+        }
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn full_buffer_expiration_preserves_successful_background_startup() -> anyhow::Result<()> {
+    let dir = tempfile::tempdir()?;
+    let mut command = tokio::process::Command::new("/bin/sh");
+    command
+        .args([
+            "-c",
+            "printf complete; (sleep 0.05; printf survived > late_write) >/dev/null 2>&1 &",
+        ])
+        .current_dir(dir.path())
+        .process_group(/*pgroup*/ 0)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .kill_on_drop(true);
+    let output = consume_output(
+        command.spawn()?,
+        ExecExpiration::Timeout(Duration::from_secs(5)),
+        ExecCapturePolicy::FullBufferWithExpiration,
+        /*stdout_stream*/ None,
+    )
+    .await?;
+    assert!(output.exit_status.success());
+    assert_eq!(output.stdout.text, b"complete");
+    timeout(Duration::from_secs(5), async {
+        while !dir.path().join("late_write").exists() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await?;
+    Ok(())
+}
+
+#[test_case(ExecCapturePolicy::FullBuffer, 1; "without_expiration")]
+#[test_case(ExecCapturePolicy::FullBufferWithExpiration, 30_000; "with_expiration")]
+#[tokio::test]
+async fn process_exec_tool_call_preserves_full_buffer_capture_policy(
+    capture_policy: ExecCapturePolicy,
+    timeout_ms: u64,
+) -> Result<()> {
     let byte_count = EXEC_OUTPUT_MAX_BYTES.saturating_add(128 * 1024);
     #[cfg(windows)]
     let command = vec![
@@ -354,8 +500,8 @@ async fn process_exec_tool_call_preserves_full_buffer_capture_policy() -> Result
         ExecParams {
             command,
             cwd: cwd.clone(),
-            expiration: 1.into(),
-            capture_policy: ExecCapturePolicy::FullBuffer,
+            expiration: timeout_ms.into(),
+            capture_policy,
             env: std::env::vars().collect(),
             network: None,
             network_environment_id: None,
@@ -369,6 +515,7 @@ async fn process_exec_tool_call_preserves_full_buffer_capture_policy() -> Result
         &cwd,
         std::slice::from_ref(&cwd),
         &None,
+        /*codex_self_exe*/ &None,
         /*use_legacy_landlock*/ false,
         /*stdout_stream*/ None,
     )
@@ -397,18 +544,12 @@ fn windows_restricted_token_supports_read_only_profiles() {
 }
 
 #[test]
-fn windows_proxy_enforcement_uses_elevated_backend() {
+fn windows_sandbox_backend_honors_unelevated_configuration() {
     assert!(!windows_sandbox_uses_elevated_backend(
-        WindowsSandboxLevel::RestrictedToken,
-        /*proxy_enforced*/ false,
+        WindowsSandboxLevel::RestrictedToken
     ));
     assert!(windows_sandbox_uses_elevated_backend(
-        WindowsSandboxLevel::RestrictedToken,
-        /*proxy_enforced*/ true,
-    ));
-    assert!(windows_sandbox_uses_elevated_backend(
-        WindowsSandboxLevel::Elevated,
-        /*proxy_enforced*/ false,
+        WindowsSandboxLevel::Elevated
     ));
     assert!(windows_sandbox_uses_elevated_backend(
         WindowsSandboxLevel::Elevated,
@@ -548,7 +689,7 @@ fn windows_elevated_allows_split_restricted_read_policies() {
     std::fs::create_dir_all(docs.as_path()).expect("create docs");
     let file_system_policy = FileSystemSandboxPolicy::restricted(vec![
         codex_protocol::permissions::FileSystemSandboxEntry {
-            path: codex_protocol::permissions::FileSystemPath::Path { path: docs },
+            path: docs.into(),
             access: codex_protocol::permissions::FileSystemAccessMode::Read,
             missing_path_behavior: None,
         },
@@ -585,10 +726,9 @@ fn windows_restricted_token_rejects_split_only_filesystem_policies() {
             missing_path_behavior: None,
         },
         codex_protocol::permissions::FileSystemSandboxEntry {
-            path: codex_protocol::permissions::FileSystemPath::Path {
-                path: codex_utils_absolute_path::AbsolutePathBuf::from_absolute_path(&docs)
-                    .expect("absolute docs"),
-            },
+            path: codex_utils_absolute_path::AbsolutePathBuf::from_absolute_path(&docs)
+                .expect("absolute docs")
+                .into(),
             access: codex_protocol::permissions::FileSystemAccessMode::Read,
             missing_path_behavior: None,
         },
@@ -626,10 +766,9 @@ fn windows_restricted_token_rejects_root_write_read_only_carveouts() {
             missing_path_behavior: None,
         },
         codex_protocol::permissions::FileSystemSandboxEntry {
-            path: codex_protocol::permissions::FileSystemPath::Path {
-                path: codex_utils_absolute_path::AbsolutePathBuf::from_absolute_path(&docs)
-                    .expect("absolute docs"),
-            },
+            path: codex_utils_absolute_path::AbsolutePathBuf::from_absolute_path(&docs)
+                .expect("absolute docs")
+                .into(),
             access: codex_protocol::permissions::FileSystemAccessMode::Read,
             missing_path_behavior: None,
         },
@@ -679,7 +818,7 @@ fn windows_restricted_token_supports_full_read_split_write_read_carveouts() {
             missing_path_behavior: None,
         },
         codex_protocol::permissions::FileSystemSandboxEntry {
-            path: codex_protocol::permissions::FileSystemPath::Path { path: docs.clone() },
+            path: docs.clone().into(),
             access: codex_protocol::permissions::FileSystemAccessMode::Read,
             missing_path_behavior: None,
         },
@@ -737,7 +876,7 @@ fn windows_restricted_token_rejects_unreadable_split_carveouts() {
             missing_path_behavior: None,
         },
         codex_protocol::permissions::FileSystemSandboxEntry {
-            path: codex_protocol::permissions::FileSystemPath::Path { path: blocked },
+            path: blocked.into(),
             access: codex_protocol::permissions::FileSystemAccessMode::Deny,
             missing_path_behavior: None,
         },
@@ -769,10 +908,9 @@ fn windows_elevated_supports_split_restricted_read_roots() {
     let expected_docs = dunce::canonicalize(&docs).expect("canonical docs");
     let file_system_policy = FileSystemSandboxPolicy::restricted(vec![
         codex_protocol::permissions::FileSystemSandboxEntry {
-            path: codex_protocol::permissions::FileSystemPath::Path {
-                path: codex_utils_absolute_path::AbsolutePathBuf::from_absolute_path(&docs)
-                    .expect("absolute docs"),
-            },
+            path: codex_utils_absolute_path::AbsolutePathBuf::from_absolute_path(&docs)
+                .expect("absolute docs")
+                .into(),
             access: codex_protocol::permissions::FileSystemAccessMode::Read,
             missing_path_behavior: None,
         },
@@ -823,10 +961,9 @@ fn windows_elevated_supports_split_write_read_carveouts() {
             missing_path_behavior: None,
         },
         codex_protocol::permissions::FileSystemSandboxEntry {
-            path: codex_protocol::permissions::FileSystemPath::Path {
-                path: codex_utils_absolute_path::AbsolutePathBuf::from_absolute_path(&docs)
-                    .expect("absolute docs"),
-            },
+            path: codex_utils_absolute_path::AbsolutePathBuf::from_absolute_path(&docs)
+                .expect("absolute docs")
+                .into(),
             access: codex_protocol::permissions::FileSystemAccessMode::Read,
             missing_path_behavior: None,
         },
@@ -926,10 +1063,9 @@ fn windows_elevated_supports_unreadable_split_carveouts() {
             missing_path_behavior: None,
         },
         codex_protocol::permissions::FileSystemSandboxEntry {
-            path: codex_protocol::permissions::FileSystemPath::Path {
-                path: codex_utils_absolute_path::AbsolutePathBuf::from_absolute_path(&blocked)
-                    .expect("absolute blocked"),
-            },
+            path: codex_utils_absolute_path::AbsolutePathBuf::from_absolute_path(&blocked)
+                .expect("absolute blocked")
+                .into(),
             access: codex_protocol::permissions::FileSystemAccessMode::Deny,
             missing_path_behavior: None,
         },
@@ -1044,18 +1180,16 @@ fn windows_elevated_rejects_reopened_writable_descendants() {
             missing_path_behavior: None,
         },
         codex_protocol::permissions::FileSystemSandboxEntry {
-            path: codex_protocol::permissions::FileSystemPath::Path {
-                path: codex_utils_absolute_path::AbsolutePathBuf::from_absolute_path(&docs)
-                    .expect("absolute docs"),
-            },
+            path: codex_utils_absolute_path::AbsolutePathBuf::from_absolute_path(&docs)
+                .expect("absolute docs")
+                .into(),
             access: codex_protocol::permissions::FileSystemAccessMode::Read,
             missing_path_behavior: None,
         },
         codex_protocol::permissions::FileSystemSandboxEntry {
-            path: codex_protocol::permissions::FileSystemPath::Path {
-                path: codex_utils_absolute_path::AbsolutePathBuf::from_absolute_path(&nested)
-                    .expect("absolute nested"),
-            },
+            path: codex_utils_absolute_path::AbsolutePathBuf::from_absolute_path(&nested)
+                .expect("absolute nested")
+                .into(),
             access: codex_protocol::permissions::FileSystemAccessMode::Write,
             missing_path_behavior: None,
         },
@@ -1086,8 +1220,10 @@ fn process_exec_tool_call_uses_platform_sandbox_for_network_only_restrictions() 
 
     assert_eq!(
         select_process_exec_tool_sandbox_type(
-            &FileSystemSandboxPolicy::unrestricted(),
-            NetworkSandboxPolicy::Restricted,
+            &PermissionProfile::from_runtime_permissions(
+                &FileSystemSandboxPolicy::unrestricted(),
+                NetworkSandboxPolicy::Restricted,
+            ),
             codex_protocol::config_types::WindowsSandboxLevel::Disabled,
             /*enforce_managed_network*/ false,
         ),
@@ -1121,6 +1257,7 @@ fn build_exec_request_preserves_windows_workspace_roots() -> Result<()> {
         &cwd,
         workspace_roots.as_slice(),
         &None,
+        /*codex_self_exe*/ &None,
         /*use_legacy_landlock*/ false,
     )?;
 
@@ -1240,6 +1377,7 @@ async fn process_exec_tool_call_respects_cancellation_token() -> Result<()> {
             &cwd,
             std::slice::from_ref(&cwd),
             &None,
+            /*codex_self_exe*/ &None,
             /*use_legacy_landlock*/ false,
             /*stdout_stream*/ None,
         ),
@@ -1321,6 +1459,7 @@ while :; do sleep 1; done"#
             &cwd,
             std::slice::from_ref(&cwd),
             &None,
+            /*codex_self_exe*/ &None,
             /*use_legacy_landlock*/ false,
             /*stdout_stream*/ None,
         ),

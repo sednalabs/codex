@@ -1,3 +1,6 @@
+#[path = "memory_readiness.rs"]
+mod readiness;
+
 use super::threads::ThreadFilterOptions;
 use super::threads::push_thread_filters;
 use super::*;
@@ -177,6 +180,7 @@ SELECT
     threads.updated_at_ms AS updated_at,
     threads.recency_at_ms AS recency_at,
     threads.source,
+    threads.originator,
     threads.history_mode,
     threads.thread_source,
     threads.agent_path,
@@ -195,7 +199,21 @@ SELECT
     threads.tokens_used,
     threads.first_user_message,
     threads.archived_at,
-    threads.is_pinned,
+    threads.thread_section_id AS section,
+    (
+        SELECT thread_sections.name
+        FROM thread_sections
+        WHERE thread_sections.id = threads.thread_section_id
+    ) AS section_name,
+    (
+        SELECT thread_sections.appearance
+        FROM thread_sections
+        WHERE thread_sections.id = threads.thread_section_id
+    ) AS section_appearance,
+    threads.section_position,
+    threads.section_entered_at_ms,
+    threads.project_id,
+    threads.daybreak_enabled,
     threads.git_sha,
     threads.git_branch,
     threads.git_origin_url
@@ -209,7 +227,8 @@ FROM threads
                 allowed_sources,
                 model_providers: None,
                 cwd_filters: None,
-                is_pinned: None,
+                section: None,
+                project_id: None,
                 anchor: None,
                 sort_key: SortKey::UpdatedAt,
                 sort_direction: SortDirection::Desc,
@@ -553,6 +572,7 @@ SELECT
     threads.updated_at_ms AS updated_at,
     threads.recency_at_ms AS recency_at,
     threads.source,
+    threads.originator,
     threads.history_mode,
     threads.thread_source,
     threads.agent_nickname,
@@ -571,7 +591,21 @@ SELECT
     threads.tokens_used,
     threads.first_user_message,
     threads.archived_at,
-    threads.is_pinned,
+    threads.thread_section_id AS section,
+    (
+        SELECT thread_sections.name
+        FROM thread_sections
+        WHERE thread_sections.id = threads.thread_section_id
+    ) AS section_name,
+    (
+        SELECT thread_sections.appearance
+        FROM thread_sections
+        WHERE thread_sections.id = threads.thread_section_id
+    ) AS section_appearance,
+    threads.section_position,
+    threads.section_entered_at_ms,
+    threads.project_id,
+    threads.daybreak_enabled,
     threads.git_sha,
     threads.git_branch,
     threads.git_origin_url
@@ -1264,6 +1298,12 @@ WHERE thread_id = ? AND source_updated_at = ?
             .await?;
         }
 
+        sqlx::query(
+            "UPDATE consolidation_progress SET max_thread_count = MAX(max_thread_count, ?)",
+        )
+        .bind(i64::try_from(selected_outputs.len())?)
+        .execute(&mut *tx)
+        .await?;
         tx.commit().await?;
         Ok(true)
     }
@@ -1389,6 +1429,9 @@ WHERE kind = ? AND job_key = ?
 
 pub(super) async fn clear_memory_data_in_pool(pool: &SqlitePool) -> anyhow::Result<()> {
     let mut tx = pool.begin().await?;
+    sqlx::query("UPDATE consolidation_progress SET max_thread_count = 0")
+        .execute(&mut *tx)
+        .await?;
 
     sqlx::query(
         r#"

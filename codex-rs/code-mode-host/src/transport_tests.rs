@@ -1,9 +1,35 @@
-use std::net::SocketAddr;
-
+use futures::StreamExt;
 use pretty_assertions::assert_eq;
+use tokio::net::TcpStream;
 
 use super::ListenTransport;
 use super::parse_listen_url;
+use crate::grpc_transport::bind_tcp_listener;
+
+#[tokio::test]
+async fn grpc_listener_disables_nagle() {
+    let bind_address = "127.0.0.1:0"
+        .parse()
+        .expect("gRPC test listener should have a valid bind address");
+    let mut listener = bind_tcp_listener(bind_address)
+        .await
+        .expect("gRPC test listener should bind");
+    let local_addr = listener
+        .local_addr()
+        .expect("gRPC test listener should have a local address");
+    let _client = TcpStream::connect(local_addr)
+        .await
+        .expect("gRPC test client should connect");
+    let nodelay = listener
+        .next()
+        .await
+        .expect("gRPC test listener should accept a connection")
+        .expect("gRPC test listener should return a valid socket")
+        .nodelay()
+        .expect("accepted gRPC socket should expose TCP_NODELAY");
+
+    assert!(nodelay);
+}
 
 #[test]
 fn parse_listen_url_accepts_stdio_transports() {
@@ -18,6 +44,7 @@ fn parse_listen_url_accepts_stdio_transports() {
 }
 
 #[test]
+<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
 fn parse_listen_url_accepts_websocket_addresses() {
     assert_eq!(
         parse_listen_url("ws://127.0.0.1:0").expect("websocket listen URL should parse"),
@@ -55,13 +82,15 @@ fn parse_listen_url_rejects_non_loopback_websocket_addresses() {
 }
 
 #[test]
+=======
+>>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
 fn parse_listen_url_rejects_invalid_transports() {
-    let invalid_address = parse_listen_url("ws://localhost:9000")
-        .expect_err("websocket listener requires an IP address");
+    let invalid_address = parse_listen_url("grpc://localhost:9000")
+        .expect_err("gRPC listener requires an IP address");
     assert!(
         invalid_address
             .to_string()
-            .contains("expected `ws://IP:PORT`")
+            .contains("expected `grpc://IP:PORT`")
     );
 
     let unsupported =

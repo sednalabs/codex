@@ -1,8 +1,17 @@
+//! Managed app-server lifecycle, serialized across CLI invocations and the updater.
+
 mod backend;
+#[cfg(windows)]
+use backend::windows::try_lock_file;
 mod client;
+mod install_lock;
 mod managed_install;
+mod prepare_install;
+pub use prepare_install::InstallRequest;
+pub use prepare_install::update_from_cli;
 mod remote_control_client;
 mod settings;
+mod thread_recovery;
 mod update_loop;
 
 use std::path::Path;
@@ -21,19 +30,24 @@ use codex_utils_home_dir::find_codex_home;
 #[cfg(unix)]
 use managed_install::executable_identity;
 use managed_install::managed_codex_bin;
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 use managed_install::managed_codex_version;
 #[cfg(unix)]
 use managed_install::resolved_managed_standalone_release;
 use serde::Serialize;
 use settings::DaemonSettings;
+use settings::MAX_SHUTDOWN_GRACE_SECONDS;
 use tokio::time::sleep;
 
 const START_POLL_INTERVAL: Duration = Duration::from_millis(50);
 const START_TIMEOUT: Duration = Duration::from_secs(10);
-const OPERATION_LOCK_TIMEOUT: Duration = Duration::from_secs(75);
-const PID_FILE_NAME: &str = "app-server.pid";
-const UPDATE_PID_FILE_NAME: &str = "app-server-updater.pid";
+// Leave room for the longest graceful stop, forced-exit check, and restart.
+const OPERATION_LOCK_TIMEOUT: Duration =
+    Duration::from_secs(MAX_SHUTDOWN_GRACE_SECONDS as u64 + 75);
+const LEGACY_PID_FILE_NAME: &str = "app-server.pid";
+const LEGACY_UPDATE_PID_FILE_NAME: &str = "app-server-updater.pid";
+const DAEMON_PID_FILE_NAME: &str = "daemon.pid";
+const DAEMON_UPDATE_PID_FILE_NAME: &str = "daemon-updater.pid";
 const OPERATION_LOCK_FILE_NAME: &str = "daemon.lock";
 const SETTINGS_FILE_NAME: &str = "settings.json";
 const STATE_DIR_NAME: &str = "app-server-daemon";
@@ -114,6 +128,24 @@ pub struct BootstrapOutput {
     pub app_server_version: String,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum UpdateStatus {
+    Updated,
+    NoUpdate,
+    Unsupported,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateOutput {
+    pub status: UpdateStatus,
+    pub managed_codex_path: PathBuf,
+    pub installed_version: Option<String>,
+    pub running_version: Option<String>,
+    pub message: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(untagged)]
 pub enum RemoteControlStartOutput {
@@ -169,7 +201,7 @@ pub struct RemoteControlOutput {
     pub app_server_version: Option<String>,
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum RestartIfRunningOutcome {
     Busy,
@@ -179,21 +211,15 @@ pub(crate) enum RestartIfRunningOutcome {
     Restarted,
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum RestartMode {
     IfVersionChanged,
+    IfBinaryOrVersionChanged,
     Always,
 }
 
-#[cfg(unix)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum UpdaterRefreshMode {
-    None,
-    ReexecIfManagedBinaryChanged,
-}
-
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum RestartDecision {
     NotReady,
@@ -217,19 +243,26 @@ enum RemoteControlStartAction {
 
 pub async fn run(command: LifecycleCommand) -> Result<LifecycleOutput> {
     ensure_supported_platform()?;
-    Daemon::from_environment()?.run(command).await
+    #[cfg(windows)]
+    if matches!(command, LifecycleCommand::Start | LifecycleCommand::Restart) {
+        backend::windows::ensure_not_elevated()?;
+    }
+    // Keep daemon package preparation off callers' async stack frames.
+    Box::pin(Daemon::from_environment()?.run(command)).await
 }
 
 pub async fn bootstrap(options: BootstrapOptions) -> Result<BootstrapOutput> {
     ensure_supported_platform()?;
-    Daemon::from_environment()?.bootstrap(options).await
+    #[cfg(windows)]
+    backend::windows::ensure_not_elevated()?;
+    Box::pin(Daemon::from_environment()?.bootstrap(options)).await
 }
 
 pub async fn ensure_remote_control_ready() -> Result<RemoteControlReadyOutput> {
     ensure_supported_platform()?;
-    Daemon::from_environment()?
-        .ensure_remote_control_ready()
-        .await
+    #[cfg(windows)]
+    backend::windows::ensure_not_elevated()?;
+    Box::pin(Daemon::from_environment()?.ensure_remote_control_ready()).await
 }
 
 pub async fn enable_remote_control_on_socket(
@@ -255,28 +288,43 @@ pub async fn start_remote_control_pairing() -> Result<RemoteControlPairingStartR
 
 pub async fn set_remote_control(mode: RemoteControlMode) -> Result<RemoteControlOutput> {
     ensure_supported_platform()?;
-    Daemon::from_environment()?.set_remote_control(mode).await
+    #[cfg(windows)]
+    backend::windows::ensure_not_elevated()?;
+    Box::pin(Daemon::from_environment()?.set_remote_control(mode)).await
 }
 
 pub async fn run_pid_update_loop(
     http_client_factory: codex_http_client::HttpClientFactory,
+    restore_release: Option<String>,
 ) -> Result<()> {
     ensure_supported_platform()?;
-    update_loop::run(http_client_factory).await
+    #[cfg(windows)]
+    backend::windows::ensure_not_elevated()?;
+    update_loop::run(http_client_factory, restore_release).await
 }
 
-#[cfg(unix)]
+pub async fn update(
+    http_client_factory: codex_http_client::HttpClientFactory,
+) -> Result<UpdateOutput> {
+    ensure_supported_platform()?;
+    #[cfg(windows)]
+    backend::windows::ensure_not_elevated()?;
+    update_loop::request_manual_update(&Daemon::from_environment()?, http_client_factory).await
+}
+
+#[cfg(any(unix, windows))]
 fn ensure_supported_platform() -> Result<()> {
     Ok(())
 }
 
-#[cfg(not(unix))]
+#[cfg(not(any(unix, windows)))]
 fn ensure_supported_platform() -> Result<()> {
     Err(anyhow!(
-        "codex app-server daemon lifecycle is only supported on Unix platforms"
+        "codex app-server daemon lifecycle is only supported on Unix and Windows platforms"
     ))
 }
 
+#[derive(Clone)]
 struct Daemon {
     socket_path: PathBuf,
     pid_file: PathBuf,
@@ -293,36 +341,79 @@ impl Daemon {
             .as_path()
             .to_path_buf();
         let state_dir = codex_home.as_path().join(STATE_DIR_NAME);
+        let managed_codex_bin = managed_codex_bin(codex_home.as_path());
+        // Old CLIs must not mistake a daemon-owned installation for their backend.
+        let (pid_file, update_pid_file) =
+            if managed_codex_bin.starts_with(codex_home.as_path().join("packages/standalone")) {
+                (LEGACY_PID_FILE_NAME, LEGACY_UPDATE_PID_FILE_NAME)
+            } else {
+                (DAEMON_PID_FILE_NAME, DAEMON_UPDATE_PID_FILE_NAME)
+            };
         Ok(Self {
             socket_path,
-            pid_file: state_dir.join(PID_FILE_NAME),
-            update_pid_file: state_dir.join(UPDATE_PID_FILE_NAME),
+            pid_file: state_dir.join(pid_file),
+            update_pid_file: state_dir.join(update_pid_file),
             operation_lock_file: state_dir.join(OPERATION_LOCK_FILE_NAME),
             settings_file: state_dir.join(SETTINGS_FILE_NAME),
-            managed_codex_bin: managed_codex_bin(codex_home.as_path()),
+            managed_codex_bin,
+        })
+    }
+
+    fn recovery_file(&self) -> Result<PathBuf> {
+        Ok(codex_app_server_transport::daemon_recovery_file_path(
+            self.settings_file
+                .parent()
+                .and_then(Path::parent)
+                .context("daemon settings path has no Codex home")?,
+        ))
+    }
+
+    // Call only after taking the operation lock: an explicit update may have
+    // migrated the package and PID namespace while this command was waiting.
+    fn current_installation(&self) -> Result<Self> {
+        let managed_codex_bin = self.current_managed_codex_bin()?;
+        let home = self
+            .settings_file
+            .parent()
+            .and_then(Path::parent)
+            .context("daemon settings path has no Codex home")?;
+        let (pid, updater) = if managed_codex_bin.starts_with(home.join("packages/standalone")) {
+            (LEGACY_PID_FILE_NAME, LEGACY_UPDATE_PID_FILE_NAME)
+        } else {
+            (DAEMON_PID_FILE_NAME, DAEMON_UPDATE_PID_FILE_NAME)
+        };
+        Ok(Self {
+            managed_codex_bin,
+            pid_file: self.pid_file.with_file_name(pid),
+            update_pid_file: self.update_pid_file.with_file_name(updater),
+            ..self.clone()
         })
     }
 
     async fn run(&self, command: LifecycleCommand) -> Result<LifecycleOutput> {
+        if command == LifecycleCommand::Version {
+            return self.version().await;
+        }
+        let _operation_lock = self.acquire_operation_lock().await?;
+        let selected = self.current_installation()?;
         match command {
-            LifecycleCommand::Start => {
-                let _operation_lock = self.acquire_operation_lock().await?;
-                self.start().await
-            }
-            LifecycleCommand::Restart => {
-                let _operation_lock = self.acquire_operation_lock().await?;
-                self.restart().await
-            }
+            LifecycleCommand::Start => selected.start().await,
+            LifecycleCommand::Restart => selected.restart().await,
             LifecycleCommand::Stop => {
-                let _operation_lock = self.acquire_operation_lock().await?;
-                self.stop().await
+                let output = selected.stop().await?;
+                if let Err(err) = thread_recovery::discard_pending(&selected) {
+                    eprintln!("warning: failed to clear saved threads after daemon stop: {err}");
+                }
+                Ok(output)
             }
-            LifecycleCommand::Version => self.version().await,
+            LifecycleCommand::Version => unreachable!(),
         }
     }
 
     async fn start(&self) -> Result<LifecycleOutput> {
+        let mut managed = self.clone();
         let settings = self.load_settings().await?;
+<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
         if let Ok(info) = client::probe(&self.socket_path).await {
             return Ok(self
                 .output(
@@ -354,11 +445,46 @@ impl Daemon {
         let info = self.wait_until_ready().await?;
         Ok(self
             .output(
+=======
+        let (status, backend, pid, info) = if let Ok(info) = client::probe(&self.socket_path).await
+        {
+            (
+                LifecycleStatus::AlreadyRunning,
+                self.running_backend(&settings).await?,
+                None,
+                info,
+            )
+        } else if self.running_backend_instance(&settings).await?.is_some() {
+            (
+                LifecycleStatus::AlreadyRunning,
+                Some(BackendKind::Pid),
+                None,
+                self.wait_until_ready().await?,
+            )
+        } else {
+            // A fresh start must ignore snapshots left by older stop clients.
+            if let Err(err) = thread_recovery::discard_pending(self) {
+                eprintln!("warning: failed to clear stale daemon recovery before start: {err}");
+            }
+            prepare_install::prepare(self, &settings).await?;
+            managed.managed_codex_bin = self.current_managed_codex_bin()?;
+            managed.ensure_managed_codex_bin()?;
+            let pid = managed.start_managed_backend(&settings).await?;
+            (
+>>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
                 LifecycleStatus::Started,
                 Some(BackendKind::Pid),
                 pid,
-                Some(info.app_server_version),
+                self.wait_until_ready().await?,
             )
+        };
+        if backend.is_some()
+            && let Err(err) = managed.ensure_managed_updater(&settings).await
+        {
+            eprintln!("warning: failed to ensure managed updater after app-server start: {err:#}");
+        }
+        Ok(managed
+            .output(status, backend, pid, Some(info.app_server_version))
             .await)
     }
 
@@ -371,6 +497,7 @@ impl Daemon {
                 "app server is running but is not managed by codex app-server daemon"
             ));
         }
+<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
 
         self.ensure_managed_codex_bin()?;
         let managed_release = self.resolved_managed_release().await?;
@@ -381,8 +508,35 @@ impl Daemon {
         let pid = self
             .start_managed_backend_with_bin(&settings, &managed_release.executable)
             .await?;
+=======
+        prepare_install::prepare(self, &settings).await?;
+        let mut managed = self.clone();
+        managed.managed_codex_bin = self.current_managed_codex_bin()?;
+        if !settings.auto_update_enabled {
+            backend::pid_update_loop_backend(self.backend_paths(&settings))
+                .stop()
+                .await?;
+        }
+
+        managed.ensure_managed_codex_bin()?;
+        if let Some(backend) = self.running_backend_instance(&settings).await? {
+            if let Err(err) = thread_recovery::discard_pending(self) {
+                eprintln!("warning: failed to clear stale daemon recovery before restart: {err}");
+            }
+            backend
+                .stop_with_grace(settings.shutdown_grace_seconds)
+                .await?;
+        }
+
+        let pid = managed.start_managed_backend(&settings).await?;
+>>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
         let info = self.wait_until_ready().await?;
-        Ok(self
+        if let Err(err) = managed.ensure_managed_updater(&settings).await {
+            eprintln!(
+                "warning: failed to ensure managed updater after app-server restart: {err:#}"
+            );
+        }
+        Ok(managed
             .output(
                 LifecycleStatus::Restarted,
                 Some(BackendKind::Pid),
@@ -392,11 +546,10 @@ impl Daemon {
             .await)
     }
 
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     pub(crate) async fn try_restart_if_running(
         &self,
         mode: RestartMode,
-        updater_refresh_mode: UpdaterRefreshMode,
         managed_codex_bin: &Path,
     ) -> Result<RestartIfRunningOutcome> {
         let operation_lock = self.open_operation_lock_file().await?;
@@ -411,11 +564,44 @@ impl Daemon {
             } else {
                 None
             };
+            // The installer can retarget `current` while the updater waits for
+            // this lock or probes the running server. Never restart from a
+            // release that is no longer the selected latest-channel binary.
+            if !self.is_stable_standalone_release()?
+                || managed_install::resolved_managed_codex_bin(&self.current_managed_codex_bin()?)
+                    .await
+                    .ok()
+                    .as_deref()
+                    != Some(managed_codex_bin)
+            {
+                return Ok(RestartIfRunningOutcome::AlreadyCurrent);
+            }
+            let mode = if mode == RestartMode::IfBinaryOrVersionChanged {
+                let managed_identity =
+                    managed_install::executable_identity(managed_codex_bin).await?;
+                if backend.running_executable_identity().await?.as_ref() == Some(&managed_identity)
+                {
+                    RestartMode::IfVersionChanged
+                } else {
+                    RestartMode::Always
+                }
+            } else {
+                mode
+            };
             match restart_decision(mode, info.as_ref(), managed_version.as_deref()) {
                 RestartDecision::NotReady => return Ok(RestartIfRunningOutcome::NotReady),
                 RestartDecision::AlreadyCurrent => RestartIfRunningOutcome::AlreadyCurrent,
                 RestartDecision::Restart => {
-                    backend.stop().await?;
+                    #[cfg(windows)]
+                    backend::windows::ensure_detached_launch(managed_codex_bin)?;
+                    if let Err(err) = thread_recovery::discard_pending(self) {
+                        eprintln!(
+                            "warning: failed to clear stale daemon recovery before update: {err}"
+                        );
+                    }
+                    backend
+                        .stop_with_grace(settings.shutdown_grace_seconds)
+                        .await?;
                     let _ = self
                         .start_managed_backend_with_bin(&settings, managed_codex_bin)
                         .await?;
@@ -431,6 +617,7 @@ impl Daemon {
             RestartIfRunningOutcome::NotRunning
         };
 
+<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
         if should_reexec_updater(updater_refresh_mode, outcome) {
             let updater = backend::pid_update_loop_backend(
                 self.backend_paths_with_bin(&settings, managed_codex_bin),
@@ -448,15 +635,26 @@ impl Daemon {
                 }
                 return Err(reexec_error);
             }
+=======
+        if !self.is_stable_standalone_release()?
+            || managed_install::resolved_managed_codex_bin(&self.current_managed_codex_bin()?)
+                .await
+                .ok()
+                .as_deref()
+                != Some(managed_codex_bin)
+        {
+            return Ok(RestartIfRunningOutcome::AlreadyCurrent);
+>>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
         }
-
         Ok(outcome)
     }
 
     async fn stop(&self) -> Result<LifecycleOutput> {
-        let settings = self.load_settings().await?;
+        let settings = DaemonSettings::load_for_stop(&self.settings_file).await;
         if let Some(backend) = self.running_backend_instance(&settings).await? {
-            backend.stop().await?;
+            backend
+                .stop_with_grace(settings.shutdown_grace_seconds)
+                .await?;
             return Ok(self
                 .output(
                     LifecycleStatus::Stopped,
@@ -536,11 +734,12 @@ impl Daemon {
 
     async fn bootstrap(&self, options: BootstrapOptions) -> Result<BootstrapOutput> {
         let _operation_lock = self.acquire_operation_lock().await?;
-        self.bootstrap_locked(options).await
+        self.current_installation()?.bootstrap_locked(options).await
     }
 
     async fn ensure_remote_control_started(&self) -> Result<RemoteControlStartOutput> {
         let _operation_lock = self.acquire_operation_lock().await?;
+<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
         let settings = self.load_settings().await?;
         match remote_control_start_action(self.is_bootstrapped(&settings).await?) {
             RemoteControlStartAction::Start => {
@@ -569,6 +768,24 @@ impl Daemon {
                 Ok(RemoteControlStartOutput::Bootstrap(output))
             }
         }
+=======
+        let selected = self.current_installation()?;
+        let settings = selected.load_settings().await?;
+        if selected.is_bootstrapped(&settings).await? {
+            let _ = selected
+                .set_remote_control_locked(RemoteControlMode::Enabled)
+                .await?;
+            let output = selected.start().await?;
+            return Ok(RemoteControlStartOutput::Start(output));
+        }
+
+        let output = selected
+            .bootstrap_locked(BootstrapOptions {
+                remote_control_enabled: true,
+            })
+            .await?;
+        Ok(RemoteControlStartOutput::Bootstrap(output))
+>>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
     }
 
     async fn ensure_remote_control_ready(&self) -> Result<RemoteControlReadyOutput> {
@@ -583,7 +800,9 @@ impl Daemon {
 
     async fn set_remote_control(&self, mode: RemoteControlMode) -> Result<RemoteControlOutput> {
         let _operation_lock = self.acquire_operation_lock().await?;
-        self.set_remote_control_locked(mode).await
+        self.current_installation()?
+            .set_remote_control_locked(mode)
+            .await
     }
 
     async fn set_remote_control_locked(
@@ -625,10 +844,14 @@ impl Daemon {
             ));
         }
 
+        if backend.is_some() {
+            self.ensure_managed_codex_bin()?;
+        }
         settings.remote_control_enabled = remote_control_enabled;
         settings.save(&self.settings_file).await?;
 
         let app_server_version = if let Some(backend) = backend {
+<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
             self.ensure_managed_codex_bin()?;
             let managed_release = self.resolved_managed_release().await?;
             backend.stop().await?;
@@ -636,6 +859,24 @@ impl Daemon {
                 .start_managed_backend_with_bin(&settings, &managed_release.executable)
                 .await?;
             Some(self.wait_until_ready().await?.app_server_version)
+=======
+            if let Err(err) = thread_recovery::discard_pending(self) {
+                eprintln!(
+                    "warning: failed to clear stale recovery before remote-control restart: {err}"
+                );
+            }
+            backend
+                .stop_with_grace(settings.shutdown_grace_seconds)
+                .await?;
+            let _ = self.start_managed_backend(&settings).await?;
+            let info = self.wait_until_ready().await?;
+            if let Err(err) = self.ensure_managed_updater(&settings).await {
+                eprintln!(
+                    "warning: failed to ensure managed updater after remote-control change: {err:#}"
+                );
+            }
+            Some(info.app_server_version)
+>>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
         } else {
             None
         };
@@ -649,6 +890,7 @@ impl Daemon {
     }
 
     async fn bootstrap_locked(&self, options: BootstrapOptions) -> Result<BootstrapOutput> {
+<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
         self.ensure_managed_codex_bin()?;
         let managed_release = self.resolved_managed_release().await?;
 
@@ -663,6 +905,10 @@ impl Daemon {
                 .sedna_release_channel
                 .unwrap_or(existing_settings.sedna_release_channel),
         };
+=======
+        let mut settings = self.load_settings().await?;
+        settings.remote_control_enabled = options.remote_control_enabled;
+>>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
         if client::probe(&self.socket_path).await.is_ok()
             && self.running_backend(&settings).await?.is_none()
         {
@@ -670,12 +916,25 @@ impl Daemon {
                 "app server is running but is not managed by codex app-server daemon"
             ));
         }
+        prepare_install::prepare(self, &settings).await?;
+        let mut managed = self.clone();
+        managed.managed_codex_bin = self.current_managed_codex_bin()?;
+        managed.ensure_managed_codex_bin()?;
         settings.save(&self.settings_file).await?;
 
+        backend::pid_update_loop_backend(self.backend_paths(&settings))
+            .stop()
+            .await?;
         if let Some(backend) = self.running_backend_instance(&settings).await? {
-            backend.stop().await?;
+            if let Err(err) = thread_recovery::discard_pending(self) {
+                eprintln!("warning: failed to clear stale daemon recovery before bootstrap: {err}");
+            }
+            backend
+                .stop_with_grace(settings.shutdown_grace_seconds)
+                .await?;
         }
 
+<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
         let backend = backend::pid_backend(
             self.backend_paths_with_bin(&settings, &managed_release.executable),
         );
@@ -699,12 +958,23 @@ impl Daemon {
                 None
             }
         };
+=======
+        let backend = backend::pid_backend(managed.backend_paths(&settings));
+        backend.start().await?;
+        let info = self.wait_until_ready().await?;
+        let auto_update_enabled = managed.ensure_managed_updater(&settings).await?;
+        let managed_codex_version = managed.managed_codex_version_best_effort().await;
+>>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
         Ok(BootstrapOutput {
             status: BootstrapStatus::Bootstrapped,
             backend: BackendKind::Pid,
             auto_update_enabled,
             remote_control_enabled: settings.remote_control_enabled,
+<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
             managed_codex_path: managed_release.executable,
+=======
+            managed_codex_path: managed.managed_codex_bin,
+>>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
             managed_codex_version,
             socket_path: self.socket_path.clone(),
             cli_version: env!("CARGO_PKG_VERSION").to_string(),
@@ -740,11 +1010,91 @@ impl Daemon {
         backend.start().await
     }
 
+    async fn ensure_managed_updater(&self, settings: &DaemonSettings) -> Result<bool> {
+        let updater = backend::pid_update_loop_backend(self.backend_paths(settings));
+        if !settings.auto_update_enabled {
+            updater.stop().await?;
+            return Ok(false);
+        }
+        if !self.is_stable_standalone_release()? {
+            // An installer publishes current and the latest marker separately.
+            // Keep its updater alive while that publication may be in progress.
+            if !self.has_latest_selection_marker() {
+                updater.stop().await?;
+            }
+            return Ok(false);
+        }
+        let Ok(codex_bin) =
+            managed_install::resolved_managed_codex_bin(&self.managed_codex_bin).await
+        else {
+            if !self.has_latest_selection_marker() {
+                updater.stop().await?;
+            }
+            return Ok(false);
+        };
+        if !managed_install::supports_daemon_update_loop(&codex_bin).await
+            || !self.is_stable_standalone_release()?
+            || !managed_install::resolved_managed_codex_bin(&self.managed_codex_bin)
+                .await
+                .is_ok_and(|selected| selected == codex_bin)
+        {
+            if !self.has_latest_selection_marker() {
+                updater.stop().await?;
+            }
+            return Ok(false);
+        }
+        backend::pid_update_loop_backend(self.backend_paths_with_bin(settings, &codex_bin))
+            .start()
+            .await?;
+        Ok(true)
+    }
+
+    fn is_stable_standalone_release(&self) -> Result<bool> {
+        let codex_home = self
+            .settings_file
+            .parent()
+            .and_then(Path::parent)
+            .context("daemon settings path has no Codex home")?;
+        Ok(managed_install::is_stable_standalone_release(
+            codex_home,
+            &self.current_managed_codex_bin()?,
+        ))
+    }
+
+    fn current_managed_codex_bin(&self) -> Result<PathBuf> {
+        // An installer can move a legacy binary into bin/ while this updater runs.
+        let home = self
+            .settings_file
+            .parent()
+            .and_then(Path::parent)
+            .context("daemon settings path has no Codex home")?;
+        Ok(managed_install::managed_codex_bin(home))
+    }
+
+    fn has_latest_selection_marker(&self) -> bool {
+        self.settings_file
+            .parent()
+            .and_then(Path::parent)
+            .is_some_and(|home| {
+                managed_install::package_root(home)
+                    .join("auto-update-version")
+                    .is_file()
+            })
+    }
+
     async fn is_bootstrapped(&self, settings: &DaemonSettings) -> Result<bool> {
+<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
         if settings.bootstrapped {
             return Ok(remote_control_bootstrap_ready(
                 /*persisted_bootstrap*/ true, /*legacy_updater_running*/ false,
             ));
+=======
+        if !settings.auto_update_enabled
+            || !self.is_stable_standalone_release()?
+            || !managed_install::supports_daemon_update_loop(&self.managed_codex_bin).await
+        {
+            return Ok(self.running_backend_instance(settings).await?.is_some());
+>>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
         }
         let updater = backend::pid_update_loop_backend(self.backend_paths(settings));
         Ok(remote_control_bootstrap_ready(
@@ -814,17 +1164,26 @@ impl Daemon {
 
     fn ensure_managed_codex_bin(&self) -> Result<()> {
         if self.managed_codex_bin.is_file() {
+            #[cfg(windows)]
+            backend::windows::ensure_detached_launch(&self.managed_codex_bin)?;
             return Ok(());
         }
 
+<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
         Err(anyhow!(missing_managed_install_message(
             &self.managed_codex_bin,
             option_env!("CODEX_RELEASE_REPOSITORY"),
             option_env!("CODEX_RELEASE_TAG_PREFIX"),
         )))
+=======
+        let managed_codex_path = self.managed_codex_bin.display();
+        Err(anyhow!(
+            "daemon executable not found at {managed_codex_path}; repair the existing installation, or run `codex app-server daemon start` to install a missing daemon"
+        ))
+>>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
     }
 
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     async fn managed_codex_version_best_effort(&self) -> Option<String> {
         let managed_release = self.resolved_managed_release().await.ok()?;
         managed_codex_version(&managed_release.executable)
@@ -832,7 +1191,7 @@ impl Daemon {
             .ok()
     }
 
-    #[cfg(not(unix))]
+    #[cfg(not(any(unix, windows)))]
     async fn managed_codex_version_best_effort(&self) -> Option<String> {
         None
     }
@@ -852,6 +1211,10 @@ impl Daemon {
             update_pid_file: self.update_pid_file.clone(),
             remote_control_enabled: settings.remote_control_enabled,
         }
+    }
+
+    fn manual_update_socket_path(&self) -> PathBuf {
+        self.update_pid_file.with_extension("sock")
     }
 
     async fn load_settings(&self) -> Result<DaemonSettings> {
@@ -875,12 +1238,18 @@ impl Daemon {
 
     async fn open_operation_lock_file(&self) -> Result<tokio::fs::File> {
         if let Some(parent) = self.operation_lock_file.parent() {
-            tokio::fs::create_dir_all(parent).await.with_context(|| {
-                format!(
-                    "failed to create daemon state directory {}",
-                    parent.display()
-                )
-            })?;
+            #[cfg(unix)]
+            if let Some(home) = parent.parent() {
+                tokio::fs::create_dir_all(home).await?;
+            }
+            codex_uds::prepare_private_socket_directory(parent)
+                .await
+                .with_context(|| {
+                    format!(
+                        "failed to create daemon state directory {}",
+                        parent.display()
+                    )
+                })?;
         }
         tokio::fs::OpenOptions::new()
             .create(true)
@@ -1004,13 +1373,16 @@ fn already_remote_control_status(mode: RemoteControlMode) -> RemoteControlStatus
     }
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 fn restart_decision(
     mode: RestartMode,
     info: Option<&client::ProbeInfo>,
     managed_version: Option<&str>,
 ) -> RestartDecision {
     match (mode, info, managed_version) {
+        (RestartMode::IfBinaryOrVersionChanged, _, _) => {
+            unreachable!("binary comparison is resolved before restart decision")
+        }
         (RestartMode::IfVersionChanged, None, _) => RestartDecision::NotReady,
         (RestartMode::IfVersionChanged, Some(info), Some(managed_version))
             if info.app_server_version == managed_version =>
@@ -1022,6 +1394,7 @@ fn restart_decision(
 }
 
 #[cfg(unix)]
+<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
 pub(crate) fn should_reexec_updater(
     updater_refresh_mode: UpdaterRefreshMode,
     outcome: RestartIfRunningOutcome,
@@ -1034,6 +1407,8 @@ pub(crate) fn should_reexec_updater(
 }
 
 #[cfg(unix)]
+=======
+>>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
 fn try_lock_file(file: &tokio::fs::File) -> Result<bool> {
     use std::os::fd::AsRawFd;
 
@@ -1049,12 +1424,12 @@ fn try_lock_file(file: &tokio::fs::File) -> Result<bool> {
     Err(err).context("failed to lock daemon operation")
 }
 
-#[cfg(not(unix))]
+#[cfg(not(any(unix, windows)))]
 fn try_lock_file(_file: &tokio::fs::File) -> Result<bool> {
     Ok(true)
 }
 
-#[cfg(all(test, unix))]
+#[cfg(all(test, any(unix, windows)))]
 mod tests {
     use pretty_assertions::assert_eq;
     use tempfile::TempDir;
@@ -1069,8 +1444,8 @@ mod tests {
     use super::RemoteControlStartOutput;
     use super::RemoteControlStatus;
     use super::RestartDecision;
-    use super::RestartIfRunningOutcome;
     use super::RestartMode;
+<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
     use super::UpdaterLifecycleAction;
     use super::UpdaterRefreshMode;
     use super::missing_managed_install_message;
@@ -1081,6 +1456,12 @@ mod tests {
     use super::updater_lifecycle_action;
     use crate::client::ProbeInfo;
     use std::path::Path;
+=======
+    use super::restart_decision;
+    use crate::client::ProbeInfo;
+    #[cfg(unix)]
+    use crate::settings::DaemonSettings;
+>>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
 
     #[test]
     fn remote_control_status_uses_camel_case_json() {
@@ -1091,6 +1472,7 @@ mod tests {
     }
 
     #[test]
+<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
     fn changed_updater_reexecs_after_restart_or_when_app_server_is_stopped() {
         assert_eq!(
             [
@@ -1200,6 +1582,8 @@ mod tests {
     }
 
     #[test]
+=======
+>>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
     fn restart_decision_preserves_forced_refreshes() {
         let current_info = ProbeInfo {
             app_server_version: "0.1.0".to_string(),
@@ -1295,6 +1679,148 @@ mod tests {
             serde_json::to_value(output).expect("serialize"),
             serde_json::to_value(bootstrap_output).expect("serialize")
         );
+    }
+
+    #[tokio::test]
+    async fn waiting_lifecycle_command_uses_migrated_installation() {
+        let home = TempDir::new().expect("home");
+        let state = home.path().join("app-server-daemon");
+        let legacy = home.path().join("packages/standalone/current");
+        std::fs::create_dir_all(&legacy).expect("legacy selection");
+        let daemon = Daemon {
+            socket_path: home.path().join("server.sock"),
+            pid_file: state.join(super::LEGACY_PID_FILE_NAME),
+            update_pid_file: state.join(super::LEGACY_UPDATE_PID_FILE_NAME),
+            operation_lock_file: state.join("daemon.lock"),
+            settings_file: state.join("settings.json"),
+            managed_codex_bin: super::managed_codex_bin(home.path()),
+        };
+        let lock = daemon.acquire_operation_lock().await.expect("lock");
+        let stop = daemon.run(super::LifecycleCommand::Stop);
+        tokio::pin!(stop);
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(20), &mut stop)
+                .await
+                .is_err()
+        );
+        std::fs::create_dir_all(home.path().join("packages/app-server-daemon/current"))
+            .expect("migrate selection");
+        drop(lock);
+        let output = stop.await.expect("stop");
+        assert_eq!(
+            (output.status, output.managed_codex_path),
+            (
+                LifecycleStatus::NotRunning,
+                super::managed_codex_bin(home.path())
+            )
+        );
+    }
+
+    #[tokio::test]
+    async fn stop_creates_missing_home_parent() {
+        let temp = TempDir::new().expect("temp dir");
+        let state = temp.path().join("missing-home").join("daemon-state");
+        let daemon = Daemon {
+            socket_path: state.join("server.sock"),
+            pid_file: state.join("server.pid"),
+            update_pid_file: state.join("updater.pid"),
+            operation_lock_file: state.join("daemon.lock"),
+            settings_file: state.join("settings.json"),
+            managed_codex_bin: state.join("missing-codex"),
+        };
+        assert_eq!(
+            daemon
+                .run(super::LifecycleCommand::Stop)
+                .await
+                .expect("stop on fresh home")
+                .status,
+            LifecycleStatus::NotRunning,
+        );
+    }
+
+    #[tokio::test]
+    async fn stop_and_fresh_start_discard_pending_thread_restore() {
+        let home = TempDir::new().expect("home");
+        let state = home.path().join("app-server-daemon");
+        codex_uds::prepare_private_socket_directory(&state)
+            .await
+            .expect("private state directory");
+        let daemon = Daemon {
+            socket_path: home.path().join("server.sock"),
+            pid_file: state.join("server.pid"),
+            update_pid_file: state.join("updater.pid"),
+            operation_lock_file: state.join("daemon.lock"),
+            settings_file: state.join("settings.json"),
+            managed_codex_bin: home.path().join("codex"),
+        };
+        codex_app_server_transport::daemon_recovery::write_candidates(
+            &daemon.recovery_file().expect("recovery path"),
+            &["thread".to_string()].into_iter().collect(),
+        )
+        .expect("saved threads");
+        assert_eq!(
+            daemon
+                .run(super::LifecycleCommand::Stop)
+                .await
+                .expect("stop")
+                .status,
+            LifecycleStatus::NotRunning
+        );
+        assert!(!daemon.recovery_file().expect("recovery path").exists());
+        // Simulate an older stop client leaving a snapshot behind.
+        std::fs::write(
+            daemon.recovery_file().expect("recovery path"),
+            r#"["thread"]"#,
+        )
+        .expect("legacy saved threads");
+        daemon
+            .run(super::LifecycleCommand::Start)
+            .await
+            .expect_err("missing backend binary");
+        assert!(!daemon.recovery_file().expect("recovery path").exists());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn managed_local_backend_counts_as_bootstrapped_without_updater() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let home = TempDir::new().expect("home");
+        let standalone = home.path().join("packages/standalone");
+        let local_bin = standalone.join("local-main/bin/codex");
+        tokio::fs::create_dir_all(local_bin.parent().expect("bin parent"))
+            .await
+            .expect("local bin directory");
+        tokio::fs::write(&local_bin, b"#!/bin/sh\nexec sleep 30\n")
+            .await
+            .expect("local bin");
+        std::fs::set_permissions(&local_bin, std::fs::Permissions::from_mode(0o755))
+            .expect("executable local bin");
+        std::os::unix::fs::symlink("local-main", standalone.join("current"))
+            .expect("current local build");
+        let state = home.path().join("app-server-daemon");
+        let daemon = Daemon {
+            socket_path: home
+                .path()
+                .join("app-server-control/app-server-control.sock"),
+            pid_file: state.join("app-server.pid"),
+            update_pid_file: state.join("app-server-updater.pid"),
+            operation_lock_file: state.join("daemon.lock"),
+            settings_file: state.join("settings.json"),
+            managed_codex_bin: standalone.join("current/bin/codex"),
+        };
+        let settings = DaemonSettings::default();
+        assert!(
+            !daemon
+                .is_bootstrapped(&settings)
+                .await
+                .expect("not running")
+        );
+        let backend = crate::backend::pid_backend(daemon.backend_paths(&settings));
+        backend.start().await.expect("start local backend");
+        let bootstrapped = daemon.is_bootstrapped(&settings).await;
+        backend.stop().await.expect("stop local backend");
+        assert!(bootstrapped.expect("managed local backend"));
     }
 
     #[tokio::test]

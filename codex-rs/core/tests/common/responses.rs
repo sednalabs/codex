@@ -80,6 +80,26 @@ impl ResponseMock {
     }
 }
 
+pub fn assert_parent_turn(body: &Value, expected: Option<&str>) -> Result<()> {
+    assert_turn_id(body, "parent_turn_id", expected)
+}
+
+pub fn assert_root_turn(body: &Value, expected: Option<&str>) -> Result<()> {
+    assert_turn_id(body, "root_turn_id", expected)
+}
+
+fn assert_turn_id(body: &Value, key: &str, expected: Option<&str>) -> Result<()> {
+    let metadata = &body["client_metadata"];
+    let payload = metadata["x-codex-turn-metadata"]
+        .as_str()
+        .expect("canonical turn metadata");
+    let canonical: Value = serde_json::from_str(payload)?;
+    let expected = expected.map(Value::from);
+    let actual = (metadata.get(key), canonical.get(key));
+    assert_eq!(actual, (expected.as_ref(), expected.as_ref()));
+    Ok(())
+}
+
 #[derive(Debug, Clone)]
 pub struct ResponsesRequest(wiremock::Request);
 
@@ -274,6 +294,21 @@ impl ResponsesRequest {
             .as_array()
             .expect("input array not found in request")
             .clone()
+    }
+
+    /// Returns whether an input item's content annotations exactly match the given sequence.
+    pub fn has_content_kinds(&self, kinds: &[&str]) -> bool {
+        self.input().into_iter().any(|item| {
+            item["internal_chat_message_metadata_passthrough"]["content_item_kinds"]
+                .as_array()
+                .is_some_and(|actual| {
+                    actual.len() == kinds.len()
+                        && actual
+                            .iter()
+                            .zip(kinds)
+                            .all(|(actual, expected)| actual.as_str() == Some(*expected))
+                })
+        })
     }
 
     pub fn inputs_of_type(&self, ty: &str) -> Vec<Value> {
@@ -569,6 +604,7 @@ impl WebSocketTestServer {
         request_index: usize,
     ) -> WebSocketRequest {
         loop {
+            let notified = self.request_log_updated.notified();
             if let Some(request) = self
                 .connections
                 .lock()
@@ -579,7 +615,7 @@ impl WebSocketTestServer {
             {
                 return request;
             }
-            self.request_log_updated.notified().await;
+            notified.await;
         }
     }
 
@@ -989,21 +1025,21 @@ pub fn ev_apply_patch_custom_tool_call(call_id: &str, patch: &str) -> Value {
     })
 }
 
-pub fn ev_shell_command_call(call_id: &str, command: &str) -> Value {
-    let args = serde_json::json!({ "command": command });
-    ev_shell_command_call_with_args(call_id, &args)
+pub fn ev_exec_command_call(call_id: &str, command: &str) -> Value {
+    let args = serde_json::json!({ "cmd": command });
+    ev_exec_command_call_with_args(call_id, &args)
 }
 
-pub fn ev_shell_command_call_with_args(call_id: &str, args: &serde_json::Value) -> Value {
-    let arguments = serde_json::to_string(args).expect("serialize shell command arguments");
-    ev_function_call(call_id, "shell_command", &arguments)
+pub fn ev_exec_command_call_with_args(call_id: &str, args: &serde_json::Value) -> Value {
+    let arguments = serde_json::to_string(args).expect("serialize exec command arguments");
+    ev_function_call(call_id, "exec_command", &arguments)
 }
 
-pub fn ev_apply_patch_shell_command_call_via_heredoc(call_id: &str, patch: &str) -> Value {
-    let args = serde_json::json!({ "command": format!("apply_patch <<'EOF'\n{patch}\nEOF\n") });
+pub fn ev_apply_patch_exec_command_call_via_heredoc(call_id: &str, patch: &str) -> Value {
+    let args = serde_json::json!({ "cmd": format!("apply_patch <<'EOF'\n{patch}\nEOF\n") });
     let arguments = serde_json::to_string(&args).expect("serialize apply_patch arguments");
 
-    ev_function_call(call_id, "shell_command", &arguments)
+    ev_function_call(call_id, "exec_command", &arguments)
 }
 
 pub fn sse_failed(id: &str, code: &str, message: &str) -> String {
@@ -1056,14 +1092,6 @@ fn base_mock() -> (MockBuilder, ResponseMock) {
     (mock, response_mock)
 }
 
-fn compact_mock() -> (MockBuilder, ResponseMock) {
-    let response_mock = ResponseMock::new();
-    let mock = Mock::given(method("POST"))
-        .and(path_regex(".*/responses/compact$"))
-        .and(response_mock.clone());
-    (mock, response_mock)
-}
-
 fn models_mock() -> (MockBuilder, ModelsMock) {
     let models_mock = ModelsMock::new();
     let mock = Mock::given(method("GET"))
@@ -1094,6 +1122,7 @@ pub async fn mount_sse_once(server: &MockServer, body: String) -> ResponseMock {
     response_mock
 }
 
+<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
 pub async fn mount_sse_repeating(server: &MockServer, body: String) -> ResponseMock {
     let (mock, response_mock) = base_mock();
     mock.respond_with(sse_response(body)).mount(server).await;
@@ -1213,6 +1242,8 @@ pub async fn mount_compact_response_once(
     response_mock
 }
 
+=======
+>>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
 pub async fn mount_models_once(server: &MockServer, body: ModelsResponse) -> ModelsMock {
     let (mock, models_mock) = models_mock();
     mock.respond_with(
@@ -1603,51 +1634,13 @@ pub async fn mount_response_sequence(
     response_mock
 }
 
-/// Mounts a sequence of responses for each POST to `/v1/responses/compact`.
-/// Panics if more requests are received than responses provided.
-pub async fn mount_compact_response_sequence(
-    server: &MockServer,
-    responses: Vec<ResponseTemplate>,
-) -> ResponseMock {
-    use std::sync::atomic::AtomicUsize;
-    use std::sync::atomic::Ordering;
-
-    struct SeqResponder {
-        num_calls: AtomicUsize,
-        responses: Vec<ResponseTemplate>,
-    }
-
-    impl Respond for SeqResponder {
-        fn respond(&self, _: &wiremock::Request) -> ResponseTemplate {
-            let call_num = self.num_calls.fetch_add(1, Ordering::SeqCst);
-            self.responses
-                .get(call_num)
-                .expect("missing response for compact call")
-                .clone()
-        }
-    }
-
-    let num_calls = responses.len();
-    let responder = SeqResponder {
-        num_calls: AtomicUsize::new(0),
-        responses,
-    };
-
-    let (mock, response_mock) = compact_mock();
-    mock.respond_with(responder)
-        .up_to_n_times(num_calls as u64)
-        .expect(num_calls as u64)
-        .mount(server)
-        .await;
-    response_mock
-}
-
 /// Validate invariants on the request body sent to `/v1/responses`.
 ///
-/// - No `function_call_output`/`custom_tool_call_output` with missing/empty `call_id`.
+/// - A `function_call_output` with missing/empty `call_id` must have a nonempty `name`.
+/// - No `custom_tool_call_output` with missing/empty `call_id`.
 /// - `tool_search_output` must have a `call_id` unless it is a server-executed legacy item.
-/// - Every `function_call_output` must match a prior `function_call` or
-///   `local_shell_call` with the same `call_id` in the same `input`.
+/// - Every `function_call_output` with a `call_id` must match a prior `function_call`
+///   or `local_shell_call` with the same `call_id` in the same `input`.
 /// - Every `custom_tool_call_output` must match a prior `custom_tool_call`.
 /// - Every `tool_search_output` must match a prior `tool_search_call`.
 /// - Additionally, enforce symmetry: every `function_call`/`custom_tool_call`/
@@ -1693,9 +1686,19 @@ fn validate_request_body_invariants(request: &wiremock::Request) {
         items
             .iter()
             .filter(|item| item.get("type").and_then(Value::as_str) == Some(kind))
-            .map(|item| {
-                let id = get_call_id(item).expect(missing_msg);
-                id.to_string()
+            .filter_map(|item| {
+                if let Some(id) = get_call_id(item) {
+                    return Some(id.to_string());
+                }
+                if kind == "function_call_output"
+                    && item
+                        .get("name")
+                        .and_then(Value::as_str)
+                        .is_some_and(|name| !name.is_empty())
+                {
+                    return None;
+                }
+                panic!("{missing_msg}");
             })
             .collect()
     }

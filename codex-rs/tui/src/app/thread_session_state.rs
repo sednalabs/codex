@@ -1,6 +1,9 @@
 use super::App;
+<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
 use crate::session_resume::SessionModelSettings;
 use crate::session_resume::read_session_model_settings;
+=======
+>>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
 use crate::session_state::ThreadSessionState;
 use codex_app_server_protocol::AskForApproval;
 use codex_app_server_protocol::Thread;
@@ -81,10 +84,15 @@ impl App {
         let active_permission_profile = self.current_active_permission_profile();
         let mut session = if let Some(mut session) = self.primary_session_configured.clone() {
             if session.thread_id != thread_id {
+<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
                 // Start from neutral thread-scoped state so stale settings from
                 // the active session cannot leak if read metadata is incomplete.
                 session.model.clear();
                 session.reasoning_effort = None;
+=======
+                // `thread/read` does not include all thread settings, so do not carry
+                // thread-scoped state from the currently active session.
+>>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
                 session.collaboration_mode = None;
                 session.personality = None;
             }
@@ -123,6 +131,7 @@ impl App {
         session.active_permission_profile = active_permission_profile;
         session.instruction_source_paths = Vec::new();
         session.rollout_path = thread.path.clone();
+<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
         let mut model_settings = SessionModelSettings {
             model: thread.model.clone(),
             reasoning_effort: thread.reasoning_effort.clone(),
@@ -141,6 +150,10 @@ impl App {
         }
         if let Some(model) = model_settings.model {
             session.model = model;
+=======
+        if let Some(model) = &thread.model {
+            session.model = model.clone();
+>>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
         } else if thread.path.is_some() {
             session.model.clear();
         }
@@ -428,6 +441,8 @@ mod tests {
             ..test_thread_session(primary_thread_id, test_path_buf("/tmp/primary"))
         };
         let read_thread = Thread {
+            originator: None,
+            environments: None,
             id: read_thread_id.to_string(),
             extra: None,
             session_id: read_thread_id.to_string(),
@@ -435,7 +450,10 @@ mod tests {
             parent_thread_id: None,
             preview: "read thread".to_string(),
             ephemeral: false,
-            is_pinned: false,
+            section: None,
+            section_entered_at: None,
+            project_id: None,
+            daybreak_enabled: None,
             history_mode: Default::default(),
             model_provider: "read-provider".to_string(),
             model: None,

@@ -6,6 +6,7 @@ use std::sync::Arc;
 use crate::runtime::McpRuntimeContext;
 use codex_api::SharedAuthProvider;
 use codex_config::AppToolApproval;
+use codex_config::McpServerAuth;
 use codex_config::McpServerConfig;
 use codex_config::McpServerTransportConfig;
 use codex_config::types::AuthKeyringBackendKind;
@@ -13,8 +14,11 @@ use codex_config::types::OAuthCredentialsStoreMode;
 use codex_connectors::ConnectorRuntimeContextKey;
 use codex_exec_server::Environment;
 use codex_login::CodexAuth;
+use codex_protocol::mcp::ClientMcpExtensions;
+use codex_rmcp_client::McpOAuthRefreshMode;
+use codex_rmcp_client::StoredOAuthCredentialSnapshot;
 use codex_rmcp_client::StoredOAuthTokens;
-use codex_rmcp_client::stored_oauth_credentials;
+use codex_utils_path_uri::PathUri;
 use rmcp::model::ElicitationCapability;
 use tracing::warn;
 
@@ -22,11 +26,20 @@ use tracing::warn;
 #[derive(Debug, Clone)]
 pub struct EffectiveMcpServer {
     config: McpServerConfig,
+    agent_plugin: bool,
 }
 
 impl EffectiveMcpServer {
     pub fn configured(config: McpServerConfig) -> Self {
-        Self { config }
+        Self {
+            config,
+            agent_plugin: false,
+        }
+    }
+
+    pub fn with_agent_plugin(mut self, agent_plugin: bool) -> Self {
+        self.agent_plugin = agent_plugin;
+        self
     }
 
     pub fn config(&self) -> &McpServerConfig {
@@ -40,6 +53,40 @@ impl EffectiveMcpServer {
     pub fn required(&self) -> bool {
         self.config.required
     }
+
+    pub fn is_agent_plugin(&self) -> bool {
+        self.agent_plugin
+    }
+}
+
+pub(crate) fn has_explicit_http_authorization(config: &McpServerConfig) -> bool {
+    let McpServerTransportConfig::StreamableHttp {
+        bearer_token_env_var,
+        http_headers,
+        env_http_headers,
+        ..
+    } = &config.transport
+    else {
+        return false;
+    };
+
+    if bearer_token_env_var.is_some()
+        || env_http_headers
+            .as_ref()
+            .is_some_and(|headers| !headers.is_empty())
+    {
+        return false;
+    }
+
+    http_headers.as_ref().is_some_and(|headers| {
+        headers.iter().any(|(name, value)| {
+            name.eq_ignore_ascii_case("authorization")
+                && !value.trim().is_empty()
+                && value
+                    .bytes()
+                    .all(|byte| byte == b'\t' || (byte >= b' ' && byte != 0x7f))
+        })
+    })
 }
 
 /// Inputs that determine the identity of a live MCP connection.
@@ -48,10 +95,14 @@ impl EffectiveMcpServer {
 /// those belong to a publication and can change without reconnecting.
 #[derive(Clone)]
 pub(crate) struct McpServerConnectionIdentity {
+    auth: McpServerAuth,
     transport: McpServerTransportConfig,
     environment_id: String,
+    host_plugin_root: Option<PathUri>,
     oauth_store: Option<(OAuthCredentialsStoreMode, AuthKeyringBackendKind)>,
-    oauth_credentials: Result<Option<StoredOAuthTokens>, String>,
+    oauth_refresh_mode: Option<McpOAuthRefreshMode>,
+    oauth_credentials: Result<Option<StoredOAuthCredentialSnapshot>, String>,
+    pub(crate) oauth_store_was_contended: bool,
     resolved_environment: Result<Option<Arc<Environment>>, String>,
     local_stdio_fallback_cwd: Option<PathBuf>,
     referenced_environment_variables: Vec<(String, Option<OsString>)>,
@@ -59,7 +110,8 @@ pub(crate) struct McpServerConnectionIdentity {
     runtime_auth_token: Option<String>,
     codex_apps_cache_identity: Option<(PathBuf, ConnectorRuntimeContextKey)>,
     client_elicitation_capability: ElicitationCapability,
-    supports_openai_form_elicitation: bool,
+    client_mcp_extensions: ClientMcpExtensions,
+    agent_plugin: bool,
 }
 
 impl McpServerConnectionIdentity {
@@ -67,58 +119,111 @@ impl McpServerConnectionIdentity {
     pub(crate) fn new(
         server_name: &str,
         server: &EffectiveMcpServer,
+        host_plugin_root: Option<&PathUri>,
         store_mode: OAuthCredentialsStoreMode,
         keyring_backend_kind: AuthKeyringBackendKind,
+        oauth_refresh_mode: McpOAuthRefreshMode,
         resolved_environment: &Result<Option<Arc<Environment>>, String>,
         runtime_context: &McpRuntimeContext,
         runtime_auth_provider: Option<&SharedAuthProvider>,
         auth: Option<&CodexAuth>,
         codex_apps_cache_identity: Option<(PathBuf, ConnectorRuntimeContextKey)>,
         client_elicitation_capability: ElicitationCapability,
-        supports_openai_form_elicitation: bool,
+        client_mcp_extensions: ClientMcpExtensions,
+        previous_identity: Option<&Self>,
     ) -> Self {
         let config = server.config();
-        let stored_oauth_url = if runtime_auth_provider.is_none() {
+        let valid_http_header_value = |value: &str| {
+            value
+                .bytes()
+                .all(|byte| byte == b'\t' || (byte >= b' ' && byte != 0x7f))
+        };
+        let stored_oauth_url = if runtime_auth_provider.is_none()
+            && !matches!(config.auth, McpServerAuth::EmaAuth)
+            && (!matches!(config.auth, McpServerAuth::ChatGpt) || config.is_local_environment())
+        {
             match &config.transport {
                 McpServerTransportConfig::StreamableHttp {
                     url,
                     bearer_token_env_var: None,
-                    ..
-                } => Some(url),
-                McpServerTransportConfig::StreamableHttp {
-                    bearer_token_env_var: Some(_),
-                    ..
+                    http_headers,
+                    env_http_headers,
+                    http_headers_helper: _,
+                } if !http_headers.as_ref().is_some_and(|headers| {
+                    headers.iter().any(|(name, value)| {
+                        name.eq_ignore_ascii_case("authorization") && valid_http_header_value(value)
+                    })
+                }) && !env_http_headers.as_ref().is_some_and(|headers| {
+                    headers.iter().any(|(name, env_var)| {
+                        name.eq_ignore_ascii_case("authorization")
+                            && std::env::var(env_var).is_ok_and(|value| {
+                                !value.trim().is_empty() && valid_http_header_value(&value)
+                            })
+                    })
+                }) =>
+                {
+                    Some(url)
                 }
+                McpServerTransportConfig::StreamableHttp { .. }
                 | McpServerTransportConfig::Stdio { .. } => None,
             }
         } else {
             None
         };
         let oauth_credentials = stored_oauth_url.map_or(Ok(None), |url| {
-            stored_oauth_credentials(server_name, url, store_mode, keyring_backend_kind).map_err(
-                |error| {
-                    warn!(server_name, %error, "failed to read stored MCP OAuth credentials");
-                    error.to_string()
-                },
+            let credential_name = config.oauth_credential_name(server_name);
+            StoredOAuthCredentialSnapshot::for_runtime_refresh(
+                previous_identity.and_then(|previous_identity| {
+                    previous_identity
+                        .oauth_credentials
+                        .as_ref()
+                        .ok()
+                        .and_then(Option::as_ref)
+                        .filter(|_| {
+                            previous_identity.oauth_store
+                                == Some((store_mode, keyring_backend_kind))
+                        })
+                }),
+                credential_name.as_ref(),
+                url,
+                store_mode,
+                keyring_backend_kind,
             )
+            .map_err(|error| {
+                warn!(server_name, %error, "failed to read stored MCP OAuth credentials");
+                error.to_string()
+            })
         });
         let local_stdio_fallback_cwd = (config.is_local_environment()
             && matches!(
                 config.transport,
                 McpServerTransportConfig::Stdio { cwd: None, .. }
+                    | McpServerTransportConfig::StreamableHttp {
+                        http_headers_helper: Some(_),
+                        ..
+                    }
             ))
-        .then(|| runtime_context.local_stdio_fallback_cwd());
+        .then(|| runtime_context.local_process_cwd());
         let referenced_environment_variables = referenced_environment_variables(config);
         let runtime_auth = runtime_auth_provider.and(auth).cloned();
         let runtime_auth_token = runtime_auth.as_ref().and_then(|auth| auth.get_token().ok());
+        let oauth_store_was_contended = oauth_credentials
+            .as_ref()
+            .ok()
+            .and_then(Option::as_ref)
+            .is_some_and(StoredOAuthCredentialSnapshot::store_was_contended);
 
         Self {
+            auth: config.auth.clone(),
             transport: config.transport.clone(),
             environment_id: config.environment_id.clone(),
+            host_plugin_root: host_plugin_root.cloned(),
             oauth_store: stored_oauth_url
                 .is_some()
                 .then_some((store_mode, keyring_backend_kind)),
+            oauth_refresh_mode: stored_oauth_url.is_some().then_some(oauth_refresh_mode),
             oauth_credentials,
+            oauth_store_was_contended,
             resolved_environment: resolved_environment.clone(),
             local_stdio_fallback_cwd,
             referenced_environment_variables,
@@ -126,7 +231,8 @@ impl McpServerConnectionIdentity {
             runtime_auth_token,
             codex_apps_cache_identity,
             client_elicitation_capability,
-            supports_openai_form_elicitation,
+            client_mcp_extensions,
+            agent_plugin: server.is_agent_plugin(),
         }
     }
 
@@ -144,9 +250,12 @@ impl McpServerConnectionIdentity {
             (None, None) => true,
             (Some(_), None) | (None, Some(_)) => false,
         };
-        self.transport == other.transport
+        self.auth == other.auth
+            && self.transport == other.transport
             && self.environment_id == other.environment_id
+            && self.host_plugin_root == other.host_plugin_root
             && self.oauth_store == other.oauth_store
+            && self.oauth_refresh_mode == other.oauth_refresh_mode
             && same_resolved_environment(&self.resolved_environment, &other.resolved_environment)
             && self.local_stdio_fallback_cwd == other.local_stdio_fallback_cwd
             && self.referenced_environment_variables == other.referenced_environment_variables
@@ -154,11 +263,58 @@ impl McpServerConnectionIdentity {
             && self.runtime_auth_token == other.runtime_auth_token
             && self.codex_apps_cache_identity == other.codex_apps_cache_identity
             && self.client_elicitation_capability == other.client_elicitation_capability
-            && self.supports_openai_form_elicitation == other.supports_openai_form_elicitation
+            && self.client_mcp_extensions == other.client_mcp_extensions
+            && self.agent_plugin == other.agent_plugin
     }
 
-    pub(crate) fn oauth_credentials(&self) -> Result<&Option<StoredOAuthTokens>, &String> {
-        self.oauth_credentials.as_ref()
+    pub(crate) fn oauth_credentials(&self) -> Result<Option<&StoredOAuthTokens>, &String> {
+        self.oauth_credentials.as_ref().map(|credentials| {
+            credentials
+                .as_ref()
+                .map(StoredOAuthCredentialSnapshot::credentials)
+        })
+    }
+
+    pub(crate) fn oauth_credentials_changed(
+        &self,
+        server_name: &str,
+        config: &McpServerConfig,
+    ) -> bool {
+        let Some((store_mode, keyring_backend_kind)) = self.oauth_store else {
+            return false;
+        };
+        let McpServerTransportConfig::StreamableHttp { url, .. } = &self.transport else {
+            return false;
+        };
+
+        let credential_name = config.oauth_credential_name(server_name);
+        let current_credentials = match self.oauth_credentials.as_ref() {
+            Ok(Some(credentials)) => credentials.reload(
+                credential_name.as_ref(),
+                url,
+                store_mode,
+                keyring_backend_kind,
+            ),
+            Ok(None) | Err(_) => StoredOAuthCredentialSnapshot::for_runtime_refresh(
+                /*previous*/ None,
+                credential_name.as_ref(),
+                url,
+                store_mode,
+                keyring_backend_kind,
+            )
+            .map(|snapshot| snapshot.map(|snapshot| snapshot.credentials().clone())),
+        };
+
+        match current_credentials {
+            Ok(Some(current_credentials)) => {
+                self.oauth_credentials() != Ok(Some(&current_credentials))
+            }
+            Ok(None) => false,
+            Err(error) => {
+                warn!(server_name, %error, "failed to read stored MCP OAuth credentials");
+                false
+            }
+        }
     }
 }
 
@@ -193,6 +349,7 @@ fn referenced_environment_variables(config: &McpServerConfig) -> Vec<(String, Op
             ..
         } => bearer_token_env_var
             .iter()
+            .filter(|name| config.is_local_environment() || std::env::var_os(name).is_some())
             .chain(env_http_headers.iter().flat_map(|headers| headers.values()))
             .cloned()
             .collect(),
@@ -276,3 +433,7 @@ impl From<&EffectiveMcpServer> for McpServerMetadata {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "server_tests.rs"]
+mod tests;

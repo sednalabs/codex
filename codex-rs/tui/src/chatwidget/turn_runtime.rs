@@ -1,7 +1,7 @@
 //! Agent turn lifecycle and runtime bookkeeping for `ChatWidget`.
 //!
 //! This module owns task start/completion state, runtime metrics, plan updates,
-//! and final-message separator handling.
+//! and completion metadata rendering.
 
 use super::*;
 
@@ -34,9 +34,16 @@ impl ChatWidget {
     /// both the agent turn lifecycle and MCP startup lifecycle.
     pub(super) fn update_task_running_state(&mut self) {
         self.bottom_pane.set_task_running(
-            self.turn_lifecycle.agent_turn_running || self.mcp_startup_status.is_some(),
+            self.turn_lifecycle.agent_turn_running
+                || self.review.is_review_mode
+                || self.mcp_startup_status.is_some(),
         );
-        self.refresh_plan_mode_nudge();
+        if self.mcp_startup_status.is_some()
+            && !self.turn_lifecycle.agent_turn_running
+            && !self.review.is_review_mode
+        {
+            self.bottom_pane.hide_status_indicator();
+        }
         self.refresh_status_surfaces();
     }
 
@@ -69,6 +76,7 @@ impl ChatWidget {
     // Raw reasoning uses the same flow as summarized reasoning
 
     pub(super) fn on_task_started(&mut self) {
+        self.clear_context_compaction();
         self.input_queue.user_turn_pending_start = false;
         self.reset_safety_buffering_for_turn_start();
         self.turn_lifecycle.start(Instant::now());
@@ -83,6 +91,8 @@ impl ChatWidget {
         self.quit_shortcut_expires_at = None;
         self.quit_shortcut_key = None;
         self.update_task_running_state();
+        self.bottom_pane.ensure_status_indicator();
+        self.bottom_pane.reset_status_timer(Duration::ZERO);
         self.status_state.retry_status_header = None;
         self.clear_active_hook_cell();
         self.status_state.pending_status_indicator_restore = false;
@@ -95,6 +105,8 @@ impl ChatWidget {
         self.reasoning_summary_parts.clear();
         self.reasoning_buffer.clear();
         self.reasoning_header = None;
+        self.status_state.reasoning_item_id = None;
+        self.status_state.reasoning_resume_turn_id = None;
         self.set_ambient_pet_notification(
             crate::pets::PetNotificationKind::Running,
             /*body*/ None,
@@ -105,9 +117,12 @@ impl ChatWidget {
     pub(super) fn on_task_complete(
         &mut self,
         last_agent_message: Option<String>,
-        duration_ms: Option<i64>,
+        completion: Option<history_cell::FinalMessageSeparator>,
         from_replay: bool,
     ) {
+        if self.status_state.reasoning_resume_turn_id.is_some() {
+            self.on_agent_reasoning_final();
+        }
         self.input_queue.submit_pending_steers_after_interrupt = false;
         self.cyber_policy_auto_continue_attempts = 0;
         // Use `last_agent_message` from the turn-complete notification as the copy
@@ -133,54 +148,33 @@ impl ChatWidget {
             .unwrap_or_default();
         self.transcript.saw_copy_source_this_turn = false;
         // If a stream is currently active, finalize it.
-        self.flush_answer_stream_with_separator();
-        if let Some(mut controller) = self.plan_stream_controller.take() {
-            let had_live_tail = controller.has_live_tail();
-            self.clear_active_stream_tail();
-            let (cell, source) = controller.finalize();
-            if !had_live_tail && let Some(cell) = cell {
-                self.add_boxed_history(cell);
-            }
-            if let Some(source) = source {
-                self.note_stream_consolidation_queued();
-                self.app_event_tx
-                    .send(AppEvent::ConsolidateProposedPlan(source));
-            }
-            self.request_pending_usage_output_insertion_after_stream_shutdown();
-        }
+        self.flush_answer_and_plan_streams();
         self.flush_unified_exec_wait_streak();
         if !from_replay {
             self.collect_runtime_metrics_delta();
-            let runtime_metrics =
-                (!self.turn_runtime_metrics.is_empty()).then_some(self.turn_runtime_metrics);
-            let show_work_separator = self.transcript.had_work_activity
-                && (self.transcript.needs_final_message_separator || runtime_metrics.is_some());
-            if show_work_separator || runtime_metrics.is_some() {
-                let elapsed_seconds = if show_work_separator {
-                    duration_ms
-                        .and_then(|duration_ms| u64::try_from(duration_ms).ok())
-                        .map(|duration_ms| duration_ms / 1_000)
-                        .or_else(|| {
-                            self.bottom_pane
-                                .status_widget()
-                                .map(crate::status_indicator_widget::StatusIndicatorWidget::elapsed_seconds)
-                        })
-                } else {
-                    None
-                };
-                self.add_to_history(history_cell::FinalMessageSeparator::new(
-                    elapsed_seconds,
-                    runtime_metrics,
-                ));
-            }
-            self.turn_runtime_metrics = RuntimeMetricsSummary::default();
-            self.transcript.needs_final_message_separator = false;
-            self.transcript.had_work_activity = false;
+        }
+        let runtime_metrics = (!from_replay && !self.turn_runtime_metrics.is_empty())
+            .then_some(self.turn_runtime_metrics);
+        if let Some(completion) = completion {
+            self.add_to_history(completion.with_runtime_metrics(runtime_metrics));
+        } else if let Some(runtime_metrics) = runtime_metrics {
+            self.add_to_history(history_cell::FinalMessageSeparator::new(
+                /*elapsed_seconds*/ None,
+                Some(runtime_metrics),
+            ));
+        }
+        self.turn_runtime_metrics = RuntimeMetricsSummary::default();
+        if !from_replay {
             self.request_status_line_branch_refresh();
             self.request_status_line_git_summary_refresh();
+            self.refresh_thread_usage_after_turn();
         }
         // Mark task stopped and request redraw now that all content is in history.
+        self.clear_context_compaction();
         self.status_state.pending_status_indicator_restore = false;
+        self.status_state.reasoning_item_id = None;
+        self.status_state.reasoning_resume_turn_id = None;
+        self.reasoning_header = None;
         self.input_queue.user_turn_pending_start = false;
         self.clear_active_hook_cell();
         self.clear_guardian_review_status();
@@ -207,6 +201,7 @@ impl ChatWidget {
         if !self.has_queued_follow_up_messages() && !had_pending_steers {
             self.maybe_prompt_plan_implementation();
         }
+<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
         self.transcript.saw_plan_item_this_turn = false;
         // If there is a queued user message, send exactly one now to begin the next turn.
         let follow_up_started = self.maybe_send_next_queued_input();
@@ -222,9 +217,34 @@ impl ChatWidget {
             self.notify(Notification::AgentTurnComplete {
                 response: notification_response,
             });
+=======
+        // Keep this flag for replayed completion events so a subsequent live TurnComplete can
+        // still show the prompt once after thread switch replay.
+        if !from_replay {
+            self.transcript.saw_plan_item_this_turn = false;
         }
-
-        self.maybe_show_pending_rate_limit_prompt();
+        if !from_replay {
+            // Emit a notification only when the live agent is waiting for the user.
+            let follow_up_started = self.maybe_send_next_queued_input();
+            let active_goal_continuing = self
+                .current_goal_status
+                .as_ref()
+                .is_some_and(GoalStatusState::is_active);
+            if !follow_up_started
+                && !active_goal_continuing
+                && !self
+                    .turn_lifecycle
+                    .last_turn_id
+                    .as_deref()
+                    .is_some_and(|turn_id| self.should_hide_realtime_delegation(turn_id))
+            {
+                self.notify(Notification::AgentTurnComplete {
+                    response: notification_response,
+                });
+            }
+            self.maybe_show_pending_rate_limit_prompt();
+>>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
+        }
     }
 
     pub(super) fn maybe_prompt_plan_implementation(&mut self) {
@@ -298,7 +318,7 @@ impl ChatWidget {
         None
     }
 
-    pub(super) fn has_queued_follow_up_messages(&self) -> bool {
+    pub(crate) fn has_queued_follow_up_messages(&self) -> bool {
         self.input_queue.has_queued_follow_up_messages()
     }
 
@@ -317,6 +337,14 @@ impl ChatWidget {
     /// This does not clear MCP startup tracking, because MCP startup can overlap with turn cleanup
     /// and should continue to drive the bottom-pane running indicator while it is in progress.
     pub(super) fn finalize_turn(&mut self) {
+        self.flush_answer_and_plan_streams();
+        if self.status_state.reasoning_resume_turn_id.is_some() {
+            self.on_agent_reasoning_final();
+        }
+        self.status_state.reasoning_item_id = None;
+        self.status_state.reasoning_resume_turn_id = None;
+        self.reasoning_header = None;
+        self.clear_context_compaction();
         self.clear_safety_buffering();
         // Drop preview-only stream tail content on any termination path before
         // failed-cell finalization, so transient tail cells are never persisted.
@@ -344,6 +372,7 @@ impl ChatWidget {
         self.safety_buffering_prompt = None;
         self.request_status_line_branch_refresh();
         self.request_status_line_git_summary_refresh();
+        self.refresh_thread_usage_after_turn();
         self.maybe_show_pending_rate_limit_prompt();
     }
 
@@ -365,7 +394,6 @@ impl ChatWidget {
 
     fn on_error(&mut self, message: String) {
         self.input_queue.submit_pending_steers_after_interrupt = false;
-        self.flush_answer_stream_with_separator();
         self.finalize_turn();
         self.cyber_policy_auto_continue_attempts = 0;
         self.add_to_history(history_cell::new_error_event(message));
@@ -404,7 +432,16 @@ impl ChatWidget {
         }
         self.input_queue.submit_pending_steers_after_interrupt = false;
         self.finalize_turn();
-        self.add_to_history(history_cell::new_cyber_policy_error_event());
+        let notice = if self.config.model_provider_id == "openai" {
+            self.cyber_policy_notice
+                .get()
+                .copied()
+                .unwrap_or_default()
+                .for_model(self.current_model())
+        } else {
+            crate::daybreak::Notice::Limited
+        };
+        self.add_to_history(history_cell::new_cyber_policy_error_event(notice));
         self.request_redraw();
 
         // Keep the generated follow-up visible in the transcript without adding it to the user's
@@ -430,6 +467,9 @@ impl ChatWidget {
     }
 
     pub(super) fn on_rate_limit_error(&mut self, error_kind: RateLimitErrorKind, message: String) {
+        self.invalidate_ordinary_usage_recovery();
+        // on_error can drain queued input, before the asynchronous recovery read completes.
+        self.input_queue.rate_limit_recovery_pending = self.has_chatgpt_account;
         let usage_limit_error = matches!(error_kind, RateLimitErrorKind::UsageLimit);
         let rate_limit_reached_type = self.codex_rate_limit_reached_type.map(|kind| {
             if usage_limit_error {
@@ -446,31 +486,38 @@ impl ChatWidget {
                 kind
             }
         });
+        if self.codex_rate_limit_reached_type != rate_limit_reached_type {
+            self.clear_backend_banner();
+        }
         self.codex_rate_limit_reached_type = rate_limit_reached_type;
-        match rate_limit_reached_type {
-            Some(RateLimitReachedType::WorkspaceOwnerCreditsDepleted) => {
-                self.on_error(
+        // Keep owner remediation in history even when the optional backend banner is unavailable.
+        let (message, nudge) = match rate_limit_reached_type {
+            Some(RateLimitReachedType::WorkspaceOwnerCreditsDepleted) => (
                     "You're out of credits. Your workspace is out of credits. Add credits to continue using Codex."
                         .to_string(),
-                );
-            }
-            Some(RateLimitReachedType::WorkspaceOwnerUsageLimitReached) => {
-                self.on_error(
+                    None,
+            ),
+            Some(RateLimitReachedType::WorkspaceOwnerUsageLimitReached) => (
                     "Usage limit reached. You've reached your usage limit. Increase your limits to continue using codex."
                         .to_string(),
-                );
-            }
-            Some(RateLimitReachedType::WorkspaceMemberCreditsDepleted) => {
-                self.on_error(message);
-                self.open_workspace_owner_nudge_prompt(AddCreditsNudgeCreditType::Credits);
-            }
-            Some(RateLimitReachedType::WorkspaceMemberUsageLimitReached) => {
-                self.on_error(message);
-                self.open_workspace_owner_nudge_prompt(AddCreditsNudgeCreditType::UsageLimit);
-            }
-            Some(RateLimitReachedType::RateLimitReached) | None => {
-                self.on_error(message);
-            }
+                    None,
+            ),
+            Some(RateLimitReachedType::WorkspaceMemberCreditsDepleted) =>
+                (message, Some(AddCreditsNudgeCreditType::Credits)),
+            Some(RateLimitReachedType::WorkspaceMemberUsageLimitReached) =>
+                (message, Some(AddCreditsNudgeCreditType::UsageLimit)),
+            Some(RateLimitReachedType::RateLimitReached) | None => (message, None),
+        };
+        self.on_error(message);
+        if !self.has_applicable_backend_banner()
+            && let Some(credit_type) = nudge
+        {
+            self.open_workspace_owner_nudge_prompt(credit_type);
+        }
+        if self.has_chatgpt_account {
+            self.app_event_tx.send(AppEvent::RefreshRateLimits {
+                origin: crate::app_event::RateLimitRefreshOrigin::Recovery,
+            });
         }
     }
 
@@ -481,7 +528,9 @@ impl ChatWidget {
         from_replay: bool,
         capability: Option<String>,
     ) {
-        if codex_error_info
+        if codex_error_info == Some(AppServerCodexErrorInfo::MisalignmentPolicyViolation) {
+            self.on_misalignment_policy_violation();
+        } else if codex_error_info
             .as_ref()
             .is_some_and(|info| self.handle_app_server_steer_rejected_error(info))
         {

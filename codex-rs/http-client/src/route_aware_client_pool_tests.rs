@@ -10,12 +10,104 @@ use std::sync::atomic::Ordering;
 use std::time::Duration;
 use std::time::Instant;
 
+use bytes::Bytes;
+use futures::stream;
 use pretty_assertions::assert_eq;
 use tracing_subscriber::Layer;
 use tracing_subscriber::layer::SubscriberExt;
 
 use super::*;
 use crate::OutboundProxyPolicy;
+
+#[tokio::test]
+async fn request_failures_classify_real_untrusted_certificate_handshakes() {
+    codex_utils_rustls_provider::ensure_rustls_crypto_provider();
+    let certificate = rcgen::generate_simple_self_signed(vec!["localhost".to_string()])
+        .expect("self-signed certificate should generate");
+    let private_key = rustls::pki_types::PrivateKeyDer::Pkcs8(
+        rustls::pki_types::PrivatePkcs8KeyDer::from(certificate.signing_key.serialize_der()),
+    );
+    let configuration = Arc::new(
+        rustls::ServerConfig::builder()
+            .with_no_client_auth()
+            .with_single_cert(vec![certificate.cert.der().clone()], private_key)
+            .expect("TLS server should be configured"),
+    );
+    let listener = TcpListener::bind("127.0.0.1:0").expect("TLS server should bind");
+    let address = listener
+        .local_addr()
+        .expect("TLS server should have an address");
+    let server = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().expect("TLS server should accept");
+        stream
+            .set_read_timeout(Some(Duration::from_secs(3)))
+            .expect("TLS handshake timeout");
+        let mut connection = rustls::ServerConnection::new(configuration)
+            .expect("TLS server connection should be created");
+        let _ = connection.complete_io(&mut stream);
+    });
+    let pool = RouteAwareClientPool::new_without_request_logging(
+        HttpClientFactory::new(OutboundProxyPolicy::ReqwestDefault),
+        ClientRouteClass::Api,
+    );
+
+    let request = pool
+        .get(format!("https://localhost:{}/", address.port()))
+        .timeout(Duration::from_secs(3))
+        .request
+        .expect("TLS request should build");
+    let error = pool
+        .send_with_resolver(request, |_| async { Ok(OutboundProxyRoute::Direct) })
+        .await
+        .expect_err("self-signed server certificate must not be trusted");
+    drop(std::net::TcpStream::connect(address));
+    server.join().expect("TLS server should finish");
+
+    assert_eq!(
+        error.failure_class(),
+        Some(RouteFailureClass::TlsError),
+        "unexpected certificate error: {error:?}"
+    );
+}
+
+#[tokio::test]
+async fn request_failures_classify_https_proxy_authentication_challenges() {
+    let (address, proxy) = spawn_response_server(vec![
+        "HTTP/1.1 407 Proxy Authentication Required\r\n\
+         Proxy-Authenticate: Basic realm=\"codex\"\r\n\
+         Content-Length: 0\r\n\
+         Connection: close\r\n\r\n"
+            .to_string(),
+    ]);
+    let pool = RouteAwareClientPool::new_without_request_logging(
+        HttpClientFactory::new(OutboundProxyPolicy::RespectSystemProxy),
+        ClientRouteClass::Api,
+    );
+    let mut request = reqwest::Request::new(
+        Method::GET,
+        reqwest::Url::parse("https://example.com/").expect("request URL should parse"),
+    );
+    *request.timeout_mut() = Some(Duration::from_secs(3));
+
+    let error = pool
+        .send_with_resolver(request, move |_| async move {
+            Ok(OutboundProxyRoute::Proxy {
+                url: format!("http://{address}"),
+                no_proxy: None,
+            })
+        })
+        .await
+        .expect_err("HTTPS proxy challenge should reject the CONNECT request");
+    let requests = proxy.join().expect("proxy fixture should finish");
+
+    assert_eq!(requests.len(), 1);
+    assert!(requests[0].starts_with("CONNECT example.com:443 HTTP/1.1\r\n"));
+    assert_eq!(
+        error.failure_class(),
+        Some(RouteFailureClass::ProxyAuthenticationRequired),
+        "unexpected HTTPS proxy error: {error:?}"
+    );
+}
 
 #[test]
 fn request_builder_debug_redacts_url_secrets() {
@@ -31,11 +123,128 @@ fn request_builder_debug_redacts_url_secrets() {
         format!("{request:?}"),
         concat!(
             "RouteAwareRequestBuilder { pool: RouteAwareClientPool { ",
-            "http_client_factory: HttpClientFactory { outbound_proxy_policy: ReqwestDefault }, ",
+            "http_client_factory: HttpClientFactory { outbound_proxy_policy: ReqwestDefault, ",
+            "network_policy: NetworkPolicy { managed: false, .. } }, ",
             "route_class: Api, .. }, method: Some(GET), ",
             "url: Some(\"<redacted>\"), .. }"
         )
     );
+}
+
+#[tokio::test]
+async fn streams_request_bodies_without_exposing_reqwest_body() {
+    let (address, server) = spawn_response_server(vec![
+        "HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".to_string(),
+    ]);
+    let pool = RouteAwareClientPool::new(
+        HttpClientFactory::new(OutboundProxyPolicy::ReqwestDefault),
+        ClientRouteClass::Api,
+    );
+    let response = pool
+        .put(format!("http://{address}/upload"))
+        .header(http::header::CONTENT_LENGTH, /*value*/ 5)
+        .body_stream(stream::iter(vec![Ok::<_, io::Error>(Bytes::from_static(
+            b"hello",
+        ))]))
+        .send()
+        .await
+        .expect("streaming request should succeed");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let requests = server.join().expect("response server should finish");
+    assert_eq!(requests.len(), 1);
+    assert!(requests[0].ends_with("\r\n\r\nhello"));
+}
+
+#[tokio::test]
+async fn legacy_custom_ca_fallback_is_limited_to_reqwest_default() {
+    const CHILD_POLICY_ENV: &str = "CODEX_HTTP_CLIENT_POOL_INVALID_CA_TEST_POLICY";
+
+    let Ok(policy_name) = std::env::var(CHILD_POLICY_ENV) else {
+        let temp_dir = tempfile::tempdir().expect("temporary directory should be created");
+        let invalid_ca_path = temp_dir.path().join("invalid-ca.pem");
+        std::fs::write(&invalid_ca_path, "not a PEM certificate")
+            .expect("invalid CA fixture should be written");
+
+        for ca_env in ["CODEX_CA_CERTIFICATE", "SSL_CERT_FILE"] {
+            for policy_name in ["reqwest-default", "respect-system-proxy"] {
+                let output = std::process::Command::new(
+                    std::env::current_exe().expect("test executable should be available"),
+                )
+                .arg("--exact")
+                .arg("route_aware_client_pool::tests::legacy_custom_ca_fallback_is_limited_to_reqwest_default")
+                .arg("--nocapture")
+                .env_remove("CODEX_CA_CERTIFICATE")
+                .env_remove("SSL_CERT_FILE")
+                .env(ca_env, &invalid_ca_path)
+                .env(CHILD_POLICY_ENV, policy_name)
+                .output()
+                .expect("isolated CA subprocess should run");
+
+                assert!(
+                    output.status.success(),
+                    "{policy_name} failed with invalid {ca_env}\nstdout:\n{}\nstderr:\n{}",
+                    String::from_utf8_lossy(&output.stdout),
+                    String::from_utf8_lossy(&output.stderr),
+                );
+            }
+        }
+        return;
+    };
+
+    let outbound_proxy_policy = match policy_name.as_str() {
+        "reqwest-default" => OutboundProxyPolicy::ReqwestDefault,
+        "respect-system-proxy" => OutboundProxyPolicy::RespectSystemProxy,
+        _ => panic!("unexpected test proxy policy: {policy_name}"),
+    };
+    let pool = RouteAwareClientPool::with_chatgpt_cloudflare_cookies(
+        HttpClientFactory::new(outbound_proxy_policy),
+        ClientRouteClass::Other,
+    )
+    .with_legacy_custom_ca_fallback();
+
+    match outbound_proxy_policy {
+        OutboundProxyPolicy::ReqwestDefault => {
+            let (address, server) = spawn_response_server(vec![
+                "HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".to_string(),
+            ]);
+            let response = pool
+                .get(format!("http://{address}/update"))
+                .send()
+                .await
+                .expect("default-routed request should fall back to system roots");
+
+            assert_eq!(response.status(), StatusCode::OK);
+            let requests = server.join().expect("response server should finish");
+            assert_eq!(requests.len(), 1);
+        }
+        OutboundProxyPolicy::RespectSystemProxy => {
+            let error = pool
+                .client_for_url_with_resolver("http://127.0.0.1/update", |_| async {
+                    Ok(OutboundProxyRoute::Direct)
+                })
+                .await
+                .expect_err("system-proxy routes should reject invalid custom CAs");
+
+            assert!(matches!(error, RouteAwareClientPoolError::Build(_)));
+        }
+    }
+}
+
+#[tokio::test]
+async fn without_url_redacts_transport_error_urls() {
+    let listener = TcpListener::bind(("127.0.0.1", 0)).expect("listener should bind");
+    let address = listener.local_addr().expect("listener should have address");
+    drop(listener);
+    let secret = "signed-secret";
+    let error = reqwest::Client::new()
+        .get(format!("http://{address}/upload?sig={secret}"))
+        .send()
+        .await
+        .expect_err("closed listener should reject request");
+    let error = RouteAwareRequestError::from(error).without_url();
+
+    assert!(!error.to_string().contains(secret));
 }
 
 #[tokio::test]
@@ -83,6 +292,89 @@ async fn forwards_exact_urls_and_caches_clients_by_resolved_route() {
 }
 
 #[tokio::test]
+async fn cached_tls_backend_only_changes_its_destination_and_route() {
+    let pool = RouteAwareClientPool::with_builder(
+        HttpClientFactory::new(OutboundProxyPolicy::ReqwestDefault),
+        ClientRouteClass::Other,
+        HttpClientBuilder::new(),
+    )
+    .with_tls_backend_fallback();
+    let rustls_url = "https://mcp.example.com/first";
+    let native_url = "https://another.example.com/first";
+    let proxied_url = "https://mcp.example.com/proxied";
+    let proxy = OutboundProxyRoute::Proxy {
+        url: "http://proxy.example.com".to_string(),
+        no_proxy: None,
+    };
+    let resolver = FakeRouteResolver::new(HashMap::from([
+        (rustls_url.to_string(), OutboundProxyRoute::Direct),
+        (native_url.to_string(), OutboundProxyRoute::Direct),
+        (proxied_url.to_string(), proxy),
+    ]));
+    let fallback_client = HttpClientBuilder::new()
+        .with_rustls_tls()
+        .build_direct()
+        .expect("rustls client should build without proxy autodiscovery");
+    pool.rustls_clients
+        .as_ref()
+        .expect("TLS fallback cache")
+        .remember(
+            &reqwest::Url::parse(rustls_url).expect("valid rustls URL"),
+            &OutboundProxyRoute::Direct,
+            fallback_client,
+        );
+
+    resolve_with(&pool, &resolver, rustls_url)
+        .await
+        .expect("remembered destination should build the rustls client");
+    assert_eq!(pool.clients.lock().expect("client cache lock").len(), 0);
+
+    resolve_with(&pool, &resolver, native_url)
+        .await
+        .expect("another destination should retain its native TLS client");
+    resolve_with(&pool, &resolver, proxied_url)
+        .await
+        .expect("another proxy route should retain its native TLS client");
+    assert_eq!(pool.clients.lock().expect("client cache lock").len(), 2);
+}
+
+#[tokio::test]
+async fn tls_fallback_pool_reselects_routes_for_each_redirect_hop() {
+    let (address, server) = spawn_response_server(vec![
+        "HTTP/1.1 302 Found\r\nLocation: /final\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+            .to_string(),
+        "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok".to_string(),
+    ]);
+    let initial_url = format!("http://{address}/start");
+    let final_url = format!("http://{address}/final");
+    let resolver = FakeRouteResolver::new(HashMap::from([
+        (initial_url.clone(), OutboundProxyRoute::Direct),
+        (final_url.clone(), OutboundProxyRoute::Direct),
+    ]));
+    let pool = RouteAwareClientPool::new(
+        HttpClientFactory::new(OutboundProxyPolicy::ReqwestDefault),
+        ClientRouteClass::Other,
+    )
+    .with_tls_backend_fallback();
+    let request = reqwest::Request::new(
+        Method::GET,
+        reqwest::Url::parse(&initial_url).expect("valid initial URL"),
+    );
+
+    let response = pool
+        .send_with_resolver(request, |url| resolver.resolve(url))
+        .await
+        .expect("fallback-enabled client should follow redirects");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(resolver.observed_urls(), vec![initial_url, final_url]);
+    assert_eq!(
+        server.join().expect("redirect server should finish").len(),
+        2
+    );
+}
+
+#[tokio::test]
 async fn reqwest_default_route_preserves_transport_redirects() {
     let listener = TcpListener::bind(("127.0.0.1", 0)).expect("redirect listener should bind");
     let address = listener
@@ -111,9 +403,19 @@ async fn reqwest_default_route_preserves_transport_redirects() {
                     Err(error) => panic!("redirect server should accept: {error}"),
                 }
             };
+<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
             stream
                 .set_nonblocking(false)
                 .expect("accepted redirect stream should use blocking reads");
+=======
+            // Accepted sockets inherit the listener's nonblocking mode on macOS.
+            stream
+                .set_nonblocking(false)
+                .expect("redirect stream should become blocking");
+            stream
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .expect("redirect stream should get a read timeout");
+>>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
             let mut buffer = [0_u8; 1024];
             let size = stream
                 .read(&mut buffer)
@@ -480,7 +782,7 @@ async fn resolve_with(
     request_url: &str,
 ) -> Result<HttpClient, RouteAwareClientPoolError> {
     let resolver = resolver.clone();
-    let (_, client) = pool
+    let (_, client, _) = pool
         .client_for_url_with_resolver(request_url, move |request_url| async move {
             resolver.resolve(request_url).await
         })

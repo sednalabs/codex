@@ -16,7 +16,8 @@
         "userPromptSubmit",
         "subagentStart",
         "subagentStop",
-        "stop"
+        "stop",
+        "interrupt"
       ],
       "type": "string"
     },
@@ -30,6 +31,7 @@
     "HookHandlerType": {
       "enum": [
         "command",
+        "mcpTool",
         "prompt",
         "agent"
       ],

@@ -5,6 +5,25 @@ import type { McpServerInfo } from "../McpServerInfo";
 import type { Resource } from "../Resource";
 import type { ResourceTemplate } from "../ResourceTemplate";
 import type { Tool } from "../Tool";
+import type { JsonValue } from "../serde_json/JsonValue";
 import type { McpAuthStatus } from "./McpAuthStatus";
+import type { McpServerConnectionStatus } from "./McpServerConnectionStatus";
 
+<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
 export type McpServerStatus = { name: string, serverInfo: McpServerInfo | null, tools: { [key in string]: Tool }, resources: Array<Resource>, resourceTemplates: Array<ResourceTemplate>, authStatus: McpAuthStatus, };
+=======
+export type McpServerStatus = { name: string,
+/**
+ * Current thread-runtime connection state; null when unavailable or the configuration changed.
+ */
+runtimeStatus: McpServerConnectionStatus | null, pluginId: string | null, serverInfo: McpServerInfo | null,
+/**
+ * Capabilities advertised by the initialized MCP server; null when unavailable.
+ */
+serverCapabilities: JsonValue | null, tools: { [key in string]?: Tool },
+/**
+ * Tool discovery failed and no catalog was returned.
+ * Null when a catalog is returned, including cached or empty catalogs.
+ */
+toolsError: string | null, resources: Array<Resource>, resourceTemplates: Array<ResourceTemplate>, authStatus: McpAuthStatus, };
+>>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360

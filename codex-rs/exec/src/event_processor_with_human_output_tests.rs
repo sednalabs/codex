@@ -141,13 +141,13 @@ fn summarizes_managed_workspace_write_permission_profile() {
     let profile = PermissionProfile::from_runtime_permissions(
         &FileSystemSandboxPolicy::restricted(vec![
             FileSystemSandboxEntry {
-                path: FileSystemPath::Path { path: cwd.clone() },
+                path: cwd.clone().into(),
                 access: FileSystemAccessMode::Write,
                 missing_path_behavior: None,
             },
             FileSystemSandboxEntry {
                 path: FileSystemPath::Path {
-                    path: cache_root.clone(),
+                    path: cache_root.clone().into(),
                 },
                 access: FileSystemAccessMode::Write,
                 missing_path_behavior: None,
@@ -250,6 +250,8 @@ fn final_message_from_turn_items_uses_latest_agent_message() {
             text: "first".to_string(),
             phase: None,
             memory_citation: None,
+            delivery: None,
+            questions: None,
         },
         ThreadItem::Plan {
             id: "plan-1".to_string(),
@@ -260,6 +262,8 @@ fn final_message_from_turn_items_uses_latest_agent_message() {
             text: "second".to_string(),
             phase: None,
             memory_citation: None,
+            delivery: None,
+            questions: None,
         },
     ]);
 
@@ -320,6 +324,8 @@ fn turn_completed_recovers_final_message_from_turn_items() {
                     text: "final answer".to_string(),
                     phase: None,
                     memory_citation: None,
+                    delivery: None,
+                    questions: None,
                 }],
                 status: TurnStatus::Completed,
                 error: None,
@@ -370,6 +376,8 @@ fn turn_completed_overwrites_stale_final_message_from_turn_items() {
                     text: "final answer".to_string(),
                     phase: None,
                     memory_citation: None,
+                    delivery: None,
+                    questions: None,
                 }],
                 status: TurnStatus::Completed,
                 error: None,

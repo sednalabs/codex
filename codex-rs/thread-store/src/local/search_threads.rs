@@ -1,13 +1,17 @@
 use std::collections::HashMap;
+use std::path::Path;
+use std::path::PathBuf;
 
 use codex_install_context::InstallContext;
 use codex_rollout::RolloutConfig;
 use codex_rollout::first_rollout_content_match_snippet;
 use codex_rollout::parse_cursor;
 use codex_rollout::search_rollout_matches;
+use codex_utils_absolute_path::normalize_windows_device_path;
 
 use super::LocalThreadStore;
 use super::helpers::resolve_thread_names;
+use super::helpers::resolve_thread_section_metadata;
 use super::helpers::set_thread_name;
 use super::helpers::stored_thread_from_rollout_item;
 use super::list_threads::list_rollout_threads;
@@ -52,6 +56,11 @@ pub(super) async fn search_threads(
         ThreadSortKey::CreatedAt => codex_rollout::ThreadSortKey::CreatedAt,
         ThreadSortKey::UpdatedAt => codex_rollout::ThreadSortKey::UpdatedAt,
         ThreadSortKey::RecencyAt => codex_rollout::ThreadSortKey::RecencyAt,
+        ThreadSortKey::SectionPosition => {
+            return Err(ThreadStoreError::InvalidRequest {
+                message: "section-position sorting requires a section filter".to_owned(),
+            });
+        }
     };
     let sort_direction = match params.sort_direction {
         SortDirection::Asc => codex_rollout::SortDirection::Asc,
@@ -93,13 +102,17 @@ pub(super) async fn search_threads(
         allowed_sources: params.allowed_sources.clone(),
         model_providers: None,
         cwd_filters: None,
-        is_pinned: None,
+        section: None,
+        project_id: None,
         archived: params.archived,
         search_term: None,
         relation_filter: None,
         use_state_db_only: state_db.is_some(),
     };
-    let mut remaining_rollouts = matching_rollouts;
+    let mut remaining_rollouts = matching_rollouts
+        .into_iter()
+        .map(|(path, snippet)| (rollout_search_path(&path), snippet))
+        .collect::<HashMap<_, _>>();
 
     loop {
         let page = list_rollout_threads(
@@ -113,7 +126,7 @@ pub(super) async fn search_threads(
         )
         .await?;
         for item in page.items {
-            let logical_path = codex_rollout::plain_rollout_path(item.path.as_path());
+            let logical_path = rollout_search_path(item.path.as_path());
             let Some(snippet) = (match remaining_rollouts.remove(logical_path.as_path()) {
                 Some(Some(snippet)) => Some(snippet),
                 Some(None) => first_rollout_content_match_snippet(item.path.as_path(), search_term)
@@ -166,9 +179,39 @@ pub(super) async fn search_threads(
             })
         })
         .collect::<Vec<_>>();
+    if let Some(state_db) = state_db {
+        let sectioned_thread_ids = items
+            .iter()
+            .filter(|item| item.thread.section.is_some())
+            .map(|item| item.thread.thread_id)
+            .collect::<Vec<_>>();
+        let mut section_metadata =
+            resolve_thread_section_metadata(state_db.as_ref(), &sectioned_thread_ids).await;
+        for item in &mut items {
+            if let Some((section_position, section_entered_at)) =
+                section_metadata.remove(&item.thread.thread_id)
+            {
+                item.thread.section_position = section_position;
+                item.thread.section_entered_at = section_entered_at;
+            }
+        }
+    }
     set_thread_search_result_names(store, &mut items).await;
 
     Ok(ThreadSearchPage { items, next_cursor })
+}
+
+fn rollout_search_path(path: &Path) -> PathBuf {
+    let path = codex_rollout::plain_rollout_path(path);
+    // Resume can persist a Windows namespace prefix while filesystem search returns the
+    // ordinary spelling. Normalize both join keys without requiring the uncompressed file
+    // to exist, and retain the filename identifying the selected rollout after a revert.
+    if cfg!(windows)
+        && let Some(normalized) = path.to_str().and_then(normalize_windows_device_path)
+    {
+        return PathBuf::from(normalized);
+    }
+    path
 }
 
 fn cursor_from_thread_search_item(
@@ -188,10 +231,12 @@ fn cursor_from_thread_search_item(
             .as_deref()
             .or(item.item.updated_at.as_deref())
             .or(item.item.created_at.as_deref())?,
+        ThreadSortKey::SectionPosition => return None,
     };
     match sort_key {
         ThreadSortKey::RecencyAt => parse_cursor(&format!("{timestamp}|{}", item.item.thread_id?)),
         ThreadSortKey::CreatedAt | ThreadSortKey::UpdatedAt => parse_cursor(timestamp),
+        ThreadSortKey::SectionPosition => None,
     }
 }
 

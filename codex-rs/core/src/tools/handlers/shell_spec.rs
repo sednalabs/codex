@@ -17,7 +17,10 @@ pub struct CommandToolOptions {
 #[cfg(test)]
 pub fn create_exec_command_tool(options: CommandToolOptions) -> ToolSpec {
     create_exec_command_tool_with_environment_id(
-        options, /*include_environment_id*/ false, /*include_shell_parameter*/ true,
+        options,
+        /*include_environment_id*/ false,
+        /*include_shell_parameter*/ true,
+        /*include_windows_shell_guidance*/ cfg!(windows),
     )
 }
 
@@ -25,9 +28,10 @@ pub(crate) fn create_exec_command_tool_with_environment_id(
     options: CommandToolOptions,
     include_environment_id: bool,
     include_shell_parameter: bool,
+    include_windows_shell_guidance: bool,
 ) -> ToolSpec {
     let yield_time_ms_description = if cfg!(windows) {
-        "Maximum time to wait before returning a session ID for a still-running command. Commands that finish sooner return immediately. For ordinary commands, omit this parameter to use the 10000 ms default. Effective range on Windows is 2000-30000 ms. Set a shorter value only when intentionally starting a long-lived or interactive process and you want a session ID promptly."
+        "Maximum time to wait before returning a session ID for a still-running command. Commands that finish sooner return immediately. For ordinary commands, omit this parameter to use the 10000 ms default. Effective range on Windows is 10000-30000 ms."
     } else {
         "Wait before yielding output. Defaults to 10000 ms; effective range is 250-30000 ms."
     };
@@ -104,7 +108,7 @@ pub(crate) fn create_exec_command_tool_with_environment_id(
 
     ToolSpec::Function(ResponsesApiTool {
         name: "exec_command".to_string(),
-        description: if cfg!(windows) {
+        description: if include_windows_shell_guidance {
             format!(
                 "Runs a command in a PTY, returning output or a session ID for ongoing interaction.\n\n{}",
                 windows_shell_guidance()
@@ -120,7 +124,7 @@ pub(crate) fn create_exec_command_tool_with_environment_id(
             Some(vec!["cmd".to_string()]),
             Some(false.into()),
         ),
-        output_schema: Some(unified_exec_output_schema()),
+        output_schema: Some(unified_exec_output_schema().into()),
     })
 }
 
@@ -168,6 +172,7 @@ pub fn create_write_stdin_tool() -> ToolSpec {
             Some(vec!["session_id".to_string()]),
             Some(false.into()),
         ),
+<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
         output_schema: Some(unified_exec_output_schema()),
     })
 }
@@ -271,6 +276,9 @@ Examples of valid command strings:
             Some(false.into()),
         ),
         output_schema: None,
+=======
+        output_schema: Some(unified_exec_output_schema().into()),
+>>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
     })
 }
 

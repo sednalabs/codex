@@ -174,6 +174,7 @@ def parse_args():
     parser.add_argument("--pr", default="auto", help="auto, PR number, or PR URL")
     parser.add_argument("--repo", help="Optional OWNER/REPO override")
     parser.add_argument(
+<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
         "--installation-observer",
         action="store_true",
         help=(
@@ -182,6 +183,8 @@ def parse_args():
         ),
     )
     parser.add_argument(
+=======
+>>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
         "--poll-seconds", type=int, default=30, help="Watch poll interval"
     )
     parser.add_argument(
@@ -190,6 +193,7 @@ def parse_args():
         default=3,
         help="Max rerun cycles per head SHA before stop recommendation",
     )
+<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
     parser.add_argument(
         "--state-file",
         help=(
@@ -197,12 +201,16 @@ def parse_args():
             "Directory components are rejected."
         ),
     )
+=======
+    parser.add_argument("--state-file", help="Path to state JSON file")
+>>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
     parser.add_argument(
         "--once", action="store_true", help="Emit one snapshot and exit"
     )
     parser.add_argument(
         "--watch", action="store_true", help="Continuously emit JSONL snapshots"
     )
+<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
     parser.add_argument(
         "--watch-until-action",
         action="store_true",
@@ -226,6 +234,8 @@ def parse_args():
             "terminal before returning CI failure actions."
         ),
     )
+=======
+>>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
     parser.add_argument(
         "--retry-failed-now",
         action="store_true",
@@ -525,12 +535,15 @@ def extract_repo_slug(repo_data, owner_data=None):
     return None
 
 
+<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
 def extract_repo_from_pr_view(data):
     return extract_repo_slug(
         data.get("headRepository"), data.get("headRepositoryOwner")
     )
 
 
+=======
+>>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
 def extract_repo_from_pr_url(pr_url):
     parsed = urlparse(pr_url)
     parts = [p for p in parsed.path.split("/") if p]
@@ -653,7 +666,11 @@ def save_state(path, state):
     path = state_dir / safe_state_file_name(path.name)
     payload = json.dumps(state, indent=2, sort_keys=True) + "\n"
     fd, tmp_name = tempfile.mkstemp(
+<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
         prefix="codex-babysit-pr-state.", suffix=".tmp", dir=state_dir
+=======
+        prefix=f"{path.name}.", suffix=".tmp", dir=path.parent
+>>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
     )
     tmp_path = Path(tmp_name)
     try:
@@ -942,10 +959,14 @@ def get_authenticated_login(cache=None):
         raise GhCommandError(
             "Unable to determine authenticated GitHub login from `gh api user`"
         )
+<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
     login = str(data["login"])
     if cache is not None:
         cache["authenticated_login"] = login
     return login
+=======
+    return str(data["login"])
+>>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
 
 
 def comment_endpoints(repo, pr_number):
@@ -1092,7 +1113,9 @@ def fetch_new_review_items(pr, state, fresh_state, authenticated_login=None):
         if isinstance(item, dict) and item.get("id") not in (None, "")
     }
     pending_review_ids = {
-        review_id for review_id, review_state in review_states.items() if review_state == "PENDING"
+        review_id
+        for review_id, review_state in review_states.items()
+        if review_state == "PENDING"
     }
     pending_review_comment_ids = {
         str(item.get("id"))
@@ -1101,7 +1124,9 @@ def fetch_new_review_items(pr, state, fresh_state, authenticated_login=None):
         and item.get("id") not in (None, "")
         and str(item.get("pull_request_review_id") or "") in pending_review_ids
     }
-    review_comment_items = normalize_review_comments(review_comment_payload, review_states)
+    review_comment_items = normalize_review_comments(
+        review_comment_payload, review_states
+    )
     review_items = normalize_reviews(review_payload)
     all_items = issue_items + review_comment_items + review_items
 
@@ -1695,8 +1720,12 @@ def recommend_actions(
     checks_summary,
     failed_runs,
     failed_jobs,
+<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
     actionable_review_items,
     review_state,
+=======
+    new_review_items,
+>>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
     retries_used,
     max_retries,
 ):
@@ -1765,8 +1794,14 @@ def collect_snapshot(args, cache=None):
         cache = {}
     local_git_context = detect_local_git_context()
     pr = resolve_pr(args.pr, repo_override=args.repo)
+<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
     validate_pr_resolution(args.pr, args.repo, pr, local_git_context)
     state_path = state_file_for(args, pr)
+=======
+    state_path = (
+        Path(args.state_file) if args.state_file else default_state_file_for(pr)
+    )
+>>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
     state, fresh_state = load_state(state_path)
     pr["merge_queue"] = reconcile_merge_queue_entry(
         {**pr, "merge_queue": get_merge_queue_entry(pr["repo"], pr["number"])}, state
@@ -1830,7 +1865,11 @@ def collect_snapshot(args, cache=None):
     workflow_runs = get_workflow_runs_for_sha(pr["repo"], pr["head_sha"])
     failed_runs = failed_runs_from_workflow_runs(workflow_runs, pr["head_sha"])
     failed_jobs = failed_jobs_from_workflow_runs(
+<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
         pr["repo"], workflow_runs, pr["head_sha"], cache=cache
+=======
+        pr["repo"], workflow_runs, pr["head_sha"]
+>>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
     )
 
     retries_used = current_retry_count(state, pr["head_sha"])
@@ -2263,8 +2302,12 @@ def run_watch(args):
             },
         )
         actions = set(snapshot.get("actions") or [])
+<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
         if actions & STOP_ACTIONS:
             persist_watch_schedule(state_path, snapshot, "watch", 0)
+=======
+        if "stop_pr_closed" in actions or "stop_exhausted_retries" in actions:
+>>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
             print_event(
                 "stop", {"actions": snapshot.get("actions"), "pr": snapshot.get("pr")}
             )

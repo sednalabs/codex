@@ -1,5 +1,17 @@
 {
+<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
   "$schema": "https://json-schema.org/draft/2020-12/schema",
+=======
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "definitions": {
+    "DesktopOnboardingEntrypoint": {
+      "enum": [
+        "life_sciences"
+      ],
+      "type": "string"
+    }
+  },
+>>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
   "properties": {
     "error": {
       "type": [
@@ -11,6 +23,16 @@
       "type": [
         "string",
         "null"
+      ]
+    },
+    "onboardingEntrypoint": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/DesktopOnboardingEntrypoint"
+        },
+        {
+          "type": "null"
+        }
       ]
     },
     "success": {

@@ -2,8 +2,13 @@ use crate::ClaSource;
 use crate::CurSource;
 use crate::RewriteProfile;
 use crate::detect::plugins;
+use crate::detect::sessions::detect_cla_session_connectors;
+use crate::detect::sessions::detect_cla_session_connectors_by_source_path;
+use crate::detect::sessions::detect_cur_session_connectors;
+use crate::detect::sessions::detect_cur_session_connectors_by_source_path;
 use crate::detect::sessions::detect_recent_cla_sessions_with_limits;
 use crate::detect::sessions::detect_recent_cur_sessions_with_limits;
+use crate::model::DetectedConnectorCandidate;
 use crate::model::ExternalAgentSessionImportLimits;
 use crate::sessions::ExternalAgentSessionMigration;
 use crate::sessions::SessionMetadataMode;
@@ -65,6 +70,14 @@ impl ExternalAgentSource {
         match self {
             Self::Cla => ClaSource::CONFIG_DIR,
             Self::Cur => CurSource::CONFIG_DIR,
+        }
+    }
+
+    pub(super) fn skills_dir_names(self, scope: &MigrationScope) -> &'static [&'static str] {
+        match (self, scope) {
+            // skills-cursor is Cursor-managed and only exists under the home config.
+            (Self::Cur, MigrationScope::Home) => &["skills", "skills-cursor"],
+            _ => &["skills"],
         }
     }
 
@@ -140,12 +153,11 @@ impl ExternalAgentSource {
 
     pub(super) fn effective_settings(
         self,
-        source_config_dir: &Path,
         source_settings: &Path,
     ) -> io::Result<Option<JsonValue>> {
         match self {
             Self::Cla => ClaSource::effective_settings(source_settings),
-            Self::Cur => CurSource::effective_settings(source_config_dir, source_settings),
+            Self::Cur => CurSource::effective_settings(source_settings),
         }
     }
 
@@ -201,6 +213,34 @@ impl ExternalAgentSource {
         match self {
             Self::Cla => ClaSource::connector_metadata_roots(external_agent_home),
             Self::Cur => Vec::new(),
+        }
+    }
+
+    pub(super) fn detect_session_connectors(
+        self,
+        sessions: &[ExternalAgentSessionMigration],
+        connector_metadata_roots: &[PathBuf],
+        external_agent_home: &Path,
+    ) -> Vec<DetectedConnectorCandidate> {
+        match self {
+            Self::Cla => detect_cla_session_connectors(sessions, connector_metadata_roots),
+            Self::Cur => detect_cur_session_connectors(sessions, external_agent_home),
+        }
+    }
+
+    pub(super) fn detect_session_connectors_by_source_path(
+        self,
+        sessions: &[ExternalAgentSessionMigration],
+        connector_metadata_roots: &[PathBuf],
+        external_agent_home: &Path,
+    ) -> BTreeMap<PathBuf, Vec<DetectedConnectorCandidate>> {
+        match self {
+            Self::Cla => {
+                detect_cla_session_connectors_by_source_path(sessions, connector_metadata_roots)
+            }
+            Self::Cur => {
+                detect_cur_session_connectors_by_source_path(sessions, external_agent_home)
+            }
         }
     }
 

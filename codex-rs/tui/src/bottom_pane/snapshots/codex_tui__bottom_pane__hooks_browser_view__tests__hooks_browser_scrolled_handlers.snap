@@ -2,6 +2,7 @@
 source: tui/src/bottom_pane/hooks_browser_view.rs
 expression: "render_lines(&view, 112)"
 ---
+<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
 
   PreToolUse hooks
   Turn hooks on or off. Your changes are saved automatically.
@@ -22,4 +23,27 @@ expression: "render_lines(&view, 112)"
   Timeout   30s
   Trust     Trusted
 
+=======
+                                                                                                                
+  PreToolUse hooks                                                                                              
+  Turn hooks on or off. Your changes are saved automatically.                                                   
+                                                                                                                
+  [x] Hook 2                                                                                                    
+  [x] Hook 3                                                                                                    
+  [x] Hook 4                                                                                                    
+  [x] Hook 5                                                                                                    
+  [x] Hook 6                                                                                                    
+  [x] Hook 7                                                                                                    
+  [x] Hook 8                                                                                                    
+  [x] Hook 9                                                                                                    
+                                                                                                                
+  Event     PreToolUse                                                                                          
+  Matcher   Bash                                                                                                
+  Source    User config - /tmp/hooks.json                                                                       
+  Command   /tmp/hook-8.sh                                                                                      
+  Mode      Sync                                                                                                
+  Timeout   30s                                                                                                 
+  Trust     Trusted                                                                                             
+                                                                                                                
+>>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
   Press space or enter to toggle; esc to go back

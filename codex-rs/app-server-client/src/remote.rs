@@ -195,6 +195,7 @@ impl RemoteAppServerConnectArgs {
         let capabilities = InitializeCapabilities {
             experimental_api: self.experimental_api,
             request_attestation: false,
+            extensions: None,
             opt_out_notification_methods: if self.opt_out_notification_methods.is_empty() {
                 None
             } else {
@@ -252,12 +253,19 @@ enum RemoteClientCommand {
     },
 }
 
+#[derive(Default)]
+struct RemoteServerMetadata {
+    server_version: Option<String>,
+    codex_home: Option<String>,
+    platform_family: Option<String>,
+    platform_os: Option<String>,
+}
+
 pub struct RemoteAppServerClient {
     command_tx: mpsc::Sender<RemoteClientCommand>,
     event_rx: mpsc::Receiver<AppServerEvent>,
     pending_events: VecDeque<AppServerEvent>,
-    server_version: Option<String>,
-    codex_home: Option<String>,
+    metadata: RemoteServerMetadata,
     worker_handle: tokio::task::JoinHandle<()>,
     #[cfg(test)]
     pub(crate) _test_pending_required_event: std::sync::Arc<tokio::sync::Notify>,
@@ -270,8 +278,34 @@ pub struct RemoteAppServerRequestHandle {
     command_tx: mpsc::Sender<RemoteClientCommand>,
 }
 
+enum SocketPeerPolicy {
+    ExplicitEndpoint,
+    #[cfg(windows)]
+    NonElevatedCurrentUser,
+}
+
 impl RemoteAppServerClient {
     pub async fn connect(args: RemoteAppServerConnectArgs) -> IoResult<Self> {
+        Self::connect_with_policy(args, SocketPeerPolicy::ExplicitEndpoint).await
+    }
+
+    /// Connects to an implicitly discovered Windows daemon, verifying its peer
+    /// token before the WebSocket handshake or any session requests.
+    #[cfg(windows)]
+    pub async fn connect_local_daemon(args: RemoteAppServerConnectArgs) -> IoResult<Self> {
+        if !matches!(args.endpoint, RemoteAppServerEndpoint::UnixSocket { .. }) {
+            return Err(IoError::new(
+                ErrorKind::InvalidInput,
+                "local daemon requires a Unix socket",
+            ));
+        }
+        Self::connect_with_policy(args, SocketPeerPolicy::NonElevatedCurrentUser).await
+    }
+
+    async fn connect_with_policy(
+        args: RemoteAppServerConnectArgs,
+        peer_policy: SocketPeerPolicy,
+    ) -> IoResult<Self> {
         let channel_capacity = args.channel_capacity.max(1);
         let initialize_params = args.initialize_params();
         match args.endpoint {
@@ -285,7 +319,8 @@ impl RemoteAppServerClient {
                     .await
             }
             RemoteAppServerEndpoint::UnixSocket { socket_path } => {
-                let (endpoint, stream) = connect_unix_socket_endpoint(socket_path).await?;
+                let (endpoint, stream) =
+                    connect_unix_socket_endpoint(socket_path, peer_policy).await?;
                 Self::connect_with_stream(channel_capacity, endpoint, stream, initialize_params)
                     .await
             }
@@ -293,11 +328,19 @@ impl RemoteAppServerClient {
     }
 
     pub fn server_version(&self) -> Option<&str> {
-        self.server_version.as_deref()
+        self.metadata.server_version.as_deref()
     }
 
     pub fn codex_home(&self) -> Option<&str> {
-        self.codex_home.as_deref()
+        self.metadata.codex_home.as_deref()
+    }
+
+    pub fn platform_family(&self) -> Option<&str> {
+        self.metadata.platform_family.as_deref()
+    }
+
+    pub fn platform_os(&self) -> Option<&str> {
+        self.metadata.platform_os.as_deref()
     }
 
     async fn connect_with_stream<S>(
@@ -310,8 +353,12 @@ impl RemoteAppServerClient {
         S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
     {
         let mut stream = stream;
+<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
         let mut inbound_server_request_ledger = InboundServerRequestLedger::new(channel_capacity);
         let (pending_events, server_version, codex_home) = initialize_remote_connection(
+=======
+        let (pending_events, metadata) = initialize_remote_connection(
+>>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
             &mut stream,
             &endpoint,
             initialize_params,
@@ -591,6 +638,7 @@ impl RemoteAppServerClient {
                                             Ok(request) => {
                                                 let delivery = try_deliver_event(
                                                     &event_tx,
+<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
                                                     &mut skipped_events,
                                                     &mut post_pending_skipped_events,
                                                     &mut pending_required_event,
@@ -626,6 +674,13 @@ impl RemoteAppServerClient {
                                                             RemoteDisconnectedDelivery::Pending,
                                                         );
                                                     }
+=======
+                                                    AppServerEvent::ServerRequest(Box::new(request)),
+                                                )
+                                                {
+                                                    warn!(%err, "failed to deliver remote app-server server request");
+                                                    break;
+>>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
                                                 }
                                             }
                                             Err(err) => {
@@ -743,8 +798,7 @@ impl RemoteAppServerClient {
             command_tx,
             event_rx,
             pending_events: pending_events.into(),
-            server_version,
-            codex_home,
+            metadata,
             worker_handle,
             #[cfg(test)]
             _test_pending_required_event: test_pending_required_event,
@@ -892,6 +946,11 @@ impl RemoteAppServerClient {
         let Self {
             command_tx,
             event_rx,
+<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
+=======
+            pending_events: _pending_events,
+            metadata: _,
+>>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
             worker_handle,
             ..
         } = self;
@@ -1031,6 +1090,7 @@ async fn connect_websocket_endpoint(
 
 async fn connect_unix_socket_endpoint(
     socket_path: AbsolutePathBuf,
+    peer_policy: SocketPeerPolicy,
 ) -> IoResult<(String, WebSocketStream<UnixStream>)> {
     let endpoint = format!("unix://{}", socket_path.display());
     let request = UDS_WEBSOCKET_HANDSHAKE_URL
@@ -1054,6 +1114,11 @@ async fn connect_unix_socket_endpoint(
                 "failed to connect to remote app server at `{endpoint}`: {err}"
             ))
         })?;
+    match peer_policy {
+        SocketPeerPolicy::ExplicitEndpoint => {}
+        #[cfg(windows)]
+        SocketPeerPolicy::NonElevatedCurrentUser => stream.ensure_non_elevated_peer()?,
+    }
     let websocket_config = remote_websocket_config();
     let stream = timeout(
         CONNECT_TIMEOUT,
@@ -1087,15 +1152,18 @@ async fn initialize_remote_connection<S>(
     endpoint: &str,
     params: InitializeParams,
     initialize_timeout: Duration,
+<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
     inbound_server_request_ledger: &mut InboundServerRequestLedger,
 ) -> IoResult<(Vec<AppServerEvent>, Option<String>, Option<String>)>
+=======
+) -> IoResult<(Vec<AppServerEvent>, RemoteServerMetadata)>
+>>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
 where
     S: AsyncRead + AsyncWrite + Unpin,
 {
     let initialize_request_id = RequestId::String("initialize".to_string());
     let mut pending_events = Vec::new();
-    let mut server_version = None;
-    let mut codex_home = None;
+    let mut metadata = RemoteServerMetadata::default();
     write_jsonrpc_message(
         stream,
         JSONRPCMessage::Request(jsonrpc_request_from_client_request(
@@ -1119,7 +1187,7 @@ where
                     })?;
                     match message {
                         JSONRPCMessage::Response(response) if response.id == initialize_request_id => {
-                            server_version = response
+                            metadata.server_version = response
                                 .result
                                 .get("userAgent")
                                 .and_then(serde_json::Value::as_str)
@@ -1127,12 +1195,16 @@ where
                                     let (_, rest) = user_agent.split_once('/')?;
                                     rest.split_whitespace().next().map(str::to_string)
                                 });
-                            codex_home = response
+                            metadata.codex_home = response
                                 .result
                                 .get("codexHome")
                                 .and_then(serde_json::Value::as_str)
                                 .filter(|codex_home| !codex_home.is_empty())
                                 .map(str::to_string);
+                            metadata.platform_family = response.result.get("platformFamily")
+                                .and_then(serde_json::Value::as_str).map(str::to_string);
+                            metadata.platform_os = response.result.get("platformOs")
+                                .and_then(serde_json::Value::as_str).map(str::to_string);
                             break Ok(());
                         }
                         JSONRPCMessage::Error(error) if error.id == initialize_request_id => {
@@ -1152,7 +1224,8 @@ where
                             inbound_server_request_ledger.claim(&request_id)?;
                             match ServerRequest::try_from(request) {
                                 Ok(request) => {
-                                    pending_events.push(AppServerEvent::ServerRequest(request));
+                                    pending_events
+                                        .push(AppServerEvent::ServerRequest(Box::new(request)));
                                 }
                                 Err(err) => {
                                     warn!(%err, method, "rejecting unknown remote app-server request during initialize");
@@ -1226,12 +1299,12 @@ where
     )
     .await?;
 
-    Ok((pending_events, server_version, codex_home))
+    Ok((pending_events, metadata))
 }
 
 fn app_server_event_from_notification(notification: JSONRPCNotification) -> Option<AppServerEvent> {
     match ServerNotification::try_from(notification) {
-        Ok(notification) => Some(AppServerEvent::ServerNotification(notification)),
+        Ok(notification) => Some(AppServerEvent::ServerNotification(Box::new(notification))),
         Err(_) => None,
     }
 }
@@ -1679,8 +1752,7 @@ mod tests {
             command_tx,
             event_rx,
             pending_events: VecDeque::new(),
-            server_version: None,
-            codex_home: None,
+            metadata: RemoteServerMetadata::default(),
             worker_handle,
             _test_pending_required_event: std::sync::Arc::new(tokio::sync::Notify::new()),
             _test_pending_lag: std::sync::Arc::new(tokio::sync::Notify::new()),

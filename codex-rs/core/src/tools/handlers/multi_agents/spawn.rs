@@ -1,4 +1,7 @@
 use super::*;
+use crate::agent::child_config::SpawnConfigOptions;
+use crate::agent::child_config::SpawnConfigVersion;
+use crate::agent::child_config::prepare_agent_spawn_config;
 use crate::agent::control::SpawnAgentForkMode;
 use crate::agent::control::SpawnAgentOptions;
 use crate::agent::control::render_input_preview;
@@ -36,7 +39,10 @@ impl ToolExecutor<ToolInvocation> for Handler {
         )
     }
 
-    fn handle(&self, invocation: ToolInvocation) -> codex_tools::ToolExecutorFuture<'_> {
+    fn handle<'a>(&'a self, invocation: ToolInvocation) -> codex_tools::ToolExecutorFuture<'a>
+    where
+        ToolInvocation: 'a,
+    {
         Box::pin(async move { handle_spawn_agent(invocation).await.map(boxed_tool_output) })
     }
 }
@@ -46,11 +52,12 @@ async fn handle_spawn_agent(
 ) -> Result<SpawnAgentResult, FunctionCallError> {
     let ToolInvocation {
         session,
-        turn,
+        step_context,
         payload,
         call_id,
         ..
     } = invocation;
+    let turn = &step_context.turn;
     let arguments = function_arguments(payload)?;
     let args: SpawnAgentArgs = parse_arguments(&arguments)?;
     let role_name = args
@@ -68,6 +75,7 @@ async fn handle_spawn_agent(
             "Agent depth limit reached. Solve the task yourself.".to_string(),
         ));
     }
+<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
     let mut config =
         build_agent_spawn_config(&session.get_base_instructions().await, turn.as_ref())?;
     if let Some(service_tier) = args.service_tier.as_ref() {
@@ -77,12 +85,37 @@ async fn handle_spawn_agent(
         reject_full_fork_agent_type_override(role_name)?;
     }
     apply_requested_spawn_agent_model_overrides(
+=======
+    session
+        .emit_turn_item_started(
+            turn,
+            &TurnItem::CollabAgentToolCall(CollabAgentToolCallItem {
+                id: call_id.clone(),
+                tool: CollabAgentTool::SpawnAgent,
+                status: CollabAgentToolCallStatus::InProgress,
+                sender_thread_id: session.thread_id,
+                receiver_thread_ids: Vec::new(),
+                receiver_agents: Vec::new(),
+                prompt: Some(prompt.clone()),
+                model: Some(args.model.clone().unwrap_or_default()),
+                reasoning_effort: Some(args.reasoning_effort.clone().unwrap_or_default()),
+                agents_states: Default::default(),
+            }),
+        )
+        .await;
+    let prepared = prepare_agent_spawn_config(
+>>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
         &session,
         turn.as_ref(),
-        &mut config,
-        args.model.as_deref(),
-        args.reasoning_effort.clone(),
+        SpawnConfigOptions {
+            version: SpawnConfigVersion::V1,
+            full_history_fork: args.fork_context,
+            role_name,
+            model: args.model.as_deref(),
+            reasoning_effort: args.reasoning_effort.clone(),
+        },
     )
+<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
     .await?;
     if !args.fork_context {
         apply_spawn_agent_role(&session, &mut config, role_name).await?;
@@ -125,6 +158,11 @@ async fn handle_spawn_agent(
         )
         .await;
 
+=======
+    .await
+    .map_err(FunctionCallError::RespondToModel)?;
+    let config = prepared.config;
+>>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
     let result = Box::pin(session.services.agent_control.spawn_agent_with_metadata(
         config,
         input_items,
@@ -132,15 +170,24 @@ async fn handle_spawn_agent(
             session.thread_id,
             &turn.session_source,
             child_depth,
-            role_name,
+            prepared.role_name.as_deref(),
             /*task_name*/ None,
         )?),
         SpawnAgentOptions {
             fork_parent_spawn_call_id: args.fork_context.then(|| call_id.clone()),
             fork_mode: args.fork_context.then_some(SpawnAgentForkMode::FullHistory),
             parent_thread_id: Some(session.thread_id),
+<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
             environments: Some(turn.environments.to_selections()),
             spawn_call_id: Some(call_id.clone()),
+=======
+            parent_turn_id: Some(turn.sub_id.clone()),
+            root_turn_id: turn.turn_metadata_state.root_turn_id(),
+            turn_trigger: turn.turn_metadata_state.current_turn_trigger(),
+            environments: Some(step_context.environments.to_selections()),
+            multi_agent_v2_usage_hints: None,
+            cyber_access_program: turn.cyber_access_program,
+>>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
         },
     ))
     .await;
@@ -198,7 +245,7 @@ async fn handle_spawn_agent(
         .unwrap_or_default();
     session
         .emit_turn_item_completed(
-            &turn,
+            turn,
             TurnItem::CollabAgentToolCall(CollabAgentToolCallItem {
                 id: call_id,
                 tool: CollabAgentTool::SpawnAgent,
@@ -251,7 +298,6 @@ struct SpawnAgentArgs {
     agent_type: Option<String>,
     model: Option<String>,
     reasoning_effort: Option<ReasoningEffort>,
-    service_tier: Option<String>,
     #[serde(default)]
     fork_context: bool,
 }
@@ -263,7 +309,7 @@ pub(crate) struct SpawnAgentResult {
 }
 
 impl ToolOutput for SpawnAgentResult {
-    fn log_preview(&self) -> String {
+    fn log_output(&self) -> String {
         tool_output_json_text(self, "spawn_agent")
     }
 

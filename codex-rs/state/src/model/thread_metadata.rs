@@ -1,6 +1,7 @@
 use anyhow::Result;
 use chrono::DateTime;
 use chrono::Utc;
+use codex_protocol::SanitizedGitUrl;
 use codex_protocol::ThreadId;
 use codex_protocol::openai_models::ReasoningEffort;
 use codex_protocol::protocol::AskForApproval;
@@ -8,6 +9,8 @@ use codex_protocol::protocol::SandboxPolicy;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::ThreadHistoryMode;
 use codex_protocol::protocol::ThreadSource;
+use serde::Deserialize;
+use serde::Serialize;
 use sqlx::Row;
 use sqlx::sqlite::SqliteRow;
 use std::collections::HashMap;
@@ -22,6 +25,8 @@ pub enum SortKey {
     UpdatedAt,
     /// Sort by the thread's product recency timestamp.
     RecencyAt,
+    /// Sort by the thread's stable position within its user-selected section.
+    SectionPosition,
 }
 
 /// Sort direction to use when listing threads.
@@ -47,6 +52,48 @@ pub struct Anchor {
     pub ts: DateTime<Utc>,
     /// The thread ID component used to disambiguate equal recency timestamps.
     pub id: Option<ThreadId>,
+}
+
+/// Visual presentation metadata owned by a thread section.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ThreadSectionAppearance {
+    pub icon: Option<String>,
+    pub color: Option<String>,
+}
+
+/// An independently persisted thread section and its user-facing presentation.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ThreadSection {
+    /// Opaque UUIDv7 identifying the section independently of its name.
+    pub id: String,
+    /// User-facing section name.
+    pub name: String,
+    #[serde(default)]
+    pub appearance: Option<ThreadSectionAppearance>,
+}
+
+impl ThreadSection {
+    pub(crate) fn from_row(
+        (id, name, appearance): (String, String, Option<String>),
+    ) -> Result<Self> {
+        Ok(Self {
+            id,
+            name,
+            appearance: appearance
+                .map(|appearance| serde_json::from_str(&appearance))
+                .transpose()?,
+        })
+    }
+}
+
+/// A cursor-paginated page of independently persisted thread sections.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ThreadSectionsPage {
+    /// Sections in ascending identifier order.
+    pub sections: Vec<ThreadSection>,
+    /// Identifier after which the next page starts, if any.
+    pub next_cursor: Option<String>,
 }
 
 /// A single page of thread metadata results.
@@ -90,6 +137,8 @@ pub struct ExtractionOutcome {
 /// Canonical persisted thread metadata.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ThreadMetadata {
+    /// Originator recorded at creation, if available.
+    pub originator: Option<String>,
     /// The thread identifier.
     pub id: ThreadId,
     /// The absolute rollout path on disk.
@@ -138,19 +187,29 @@ pub struct ThreadMetadata {
     pub first_user_message: Option<String>,
     /// The archive timestamp, if the thread is archived.
     pub archived_at: Option<DateTime<Utc>>,
-    /// Whether the thread was explicitly pinned by the user.
-    pub is_pinned: bool,
+    /// The user-selected section for this thread, if any.
+    pub section: Option<ThreadSection>,
+    /// The stable sparse ordering rank within the user-selected section.
+    pub section_position: Option<i64>,
+    /// The time when the thread most recently entered its current section.
+    pub section_entered_at: Option<DateTime<Utc>>,
+    /// Canonical project assignment owned by app-server, if any.
+    pub project_id: Option<String>,
+    /// User-selected Daybreak preference, absent until explicitly set.
+    pub daybreak_enabled: Option<bool>,
     /// The git commit SHA, if known.
     pub git_sha: Option<String>,
     /// The git branch name, if known.
     pub git_branch: Option<String>,
     /// The git origin URL, if known.
-    pub git_origin_url: Option<String>,
+    pub git_origin_url: Option<SanitizedGitUrl>,
 }
 
 /// Builder data required to construct [`ThreadMetadata`] without parsing filenames.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ThreadMetadataBuilder {
+    /// Originator recorded at creation, if available.
+    pub originator: Option<String>,
     /// The thread identifier.
     pub id: ThreadId,
     /// The absolute rollout path on disk.
@@ -190,7 +249,7 @@ pub struct ThreadMetadataBuilder {
     /// The git branch name, if known.
     pub git_branch: Option<String>,
     /// The git origin URL, if known.
-    pub git_origin_url: Option<String>,
+    pub git_origin_url: Option<SanitizedGitUrl>,
 }
 
 impl ThreadMetadataBuilder {
@@ -207,6 +266,7 @@ impl ThreadMetadataBuilder {
             created_at,
             updated_at: None,
             recency_at: None,
+            originator: None,
             source,
             history_mode: ThreadHistoryMode::Legacy,
             thread_source: None,
@@ -240,6 +300,7 @@ impl ThreadMetadataBuilder {
             .map(canonicalize_datetime)
             .unwrap_or(updated_at);
         ThreadMetadata {
+            originator: self.originator.clone(),
             id: self.id,
             rollout_path: self.rollout_path.clone(),
             created_at,
@@ -270,7 +331,11 @@ impl ThreadMetadataBuilder {
             tokens_used: 0,
             first_user_message: None,
             archived_at: self.archived_at.map(canonicalize_datetime),
-            is_pinned: false,
+            section: None,
+            section_position: None,
+            section_entered_at: None,
+            project_id: None,
+            daybreak_enabled: None,
             git_sha: self.git_sha.clone(),
             git_branch: self.git_branch.clone(),
             git_origin_url: self.git_origin_url.clone(),
@@ -337,6 +402,9 @@ impl ThreadMetadata {
         if self.source != other.source {
             diffs.push("source");
         }
+        if self.originator != other.originator {
+            diffs.push("originator");
+        }
         if self.agent_nickname != other.agent_nickname {
             diffs.push("agent_nickname");
         }
@@ -385,8 +453,20 @@ impl ThreadMetadata {
         if self.archived_at != other.archived_at {
             diffs.push("archived_at");
         }
-        if self.is_pinned != other.is_pinned {
-            diffs.push("is_pinned");
+        if self.section != other.section {
+            diffs.push("section");
+        }
+        if self.section_position != other.section_position {
+            diffs.push("section_position");
+        }
+        if self.section_entered_at != other.section_entered_at {
+            diffs.push("section_entered_at");
+        }
+        if self.project_id != other.project_id {
+            diffs.push("project_id");
+        }
+        if self.daybreak_enabled != other.daybreak_enabled {
+            diffs.push("daybreak_enabled");
         }
         if self.git_sha != other.git_sha {
             diffs.push("git_sha");
@@ -407,6 +487,7 @@ fn canonicalize_datetime(dt: DateTime<Utc>) -> DateTime<Utc> {
 
 #[derive(Debug)]
 pub(crate) struct ThreadRow {
+    originator: Option<String>,
     id: String,
     rollout_path: String,
     created_at: i64,
@@ -431,7 +512,13 @@ pub(crate) struct ThreadRow {
     tokens_used: i64,
     first_user_message: String,
     archived_at: Option<i64>,
-    is_pinned: bool,
+    section: Option<String>,
+    section_name: Option<String>,
+    section_appearance: Option<String>,
+    section_position: Option<i64>,
+    section_entered_at_ms: Option<i64>,
+    project_id: Option<String>,
+    daybreak_enabled: Option<bool>,
     git_sha: Option<String>,
     git_branch: Option<String>,
     git_origin_url: Option<String>,
@@ -440,6 +527,7 @@ pub(crate) struct ThreadRow {
 impl ThreadRow {
     pub(crate) fn try_from_row(row: &SqliteRow) -> Result<Self> {
         Ok(Self {
+            originator: row.try_get("originator")?,
             id: row.try_get("id")?,
             rollout_path: row.try_get("rollout_path")?,
             created_at: row.try_get("created_at")?,
@@ -464,7 +552,13 @@ impl ThreadRow {
             tokens_used: row.try_get("tokens_used")?,
             first_user_message: row.try_get("first_user_message")?,
             archived_at: row.try_get("archived_at")?,
-            is_pinned: row.try_get("is_pinned")?,
+            section: row.try_get("section")?,
+            section_name: row.try_get("section_name")?,
+            section_appearance: row.try_get("section_appearance")?,
+            section_position: row.try_get("section_position")?,
+            section_entered_at_ms: row.try_get("section_entered_at_ms")?,
+            project_id: row.try_get("project_id")?,
+            daybreak_enabled: row.try_get("daybreak_enabled")?,
             git_sha: row.try_get("git_sha")?,
             git_branch: row.try_get("git_branch")?,
             git_origin_url: row.try_get("git_origin_url")?,
@@ -477,6 +571,7 @@ impl TryFrom<ThreadRow> for ThreadMetadata {
 
     fn try_from(row: ThreadRow) -> std::result::Result<Self, Self::Error> {
         let ThreadRow {
+            originator,
             id,
             rollout_path,
             created_at,
@@ -501,7 +596,13 @@ impl TryFrom<ThreadRow> for ThreadMetadata {
             tokens_used,
             first_user_message,
             archived_at,
-            is_pinned,
+            section,
+            section_name,
+            section_appearance,
+            section_position,
+            section_entered_at_ms,
+            project_id,
+            daybreak_enabled,
             git_sha,
             git_branch,
             git_origin_url,
@@ -511,8 +612,25 @@ impl TryFrom<ThreadRow> for ThreadMetadata {
             .transpose()
             .map_err(anyhow::Error::msg)?;
         let history_mode = history_mode.parse().map_err(anyhow::Error::msg)?;
+        let section = match (section, section_name) {
+            (Some(id), Some(name)) => {
+                Some(ThreadSection::from_row((id, name, section_appearance))?)
+            }
+            (None, None) => None,
+            (Some(id), None) => {
+                return Err(anyhow::anyhow!(
+                    "thread references an unknown section: {id}"
+                ));
+            }
+            (None, Some(name)) => {
+                return Err(anyhow::anyhow!(
+                    "thread has a section name without a section id: {name}"
+                ));
+            }
+        };
         Ok(Self {
             id: ThreadId::try_from(id)?,
+            originator,
             rollout_path: PathBuf::from(rollout_path),
             created_at: epoch_millis_to_datetime(created_at)?,
             updated_at: epoch_millis_to_datetime(updated_at)?,
@@ -537,10 +655,17 @@ impl TryFrom<ThreadRow> for ThreadMetadata {
             tokens_used,
             first_user_message: (!first_user_message.is_empty()).then_some(first_user_message),
             archived_at: archived_at.map(epoch_seconds_to_datetime).transpose()?,
-            is_pinned,
+            section,
+            section_position,
+            section_entered_at: section_entered_at_ms
+                .map(epoch_millis_to_datetime)
+                .transpose()?,
+            project_id,
+            daybreak_enabled,
             git_sha,
             git_branch,
-            git_origin_url,
+            git_origin_url: git_origin_url
+                .and_then(|origin_url| SanitizedGitUrl::try_from(origin_url).ok()),
         })
     }
 }
@@ -554,10 +679,13 @@ pub(crate) fn anchor_from_item(
         SortKey::CreatedAt => item.created_at,
         SortKey::UpdatedAt => item.updated_at,
         SortKey::RecencyAt => item.recency_at,
+        SortKey::SectionPosition => DateTime::<Utc>::from_timestamp_millis(item.section_position?)?,
     };
     Some(Anchor {
         ts,
-        id: (include_thread_id_tiebreaker || sort_key == SortKey::RecencyAt).then_some(item.id),
+        id: (include_thread_id_tiebreaker
+            || matches!(sort_key, SortKey::RecencyAt | SortKey::SectionPosition))
+        .then_some(item.id),
     })
 }
 
@@ -604,6 +732,7 @@ mod tests {
     use super::ThreadRow;
     use chrono::DateTime;
     use chrono::Utc;
+    use codex_protocol::SanitizedGitUrl;
     use codex_protocol::ThreadId;
     use codex_protocol::openai_models::ReasoningEffort;
     use codex_protocol::protocol::ThreadHistoryMode;
@@ -612,6 +741,7 @@ mod tests {
 
     fn thread_row(reasoning_effort: Option<&str>) -> ThreadRow {
         ThreadRow {
+            originator: None,
             id: "00000000-0000-0000-0000-000000000123".to_string(),
             rollout_path: "/tmp/rollout-123.jsonl".to_string(),
             created_at: 1_700_000_000,
@@ -636,7 +766,13 @@ mod tests {
             tokens_used: 1,
             first_user_message: String::new(),
             archived_at: None,
-            is_pinned: false,
+            section: None,
+            section_name: None,
+            section_appearance: None,
+            section_position: None,
+            section_entered_at_ms: None,
+            project_id: None,
+            daybreak_enabled: None,
             git_sha: None,
             git_branch: None,
             git_origin_url: None,
@@ -645,6 +781,7 @@ mod tests {
 
     fn expected_thread_metadata(reasoning_effort: Option<ReasoningEffort>) -> ThreadMetadata {
         ThreadMetadata {
+            originator: None,
             id: ThreadId::from_string("00000000-0000-0000-0000-000000000123")
                 .expect("valid thread id"),
             rollout_path: PathBuf::from("/tmp/rollout-123.jsonl"),
@@ -670,7 +807,11 @@ mod tests {
             tokens_used: 1,
             first_user_message: None,
             archived_at: None,
-            is_pinned: false,
+            section: None,
+            section_position: None,
+            section_entered_at: None,
+            project_id: None,
+            daybreak_enabled: None,
             git_sha: None,
             git_branch: None,
             git_origin_url: None,
@@ -713,7 +854,10 @@ mod tests {
         reconciled.history_mode = ThreadHistoryMode::Paginated;
         reconciled.git_sha = Some("rollout-sha".to_string());
         reconciled.git_branch = Some("rollout-branch".to_string());
-        reconciled.git_origin_url = Some("rollout-origin".to_string());
+        reconciled.git_origin_url = Some(
+            SanitizedGitUrl::try_from("https://example.com/rollout-origin")
+                .expect("valid git remote URL"),
+        );
         let existing = expected_thread_metadata(/*reasoning_effort*/ None);
         let expected = reconciled.clone();
 

@@ -29,6 +29,7 @@ pub struct WindowsSandboxFilesystemOverrides {
     pub additional_deny_write_paths: Vec<AbsolutePathBuf>,
 }
 
+<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
 pub fn windows_sandbox_uses_elevated_backend(
     sandbox_level: WindowsSandboxLevel,
     proxy_enforced: bool,
@@ -59,6 +60,10 @@ pub fn resolve_windows_sandbox_filesystem_overrides(
             windows_sandbox_level,
         )
     }
+=======
+pub fn windows_sandbox_uses_elevated_backend(sandbox_level: WindowsSandboxLevel) -> bool {
+    matches!(sandbox_level, WindowsSandboxLevel::Elevated)
+>>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
 }
 
 pub fn permission_profile_supports_windows_restricted_token_sandbox(
@@ -282,8 +287,10 @@ pub fn resolve_windows_elevated_filesystem_overrides(
         .needs_direct_runtime_enforcement(network_sandbox_policy, sandbox_policy_cwd);
     let has_explicit_write_carveouts = split_writable_roots.iter().any(|writable_root| {
         writable_root.read_only_subpaths.iter().any(|path| {
-            file_system_sandbox_policy
-                .has_explicit_non_write_entry_for_path_with_cwd(path.as_path(), sandbox_policy_cwd)
+            file_system_sandbox_policy.has_explicit_non_write_entry_for_local_path_with_cwd(
+                path.as_path(),
+                sandbox_policy_cwd,
+            )
         })
     });
     let normalize_path = |path: PathBuf| dunce::canonicalize(&path).unwrap_or(path);
@@ -350,7 +357,7 @@ pub fn resolve_windows_elevated_filesystem_overrides(
                     })
                 });
                 let explicitly_configured = file_system_sandbox_policy
-                    .has_explicit_non_write_entry_for_path_with_cwd(
+                    .has_explicit_non_write_entry_for_local_path_with_cwd(
                         read_only_subpath.as_path(),
                         sandbox_policy_cwd,
                     );
@@ -398,7 +405,7 @@ fn windows_policy_has_root_read_access(
     let Some(root) = cwd.as_path().ancestors().last() else {
         return false;
     };
-    file_system_sandbox_policy.can_read_path_with_cwd(root, cwd.as_path())
+    file_system_sandbox_policy.can_read_local_path_with_cwd(root, cwd.as_path())
 }
 
 fn permission_profile_display_name(permission_profile: &PermissionProfile) -> &'static str {

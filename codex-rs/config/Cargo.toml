@@ -24,7 +24,11 @@ codex-protocol = { workspace = true }
 codex-utils-absolute-path = { workspace = true }
 codex-utils-path = { workspace = true }
 codex-utils-path-uri = { workspace = true }
+<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
 codex-utils-version = { workspace = true }
+=======
+codex-utils-redacted-string = { workspace = true }
+>>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
 dunce = { workspace = true }
 futures = { workspace = true, features = ["alloc", "std"] }
 gethostname = { workspace = true }
@@ -55,6 +59,7 @@ libc = { workspace = true }
 core-foundation = "0.10"
 
 [target.'cfg(target_os = "windows")'.dependencies]
+codex-windows-sandbox = { workspace = true }
 winapi-util = { workspace = true }
 windows-sys = { version = "0.52", features = [
     "Win32_Foundation",

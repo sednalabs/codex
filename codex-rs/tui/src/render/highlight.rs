@@ -47,6 +47,11 @@ use syntect::parsing::SyntaxSet;
 use syntect::util::LinesWithEndings;
 use two_face::theme::EmbeddedThemeName;
 
+#[path = "highlight_streaming.rs"]
+mod streaming;
+
+pub(crate) use streaming::StreamingCodeHighlighter;
+
 // -- Global singletons -------------------------------------------------------
 
 static SYNTAX_SET: OnceLock<SyntaxSet> = OnceLock::new();
@@ -489,7 +494,7 @@ fn ansi_palette_color(index: u8) -> RtColor {
 /// `clippy::disallowed_methods` is explicitly allowed here because this helper
 /// intentionally constructs `ratatui::style::Color::Rgb`.
 #[allow(clippy::disallowed_methods)]
-fn convert_syntect_color(color: SyntectColor) -> Option<RtColor> {
+pub(crate) fn convert_syntect_color(color: SyntectColor) -> Option<RtColor> {
     match color.a {
         // Bat-compatible encoding used by `ansi`, `base16`, and `base16-256`:
         // alpha 0x00 means `r` stores an ANSI palette index, not RGB red.
@@ -630,23 +635,28 @@ fn highlight_to_line_spans_with_theme(
 
     for line in LinesWithEndings::from(code) {
         let ranges = h.highlight_line(line, syntax_set()).ok()?;
-        let mut spans: Vec<Span<'static>> = Vec::new();
-        for (style, text) in ranges {
-            // Strip trailing line endings (LF and CR) since we handle line
-            // breaks ourselves.  CRLF inputs would otherwise leave a stray \r.
-            let text = text.trim_end_matches(['\n', '\r']);
-            if text.is_empty() {
-                continue;
-            }
-            spans.push(Span::styled(text.to_string(), convert_style(style)));
-        }
-        if spans.is_empty() {
-            spans.push(Span::raw(String::new()));
-        }
-        lines.push(spans);
+        lines.push(highlighted_line_spans(ranges));
     }
 
     Some(lines)
+}
+
+/// Convert one highlighted line into the spans shared by full and streaming renders.
+///
+/// Source line endings are omitted, while empty lines retain their canonical empty span.
+fn highlighted_line_spans(ranges: Vec<(SyntectStyle, &str)>) -> Vec<Span<'static>> {
+    let mut spans = Vec::new();
+    for (style, text) in ranges {
+        // Line breaks are represented by the surrounding Line, not its spans.
+        let text = text.trim_end_matches(['\n', '\r']);
+        if !text.is_empty() {
+            spans.push(Span::styled(text.to_string(), convert_style(style)));
+        }
+    }
+    if spans.is_empty() {
+        spans.push(Span::raw(String::new()));
+    }
+    spans
 }
 
 /// Parse `code` using syntect for `lang` and return per-line styled spans.

@@ -1,24 +1,14 @@
-use crate::agent::role::apply_role_to_config;
-use crate::config::Config;
 use crate::config::DEFAULT_MULTI_AGENT_V2_MIN_WAIT_TIMEOUT_MS;
 use crate::config::HARD_MAX_MULTI_AGENT_V2_TIMEOUT_MS;
 use crate::function_tool::FunctionCallError;
-use crate::session::session::Session;
-use crate::session::turn_context::TurnContext;
 use crate::tools::context::FunctionToolOutput;
 use crate::tools::context::ToolOutput;
 use crate::tools::context::ToolPayload;
-use codex_models_manager::manager::RefreshStrategy;
 use codex_protocol::AgentPath;
 use codex_protocol::ThreadId;
 use codex_protocol::error::CodexErr;
 use codex_protocol::error::CodexErrorDetails;
-use codex_protocol::models::BaseInstructions;
 use codex_protocol::models::ResponseInputItem;
-use codex_protocol::openai_models::ModelPreset;
-use codex_protocol::openai_models::ReasoningEffort;
-use codex_protocol::openai_models::ReasoningEffortPreset;
-use codex_protocol::protocol::MultiAgentVersion;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::SubAgentSource;
 use codex_protocol::user_input::UserInput;
@@ -28,6 +18,7 @@ use serde_json::Value as JsonValue;
 /// Minimum wait timeout to prevent tight polling loops from burning CPU.
 pub(crate) const MIN_WAIT_TIMEOUT_MS: i64 = DEFAULT_MULTI_AGENT_V2_MIN_WAIT_TIMEOUT_MS;
 pub(crate) const DEFAULT_WAIT_TIMEOUT_MS: i64 = 30_000;
+<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
 /// Preserve the legacy V1 wait ceiling. V2 has its own longer event-driven
 /// ceiling so changing that capability does not change the V1 surface.
 pub(crate) const MAX_WAIT_TIMEOUT_MS: i64 = 3600 * 1000;
@@ -48,6 +39,9 @@ pub(crate) fn model_supports_multi_agent_backend(
             .is_none_or(|version| version == multi_agent_version)
 }
 
+=======
+pub(crate) const MAX_WAIT_TIMEOUT_MS: i64 = HARD_MAX_MULTI_AGENT_V2_TIMEOUT_MS;
+>>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
 pub(crate) fn function_arguments(payload: ToolPayload) -> Result<String, FunctionCallError> {
     match payload {
         ToolPayload::Function { arguments } => Ok(arguments),
@@ -177,6 +171,7 @@ pub(crate) fn parse_collab_input(
         }
     }
 }
+<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
 
 /// Builds the base config snapshot for a newly spawned sub-agent.
 ///
@@ -461,3 +456,5 @@ pub(crate) fn validate_spawn_agent_reasoning_effort(
         "Reasoning effort `{requested_reasoning_effort}` is not supported for model `{model}`. Supported reasoning efforts: {supported}"
     )))
 }
+=======
+>>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360

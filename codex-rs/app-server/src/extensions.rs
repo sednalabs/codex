@@ -10,31 +10,39 @@ use codex_app_server_protocol::ServerNotification;
 use codex_app_server_protocol::Thread;
 use codex_app_server_protocol::ThreadGoal;
 use codex_app_server_protocol::ThreadGoalUpdatedNotification;
+<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
 use codex_app_server_protocol::Turn;
+=======
+use codex_app_server_protocol::ThreadQueueChangedNotification;
+>>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
 use codex_app_server_protocol::WarningNotification;
-use codex_core::NewThread;
-use codex_core::StartThreadOptions;
 use codex_core::ThreadManager;
 use codex_core::config::Config;
 use codex_core_plugins::EffectivePluginsChange;
 use codex_exec_server::EnvironmentManager;
-use codex_extension_api::AgentSpawnFuture;
-use codex_extension_api::AgentSpawner;
 use codex_extension_api::ExtensionEventSink;
 use codex_extension_api::ExtensionRegistry;
 use codex_extension_api::ExtensionRegistryBuilder;
 use codex_extension_api::ExtensionWarning;
+<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
 use codex_file_watcher::WatchPath;
+=======
+use codex_extension_api::TurnStartAdmission;
+use codex_goal_extension::GoalExtensionConfig;
+>>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
 use codex_goal_extension::GoalService;
 use codex_http_client::HttpClientFactory;
 use codex_login::AuthManager;
 use codex_protocol::ThreadId;
-use codex_protocol::error::CodexErr;
 use codex_protocol::protocol::Event;
 use codex_protocol::protocol::EventMsg;
+use codex_queue_extension::QueuedItemService;
 use codex_rollout::state_db::StateDbHandle;
+<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
 use codex_thread_store::ThreadStore;
 use codex_utils_absolute_path::AbsolutePathBuf;
+=======
+>>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
 
 use crate::outgoing_message::ConnectionId;
 use crate::outgoing_message::OutgoingMessageSender;
@@ -53,10 +61,12 @@ pub(crate) struct ThreadExtensionDependencies {
     pub(crate) executor_skill_provider: Arc<dyn codex_skills_extension::SkillProvider>,
     pub(crate) git_attribution_base_url: String,
     pub(crate) http_client_factory: HttpClientFactory,
-    /// Process-scoped persistence backend for extensions that need stored thread history.
-    pub(crate) thread_store: Arc<dyn ThreadStore>,
+    /// Process-scoped queue shared by idle dispatch and app-server requests.
+    pub(crate) queue_service: Option<Arc<QueuedItemService>>,
+    pub(crate) turn_start_admission: Option<Arc<dyn TurnStartAdmission>>,
 }
 
+<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
 /// Internal app-server extension seam.
 ///
 /// This keeps fork-specific behavior behind a narrow, upstream-shaped hook
@@ -192,11 +202,11 @@ pub(crate) async fn dispatch_notification_to_connection(
 
 pub(crate) fn thread_extensions<S>(
     guardian_agent_spawner: S,
+=======
+pub(crate) fn thread_extensions(
+>>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
     dependencies: ThreadExtensionDependencies,
-) -> Arc<ExtensionRegistry<Config>>
-where
-    S: AgentSpawner<StartThreadOptions, Spawned = NewThread, Error = CodexErr> + 'static,
-{
+) -> Arc<ExtensionRegistry<Config>> {
     let ThreadExtensionDependencies {
         event_sink,
         auth_manager,
@@ -208,18 +218,29 @@ where
         executor_skill_provider,
         git_attribution_base_url,
         http_client_factory,
-        thread_store: _thread_store,
+        queue_service,
+        turn_start_admission,
     } = dependencies;
-    let mut builder = ExtensionRegistryBuilder::<Config>::with_event_sink(event_sink);
+    let mut builder = ExtensionRegistryBuilder::<Config>::with_event_sink(Arc::clone(&event_sink));
+    if let Some(admission) = turn_start_admission {
+        builder.turn_start_admission(admission);
+    }
+    if let Some(queue_service) = queue_service {
+        codex_queue_extension::install(&mut builder, queue_service);
+    }
+    codex_history_notes_extension::install(&mut builder, auth_manager.clone());
     if let Some(state_db) = state_db {
         codex_goal_extension::install_with_backend(
             &mut builder,
             state_db,
             analytics_events_client,
             codex_otel::global(),
-            thread_manager,
+            thread_manager.clone(),
             goal_service,
-            |config: &Config| config.features.enabled(codex_features::Feature::Goals),
+            |config: &Config| GoalExtensionConfig {
+                enabled: config.features.enabled(codex_features::Feature::Goals),
+                max_goal_token_budget: config.max_goal_token_budget,
+            },
         );
     }
     codex_git_attribution::install(
@@ -228,7 +249,7 @@ where
         git_attribution_base_url,
         http_client_factory,
     );
-    codex_guardian::install(&mut builder, guardian_agent_spawner);
+    codex_guardian_v2::install(&mut builder, auth_manager.clone(), thread_manager);
     codex_memories_extension::install(&mut builder, codex_otel::global());
     codex_mcp_extension::install(&mut builder);
     codex_mcp_extension::install_executor_plugins(&mut builder, environment_manager);
@@ -248,6 +269,7 @@ where
         codex_otel::global(),
         |config: &Config| codex_skills_extension::SkillsExtensionConfig {
             include_instructions: config.include_skill_instructions,
+            max_context_tokens: config.skill_max_context_tokens,
             bundled_skills_enabled: config.bundled_skills_enabled(),
             orchestrator_skills_enabled: config.orchestrator_skills_enabled,
             shadow_selection_enabled: config
@@ -301,6 +323,40 @@ const EXTENSION_WARNING_SUBSCRIBER_TIMEOUT: Duration = Duration::from_secs(10);
 impl ExtensionEventSink for AppServerExtensionEventSink {
     fn emit(&self, event: Event) {
         match event.msg {
+            EventMsg::ThreadQueueChanged(queue_event) => {
+                let thread_id = queue_event.thread_id;
+                if let Some(listener_command_tx) = self
+                    .thread_state_manager
+                    .current_listener_command_tx(thread_id)
+                {
+                    let command = ThreadListenerCommand::EmitThreadQueueChanged;
+                    if listener_command_tx.send(command).is_ok() {
+                        return;
+                    }
+                    tracing::warn!(
+                        "failed to enqueue extension queue update for {thread_id}: listener command channel is closed"
+                    );
+                }
+                let outgoing = Arc::clone(&self.outgoing);
+                let thread_state_manager = self.thread_state_manager.clone();
+                tokio::spawn(async move {
+                    let subscribed_connection_ids = thread_state_manager
+                        .subscribed_connection_ids(thread_id)
+                        .await;
+                    let outgoing = ThreadScopedOutgoingMessageSender::new(
+                        outgoing,
+                        subscribed_connection_ids,
+                        thread_id,
+                    );
+                    outgoing
+                        .send_server_notification(ServerNotification::ThreadQueueChanged(
+                            ThreadQueueChangedNotification {
+                                thread_id: thread_id.to_string(),
+                            },
+                        ))
+                        .await;
+                });
+            }
             EventMsg::ThreadGoalUpdated(thread_goal_event) => {
                 let thread_id = thread_goal_event.thread_id;
                 let turn_id = thread_goal_event.turn_id;
@@ -396,6 +452,7 @@ impl ExtensionEventSink for AppServerExtensionEventSink {
     }
 }
 
+<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
 pub(crate) fn guardian_agent_spawner(
     thread_manager: Weak<ThreadManager>,
 ) -> impl AgentSpawner<StartThreadOptions, Spawned = NewThread, Error = CodexErr> {
@@ -518,6 +575,8 @@ fn nearest_existing_watch_ancestor(path: &Path) -> Option<PathBuf> {
         .map(Path::to_path_buf)
 }
 
+=======
+>>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
 #[cfg(test)]
 mod tests {
     use codex_protocol::protocol::ThreadGoal as CoreThreadGoal;

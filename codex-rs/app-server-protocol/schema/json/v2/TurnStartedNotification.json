@@ -4,6 +4,7 @@
       "description": "A path that is guaranteed to be absolute and normalized (though it is not\nguaranteed to be canonicalized or exist on the filesystem).\n\nIMPORTANT: When deserializing an `AbsolutePathBuf`, a base path must be set\nusing [AbsolutePathBufGuard::new]. If no base path is set, the\ndeserialization will fail unless the path being deserialized is already\nabsolute.",
       "type": "string"
     },
+<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
     "AgentNotificationContent": {
       "oneOf": [
         {
@@ -121,6 +122,32 @@
         "origin",
         "senderAgentPath",
         "content"
+=======
+    "AgentMessageDelivery": {
+      "enum": [
+        "async"
+      ],
+      "type": "string"
+    },
+    "AsyncUserInputQuestion": {
+      "additionalProperties": false,
+      "properties": {
+        "options": {
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "title": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "title"
+>>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
       ],
       "type": "object"
     },
@@ -151,8 +178,10 @@
             "contextWindowExceeded",
             "sessionBudgetExceeded",
             "usageLimitExceeded",
+            "rateLimitExceeded",
             "serverOverloaded",
             "cyberPolicy",
+            "misalignmentPolicyViolation",
             "internalServerError",
             "unauthorized",
             "badRequest",
@@ -320,7 +349,11 @@
         "sendInput",
         "resumeAgent",
         "wait",
-        "closeAgent"
+        "closeAgent",
+        "sendMessage",
+        "followupTask",
+        "interruptAgent",
+        "listAgents"
       ],
       "type": "string"
     },
@@ -328,7 +361,8 @@
       "enum": [
         "inProgress",
         "completed",
-        "failed"
+        "failed",
+        "interrupted"
       ],
       "type": "string"
     },
@@ -352,7 +386,11 @@
               "type": "string"
             },
             "path": {
+<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
               "$ref": "#/$defs/AbsolutePathBuf"
+=======
+              "$ref": "#/definitions/LegacyAppPathString"
+>>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
             },
             "type": {
               "const": "read",
@@ -606,6 +644,136 @@
       ],
       "type": "object"
     },
+    "FunctionCallOutputBody": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "items": {
+            "$ref": "#/definitions/FunctionCallOutputContentItem"
+          },
+          "type": "array"
+        }
+      ]
+    },
+    "FunctionCallOutputContentItem": {
+      "description": "Responses API compatible content items that can be returned by a tool call. This is a subset of ContentItem with the types we support as function call outputs.",
+      "oneOf": [
+        {
+          "properties": {
+            "text": {
+              "type": "string"
+            },
+            "type": {
+              "enum": [
+                "input_text"
+              ],
+              "title": "InputTextFunctionCallOutputContentItemType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "text",
+            "type"
+          ],
+          "title": "InputTextFunctionCallOutputContentItem",
+          "type": "object"
+        },
+        {
+          "anyOf": [
+            {
+              "properties": {
+                "image_url": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "image_url"
+              ],
+              "title": "ImageUrlFunctionCallOutputContentItem",
+              "type": "object"
+            },
+            {
+              "properties": {
+                "file_id": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "file_id"
+              ],
+              "title": "FileIdFunctionCallOutputContentItem",
+              "type": "object"
+            }
+          ],
+          "properties": {
+            "detail": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/ImageDetail"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "type": {
+              "enum": [
+                "input_image"
+              ],
+              "title": "InputImageFunctionCallOutputContentItemType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "title": "InputImageFunctionCallOutputContentItem",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "audio_url": {
+              "type": "string"
+            },
+            "type": {
+              "enum": [
+                "input_audio"
+              ],
+              "title": "InputAudioFunctionCallOutputContentItemType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "audio_url",
+            "type"
+          ],
+          "title": "InputAudioFunctionCallOutputContentItem",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "encrypted_content": {
+              "type": "string"
+            },
+            "type": {
+              "enum": [
+                "encrypted_content"
+              ],
+              "title": "EncryptedContentFunctionCallOutputContentItemType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "encrypted_content",
+            "type"
+          ],
+          "title": "EncryptedContentFunctionCallOutputContentItem",
+          "type": "object"
+        }
+      ]
+    },
     "HookPromptFragment": {
       "properties": {
         "hookRunId": {
@@ -630,6 +798,7 @@
       ],
       "type": "string"
     },
+<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
     "ImageGenerationItem": {
       "properties": {
         "id": {
@@ -664,9 +833,64 @@
         "result"
       ],
       "type": "object"
+=======
+    "ImageGenerationFailure": {
+      "oneOf": [
+        {
+          "properties": {
+            "limitId": {
+              "type": "string"
+            },
+            "resetsAt": {
+              "format": "int64",
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "type": {
+              "enum": [
+                "usageLimitExceeded"
+              ],
+              "title": "UsageLimitExceededImageGenerationFailureType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "limitId",
+            "type"
+          ],
+          "title": "UsageLimitExceededImageGenerationFailure",
+          "type": "object"
+        }
+      ]
+>>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
     },
     "LegacyAppPathString": {
       "type": "string"
+    },
+    "McpAppDisplayMode": {
+      "enum": [
+        "inline",
+        "fullscreen"
+      ],
+      "type": "string"
+    },
+    "McpAppUi": {
+      "description": "UI resource and display preference for model invocations, captured from the tool descriptor.",
+      "properties": {
+        "preferredModelDisplayMode": {
+          "$ref": "#/definitions/McpAppDisplayMode"
+        },
+        "resourceUri": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "preferredModelDisplayMode",
+        "resourceUri"
+      ],
+      "type": "object"
     },
     "McpToolCallAppContext": {
       "properties": {
@@ -799,6 +1023,47 @@
         }
       ]
     },
+    "MisalignmentErrorDetails": {
+      "properties": {
+        "detailedExplanation": {
+          "description": "A substantive localized explanation is required before offering continuation.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "errorType": {
+          "description": "Open-ended classification; clients must accept categories added by Responses.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "steer": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/MisalignmentSteer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Instruction to submit as the next turn's user input if continuation is confirmed."
+        }
+      },
+      "type": "object"
+    },
+    "MisalignmentSteer": {
+      "properties": {
+        "message": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "message"
+      ],
+      "type": "object"
+    },
     "NonSteerableTurnKind": {
       "enum": [
         "review",
@@ -894,7 +1159,8 @@
       "enum": [
         "started",
         "interacted",
-        "interrupted"
+        "interrupted",
+        "completed"
       ],
       "type": "string"
     },
@@ -1012,6 +1278,17 @@
         },
         {
           "properties": {
+            "delivery": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/AgentMessageDelivery"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
             "id": {
               "type": "string"
             },
@@ -1037,6 +1314,16 @@
               ],
               "default": null
             },
+            "questions": {
+              "default": null,
+              "items": {
+                "$ref": "#/definitions/AsyncUserInputQuestion"
+              },
+              "type": [
+                "array",
+                "null"
+              ]
+            },
             "text": {
               "type": "string"
             },
@@ -1055,7 +1342,45 @@
           "type": "object"
         },
         {
+<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
           "description": "EXPERIMENTAL - proposed plan item content. The completed plan item is\nauthoritative and may not match the concatenation of `PlanDelta` text.",
+=======
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "name": {
+              "type": "string"
+            },
+            "namespace": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "output": {
+              "$ref": "#/definitions/FunctionCallOutputBody"
+            },
+            "type": {
+              "enum": [
+                "functionCallOutput"
+              ],
+              "title": "FunctionCallOutputThreadItemType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "id",
+            "name",
+            "output",
+            "type"
+          ],
+          "title": "FunctionCallOutputThreadItem",
+          "type": "object"
+        },
+        {
+          "description": "EXPERIMENTAL - proposed plan item content. The completed plan item is authoritative and may not match the concatenation of `PlanDelta` text.",
+>>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
           "properties": {
             "id": {
               "type": "string"
@@ -1274,15 +1599,32 @@
               "type": "string"
             },
             "mcpAppResourceUri": {
-              "description": "Deprecated: use `appContext.resourceUri` instead.",
+              "description": "Legacy compatibility field; prefer `mcpAppUi.resourceUri` when available.",
               "type": [
                 "string",
                 "null"
               ]
             },
+            "mcpAppUi": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/McpAppUi"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Presentation captured from the invoked descriptor; absent in older history."
+            },
             "pluginId": {
               "type": [
                 "string",
+                "null"
+              ]
+            },
+            "readOnlyHint": {
+              "type": [
+                "boolean",
                 "null"
               ]
             },
@@ -1686,6 +2028,52 @@
         {
           "$ref": "#/$defs/ImageGenerationItem",
           "properties": {
+<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
+=======
+            "failure": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/ImageGenerationFailure"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "id": {
+              "type": "string"
+            },
+            "result": {
+              "type": "string"
+            },
+            "revisedPrompt": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "savedPath": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/AbsolutePathBuf"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "status": {
+              "type": "string"
+            },
+            "transparentBackground": {
+              "default": null,
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+>>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
             "type": {
               "const": "imageGeneration",
               "title": "ImageGenerationThreadItemType",
@@ -1847,6 +2235,18 @@
         },
         "message": {
           "type": "string"
+        },
+        "misalignment": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/MisalignmentErrorDetails"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Optional public explanation and continuation instruction for a misalignment block."
         }
       },
       "required": [
@@ -1911,6 +2311,32 @@
           "type": "object"
         },
         {
+          "anyOf": [
+            {
+              "properties": {
+                "url": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "url"
+              ],
+              "title": "UrlUserInput",
+              "type": "object"
+            },
+            {
+              "properties": {
+                "fileId": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "fileId"
+              ],
+              "title": "FileIdUserInput",
+              "type": "object"
+            }
+          ],
           "properties": {
             "detail": {
               "anyOf": [
@@ -1927,14 +2353,10 @@
               "const": "image",
               "title": "ImageUserInputType",
               "type": "string"
-            },
-            "url": {
-              "type": "string"
             }
           },
           "required": [
-            "type",
-            "url"
+            "type"
           ],
           "title": "ImageUserInput",
           "type": "object"

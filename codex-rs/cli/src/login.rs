@@ -9,11 +9,14 @@
 
 use codex_config::types::AuthCredentialsStoreMode;
 use codex_core::config::Config;
+use codex_core::config::edit::ConfigEdit;
+use codex_core::config::edit::ConfigEditsBuilder;
 use codex_login::AuthKeyringBackendKind;
+use codex_login::AuthManager;
 use codex_login::AuthRouteConfig;
 use codex_login::CLIENT_ID;
-use codex_login::CodexAuth;
 use codex_login::ServerOptions;
+use codex_login::is_workload_identity_selected;
 use codex_login::login_with_access_token;
 use codex_login::login_with_api_key;
 use codex_login::logout_with_revoke;
@@ -169,15 +172,18 @@ pub async fn run_login_with_chatgpt(cli_config_overrides: CliConfigOverrides) ->
     let _login_log_guard = init_login_file_logging(&config);
     tracing::info!("starting browser login flow");
 
-    if matches!(config.forced_login_method, Some(ForcedLoginMethod::Api)) {
+    if !config
+        .auth_config()
+        .is_login_method_allowed(ForcedLoginMethod::Chatgpt)
+    {
         eprintln!("{CHATGPT_LOGIN_DISABLED_MESSAGE}");
         std::process::exit(1);
     }
 
-    let forced_chatgpt_workspace_id = config.forced_chatgpt_workspace_id.clone();
+    let effective_chatgpt_workspaces = config.auth_config().effective_chatgpt_workspaces();
     match login_with_chatgpt(
         config.codex_home.to_path_buf(),
-        forced_chatgpt_workspace_id,
+        effective_chatgpt_workspaces,
         config.cli_auth_credentials_store_mode,
         config.auth_keyring_backend_kind(),
         config.auth_route_config(),
@@ -203,7 +209,10 @@ pub async fn run_login_with_api_key(
     let _login_log_guard = init_login_file_logging(&config);
     tracing::info!("starting api key login flow");
 
-    if matches!(config.forced_login_method, Some(ForcedLoginMethod::Chatgpt)) {
+    if !config
+        .auth_config()
+        .is_login_method_allowed(ForcedLoginMethod::Api)
+    {
         eprintln!("{API_KEY_LOGIN_DISABLED_MESSAGE}");
         std::process::exit(1);
     }
@@ -233,17 +242,21 @@ pub async fn run_login_with_access_token(
     let _login_log_guard = init_login_file_logging(&config);
     tracing::info!("starting access token login flow");
 
-    if matches!(config.forced_login_method, Some(ForcedLoginMethod::Api)) {
+    if !config
+        .auth_config()
+        .is_login_method_allowed(ForcedLoginMethod::Chatgpt)
+    {
         eprintln!("{ACCESS_TOKEN_LOGIN_DISABLED_MESSAGE}");
         std::process::exit(1);
     }
 
     let auth_route_config = config.auth_route_config();
+    let effective_chatgpt_workspaces = config.auth_config().effective_chatgpt_workspaces();
     match login_with_access_token(
         &config.codex_home,
         &access_token,
         config.cli_auth_credentials_store_mode,
-        config.forced_chatgpt_workspace_id.as_deref(),
+        effective_chatgpt_workspaces.as_deref(),
         Some(&config.chatgpt_base_url),
         config.auth_keyring_backend_kind(),
         &auth_route_config,
@@ -311,7 +324,10 @@ pub async fn run_login_with_device_code(
     let config = load_config_or_exit(cli_config_overrides).await;
     let _login_log_guard = init_login_file_logging(&config);
     tracing::info!("starting device code login flow");
-    if matches!(config.forced_login_method, Some(ForcedLoginMethod::Api)) {
+    if !config
+        .auth_config()
+        .is_login_method_allowed(ForcedLoginMethod::Chatgpt)
+    {
         eprintln!("{CHATGPT_LOGIN_DISABLED_MESSAGE}");
         std::process::exit(1);
     }
@@ -323,11 +339,11 @@ pub async fn run_login_with_device_code(
         &auth_route_config,
     )
     .await;
-    let forced_chatgpt_workspace_id = config.forced_chatgpt_workspace_id.clone();
+    let effective_chatgpt_workspaces = config.auth_config().effective_chatgpt_workspaces();
     let mut opts = ServerOptions::new(
         config.codex_home.to_path_buf(),
         client_id.unwrap_or(CLIENT_ID.to_string()),
-        forced_chatgpt_workspace_id,
+        effective_chatgpt_workspaces,
         config.cli_auth_credentials_store_mode,
         config.auth_keyring_backend_kind(),
         auth_route_config,
@@ -359,7 +375,10 @@ pub async fn run_login_with_device_code_fallback_to_browser(
     let config = load_config_or_exit(cli_config_overrides).await;
     let _login_log_guard = init_login_file_logging(&config);
     tracing::info!("starting login flow with device code fallback");
-    if matches!(config.forced_login_method, Some(ForcedLoginMethod::Api)) {
+    if !config
+        .auth_config()
+        .is_login_method_allowed(ForcedLoginMethod::Chatgpt)
+    {
         eprintln!("{CHATGPT_LOGIN_DISABLED_MESSAGE}");
         std::process::exit(1);
     }
@@ -372,11 +391,11 @@ pub async fn run_login_with_device_code_fallback_to_browser(
     )
     .await;
 
-    let forced_chatgpt_workspace_id = config.forced_chatgpt_workspace_id.clone();
+    let effective_chatgpt_workspaces = config.auth_config().effective_chatgpt_workspaces();
     let mut opts = ServerOptions::new(
         config.codex_home.to_path_buf(),
         client_id.unwrap_or(CLIENT_ID.to_string()),
-        forced_chatgpt_workspace_id,
+        effective_chatgpt_workspaces,
         config.cli_auth_credentials_store_mode,
         config.auth_keyring_backend_kind(),
         auth_route_config,
@@ -423,16 +442,24 @@ pub async fn run_login_with_device_code_fallback_to_browser(
 
 pub async fn run_login_status(cli_config_overrides: CliConfigOverrides) -> ! {
     let config = load_config_or_exit(cli_config_overrides).await;
-    let auth_route_config = config.auth_route_config();
 
-    match CodexAuth::from_auth_storage(
-        &config.codex_home,
-        config.cli_auth_credentials_store_mode,
-        Some(&config.chatgpt_base_url),
-        config.auth_keyring_backend_kind(),
-        &auth_route_config,
-    )
-    .await
+    if is_workload_identity_selected() {
+        match AuthManager::shared_from_config(&config, /*enable_codex_api_key_env*/ false).await {
+            Ok(_) => {
+                eprintln!("Logged in using workload identity");
+                std::process::exit(0);
+            }
+            Err(err) => {
+                eprintln!("Error checking login status: {err}");
+                std::process::exit(1);
+            }
+        }
+    }
+
+    let auth_config = config.auth_config();
+    match auth_config
+        .load_auth(/*enable_codex_api_key_env*/ false)
+        .await
     {
         Ok(Some(auth)) => match auth.auth_mode() {
             AuthMode::ApiKey => match auth.get_token() {
@@ -464,13 +491,17 @@ pub async fn run_login_status(cli_config_overrides: CliConfigOverrides) -> ! {
                 eprintln!("Logged in using Amazon Bedrock API key");
                 std::process::exit(0);
             }
+            AuthMode::BedrockAccessKeys => {
+                eprintln!("Logged in using Amazon Bedrock AWS access keys");
+                std::process::exit(0);
+            }
         },
         Ok(None) => {
             eprintln!("Not logged in");
             std::process::exit(1);
         }
-        Err(e) => {
-            eprintln!("Error checking login status: {e}");
+        Err(err) => {
+            eprintln!("Error checking login status: {err}");
             std::process::exit(1);
         }
     }
@@ -480,7 +511,7 @@ pub async fn run_logout(cli_config_overrides: CliConfigOverrides) -> ! {
     let config = load_config_or_exit(cli_config_overrides).await;
     let auth_route_config = config.auth_route_config();
 
-    match logout_with_revoke(
+    let logged_out = match logout_with_revoke(
         &config.codex_home,
         config.cli_auth_credentials_store_mode,
         config.auth_keyring_backend_kind(),
@@ -488,19 +519,37 @@ pub async fn run_logout(cli_config_overrides: CliConfigOverrides) -> ! {
     )
     .await
     {
-        Ok(true) => {
-            eprintln!("Successfully logged out");
-            std::process::exit(0);
-        }
-        Ok(false) => {
-            eprintln!("Not logged in");
-            std::process::exit(0);
-        }
-        Err(e) => {
-            eprintln!("Error logging out: {e}");
+        Ok(logged_out) => logged_out,
+        Err(err) => {
+            eprintln!("Error logging out: {err}");
             std::process::exit(1);
         }
+    };
+
+    let cleared_bedrock_config =
+        if let Some(paths) = ConfigEditsBuilder::bedrock_provider_config_paths_to_clear(&config) {
+            let edits = paths
+                .into_iter()
+                .map(|segments| ConfigEdit::ClearPath { segments });
+            if let Err(err) = ConfigEditsBuilder::for_config(&config)
+                .with_edits(edits)
+                .apply()
+                .await
+            {
+                eprintln!("Error clearing Amazon Bedrock configuration after logout: {err}");
+                std::process::exit(1);
+            }
+            true
+        } else {
+            false
+        };
+
+    if logged_out || cleared_bedrock_config {
+        eprintln!("Successfully logged out");
+    } else {
+        eprintln!("Not logged in");
     }
+    std::process::exit(0);
 }
 
 async fn load_config_or_exit(cli_config_overrides: CliConfigOverrides) -> Config {
@@ -513,7 +562,13 @@ async fn load_config_or_exit(cli_config_overrides: CliConfigOverrides) -> Config
     };
 
     match Config::load_with_cli_overrides(cli_overrides).await {
-        Ok(config) => config,
+        Ok(config) => match config.auth_config().validate() {
+            Ok(()) => config,
+            Err(e) => {
+                eprintln!("Error loading configuration: {e}");
+                std::process::exit(1);
+            }
+        },
         Err(e) => {
             eprintln!("Error loading configuration: {e}");
             std::process::exit(1);

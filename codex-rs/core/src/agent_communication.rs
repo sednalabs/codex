@@ -69,7 +69,14 @@ pub(crate) fn emit_agent_communication_send(
             state = "send",
             sender_thread_id = %context.sender_thread_id,
             receiver_thread_id = %receiver_thread_id,
+<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
             content = telemetry_content(communication),
+=======
+            content = communication
+                .encrypted_content
+                .as_deref()
+                .unwrap_or("[plaintext]"),
+>>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
         },
         "agent communication"
     );

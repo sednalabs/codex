@@ -13,6 +13,7 @@ path = "src/lib.rs"
 workspace = true
 
 [dependencies]
+chrono = { workspace = true }
 codex-api = { workspace = true }
 codex-agent-identity = { workspace = true }
 codex-aws-auth = { workspace = true }
@@ -25,12 +26,20 @@ codex-otel = { workspace = true }
 codex-protocol = { workspace = true }
 codex-response-debug-context = { workspace = true }
 http = { workspace = true }
-tokio = { workspace = true, features = ["sync", "time"] }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+tokio = { workspace = true, features = ["io-util", "process", "sync", "time"] }
 tracing = { workspace = true, features = ["log"] }
 
 [dev-dependencies]
+<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
 aws-credential-types = { workspace = true }
+=======
+base64 = { workspace = true }
+codex-utils-redacted-string = { workspace = true }
+>>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
 pretty_assertions = { workspace = true }
-serde_json = { workspace = true }
+tempfile = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt"] }
 wiremock = { workspace = true }

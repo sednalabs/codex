@@ -3,6 +3,7 @@
 //! This module owns the `App` struct, shared imports, and the high-level run loop that coordinates
 //! the focused app submodules.
 
+pub(crate) use self::agents_overview::PendingWorktree;
 use crate::AppServerTarget;
 use crate::app_backtrack::BacktrackState;
 use crate::app_command::AppCommand;
@@ -14,6 +15,8 @@ use crate::app_event::PermissionProfileSelection;
 use crate::app_event::PluginLocation;
 use crate::app_event::PluginRemoteSectionError;
 use crate::app_event::RateLimitRefreshOrigin;
+use crate::app_event::RunningTaskExitAction;
+use crate::app_event::ThreadTitleDestination;
 #[cfg(target_os = "windows")]
 use crate::app_event::WindowsSandboxEnableMode;
 use crate::app_event_sender::AppEventSender;
@@ -49,6 +52,7 @@ use crate::history_cell::HistoryCell;
 use crate::history_cell::UpdateAvailableHistoryCell;
 use crate::hooks_rpc::HookTrustUpdate;
 use crate::key_hint::KeyBindingListExt;
+use crate::keymap::KeyChordMatcher;
 use crate::keymap::RuntimeKeymap;
 use crate::legacy_core::config::Config;
 use crate::legacy_core::config::ConfigBuilder;
@@ -72,6 +76,7 @@ use crate::render::renderable::Renderable;
 use crate::resume_picker::SessionSelection;
 use crate::resume_picker::SessionTarget;
 use crate::session_state::ThreadSessionState;
+use crate::startup_draft::StartupDraftPump;
 #[cfg(test)]
 use crate::test_support::PathBufExt;
 #[cfg(test)]
@@ -128,14 +133,17 @@ use codex_app_server_protocol::SkillsListResponse;
 use codex_app_server_protocol::ThreadItem;
 use codex_app_server_protocol::ThreadListParams;
 use codex_app_server_protocol::ThreadMemoryMode;
+<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
 use codex_app_server_protocol::ThreadSourceKind;
+=======
+use codex_app_server_protocol::ThreadSettingsUpdateParams;
+>>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
 use codex_app_server_protocol::ThreadStartSource;
 use codex_app_server_protocol::Turn;
 use codex_app_server_protocol::TurnError as AppServerTurnError;
 use codex_app_server_protocol::TurnStatus;
 use codex_app_server_protocol::WriteStatus;
 use codex_config::CloudConfigBundleLoader;
-use codex_config::ConfigLayerStackOrdering;
 use codex_config::LoaderOverrides;
 use codex_config::types::ApprovalsReviewer;
 use codex_config::types::MemoriesToml;
@@ -145,16 +153,11 @@ use codex_config::types::WindowsToml;
 use codex_exec_server::EnvironmentManager;
 use codex_features::Feature;
 use codex_features::FeaturesToml;
-use codex_model_provider::create_model_provider;
-use codex_model_provider_info::ModelProviderInfo;
 use codex_models_manager::model_presets::HIDE_GPT_5_1_CODEX_MAX_MIGRATION_PROMPT_CONFIG;
 use codex_models_manager::model_presets::HIDE_GPT5_1_MIGRATION_PROMPT_CONFIG;
 use codex_otel::SessionTelemetry;
 use codex_otel::TelemetryAuthMode;
 use codex_protocol::ThreadId;
-use codex_protocol::config_types::Personality;
-#[cfg(target_os = "windows")]
-use codex_protocol::config_types::WindowsSandboxLevel;
 use codex_protocol::models::ActivePermissionProfile;
 use codex_protocol::models::BUILT_IN_PERMISSION_PROFILE_WORKSPACE;
 use codex_protocol::models::PermissionProfile;
@@ -162,8 +165,6 @@ use codex_protocol::openai_models::ModelAvailabilityNux;
 use codex_protocol::openai_models::ModelPreset;
 use codex_protocol::openai_models::ModelUpgrade;
 use codex_protocol::openai_models::ReasoningEffort as ReasoningEffortConfig;
-#[cfg(target_os = "windows")]
-use codex_protocol::permissions::FileSystemSandboxKind;
 use codex_rollout::StateDbHandle;
 use codex_terminal_detection::user_agent;
 use codex_utils_absolute_path::AbsolutePathBuf;
@@ -176,20 +177,20 @@ use crossterm::event::KeyEventKind;
 use crossterm::event::KeyModifiers;
 use ratatui::backend::Backend;
 use ratatui::layout::Rect;
+use ratatui::layout::Size;
 use ratatui::style::Stylize;
 use ratatui::text::Line;
 use ratatui::widgets::Paragraph;
 use ratatui::widgets::Wrap;
 use std::collections::BTreeMap;
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::collections::VecDeque;
 use std::io::Write;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
-use std::sync::atomic::Ordering;
-use std::thread;
 use std::time::Duration;
 use std::time::Instant;
 use tokio::select;
@@ -199,35 +200,74 @@ use tokio::sync::mpsc::error::TryRecvError;
 use tokio::sync::mpsc::error::TrySendError;
 use tokio::sync::mpsc::unbounded_channel;
 use tokio::task::JoinHandle;
+use tokio_util::sync::CancellationToken;
 use toml::Value as TomlValue;
 use uuid::Uuid;
 mod agent_message_consolidation;
 mod agent_navigation;
+mod agent_picker;
 mod agent_status_feed;
+mod agents_overview;
+mod agents_overview_actions;
+mod agents_overview_details;
+mod agents_overview_threads;
+mod agents_overview_usage;
+mod agents_overview_view;
+pub(crate) use agents_overview::AGENTS_OVERVIEW_VIEW_ID;
 mod app_server_event_targets;
 mod app_server_events;
 pub(crate) mod app_server_requests;
+mod backend_banner_fallback;
 mod background_requests;
 mod config_persistence;
+mod connector_mentions;
 mod event_dispatch;
+mod exit_summary;
+mod experimental_features;
+mod file_change_approvals;
+mod history_pagination;
 mod history_ui;
 mod input;
 mod loaded_threads;
+mod managed_worktree_creation;
+mod misalignment_policy;
+mod model_defaults;
+mod new_session;
+pub(crate) use new_session::has_launch_setting;
 mod pending_interactive_replay;
+mod permission_shortcuts;
 mod pets;
 mod platform_actions;
 mod plugin_mentions;
+mod rate_limit_refresh;
+mod realtime_delivery;
+mod realtime_settings;
+mod reasoning_replay;
+mod recap;
+mod reconnect;
 mod replay_filter;
 mod resize_reflow;
+mod resume_config;
 mod safety_buffering;
+mod server_version_notice;
 mod session_lifecycle;
+mod session_picker;
 mod side;
+mod startup;
 mod startup_prompts;
+mod startup_warnings;
+mod thread_event_buffer;
 mod thread_events;
 mod thread_goal_actions;
 mod thread_routing;
 mod thread_session_state;
 mod thread_settings;
+mod thread_title;
+mod transcript_export;
+mod user_verification;
+mod user_verification_errors;
+mod user_verification_requests;
+mod working_directory;
 
 use self::agent_navigation::AgentNavigationDirection;
 use self::agent_navigation::AgentNavigationState;
@@ -241,6 +281,7 @@ use self::loaded_threads::LoadedSubagentAccumulator;
 use self::loaded_threads::LoadedSubagentThread;
 use self::loaded_threads::MAX_RETAINED_SUBAGENT_LINEAGE;
 use self::pending_interactive_replay::PendingInteractiveReplayState;
+pub(crate) use self::platform_actions::WindowsSandboxHost;
 use self::platform_actions::*;
 use self::side::SideParentStatus;
 use self::side::SideParentStatusChange;
@@ -255,6 +296,10 @@ enum ThreadInteractiveRequest {
     AppLink(AppLinkViewParams),
     Approval(ApprovalRequest),
     McpServerElicitation(McpServerElicitationFormRequest),
+    UserVerification {
+        thread_id: ThreadId,
+        request: crate::bottom_pane::user_verification::UserVerificationRequest,
+    },
 }
 
 /// Extracts `receiver_thread_ids` from collab agent tool-call notifications.
@@ -394,14 +439,6 @@ impl AutoReviewMode {
     }
 }
 
-#[cfg(target_os = "windows")]
-fn managed_filesystem_sandbox_is_restricted(permission_profile: &PermissionProfile) -> bool {
-    matches!(
-        permission_profile.file_system_sandbox_policy().kind,
-        FileSystemSandboxKind::Restricted
-    )
-}
-
 /// Baseline cadence for periodic stream commit animation ticks.
 ///
 /// Smooth-mode streaming drains one line per tick, so this interval controls
@@ -412,7 +449,8 @@ const COMMIT_ANIMATION_TICK: Duration = tui::TARGET_FRAME_INTERVAL;
 pub struct AppExitInfo {
     pub token_usage: TokenUsage,
     pub thread_id: Option<ThreadId>,
-    pub resume_hint: Option<String>,
+    pub resume_hint: Option<ResumableThread>,
+    pub disconnect_info: Option<DisconnectInfo>,
     pub update_action: Option<UpdateAction>,
     pub exit_reason: ExitReason,
 }
@@ -423,11 +461,15 @@ impl AppExitInfo {
             token_usage: TokenUsage::default(),
             thread_id: None,
             resume_hint: None,
+            disconnect_info: None,
             update_action: None,
             exit_reason: ExitReason::Fatal(message.into()),
         }
     }
 }
+
+pub use exit_summary::DisconnectInfo;
+pub use exit_summary::ResumableThread;
 
 #[derive(Debug)]
 pub(crate) enum AppRunControl {
@@ -438,6 +480,10 @@ pub(crate) enum AppRunControl {
 #[derive(Debug, Clone)]
 pub enum ExitReason {
     UserRequested,
+    Archived(ThreadId),
+    TurnInterrupted,
+    /// The current thread was deleted, rather than disconnected.
+    ThreadRemoved,
     Fatal(String),
 }
 
@@ -458,12 +504,6 @@ fn session_summary(
         usage_line,
         resume_hint,
     })
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct ResumableThread {
-    thread_id: ThreadId,
-    thread_name: Option<String>,
 }
 
 fn resumable_thread(
@@ -511,42 +551,59 @@ struct SessionSummary {
 struct InitialHistoryReplayBuffer {
     retained_lines: VecDeque<crate::terminal_hyperlinks::HyperlinkLine>,
     render_from_transcript_tail: bool,
+    was_truncated: bool,
 }
 
 pub(crate) struct App {
+    feature_write_lock: Arc<tokio::sync::Mutex<()>>,
     model_catalog: Arc<ModelCatalog>,
     pub(crate) session_telemetry: SessionTelemetry,
     pub(crate) app_event_tx: AppEventSender,
     pub(crate) chat_widget: ChatWidget,
     workspace_command_runner: Option<WorkspaceCommandRunner>,
-    /// Config is stored here so we can recreate ChatWidgets as needed.
+    /// Legacy bootstrap and server-setting inputs; local preferences live in `local_settings`.
     pub(crate) config: Config,
+    pub(crate) local_settings: crate::local_settings::LocalSettings,
     launch_cwd: PathBuf,
+    /// Resume anchor selected by `/cd`; ordinary resumes retain the immutable launch cwd.
+    runtime_working_directory_override: Option<PathBuf>,
     pub(crate) state_db: Option<StateDbHandle>,
     cli_kv_overrides: Vec<(String, TomlValue)>,
     harness_overrides: ConfigOverrides,
     loader_overrides: LoaderOverrides,
     cloud_config_bundle: CloudConfigBundleLoader,
-    runtime_approval_policy_override: Option<AskForApproval>,
+    runtime_approval_policy_override: Option<RuntimeApprovalPolicyOverride>,
     runtime_permission_profile_override: Option<RuntimePermissionProfileOverride>,
+    /// In-flight remote selections; confirmed settings live in each task's server snapshot.
+    pending_server_profiles: HashMap<ThreadId, PermissionProfileSelection>,
 
     pub(crate) file_search: FileSearchManager,
 
     pub(crate) transcript_cells: Vec<Arc<dyn HistoryCell>>,
+    last_rendered_history_tail: Option<history_ui::RenderedHistoryTail>,
+    last_thread_usage_status_cell: Option<history_ui::ThreadUsageStatusHistory>,
+    pub(crate) pending_thread_usage_history_refresh: bool,
 
-    // Pager overlay state (Transcript or Static like Diff)
+    // Alternate-screen overlays: transcript, diff, and analytics.
     pub(crate) overlay: Option<Overlay>,
+<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
     pub(crate) transcript_overlay_state: TranscriptOverlayState,
+=======
+    pub(crate) retained_analytics: Option<Box<crate::analytics::AnalyticsView>>,
+>>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
     pub(crate) deferred_history_lines: Vec<crate::terminal_hyperlinks::HyperlinkLine>,
     has_emitted_history_lines: bool,
     transcript_reflow: TranscriptReflowState,
     initial_history_replay_buffer: Option<InitialHistoryReplayBuffer>,
+    pending_thread_switch_resets: usize,
+    pub(crate) scrollback_has_older_history: bool,
 
     pub(crate) enhanced_keys_supported: bool,
     pub(crate) keymap: RuntimeKeymap,
+    pub(crate) key_chord_matcher: KeyChordMatcher,
 
-    /// Controls the animation thread that sends CommitTick events.
-    pub(crate) commit_anim_running: Arc<AtomicBool>,
+    /// The foreground loop owns stream pacing; stopped animations have no timer.
+    pub(crate) commit_animation: Option<tokio::time::Interval>,
     // Shared across ChatWidget instances so invalid status-line config warnings only emit once.
     status_line_invalid_items_warned: Arc<AtomicBool>,
     // Shared across ChatWidget instances so invalid terminal-title config warnings only emit once.
@@ -558,13 +615,13 @@ pub(crate) struct App {
     pub(crate) backtrack: crate::app_backtrack::BacktrackState,
     /// When set, the next draw rebuilds terminal scrollback from the retained transcript cells.
     ///
-    /// This is used after a confirmed thread rollback to ensure scrollback reflects the trimmed
-    /// transcript cells.
+    /// This keeps scrollback consistent with the retained transcript after backtracking.
     pub(crate) backtrack_render_pending: bool,
     pub(crate) feedback: codex_feedback::CodexFeedback,
     feedback_audience: FeedbackAudience,
     environment_manager: Arc<EnvironmentManager>,
     app_server_target: AppServerTarget,
+    reconnect: reconnect::ReconnectState,
     /// Set when the user confirms an update; propagated on exit.
     pub(crate) pending_update_action: Option<UpdateAction>,
 
@@ -581,9 +638,18 @@ pub(crate) struct App {
     windows_sandbox: WindowsSandboxState,
 
     thread_event_channels: HashMap<ThreadId, ThreadEventChannel>,
+    pending_realtime_speech_replay: HashMap<ThreadId, Vec<(String, ThreadItem)>>,
+    pending_realtime_transcript_replay:
+        HashMap<ThreadId, VecDeque<crate::chatwidget::RealtimeTranscriptRecord>>,
+    realtime_replay_order: VecDeque<ThreadId>,
+    temporary_structured_requests: HashMap<ThreadId, mpsc::UnboundedSender<ServerNotification>>,
+    /// Track title generation across thread switches and deduplicate automatic requests.
+    pending_thread_titles: HashMap<(ThreadId, ThreadTitleDestination), CancellationToken>,
     thread_event_listener_tasks: HashMap<ThreadId, JoinHandle<()>>,
     agent_navigation: AgentNavigationState,
+    agents_overview: agents_overview::AgentsOverviewState,
     side_threads: HashMap<ThreadId, SideThreadState>,
+    abandoned_side_threads: HashSet<ThreadId>,
     active_thread_id: Option<ThreadId>,
     active_thread_rx: Option<mpsc::Receiver<ThreadBufferedEvent>>,
     primary_thread_id: Option<ThreadId>,
@@ -592,9 +658,31 @@ pub(crate) struct App {
     primary_session_configured: Option<ThreadSessionState>,
     pending_primary_events: VecDeque<ThreadBufferedEvent>,
     pending_app_server_requests: PendingAppServerRequests,
+    dynamic_tool_status_updates:
+        tokio::sync::broadcast::Sender<codex_app_server_protocol::ThreadStatusChangedNotification>,
+    dynamic_tool_tasks: HashMap<codex_app_server_protocol::RequestId, (String, JoinHandle<()>)>,
     pending_startup_thread_start: bool,
+    pending_server_version_notice: Option<crate::status::remote_connection::ServerVersionNotice>,
+    /// Opens the session picker after event dispatch returns, with a fresh stack.
+    pending_open_resume_picker: bool,
+    /// Runs a requested /cd after event dispatch returns, with a fresh stack.
+    pending_working_directory_change: Option<working_directory::PendingWorkingDirectoryChange>,
+    /// Starts worktree setup after the event handler returns, with a fresh stack.
+    pending_start_managed_worktree: Option<(crate::app_event::ManagedWorktreeMode, Option<String>)>,
+    pending_managed_worktree_creation: bool,
+    /// Defers checkout completion and config loading until the event handler returns.
+    pending_managed_worktree_created: Option<Box<crate::app_event::ManagedWorktreeCreated>>,
+    /// Defers the saved-history fork until the event handler has returned.
+    pending_managed_worktree_transition: Option<Box<crate::app_event::ManagedWorktreeTransition>>,
+    /// Holds notifications until the new widget is attached on a fresh loop iteration.
+    pending_managed_worktree_attach: Option<Box<working_directory::ManagedWorktreeAttach>>,
+    /// Keeps protected screens quarantined until initialized chat receives genuine user input.
+    startup_protected_input_boundary: bool,
+    /// Keeps that boundary armed while a startup approval waits for the typing-idle timer.
+    startup_pending_protected_request: bool,
     /// Invalidates in-flight full rate-limit reads when a newer rolling hard stop arrives.
     rate_limit_hard_stop_generation: u64,
+    rate_limit_refresh_state: rate_limit_refresh::RateLimitRefreshState,
     // Serialize plugin enablement writes per plugin so stale completions cannot
     // overwrite a newer toggle, even if the plugin is toggled from different
     // cwd contexts.
@@ -602,6 +690,7 @@ pub(crate) struct App {
     // Serialize hook enablement writes per hook so stale completions cannot
     // persist an older toggle after a newer one.
     pending_hook_enabled_writes: HashMap<String, Option<bool>>,
+    recap: recap::RecapState,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -609,6 +698,35 @@ struct RuntimePermissionProfileOverride {
     permission_profile: PermissionProfile,
     active_permission_profile: Option<ActivePermissionProfile>,
     network: Option<crate::legacy_core::config::NetworkProxySpec>,
+    approvals_reviewer: ApprovalsReviewer,
+    turn_override: RuntimePermissionProfileTurnOverride,
+}
+
+/// Separates user choices from settings inherited when attaching to another task.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum RuntimeApprovalPolicyOverride {
+    Explicit(AskForApproval),
+    Restored(AskForApproval),
+}
+
+impl RuntimeApprovalPolicyOverride {
+    fn policy(self) -> AskForApproval {
+        match self {
+            Self::Explicit(policy) | Self::Restored(policy) => policy,
+        }
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum RuntimePolicyOverrideScope {
+    All,
+    ExplicitOnly,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RuntimePermissionProfileTurnOverride {
+    Preserve,
+    LegacySandbox,
 }
 
 impl RuntimePermissionProfileOverride {
@@ -617,7 +735,31 @@ impl RuntimePermissionProfileOverride {
             permission_profile: config.permissions.permission_profile().clone(),
             active_permission_profile: config.permissions.active_permission_profile(),
             network: config.permissions.network.clone(),
+            approvals_reviewer: config.approvals_reviewer,
+            turn_override: RuntimePermissionProfileTurnOverride::LegacySandbox,
         }
+    }
+
+    fn from_restored_config(config: &Config) -> Self {
+        Self {
+            turn_override: RuntimePermissionProfileTurnOverride::Preserve,
+            ..Self::from_config(config)
+        }
+    }
+
+    fn matches_config(&self, config: &Config) -> bool {
+        self.permission_profile == *config.permissions.permission_profile()
+            && self.active_permission_profile == config.permissions.active_permission_profile()
+            && self.network == config.permissions.network
+            && self.approvals_reviewer == config.approvals_reviewer
+    }
+
+    fn turn_permission_profile(&self) -> Option<&PermissionProfile> {
+        matches!(
+            self.turn_override,
+            RuntimePermissionProfileTurnOverride::LegacySandbox
+        )
+        .then_some(&self.permission_profile)
     }
 }
 
@@ -631,38 +773,6 @@ fn active_turn_not_steerable_turn_error(error: &TypedRequestError) -> Option<App
         Some(AppServerCodexErrorInfo::ActiveTurnNotSteerable { .. })
     )
     .then_some(turn_error)
-}
-
-async fn resolve_runtime_model_provider_base_url(provider: &ModelProviderInfo) -> Option<String> {
-    let provider = create_model_provider(provider.clone(), /*auth_manager*/ None);
-    match provider.runtime_base_url().await {
-        Ok(base_url) => base_url,
-        Err(err) => {
-            tracing::warn!(%err, "failed to resolve runtime model provider base URL for status");
-            None
-        }
-    }
-}
-
-fn spawn_startup_thread_start(
-    app_server: &AppServerSession,
-    config: Config,
-    app_event_tx: AppEventSender,
-) {
-    let request_handle = app_server.request_handle();
-    let thread_params_mode = app_server.thread_params_mode();
-    let remote_cwd_override = app_server.remote_cwd_override().map(Path::to_path_buf);
-    tokio::spawn(async move {
-        let result = crate::app_server_session::start_thread_with_request_handle(
-            request_handle,
-            config,
-            thread_params_mode,
-            remote_cwd_override,
-        )
-        .await
-        .map_err(|err| format!("{err:#}"));
-        app_event_tx.send(AppEvent::StartupThreadStarted { result });
-    });
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -696,31 +806,6 @@ fn active_turn_steer_race(error: &TypedRequestError) -> Option<ActiveTurnSteerRa
     Some(ActiveTurnSteerRace::ExpectedTurnMismatch { actual_turn_id })
 }
 
-fn session_start_error(
-    action: &str,
-    target_session: &SessionTarget,
-    err: color_eyre::eyre::Report,
-) -> color_eyre::eyre::Report {
-    if let Some(message) = archived_session_guidance(&err) {
-        return color_eyre::eyre::eyre!("{message}");
-    }
-
-    let target_label = target_session.display_label();
-    color_eyre::eyre::eyre!("Failed to {action} session from {target_label}: {err}")
-}
-
-fn archived_session_guidance(err: &color_eyre::eyre::Report) -> Option<String> {
-    let err = err.to_string();
-    let message = &err[err.find("session ")?..];
-    if !message.contains(" is archived. Run `codex unarchive ") {
-        return None;
-    }
-    let message = message
-        .split_once(" (code ")
-        .map_or(message, |(message, _)| message);
-    Some(message.to_string())
-}
-
 fn active_turn_interrupt_race(error: &TypedRequestError) -> Option<String> {
     let TypedRequestError::Server { method, source } = error else {
         return None;
@@ -748,6 +833,7 @@ impl App {
         initial_user_message: Option<crate::chatwidget::UserMessage>,
     ) -> crate::chatwidget::ChatWidgetInit {
         crate::chatwidget::ChatWidgetInit {
+            local_settings: self.local_settings.clone(),
             config: cfg,
             frame_requester: tui.frame_requester(),
             app_event_tx: self.app_event_tx.clone(),
@@ -755,15 +841,12 @@ impl App {
             initial_user_message,
             enhanced_keys_supported: self.enhanced_keys_supported,
             has_chatgpt_account: self.chat_widget.has_chatgpt_account(),
+            requires_openai_auth: self.chat_widget.requires_openai_auth,
             has_codex_backend_auth: self.chat_widget.has_codex_backend_auth(),
             model_catalog: self.model_catalog.clone(),
             feedback: self.feedback.clone(),
             is_first_run: false,
             status_account_display: self.chat_widget.status_account_display().cloned(),
-            runtime_model_provider_base_url: self
-                .chat_widget
-                .runtime_model_provider_base_url()
-                .map(str::to_string),
             initial_plan_type: self.chat_widget.current_plan_type(),
             model: Some(self.chat_widget.current_model().to_string()),
             startup_tooltip_override: None,
@@ -773,6 +856,7 @@ impl App {
         }
     }
 
+<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
     #[allow(clippy::too_many_arguments)]
     pub async fn run(
         tui: &mut tui::Tui,
@@ -1293,34 +1377,111 @@ See the Codex keymap documentation for supported actions and examples."
         })
     }
 
+=======
+>>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
     pub(crate) async fn handle_tui_event(
         &mut self,
         tui: &mut tui::Tui,
         app_server: &mut AppServerSession,
         event: TuiEvent,
     ) -> Result<AppRunControl> {
-        if matches!(event, TuiEvent::Draw | TuiEvent::Resize) {
-            self.handle_draw_pre_render(tui)?;
+        if self.reconnect.offline
+            && let TuiEvent::Key(key) = &event
+            && matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat)
+            && key.modifiers.contains(KeyModifiers::CONTROL)
+            && let KeyCode::Char(character) = key.code
+            && (character.eq_ignore_ascii_case(&'c')
+                || (character.eq_ignore_ascii_case(&'d')
+                    && self.chat_widget.composer_is_empty()
+                    && self.chat_widget.no_modal_or_popup_active()))
+        {
+            return Ok(AppRunControl::Exit(ExitReason::UserRequested));
+        }
+        let screen_size = tui.screen_size_for_event(&event)?;
+        if !matches!(
+            &event,
+            TuiEvent::Key(_) | TuiEvent::Paste(_) | TuiEvent::FocusLost
+        ) {
+            self.expire_pending_key_chord();
+            self.handle_draw_pre_render(tui, screen_size)?;
+        }
+
+        let event = if let TuiEvent::Key(mut key_event) = event {
+            let escape = KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE);
+            if self.should_recover_vim_insert_escape(key_event) {
+                // Restore both strokes before chords or global shortcuts can consume them.
+                if let Some(escape) = self.route_key_chord_event(tui, escape) {
+                    self.handle_key_event(tui, app_server, escape).await;
+                }
+                key_event.modifiers.remove(KeyModifiers::ALT);
+            }
+
+            let Some(key_event) = self.route_key_chord_event(tui, key_event) else {
+                return Ok(AppRunControl::Continue);
+            };
+            TuiEvent::Key(key_event)
+        } else {
+            event
+        };
+
+        if self.reconnect.offline
+            && let TuiEvent::Key(key) = &event
+        {
+            if self.reconnect.presentation == reconnect::ReconnectPresentation::Overview {
+                self.chat_widget.handle_disconnected_view_key(*key);
+            } else {
+                self.chat_widget.handle_disconnected_key(*key);
+            }
+            return Ok(AppRunControl::Continue);
+        }
+
+        match &event {
+            TuiEvent::FocusLost => {
+                let now = Instant::now();
+                let thread_id = self.current_displayed_thread_id();
+
+                self.recap.note_focus_lost(now);
+
+                if let Some(thread_id) = thread_id {
+                    self.schedule_recap_check(thread_id, now);
+                }
+            }
+            TuiEvent::FocusGained => {
+                self.recap.note_focus_gained();
+            }
+            _ => {}
         }
 
         if self.overlay.is_some() {
-            let _ = self.handle_backtrack_overlay_event(tui, event).await?;
+            let _ = self
+                .handle_backtrack_overlay_event(tui, app_server, event)
+                .await?;
         } else {
             match event {
                 TuiEvent::Key(key_event) => {
                     self.handle_key_event(tui, app_server, key_event).await;
                 }
                 TuiEvent::Paste(pasted) => {
-                    // Many terminals convert newlines to \r when pasting (e.g., iTerm2),
-                    // but tui-textarea expects \n. Normalize CR to LF.
+                    // Pasted text may contain CRLF pairs or bare CRs (e.g., from iTerm2),
+                    // but tui-textarea expects LF. Normalize CRLF pairs before bare CRs so
+                    // each pasted line break becomes one LF and existing LFs stay unchanged.
                     // [tui-textarea]: https://github.com/rhysd/tui-textarea/blob/4d18622eeac13b309e0ff6a55a46ac6706da68cf/src/textarea.rs#L782-L783
                     // [iTerm2]: https://github.com/gnachman/iTerm2/blob/5d0c0d9f68523cbd0494dad5422998964a2ecd8d/sources/iTermPasteHelper.m#L206-L216
-                    let pasted = pasted.replace("\r", "\n");
+                    let pasted = pasted.replace("\r\n", "\n").replace('\r', "\n");
                     self.chat_widget.handle_paste(pasted);
+                    if self.reconnect.offline
+                        && self.reconnect.presentation
+                            == reconnect::ReconnectPresentation::Conversation
+                    {
+                        self.chat_widget.handle_disconnected_key(KeyEvent::new(
+                            KeyCode::Null,
+                            KeyModifiers::NONE,
+                        ));
+                    }
                 }
-                TuiEvent::Draw | TuiEvent::Resize => {
+                TuiEvent::Draw | TuiEvent::Resume | TuiEvent::Resize(_) | TuiEvent::FocusGained => {
                     if self.backtrack_render_pending {
-                        self.rebuild_transcript_after_backtrack(tui)?;
+                        self.rebuild_transcript_after_backtrack(tui, screen_size.into())?;
                         self.backtrack_render_pending = false;
                     }
                     self.chat_widget.maybe_post_pending_notification(tui);
@@ -1328,18 +1489,27 @@ See the Codex keymap documentation for supported actions and examples."
                         .chat_widget
                         .handle_paste_burst_tick(tui.frame_requester())
                     {
+                        tui.defer_screen_size(screen_size);
                         return Ok(AppRunControl::Continue);
                     }
                     // Allow widgets to process any pending timers before rendering.
+                    let had_active_view = self.chat_widget.has_active_view();
                     self.chat_widget.pre_draw_tick();
-                    let rendered_area = self.render_chat_widget_frame(tui)?;
+                    self.refresh_agents_overview_usage(app_server, tui.frame_requester());
+                    let rendered_area = self.render_chat_widget_frame(tui, screen_size)?;
+                    if !had_active_view
+                        && self.chat_widget.has_active_view()
+                        && self.startup_protected_input_boundary
+                    {
+                        tui.discard_pending_input_before_interactive_screen()?;
+                        self.startup_pending_protected_request = false;
+                    }
                     if self.chat_widget.ambient_pet_image_enabled() {
-                        let terminal_size = tui.terminal.size()?;
                         let ambient_pet_area = Rect::new(
                             /*x*/ 0,
                             /*y*/ 0,
-                            terminal_size.width,
-                            terminal_size.height,
+                            screen_size.width,
+                            screen_size.height,
                         );
                         if let Err(err) = tui.draw_ambient_pet_image(
                             self.chat_widget
@@ -1363,6 +1533,7 @@ See the Codex keymap documentation for supported actions and examples."
                         self.app_event_tx.send(AppEvent::LaunchExternalEditor);
                     }
                 }
+                TuiEvent::FocusLost => {}
             }
         }
         Ok(AppRunControl::Continue)
@@ -1371,17 +1542,41 @@ See the Codex keymap documentation for supported actions and examples."
     pub(super) fn show_shutdown_feedback(&mut self, tui: &mut tui::Tui) -> Result<()> {
         self.disable_ambient_pet_before_shutdown(tui)?;
         self.chat_widget.show_shutdown_in_progress();
-        self.handle_draw_pre_render(tui)?;
+        let screen_size = tui.terminal.last_known_screen_size;
+        self.handle_draw_pre_render(tui, screen_size)?;
         self.chat_widget.pre_draw_tick();
-        self.render_chat_widget_frame(tui)?;
+        self.render_chat_widget_frame(tui, screen_size)?;
         Ok(())
     }
 
-    fn render_chat_widget_frame(&mut self, tui: &mut tui::Tui) -> Result<Rect> {
-        let width = tui.terminal.size()?.width;
-        self.with_chat_widget_frame(width, |desired_height, chat_widget| {
+    fn render_chat_widget_frame(&mut self, tui: &mut tui::Tui, screen_size: Size) -> Result<Rect> {
+        self.sync_thread_title_progress();
+        let dashboard_visible = self
+            .chat_widget
+            .selected_index_for_present_view(AGENTS_OVERVIEW_VIEW_ID)
+            .is_some();
+        let dashboard_was_visible = std::mem::replace(
+            &mut self.agents_overview.rendered_full_screen,
+            dashboard_visible,
+        );
+        // Full-height inline overlays scroll history off screen without a terminal resize.
+        // Rebuild it once when returning to a content-height chat viewport.
+        let restoring_inline_viewport = !tui.is_alt_screen_active()
+            && tui.terminal.viewport_area.height == screen_size.height
+            && self.with_chat_widget_frame(screen_size.width, |height, _| height)
+                < screen_size.height;
+        if !dashboard_visible && (dashboard_was_visible || restoring_inline_viewport) {
+            self.schedule_immediate_resize_reflow(tui);
+            self.maybe_run_resize_reflow(tui, screen_size)?;
+        }
+        self.with_chat_widget_frame(screen_size.width, |desired_height, chat_widget| {
+            let desired_height = if dashboard_visible {
+                screen_size.height
+            } else {
+                desired_height
+            };
             let mut rendered_area = Rect::default();
-            tui.draw_with_resize_reflow(desired_height, |frame| {
+            tui.draw_with_resize_reflow(desired_height, screen_size, |frame| {
                 let area = frame.area();
                 rendered_area = area;
                 chat_widget.render(area, frame.buffer);

@@ -48,8 +48,11 @@ pub(crate) struct ExecCommandArgs {
     #[serde(default = "default_exec_yield_time_ms")]
     yield_time_ms: u64,
     #[serde(default)]
+    timeout_ms: Option<u64>,
+    #[serde(default)]
     max_output_tokens: Option<usize>,
     #[serde(default)]
+<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
     wait_until_terminal: bool,
     #[serde(default)]
     max_wait_ms: Option<u64>,
@@ -59,6 +62,9 @@ pub(crate) struct ExecCommandArgs {
     notify_on_completion: bool,
     #[serde(default)]
     sandbox_permissions: SandboxPermissions,
+=======
+    sandbox_permissions: Option<SandboxPermissions>,
+>>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
     #[serde(default)]
     additional_permissions: Option<AdditionalPermissionProfile>,
     #[serde(default)]

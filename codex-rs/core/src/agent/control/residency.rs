@@ -478,7 +478,27 @@ impl V2Residency {
             {
                 return true;
             }
+<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
             self.touch(candidate_thread_id);
+=======
+            candidate_thread.ensure_rollout_materialized().await;
+            if let Err(err) = candidate_thread.shutdown_and_wait().await {
+                warn!(
+                    "failed to shut down v2 resident thread before unloading {candidate_thread_id}: {err}"
+                );
+                self.touch(candidate_thread_id);
+                continue;
+            }
+            let environments = candidate_thread.environment_selections().await;
+            candidate_thread
+                .session
+                .services
+                .agent_control
+                .state
+                .save_evicted_environments(candidate_thread_id, environments);
+            let _ = manager.remove_thread(&candidate_thread_id).await;
+            return true;
+>>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
         }
         false
     }

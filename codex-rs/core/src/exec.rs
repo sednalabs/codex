@@ -32,7 +32,6 @@ use codex_protocol::error::SandboxErr;
 use codex_protocol::exec_output::ExecToolCallOutput;
 use codex_protocol::exec_output::StreamOutput;
 use codex_protocol::models::PermissionProfile;
-use codex_protocol::permissions::FileSystemSandboxPolicy;
 use codex_protocol::permissions::NetworkSandboxPolicy;
 use codex_protocol::protocol::Event;
 use codex_protocol::protocol::EventMsg;
@@ -47,6 +46,10 @@ use codex_sandboxing::WindowsSandboxFilesystemOverrides;
 pub(crate) use codex_sandboxing::is_likely_sandbox_denied;
 #[cfg(test)]
 use codex_sandboxing::permission_profile_supports_windows_restricted_token_sandbox;
+<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
+=======
+use codex_sandboxing::record_filesystem_sandbox_violation;
+>>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
 #[cfg(test)]
 use codex_sandboxing::resolve_windows_elevated_filesystem_overrides;
 #[cfg(test)]
@@ -103,6 +106,8 @@ pub struct ExecParams {
     pub network: Option<NetworkProxy>,
     pub network_environment_id: Option<String>,
     pub sandbox_permissions: SandboxPermissions,
+    // TODO(anp): Reconcile these launch settings with TurnEnvironment::sandbox_context
+    // so turn-scoped execution uses the selected environment's backend.
     pub windows_sandbox_level: codex_protocol::config_types::WindowsSandboxLevel,
     pub windows_sandbox_private_desktop: bool,
     pub justification: Option<String>,
@@ -117,17 +122,19 @@ pub enum ExecCapturePolicy {
     /// Trusted internal helpers can buffer the full child output in memory
     /// without the shell-oriented output cap or exec-expiration behavior.
     FullBuffer,
+    /// Internal helpers that need complete output but must honor timeout and cancellation.
+    FullBufferWithExpiration,
+    /// Full-buffer helpers that honor expiration and suppress unredacted sandbox diagnostics.
+    SensitiveFullBuffer,
 }
 
 fn select_process_exec_tool_sandbox_type(
-    file_system_sandbox_policy: &FileSystemSandboxPolicy,
-    network_sandbox_policy: NetworkSandboxPolicy,
+    permission_profile: &PermissionProfile,
     windows_sandbox_level: codex_protocol::config_types::WindowsSandboxLevel,
     enforce_managed_network: bool,
 ) -> SandboxType {
     SandboxManager::new().select_initial(
-        file_system_sandbox_policy,
-        network_sandbox_policy,
+        permission_profile,
         SandboxablePreference::Auto,
         windows_sandbox_level,
         enforce_managed_network,
@@ -163,14 +170,6 @@ pub enum ExecExpirationOutcome {
     TimedOut,
     /// The cancellation token was cancelled.
     Cancelled,
-}
-
-impl From<Option<u64>> for ExecExpiration {
-    fn from(timeout_ms: Option<u64>) -> Self {
-        timeout_ms.map_or(ExecExpiration::DefaultTimeout, |timeout_ms| {
-            ExecExpiration::Timeout(Duration::from_millis(timeout_ms))
-        })
-    }
 }
 
 impl From<u64> for ExecExpiration {
@@ -209,6 +208,7 @@ impl ExecExpiration {
     }
 
     /// If ExecExpiration is a timeout, returns the timeout in milliseconds.
+    #[cfg(target_os = "windows")]
     pub(crate) fn timeout_ms(&self) -> Option<u64> {
         match self {
             ExecExpiration::Timeout(duration) => Some(duration.as_millis() as u64),
@@ -259,12 +259,16 @@ pub(crate) fn cancel_when_either(
     first: CancellationToken,
     second: CancellationToken,
 ) -> CancellationToken {
-    let combined = CancellationToken::new();
+    let combined = first.child_token();
+    if combined.is_cancelled() || second.is_cancelled() {
+        combined.cancel();
+        return combined;
+    }
     let cancel = combined.clone();
     tokio::spawn(async move {
         tokio::select! {
-            _ = first.cancelled() => {}
             _ = second.cancelled() => {}
+            _ = cancel.cancelled() => {}
         }
         cancel.cancel();
     });
@@ -275,7 +279,7 @@ impl ExecCapturePolicy {
     fn retained_bytes_cap(self) -> Option<usize> {
         match self {
             Self::ShellTool => Some(EXEC_OUTPUT_MAX_BYTES),
-            Self::FullBuffer => None,
+            Self::FullBuffer | Self::FullBufferWithExpiration | Self::SensitiveFullBuffer => None,
         }
     }
 
@@ -285,7 +289,7 @@ impl ExecCapturePolicy {
 
     fn uses_expiration(self) -> bool {
         match self {
-            Self::ShellTool => true,
+            Self::ShellTool | Self::FullBufferWithExpiration | Self::SensitiveFullBuffer => true,
             Self::FullBuffer => false,
         }
     }
@@ -305,6 +309,7 @@ pub async fn process_exec_tool_call(
     sandbox_cwd: &AbsolutePathBuf,
     windows_sandbox_workspace_roots: &[AbsolutePathBuf],
     codex_linux_sandbox_exe: &Option<PathBuf>,
+    codex_self_exe: &Option<PathBuf>,
     use_legacy_landlock: bool,
     stdout_stream: Option<StdoutStream>,
 ) -> Result<ExecToolCallOutput> {
@@ -314,6 +319,7 @@ pub async fn process_exec_tool_call(
         sandbox_cwd,
         windows_sandbox_workspace_roots,
         codex_linux_sandbox_exe,
+        codex_self_exe,
         use_legacy_landlock,
     )?;
 
@@ -329,6 +335,7 @@ pub fn build_exec_request(
     sandbox_cwd: &AbsolutePathBuf,
     windows_sandbox_workspace_roots: &[AbsolutePathBuf],
     codex_linux_sandbox_exe: &Option<PathBuf>,
+    codex_self_exe: &Option<PathBuf>,
     use_legacy_landlock: bool,
 ) -> Result<ExecRequest> {
     let ExecParams {
@@ -350,11 +357,8 @@ pub fn build_exec_request(
     } = params;
 
     let enforce_managed_network = network.is_some();
-    let (file_system_sandbox_policy, network_sandbox_policy) =
-        permission_profile.to_runtime_permissions();
     let sandbox_type = select_process_exec_tool_sandbox_type(
-        &file_system_sandbox_policy,
-        network_sandbox_policy,
+        permission_profile,
         windows_sandbox_level,
         enforce_managed_network,
     );
@@ -389,7 +393,7 @@ pub fn build_exec_request(
         expiration,
         capture_policy,
     };
-    let mut exec_req = manager
+    let request = manager
         .transform(SandboxTransformRequest {
             command,
             permissions: permission_profile,
@@ -398,26 +402,27 @@ pub fn build_exec_request(
             environment_id: network_environment_id.as_deref(),
             network: network.as_ref(),
             sandbox_policy_cwd: &sandbox_policy_cwd_uri,
-            codex_linux_sandbox_exe: codex_linux_sandbox_exe.as_deref(),
+            sandbox_exe: if cfg!(windows) {
+                codex_self_exe.as_deref()
+            } else {
+                codex_linux_sandbox_exe.as_deref()
+            },
             use_legacy_landlock,
             windows_sandbox_level,
             windows_sandbox_private_desktop,
         })
-        .map(|request| {
-            let windows_sandbox_workspace_roots = if windows_sandbox_workspace_roots.is_empty() {
-                vec![sandbox_cwd.clone()]
-            } else {
-                windows_sandbox_workspace_roots.to_vec()
-            };
-            ExecRequest::from_sandbox_exec_request(
-                request,
-                options,
-                windows_sandbox_workspace_roots,
-            )
-        })
         .map_err(CodexErr::from)?;
+<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
     exec_req.prepare_windows_sandbox()?;
     Ok(exec_req)
+=======
+    let windows_sandbox_workspace_roots = if windows_sandbox_workspace_roots.is_empty() {
+        vec![sandbox_cwd.clone()]
+    } else {
+        windows_sandbox_workspace_roots.to_vec()
+    };
+    ExecRequest::from_sandbox_exec_request(request, options, windows_sandbox_workspace_roots)
+>>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
 }
 
 pub(crate) async fn execute_exec_request(
@@ -430,6 +435,7 @@ pub(crate) async fn execute_exec_request(
         cwd,
         env,
         exec_server_env_config: _,
+        exec_server_shell_snapshot: _,
         network,
         expiration,
         capture_policy,
@@ -439,8 +445,6 @@ pub(crate) async fn execute_exec_request(
         windows_sandbox_level,
         windows_sandbox_private_desktop,
         permission_profile,
-        file_system_sandbox_policy: _,
-        network_sandbox_policy,
         windows_sandbox_filesystem_overrides,
         network_environment_id,
         arg0,
@@ -449,6 +453,7 @@ pub(crate) async fn execute_exec_request(
         exec_server_managed_network: _,
         exec_server_network_proxy: _,
     } = exec_request;
+    let network_sandbox_policy = permission_profile.network_sandbox_policy();
 
     // TODO(anp): Keep PathUri through the local process launch boundary.
     let cwd = cwd
@@ -488,7 +493,7 @@ pub(crate) async fn execute_exec_request(
     )
     .await;
     let duration = start.elapsed();
-    finalize_exec_result(raw_output_result, sandbox, duration)
+    finalize_exec_result(raw_output_result, sandbox, duration, capture_policy)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -663,7 +668,7 @@ async fn exec_windows_sandbox(
     let command_path = command.first().cloned();
     let sandbox_level = windows_sandbox_level;
     let proxy_enforced = network.is_some();
-    let use_elevated = windows_sandbox_uses_elevated_backend(sandbox_level, proxy_enforced);
+    let use_elevated = windows_sandbox_uses_elevated_backend(sandbox_level);
     let additional_deny_write_paths = windows_sandbox_filesystem_overrides
         .map(|overrides| overrides.additional_deny_write_paths.clone())
         .unwrap_or_default();
@@ -773,6 +778,7 @@ fn finalize_exec_result(
     raw_output_result: std::result::Result<RawExecToolCallOutput, CodexErr>,
     sandbox_type: SandboxType,
     duration: Duration,
+    capture_policy: ExecCapturePolicy,
 ) -> Result<ExecToolCallOutput> {
     match raw_output_result {
         Ok(raw_output) => {
@@ -814,6 +820,9 @@ fn finalize_exec_result(
             }
 
             if is_likely_sandbox_denied(sandbox_type, &exec_output) {
+                if capture_policy != ExecCapturePolicy::SensitiveFullBuffer {
+                    record_filesystem_sandbox_violation(sandbox_type, &exec_output);
+                }
                 return Err(CodexErr::Sandbox(SandboxErr::Denied {
                     output: Box::new(exec_output),
                     network_policy_decision: None,
@@ -1008,12 +1017,15 @@ async fn consume_output(
         }
     };
     tokio::pin!(expiration_wait);
-    let (exit_status, timed_out) = tokio::select! {
+    let process_group_id = child.id();
+    let mut expiration_resolved = false;
+    let (mut exit_status, mut timed_out) = tokio::select! {
         status_result = child.wait() => {
             let exit_status = status_result?;
             (exit_status, false)
         }
         outcome = &mut expiration_wait => {
+            expiration_resolved = true;
             match outcome {
                 Some(ExecExpirationOutcome::TimedOut) => {
                     kill_child_process_group(&mut child)?;
@@ -1091,8 +1103,79 @@ async fn consume_output(
     let mut stdout_handle = stdout_handle;
     let mut stderr_handle = stderr_handle;
 
-    let stdout = await_output(&mut stdout_handle, capture_policy.io_drain_timeout()).await?;
-    let stderr = await_output(&mut stderr_handle, capture_policy.io_drain_timeout()).await?;
+    let (stdout, stderr) = if matches!(
+        capture_policy,
+        ExecCapturePolicy::FullBufferWithExpiration | ExecCapturePolicy::SensitiveFullBuffer
+    ) {
+        let mut stdout_done = false;
+        let mut stderr_done = false;
+        let drain = async {
+            let stdout = (&mut stdout_handle).await;
+            stdout_done = true;
+            let stdout = stdout.map_err(io::Error::other)??;
+            let stderr = (&mut stderr_handle).await;
+            stderr_done = true;
+            let stderr = stderr.map_err(io::Error::other)??;
+            Ok::<_, io::Error>((stdout, stderr))
+        };
+        // The leader can exit while descendants still hold its pipes. Keep the original
+        // expiration active until draining finishes, without polling a completed future again.
+        let drained = tokio::select! {
+            biased;
+            outcome = &mut expiration_wait, if !expiration_resolved => {
+                match outcome {
+                    Some(ExecExpirationOutcome::TimedOut) => {
+                        exit_status = synthetic_exit_status(EXIT_CODE_SIGNAL_BASE + TIMEOUT_CODE);
+                        timed_out = true;
+                    }
+                    Some(ExecExpirationOutcome::Cancelled) => {
+                        exit_status = synthetic_exit_status_for_code(/*code*/ 1);
+                    }
+                    None => unreachable!("full-buffer capture always uses expiration"),
+                }
+                None
+            }
+            result = tokio::time::timeout(capture_policy.io_drain_timeout(), drain) => {
+                Some(result.unwrap_or_else(|_| Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "capture output pipes did not close before the drain deadline",
+                ))))
+            }
+        };
+        match drained {
+            Some(Ok(output)) => output,
+            failure => {
+                let cleanup = process_group_id
+                    .map_or(Ok(()), codex_utils_pty::process_group::kill_process_group);
+                stdout_handle.abort();
+                stderr_handle.abort();
+                if !stdout_done {
+                    let _ = stdout_handle.await;
+                }
+                if !stderr_done {
+                    let _ = stderr_handle.await;
+                }
+                cleanup?;
+                if let Some(Err(err)) = failure {
+                    return Err(err.into());
+                }
+                (
+                    StreamOutput {
+                        text: Vec::new(),
+                        truncated_after_lines: None,
+                    },
+                    StreamOutput {
+                        text: Vec::new(),
+                        truncated_after_lines: None,
+                    },
+                )
+            }
+        }
+    } else {
+        let stdout = await_output(&mut stdout_handle, capture_policy.io_drain_timeout()).await?;
+        let stderr = await_output(&mut stderr_handle, capture_policy.io_drain_timeout()).await?;
+        (stdout, stderr)
+    };
     let aggregated_output = aggregate_output(&stdout, &stderr, retained_bytes_cap);
 
     Ok(RawExecToolCallOutput {

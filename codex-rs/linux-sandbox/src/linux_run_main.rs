@@ -8,9 +8,12 @@ use std::io::Read;
 use std::os::fd::AsRawFd;
 use std::os::fd::FromRawFd;
 use std::os::unix::ffi::OsStrExt;
+use std::os::unix::fs::OpenOptionsExt;
+use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::OnceLock;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicI32;
 use std::sync::atomic::Ordering;
@@ -19,12 +22,14 @@ use std::time::Duration;
 
 use crate::bwrap::BwrapNetworkMode;
 use crate::bwrap::BwrapOptions;
+use crate::bwrap::WSL_INTEROP_DIR;
 use crate::bwrap::create_bwrap_command_args;
 use crate::landlock::apply_permission_profile_to_current_thread;
 use crate::launcher::exec_bwrap;
 use crate::launcher::preferred_bwrap_supports_argv0;
 use crate::proxy_routing::activate_proxy_routes_in_netns;
 use crate::proxy_routing::prepare_host_proxy_route_spec;
+use codex_network_proxy::ManagedNetworkSandboxContext;
 use codex_protocol::error::Result as CodexResult;
 use codex_protocol::models::PermissionProfile;
 use codex_protocol::permissions::FileSystemAccessMode;
@@ -41,6 +46,7 @@ static PENDING_FORWARDED_SIGNAL: AtomicI32 = AtomicI32::new(0);
 
 const FORWARDED_SIGNALS: &[libc::c_int] =
     &[libc::SIGHUP, libc::SIGINT, libc::SIGQUIT, libc::SIGTERM];
+const LINUX_CAPABILITY_VERSION_3: u32 = 0x2008_0522;
 const SYNTHETIC_MOUNT_MARKER_SYNTHETIC: &[u8] = b"synthetic\n";
 const SYNTHETIC_MOUNT_MARKER_EXISTING: &[u8] = b"existing\n";
 const PROTECTED_CREATE_MARKER: &[u8] = b"protected-create\n";
@@ -119,17 +125,21 @@ pub struct LandlockCommand {
     #[arg(long = "apply-seccomp-then-exec", hide = true, default_value_t = false)]
     pub apply_seccomp_then_exec: bool,
 
-    /// Internal compatibility flag.
-    ///
-    /// By default, restricted-network sandboxing uses isolated networking.
-    /// If set, sandbox setup switches to proxy-only network mode with
-    /// managed routing bridges.
-    #[arg(long = "allow-network-for-proxy", hide = true, default_value_t = false)]
-    pub allow_network_for_proxy: bool,
+    /// Effective managed-network policy prepared for this command launch.
+    #[arg(
+        long,
+        hide = true,
+        value_parser = parse_managed_network
+    )]
+    pub managed_network: Option<ManagedNetworkSandboxContext>,
 
     /// Internal route spec used for managed proxy routing in bwrap mode.
     #[arg(long = "proxy-route-spec", hide = true)]
     pub proxy_route_spec: Option<String>,
+
+    /// Inherited fallback mounts that must be authenticated before sandboxed code runs.
+    #[arg(long = "verify-fd-mount", hide = true)]
+    pub verify_fd_mounts: Vec<String>,
 
     /// When set, skip mounting a fresh `/proc` even though PID isolation is
     /// still enabled. This is primarily intended for restrictive container
@@ -156,31 +166,66 @@ pub fn run_main() -> ! {
         permission_profile,
         use_legacy_landlock,
         apply_seccomp_then_exec,
-        allow_network_for_proxy,
+        managed_network,
         proxy_route_spec,
+        verify_fd_mounts,
         no_proc,
         command,
     } = LandlockCommand::parse();
+    let allow_network_for_proxy = managed_network.is_some();
 
     if command.is_empty() {
         panic!("No command specified to execute.");
     }
+    if !apply_seccomp_then_exec && !verify_fd_mounts.is_empty() {
+        panic!("--verify-fd-mount is only supported in the inner sandbox stage");
+    }
     ensure_inner_stage_mode_is_valid(apply_seccomp_then_exec, use_legacy_landlock);
     let EffectivePermissions {
         permission_profile,
-        mut file_system_sandbox_policy,
+        file_system_sandbox_policy,
         network_sandbox_policy,
     } = resolve_permission_profile(permission_profile).unwrap_or_else(|err| panic!("{err}"));
     ensure_legacy_landlock_mode_supports_policy(
         use_legacy_landlock,
         &file_system_sandbox_policy,
         network_sandbox_policy,
+        allow_network_for_proxy,
         &sandbox_policy_cwd,
+        Path::new(WSL_INTEROP_DIR),
     );
 
     // Inner stage: apply seccomp/no_new_privs after bubblewrap has already
     // established the filesystem view.
     if apply_seccomp_then_exec {
+        if let Err(err) = crate::fd_mount::verify_fd_mounts(&verify_fd_mounts) {
+            panic!("failed to verify descriptor-backed bubblewrap mount: {err}");
+        }
+
+        let mut capability_header = [LINUX_CAPABILITY_VERSION_3, 0];
+        let mut capability_sets = [[0_u32; 3]; 2];
+        // SAFETY: capability ABI version 3 uses a [version, pid] header and
+        // two [effective, permitted, inheritable] capability-set entries.
+        let result = unsafe {
+            libc::syscall(
+                libc::SYS_capget,
+                capability_header.as_mut_ptr(),
+                capability_sets.as_mut_ptr(),
+            )
+        };
+        if result < 0 {
+            panic!(
+                "failed to verify Linux sandbox capabilities: {}",
+                std::io::Error::last_os_error()
+            );
+        }
+        if capability_sets
+            .into_iter()
+            .any(|[effective, permitted, _]| effective != 0 || permitted != 0)
+        {
+            panic!("Linux sandbox retained effective or permitted capabilities");
+        }
+
         if allow_network_for_proxy {
             let spec = proxy_route_spec
                 .as_deref()
@@ -194,12 +239,45 @@ pub fn run_main() -> ! {
             &permission_profile,
             &sandbox_policy_cwd,
             /*apply_landlock_fs*/ false,
-            allow_network_for_proxy,
+            managed_network.as_ref(),
             proxy_routing_active,
         ) {
             panic!("error applying Linux sandbox restrictions: {e:?}");
         }
-        exec_or_panic(command);
+
+        let signal_mask = ForwardedSignalMask::block();
+        let command_pid = unsafe { libc::fork() };
+        if command_pid < 0 {
+            let err = std::io::Error::last_os_error();
+            panic!("failed to fork sandboxed command: {err}");
+        }
+
+        if command_pid == 0 {
+            reset_forwarded_signal_handlers_to_default();
+            signal_mask.restore();
+            exec_or_panic(command);
+        }
+
+        let signal_forwarders = install_bwrap_signal_forwarders(command_pid);
+        signal_mask.restore();
+        loop {
+            let mut status = 0;
+            let reaped_pid = unsafe { libc::waitpid(-1, &mut status, 0) };
+            if reaped_pid == command_pid {
+                let exit_signal_mask = ForwardedSignalMask::block();
+                signal_forwarders.restore();
+                exit_signal_mask.restore();
+                exit_with_wait_status(status);
+            }
+            if reaped_pid >= 0 {
+                continue;
+            }
+
+            let err = std::io::Error::last_os_error();
+            if err.raw_os_error() != Some(libc::EINTR) {
+                panic!("failed to reap sandboxed child: {err}");
+            }
+        }
     }
 
     if file_system_sandbox_policy.has_full_disk_write_access() && !allow_network_for_proxy {
@@ -207,8 +285,8 @@ pub fn run_main() -> ! {
             &permission_profile,
             &sandbox_policy_cwd,
             /*apply_landlock_fs*/ false,
-            allow_network_for_proxy,
-            /*proxy_routed_network*/ false,
+            managed_network.as_ref(),
+            /*proxy_routing_active*/ false,
         ) {
             panic!("error applying Linux sandbox restrictions: {e:?}");
         }
@@ -219,22 +297,18 @@ pub fn run_main() -> ! {
         // Outer stage: bubblewrap first, then re-enter this binary in the
         // sandboxed environment to apply seccomp. This path never falls back
         // to legacy Landlock on failure.
-        let proxy_route_spec = if allow_network_for_proxy {
-            let (proxy_route_spec, socket_dir) = prepare_host_proxy_route_spec()
+        let (proxy_route_spec, proxy_controls) = if allow_network_for_proxy {
+            let (proxy_route_spec, controls) = prepare_host_proxy_route_spec()
                 .unwrap_or_else(|err| panic!("failed to prepare host proxy routing bridge: {err}"));
-            file_system_sandbox_policy = file_system_sandbox_policy.with_additional_readable_roots(
-                &sandbox_policy_cwd,
-                std::slice::from_ref(&socket_dir),
-            );
-            Some(proxy_route_spec)
+            (Some(proxy_route_spec), controls)
         } else {
-            None
+            (None, Vec::new())
         };
         let inner = build_inner_seccomp_command(InnerSeccompCommandArgs {
             sandbox_policy_cwd: &sandbox_policy_cwd,
             command_cwd: command_cwd.as_deref(),
             permission_profile: &permission_profile,
-            allow_network_for_proxy,
+            managed_network,
             proxy_route_spec,
             command,
         });
@@ -243,11 +317,16 @@ pub fn run_main() -> ! {
         run_bwrap_with_proc_fallback(
             &sandbox_policy_cwd,
             command_cwd.as_deref(),
+<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
             &bwrap_file_system_sandbox_policy,
             network_sandbox_policy,
+=======
+            &file_system_sandbox_policy,
+            bwrap_network_mode(network_sandbox_policy, allow_network_for_proxy),
+>>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
             inner,
+            proxy_controls,
             !no_proc,
-            allow_network_for_proxy,
         );
     }
 
@@ -256,8 +335,8 @@ pub fn run_main() -> ! {
         &permission_profile,
         &sandbox_policy_cwd,
         /*apply_landlock_fs*/ true,
-        allow_network_for_proxy,
-        /*proxy_routed_network*/ false,
+        managed_network.as_ref(),
+        /*proxy_routing_active*/ false,
     ) {
         panic!("error applying legacy Linux sandbox restrictions: {e:?}");
     }
@@ -288,6 +367,7 @@ fn parse_permission_profile(value: &str) -> std::result::Result<PermissionProfil
     serde_json::from_str(value).map_err(|err| format!("invalid permission profile JSON: {err}"))
 }
 
+<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
 fn file_system_policy_with_bwrap_bootstrap_roots(
     file_system_sandbox_policy: &FileSystemSandboxPolicy,
 ) -> FileSystemSandboxPolicy {
@@ -317,6 +397,11 @@ fn current_exe_parent_readable_root() -> Option<AbsolutePathBuf> {
     let current_exe = std::env::current_exe().ok()?;
     let current_exe = AbsolutePathBuf::from_absolute_path(&current_exe).ok()?;
     current_exe.parent()
+=======
+fn parse_managed_network(value: &str) -> std::result::Result<ManagedNetworkSandboxContext, String> {
+    serde_json::from_str(value)
+        .map_err(|err| format!("invalid managed network context JSON: {err}"))
+>>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
 }
 
 fn resolve_permission_profile(
@@ -343,7 +428,9 @@ fn ensure_legacy_landlock_mode_supports_policy(
     use_legacy_landlock: bool,
     file_system_sandbox_policy: &FileSystemSandboxPolicy,
     network_sandbox_policy: NetworkSandboxPolicy,
+    allow_network_for_proxy: bool,
     sandbox_policy_cwd: &Path,
+    wsl_interop_dir: &Path,
 ) {
     if use_legacy_landlock
         && file_system_sandbox_policy
@@ -353,18 +440,33 @@ fn ensure_legacy_landlock_mode_supports_policy(
             "permission profiles requiring direct runtime enforcement are incompatible with --use-legacy-landlock"
         );
     }
+    if use_legacy_landlock
+        && network_sandbox_policy.is_enabled()
+        && !allow_network_for_proxy
+        && !file_system_sandbox_policy.has_full_disk_write_access()
+        // Interop can use another binfmt handler or a newly created socket.
+        // An active endpoint probe would race with sandboxed command startup.
+        && wsl_interop_dir.is_dir()
+    {
+        panic!(
+            "legacy Landlock cannot isolate WSL Windows interop with network access enabled; use bubblewrap or restrict network access"
+        );
+    }
 }
 
 fn run_bwrap_with_proc_fallback(
     sandbox_policy_cwd: &Path,
     command_cwd: Option<&Path>,
     file_system_sandbox_policy: &FileSystemSandboxPolicy,
-    network_sandbox_policy: NetworkSandboxPolicy,
+    network_mode: BwrapNetworkMode,
     inner: Vec<String>,
+    proxy_controls: Vec<File>,
     mount_proc: bool,
-    allow_network_for_proxy: bool,
 ) -> ! {
+<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
     let mut network_mode = bwrap_network_mode(network_sandbox_policy, allow_network_for_proxy);
+=======
+>>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
     let mut mount_proc = mount_proc;
     let command_cwd = command_cwd.unwrap_or(sandbox_policy_cwd);
 
@@ -390,6 +492,8 @@ fn run_bwrap_with_proc_fallback(
     let options = BwrapOptions {
         mount_proc,
         network_mode,
+        mask_wsl_interop: !file_system_sandbox_policy.has_full_disk_write_access()
+            && Path::new(WSL_INTEROP_DIR).is_dir(),
         ..Default::default()
     };
     let mut bwrap_args = build_bwrap_argv(
@@ -400,6 +504,7 @@ fn run_bwrap_with_proc_fallback(
         options,
     )
     .unwrap_or_else(|err| exit_with_bwrap_build_error(err));
+    bwrap_args.preserved_files.extend(proxy_controls);
     apply_inner_command_argv0(&mut bwrap_args.args);
     run_or_exec_bwrap(bwrap_args);
 }
@@ -578,6 +683,7 @@ fn run_bwrap_in_child_with_synthetic_mount_cleanup(bwrap_args: crate::bwrap::Bwr
         exec_bwrap(args, preserved_files);
     }
 
+    drop(preserved_files);
     close_child_exec_start_read(exec_start_pipe[0]);
     let protected_create_monitor = ProtectedCreateMonitor::start(&protected_create_targets);
     let signal_forwarders = install_bwrap_signal_forwarders(pid);
@@ -1120,12 +1226,6 @@ fn cleanup_protected_create_targets(targets: &[ProtectedCreateTargetRegistration
 
         let mut violation = false;
         for target in targets.iter().rev() {
-            if synthetic_mount_marker_dir_has_active_process(&target.marker_dir) {
-                if target.target.path().exists() {
-                    violation = true;
-                }
-                continue;
-            }
             violation |= remove_protected_create_target(&target.target);
             match fs::remove_dir(&target.marker_dir) {
                 Ok(()) => {}
@@ -1190,7 +1290,13 @@ fn try_remove_protected_create_target(
         ProtectedCreateRemoval::Other
     };
     let result = if removal == ProtectedCreateRemoval::Directory {
-        fs::remove_dir_all(path)
+        match fs::remove_dir_all(path) {
+            Err(err) if err.kind() == std::io::ErrorKind::PermissionDenied => {
+                make_directory_tree_writable(path)?;
+                fs::remove_dir_all(path)
+            }
+            result => result,
+        }
     } else {
         fs::remove_file(path)
     };
@@ -1204,6 +1310,28 @@ fn try_remove_protected_create_target(
         path.display()
     );
     Ok(Some(removal))
+}
+
+fn make_directory_tree_writable(path: &Path) -> std::io::Result<()> {
+    let metadata = match fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(err) => return Err(err),
+    };
+    if !metadata.is_dir() {
+        return Ok(());
+    }
+
+    let directory = OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_PATH | libc::O_DIRECTORY | libc::O_NOFOLLOW)
+        .open(path)?;
+    let directory_path = PathBuf::from(format!("/proc/self/fd/{}", directory.as_raw_fd()));
+    fs::set_permissions(&directory_path, fs::Permissions::from_mode(0o700))?;
+    for entry in fs::read_dir(directory_path)? {
+        make_directory_tree_writable(&entry?.path())?;
+    }
+    Ok(())
 }
 
 fn remove_synthetic_mount_target(target: &crate::bwrap::SyntheticMountTarget) {
@@ -1292,11 +1420,32 @@ fn synthetic_mount_marker_dir(path: &Path) -> PathBuf {
     synthetic_mount_registry_root().join(format!("{:016x}", hash_path(path)))
 }
 
-fn synthetic_mount_registry_root() -> PathBuf {
-    let effective_uid = unsafe { libc::geteuid() };
-    std::env::temp_dir().join(format!(
-        "codex-bwrap-synthetic-mount-targets-{effective_uid}"
-    ))
+pub(crate) fn synthetic_mount_registry_root() -> PathBuf {
+    static REGISTRY_ROOT: OnceLock<PathBuf> = OnceLock::new();
+
+    REGISTRY_ROOT
+        .get_or_init(|| {
+            let effective_uid = unsafe { libc::geteuid() };
+            let temp_dir = std::env::temp_dir();
+            let temp_dir = temp_dir.canonicalize().unwrap_or_else(|err| {
+                panic!(
+                    "failed to resolve synthetic mount registry temp directory {}: {err}",
+                    temp_dir.display()
+                )
+            });
+            let registry_root = temp_dir.join(format!(
+                "codex-bwrap-synthetic-mount-targets-{effective_uid}"
+            ));
+            // A registry symlink can redirect bookkeeping into a writable root
+            // that does not overlap TMPDIR, bypassing its read-only mount.
+            assert!(
+                !registry_root.is_symlink(),
+                "synthetic mount registry must not be a symlink: {}",
+                registry_root.display()
+            );
+            registry_root
+        })
+        .clone()
 }
 
 fn hash_path(path: &Path) -> u64 {
@@ -1453,7 +1602,7 @@ struct InnerSeccompCommandArgs<'a> {
     sandbox_policy_cwd: &'a Path,
     command_cwd: Option<&'a Path>,
     permission_profile: &'a PermissionProfile,
-    allow_network_for_proxy: bool,
+    managed_network: Option<ManagedNetworkSandboxContext>,
     proxy_route_spec: Option<String>,
     command: Vec<String>,
 }
@@ -1464,7 +1613,7 @@ fn build_inner_seccomp_command(args: InnerSeccompCommandArgs<'_>) -> Vec<String>
         sandbox_policy_cwd,
         command_cwd,
         permission_profile,
-        allow_network_for_proxy,
+        managed_network,
         proxy_route_spec,
         command,
     } = args;
@@ -1491,8 +1640,12 @@ fn build_inner_seccomp_command(args: InnerSeccompCommandArgs<'_>) -> Vec<String>
         permission_profile_json,
         "--apply-seccomp-then-exec".to_string(),
     ]);
-    if allow_network_for_proxy {
-        inner.push("--allow-network-for-proxy".to_string());
+    if let Some(managed_network) = managed_network {
+        inner.push("--managed-network".to_string());
+        inner.push(
+            serde_json::to_string(&managed_network)
+                .unwrap_or_else(|err| panic!("failed to serialize managed network context: {err}")),
+        );
         let proxy_route_spec = proxy_route_spec
             .unwrap_or_else(|| panic!("managed proxy mode requires a proxy route spec"));
         inner.push("--proxy-route-spec".to_string());

@@ -18,7 +18,10 @@ async fn debug_clear_memories_resets_state_and_removes_memory_dir() -> Result<()
     let sqlite = codex_state::SqliteConfig::new_for_testing(codex_home.path().abs());
     let runtime = StateRuntime::init(sqlite.clone(), "test-provider".to_string()).await?;
     runtime.close().await;
+<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
     drop(runtime);
+=======
+>>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
 
     let thread_id = "00000000-0000-0000-0000-000000000123";
     let db_path = sqlite.state_db_path();

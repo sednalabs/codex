@@ -2,6 +2,7 @@
 //!
 //! Responsibilities
 //! - Manages interactive processes (create, reuse, buffer output with caps).
+//! - Supports completion-only calls that terminate on timeout or cancellation.
 //! - Uses the shared ToolOrchestrator to handle approval, sandbox selection, and
 //!   retry semantics in a single, descriptive flow.
 //! - Spawns the PTY from a sandbox-transformed `ExecRequest`; on sandbox denial,
@@ -37,20 +38,26 @@ use codex_utils_path_uri::PathUri;
 use rand::Rng;
 use rand::rng;
 use tokio::sync::Mutex;
+use tokio_util::sync::CancellationToken;
 
 use crate::sandboxing::SandboxPermissions;
 use crate::session::session::Session;
+use crate::session::step_context::StepContext;
 use crate::session::turn_context::TurnContext;
 use crate::session::turn_context::TurnEnvironment;
 use crate::shell::ShellType;
 use crate::tools::network_approval::DeferredNetworkApproval;
+use codex_core_plugins::PluginMetricsSidecar;
 
 mod async_watcher;
 mod errors;
 mod head_tail_buffer;
+mod oneshot;
 mod process;
 mod process_manager;
 mod process_state;
+mod shell_snapshot;
+mod stdin_approval;
 
 pub(crate) fn set_deterministic_process_ids_for_tests(enabled: bool) {
     process_manager::set_deterministic_process_ids_for_tests(enabled);
@@ -62,9 +69,11 @@ pub(crate) use process::NoopSpawnLifecycle;
 pub(crate) use process::SpawnLifecycle;
 pub(crate) use process::SpawnLifecycleHandle;
 pub(crate) use process::UnifiedExecProcess;
+pub(crate) use stdin_approval::TerminalPermissions;
+pub(crate) use stdin_approval::TerminalSandboxSource;
 
 pub(crate) const MIN_YIELD_TIME_MS: u64 = 250;
-pub(crate) const WINDOWS_INITIAL_EXEC_YIELD_TIME_FLOOR_MS: u64 = 2_000;
+pub(crate) const WINDOWS_INITIAL_EXEC_YIELD_TIME_FLOOR_MS: u64 = 10_000;
 // Minimum yield time for an empty `write_stdin`.
 pub(crate) const MIN_EMPTY_YIELD_TIME_MS: u64 = 5_000;
 pub(crate) const MAX_YIELD_TIME_MS: u64 = 30_000;
@@ -74,17 +83,30 @@ pub(crate) const UNIFIED_EXEC_OUTPUT_MAX_BYTES: usize = 1024 * 1024; // 1 MiB
 pub(crate) const UNIFIED_EXEC_OUTPUT_MAX_TOKENS: usize = UNIFIED_EXEC_OUTPUT_MAX_BYTES / 4;
 pub(crate) const MAX_UNIFIED_EXEC_PROCESSES: usize = 64;
 
+const MAX_TRACE_ID_BYTES: usize = 256;
+
+fn trace_id(id: &str) -> Option<&str> {
+    (!id.is_empty() && id.len() <= MAX_TRACE_ID_BYTES).then_some(id)
+}
+
 pub(crate) struct UnifiedExecContext {
     pub session: Arc<Session>,
-    pub turn: Arc<TurnContext>,
+    pub step_context: Arc<StepContext>,
+    pub cancellation_token: CancellationToken,
     pub call_id: String,
 }
 
 impl UnifiedExecContext {
-    pub fn new(session: Arc<Session>, turn: Arc<TurnContext>, call_id: String) -> Self {
+    pub fn new(
+        session: Arc<Session>,
+        step_context: Arc<StepContext>,
+        cancellation_token: CancellationToken,
+        call_id: String,
+    ) -> Self {
         Self {
             session,
-            turn,
+            step_context,
+            cancellation_token,
             call_id,
         }
     }
@@ -177,16 +199,30 @@ impl Default for UnifiedExecProcessManager {
 
 struct ProcessEntry {
     process: Arc<UnifiedExecProcess>,
+    plugin_metrics_sidecar: Option<SharedPluginMetricsSidecar>,
     call_id: String,
     process_id: i32,
     cwd: PathUri,
     initial_exec_command_active: Arc<std::sync::atomic::AtomicBool>,
     hook_command: String,
     tty: bool,
+    environment_id: String,
+    permissions: TerminalPermissions,
     network_approval: Option<DeferredNetworkApproval>,
     session: Weak<Session>,
     last_used: tokio::time::Instant,
     completion_cause: Arc<AtomicU8>,
+}
+
+type SharedPluginMetricsSidecar = Arc<std::sync::Mutex<Option<PluginMetricsSidecar>>>;
+
+fn take_plugin_metrics_sidecar(
+    sidecar: &SharedPluginMetricsSidecar,
+) -> Option<PluginMetricsSidecar> {
+    sidecar
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .take()
 }
 
 pub(crate) fn clamp_yield_time(yield_time_ms: u64) -> u64 {

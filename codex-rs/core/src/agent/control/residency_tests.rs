@@ -1220,8 +1220,13 @@ async fn interrupted_v2_agent_remains_known_and_reloads_after_residency_eviction
     )
     .await;
 
+<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
     control
         .ensure_v2_agent_loaded(config, first.thread_id)
+=======
+    let err = control
+        .ensure_v2_agent_loaded(config, first.thread_id, /*parent*/ None)
+>>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
         .await
         .expect("evicted interrupted agent should reload");
     let reloaded = manager

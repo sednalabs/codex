@@ -33,7 +33,7 @@ async fn production_http_forwards_headers_and_decodes_response() {
         .set_nonblocking(true)
         .expect("environment HTTP listener should become nonblocking");
     let server = std::thread::spawn(move || {
-        let deadline = Instant::now() + Duration::from_secs(2);
+        let deadline = Instant::now() + Duration::from_secs(10);
         let (mut stream, _) = loop {
             match listener.accept() {
                 Ok(connection) => break connection,
@@ -48,7 +48,10 @@ async fn production_http_forwards_headers_and_decodes_response() {
             }
         };
         stream
-            .set_read_timeout(Some(Duration::from_secs(2)))
+            .set_nonblocking(false)
+            .expect("environment HTTP stream should become blocking");
+        stream
+            .set_read_timeout(Some(Duration::from_secs(10)))
             .expect("environment HTTP stream should get a read timeout");
         let mut request = Vec::new();
         let mut buffer = [0_u8; 1024];
@@ -83,7 +86,7 @@ async fn production_http_forwards_headers_and_decodes_response() {
         HeaderMap::from_iter([(AUTHORIZATION, HeaderValue::from_static("Bearer real-token"))]);
 
     let selection = tokio::time::timeout(
-        Duration::from_secs(2),
+        Duration::from_secs(10),
         autodetect_environment_id_with_origins(
             &http,
             &base_url,
@@ -130,7 +133,7 @@ async fn autodetect_requests_exact_repository_endpoint_and_decodes_selection() {
         BASE_URL,
         &headers,
         Some("Repository".to_string()),
-        &["git@github.com:openai/codex.git".to_string()],
+        &[SanitizedGitUrl::try_from("git@github.com:openai/codex.git").expect("valid Git remote")],
     )
     .await
     .expect("repository environment should be selected");
@@ -151,6 +154,68 @@ async fn autodetect_requests_exact_repository_endpoint_and_decodes_selection() {
     );
 }
 
+/// Repository discovery must accept credential-bearing origins without exposing credentials.
+#[tokio::test]
+async fn autodetect_sanitizes_credential_bearing_git_origins() {
+    let http = FakeHttp::new(HashMap::from([(
+        BY_REPO_URL.to_string(),
+        json_response(r#"[{"id":"env-repo","label":"Repository"}]"#),
+    )]));
+
+    let selection = autodetect_environment_id_with_origins(
+        &http,
+        BASE_URL,
+        &HeaderMap::new(),
+        /*desired_label*/ None,
+        &[SanitizedGitUrl::try_from(
+            "https://alice:synthetic-git-secret@github.com/openai/codex.git",
+        )
+        .expect("valid Git remote")],
+    )
+    .await
+    .expect("repository environment should be selected");
+
+    assert_eq!(
+        selection,
+        AutodetectSelection {
+            id: "env-repo".to_string(),
+            label: Some("Repository".to_string()),
+        }
+    );
+    assert_eq!(http.requested_urls(), vec![BY_REPO_URL.to_string()]);
+}
+
+/// Removing an SCP remote username must not prevent repository-specific discovery.
+#[tokio::test]
+async fn autodetect_recognizes_sanitized_scp_git_origins() {
+    let http = FakeHttp::new(HashMap::from([(
+        BY_REPO_URL.to_string(),
+        json_response(r#"[{"id":"env-repo","label":"Repository"}]"#),
+    )]));
+
+    let selection = autodetect_environment_id_with_origins(
+        &http,
+        BASE_URL,
+        &HeaderMap::new(),
+        /*desired_label*/ None,
+        &[
+            SanitizedGitUrl::try_from("org-123@github.com:openai/codex.git")
+                .expect("valid Git remote"),
+        ],
+    )
+    .await
+    .expect("repository environment should be selected");
+
+    assert_eq!(
+        selection,
+        AutodetectSelection {
+            id: "env-repo".to_string(),
+            label: Some("Repository".to_string()),
+        }
+    );
+    assert_eq!(http.requested_urls(), vec![BY_REPO_URL.to_string()]);
+}
+
 #[tokio::test]
 async fn autodetect_falls_back_to_exact_global_endpoint_and_decodes_selection() {
     let http = FakeHttp::new(HashMap::from([
@@ -166,7 +231,7 @@ async fn autodetect_falls_back_to_exact_global_endpoint_and_decodes_selection() 
         BASE_URL,
         &HeaderMap::new(),
         /*desired_label*/ None,
-        &["git@github.com:openai/codex.git".to_string()],
+        &[SanitizedGitUrl::try_from("git@github.com:openai/codex.git").expect("valid Git remote")],
     )
     .await
     .expect("global environment should be selected");
@@ -203,7 +268,10 @@ async fn list_requests_exact_repository_and_global_endpoints_and_merges_results(
         &http,
         BASE_URL,
         &HeaderMap::new(),
-        &["https://github.com/openai/codex.git".to_string()],
+        &[
+            SanitizedGitUrl::try_from("https://github.com/openai/codex.git")
+                .expect("valid Git remote"),
+        ],
     )
     .await
     .expect("environment list should decode");

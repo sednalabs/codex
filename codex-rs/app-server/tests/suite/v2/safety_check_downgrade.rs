@@ -187,6 +187,7 @@ async fn cyber_policy_response_emits_typed_error_notification_v2() -> Result<()>
     let error = collect_cyber_policy_error_and_validate_no_reroute(&mut mcp).await?;
     let ErrorNotification {
         error,
+<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
         will_retry,
         thread_id: error_thread_id,
         turn_id: error_turn_id,
@@ -203,6 +204,20 @@ async fn cyber_policy_response_emits_typed_error_notification_v2() -> Result<()>
         .expect("cyber policy errors carry server-issued automatic-turn capability details");
     assert_eq!(trigger_turn_id, turn_start.turn.id);
     assert!(!capability.is_empty());
+=======
+        ErrorNotification {
+            error: codex_app_server_protocol::TurnError {
+                misalignment: None,
+                message: CYBER_POLICY_MESSAGE.to_string(),
+                codex_error_info: Some(CodexErrorInfo::CyberPolicy),
+                additional_details: None,
+            },
+            will_retry: false,
+            thread_id: thread.id,
+            turn_id: turn_start.turn.id,
+        }
+    );
+>>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
 
     Ok(())
 }

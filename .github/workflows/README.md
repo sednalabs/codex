@@ -6,6 +6,9 @@ deliberate schedule/manual checkpoints instead of re-running after every merge.
 
 ## Pull Requests
 
+- Required checks run against GitHub's synthetic merge commit, not the pull
+  request head alone. This includes changes already on `main` and catches
+  conflicts before they reach the branch.
 - `bazel.yml` is the main pre-merge verification path for Rust code.
   It runs Bazel `test` and Bazel `clippy` on the supported Bazel targets.
 - `rust-ci.yml` keeps the Cargo-native PR checks intentionally small:

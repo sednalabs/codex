@@ -63,12 +63,16 @@ None
 <realtime_conversation>
 Realtime conversation ended.
 
+<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
 This realtime-mode instruction no longer applies. Subsequent user input will
 return to typed text rather than transcript-style text. Do not assume
 recognition errors or missing punctuation once realtime has ended. Resume
 normal chat behavior.
 
 Reason: inactive
+=======
+Subsequent user input will return to typed text rather than transcript-style text. Do not assume recognition errors or missing punctuation once realtime has ended. Resume normal chat behavior.
+>>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
 </realtime_conversation>
 
 Unknown -> {"active":true} (role - developer)

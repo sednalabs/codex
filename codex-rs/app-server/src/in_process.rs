@@ -62,19 +62,23 @@ use crate::outgoing_message::OutgoingEnvelope;
 use crate::outgoing_message::OutgoingMessage;
 use crate::outgoing_message::OutgoingMessageSender;
 use crate::outgoing_message::QueuedOutgoingMessage;
+use crate::plugin_config_reload::PluginStartupConfig;
 use crate::transport::CHANNEL_CAPACITY;
 use crate::transport::OutboundConnectionState;
 use crate::transport::route_outgoing_envelope;
 use codex_analytics::AppServerRpcTransport;
+use codex_app_server_protocol::AgentMessageDelivery;
 use codex_app_server_protocol::ClientNotification;
 use codex_app_server_protocol::ClientRequest;
 use codex_app_server_protocol::ConfigWarningNotification;
 use codex_app_server_protocol::InitializeParams;
+use codex_app_server_protocol::ItemCompletedNotification;
 use codex_app_server_protocol::JSONRPCErrorError;
 use codex_app_server_protocol::RequestId;
 use codex_app_server_protocol::Result;
 use codex_app_server_protocol::ServerNotification;
 use codex_app_server_protocol::ServerRequest;
+use codex_app_server_protocol::ThreadItem;
 use codex_arg0::Arg0DispatchPaths;
 use codex_config::CloudConfigBundleLoader;
 use codex_config::LoaderOverrides;
@@ -118,7 +122,9 @@ fn server_notification_requires_delivery(notification: &ServerNotification) -> b
     matches!(
         notification,
         ServerNotification::TurnCompleted(_)
+            | ServerNotification::ThreadQueueChanged(_)
             | ServerNotification::ThreadSettingsUpdated(_)
+<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
             | ServerNotification::ItemCompleted(_)
             | ServerNotification::ExternalAgentConfigImportCompleted(_)
             | ServerNotification::AgentMessageDelta(_)
@@ -128,6 +134,17 @@ fn server_notification_requires_delivery(notification: &ServerNotification) -> b
             | ServerNotification::FuzzyFileSearchSessionCompleted(_)
             | ServerNotification::ThreadRealtimeTranscriptDelta(_)
             | ServerNotification::ThreadRealtimeTranscriptDone(_)
+=======
+            | ServerNotification::ThreadAttachmentUpdated(_)
+            | ServerNotification::ExternalAgentConfigImportCompleted(_)
+            | ServerNotification::ItemCompleted(ItemCompletedNotification {
+                item: ThreadItem::AgentMessage {
+                    delivery: Some(AgentMessageDelivery::Async),
+                    ..
+                },
+                ..
+            })
+>>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
     )
 }
 
@@ -276,9 +293,9 @@ pub struct InProcessStartArgs {
 #[derive(Debug, Clone)]
 pub enum InProcessServerEvent {
     /// Server request that requires client response/rejection.
-    ServerRequest(ServerRequest),
+    ServerRequest(Box<ServerRequest>),
     /// App-server notification directed to the embedded client.
-    ServerNotification(ServerNotification),
+    ServerNotification(Box<ServerNotification>),
     /// Indicates one or more events were dropped due to backpressure.
     Lagged { skipped: usize },
 }
@@ -292,6 +309,7 @@ enum InProcessClientMessage {
     Request {
         request: Box<ClientRequest>,
         response_tx: oneshot::Sender<PendingClientRequestResponse>,
+        cancellation: tokio_util::sync::CancellationToken,
     },
     Notification {
         notification: ClientNotification,
@@ -310,7 +328,7 @@ enum InProcessClientMessage {
 }
 
 enum ProcessorCommand {
-    Request(Box<ClientRequest>),
+    Request(Box<ClientRequest>, tokio_util::sync::CancellationToken),
     Notification(ClientNotification),
 }
 
@@ -322,9 +340,12 @@ pub struct InProcessClientSender {
 impl InProcessClientSender {
     pub async fn request(&self, request: ClientRequest) -> IoResult<PendingClientRequestResponse> {
         let (response_tx, response_rx) = oneshot::channel();
+        let cancellation = tokio_util::sync::CancellationToken::new();
+        let _cancel_on_drop = cancellation.clone().drop_guard();
         self.try_send_client_message(InProcessClientMessage::Request {
             request: Box::new(request),
             response_tx,
+            cancellation,
         })?;
         response_rx.await.map_err(|err| {
             IoError::new(
@@ -529,13 +550,38 @@ pub async fn start(mut args: InProcessStartArgs) -> IoResult<InProcessClientHand
     Ok(client)
 }
 
+async fn run_outbound_router(
+    mut outgoing_rx: mpsc::Receiver<OutgoingEnvelope>,
+    mut outbound_connections: HashMap<ConnectionId, OutboundConnectionState>,
+    mut shutdown_rx: oneshot::Receiver<()>,
+) {
+    loop {
+        tokio::select! {
+            biased;
+            _ = &mut shutdown_rx => break,
+            envelope = outgoing_rx.recv() => {
+                let Some(envelope) = envelope else {
+                    break;
+                };
+                route_outgoing_envelope(&mut outbound_connections, envelope).await;
+            }
+        }
+    }
+}
+
 async fn start_uninitialized(args: InProcessStartArgs) -> IoResult<InProcessClientHandle> {
+    args.config.auth_config().validate()?;
     let channel_capacity = args.channel_capacity.max(1);
     let installation_id = resolve_installation_id(&args.config.codex_home).await?;
+    let auth_manager =
+        AuthManager::shared_from_config(args.config.as_ref(), args.enable_codex_api_key_env)
+            .await
+            .map_err(IoError::other)?;
     let (client_tx, mut client_rx) = mpsc::channel::<InProcessClientMessage>(channel_capacity);
     let (event_tx, event_rx) = mpsc::channel::<InProcessServerEvent>(channel_capacity);
 
     let runtime_handle = tokio::spawn(async move {
+<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
         let (event_outgoing_tx, event_outgoing_rx) =
             mpsc::channel::<OutgoingEnvelope>(channel_capacity);
         let (response_outgoing_tx, response_outgoing_rx) =
@@ -543,6 +589,9 @@ async fn start_uninitialized(args: InProcessStartArgs) -> IoResult<InProcessClie
         let auth_manager =
             AuthManager::shared_from_config(args.config.as_ref(), args.enable_codex_api_key_env)
                 .await;
+=======
+        let (outgoing_tx, outgoing_rx) = mpsc::channel::<OutgoingEnvelope>(channel_capacity);
+>>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
         let analytics_events_client =
             analytics_events_client_from_config(Arc::clone(&auth_manager), args.config.as_ref());
         let analytics_events_flush_client = analytics_events_client.clone();
@@ -572,6 +621,7 @@ async fn start_uninitialized(args: InProcessStartArgs) -> IoResult<InProcessClie
                 /*disconnect_sender*/ None,
             ),
         );
+<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
         let mut response_outbound_connections =
             HashMap::<ConnectionId, OutboundConnectionState>::new();
         response_outbound_connections.insert(
@@ -592,6 +642,14 @@ async fn start_uninitialized(args: InProcessStartArgs) -> IoResult<InProcessClie
             deliver_in_process_events(event_writer_rx, event_tx).await;
         });
         let mut event_delivery_finished = false;
+=======
+        let (outbound_shutdown_tx, outbound_shutdown_rx) = oneshot::channel();
+        let mut outbound_handle = tokio::spawn(run_outbound_router(
+            outgoing_rx,
+            outbound_connections,
+            outbound_shutdown_rx,
+        ));
+>>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
 
         let processor_outgoing = Arc::clone(&outgoing_message_sender);
         let config_manager = ConfigManager::new(
@@ -617,22 +675,27 @@ async fn start_uninitialized(args: InProcessStartArgs) -> IoResult<InProcessClie
                 state_db: args.state_db,
                 config_warnings: args.config_warnings,
                 session_source: args.session_source,
+                user_verification: Arc::new(crate::user_verification::Service::new(Arc::clone(
+                    &auth_manager,
+                ))),
                 auth_manager,
                 installation_id,
                 code_mode_session_provider: None,
                 rpc_transport: AppServerRpcTransport::InProcess,
                 remote_control_handle: None,
-                plugin_startup_tasks: crate::PluginStartupTasks::Start,
+                plugin_startup_tasks: Some(PluginStartupConfig::Current),
             }));
             let mut thread_created_rx = processor.thread_created_receiver();
-            let session = Arc::new(ConnectionSessionState::new());
+            let session = Arc::new(ConnectionSessionState::new(
+                crate::transport::ConnectionOrigin::InProcess,
+            ));
             let mut listen_for_threads = true;
 
             loop {
                 tokio::select! {
                     command = processor_rx.recv() => {
                         match command {
-                            Some(ProcessorCommand::Request(request)) => {
+                            Some(ProcessorCommand::Request(request, cancellation)) => {
                                 let was_initialized = session.initialized();
                                 processor
                                     .process_client_request(
@@ -640,6 +703,7 @@ async fn start_uninitialized(args: InProcessStartArgs) -> IoResult<InProcessClie
                                         *request,
                                         Arc::clone(&session),
                                         &outbound_initialized,
+                                        cancellation,
                                     )
                                     .await;
                                 let opted_out_notification_methods_snapshot =
@@ -711,7 +775,7 @@ async fn start_uninitialized(args: InProcessStartArgs) -> IoResult<InProcessClie
             tokio::select! {
                 message = client_rx.recv() => {
                     match message {
-                        Some(InProcessClientMessage::Request { request, response_tx }) => {
+                        Some(InProcessClientMessage::Request { request, response_tx, cancellation }) => {
                             let request = *request;
                             let request_id = request.id().clone();
                             match pending_request_responses.entry(request_id.clone()) {
@@ -726,7 +790,7 @@ async fn start_uninitialized(args: InProcessStartArgs) -> IoResult<InProcessClie
                                 }
                             }
 
-                            match processor_tx.try_send(ProcessorCommand::Request(Box::new(request))) {
+                            match processor_tx.try_send(ProcessorCommand::Request(Box::new(request), cancellation)) {
                                 Ok(()) => {}
                                 Err(mpsc::error::TrySendError::Full(_)) => {
                                     if let Some(response_tx) =
@@ -765,12 +829,12 @@ async fn start_uninitialized(args: InProcessStartArgs) -> IoResult<InProcessClie
                         }
                         Some(InProcessClientMessage::ServerRequestResponse { request_id, result }) => {
                             outgoing_message_sender
-                                .notify_client_response(request_id, result)
+                                .notify_client_response(IN_PROCESS_CONNECTION_ID, request_id, result)
                                 .await;
                         }
                         Some(InProcessClientMessage::ServerRequestError { request_id, error }) => {
                             outgoing_message_sender
-                                .notify_client_error(request_id, error)
+                                .notify_client_error(IN_PROCESS_CONNECTION_ID, request_id, error)
                                 .await;
                         }
                         Some(InProcessClientMessage::Shutdown { done_tx }) => {
@@ -790,7 +854,10 @@ async fn start_uninitialized(args: InProcessStartArgs) -> IoResult<InProcessClie
                     match outgoing_message {
                         OutgoingMessage::Response(response) => {
                             if let Some(response_tx) = pending_request_responses.remove(&response.id) {
-                                let _ = response_tx.send(Ok(response.result));
+                                let result = serde_json::to_value(response.result).map_err(|err| {
+                                    internal_error(format!("failed to serialize response: {err}"))
+                                });
+                                let _ = response_tx.send(result);
                             } else {
                                 warn!(
                                     request_id = ?response.id,
@@ -808,8 +875,70 @@ async fn start_uninitialized(args: InProcessStartArgs) -> IoResult<InProcessClie
                                 );
                             }
                         }
+<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
                         OutgoingMessage::Request(_) | OutgoingMessage::AppServerNotification(_) => {
                             warn!("received unexpected event-lane message in response delivery");
+=======
+                        OutgoingMessage::Request(request) => {
+                            // Send directly to avoid cloning; on failure the
+                            // original value is returned inside the error.
+                            if let Err(send_error) = event_tx
+                                .try_send(InProcessServerEvent::ServerRequest(Box::new(request)))
+                            {
+                                let (error, inner) = match send_error {
+                                    mpsc::error::TrySendError::Full(inner) => (
+                                        JSONRPCErrorError {
+                                            code: OVERLOADED_ERROR_CODE,
+                                            message:
+                                                "in-process server request queue is full".to_string(),
+                                            data: None,
+                                        },
+                                        inner,
+                                    ),
+                                    mpsc::error::TrySendError::Closed(inner) => (
+                                        internal_error(
+                                            "in-process server request consumer is closed",
+                                        ),
+                                        inner,
+                                    ),
+                                };
+                                let request_id = match inner {
+                                    InProcessServerEvent::ServerRequest(req) => req.id().clone(),
+                                    _ => unreachable!("we just sent a ServerRequest variant"),
+                                };
+                                outgoing_message_sender
+                                    .notify_client_error(IN_PROCESS_CONNECTION_ID, request_id, error)
+                                    .await;
+                            }
+                        }
+                        OutgoingMessage::AppServerNotification(envelope) => {
+                            let notification = envelope.notification;
+                            if server_notification_requires_delivery(&notification) {
+                                if event_tx
+                                    .send(InProcessServerEvent::ServerNotification(Box::new(
+                                        notification,
+                                    )))
+                                    .await
+                                    .is_err()
+                                {
+                                    break;
+                                }
+                            } else if let Err(send_error) =
+                                event_tx.try_send(InProcessServerEvent::ServerNotification(
+                                    Box::new(notification),
+                                ))
+                            {
+                                match send_error {
+                                    mpsc::error::TrySendError::Full(_) => {
+                                        warn!("dropping in-process server notification (queue full)");
+                                        continue;
+                                    }
+                                    mpsc::error::TrySendError::Closed(_) => {
+                                        break;
+                                    }
+                                }
+                            }
+>>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
                         }
                     }
                     if let Some(write_complete_tx) = queued_message.write_complete_tx {
@@ -830,8 +959,13 @@ async fn start_uninitialized(args: InProcessStartArgs) -> IoResult<InProcessClie
                 "in-process app-server runtime is shutting down",
             )))
             .await;
+<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
         // Drop the runtime's sender before awaiting the delivery and router
         // tasks so both bounded ingress receivers can observe channel closure.
+=======
+        // Detached processor work can retain outgoing senders, so channel
+        // closure alone cannot be used to shut down the outbound router.
+>>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
         drop(outgoing_message_sender);
         for (_, response_tx) in pending_request_responses {
             let _ = response_tx.send(Err(internal_error(
@@ -843,6 +977,7 @@ async fn start_uninitialized(args: InProcessStartArgs) -> IoResult<InProcessClie
             processor_handle.abort();
             let _ = processor_handle.await;
         }
+<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
         if let Err(_elapsed) = timeout(SHUTDOWN_TIMEOUT, async {
             if !event_delivery_finished {
                 let _ = (&mut event_delivery_handle).await;
@@ -863,6 +998,12 @@ async fn start_uninitialized(args: InProcessStartArgs) -> IoResult<InProcessClie
             }
             let _ = event_outbound_handle.await;
             let _ = response_outbound_handle.await;
+=======
+        let _ = outbound_shutdown_tx.send(());
+        if let Err(_elapsed) = timeout(SHUTDOWN_TIMEOUT, &mut outbound_handle).await {
+            outbound_handle.abort();
+            let _ = outbound_handle.await;
+>>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
         }
 
         analytics_events_flush_client.flush().await;
@@ -891,8 +1032,14 @@ mod tests {
     use codex_app_server_protocol::FuzzyFileSearchSessionUpdatedNotification;
     use codex_app_server_protocol::ServerRequestPayload;
     use codex_app_server_protocol::SessionSource as ApiSessionSource;
+<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
     use codex_app_server_protocol::ThreadRealtimeTranscriptDeltaNotification;
     use codex_app_server_protocol::ThreadRealtimeTranscriptDoneNotification;
+=======
+    use codex_app_server_protocol::ThreadAttachmentOperation;
+    use codex_app_server_protocol::ThreadAttachmentUpdatedNotification;
+    use codex_app_server_protocol::ThreadQueueChangedNotification;
+>>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
     use codex_app_server_protocol::ThreadStartParams;
     use codex_app_server_protocol::ThreadStartResponse;
     use codex_app_server_protocol::Turn;
@@ -1366,6 +1513,30 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
+    async fn in_process_outbound_router_shutdown_does_not_wait_for_retained_sender() {
+        let (outgoing_tx, outgoing_rx) = mpsc::channel(/*buffer*/ 1);
+        let retained_outgoing_tx = outgoing_tx.clone();
+        drop(outgoing_tx);
+
+        let (shutdown_tx, shutdown_rx) = oneshot::channel();
+        let mut outbound_handle = tokio::spawn(run_outbound_router(
+            outgoing_rx,
+            HashMap::new(),
+            shutdown_rx,
+        ));
+
+        assert!(!retained_outgoing_tx.is_closed());
+        shutdown_tx
+            .send(())
+            .expect("outbound router should accept explicit shutdown");
+        timeout(SHUTDOWN_TIMEOUT, &mut outbound_handle)
+            .await
+            .expect("outbound router should not wait for its retained sender")
+            .expect("outbound router should complete successfully");
+        assert!(retained_outgoing_tx.is_closed());
+    }
+
+    #[tokio::test(start_paused = true)]
     async fn in_process_shutdown_waits_for_analytics_flush_budget() {
         let (client_tx, mut client_rx) = mpsc::channel(/*buffer*/ 1);
         let (_event_tx, event_rx) = mpsc::channel(/*buffer*/ 1);
@@ -1395,7 +1566,7 @@ mod tests {
     }
 
     #[test]
-    fn guaranteed_delivery_helpers_cover_terminal_server_notifications() {
+    fn guaranteed_delivery_helpers_cover_required_server_notifications() {
         assert!(server_notification_requires_delivery(
             &ServerNotification::TurnCompleted(TurnCompletedNotification {
                 thread_id: "thread-1".to_string(),
@@ -1414,6 +1585,11 @@ mod tests {
             })
         ));
         assert!(server_notification_requires_delivery(
+            &ServerNotification::ThreadQueueChanged(ThreadQueueChangedNotification {
+                thread_id: "thread-1".to_string(),
+            })
+        ));
+        assert!(server_notification_requires_delivery(
             &ServerNotification::ExternalAgentConfigImportCompleted(
                 ExternalAgentConfigImportCompletedNotification {
                     import_id: "import".to_string(),
@@ -1422,6 +1598,7 @@ mod tests {
             )
         ));
         assert!(server_notification_requires_delivery(
+<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
             &ServerNotification::FuzzyFileSearchSessionCompleted(
                 FuzzyFileSearchSessionCompletedNotification {
                     session_id: "session".to_string(),
@@ -1454,6 +1631,30 @@ mod tests {
                     files: Vec::new(),
                 },
             )
+=======
+            &ServerNotification::ThreadAttachmentUpdated(ThreadAttachmentUpdatedNotification {
+                thread_id: "thread-1".to_string(),
+                attachment_type: "pull_request".to_string(),
+                identity_key: r#"["github.com","openai","codex",123]"#.to_string(),
+                attachment_id: "attachment-1".to_string(),
+                operation: ThreadAttachmentOperation::Deleted,
+            })
+        ));
+        assert!(server_notification_requires_delivery(
+            &ServerNotification::ItemCompleted(ItemCompletedNotification {
+                item: ThreadItem::AgentMessage {
+                    id: "item-1".to_string(),
+                    text: "Still working".to_string(),
+                    phase: None,
+                    memory_citation: None,
+                    delivery: Some(AgentMessageDelivery::Async),
+                    questions: None,
+                },
+                thread_id: "thread-1".to_string(),
+                turn_id: "turn-1".to_string(),
+                completed_at_ms: 0,
+            })
+>>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
         ));
     }
 }

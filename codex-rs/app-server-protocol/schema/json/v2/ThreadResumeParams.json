@@ -102,6 +102,18 @@
         }
       ]
     },
+    "ConfigurationReasoning": {
+      "description": "Reasoning settings interpreted by the backend for the routed model.",
+      "properties": {
+        "effort": {
+          "$ref": "#/definitions/ReasoningEffort"
+        }
+      },
+      "required": [
+        "effort"
+      ],
+      "type": "object"
+    },
     "ContentItem": {
       "oneOf": [
         {
@@ -123,6 +135,32 @@
           "type": "object"
         },
         {
+          "anyOf": [
+            {
+              "properties": {
+                "image_url": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "image_url"
+              ],
+              "title": "ImageUrlContentItem",
+              "type": "object"
+            },
+            {
+              "properties": {
+                "file_id": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "file_id"
+              ],
+              "title": "FileIdContentItem",
+              "type": "object"
+            }
+          ],
           "properties": {
             "detail": {
               "anyOf": [
@@ -134,9 +172,6 @@
                 }
               ]
             },
-            "image_url": {
-              "type": "string"
-            },
             "type": {
               "const": "input_image",
               "title": "InputImageContentItemType",
@@ -144,8 +179,12 @@
             }
           },
           "required": [
+<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
             "type",
             "image_url"
+=======
+            "type"
+>>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
           ],
           "title": "InputImageContentItem",
           "type": "object"
@@ -293,6 +332,32 @@
           "type": "object"
         },
         {
+          "anyOf": [
+            {
+              "properties": {
+                "image_url": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "image_url"
+              ],
+              "title": "ImageUrlFunctionCallOutputContentItem",
+              "type": "object"
+            },
+            {
+              "properties": {
+                "file_id": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "file_id"
+              ],
+              "title": "FileIdFunctionCallOutputContentItem",
+              "type": "object"
+            }
+          ],
           "properties": {
             "detail": {
               "anyOf": [
@@ -304,9 +369,6 @@
                 }
               ]
             },
-            "image_url": {
-              "type": "string"
-            },
             "type": {
               "const": "input_image",
               "title": "InputImageFunctionCallOutputContentItemType",
@@ -314,8 +376,12 @@
             }
           },
           "required": [
+<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
             "type",
             "image_url"
+=======
+            "type"
+>>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
           ],
           "title": "InputImageFunctionCallOutputContentItem",
           "type": "object"
@@ -470,6 +536,11 @@
         "friendly",
         "pragmatic"
       ],
+      "type": "string"
+    },
+    "ReasoningEffort": {
+      "description": "A non-empty reasoning effort value advertised by the model.",
+      "minLength": 1,
       "type": "string"
     },
     "ReasoningItemContent": {
@@ -755,6 +826,15 @@
             "call_id": {
               "type": "string"
             },
+            "encrypted_function_args": {
+              "items": {
+                "type": "string"
+              },
+              "type": [
+                "array",
+                "null"
+              ]
+            },
             "id": {
               "anyOf": [
                 {
@@ -854,7 +934,10 @@
         {
           "properties": {
             "call_id": {
-              "type": "string"
+              "type": [
+                "string",
+                "null"
+              ]
             },
             "id": {
               "anyOf": [
@@ -876,6 +959,18 @@
                 }
               ]
             },
+            "name": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "namespace": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "output": {
               "$ref": "#/$defs/FunctionCallOutputBody"
             },
@@ -886,9 +981,14 @@
             }
           },
           "required": [
+<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
             "type",
             "call_id",
             "output"
+=======
+            "output",
+            "type"
+>>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
           ],
           "title": "FunctionCallOutputResponseItem",
           "type": "object"
@@ -1189,6 +1289,27 @@
           "type": "object"
         },
         {
+          "description": "A durable input control interpreted by the backend at its position in history.",
+          "properties": {
+            "reasoning": {
+              "$ref": "#/definitions/ConfigurationReasoning"
+            },
+            "type": {
+              "enum": [
+                "configuration_update"
+              ],
+              "title": "ConfigurationUpdateResponseItemType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "reasoning",
+            "type"
+          ],
+          "title": "ConfigurationUpdateResponseItem",
+          "type": "object"
+        },
+        {
           "properties": {
             "type": {
               "const": "compaction_trigger",
@@ -1474,6 +1595,10 @@
         "string",
         "null"
       ]
+    },
+    "excludeTurns": {
+      "description": "When true, return only thread metadata and live-resume state without populating `thread.turns`. This is useful when the client plans to call `thread/turns/list` immediately after resuming. Full-history hydration is deprecated for paginated threads; use this with `thread/turns/list` and `thread/items/list` instead.",
+      "type": "boolean"
     },
     "model": {
       "description": "Configuration overrides for the resumed thread, if any.",

@@ -5,6 +5,7 @@ edition.workspace = true
 license.workspace = true
 
 [lib]
+<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
 name = "codex_realtime_webrtc"
 path = "src/lib.rs"
 test = false
@@ -19,3 +20,27 @@ libwebrtc = { version = "0.3.26", git = "https://github.com/juberti-oai/rust-sdk
 
 [lints]
 workspace = true
+=======
+doctest = false
+
+[lints]
+workspace = true
+
+[dependencies]
+codex-build-info = { workspace = true }
+anyhow = { workspace = true }
+codex-install-context = { workspace = true }
+codex-utils-pty = { workspace = true }
+futures = { workspace = true, features = ["std"] }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "sync", "time"] }
+tracing = { workspace = true }
+
+[dev-dependencies]
+ctor = { workspace = true }
+pretty_assertions = { workspace = true }
+
+[target.'cfg(unix)'.dev-dependencies]
+libc = { workspace = true }
+>>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360

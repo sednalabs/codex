@@ -1,11 +1,21 @@
 use anyhow::Context;
 use anyhow::Result;
 use chrono::Utc;
+use codex_app_server_protocol::ThreadRealtimeItemContent;
+use codex_app_server_protocol::ThreadRealtimeSessionOutcome;
+use codex_app_server_protocol::ThreadRealtimeTranscriptRole;
+use codex_app_server_protocol::ThreadTimelineEntry;
+use codex_config::config_toml::RealtimeWsMode;
 use codex_config::config_toml::RealtimeWsVersion;
+use codex_core::StartThreadOptions;
+use codex_core::TurnInputRequest;
 use codex_core::test_support::auth_manager_from_auth;
+use codex_history::InitialHistory;
+use codex_history::RolloutItem;
 use codex_login::CodexAuth;
 use codex_login::OPENAI_API_KEY_ENV_VAR;
 use codex_protocol::ThreadId;
+use codex_protocol::mcp::ClientMcpExtensions;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::CodexErrorInfo;
@@ -15,18 +25,22 @@ use codex_protocol::protocol::ConversationStartTransport;
 use codex_protocol::protocol::ConversationTextParams;
 use codex_protocol::protocol::ConversationTextRole;
 use codex_protocol::protocol::EventMsg;
-use codex_protocol::protocol::InitialHistory;
+use codex_protocol::protocol::InternalSessionSource;
 use codex_protocol::protocol::Op;
 use codex_protocol::protocol::RealtimeAudioFrame;
 use codex_protocol::protocol::RealtimeConversationRealtimeEvent;
 use codex_protocol::protocol::RealtimeConversationVersion;
 use codex_protocol::protocol::RealtimeEvent;
+use codex_protocol::protocol::RealtimeHandoffRequested;
 use codex_protocol::protocol::RealtimeNoopRequested;
 use codex_protocol::protocol::RealtimeOutputModality;
+use codex_protocol::protocol::RealtimeTranscriptEntry;
 use codex_protocol::protocol::RealtimeVoice;
-use codex_protocol::protocol::RolloutItem;
 use codex_protocol::protocol::SessionSource;
+use codex_protocol::protocol::ThreadHistoryMode;
+use codex_protocol::protocol::ThreadSource;
 use codex_protocol::user_input::UserInput;
+use codex_thread_store::ListTimelineParams;
 use core_test_support::responses;
 use core_test_support::responses::WebSocketConnectionConfig;
 use core_test_support::responses::start_mock_server;
@@ -39,6 +53,8 @@ use core_test_support::test_codex::TestCodex;
 use core_test_support::test_codex::test_codex;
 use core_test_support::wait_for_event;
 use core_test_support::wait_for_event_match;
+use futures::SinkExt;
+use futures::StreamExt;
 use pretty_assertions::assert_eq;
 use serde_json::Value;
 use serde_json::json;
@@ -48,13 +64,26 @@ use std::process::Command;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::time::Duration;
+use test_case::test_case;
+use test_case::test_matrix;
+use tokio::io::AsyncReadExt;
+use tokio::io::AsyncWriteExt;
 use tokio::sync::oneshot;
 use tokio::time::timeout;
+<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
+=======
+use tokio_tungstenite::accept_hdr_async;
+use tokio_tungstenite::tungstenite::Message;
+use tokio_tungstenite::tungstenite::handshake::server::Request;
+use tokio_tungstenite::tungstenite::handshake::server::Response;
+use uuid::Uuid;
+>>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
 use wiremock::Match;
 use wiremock::Mock;
 use wiremock::Request as WiremockRequest;
 use wiremock::ResponseTemplate;
 use wiremock::matchers::method;
+use wiremock::matchers::path;
 use wiremock::matchers::path_regex;
 
 const STARTUP_CONTEXT_HEADER: &str = "Startup context from Codex.";
@@ -284,6 +313,7 @@ async fn conversation_start_audio_text_close_round_trip() -> Result<()> {
     test.codex
         .submit(Op::RealtimeConversationStart(ConversationStartParams {
             client_managed_handoffs: false,
+            delegation_ack_filler: None,
             flush_transcript_tail_on_session_end: false,
             codex_responses_as_items: false,
             codex_response_item_prefix: None,
@@ -294,6 +324,8 @@ async fn conversation_start_audio_text_close_round_trip() -> Result<()> {
             output_modality: RealtimeOutputModality::Audio,
             include_startup_context: true,
             initial_items: Vec::new(),
+            realtime_start_instructions: None,
+            realtime_end_instructions: None,
             prompt: Some(Some("backend prompt".to_string())),
             realtime_session_id: None,
             transport: None,
@@ -414,7 +446,145 @@ async fn conversation_start_audio_text_close_round_trip() -> Result<()> {
         Some("requested" | "transport_closed")
     ));
 
+    test.codex.ensure_rollout_materialized().await;
+    let history = test.codex.load_history(/*include_archived*/ false).await?;
+    assert!(
+        !history
+            .items
+            .iter()
+            .any(|item| matches!(item, RolloutItem::RealtimeItem(_)))
+    );
+
     server.shutdown().await;
+    Ok(())
+}
+
+// No host consumes realtime events in this test. The injected store must receive
+// canonical history even when the host has no realtime notification adapter.
+#[test_case(ThreadRealtimeSessionOutcome::Ended; "transport_close")]
+#[test_case(ThreadRealtimeSessionOutcome::Failed; "error_close")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn conversation_records_history_without_an_event_observer(
+    outcome: ThreadRealtimeSessionOutcome,
+) -> Result<()> {
+    skip_if_no_network!(Ok(()));
+    let api_server = start_mock_server().await;
+    let mut events = vec![
+        json!({ "type": "session.updated", "session": { "id": "voice-1" } }),
+        json!({ "type": "response.output_text.delta", "delta": "assistant first" }),
+        json!({ "type": "conversation.item.input_audio_transcription.delta", "delta": "user second" }),
+    ];
+    if outcome == ThreadRealtimeSessionOutcome::Failed {
+        events.push(json!({ "type": "error", "error": { "message": "fixture failure" } }));
+    }
+    let realtime_server = start_websocket_server(vec![vec![events.clone()], vec![events]]).await;
+    let mut builder = test_codex()
+        .with_history_mode(ThreadHistoryMode::Paginated)
+        .with_config({
+            let url = realtime_server.uri().to_string();
+            move |config| {
+                config.experimental_realtime_ws_base_url = Some(url);
+                config.realtime.version = RealtimeWsVersion::V2;
+            }
+        });
+    let test = builder.build_with_auto_env(&api_server).await?;
+    test.codex.ensure_rollout_materialized().await;
+    let mut expected = Vec::new();
+    for session_count in 1..=2 {
+        test.codex
+            .submit(Op::RealtimeConversationStart(ConversationStartParams {
+                client_managed_handoffs: false,
+                delegation_ack_filler: None,
+                flush_transcript_tail_on_session_end: false,
+                codex_responses_as_items: false,
+                codex_response_item_prefix: None,
+                codex_response_handoff_mode:
+                    codex_protocol::protocol::CodexResponseHandoffMode::Thinking,
+                codex_response_handoff_channel_prefixes: None,
+                model: None,
+                output_modality: RealtimeOutputModality::Audio,
+                include_startup_context: false,
+                initial_items: Vec::new(),
+                realtime_start_instructions: None,
+                realtime_end_instructions: None,
+                prompt: Some(Some("fixture".to_string())),
+                realtime_session_id: Some("voice-1".to_string()),
+                transport: None,
+                version: None,
+                voice: None,
+            }))
+            .await?;
+        let items = timeout(Duration::from_secs(10), async {
+            loop {
+                test.thread_store
+                    .flush_thread(test.session_configured.thread_id)
+                    .await?;
+                let history = test
+                    .thread_store
+                    .list_timeline(ListTimelineParams {
+                        thread_id: test.session_configured.thread_id,
+                        cursor: None,
+                        page_size: 100,
+                    })
+                    .await?;
+                let items = history
+                    .items
+                    .into_iter()
+                    .filter_map(|item| match item {
+                        ThreadTimelineEntry::Realtime { item, .. } => Some(item),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>();
+                if items
+                    .iter()
+                    .filter(|item| {
+                        matches!(
+                            item.content,
+                            ThreadRealtimeItemContent::RealtimeSessionClosed { .. }
+                        )
+                    })
+                    .count()
+                    == session_count
+                {
+                    break Ok::<_, anyhow::Error>(items);
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .context("Core should persist history without a host observer")??;
+        expected.extend([
+            ThreadRealtimeItemContent::RealtimeSessionStarted,
+            ThreadRealtimeItemContent::TranscriptSegment {
+                role: ThreadRealtimeTranscriptRole::Assistant,
+                text: "assistant first".to_string(),
+            },
+            ThreadRealtimeItemContent::TranscriptSegment {
+                role: ThreadRealtimeTranscriptRole::User,
+                text: "user second".to_string(),
+            },
+            ThreadRealtimeItemContent::RealtimeSessionClosed { outcome },
+        ]);
+        assert_eq!(
+            items
+                .iter()
+                .map(|item| item.content.clone())
+                .collect::<Vec<_>>(),
+            expected
+        );
+        let ids = items
+            .iter()
+            .map(|item| item.id.as_str())
+            .collect::<std::collections::HashSet<_>>();
+        assert_eq!(ids.len(), items.len());
+        assert!(
+            items
+                .iter()
+                .all(|item| item.realtime_session_id == "voice-1")
+        );
+    }
+    test.codex.submit(Op::Shutdown).await?;
+    realtime_server.shutdown().await;
     Ok(())
 }
 
@@ -434,6 +604,7 @@ async fn conversation_start_defaults_to_v2_and_gpt_realtime_1_5() -> Result<()> 
     test.codex
         .submit(Op::RealtimeConversationStart(ConversationStartParams {
             client_managed_handoffs: false,
+            delegation_ack_filler: None,
             flush_transcript_tail_on_session_end: false,
             codex_responses_as_items: false,
             codex_response_item_prefix: None,
@@ -444,6 +615,8 @@ async fn conversation_start_defaults_to_v2_and_gpt_realtime_1_5() -> Result<()> 
             output_modality: RealtimeOutputModality::Audio,
             include_startup_context: true,
             initial_items: Vec::new(),
+            realtime_start_instructions: None,
+            realtime_end_instructions: None,
             prompt: Some(Some("backend prompt".to_string())),
             realtime_session_id: None,
             transport: None,
@@ -489,8 +662,152 @@ async fn conversation_start_defaults_to_v2_and_gpt_realtime_1_5() -> Result<()> 
     Ok(())
 }
 
+#[test_matrix(
+    [ConversationStartTransport::Websocket, ConversationStartTransport::ExistingCall { call_id: "rtc_existing".to_string(), sideband_base_url: None }],
+    [None, Some(ThreadSource::User)]
+)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn conversation_webrtc_frameless_chatgpt_sends_codex_headers_to_backend() -> Result<()> {
+async fn conversation_websocket_transports_send_codex_headers_without_creating_a_call(
+    transport: ConversationStartTransport,
+    thread_source: Option<ThreadSource>,
+) -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let server = start_mock_server().await;
+    let realtime_server = start_websocket_server(vec![vec![vec![json!({
+        "type": "session.started",
+        "session": { "id": "rtc_existing", "instructions": "backend prompt" }
+    })]]])
+    .await;
+    let realtime_ws_base_url = realtime_server.uri().to_string();
+    let mut builder = test_codex().with_config(move |config| {
+        config.experimental_realtime_ws_backend_prompt = Some("backend prompt".to_string());
+        config.experimental_realtime_ws_base_url = Some(realtime_ws_base_url);
+        config.realtime.session_type = RealtimeWsMode::Transcription;
+    });
+    let test = builder.build_with_auto_env(&server).await?;
+    let conversation = test
+        .thread_manager
+        .start_thread(StartThreadOptions {
+            thread_source: thread_source.clone(),
+            environments: Some(test.codex.config_snapshot().await.environments.environments),
+            ..StartThreadOptions::new(test.config.clone())
+        })
+        .await?;
+    let codex = &conversation.thread;
+
+    codex
+        .submit(Op::RealtimeConversationStart(ConversationStartParams {
+            client_managed_handoffs: false,
+            delegation_ack_filler: None,
+            flush_transcript_tail_on_session_end: false,
+            codex_responses_as_items: false,
+            codex_response_item_prefix: None,
+            codex_response_handoff_mode:
+                codex_protocol::protocol::CodexResponseHandoffMode::Thinking,
+            codex_response_handoff_channel_prefixes: None,
+            model: None,
+            output_modality: RealtimeOutputModality::Audio,
+            include_startup_context: false,
+            initial_items: Vec::new(),
+            realtime_start_instructions: None,
+            realtime_end_instructions: None,
+            prompt: None,
+            realtime_session_id: None,
+            transport: Some(transport.clone()),
+            version: Some(RealtimeConversationVersion::V3),
+            voice: None,
+        }))
+        .await?;
+
+    let started = wait_for_event_match(codex, |msg| match msg {
+        EventMsg::RealtimeConversationStarted(started) => Some(Ok(started.clone())),
+        EventMsg::Error(err) => Some(Err(err.clone())),
+        _ => None,
+    })
+    .await
+    .expect("realtime websocket connection failed");
+    let (expected_uri, expected_realtime_session_id) = match transport {
+        ConversationStartTransport::Websocket => (
+            "/v1/live?model=gpt-live-1-codex",
+            Some(conversation.thread_id.to_string()),
+        ),
+        ConversationStartTransport::ExistingCall { .. } => ("/v1/live/rtc_existing", None),
+        ConversationStartTransport::Webrtc { .. } => unreachable!("websocket transports only"),
+    };
+    assert_eq!(
+        (started.version, started.realtime_session_id),
+        (
+            RealtimeConversationVersion::V3,
+            expected_realtime_session_id.clone()
+        )
+    );
+
+    let handshake = realtime_server.single_handshake();
+    assert_eq!(handshake.uri(), expected_uri);
+    assert_eq!(
+        handshake.header("authorization").as_deref(),
+        Some("Bearer dummy")
+    );
+    assert_eq!(
+        handshake.header("x-session-id"),
+        expected_realtime_session_id
+    );
+    assert_eq!(
+        (
+            handshake.header("session-id"),
+            handshake.header("thread-id")
+        ),
+        (
+            Some(conversation.session_configured.session_id.to_string()),
+            Some(conversation.thread_id.to_string()),
+        )
+    );
+    assert_eq!(
+        handshake
+            .header("x-codex-turn-metadata")
+            .map(|value| serde_json::from_str::<Value>(&value))
+            .transpose()?,
+        thread_source.map(|source| json!({ "thread_source": source }))
+    );
+    assert!(
+        server
+            .received_requests()
+            .await
+            .context("mock server should record requests")?
+            .iter()
+            .all(|request| !request.url.path().ends_with("/realtime/calls")),
+        "websocket transports must not create another realtime call over HTTP"
+    );
+
+    codex.submit(Op::RealtimeConversationClose).await?;
+    let _closed = wait_for_event_match(codex, |msg| match msg {
+        EventMsg::RealtimeConversationClosed(closed) => Some(closed.clone()),
+        _ => None,
+    })
+    .await;
+    codex.shutdown_and_wait().await?;
+    test.codex.shutdown_and_wait().await?;
+    realtime_server.shutdown().await;
+    Ok(())
+}
+
+#[test_case(None, "gpt-live-1-codex", None, None; "default model without source")]
+#[test_case(Some("session-override-model"), "session-override-model", None, None; "explicit model without source")]
+#[test_case(None, "gpt-live-1-codex", Some(ThreadSource::User), Some("user".to_string()); "user source")]
+#[test_case(None, "gpt-live-1-codex", Some(ThreadSource::Feature("voice_chat".to_string())), Some("voice_chat".to_string()); "voice chat source")]
+#[test_case(None, "gpt-live-1-codex", Some(ThreadSource::Feature("realtime_voice".to_string())), Some("realtime_voice".to_string()); "realtime voice source")]
+#[test_case(None, "gpt-live-1-codex", Some(ThreadSource::GuardianReview), Some("guardian_review".to_string()); "child shares parent session")]
+#[test_case(None, "gpt-live-1-codex", Some(ThreadSource::Feature("x".repeat(/*n*/ 256))), Some("x".repeat(/*n*/ 256)); "source at byte limit")]
+#[test_case(None, "gpt-live-1-codex", Some(ThreadSource::Feature("x".repeat(/*n*/ 257))), None; "oversized source omitted")]
+#[test_case(None, "gpt-live-1-codex", Some(ThreadSource::Feature("é\r\n\"".to_string())), Some("é\r\n\"".to_string()); "source escaped for headers")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn conversation_webrtc_frameless_chatgpt_sends_codex_headers_to_backend(
+    model: Option<&str>,
+    expected_model: &str,
+    thread_source: Option<ThreadSource>,
+    expected_source: Option<String>,
+) -> Result<()> {
     skip_if_no_network!(Ok(()));
 
     let server = start_mock_server().await;
@@ -520,23 +837,56 @@ async fn conversation_webrtc_frameless_chatgpt_sends_codex_headers_to_backend() 
             config.experimental_realtime_ws_backend_prompt = Some("backend prompt".to_string());
             config.experimental_realtime_ws_base_url = Some(realtime_ws_base_url);
         });
-    let test = builder.build(&server).await?;
+    let test = builder.build_with_auto_env(&server).await?;
 
-    test.codex
+    let mut options = StartThreadOptions {
+        thread_source: thread_source.clone(),
+        environments: Some(test.codex.config_snapshot().await.environments.environments),
+        ..StartThreadOptions::new(test.config.clone())
+    };
+    let conversation = if thread_source == Some(ThreadSource::GuardianReview) {
+        options.session_source = Some(SessionSource::Internal(InternalSessionSource::Guardian));
+        let child = test
+            .thread_manager
+            .spawn_internal_session(test.session_configured.thread_id, options)
+            .await?;
+        assert_eq!(
+            child.session_configured.session_id,
+            test.session_configured.session_id
+        );
+        assert_ne!(
+            child.session_configured.session_id.to_string(),
+            child.session_configured.thread_id.to_string()
+        );
+        child
+    } else {
+        test.thread_manager.start_thread(options).await?
+    };
+    let codex = &conversation.thread;
+    assert_eq!(codex.config_snapshot().await.thread_source, thread_source);
+    let requested_realtime_session_id = Uuid::new_v4().to_string();
+
+    codex
         .submit(Op::RealtimeConversationStart(ConversationStartParams {
             client_managed_handoffs: false,
+            delegation_ack_filler: None,
             flush_transcript_tail_on_session_end: false,
             codex_responses_as_items: false,
             codex_response_item_prefix: None,
             codex_response_handoff_mode:
                 codex_protocol::protocol::CodexResponseHandoffMode::Thinking,
             codex_response_handoff_channel_prefixes: None,
-            model: Some("session-override-model".to_string()),
+            model: model.map(str::to_string),
             output_modality: RealtimeOutputModality::Audio,
             include_startup_context: false,
-            initial_items: Vec::new(),
+            initial_items: vec![ConversationTextParams {
+                text: "private voice transcript".to_string(),
+                role: ConversationTextRole::User,
+            }],
+            realtime_start_instructions: None,
+            realtime_end_instructions: None,
             prompt: Some(Some("backend prompt".to_string())),
-            realtime_session_id: None,
+            realtime_session_id: Some(requested_realtime_session_id.clone()),
             transport: Some(ConversationStartTransport::Webrtc {
                 sdp: "v=offer\r\n".to_string(),
             }),
@@ -545,7 +895,7 @@ async fn conversation_webrtc_frameless_chatgpt_sends_codex_headers_to_backend() 
         }))
         .await?;
 
-    let created = wait_for_event_match(&test.codex, |msg| match msg {
+    let created = wait_for_event_match(codex, |msg| match msg {
         EventMsg::RealtimeConversationSdp(created) => Some(Ok(created.clone())),
         EventMsg::Error(err) => Some(Err(err.clone())),
         _ => None,
@@ -555,8 +905,10 @@ async fn conversation_webrtc_frameless_chatgpt_sends_codex_headers_to_backend() 
     assert_eq!(created.sdp, "v=answer\r\n");
 
     let request = capture.single_request();
-    let expected_session_id = test.session_configured.session_id.to_string();
-    let expected_thread_id = test.session_configured.thread_id.to_string();
+    let expected_session_id = conversation.session_configured.session_id.to_string();
+    let expected_thread_id = conversation.session_configured.thread_id.to_string();
+    assert_ne!(requested_realtime_session_id, expected_session_id);
+    assert_ne!(requested_realtime_session_id, expected_thread_id);
     assert_eq!(
         (
             request.url.path(),
@@ -573,6 +925,14 @@ async fn conversation_webrtc_frameless_chatgpt_sends_codex_headers_to_backend() 
                 .headers
                 .get("thread-id")
                 .and_then(|value| value.to_str().ok()),
+            request
+                .headers
+                .get("x-session-id")
+                .and_then(|value| value.to_str().ok()),
+            request
+                .headers
+                .get("authorization")
+                .and_then(|value| value.to_str().ok()),
         ),
         (
             "/backend-api/codex/realtime/calls",
@@ -580,27 +940,48 @@ async fn conversation_webrtc_frameless_chatgpt_sends_codex_headers_to_backend() 
             Some("quicksilver=v2"),
             Some(expected_session_id.as_str()),
             Some(expected_thread_id.as_str()),
+            Some(requested_realtime_session_id.as_str()),
+            Some("Bearer Access Token"),
         )
     );
+    let metadata = request
+        .headers
+        .get("x-codex-turn-metadata")
+        .map(|value| serde_json::from_slice::<Value>(value.as_bytes()))
+        .transpose()?;
+    // A continuous Voice call has no single backing turn. Only the saved source belongs here.
+    assert_eq!(
+        metadata,
+        expected_source.map(|source| json!({ "thread_source": source }))
+    );
+    for value in request.headers.values() {
+        let value = value.to_str()?;
+        assert!(!value.contains("backend prompt"));
+        assert!(!value.contains("private voice transcript"));
+    }
     let body: Value =
         serde_json::from_slice(&request.body).context("backend body should be JSON")?;
     assert_eq!(
         json!({
             "sdp": body["sdp"],
             "delegation": body["session"]["delegation"]["type"],
+            "model": body["session"]["model"],
         }),
         json!({
             "sdp": "v=offer\r\n",
             "delegation": "client",
+            "model": expected_model,
         })
     );
 
-    test.codex.submit(Op::RealtimeConversationClose).await?;
-    let _closed = wait_for_event_match(&test.codex, |msg| match msg {
+    codex.submit(Op::RealtimeConversationClose).await?;
+    let _closed = wait_for_event_match(codex, |msg| match msg {
         EventMsg::RealtimeConversationClosed(closed) => Some(closed.clone()),
         _ => None,
     })
     .await;
+    codex.shutdown_and_wait().await?;
+    test.codex.shutdown_and_wait().await?;
     realtime_server.shutdown().await;
     Ok(())
 }
@@ -649,6 +1030,7 @@ async fn conversation_webrtc_start_posts_generated_session() -> Result<()> {
     test.codex
         .submit(Op::RealtimeConversationStart(ConversationStartParams {
             client_managed_handoffs: false,
+            delegation_ack_filler: None,
             flush_transcript_tail_on_session_end: false,
             codex_responses_as_items: false,
             codex_response_item_prefix: None,
@@ -659,6 +1041,8 @@ async fn conversation_webrtc_start_posts_generated_session() -> Result<()> {
             output_modality: RealtimeOutputModality::Audio,
             include_startup_context: true,
             initial_items: Vec::new(),
+            realtime_start_instructions: None,
+            realtime_end_instructions: None,
             prompt: Some(Some("backend prompt".to_string())),
             realtime_session_id: None,
             transport: Some(ConversationStartTransport::Webrtc {
@@ -799,6 +1183,331 @@ async fn conversation_webrtc_start_posts_generated_session() -> Result<()> {
     Ok(())
 }
 
+#[derive(Clone, Copy)]
+enum SidebandReconnectTransport {
+    Webrtc,
+    ExistingCallConfiguredEndpoint,
+    ExistingCallPerCallEndpoint,
+}
+
+#[test_case(SidebandReconnectTransport::Webrtc; "core-created webrtc")]
+#[test_case(
+    SidebandReconnectTransport::ExistingCallConfiguredEndpoint;
+    "client-created existing call"
+)]
+#[test_case(
+    SidebandReconnectTransport::ExistingCallPerCallEndpoint;
+    "client-created existing call with per-call endpoint"
+)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn conversation_webrtc_live_reconnects_sideband_after_unclean_disconnect(
+    transport: SidebandReconnectTransport,
+) -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let attaches_existing_call = !matches!(transport, SidebandReconnectTransport::Webrtc);
+    let server = start_mock_server().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/live"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("Location", "/v1/live/rtc_reconnect")
+                .set_body_string("v=answer\r\n"),
+        )
+        .mount(&server)
+        .await;
+    let _response_mock = responses::mount_sse_once(
+        &server,
+        responses::sse(vec![
+            responses::ev_response_created("resp-reconnect"),
+            responses::ev_assistant_message("msg-reconnect", "ok"),
+            responses::ev_completed("resp-reconnect"),
+        ]),
+    )
+    .await;
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let realtime_ws_base_url = format!("ws://{}", listener.local_addr()?);
+    let unused_endpoint = start_websocket_server(vec![vec![]]).await;
+    let configured_base_url = match transport {
+        SidebandReconnectTransport::Webrtc
+        | SidebandReconnectTransport::ExistingCallConfiguredEndpoint => {
+            realtime_ws_base_url.clone()
+        }
+        SidebandReconnectTransport::ExistingCallPerCallEndpoint => {
+            unused_endpoint.uri().to_string()
+        }
+    };
+    let transport = match transport {
+        SidebandReconnectTransport::Webrtc => ConversationStartTransport::Webrtc {
+            sdp: "v=offer\r\n".to_string(),
+        },
+        SidebandReconnectTransport::ExistingCallConfiguredEndpoint => {
+            ConversationStartTransport::ExistingCall {
+                call_id: "rtc_reconnect".to_string(),
+                sideband_base_url: None,
+            }
+        }
+        SidebandReconnectTransport::ExistingCallPerCallEndpoint => {
+            ConversationStartTransport::ExistingCall {
+                call_id: "rtc_reconnect".to_string(),
+                sideband_base_url: Some(realtime_ws_base_url),
+            }
+        }
+    };
+    let (inbound_flood_started_tx, inbound_flood_started_rx) = oneshot::channel();
+    let sideband_server = tokio::spawn(async move {
+        let validate_handshake = |request: &Request, response: Response| {
+            assert_eq!(request.uri().to_string(), "/v1/live/rtc_reconnect");
+            Ok(response)
+        };
+        let (stream, _) = listener.accept().await?;
+        let mut websocket = accept_hdr_async(stream, validate_handshake).await?;
+        websocket
+            .send(Message::Text(
+                json!({
+                    "type": "input_transcript.added",
+                    "item": { "text": "hello wor" }
+                })
+                .to_string()
+                .into(),
+            ))
+            .await?;
+        let (mut websocket_tx, mut websocket_rx) = websocket.split();
+        inbound_flood_started_tx
+            .send(())
+            .map_err(|_| anyhow::anyhow!("realtime client dropped before inbound flood"))?;
+        let inbound_flood = tokio::spawn(async move {
+            let mut event_count = 0_u32;
+            loop {
+                websocket_tx
+                    .send(Message::Text(
+                        json!({
+                            "type": "session.updated",
+                            "session": { "id": "sess_reconnect_flood" }
+                        })
+                        .to_string()
+                        .into(),
+                    ))
+                    .await?;
+                event_count += 1;
+                if event_count.is_multiple_of(64) {
+                    tokio::task::yield_now().await;
+                }
+            }
+            #[allow(unreachable_code)]
+            Ok::<(), anyhow::Error>(())
+        });
+        timeout(Duration::from_secs(5), async {
+            loop {
+                let message = websocket_rx
+                    .next()
+                    .await
+                    .context("sideband closed before outbound text")??;
+                let Message::Text(payload) = message else {
+                    continue;
+                };
+                let payload: Value = serde_json::from_str(&payload)?;
+                let saw_outbound_text = payload["type"] == "session.context.append"
+                    && payload["content"]
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .filter_map(|content| content["text"].as_str())
+                        .any(|text| text.contains("outbound during inbound flood"));
+                if saw_outbound_text {
+                    break Ok::<(), anyhow::Error>(());
+                }
+            }
+        })
+        .await
+        .context("outbound text was starved by sustained inbound traffic")??;
+        inbound_flood.abort();
+        drop(websocket_rx);
+
+        let (stream, _) = listener.accept().await?;
+        let mut websocket = accept_hdr_async(stream, validate_handshake).await?;
+        websocket
+            .send(Message::Text(
+                json!({
+                    "type": "turn.done",
+                    "turn": { "role": "user", "transcript": "hello world" }
+                })
+                .to_string()
+                .into(),
+            ))
+            .await?;
+        websocket
+            .send(Message::Text(
+                json!({
+                    "type": "output_transcript.added",
+                    "item": { "text": "after reconnect" }
+                })
+                .to_string()
+                .into(),
+            ))
+            .await?;
+        websocket
+            .send(Message::Text(
+                json!({
+                    "type": "delegation.created",
+                    "item": {
+                        "id": "handoff_reconnect",
+                        "type": "delegation",
+                        "target": "client",
+                        "content": [{ "type": "input_text", "text": "hello world" }]
+                    }
+                })
+                .to_string()
+                .into(),
+            ))
+            .await?;
+        drop(websocket);
+
+        let (mut stream, _) = listener.accept().await?;
+        let mut request = vec![0_u8; 4096];
+        let request_len = stream.read(&mut request).await?;
+        if !request[..request_len].starts_with(b"GET /v1/live/rtc_reconnect HTTP/1.1\r\n") {
+            anyhow::bail!("expected reconnect websocket handshake for the same call");
+        }
+        stream
+            .write_all(b"HTTP/1.1 410 Gone\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+            .await?;
+        if timeout(Duration::from_secs(1), listener.accept())
+            .await
+            .is_ok()
+        {
+            anyhow::bail!("terminal sideband response was retried");
+        }
+        Ok::<(), anyhow::Error>(())
+    });
+
+    let mut builder = test_codex().with_config(move |config| {
+        config.experimental_realtime_ws_backend_prompt = Some("backend prompt".to_string());
+        config.experimental_realtime_ws_model = Some("realtime-test-model".to_string());
+        config.experimental_realtime_ws_startup_context = Some(String::new());
+        config.experimental_realtime_ws_base_url = Some(configured_base_url);
+        config.realtime.version = RealtimeWsVersion::V3;
+    });
+    let test = builder.build_with_auto_env(&server).await?;
+
+    test.codex
+        .submit(Op::RealtimeConversationStart(ConversationStartParams {
+            client_managed_handoffs: false,
+            delegation_ack_filler: None,
+            flush_transcript_tail_on_session_end: false,
+            codex_responses_as_items: false,
+            codex_response_item_prefix: None,
+            codex_response_handoff_mode:
+                codex_protocol::protocol::CodexResponseHandoffMode::Thinking,
+            codex_response_handoff_channel_prefixes: None,
+            model: None,
+            output_modality: RealtimeOutputModality::Audio,
+            include_startup_context: !attaches_existing_call,
+            initial_items: Vec::new(),
+            realtime_start_instructions: None,
+            realtime_end_instructions: None,
+            prompt: if attaches_existing_call {
+                None
+            } else {
+                Some(Some("backend prompt".to_string()))
+            },
+            realtime_session_id: attaches_existing_call.then(|| "sess_client_owned".to_string()),
+            transport: Some(transport),
+            version: Some(RealtimeConversationVersion::V3),
+            voice: None,
+        }))
+        .await?;
+    timeout(Duration::from_secs(5), inbound_flood_started_rx)
+        .await
+        .context("timed out waiting for sustained inbound traffic")?
+        .context("sideband server stopped before sustained inbound traffic")?;
+    test.codex
+        .submit(Op::RealtimeConversationText(ConversationTextParams {
+            text: "outbound during inbound flood".to_string(),
+            role: ConversationTextRole::User,
+        }))
+        .await?;
+
+    let handoff = timeout(Duration::from_secs(10), async {
+        let mut saw_post_reconnect_transcript = false;
+        loop {
+            match test.codex.next_event().await?.msg {
+                EventMsg::RealtimeConversationRealtime(RealtimeConversationRealtimeEvent {
+                    payload: RealtimeEvent::OutputTranscriptDelta(delta),
+                }) if delta.delta == "after reconnect" => {
+                    saw_post_reconnect_transcript = true;
+                }
+                EventMsg::RealtimeConversationRealtime(RealtimeConversationRealtimeEvent {
+                    payload: RealtimeEvent::HandoffRequested(handoff),
+                }) => {
+                    if !saw_post_reconnect_transcript {
+                        anyhow::bail!("handoff arrived before the post-reconnect transcript");
+                    }
+                    break Ok::<_, anyhow::Error>(handoff);
+                }
+                EventMsg::RealtimeConversationRealtime(RealtimeConversationRealtimeEvent {
+                    payload: RealtimeEvent::Error(message),
+                }) => anyhow::bail!("reconnect emitted a realtime error: {message}"),
+                EventMsg::RealtimeConversationClosed(closed) => {
+                    anyhow::bail!("reconnect closed the conversation early: {closed:?}")
+                }
+                EventMsg::Error(err) => {
+                    anyhow::bail!("reconnect emitted an app error: {}", err.message)
+                }
+                _ => {}
+            }
+        }
+    })
+    .await
+    .context("timed out waiting for the reconnected sideband")??;
+    assert_eq!(
+        handoff,
+        RealtimeHandoffRequested {
+            handoff_id: "handoff_reconnect".to_string(),
+            item_id: "handoff_reconnect".to_string(),
+            input_transcript: "hello world".to_string(),
+            active_transcript: vec![
+                RealtimeTranscriptEntry {
+                    role: "user".to_string(),
+                    text: "hello world".to_string(),
+                },
+                RealtimeTranscriptEntry {
+                    role: "assistant".to_string(),
+                    text: "after reconnect".to_string(),
+                }
+            ],
+        }
+    );
+
+    let closed = timeout(Duration::from_secs(10), async {
+        loop {
+            match test.codex.next_event().await?.msg {
+                EventMsg::RealtimeConversationRealtime(RealtimeConversationRealtimeEvent {
+                    payload: RealtimeEvent::Error(message),
+                }) => anyhow::bail!("terminal reconnect emitted a realtime error: {message}"),
+                EventMsg::RealtimeConversationClosed(closed) => {
+                    break Ok::<_, anyhow::Error>(closed);
+                }
+                EventMsg::Error(err) => {
+                    anyhow::bail!("terminal reconnect emitted an app error: {}", err.message)
+                }
+                _ => {}
+            }
+        }
+    })
+    .await
+    .context("timed out waiting for the terminal reconnect response")??;
+    assert_eq!(closed.reason.as_deref(), Some("transport_closed"));
+    timeout(Duration::from_secs(10), sideband_server)
+        .await
+        .context("timed out waiting for sideband server")???;
+    assert!(unused_endpoint.handshakes().is_empty());
+    test.codex.shutdown_and_wait().await?;
+    unused_endpoint.shutdown().await;
+    Ok(())
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn conversation_webrtc_start_uses_avas_query() -> Result<()> {
     skip_if_no_network!(Ok(()));
@@ -840,6 +1549,7 @@ async fn conversation_webrtc_start_uses_avas_query() -> Result<()> {
     test.codex
         .submit(Op::RealtimeConversationStart(ConversationStartParams {
             client_managed_handoffs: false,
+            delegation_ack_filler: None,
             flush_transcript_tail_on_session_end: false,
             codex_responses_as_items: false,
             codex_response_item_prefix: None,
@@ -850,6 +1560,8 @@ async fn conversation_webrtc_start_uses_avas_query() -> Result<()> {
             output_modality: RealtimeOutputModality::Audio,
             include_startup_context: true,
             initial_items: Vec::new(),
+            realtime_start_instructions: None,
+            realtime_end_instructions: None,
             prompt: Some(Some("backend prompt".to_string())),
             realtime_session_id: None,
             transport: Some(ConversationStartTransport::Webrtc {
@@ -942,6 +1654,7 @@ async fn conversation_webrtc_default_v1_ignores_configured_v2_voice() -> Result<
     test.codex
         .submit(Op::RealtimeConversationStart(ConversationStartParams {
             client_managed_handoffs: false,
+            delegation_ack_filler: None,
             flush_transcript_tail_on_session_end: false,
             codex_responses_as_items: false,
             codex_response_item_prefix: None,
@@ -952,6 +1665,8 @@ async fn conversation_webrtc_default_v1_ignores_configured_v2_voice() -> Result<
             output_modality: RealtimeOutputModality::Audio,
             include_startup_context: true,
             initial_items: Vec::new(),
+            realtime_start_instructions: None,
+            realtime_end_instructions: None,
             prompt: Some(Some("backend prompt".to_string())),
             realtime_session_id: None,
             transport: Some(ConversationStartTransport::Webrtc {
@@ -1006,6 +1721,7 @@ async fn conversation_webrtc_default_v1_rejects_explicit_v2_voice() -> Result<()
     test.codex
         .submit(Op::RealtimeConversationStart(ConversationStartParams {
             client_managed_handoffs: false,
+            delegation_ack_filler: None,
             flush_transcript_tail_on_session_end: false,
             codex_responses_as_items: false,
             codex_response_item_prefix: None,
@@ -1016,6 +1732,8 @@ async fn conversation_webrtc_default_v1_rejects_explicit_v2_voice() -> Result<()
             output_modality: RealtimeOutputModality::Audio,
             include_startup_context: true,
             initial_items: Vec::new(),
+            realtime_start_instructions: None,
+            realtime_end_instructions: None,
             prompt: Some(Some("backend prompt".to_string())),
             realtime_session_id: None,
             transport: Some(ConversationStartTransport::Webrtc {
@@ -1080,6 +1798,7 @@ async fn conversation_webrtc_start_uses_configured_call_base_url_for_avas() -> R
     test.codex
         .submit(Op::RealtimeConversationStart(ConversationStartParams {
             client_managed_handoffs: false,
+            delegation_ack_filler: None,
             flush_transcript_tail_on_session_end: false,
             codex_responses_as_items: false,
             codex_response_item_prefix: None,
@@ -1090,6 +1809,8 @@ async fn conversation_webrtc_start_uses_configured_call_base_url_for_avas() -> R
             output_modality: RealtimeOutputModality::Audio,
             include_startup_context: true,
             initial_items: Vec::new(),
+            realtime_start_instructions: None,
+            realtime_end_instructions: None,
             prompt: Some(Some("backend prompt".to_string())),
             realtime_session_id: None,
             transport: Some(ConversationStartTransport::Webrtc {
@@ -1159,6 +1880,7 @@ async fn conversation_webrtc_close_while_sideband_connecting_drops_pending_join(
         )
         .mount(&server)
         .await;
+<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
     let realtime_server = start_websocket_server_with_headers(vec![WebSocketConnectionConfig {
         requests: vec![vec![]],
         response_headers: Vec::new(),
@@ -1168,8 +1890,30 @@ async fn conversation_webrtc_close_while_sideband_connecting_drops_pending_join(
         close_after_requests: false,
     }])
     .await;
+=======
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let realtime_ws_base_url = format!("ws://{}", listener.local_addr()?);
+    let (pending_handshake_tx, pending_handshake_rx) = oneshot::channel();
+    let (release_handshake_tx, release_handshake_rx) = oneshot::channel();
+    let handshake_task = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await?;
+        let mut request = Vec::new();
+        while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+            let bytes_read = stream.read_buf(&mut request).await?;
+            anyhow::ensure!(
+                bytes_read > 0,
+                "sideband closed before sending its handshake"
+            );
+        }
+        pending_handshake_tx
+            .send(())
+            .expect("pending sideband handshake should have a receiver");
+        release_handshake_rx.await?;
+        stream.read_to_end(&mut request).await?;
+        Ok::<Vec<u8>, anyhow::Error>(request)
+    });
+>>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
 
-    let realtime_ws_base_url = realtime_server.uri().to_string();
     let mut builder = test_codex().with_config(move |config| {
         config.experimental_realtime_ws_backend_prompt = Some("backend prompt".to_string());
         config.experimental_realtime_ws_model = Some("realtime-test-model".to_string());
@@ -1182,6 +1926,7 @@ async fn conversation_webrtc_close_while_sideband_connecting_drops_pending_join(
     test.codex
         .submit(Op::RealtimeConversationStart(ConversationStartParams {
             client_managed_handoffs: false,
+            delegation_ack_filler: None,
             flush_transcript_tail_on_session_end: false,
             codex_responses_as_items: false,
             codex_response_item_prefix: None,
@@ -1192,6 +1937,8 @@ async fn conversation_webrtc_close_while_sideband_connecting_drops_pending_join(
             output_modality: RealtimeOutputModality::Audio,
             include_startup_context: true,
             initial_items: Vec::new(),
+            realtime_start_instructions: None,
+            realtime_end_instructions: None,
             prompt: Some(Some("backend prompt".to_string())),
             realtime_session_id: None,
             transport: Some(ConversationStartTransport::Webrtc {
@@ -1208,10 +1955,9 @@ async fn conversation_webrtc_close_while_sideband_connecting_drops_pending_join(
     })
     .await;
     assert_eq!(sdp, "v=answer\r\n");
-    assert!(
-        realtime_server.handshakes().is_empty(),
-        "sideband websocket should still be pending when SDP is emitted"
-    );
+    timeout(Duration::from_secs(10), pending_handshake_rx)
+        .await
+        .context("timed out waiting for the sideband handshake")??;
 
     test.codex.submit(Op::RealtimeConversationClose).await?;
     let closed = wait_for_event_match(&test.codex, |msg| match msg {
@@ -1221,6 +1967,7 @@ async fn conversation_webrtc_close_while_sideband_connecting_drops_pending_join(
     .await;
     assert_eq!(closed.reason.as_deref(), Some("requested"));
 
+<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
     let stale_event = timeout(stale_sideband_observation_window, async {
         wait_for_event_match(&test.codex, |msg| match msg {
             EventMsg::RealtimeConversationRealtime(RealtimeConversationRealtimeEvent {
@@ -1231,20 +1978,42 @@ async fn conversation_webrtc_close_while_sideband_connecting_drops_pending_join(
             }
             _ => None,
         })
+=======
+    release_handshake_tx
+        .send(())
+        .expect("pending sideband handshake should still be waiting");
+    let handshake_request = timeout(Duration::from_secs(10), handshake_task)
+>>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
         .await
-    })
-    .await;
+        .context("timed out waiting for the canceled sideband handshake")???;
     assert!(
-        stale_event.is_err(),
-        "pending sideband task leaked after close: {:?}",
-        stale_event.ok()
-    );
-    assert!(
-        realtime_server.handshakes().is_empty(),
-        "pending sideband task should abort before websocket handshake completes"
+        handshake_request.starts_with(b"GET "),
+        "pending sideband connection should close before completing its handshake"
     );
 
-    realtime_server.shutdown().await;
+    timeout(Duration::from_secs(10), async {
+        test.codex.submit(Op::Shutdown).await?;
+        loop {
+            match test.codex.next_event().await?.msg {
+                EventMsg::RealtimeConversationRealtime(RealtimeConversationRealtimeEvent {
+                    payload: RealtimeEvent::Error(message),
+                }) => {
+                    anyhow::bail!("pending sideband task emitted a stale realtime error: {message}")
+                }
+                EventMsg::RealtimeConversationClosed(closed) => {
+                    anyhow::bail!(
+                        "pending sideband task emitted a duplicate close event: {closed:?}"
+                    )
+                }
+                EventMsg::ShutdownComplete => break,
+                _ => {}
+            }
+        }
+        test.codex.wait_until_terminated().await;
+        Ok::<(), anyhow::Error>(())
+    })
+    .await
+    .context("timed out waiting for realtime session shutdown")??;
     Ok(())
 }
 
@@ -1277,6 +2046,7 @@ async fn conversation_webrtc_sideband_connect_failure_closes_with_error() -> Res
     test.codex
         .submit(Op::RealtimeConversationStart(ConversationStartParams {
             client_managed_handoffs: false,
+            delegation_ack_filler: None,
             flush_transcript_tail_on_session_end: false,
             codex_responses_as_items: false,
             codex_response_item_prefix: None,
@@ -1287,6 +2057,8 @@ async fn conversation_webrtc_sideband_connect_failure_closes_with_error() -> Res
             output_modality: RealtimeOutputModality::Audio,
             include_startup_context: true,
             initial_items: Vec::new(),
+            realtime_start_instructions: None,
+            realtime_end_instructions: None,
             prompt: Some(Some("backend prompt".to_string())),
             realtime_session_id: None,
             transport: Some(ConversationStartTransport::Webrtc {
@@ -1374,6 +2146,7 @@ async fn conversation_start_uses_openai_env_key_fallback_with_chatgpt_auth() -> 
     test.codex
         .submit(Op::RealtimeConversationStart(ConversationStartParams {
             client_managed_handoffs: false,
+            delegation_ack_filler: None,
             flush_transcript_tail_on_session_end: false,
             codex_responses_as_items: false,
             codex_response_item_prefix: None,
@@ -1384,6 +2157,8 @@ async fn conversation_start_uses_openai_env_key_fallback_with_chatgpt_auth() -> 
             output_modality: RealtimeOutputModality::Audio,
             include_startup_context: true,
             initial_items: Vec::new(),
+            realtime_start_instructions: None,
+            realtime_end_instructions: None,
             prompt: Some(Some("backend prompt".to_string())),
             realtime_session_id: None,
             transport: None,
@@ -1469,6 +2244,7 @@ async fn assert_transport_close_tail_flush(
     test.codex
         .submit(Op::RealtimeConversationStart(ConversationStartParams {
             client_managed_handoffs: false,
+            delegation_ack_filler: None,
             flush_transcript_tail_on_session_end,
             codex_responses_as_items: false,
             codex_response_item_prefix: None,
@@ -1479,6 +2255,8 @@ async fn assert_transport_close_tail_flush(
             output_modality: RealtimeOutputModality::Audio,
             include_startup_context: true,
             initial_items: Vec::new(),
+            realtime_start_instructions: None,
+            realtime_end_instructions: None,
             prompt: Some(Some("backend prompt".to_string())),
             realtime_session_id: None,
             transport: None,
@@ -1589,6 +2367,7 @@ async fn conversation_start_preflight_failure_emits_realtime_error_only() -> Res
     test.codex
         .submit(Op::RealtimeConversationStart(ConversationStartParams {
             client_managed_handoffs: false,
+            delegation_ack_filler: None,
             flush_transcript_tail_on_session_end: false,
             codex_responses_as_items: false,
             codex_response_item_prefix: None,
@@ -1599,6 +2378,8 @@ async fn conversation_start_preflight_failure_emits_realtime_error_only() -> Res
             output_modality: RealtimeOutputModality::Audio,
             include_startup_context: true,
             initial_items: Vec::new(),
+            realtime_start_instructions: None,
+            realtime_end_instructions: None,
             prompt: Some(Some("backend prompt".to_string())),
             realtime_session_id: None,
             transport: None,
@@ -1644,6 +2425,7 @@ async fn conversation_start_connect_failure_emits_realtime_error_only() -> Resul
     test.codex
         .submit(Op::RealtimeConversationStart(ConversationStartParams {
             client_managed_handoffs: false,
+            delegation_ack_filler: None,
             flush_transcript_tail_on_session_end: false,
             codex_responses_as_items: false,
             codex_response_item_prefix: None,
@@ -1654,6 +2436,8 @@ async fn conversation_start_connect_failure_emits_realtime_error_only() -> Resul
             output_modality: RealtimeOutputModality::Audio,
             include_startup_context: true,
             initial_items: Vec::new(),
+            realtime_start_instructions: None,
+            realtime_end_instructions: None,
             prompt: Some(Some("backend prompt".to_string())),
             realtime_session_id: None,
             transport: None,
@@ -1747,6 +2531,7 @@ async fn conversation_second_start_replaces_runtime() -> Result<()> {
     test.codex
         .submit(Op::RealtimeConversationStart(ConversationStartParams {
             client_managed_handoffs: false,
+            delegation_ack_filler: None,
             flush_transcript_tail_on_session_end: false,
             codex_responses_as_items: false,
             codex_response_item_prefix: None,
@@ -1757,6 +2542,8 @@ async fn conversation_second_start_replaces_runtime() -> Result<()> {
             output_modality: RealtimeOutputModality::Audio,
             include_startup_context: true,
             initial_items: Vec::new(),
+            realtime_start_instructions: None,
+            realtime_end_instructions: None,
             prompt: Some(Some("old".to_string())),
             realtime_session_id: Some("conv_old".to_string()),
             transport: None,
@@ -1781,6 +2568,7 @@ async fn conversation_second_start_replaces_runtime() -> Result<()> {
     test.codex
         .submit(Op::RealtimeConversationStart(ConversationStartParams {
             client_managed_handoffs: false,
+            delegation_ack_filler: None,
             flush_transcript_tail_on_session_end: false,
             codex_responses_as_items: false,
             codex_response_item_prefix: None,
@@ -1791,6 +2579,8 @@ async fn conversation_second_start_replaces_runtime() -> Result<()> {
             output_modality: RealtimeOutputModality::Audio,
             include_startup_context: true,
             initial_items: Vec::new(),
+            realtime_start_instructions: None,
+            realtime_end_instructions: None,
             prompt: Some(Some("new".to_string())),
             realtime_session_id: Some("conv_new".to_string()),
             transport: None,
@@ -1886,6 +2676,7 @@ async fn conversation_uses_experimental_realtime_ws_base_url_override() -> Resul
     test.codex
         .submit(Op::RealtimeConversationStart(ConversationStartParams {
             client_managed_handoffs: false,
+            delegation_ack_filler: None,
             flush_transcript_tail_on_session_end: false,
             codex_responses_as_items: false,
             codex_response_item_prefix: None,
@@ -1896,6 +2687,8 @@ async fn conversation_uses_experimental_realtime_ws_base_url_override() -> Resul
             output_modality: RealtimeOutputModality::Audio,
             include_startup_context: true,
             initial_items: Vec::new(),
+            realtime_start_instructions: None,
+            realtime_end_instructions: None,
             prompt: Some(Some("backend prompt".to_string())),
             realtime_session_id: None,
             transport: None,
@@ -1959,6 +2752,7 @@ async fn conversation_uses_default_realtime_backend_prompt() -> Result<()> {
     test.codex
         .submit(Op::RealtimeConversationStart(ConversationStartParams {
             client_managed_handoffs: false,
+            delegation_ack_filler: None,
             flush_transcript_tail_on_session_end: false,
             codex_responses_as_items: false,
             codex_response_item_prefix: None,
@@ -1969,6 +2763,8 @@ async fn conversation_uses_default_realtime_backend_prompt() -> Result<()> {
             output_modality: RealtimeOutputModality::Audio,
             include_startup_context: true,
             initial_items: Vec::new(),
+            realtime_start_instructions: None,
+            realtime_end_instructions: None,
             prompt: None,
             realtime_session_id: None,
             transport: None,
@@ -2040,6 +2836,7 @@ async fn conversation_uses_empty_instructions_for_null_or_empty_prompt() -> Resu
         test.codex
             .submit(Op::RealtimeConversationStart(ConversationStartParams {
                 client_managed_handoffs: false,
+                delegation_ack_filler: None,
                 flush_transcript_tail_on_session_end: false,
                 codex_responses_as_items: false,
                 codex_response_item_prefix: None,
@@ -2050,6 +2847,8 @@ async fn conversation_uses_empty_instructions_for_null_or_empty_prompt() -> Resu
                 output_modality: RealtimeOutputModality::Audio,
                 include_startup_context: true,
                 initial_items: Vec::new(),
+                realtime_start_instructions: None,
+                realtime_end_instructions: None,
                 prompt,
                 realtime_session_id: None,
                 transport: None,
@@ -2114,6 +2913,7 @@ async fn conversation_uses_explicit_start_voice() -> Result<()> {
     test.codex
         .submit(Op::RealtimeConversationStart(ConversationStartParams {
             client_managed_handoffs: false,
+            delegation_ack_filler: None,
             flush_transcript_tail_on_session_end: false,
             codex_responses_as_items: false,
             codex_response_item_prefix: None,
@@ -2124,6 +2924,8 @@ async fn conversation_uses_explicit_start_voice() -> Result<()> {
             output_modality: RealtimeOutputModality::Audio,
             include_startup_context: true,
             initial_items: Vec::new(),
+            realtime_start_instructions: None,
+            realtime_end_instructions: None,
             prompt: Some(Some("backend prompt".to_string())),
             realtime_session_id: None,
             transport: None,
@@ -2180,6 +2982,7 @@ async fn conversation_uses_configured_realtime_voice() -> Result<()> {
     test.codex
         .submit(Op::RealtimeConversationStart(ConversationStartParams {
             client_managed_handoffs: false,
+            delegation_ack_filler: None,
             flush_transcript_tail_on_session_end: false,
             codex_responses_as_items: false,
             codex_response_item_prefix: None,
@@ -2190,6 +2993,8 @@ async fn conversation_uses_configured_realtime_voice() -> Result<()> {
             output_modality: RealtimeOutputModality::Audio,
             include_startup_context: true,
             initial_items: Vec::new(),
+            realtime_start_instructions: None,
+            realtime_end_instructions: None,
             prompt: Some(Some("backend prompt".to_string())),
             realtime_session_id: None,
             transport: None,
@@ -2234,6 +3039,7 @@ async fn conversation_rejects_voice_for_wrong_realtime_version() -> Result<()> {
     test.codex
         .submit(Op::RealtimeConversationStart(ConversationStartParams {
             client_managed_handoffs: false,
+            delegation_ack_filler: None,
             flush_transcript_tail_on_session_end: false,
             codex_responses_as_items: false,
             codex_response_item_prefix: None,
@@ -2244,6 +3050,8 @@ async fn conversation_rejects_voice_for_wrong_realtime_version() -> Result<()> {
             output_modality: RealtimeOutputModality::Audio,
             include_startup_context: true,
             initial_items: Vec::new(),
+            realtime_start_instructions: None,
+            realtime_end_instructions: None,
             prompt: Some(Some("backend prompt".to_string())),
             realtime_session_id: None,
             transport: None,
@@ -2289,6 +3097,7 @@ async fn conversation_uses_experimental_realtime_ws_backend_prompt_override() ->
     test.codex
         .submit(Op::RealtimeConversationStart(ConversationStartParams {
             client_managed_handoffs: false,
+            delegation_ack_filler: None,
             flush_transcript_tail_on_session_end: false,
             codex_responses_as_items: false,
             codex_response_item_prefix: None,
@@ -2299,6 +3108,8 @@ async fn conversation_uses_experimental_realtime_ws_backend_prompt_override() ->
             output_modality: RealtimeOutputModality::Audio,
             include_startup_context: true,
             initial_items: Vec::new(),
+            realtime_start_instructions: None,
+            realtime_end_instructions: None,
             prompt: Some(Some("prompt from op".to_string())),
             realtime_session_id: None,
             transport: None,
@@ -2370,6 +3181,7 @@ async fn conversation_uses_experimental_realtime_ws_startup_context_override() -
     test.codex
         .submit(Op::RealtimeConversationStart(ConversationStartParams {
             client_managed_handoffs: false,
+            delegation_ack_filler: None,
             flush_transcript_tail_on_session_end: false,
             codex_responses_as_items: false,
             codex_response_item_prefix: None,
@@ -2380,6 +3192,8 @@ async fn conversation_uses_experimental_realtime_ws_startup_context_override() -
             output_modality: RealtimeOutputModality::Audio,
             include_startup_context: true,
             initial_items: Vec::new(),
+            realtime_start_instructions: None,
+            realtime_end_instructions: None,
             prompt: Some(Some("prompt from op".to_string())),
             realtime_session_id: None,
             transport: None,
@@ -2445,6 +3259,7 @@ async fn conversation_disables_realtime_startup_context_with_empty_override() ->
     test.codex
         .submit(Op::RealtimeConversationStart(ConversationStartParams {
             client_managed_handoffs: false,
+            delegation_ack_filler: None,
             flush_transcript_tail_on_session_end: false,
             codex_responses_as_items: false,
             codex_response_item_prefix: None,
@@ -2455,6 +3270,8 @@ async fn conversation_disables_realtime_startup_context_with_empty_override() ->
             output_modality: RealtimeOutputModality::Audio,
             include_startup_context: true,
             initial_items: Vec::new(),
+            realtime_start_instructions: None,
+            realtime_end_instructions: None,
             prompt: Some(Some("prompt from op".to_string())),
             realtime_session_id: None,
             transport: None,
@@ -2513,6 +3330,7 @@ async fn conversation_start_injects_startup_context_from_thread_history() -> Res
     test.codex
         .submit(Op::RealtimeConversationStart(ConversationStartParams {
             client_managed_handoffs: false,
+            delegation_ack_filler: None,
             flush_transcript_tail_on_session_end: false,
             codex_responses_as_items: false,
             codex_response_item_prefix: None,
@@ -2523,6 +3341,8 @@ async fn conversation_start_injects_startup_context_from_thread_history() -> Res
             output_modality: RealtimeOutputModality::Audio,
             include_startup_context: true,
             initial_items: Vec::new(),
+            realtime_start_instructions: None,
+            realtime_end_instructions: None,
             prompt: Some(Some("backend prompt".to_string())),
             realtime_session_id: None,
             transport: None,
@@ -2601,14 +3421,14 @@ async fn conversation_startup_context_current_thread_selects_many_turns_by_budge
             let turn_number = index + 1;
             let assistant_turn = format!("assistant turn {turn_number}");
             [
-                RolloutItem::ResponseItem(ResponseItem::Message {
+                ResponseItem::Message {
                     id: None,
                     role: "user".to_string(),
                     content: vec![ContentItem::InputText { text: user_turn }],
                     phase: None,
                     internal_chat_message_metadata_passthrough: None,
-                }),
-                RolloutItem::ResponseItem(ResponseItem::Message {
+                },
+                ResponseItem::Message {
                     id: None,
                     role: "assistant".to_string(),
                     content: vec![ContentItem::OutputText {
@@ -2616,8 +3436,9 @@ async fn conversation_startup_context_current_thread_selects_many_turns_by_budge
                     }],
                     phase: None,
                     internal_chat_message_metadata_passthrough: None,
-                }),
+                },
             ]
+            .map(|item| RolloutItem::ResponseItem(item.into()))
         })
         .collect::<Vec<_>>();
     test.codex.shutdown_and_wait().await?;
@@ -2628,7 +3449,7 @@ async fn conversation_startup_context_current_thread_selects_many_turns_by_budge
             InitialHistory::Forked(history),
             auth_manager_from_auth(CodexAuth::from_api_key("dummy")),
             /*parent_trace*/ None,
-            /*supports_openai_form_elicitation*/ false,
+            ClientMcpExtensions::default(),
         )
         .await?;
     let codex = resumed_thread.thread;
@@ -2636,6 +3457,7 @@ async fn conversation_startup_context_current_thread_selects_many_turns_by_budge
     codex
         .submit(Op::RealtimeConversationStart(ConversationStartParams {
             client_managed_handoffs: false,
+            delegation_ack_filler: None,
             flush_transcript_tail_on_session_end: false,
             codex_responses_as_items: false,
             codex_response_item_prefix: None,
@@ -2646,6 +3468,8 @@ async fn conversation_startup_context_current_thread_selects_many_turns_by_budge
             output_modality: RealtimeOutputModality::Audio,
             include_startup_context: true,
             initial_items: Vec::new(),
+            realtime_start_instructions: None,
+            realtime_end_instructions: None,
             prompt: Some(Some("backend prompt".to_string())),
             realtime_session_id: None,
             transport: None,
@@ -2752,6 +3576,7 @@ async fn conversation_startup_context_falls_back_to_workspace_map() -> Result<()
     test.codex
         .submit(Op::RealtimeConversationStart(ConversationStartParams {
             client_managed_handoffs: false,
+            delegation_ack_filler: None,
             flush_transcript_tail_on_session_end: false,
             codex_responses_as_items: false,
             codex_response_item_prefix: None,
@@ -2762,6 +3587,8 @@ async fn conversation_startup_context_falls_back_to_workspace_map() -> Result<()
             output_modality: RealtimeOutputModality::Audio,
             include_startup_context: true,
             initial_items: Vec::new(),
+            realtime_start_instructions: None,
+            realtime_end_instructions: None,
             prompt: Some(Some("backend prompt".to_string())),
             realtime_session_id: None,
             transport: None,
@@ -2820,6 +3647,7 @@ async fn conversation_startup_context_is_truncated_and_sent_once_per_start() -> 
     test.codex
         .submit(Op::RealtimeConversationStart(ConversationStartParams {
             client_managed_handoffs: false,
+            delegation_ack_filler: None,
             flush_transcript_tail_on_session_end: false,
             codex_responses_as_items: false,
             codex_response_item_prefix: None,
@@ -2830,6 +3658,8 @@ async fn conversation_startup_context_is_truncated_and_sent_once_per_start() -> 
             output_modality: RealtimeOutputModality::Audio,
             include_startup_context: true,
             initial_items: Vec::new(),
+            realtime_start_instructions: None,
+            realtime_end_instructions: None,
             prompt: Some(Some("backend prompt".to_string())),
             realtime_session_id: None,
             transport: None,
@@ -2874,8 +3704,10 @@ async fn conversation_startup_context_is_truncated_and_sent_once_per_start() -> 
     Ok(())
 }
 
+#[test_case(false; "durable")]
+#[test_case(true; "ephemeral")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn conversation_user_text_turn_is_not_sent_to_realtime() -> Result<()> {
+async fn conversation_user_text_turn_is_not_sent_to_realtime(ephemeral: bool) -> Result<()> {
     skip_if_no_network!(Ok(()));
 
     let api_server = start_mock_server().await;
@@ -2889,26 +3721,37 @@ async fn conversation_user_text_turn_is_not_sent_to_realtime() -> Result<()> {
     .await;
 
     let realtime_server = start_websocket_server(vec![vec![
-        vec![json!({
-            "type": "session.updated",
-            "session": { "id": "sess_user_text", "instructions": "backend prompt" }
-        })],
+        vec![
+            json!({
+                "type": "session.updated",
+                "session": { "id": "sess_user_text", "instructions": "backend prompt" }
+            }),
+            json!({
+                "type": "response.output_text.delta",
+                "delta": "spoken before typed input"
+            }),
+        ],
         vec![],
     ]])
     .await;
 
-    let mut builder = test_codex().with_config({
-        let realtime_base_url = realtime_server.uri().to_string();
-        move |config| {
-            config.experimental_realtime_ws_base_url = Some(realtime_base_url);
-            config.experimental_realtime_ws_startup_context = Some(String::new());
-        }
-    });
-    let test = builder.build(&api_server).await?;
+    let mut builder = test_codex()
+        .with_history_mode(ThreadHistoryMode::Paginated)
+        .with_config({
+            let realtime_base_url = realtime_server.uri().to_string();
+            move |config| {
+                config.ephemeral = ephemeral;
+                config.realtime.version = RealtimeWsVersion::V2;
+                config.experimental_realtime_ws_base_url = Some(realtime_base_url);
+                config.experimental_realtime_ws_startup_context = Some(String::new());
+            }
+        });
+    let test = builder.build_with_auto_env(&api_server).await?;
 
     test.codex
         .submit(Op::RealtimeConversationStart(ConversationStartParams {
             client_managed_handoffs: false,
+            delegation_ack_filler: None,
             flush_transcript_tail_on_session_end: false,
             codex_responses_as_items: false,
             codex_response_item_prefix: None,
@@ -2919,6 +3762,8 @@ async fn conversation_user_text_turn_is_not_sent_to_realtime() -> Result<()> {
             output_modality: RealtimeOutputModality::Audio,
             include_startup_context: true,
             initial_items: Vec::new(),
+            realtime_start_instructions: None,
+            realtime_end_instructions: None,
             prompt: Some(Some("backend prompt".to_string())),
             realtime_session_id: None,
             transport: None,
@@ -2940,18 +3785,26 @@ async fn conversation_user_text_turn_is_not_sent_to_realtime() -> Result<()> {
     .await;
     assert_eq!(session_updated, "sess_user_text");
 
+    wait_for_event(&test.codex, |event| {
+        if let EventMsg::RealtimeConversationRealtime(event) = event {
+            match event.payload {
+                RealtimeEvent::HistoryItemStarted(_)
+                | RealtimeEvent::HistoryTranscriptDelta { .. }
+                | RealtimeEvent::HistoryItemCompleted(_) => assert!(!ephemeral),
+                RealtimeEvent::OutputTranscriptDelta(_) => return true,
+                _ => {}
+            }
+        }
+        false
+    })
+    .await;
+
     let user_text = "typed follow-up for realtime";
     test.codex
-        .submit(Op::UserInput {
-            items: vec![UserInput::Text {
-                text: user_text.to_string(),
-                text_elements: Vec::new(),
-            }],
-            final_output_json_schema: None,
-            responsesapi_client_metadata: None,
-            additional_context: Default::default(),
-            thread_settings: Default::default(),
-        })
+        .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
+            text: user_text.to_string(),
+            text_elements: Vec::new(),
+        }]))
         .await?;
 
     let turn_complete = wait_for_event_match(&test.codex, |event| match event {
@@ -2963,6 +3816,30 @@ async fn conversation_user_text_turn_is_not_sent_to_realtime() -> Result<()> {
 
     let model_user_texts = response_mock.single_request().message_input_texts("user");
     assert!(model_user_texts.iter().any(|text| text == user_text));
+
+    if !ephemeral {
+        test.thread_store
+            .flush_thread(test.session_configured.thread_id)
+            .await?;
+        let timeline = test
+            .thread_store
+            .list_timeline(ListTimelineParams {
+                thread_id: test.session_configured.thread_id,
+                cursor: None,
+                page_size: 100,
+            })
+            .await?;
+        assert_eq!(
+            timeline.items.iter().filter_map(|entry| match entry {
+                ThreadTimelineEntry::Realtime { item, .. }
+                    if matches!(&item.content, ThreadRealtimeItemContent::TranscriptSegment { text, .. } if text == "spoken before typed input") => Some("speech"),
+                ThreadTimelineEntry::Item { item, .. }
+                    if matches!(item.as_ref(), codex_app_server_protocol::ThreadItem::UserMessage { .. }) => Some("typed input"),
+                _ => None,
+            }).collect::<Vec<_>>(),
+            vec!["speech", "typed input"]
+        );
+    }
 
     let realtime_connections = realtime_server.connections();
     assert_eq!(realtime_connections.len(), 1);
@@ -3014,6 +3891,7 @@ async fn realtime_v2_noop_tool_call_returns_empty_function_output_without_respon
     test.codex
         .submit(Op::RealtimeConversationStart(ConversationStartParams {
             client_managed_handoffs: false,
+            delegation_ack_filler: None,
             flush_transcript_tail_on_session_end: false,
             codex_responses_as_items: false,
             codex_response_item_prefix: None,
@@ -3024,6 +3902,8 @@ async fn realtime_v2_noop_tool_call_returns_empty_function_output_without_respon
             output_modality: RealtimeOutputModality::Audio,
             include_startup_context: true,
             initial_items: Vec::new(),
+            realtime_start_instructions: None,
+            realtime_end_instructions: None,
             prompt: Some(Some("backend prompt".to_string())),
             realtime_session_id: None,
             transport: None,
@@ -3121,6 +4001,7 @@ async fn conversation_mirrors_assistant_message_text_to_realtime_handoff() -> Re
     test.codex
         .submit(Op::RealtimeConversationStart(ConversationStartParams {
             client_managed_handoffs: false,
+            delegation_ack_filler: None,
             flush_transcript_tail_on_session_end: false,
             codex_responses_as_items: false,
             codex_response_item_prefix: None,
@@ -3131,6 +4012,8 @@ async fn conversation_mirrors_assistant_message_text_to_realtime_handoff() -> Re
             output_modality: RealtimeOutputModality::Audio,
             include_startup_context: true,
             initial_items: Vec::new(),
+            realtime_start_instructions: None,
+            realtime_end_instructions: None,
             prompt: Some(Some("backend prompt".to_string())),
             realtime_session_id: None,
             transport: None,
@@ -3289,6 +4172,7 @@ async fn conversation_flushes_assistant_deltas_every_200ms_for_v3_handoff() -> R
     test.codex
         .submit(Op::RealtimeConversationStart(ConversationStartParams {
             client_managed_handoffs: false,
+            delegation_ack_filler: None,
             flush_transcript_tail_on_session_end: false,
             codex_responses_as_items: false,
             codex_response_item_prefix: None,
@@ -3305,6 +4189,8 @@ async fn conversation_flushes_assistant_deltas_every_200ms_for_v3_handoff() -> R
             output_modality: RealtimeOutputModality::Audio,
             include_startup_context: true,
             initial_items: Vec::new(),
+            realtime_start_instructions: None,
+            realtime_end_instructions: None,
             prompt: Some(Some("backend prompt".to_string())),
             realtime_session_id: None,
             transport: None,
@@ -3465,6 +4351,7 @@ async fn conversation_handoff_persists_across_item_done_until_turn_complete() ->
     test.codex
         .submit(Op::RealtimeConversationStart(ConversationStartParams {
             client_managed_handoffs: false,
+            delegation_ack_filler: None,
             flush_transcript_tail_on_session_end: false,
             codex_responses_as_items: false,
             codex_response_item_prefix: None,
@@ -3475,6 +4362,8 @@ async fn conversation_handoff_persists_across_item_done_until_turn_complete() ->
             output_modality: RealtimeOutputModality::Audio,
             include_startup_context: true,
             initial_items: Vec::new(),
+            realtime_start_instructions: None,
+            realtime_end_instructions: None,
             prompt: Some(Some("backend prompt".to_string())),
             realtime_session_id: None,
             transport: None,
@@ -3581,7 +4470,7 @@ fn message_input_texts(body: &Value, role: &str) -> Vec<String> {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn inbound_handoff_request_starts_turn() -> Result<()> {
+async fn inbound_handoff_request_starts_turn_and_promotes_its_artifact() -> Result<()> {
     skip_if_no_network!(Ok(()));
 
     let api_server = start_mock_server().await;
@@ -3589,7 +4478,7 @@ async fn inbound_handoff_request_starts_turn() -> Result<()> {
         &api_server,
         responses::sse(vec![
             responses::ev_response_created("resp-1"),
-            responses::ev_assistant_message("msg-1", "ok"),
+            responses::ev_assistant_message("msg-1", "::codex-realtime-inline{}\nShared artifact"),
             responses::ev_completed("resp-1"),
         ]),
     )
@@ -3613,18 +4502,21 @@ async fn inbound_handoff_request_starts_turn() -> Result<()> {
     ]]])
     .await;
 
-    let mut builder = test_codex().with_config({
-        let realtime_base_url = realtime_server.uri().to_string();
-        move |config| {
-            config.experimental_realtime_ws_base_url = Some(realtime_base_url);
-            config.realtime.version = RealtimeWsVersion::V1;
-        }
-    });
-    let test = builder.build(&api_server).await?;
+    let mut builder = test_codex()
+        .with_history_mode(ThreadHistoryMode::Paginated)
+        .with_config({
+            let realtime_base_url = realtime_server.uri().to_string();
+            move |config| {
+                config.experimental_realtime_ws_base_url = Some(realtime_base_url);
+                config.realtime.version = RealtimeWsVersion::V1;
+            }
+        });
+    let test = builder.build_with_auto_env(&api_server).await?;
 
     test.codex
         .submit(Op::RealtimeConversationStart(ConversationStartParams {
             client_managed_handoffs: false,
+            delegation_ack_filler: None,
             flush_transcript_tail_on_session_end: false,
             codex_responses_as_items: false,
             codex_response_item_prefix: None,
@@ -3635,6 +4527,8 @@ async fn inbound_handoff_request_starts_turn() -> Result<()> {
             output_modality: RealtimeOutputModality::Audio,
             include_startup_context: true,
             initial_items: Vec::new(),
+            realtime_start_instructions: None,
+            realtime_end_instructions: None,
             prompt: Some(Some("backend prompt".to_string())),
             realtime_session_id: None,
             transport: None,
@@ -3673,7 +4567,50 @@ async fn inbound_handoff_request_starts_turn() -> Result<()> {
     })
     .await;
 
+    test.thread_store
+        .flush_thread(test.session_configured.thread_id)
+        .await?;
+    let timeline = test
+        .thread_store
+        .list_timeline(ListTimelineParams {
+            thread_id: test.session_configured.thread_id,
+            cursor: None,
+            page_size: 100,
+        })
+        .await?;
+    let promotions = timeline
+        .items
+        .into_iter()
+        .filter_map(|entry| match entry {
+            ThreadTimelineEntry::Realtime { item, .. }
+                if matches!(
+                    item.content,
+                    ThreadRealtimeItemContent::BemItemPromoted { .. }
+                ) =>
+            {
+                Some(item.content)
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        promotions,
+        vec![ThreadRealtimeItemContent::BemItemPromoted {
+            turn_id,
+            item_id: "msg-1".to_string(),
+            presentation:
+                codex_app_server_protocol::ThreadRealtimeBemItemPresentation::InlineMarkdown,
+        }]
+    );
+
     let request = response_mock.single_request();
+    let turn_metadata: Value = serde_json::from_str(
+        request
+            .header("x-codex-turn-metadata")
+            .as_deref()
+            .context("realtime-routed turn should include turn metadata")?,
+    )?;
+    assert_eq!(turn_metadata["turn_trigger"].as_str(), Some("realtime"));
     let user_texts = request.message_input_texts("user");
     assert!(user_texts.iter().any(|text| text
         == "<realtime_delegation>\n  <input>text from realtime</input>\n  <transcript_delta>user: text from realtime</transcript_delta>\n</realtime_delegation>"));
@@ -3735,6 +4672,7 @@ async fn inbound_handoff_request_uses_active_transcript() -> Result<()> {
     test.codex
         .submit(Op::RealtimeConversationStart(ConversationStartParams {
             client_managed_handoffs: false,
+            delegation_ack_filler: None,
             flush_transcript_tail_on_session_end: false,
             codex_responses_as_items: false,
             codex_response_item_prefix: None,
@@ -3745,6 +4683,8 @@ async fn inbound_handoff_request_uses_active_transcript() -> Result<()> {
             output_modality: RealtimeOutputModality::Audio,
             include_startup_context: true,
             initial_items: Vec::new(),
+            realtime_start_instructions: None,
+            realtime_end_instructions: None,
             prompt: Some(Some("backend prompt".to_string())),
             realtime_session_id: None,
             transport: None,
@@ -3846,6 +4786,7 @@ async fn inbound_handoff_request_sends_transcript_delta_after_each_handoff() -> 
     test.codex
         .submit(Op::RealtimeConversationStart(ConversationStartParams {
             client_managed_handoffs: false,
+            delegation_ack_filler: None,
             flush_transcript_tail_on_session_end: false,
             codex_responses_as_items: false,
             codex_response_item_prefix: None,
@@ -3856,6 +4797,8 @@ async fn inbound_handoff_request_sends_transcript_delta_after_each_handoff() -> 
             output_modality: RealtimeOutputModality::Audio,
             include_startup_context: true,
             initial_items: Vec::new(),
+            realtime_start_instructions: None,
+            realtime_end_instructions: None,
             prompt: Some(Some("backend prompt".to_string())),
             realtime_session_id: None,
             transport: None,
@@ -3976,6 +4919,7 @@ async fn conversation_close_routes_only_remaining_transcript_tail_once() -> Resu
     test.codex
         .submit(Op::RealtimeConversationStart(ConversationStartParams {
             client_managed_handoffs: false,
+            delegation_ack_filler: None,
             flush_transcript_tail_on_session_end: true,
             codex_responses_as_items: false,
             codex_response_item_prefix: None,
@@ -3986,6 +4930,8 @@ async fn conversation_close_routes_only_remaining_transcript_tail_once() -> Resu
             output_modality: RealtimeOutputModality::Audio,
             include_startup_context: true,
             initial_items: Vec::new(),
+            realtime_start_instructions: None,
+            realtime_end_instructions: None,
             prompt: Some(Some("backend prompt".to_string())),
             realtime_session_id: None,
             transport: None,
@@ -4067,6 +5013,7 @@ async fn inbound_conversation_item_does_not_start_turn_and_still_forwards_audio(
     test.codex
         .submit(Op::RealtimeConversationStart(ConversationStartParams {
             client_managed_handoffs: false,
+            delegation_ack_filler: None,
             flush_transcript_tail_on_session_end: false,
             codex_responses_as_items: false,
             codex_response_item_prefix: None,
@@ -4077,6 +5024,8 @@ async fn inbound_conversation_item_does_not_start_turn_and_still_forwards_audio(
             output_modality: RealtimeOutputModality::Audio,
             include_startup_context: true,
             initial_items: Vec::new(),
+            realtime_start_instructions: None,
+            realtime_end_instructions: None,
             prompt: Some(Some("backend prompt".to_string())),
             realtime_session_id: None,
             transport: None,
@@ -4198,6 +5147,7 @@ async fn delegated_turn_user_role_echo_does_not_redelegate_and_still_forwards_au
     test.codex
         .submit(Op::RealtimeConversationStart(ConversationStartParams {
             client_managed_handoffs: false,
+            delegation_ack_filler: None,
             flush_transcript_tail_on_session_end: false,
             codex_responses_as_items: false,
             codex_response_item_prefix: None,
@@ -4208,6 +5158,8 @@ async fn delegated_turn_user_role_echo_does_not_redelegate_and_still_forwards_au
             output_modality: RealtimeOutputModality::Audio,
             include_startup_context: true,
             initial_items: Vec::new(),
+            realtime_start_instructions: None,
+            realtime_end_instructions: None,
             prompt: Some(Some("backend prompt".to_string())),
             realtime_session_id: None,
             transport: None,
@@ -4359,6 +5311,7 @@ async fn inbound_handoff_request_does_not_block_realtime_event_forwarding() -> R
     test.codex
         .submit(Op::RealtimeConversationStart(ConversationStartParams {
             client_managed_handoffs: false,
+            delegation_ack_filler: None,
             flush_transcript_tail_on_session_end: false,
             codex_responses_as_items: false,
             codex_response_item_prefix: None,
@@ -4369,6 +5322,8 @@ async fn inbound_handoff_request_does_not_block_realtime_event_forwarding() -> R
             output_modality: RealtimeOutputModality::Audio,
             include_startup_context: true,
             initial_items: Vec::new(),
+            realtime_start_instructions: None,
+            realtime_end_instructions: None,
             prompt: Some(Some("backend prompt".to_string())),
             realtime_session_id: None,
             transport: None,
@@ -4509,6 +5464,7 @@ async fn inbound_handoff_request_steers_active_turn() -> Result<()> {
     test.codex
         .submit(Op::RealtimeConversationStart(ConversationStartParams {
             client_managed_handoffs: false,
+            delegation_ack_filler: None,
             flush_transcript_tail_on_session_end: false,
             codex_responses_as_items: false,
             codex_response_item_prefix: None,
@@ -4519,6 +5475,8 @@ async fn inbound_handoff_request_steers_active_turn() -> Result<()> {
             output_modality: RealtimeOutputModality::Audio,
             include_startup_context: true,
             initial_items: Vec::new(),
+            realtime_start_instructions: None,
+            realtime_end_instructions: None,
             prompt: Some(Some("backend prompt".to_string())),
             realtime_session_id: None,
             transport: None,
@@ -4539,16 +5497,10 @@ async fn inbound_handoff_request_steers_active_turn() -> Result<()> {
     .await;
 
     test.codex
-        .submit(Op::UserInput {
-            items: vec![UserInput::Text {
-                text: "first prompt".to_string(),
-                text_elements: Vec::new(),
-            }],
-            final_output_json_schema: None,
-            responsesapi_client_metadata: None,
-            additional_context: Default::default(),
-            thread_settings: Default::default(),
-        })
+        .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
+            text: "first prompt".to_string(),
+            text_elements: Vec::new(),
+        }]))
         .await?;
 
     wait_for_event(&test.codex, |event| {
@@ -4670,6 +5622,7 @@ async fn inbound_handoff_request_starts_turn_and_does_not_block_realtime_audio()
     test.codex
         .submit(Op::RealtimeConversationStart(ConversationStartParams {
             client_managed_handoffs: false,
+            delegation_ack_filler: None,
             flush_transcript_tail_on_session_end: false,
             codex_responses_as_items: false,
             codex_response_item_prefix: None,
@@ -4680,6 +5633,8 @@ async fn inbound_handoff_request_starts_turn_and_does_not_block_realtime_audio()
             output_modality: RealtimeOutputModality::Audio,
             include_startup_context: true,
             initial_items: Vec::new(),
+            realtime_start_instructions: None,
+            realtime_end_instructions: None,
             prompt: Some(Some("backend prompt".to_string())),
             realtime_session_id: None,
             transport: None,

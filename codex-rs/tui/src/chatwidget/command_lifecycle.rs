@@ -10,6 +10,7 @@ impl ChatWidget {
         let Some(wait) = self.unified_exec_wait_streak.take() else {
             return;
         };
+<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
         self.transcript.needs_final_message_separator = true;
         if self
             .transcript
@@ -28,6 +29,11 @@ impl ChatWidget {
             self.app_event_tx
                 .send(AppEvent::InsertHistoryCell(Box::new(cell)));
         }
+=======
+        let cell = history_cell::new_unified_exec_interaction(wait.command_display, String::new());
+        self.app_event_tx
+            .send(AppEvent::InsertHistoryCell(Box::new(cell)));
+>>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
         self.restore_reasoning_status_header();
     }
 
@@ -361,8 +367,12 @@ impl ChatWidget {
                 parsed_cmd,
                 source,
                 /*interaction_input*/ None,
+<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
                 terminal_wait,
                 self.config.animations,
+=======
+                self.local_settings.tui.animations,
+>>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
             )));
             self.bump_active_cell_revision();
         }
@@ -394,6 +404,7 @@ impl ChatWidget {
             command,
             process_id: _,
             source,
+            status,
             command_actions,
             terminal_wait,
             aggregated_output,
@@ -410,7 +421,11 @@ impl ChatWidget {
             .map(codex_app_server_protocol::CommandAction::into_core)
             .collect();
         let duration = Duration::from_millis(duration_ms.unwrap_or_default().max(0) as u64);
-        let exit_code = exit_code.unwrap_or_default();
+        let exit_code = if status == codex_app_server_protocol::CommandExecutionStatus::Completed {
+            exit_code.unwrap_or_default()
+        } else {
+            exit_code.filter(|code| *code != 0).unwrap_or(1)
+        };
         let aggregated_output = aggregated_output.unwrap_or_default();
 
         let running = self.running_commands.remove(&id);
@@ -431,6 +446,14 @@ impl ChatWidget {
                     ExecEndTarget::ActiveTracked
                 }
                 Some(exec_cell) if exec_cell.is_active() => {
+                    ExecEndTarget::OrphanHistoryWhileActiveExec
+                }
+                None if cell.as_any().is::<McpToolCallCell>()
+                    || cell
+                        .as_any()
+                        .downcast_ref::<history_cell::ComputerActivityCell>()
+                        .is_some_and(history_cell::ComputerActivityCell::is_active) =>
+                {
                     ExecEndTarget::OrphanHistoryWhileActiveExec
                 }
                 Some(_) | None => ExecEndTarget::NewCell,
@@ -471,12 +494,15 @@ impl ChatWidget {
                     parsed,
                     source,
                     /*interaction_input*/ None,
+<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
                     terminal_wait,
                     self.config.animations,
+=======
+                    self.local_settings.tui.animations,
+>>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
                 );
                 let completed = orphan.complete_call(&id, output, duration);
                 debug_assert!(completed, "new orphan exec cell should contain {id}");
-                self.transcript.needs_final_message_separator = true;
                 self.app_event_tx
                     .send(AppEvent::InsertHistoryCell(Box::new(orphan)));
                 self.request_redraw();
@@ -489,8 +515,12 @@ impl ChatWidget {
                     parsed,
                     source,
                     /*interaction_input*/ None,
+<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
                     terminal_wait,
                     self.config.animations,
+=======
+                    self.local_settings.tui.animations,
+>>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
                 );
                 let completed = cell.complete_call(&id, output, duration);
                 debug_assert!(completed, "new exec cell should contain {id}");
@@ -503,8 +533,6 @@ impl ChatWidget {
                 }
             }
         }
-        // Mark that actual work was done (command executed)
-        self.transcript.had_work_activity = true;
         if is_user_shell {
             self.maybe_send_next_queued_input();
         }

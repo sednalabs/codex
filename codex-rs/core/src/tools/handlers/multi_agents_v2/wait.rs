@@ -118,7 +118,10 @@ impl ToolExecutor<ToolInvocation> for Handler {
         create_wait_agent_tool_v2(self.options)
     }
 
-    fn handle(&self, invocation: ToolInvocation) -> codex_tools::ToolExecutorFuture<'_> {
+    fn handle<'a>(&'a self, invocation: ToolInvocation) -> codex_tools::ToolExecutorFuture<'a>
+    where
+        ToolInvocation: 'a,
+    {
         Box::pin(self.handle_call(invocation))
     }
 }
@@ -137,6 +140,7 @@ impl Handler {
         } = invocation;
         let arguments = function_arguments(payload)?;
         let args: WaitArgs = parse_arguments(&arguments)?;
+<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
         let wait_capability = registered_tool_runtime_capabilities().wait_agent;
         let native_event_capable = wait_capability
             .is_some_and(|capability| capability.native_event_wait && capability.mailbox_wake);
@@ -150,6 +154,20 @@ impl Handler {
             Vec::new()
         } else {
             resolve_agent_targets(&session, &turn, args.targets).await?
+=======
+        let min_timeout_ms = turn.config.multi_agent_v2.min_wait_timeout_ms;
+        let max_timeout_ms = turn.config.multi_agent_v2.max_wait_timeout_ms;
+        let default_timeout_ms = turn.config.multi_agent_v2.default_wait_timeout_ms;
+        let requested_timeout_ms = args.timeout_ms;
+        let timeout_ms = match requested_timeout_ms {
+            Some(ms) if ms > max_timeout_ms => {
+                return Err(FunctionCallError::RespondToModel(format!(
+                    "timeout_ms must be at most {max_timeout_ms}"
+                )));
+            }
+            Some(ms) => ms.max(min_timeout_ms),
+            None => default_timeout_ms,
+>>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
         };
         let mut seen = HashSet::with_capacity(receiver_thread_ids.len());
         for id in &receiver_thread_ids {
@@ -206,6 +224,7 @@ impl Handler {
             )
             .await;
 
+<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
         let mut status_rxs = Vec::with_capacity(receiver_thread_ids.len());
         let mut final_statuses = HashMap::new();
         for id in &receiver_thread_ids {
@@ -239,6 +258,11 @@ impl Handler {
                 }
             }
         }
+=======
+        let deadline = Instant::now() + Duration::from_millis(timeout_ms as u64);
+        let outcome = wait_for_activity(&mut activity_rx, pending_activity, deadline).await;
+        let result = WaitAgentResult::from_outcome(outcome, requested_timeout_ms, timeout_ms);
+>>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
 
         let return_when = wait_capability
             .filter(|capability| capability.return_when)
@@ -448,6 +472,7 @@ async fn ready_wake_source(
 }
 
 impl WaitAgentResult {
+<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
     fn new(
         requested_ids: Vec<ThreadId>,
         pending_ids: Vec<ThreadId>,
@@ -461,14 +486,36 @@ impl WaitAgentResult {
             CollabWaitingCompletionReason::SubscriptionLoss => {
                 "Wait ended because its event subscription was lost."
             }
+=======
+    fn from_outcome(
+        outcome: WaitOutcome,
+        requested_timeout_ms: Option<i64>,
+        timeout_ms: i64,
+    ) -> Self {
+        let message = match outcome {
+            WaitOutcome::MailboxActivity => "Wait completed.",
+            WaitOutcome::Steered => "Wait interrupted by new input.",
+            WaitOutcome::TimedOut => "Wait timed out.",
+>>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
+        };
+        let message = match requested_timeout_ms {
+            Some(requested_timeout_ms) if requested_timeout_ms < timeout_ms => format!(
+                "{message}\n\nRequested timeout of {requested_timeout_ms}ms was clamped to the minimum of {timeout_ms}ms."
+            ),
+            Some(_) | None => message.to_string(),
         };
         Self {
+<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
             message: message.to_string(),
             requested_ids,
             pending_ids,
             completion_reason,
             timed_out: matches!(completion_reason, CollabWaitingCompletionReason::Timeout),
             wake_notifications: (!notifications.is_empty()).then_some(notifications),
+=======
+            message,
+            timed_out: outcome == WaitOutcome::TimedOut,
+>>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
         }
     }
 
@@ -590,8 +637,13 @@ async fn emit_wait_completion(
 }
 
 impl ToolOutput for WaitAgentResult {
+<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
     fn log_preview(&self) -> String {
         self.output_json_text(registered_tool_runtime_capabilities())
+=======
+    fn log_output(&self) -> String {
+        tool_output_json_text(self, "wait_agent")
+>>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
     }
 
     fn success_for_logging(&self) -> bool {

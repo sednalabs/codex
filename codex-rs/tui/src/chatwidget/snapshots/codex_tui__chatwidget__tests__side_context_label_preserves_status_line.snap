@@ -4,6 +4,6 @@ expression: terminal.backend()
 ---
 "                                                                                "
 "                                                                                "
-"› Check recently modified functions for compatibility                           "
+"› Ask a follow-up question                                                      "
 "                                                                                "
 "  gpt-6-astra   Side from main thread · ctrl + / to switch · ctrl + c to close  "

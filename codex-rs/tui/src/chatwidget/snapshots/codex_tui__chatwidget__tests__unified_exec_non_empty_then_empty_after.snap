@@ -1,8 +1,14 @@
 ---
-source: tui/src/chatwidget/tests.rs
-expression: combined
+source: tui/src/chatwidget/tests/exec_flow.rs
+expression: normalize_completion_timestamps(& (combined))
 ---
 ↳ Interacted with background terminal · just fix
   └ pwd
 
+<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
 • Waiting · primitive: write_stdin(empty stdin poll) · just fix
+=======
+• Waited for background terminal · just fix
+
+  done [completion time]
+>>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360

@@ -1,9 +1,14 @@
 {
+<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
   "$defs": {
     "AbsolutePathBuf": {
       "description": "A path that is guaranteed to be absolute and normalized (though it is not\nguaranteed to be canonicalized or exist on the filesystem).\n\nIMPORTANT: When deserializing an `AbsolutePathBuf`, a base path must be set\nusing [AbsolutePathBufGuard::new]. If no base path is set, the\ndeserialization will fail unless the path being deserialized is already\nabsolute.",
       "type": "string"
     },
+=======
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "definitions": {
+>>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
     "AdditionalFileSystemPermissions": {
       "properties": {
         "entries": {
@@ -161,7 +166,11 @@
               "type": "string"
             },
             "path": {
+<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
               "$ref": "#/$defs/AbsolutePathBuf"
+=======
+              "$ref": "#/definitions/LegacyAppPathString"
+>>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
             },
             "type": {
               "const": "read",
@@ -323,6 +332,14 @@
         }
       ]
     },
+    "CommandExecutionApprovalKind": {
+      "description": "Distinguishes a command approval from input sent to an existing terminal.",
+      "enum": [
+        "command",
+        "writeStdin"
+      ],
+      "type": "string"
+    },
     "CommandExecutionRequestApprovalParams": {
       "properties": {
         "additionalPermissions": {
@@ -337,7 +354,11 @@
           "description": "Optional additional permissions requested for this command."
         },
         "approvalId": {
+<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
           "description": "Unique identifier for this specific approval callback.\n\nFor regular shell/unified_exec approvals, this is null.\n\nFor zsh-exec-bridge subcommand approvals, multiple callbacks can belong to\none parent `itemId`, so `approvalId` is a distinct opaque callback id\n(a UUID) used to disambiguate routing.",
+=======
+          "description": "Unique identifier for this specific approval callback.\n\nFor regular shell/unified_exec approvals, this is null.\n\nFor zsh-exec-bridge subcommand approvals, multiple callbacks can belong to one parent `itemId`, so `approvalId` is a distinct opaque callback id (a UUID) used to disambiguate routing. Stdin approvals also use a distinct callback id; inspect `kind` to distinguish them.",
+>>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
           "type": [
             "string",
             "null"
@@ -391,6 +412,15 @@
         },
         "itemId": {
           "type": "string"
+        },
+        "kind": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/CommandExecutionApprovalKind"
+            }
+          ],
+          "default": "command",
+          "description": "Kind of action under review. Defaults to `command` for older servers."
         },
         "networkApprovalContext": {
           "anyOf": [
@@ -1442,6 +1472,27 @@
         {
           "properties": {
             "_meta": true,
+            "message": {
+              "type": "string"
+            },
+            "mode": {
+              "enum": [
+                "openaiForm"
+              ],
+              "type": "string"
+            },
+            "requestedSchema": true
+          },
+          "required": [
+            "message",
+            "mode",
+            "requestedSchema"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "_meta": true,
             "elicitationId": {
               "type": "string"
             },
@@ -1638,7 +1689,11 @@
     "PermissionsRequestApprovalParams": {
       "properties": {
         "cwd": {
+<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
           "$ref": "#/$defs/AbsolutePathBuf"
+=======
+          "$ref": "#/definitions/LegacyAppPathString"
+>>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
         },
         "environmentId": {
           "default": null,
@@ -1770,8 +1825,12 @@
         }
       },
       "required": [
+<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
         "threadId",
         "turnId",
+=======
+        "isBlocking",
+>>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
         "itemId",
         "questions",
         "isBlocking"

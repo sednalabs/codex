@@ -27,16 +27,25 @@ modelProviders?: Array<string> | null, /**
  * are returned. When omitted or empty, defaults to interactive sources.
  */
 sourceKinds?: Array<ThreadSourceKind> | null, /**
+<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
  * Optional per-thread source filter; when omitted, side threads are excluded.
  */
 threadSources?: Array<ThreadSource> | null, /**
+=======
+ * Optional originator allowlist, matching any supplied value exactly.
+ * Supported by hosted backends only; the local app-server rejects a nonempty list.
+ * Omitted or empty lists leave originators unrestricted.
+ */
+originators?: Array<string> | null, /**
+>>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
  * Optional archived filter; when set to true, only archived threads are returned.
  * If false or null, only non-archived threads are returned.
  */
 archived?: boolean | null, /**
- * Optional pinned filter; when set, only threads matching this value are returned.
+ * Omit to include every section, set to `null` for unsectioned threads,
+ * or provide a section ID to return only threads in that section.
  */
-isPinned?: boolean | null, /**
+sectionId?: string | null, /**
  * Optional cwd filter or filters; when set, only threads whose session cwd
  * exactly matches one of these paths are returned.
  */

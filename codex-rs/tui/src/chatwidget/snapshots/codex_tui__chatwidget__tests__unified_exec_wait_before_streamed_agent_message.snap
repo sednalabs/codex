@@ -1,7 +1,9 @@
 ---
-source: tui/src/chatwidget/tests.rs
-expression: combined
+source: tui/src/chatwidget/tests/exec_flow.rs
+expression: normalize_completion_timestamps(& (combined))
 ---
 • Waiting · primitive: write_stdin(empty stdin poll) · cargo test -p codex-core
 
 • Streaming response.
+
+  done [completion time]

@@ -1,109 +1,169 @@
-# codex-app-server
+# MCP App UI
 
-`codex app-server` is the interface Codex uses to power rich interfaces such as the [Codex VS Code extension](https://marketplace.visualstudio.com/items?itemName=openai.chatgpt).
+`mcpToolCall.mcpAppUi` records the invoked descriptor's `resourceUri`
+and `preferredModelDisplayMode` (`inline` or `fullscreen`). Descriptors with a widget
+URI default to `inline` when the preference is missing or unsupported. The
+UI information is preserved in tool-call events and saved history so clients can
+render without waiting for the full MCP catalog.
 
-## Table of Contents
+The field is null for older history and tools that declare widgets only in
+result metadata; clients retain catalog discovery for those calls. Existing
+resource URI fields remain available for older clients.
 
-- [Protocol](#protocol)
-- [Message Schema](#message-schema)
-- [Core Primitives](#core-primitives)
-- [Lifecycle Overview](#lifecycle-overview)
-- [Initialization](#initialization)
-- [API Overview](#api-overview)
-- [Events](#events)
-- [Approvals](#approvals)
-- [Skills](#skills)
-- [Apps](#apps)
-- [Auth endpoints](#auth-endpoints)
-- [Experimental API Opt-in](#experimental-api-opt-in)
+# Initial Daybreak choice (experimental)
 
-## Protocol
+Persistent threads accept `daybreakEnabled` on `thread/start` with the
+`experimentalApi` opt-in. The response and `thread/started` notification both
+include the initial choice in `thread.daybreakEnabled`. The choice is staged
+with the thread's other initial metadata and saved when the thread is persisted.
+An unused thread is not guaranteed to survive restart. Omitted or null leaves
+the choice unset. Ephemeral threads cannot save it.
+Use `thread/metadata/update` for later changes. This preference does not select
+`turn/start.cyberAccessProgram` or grant access to an access program.
 
-Similar to [MCP](https://modelcontextprotocol.io/), `codex app-server` supports bidirectional communication using JSON-RPC 2.0 messages (with the `"jsonrpc":"2.0"` header omitted on the wire).
+# User verification cancellation (experimental)
 
-Supported transports:
+Local UI clients can cancel a native user-verification RPC by sending
+`userVerification/cancel` with `{requestId}` and the `experimentalApi` opt-in.
+The result is an empty acknowledgment (`{}`). This API does not enable desktop
+verification capability advertisement.
 
-- stdio (`--stdio` or `--listen stdio://`, default): newline-delimited JSON (JSONL)
-- websocket (`--listen ws://IP:PORT`): one JSON-RPC message per websocket text frame (**experimental / unsupported**)
-- unix socket (`--listen unix://` or `--listen unix://PATH`): websocket connections over `$CODEX_HOME/app-server-control/app-server-control.sock` or a custom socket path, using the standard HTTP Upgrade handshake
-- off (`--listen off`): do not expose a local transport
+`requestId` is the original status, enroll, delete, or verify RPC's string or
+integer ID on the same connection, not the server elicitation ID. Use fresh IDs
+for each operation and a distinct ID for the cancel RPC. Unknown, finished,
+unrelated, and other-connection requests are no-ops.
 
-When running with `--listen ws://IP:PORT`, the same listener also serves basic HTTP health probes:
+The acknowledgment confirms the cancellation signal without waiting for the OS
+prompt to close. The original RPC completes independently, with
+`cancelled/interrupted` when cancellation prevents completion. Cancellation
+cannot roll back completed effects. It remains effective while a proof waits for
+outbound queue capacity, but cannot retract a response already enqueued.
 
-- `GET /readyz` returns `200 OK` once the listener is accepting new connections.
-- `GET /healthz` returns `200 OK` when no `Origin` header is present.
-- Any request carrying an `Origin` header is rejected with `403 Forbidden`.
+Canceling or resolving an elicitation does not itself stop a separate
+`userVerification/verify` RPC. Clients must cancel that RPC separately and discard
+late proofs after the approval is canceled or resolved. Only one native worker
+runs per app-server; if an OS call remains active after cancellation or timeout,
+subsequent local operations return `failed/providerError` until that worker exits.
 
-Websocket transport is currently experimental and unsupported. Do not rely on it for production workloads.
+# Hosted Codex Apps MCP protocol
 
-Pass `--code-mode-host wss://HOST/PATH` to connect this app-server process to a remote code-mode host instead of starting a local host. This outbound connection is independent of `--listen` and is shared by the process's threads. Use `ws://` for a local code-mode host.
+The host-owned HTTP `codex_apps` server uses Legacy by default in app-server and
+standalone Codex. To discover the 2026-07-28 protocol, set
+`codex_apps_mcp_2026_07_28 = true` under `[features]`, or send a true runtime
+override via `experimentalFeature/enablement/set`. Discovery falls back to Legacy
+when the server does not support it. Explicit config takes precedence.
+The dedicated setting does not apply to third-party HTTP or local `codex_app`
+stdio servers. The existing `mcp_2026_07_28` flag still governs eligible other
+servers, regardless of whether their names or URLs resemble hosted Apps.
+App-server does not persist this selection.
 
-The unix socket transport is intended for local app-server control-plane clients. `codex app-server proxy`
-opens exactly one raw stream connection to `$CODEX_HOME/app-server-control/app-server-control.sock`
-by default, or to `--sock PATH` when provided, and proxies bytes between that socket and stdin/stdout.
-The proxied stream carries the websocket HTTP Upgrade handshake followed by websocket frames.
+# Thread removal
 
-Tracing/log output:
+`thread/archive` and `thread/delete` reject attempts to remove a live internal
+worker with JSON-RPC error `-32600`. The worker's owner controls its shutdown.
+For example, a Guardian reviewer remains available to its parent conversation
+after a client tries to archive or delete it.
 
-- `RUST_LOG` controls log filtering/verbosity.
-- Set `LOG_FORMAT=json` to emit app-server tracing logs to `stderr` as JSON (one event per line).
+After the owner releases the worker, its saved conversation can be archived or
+deleted normally. Ordinary client-controlled threads keep their existing behavior.
 
-Backpressure behavior:
+## User verification (experimental)
 
-- The server uses bounded queues between transport ingress, request processing, and outbound writes.
-- When request ingress is saturated, new requests are rejected with a JSON-RPC error code `-32001` and message `"Server overloaded; retry later."`.
-- Clients should treat this as retryable and use exponential backoff with jitter.
+Codex app-server advertises `openai/elicitation.userVerification` to the
+host-owned plugin service for bundled, in-process TUI sessions (`codex-tui`) and
+local stdio desktop sessions (`Codex Desktop`) on devices with supported biometric
+hardware and the `experimentalApi` opt-in. This is an app-server decision,
+independent of whether a key exists; TUI/Desktop/mobile do not advertise this MCP
+capability. Mobile integration requires a separate rollout. Other clients and
+network connections do not receive this mode, even with a recognized client name.
+Before sending verification requests to desktop sessions, deploy a GUI that
+handles the typed verification request, cancellation, and late proofs. The general
+`experimentalApi` opt-in does not identify a compatible GUI version.
 
-## Message Schema
+Local UI clients use five methods. They require the existing
+`experimentalApi` opt-in. The local provider reports
+`unavailable/providerUnavailable` on unsupported platforms or without the required
+ChatGPT account identity.
 
-Currently, you can dump a TypeScript version of the schema using `codex app-server generate-ts`, or a JSON Schema bundle via `codex app-server generate-json-schema`. Each output is specific to the version of Codex you used to run the command, so the generated artifacts are guaranteed to match that version.
+| Method | Params | Result |
+| --- | --- | --- |
+| `userVerification/status` | `{}` | `{credentialId, unavailableReason, unavailableMessage}` |
+| `userVerification/enroll` | `{}` | `{credentialId, algorithm?, publicKey?}` |
+| `userVerification/delete` | `{}` | `{}` |
+| `userVerification/verify` | `{challenge, title, description}` | `{proof: {credentialId, signature}}` |
+| `userVerification/cancel` | `{requestId}` | `{}` |
 
-```
-codex app-server generate-ts --out DIR
-codex app-server generate-json-schema --out DIR
-```
+Status reads local readiness without prompting or contacting a backend. A null
+`unavailableReason` means local checks passed, not that registration is valid.
+Unsupported platforms and missing account identity are reported in the status
+response's `unavailableReason` field.
+Enrollment creates or reuses the local key and returns its public metadata. The
+`publicKey` is unpadded base64url SPKI-DER; `algorithm` is `ecdsaP256Sha256X962`.
+During the experimental rollout, `algorithm` and `publicKey` are optional for
+compatibility with older app-servers. Current servers populate both fields;
+callers must check that both are present and non-null before backend registration.
+The trusted UI host owns backend registration: obtain an enrollment challenge,
+sign it with `userVerification/verify`, check that the proof's `credentialId`
+matches this response, and submit the public metadata and proof to the backend.
+Local success is not server enrollment. The caller must preserve the authenticated
+account across this flow and reconcile uncertain registration before retrying.
+Deletion removes the local key; the caller owns backend revocation.
+Enrollment and deletion coordinate credential lifecycle; callers do not issue
+separate generate or rotate commands. Identity comes from the authenticated
+account; this API exposes no caller-selected scope.
 
-## Core Primitives
+Verify signs 1–4096 decoded challenge bytes using P-256 ECDSA with SHA-256. The
+challenge and DER signature use unpadded base64url. Title is 1–256 UTF-8 bytes;
+description is at most 4096 bytes. The UI obtains approval for that display
+context before calling. Verify does not require a pending elicitation; a UI with
+its own authenticator can return proof directly in elicitation response content.
+The calling flow owns pending-request checks and discards late proofs.
+Native enroll, delete, and verify accept local stdio and in-process connections.
+WebSocket and remote-control peers must use their own device authenticator;
+status remains available for local readiness. Dropping an embedded RPC, disconnecting,
+or changing authentication cancels its native operation. Responses recheck the
+captured identity after waiting for outbound queue capacity.
+Canceling or resolving an elicitation does not itself stop a separate
+`userVerification/verify` RPC. The GUI must use `userVerification/cancel` to
+cancel that RPC and discard late proofs when an approval is canceled or resolved.
+See [User verification cancellation](#user-verification-cancellation-experimental)
+for request ID and acknowledgment semantics.
+Only one native worker runs per app-server. If an OS call remains active after
+cancellation or timeout, subsequent local operations return `failed/providerError`
+until that worker exits.
 
-The API exposes three top level primitives representing an interaction between a user and Codex:
+Failures use the normal JSON-RPC error envelope with closed `{type, reason}` data:
+`invalidRequest`, `unavailable`, `cancelled`, or `failed`. UI clients branch on
+these values rather than message text. Native diagnostic payloads stay private.
 
-- **Thread**: A conversation between a user and the Codex agent. Each thread contains multiple turns.
-- **Turn**: One turn of the conversation, typically starting with a user message and finishing with an agent message. Each turn contains multiple items.
-- **Item**: Represents user inputs and agent outputs as part of the turn, persisted and used as the context for future conversations. Example items include user message, agent reasoning, agent message, shell command, file edit, etc.
+## Managed model provider requirements
 
-Use the thread APIs to create, list, or archive conversations. Drive a conversation with turn APIs and stream progress via turn notifications.
+Existing threads retain their provider configuration. Input RPCs reject requests when managed
+`model_provider` or `model_providers` requirements no longer match that configuration, or cannot
+be loaded. This covers turn start/steer, review, compaction, manual queue start, and active goal
+updates. Realtime connections use separate routing configuration and are not checked here.
+Interrupt, realtime stop, and goal pause/clear remain available. User and project
+configuration changes alone do not invalidate existing threads.
 
-## Lifecycle Overview
+# Amazon Bedrock authentication
 
-- Initialize once per connection: Immediately after opening a transport connection, send an `initialize` request with your client metadata, then emit an `initialized` notification. Any other request on that connection before this handshake gets rejected.
-- Start (or resume) a thread: Call `thread/start` to open a fresh conversation. The response returns the thread object and you’ll also get a `thread/started` notification. If you’re continuing an existing conversation, call `thread/resume` with its ID instead. If you want to branch from an existing conversation, call `thread/fork` to create a new thread id with copied history. Like `thread/start`, `thread/fork` also accepts `ephemeral: true` for an in-memory temporary thread.
-  The returned `thread.ephemeral` flag tells you whether the session is intentionally in-memory only; when it is `true`, `thread.path` is `null`.
-- Begin a turn: To send user input, call `turn/start` with the target `threadId` and the user's input. Optional fields let you override model, cwd, sandbox policy or experimental `permissions` profile selection, approval policy, approvals reviewer, etc. This immediately returns the new turn object. The app-server emits `turn/started` when that turn actually begins running.
-- Stream events: After `turn/start`, keep reading JSON-RPC notifications on stdout. You’ll see `item/started`, `item/completed`, deltas like `item/agentMessage/delta`, tool progress, etc. These represent streaming model output plus any side effects (commands, tool calls, reasoning notes).
-- Finish the turn: When the model is done (or the turn is interrupted via making the `turn/interrupt` call), the server sends `turn/completed` with the final turn state and token usage.
+If `model_providers.amazon-bedrock.aws.credential_export` is configured, Bedrock setup and
+Bedrock login return an error without changing configuration or saved credentials. Remove the
+exporter configuration before selecting another credential source. `aws.credential_export` and
+`aws.profile` cannot be configured together.
 
-## Initialization
+## Stored thread attachments
 
-Clients must send a single `initialize` request per transport connection before invoking any other method on that connection, then acknowledge with an `initialized` notification. The server returns the user agent string it will present to upstream services, `codexHome` for the server's Codex home directory, and `platformFamily` and `platformOs` strings describing the app-server runtime target; subsequent requests issued before initialization receive a `"Not initialized"` error, and repeated `initialize` calls on the same connection receive an `"Already initialized"` error.
+- `thread/attachment/add` — add a durable resource reference to a stored thread without loading it. Repeated writes with the same attachment type and identity key return the existing attachment.
+- `thread/attachment/list` — list attachments for one stored thread in a cursor-paginated request, including a thread that is not loaded.
+- `thread/attachment/remove` — remove an attachment by its thread, attachment type, and identity key; returns `{}`.
+- `thread/attachment/updated` — notification broadcast after an attachment is created or removed; contains the thread, attachment identity, attachment id, and operation.
+### Example: Manage stored thread attachments
 
-`initialize.params.capabilities` also supports per-connection notification opt-out via `optOutNotificationMethods`, which is a list of exact method names to suppress for that connection. Matching is exact (no wildcards/prefixes). Unknown method names are accepted and ignored.
-
-Clients that handle OpenAI extended MCP forms, including a fallback for
-unsupported field types, set
-`initialize.params.capabilities.mcpServerOpenaiFormElicitation` to `true`.
-App-server then advertises the downstream `openai/form` MCP extension for
-threads started, resumed, or forked by that connection. Clients that cannot
-handle the request envelope omit the field or set it to `false`.
-
-Applications building on top of `codex app-server` should identify themselves via the `clientInfo` parameter.
-
-**Important**: `clientInfo.name` is used to identify the client for the OpenAI Compliance Logs Platform. If
-you are developing a new Codex integration that is intended for enterprise use, please contact us to get it
-added to a known clients list. For more context: https://chatgpt.com/admin/api-reference#tag/Logs:-Codex
-
-Example (from OpenAI's official VSCode extension):
+Attachments record the resources currently associated with a thread, independently of conversation history. Clients can add, remove, and list attachments for one stored thread at a time without resuming those threads. Adding or removing an attachment does not create or delete the underlying resource or rewrite history. An attachment is idempotently identified by its thread, `attachmentType`, and `identityKey`. For pull requests, clients should reuse the canonical application identity `JSON.stringify([canonicalHostname, lowercaseOwner, lowercaseRepository, pullRequestNumber])` so addition and removal agree across surfaces.
 
 ```json
+<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
 {
   "method": "initialize",
   "id": 0,
@@ -329,88 +389,26 @@ Example:
 
 ```json
 { "method": "thread/resume", "id": 11, "params": {
+=======
+{ "method": "thread/attachment/add", "id": 20, "params": {
+>>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
     "threadId": "thr_123",
-    "personality": "friendly"
-} }
-{ "id": 11, "result": { "thread": { "id": "thr_123", … } } }
-
-{ "method": "thread/resume", "id": 12, "params": {
-    "threadId": "thr_123",
-    "excludeTurns": true
-} }
-{ "id": 12, "result": {
-    "thread": { "id": "thr_123", "turns": [], … },
-    "turnsBackwardsCursor": "turn-head-cursor-or-null",
-    "itemsBackwardsCursor": "item-head-cursor-or-null"
-} }
-
-{ "method": "thread/resume", "id": 13, "params": {
-    "threadId": "thr_123",
-    "excludeTurns": true,
-    "initialTurnsPage": {
-        "limit": 20,
-        "sortDirection": "desc",
-        "itemsView": "summary"
-    }
-} }
-{ "id": 13, "result": {
-    "thread": { "id": "thr_123", "turns": [], … },
-    "initialTurnsPage": {
-        "data": [ ... ],
-        "nextCursor": "older-turns-cursor-or-null",
-        "backwardsCursor": "newer-turns-cursor-or-null"
-    }
-} }
-```
-
-To branch from a stored session, call `thread/fork` with the `thread.id`. This creates a new thread id and emits a `thread/started` notification for it. The returned `thread.sessionId` identifies the current live session tree root. Root threads use their own `thread.id` as `thread.sessionId`; stored threads that are not loaded also report their own `thread.id`, because resuming one makes it the root of a new live session tree. When the source history includes persisted token usage, the server also emits `thread/tokenUsage/updated` for the new thread immediately after the response. If the source thread is actively running, the fork snapshots it as if the current turn had been interrupted first. Pass `ephemeral: true` when the fork should stay in-memory only:
-
-```json
-{ "method": "thread/fork", "id": 12, "params": { "threadId": "thr_123", "ephemeral": true } }
-{ "id": 12, "result": { "thread": { "id": "thr_456", "sessionId": "thr_456", … } } }
-{ "method": "thread/started", "params": { "thread": { … } } }
-```
-
-Like `thread/resume`, experimental clients can pass `excludeTurns: true` to `thread/fork` to return only thread metadata in `thread.turns` and page history with `thread/turns/list`. In that mode the server skips replaying restored `thread/tokenUsage/updated`, which keeps the fork path from rebuilding turns just to attribute historical usage. Ephemeral forks of paginated threads require `excludeTurns: true`.
-
-### Example: List threads (with pagination & filters)
-
-`thread/list` lets you render a history UI. Results default to `createdAt` (newest first) descending. Pass any combination of:
-
-- `cursor` — opaque string from a prior response; omit for the first page.
-- `limit` — server defaults to a reasonable page size if unset.
-- `sortKey` — `created_at` (default), `updated_at`, or `recency_at`.
-- `recencyAt` is initialized when the thread is created and advances when a turn starts. Unlike `updatedAt`, background output and other persisted mutations do not advance it.
-- `sortDirection` — `desc` (default) or `asc`.
-- `modelProviders` — restrict results to specific providers; unset, null, or an empty array will include all providers.
-- `sourceKinds` — restrict results to specific sources; omit or pass `[]` for interactive sessions only (`cli`, `vscode`).
-- `archived` — when `true`, list archived threads only. When `false` or `null`, list non-archived threads (default).
-- `isPinned` — when provided, return only threads whose persisted pin state matches the requested value; omit it to include both pinned and unpinned threads.
-- `cwd` — restrict results to threads whose session cwd exactly matches this path, or one of these paths when an array is provided. Relative paths are resolved against the app-server process cwd before matching.
-- `useStateDbOnly` — when `true`, return from the state DB without scanning JSONL rollouts to repair metadata. Omit or pass `false` to preserve the default scan-and-repair behavior.
-- `searchTerm` — restrict results to threads whose extracted title contains this substring (case-sensitive).
-- Responses include `nextCursor` to continue in the same direction and `backwardsCursor` to pass as `cursor` when reversing `sortDirection`.
-- Responses include `agentNickname` and `agentRole` for AgentControl-spawned thread sub-agents when available.
-
-Example:
-
-```json
-{ "method": "thread/list", "id": 20, "params": {
-    "cursor": null,
-    "limit": 25,
-    "cwd": ["/Users/me/project", "/Users/me/project-worktree"],
-    "sortKey": "created_at"
+    "attachmentType": "pull_request",
+    "identityKey": "[\"github.com\",\"openai\",\"codex\",123]",
+    "payload": { "url": "https://github.com/openai/codex/pull/123" }
 } }
 { "id": 20, "result": {
-    "data": [
-        { "id": "thr_a", "preview": "Create a TUI", "modelProvider": "openai", "createdAt": 1730831111, "updatedAt": 1730831111, "recencyAt": 1730831111, "status": { "type": "notLoaded" }, "agentNickname": "Atlas", "agentRole": "explorer" },
-        { "id": "thr_b", "preview": "Fix tests", "modelProvider": "openai", "createdAt": 1730750000, "updatedAt": 1730750000, "recencyAt": 1730750000, "status": { "type": "notLoaded" } }
-    ],
-    "nextCursor": "opaque-token-or-null",
-    "backwardsCursor": "opaque-token-or-null"
+    "outcome": "created",
+    "attachment": {
+        "id": "01984de2-8f74-7c91-a3b2-5c5e937cf318",
+        "attachmentType": "pull_request",
+        "identityKey": "[\"github.com\",\"openai\",\"codex\",123]",
+        "payload": { "url": "https://github.com/openai/codex/pull/123" },
+        "createdAt": 1750000000
+    }
 } }
-```
 
+<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
 When `nextCursor` is `null`, you’ve reached the final page.
 
 ### Example: List descendant threads
@@ -423,279 +421,96 @@ Relationship-filtered traversal is safety-bounded. When the response contains `r
 { "method": "thread/list", "id": 21, "params": {
     "ancestorThreadId": "00000000-0000-0000-0000-000000000100",
     "limit": 25
+=======
+{ "method": "thread/attachment/list", "id": 21, "params": {
+    "threadId": "thr_123",
+    "limit": 100
+>>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
 } }
 { "id": 21, "result": {
-    "data": [
-        { "id": "00000000-0000-0000-0000-000000000101", "parentThreadId": "00000000-0000-0000-0000-000000000100", "status": { "type": "notLoaded" } },
-        { "id": "00000000-0000-0000-0000-000000000102", "parentThreadId": "00000000-0000-0000-0000-000000000101", "status": { "type": "notLoaded" } }
-    ],
-    "nextCursor": null,
-    "backwardsCursor": null
-} }
-```
-
-### Example: List loaded threads
-
-`thread/loaded/list` returns thread ids currently loaded in memory. This is useful when you want to check which sessions are active without scanning rollouts on disk.
-
-```json
-{ "method": "thread/loaded/list", "id": 21 }
-{ "id": 21, "result": {
-    "data": ["thr_123", "thr_456"]
-} }
-```
-
-### Example: Track thread status changes
-
-`thread/status/changed` is emitted whenever a loaded thread's status changes after it has already been introduced to the client:
-
-- Includes `threadId` and the new `status`.
-- Status can be `notLoaded`, `idle`, `systemError`, or `active` (with `activeFlags`; `active` implies running).
-- `thread/start`, `thread/fork`, and detached review threads do not emit a separate initial `thread/status/changed`; their `thread/started` notification already carries the current `thread.status`.
-
-```json
-{
-  "method": "thread/status/changed",
-  "params": {
-    "threadId": "thr_123",
-    "status": { "type": "active", "activeFlags": [] }
-  }
-}
-```
-
-### Example: Unsubscribe from a loaded thread
-
-`thread/unsubscribe` removes the current connection's subscription to a thread. The response status is one of:
-
-- `unsubscribed` when the connection was subscribed and is now removed.
-- `notSubscribed` when the connection was not subscribed to that thread.
-- `notLoaded` when the thread is not loaded.
-
-If this was the last subscriber, the server does not unload the thread immediately. It unloads the thread after the thread has had no subscribers and no thread activity for 30 minutes, runs `SessionEnd` hooks, then emits `thread/closed` and a `thread/status/changed` transition to `notLoaded`.
-
-`SessionEnd` also runs before archive, delete, and graceful app-server shutdown. It runs only for root threads, not `ThreadSpawn` children or internal subagents. Hooks are advisory: their output cannot block teardown. The default timeout is one second, configured timeouts are capped at three seconds, `async: true` runs synchronously with a configuration warning, and the hook input always reports `reason: "other"`. `SessionEnd` matchers are evaluated against that reason.
-
-```json
-{ "method": "thread/unsubscribe", "id": 22, "params": { "threadId": "thr_123" } }
-{ "id": 22, "result": { "status": "unsubscribed" } }
-```
-
-Later, after the idle unload timeout:
-
-```json
-{ "method": "thread/status/changed", "params": {
-    "threadId": "thr_123",
-    "status": { "type": "notLoaded" }
-} }
-{ "method": "thread/closed", "params": { "threadId": "thr_123" } }
-```
-
-### Example: Read a thread
-
-Use `thread/read` to fetch a stored thread by id without resuming it. Pass `includeTurns` when you want thread history loaded into `thread.turns`. The returned thread includes `parentThreadId`, `agentNickname`, and `agentRole` for subagent threads when available.
-
-Paginated threads support metadata-only reads; `includeTurns: true` is unsupported for them.
-
-```json
-{ "method": "thread/read", "id": 22, "params": { "threadId": "thr_123" } }
-{ "id": 22, "result": {
-    "thread": { "id": "thr_123", "status": { "type": "notLoaded" }, "turns": [] }
-} }
-```
-
-```json
-{ "method": "thread/read", "id": 23, "params": { "threadId": "thr_123", "includeTurns": true } }
-{ "id": 23, "result": {
-    "thread": { "id": "thr_123", "status": { "type": "notLoaded" }, "turns": [ ... ] }
-} }
-```
-
-### Example: List thread turns (experimental)
-
-Use `thread/turns/list` with `capabilities.experimentalApi = true` to page a stored thread’s turn history without resuming it. By default, results are sorted descending so clients can start at the present and fetch older turns with `nextCursor`. The response also includes `backwardsCursor`; pass it as `cursor` on a later request with `sortDirection: "asc"` to fetch turns newer than the first item from the earlier page.
-
-Every returned `Turn` includes `itemsView`, which tells clients whether the `items` array was omitted intentionally (`notLoaded`), contains only summary items (`summary`), or contains every item available from persisted app-server history (`full`). Pass `itemsView` to choose the returned detail level; omitted `itemsView` defaults to `"summary"`.
-
-Paginated threads support the same views. Their `full` view is materialized from the paginated item projection before app-server returns the turn page.
-
-```json
-{ "method": "thread/turns/list", "id": 24, "params": {
-    "threadId": "thr_123",
-    "limit": 50,
-    "sortDirection": "desc",
-    "itemsView": "summary"
-} }
-{ "id": 24, "result": {
-    "data": [ ... ],
-    "nextCursor": "older-turns-cursor-or-null",
-    "backwardsCursor": "newer-turns-cursor-or-null"
-} }
-```
-
-`thread/items/list` pages full persisted items across a thread, optionally filtered to one turn:
-
-```json
-{ "method": "thread/items/list", "id": 25, "params": {
-    "threadId": "thr_123",
-    "turnId": "turn_456",
-    "limit": 100,
-    "sortDirection": "asc"
-} }
-```
-
-Each returned entry includes the containing `turnId` and its full `item`, so clients can group
-unfiltered pages into turns. Omit `turnId` or pass `null` to page items across the thread. Item
-cursors can be reused with or without `turnId`; the filter does not change the cursor's scope.
-Thread stores that do not implement item pagination return JSON-RPC `-32601` with message
-`thread/items/list is not supported yet`.
-
-`thread/searchOccurrences` searches one paginated thread without replaying its rollout. It returns
-occurrences in chronological message order from every visible user message, including steering
-messages, and final assistant messages. `snippetMatchRange` uses
-UTF-16 offsets within `snippet`, and `turnCursor` can be passed directly to `thread/turns/list`
-to load the containing turn.
-
-```json
-{ "method": "thread/searchOccurrences", "id": 26, "params": {
-    "threadId": "thr_123",
-    "searchTerm": "needle",
-    "limit": 50
-} }
-{ "id": 26, "result": {
     "data": [{
-        "turnId": "turn_456",
-        "itemId": "item_789",
-        "snippet": "The needle is here.",
-        "snippetMatchRange": { "start": 4, "end": 10 },
-        "turnCursor": "opaque-inclusive-turn-cursor"
+        "id": "01984de2-8f74-7c91-a3b2-5c5e937cf318",
+        "attachmentType": "pull_request",
+        "identityKey": "[\"github.com\",\"openai\",\"codex\",123]",
+        "payload": { "url": "https://github.com/openai/codex/pull/123" },
+        "createdAt": 1750000000
     }],
     "nextCursor": null
 } }
-```
 
-### Example: Update stored thread metadata
-
-Use `thread/metadata/update` to patch sqlite-backed metadata for a thread without resuming it. Today this supports persisted `gitInfo`; omitted fields are left unchanged, while explicit `null` clears a stored value.
-
-```json
-{ "method": "thread/metadata/update", "id": 24, "params": {
+{ "method": "thread/attachment/remove", "id": 22, "params": {
     "threadId": "thr_123",
-    "gitInfo": { "branch": "feature/sidebar-pr" }
+    "attachmentType": "pull_request",
+    "identityKey": "[\"github.com\",\"openai\",\"codex\",123]"
 } }
-{ "id": 24, "result": {
-    "thread": {
-        "id": "thr_123",
-        "gitInfo": { "sha": null, "branch": "feature/sidebar-pr", "originUrl": null }
-    }
-} }
+{ "id": 22, "result": {} }
 
-{ "method": "thread/metadata/update", "id": 25, "params": {
+{ "method": "thread/attachment/updated", "params": {
     "threadId": "thr_123",
-    "gitInfo": { "branch": null }
-} }
-{ "id": 25, "result": {
-    "thread": {
-        "id": "thr_123",
-        "gitInfo": null
-    }
+    "attachmentType": "pull_request",
+    "identityKey": "[\"github.com\",\"openai\",\"codex\",123]",
+    "attachmentId": "01984de2-8f74-7c91-a3b2-5c5e937cf318",
+    "operation": "deleted"
 } }
 ```
 
-Experimental: use `thread/memoryMode/set` to change whether a thread remains eligible for future memory generation.
+`thread/attachment/list` accepts one `threadId` and returns at most 100 attachments per page, ordered by creation time and attachment id. Continue with `nextCursor` and the same `threadId` until the cursor is `null`. Each thread can retain up to 100 attachments. Removing an attachment frees a slot for a new attachment.
 
-```json
-{ "method": "thread/memoryMode/set", "id": 26, "params": {
-    "threadId": "thr_123",
-    "mode": "disabled"
-} }
-{ "id": 26, "result": {} }
-```
+A non-ephemeral fork copies the source thread's current attachments, even when forking at an earlier turn. The copies have new attachment IDs and creation timestamps, but retain the same resource identities and payloads. Clients use `forkedFromId` on `thread/started` to detect forks and call `thread/attachment/list` with the new thread ID to load their attachments. Fork copying does not emit per-attachment updates; explicit add/remove operations still do. Copying is awaited before publishing the fork, but is best effort: a copy failure is logged and the conversation fork succeeds without attachments. Membership can then change independently on either thread; the referenced resources themselves are not copied. Resuming a fork does not repeat the copy.
 
-Experimental: use `memory/reset` to clear local memory artifacts and sqlite-backed memory stage data for the current Codex home. This preserves existing thread memory modes; use `thread/memoryMode/set` separately when a thread's future memory eligibility should change.
+Attachment creation and deletion requests using the same thread ID are serialized across connections. The requesting client receives its response before the compact update is broadcast, and duplicate creates or absent deletes do not emit updates. Deleting the owning thread removes its attachments under the same lifecycle exclusion; queued attachment mutations then report that the thread was not found.
 
-```json
-{ "method": "memory/reset", "id": 27 }
-{ "id": 27, "result": {} }
-```
+# Thread plugin settings
 
-### Example: Set and update a thread goal
+`thread/settings/update` and `turn/start` accept `disabledPluginIds`, a list of
+`PluginSummary.id` values from `plugin/list`, in the
+`<plugin-name>@<marketplace-name>` format. A supplied list replaces the selection;
+omission or `null` preserves it, and `[]` clears it. Saving this selection does
+not yet filter plugin capabilities.
 
-Use `thread/goal/set` to create or update the current goal for a materialized thread. Clients can set `budgetLimited` when they stop because a token budget is exhausted or nearly exhausted, `blocked` when progress is waiting on outside intervention, and `usageLimited` when usage availability stops further work. The system also sets `budgetLimited` when accounting crosses a configured token budget and `usageLimited` when a turn ends on a hard usage-limit error.
+Read the selection from `threadSettings.disabledPluginIds` in
+`thread/settings/updated` notifications, or from `disabledPluginIds` in
+`thread/start`, `thread/resume`, and `thread/fork` responses. Selections persist
+across resume. Forks restore the selection from the history retained at the
+requested fork boundary.
 
-```json
-{ "method": "thread/goal/set", "id": 27, "params": {
-    "threadId": "thr_123",
-    "objective": "Keep improving the benchmark until p95 latency is under 120ms",
-    "tokenBudget": 200000
-} }
-{ "id": 27, "result": { "goal": {
-    "threadId": "thr_123",
-    "objective": "Keep improving the benchmark until p95 latency is under 120ms",
-    "status": "active",
-    "tokenBudget": 200000,
-    "tokensUsed": 0,
-    "timeUsedSeconds": 0,
-    "createdAt": 1776272400,
-    "updatedAt": 1776272400
-} } }
-{ "method": "thread/goal/updated", "params": { "threadId": "thr_123", "goal": {
-    "threadId": "thr_123",
-    "objective": "Keep improving the benchmark until p95 latency is under 120ms",
-    "status": "active",
-    "tokenBudget": 200000,
-    "tokensUsed": 0,
-    "timeUsedSeconds": 0,
-    "createdAt": 1776272400,
-    "updatedAt": 1776272400
-} } }
-```
+# MCP server capabilities
 
-```json
-{ "method": "thread/goal/set", "id": 28, "params": {
-    "threadId": "thr_123",
-    "status": "blocked"
-} }
-{ "id": 28, "result": { "goal": {
-    "threadId": "thr_123",
-    "objective": "Keep improving the benchmark until p95 latency is under 120ms",
-    "status": "blocked",
-    "tokenBudget": 200000,
-    "tokensUsed": 10000,
-    "timeUsedSeconds": 60,
-    "createdAt": 1776272400,
-    "updatedAt": 1776272460
-} } }
-```
+`mcpServerStatus/list` returns `serverCapabilities` for each initialized MCP server
+in both `full` and `toolsAndAuthOnly` detail modes, including thread-scoped reads.
+This is the server's advertised MCP capabilities object, including its `extensions`
+map. It is null when the connection has not initialized successfully; capabilities
+are never inferred from tools or copied from a shared catalog cache.
 
-Use `thread/goal/get` to read the current goal without changing it.
+# Thread rollback
 
-```json
-{ "method": "thread/goal/get", "id": 29, "params": { "threadId": "thr_123" } }
-{ "id": 29, "result": { "goal": null } }
-```
+`thread/rollback` has been removed from the API, including its request and response
+types. Requests use the generic unknown-method rejection path. Use `thread/revert`
+for paginated threads instead.
 
-Use `thread/goal/clear` to remove the current goal.
+Existing rollouts may contain historical `ThreadRolledBack` events. Their replay
+and migration remain supported so resuming, reading, and forking those threads
+preserves the surviving history. This disk compatibility does not require restoring
+support for new `thread/rollback` requests.
 
-```json
-{ "method": "thread/goal/clear", "id": 30, "params": { "threadId": "thr_123" } }
-{ "id": 30, "result": { "cleared": true } }
-{ "method": "thread/goal/cleared", "params": { "threadId": "thr_123" } }
-```
+# Selected workspace routing
 
-### Example: Archive a thread
+The experimental `account/read.workspaceRouting` response field returns the selected ChatGPT workspace's `chatgptAccountId`, resolved HTTPS `backendOrigin`, and backend-provided `accountRoutingOverride`. The routing value is `us`, `us_cr`, or the explicit `NO_CONSTRAINT` value. API-only and signed-out accounts return `null` and do not need `accounts/check`.
 
-Use `thread/archive` to move the persisted rollout (stored as a JSONL file on disk) into the archived sessions directory and attempt to move any spawned descendant thread rollouts.
+App-server discovers routing for saved ChatGPT logins at startup and for new logins or workspace switches. After requirements and routing are ready, it sends the existing `account/updated` notification. Newly initialized connections also receive this notification once saved-workspace routing is ready, including when discovery finished before the connection initialized. Clients then reread `configRequirements/read` and `account/read`. Saved ChatGPT credentials without a selected workspace ID retain their account information and return `workspaceRouting: null`; app-server does not guess a workspace from the backend's default account. Discovery failures for a selected workspace, including missing or null fields from older backends, return an `account/read` error. They never produce a successful unrestricted result. A later read retries failed discovery. Logout clears the cached routing, and results from earlier authentication owners are discarded. Token refreshes for the same known user and workspace invalidate cached routing without cancelling discovery or failing sign-in. Configuration is reloaded after discovery; a changed backend, model provider, or required backend rejects the result so the next read discovers against current configuration. Account notifications recheck the auth owner generation after waiting for outbound queue capacity. Superseded sign-in attempts emit a failed `account/login/completed` event instead of silently dropping completion. Notifications remain snapshots: clients reread current account and requirements state rather than treating a queued notification as authorization.
 
-```json
-{ "method": "thread/archive", "id": 21, "params": { "threadId": "thr_b" } }
-{ "id": 21, "result": {} }
-{ "method": "thread/archived", "params": { "threadId": "thr_b" } }
-```
+The origin of a required `chatgpt_base_url` must match the discovered origin by scheme, host, and effective port. The base URL's API path is not part of this comparison. Either origin alone is sufficient. If requirements specify no base URL and discovery explicitly returns `NO_CONSTRAINT`, the effective `chatgpt_base_url` supplies the origin, including its existing default. `backendOrigin` is always a resolved origin; `accountRoutingOverride` preserves `NO_CONSTRAINT` when the backend explicitly returns it. Discovering an origin does not change API paths or apply routing headers to requests.
 
-An archived thread will not appear in `thread/list` unless `archived` is set to `true`.
+## Windows sandbox implementation selection
 
-### Example: Delete a thread
+`windowsSandbox/setupStart` and `windowsSandbox/readiness` apply only to the
+legacy `elevated` and `unelevated` backends. Clients resolve the desired sandbox
+implementation from configuration. When it is `mxc`, they skip both methods;
+`allowedWindowsSandboxImplementations` can allow `mxc` independently of the
+legacy setup modes. Non-Windows hosts report `notConfigured` for the legacy
+readiness API.
 
+<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
 Use `thread/delete` to hard-delete a thread and its spawned descendant threads. Existing rollout files and associated metadata must be removed before the request succeeds; missing rollout files are treated as already deleted.
 
 ```json
@@ -2419,3 +2234,8 @@ For server-initiated request payloads, annotate the field the same way so schema
    ```bash
    just test -p codex-app-server-protocol
    ```
+=======
+MXC uses the standard `command/exec` streaming and process-control path, including
+ConPTY when `tty` is enabled. The buffered legacy Windows sandbox restrictions on
+process control and custom output caps do not apply to MXC.
+>>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360

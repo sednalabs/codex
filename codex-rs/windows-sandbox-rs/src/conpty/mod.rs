@@ -106,8 +106,7 @@ pub fn spawn_conpty_process_as_user(
     argv: &[String],
     cwd: &Path,
     env_map: &HashMap<String, String>,
-    use_private_desktop: bool,
-    logs_base_dir: Option<&Path>,
+    desktop: LaunchDesktop,
 ) -> Result<(PROCESS_INFORMATION, ConptyInstance)> {
     let cmdline_str = argv
         .iter()
@@ -122,7 +121,6 @@ pub fn spawn_conpty_process_as_user(
     si.StartupInfo.hStdInput = INVALID_HANDLE_VALUE;
     si.StartupInfo.hStdOutput = INVALID_HANDLE_VALUE;
     si.StartupInfo.hStdError = INVALID_HANDLE_VALUE;
-    let desktop = LaunchDesktop::prepare(use_private_desktop, logs_base_dir)?;
     si.StartupInfo.lpDesktop = desktop.startup_info_desktop();
     let job = Arc::new(JobObject::create().context("create process job")?);
 
@@ -136,9 +134,13 @@ pub fn spawn_conpty_process_as_user(
         job: Some(Arc::clone(&job)),
         _desktop: Some(desktop),
     };
-    let mut attrs = ProcThreadAttributeList::new(/*attr_count*/ 2)?;
+    let preserve_app_context = crate::app_package::current_process_is_registered_core_runner()?;
+    let mut attrs = ProcThreadAttributeList::new(2 + u32::from(preserve_app_context))?;
     attrs.set_pseudoconsole(hpc)?;
     attrs.set_job(job.as_raw_handle() as HANDLE)?;
+    if preserve_app_context {
+        attrs.preserve_desktop_app_context()?;
+    }
     si.lpAttributeList = attrs.as_mut_ptr();
 
     let mut pi: PROCESS_INFORMATION = unsafe { std::mem::zeroed() };

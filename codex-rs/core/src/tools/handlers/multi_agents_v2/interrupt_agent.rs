@@ -1,6 +1,8 @@
+use super::analytics::ToolCallAnalytics;
 use super::*;
+use crate::agent::control::AgentInterruptError;
+use crate::agent::control::AgentInterruptOutcome;
 use crate::tools::handlers::multi_agents_spec::create_interrupt_agent_tool_v2;
-use codex_protocol::error::CodexErrorDetails;
 use codex_tools::ToolSpec;
 
 pub(crate) struct Handler;
@@ -14,17 +16,23 @@ impl ToolExecutor<ToolInvocation> for Handler {
         create_interrupt_agent_tool_v2()
     }
 
-    fn handle(&self, invocation: ToolInvocation) -> codex_tools::ToolExecutorFuture<'_> {
+    fn handle<'a>(&'a self, invocation: ToolInvocation) -> codex_tools::ToolExecutorFuture<'a>
+    where
+        ToolInvocation: 'a,
+    {
         Box::pin(async move {
-            handle_interrupt_agent(invocation)
-                .await
-                .map(boxed_tool_output)
+            let mut analytics =
+                ToolCallAnalytics::new(&invocation, CollabAgentTool::InterruptAgent);
+            let result = handle_interrupt_agent(invocation, &mut analytics).await;
+            analytics.finish(&result);
+            result.map(boxed_tool_output)
         })
     }
 }
 
 async fn handle_interrupt_agent(
     invocation: ToolInvocation,
+    analytics: &mut ToolCallAnalytics,
 ) -> Result<InterruptAgentResult, FunctionCallError> {
     let ToolInvocation {
         session,
@@ -36,65 +44,40 @@ async fn handle_interrupt_agent(
     let arguments = function_arguments(payload)?;
     let args: InterruptAgentArgs = parse_arguments(&arguments)?;
     let agent_id = resolve_agent_target(&session, &turn, &args.target).await?;
-    let receiver_agent = session
+    analytics.set_receiver(agent_id);
+    let AgentInterruptOutcome {
+        agent_path,
+        previous_status,
+    } = session
         .services
         .agent_control
-        .ensure_agent_known(agent_id)
-        .map_err(|err| collab_agent_error(agent_id, err))?;
-    if receiver_agent
-        .agent_path
-        .as_ref()
-        .is_some_and(AgentPath::is_root)
-    {
-        return Err(FunctionCallError::RespondToModel(
-            "root is not a spawned agent".to_string(),
-        ));
-    }
-    if agent_id == session.thread_id {
-        return Err(FunctionCallError::RespondToModel(
-            "an agent cannot interrupt itself; return your result and let the parent interrupt you if needed"
-                .to_string(),
-        ));
-    }
-    let receiver_agent_path = receiver_agent.agent_path.clone().ok_or_else(|| {
-        FunctionCallError::RespondToModel("target agent is missing an agent_path".to_string())
-    })?;
-    let status = session.services.agent_control.get_status(agent_id).await;
-    let result = match session
-        .services
-        .agent_control
-        .interrupt_agent(agent_id)
+        .interrupt_spawned_agent(session.thread_id, agent_id)
         .await
-    {
-        Ok(_) => Ok(()),
-        Err(err)
-            if matches!(
-                err.details(),
-                CodexErrorDetails::ThreadNotFound(_) | CodexErrorDetails::InternalAgentDied
-            ) =>
-        {
-            Ok(())
-        }
-        Err(err) => Err(collab_agent_error(agent_id, err)),
-    };
-    result?;
+        .map_err(|err| match err {
+            AgentInterruptError::InvalidRequest(message) => {
+                FunctionCallError::RespondToModel(message)
+            }
+            AgentInterruptError::Agent(err) => collab_agent_error(agent_id, err),
+        })?;
     emit_sub_agent_activity(
         &session,
         &turn,
         SubAgentActivityItem {
             id: call_id,
             agent_thread_id: agent_id,
+<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
             agent_path: receiver_agent_path,
             model: None,
             reasoning_effort: None,
+=======
+            agent_path,
+>>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
             kind: SubAgentActivityKind::Interrupted,
         },
     )
     .await;
 
-    Ok(InterruptAgentResult {
-        previous_status: status,
-    })
+    Ok(InterruptAgentResult { previous_status })
 }
 
 impl CoreToolRuntime for Handler {
@@ -115,7 +98,7 @@ pub(crate) struct InterruptAgentResult {
 }
 
 impl ToolOutput for InterruptAgentResult {
-    fn log_preview(&self) -> String {
+    fn log_output(&self) -> String {
         tool_output_json_text(self, "interrupt_agent")
     }
 

@@ -1,5 +1,9 @@
 pub(crate) mod agent_resolver;
+<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
 #[allow(dead_code, unused_imports)]
+=======
+pub(crate) mod child_config;
+>>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
 pub(crate) mod control;
 pub(crate) mod goal_notifications;
 mod lifecycle;

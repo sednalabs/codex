@@ -30,4 +30,15 @@ model?: string | null, modelProvider?: string | null, serviceTier?: string | nul
  * Override where approval requests are routed for review on this thread
  * and subsequent turns.
  */
+<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
 approvalsReviewer?: ApprovalsReviewer | null, sandbox?: SandboxMode | null, config?: { [key in string]: JsonValue } | null, baseInstructions?: string | null, developerInstructions?: string | null, personality?: Personality | null};
+=======
+approvalsReviewer?: ApprovalsReviewer | null, sandbox?: SandboxMode | null, config?: { [key in string]?: JsonValue } | null, baseInstructions?: string | null, developerInstructions?: string | null, personality?: Personality | null, /**
+ * When true, return only thread metadata and live-resume state without
+ * populating `thread.turns`. This is useful when the client plans to call
+ * `thread/turns/list` immediately after resuming. Full-history hydration
+ * is deprecated for paginated threads; use this with `thread/turns/list`
+ * and `thread/items/list` instead.
+ */
+excludeTurns?: boolean};
+>>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360

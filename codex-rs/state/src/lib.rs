@@ -19,12 +19,24 @@ mod runtime;
 mod sqlite;
 mod telemetry;
 
+pub use model::CreatedProject;
 pub use model::LogEntry;
 pub use model::LogQuery;
 pub use model::LogRow;
 pub use model::Phase2AttestedBaseline;
 pub use model::Phase2JobClaimOutcome;
+<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
 pub use runtime::ConfiguredIdentityProvenance;
+=======
+pub use model::Project;
+pub use model::ProjectRoot;
+pub use model::ProjectSortKey;
+pub use model::ProjectsPage;
+pub use model::QueuedUserSubmissionRecord;
+pub use model::RolloutMigrationCursor;
+pub use model::RolloutMigrationSkippedRollout;
+pub use model::RolloutMigrationState;
+>>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
 /// Preferred entrypoint: owns configuration and metrics.
 pub use runtime::StateRuntime;
 pub use sqlite::SqliteConfig;
@@ -36,24 +48,34 @@ pub use audit::read_thread_state_audit_rows;
 /// Most consumers should prefer [`StateRuntime`].
 pub use extract::apply_rollout_item;
 pub use extract::rollout_item_affects_thread_metadata;
+pub use model::AddThreadAttachmentOutcome;
 pub use model::Anchor;
 pub use model::BackfillState;
 pub use model::BackfillStats;
 pub use model::BackfillStatus;
 pub use model::DirectionalThreadSpawnEdgeStatus;
 pub use model::ExtractionOutcome;
+pub use model::RemoveThreadAttachmentOutcome;
 pub use model::SortDirection;
 pub use model::SortKey;
 pub use model::Stage1JobClaim;
 pub use model::Stage1JobClaimOutcome;
 pub use model::Stage1Output;
 pub use model::Stage1StartupClaimParams;
+pub use model::ThreadAttachment;
+pub use model::ThreadAttachmentPage;
 pub use model::ThreadGoal;
 pub use model::ThreadGoalStatus;
 pub use model::ThreadMetadata;
 pub use model::ThreadMetadataBuilder;
 pub use model::ThreadRelationFilter;
+<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
 pub use model::ThreadSpawnDescendants;
+=======
+pub use model::ThreadSection;
+pub use model::ThreadSectionAppearance;
+pub use model::ThreadSectionsPage;
+>>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
 pub use model::ThreadsPage;
 pub use runtime::ExternalAgentConfigImportDetailsRecord;
 pub use runtime::ExternalAgentConfigImportFailureRecord;
@@ -68,6 +90,8 @@ pub use runtime::GoalUpdate;
 pub use runtime::MemoryStore;
 pub use runtime::RemoteControlEnrollmentRecord;
 pub use runtime::RuntimeDbBackup;
+pub use runtime::SqliteIntegrityCheck;
+pub use runtime::SqliteQueueStore;
 pub use runtime::ThreadFilterOptions;
 pub use runtime::backup_runtime_db_for_fresh_start;
 pub use runtime::is_sqlite_corruption_error;
@@ -85,6 +109,30 @@ pub use telemetry::install_process_db_telemetry;
 pub use telemetry::record_backfill_gate;
 pub use telemetry::record_fallback;
 
+/// Maximum number of pending user submissions permitted for one thread.
+pub const MAX_QUEUE_ITEMS: usize = 100;
+
+/// Maximum serialized size of one persisted thread-attachment payload.
+pub const MAX_THREAD_ATTACHMENT_PAYLOAD_BYTES: usize = 64 * 1024;
+
+/// Maximum byte length of a persisted attachment type.
+pub const MAX_THREAD_ATTACHMENT_TYPE_BYTES: usize = 256;
+
+/// Maximum byte length of a persisted stable attachment identity key.
+pub const MAX_THREAD_ATTACHMENT_IDENTITY_KEY_BYTES: usize = 256;
+
+/// Maximum number of attachments returned in one page.
+pub const MAX_THREAD_ATTACHMENT_LIST_PAGE_SIZE: usize = 100;
+
+/// Maximum number of active attachments retained for one thread.
+pub const MAX_THREAD_ATTACHMENTS_PER_THREAD: usize = 100;
+
+/// Stable UUIDv7 identifying the built-in pinned thread section.
+pub const PINNED_THREAD_SECTION_ID: &str = "01984de2-8f74-7c91-a3b2-5c5e937cf318";
+
+/// User-facing name of the built-in pinned thread section.
+pub const PINNED_THREAD_SECTION_NAME: &str = "Pinned";
+
 /// Environment variable for overriding the SQLite state database home directory.
 pub const SQLITE_HOME_ENV: &str = "CODEX_SQLITE_HOME";
 
@@ -100,9 +148,24 @@ pub const DB_INIT_METRIC: &str = "codex.sqlite.init.count";
 pub const DB_INIT_DURATION_METRIC: &str = "codex.sqlite.init.duration_ms";
 /// Rollout fallback attempts. Tags: [caller, reason]
 pub const DB_FALLBACK_METRIC: &str = "codex.sqlite.fallback.count";
+<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
 
 /// Maximum descendant rows retained by thread-relation consumers.
 ///
 /// Recursive relation queries admit one additional row as a truncation sentinel so callers can
 /// expose every retained descendant while still detecting that more lineage exists.
 pub const MAX_THREAD_RELATION_DESCENDANTS: usize = 3_200;
+=======
+/// SQLite log batch write attempts. Tags: [status, error]
+pub const LOG_WRITE_METRIC: &str = "codex.sqlite.logs.write.count";
+/// SQLite log batch write latency. Tags: [status, error]
+pub const LOG_WRITE_DURATION_METRIC: &str = "codex.sqlite.logs.write.duration_ms";
+/// Estimated bytes in each SQLite log batch. Tags: [status, error]
+pub const LOG_WRITE_BYTES_METRIC: &str = "codex.sqlite.logs.write.bytes";
+/// Number of entries in each SQLite log batch. Tags: [status, error]
+pub const LOG_WRITE_ENTRIES_METRIC: &str = "codex.sqlite.logs.write.entries";
+/// Largest estimated entry size in each SQLite log batch. Tags: [status, error]
+pub const LOG_WRITE_MAX_ENTRY_BYTES_METRIC: &str = "codex.sqlite.logs.write.max_entry_bytes";
+/// SQLite log entries discarded before they can be queued. Tags: [reason]
+pub const LOG_QUEUE_DROPPED_METRIC: &str = "codex.sqlite.logs.queue.dropped";
+>>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360

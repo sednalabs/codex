@@ -9,16 +9,33 @@ workspace = true
 
 [dependencies]
 anyhow = { workspace = true }
+bytes = { workspace = true }
+codex-http-client = { workspace = true }
 codex-login = { workspace = true }
 codex-protocol = { workspace = true }
+codex-rollout = { workspace = true }
+flate2 = { workspace = true }
+http = { workspace = true }
+httpdate = { workspace = true }
 mime_guess = { workspace = true }
+<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
 sentry = { version = "0.49" }
+=======
+sentry = { version = "0.46" }
+tokio = { workspace = true, features = ["time"] }
+>>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 
 [dev-dependencies]
+log = { workspace = true }
 pretty_assertions = { workspace = true }
+<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
 tempfile = { workspace = true }
+=======
+tokio = { workspace = true, features = ["macros", "rt"] }
+wiremock = { workspace = true }
+>>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
 
 [lib]
 doctest = false

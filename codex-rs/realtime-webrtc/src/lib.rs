@@ -1,3 +1,4 @@
+<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
 #[cfg(target_os = "macos")]
 mod native;
 
@@ -88,3 +89,28 @@ impl RealtimeWebrtcSession {
         }
     }
 }
+=======
+mod client;
+mod helper_exit;
+#[cfg(any(target_os = "linux", test))]
+mod linux_alsa;
+mod message_reader;
+mod protocol;
+mod session;
+
+pub use client::ConnectionError;
+pub use client::VoiceHost;
+pub use helper_exit::HelperExitStage;
+pub use protocol::AudioControls;
+pub use protocol::AudioState;
+pub use protocol::MAX_FRAME_BYTES;
+pub use protocol::Message;
+pub use protocol::RUNTIME_ENVIRONMENT;
+pub use protocol::SessionDescription;
+pub use protocol::decode_frame;
+pub use protocol::encode_frame;
+pub use protocol::read_message;
+pub use session::RealtimeWebrtcSession;
+pub use session::RealtimeWebrtcSessionHandle;
+pub use session::StartedRealtimeWebrtcSession;
+>>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360

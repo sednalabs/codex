@@ -5,6 +5,8 @@ use crate::linux_run_main::install_bwrap_signal_forwarders;
 #[cfg(test)]
 use crate::linux_run_main::wait_for_bwrap_child;
 #[cfg(test)]
+use codex_network_proxy::ManagedNetworkSandboxContext;
+#[cfg(test)]
 use codex_protocol::models::PermissionProfile;
 #[cfg(test)]
 use codex_protocol::protocol::FileSystemSandboxPolicy;
@@ -14,6 +16,8 @@ use codex_protocol::protocol::NetworkSandboxPolicy;
 use codex_utils_absolute_path::AbsolutePathBuf;
 #[cfg(test)]
 use pretty_assertions::assert_eq;
+#[cfg(test)]
+use std::os::unix::fs::PermissionsExt;
 
 fn read_only_permission_profile() -> PermissionProfile {
     PermissionProfile::read_only()
@@ -81,8 +85,11 @@ fn inserts_bwrap_argv0_before_command_separator() {
             "/dev".to_string(),
             "--unshare-user".to_string(),
             "--unshare-pid".to_string(),
+            "--unshare-ipc".to_string(),
             "--proc".to_string(),
             "/proc".to_string(),
+            "--cap-drop".to_string(),
+            "ALL".to_string(),
             "--argv0".to_string(),
             "codex-linux-sandbox".to_string(),
             "--".to_string(),
@@ -199,6 +206,48 @@ fn inserts_unshare_net_when_proxy_only_network_mode_requested() {
 }
 
 #[test]
+fn masks_wsl_interop_with_full_network_and_restricted_filesystem() {
+    let argv = build_bwrap_argv(
+        vec!["/bin/true".to_string()],
+        &read_only_file_system_policy(),
+        Path::new("/"),
+        Path::new("/"),
+        BwrapOptions {
+            network_mode: BwrapNetworkMode::FullAccess,
+            mask_wsl_interop: true,
+            ..Default::default()
+        },
+    )
+    .expect("build bwrap argv")
+    .args;
+
+    assert!(argv.windows(2).any(|args| args == ["--tmpfs", "/run/WSL"]));
+    assert!(!argv.iter().any(|arg| arg == "--unshare-net"));
+}
+
+#[test]
+fn masks_inherited_procfs_when_wsl_interop_is_masked_without_fresh_proc() {
+    let argv = build_bwrap_argv(
+        vec!["/bin/true".to_string()],
+        &read_only_file_system_policy(),
+        Path::new("/"),
+        Path::new("/"),
+        BwrapOptions {
+            mount_proc: false,
+            network_mode: BwrapNetworkMode::FullAccess,
+            mask_wsl_interop: true,
+            ..Default::default()
+        },
+    )
+    .expect("build bwrap argv")
+    .args;
+
+    assert!(argv.windows(2).any(|args| args == ["--tmpfs", "/run/WSL"]));
+    assert!(argv.windows(2).any(|args| args == ["--tmpfs", "/proc"]));
+    assert!(!argv.windows(2).any(|args| args == ["--proc", "/proc"]));
+}
+
+#[test]
 fn proxy_only_mode_takes_precedence_over_full_network_policy() {
     let mode = bwrap_network_mode(
         NetworkSandboxPolicy::Enabled,
@@ -224,7 +273,7 @@ fn split_only_filesystem_policy_requires_direct_runtime_enforcement() {
             missing_path_behavior: None,
         },
         codex_protocol::permissions::FileSystemSandboxEntry {
-            path: codex_protocol::permissions::FileSystemPath::Path { path: docs },
+            path: docs.into(),
             access: codex_protocol::permissions::FileSystemAccessMode::Read,
             missing_path_behavior: None,
         },
@@ -250,7 +299,7 @@ fn root_write_read_only_carveout_requires_direct_runtime_enforcement() {
             missing_path_behavior: None,
         },
         codex_protocol::permissions::FileSystemSandboxEntry {
-            path: codex_protocol::permissions::FileSystemPath::Path { path: docs },
+            path: docs.into(),
             access: codex_protocol::permissions::FileSystemAccessMode::Read,
             missing_path_behavior: None,
         },
@@ -334,31 +383,34 @@ fn synthetic_mount_registry_root_is_unique_to_effective_user() {
     let effective_uid = unsafe { libc::geteuid() };
     assert_eq!(
         synthetic_mount_registry_root(),
-        std::env::temp_dir().join(format!(
-            "codex-bwrap-synthetic-mount-targets-{effective_uid}"
-        ))
+        std::env::temp_dir()
+            .canonicalize()
+            .expect("resolve temp directory")
+            .join(format!(
+                "codex-bwrap-synthetic-mount-targets-{effective_uid}"
+            ))
     );
 }
 
 #[test]
 fn cleanup_synthetic_mount_targets_waits_for_other_active_registrations() {
     let temp_dir = tempfile::TempDir::new().expect("tempdir");
-    let empty_file = temp_dir.path().join(".git");
-    std::fs::write(&empty_file, "").expect("write empty file");
-    let target = crate::bwrap::SyntheticMountTarget::missing(&empty_file);
+    let empty_dir = temp_dir.path().join(".git");
+    std::fs::create_dir(&empty_dir).expect("create empty dir");
+    let target = crate::bwrap::SyntheticMountTarget::missing_empty_directory(&empty_dir);
 
     let registrations = register_synthetic_mount_targets(std::slice::from_ref(&target));
     let active_marker = registrations[0].marker_dir.join("1");
     std::fs::write(&active_marker, "").expect("write active marker");
 
     cleanup_synthetic_mount_targets(&registrations);
-    assert!(empty_file.exists());
+    assert!(empty_dir.exists());
 
     std::fs::remove_file(active_marker).expect("remove active marker");
     let registrations = register_synthetic_mount_targets(std::slice::from_ref(&target));
     cleanup_synthetic_mount_targets(&registrations);
 
-    assert!(!empty_file.exists());
+    assert!(!empty_dir.exists());
 }
 
 #[test]
@@ -420,7 +472,7 @@ fn cleanup_protected_create_targets_removes_created_path_and_reports_violation()
 }
 
 #[test]
-fn cleanup_protected_create_targets_waits_for_other_active_registrations() {
+fn cleanup_protected_create_targets_removes_path_despite_active_marker() {
     let temp_dir = tempfile::TempDir::new().expect("tempdir");
     let dot_git = temp_dir.path().join(".git");
     let target = crate::bwrap::ProtectedCreateTarget::missing(&dot_git);
@@ -432,14 +484,39 @@ fn cleanup_protected_create_targets_waits_for_other_active_registrations() {
 
     let violation = cleanup_protected_create_targets(&registrations);
     assert!(violation);
-    assert!(dot_git.exists());
+    assert!(!dot_git.exists());
+}
 
-    std::fs::remove_file(active_marker).expect("remove active marker");
-    let registrations = register_protected_create_targets(std::slice::from_ref(&target));
+#[test]
+fn cleanup_protected_create_targets_removes_read_only_directory_and_reports_violation() {
+    let temp_dir = tempfile::TempDir::new().expect("tempdir");
+    let dot_git = temp_dir.path().join(".git");
+    let outside = temp_dir.path().join("outside");
+    let target = crate::bwrap::ProtectedCreateTarget::missing(&dot_git);
+
+    let registrations = register_protected_create_targets(&[target]);
+    std::fs::create_dir(&outside).expect("create outside directory");
+    std::fs::set_permissions(&outside, std::fs::Permissions::from_mode(0o755))
+        .expect("set outside directory permissions");
+    std::fs::create_dir(&dot_git).expect("create protected path");
+    std::fs::write(dot_git.join("config"), "[core]\n").expect("write protected child");
+    std::os::unix::fs::symlink(&outside, dot_git.join("outside-link"))
+        .expect("link outside directory");
+    std::fs::set_permissions(&dot_git, std::fs::Permissions::from_mode(0o000))
+        .expect("make protected path read-only");
+
     let violation = cleanup_protected_create_targets(&registrations);
 
     assert!(violation);
     assert!(!dot_git.exists());
+    assert_eq!(
+        std::fs::metadata(&outside)
+            .expect("outside directory remains")
+            .permissions()
+            .mode()
+            & 0o777,
+        0o755
+    );
 }
 
 #[test]
@@ -489,17 +566,63 @@ fn run_bwrap_signal_forwarder_test_supervisor() -> ! {
 #[test]
 fn managed_proxy_inner_command_includes_route_spec() {
     let permission_profile = read_only_permission_profile();
-    let args = build_inner_seccomp_command(InnerSeccompCommandArgs {
-        sandbox_policy_cwd: Path::new("/tmp"),
-        command_cwd: Some(Path::new("/tmp/link")),
-        permission_profile: &permission_profile,
-        allow_network_for_proxy: true,
-        proxy_route_spec: Some("{\"routes\":[]}".to_string()),
-        command: vec!["/bin/true".to_string()],
-    });
+    for managed_network in [
+        ManagedNetworkSandboxContext::default(),
+        ManagedNetworkSandboxContext {
+            loopback_ports: vec![8080, 9090],
+            allow_local_binding: true,
+            allow_unix_sockets: vec!["/tmp/daemon.sock".to_string()],
+            dangerously_allow_all_unix_sockets: true,
+        },
+    ] {
+        let args = build_inner_seccomp_command(InnerSeccompCommandArgs {
+            sandbox_policy_cwd: Path::new("/tmp"),
+            command_cwd: Some(Path::new("/tmp/link")),
+            permission_profile: &permission_profile,
+            managed_network: Some(managed_network.clone()),
+            proxy_route_spec: Some("{\"routes\":[]}".to_string()),
+            command: vec!["/bin/true".to_string()],
+        });
 
-    assert!(args.iter().any(|arg| arg == "--proxy-route-spec"));
-    assert!(args.iter().any(|arg| arg == "{\"routes\":[]}"));
+        assert!(args.iter().any(|arg| arg == "--proxy-route-spec"));
+        assert!(args.iter().any(|arg| arg == "{\"routes\":[]}"));
+        let parsed = LandlockCommand::try_parse_from(args)
+            .expect("inner command should preserve the managed network policy");
+        assert_eq!(parsed.managed_network, Some(managed_network));
+    }
+}
+
+#[test]
+fn managed_network_policy_alone_enables_proxy_mode() {
+    let parsed = LandlockCommand::try_parse_from([
+        "codex-linux-sandbox",
+        "--sandbox-policy-cwd",
+        "/tmp",
+        "--managed-network",
+        "{}",
+        "--",
+        "/bin/true",
+    ])
+    .expect("managed network context should enable proxy mode on its own");
+    assert_eq!(
+        parsed.managed_network,
+        Some(ManagedNetworkSandboxContext::default())
+    );
+}
+
+#[test]
+fn malformed_managed_network_policy_is_rejected() {
+    let error = LandlockCommand::try_parse_from([
+        "codex-linux-sandbox",
+        "--sandbox-policy-cwd",
+        "/tmp",
+        "--managed-network",
+        "{\"dangerouslyAllowAllUnixSockets\":\"true\"}",
+        "--",
+        "/bin/true",
+    ])
+    .expect_err("managed network policy should reject a non-boolean grant");
+    assert_eq!(error.kind(), clap::error::ErrorKind::ValueValidation);
 }
 
 #[test]
@@ -509,7 +632,7 @@ fn inner_command_includes_permission_profile_flag() {
         sandbox_policy_cwd: Path::new("/tmp"),
         command_cwd: Some(Path::new("/tmp/link")),
         permission_profile: &permission_profile,
-        allow_network_for_proxy: false,
+        managed_network: None,
         proxy_route_spec: None,
         command: vec!["/bin/true".to_string()],
     });
@@ -528,12 +651,15 @@ fn non_managed_inner_command_omits_route_spec() {
         sandbox_policy_cwd: Path::new("/tmp"),
         command_cwd: Some(Path::new("/tmp/link")),
         permission_profile: &permission_profile,
-        allow_network_for_proxy: false,
+        managed_network: None,
         proxy_route_spec: None,
         command: vec!["/bin/true".to_string()],
     });
 
     assert!(!args.iter().any(|arg| arg == "--proxy-route-spec"));
+    let parsed = LandlockCommand::try_parse_from(args)
+        .expect("unmanaged inner command should preserve ordinary sandbox mode");
+    assert_eq!(parsed.managed_network, None);
 }
 
 #[test]
@@ -597,7 +723,7 @@ fn managed_proxy_inner_command_requires_route_spec() {
             sandbox_policy_cwd: Path::new("/tmp"),
             command_cwd: Some(Path::new("/tmp/link")),
             permission_profile: &permission_profile,
-            allow_network_for_proxy: true,
+            managed_network: Some(ManagedNetworkSandboxContext::default()),
             proxy_route_spec: None,
             command: vec!["/bin/true".to_string()],
         })
@@ -637,7 +763,7 @@ fn resolve_permission_profile_preserves_direct_runtime_profile() {
             missing_path_behavior: None,
         },
         codex_protocol::permissions::FileSystemSandboxEntry {
-            path: codex_protocol::permissions::FileSystemPath::Path { path: docs },
+            path: docs.into(),
             access: codex_protocol::permissions::FileSystemAccessMode::Write,
             missing_path_behavior: None,
         },
@@ -693,7 +819,7 @@ fn legacy_landlock_rejects_split_only_filesystem_policies() {
             missing_path_behavior: None,
         },
         codex_protocol::permissions::FileSystemSandboxEntry {
-            path: codex_protocol::permissions::FileSystemPath::Path { path: docs },
+            path: docs.into(),
             access: codex_protocol::permissions::FileSystemAccessMode::Write,
             missing_path_behavior: None,
         },
@@ -704,11 +830,42 @@ fn legacy_landlock_rejects_split_only_filesystem_policies() {
             /*use_legacy_landlock*/ true,
             &policy,
             NetworkSandboxPolicy::Restricted,
+            /*allow_network_for_proxy*/ false,
             temp_dir.path(),
+            &temp_dir.path().join("WSL"),
         );
     });
 
     assert!(result.is_err());
+}
+
+#[test]
+fn legacy_landlock_rejects_full_network_when_wsl_interop_is_available() {
+    let temp_dir = tempfile::TempDir::new().expect("tempdir");
+    let wsl_interop_dir = temp_dir.path().join("WSL");
+    std::fs::create_dir(&wsl_interop_dir).expect("create interop directory");
+    let policy = read_only_file_system_policy();
+
+    let result = std::panic::catch_unwind(|| {
+        ensure_legacy_landlock_mode_supports_policy(
+            /*use_legacy_landlock*/ true,
+            &policy,
+            NetworkSandboxPolicy::Enabled,
+            /*allow_network_for_proxy*/ false,
+            temp_dir.path(),
+            &wsl_interop_dir,
+        );
+    });
+    assert!(result.is_err());
+
+    ensure_legacy_landlock_mode_supports_policy(
+        /*use_legacy_landlock*/ true,
+        &policy,
+        NetworkSandboxPolicy::Enabled,
+        /*allow_network_for_proxy*/ true,
+        temp_dir.path(),
+        &wsl_interop_dir,
+    );
 }
 
 #[test]

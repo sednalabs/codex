@@ -34,7 +34,9 @@ fn environment(id: &str, cwd: PathUri, shell: impl Into<String>) -> (String, Env
         EnvironmentState {
             cwd,
             status: EnvironmentStatus::Available,
+            error: None,
             shell: Some(shell.into()),
+            is_primary: false,
         },
     )
 }
@@ -46,8 +48,17 @@ fn environment_state(
     network: Option<NetworkContext>,
     subagents: Option<String>,
 ) -> EnvironmentsState {
+    let environments = environments
+        .into_iter()
+        .enumerate()
+        .map(|(index, (id, mut environment))| {
+            environment.is_primary = index == 0;
+            (id, environment)
+        })
+        .collect();
     EnvironmentsState {
-        environments: environments.into_iter().collect(),
+        environments,
+        shell_version: None,
         current_date,
         timezone,
         network,
@@ -287,11 +298,11 @@ fn serialize_environment_context_with_multiple_selected_environments() {
     let expected = format!(
         r#"<environment_context>
   <environments>
-    <environment id="local">
+    <environment id="local" primary="true">
       <cwd>{}</cwd>
       <shell>bash</shell>
     </environment>
-    <environment id="remote">
+    <environment id="remote" primary="false">
       <cwd>{}</cwd>
       <shell>bash</shell>
     </environment>
@@ -328,11 +339,11 @@ fn serialize_environment_context_prefers_environment_shell_when_present() {
     let expected = format!(
         r#"<environment_context>
   <environments>
-    <environment id="local">
+    <environment id="local" primary="true">
       <cwd>{}</cwd>
       <shell>powershell</shell>
     </environment>
-    <environment id="remote">
+    <environment id="remote" primary="false">
       <cwd>{}</cwd>
       <shell>cmd</shell>
     </environment>
@@ -343,4 +354,45 @@ fn serialize_environment_context_prefers_environment_shell_when_present() {
     );
 
     assert_eq!(context.render(), expected);
+}
+
+fn powershell_environment() -> EnvironmentsState {
+    let cwd = PathUri::from_abs_path(&test_abs_path("/repo"));
+    EnvironmentsState {
+        environments: [environment("local", cwd, "powershell")].into(),
+        shell_version: Some("5.1".to_string()),
+        ..Default::default()
+    }
+}
+
+#[test]
+fn shell_version_diff_restates_shell_from_legacy_snapshot() {
+    let current = powershell_environment();
+    let mut previous = current.snapshot();
+    previous.shell_version = None;
+    previous.environments.get_mut("local").expect("local").shell = None;
+    let rendered = current
+        .render_diff(PreviousSectionState::Known(&previous))
+        .expect("shell version update")
+        .render();
+    assert!(
+        rendered.contains("<shell>powershell</shell>\n  <shell_version>5.1</shell_version>"),
+        "{rendered}"
+    );
+}
+
+#[test]
+fn shell_version_diff_clears_previously_visible_version() {
+    let previous = powershell_environment();
+    let current = EnvironmentsState {
+        shell_version: None,
+        ..previous.clone()
+    };
+    assert_eq!(
+        current
+            .render_diff(PreviousSectionState::Known(&previous.snapshot()))
+            .expect("removed shell version")
+            .render(),
+        "<environment_context>\n  <shell_version status=\"unavailable\" />\n</environment_context>"
+    );
 }

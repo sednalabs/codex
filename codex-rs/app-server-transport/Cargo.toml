@@ -46,6 +46,7 @@ time = { workspace = true }
 tokio = { workspace = true, features = [
     "io-std",
     "macros",
+    "process",
     "rt-multi-thread",
 ] }
 tokio-tungstenite = { workspace = true }
@@ -53,6 +54,9 @@ tokio-util = { workspace = true }
 tracing = { workspace = true, features = ["log"] }
 url = { workspace = true }
 uuid = { workspace = true, features = ["serde", "v7"] }
+
+[target.'cfg(unix)'.dependencies]
+signal-hook = { workspace = true }
 
 [dev-dependencies]
 chrono = { workspace = true }

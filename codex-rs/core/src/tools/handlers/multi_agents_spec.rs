@@ -1,5 +1,5 @@
-use super::multi_agents_common::MAX_SPAWN_AGENT_MODEL_OVERRIDES;
-use super::multi_agents_common::model_supports_multi_agent_backend;
+use crate::agent::child_config::MAX_SPAWN_AGENT_MODEL_OVERRIDES;
+use crate::agent::child_config::model_supports_multi_agent_backend;
 use codex_protocol::openai_models::ModelPreset;
 use codex_protocol::protocol::MultiAgentVersion;
 use codex_tools::JsonSchema;
@@ -21,10 +21,13 @@ const SPAWN_AGENT_INHERITED_MODEL_GUIDANCE: &str = "Spawned agents inherit your 
 const SPAWN_AGENT_TYPE_OVERRIDE_DESCRIPTION_V1: &str = "Agent type override for the new agent. Omit to inherit the parent agent type with a full-history fork; otherwise, `default` is used.";
 const SPAWN_AGENT_MODEL_OVERRIDE_DESCRIPTION: &str =
     "Model override for the new agent. Omit unless an explicit override is needed.";
+<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
 const SPAWN_AGENT_MODEL_ASSERTION_DESCRIPTION: &str = "Optional exact model assertion. The spawn is rejected before child creation and prompt delivery if the model selected after role and profile resolution differs.";
 const SPAWN_AGENT_REASONING_EFFORT_ASSERTION_DESCRIPTION: &str = "Optional exact reasoning effort assertion. The spawn is rejected before child creation and prompt delivery if the reasoning effort selected after model, role, and profile resolution differs.";
 const SPAWN_AGENT_SERVICE_TIER_OVERRIDE_DESCRIPTION: &str =
     "Service tier override for the new agent. Omit unless explicitly requested.";
+=======
+>>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
 const MAX_REASONING_EFFORT_CHARS_IN_SPAWN_AGENT_DESCRIPTION: usize = 64;
 
 #[derive(Debug, Clone)]
@@ -99,7 +102,7 @@ pub fn create_spawn_agent_tool_v1(options: SpawnAgentToolOptions) -> ToolSpec {
             strict: false,
             defer_loading: None,
             parameters: JsonSchema::object(properties, /*required*/ None, Some(false.into())),
-            output_schema: Some(spawn_agent_output_schema_v1()),
+            output_schema: Some(spawn_agent_output_schema_v1().into()),
         })],
     })
 }
@@ -114,9 +117,6 @@ pub fn create_spawn_agent_tool_v2(options: SpawnAgentToolOptions) -> ToolSpec {
     let mut properties = spawn_agent_common_properties_v2(&options.agent_type_description);
     if !options.expose_agent_type {
         properties.remove("agent_type");
-    }
-    if options.hide_agent_type_model_reasoning {
-        properties.remove("service_tier");
     }
     if !options.expose_spawn_agent_model_overrides {
         properties.remove("model");
@@ -144,9 +144,9 @@ pub fn create_spawn_agent_tool_v2(options: SpawnAgentToolOptions) -> ToolSpec {
             Some(vec!["task_name".to_string(), "message".to_string()]),
             Some(false.into()),
         ),
-        output_schema: Some(spawn_agent_output_schema_v2(
-            options.hide_agent_type_model_reasoning,
-        )),
+        output_schema: Some(
+            spawn_agent_output_schema_v2(options.hide_agent_type_model_reasoning).into(),
+        ),
     })
 }
 
@@ -183,7 +183,7 @@ pub fn create_send_input_tool_v1() -> ToolSpec {
             strict: false,
             defer_loading: None,
             parameters: JsonSchema::object(properties, Some(vec!["target".to_string()]), Some(false.into())),
-            output_schema: Some(send_input_output_schema()),
+            output_schema: Some(send_input_output_schema().into()),
         })],
     })
 }
@@ -280,7 +280,7 @@ pub fn create_resume_agent_tool() -> ToolSpec {
             strict: false,
             defer_loading: None,
             parameters: JsonSchema::object(properties, Some(vec!["id".to_string()]), Some(false.into())),
-            output_schema: Some(resume_agent_output_schema()),
+            output_schema: Some(resume_agent_output_schema().into()),
         })],
     })
 }
@@ -296,7 +296,7 @@ pub fn create_wait_agent_tool_v1(options: WaitAgentTimeoutOptions) -> ToolSpec {
             strict: false,
             defer_loading: None,
             parameters: wait_agent_tool_parameters_v1(options),
-            output_schema: Some(wait_output_schema_v1()),
+            output_schema: Some(wait_output_schema_v1().into()),
         })],
     })
 }
@@ -314,8 +314,13 @@ fn create_wait_agent_tool_v2_with_capabilities(
         description: wait_agent_v2_description(capabilities.wait_agent.is_some()),
         strict: false,
         defer_loading: None,
+<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
         parameters: wait_agent_tool_parameters_v2(options, capabilities),
         output_schema: Some(wait_output_schema_v2(capabilities)),
+=======
+        parameters: wait_agent_tool_parameters_v2(options),
+        output_schema: Some(wait_output_schema_v2().into()),
+>>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
     })
 }
 
@@ -340,6 +345,7 @@ fn create_list_agents_tool_with_capabilities(capabilities: ToolRuntimeCapabiliti
         strict: false,
         defer_loading: None,
         parameters: JsonSchema::object(properties, /*required*/ None, Some(false.into())),
+<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
         output_schema: Some(list_agents_output_schema(capabilities)),
     })
 }
@@ -394,6 +400,9 @@ pub fn create_inspect_agent_tree_tool() -> ToolSpec {
         defer_loading: None,
         parameters: JsonSchema::object(properties, /*required*/ None, Some(false.into())),
         output_schema: Some(inspect_agent_tree_output_schema()),
+=======
+        output_schema: Some(list_agents_output_schema().into()),
+>>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
     })
 }
 
@@ -412,9 +421,12 @@ pub fn create_close_agent_tool_v1() -> ToolSpec {
             strict: false,
             defer_loading: None,
             parameters: JsonSchema::object(properties, Some(vec!["target".to_string()]), Some(false.into())),
-            output_schema: Some(agent_previous_status_output_schema(
-                "The agent status observed before shutdown was requested.",
-            )),
+            output_schema: Some(
+                agent_previous_status_output_schema(
+                    "The agent status observed before shutdown was requested.",
+                )
+                .into(),
+            ),
         })],
     })
 }
@@ -433,9 +445,12 @@ pub fn create_interrupt_agent_tool_v2() -> ToolSpec {
         strict: false,
         defer_loading: None,
         parameters: JsonSchema::object(properties, Some(vec!["target".to_string()]), Some(false.into())),
-        output_schema: Some(agent_previous_status_output_schema(
-            "The agent status observed before the interrupt request was handled.",
-        )),
+        output_schema: Some(
+            agent_previous_status_output_schema(
+                "The agent status observed before the interrupt request was handled.",
+            )
+            .into(),
+        ),
     })
 }
 
@@ -886,6 +901,7 @@ fn wait_output_schema_v2(capabilities: ToolRuntimeCapabilities) -> Value {
             "message".to_string(),
             json!({
                 "type": "string",
+<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
                 "description": "Brief wait summary without the agent's final content."
             }),
         ),
@@ -902,6 +918,11 @@ fn wait_output_schema_v2(capabilities: ToolRuntimeCapabilities) -> Value {
         (
             "timed_out".to_string(),
             json!({
+=======
+                "description": "Brief wait summary without the agent's final content, including any timeout adjustment."
+            },
+            "timed_out": {
+>>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
                 "type": "boolean",
                 "description": "Whether the wait call returned because it hit the timeout."
             }),
@@ -1035,12 +1056,6 @@ fn spawn_agent_common_properties_v1(agent_type_description: &str) -> BTreeMap<St
                     .to_string(),
             )),
         ),
-        (
-            "service_tier".to_string(),
-            JsonSchema::string(Some(
-                SPAWN_AGENT_SERVICE_TIER_OVERRIDE_DESCRIPTION.to_string(),
-            )),
-        ),
     ])
 }
 
@@ -1056,7 +1071,7 @@ fn spawn_agent_common_properties_v2(agent_type_description: &str) -> BTreeMap<St
         (
             "agent_type".to_string(),
             JsonSchema::string(Some(format!(
-                "Agent type override for the new agent. Omit unless explicitly asked. Set `fork_turns` to `none` or a positive integer when an explicit override is needed.\n{agent_type_description}"
+                "Agent type override for the new agent. Omit unless explicitly asked. The selected role applies regardless of how much parent history is inherited.\n{agent_type_description}"
             ))),
         ),
         (
@@ -1085,6 +1100,7 @@ fn spawn_agent_common_properties_v2(agent_type_description: &str) -> BTreeMap<St
                     .to_string(),
             )),
         ),
+<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
         (
             "expected_reasoning_effort".to_string(),
             JsonSchema::string(Some(
@@ -1097,6 +1113,8 @@ fn spawn_agent_common_properties_v2(agent_type_description: &str) -> BTreeMap<St
                 SPAWN_AGENT_SERVICE_TIER_OVERRIDE_DESCRIPTION.to_string(),
             )),
         ),
+=======
+>>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
     ])
 }
 
@@ -1104,7 +1122,6 @@ fn hide_spawn_agent_metadata_options(properties: &mut BTreeMap<String, JsonSchem
     properties.remove("agent_type");
     properties.remove("model");
     properties.remove("reasoning_effort");
-    properties.remove("service_tier");
 }
 
 fn spawn_agent_tool_description(
@@ -1180,7 +1197,13 @@ fn default_spawn_agent_usage_hint(available_models_description: Option<&str>) ->
         })
         .unwrap_or_default();
     format!(
+<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
         r#"This spawn_agent tool provides access to sub-agents for bounded parallel work. Do not set the `model` field unless the user explicitly asks for a different model or there is a clear task-specific reason. You should follow the rules and guidelines below to use this tool.
+=======
+        r#"
+        {tool_description}
+This spawn_agent tool provides you access to sub-agents that inherit your current model by default. Do not set the `model` field unless the user explicitly asks for a different model. You should follow the rules and guidelines below to use this tool.
+>>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
 
 Do not spawn sub-agents unless the user or applicable AGENTS.md/skill instructions explicitly ask for sub-agents, delegation, or parallel agent work.
 Requests for depth, thoroughness, research, investigation, or detailed codebase analysis do not count as permission to spawn.

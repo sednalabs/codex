@@ -2,6 +2,7 @@ use anyhow::Result;
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use codex_core::StartThreadOptions;
+use codex_core::TurnInputRequest;
 use codex_protocol::dynamic_tools::DynamicToolCallOutputContentItem;
 use codex_protocol::dynamic_tools::DynamicToolResponse;
 use codex_protocol::dynamic_tools::DynamicToolSpec;
@@ -99,16 +100,10 @@ async fn dynamic_tool_audio_exceeding_the_output_budget_is_omitted() -> Result<(
     test.session_configured = new_thread.session_configured;
 
     test.codex
-        .submit(Op::UserInput {
-            items: vec![UserInput::Text {
-                text: "Return a recording".to_string(),
-                text_elements: Vec::new(),
-            }],
-            final_output_json_schema: None,
-            responsesapi_client_metadata: None,
-            additional_context: Default::default(),
-            thread_settings: Default::default(),
-        })
+        .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
+            text: "Return a recording".to_string(),
+            text_elements: Vec::new(),
+        }]))
         .await?;
     let EventMsg::DynamicToolCallRequest(request) = wait_for_event(&test.codex, |event| {
         matches!(event, EventMsg::DynamicToolCallRequest(_))

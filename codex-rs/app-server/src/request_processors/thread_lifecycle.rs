@@ -1,10 +1,13 @@
 use super::*;
 use crate::extensions::send_thread_warning;
+<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
 use codex_core::V2ThreadUnloadResult;
+=======
+use codex_app_server_protocol::ThreadQueueChangedNotification;
+use codex_extension_api::ThreadIdleCause;
+>>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
 use codex_protocol::config_types::MultiAgentMode;
 use futures::future::BoxFuture;
-
-pub(super) const THREAD_UNLOADING_DELAY: Duration = Duration::from_secs(30 * 60);
 
 #[derive(Clone)]
 pub(super) struct ListenerTaskContext {
@@ -13,10 +16,10 @@ pub(super) struct ListenerTaskContext {
     pub(super) outgoing: Arc<OutgoingMessageSender>,
     pub(super) pending_thread_unloads: Arc<Mutex<HashSet<ThreadId>>>,
     pub(super) thread_watch_manager: ThreadWatchManager,
-    pub(super) thread_list_state_permit: Arc<Semaphore>,
-    pub(super) fallback_model_provider: String,
     pub(super) codex_home: PathBuf,
+    pub(super) thread_unload_delay: Duration,
     pub(super) skills_watcher: Arc<SkillsWatcher>,
+    pub(super) turn_cost_worker: Option<crate::turn_cost_worker::TurnCostWorkerHandle>,
 }
 
 struct UnloadingState {
@@ -58,7 +61,7 @@ impl UnloadingState {
     fn unloading_target(&self) -> Option<Instant> {
         match (self.has_subscribers, self.is_active) {
             ((false, has_no_subscribers_since), (false, is_inactive_since)) => {
-                Some(std::cmp::max(has_no_subscribers_since, is_inactive_since) + self.delay)
+                std::cmp::max(has_no_subscribers_since, is_inactive_since).checked_add(self.delay)
             }
             _ => None,
         }
@@ -237,7 +240,7 @@ async fn ensure_listener_task_running_inner(
     let Some(mut unloading_state) = UnloadingState::new(
         &listener_task_context,
         conversation_id,
-        THREAD_UNLOADING_DELAY,
+        listener_task_context.thread_unload_delay,
     )
     .await
     else {
@@ -255,8 +258,8 @@ async fn ensure_listener_task_running_inner(
             &environments,
         )
         .await;
-    let thread_settings_baseline =
-        thread_settings_from_config_snapshot(&conversation.config_snapshot().await);
+    let config_snapshot = conversation.config_snapshot().await;
+    let thread_settings_baseline = thread_settings_from_config_snapshot(&config_snapshot);
     let (mut listener_command_rx, listener_generation) = {
         let mut thread_state = thread_state.lock().await;
         if thread_state.listener_matches(&conversation) {
@@ -286,9 +289,8 @@ async fn ensure_listener_task_running_inner(
         thread_state_manager,
         pending_thread_unloads,
         thread_watch_manager,
-        thread_list_state_permit,
-        fallback_model_provider,
         codex_home,
+        turn_cost_worker,
         ..
     } = listener_task_context;
     let outgoing_for_task = Arc::clone(&outgoing);
@@ -379,6 +381,15 @@ async fn ensure_listener_task_running_inner(
                         }
                     };
 
+                    if let Some(worker) = &turn_cost_worker {
+                        worker.observe_event(
+                            conversation_id,
+                            config.as_ref(),
+                            &event,
+                            || conversation.session_telemetry(),
+                        );
+                    }
+
                     // Track the event before emitting any typed translations
                     // so thread-local state such as raw event opt-in stays
                     // synchronized with the conversation.
@@ -411,10 +422,16 @@ async fn ensure_listener_task_running_inner(
                         thread_outgoing,
                         thread_state.clone(),
                         thread_watch_manager.clone(),
-                        thread_list_state_permit.clone(),
-                        fallback_model_provider.clone(),
                     )
                     .await;
+                    if matches!(event.msg, EventMsg::ShutdownComplete)
+                        && let Some(completion_tx) = thread_state
+                            .lock()
+                            .await
+                            .take_shutdown_drain_waiter()
+                    {
+                        let _ = completion_tx.send(());
+                    }
                 }
                 unloading_watchers_open = unloading_state.wait_for_unloading_trigger() => {
                     if !unloading_watchers_open {
@@ -547,11 +564,14 @@ pub(super) async fn unload_thread_without_subscribers(
     tokio::spawn(async move {
         match wait_for_thread_shutdown(&thread).await {
             ThreadShutdownResult::Complete => {
-                if thread_manager.remove_thread(&thread_id).await.is_none() {
-                    info!("thread {thread_id} was already removed before teardown finalized");
-                    thread_watch_manager
-                        .remove_thread(&thread_id.to_string())
-                        .await;
+                // A delayed unload can finish after thread/revert replaces this runtime under
+                // the same thread ID. Only the runtime that scheduled this unload may remove it.
+                if thread_manager
+                    .remove_thread_if_matches(&thread_id, &thread)
+                    .await
+                    .is_none()
+                {
+                    info!("thread {thread_id} was replaced or removed before teardown finalized");
                     pending_thread_unloads.lock().await.remove(&thread_id);
                     return;
                 }
@@ -618,7 +638,10 @@ pub(super) async fn handle_thread_listener_command(
     listener_command: ThreadListenerCommand,
 ) {
     match listener_command {
-        ThreadListenerCommand::SendThreadResumeResponse(resume_request) => {
+        ThreadListenerCommand::SendThreadResumeResponse {
+            request: resume_request,
+            completion_tx,
+        } => {
             handle_pending_thread_resume_request(
                 conversation_id,
                 conversation,
@@ -631,6 +654,7 @@ pub(super) async fn handle_thread_listener_command(
                 *resume_request,
             )
             .await;
+            let _ = completion_tx.send(());
         }
         ThreadListenerCommand::EmitThreadGoalUpdated { turn_id, goal } => {
             outgoing
@@ -639,6 +663,23 @@ pub(super) async fn handle_thread_listener_command(
                         thread_id: conversation_id.to_string(),
                         turn_id,
                         goal,
+                    },
+                ))
+                .await;
+        }
+        ThreadListenerCommand::EmitThreadQueueChanged => {
+            let subscribed_connection_ids = thread_state_manager
+                .subscribed_connection_ids(conversation_id)
+                .await;
+            let outgoing = ThreadScopedOutgoingMessageSender::new(
+                Arc::clone(outgoing),
+                subscribed_connection_ids,
+                conversation_id,
+            );
+            outgoing
+                .send_server_notification(ServerNotification::ThreadQueueChanged(
+                    ThreadQueueChangedNotification {
+                        thread_id: conversation_id.to_string(),
                     },
                 ))
                 .await;
@@ -735,6 +776,7 @@ pub(super) async fn handle_pending_thread_resume_request(
         thread_status.clone(),
         has_live_in_progress_turn,
     );
+<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
     crate::extensions::app_server_hooks().augment_thread_resume(
         &mut thread,
         active_turn.as_ref(),
@@ -743,6 +785,8 @@ pub(super) async fn handle_pending_thread_resume_request(
     let token_usage_turn_id = pending
         .include_turns
         .then(|| restored_token_usage_turn_id(&pending.history_items, &thread));
+=======
+>>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
     let mut initial_turns_page = if let Some(mut page) = pending.paginated_initial_turns_page.take()
     {
         if let (Some(active_turn), Some(params)) =
@@ -782,6 +826,14 @@ pub(super) async fn handle_pending_thread_resume_request(
     } else {
         None
     };
+    let token_usage_turn_id = pending.cold_resume_token_usage_turn_id.or_else(|| {
+        pending
+            .include_turns
+            .then(|| restored_token_usage_turn_id(&pending.history_items, thread.turns.as_slice()))
+    });
+    if pending.initial_turns_page.is_none() {
+        initial_turns_page = None;
+    }
     if pending.redact_resume_payloads {
         redact_thread_resume_payloads(&mut thread.turns);
         if let Some(initial_turns_page) = initial_turns_page.as_mut() {
@@ -840,6 +892,7 @@ pub(super) async fn handle_pending_thread_resume_request(
     let cwd = config_snapshot.cwd().clone();
     let ThreadConfigSnapshot {
         model,
+        disabled_plugin_ids,
         model_provider_id,
         service_tier,
         approval_policy,
@@ -847,6 +900,7 @@ pub(super) async fn handle_pending_thread_resume_request(
         active_permission_profile,
         workspace_roots,
         reasoning_effort,
+        collaboration_mode,
         originator,
         ..
     } = config_snapshot;
@@ -858,6 +912,7 @@ pub(super) async fn handle_pending_thread_resume_request(
 
     let response = ThreadResumeResponse {
         thread,
+        disabled_plugin_ids,
         model,
         model_provider: model_provider_id,
         service_tier,
@@ -869,6 +924,7 @@ pub(super) async fn handle_pending_thread_resume_request(
         sandbox,
         active_permission_profile,
         reasoning_effort,
+        collaboration_mode: Some(collaboration_mode),
         multi_agent_mode: MultiAgentMode::ExplicitRequestOnly,
         initial_turns_page,
         turns_backwards_cursor,
@@ -877,8 +933,8 @@ pub(super) async fn handle_pending_thread_resume_request(
     outgoing
         .send_response_with_thread_originator(request_id, response, originator)
         .await;
-    // Match cold resume: metadata-only resume should attach the listener without
-    // paying the cost of turn reconstruction for historical usage replay.
+    // Warm metadata-only resumes skip history reconstruction. Cold paginated children can
+    // replay usage using attribution captured before the listener was attached.
     if let Some(token_usage_turn_id) = token_usage_turn_id {
         // Rejoining a loaded thread has the same UI contract as a cold resume, but
         // uses the live conversation state instead of reconstructing a new session.
@@ -906,9 +962,9 @@ pub(super) async fn handle_pending_thread_resume_request(
         .await;
     // App-server owns resume response and snapshot ordering, so wait until
     // replay completes before letting extensions react to the idle thread.
-    if pending.emit_thread_goal_update {
-        conversation.emit_thread_idle_lifecycle_if_idle().await;
-    }
+    conversation
+        .emit_thread_idle_lifecycle_if_idle(ThreadIdleCause::Completed)
+        .await;
 }
 
 pub(super) async fn send_thread_goal_snapshot_notification(

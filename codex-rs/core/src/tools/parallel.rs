@@ -18,6 +18,7 @@ use crate::agent::SpawnPublicationDecision;
 use crate::function_tool::FunctionCallError;
 use crate::session::session::Session;
 use crate::session::step_context::StepContext;
+use crate::tools::call_trace;
 use crate::tools::context::AbortedToolOutput;
 use crate::tools::context::SharedTurnDiffTracker;
 use crate::tools::context::ToolPayload;
@@ -27,9 +28,10 @@ use crate::tools::registry::AnyToolResult;
 use crate::tools::registry::ToolArgumentDiffConsumer;
 use crate::tools::router::ToolCall;
 use crate::tools::router::ToolCallSource;
-use crate::tools::router::ToolRouter;
+use codex_history::ResponseItemEnvelope;
 use codex_protocol::error::CodexErr;
 use codex_protocol::models::ResponseInputItem;
+use codex_protocol::models::ToolResultMetadata;
 
 struct ToolCallTimingGuard {
     started_at: Instant,
@@ -98,7 +100,6 @@ impl Drop for SpawnPublicationGuard {
 
 #[derive(Clone)]
 pub(crate) struct ToolCallRuntime {
-    router: Arc<ToolRouter>,
     session: Arc<Session>,
     // Tool calls may run later, so retain the step whose tool list advertised them.
     step_context: Arc<StepContext>,
@@ -108,13 +109,11 @@ pub(crate) struct ToolCallRuntime {
 
 impl ToolCallRuntime {
     pub(crate) fn new(
-        router: Arc<ToolRouter>,
         session: Arc<Session>,
         step_context: Arc<StepContext>,
         tracker: SharedTurnDiffTracker,
     ) -> Self {
         Self {
-            router,
             session,
             step_context,
             tracker,
@@ -126,7 +125,9 @@ impl ToolCallRuntime {
         &self,
         tool_name: &codex_tools::ToolName,
     ) -> Option<Box<dyn ToolArgumentDiffConsumer>> {
-        self.router.create_diff_consumer(tool_name)
+        self.step_context
+            .tool_router
+            .create_diff_consumer(tool_name)
     }
 
     #[instrument(level = "trace", skip_all)]
@@ -134,36 +135,58 @@ impl ToolCallRuntime {
         self,
         call: ToolCall,
         cancellation_token: CancellationToken,
-    ) -> impl std::future::Future<Output = Result<ResponseInputItem, CodexErr>> {
+    ) -> impl std::future::Future<Output = Result<ResponseItemEnvelope, CodexErr>> {
         let error_call = call.clone();
+        let source = call.direct_source();
+        let recorder = self.session.services.executed_tool_calls.clone();
+        let recorded_call = recorder.prepare_direct_call(&call, &source, &self.step_context);
+        let step_context = Arc::clone(&self.step_context);
         let future =
-            self.handle_tool_call_with_source(call, ToolCallSource::Direct, cancellation_token);
+            self.handle_tool_call_with_source(step_context, call, source, cancellation_token);
         async move {
-            match future.await {
-                Ok(response) => Ok(response.into_response()),
-                Err(FunctionCallError::Fatal(message)) => Err(CodexErr::Fatal(message)),
-                Err(other) => Ok(Self::failure_response(error_call, other)),
-            }
+            let result = future.await;
+            let mut recorded_call =
+                recorded_call.filter(|(_, recording)| recording.strong_count() > 0);
+            let mut response = match result {
+                Ok(result) => {
+                    if let Some((call, _)) = recorded_call.as_mut()
+                        && let Some(metadata) = result.result.tool_result_metadata()
+                    {
+                        call.set_tool_result_metadata(ToolResultMetadata::new(metadata));
+                    }
+                    result.into_response()
+                }
+                Err(FunctionCallError::Fatal(message)) => return Err(CodexErr::Fatal(message)),
+                Err(other) => {
+                    ResponseItemEnvelope::new(Self::failure_response(error_call, other).into())
+                }
+            };
+            recorder.attach_direct_call_to_output(&mut response.item, recorded_call);
+            Ok(response)
         }
-        .in_current_span()
     }
 
     #[instrument(level = "trace", skip_all)]
     pub(crate) fn handle_tool_call_with_source(
         self,
+        step_context: Arc<StepContext>,
         call: ToolCall,
         source: ToolCallSource,
         cancellation_token: CancellationToken,
     ) -> impl std::future::Future<Output = Result<AnyToolResult, FunctionCallError>> {
-        let supports_parallel = self.router.tool_supports_parallel(&call);
-        let router = Arc::clone(&self.router);
+        self.session
+            .services
+            .executed_tool_calls
+            .record_tool_call(&call, &source, &step_context);
+        let router = &step_context.tool_router;
+        let supports_parallel = router.tool_supports_parallel(&call);
+        let tool_runtime = router.tool_runtime(&call.tool_name);
+        let router = Arc::clone(router);
         let session = Arc::clone(&self.session);
-        let step_context = Arc::clone(&self.step_context);
         let turn = Arc::clone(&step_context.turn);
         let tracker = Arc::clone(&self.tracker);
         let lock = Arc::clone(&self.parallel_execution);
         let invocation_cancellation_token = cancellation_token.clone();
-        let wait_for_runtime_cancellation = self.router.tool_waits_for_runtime_cancellation(&call);
         let started = Instant::now();
         let tool_call_timing_guard =
             ToolCallTimingGuard::capture(started, &session.thread_id, &turn.sub_id, &call, &source);
@@ -181,19 +204,36 @@ impl ToolCallRuntime {
         let terminal_outcome_reached = Arc::new(AtomicBool::new(false));
         let dispatch_terminal_outcome_reached = Arc::clone(&terminal_outcome_reached);
         let dispatch_call = call.clone();
+        let thread_id = session.thread_id;
+        let trace_source = match &source {
+            ToolCallSource::Direct | ToolCallSource::DirectPlaintextMessage => {
+                call_trace::Source::Direct
+            }
+            ToolCallSource::CodeMode { .. } => call_trace::Source::CodeMode,
+        };
+        let dispatch_tool_name = call.tool_name.clone();
+        let dispatch_call_id = call.call_id.clone();
 
+        // Code-mode callbacks can resume outside the turn's local span ancestry.
         let dispatch_span = trace_span!(
             "dispatch_tool_call_with_code_mode_result",
             otel.name = %call.tool_name,
             tool_name = %call.tool_name,
+            thread.id = %session.thread_id,
             call_id = call.call_id.as_str(),
             aborted = false,
         );
         let abort_dispatch_span = dispatch_span.clone();
 
-        let mut dispatch_handle: AbortOnDropHandle<Result<AnyToolResult, FunctionCallError>> =
-            AbortOnDropHandle::new(tokio::spawn(async move {
-                let _guard = if supports_parallel {
+        let mut dispatch_handle = AbortOnDropHandle::new(tokio::spawn(
+            async move {
+                if let Some(tool_runtime) = tool_runtime
+                    && let Some(readiness) = tool_runtime.wait_until_ready(&session)
+                {
+                    readiness.await;
+                }
+
+                let guard = if supports_parallel {
                     Either::Left(lock.read().await)
                 } else {
                     Either::Right(lock.write().await)
@@ -204,7 +244,7 @@ impl ToolCallRuntime {
                     let _ = execution_started_at.set(Instant::now());
                 }
 
-                router
+                let result = router
                     .dispatch_tool_call_with_terminal_outcome(
                         session,
                         step_context,
@@ -215,8 +255,25 @@ impl ToolCallRuntime {
                         dispatch_terminal_outcome_reached,
                     )
                     .instrument(dispatch_span.clone())
-                    .await
-            }));
+                    .await;
+                drop(guard);
+                // The sampling loop collects results in order only after its stream ends.
+                // Record readiness here, before either caller encodes or collects the result.
+                // A fatal error still propagates to the caller instead of producing a tool
+                // result; unlike a normal tool failure, it has no readiness event.
+                if !matches!(&result, Err(FunctionCallError::Fatal(_))) {
+                    call_trace::result_ready(
+                        thread_id,
+                        &turn.sub_id,
+                        &dispatch_tool_name,
+                        &dispatch_call_id,
+                        trace_source,
+                    );
+                }
+                result
+            }
+            .in_current_span(),
+        ));
 
         async move {
             let _tool_call_timing_guard = tool_call_timing_guard;
@@ -243,26 +300,20 @@ impl ToolCallRuntime {
                     } else {
                         let secs = started.elapsed().as_secs_f32().max(0.1);
                         abort_dispatch_span.record("aborted", true);
-                        if wait_for_runtime_cancellation {
-                            if terminal_outcome_reached.swap(true, Ordering::AcqRel) {
-                                return dispatch_handle.await.map_err(Self::tool_task_join_error)?;
-                            }
-                            // The abort owns the terminal outcome; await only so
-                            // the runtime can finish process teardown.
-                            match dispatch_handle.await {
-                                Ok(_) => {}
-                                Err(err) if err.is_cancelled() => {}
-                                Err(err) => return Err(Self::tool_task_join_error(err)),
-                            }
-                        } else {
-                            dispatch_handle.abort();
-                            match dispatch_handle.await {
-                                Ok(result) => return result,
-                                Err(err) if err.is_cancelled() => {}
-                                Err(err) => return Err(Self::tool_task_join_error(err)),
-                            }
+                        dispatch_handle.abort();
+                        match dispatch_handle.await {
+                            Ok(result) => return result,
+                            Err(err) if err.is_cancelled() => {}
+                            Err(err) => return Err(Self::tool_task_join_error(err)),
                         }
                         let response = Self::aborted_response(&call, secs);
+                        call_trace::result_ready(
+                            thread_id,
+                            &abort_turn.sub_id,
+                            &call.tool_name,
+                            &call.call_id,
+                            trace_source,
+                        );
                         notify_tool_aborted(
                             abort_session.as_ref(),
                             abort_turn.as_ref(),
@@ -325,12 +376,7 @@ impl ToolCallRuntime {
     }
 
     fn abort_message(call: &ToolCall, secs: f32) -> String {
-        if call.tool_name.namespace.is_none()
-            && matches!(
-                call.tool_name.name.as_str(),
-                "shell_command" | "unified_exec"
-            )
-        {
+        if call.tool_name.is_default_namespace() && call.tool_name.name == "exec_command" {
             format!("Wall time: {secs:.1} seconds\naborted by user")
         } else {
             format!("aborted by user after {secs:.1}s")
@@ -358,7 +404,11 @@ impl ToolCallTimingGuard {
         // Code-mode calls are nested within a direct code-mode tool call whose
         // timing already includes them. Suppress nested guards so consumers do
         // not mistake overlapping events for independent tool-call latency.
-        if !matches!(source, ToolCallSource::Direct) || !tracing::enabled!(tracing::Level::INFO) {
+        if !matches!(
+            source,
+            ToolCallSource::Direct | ToolCallSource::DirectPlaintextMessage
+        ) || !tracing::enabled!(tracing::Level::INFO)
+        {
             return None;
         }
 
@@ -432,6 +482,7 @@ impl Drop for ToolCallTimingGuard {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::BTreeMap;
     use std::time::Duration;
 
     use crate::StartThreadOptions;
@@ -444,7 +495,11 @@ mod tests {
     use crate::tools::registry::CoreToolRuntime;
     use crate::tools::registry::ToolExecutor;
     use crate::tools::registry::ToolRegistry;
+<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
     use crate::tools::router::ToolRouterParams;
+=======
+    use crate::tools::router::ToolRouter;
+>>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
     use crate::turn_diff_tracker::TurnDiffTracker;
     use codex_extension_api::ToolCallOutcome;
     use codex_features::Feature;
@@ -453,7 +508,11 @@ mod tests {
     use codex_protocol::AgentPath;
     use codex_protocol::models::FunctionCallOutputBody;
     use codex_protocol::models::FunctionCallOutputPayload;
+<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
     use codex_tools::ToolName;
+=======
+    use codex_protocol::openai_models::ToolMode;
+>>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
     use pretty_assertions::assert_eq;
     use tokio::sync::Notify;
     use tokio::sync::oneshot;
@@ -471,6 +530,7 @@ mod tests {
                 payload: ToolPayload::Function {
                     arguments: "{}".to_string(),
                 },
+                encrypted_function_args: None,
             };
             let direct_guard = ToolCallTimingGuard::capture(
                 Instant::now(),
@@ -516,9 +576,14 @@ mod tests {
         let router = Arc::new(ToolRouter::from_parts(
             ToolRegistry::from_tools([handler]),
             Vec::new(),
+            ToolMode::Direct,
+            BTreeMap::new(),
+            /*tool_namespaces_info*/ None,
+            &[],
         ));
+        let step_context = step_context.with_tool_router_for_test(router);
         let tracker = Arc::new(tokio::sync::Mutex::new(TurnDiffTracker::new()));
-        let runtime = ToolCallRuntime::new(router, session, step_context, tracker);
+        let runtime = ToolCallRuntime::new(session, step_context, tracker);
         let execution_gate = Arc::clone(&runtime.parallel_execution);
         let execution_gate_guard = execution_gate
             .try_write_owned()
@@ -547,6 +612,7 @@ mod tests {
             payload: ToolPayload::Function {
                 arguments: "{}".to_string(),
             },
+            encrypted_function_args: None,
         };
         let response_task =
             tokio::spawn(runtime.handle_tool_call(call, cancellation_token.clone()));
@@ -638,7 +704,10 @@ mod tests {
             })
         }
 
-        fn handle(&self, _invocation: ToolInvocation) -> codex_tools::ToolExecutorFuture<'_> {
+        fn handle<'a>(&'a self, _invocation: ToolInvocation) -> codex_tools::ToolExecutorFuture<'a>
+        where
+            ToolInvocation: 'a,
+        {
             Box::pin(async {
                 Ok(
                     Box::new(FunctionToolOutput::from_text("ok".to_string(), Some(true)))
@@ -649,90 +718,6 @@ mod tests {
     }
 
     impl CoreToolRuntime for ImmediateHandler {}
-
-    struct CancellationCleanupHandler {
-        tool_name: codex_tools::ToolName,
-        started: std::sync::Mutex<Option<oneshot::Sender<()>>>,
-        cleanup_started: std::sync::Mutex<Option<oneshot::Sender<()>>>,
-        allow_cleanup: Arc<Notify>,
-    }
-
-    impl ToolExecutor<ToolInvocation> for CancellationCleanupHandler {
-        fn tool_name(&self) -> codex_tools::ToolName {
-            self.tool_name.clone()
-        }
-
-        fn spec(&self) -> codex_tools::ToolSpec {
-            codex_tools::ToolSpec::Function(codex_tools::ResponsesApiTool {
-                name: self.tool_name.name.clone(),
-                description: "Cancellation cleanup test tool.".to_string(),
-                strict: false,
-                defer_loading: None,
-                parameters: codex_tools::JsonSchema::default(),
-                output_schema: None,
-            })
-        }
-
-        fn handle(&self, invocation: ToolInvocation) -> codex_tools::ToolExecutorFuture<'_> {
-            Box::pin(self.handle_call(invocation))
-        }
-    }
-
-    impl CancellationCleanupHandler {
-        async fn handle_call(
-            &self,
-            invocation: ToolInvocation,
-        ) -> Result<Box<dyn crate::tools::context::ToolOutput>, FunctionCallError> {
-            let started = self
-                .started
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .take();
-            if let Some(started) = started {
-                let _ = started.send(());
-            }
-            invocation.cancellation_token.cancelled().await;
-            let cleanup_started = self
-                .cleanup_started
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .take();
-            if let Some(cleanup_started) = cleanup_started {
-                let _ = cleanup_started.send(());
-            }
-            self.allow_cleanup.notified().await;
-            Ok(Box::new(FunctionToolOutput::from_text(
-                "cleanup complete".to_string(),
-                Some(false),
-            )) as Box<dyn crate::tools::context::ToolOutput>)
-        }
-    }
-
-    impl CoreToolRuntime for CancellationCleanupHandler {
-        fn waits_for_runtime_cancellation(&self) -> bool {
-            true
-        }
-    }
-
-    struct FinishRecorder {
-        records: Arc<std::sync::Mutex<Vec<ToolCallOutcome>>>,
-    }
-
-    impl codex_extension_api::ToolLifecycleContributor for FinishRecorder {
-        fn on_tool_finish<'a>(
-            &'a self,
-            input: codex_extension_api::ToolFinishInput<'a>,
-        ) -> codex_extension_api::ToolLifecycleFuture<'a> {
-            let records = Arc::clone(&self.records);
-            let outcome = input.outcome;
-            Box::pin(async move {
-                records
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .push(outcome);
-            })
-        }
-    }
 
     struct BlockingFinishContributor {
         records: Arc<std::sync::Mutex<Vec<ToolCallOutcome>>>,
@@ -792,9 +777,14 @@ mod tests {
         let router = Arc::new(ToolRouter::from_parts(
             ToolRegistry::from_tools([handler]),
             Vec::new(),
+            ToolMode::Direct,
+            BTreeMap::new(),
+            /*tool_namespaces_info*/ None,
+            &[],
         ));
+        let step_context = step_context.with_tool_router_for_test(router);
         let tracker = Arc::new(tokio::sync::Mutex::new(TurnDiffTracker::new()));
-        let runtime = ToolCallRuntime::new(router, session, step_context, tracker);
+        let runtime = ToolCallRuntime::new(session, step_context, tracker);
         let cancellation_token = CancellationToken::new();
         let call = ToolCall {
             tool_name,
@@ -802,6 +792,7 @@ mod tests {
             payload: ToolPayload::Function {
                 arguments: "{}".to_string(),
             },
+            encrypted_function_args: None,
         };
 
         let response_task =
@@ -825,7 +816,10 @@ mod tests {
                 success: Some(true),
             },
         };
-        assert_eq!(expected_response, response);
+        assert_eq!(
+            ResponseItemEnvelope::new(expected_response.into()),
+            response
+        );
 
         let actual = records
             .lock()
@@ -836,6 +830,7 @@ mod tests {
 
         Ok(())
     }
+<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
 
     #[test]
     fn abort_message_uses_shell_style_for_shell_like_tools() {
@@ -1443,4 +1438,6 @@ mod tests {
 
         Ok(())
     }
+=======
+>>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
 }

@@ -1,6 +1,10 @@
 use crate::RewriteProfile;
 use crate::invalid_data_error;
+<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
 use crate::utils::path_is_missing_without_follow;
+=======
+use crate::scope::is_redirected_destination;
+>>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
 use serde_yaml::Value as YamlValue;
 use std::collections::BTreeMap;
 use std::fs;
@@ -47,7 +51,11 @@ pub fn missing_subagent_names(
         let Some(target) = subagent_target_file(&source_file, target_agents) else {
             continue;
         };
+<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
         if path_is_missing_without_follow(&target)? {
+=======
+        if !target.exists() && !is_redirected_destination(&target)? {
+>>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
             names.push(metadata.name);
         }
     }
@@ -69,7 +77,11 @@ pub fn import_subagents_with_rewrite_profile(
         let Some(target) = subagent_target_file(&source_file, target_agents) else {
             continue;
         };
+<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
         if !path_is_missing_without_follow(&target)? {
+=======
+        if target.exists() || is_redirected_destination(&target)? {
+>>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
             continue;
         }
         let document = parse_document(&source_file)?;

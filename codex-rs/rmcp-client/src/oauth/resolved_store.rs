@@ -8,6 +8,11 @@ use codex_keyring_store::KeyringStore;
 use tracing::warn;
 
 use super::OAuthKeyringLoadError;
+<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
+=======
+use super::OAuthStore;
+use super::OAuthStoreLock;
+>>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
 use super::OAuthStoreLockFailure;
 use super::StoredOAuthTokens;
 use super::compute_store_key;
@@ -15,7 +20,9 @@ use super::delete_oauth_tokens_from_direct_keyring;
 use super::delete_oauth_tokens_from_file;
 use super::delete_oauth_tokens_from_secrets_keyring;
 use super::load_oauth_tokens_from_file;
+use super::load_oauth_tokens_from_file_with_lock_held;
 use super::load_oauth_tokens_from_keyring;
+use super::load_oauth_tokens_from_secrets_keyring_with_lock_held;
 use super::save_oauth_tokens_to_file;
 use super::save_oauth_tokens_with_keyring;
 
@@ -55,6 +62,34 @@ impl ResolvedOAuthCredentialStore {
             .context(
                 "failed to reread OAuth tokens from resolved keyring storage; refusing file fallback",
             ),
+        }
+    }
+
+    /// Reads the selected authority without waiting for its aggregate-store lock.
+    pub(crate) fn try_load<K: KeyringStore + Clone + 'static>(
+        self,
+        keyring_store: &K,
+        server_name: &str,
+        url: &str,
+    ) -> Result<Option<StoredOAuthTokens>> {
+        match self {
+            Self::File => {
+                let _store_lock = OAuthStoreLock::try_acquire_for_read(OAuthStore::File)?;
+                load_oauth_tokens_from_file_with_lock_held(server_name, url)
+                    .context("failed to probe OAuth tokens from resolved file storage")
+            }
+            Self::Keyring(AuthKeyringBackendKind::Direct) => {
+                self.load(keyring_store, server_name, url)
+            }
+            Self::Keyring(AuthKeyringBackendKind::Secrets) => {
+                let _store_lock = OAuthStoreLock::try_acquire_for_read(OAuthStore::Secrets)?;
+                load_oauth_tokens_from_secrets_keyring_with_lock_held(
+                    keyring_store,
+                    server_name,
+                    url,
+                )
+                .map_err(anyhow::Error::from)
+            }
         }
     }
 
@@ -172,6 +207,7 @@ pub(crate) fn resolve_oauth_tokens_from_store_policy<K: KeyringStore + Clone + '
     }
 }
 
+<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
 fn load_auto_fallback_tokens(server_name: &str, url: &str) -> Result<Option<StoredOAuthTokens>> {
     match load_oauth_tokens_from_file(server_name, url) {
         Ok(tokens) => Ok(tokens),
@@ -184,5 +220,33 @@ fn load_auto_fallback_tokens(server_name: &str, url: &str) -> Result<Option<Stor
             );
             Ok(None)
         }
+=======
+pub(crate) fn try_resolve_oauth_tokens_from_store_policy<K: KeyringStore + Clone + 'static>(
+    keyring_store: &K,
+    server_name: &str,
+    url: &str,
+    store_mode: OAuthCredentialsStoreMode,
+    keyring_backend_kind: AuthKeyringBackendKind,
+) -> Result<Option<ResolvedOAuthTokens>> {
+    let load = |store: ResolvedOAuthCredentialStore| {
+        store
+            .try_load(keyring_store, server_name, url)
+            .map(|tokens| tokens.map(|tokens| ResolvedOAuthTokens { tokens, store }))
+    };
+    let keyring = ResolvedOAuthCredentialStore::Keyring(keyring_backend_kind);
+    match store_mode {
+        OAuthCredentialsStoreMode::File => load(ResolvedOAuthCredentialStore::File),
+        OAuthCredentialsStoreMode::Keyring => load(keyring),
+        OAuthCredentialsStoreMode::Auto => match load(keyring) {
+            Ok(Some(tokens)) => Ok(Some(tokens)),
+            Ok(None) => load(ResolvedOAuthCredentialStore::File),
+            Err(error) if error.downcast_ref::<OAuthStoreLockFailure>().is_some() => Err(error),
+            Err(error) => {
+                warn!("failed to read OAuth tokens from keyring: {error}");
+                load(ResolvedOAuthCredentialStore::File)
+                    .with_context(|| format!("failed to read OAuth tokens from keyring: {error}"))
+            }
+        },
+>>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
     }
 }

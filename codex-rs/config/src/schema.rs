@@ -2,13 +2,48 @@ use crate::config_toml::ConfigToml;
 use crate::types::RawMcpServerConfig;
 use codex_features::FEATURES;
 use codex_features::legacy_feature_keys;
+<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
 use schemars::Schema;
 use schemars::SchemaGenerator;
 use schemars::generate::SchemaSettings;
+=======
+use codex_protocol::protocol::GranularApprovalConfig;
+use schemars::JsonSchema;
+use schemars::r#gen::SchemaGenerator;
+use schemars::r#gen::SchemaSettings;
+use schemars::schema::InstanceType;
+use schemars::schema::ObjectValidation;
+use schemars::schema::RootSchema;
+use schemars::schema::Schema;
+use schemars::schema::SchemaObject;
+use schemars::schema::SubschemaValidation;
+>>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
 use serde_json::Map;
 use serde_json::Value;
 use serde_json::json;
 use std::path::Path;
+
+/// Determines the conditions under which the user is consulted to approve
+/// running the command proposed by Codex.
+#[allow(dead_code)]
+#[derive(JsonSchema)]
+#[schemars(rename = "AskForApproval")]
+#[serde(rename_all = "kebab-case")]
+pub(crate) enum ConfigAskForApproval {
+    /// The model decides when to ask the user for approval.
+    OnRequest,
+
+    /// Fine-grained controls for individual approval flows.
+    ///
+    /// When a field is `true`, commands in that category are allowed. When it
+    /// is `false`, those requests are automatically rejected instead of shown
+    /// to the user.
+    Granular(GranularApprovalConfig),
+
+    /// Never ask the user to approve commands. Failures are immediately returned
+    /// to the model, and never escalated to the user for approval.
+    Never,
+}
 
 /// Schema for the `[features]` map with known + legacy keys only.
 pub fn features_schema(schema_gen: &mut SchemaGenerator) -> Schema {
@@ -28,6 +63,15 @@ pub fn features_schema(schema_gen: &mut SchemaGenerator) -> Schema {
             );
             continue;
         }
+        if feature.id == codex_features::Feature::CodeModeHost {
+            validation.properties.insert(
+                feature.key.to_string(),
+                schema_gen.subschema_for::<codex_features::FeatureToml<
+                    codex_features::CodeModeHostConfigToml,
+                >>(),
+            );
+            continue;
+        }
         if feature.id == codex_features::Feature::NonPrefixedMcpToolNames {
             properties.insert(
                 feature.key.to_string(),
@@ -38,6 +82,19 @@ pub fn features_schema(schema_gen: &mut SchemaGenerator) -> Schema {
                         >,
                     >()
                     .into(),
+            );
+            continue;
+        }
+        if feature.id == codex_features::Feature::GuardianThreadContext {
+            // This setting is already part of the guardianv2 feature table.
+            continue;
+        }
+        if feature.id == codex_features::Feature::GuardianV2 {
+            validation.properties.insert(
+                feature.key.to_string(),
+                schema_gen.subschema_for::<codex_features::FeatureToml<
+                    codex_features::GuardianV2ConfigToml,
+                >>(),
             );
             continue;
         }
@@ -63,6 +120,15 @@ pub fn features_schema(schema_gen: &mut SchemaGenerator) -> Schema {
             );
             continue;
         }
+        if feature.id == codex_features::Feature::ContextManagement {
+            validation.properties.insert(
+                feature.key.to_string(),
+                schema_gen.subschema_for::<codex_features::FeatureToml<
+                    codex_features::ContextManagementConfigToml,
+                >>(),
+            );
+            continue;
+        }
         if feature.id == codex_features::Feature::RolloutBudget {
             properties.insert(
                 feature.key.to_string(),
@@ -84,6 +150,15 @@ pub fn features_schema(schema_gen: &mut SchemaGenerator) -> Schema {
                         >,
                     >()
                     .into(),
+            );
+            continue;
+        }
+        if feature.id == codex_features::Feature::SleepTool {
+            validation.properties.insert(
+                feature.key.to_string(),
+                schema_gen.subschema_for::<codex_features::FeatureToml<
+                    codex_features::SleepToolConfigToml,
+                >>(),
             );
             continue;
         }
@@ -116,6 +191,15 @@ pub fn features_schema(schema_gen: &mut SchemaGenerator) -> Schema {
             schema_gen.subschema_for::<bool>().into(),
         );
     }
+<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
+=======
+    validation.properties.insert(
+        "tool_registry".to_string(),
+        schema_gen.subschema_for::<codex_features::ToolRegistryConfigToml>(),
+    );
+    validation.additional_properties = Some(Box::new(Schema::Bool(false)));
+    object.object = Some(Box::new(validation));
+>>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
 
     match json!({
         "type": "object",

@@ -1,7 +1,13 @@
+<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
 use super::message_tool::AssignTaskArgs;
 use super::message_tool::MessageDeliveryMode;
+=======
+use super::analytics::ToolCallAnalytics;
+use super::message_tool::FollowupTaskArgs;
+>>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
 use super::message_tool::handle_message_string_tool;
 use super::*;
+use crate::agent::control::MessageDeliveryMode;
 use crate::tools::handlers::multi_agents_spec::create_followup_task_tool;
 use codex_tools::ToolSpec;
 
@@ -16,8 +22,16 @@ impl ToolExecutor<ToolInvocation> for Handler {
         create_followup_task_tool()
     }
 
-    fn handle(&self, invocation: ToolInvocation) -> codex_tools::ToolExecutorFuture<'_> {
-        Box::pin(self.handle_call(invocation))
+    fn handle<'a>(&'a self, invocation: ToolInvocation) -> codex_tools::ToolExecutorFuture<'a>
+    where
+        ToolInvocation: 'a,
+    {
+        Box::pin(async move {
+            let mut analytics = ToolCallAnalytics::new(&invocation, CollabAgentTool::FollowupTask);
+            let result = self.handle_call(invocation, &mut analytics).await;
+            analytics.finish(&result);
+            result
+        })
     }
 }
 
@@ -25,6 +39,7 @@ impl Handler {
     async fn handle_call(
         &self,
         invocation: ToolInvocation,
+        analytics: &mut ToolCallAnalytics,
     ) -> Result<Box<dyn crate::tools::context::ToolOutput>, FunctionCallError> {
         let arguments = function_arguments(invocation.payload.clone())?;
         let args: AssignTaskArgs = parse_arguments(&arguments)?;
@@ -33,7 +48,11 @@ impl Handler {
             MessageDeliveryMode::TriggerTurn,
             args.target,
             args.message,
+<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
             args.expected_model,
+=======
+            analytics,
+>>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
         )
         .await
         .map(boxed_tool_output)

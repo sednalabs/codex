@@ -1,9 +1,6 @@
-use std::time::Instant;
-
 use crate::function_tool::FunctionCallError;
 use crate::tools::context::ToolInvocation;
 use crate::tools::context::ToolPayload;
-use crate::tools::context::boxed_tool_output;
 use crate::tools::handlers::mcp_resource_spec::create_read_mcp_resource_tool;
 use crate::tools::registry::CoreToolRuntime;
 use crate::tools::registry::ToolExecutor;
@@ -15,14 +12,21 @@ use rmcp::model::ReadResourceRequestParams;
 
 use super::ReadResourceArgs;
 use super::ReadResourcePayload;
+<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
 use super::call_tool_result_from_execution_status;
 use super::emit_tool_call_begin;
 use super::emit_tool_call_end;
+=======
+>>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
 use super::ensure_model_can_access_mcp_server;
 use super::normalize_required_string;
 use super::parse_args;
 use super::parse_arguments;
+<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
 use super::serialize_read_resource_output;
+=======
+use super::run_resource_operation;
+>>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
 
 pub struct ReadMcpResourceHandler;
 
@@ -39,7 +43,10 @@ impl ToolExecutor<ToolInvocation> for ReadMcpResourceHandler {
         true
     }
 
-    fn handle(&self, invocation: ToolInvocation) -> codex_tools::ToolExecutorFuture<'_> {
+    fn handle<'a>(&'a self, invocation: ToolInvocation) -> codex_tools::ToolExecutorFuture<'a>
+    where
+        ToolInvocation: 'a,
+    {
         Box::pin(self.handle_call(invocation))
     }
 }
@@ -81,10 +88,7 @@ impl ReadMcpResourceHandler {
             arguments: arguments.clone(),
         };
 
-        emit_tool_call_begin(&session, turn.as_ref(), &call_id, invocation.clone()).await;
-        let start = Instant::now();
-
-        let payload_result: Result<ReadResourcePayload, FunctionCallError> = async {
+        run_resource_operation(&session, &step_context, &call_id, invocation, async {
             ensure_model_can_access_mcp_server(turn.as_ref(), &server)?;
             let result = mcp
                 .read_resource(&server, ReadResourceRequestParams::new(uri.clone()))
@@ -98,6 +102,7 @@ impl ReadMcpResourceHandler {
                 uri,
                 result,
             })
+<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
         }
         .await;
         let truncation_policy = turn.model_info.truncation_policy.into();
@@ -151,6 +156,10 @@ impl ReadMcpResourceHandler {
                 Err(err)
             }
         }
+=======
+        })
+        .await
+>>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
     }
 }
 

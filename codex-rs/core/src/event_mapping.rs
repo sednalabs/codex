@@ -32,15 +32,20 @@ use codex_protocol::user_input::UserInput;
 use tracing::warn;
 use uuid::Uuid;
 
+use crate::context::APPROVED_COMMAND_PREFIX_SAVED_MESSAGE_PREFIX;
 use crate::context::is_contextual_user_fragment;
 use crate::context::parse_visible_hook_prompt_message;
 use crate::web_search::web_search_action_detail;
 
 const CONTEXTUAL_DEVELOPER_PREFIXES: &[&str] = &[
     "<permissions instructions>",
+    APPROVED_COMMAND_PREFIX_SAVED_MESSAGE_PREFIX,
     "<model_switch>",
+    "<managed_developer_instructions>",
+    "<persistent_mode>",
     APPS_INSTRUCTIONS_OPEN_TAG,
     COLLABORATION_MODE_OPEN_TAG,
+    "<multi_agent_role>",
     MULTI_AGENT_MODE_OPEN_TAG,
     ENVIRONMENTS_INSTRUCTIONS_OPEN_TAG,
     "<git_attribution>",
@@ -121,9 +126,9 @@ fn parse_user_message(message: &[ContentItem]) -> Option<UserMessageItem> {
                     text_elements: Vec::new(),
                 });
             }
-            ContentItem::InputImage { image_url, detail } => {
+            ContentItem::InputImage { image, detail } => {
                 content.push(UserInput::Image {
-                    image_url: image_url.clone(),
+                    image: image.clone(),
                     detail: *detail,
                 });
             }
@@ -168,6 +173,8 @@ fn parse_agent_message(
         content,
         phase,
         memory_citation: None,
+        delivery: None,
+        questions: None,
     }
 }
 

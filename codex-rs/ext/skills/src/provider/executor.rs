@@ -1,10 +1,11 @@
 use std::sync::Arc;
 
-use codex_core_skills::loader::load_environment_skills_from_discovery;
-use codex_core_skills::loader::load_environment_skills_from_root;
 use codex_exec_server::EnvironmentManager;
+use codex_exec_server::FileSystemSandboxContext;
+use codex_extension_api::SelectedPluginSnapshot;
 use codex_protocol::capabilities::CapabilityRootLocation;
 use codex_protocol::protocol::Product;
+use codex_protocol::protocol::SkillScope;
 use codex_skills::EnvironmentSkillMetadata;
 use codex_utils_path_uri::PathConvention;
 use codex_utils_path_uri::PathUri;
@@ -19,6 +20,8 @@ use crate::catalog::SkillReadResult;
 use crate::catalog::SkillResourceId;
 use crate::catalog::SkillSearchResult;
 use crate::catalog::SkillSourceKind;
+use crate::loader::load_environment_skills_from_discovery;
+use crate::loader::load_environment_skills_from_root;
 use crate::provider::MAX_SKILL_RESOURCE_CONTENT_BYTES;
 use crate::provider::SkillListQuery;
 use crate::provider::SkillProvider;
@@ -41,6 +44,25 @@ impl ExecutorSkillProvider {
         Self {
             environment_manager,
             restriction_product,
+        }
+    }
+}
+
+pub(crate) fn attribute_executor_plugins(
+    catalog: &mut SkillCatalog,
+    snapshot: &SelectedPluginSnapshot,
+) {
+    catalog
+        .entries
+        .retain(|skill| !snapshot.disabled_plugin_roots.contains(&skill.authority.id));
+    for skill in &mut catalog.entries {
+        if let Some(plugin) = snapshot
+            .plugins
+            .iter()
+            .find(|plugin| plugin.selected_root_id == skill.authority.id)
+        {
+            skill.plugin_id = Some(plugin.plugin_id.clone());
+            skill.analytics_scope = Some(SkillScope::User);
         }
     }
 }
@@ -88,6 +110,7 @@ impl SkillProvider for ExecutorSkillProvider {
                         &skill,
                         authority.clone(),
                         selected_root_id,
+                        path,
                         environment_id,
                         /*instructions*/ None,
                     ));
@@ -98,7 +121,10 @@ impl SkillProvider for ExecutorSkillProvider {
         })
     }
 
-    fn read(&self, request: SkillReadRequest) -> SkillProviderFuture<'_, SkillReadResult> {
+    fn read<'a>(
+        &'a self,
+        request: SkillReadRequest<'a>,
+    ) -> SkillProviderFuture<'a, SkillReadResult> {
         Box::pin(async move {
             if request.authority.kind != SkillSourceKind::Executor {
                 return Err(SkillProviderError::new(format!(
@@ -147,6 +173,7 @@ impl SkillProvider for ExecutorSkillProvider {
                 file_system.as_ref(),
                 resource_path,
                 request.resource.as_str(),
+                request.sandbox.as_ref(),
             )
             .await?;
 
@@ -170,8 +197,10 @@ impl ExecutorSkillProvider {
         let mut catalog = SkillCatalog::default();
         for root in snapshot.roots() {
             let selected_root_id = &root.selected_root.id;
-            let CapabilityRootLocation::Environment { environment_id, .. } =
-                &root.selected_root.location;
+            let CapabilityRootLocation::Environment {
+                environment_id,
+                path,
+            } = &root.selected_root.location;
             let discovery = match &root.result {
                 Ok(discovery) => discovery.as_ref(),
                 Err(error) => {
@@ -191,6 +220,7 @@ impl ExecutorSkillProvider {
                     &skill.metadata,
                     authority.clone(),
                     selected_root_id,
+                    path,
                     environment_id,
                     Some(skill.instructions),
                 ));
@@ -204,10 +234,15 @@ fn catalog_entry_from_skill(
     skill: &EnvironmentSkillMetadata,
     authority: SkillAuthority,
     selected_root_id: &str,
+    selected_root_path: &PathUri,
     environment_id: &str,
     instructions: Option<String>,
 ) -> SkillCatalogEntry {
     let handle_prefix = format!("skill://{selected_root_id}/");
+    let alias_root = format!(
+        "{handle_prefix}{}",
+        normalized_environment_path(selected_root_path).trim_start_matches('/')
+    );
     let normalized_main_path = normalized_environment_path(&skill.path_to_skills_md);
     let normalized_package_path = skill.path_to_skills_md.parent().map_or_else(
         || normalized_main_path.clone(),
@@ -243,6 +278,7 @@ fn catalog_entry_from_skill(
     )
     .with_short_description(skill.short_description.clone())
     .with_display_path(main_resource)
+    .with_alias_root(alias_root)
     .with_dependencies(skill.dependencies.clone());
 
     if skill.allows_implicit_invocation() {
@@ -265,14 +301,24 @@ async fn read_bounded_text(
     file_system: &dyn codex_exec_server::ExecutorFileSystem,
     path: &PathUri,
     resource: &str,
+    sandbox: Option<&FileSystemSandboxContext>,
 ) -> Result<String, SkillProviderError> {
     let read_error = |err| {
         SkillProviderError::new(format!(
             "failed to read executor skill resource {resource}: {err}"
         ))
     };
+    if sandbox.is_some_and(FileSystemSandboxContext::should_run_in_sandbox)
+        && path.infer_path_convention() == Some(PathConvention::Windows)
+        && sandbox.is_some_and(|context| !context.windows_sandbox_is_requested())
+    {
+        return Err(SkillProviderError::new(
+            "executor skill resource requires an unavailable filesystem sandbox",
+        ));
+    }
+
     let mut stream = file_system
-        .read_file_stream(path, /*sandbox*/ None)
+        .read_file_stream(path, sandbox)
         .await
         .map_err(&read_error)?;
     let mut contents = Vec::new();

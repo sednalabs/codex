@@ -2,9 +2,12 @@
 
 use std::collections::BTreeMap;
 use std::collections::HashMap;
+use std::num::NonZeroU64;
 use std::path::Path;
 
 use crate::HooksToml;
+use crate::browser_use::BrowserUseConfigToml;
+use crate::computer_use::ComputerUseConfigToml;
 use crate::permissions_toml::PermissionsToml;
 use crate::profile_toml::ConfigProfile;
 use crate::types::AnalyticsConfigToml;
@@ -14,6 +17,7 @@ use crate::types::AuthCredentialsStoreMode;
 use crate::types::FeedbackConfigToml;
 use crate::types::History;
 use crate::types::MarketplaceConfig;
+use crate::types::McpEnterpriseManagedAuthConfig;
 use crate::types::McpServerConfig;
 use crate::types::MemoriesToml;
 use crate::types::Notice;
@@ -29,6 +33,7 @@ use crate::types::UriBasedFileOpener;
 use crate::types::WindowsToml;
 use codex_features::FeaturesToml;
 use codex_model_provider_info::AMAZON_BEDROCK_PROVIDER_ID;
+use codex_model_provider_info::AMAZON_BEDROCK_RUNTIME_PROVIDER_ID;
 use codex_model_provider_info::LEGACY_OLLAMA_CHAT_PROVIDER_ID;
 use codex_model_provider_info::LMSTUDIO_OSS_PROVIDER_ID;
 use codex_model_provider_info::ModelProviderInfo;
@@ -59,8 +64,9 @@ use serde::Serialize;
 use serde::de::Error as SerdeError;
 use serde_json::Value as JsonValue;
 
-const RESERVED_MODEL_PROVIDER_IDS: [&str; 4] = [
+const RESERVED_MODEL_PROVIDER_IDS: [&str; 5] = [
     AMAZON_BEDROCK_PROVIDER_ID,
+    AMAZON_BEDROCK_RUNTIME_PROVIDER_ID,
     OPENAI_PROVIDER_ID,
     OLLAMA_OSS_PROVIDER_ID,
     LMSTUDIO_OSS_PROVIDER_ID,
@@ -168,6 +174,7 @@ pub struct ConfigToml {
     pub model_auto_compact_token_limit_scope: Option<AutoCompactTokenLimitScope>,
 
     /// Default approval policy for executing commands.
+    #[schemars(with = "Option<crate::schema::ConfigAskForApproval>")]
     pub approval_policy: Option<AskForApproval>,
 
     /// Configures who approval requests are routed to for review once they have
@@ -178,6 +185,10 @@ pub struct ConfigToml {
     /// Optional policy instructions for the guardian auto-reviewer.
     #[serde(default)]
     pub auto_review: Option<AutoReviewToml>,
+
+    pub browser_use: Option<BrowserUseConfigToml>,
+
+    pub computer_use: Option<ComputerUseConfigToml>,
 
     #[serde(default)]
     pub shell_environment_policy: ShellEnvironmentPolicyToml,
@@ -194,6 +205,13 @@ pub struct ConfigToml {
 
     /// Sandbox mode to use.
     pub sandbox_mode: Option<SandboxMode>,
+
+    /// Allow macOS sandbox writable roots at or beneath CODEX_HOME to traverse
+    /// symlinks. Read only from the host's user config at startup; defaults to false.
+    /// This grants no write access by itself, but trusts symlink targets even if
+    /// they change between commands or lie outside CODEX_HOME.
+    /// This setting has no effect on Linux or Windows.
+    pub allow_symlinked_codex_home: Option<bool>,
 
     /// Sandbox configuration to apply if `sandbox` is `WorkspaceWrite`.
     pub sandbox_workspace_write: Option<SandboxWorkspaceWrite>,
@@ -260,6 +278,10 @@ pub struct ConfigToml {
     #[schemars(schema_with = "crate::schema::mcp_servers_schema")]
     pub mcp_servers: HashMap<String, McpServerConfig>,
 
+    /// Trusted enterprise IdP shared by EMA-enabled MCP servers and plugins.
+    #[serde(default)]
+    pub mcp_enterprise_managed_auth: Option<McpEnterpriseManagedAuthConfig>,
+
     /// Preferred backend for storing MCP OAuth credentials.
     /// keyring: Use an OS-specific keyring service.
     ///          https://github.com/openai/codex/blob/main/codex-rs/rmcp-client/src/oauth.rs#L2
@@ -278,12 +300,18 @@ pub struct ConfigToml {
     /// to 127.0.0.1 (using `mcp_oauth_callback_port` when provided).
     pub mcp_oauth_callback_url: Option<String>,
 
+    /// Milliseconds to wait for optional MCP servers while building the initial tool catalog.
+    ///
+    /// Defaults to 1000. Set to 0 to disable the shared grace and wait for each
+    /// server's configured `startup_timeout_sec` instead.
+    pub mcp_optional_startup_grace_ms: Option<u64>,
+
     /// User-defined provider entries that extend the built-in list. Built-in
     /// IDs cannot be overridden.
     #[serde(default, deserialize_with = "deserialize_model_providers")]
     pub model_providers: HashMap<String, ModelProviderInfo>,
 
-    /// Maximum number of bytes to include from an AGENTS.md project doc file.
+    /// Maximum total bytes of project instruction content across all selected environments.
     #[serde(default = "default_project_doc_max_bytes")]
     pub project_doc_max_bytes: Option<usize>,
 
@@ -297,6 +325,10 @@ pub struct ConfigToml {
     /// Maximum poll window for background terminal output (`write_stdin`), in milliseconds.
     /// Default: `300000` (5 minutes).
     pub background_terminal_max_timeout: Option<u64>,
+
+    /// Seconds a thread must have no subscribers and no activity before app-server
+    /// unloads it. Defaults to 60; zero unloads immediately. Changes require a server restart.
+    pub thread_unload_delay_secs: Option<u64>,
 
     /// Deprecated: ignored.
     #[schemars(skip)]
@@ -325,9 +357,6 @@ pub struct ConfigToml {
     /// also enables the TUI text log in this directory.
     /// Defaults to `$CODEX_HOME/log`.
     pub log_dir: Option<AbsolutePathBuf>,
-
-    /// Debugging and reproducibility settings.
-    pub debug: Option<DebugToml>,
 
     /// Optional URI-based file opener. If set, citations to files in the model
     /// output will be hyperlinked using the specified URI scheme.
@@ -368,6 +397,9 @@ pub struct ConfigToml {
     /// Optional product SKU forwarded on host-owned Codex Apps MCP requests.
     pub apps_mcp_product_sku: Option<String>,
 
+    /// Bounded, product-owned metadata attached to every Responses API request.
+    pub responses_api_metadata: Option<BTreeMap<String, String>>,
+
     /// Orchestrator-owned feature settings.
     pub orchestrator: Option<OrchestratorToml>,
 
@@ -407,10 +439,6 @@ pub struct ConfigToml {
     /// active.
     pub experimental_realtime_start_instructions: Option<String>,
 
-    /// Experimental / do not use. When set, app-server fetches thread-scoped
-    /// config from a remote service at this endpoint.
-    pub experimental_thread_config_endpoint: Option<String>,
-
     /// Removed. Former remote thread-store endpoint setting kept only so we can
     /// fail fast instead of silently falling back to local persistence.
     #[schemars(skip)]
@@ -431,6 +459,9 @@ pub struct ConfigToml {
 
     /// Agent-related settings (thread limits, etc.).
     pub agents: Option<AgentsToml>,
+
+    /// Goal-related settings.
+    pub goals: Option<GoalsToml>,
 
     /// Memories subsystem settings.
     pub memories: Option<MemoriesToml>,
@@ -473,6 +504,7 @@ pub struct ConfigToml {
     /// Defaults to `true`.
     pub check_for_update_on_startup: Option<bool>,
 
+<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
     /// The published Sedna release stream used by update notices. `stable`
     /// includes only GitHub Releases whose `prerelease` flag is false.
     /// Defaults to `stable`.
@@ -481,6 +513,9 @@ pub struct ConfigToml {
     /// When true, disables burst-paste detection for typed input entirely.
     /// All characters are inserted as they are received, and no buffering
     /// or placeholder replacement will occur for fast keypress bursts.
+=======
+    /// Legacy fallback for `tui.disable_paste_burst`. Prefer the setting under `[tui]`.
+>>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
     pub disable_paste_burst: Option<bool>,
 
     /// When `false`, disables analytics across Codex product surfaces in this machine.
@@ -516,38 +551,6 @@ pub struct ConfigToml {
     pub oss_provider: Option<String>,
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema)]
-#[schemars(deny_unknown_fields)]
-pub struct ConfigLockfileToml {
-    pub version: u32,
-    pub codex_version: String,
-
-    /// Replayable effective config captured in the lockfile.
-    pub config: ConfigToml,
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq, Eq, JsonSchema)]
-#[schemars(deny_unknown_fields)]
-pub struct DebugToml {
-    pub config_lockfile: Option<DebugConfigLockToml>,
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq, Eq, JsonSchema)]
-#[schemars(deny_unknown_fields)]
-pub struct DebugConfigLockToml {
-    /// Directory where Codex writes effective session config lock files.
-    pub export_dir: Option<AbsolutePathBuf>,
-
-    /// Lockfile to replay as the authoritative effective config.
-    pub load_path: Option<AbsolutePathBuf>,
-
-    /// Allow replaying a lock generated by a different Codex version.
-    pub allow_codex_version_mismatch: Option<bool>,
-
-    /// Save fields resolved from the model catalog/session configuration.
-    pub save_fields_resolved_from_model_catalog: Option<bool>,
-}
-
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ThreadStoreToml {
@@ -562,6 +565,8 @@ pub enum ThreadStoreToml {
 pub struct AutoReviewToml {
     /// Additional policy instructions inserted into the guardian prompt.
     pub policy: Option<String>,
+    /// Experimental full Guardian prompt template containing the tenant policy placeholder.
+    pub experimental_policy_template: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema)]
@@ -655,7 +660,7 @@ pub struct ExperimentalRequestUserInput {
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema)]
 #[schemars(deny_unknown_fields)]
 pub struct UpdatePlanToolConfig {
-    #[serde(default = "default_true")]
+    #[serde(default)]
     pub enabled: bool,
 }
 
@@ -685,6 +690,17 @@ where
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq, Eq, JsonSchema)]
+<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
+=======
+#[schemars(deny_unknown_fields)]
+pub struct GoalsToml {
+    /// Maximum token budget allowed for a goal and default budget for new goals.
+    pub max_goal_token_budget: Option<NonZeroU64>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq, Eq, JsonSchema)]
+#[schemars(deny_unknown_fields)]
+>>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
 pub struct AgentsToml {
     /// Whether multi-agent tools are enabled. Defaults to true.
     /// An enabled `features.multi_agent_v2` setting takes precedence.
@@ -909,8 +925,10 @@ pub fn validate_reserved_model_provider_ids(
     let mut conflicts = model_providers
         .keys()
         .filter(|key| {
-            key.as_str() != AMAZON_BEDROCK_PROVIDER_ID
-                && RESERVED_MODEL_PROVIDER_IDS.contains(&key.as_str())
+            !matches!(
+                key.as_str(),
+                AMAZON_BEDROCK_PROVIDER_ID | AMAZON_BEDROCK_RUNTIME_PROVIDER_ID
+            ) && RESERVED_MODEL_PROVIDER_IDS.contains(&key.as_str())
         })
         .map(|key| format!("`{key}`"))
         .collect::<Vec<_>>();
@@ -931,10 +949,18 @@ pub fn validate_model_providers(
 ) -> Result<(), String> {
     validate_reserved_model_provider_ids(model_providers)?;
     for (key, provider) in model_providers {
-        if key != AMAZON_BEDROCK_PROVIDER_ID {
+        if matches!(
+            key.as_str(),
+            AMAZON_BEDROCK_PROVIDER_ID | AMAZON_BEDROCK_RUNTIME_PROVIDER_ID
+        ) {
+            provider
+                .validate_bedrock_override()
+                .map_err(|message| format!("model_providers.{key} {message}"))?;
+        } else {
             if provider.aws.is_some() {
                 return Err(format!(
-                    "model_providers.{key}: provider aws is only supported for `{AMAZON_BEDROCK_PROVIDER_ID}`"
+                    "model_providers.{key}: provider aws is only supported for \
+`{AMAZON_BEDROCK_PROVIDER_ID}` or `{AMAZON_BEDROCK_RUNTIME_PROVIDER_ID}`"
                 ));
             }
             if provider.name.trim().is_empty() {
@@ -961,6 +987,10 @@ where
     Ok(model_providers)
 }
 
+#[cfg(test)]
+#[path = "bedrock_runtime_tests.rs"]
+mod bedrock_runtime_tests;
+
 pub fn validate_oss_provider(provider: &str) -> std::io::Result<()> {
     match provider {
         LMSTUDIO_OSS_PROVIDER_ID | OLLAMA_OSS_PROVIDER_ID => Ok(()),
@@ -984,6 +1014,16 @@ mod tests {
 
     const WORKSPACE_ID_A: &str = "123e4567-e89b-42d3-a456-426614174000";
     const WORKSPACE_ID_B: &str = "123e4567-e89b-42d3-a456-426614174001";
+
+    #[test]
+    fn thread_unload_delay_requires_nonnegative_seconds() {
+        for value in ["-1", "1.5", "\"60\""] {
+            let error =
+                toml::from_str::<ConfigToml>(&format!("thread_unload_delay_secs = {value}"))
+                    .expect_err("idle timeout must be a nonnegative integer");
+            assert!(error.to_string().contains("thread_unload_delay_secs"));
+        }
+    }
 
     #[test]
     fn forced_chatgpt_workspace_id_accepts_single_string() {

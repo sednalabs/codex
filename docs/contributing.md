@@ -1,29 +1,48 @@
 ## Contributing
 
-**External contributions are by invitation only**
+We welcome community contributions through the [openai/codex issue tracker](https://github.com/openai/codex/issues). Bug reports, root-cause analyses, and feature requests help us understand what matters most and improve Codex.
 
+<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
 At this time, this fork does not accept unsolicited code contributions.
+=======
+**We do not accept external code contributions or pull requests.**
+>>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
 
-If you would like to propose a new feature or a change in behavior, please open an issue describing the proposal or upvote an existing enhancement request. We prioritize new features based on community feedback, alignment with our roadmap, and consistency across all Codex surfaces (CLI, IDE extensions, web, etc.).
+### Why we do not accept external code contributions
 
-If you encounter a bug, please open a bug report or verify that an existing report already covers the issue. If you would like to help, we encourage you to contribute by sharing analysis, reproduction details, root-cause hypotheses, or a high-level outline of a potential fix directly in the issue thread.
+Effective changes to Codex require architectural context, an understanding of system-level constraints, and visibility into the project's roadmap. External pull requests often focus on issues that are lower priority, affect a small number of users, or need substantial changes to fit the broader system. Reviewing and iterating on those changes can take more time than implementing a fix directly, diverting attention from higher-priority work.
 
+<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
 Fork maintainers may invite an external contributor to submit a pull request when:
+=======
+Community expertise is most valuable when shared through detailed bug reports, reproduction steps, logs, root-cause analysis, and design discussions in issues. Understanding the problem, identifying the right solution, and prioritizing the work are typically the hard parts; implementation is comparatively straightforward with the help of Codex itself.
+>>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
 
-- the problem is well understood,
-- the proposed approach aligns with the team’s intended solution, and
-- the issue is deemed high-impact and high-priority.
+For these reasons, we focus community contributions on issue reports, analysis, and feedback, while the Codex team handles code changes.
 
+<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
 Pull requests that have not been explicitly invited by a fork maintainer will be closed without review.
+=======
+### Reporting bugs
+>>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
 
-**Why we do not generally accept external code contributions**
+Before opening a new issue, search the issue tracker to see whether the problem has already been reported. If it has, add any new information to the existing issue.
 
-In the past, the Codex team accepted external pull requests for bug fixes. While we appreciated the effort and engagement from the community, this model did not scale well.
+When reporting a bug, include as much relevant detail as possible:
 
+<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
 Many contributions were made without full visibility into the architectural context, system-level constraints, or near-term roadmap considerations that guide this fork's development. Others focused on issues that were low priority or affected a very small subset of users. Reviewing and iterating on these PRs often took more time than implementing the fix directly, and diverted attention from higher-priority work.
+=======
+- Clear, detailed steps to reproduce the problem.
+- Expected and actual behavior.
+- Your Codex version, operating system, and other relevant environment details.
+- Logs, error messages, or other diagnostic information, with sensitive information removed.
+- Root-cause analysis, technical observations, or potential approaches to a fix, if available.
+>>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
 
-The most valuable contributions consistently came from community members who demonstrated deep understanding of a problem domain. That expertise is most helpful when shared early -- through detailed bug reports, analysis, and design discussion in issues. Identifying the right solution is typically the hard part; implementing it is comparatively straightforward with the help of Codex itself.
+### Requesting features
 
+<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
 For these reasons, we focus external contributions on discussion, analysis, and feedback, and reserve code changes for cases where a targeted invitation makes sense.
 
 ### Development workflow
@@ -69,17 +88,24 @@ When a change updates model catalogs or model metadata (`/models` payloads, pres
 2. If your invited PR introduces scope or behavior that was not previously discussed and approved, we may close the PR.
 3. We may ask for changes. Please do not take this personally. We value the work, but we also value consistency and long-term maintainability.
 4. When there is consensus that the PR meets the bar, a maintainer will squash-and-merge.
+=======
+Open a feature request in the issue tracker, or upvote an existing request that describes the same need. Explain your use case, the behavior you would like, and why it would improve your workflow.
+>>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
 
 ### Community values
 
 - **Be kind and inclusive.** Treat others with respect; we follow the [Contributor Covenant](https://www.contributor-covenant.org/).
-- **Assume good intent.** Written communication is hard - err on the side of generosity.
-- **Teach & learn.** If you spot something confusing, open an issue or discussion with suggestions or clarifications.
+- **Assume good intent.** Written communication is hard, so err on the side of generosity.
+- **Share what you learn.** Reproduction details, logs, and analysis help the entire community.
 
-### Getting help
+### Security
 
+<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
 If you run into problems setting up the project, would like feedback on an idea, or just want to say _hi_ - please open a Discussion topic or jump into the relevant issue. We are happy to help.
 
 ### Security & responsible AI
 
 If you discover a security issue in this fork, open a private security report via GitHub Security Advisories for this repository.
+=======
+If you discover a security vulnerability, follow the [security policy](../SECURITY.md) instead of reporting it in a public issue.
+>>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360

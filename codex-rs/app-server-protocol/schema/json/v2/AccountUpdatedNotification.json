@@ -37,6 +37,13 @@
           "const": "bedrockApiKey",
           "description": "Amazon Bedrock bearer token managed by Codex.",
           "type": "string"
+        },
+        {
+          "description": "Amazon Bedrock AWS access keys managed by Codex.",
+          "enum": [
+            "bedrockAccessKeys"
+          ],
+          "type": "string"
         }
       ]
     },
@@ -48,12 +55,16 @@
         "pro",
         "prolite",
         "team",
+        "self_serve_business_prolite",
         "self_serve_business_usage_based",
         "business",
         "ent26",
+        "enterprise_cbp_automation",
         "enterprise_cbp_usage_based",
         "enterprise",
         "edu",
+        "edu_plus",
+        "edu_pro",
         "unknown"
       ],
       "type": "string"

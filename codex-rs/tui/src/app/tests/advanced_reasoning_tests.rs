@@ -28,8 +28,12 @@ async fn fork_current_session_preserves_conversation_ultra() -> Result<()> {
     let mut tui = crate::tui::test_support::make_test_tui()?;
     let mut app_server = crate::start_embedded_app_server_for_picker(&app.config).await?;
 
-    let control =
-        Box::pin(app.handle_event(&mut tui, &mut app_server, AppEvent::ForkCurrentSession)).await?;
+    let control = Box::pin(app.handle_event(
+        &mut tui,
+        &mut app_server,
+        AppEvent::ForkCurrentSession { name: None },
+    ))
+    .await?;
 
     assert!(matches!(control, AppRunControl::Continue));
     assert_ne!(app.chat_widget.thread_id(), Some(source_thread_id));
@@ -61,18 +65,22 @@ async fn switching_from_ultra_thread_restores_configured_plan_effort() {
 
     app.replay_thread_snapshot(
         ThreadEventSnapshot {
+            delegated_turns: Vec::new(),
             session: Some(ultra_session),
             turns: Vec::new(),
             events: Vec::new(),
+            active_reasoning_item: None,
             input_state: None,
         },
         /*resume_restored_queue*/ false,
     );
     app.replay_thread_snapshot(
         ThreadEventSnapshot {
+            delegated_turns: Vec::new(),
             session: Some(normal_session),
             turns: Vec::new(),
             events: Vec::new(),
+            active_reasoning_item: None,
             input_state: None,
         },
         /*resume_restored_queue*/ false,

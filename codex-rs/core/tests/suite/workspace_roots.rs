@@ -1,9 +1,13 @@
 use anyhow::Context;
 use anyhow::Result;
+use codex_core::EnvironmentConfig;
+use codex_exec_server::CreateDirectoryOptions;
 use codex_exec_server::RemoveOptions;
-use codex_features::Feature;
+use codex_protocol::config_types::WindowsSandboxLevel;
 use codex_protocol::models::PermissionProfile;
+use codex_protocol::models::PermissionProfileSnapshot;
 use codex_protocol::permissions::NetworkSandboxPolicy;
+use codex_utils_absolute_path::AbsolutePathBuf;
 use codex_utils_path_uri::PathUri;
 #[cfg(windows)]
 use core_test_support::PathExt;
@@ -22,6 +26,7 @@ use core_test_support::test_codex::TestCodex;
 use core_test_support::test_codex::test_codex;
 use core_test_support::test_target_os;
 use serde_json::json;
+use test_case::test_case;
 use wiremock::MockServer;
 
 const PATCH_CALL_ID: &str = "workspace-root-patch";
@@ -44,11 +49,6 @@ async fn workspace_roots_test(server: &MockServer) -> Result<TestCodex> {
                 .expect("test workspace should be canonicalizable")
                 .abs();
         }
-        config.use_experimental_unified_exec_tool = true;
-        config
-            .features
-            .enable(Feature::UnifiedExec)
-            .expect("test config should allow feature update");
         config.workspace_roots = vec![config.cwd.clone()];
         config.set_windows_sandbox_enabled(/*value*/ true);
     });
@@ -62,6 +62,14 @@ fn outside_workspace_path(test: &TestCodex, file_name: &str) -> Result<PathUri> 
         .context("test workspace should have a parent")?
         .join(&file_name)
         .map_err(Into::into)
+}
+
+fn sibling_workspace_root_name(cwd: &AbsolutePathBuf, suffix: &str) -> String {
+    let cwd_name = cwd
+        .file_name()
+        .expect("test workspace should have a file name")
+        .to_string_lossy();
+    format!("{cwd_name}-{suffix}")
 }
 
 fn command_arguments(path: &str, contents: &str) -> Result<String> {
@@ -115,7 +123,9 @@ async fn submit_workspace_turn(test: &TestCodex, prompt: &str) -> Result<()> {
 
 async fn read_file(test: &TestCodex, path: &PathUri) -> Result<String> {
     Ok(String::from_utf8(
-        test.fs().read_file(path, /*sandbox*/ None).await?,
+        test.fs()
+            .read_file(path, Default::default(), /*sandbox*/ None)
+            .await?,
     )?)
 }
 
@@ -127,6 +137,7 @@ async fn remove_files(test: &TestCodex, paths: &[&PathUri]) -> Result<()> {
                 RemoveOptions {
                     recursive: false,
                     force: true,
+                    follow_symlinks: true,
                 },
                 /*sandbox*/ None,
             )
@@ -211,6 +222,243 @@ fn is_gnu_fs_helper_loader_failure(output: Option<&str>) -> bool {
         })
 }
 
+#[test_case(false; "thread-owned secondary root")]
+#[test_case(true; "owner-resolved secondary root")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn workspace_roots_allow_file_and_command_writes_in_secondary_root(
+    owner_resolved_roots: bool,
+) -> Result<()> {
+    const SECONDARY_ROOT_NAME: &str = "secondary-workspace-root";
+    const COMMAND_CONTENTS: &str = "secondary root command";
+
+    skip_if_wine_exec!(
+        Ok(()),
+        "Wine does not emulate Windows restricted-token and ACL sandbox semantics"
+    );
+
+    let server = start_mock_server().await;
+    let mut builder = test_codex()
+        .with_config(move |config| {
+            #[cfg(windows)]
+            {
+                config.cwd = dunce::canonicalize(config.cwd.as_path())
+                    .expect("primary workspace root should be canonicalizable")
+                    .abs();
+            }
+            let secondary_root = config
+                .cwd
+                .parent()
+                .expect("workspace should have a parent")
+                .join(sibling_workspace_root_name(
+                    &config.cwd,
+                    SECONDARY_ROOT_NAME,
+                ));
+            config.workspace_roots = vec![config.cwd.clone()];
+            if !owner_resolved_roots {
+                config.workspace_roots.push(secondary_root);
+            }
+            // Owner-provided sandbox settings must work independently of thread defaults.
+            config.set_windows_sandbox_enabled(!owner_resolved_roots);
+        })
+        .with_workspace_setup(|cwd, fs| async move {
+            let secondary_root = cwd
+                .parent()
+                .context("workspace should have a parent")?
+                .join(sibling_workspace_root_name(&cwd, SECONDARY_ROOT_NAME));
+            fs.create_directory(
+                &PathUri::from_abs_path(&secondary_root),
+                CreateDirectoryOptions {
+                    recursive: true,
+                    follow_symlinks: true,
+                },
+                /*sandbox*/ None,
+            )
+            .await?;
+            Ok(())
+        });
+    let test = builder.build_with_auto_env(&server).await?;
+    let secondary_root_name = sibling_workspace_root_name(&test.config.cwd, SECONDARY_ROOT_NAME);
+    let secondary_root = PathUri::from_abs_path(&test.config.cwd)
+        .parent()
+        .context("workspace should have a parent")?
+        .join(&secondary_root_name)?;
+    if owner_resolved_roots {
+        let selection = test
+            .codex
+            .environment_selections()
+            .await
+            .into_iter()
+            .next()
+            .context("thread should select its executor environment")?;
+        test.codex
+            .environment_ready(
+                &selection,
+                EnvironmentConfig {
+                    allow_login_shell: test.config.permissions.allow_login_shell,
+                    workspace_roots: vec![selection.cwd.clone(), secondary_root.clone()],
+                    permission_profile: PermissionProfileSnapshot::legacy(
+                        workspace_roots_profile(),
+                    ),
+                    shell_environment_policy: Default::default(),
+                    windows_sandbox_level: WindowsSandboxLevel::RestrictedToken,
+                    windows_sandbox_private_desktop: test
+                        .config
+                        .permissions
+                        .windows_sandbox_private_desktop,
+                    use_legacy_landlock: test.config.features.use_legacy_landlock(),
+                    exec_policy: None,
+                    mcp_policy: None,
+                    network_policy: None,
+                    selected_capability_roots: Vec::new(),
+                },
+            )
+            .await?;
+    }
+    let patch = format!(
+        "*** Begin Patch\n*** Add File: ../{secondary_root_name}/secondary-root-patch.txt\n+secondary root\n*** End Patch\n"
+    );
+    let response_mock = mount_patch_and_command_calls(
+        &server,
+        &patch,
+        &format!("../{secondary_root_name}/secondary-root-command.txt"),
+        COMMAND_CONTENTS,
+    )
+    .await?;
+
+    submit_workspace_turn(&test, "write in the secondary workspace root").await?;
+
+    let request = response_mock
+        .last_request()
+        .context("model should receive the apply_patch and command results")?;
+    let (patch_output, patch_success) = request
+        .custom_tool_call_output_content_and_success(PATCH_CALL_ID)
+        .context("patch result should be present")?;
+    assert_ne!(patch_success, Some(false), "{patch_output:?}");
+    assert!(
+        !patch_output
+            .as_deref()
+            .is_some_and(|output| output.contains("patch rejected")),
+        "{patch_output:?}"
+    );
+    let patched_file = secondary_root.join("secondary-root-patch.txt")?;
+    assert_eq!(read_file(&test, &patched_file).await?, "secondary root\n");
+    let (_, command_success) = request
+        .function_call_output_content_and_success(COMMAND_CALL_ID)
+        .context("command result should be present")?;
+    assert_ne!(command_success, Some(false));
+    let command_file = secondary_root.join("secondary-root-command.txt")?;
+    assert_eq!(
+        read_file(&test, &command_file).await?.trim_end(),
+        COMMAND_CONTENTS
+    );
+
+    test.fs()
+        .remove(
+            &secondary_root,
+            RemoveOptions {
+                recursive: true,
+                force: true,
+                follow_symlinks: true,
+            },
+            /*sandbox*/ None,
+        )
+        .await?;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn workspace_roots_allow_patches_but_protect_metadata_directories() -> Result<()> {
+    const PATCH_CONTENTS: &str = "workspace root patch access";
+    const PROTECTED_METADATA_DIRECTORIES: [&str; 3] = [".git", ".agents", ".codex"];
+
+    skip_if_wine_exec!(
+        Ok(()),
+        "Wine does not emulate Windows restricted-token and ACL sandbox semantics"
+    );
+
+    let server = start_mock_server().await;
+    let test = workspace_roots_test(&server).await?;
+    let cwd = PathUri::from_abs_path(&test.config.cwd);
+    let allowed_path = cwd.join("workspace-root-allowed-patch.txt")?;
+    for directory in PROTECTED_METADATA_DIRECTORIES {
+        test.fs()
+            .create_directory(
+                &cwd.join(directory)?,
+                CreateDirectoryOptions {
+                    recursive: true,
+                    follow_symlinks: true,
+                },
+                /*sandbox*/ None,
+            )
+            .await?;
+    }
+
+    let allowed_patch = format!(
+        "*** Begin Patch\n*** Add File: workspace-root-allowed-patch.txt\n+{PATCH_CONTENTS}\n*** End Patch\n"
+    );
+    let mut patch_calls = vec![
+        ev_response_created("resp-1"),
+        ev_apply_patch_custom_tool_call(PATCH_CALL_ID, &allowed_patch),
+    ];
+    for directory in PROTECTED_METADATA_DIRECTORIES {
+        let call_id = format!("workspace-root-protected-{directory}");
+        let patch = format!(
+            "*** Begin Patch\n*** Add File: {directory}/protected.txt\n+metadata write\n*** End Patch\n"
+        );
+        patch_calls.push(ev_apply_patch_custom_tool_call(&call_id, &patch));
+    }
+    patch_calls.push(ev_completed("resp-1"));
+    let response_mock = mount_sse_sequence(
+        &server,
+        vec![
+            sse(patch_calls),
+            sse(vec![
+                ev_response_created("resp-2"),
+                ev_assistant_message("msg-1", "done"),
+                ev_completed("resp-2"),
+            ]),
+        ],
+    )
+    .await;
+
+    submit_workspace_turn(&test, "patch the workspace and protected metadata").await?;
+
+    let request = response_mock
+        .last_request()
+        .context("model should receive every workspace-root patch result")?;
+    let (_, patch_success) = request
+        .custom_tool_call_output_content_and_success(PATCH_CALL_ID)
+        .context("workspace patch result should be present")?;
+    assert_ne!(patch_success, Some(false));
+    assert_eq!(
+        read_file(&test, &allowed_path).await?,
+        format!("{PATCH_CONTENTS}\n")
+    );
+
+    for directory in PROTECTED_METADATA_DIRECTORIES {
+        let call_id = format!("workspace-root-protected-{directory}");
+        let (output, success) = request
+            .custom_tool_call_output_content_and_success(&call_id)
+            .with_context(|| format!("{directory} patch result should be present"))?;
+        assert_ne!(success, Some(true));
+        assert!(
+            output
+                .as_deref()
+                .is_some_and(|output| output.contains("outside of the project")),
+            "{directory} patch should be denied, got {output:?}"
+        );
+        let protected_path = cwd.join(directory)?.join("protected.txt")?;
+        let error = test
+            .fs()
+            .get_metadata(&protected_path, Default::default(), /*sandbox*/ None)
+            .await
+            .expect_err("protected metadata file should not be created");
+        assert_eq!(error.kind(), std::io::ErrorKind::NotFound);
+    }
+
+    remove_files(&test, &[&allowed_path]).await
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn workspace_roots_deny_file_and_command_writes_outside_roots() -> Result<()> {
     const PATCH_CONTENTS: &str = "outside workspace root patch";
@@ -266,13 +514,13 @@ async fn workspace_roots_deny_file_and_command_writes_outside_roots() -> Result<
     );
     assert!(
         test.fs()
-            .read_file(&patch_path, /*sandbox*/ None)
+            .read_file(&patch_path, Default::default(), /*sandbox*/ None)
             .await
             .is_err()
     );
     assert!(
         test.fs()
-            .read_file(&command_path, /*sandbox*/ None)
+            .read_file(&command_path, Default::default(), /*sandbox*/ None)
             .await
             .is_err()
     );

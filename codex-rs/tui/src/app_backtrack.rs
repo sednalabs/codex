@@ -21,11 +21,14 @@
 //! `TranscriptOverlay::sync_live_tail`. This preserves the invariant that the overlay reflects
 //! both committed history and in-flight activity without changing flush or coalescing behavior.
 
+mod legacy_input;
+
 use std::any::TypeId;
 use std::sync::Arc;
 
 use crate::app::App;
 use crate::app_event::AppEvent;
+use crate::app_server_session::AppServerSession;
 use crate::bottom_pane::LocalImageAttachment;
 use crate::chatwidget::ChatWidget;
 use crate::chatwidget::UserMessage;
@@ -36,7 +39,11 @@ use crate::history_cell::SessionInfoCell;
 use crate::history_cell::UserHistoryCell;
 use crate::key_hint::KeyBindingListExt;
 use crate::pager_overlay::Overlay;
+<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
 use crate::pager_overlay::TranscriptOverlayState;
+=======
+use crate::pager_overlay::TranscriptHistoryState;
+>>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
 use crate::tui;
 use crate::tui::TuiEvent;
 use codex_app_server_protocol::ThreadItem;
@@ -82,7 +89,7 @@ pub(crate) struct BacktrackSelection {
 }
 
 impl App {
-    /// Route overlay events while the transcript overlay is active.
+    /// Route overlay events, reserving backtracking for the transcript overlay.
     ///
     /// If backtrack preview is active, Esc / previous-prompt steps selection, next-prompt steps
     /// forward, Enter confirms. Otherwise, Esc or a prompt-selection key begins preview mode and
@@ -90,8 +97,10 @@ impl App {
     pub(crate) async fn handle_backtrack_overlay_event(
         &mut self,
         tui: &mut tui::Tui,
+        app_server: &mut AppServerSession,
         event: TuiEvent,
     ) -> Result<bool> {
+<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
         if self.backtrack.overlay_preview_active {
             match event {
                 TuiEvent::Key(KeyEvent {
@@ -152,9 +161,13 @@ impl App {
             Ok(true)
         } else {
             // Not in backtrack mode: forward events to the overlay widget.
+=======
+        if !matches!(self.overlay, Some(Overlay::Transcript(_))) {
+>>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
             self.overlay_forward_event(tui, event)?;
-            Ok(true)
+            return Ok(true);
         }
+        self.handle_legacy_transcript_event(tui, app_server, event)
     }
 
     /// Handle global Esc presses for backtracking when no overlay is present.
@@ -213,6 +226,7 @@ impl App {
         let mut overlay = Overlay::new_transcript(
             self.transcript_cells.clone(),
             self.keymap.pager.clone(),
+<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
             self.keymap.app.copy.clone(),
             self.keymap.app.toggle_raw_output.clone(),
             transcript_overlay_state,
@@ -221,10 +235,18 @@ impl App {
             transcript.set_highlight_cell(transcript_overlay_state.highlight_cell);
         }
         self.overlay = Some(overlay);
+=======
+        ));
+        if self.scrollback_has_older_history
+            && let Some(Overlay::Transcript(overlay)) = self.overlay.as_mut()
+        {
+            overlay.set_history_state(TranscriptHistoryState::Partial);
+        }
+>>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
         tui.frame_requester().schedule_frame();
     }
 
-    /// Close transcript overlay and restore normal UI.
+    /// Close the current overlay and restore normal UI, retaining Analytics navigation state.
     pub(crate) fn close_transcript_overlay(&mut self, tui: &mut tui::Tui) {
         if let Some(Overlay::Transcript(transcript)) = &self.overlay {
             self.transcript_overlay_state = transcript.state();
@@ -238,7 +260,15 @@ impl App {
                 self.history_line_wrap_policy(),
             );
         }
-        self.overlay = None;
+        if let Some(Overlay::Analytics(mut view)) = self.overlay.take() {
+            view.cancel_loads();
+            self.retained_analytics = Some(view);
+        }
+        if self.pending_thread_usage_history_refresh
+            && let Err(err) = self.refresh_thread_usage_history_tail(tui)
+        {
+            tracing::warn!(error = %err, "failed to refresh thread usage after closing overlay");
+        }
         self.backtrack.overlay_preview_active = false;
         tui.frame_requester().schedule_frame();
         if was_backtrack {
@@ -343,12 +373,24 @@ impl App {
     }
 
     /// Apply a computed backtrack selection to the overlay and internal counter.
+<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
     fn apply_backtrack_selection_internal(&mut self, nth_user_message: usize) {
         if let Some(Overlay::Transcript(t)) = &mut self.overlay {
             if t.set_highlighted_user_prompt(nth_user_message).is_some() {
                 self.backtrack.nth_user_message = nth_user_message;
             } else {
                 self.backtrack.nth_user_message = usize::MAX;
+=======
+    pub(crate) fn apply_backtrack_selection_internal(&mut self, nth_user_message: usize) {
+        if let Some(cell_idx) = nth_user_position(&self.transcript_cells, nth_user_message) {
+            self.backtrack.nth_user_message = nth_user_message;
+            if let Some(Overlay::Transcript(t)) = &mut self.overlay {
+                t.set_highlight_cell(Some(cell_idx));
+            }
+        } else {
+            self.backtrack.nth_user_message = usize::MAX;
+            if let Some(Overlay::Transcript(t)) = &mut self.overlay {
+>>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
                 t.set_highlight_cell(/*cell*/ None);
             }
             return;
@@ -382,8 +424,10 @@ impl App {
     /// source of truth for the active cell and its cache invalidation key, and because `App` owns
     /// overlay lifecycle and frame scheduling for animations.
     fn overlay_forward_event(&mut self, tui: &mut tui::Tui, event: TuiEvent) -> Result<()> {
-        if matches!(&event, TuiEvent::Draw | TuiEvent::Resize)
-            && let Some(Overlay::Transcript(t)) = &mut self.overlay
+        if matches!(
+            &event,
+            TuiEvent::Draw | TuiEvent::Resume | TuiEvent::Resize(_) | TuiEvent::FocusGained
+        ) && let Some(Overlay::Transcript(t)) = &mut self.overlay
         {
             let active_key = self.chat_widget.active_cell_transcript_key();
             let chat_widget = &self.chat_widget;
@@ -711,6 +755,7 @@ fn has_backtrack_target(cells: &[Arc<dyn crate::history_cell::HistoryCell>]) -> 
     user_count(cells) > 0
 }
 
+<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
 #[derive(Clone, Copy)]
 enum OverlayBacktrackStart {
     Latest,
@@ -738,6 +783,9 @@ fn transcript_overlay_state_for_open(
 }
 
 fn nth_user_position(
+=======
+pub(crate) fn nth_user_position(
+>>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
     cells: &[Arc<dyn crate::history_cell::HistoryCell>],
     nth: usize,
 ) -> Option<usize> {
@@ -1166,6 +1214,7 @@ mod tests {
         assert!(!has_backtrack_target(&cells));
 
         cells.push(Arc::new(UserHistoryCell {
+            spoken: false,
             message: "hello".to_string(),
             text_elements: Vec::new(),
             local_image_paths: Vec::new(),

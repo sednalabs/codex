@@ -5,6 +5,8 @@ import type { AbsolutePathBuf } from "../AbsolutePathBuf";
 import type { ReasoningEffort } from "../ReasoningEffort";
 import type { GitInfo } from "./GitInfo";
 import type { SessionSource } from "./SessionSource";
+import type { ThreadHistoryMode } from "./ThreadHistoryMode";
+import type { ThreadSection } from "./ThreadSection";
 import type { ThreadSource } from "./ThreadSource";
 import type { ThreadStatus } from "./ThreadStatus";
 import type { Turn } from "./Turn";
@@ -28,16 +30,34 @@ preview: string, /**
  * Whether the thread is ephemeral and should not be materialized on disk.
  */
 ephemeral: boolean, /**
- * Whether the thread has been pinned by the user.
+ * The independently persisted section selected for this thread, if any.
  */
-isPinned: boolean, /**
+section: ThreadSection | null, /**
+ * Unix timestamp in seconds when the thread entered its current section.
+ */
+sectionEnteredAt: number | null, /**
+ * Canonical project assignment owned by app-server, if any.
+ */
+projectId: string | null, /**
+ * Persisted thread history contract selected when this thread was created.
+ */
+historyMode: ThreadHistoryMode, /**
  * Model provider used for this thread (for example, 'openai').
  */
 modelProvider: string, /**
+<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
  * Latest observed model for this thread, if known.
  */
 model: string | null, /**
  * Latest observed reasoning effort for this thread, if known.
+=======
+ * Current configured model when loaded, otherwise the latest persisted model.
+ * Null when unavailable. This is not per-turn execution telemetry.
+ */
+model: string | null, /**
+ * Current configured reasoning effort when loaded, otherwise the latest persisted effort.
+ * Null when unset or unavailable. This is not per-turn execution telemetry.
+>>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
  */
 reasoningEffort: ReasoningEffort | null, /**
  * Unix timestamp (in seconds) when the thread was created.
@@ -61,6 +81,10 @@ cwd: AbsolutePathBuf, /**
  * Version of the CLI that created the thread.
  */
 cliVersion: string, /**
+ * Originator recorded when the thread was created, independent of its current client or executor.
+ * Null when the recorded originator is unavailable.
+ */
+originator: string | null, /**
  * Origin of the thread (CLI, VSCode, codex exec, codex app-server, etc.).
  */
 source: SessionSource, /**
@@ -79,7 +103,7 @@ gitInfo: GitInfo | null, /**
  * Optional user-facing thread title.
  */
 name: string | null, /**
- * Only populated on `thread/resume`, `thread/rollback`, `thread/fork`, and `thread/read`
+ * Only populated on `thread/resume`, `thread/fork`, and `thread/read`
  * (when `includeTurns` is true) responses.
  * For all other responses and notifications returning a Thread,
  * the turns field will be an empty list.

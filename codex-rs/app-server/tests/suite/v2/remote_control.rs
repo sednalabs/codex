@@ -10,6 +10,7 @@ use app_test_support::ChatGptAuthFixture;
 use app_test_support::DEFAULT_CLIENT_NAME;
 use app_test_support::MockResponsesConfig;
 use app_test_support::TestAppServer;
+use app_test_support::create_fake_paginated_rollout;
 use app_test_support::to_response;
 use app_test_support::write_chatgpt_auth;
 use codex_app_server::AppServerRuntimeOptions;
@@ -37,6 +38,8 @@ use codex_app_server_protocol::RemoteControlPairingStatusResponse;
 use codex_app_server_protocol::RemoteControlStatusChangedNotification;
 use codex_app_server_protocol::RemoteControlStatusReadResponse;
 use codex_app_server_protocol::RequestId;
+use codex_app_server_protocol::ThreadResumeParams;
+use codex_app_server_protocol::ThreadResumeResponse;
 use codex_arg0::Arg0DispatchPaths;
 use codex_config::LoaderOverrides;
 use codex_config::types::AuthCredentialsStoreMode;
@@ -44,6 +47,8 @@ use codex_protocol::protocol::SessionSource;
 use codex_state::RemoteControlEnrollmentRecord;
 use codex_state::StateRuntime;
 use codex_utils_cli::CliConfigOverrides;
+use futures::SinkExt;
+use futures::StreamExt;
 use pretty_assertions::assert_eq;
 use serial_test::serial;
 use tempfile::TempDir;
@@ -56,11 +61,16 @@ use tokio::net::TcpStream;
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 use tokio::time::timeout;
+use tokio_tungstenite::accept_async;
+use tokio_tungstenite::tungstenite::Message;
 
 #[cfg(any(windows, target_os = "macos"))]
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(60);
 #[cfg(not(any(windows, target_os = "macos")))]
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(10);
+
+#[path = "remote_control_auth.rs"]
+mod auth_tests;
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(30);
 const REMOTE_CONTROL_DISABLED_BY_REQUIREMENTS_MESSAGE: &str =
     "remote control is disabled by managed requirements";
@@ -212,7 +222,10 @@ async fn explicit_remote_control_startup_fails_when_disabled_by_requirements() -
         "allow_remote_control = false\n",
     )?;
     let managed_config_path = codex_home.path().join("managed_config.toml");
-    let socket_path = codex_home.path().join("app-server.sock");
+    let socket_path = codex_home
+        .path()
+        .join("app-server-control")
+        .join("app-server.sock");
     let transport =
         AppServerTransport::from_listen_url(&format!("unix://{}", socket_path.display()))?;
     let _codex_home_guard = EnvVarGuard::set("CODEX_HOME", codex_home.path().as_os_str());
@@ -465,6 +478,140 @@ async fn remote_control_enable_returns_connecting_status() -> Result<()> {
     assert!(!received.server_name.is_empty());
     assert_eq!(received.environment_id.as_deref(), Some("environment-id"));
     assert!(!received.installation_id.is_empty());
+    Ok(())
+}
+
+#[tokio::test]
+async fn stdio_eof_exits_with_remote_control_connection() -> Result<()> {
+    let codex_home = TempDir::new()?;
+    let mut backend = ConnectedRemoteControlBackend::start(codex_home.path()).await?;
+    let mut app_server = TestAppServer::builder()
+        .with_codex_home(codex_home.path())
+        .without_auto_env()
+        .build_initialized()
+        .await?;
+
+    let request_id = app_server.send_remote_control_enable_request().await?;
+    let _: RemoteControlEnableResponse =
+        timeout(DEFAULT_TIMEOUT, app_server.read_response(request_id)).await??;
+    timeout(DEFAULT_TIMEOUT, backend.wait_until_initialized()).await??;
+
+    let status = timeout(DEFAULT_TIMEOUT, app_server.shutdown_gracefully()).await??;
+    assert!(status.success());
+    timeout(DEFAULT_TIMEOUT, backend.wait_for_disconnect()).await??;
+    Ok(())
+}
+
+#[tokio::test]
+async fn stdio_eof_releases_thread_writer_with_pending_remote_control_enable() -> Result<()> {
+    let codex_home = TempDir::new()?;
+    let mut backend = BlockingRemoteControlBackend::start(codex_home.path()).await?;
+    let config_path = codex_home.path().join("config.toml");
+    let mut config: toml::Value = toml::from_str(&std::fs::read_to_string(&config_path)?)?;
+    // Keep thread initialization from using the enrollment-only backend for unrelated requests.
+    let features = config["features"]
+        .as_table_mut()
+        .context("fixture features should be a table")?;
+    features.insert("apps".to_string(), toml::Value::Boolean(false));
+    features.insert("remote_plugin".to_string(), toml::Value::Boolean(false));
+    std::fs::write(
+        config_path,
+        format!(
+            "{}\n[analytics]\nenabled = false\n",
+            toml::to_string(&config)?
+        ),
+    )?;
+    let thread_id = create_fake_paginated_rollout(
+        codex_home.path(),
+        "2025-01-01T00-00-00",
+        "2025-01-01T00:00:00Z",
+        "owned thread",
+        Some("mock_provider"),
+        /*git_info*/ None,
+    )?;
+    let mut owner = TestAppServer::builder()
+        .with_codex_home(codex_home.path())
+        .without_auto_env()
+        .build_initialized()
+        .await?;
+    let _: ThreadResumeResponse = owner
+        .request(|request_id| ClientRequest::ThreadResume {
+            request_id,
+            params: ThreadResumeParams {
+                thread_id: thread_id.clone(),
+                exclude_turns: true,
+                ..Default::default()
+            },
+        })
+        .await?;
+
+    let secondary_sqlite_home = TempDir::new()?;
+    let secondary_sqlite_home_path = secondary_sqlite_home.path().to_string_lossy();
+    let mut secondary = TestAppServer::builder()
+        .with_codex_home(codex_home.path())
+        .without_auto_env()
+        .with_env_overrides(&[(
+            "CODEX_SQLITE_HOME",
+            Some(secondary_sqlite_home_path.as_ref()),
+        )])
+        .build_initialized()
+        .await?;
+    let resume_id = secondary
+        .send_thread_resume_request(ThreadResumeParams {
+            thread_id: thread_id.clone(),
+            exclude_turns: true,
+            ..Default::default()
+        })
+        .await?;
+    let error = timeout(
+        DEFAULT_TIMEOUT,
+        secondary.read_stream_until_error_message(RequestId::Integer(resume_id)),
+    )
+    .await??;
+    assert_eq!(error.error.code, -32600);
+    assert_eq!(
+        error.error.message,
+        format!("thread {thread_id} already has an active writer")
+    );
+
+    owner.send_remote_control_enable_request().await?;
+    assert_eq!(
+        timeout(DEFAULT_TIMEOUT, backend.wait_for_enroll_request()).await??,
+        "POST /backend-api/wham/remote/control/server/enroll HTTP/1.1"
+    );
+    // Keep enrollment pending while EOF requests teardown of the owning process.
+    let status = timeout(DEFAULT_TIMEOUT, owner.shutdown_gracefully())
+        .await
+        .context("stdio EOF did not stop the thread writer while enrollment was pending")??;
+    assert!(status.success());
+
+    let state_db = StateRuntime::init(
+        codex_state::SqliteConfig::new_for_testing(codex_home.path().abs()),
+        "test-provider".to_string(),
+    )
+    .await?;
+    assert_eq!(
+        state_db
+            .get_remote_control_enrollment(
+                backend.websocket_url(),
+                "account_id",
+                Some(DEFAULT_CLIENT_NAME),
+            )
+            .await?,
+        None
+    );
+
+    let resumed: ThreadResumeResponse = secondary
+        .request(|request_id| ClientRequest::ThreadResume {
+            request_id,
+            params: ThreadResumeParams {
+                thread_id: thread_id.clone(),
+                exclude_turns: true,
+                ..Default::default()
+            },
+        })
+        .await?;
+    assert_eq!(resumed.thread.id, thread_id);
     Ok(())
 }
 
@@ -809,9 +956,145 @@ struct BlockingRemoteControlBackend {
     server_task: JoinHandle<()>,
 }
 
+struct ConnectedRemoteControlBackend {
+    initialized_rx: Option<oneshot::Receiver<std::result::Result<(), String>>>,
+    server_task: JoinHandle<Result<()>>,
+    _models_server: wiremock::MockServer,
+}
+
 struct ClientManagementRemoteControlBackend {
     requests_rx: Option<oneshot::Receiver<Result<Vec<String>>>>,
     server_task: JoinHandle<()>,
+}
+
+impl ConnectedRemoteControlBackend {
+    async fn start(codex_home: &std::path::Path) -> Result<Self> {
+        let listener = configured_remote_control_listener(codex_home).await?;
+        // Model refreshes can arrive after enrollment, when this listener expects a WebSocket.
+        let models_server = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path("/v1/models"))
+            .respond_with(
+                wiremock::ResponseTemplate::new(/*s*/ 200)
+                    .set_body_json(serde_json::json!({ "models": [] })),
+            )
+            .mount(&models_server)
+            .await;
+        let remote_control_url = format!("http://{}/backend-api/", listener.local_addr()?);
+        MockResponsesConfig::new(&models_server.uri())
+            .with_root_config(&format!("chatgpt_base_url = \"{remote_control_url}\""))
+            .write(codex_home)?;
+        let (initialized_tx, initialized_rx) = oneshot::channel();
+        let server_task = tokio::spawn(async move {
+            let mut initialized_tx = Some(initialized_tx);
+            let result: Result<()> = async {
+                let (_request_line, reader) = read_enroll_request(&listener).await?;
+                respond_with_json(
+                    reader.into_inner(),
+                    serde_json::json!({
+                        "server_id": "server-id",
+                        "environment_id": "environment-id",
+                        "remote_control_token": "remote-control-token",
+                        "expires_at": "3026-05-22T12:34:56Z",
+                    }),
+                )
+                .await?;
+
+                let (stream, _) = listener.accept().await?;
+                let mut websocket = accept_async(stream).await?;
+                websocket
+                    .send(Message::Text(
+                        serde_json::json!({
+                            "type": "client_message",
+                            "client_id": "client-id",
+                            "stream_id": "stream-id",
+                            "seq_id": 0,
+                            "message": {
+                                "id": 1,
+                                "method": "initialize",
+                                "params": {
+                                    "clientInfo": {
+                                        "name": "remote-test-client",
+                                        "version": "0.1.0",
+                                    },
+                                },
+                            },
+                        })
+                        .to_string()
+                        .into(),
+                    ))
+                    .await?;
+
+                loop {
+                    let message = websocket
+                        .next()
+                        .await
+                        .context("remote control disconnected before initialize response")??;
+                    let Message::Text(message) = message else {
+                        continue;
+                    };
+                    let message: serde_json::Value = serde_json::from_str(&message)?;
+                    if message["type"] == "server_message" && message["message"]["id"] == 1 {
+                        break;
+                    }
+                }
+
+                websocket
+                    .send(Message::Text(
+                        serde_json::json!({
+                            "type": "client_message",
+                            "client_id": "client-id",
+                            "stream_id": "stream-id",
+                            "seq_id": 1,
+                            "message": {
+                                "method": "initialized",
+                            },
+                        })
+                        .to_string()
+                        .into(),
+                    ))
+                    .await?;
+                if let Some(initialized_tx) = initialized_tx.take() {
+                    let _ = initialized_tx.send(Ok(()));
+                }
+
+                while let Some(message) = websocket.next().await {
+                    match message {
+                        Ok(Message::Close(_)) | Err(_) => break,
+                        Ok(_) => {}
+                    }
+                }
+                Ok(())
+            }
+            .await;
+
+            if let Err(err) = &result
+                && let Some(initialized_tx) = initialized_tx.take()
+            {
+                let _ = initialized_tx.send(Err(err.to_string()));
+            }
+            result
+        });
+
+        Ok(Self {
+            initialized_rx: Some(initialized_rx),
+            server_task,
+            _models_server: models_server,
+        })
+    }
+
+    async fn wait_until_initialized(&mut self) -> Result<()> {
+        self.initialized_rx
+            .take()
+            .context("remote control initialization should only be awaited once")?
+            .await?
+            .map_err(anyhow::Error::msg)
+    }
+
+    async fn wait_for_disconnect(&mut self) -> Result<()> {
+        (&mut self.server_task).await??;
+        Ok(())
+    }
 }
 
 impl ClientManagementRemoteControlBackend {
@@ -1046,6 +1329,12 @@ impl Drop for BlockingRemoteControlBackend {
     }
 }
 
+impl Drop for ConnectedRemoteControlBackend {
+    fn drop(&mut self) {
+        self.server_task.abort();
+    }
+}
+
 impl Drop for ClientManagementRemoteControlBackend {
     fn drop(&mut self) {
         self.server_task.abort();
@@ -1061,8 +1350,18 @@ struct HttpRequest {
 async fn configured_remote_control_listener(codex_home: &std::path::Path) -> Result<TcpListener> {
     let listener = TcpListener::bind("127.0.0.1:0").await?;
     let remote_control_url = format!("http://{}/backend-api/", listener.local_addr()?);
+    let catalog_path = codex_home.join("models.json");
+    std::fs::write(
+        &catalog_path,
+        serde_json::to_vec(&codex_models_manager::bundled_models_response()?)?,
+    )?;
     MockResponsesConfig::new(&remote_control_url)
         .with_root_config(&format!("chatgpt_base_url = \"{remote_control_url}\""))
+        .with_root_config(&format!(
+            "model_catalog_json = {}",
+            serde_json::to_string(&catalog_path)?
+        ))
+        .disable_feature(codex_features::Feature::Plugins)
         .write(codex_home)?;
     write_chatgpt_auth(
         codex_home,

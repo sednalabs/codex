@@ -1,9 +1,7 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::atomic::AtomicBool;
 
-use crate::SkillsService;
 use crate::agent::AgentControl;
 use crate::agents_md_manager::AgentsMdManager;
 use crate::attestation::AttestationProvider;
@@ -15,8 +13,9 @@ use crate::current_time::TimeProvider;
 use crate::elicitation::ElicitationService;
 use crate::environment_selection::ThreadEnvironments;
 use crate::exec_policy::ExecPolicyManager;
-use crate::guardian::GuardianRejectionCircuitBreaker;
 use crate::mcp::McpManager;
+use crate::mcp_tool_exposure::McpHandlerCache;
+use crate::tools::ExecutedToolCalls;
 use crate::tools::code_mode::CodeModeService;
 use crate::tools::handlers::ToolSearchHandlerCache;
 use crate::tools::network_approval::NetworkApprovalService;
@@ -25,29 +24,41 @@ use crate::unified_exec::UnifiedExecProcessManager;
 use arc_swap::ArcSwap;
 use arc_swap::ArcSwapOption;
 use codex_analytics::AnalyticsEventsClient;
+use codex_attachment_store::AttachmentStore;
 use codex_core_plugins::PluginsManager;
 use codex_extension_api::ExtensionData;
 use codex_extension_api::ExtensionDataInit;
 use codex_extension_api::ExtensionRegistry;
 use codex_hooks::Hooks;
+use codex_http_client::RouteAwareClientPool;
 use codex_login::AuthManager;
 use codex_mcp::McpRuntime;
 use codex_models_manager::manager::SharedModelsManager;
 use codex_otel::SessionTelemetry;
 use codex_protocol::ThreadId;
 use codex_protocol::capabilities::SelectedCapabilityRoot;
+<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
 use codex_protocol::protocol::Event;
 use codex_rollout::state_db::StateDbHandle;
 use codex_rollout_trace::ThreadTraceContext;
 use codex_state::UsageLogger;
+=======
+use codex_protocol::mcp::ClientMcpExtensions;
+use codex_rollout::state_db::StateDbHandle;
+use codex_rollout_trace::ThreadTraceContext;
+use codex_skills_extension::HostSkillsService;
+>>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
 use codex_thread_store::LiveThread;
 use codex_thread_store::ThreadStore;
+use codex_utils_git_discovery::GitRootDiscovery;
 use tokio::runtime::Handle;
 use tokio::sync::Mutex;
 
 pub(crate) struct SessionServices {
     /// The single owner of live MCP connections for this thread.
     pub(crate) mcp_runtime: Arc<McpRuntime>,
+    /// Immutable MCP handlers scoped to this thread's current binding.
+    pub(crate) mcp_handler_cache: McpHandlerCache,
     pub(crate) unified_exec_manager: UnifiedExecProcessManager,
     pub(crate) elicitations: ElicitationService,
     #[cfg_attr(not(unix), allow(dead_code))]
@@ -61,19 +72,22 @@ pub(crate) struct SessionServices {
     pub(crate) show_raw_agent_reasoning: bool,
     pub(crate) exec_policy: Arc<ExecPolicyManager>,
     pub(crate) auth_manager: Arc<AuthManager>,
+    /// Upload-only clients shared across turns without logging signed blob URLs.
+    pub(crate) openai_file_upload_client_pool: RouteAwareClientPool,
     pub(crate) models_manager: SharedModelsManager,
+    pub(crate) git_root_discovery: Arc<GitRootDiscovery>,
     pub(crate) session_telemetry: SessionTelemetry,
     pub(crate) tool_approvals: Mutex<ApprovalStore>,
-    pub(crate) guardian_rejection_circuit_breaker: Mutex<GuardianRejectionCircuitBreaker>,
     pub(crate) runtime_handle: Handle,
-    pub(crate) skills_service: Arc<SkillsService>,
+    pub(crate) skills_service: Arc<HostSkillsService>,
     pub(crate) agents_md_manager: Arc<AgentsMdManager>,
     pub(crate) plugins_manager: Arc<PluginsManager>,
     pub(crate) mcp_manager: Arc<McpManager>,
     pub(crate) extensions: Arc<ExtensionRegistry<crate::config::Config>>,
     pub(crate) session_extension_data: ExtensionData,
     pub(crate) thread_extension_data: ExtensionData,
-    pub(crate) supports_openai_form_elicitation: AtomicBool,
+    /// MCP extensions fixed when this session is created.
+    pub(crate) client_mcp_extensions: ClientMcpExtensions,
     /// Raw capability selections for this thread. Each model step resolves them against its
     /// current executor environments before using them.
     pub(crate) selected_capability_roots: Vec<SelectedCapabilityRoot>,
@@ -85,11 +99,13 @@ pub(crate) struct SessionServices {
     pub(crate) network_approval: Arc<NetworkApprovalService>,
     pub(crate) state_db: Option<StateDbHandle>,
     pub(crate) live_thread: Option<LiveThread>,
+    pub(crate) image_store: Arc<dyn AttachmentStore>,
     pub(crate) thread_store: Arc<dyn ThreadStore>,
     pub(crate) attestation_provider: Option<Arc<dyn AttestationProvider>>,
     pub(crate) time_provider: Arc<dyn TimeProvider>,
     /// Session-scoped model client shared across turns.
     pub(crate) model_client: ModelClient,
+    pub(crate) executed_tool_calls: ExecutedToolCalls,
     pub(crate) code_mode_service: CodeModeService,
     pub(crate) usage_logger: Option<Mutex<UsageLogger>>,
     pub(crate) tool_search_handler_cache: ToolSearchHandlerCache,

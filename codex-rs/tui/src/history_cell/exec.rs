@@ -1,8 +1,12 @@
 //! Background terminal interaction and process-summary history cells.
 
 use super::*;
+<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
 use codex_app_server_protocol::TerminalWaitInfo;
 use codex_app_server_protocol::TerminalWaitPrimitive;
+=======
+use crate::width::display_width;
+>>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
 
 #[derive(Debug)]
 pub(crate) struct UnifiedExecInteractionCell {
@@ -296,9 +300,9 @@ impl HistoryCell for UnifiedExecProcessesCell {
         }
 
         let prefix = "  • ";
-        let prefix_width = UnicodeWidthStr::width(prefix);
+        let prefix_width = display_width(prefix);
         let truncation_suffix = " [...]";
-        let truncation_suffix_width = UnicodeWidthStr::width(truncation_suffix);
+        let truncation_suffix_width = display_width(truncation_suffix);
         let mut shown = 0usize;
         for process in &self.processes {
             if shown >= max_processes {
@@ -348,7 +352,7 @@ impl HistoryCell for UnifiedExecProcessesCell {
                 } else {
                     chunk_prefix_next
                 };
-                let chunk_prefix_width = UnicodeWidthStr::width(chunk_prefix);
+                let chunk_prefix_width = display_width(chunk_prefix);
                 if wrap_width <= chunk_prefix_width {
                     out.push(Line::from(chunk_prefix.dim()));
                     continue;

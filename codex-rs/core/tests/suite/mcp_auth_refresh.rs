@@ -4,6 +4,7 @@ use anyhow::Result;
 use codex_config::McpServerTransportConfig;
 use codex_core::config::ConfigBuilder;
 use codex_core::config::Constrained;
+use codex_core::plugins_manager_for_config;
 use codex_exec_server_test_support::environment_manager_without_environments;
 use codex_login::AuthManager;
 use codex_login::CodexAuth;
@@ -16,7 +17,9 @@ use codex_mcp::EffectiveMcpServer;
 use codex_mcp::McpRuntime;
 use codex_mcp::McpRuntimeContext;
 use codex_mcp::McpRuntimeInput;
+use codex_mcp::McpStartupPolicy;
 use codex_mcp::McpToolCatalogCache;
+use codex_protocol::mcp::ClientMcpExtensions;
 use codex_protocol::protocol::AskForApproval;
 use core_test_support::apps_test_server::AppsTestServer;
 use core_test_support::responses::start_mock_server;
@@ -85,9 +88,10 @@ async fn hosted_plugin_runtime_ps_mcp_tool_calls_use_current_auth_manager_token(
         .build()
         .await?;
     config.permissions.approval_policy = Constrained::allow_any(AskForApproval::Never);
-    let plugins_manager = codex_core_plugins::PluginsManager::new(home.path().to_path_buf());
+    let plugins_manager = plugins_manager_for_config(&config, Arc::clone(&auth_manager));
     let mcp_config = Arc::new(config.to_mcp_config(&plugins_manager).await);
     let runtime = McpRuntime::new(McpRuntimeInput {
+        startup_policy: McpStartupPolicy::Eager,
         config: mcp_config,
         plugins_available: false,
         ready_selected_capability_roots: Vec::new(),
@@ -102,9 +106,9 @@ async fn hosted_plugin_runtime_ps_mcp_tool_calls_use_current_auth_manager_token(
         codex_apps_tools_cache: CodexAppsToolsCache::default(),
         tool_catalog_cache: McpToolCatalogCache::default(),
         codex_apps_tools_cache_key: codex_mcp::codex_apps_tools_cache_key(Some(&expected_auth)),
-        supports_openai_form_elicitation: false,
+        client_mcp_extensions: ClientMcpExtensions::default(),
         auth: Some(expected_auth.clone()),
-        codex_apps_auth_manager: Some(Arc::clone(&auth_manager)),
+        auth_manager: Some(Arc::clone(&auth_manager)),
         elicitation_reviewer: None,
         elicitation_lifecycle: None,
     })
@@ -129,11 +133,14 @@ async fn hosted_plugin_runtime_ps_mcp_tool_calls_use_current_auth_manager_token(
         .latest_call_tool(
             CODEX_APPS_MCP_SERVER_NAME,
             "calendar_create_event",
+            /*environment_id*/ None,
             Some(json!({
                 "title": "Lunch",
                 "starts_at": "2026-06-18T12:00:00Z",
             })),
             /*meta*/ None,
+            /*requested_timeout*/ None,
+            /*wait_for_server*/ true,
         )
         .await?;
     assert_eq!(tool_result.is_error, Some(false));

@@ -1,5 +1,9 @@
 use super::*;
+<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
 use crate::extensions::app_server_hooks;
+=======
+use crate::plugin_config_reload;
+>>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
 
 #[derive(Clone)]
 pub(crate) struct MarketplaceRequestProcessor {
@@ -52,8 +56,10 @@ impl MarketplaceRequestProcessor {
         &self,
         params: MarketplaceRemoveParams,
     ) -> Result<MarketplaceRemoveResponse, JSONRPCErrorError> {
+        let config = self.load_latest_config(/*fallback_cwd*/ None).await?;
         remove_marketplace(
-            self.config.codex_home.to_path_buf(),
+            config.codex_home.to_path_buf(),
+            config.config_layer_stack,
             CoreMarketplaceRemoveRequest {
                 marketplace_name: params.marketplace_name,
             },
@@ -77,16 +83,26 @@ impl MarketplaceRequestProcessor {
         let plugins_manager = self.thread_manager.plugins_manager();
         let MarketplaceUpgradeParams { marketplace_name } = params;
         let plugins_input = config.plugins_config_input();
+        let reload_config =
+            plugin_config_reload::for_cwd(self.config_manager.clone(), config.cwd.clone());
 
         let outcome = tokio::task::spawn_blocking(move || {
             plugins_manager.upgrade_configured_marketplaces_for_config(
                 &plugins_input,
                 marketplace_name.as_deref(),
+                &reload_config,
             )
         })
         .await
         .map_err(|err| internal_error(format!("failed to upgrade marketplaces: {err}")))?
         .map_err(invalid_request)?;
+
+        if !outcome.upgraded_roots.is_empty() {
+            self.thread_manager.plugins_manager().clear_cache();
+            self.thread_manager.skills_service().clear_cache();
+            self.thread_manager.invalidate_mcp_runtimes().await;
+            self.thread_manager.refresh_hook_runtimes().await;
+        }
 
         Ok(MarketplaceUpgradeResponse {
             selected_marketplaces: outcome.selected_marketplaces,

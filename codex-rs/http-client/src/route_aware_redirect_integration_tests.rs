@@ -98,6 +98,10 @@ fn spawn_response(
                 Err(error) => panic!("HTTP listener should accept: {error}"),
             }
         };
+        // Accepted sockets inherit the listener's nonblocking mode on macOS.
+        stream
+            .set_nonblocking(false)
+            .expect("set accepted stream blocking");
         stream
             .set_nonblocking(false)
             .expect("accepted HTTP stream should use blocking reads");

@@ -3,22 +3,29 @@
 use std::sync::Arc;
 
 use crate::app_server_session::AppServerSession;
+<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
 use crate::computer_use_display::ComputerUseDisplayState;
 use crate::computer_use_display::computer_use_action_label;
+=======
+use crate::app_server_session::HistoryHydrationScope;
+>>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
 use crate::git_action_directives::parse_assistant_markdown;
 use crate::history_cell::AgentMarkdownCell;
 use crate::history_cell::HistoryCell;
 use crate::history_cell::PlainHistoryCell;
+use crate::history_cell::PrefixedWrappedHistoryCell;
 use crate::history_cell::ReasoningSummaryCell;
 use crate::history_cell::UserHistoryCell;
 use crate::history_cell::split_reasoning_summary_parts;
 use crate::inline_visualization::InlineVisualizationContext;
+use crate::legacy_core::config::Config;
 use crate::multi_agents::sub_agent_activity_summary;
 use codex_app_server_protocol::Thread;
 use codex_app_server_protocol::ThreadItem;
 use codex_app_server_protocol::UserInput;
 use codex_protocol::ThreadId;
 use codex_protocol::items::UserMessageItem;
+use codex_utils_absolute_path::AbsolutePathBuf;
 use ratatui::style::Stylize as _;
 use ratatui::text::Line;
 
@@ -34,32 +41,64 @@ pub(crate) async fn load_session_transcript(
     app_server: &mut AppServerSession,
     thread_id: ThreadId,
     raw_reasoning_visibility: RawReasoningVisibility,
-    codex_home: Option<&std::path::Path>,
+    config: Option<&Config>,
 ) -> std::io::Result<TranscriptCells> {
-    let thread = app_server
-        .thread_read(thread_id, /*include_turns*/ true)
+    let mut thread = app_server
+        .thread_read(thread_id, /*include_turns*/ false)
+        .await
+        .map_err(std::io::Error::other)?;
+    app_server
+        .hydrate_initial_thread_history(
+            &mut thread,
+            /*turn_cursor*/ None,
+            /*item_cursor*/ None,
+            /*config*/ None,
+            /*local_settings*/ None,
+            HistoryHydrationScope::Complete,
+        )
         .await
         .map_err(std::io::Error::other)?;
     Ok(thread_to_transcript_cells(
         thread,
         raw_reasoning_visibility,
-        codex_home,
+        config,
     ))
 }
 
 pub(crate) fn thread_to_transcript_cells(
     thread: Thread,
     raw_reasoning_visibility: RawReasoningVisibility,
-    codex_home: Option<&std::path::Path>,
+    config: Option<&Config>,
 ) -> TranscriptCells {
     let cwd = thread.cwd;
-    let inline_visualization_context = codex_home.and_then(|codex_home| {
-        ThreadId::from_string(&thread.id)
-            .ok()
-            .and_then(|thread_id| InlineVisualizationContext::new(codex_home, thread_id))
+    let thread_id = ThreadId::from_string(&thread.id).ok();
+    let mut cells = thread_items_to_transcript_cells(
+        thread_id,
+        &cwd,
+        thread.turns.into_iter().flat_map(|turn| turn.items),
+        raw_reasoning_visibility,
+        config,
+    );
+    if cells.is_empty() {
+        cells.push(Arc::new(PlainHistoryCell::new(vec![
+            "No transcript content available".italic().dim().into(),
+        ])));
+    }
+    cells
+}
+
+pub(crate) fn thread_items_to_transcript_cells(
+    thread_id: Option<ThreadId>,
+    cwd: &AbsolutePathBuf,
+    items: impl IntoIterator<Item = ThreadItem>,
+    raw_reasoning_visibility: RawReasoningVisibility,
+    config: Option<&Config>,
+) -> TranscriptCells {
+    let inline_visualization_context = config.and_then(|config| {
+        thread_id.and_then(|thread_id| InlineVisualizationContext::from_config(config, thread_id))
     });
     let mut cells: TranscriptCells = Vec::new();
-    for item in thread.turns.into_iter().flat_map(|turn| turn.items) {
+    for item in items {
         match item {
             ThreadItem::UserMessage {
                 id,
@@ -86,6 +125,7 @@ pub(crate) fn thread_to_transcript_cells(
                         .collect(),
                 };
                 cells.push(Arc::new(UserHistoryCell {
+                    spoken: false,
                     message: item.message(),
                     text_elements: item.text_elements(),
                     local_image_paths: item.local_image_paths(),
@@ -99,6 +139,26 @@ pub(crate) fn thread_to_transcript_cells(
                         parsed.visible_markdown,
                         cwd.as_path(),
                         inline_visualization_context.clone(),
+                    )));
+                }
+            }
+            ThreadItem::FunctionCallOutput {
+                name,
+                namespace,
+                output,
+                ..
+            } => {
+                if let Some((source_thread_id, prompt)) =
+                    crate::dynamic_tools::parse_delegated_tool_output(
+                        &name,
+                        namespace.as_deref(),
+                        &output,
+                    )
+                {
+                    cells.push(Arc::new(PrefixedWrappedHistoryCell::new(
+                        format!("Sent by Codex from task {source_thread_id}\n{prompt}"),
+                        "• ".dim(),
+                        "  ",
                     )));
                 }
             }
@@ -136,11 +196,6 @@ pub(crate) fn thread_to_transcript_cells(
                 }
             }
         }
-    }
-    if cells.is_empty() {
-        cells.push(Arc::new(PlainHistoryCell::new(vec![
-            "No transcript content available".italic().dim().into(),
-        ])));
     }
     cells
 }
@@ -277,6 +332,7 @@ fn fallback_transcript_cell(item: &ThreadItem) -> Option<PlainHistoryCell> {
         }
         ThreadItem::UserMessage { .. }
         | ThreadItem::AgentMessage { .. }
+        | ThreadItem::FunctionCallOutput { .. }
         | ThreadItem::Plan { .. }
         | ThreadItem::Reasoning { .. }
         | ThreadItem::Sleep(_) => return None,

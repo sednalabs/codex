@@ -3,32 +3,47 @@ use codex_app_server_protocol::ThreadItem;
 use codex_app_server_protocol::TurnStatus;
 use codex_protocol::ThreadId;
 use codex_protocol::models::MessagePhase;
+use codex_protocol::realtime::RealtimeItem;
 
 use super::LocalThreadStore;
 use crate::ThreadStoreError;
 use crate::ThreadStoreResult;
 
 mod read;
+mod realtime;
 mod search;
 mod segment_paging;
 mod turn_lookup;
 
 pub(super) use read::list_items;
 pub(super) use read::list_turns;
+pub(super) use realtime::list_timeline;
 pub(super) use search::search_thread_occurrences;
 pub(super) use turn_lookup::find_source_turn;
 pub(super) use turn_lookup::find_visible_turn;
 
 /// A valid complete rollout line with its absolute byte span in durable JSONL.
 ///
-/// `start_byte_offset..end_byte_offset` includes the terminating newline. Blank and rejected
-/// lines do not produce a value here, but still advance later spans.
+/// `start_byte_offset..end_byte_offset` includes the terminating newline.
 pub(super) struct ProjectedRolloutLine {
     pub ordinal: u64,
     pub start_byte_offset: u64,
     pub end_byte_offset: u64,
-    pub created_at_ms: i64,
+    pub fallback_created_at_ms: Option<i64>,
     pub changes: ThreadHistoryChangeSet,
+    pub realtime_item: Option<RealtimeItem>,
+}
+
+/// One ordered update to apply while advancing a rollout projection checkpoint.
+///
+/// Skipped ordinal ranges keep the byte and ordinal checkpoints describing the same durable
+/// prefix even when a complete rollout line cannot be projected.
+pub(super) enum RolloutProjectionStep {
+    Line(Box<ProjectedRolloutLine>),
+    SkippedOrdinalRange {
+        start_ordinal: u64,
+        end_ordinal_exclusive: u64,
+    },
 }
 
 pub(super) struct RolloutProjectionState {
@@ -40,6 +55,9 @@ pub(super) async fn projection_state(
     store: &LocalThreadStore,
     thread_id: ThreadId,
 ) -> ThreadStoreResult<Option<RolloutProjectionState>> {
+    if store.state_db.is_none() {
+        return Ok(None);
+    }
     let db_path = store.config.sqlite.thread_history_db_path();
     if !tokio::fs::try_exists(db_path.as_path())
         .await
@@ -88,7 +106,7 @@ pub(super) async fn apply_projection(
     start_offset: u64,
     next_offset: u64,
     initial_ordinal: u64,
-    projections: Vec<ProjectedRolloutLine>,
+    projections: Vec<RolloutProjectionStep>,
 ) -> ThreadStoreResult<()> {
     let pool = store.thread_history_db().await?;
     // Write the projected rows and advance the JSONL offset and ordinal in one transaction. If
@@ -120,29 +138,86 @@ WHERE thread_id = ?
     }
 
     for projection in projections {
-        let ordinal = sqlite_integer(projection.ordinal, "rollout ordinal")?;
-        if ordinal != next_ordinal {
-            return Err(ThreadStoreError::Internal {
-                message: format!(
-                    "thread history projection for {thread_id} expected ordinal {next_ordinal}, got {ordinal}"
-                ),
-            });
+        match projection {
+            RolloutProjectionStep::Line(projection) => {
+                let ordinal = sqlite_integer(projection.ordinal, "rollout ordinal")?;
+                if ordinal != next_ordinal {
+                    return Err(ThreadStoreError::Internal {
+                        message: format!(
+                            "thread history projection for {thread_id} expected ordinal {next_ordinal}, got {ordinal}"
+                        ),
+                    });
+                }
+                apply_change_set(
+                    &mut transaction,
+                    thread_id.as_str(),
+                    ordinal,
+                    sqlite_integer(projection.start_byte_offset, "rollout byte offset")?,
+                    sqlite_integer(projection.end_byte_offset, "rollout byte offset")?,
+                    projection.fallback_created_at_ms,
+                    projection.changes,
+                )
+                .await?;
+                if let Some(item) = projection.realtime_item {
+                    let item_json = serde_json::to_string(&item).map_err(thread_history_error)?;
+                    sqlx::query(
+                        r#"
+INSERT INTO thread_realtime_items (
+    thread_id,
+    item_id,
+    rollout_ordinal,
+    created_at_ms,
+    item_type,
+    item_json
+) VALUES (?, ?, ?, ?, json_extract(?, '$.type'), ?)
+ON CONFLICT(thread_id, item_id) DO NOTHING
+                        "#,
+                    )
+                    .bind(thread_id.as_str())
+                    .bind(item.id.as_str())
+                    .bind(ordinal)
+                    .bind(projection.fallback_created_at_ms.ok_or_else(|| {
+                        ThreadStoreError::Internal {
+                            message: "realtime rollout item is missing its timestamp".to_string(),
+                        }
+                    })?)
+                    .bind(item_json.as_str())
+                    .bind(item_json.as_str())
+                    .execute(&mut *transaction)
+                    .await
+                    .map_err(thread_history_error)?;
+                }
+                next_ordinal =
+                    next_ordinal
+                        .checked_add(1)
+                        .ok_or_else(|| ThreadStoreError::Internal {
+                            message: "rollout ordinal exceeds SQLite integer range".to_string(),
+                        })?;
+            }
+            RolloutProjectionStep::SkippedOrdinalRange {
+                start_ordinal,
+                end_ordinal_exclusive,
+            } => {
+                let start_ordinal = sqlite_integer(start_ordinal, "rollout ordinal")?;
+                if start_ordinal != next_ordinal {
+                    return Err(ThreadStoreError::Internal {
+                        message: format!(
+                            "thread history projection for {thread_id} expected ordinal {next_ordinal}, got {start_ordinal}"
+                        ),
+                    });
+                }
+                let end_ordinal_exclusive =
+                    sqlite_integer(end_ordinal_exclusive, "rollout ordinal")?;
+                if end_ordinal_exclusive <= start_ordinal {
+                    return Err(ThreadStoreError::Internal {
+                        message: format!(
+                            "thread history projection for {thread_id} has an empty skipped ordinal range"
+                        ),
+                    });
+                }
+                next_ordinal = end_ordinal_exclusive;
+            }
         }
-        apply_change_set(
-            &mut transaction,
-            thread_id.as_str(),
-            ordinal,
-            sqlite_integer(projection.start_byte_offset, "rollout byte offset")?,
-            sqlite_integer(projection.end_byte_offset, "rollout byte offset")?,
-            projection.created_at_ms,
-            projection.changes,
-        )
-        .await?;
-        next_ordinal = next_ordinal
-            .checked_add(1)
-            .ok_or_else(|| ThreadStoreError::Internal {
-                message: "rollout ordinal exceeds SQLite integer range".to_string(),
-            })?;
     }
 
     sqlx::query(
@@ -189,6 +264,11 @@ pub(super) async fn delete_thread(
         .execute(&mut *transaction)
         .await
         .map_err(thread_history_delete_error)?;
+    sqlx::query("DELETE FROM thread_realtime_items WHERE thread_id = ?")
+        .bind(thread_id.as_str())
+        .execute(&mut *transaction)
+        .await
+        .map_err(thread_history_delete_error)?;
     sqlx::query("DELETE FROM thread_turns WHERE thread_id = ?")
         .bind(thread_id.as_str())
         .execute(&mut *transaction)
@@ -211,7 +291,7 @@ async fn apply_change_set(
     rollout_ordinal: i64,
     rollout_byte_offset: i64,
     rollout_end_byte_offset: i64,
-    created_at_ms: i64,
+    fallback_created_at_ms: Option<i64>,
     changes: ThreadHistoryChangeSet,
 ) -> ThreadStoreResult<()> {
     for turn in changes.changed_turns {
@@ -286,7 +366,10 @@ SET
             FROM thread_items
             WHERE thread_id = ?
               AND turn_id = ?
-              AND json_extract(item_json, '$.type') = 'userMessage'
+              AND (
+                item_type = 'userMessage'
+                OR (item_type = '' AND json_extract(item_json, '$.type') = 'userMessage')
+              )
             ORDER BY rollout_ordinal
             LIMIT 1
         )
@@ -297,7 +380,10 @@ SET
             FROM thread_items
             WHERE thread_id = ?
               AND turn_id = ?
-              AND json_extract(item_json, '$.type') = 'agentMessage'
+              AND (
+                item_type = 'agentMessage'
+                OR (item_type = '' AND json_extract(item_json, '$.type') = 'agentMessage')
+              )
               AND json_extract(item_json, '$.phase') = 'final_answer'
             ORDER BY rollout_ordinal DESC
             LIMIT 1
@@ -308,7 +394,10 @@ SET
                 FROM thread_items
                 WHERE thread_id = ?
                   AND turn_id = ?
-                  AND json_extract(item_json, '$.type') = 'agentMessage'
+                  AND (
+                    item_type = 'agentMessage'
+                    OR (item_type = '' AND json_extract(item_json, '$.type') = 'agentMessage')
+                  )
                   AND json_extract(item_json, '$.phase') IS NULL
                 ORDER BY rollout_ordinal DESC
                 LIMIT 1
@@ -339,6 +428,14 @@ WHERE thread_id = ?
     }
 
     for item in changes.changed_items {
+        let created_at_ms =
+            item.started_at_ms
+                .or(fallback_created_at_ms)
+                .ok_or_else(|| ThreadStoreError::Internal {
+                    message: format!(
+                        "thread history projection for {thread_id} is missing an item creation timestamp"
+                    ),
+                })?;
         let item_id = item.item.id().to_string();
         let item_json = serde_json::to_string(&item.item).map_err(thread_history_error)?;
         // Completed items are immutable: local producers emit ItemCompleted exactly once per
@@ -421,6 +518,7 @@ WHERE thread_id = ?
                 ..
             }
             | ThreadItem::HookPrompt { .. }
+            | ThreadItem::FunctionCallOutput { .. }
             | ThreadItem::Plan { .. }
             | ThreadItem::Reasoning { .. }
             | ThreadItem::CommandExecution { .. }

@@ -6,7 +6,10 @@
 //! paths.
 
 use http::HeaderMap;
+use std::sync::Arc;
 use std::time::Duration;
+
+use codex_utils_rustls_provider::ensure_rustls_crypto_provider;
 
 use crate::BuildCustomCaTransportError;
 use crate::BuildRouteAwareHttpClientError;
@@ -14,6 +17,7 @@ use crate::ClientRouteClass;
 use crate::HttpClient;
 use crate::HttpClientFactory;
 use crate::OutboundProxyRoute;
+use crate::chatgpt_cloudflare_cookies::ChatGptCookieStore;
 use crate::client::RequestLogging;
 use crate::custom_ca::build_reqwest_client_with_custom_ca;
 use crate::with_chatgpt_cloudflare_cookie_store;
@@ -30,7 +34,16 @@ pub struct HttpClientBuilder {
     retry_requests: bool,
     connect_timeout: Option<Duration>,
     chatgpt_cloudflare_cookie_store: bool,
+    chatgpt_cookie_store: Option<Arc<ChatGptCookieStore>>,
     request_logging: RequestLogging,
+    tls_backend: TlsBackend,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+enum TlsBackend {
+    #[default]
+    TransportDefault,
+    Rustls,
 }
 
 impl HttpClientFactory {
@@ -97,6 +110,11 @@ impl HttpClientBuilder {
         self.follow_redirects
     }
 
+    pub(crate) fn with_rustls_tls(mut self) -> Self {
+        self.tls_backend = TlsBackend::Rustls;
+        self
+    }
+
     /// Limits only connection establishment, not the request as a whole.
     pub fn connect_timeout(mut self, timeout: Duration) -> Self {
         self.connect_timeout = Some(timeout);
@@ -105,6 +123,13 @@ impl HttpClientBuilder {
 
     pub fn with_chatgpt_cloudflare_cookie_store(mut self) -> Self {
         self.chatgpt_cloudflare_cookie_store = true;
+        self
+    }
+
+    /// Uses the factory's configured ChatGPT cookies without changing proxy behavior.
+    pub fn with_chatgpt_cookies(mut self, http_client_factory: &HttpClientFactory) -> Self {
+        self.chatgpt_cloudflare_cookie_store = true;
+        self.chatgpt_cookie_store = http_client_factory.chatgpt_cookie_store();
         self
     }
 
@@ -120,11 +145,12 @@ impl HttpClientBuilder {
     /// resolve a concrete direct or proxy route when the factory is configured with
     /// [`crate::OutboundProxyPolicy::RespectSystemProxy`].
     pub fn build_respecting_outbound_proxy_policy(
-        self,
+        mut self,
         http_client_factory: &HttpClientFactory,
         request_url: &str,
         route_class: ClientRouteClass,
     ) -> Result<HttpClient, BuildRouteAwareHttpClientError> {
+        self.chatgpt_cookie_store = http_client_factory.chatgpt_cookie_store();
         let (builder, request_logging) = self.into_reqwest_parts();
         let inner = http_client_factory.build_reqwest_client(builder, request_url, route_class)?;
         Ok(HttpClient::from_parts(inner, request_logging))
@@ -132,11 +158,12 @@ impl HttpClientBuilder {
 
     /// Builds a client for a route that was already resolved by a route-aware caller.
     pub(crate) fn build_for_resolved_route(
-        self,
+        mut self,
         http_client_factory: &HttpClientFactory,
         route_class: ClientRouteClass,
         route: &OutboundProxyRoute,
     ) -> Result<HttpClient, BuildRouteAwareHttpClientError> {
+        self.chatgpt_cookie_store = http_client_factory.chatgpt_cookie_store();
         let (builder, request_logging) = self.into_reqwest_parts();
         let inner = http_client_factory.build_reqwest_client_for_resolved_route(
             builder,
@@ -239,6 +266,12 @@ impl HttpClientBuilder {
         match build_with_custom_ca(self.clone().reqwest_builder(proxy_routing)) {
             Ok(inner) => HttpClient::from_parts(inner, request_logging),
             Err(error) => {
+                tracing::event!(
+                    target: "codex_otel.log_only",
+                    tracing::Level::WARN,
+                    event.name = "codex.http_client.custom_ca_fallback",
+                    "HTTP client fell back to system root certificates"
+                );
                 tracing::warn!(error = %error, "failed to build HTTP client with custom CA");
                 build_fallback(self.clone().reqwest_builder(proxy_routing))
                     .map(|inner| HttpClient::from_parts(inner, request_logging))
@@ -287,6 +320,10 @@ impl HttpClientBuilder {
 
     fn base_reqwest_builder(self) -> reqwest::ClientBuilder {
         let mut builder = reqwest::Client::builder();
+        if self.tls_backend == TlsBackend::Rustls {
+            ensure_rustls_crypto_provider();
+            builder = builder.use_rustls_tls();
+        }
         if let Some(default_headers) = self.default_headers {
             builder = builder.default_headers(default_headers);
         }
@@ -300,7 +337,10 @@ impl HttpClientBuilder {
             builder = builder.connect_timeout(connect_timeout);
         }
         if self.chatgpt_cloudflare_cookie_store {
-            builder = with_chatgpt_cloudflare_cookie_store(builder);
+            builder = match self.chatgpt_cookie_store {
+                Some(store) => builder.cookie_provider(store),
+                None => with_chatgpt_cloudflare_cookie_store(builder),
+            };
         }
         builder
     }
@@ -314,7 +354,9 @@ impl Default for HttpClientBuilder {
             retry_requests: true,
             connect_timeout: None,
             chatgpt_cloudflare_cookie_store: false,
+            chatgpt_cookie_store: None,
             request_logging: RequestLogging::Enabled,
+            tls_backend: TlsBackend::TransportDefault,
         }
     }
 }

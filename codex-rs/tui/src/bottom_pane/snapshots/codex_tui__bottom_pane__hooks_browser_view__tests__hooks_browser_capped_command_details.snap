@@ -2,6 +2,7 @@
 source: tui/src/bottom_pane/hooks_browser_view.rs
 expression: "render_lines(&view, 44)"
 ---
+<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
 
   PreToolUse hooks
   Turn hooks on or off. Your changes are s
@@ -17,4 +18,22 @@ expression: "render_lines(&view, 44)"
   Timeout   30s
   Trust     Trusted
 
+=======
+                                            
+  PreToolUse hooks                          
+  Turn hooks on or off. Your changes are s  
+                                            
+  [x] Hook 1                                
+                                            
+  Event     PreToolUse                      
+  Matcher   Bash                            
+  Source    User config - /tmp/h.json       
+  Command   one two three four five six     
+            seven eight nine ten eleven     
+            twelve thirteen fourteen…       
+  Mode      Sync                            
+  Timeout   30s                             
+  Trust     Trusted                         
+                                            
+>>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
   Press space or enter to toggle; esc to go

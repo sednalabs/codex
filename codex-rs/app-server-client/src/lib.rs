@@ -7,13 +7,14 @@
 //! - Typed caller-provided startup identity (`SessionSource` + client name).
 //! - Typed and raw request/notification dispatch.
 //! - Server request resolution and rejection.
-//! - Event consumption with backpressure signaling ([`InProcessServerEvent::Lagged`]).
+//! - Ordered, lossless event consumption that cannot block request processing.
 //! - Bounded graceful shutdown with abort fallback.
 //!
 //! The facade interposes a worker task between the caller and the underlying
 //! [`InProcessClientHandle`](codex_app_server::in_process::InProcessClientHandle),
-//! bridging async `mpsc` channels on both sides. Queues are bounded so overload
-//! surfaces as channel-full errors rather than unbounded memory growth.
+//! bridging async `mpsc` channels on both sides. Commands and the underlying
+//! runtime remain bounded; the local consumer event queue is unbounded so
+//! unread notifications cannot prevent request responses from being delivered.
 
 mod path;
 mod remote;
@@ -47,8 +48,6 @@ use codex_arg0::Arg0DispatchPaths;
 use codex_config::CloudConfigBundleLoader;
 use codex_config::LoaderOverrides;
 use codex_config::NoopThreadConfigLoader;
-use codex_config::RemoteThreadConfigLoader;
-use codex_config::ThreadConfigLoader;
 use codex_core::config::Config;
 pub use codex_core::otel_init::build_provider as build_otel_provider;
 pub use codex_exec_server::EnvironmentManager;
@@ -97,8 +96,8 @@ pub type RequestResult = std::result::Result<JsonRpcResult, JSONRPCErrorError>;
 #[derive(Debug, Clone)]
 pub enum AppServerEvent {
     Lagged { skipped: usize },
-    ServerNotification(ServerNotification),
-    ServerRequest(ServerRequest),
+    ServerNotification(Box<ServerNotification>),
+    ServerRequest(Box<ServerRequest>),
     Disconnected { message: String },
 }
 
@@ -114,6 +113,7 @@ impl From<InProcessServerEvent> for AppServerEvent {
     }
 }
 
+<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
 fn event_requires_delivery(event: &InProcessServerEvent) -> bool {
     // These transcript and terminal events must remain lossless. Dropping
     // streamed assistant text or the authoritative completed item can leave
@@ -283,6 +283,8 @@ async fn reject_unsupported_in_process_server_request(
     })?
 }
 
+=======
+>>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
 /// Layered error for [`InProcessAppServerClient::request_typed`].
 ///
 /// This keeps transport failures, server-side JSON-RPC failures, and response
@@ -376,15 +378,8 @@ pub struct InProcessClientStartArgs {
     pub mcp_server_openai_form_elicitation: bool,
     /// Notification methods this client opts out of receiving.
     pub opt_out_notification_methods: Vec<String>,
-    /// Queue capacity for command/event channels (clamped to at least 1).
+    /// Queue capacity for command and embedded-runtime channels (clamped to at least 1).
     pub channel_capacity: usize,
-}
-
-fn configured_thread_config_loader(config: &Config) -> Arc<dyn ThreadConfigLoader> {
-    match config.experimental_thread_config_endpoint.as_deref() {
-        Some(endpoint) => Arc::new(RemoteThreadConfigLoader::new(endpoint)),
-        None => Arc::new(NoopThreadConfigLoader),
-    }
 }
 
 impl InProcessClientStartArgs {
@@ -393,6 +388,7 @@ impl InProcessClientStartArgs {
         let capabilities = InitializeCapabilities {
             experimental_api: self.experimental_api,
             request_attestation: false,
+            extensions: None,
             opt_out_notification_methods: if self.opt_out_notification_methods.is_empty() {
                 None
             } else {
@@ -413,7 +409,6 @@ impl InProcessClientStartArgs {
 
     fn into_runtime_start_args(self) -> InProcessStartArgs {
         let initialize = self.initialize_params();
-        let thread_config_loader = configured_thread_config_loader(&self.config);
         InProcessStartArgs {
             arg0_paths: self.arg0_paths,
             config: self.config,
@@ -421,7 +416,7 @@ impl InProcessClientStartArgs {
             loader_overrides: self.loader_overrides,
             strict_config: self.strict_config,
             cloud_config_bundle: self.cloud_config_bundle,
-            thread_config_loader,
+            thread_config_loader: Arc::new(NoopThreadConfigLoader),
             feedback: self.feedback,
             log_db: self.log_db,
             state_db: self.state_db,
@@ -476,7 +471,7 @@ enum ClientCommand {
 /// boundary.
 pub struct InProcessAppServerClient {
     command_tx: mpsc::Sender<ClientCommand>,
-    event_rx: mpsc::Receiver<InProcessServerEvent>,
+    event_rx: mpsc::UnboundedReceiver<InProcessServerEvent>,
     worker_handle: tokio::task::JoinHandle<()>,
 }
 
@@ -499,17 +494,27 @@ pub enum AppServerClient {
 impl InProcessAppServerClient {
     /// Starts the in-process runtime and facade worker task.
     ///
+<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
     /// The returned client is ready for requests and event consumption.
     /// Required notifications and ordinary server requests retain FIFO custody
     /// after admission, even while the consumer queue is saturated.
+=======
+    /// The returned client is ready for requests and ordered event consumption.
+    /// Request queues remain bounded without blocking on unread notifications.
+>>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
     pub async fn start(args: InProcessClientStartArgs) -> IoResult<Self> {
         let channel_capacity = args.channel_capacity.max(1);
         let mut handle =
             codex_app_server::in_process::start(args.into_runtime_start_args()).await?;
         let request_sender = handle.sender();
         let (command_tx, mut command_rx) = mpsc::channel::<ClientCommand>(channel_capacity);
-        let (event_tx, event_rx) = mpsc::channel::<InProcessServerEvent>(channel_capacity);
+        // e9996ec62a preserved transcript events by awaiting a bounded queue, but that can
+        // deadlock a foreground request whose response is behind unread notifications.
+        // Match the remote-client fix in 79ea57715636: only this local consumer queue is
+        // unbounded; commands and the embedded runtime stay bounded and events remain ordered.
+        let (event_tx, event_rx) = mpsc::unbounded_channel::<InProcessServerEvent>();
 
+<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
         // Keep delivery to the public event receiver in a dedicated bounded
         // sequencer. A stalled lossless event must not prevent the facade
         // worker from accepting cancellation, resolution, or shutdown
@@ -521,6 +526,10 @@ impl InProcessAppServerClient {
         let event_terminal_tx_forward = event_terminal_tx.clone();
         let mut event_forward_handle = tokio::spawn(async move {
             let mut skipped_events = 0usize;
+=======
+        let worker_handle = tokio::spawn(async move {
+            let mut event_stream_enabled = true;
+>>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
             loop {
                 let event = tokio::select! {
                     _ = event_tx_forward.closed() => {
@@ -602,8 +611,20 @@ impl InProcessAppServerClient {
                                 // this loop can keep draining runtime events
                                 // while the request is blocked on client input.
                                 tokio::spawn(async move {
-                                    let result = request_sender.request(*request).await;
-                                    let _ = response_tx.send(result);
+                                    // Device ceremonies belong to the waiting UI. Preserve
+                                    // its cancellation through this buffering task.
+                                    let cancellable = matches!(*request,
+                                        ClientRequest::UserVerificationStatus { .. }
+                                        | ClientRequest::UserVerificationEnroll { .. }
+                                        | ClientRequest::UserVerificationDelete { .. }
+                                        | ClientRequest::UserVerificationVerify { .. });
+                                    let mut response_tx = response_tx;
+                                    tokio::select! {
+                                        _ = response_tx.closed(), if cancellable => {}
+                                        result = request_sender.request(*request) => {
+                                            let _ = response_tx.send(result);
+                                        }
+                                    }
                                 });
                             }
                             Some(ClientCommand::Notify {
@@ -645,6 +666,7 @@ impl InProcessAppServerClient {
                         let Some(event) = event else {
                             break;
                         };
+<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
                         if matches!(
                             &event,
                             InProcessServerEvent::ServerRequest(
@@ -680,6 +702,30 @@ impl InProcessAppServerClient {
                                 let _ = handle.shutdown().await;
                                 break;
                             }
+=======
+                        if let InProcessServerEvent::ServerRequest(request) = &event
+                            && let ServerRequest::ChatgptAuthTokensRefresh { request_id, .. } =
+                                request.as_ref()
+                        {
+                            let send_result = request_sender.fail_server_request(
+                                request_id.clone(),
+                                JSONRPCErrorError {
+                                    code: -32000,
+                                    message: "chatgpt auth token refresh is not supported for in-process app-server clients".to_string(),
+                                    data: None,
+                                },
+                            );
+                            if let Err(err) = send_result {
+                                warn!(
+                                    "failed to reject unsupported chatgpt auth token refresh request: {err}"
+                                );
+                            }
+                            continue;
+                        }
+
+                        if event_tx.send(event).is_err() {
+                            event_stream_enabled = false;
+>>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
                         }
                     }
                 }
@@ -851,10 +897,14 @@ impl InProcessAppServerClient {
 
     /// Returns the next in-process event, or `None` when worker exits.
     ///
+<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
     /// Callers that fall behind receive [`InProcessServerEvent::Lagged`]
     /// markers for best-effort loss. Required notifications and server
     /// requests remain ordered and retained within the bounded delivery
     /// sequencer.
+=======
+    /// Events remain ordered and are retained while callers await requests.
+>>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
     pub async fn next_event(&mut self) -> Option<InProcessServerEvent> {
         self.event_rx.recv().await
     }
@@ -870,6 +920,11 @@ impl InProcessAppServerClient {
             worker_handle,
         } = self;
         let mut worker_handle = worker_handle;
+<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
+=======
+        // Stop forwarding caller-facing events before asking the worker to shut down.
+        drop(event_rx);
+>>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
         let (response_tx, response_rx) = oneshot::channel();
         if command_tx
             .send(ClientCommand::Shutdown { response_tx })
@@ -963,6 +1018,23 @@ impl AppServerRequestHandle {
 }
 
 impl AppServerClient {
+    /// App-server platform family, which can differ from the executor's platform.
+    /// Older remote servers may omit this metadata.
+    pub fn platform_family(&self) -> Option<&str> {
+        match self {
+            Self::InProcess(_) => Some(std::env::consts::FAMILY),
+            Self::Remote(client) => client.platform_family(),
+        }
+    }
+
+    /// App-server operating system as reported at initialization, including unknown values.
+    pub fn platform_os(&self) -> Option<&str> {
+        match self {
+            Self::InProcess(_) => Some(std::env::consts::OS),
+            Self::Remote(client) => client.platform_os(),
+        }
+    }
+
     pub fn codex_home(&self, local_codex_home: &AbsolutePathBuf) -> Option<AppServerPath> {
         match self {
             Self::InProcess(_) => Some(AppServerPath::from_app_server(
@@ -1224,6 +1296,22 @@ mod tests {
     where
         S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
     {
+        expect_remote_initialize_with_metadata(
+            websocket,
+            serde_json::json!({
+                "userAgent": "codex_cli_rs/9.8.7-test (Test OS; x86_64) rust",
+                "codexHome": "/server/.codex",
+            }),
+        )
+        .await;
+    }
+
+    async fn expect_remote_initialize_with_metadata<S>(
+        websocket: &mut tokio_tungstenite::WebSocketStream<S>,
+        metadata: serde_json::Value,
+    ) where
+        S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+    {
         let JSONRPCMessage::Request(request) = read_websocket_message(websocket).await else {
             panic!("expected initialize request");
         };
@@ -1232,10 +1320,7 @@ mod tests {
             websocket,
             JSONRPCMessage::Response(JSONRPCResponse {
                 id: request.id,
-                result: serde_json::json!({
-                    "userAgent": "codex_cli_rs/9.8.7-test (Test OS; x86_64) rust",
-                    "codexHome": "/server/.codex",
-                }),
+                result: metadata,
             }),
         )
         .await;
@@ -1391,6 +1476,8 @@ mod tests {
                 text: text.to_string(),
                 phase: None,
                 memory_citation: None,
+                delivery: None,
+                questions: None,
             },
         })
     }
@@ -1469,7 +1556,15 @@ mod tests {
 
     #[tokio::test]
     async fn typed_request_roundtrip_works() {
-        let client = start_test_client(SessionSource::Exec).await;
+        let TestClient {
+            _codex_home,
+            client,
+        } = start_test_client(SessionSource::Exec).await;
+        let client = AppServerClient::InProcess(client);
+        assert_eq!(
+            (client.platform_family(), client.platform_os()),
+            (Some(std::env::consts::FAMILY), Some(std::env::consts::OS))
+        );
         let _response: ConfigRequirementsReadResponse = client
             .request_typed(ClientRequest::ConfigRequirementsRead {
                 request_id: RequestId::Integer(1),
@@ -1568,6 +1663,7 @@ mod tests {
     }
 
     #[tokio::test]
+<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
     async fn closed_event_consumer_closes_request_handle() {
         let client =
             start_test_client_with_capacity(SessionSource::Exec, /*channel_capacity*/ 1).await;
@@ -1590,6 +1686,9 @@ mod tests {
 
     #[tokio::test]
     async fn unread_required_notifications_do_not_block_requests() {
+=======
+    async fn unread_lossless_notifications_do_not_block_in_process_requests() {
+>>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
         let mut client =
             start_test_client_with_capacity(SessionSource::Cli, /*channel_capacity*/ 1).await;
         let thread: ThreadStartResponse = client
@@ -1601,6 +1700,7 @@ mod tests {
                     ..ThreadStartParams::default()
                 },
             })
+<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
             .await
             .expect("thread/start should succeed");
         let request_handle = client.request_handle();
@@ -1672,9 +1772,13 @@ mod tests {
             .send(InProcessServerEvent::ServerNotification(
                 command_execution_output_delta_notification("stdout-1"),
             ))
+=======
+>>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
             .await
-            .expect("initial event should enqueue");
+            .expect("thread/start should succeed");
+        let request_handle = client.request_handle();
 
+<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
         let mut skipped_events = 0usize;
         let result = forward_in_process_event(
             &event_tx,
@@ -1696,10 +1800,32 @@ mod tests {
                         .expect("event should arrive before timeout")
                         .expect("event stream should stay open"),
                 );
+=======
+        timeout(Duration::from_secs(2), async {
+            for (index, personality) in [
+                Personality::Friendly,
+                Personality::Pragmatic,
+                Personality::Friendly,
+                Personality::Pragmatic,
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                let _: ThreadSettingsUpdateResponse = request_handle
+                    .request_typed(ClientRequest::ThreadSettingsUpdate {
+                        request_id: RequestId::Integer((index + 2) as i64),
+                        params: ThreadSettingsUpdateParams {
+                            thread_id: thread.thread.id.clone(),
+                            personality: Some(personality),
+                            ..ThreadSettingsUpdateParams::default()
+                        },
+                    })
+                    .await
+                    .expect("thread/settings/update should succeed");
+>>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
             }
-            events
-        });
 
+<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
         for notification in [
             agent_message_delta_notification("hello"),
             realtime_transcript_delta_notification("realtime hello"),
@@ -1712,9 +1838,80 @@ mod tests {
                 &mut skipped_events,
                 InProcessServerEvent::ServerNotification(notification),
             )
+=======
+            let _: ConfigRequirementsReadResponse = request_handle
+                .request_typed(ClientRequest::ConfigRequirementsRead {
+                    request_id: RequestId::Integer(10),
+                    params: None,
+                })
+                .await
+                .expect("configuration request should succeed");
+        })
+        .await
+        .expect("unread lossless notifications must not block app-server requests");
+
+        let mut personalities = Vec::new();
+        timeout(Duration::from_secs(2), async {
+            while personalities.len() < 4 {
+                if let Some(InProcessServerEvent::ServerNotification(notification)) =
+                    client.client.next_event().await
+                    && let ServerNotification::ThreadSettingsUpdated(notification) =
+                        notification.as_ref()
+                {
+                    personalities.push(notification.thread_settings.personality);
+                }
+            }
+        })
+        .await
+        .expect("queued settings notifications should remain readable");
+        assert_eq!(
+            personalities,
+            vec![
+                Some(Personality::Friendly),
+                Some(Personality::Pragmatic),
+                Some(Personality::Friendly),
+                Some(Personality::Pragmatic),
+            ]
+        );
+
+        client.shutdown().await.expect("shutdown should complete");
+    }
+
+    #[tokio::test]
+    async fn remote_platform_metadata_preserves_reported_and_missing_values() {
+        for (family, os) in [
+            (Some("windows"), Some("windows")),
+            (Some("unix"), Some("linux")),
+            (Some("future-family"), Some("future-os")),
+            (Some("unix"), None),
+            (None, Some("linux")),
+            (None, None),
+        ] {
+            let websocket_url = start_test_remote_server(move |mut websocket| async move {
+                let mut metadata = serde_json::json!({});
+                if let Some(family) = family {
+                    metadata["platformFamily"] = family.into();
+                }
+                if let Some(os) = os {
+                    metadata["platformOs"] = os.into();
+                }
+                expect_remote_initialize_with_metadata(&mut websocket, metadata).await;
+                websocket.close(None).await.expect("close should succeed");
+            })
+>>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
             .await;
-            assert_eq!(result, ForwardEventResult::Continue);
+            let client = AppServerClient::Remote(
+                RemoteAppServerClient::connect(test_remote_connect_args(websocket_url))
+                    .await
+                    .expect("remote client should connect"),
+            );
+            assert_eq!(
+                (client.platform_family(), client.platform_os()),
+                (family, os)
+            );
+            client.shutdown().await.expect("shutdown should complete");
         }
+<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
         assert_eq!(skipped_events, 0);
 
         let events = receive_task
@@ -1765,6 +1962,8 @@ mod tests {
                 notification
             )) if notification.turn.status == codex_app_server_protocol::TurnStatus::Completed
         ));
+=======
+>>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
     }
 
     #[tokio::test]
@@ -1814,6 +2013,7 @@ mod tests {
                 JSONRPCMessage::Response(JSONRPCResponse {
                     id: request.id,
                     result: serde_json::to_value(GetAccountResponse {
+                        workspace_routing: None,
                         account: None,
                         requires_openai_auth: false,
                     })
@@ -1868,6 +2068,7 @@ mod tests {
                 JSONRPCMessage::Response(JSONRPCResponse {
                     id: request.id,
                     result: serde_json::to_value(GetAccountResponse {
+                        workspace_routing: None,
                         account: None,
                         requires_openai_auth: false,
                     })
@@ -1944,6 +2145,7 @@ mod tests {
         assert_eq!(
             response,
             GetAccountResponse {
+                workspace_routing: None,
                 account: None,
                 requires_openai_auth: false,
             }
@@ -2047,6 +2249,7 @@ mod tests {
                 JSONRPCMessage::Response(JSONRPCResponse {
                     id: request.id,
                     result: serde_json::to_value(GetAccountResponse {
+                        workspace_routing: None,
                         account: None,
                         requires_openai_auth: false,
                     })
@@ -2100,6 +2303,7 @@ mod tests {
         assert_eq!(
             first_response,
             GetAccountResponse {
+                workspace_routing: None,
                 account: None,
                 requires_openai_auth: false,
             }
@@ -2137,7 +2341,8 @@ mod tests {
         let event = client.next_event().await.expect("event should arrive");
         assert!(matches!(
             event,
-            AppServerEvent::ServerNotification(ServerNotification::AccountUpdated(_))
+            AppServerEvent::ServerNotification(notification)
+                if matches!(notification.as_ref(), ServerNotification::AccountUpdated(_))
         ));
 
         client.shutdown().await.expect("shutdown should complete");
@@ -2183,9 +2388,12 @@ mod tests {
             .expect("event stream should stay open");
         assert!(matches!(
             first_event,
-            AppServerEvent::ServerNotification(ServerNotification::CommandExecutionOutputDelta(
-                notification
-            )) if notification.delta == "stdout-1"
+            AppServerEvent::ServerNotification(notification)
+                if matches!(
+                    notification.as_ref(),
+                    ServerNotification::CommandExecutionOutputDelta(notification)
+                        if notification.delta == "stdout-1"
+                )
         ));
 
         let mut remaining_events = Vec::new();
@@ -2202,30 +2410,31 @@ mod tests {
         for event in &remaining_events {
             match event {
                 AppServerEvent::Lagged { skipped: 1 } => {}
-                AppServerEvent::ServerNotification(
-                    ServerNotification::CommandExecutionOutputDelta(notification),
-                ) if notification.delta == "stdout-2" => {}
-                AppServerEvent::ServerNotification(ServerNotification::AgentMessageDelta(
-                    notification,
-                )) if notification.delta == "hello" => {
-                    transcript_event_names.push("agent_message_delta");
-                }
-                AppServerEvent::ServerNotification(ServerNotification::ItemCompleted(
-                    notification,
-                )) if matches!(
-                    &notification.item,
-                    codex_app_server_protocol::ThreadItem::AgentMessage { text, .. } if text == "hello"
-                ) =>
-                {
-                    transcript_event_names.push("item_completed");
-                }
-                AppServerEvent::ServerNotification(ServerNotification::TurnCompleted(
-                    notification,
-                )) if notification.turn.status
-                    == codex_app_server_protocol::TurnStatus::Completed =>
-                {
-                    transcript_event_names.push("turn_completed");
-                }
+                AppServerEvent::ServerNotification(notification) => match notification.as_ref() {
+                    ServerNotification::CommandExecutionOutputDelta(notification)
+                        if notification.delta == "stdout-2" => {}
+                    ServerNotification::AgentMessageDelta(notification)
+                        if notification.delta == "hello" =>
+                    {
+                        transcript_event_names.push("agent_message_delta");
+                    }
+                    ServerNotification::ItemCompleted(notification)
+                        if matches!(
+                            &notification.item,
+                            codex_app_server_protocol::ThreadItem::AgentMessage { text, .. }
+                                if text == "hello"
+                        ) =>
+                    {
+                        transcript_event_names.push("item_completed");
+                    }
+                    ServerNotification::TurnCompleted(notification)
+                        if notification.turn.status
+                            == codex_app_server_protocol::TurnStatus::Completed =>
+                    {
+                        transcript_event_names.push("turn_completed");
+                    }
+                    _ => panic!("unexpected remaining event: {event:?}"),
+                },
                 _ => panic!("unexpected remaining event: {event:?}"),
             }
         }
@@ -2942,11 +3151,10 @@ mod tests {
     #[tokio::test]
     async fn next_event_surfaces_lagged_markers() {
         let (command_tx, _command_rx) = mpsc::channel(1);
-        let (event_tx, event_rx) = mpsc::channel(1);
+        let (event_tx, event_rx) = mpsc::unbounded_channel();
         let worker_handle = tokio::spawn(async {});
         event_tx
             .send(InProcessServerEvent::Lagged { skipped: 3 })
-            .await
             .expect("lagged marker should enqueue");
         drop(event_tx);
 
@@ -2967,6 +3175,7 @@ mod tests {
         client.shutdown().await.expect("shutdown should complete");
     }
 
+<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
     #[test]
     fn event_requires_delivery_marks_transcript_and_terminal_events() {
         assert!(event_requires_delivery(
@@ -3068,6 +3277,8 @@ mod tests {
         ));
     }
 
+=======
+>>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
     #[tokio::test]
     async fn runtime_start_args_forward_environment_manager_and_openai_form_capability() {
         let config = Arc::new(build_test_config().await);
@@ -3130,45 +3341,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn runtime_start_args_use_remote_thread_config_loader_when_configured() {
-        let mut config = build_test_config().await;
-        config.experimental_thread_config_endpoint = Some("not-a-valid-endpoint".to_string());
-
-        let runtime_args = InProcessClientStartArgs {
-            arg0_paths: Arg0DispatchPaths::default(),
-            config: Arc::new(config),
-            cli_overrides: Vec::new(),
-            loader_overrides: LoaderOverrides::default(),
-            strict_config: false,
-            cloud_config_bundle: CloudConfigBundleLoader::default(),
-            feedback: CodexFeedback::new(),
-            log_db: None,
-            state_db: None,
-            environment_manager: Arc::new(EnvironmentManager::default_for_tests()),
-            config_warnings: Vec::new(),
-            session_source: SessionSource::Exec,
-            enable_codex_api_key_env: false,
-            client_name: "codex-app-server-client-test".to_string(),
-            client_version: "0.0.0-test".to_string(),
-            experimental_api: true,
-            mcp_server_openai_form_elicitation: false,
-            opt_out_notification_methods: Vec::new(),
-            channel_capacity: DEFAULT_IN_PROCESS_CHANNEL_CAPACITY,
-        }
-        .into_runtime_start_args();
-
-        let err = runtime_args
-            .thread_config_loader
-            .load(Default::default())
-            .await
-            .expect_err("configured remote loader should try to connect");
-        assert_eq!(
-            err.code(),
-            codex_config::ThreadConfigLoadErrorCode::RequestFailed
-        );
-    }
-
-    #[tokio::test]
     async fn shutdown_completes_promptly_without_retained_managers() {
         let client = start_test_client(SessionSource::Cli).await;
 
@@ -3217,7 +3389,7 @@ mod tests {
         use std::sync::atomic::Ordering;
 
         let (command_tx, mut command_rx) = mpsc::channel(1);
-        let (_event_tx, event_rx) = mpsc::channel(1);
+        let (_event_tx, event_rx) = mpsc::unbounded_channel();
         let completed = Arc::new(AtomicBool::new(false));
         let worker_completed = Arc::clone(&completed);
         let worker_handle = tokio::spawn(async move {

@@ -1,6 +1,10 @@
 set working-directory := "codex-rs"
 set positional-arguments
+<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
 
+=======
+export CODEX_REPO_ROOT := justfile_directory()
+>>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
 export JUST_SHELL := justfile_directory() / "scripts/just-shell.py"
 
 set shell := ["python3", "-c", 'import os, runpy; runpy.run_path(os.environ["JUST_SHELL"], run_name="__main__")']
@@ -51,6 +55,11 @@ file-search *args:
 # Run the standalone code-mode host from source.
 code-mode-host *args:
     cargo run --bin codex-code-mode-host -- {args}
+
+# Assemble a local Codex package.
+[no-cd]
+assemble-codex-package *args:
+    {{ python }} {{ justfile_directory() }}/scripts/build_codex_package.py {args}
 
 # Build the CLI and run the app-server test client
 app-server-test-client *args:
@@ -818,17 +827,13 @@ bazel-argument-comment-lint:
 build-for-release:
     bazel build //codex-rs/cli:release_binaries
 
-# Run the MCP server
-mcp-server-run *args:
-    cargo run -p codex-mcp-server -- {args}
-
 # Regenerate the json schema for config.toml from the current config types.
 write-config-schema:
-    cargo run -p codex-core --bin codex-write-config-schema
+    cargo run -p codex-config-schema --bin codex-write-config-schema
 
-# Regenerate vendored app-server protocol schema artifacts.
+# Regenerate app-server protocol schemas and the Python SDK derived from them.
 write-app-server-schema *args:
-    cargo run -p codex-app-server-protocol --bin write_schema_fixtures -- {args}
+    {{ python }} app-server-protocol/scripts/write_schema_fixtures.py {args}
 
 [no-cd]
 write-hooks-schema:
@@ -856,8 +861,8 @@ argument-comment-lint-from-source *args:
 # Tail logs from the state SQLite database
 [unix]
 log *args:
-    if [ "${1:-}" = "--" ]; then shift; fi; cargo run -p codex-state --bin logs_client -- "$@"
+    if [ "${1:-}" = "--" ]; then shift; fi; cargo run -p codex-cli --bin logs_client -- "$@"
 
 [windows]
 log *args:
-    $forwarded_args = @($args | Select-Object -Skip 1); if ($forwarded_args.Count -gt 0 -and $forwarded_args[0] -eq "--") { $forwarded_args = @($forwarded_args | Select-Object -Skip 1) }; cargo run -p codex-state --bin logs_client -- @forwarded_args
+    $forwarded_args = @($args | Select-Object -Skip 1); if ($forwarded_args.Count -gt 0 -and $forwarded_args[0] -eq "--") { $forwarded_args = @($forwarded_args | Select-Object -Skip 1) }; cargo run -p codex-cli --bin logs_client -- @forwarded_args

@@ -13,8 +13,11 @@ use codex_app_server_protocol::JSONRPCResponse;
 use codex_app_server_protocol::RequestId;
 use codex_app_server_protocol::ThreadArchiveParams;
 use codex_app_server_protocol::ThreadArchiveResponse;
-use codex_app_server_protocol::ThreadMetadataUpdateParams;
-use codex_app_server_protocol::ThreadMetadataUpdateResponse;
+use codex_app_server_protocol::ThreadReadParams;
+use codex_app_server_protocol::ThreadReadResponse;
+use codex_app_server_protocol::ThreadSection;
+use codex_app_server_protocol::ThreadSectionMoveParams;
+use codex_app_server_protocol::ThreadSectionMoveResponse;
 use codex_app_server_protocol::ThreadStartParams;
 use codex_app_server_protocol::ThreadStartResponse;
 use codex_app_server_protocol::ThreadStatus;
@@ -36,6 +39,8 @@ use codex_protocol::ThreadId;
 use codex_protocol::models::BaseInstructions;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::ThreadMemoryMode;
+use codex_state::PINNED_THREAD_SECTION_ID;
+use codex_state::PINNED_THREAD_SECTION_NAME;
 use codex_thread_store::CreateThreadParams;
 use codex_thread_store::InMemoryThreadStore;
 use codex_thread_store::ThreadMetadataPatch;
@@ -97,17 +102,33 @@ async fn thread_unarchive_moves_rollout_back_into_sessions_directory() -> Result
     )
     .await??;
 
+    let pinned_section = ThreadSection {
+        id: PINNED_THREAD_SECTION_ID.to_string(),
+        name: PINNED_THREAD_SECTION_NAME.to_string(),
+        appearance: None,
+    };
     let pin_id = mcp
-        .send_thread_metadata_update_request(ThreadMetadataUpdateParams {
+        .send_thread_section_move_request(ThreadSectionMoveParams {
             thread_id: thread.id.clone(),
-            git_info: None,
-            is_pinned: Some(true),
+            section_id: Some(PINNED_THREAD_SECTION_ID.to_string()),
+            before_thread_id: None,
         })
         .await?;
-    let ThreadMetadataUpdateResponse {
+    let _: ThreadSectionMoveResponse =
+        timeout(DEFAULT_READ_TIMEOUT, mcp.read_response(pin_id)).await??;
+    let read_id = mcp
+        .send_thread_read_request(ThreadReadParams {
+            thread_id: thread.id.clone(),
+            include_turns: false,
+        })
+        .await?;
+    let ThreadReadResponse {
         thread: pinned_thread,
-    } = timeout(DEFAULT_READ_TIMEOUT, mcp.read_response(pin_id)).await??;
-    assert!(pinned_thread.is_pinned);
+    } = timeout(DEFAULT_READ_TIMEOUT, mcp.read_response(read_id)).await??;
+    assert_eq!(pinned_thread.section, Some(pinned_section.clone()));
+    let pinned_entered_at = pinned_thread
+        .section_entered_at
+        .expect("pinned thread should have a section entry timestamp");
 
     let found_rollout_path =
         find_thread_path_by_id_str(codex_home.path(), &thread.id, /*state_db_ctx*/ None)
@@ -166,7 +187,11 @@ async fn thread_unarchive_moves_rollout_back_into_sessions_directory() -> Result
     )
     .await??;
     assert_eq!(unarchived_notification.thread_id, thread.id);
-    assert!(unarchived_thread.is_pinned);
+    assert_eq!(unarchived_thread.section, Some(pinned_section.clone()));
+    assert_eq!(
+        unarchived_thread.section_entered_at,
+        Some(pinned_entered_at)
+    );
     assert!(
         unarchived_thread.updated_at > old_timestamp,
         "expected updated_at to be bumped on unarchive"
@@ -179,7 +204,14 @@ async fn thread_unarchive_moves_rollout_back_into_sessions_directory() -> Result
         .and_then(Value::as_object)
         .expect("thread/unarchive result.thread must be an object");
     assert_eq!(unarchived_thread.name, None);
-    assert_eq!(thread_json.get("isPinned"), Some(&Value::Bool(true)));
+    assert_eq!(
+        thread_json.get("section"),
+        Some(&serde_json::to_value(&pinned_section)?)
+    );
+    assert_eq!(
+        thread_json.get("sectionEnteredAt"),
+        Some(&Value::from(pinned_entered_at))
+    );
     assert_eq!(
         thread_json.get("name"),
         Some(&Value::Null),
@@ -230,6 +262,7 @@ async fn thread_unarchive_preserves_pathless_store_metadata() -> Result<()> {
             history_base: None,
             subagent_history_start_ordinal: None,
             initial_window_id: Uuid::now_v7().to_string(),
+            runtime_workspace_roots: None,
             metadata: ThreadPersistenceMetadata {
                 cwd: None,
                 model_provider: "test-provider".to_string(),
@@ -300,6 +333,37 @@ async fn thread_unarchive_preserves_pathless_store_metadata() -> Result<()> {
     assert_eq!(thread.path, None);
     assert_eq!(thread.forked_from_id, Some(parent_thread_id.to_string()));
     assert_eq!(thread.name, Some("named pathless thread".to_string()));
+    assert_eq!(thread.environments, None);
+
+    // Pathless stores can return an unarchived thread while it is still loaded.
+    for (request_id, environments) in [(2, None), (4, Some(vec![]))] {
+        let result = client
+            .request(ClientRequest::ThreadStart {
+                request_id: RequestId::Integer(request_id),
+                params: ThreadStartParams {
+                    model: Some("mock-model".to_string()),
+                    environments,
+                    ..Default::default()
+                },
+            })
+            .await?
+            .expect("thread/start should succeed");
+        let ThreadStartResponse {
+            thread: started, ..
+        } = serde_json::from_value(result)?;
+        assert!(started.environments.is_some());
+        let result = client
+            .request(ClientRequest::ThreadUnarchive {
+                request_id: RequestId::Integer(request_id + 1),
+                params: ThreadUnarchiveParams {
+                    thread_id: started.id,
+                },
+            })
+            .await?
+            .expect("thread/unarchive should succeed for a loaded pathless thread");
+        let ThreadUnarchiveResponse { thread } = serde_json::from_value(result)?;
+        assert_eq!(thread.environments, started.environments);
+    }
 
     client.shutdown().await?;
     Ok(())

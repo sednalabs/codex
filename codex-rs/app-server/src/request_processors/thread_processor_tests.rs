@@ -39,7 +39,7 @@ mod thread_list_cwd_filter_tests {
 mod background_terminal_pagination_tests {
     use super::super::paginate_background_terminals;
     use codex_app_server_protocol::ThreadBackgroundTerminal;
-    use codex_utils_absolute_path::AbsolutePathBuf;
+    use codex_utils_path_uri::LegacyAppPathString;
     use pretty_assertions::assert_eq;
 
     fn terminal(process_id: &str) -> ThreadBackgroundTerminal {
@@ -49,7 +49,7 @@ mod background_terminal_pagination_tests {
             item_id: format!("item-{process_id}"),
             process_id: process_id.to_string(),
             command: format!("command-{process_id}"),
-            cwd: AbsolutePathBuf::from_absolute_path(cwd).expect("absolute cwd"),
+            cwd: LegacyAppPathString::from_string(cwd),
             os_pid: None,
             cpu_percent: None,
             rss_kb: None,
@@ -126,17 +126,16 @@ mod thread_processor_behavior_tests {
     use codex_protocol::config_types::ModeKind;
     use codex_protocol::config_types::ReasoningSummary;
     use codex_protocol::config_types::Settings;
+<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
     use codex_protocol::dynamic_tools::DynamicToolCapability;
     use codex_protocol::models::ActivePermissionProfile;
     use codex_protocol::models::BUILT_IN_PERMISSION_PROFILE_DANGER_FULL_ACCESS;
     use codex_protocol::models::BUILT_IN_PERMISSION_PROFILE_READ_ONLY;
     use codex_protocol::models::BUILT_IN_PERMISSION_PROFILE_WORKSPACE;
+=======
+>>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
     use codex_protocol::models::PermissionProfile;
     use codex_protocol::openai_models::ReasoningEffort;
-    use codex_protocol::permissions::FileSystemAccessMode;
-    use codex_protocol::permissions::FileSystemPath;
-    use codex_protocol::permissions::FileSystemSandboxEntry;
-    use codex_protocol::permissions::NetworkSandboxPolicy;
     use codex_protocol::protocol::AskForApproval;
     use codex_protocol::protocol::SandboxPolicy;
     use codex_protocol::protocol::SessionSource;
@@ -507,6 +506,7 @@ mod thread_processor_behavior_tests {
         let thread_id =
             ThreadId::from_string("00000000-0000-0000-0000-000000000123").expect("valid thread");
         let stored_thread = StoredThread {
+            originator: None,
             thread_id,
             extra_config: None,
             rollout_path: Some(PathBuf::from("/tmp/thread.jsonl")),
@@ -521,7 +521,11 @@ mod thread_processor_behavior_tests {
             updated_at: updated_at.with_timezone(&Utc),
             recency_at: updated_at.with_timezone(&Utc),
             archived_at: None,
-            is_pinned: false,
+            section: None,
+            section_position: None,
+            section_entered_at: None,
+            project_id: None,
+            daybreak_enabled: None,
             cwd: PathBuf::from("/tmp"),
             cli_version: "0.0.0".to_string(),
             source: SessionSource::Cli,
@@ -548,84 +552,6 @@ mod thread_processor_behavior_tests {
             summary.updated_at.as_deref(),
             Some("2025-01-02T03:04:06.789Z")
         );
-    }
-
-    #[test]
-    fn requested_permissions_trust_project_uses_permission_profile_intent() {
-        let cwd = test_path_buf("/tmp/project").abs();
-        let full_access_profile = codex_protocol::models::PermissionProfile::Disabled;
-        let workspace_write_profile = codex_protocol::models::PermissionProfile::workspace_write();
-        let read_only_profile = codex_protocol::models::PermissionProfile::read_only();
-        let split_write_profile =
-            codex_protocol::models::PermissionProfile::from_runtime_permissions(
-                &FileSystemSandboxPolicy::restricted(vec![
-                    FileSystemSandboxEntry {
-                        path: FileSystemPath::Path { path: cwd.clone() },
-                        access: FileSystemAccessMode::Write,
-                        missing_path_behavior: None,
-                    },
-                    FileSystemSandboxEntry {
-                        path: FileSystemPath::GlobPattern {
-                            pattern: "/tmp/project/**/*.env".to_string(),
-                        },
-                        access: FileSystemAccessMode::Deny,
-                        missing_path_behavior: None,
-                    },
-                ]),
-                NetworkSandboxPolicy::Restricted,
-            );
-
-        assert!(requested_permissions_trust_project(
-            &ConfigOverrides {
-                permission_profile: Some(full_access_profile),
-                ..Default::default()
-            },
-            cwd.as_path()
-        ));
-        assert!(requested_permissions_trust_project(
-            &ConfigOverrides {
-                permission_profile: Some(workspace_write_profile),
-                ..Default::default()
-            },
-            cwd.as_path()
-        ));
-        assert!(requested_permissions_trust_project(
-            &ConfigOverrides {
-                permission_profile: Some(split_write_profile),
-                ..Default::default()
-            },
-            cwd.as_path()
-        ));
-        assert!(requested_permissions_trust_project(
-            &ConfigOverrides {
-                default_permissions: Some(BUILT_IN_PERMISSION_PROFILE_WORKSPACE.to_string()),
-                ..Default::default()
-            },
-            cwd.as_path()
-        ));
-        assert!(requested_permissions_trust_project(
-            &ConfigOverrides {
-                default_permissions: Some(
-                    BUILT_IN_PERMISSION_PROFILE_DANGER_FULL_ACCESS.to_string()
-                ),
-                ..Default::default()
-            },
-            cwd.as_path()
-        ));
-        assert!(!requested_permissions_trust_project(
-            &ConfigOverrides {
-                permission_profile: Some(read_only_profile),
-                ..Default::default()
-            },
-            cwd.as_path()
-        ));
-        assert!(!requested_permissions_trust_project(
-            &ConfigOverrides {
-                default_permissions: Some(BUILT_IN_PERMISSION_PROFILE_READ_ONLY.to_string()),
-                ..Default::default()
-            },
-            cwd.as_path()
-        ));
     }
 
     #[test]
@@ -801,12 +727,14 @@ mod thread_processor_behavior_tests {
             initial_turns_page: None,
         };
         let config_snapshot = ThreadConfigSnapshot {
+            disabled_plugin_ids: Vec::new(),
             model: "gpt-5".to_string(),
             model_provider_id: "openai".to_string(),
             service_tier: Some("flex".to_string()),
             approval_policy: codex_protocol::protocol::AskForApproval::OnRequest,
             approvals_reviewer: codex_protocol::config_types::ApprovalsReviewer::User,
             permission_profile: codex_protocol::models::PermissionProfile::Disabled,
+            full_access: false,
             active_permission_profile: None,
             environments: TurnEnvironmentSelections::new(cwd, Vec::new()),
             workspace_roots: Vec::new(),
@@ -1125,9 +1053,9 @@ mod thread_processor_behavior_tests {
 
     #[tokio::test]
     async fn read_summary_from_rollout_returns_empty_preview_when_no_user_message() -> Result<()> {
-        use codex_protocol::protocol::RolloutItem;
-        use codex_protocol::protocol::RolloutLine;
         use codex_protocol::protocol::SessionMetaLine;
+        use codex_rollout::RolloutItem;
+        use codex_rollout::RolloutLine;
         use std::fs;
         use std::fs::FileTimes;
 
@@ -1183,9 +1111,9 @@ mod thread_processor_behavior_tests {
 
     #[tokio::test]
     async fn read_summary_from_rollout_preserves_agent_nickname() -> Result<()> {
-        use codex_protocol::protocol::RolloutItem;
-        use codex_protocol::protocol::RolloutLine;
         use codex_protocol::protocol::SessionMetaLine;
+        use codex_rollout::RolloutItem;
+        use codex_rollout::RolloutLine;
         use std::fs;
 
         let temp_dir = TempDir::new()?;
@@ -1235,9 +1163,9 @@ mod thread_processor_behavior_tests {
 
     #[tokio::test]
     async fn read_summary_from_rollout_preserves_forked_from_id() -> Result<()> {
-        use codex_protocol::protocol::RolloutItem;
-        use codex_protocol::protocol::RolloutLine;
         use codex_protocol::protocol::SessionMetaLine;
+        use codex_rollout::RolloutItem;
+        use codex_rollout::RolloutLine;
         use std::fs;
 
         let temp_dir = TempDir::new()?;
@@ -1401,6 +1329,7 @@ mod thread_processor_behavior_tests {
                 "turn-1",
                 &EventMsg::TurnStarted(codex_protocol::protocol::TurnStartedEvent {
                     turn_id: "turn-1".to_string(),
+                    root_turn_id: None,
                     trace_id: None,
                     started_at: None,
                     model_context_window: None,
