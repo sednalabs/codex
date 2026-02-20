@@ -2302,9 +2302,6 @@ impl ChatComposer {
                 self.windows_degraded_sandbox_active,
             )
         {
-            if self.reject_slash_command_if_unavailable(cmd) {
-                return Some(InputResult::None);
-            }
             self.textarea.set_text_clearing_elements("");
             Some(InputResult::Command(cmd))
         } else {
@@ -2339,9 +2336,6 @@ impl ChatComposer {
         if !cmd.supports_inline_args() {
             return None;
         }
-        if self.reject_slash_command_if_unavailable(cmd) {
-            return Some(InputResult::None);
-        }
 
         let mut args_elements =
             Self::slash_command_args_elements(rest, rest_offset, &self.textarea.text_elements());
@@ -2356,8 +2350,8 @@ impl ChatComposer {
 
     /// Expand pending placeholders and extract normalized inline-command args.
     ///
-    /// Inline-arg commands are initially dispatched using the raw draft so command rejection does
-    /// not consume user input. Once a command is accepted, this helper performs the usual
+    /// Inline-arg commands are initially dispatched using the raw draft. Once the command handler
+    /// accepts and executes the command, this helper performs the usual
     /// submission preparation (paste expansion, element trimming) and rebases element ranges from
     /// full-text offsets to command-arg offsets.
     pub(crate) fn prepare_inline_args_submission(
@@ -2374,20 +2368,6 @@ impl ChatComposer {
         let trimmed_rest = prepared_rest.trim();
         args_elements = Self::trim_text_elements(prepared_rest, trimmed_rest, args_elements);
         Some((trimmed_rest.to_string(), args_elements))
-    }
-
-    fn reject_slash_command_if_unavailable(&self, cmd: SlashCommand) -> bool {
-        if !self.is_task_running || cmd.available_during_task() {
-            return false;
-        }
-        let message = format!(
-            "'/{}' is disabled while a task is in progress.",
-            cmd.command()
-        );
-        self.app_event_tx.send(AppEvent::InsertHistoryCell(Box::new(
-            history_cell::new_error_event(message),
-        )));
-        true
     }
 
     /// Translate full-text element ranges into command-argument ranges.
@@ -5579,7 +5559,7 @@ mod tests {
     }
 
     #[test]
-    fn slash_command_disabled_while_task_running_keeps_text() {
+    fn slash_command_while_task_running_dispatches_for_queueing() {
         use crossterm::event::KeyCode;
         use crossterm::event::KeyEvent;
         use crossterm::event::KeyModifiers;
@@ -5601,24 +5581,19 @@ mod tests {
         let (result, _needs_redraw) =
             composer.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
 
-        assert_eq!(InputResult::None, result);
+        match result {
+            InputResult::CommandWithArgs(cmd, args, _) => {
+                assert_eq!(cmd.command(), "review");
+                assert_eq!(args, "these changes");
+            }
+            _ => panic!("expected slash command dispatch"),
+        }
         assert_eq!("/review these changes", composer.textarea.text());
 
-        let mut found_error = false;
-        while let Ok(event) = rx.try_recv() {
-            if let AppEvent::InsertHistoryCell(cell) = event {
-                let message = cell
-                    .display_lines(80)
-                    .into_iter()
-                    .map(|line| line.to_string())
-                    .collect::<Vec<_>>()
-                    .join("\n");
-                assert!(message.contains("disabled while a task is in progress"));
-                found_error = true;
-                break;
-            }
-        }
-        assert!(found_error, "expected error history cell to be sent");
+        assert!(
+            rx.try_recv().is_err(),
+            "composer should not emit history errors"
+        );
     }
 
     #[test]

@@ -148,6 +148,12 @@ pub(crate) enum AppEvent {
     /// Update the current personality in the running app and widget.
     UpdatePersonality(Personality),
 
+    /// Apply a model selection immediately, or queue it when a task is active.
+    SelectModel {
+        model: String,
+        effort: Option<ReasoningEffort>,
+    },
+
     /// Persist the selected model and reasoning effort to the appropriate config.
     PersistModelSelection {
         model: String,

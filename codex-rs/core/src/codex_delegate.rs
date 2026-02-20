@@ -201,10 +201,6 @@ async fn forward_events(
                     } => {}
                     Event {
                         id: _,
-                        msg: EventMsg::TokenCount(_),
-                    } => {}
-                    Event {
-                        id: _,
                         msg: EventMsg::SessionConfigured(_),
                     } => {}
                     Event {
@@ -465,6 +461,7 @@ mod tests {
     use codex_protocol::models::ResponseItem;
     use codex_protocol::protocol::AgentStatus;
     use codex_protocol::protocol::RawResponseItemEvent;
+    use codex_protocol::protocol::TokenCountEvent;
     use codex_protocol::protocol::TurnAbortReason;
     use codex_protocol::protocol::TurnAbortedEvent;
     use pretty_assertions::assert_eq;
@@ -541,5 +538,53 @@ mod tests {
             ops.iter().any(|op| matches!(op, Op::Shutdown)),
             "expected Shutdown op after cancellation"
         );
+    }
+
+    #[tokio::test]
+    async fn forward_events_forwards_token_count() {
+        let (tx_events, rx_events) = bounded(1);
+        let (tx_sub, _rx_sub) = bounded(SUBMISSION_CHANNEL_CAPACITY);
+        let (_agent_status_tx, agent_status) = watch::channel(AgentStatus::PendingInit);
+        let (session, ctx, _rx_evt) = crate::codex::make_session_and_context_with_rx().await;
+        let codex = Arc::new(Codex {
+            tx_sub,
+            rx_event: rx_events,
+            agent_status,
+            session: Arc::clone(&session),
+        });
+
+        let (tx_out, rx_out) = bounded(1);
+        let cancel = CancellationToken::new();
+        let forward = tokio::spawn(forward_events(
+            Arc::clone(&codex),
+            tx_out,
+            session,
+            ctx,
+            cancel,
+        ));
+
+        tx_events
+            .send(Event {
+                id: "token".to_string(),
+                msg: EventMsg::TokenCount(TokenCountEvent {
+                    info: None,
+                    rate_limits: None,
+                }),
+            })
+            .await
+            .unwrap();
+        drop(tx_events);
+
+        let received = rx_out
+            .recv()
+            .await
+            .expect("token count event not forwarded");
+        assert_eq!("token", received.id);
+        assert!(matches!(received.msg, EventMsg::TokenCount(_)));
+
+        timeout(Duration::from_millis(1000), forward)
+            .await
+            .expect("forward_events hung")
+            .expect("forward_events join error");
     }
 }

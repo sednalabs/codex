@@ -1,5 +1,6 @@
 ---
 source: tui/src/bottom_pane/queued_user_messages.rs
+assertion_line: 142
 expression: "format!(\"{buf:?}\")"
 ---
 Buffer {
@@ -8,7 +9,7 @@ Buffer {
         "  ↳ This is a longer message that should",
         "    be wrapped                          ",
         "  ↳ This is another message             ",
-        "    ⌥ + ↑ edit                          ",
+        "    ⌥ + ↑ edit queued                   ",
     ],
     styles: [
         x: 0, y: 0, fg: Reset, bg: Reset, underline: Reset, modifier: DIM,
@@ -20,6 +21,6 @@ Buffer {
         x: 4, y: 2, fg: Reset, bg: Reset, underline: Reset, modifier: DIM | ITALIC,
         x: 27, y: 2, fg: Reset, bg: Reset, underline: Reset, modifier: NONE,
         x: 0, y: 3, fg: Reset, bg: Reset, underline: Reset, modifier: DIM,
-        x: 14, y: 3, fg: Reset, bg: Reset, underline: Reset, modifier: NONE,
+        x: 21, y: 3, fg: Reset, bg: Reset, underline: Reset, modifier: NONE,
     ]
 }

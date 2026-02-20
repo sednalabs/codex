@@ -1,5 +1,6 @@
 ---
 source: tui/src/bottom_pane/queued_user_messages.rs
+assertion_line: 114
 expression: "format!(\"{buf:?}\")"
 ---
 Buffer {
@@ -7,7 +8,7 @@ Buffer {
     content: [
         "  ↳ Hello, world!                       ",
         "  ↳ This is another message             ",
-        "    ⌥ + ↑ edit                          ",
+        "    ⌥ + ↑ edit queued                   ",
     ],
     styles: [
         x: 0, y: 0, fg: Reset, bg: Reset, underline: Reset, modifier: DIM,
@@ -17,6 +18,6 @@ Buffer {
         x: 4, y: 1, fg: Reset, bg: Reset, underline: Reset, modifier: DIM | ITALIC,
         x: 27, y: 1, fg: Reset, bg: Reset, underline: Reset, modifier: NONE,
         x: 0, y: 2, fg: Reset, bg: Reset, underline: Reset, modifier: DIM,
-        x: 14, y: 2, fg: Reset, bg: Reset, underline: Reset, modifier: NONE,
+        x: 21, y: 2, fg: Reset, bg: Reset, underline: Reset, modifier: NONE,
     ]
 }

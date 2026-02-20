@@ -1408,6 +1408,7 @@ impl HasLegacyEvent for EventMsg {
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, TS)]
 pub struct ExitedReviewModeEvent {
     pub review_output: Option<ReviewOutputEvent>,
+    pub review_token_usage: Option<TokenUsage>,
 }
 
 // Individual event payload types matching each `EventMsg` variant.

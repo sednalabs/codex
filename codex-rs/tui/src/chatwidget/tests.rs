@@ -1421,6 +1421,7 @@ async fn review_restores_context_window_indicator() {
         id: "review-end".into(),
         msg: EventMsg::ExitedReviewMode(ExitedReviewModeEvent {
             review_output: None,
+            review_token_usage: None,
         }),
     });
     let _ = drain_insert_history(&mut rx);
@@ -1642,6 +1643,8 @@ async fn make_chatwidget_manual(
         show_welcome_banner: true,
         queued_user_messages: VecDeque::new(),
         queued_message_edit_binding: crate::key_hint::alt(KeyCode::Up),
+        queued_slash_commands: VecDeque::new(),
+        queued_follow_up_order: VecDeque::new(),
         suppress_session_configured_redraw: false,
         pending_notification: None,
         quit_shortcut_expires_at: None,
@@ -3122,6 +3125,131 @@ fn queued_message_edit_binding_mapping_covers_special_terminals() {
     );
 }
 
+#[tokio::test]
+async fn alt_up_edits_most_recent_queued_slash_command() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(None).await;
+
+    // Simulate a running task so slash commands are queued.
+    chat.bottom_pane.set_task_running(true);
+    chat.dispatch_command(SlashCommand::MemoryDrop);
+    assert_eq!(chat.queued_slash_commands.len(), 1);
+
+    // Press Alt+Up to edit the queued slash command.
+    chat.handle_key_event(KeyEvent::new(KeyCode::Up, KeyModifiers::ALT));
+
+    assert_eq!(
+        chat.bottom_pane.composer_text(),
+        "/debug-m-drop".to_string()
+    );
+    assert!(chat.queued_slash_commands.is_empty());
+}
+
+#[tokio::test]
+async fn alt_up_restores_queued_slash_command_payload_for_edit() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(None).await;
+
+    let local_placeholder = "[Image #2]";
+    let args = format!("{local_placeholder} inspect $repo");
+    let mention_token = "$repo";
+    let mention_start = args.find(mention_token).expect("mention token exists");
+    let args_elements = vec![
+        TextElement::new(
+            (0..local_placeholder.len()).into(),
+            Some(local_placeholder.to_string()),
+        ),
+        TextElement::new(
+            (mention_start..mention_start + mention_token.len()).into(),
+            Some(mention_token.to_string()),
+        ),
+    ];
+    let local_images = vec![LocalImageAttachment {
+        placeholder: local_placeholder.to_string(),
+        path: PathBuf::from("/tmp/queued-plan.png"),
+    }];
+    let remote_image_urls = vec!["https://example.com/queued-remote.png".to_string()];
+    let mention_bindings = vec![MentionBinding {
+        mention: "repo".to_string(),
+        path: "/tmp/repo".to_string(),
+    }];
+
+    chat.queued_slash_commands
+        .push_back(QueuedSlashCommand::CommandWithArgs {
+            cmd: SlashCommand::Plan,
+            args: args.clone(),
+            text_elements: args_elements.clone(),
+            local_images: local_images.clone(),
+            remote_image_urls: remote_image_urls.clone(),
+            mention_bindings: mention_bindings.clone(),
+        });
+    chat.queued_follow_up_order
+        .push_back(QueuedFollowUpKind::SlashCommand);
+    chat.refresh_queued_user_messages();
+
+    chat.handle_key_event(KeyEvent::new(KeyCode::Up, KeyModifiers::ALT));
+
+    let command_prefix = format!("/{command} ", command = SlashCommand::Plan.command());
+    let expected_text = format!("{command_prefix}{args}");
+    let expected_elements = args_elements
+        .into_iter()
+        .map(|element| {
+            element.map_range(|range| {
+                (range.start + command_prefix.len()..range.end + command_prefix.len()).into()
+            })
+        })
+        .collect::<Vec<_>>();
+
+    assert_eq!(chat.bottom_pane.composer_text(), expected_text);
+    let composer_elements = chat.bottom_pane.composer_text_elements();
+    assert!(
+        composer_elements
+            .iter()
+            .any(|element| element.placeholder(expected_text.as_str()) == Some("/plan")),
+        "expected recalled composer draft to preserve slash command prefix metadata",
+    );
+    for expected_element in expected_elements {
+        assert!(
+            composer_elements.contains(&expected_element),
+            "expected recalled composer draft to preserve inline payload element metadata",
+        );
+    }
+    assert_eq!(chat.bottom_pane.composer_local_images(), local_images);
+    assert_eq!(chat.remote_image_urls(), remote_image_urls);
+    assert_eq!(chat.bottom_pane.take_mention_bindings(), mention_bindings);
+    assert!(chat.queued_slash_commands.is_empty());
+}
+
+#[tokio::test]
+async fn alt_up_uses_strict_chronological_queue_order() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(None).await;
+
+    // Simulate a running task so follow-up inputs are queued.
+    chat.bottom_pane.set_task_running(true);
+    chat.queue_user_message(UserMessage::from("first queued message".to_string()));
+    chat.dispatch_command(SlashCommand::MemoryDrop);
+    chat.queue_user_message(UserMessage::from("second queued message".to_string()));
+
+    chat.handle_key_event(KeyEvent::new(KeyCode::Up, KeyModifiers::ALT));
+    assert_eq!(
+        chat.bottom_pane.composer_text(),
+        "second queued message".to_string()
+    );
+
+    chat.handle_key_event(KeyEvent::new(KeyCode::Up, KeyModifiers::ALT));
+    assert_eq!(
+        chat.bottom_pane.composer_text(),
+        "/debug-m-drop".to_string()
+    );
+
+    chat.handle_key_event(KeyEvent::new(KeyCode::Up, KeyModifiers::ALT));
+    assert_eq!(
+        chat.bottom_pane.composer_text(),
+        "first queued message".to_string()
+    );
+
+    assert!(chat.queued_user_messages.is_empty());
+    assert!(chat.queued_slash_commands.is_empty());
+}
+
 /// Pressing Up to recall the most recent history entry and immediately queuing
 /// it while a task is running should always enqueue the same text, even when it
 /// is queued repeatedly.
@@ -4376,6 +4504,43 @@ async fn slash_fork_requests_current_fork() {
     chat.dispatch_command(SlashCommand::Fork);
 
     assert_matches!(rx.try_recv(), Ok(AppEvent::ForkCurrentSession));
+}
+
+#[tokio::test]
+async fn slash_model_opens_picker_while_task_running() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(None).await;
+    chat.thread_id = Some(ThreadId::new());
+    chat.bottom_pane.set_task_running(true);
+
+    chat.dispatch_command(SlashCommand::Model);
+
+    let popup = render_bottom_popup(&chat, 80);
+    assert!(
+        popup.contains("Select Model"),
+        "expected model picker while task is running, got {popup:?}"
+    );
+    assert!(
+        chat.queued_slash_commands.is_empty(),
+        "expected /model command itself not to be queued"
+    );
+}
+
+#[tokio::test]
+async fn slash_status_is_not_queued_while_task_running() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(None).await;
+    chat.bottom_pane.set_task_running(true);
+
+    chat.dispatch_command(SlashCommand::Status);
+
+    assert!(
+        chat.queued_slash_commands.is_empty(),
+        "expected /status to run immediately without queueing"
+    );
+    let cells = drain_insert_history(&mut rx);
+    assert!(
+        !cells.is_empty(),
+        "expected /status output to render immediately"
+    );
 }
 
 #[tokio::test]
@@ -5796,22 +5961,190 @@ async fn user_shell_command_renders_output_not_exploring() {
 }
 
 #[tokio::test]
-async fn disabled_slash_command_while_task_running_snapshot() {
-    // Build a chat widget and simulate an active task
+async fn slash_command_queues_while_task_running() {
+    let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(None).await;
+    chat.bottom_pane.set_task_running(true);
+
+    chat.dispatch_command(SlashCommand::MemoryDrop);
+
+    assert_matches!(op_rx.try_recv(), Err(TryRecvError::Empty));
+    assert_eq!(chat.queued_slash_commands.len(), 1);
+    assert!(matches!(
+        chat.queued_slash_commands.front(),
+        Some(QueuedSlashCommand::Command(SlashCommand::MemoryDrop))
+    ));
+
+    let cells = drain_insert_history(&mut rx);
+    let rendered = lines_to_single_string(cells.last().expect("expected queue info message"));
+    assert!(
+        rendered.contains("Queued '/debug-m-drop'"),
+        "expected queued command message, got {rendered:?}"
+    );
+}
+
+#[tokio::test]
+async fn queued_slash_command_runs_after_task_complete() {
+    let (mut chat, _rx, mut op_rx) = make_chatwidget_manual(None).await;
+    chat.bottom_pane.set_task_running(true);
+
+    chat.dispatch_command(SlashCommand::MemoryDrop);
+    assert_matches!(op_rx.try_recv(), Err(TryRecvError::Empty));
+
+    chat.on_task_complete(None, false);
+
+    assert_matches!(op_rx.try_recv(), Ok(Op::DropMemories));
+    assert!(chat.queued_slash_commands.is_empty());
+}
+
+#[tokio::test]
+async fn queued_inline_slash_command_runs_with_args_after_task_complete() {
+    let (mut chat, _rx, mut op_rx) = make_chatwidget_manual(None).await;
+    chat.bottom_pane.set_task_running(true);
+    chat.bottom_pane.set_composer_text(
+        "/review focus on error handling".to_string(),
+        Vec::new(),
+        Vec::new(),
+    );
+
+    chat.dispatch_command_with_args(
+        SlashCommand::Review,
+        "focus on error handling".to_string(),
+        Vec::new(),
+    );
+    assert_matches!(op_rx.try_recv(), Err(TryRecvError::Empty));
+
+    chat.on_task_complete(None, false);
+
+    match op_rx.try_recv() {
+        Ok(Op::Review { review_request }) => {
+            assert_eq!(
+                review_request,
+                ReviewRequest {
+                    target: ReviewTarget::Custom {
+                        instructions: "focus on error handling".to_string(),
+                    },
+                    user_facing_hint: None,
+                }
+            );
+        }
+        other => panic!("expected Op::Review, got {other:?}"),
+    }
+    assert!(chat.queued_slash_commands.is_empty());
+}
+
+#[tokio::test]
+async fn queued_inline_plan_slash_command_captures_prepared_mention_bindings() {
+    let (mut chat, _rx, mut op_rx) = make_chatwidget_manual(None).await;
+    chat.bottom_pane.set_task_running(true);
+
+    let mention_bindings = vec![MentionBinding {
+        mention: "repo".to_string(),
+        path: "/tmp/repo".to_string(),
+    }];
+    chat.bottom_pane.set_composer_text_with_mention_bindings(
+        "/plan inspect $repo".to_string(),
+        Vec::new(),
+        Vec::new(),
+        mention_bindings.clone(),
+    );
+
+    chat.dispatch_command_with_args(SlashCommand::Plan, "inspect $repo".to_string(), Vec::new());
+    assert_matches!(op_rx.try_recv(), Err(TryRecvError::Empty));
+
+    assert_eq!(chat.queued_slash_commands.len(), 1);
+    match chat.queued_slash_commands.front() {
+        Some(QueuedSlashCommand::CommandWithArgs {
+            cmd,
+            args,
+            text_elements,
+            mention_bindings: queued_bindings,
+            ..
+        }) => {
+            assert_eq!(*cmd, SlashCommand::Plan);
+            assert_eq!(args, "inspect $repo");
+            assert_eq!(queued_bindings, &mention_bindings);
+            assert!(
+                text_elements
+                    .iter()
+                    .any(|element| element.placeholder(args.as_str()) == Some("$repo")),
+                "expected queued args to preserve mention element metadata",
+            );
+        }
+        _ => panic!("expected queued inline /plan command"),
+    }
+}
+
+#[tokio::test]
+async fn selected_model_change_queues_while_task_running() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(None).await;
     chat.bottom_pane.set_task_running(true);
 
-    // Dispatch a command that is unavailable while a task runs (e.g., /model)
-    chat.dispatch_command(SlashCommand::Model);
-
-    // Drain history and snapshot the rendered error line(s)
-    let cells = drain_insert_history(&mut rx);
-    assert!(
-        !cells.is_empty(),
-        "expected an error message history cell to be emitted",
+    chat.apply_model_and_effort(
+        "gpt-5.1-codex-mini".to_string(),
+        Some(ReasoningEffortConfig::Low),
     );
-    let blob = lines_to_single_string(cells.last().unwrap());
-    assert_snapshot!(blob);
+
+    assert_eq!(chat.queued_slash_commands.len(), 1);
+    assert!(matches!(
+        chat.queued_slash_commands.front(),
+        Some(QueuedSlashCommand::ModelSelection {
+            model,
+            effort: Some(ReasoningEffortConfig::Low),
+        }) if model == "gpt-5.1-codex-mini"
+    ));
+
+    let cells = drain_insert_history(&mut rx);
+    let rendered = lines_to_single_string(cells.last().expect("expected queue info message"));
+    assert!(
+        rendered.contains("Queued '/model gpt-5.1-codex-mini"),
+        "expected queued model selection message, got {rendered:?}"
+    );
+
+    chat.on_task_complete(None, false);
+
+    let mut saw_model = false;
+    let mut saw_effort = false;
+    while let Ok(event) = rx.try_recv() {
+        match event {
+            AppEvent::UpdateModel(model) if model == "gpt-5.1-codex-mini" => saw_model = true,
+            AppEvent::UpdateReasoningEffort(Some(ReasoningEffortConfig::Low)) => saw_effort = true,
+            _ => {}
+        }
+    }
+    assert!(
+        saw_model,
+        "expected queued model to apply after task completion"
+    );
+    assert!(
+        saw_effort,
+        "expected queued reasoning effort to apply after task completion"
+    );
+}
+
+#[tokio::test]
+async fn queued_compact_runs_after_queued_model_selection() {
+    let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(None).await;
+    chat.bottom_pane.set_task_running(true);
+
+    chat.apply_model_and_effort(
+        "gpt-5.1-codex-mini".to_string(),
+        Some(ReasoningEffortConfig::Low),
+    );
+    chat.dispatch_command(SlashCommand::Compact);
+    assert_matches!(op_rx.try_recv(), Err(TryRecvError::Empty));
+
+    chat.on_task_complete(None, false);
+
+    while let Ok(_op) = op_rx.try_recv() {}
+    let mut saw_compact = false;
+    while let Ok(event) = rx.try_recv() {
+        if matches!(event, AppEvent::CodexOp(Op::Compact)) {
+            saw_compact = true;
+            break;
+        }
+    }
+    assert!(saw_compact, "expected queued /compact to emit Op::Compact");
+    assert!(chat.queued_slash_commands.is_empty());
 }
 
 #[tokio::test]

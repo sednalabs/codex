@@ -475,15 +475,36 @@ mod tests {
 
         tokio::time::sleep(Duration::from_millis(200)).await;
 
-        let err = write_stdin(&session, process_id, "", 100)
-            .await
-            .expect_err("expected unknown process error");
+        let first_poll = write_stdin(&session, process_id, "", 100).await;
 
-        match err {
-            UnifiedExecError::UnknownProcessId { process_id: err_id } => {
+        match first_poll {
+            Err(UnifiedExecError::UnknownProcessId { process_id: err_id }) => {
                 assert_eq!(err_id, process_id, "process id should match request");
             }
-            other => panic!("expected UnknownProcessId, got {other:?}"),
+            Ok(response) => {
+                assert!(
+                    response.process_id.is_none(),
+                    "completed process should not continue the session"
+                );
+                assert!(
+                    response.exit_code.is_some(),
+                    "completed process response should include an exit code"
+                );
+
+                let err = write_stdin(&session, process_id, "", 100)
+                    .await
+                    .expect_err("expected unknown process on subsequent poll");
+
+                match err {
+                    UnifiedExecError::UnknownProcessId { process_id: err_id } => {
+                        assert_eq!(err_id, process_id, "process id should match request");
+                    }
+                    other => panic!("expected UnknownProcessId, got {other:?}"),
+                }
+            }
+            Err(other) => {
+                panic!("expected UnknownProcessId or final process response, got {other:?}")
+            }
         }
 
         assert!(

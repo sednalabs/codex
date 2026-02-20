@@ -291,6 +291,98 @@ struct RunningCommand {
     source: ExecCommandSource,
 }
 
+enum QueuedSlashCommand {
+    Command(SlashCommand),
+    CommandWithArgs {
+        cmd: SlashCommand,
+        args: String,
+        text_elements: Vec<TextElement>,
+        local_images: Vec<LocalImageAttachment>,
+        remote_image_urls: Vec<String>,
+        mention_bindings: Vec<MentionBinding>,
+    },
+    ModelSelection {
+        model: String,
+        effort: Option<ReasoningEffortConfig>,
+    },
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum QueuedFollowUpKind {
+    UserMessage,
+    SlashCommand,
+}
+
+enum QueuedFollowUpInput {
+    UserMessage(UserMessage),
+    SlashCommand(QueuedSlashCommand),
+}
+
+impl QueuedSlashCommand {
+    fn display_text(&self) -> String {
+        match self {
+            QueuedSlashCommand::Command(cmd) => format!("/{}", cmd.command()),
+            QueuedSlashCommand::CommandWithArgs { cmd, args, .. } if args.is_empty() => {
+                format!("/{}", cmd.command())
+            }
+            QueuedSlashCommand::CommandWithArgs { cmd, args, .. } => {
+                format!("/{} {args}", cmd.command())
+            }
+            QueuedSlashCommand::ModelSelection { model, effort } => {
+                let effort_label = effort
+                    .map(|value| value.to_string())
+                    .unwrap_or_else(|| "default".to_string());
+                format!("/model {model} ({effort_label})")
+            }
+        }
+    }
+
+    fn into_user_message_for_edit(self) -> UserMessage {
+        match self {
+            QueuedSlashCommand::Command(cmd) => UserMessage::from(format!("/{}", cmd.command())),
+            QueuedSlashCommand::CommandWithArgs {
+                cmd,
+                args,
+                text_elements,
+                local_images,
+                remote_image_urls,
+                mention_bindings,
+            } => {
+                let command_prefix = format!("/{}", cmd.command());
+                if args.is_empty() {
+                    return UserMessage {
+                        text: command_prefix,
+                        local_images,
+                        remote_image_urls,
+                        text_elements: Vec::new(),
+                        mention_bindings,
+                    };
+                }
+
+                let prefix_len = command_prefix.len() + 1;
+                let text = format!("{command_prefix} {args}");
+                let text_elements = text_elements
+                    .into_iter()
+                    .map(|element| {
+                        element.map_range(|range| {
+                            (range.start + prefix_len..range.end + prefix_len).into()
+                        })
+                    })
+                    .collect();
+                UserMessage {
+                    text,
+                    local_images,
+                    remote_image_urls,
+                    text_elements,
+                    mention_bindings,
+                }
+            }
+            // `/model` is picker-driven in the TUI, so restoring the command token is enough.
+            QueuedSlashCommand::ModelSelection { .. } => UserMessage::from("/model".to_string()),
+        }
+    }
+}
+
 struct UnifiedExecProcessSummary {
     key: String,
     call_id: String,
@@ -601,6 +693,10 @@ pub(crate) struct ChatWidget {
     /// [`queued_message_edit_binding_for_terminal`] and propagated to
     /// `BottomPane` so the hint text matches the actual shortcut.
     queued_message_edit_binding: KeyBinding,
+    // Slash commands queued while a turn is in progress
+    queued_slash_commands: VecDeque<QueuedSlashCommand>,
+    // Unified ordering across queued messages and slash commands.
+    queued_follow_up_order: VecDeque<QueuedFollowUpKind>,
     // Pending notification to show when unfocused on next Draw
     pending_notification: Option<Notification>,
     /// When `Some`, the user has pressed a quit shortcut and the second press
@@ -1395,7 +1491,7 @@ impl ChatWidget {
         self.unified_exec_wait_streak = None;
         self.request_redraw();
 
-        if !from_replay && self.queued_user_messages.is_empty() {
+        if !from_replay && !self.has_queued_follow_up_actions() {
             self.maybe_prompt_plan_implementation();
         }
         // Keep this flag for replayed completion events so a subsequent live TurnComplete can
@@ -1417,7 +1513,7 @@ impl ChatWidget {
         if !self.collaboration_modes_enabled() {
             return;
         }
-        if !self.queued_user_messages.is_empty() {
+        if self.has_queued_follow_up_actions() {
             return;
         }
         if self.active_mode_kind() != ModeKind::Plan {
@@ -1754,6 +1850,7 @@ impl ChatWidget {
             self.refresh_queued_user_messages();
         }
 
+        self.maybe_send_next_queued_input();
         self.request_redraw();
     }
 
@@ -1778,6 +1875,8 @@ impl ChatWidget {
         };
 
         let mut to_merge: Vec<UserMessage> = self.queued_user_messages.drain(..).collect();
+        self.queued_follow_up_order
+            .retain(|kind| matches!(kind, QueuedFollowUpKind::SlashCommand));
         if !existing_message.text.is_empty()
             || !existing_message.local_images.is_empty()
             || !existing_message.remote_image_urls.is_empty()
@@ -2702,6 +2801,8 @@ impl ChatWidget {
             forked_from: None,
             queued_user_messages: VecDeque::new(),
             queued_message_edit_binding,
+            queued_slash_commands: VecDeque::new(),
+            queued_follow_up_order: VecDeque::new(),
             show_welcome_banner: is_first_run,
             suppress_session_configured_redraw: false,
             pending_notification: None,
@@ -2876,6 +2977,8 @@ impl ChatWidget {
             plan_item_active: false,
             queued_user_messages: VecDeque::new(),
             queued_message_edit_binding,
+            queued_slash_commands: VecDeque::new(),
+            queued_follow_up_order: VecDeque::new(),
             show_welcome_banner: is_first_run,
             suppress_session_configured_redraw: false,
             pending_notification: None,
@@ -3031,6 +3134,8 @@ impl ChatWidget {
             forked_from: None,
             queued_user_messages: VecDeque::new(),
             queued_message_edit_binding,
+            queued_slash_commands: VecDeque::new(),
+            queued_follow_up_order: VecDeque::new(),
             show_welcome_banner: false,
             suppress_session_configured_redraw: true,
             pending_notification: None,
@@ -3148,9 +3253,9 @@ impl ChatWidget {
 
         if key_event.kind == KeyEventKind::Press
             && self.queued_message_edit_binding.is_press(key_event)
-            && !self.queued_user_messages.is_empty()
+            && (!self.queued_user_messages.is_empty() || !self.queued_slash_commands.is_empty())
         {
-            if let Some(user_message) = self.queued_user_messages.pop_back() {
+            if let Some(user_message) = self.pop_latest_queued_follow_up_for_edit() {
                 self.restore_user_message_to_composer(user_message);
                 self.refresh_queued_user_messages();
                 self.request_redraw();
@@ -3276,14 +3381,13 @@ impl ChatWidget {
     }
 
     fn dispatch_command(&mut self, cmd: SlashCommand) {
+        if matches!(cmd, SlashCommand::Model) && self.bottom_pane.is_task_running() {
+            self.open_model_popup();
+            return;
+        }
         if !cmd.available_during_task() && self.bottom_pane.is_task_running() {
-            let message = format!(
-                "'/{}' is disabled while a task is in progress.",
-                cmd.command()
-            );
-            self.add_to_history(history_cell::new_error_event(message));
+            self.queue_slash_command(QueuedSlashCommand::Command(cmd));
             self.bottom_pane.drain_pending_submission_state();
-            self.request_redraw();
             return;
         }
         match cmd {
@@ -3545,35 +3649,19 @@ impl ChatWidget {
         }
     }
 
-    fn dispatch_command_with_args(
+    fn dispatch_prepared_inline_command(
         &mut self,
         cmd: SlashCommand,
-        args: String,
-        _text_elements: Vec<TextElement>,
+        prepared_args: String,
+        prepared_elements: Vec<TextElement>,
+        local_images: Vec<LocalImageAttachment>,
+        remote_image_urls: Vec<String>,
+        mention_bindings: Vec<MentionBinding>,
+        drain_submission_state: bool,
     ) {
-        if !cmd.supports_inline_args() {
-            self.dispatch_command(cmd);
-            return;
-        }
-        if !cmd.available_during_task() && self.bottom_pane.is_task_running() {
-            let message = format!(
-                "'/{}' is disabled while a task is in progress.",
-                cmd.command()
-            );
-            self.add_to_history(history_cell::new_error_event(message));
-            self.request_redraw();
-            return;
-        }
-
-        let trimmed = args.trim();
         match cmd {
-            SlashCommand::Rename if !trimmed.is_empty() => {
+            SlashCommand::Rename => {
                 self.otel_manager.counter("codex.thread.rename", 1, &[]);
-                let Some((prepared_args, _prepared_elements)) =
-                    self.bottom_pane.prepare_inline_args_submission(false)
-                else {
-                    return;
-                };
                 let Some(name) = codex_core::util::normalize_thread_name(&prepared_args) else {
                     self.add_error_message("Thread name cannot be empty.".to_string());
                     return;
@@ -3583,28 +3671,21 @@ impl ChatWidget {
                 self.request_redraw();
                 self.app_event_tx
                     .send(AppEvent::CodexOp(Op::SetThreadName { name }));
-                self.bottom_pane.drain_pending_submission_state();
+                if drain_submission_state {
+                    self.bottom_pane.drain_pending_submission_state();
+                }
             }
-            SlashCommand::Plan if !trimmed.is_empty() => {
+            SlashCommand::Plan => {
                 self.dispatch_command(cmd);
                 if self.active_mode_kind() != ModeKind::Plan {
                     return;
                 }
-                let Some((prepared_args, prepared_elements)) =
-                    self.bottom_pane.prepare_inline_args_submission(true)
-                else {
-                    return;
-                };
-                let local_images = self
-                    .bottom_pane
-                    .take_recent_submission_images_with_placeholders();
-                let remote_image_urls = self.take_remote_image_urls();
                 let user_message = UserMessage {
                     text: prepared_args,
                     local_images,
                     remote_image_urls,
                     text_elements: prepared_elements,
-                    mention_bindings: self.bottom_pane.take_recent_submission_mention_bindings(),
+                    mention_bindings,
                 };
                 if self.is_session_configured() {
                     self.reasoning_buffer.clear();
@@ -3615,12 +3696,7 @@ impl ChatWidget {
                     self.queue_user_message(user_message);
                 }
             }
-            SlashCommand::Review if !trimmed.is_empty() => {
-                let Some((prepared_args, _prepared_elements)) =
-                    self.bottom_pane.prepare_inline_args_submission(false)
-                else {
-                    return;
-                };
+            SlashCommand::Review => {
                 self.submit_op(Op::Review {
                     review_request: ReviewRequest {
                         target: ReviewTarget::Custom {
@@ -3629,22 +3705,85 @@ impl ChatWidget {
                         user_facing_hint: None,
                     },
                 });
-                self.bottom_pane.drain_pending_submission_state();
+                if drain_submission_state {
+                    self.bottom_pane.drain_pending_submission_state();
+                }
             }
-            SlashCommand::SandboxReadRoot if !trimmed.is_empty() => {
-                let Some((prepared_args, _prepared_elements)) =
-                    self.bottom_pane.prepare_inline_args_submission(false)
-                else {
-                    return;
-                };
+            SlashCommand::SandboxReadRoot => {
                 self.app_event_tx
                     .send(AppEvent::BeginWindowsSandboxGrantReadRoot {
                         path: prepared_args,
                     });
-                self.bottom_pane.drain_pending_submission_state();
+                if drain_submission_state {
+                    self.bottom_pane.drain_pending_submission_state();
+                }
             }
             _ => self.dispatch_command(cmd),
         }
+    }
+
+    fn dispatch_command_with_args(
+        &mut self,
+        cmd: SlashCommand,
+        args: String,
+        _text_elements: Vec<TextElement>,
+    ) {
+        if !cmd.supports_inline_args() {
+            self.dispatch_command(cmd);
+            return;
+        }
+        let trimmed = args.trim();
+        if trimmed.is_empty() {
+            if !cmd.available_during_task() && self.bottom_pane.is_task_running() {
+                self.queue_slash_command(QueuedSlashCommand::Command(cmd));
+                self.bottom_pane.drain_pending_submission_state();
+            } else {
+                self.dispatch_command(cmd);
+            }
+            return;
+        }
+
+        let record_history = matches!(cmd, SlashCommand::Plan);
+        let Some((prepared_args, prepared_elements)) = self
+            .bottom_pane
+            .prepare_inline_args_submission(record_history)
+        else {
+            return;
+        };
+        let (local_images, remote_image_urls, mention_bindings) =
+            if matches!(cmd, SlashCommand::Plan) {
+                (
+                    self.bottom_pane
+                        .take_recent_submission_images_with_placeholders(),
+                    self.take_remote_image_urls(),
+                    self.bottom_pane.take_recent_submission_mention_bindings(),
+                )
+            } else {
+                (Vec::new(), Vec::new(), Vec::new())
+            };
+
+        if !cmd.available_during_task() && self.bottom_pane.is_task_running() {
+            self.queue_slash_command(QueuedSlashCommand::CommandWithArgs {
+                cmd,
+                args: prepared_args,
+                text_elements: prepared_elements,
+                local_images,
+                remote_image_urls,
+                mention_bindings,
+            });
+            self.bottom_pane.drain_pending_submission_state();
+            return;
+        }
+
+        self.dispatch_prepared_inline_command(
+            cmd,
+            prepared_args,
+            prepared_elements,
+            local_images,
+            remote_image_urls,
+            mention_bindings,
+            true,
+        );
     }
 
     fn show_rename_prompt(&mut self) {
@@ -3735,16 +3874,36 @@ impl ChatWidget {
             || self.is_review_mode
         {
             self.queued_user_messages.push_back(user_message);
+            self.queued_follow_up_order
+                .push_back(QueuedFollowUpKind::UserMessage);
             self.refresh_queued_user_messages();
         } else {
             self.submit_user_message(user_message);
         }
     }
 
+    fn queue_slash_command(&mut self, queued_command: QueuedSlashCommand) {
+        let command_text = queued_command.display_text();
+        self.queued_slash_commands.push_back(queued_command);
+        self.queued_follow_up_order
+            .push_back(QueuedFollowUpKind::SlashCommand);
+        self.refresh_queued_user_messages();
+        self.add_info_message(
+            format!("Queued '{command_text}'. It will run after the current task completes."),
+            None,
+        );
+    }
+
+    fn has_queued_follow_up_actions(&self) -> bool {
+        !self.queued_user_messages.is_empty() || !self.queued_slash_commands.is_empty()
+    }
+
     fn submit_user_message(&mut self, user_message: UserMessage) {
         if !self.is_session_configured() {
             tracing::warn!("cannot submit user message before session is configured; queueing");
             self.queued_user_messages.push_front(user_message);
+            self.queued_follow_up_order
+                .push_front(QueuedFollowUpKind::UserMessage);
             self.refresh_queued_user_messages();
             return;
         }
@@ -4227,8 +4386,12 @@ impl ChatWidget {
     }
 
     fn on_exited_review_mode(&mut self, review: ExitedReviewModeEvent) {
+        let ExitedReviewModeEvent {
+            review_output,
+            review_token_usage,
+        } = review;
         // Leave review mode; if output is present, flush pending stream + show results.
-        if let Some(output) = review.review_output {
+        if let Some(output) = review_output {
             self.flush_answer_stream_with_separator();
             self.flush_interrupt_queue();
             self.flush_active_cell();
@@ -4258,6 +4421,14 @@ impl ChatWidget {
         self.add_to_history(history_cell::new_review_status_line(
             "<< Code review finished >>".to_string(),
         ));
+        if let Some(token_usage) = review_token_usage
+            && !token_usage.is_zero()
+        {
+            let usage_message = codex_core::protocol::FinalOutput::from(token_usage).to_string();
+            self.add_to_history(history_cell::new_review_status_line(format!(
+                "<< Review {usage_message} >>"
+            )));
+        }
         self.request_redraw();
     }
 
@@ -4338,20 +4509,123 @@ impl ChatWidget {
         if self.bottom_pane.is_task_running() {
             return;
         }
-        if let Some(user_message) = self.queued_user_messages.pop_front() {
-            self.submit_user_message(user_message);
+        if let Some(queued_input) = self.pop_next_queued_follow_up() {
+            match queued_input {
+                QueuedFollowUpInput::UserMessage(user_message) => {
+                    self.submit_user_message(user_message);
+                    self.refresh_queued_user_messages();
+                    return;
+                }
+                QueuedFollowUpInput::SlashCommand(queued_command) => match queued_command {
+                    QueuedSlashCommand::Command(cmd) => self.dispatch_command(cmd),
+                    QueuedSlashCommand::CommandWithArgs {
+                        cmd,
+                        args,
+                        text_elements,
+                        local_images,
+                        remote_image_urls,
+                        mention_bindings,
+                    } => self.dispatch_prepared_inline_command(
+                        cmd,
+                        args,
+                        text_elements,
+                        local_images,
+                        remote_image_urls,
+                        mention_bindings,
+                        false,
+                    ),
+                    QueuedSlashCommand::ModelSelection { model, effort } => {
+                        self.apply_model_and_effort(model, effort);
+                        if !self.bottom_pane.is_task_running() {
+                            // Applying a queued model change does not start a turn, so continue
+                            // draining queued follow-ups immediately (e.g. queued `/compact`).
+                            self.maybe_send_next_queued_input();
+                            return;
+                        }
+                    }
+                },
+            }
         }
+
         // Update the list to reflect the remaining queued messages (if any).
         self.refresh_queued_user_messages();
     }
 
+    fn pop_next_queued_follow_up(&mut self) -> Option<QueuedFollowUpInput> {
+        while let Some(kind) = self.queued_follow_up_order.pop_front() {
+            match kind {
+                QueuedFollowUpKind::UserMessage => {
+                    if let Some(message) = self.queued_user_messages.pop_front() {
+                        return Some(QueuedFollowUpInput::UserMessage(message));
+                    }
+                }
+                QueuedFollowUpKind::SlashCommand => {
+                    if let Some(command) = self.queued_slash_commands.pop_front() {
+                        return Some(QueuedFollowUpInput::SlashCommand(command));
+                    }
+                }
+            }
+        }
+
+        if let Some(message) = self.queued_user_messages.pop_front() {
+            return Some(QueuedFollowUpInput::UserMessage(message));
+        }
+        self.queued_slash_commands
+            .pop_front()
+            .map(QueuedFollowUpInput::SlashCommand)
+    }
+
+    fn pop_latest_queued_follow_up_for_edit(&mut self) -> Option<UserMessage> {
+        while let Some(kind) = self.queued_follow_up_order.pop_back() {
+            match kind {
+                QueuedFollowUpKind::UserMessage => {
+                    if let Some(message) = self.queued_user_messages.pop_back() {
+                        return Some(message);
+                    }
+                }
+                QueuedFollowUpKind::SlashCommand => {
+                    if let Some(command) = self.queued_slash_commands.pop_back() {
+                        return Some(command.into_user_message_for_edit());
+                    }
+                }
+            }
+        }
+
+        if let Some(message) = self.queued_user_messages.pop_back() {
+            return Some(message);
+        }
+        self.queued_slash_commands
+            .pop_back()
+            .map(QueuedSlashCommand::into_user_message_for_edit)
+    }
+
     /// Rebuild and update the queued user messages from the current queue.
     fn refresh_queued_user_messages(&mut self) {
-        let messages: Vec<String> = self
-            .queued_user_messages
-            .iter()
-            .map(|m| m.text.clone())
-            .collect();
+        let mut messages: Vec<String> = Vec::new();
+        let mut user_iter = self.queued_user_messages.iter();
+        let mut slash_iter = self.queued_slash_commands.iter();
+
+        if self.queued_follow_up_order.is_empty() {
+            messages.extend(user_iter.by_ref().map(|m| m.text.clone()));
+            messages.extend(slash_iter.by_ref().map(QueuedSlashCommand::display_text));
+        } else {
+            for kind in self.queued_follow_up_order.iter() {
+                match kind {
+                    QueuedFollowUpKind::UserMessage => {
+                        if let Some(message) = user_iter.next() {
+                            messages.push(message.text.clone());
+                        }
+                    }
+                    QueuedFollowUpKind::SlashCommand => {
+                        if let Some(command) = slash_iter.next() {
+                            messages.push(command.display_text());
+                        }
+                    }
+                }
+            }
+            messages.extend(user_iter.map(|m| m.text.clone()));
+            messages.extend(slash_iter.map(QueuedSlashCommand::display_text));
+        }
         self.bottom_pane.set_queued_user_messages(messages);
     }
 
@@ -5212,9 +5486,7 @@ impl ChatWidget {
                 return;
             }
 
-            tx.send(AppEvent::UpdateModel(model_for_action.clone()));
-            tx.send(AppEvent::UpdateReasoningEffort(effort_for_action));
-            tx.send(AppEvent::PersistModelSelection {
+            tx.send(AppEvent::SelectModel {
                 model: model_for_action.clone(),
                 effort: effort_for_action,
             });
@@ -5502,18 +5774,31 @@ impl ChatWidget {
         }
     }
 
-    fn apply_model_and_effort_without_persist(
-        &self,
+    pub(crate) fn apply_model_and_effort(
+        &mut self,
         model: String,
         effort: Option<ReasoningEffortConfig>,
     ) {
-        self.app_event_tx.send(AppEvent::UpdateModel(model));
+        if self.bottom_pane.is_task_running() {
+            self.queue_slash_command(QueuedSlashCommand::ModelSelection { model, effort });
+            return;
+        }
+
+        self.app_event_tx
+            .send(AppEvent::CodexOp(Op::OverrideTurnContext {
+                cwd: None,
+                approval_policy: None,
+                sandbox_policy: None,
+                windows_sandbox_level: None,
+                model: Some(model.clone()),
+                effort: Some(effort),
+                summary: None,
+                collaboration_mode: None,
+                personality: None,
+            }));
+        self.app_event_tx.send(AppEvent::UpdateModel(model.clone()));
         self.app_event_tx
             .send(AppEvent::UpdateReasoningEffort(effort));
-    }
-
-    fn apply_model_and_effort(&self, model: String, effort: Option<ReasoningEffortConfig>) {
-        self.apply_model_and_effort_without_persist(model.clone(), effort);
         self.app_event_tx
             .send(AppEvent::PersistModelSelection { model, effort });
     }

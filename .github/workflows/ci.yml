@@ -28,10 +28,14 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       # stage_npm_packages.py requires DotSlash when staging releases.
-      - uses: facebook/install-dotslash@v2
+      # On forks, skip staging since release artifacts may not exist.
+      - name: Install DotSlash (upstream release staging only)
+        if: ${{ github.repository_owner == 'openai' }}
+        uses: facebook/install-dotslash@v2
 
       - name: Stage npm package
         id: stage_npm_package
+        if: ${{ github.repository_owner == 'openai' }}
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -47,6 +51,7 @@ jobs:
           echo "pack_output=$PACK_OUTPUT" >> "$GITHUB_OUTPUT"
 
       - name: Upload staged npm package artifact
+        if: ${{ github.repository_owner == 'openai' }}
         uses: actions/upload-artifact@v6
         with:
           name: codex-npm-staging

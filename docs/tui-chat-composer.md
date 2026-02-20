@@ -89,9 +89,10 @@ Key effects when disabled:
   `input_modalities`; attach and submit paths also re-check support and emit a warning instead of
   dropping the draft.
 
-Built-in slash command availability is centralized in
-`codex-rs/tui/src/bottom_pane/slash_commands.rs` and reused by both the composer and the command
-popup so gating stays in sync.
+Built-in slash command metadata is centralized in
+`codex-rs/tui/src/bottom_pane/slash_commands.rs` and reused by both the composer and command popup
+for command discovery and parsing. Task-running availability is enforced by `ChatWidget`, which
+can queue unavailable commands and run them after the active task completes.
 
 ## Submission flow (Enter/Tab)
 
@@ -117,6 +118,10 @@ the input starts with `!` (shell command).
 
 The same preparation path is reused for slash commands with arguments (for example `/plan` and
 `/review`) so pasted content and text elements are preserved when extracting args.
+
+While a task is running, queued follow-up entries are shown above the composer in one list. That
+preview includes both queued message drafts and queued slash commands. `Alt+Up` recalls queued
+entries for editing from that list in strict reverse-chronological order across both entry types.
 
 ### Numeric auto-submit path
 

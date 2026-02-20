@@ -1,5 +1,6 @@
 ---
 source: tui/src/bottom_pane/mod.rs
+assertion_line: 1274
 expression: "render_snapshot(&pane, area)"
 ---
 • Working (0s • esc to interrupt)               
@@ -7,7 +8,7 @@ expression: "render_snapshot(&pane, area)"
     Second detail line                          
                                                 
   ↳ Queued follow-up question                   
-    ⌥ + ↑ edit                                  
+    ⌥ + ↑ edit queued                           
                                                 
 › Ask Codex to do anything                      
                                                 
