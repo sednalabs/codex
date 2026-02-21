@@ -7667,7 +7667,7 @@ async fn status_line_weekly_limit_pacing_on_pace_within_tolerance() {
 
 #[tokio::test]
 async fn status_line_weekly_limit_pacing_on_pace_at_positive_epsilon_boundary() {
-    let (chat, _rx, _op_rx) = make_chatwidget_manual(None).await;
+    let (_chat, _rx, _op_rx) = make_chatwidget_manual(None).await;
     let window_minutes = 10080;
     let captured_at = chrono::Local::now();
     let resets_at = captured_at.timestamp() + ((window_minutes * 60) / 2);
@@ -7678,13 +7678,13 @@ async fn status_line_weekly_limit_pacing_on_pace_at_positive_epsilon_boundary() 
         window_minutes: Some(window_minutes),
     };
 
-    let signal = chat.status_line_weekly_pace(&window, captured_at);
-    assert_eq!(signal, Some(WeeklyPacingSignal::OnPace));
+    let signal = ChatWidget::classify_weekly_pacing_signal(&window, captured_at, captured_at);
+    assert_eq!(signal, WeeklyPacingSignal::OnPace);
 }
 
 #[tokio::test]
 async fn status_line_weekly_limit_pacing_on_pace_at_negative_epsilon_boundary() {
-    let (chat, _rx, _op_rx) = make_chatwidget_manual(None).await;
+    let (_chat, _rx, _op_rx) = make_chatwidget_manual(None).await;
     let window_minutes = 10080;
     let captured_at = chrono::Local::now();
     let resets_at = captured_at.timestamp() + ((window_minutes * 60) / 2);
@@ -7695,8 +7695,8 @@ async fn status_line_weekly_limit_pacing_on_pace_at_negative_epsilon_boundary() 
         window_minutes: Some(window_minutes),
     };
 
-    let signal = chat.status_line_weekly_pace(&window, captured_at);
-    assert_eq!(signal, Some(WeeklyPacingSignal::OnPace));
+    let signal = ChatWidget::classify_weekly_pacing_signal(&window, captured_at, captured_at);
+    assert_eq!(signal, WeeklyPacingSignal::OnPace);
 }
 
 #[tokio::test]
@@ -7746,7 +7746,7 @@ async fn status_line_weekly_limit_pacing_shows_stale_when_snapshot_stale() {
 
 #[tokio::test]
 async fn status_line_weekly_limit_pacing_at_stale_threshold_remains_non_stale() {
-    let (chat, _rx, _op_rx) = make_chatwidget_manual(None).await;
+    let (_chat, _rx, _op_rx) = make_chatwidget_manual(None).await;
     let captured_at = chrono::Local::now();
     let window = RateLimitWindowDisplay {
         used_percent: 37.0,
@@ -7756,13 +7756,13 @@ async fn status_line_weekly_limit_pacing_at_stale_threshold_remains_non_stale() 
     };
     let rendered_at = captured_at + chrono::Duration::minutes(15);
 
-    let signal = chat.status_line_weekly_signal(&window, captured_at, rendered_at);
-    assert_eq!(signal, Some(WeeklyPacingSignal::OnPace));
+    let signal = ChatWidget::classify_weekly_pacing_signal(&window, captured_at, rendered_at);
+    assert_eq!(signal, WeeklyPacingSignal::OnPace);
 }
 
 #[tokio::test]
 async fn status_line_weekly_limit_pacing_one_second_past_stale_threshold_shows_stale() {
-    let (chat, _rx, _op_rx) = make_chatwidget_manual(None).await;
+    let (_chat, _rx, _op_rx) = make_chatwidget_manual(None).await;
     let captured_at = chrono::Local::now();
     let window = RateLimitWindowDisplay {
         used_percent: 37.0,
@@ -7772,8 +7772,8 @@ async fn status_line_weekly_limit_pacing_one_second_past_stale_threshold_shows_s
     };
     let rendered_at = captured_at + chrono::Duration::minutes(15) + chrono::Duration::seconds(1);
 
-    let signal = chat.status_line_weekly_signal(&window, captured_at, rendered_at);
-    assert_eq!(signal, Some(WeeklyPacingSignal::Stale));
+    let signal = ChatWidget::classify_weekly_pacing_signal(&window, captured_at, rendered_at);
+    assert_eq!(signal, WeeklyPacingSignal::Stale);
 }
 
 #[tokio::test]
@@ -7792,7 +7792,7 @@ async fn status_line_weekly_limit_pacing_shows_stale_when_snapshot_stale_and_tim
 }
 
 #[tokio::test]
-async fn status_line_weekly_limit_pacing_uses_snapshot_capture_time() {
+async fn status_line_weekly_limit_pacing_treats_future_capture_skew_as_stale() {
     let (mut chat, _rx, _op_rx) = make_chatwidget_manual(None).await;
     let resets_at = chrono::Local::now().timestamp() + (6048 * 60);
     chat.on_rate_limit_snapshot(Some(weekly_snapshot(37.0, Some(10080), Some(resets_at))));
@@ -7804,7 +7804,7 @@ async fn status_line_weekly_limit_pacing_uses_snapshot_capture_time() {
     snapshot.captured_at = chrono::Local::now() + chrono::Duration::hours(24);
 
     let value = chat.status_line_value_for_item(&StatusLineItem::WeeklyLimit);
-    assert_eq!(value.as_deref(), Some("weekly 63% (under 17%)"));
+    assert_eq!(value.as_deref(), Some("weekly 63% (stale)"));
 }
 
 #[tokio::test]
@@ -7814,6 +7814,150 @@ async fn status_line_weekly_limit_pacing_falls_back_when_seconds_remaining_overf
 
     let value = chat.status_line_value_for_item(&StatusLineItem::WeeklyLimit);
     assert_eq!(value.as_deref(), Some("weekly 63%"));
+}
+
+#[tokio::test]
+async fn status_line_weekly_limit_pacing_rounds_non_on_pace_delta_up_for_display() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(None).await;
+    let resets_at = chrono::Local::now().timestamp() + ((10080 * 60) / 2);
+    chat.on_rate_limit_snapshot(Some(weekly_snapshot(46.9, Some(10080), Some(resets_at))));
+
+    let value = chat.status_line_value_for_item(&StatusLineItem::WeeklyLimit);
+    assert_eq!(value.as_deref(), Some("weekly 53% (under 4%)"));
+}
+
+#[tokio::test]
+async fn status_line_weekly_limit_pacing_ignores_stale_non_codex_snapshot() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(None).await;
+    let resets_at = chrono::Local::now().timestamp() + (6048 * 60);
+    chat.on_rate_limit_snapshot(Some(weekly_snapshot(37.0, Some(10080), Some(resets_at))));
+    chat.on_rate_limit_snapshot(Some(RateLimitSnapshot {
+        limit_id: Some("codex-other".to_string()),
+        limit_name: Some("codex-other".to_string()),
+        primary: Some(RateLimitWindow {
+            used_percent: 1.0,
+            window_minutes: Some(60),
+            resets_at: None,
+        }),
+        secondary: None,
+        credits: None,
+        plan_type: None,
+    }));
+
+    let stale_other_snapshot = chat
+        .rate_limit_snapshots_by_limit_id
+        .get_mut("codex-other")
+        .expect("codex-other rate-limit snapshot should be cached");
+    stale_other_snapshot.captured_at = chrono::Local::now() - chrono::Duration::minutes(16);
+
+    let value = chat.status_line_value_for_item(&StatusLineItem::WeeklyLimit);
+    assert_eq!(value.as_deref(), Some("weekly 63% (on pace)"));
+}
+
+#[tokio::test]
+async fn refresh_status_line_prunes_expired_non_codex_snapshots() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(None).await;
+    chat.on_rate_limit_snapshot(Some(weekly_snapshot(
+        37.0,
+        Some(10080),
+        Some(chrono::Local::now().timestamp() + (6048 * 60)),
+    )));
+    chat.on_rate_limit_snapshot(Some(RateLimitSnapshot {
+        limit_id: Some("codex-other".to_string()),
+        limit_name: Some("codex-other".to_string()),
+        primary: Some(RateLimitWindow {
+            used_percent: 1.0,
+            window_minutes: Some(60),
+            resets_at: None,
+        }),
+        secondary: None,
+        credits: None,
+        plan_type: None,
+    }));
+
+    let stale_other_snapshot = chat
+        .rate_limit_snapshots_by_limit_id
+        .get_mut("codex-other")
+        .expect("codex-other rate-limit snapshot should be cached");
+    stale_other_snapshot.captured_at = chrono::Local::now()
+        - chrono::Duration::minutes(NON_CODEX_RATE_LIMIT_SNAPSHOT_RETENTION_MINUTES + 1);
+
+    chat.refresh_status_line();
+
+    assert!(chat.rate_limit_snapshots_by_limit_id.contains_key("codex"));
+    assert!(
+        !chat
+            .rate_limit_snapshots_by_limit_id
+            .contains_key("codex-other")
+    );
+}
+
+#[tokio::test]
+async fn status_line_weekly_limit_pacing_copy_variants_snapshot() {
+    let captured_at = chrono::Local::now();
+    let align_snapshot_time = |chat: &mut ChatWidget, resets_at: Option<i64>| {
+        let snapshot = chat
+            .rate_limit_snapshots_by_limit_id
+            .get_mut("codex")
+            .expect("codex rate-limit snapshot should be cached");
+        snapshot.captured_at = captured_at;
+        if let Some(window) = snapshot.secondary.as_mut() {
+            window.resets_at_unix_seconds = resets_at;
+        }
+    };
+
+    let on_pace = {
+        let (mut chat, _rx, _op_rx) = make_chatwidget_manual(None).await;
+        let resets_at = captured_at.timestamp() + (6048 * 60);
+        chat.on_rate_limit_snapshot(Some(weekly_snapshot(37.0, Some(10080), Some(resets_at))));
+        align_snapshot_time(&mut chat, Some(resets_at));
+        chat.status_line_value_for_item(&StatusLineItem::WeeklyLimit)
+            .expect("weekly status line should render")
+    };
+
+    let over = {
+        let (mut chat, _rx, _op_rx) = make_chatwidget_manual(None).await;
+        let resets_at = captured_at.timestamp() + (6048 * 60);
+        chat.on_rate_limit_snapshot(Some(weekly_snapshot(50.0, Some(10080), Some(resets_at))));
+        align_snapshot_time(&mut chat, Some(resets_at));
+        chat.status_line_value_for_item(&StatusLineItem::WeeklyLimit)
+            .expect("weekly status line should render")
+    };
+
+    let under_rounded = {
+        let (mut chat, _rx, _op_rx) = make_chatwidget_manual(None).await;
+        let resets_at = captured_at.timestamp() + ((10080 * 60) / 2);
+        chat.on_rate_limit_snapshot(Some(weekly_snapshot(46.9, Some(10080), Some(resets_at))));
+        align_snapshot_time(&mut chat, Some(resets_at));
+        chat.status_line_value_for_item(&StatusLineItem::WeeklyLimit)
+            .expect("weekly status line should render")
+    };
+
+    let stale = {
+        let (mut chat, _rx, _op_rx) = make_chatwidget_manual(None).await;
+        let resets_at = captured_at.timestamp() + (6048 * 60);
+        chat.on_rate_limit_snapshot(Some(weekly_snapshot(37.0, Some(10080), Some(resets_at))));
+        let snapshot = chat
+            .rate_limit_snapshots_by_limit_id
+            .get_mut("codex")
+            .expect("codex rate-limit snapshot should be cached");
+        snapshot.captured_at = captured_at - chrono::Duration::minutes(16);
+        chat.status_line_value_for_item(&StatusLineItem::WeeklyLimit)
+            .expect("weekly status line should render")
+    };
+
+    let unavailable = {
+        let (mut chat, _rx, _op_rx) = make_chatwidget_manual(None).await;
+        chat.on_rate_limit_snapshot(Some(weekly_snapshot(20.0, Some(10080), None)));
+        align_snapshot_time(&mut chat, None);
+        chat.status_line_value_for_item(&StatusLineItem::WeeklyLimit)
+            .expect("weekly status line should render")
+    };
+
+    assert_snapshot!(
+        "status_line_weekly_limit_pacing_copy_variants",
+        [on_pace, over, under_rounded, stale, unavailable].join("\n")
+    );
 }
 
 #[tokio::test]

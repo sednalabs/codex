@@ -37,6 +37,7 @@ Choose **Variant A** as the canonical status-line format because it best balance
 - Fresh + over pace: `weekly {remaining:.0}% (over {abs_delta:.0}%)`
 - Fresh + under pace: `weekly {remaining:.0}% (under {abs_delta:.0}%)`
 - Missing/invalid pacing data: render base weekly value with no pacing suffix.
+- Weekly stale state is derived from the codex weekly snapshot itself (not from unrelated limit buckets).
 
 ## Pacing Semantics and Thresholds
 
@@ -54,7 +55,7 @@ Classification:
 
 Display rules:
 
-- Display `abs_delta = abs(pace_delta).round()` as the percentage magnitude.
+- Display `abs_delta` using upward rounding (`ceil`) for non-on-pace states so labels do not understate out-of-band deltas.
 - Do not display signed percentages in user-facing copy.
 - If `resets_at - captured_at` cannot be represented safely, treat pacing as unavailable (base weekly value only).
 
@@ -62,9 +63,13 @@ Display rules:
 
 - Staleness uses shared helper `is_snapshot_stale(captured_at, now)` from `status/rate_limits.rs`.
 - A snapshot is stale only when age is strictly greater than the threshold (`> 15 minutes`).
+- Future capture timestamps are tolerated only within a small skew window (`<= 60s`); beyond that they are treated as stale/skewed.
 - Exact boundary behavior:
   - exactly `15m` old is **not** stale,
   - `15m + 1s` old **is** stale.
+- Future-skew boundary behavior:
+  - exactly `+60s` ahead is **not** stale,
+  - `+61s` ahead **is** stale.
 - The same stale predicate is reused in `/status` and footer weekly signal logic to avoid drift.
 
 ## Truncation / Narrow-Width Behavior
@@ -75,7 +80,8 @@ Display rules:
 
 ## Maintenance Notes
 
-- Weekly signal internals now use a typed `WeeklyPacingSignal` representation in `chatwidget`, with formatting centralized via `Display`.
+- Weekly signal internals now use a typed `WeeklyPacingSignal` representation in `chatwidget`, with suffix rendering centralized in one method.
+- Non-codex limit snapshots are pruned after a retention window so stale orphan buckets do not linger indefinitely.
 - Tests cover:
   - epsilon boundaries for on-pace classification,
   - stale threshold exact-edge behavior,

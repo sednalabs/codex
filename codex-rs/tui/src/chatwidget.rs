@@ -446,22 +446,40 @@ const RATE_LIMIT_WARNING_THRESHOLDS: [f64; 3] = [75.0, 90.0, 95.0];
 const NUDGE_MODEL_SLUG: &str = "gpt-5.1-codex-mini";
 const RATE_LIMIT_SWITCH_PROMPT_THRESHOLD: f64 = 90.0;
 const WEEKLY_PACE_ON_TRACK_EPSILON_PERCENT: f64 = 3.0;
+const NON_CODEX_RATE_LIMIT_SNAPSHOT_RETENTION_MINUTES: i64 = 60;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct PercentDelta(u8);
+
+impl PercentDelta {
+    fn from_abs_delta(abs_delta: f64) -> Self {
+        Self(abs_delta.clamp(0.0, 100.0).ceil() as u8)
+    }
+}
+
+impl std::fmt::Display for PercentDelta {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum WeeklyPacingSignal {
+    Unavailable,
     Stale,
     OnPace,
-    Over(i64),
-    Under(i64),
+    Over(PercentDelta),
+    Under(PercentDelta),
 }
 
-impl std::fmt::Display for WeeklyPacingSignal {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl WeeklyPacingSignal {
+    fn status_line_suffix(self) -> Option<String> {
         match self {
-            Self::Stale => write!(f, "stale"),
-            Self::OnPace => write!(f, "on pace"),
-            Self::Over(delta_percent) => write!(f, "over {delta_percent}%"),
-            Self::Under(delta_percent) => write!(f, "under {delta_percent}%"),
+            Self::Unavailable => None,
+            Self::Stale => Some("stale".to_string()),
+            Self::OnPace => Some("on pace".to_string()),
+            Self::Over(delta_percent) => Some(format!("over {delta_percent}%")),
+            Self::Under(delta_percent) => Some(format!("under {delta_percent}%")),
         }
     }
 }
@@ -1049,6 +1067,7 @@ impl ChatWidget {
     /// a session id exists or before branch lookup completes), those items are skipped without
     /// placeholders so the line remains compact and stable.
     pub(crate) fn refresh_status_line(&mut self) {
+        self.prune_expired_non_codex_rate_limit_snapshots(Local::now());
         let (items, invalid_items) = self.status_line_items_with_invalids();
         if self.thread_id.is_some()
             && !invalid_items.is_empty()
@@ -4660,6 +4679,8 @@ impl ChatWidget {
     }
 
     pub(crate) fn add_status_output(&mut self) {
+        let rendered_at = Local::now();
+        self.prune_expired_non_codex_rate_limit_snapshots(rendered_at);
         let default_usage = TokenUsage::default();
         let token_info = self.token_info.as_ref();
         let total_usage = token_info
@@ -4682,7 +4703,7 @@ impl ChatWidget {
             self.forked_from,
             rate_limit_snapshots.as_slice(),
             self.plan_type,
-            Local::now(),
+            rendered_at,
             self.model_display_name(),
             collaboration_mode,
             reasoning_effort_override,
@@ -4852,14 +4873,18 @@ impl ChatWidget {
                     .map(get_limits_duration)
                     .unwrap_or_else(|| "weekly".to_string());
                 self.status_line_limit_display(window, &label).map(|base| {
-                    window
-                        .and_then(|window| {
-                            captured_at.and_then(|captured_at| {
-                                self.status_line_weekly_signal(window, captured_at, rendered_at)
-                            })
-                        })
-                        .map(|signal| format!("{base} ({signal})"))
-                        .unwrap_or(base)
+                    let signal = match (window, captured_at) {
+                        (Some(window), Some(captured_at)) => {
+                            Self::classify_weekly_pacing_signal(window, captured_at, rendered_at)
+                        }
+                        _ => WeeklyPacingSignal::Unavailable,
+                    };
+
+                    if let Some(suffix) = signal.status_line_suffix() {
+                        format!("{base} ({suffix})")
+                    } else {
+                        base
+                    }
                 })
             }
             StatusLineItem::CodexVersion => Some(CODEX_CLI_VERSION.to_string()),
@@ -4876,6 +4901,24 @@ impl ChatWidget {
             )),
             StatusLineItem::SessionId => self.thread_id.map(|id| id.to_string()),
         }
+    }
+
+    fn retain_rate_limit_snapshot(
+        limit_id: &str,
+        snapshot: &RateLimitSnapshotDisplay,
+        now: DateTime<Local>,
+    ) -> bool {
+        if limit_id.eq_ignore_ascii_case("codex") {
+            return true;
+        }
+
+        now.signed_duration_since(snapshot.captured_at)
+            <= chrono::Duration::minutes(NON_CODEX_RATE_LIMIT_SNAPSHOT_RETENTION_MINUTES)
+    }
+
+    fn prune_expired_non_codex_rate_limit_snapshots(&mut self, now: DateTime<Local>) {
+        self.rate_limit_snapshots_by_limit_id
+            .retain(|limit_id, snapshot| Self::retain_rate_limit_snapshot(limit_id, snapshot, now));
     }
 
     fn status_line_context_window_size(&self) -> Option<i64> {
@@ -4924,44 +4967,44 @@ impl ChatWidget {
         Some(format!("{label} {remaining:.0}%"))
     }
 
-    fn status_line_weekly_signal(
-        &self,
+    fn classify_weekly_pacing_signal(
         window: &RateLimitWindowDisplay,
         captured_at: DateTime<Local>,
         rendered_at: DateTime<Local>,
-    ) -> Option<WeeklyPacingSignal> {
+    ) -> WeeklyPacingSignal {
         if is_snapshot_stale(captured_at, rendered_at) {
-            return Some(WeeklyPacingSignal::Stale);
+            return WeeklyPacingSignal::Stale;
         }
 
-        self.status_line_weekly_pace(window, captured_at)
-    }
-
-    fn status_line_weekly_pace(
-        &self,
-        window: &RateLimitWindowDisplay,
-        captured_at: DateTime<Local>,
-    ) -> Option<WeeklyPacingSignal> {
-        let resets_at_unix_seconds = window.resets_at_unix_seconds?;
-        let window_minutes = window.window_minutes?;
+        let Some(resets_at_unix_seconds) = window.resets_at_unix_seconds else {
+            return WeeklyPacingSignal::Unavailable;
+        };
+        let Some(window_minutes) = window.window_minutes else {
+            return WeeklyPacingSignal::Unavailable;
+        };
         if window_minutes <= 0 {
-            return None;
+            return WeeklyPacingSignal::Unavailable;
         }
 
         let usage_remaining_pct = (100.0f64 - window.used_percent).clamp(0.0f64, 100.0f64);
         let window_seconds = window_minutes.saturating_mul(60) as f64;
-        let seconds_remaining = resets_at_unix_seconds.checked_sub(captured_at.timestamp())? as f64;
+        let seconds_remaining_i128 =
+            i128::from(resets_at_unix_seconds) - i128::from(captured_at.timestamp());
+        let seconds_remaining = match i64::try_from(seconds_remaining_i128) {
+            Ok(seconds) => seconds as f64,
+            Err(_) => return WeeklyPacingSignal::Unavailable,
+        };
         let time_remaining_pct =
             ((seconds_remaining / window_seconds) * 100.0f64).clamp(0.0, 100.0);
         let pace_delta = usage_remaining_pct - time_remaining_pct;
-        let abs_delta = pace_delta.abs().round() as i64;
+        let abs_delta = PercentDelta::from_abs_delta(pace_delta.abs());
 
         if pace_delta.abs() <= WEEKLY_PACE_ON_TRACK_EPSILON_PERCENT {
-            Some(WeeklyPacingSignal::OnPace)
+            WeeklyPacingSignal::OnPace
         } else if pace_delta < 0.0 {
-            Some(WeeklyPacingSignal::Over(abs_delta))
+            WeeklyPacingSignal::Over(abs_delta)
         } else {
-            Some(WeeklyPacingSignal::Under(abs_delta))
+            WeeklyPacingSignal::Under(abs_delta)
         }
     }
 

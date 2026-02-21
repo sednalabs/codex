@@ -56,11 +56,14 @@ pub(crate) enum StatusRateLimitData {
 
 /// Maximum age before a snapshot is considered stale in status output.
 pub(crate) const RATE_LIMIT_STALE_THRESHOLD_MINUTES: i64 = 15;
+/// Maximum tolerated future skew for snapshot capture timestamps.
+pub(crate) const RATE_LIMIT_FUTURE_SKEW_TOLERANCE_SECONDS: i64 = 60;
 
-/// Returns true when a captured snapshot is older than the staleness threshold.
+/// Returns true when a captured snapshot is stale or has excessive future skew.
 pub(crate) fn is_snapshot_stale(captured_at: DateTime<Local>, now: DateTime<Local>) -> bool {
-    now.signed_duration_since(captured_at)
-        > ChronoDuration::minutes(RATE_LIMIT_STALE_THRESHOLD_MINUTES)
+    let snapshot_age = now.signed_duration_since(captured_at);
+    snapshot_age > ChronoDuration::minutes(RATE_LIMIT_STALE_THRESHOLD_MINUTES)
+        || snapshot_age < ChronoDuration::seconds(-RATE_LIMIT_FUTURE_SKEW_TOLERANCE_SECONDS)
 }
 
 /// Display-friendly representation of one usage window from a snapshot.
@@ -353,6 +356,7 @@ fn format_credit_balance(raw: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::CreditsSnapshotDisplay;
+    use super::RATE_LIMIT_FUTURE_SKEW_TOLERANCE_SECONDS;
     use super::RATE_LIMIT_STALE_THRESHOLD_MINUTES;
     use super::RateLimitSnapshotDisplay;
     use super::RateLimitWindowDisplay;
@@ -466,6 +470,23 @@ mod tests {
         let captured_at = now
             - ChronoDuration::minutes(RATE_LIMIT_STALE_THRESHOLD_MINUTES)
             - ChronoDuration::seconds(1);
+
+        assert!(is_snapshot_stale(captured_at, now));
+    }
+
+    #[test]
+    fn future_skew_tolerance_boundary_is_not_stale() {
+        let now = Local::now();
+        let captured_at = now + ChronoDuration::seconds(RATE_LIMIT_FUTURE_SKEW_TOLERANCE_SECONDS);
+
+        assert!(!is_snapshot_stale(captured_at, now));
+    }
+
+    #[test]
+    fn future_skew_plus_one_second_is_stale() {
+        let now = Local::now();
+        let captured_at =
+            now + ChronoDuration::seconds(RATE_LIMIT_FUTURE_SKEW_TOLERANCE_SECONDS + 1);
 
         assert!(is_snapshot_stale(captured_at, now));
     }
