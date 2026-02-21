@@ -8,11 +8,13 @@ It is the UX decision artifact that unblocks implementation work in `1134`.
 - In scope: status-line copy/layout for weekly usage + pacing.
 - Out of scope: telemetry source changes, protocol changes, or final rendering implementation.
 
-## Current Baseline
+## Current Behavior
 
-- Current weekly limit item renders as `weekly {remaining}%`.
-- It does not show pace versus time remaining in the weekly window.
-- Footer-level truncation already exists and uses ellipsis when space is constrained.
+- Weekly limit item always starts from `weekly {remaining:.0}%`.
+- When pacing inputs are available and the snapshot is fresh, the footer appends a compact suffix:
+  - `(on pace)`, `(over {n}%)`, or `(under {n}%)`.
+- When the snapshot is stale, footer copy shows `(stale)` and intentionally hides pace percentage.
+- Footer-level truncation still applies globally and uses ellipsis when space is constrained.
 
 ## Candidate Variants
 
@@ -29,9 +31,12 @@ Choose **Variant A** as the canonical status-line format because it best balance
 
 ### Canonical Copy Rules
 
-- On pace: `weekly {remaining:.0}% (on pace)`
-- Over pace: `weekly {remaining:.0}% (over {abs_delta:.0}%)`
-- Under pace: `weekly {remaining:.0}% (under {abs_delta:.0}%)`
+- Base weekly value: `weekly {remaining:.0}%`
+- Stale snapshot: `weekly {remaining:.0}% (stale)` (takes precedence over pace detail)
+- Fresh + on pace: `weekly {remaining:.0}% (on pace)`
+- Fresh + over pace: `weekly {remaining:.0}% (over {abs_delta:.0}%)`
+- Fresh + under pace: `weekly {remaining:.0}% (under {abs_delta:.0}%)`
+- Missing/invalid pacing data: render base weekly value with no pacing suffix.
 
 ## Pacing Semantics and Thresholds
 
@@ -51,6 +56,16 @@ Display rules:
 
 - Display `abs_delta = abs(pace_delta).round()` as the percentage magnitude.
 - Do not display signed percentages in user-facing copy.
+- If `resets_at - captured_at` cannot be represented safely, treat pacing as unavailable (base weekly value only).
+
+## Stale Snapshot Semantics
+
+- Staleness uses shared helper `is_snapshot_stale(captured_at, now)` from `status/rate_limits.rs`.
+- A snapshot is stale only when age is strictly greater than the threshold (`> 15 minutes`).
+- Exact boundary behavior:
+  - exactly `15m` old is **not** stale,
+  - `15m + 1s` old **is** stale.
+- The same stale predicate is reused in `/status` and footer weekly signal logic to avoid drift.
 
 ## Truncation / Narrow-Width Behavior
 
@@ -58,10 +73,11 @@ Display rules:
 - Rely on the existing footer-level truncation path, which preserves the mode indicator and applies an ellipsis to the left status-line content.
 - The selected copy is intentionally compact to reduce truncation frequency in common layouts.
 
-## Implementation Handoff to 1134
+## Maintenance Notes
 
-`1134` should:
-
-- implement the above copy/state rules in the weekly status-line rendering path,
-- preserve existing weekly remaining percentage,
-- keep missing-data behavior explicit (render current weekly value without pacing suffix).
+- Weekly signal internals now use a typed `WeeklyPacingSignal` representation in `chatwidget`, with formatting centralized via `Display`.
+- Tests cover:
+  - epsilon boundaries for on-pace classification,
+  - stale threshold exact-edge behavior,
+  - stale precedence over missing pacing inputs,
+  - overflow-safe fallback when `seconds_remaining` cannot be computed.
