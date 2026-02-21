@@ -4465,7 +4465,8 @@ impl ChatWidget {
         if let Some(token_usage) = review_token_usage
             && !token_usage.is_zero()
         {
-            let usage_message = codex_core::protocol::FinalOutput::from(token_usage).to_string();
+            let usage_message =
+                codex_protocol::protocol::FinalOutput::from(token_usage).to_string();
             self.add_to_history(history_cell::new_review_status_line(format!(
                 "<< Review {usage_message} >>"
             )));
