@@ -447,6 +447,25 @@ const NUDGE_MODEL_SLUG: &str = "gpt-5.1-codex-mini";
 const RATE_LIMIT_SWITCH_PROMPT_THRESHOLD: f64 = 90.0;
 const WEEKLY_PACE_ON_TRACK_EPSILON_PERCENT: f64 = 3.0;
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum WeeklyPacingSignal {
+    Stale,
+    OnPace,
+    Over(i64),
+    Under(i64),
+}
+
+impl std::fmt::Display for WeeklyPacingSignal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Stale => write!(f, "stale"),
+            Self::OnPace => write!(f, "on pace"),
+            Self::Over(delta_percent) => write!(f, "over {delta_percent}%"),
+            Self::Under(delta_percent) => write!(f, "under {delta_percent}%"),
+        }
+    }
+}
+
 #[derive(Default)]
 struct RateLimitWarningState {
     secondary_index: usize,
@@ -4910,9 +4929,9 @@ impl ChatWidget {
         window: &RateLimitWindowDisplay,
         captured_at: DateTime<Local>,
         rendered_at: DateTime<Local>,
-    ) -> Option<String> {
+    ) -> Option<WeeklyPacingSignal> {
         if is_snapshot_stale(captured_at, rendered_at) {
-            return Some("stale".to_string());
+            return Some(WeeklyPacingSignal::Stale);
         }
 
         self.status_line_weekly_pace(window, captured_at)
@@ -4922,7 +4941,7 @@ impl ChatWidget {
         &self,
         window: &RateLimitWindowDisplay,
         captured_at: DateTime<Local>,
-    ) -> Option<String> {
+    ) -> Option<WeeklyPacingSignal> {
         let resets_at_unix_seconds = window.resets_at_unix_seconds?;
         let window_minutes = window.window_minutes?;
         if window_minutes <= 0 {
@@ -4935,14 +4954,14 @@ impl ChatWidget {
         let time_remaining_pct =
             ((seconds_remaining / window_seconds) * 100.0f64).clamp(0.0, 100.0);
         let pace_delta = usage_remaining_pct - time_remaining_pct;
-        let abs_delta = pace_delta.abs().round();
+        let abs_delta = pace_delta.abs().round() as i64;
 
         if pace_delta.abs() <= WEEKLY_PACE_ON_TRACK_EPSILON_PERCENT {
-            Some("on pace".to_string())
+            Some(WeeklyPacingSignal::OnPace)
         } else if pace_delta < 0.0 {
-            Some(format!("over {abs_delta:.0}%"))
+            Some(WeeklyPacingSignal::Over(abs_delta))
         } else {
-            Some(format!("under {abs_delta:.0}%"))
+            Some(WeeklyPacingSignal::Under(abs_delta))
         }
     }
 
