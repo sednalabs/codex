@@ -264,7 +264,6 @@ use crate::streaming::commit_tick::run_commit_tick;
 use crate::streaming::controller::PlanStreamController;
 use crate::streaming::controller::StreamController;
 
-use chrono::DateTime;
 use chrono::Local;
 use codex_core::AuthManager;
 use codex_core::CodexAuth;
@@ -4823,17 +4822,20 @@ impl ChatWidget {
                 self.status_line_limit_display(window, &label)
             }
             StatusLineItem::WeeklyLimit => {
-                let snapshot = self.rate_limit_snapshots_by_limit_id.get("codex");
-                let window = snapshot.and_then(|s| s.secondary.as_ref());
+                let window = self
+                    .rate_limit_snapshots_by_limit_id
+                    .get("codex")
+                    .and_then(|s| s.secondary.as_ref());
                 let label = window
                     .and_then(|window| window.window_minutes)
                     .map(get_limits_duration)
                     .unwrap_or_else(|| "weekly".to_string());
-                self.status_line_weekly_limit_display(
-                    window,
-                    snapshot.map(|s| s.captured_at),
-                    &label,
-                )
+                self.status_line_limit_display(window, &label).map(|base| {
+                    window
+                        .and_then(|window| self.status_line_weekly_pace(window))
+                        .map(|pace| format!("{base} ({pace})"))
+                        .unwrap_or(base)
+                })
             }
             StatusLineItem::CodexVersion => Some(CODEX_CLI_VERSION.to_string()),
             StatusLineItem::ContextWindowSize => self
@@ -4897,28 +4899,7 @@ impl ChatWidget {
         Some(format!("{label} {remaining:.0}%"))
     }
 
-    fn status_line_weekly_limit_display(
-        &self,
-        window: Option<&RateLimitWindowDisplay>,
-        captured_at: Option<DateTime<Local>>,
-        label: &str,
-    ) -> Option<String> {
-        let base = self.status_line_limit_display(window, label)?;
-        let Some(window) = window else {
-            return Some(base);
-        };
-        let Some(pace) = self.status_line_weekly_pace(window, captured_at) else {
-            return Some(base);
-        };
-        Some(format!("{base} ({pace})"))
-    }
-
-    fn status_line_weekly_pace(
-        &self,
-        window: &RateLimitWindowDisplay,
-        captured_at: Option<DateTime<Local>>,
-    ) -> Option<String> {
-        let captured_at = captured_at?;
+    fn status_line_weekly_pace(&self, window: &RateLimitWindowDisplay) -> Option<String> {
         let resets_at_unix_seconds = window.resets_at_unix_seconds?;
         let window_minutes = window.window_minutes?;
         if window_minutes <= 0 {
@@ -4927,7 +4908,7 @@ impl ChatWidget {
 
         let usage_remaining_pct = (100.0f64 - window.used_percent).clamp(0.0f64, 100.0f64);
         let window_seconds = window_minutes.saturating_mul(60) as f64;
-        let seconds_remaining = (resets_at_unix_seconds - captured_at.timestamp()) as f64;
+        let seconds_remaining = (resets_at_unix_seconds - Local::now().timestamp()) as f64;
         let time_remaining_pct =
             ((seconds_remaining / window_seconds) * 100.0f64).clamp(0.0, 100.0);
         let pace_delta = usage_remaining_pct - time_remaining_pct;
