@@ -143,6 +143,25 @@ fn snapshot(percent: f64) -> RateLimitSnapshot {
     }
 }
 
+fn weekly_snapshot(
+    used_percent: f64,
+    window_minutes: Option<i64>,
+    resets_at: Option<i64>,
+) -> RateLimitSnapshot {
+    RateLimitSnapshot {
+        limit_id: None,
+        limit_name: None,
+        primary: None,
+        secondary: Some(RateLimitWindow {
+            used_percent,
+            window_minutes,
+            resets_at,
+        }),
+        credits: None,
+        plan_type: None,
+    }
+}
+
 #[tokio::test]
 async fn resumed_initial_messages_render_history() {
     let (mut chat, mut rx, _ops) = make_chatwidget_manual(None).await;
@@ -7634,6 +7653,45 @@ async fn status_line_invalid_items_warn_once() {
         cells.is_empty(),
         "expected invalid status line warning to emit only once"
     );
+}
+
+#[tokio::test]
+async fn status_line_weekly_limit_pacing_on_pace_within_tolerance() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(None).await;
+    let resets_at = chrono::Local::now().timestamp() + (6048 * 60);
+    chat.on_rate_limit_snapshot(Some(weekly_snapshot(37.0, Some(10080), Some(resets_at))));
+
+    let value = chat.status_line_value_for_item(&StatusLineItem::WeeklyLimit);
+    assert_eq!(value.as_deref(), Some("weekly 63% (on pace)"));
+}
+
+#[tokio::test]
+async fn status_line_weekly_limit_pacing_over_when_usage_is_ahead_of_time() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(None).await;
+    let resets_at = chrono::Local::now().timestamp() + (6048 * 60);
+    chat.on_rate_limit_snapshot(Some(weekly_snapshot(50.0, Some(10080), Some(resets_at))));
+
+    let value = chat.status_line_value_for_item(&StatusLineItem::WeeklyLimit);
+    assert_eq!(value.as_deref(), Some("weekly 50% (over 10%)"));
+}
+
+#[tokio::test]
+async fn status_line_weekly_limit_pacing_under_when_usage_is_behind_time() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(None).await;
+    let resets_at = chrono::Local::now().timestamp() + (6048 * 60);
+    chat.on_rate_limit_snapshot(Some(weekly_snapshot(20.0, Some(10080), Some(resets_at))));
+
+    let value = chat.status_line_value_for_item(&StatusLineItem::WeeklyLimit);
+    assert_eq!(value.as_deref(), Some("weekly 80% (under 20%)"));
+}
+
+#[tokio::test]
+async fn status_line_weekly_limit_pacing_falls_back_when_time_data_missing() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(None).await;
+    chat.on_rate_limit_snapshot(Some(weekly_snapshot(20.0, Some(10080), None)));
+
+    let value = chat.status_line_value_for_item(&StatusLineItem::WeeklyLimit);
+    assert_eq!(value.as_deref(), Some("weekly 80%"));
 }
 
 #[tokio::test]

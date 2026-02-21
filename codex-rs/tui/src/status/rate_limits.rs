@@ -64,6 +64,8 @@ pub(crate) struct RateLimitWindowDisplay {
     pub used_percent: f64,
     /// Human-readable local reset time.
     pub resets_at: Option<String>,
+    /// Raw reset timestamp (Unix seconds) used for pacing math.
+    pub resets_at_unix_seconds: Option<i64>,
     /// Window length in minutes when provided by the server.
     pub window_minutes: Option<i64>,
 }
@@ -79,6 +81,7 @@ impl RateLimitWindowDisplay {
         Self {
             used_percent: window.used_percent,
             resets_at,
+            resets_at_unix_seconds: window.resets_at,
             window_minutes: window.window_minutes,
         }
     }
@@ -356,6 +359,7 @@ mod tests {
         RateLimitWindowDisplay {
             used_percent,
             resets_at: Some("soon".to_string()),
+            resets_at_unix_seconds: Some(0),
             window_minutes: Some(300),
         }
     }
@@ -413,11 +417,13 @@ mod tests {
             primary: Some(RateLimitWindowDisplay {
                 used_percent: 20.0,
                 resets_at: Some("soon".to_string()),
+                resets_at_unix_seconds: Some(0),
                 window_minutes: Some(60),
             }),
             secondary: Some(RateLimitWindowDisplay {
                 used_percent: 40.0,
                 resets_at: Some("later".to_string()),
+                resets_at_unix_seconds: Some(0),
                 window_minutes: None,
             }),
             credits: None,

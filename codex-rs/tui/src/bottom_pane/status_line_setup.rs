@@ -112,7 +112,7 @@ impl StatusLineItem {
                 "Remaining usage on 5-hour usage limit (omitted when unavailable)"
             }
             StatusLineItem::WeeklyLimit => {
-                "Remaining usage on weekly usage limit (omitted when unavailable)"
+                "Remaining usage on weekly usage limit plus pacing signal (omitted when unavailable)"
             }
             StatusLineItem::CodexVersion => "Codex application version",
             StatusLineItem::ContextWindowSize => {
@@ -141,7 +141,7 @@ impl StatusLineItem {
             StatusLineItem::ContextRemaining => "18% left",
             StatusLineItem::ContextUsed => "82% used",
             StatusLineItem::FiveHourLimit => "5h 100%",
-            StatusLineItem::WeeklyLimit => "weekly 98%",
+            StatusLineItem::WeeklyLimit => "weekly 98% (on pace)",
             StatusLineItem::CodexVersion => "v0.93.0",
             StatusLineItem::ContextWindowSize => "258K window",
             StatusLineItem::UsedTokens => "27.3K used",

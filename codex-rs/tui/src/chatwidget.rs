@@ -264,6 +264,7 @@ use crate::streaming::commit_tick::run_commit_tick;
 use crate::streaming::controller::PlanStreamController;
 use crate::streaming::controller::StreamController;
 
+use chrono::DateTime;
 use chrono::Local;
 use codex_core::AuthManager;
 use codex_core::CodexAuth;
@@ -443,6 +444,7 @@ fn is_standard_tool_call(parsed_cmd: &[ParsedCommand]) -> bool {
 const RATE_LIMIT_WARNING_THRESHOLDS: [f64; 3] = [75.0, 90.0, 95.0];
 const NUDGE_MODEL_SLUG: &str = "gpt-5.1-codex-mini";
 const RATE_LIMIT_SWITCH_PROMPT_THRESHOLD: f64 = 90.0;
+const WEEKLY_PACE_ON_TRACK_EPSILON_PERCENT: f64 = 3.0;
 
 #[derive(Default)]
 struct RateLimitWarningState {
@@ -4821,15 +4823,17 @@ impl ChatWidget {
                 self.status_line_limit_display(window, &label)
             }
             StatusLineItem::WeeklyLimit => {
-                let window = self
-                    .rate_limit_snapshots_by_limit_id
-                    .get("codex")
-                    .and_then(|s| s.secondary.as_ref());
+                let snapshot = self.rate_limit_snapshots_by_limit_id.get("codex");
+                let window = snapshot.and_then(|s| s.secondary.as_ref());
                 let label = window
                     .and_then(|window| window.window_minutes)
                     .map(get_limits_duration)
                     .unwrap_or_else(|| "weekly".to_string());
-                self.status_line_limit_display(window, &label)
+                self.status_line_weekly_limit_display(
+                    window,
+                    snapshot.map(|s| s.captured_at),
+                    &label,
+                )
             }
             StatusLineItem::CodexVersion => Some(CODEX_CLI_VERSION.to_string()),
             StatusLineItem::ContextWindowSize => self
@@ -4891,6 +4895,51 @@ impl ChatWidget {
         let window = window?;
         let remaining = (100.0f64 - window.used_percent).clamp(0.0f64, 100.0f64);
         Some(format!("{label} {remaining:.0}%"))
+    }
+
+    fn status_line_weekly_limit_display(
+        &self,
+        window: Option<&RateLimitWindowDisplay>,
+        captured_at: Option<DateTime<Local>>,
+        label: &str,
+    ) -> Option<String> {
+        let base = self.status_line_limit_display(window, label)?;
+        let Some(window) = window else {
+            return Some(base);
+        };
+        let Some(pace) = self.status_line_weekly_pace(window, captured_at) else {
+            return Some(base);
+        };
+        Some(format!("{base} ({pace})"))
+    }
+
+    fn status_line_weekly_pace(
+        &self,
+        window: &RateLimitWindowDisplay,
+        captured_at: Option<DateTime<Local>>,
+    ) -> Option<String> {
+        let captured_at = captured_at?;
+        let resets_at_unix_seconds = window.resets_at_unix_seconds?;
+        let window_minutes = window.window_minutes?;
+        if window_minutes <= 0 {
+            return None;
+        }
+
+        let usage_remaining_pct = (100.0f64 - window.used_percent).clamp(0.0f64, 100.0f64);
+        let window_seconds = window_minutes.saturating_mul(60) as f64;
+        let seconds_remaining = (resets_at_unix_seconds - captured_at.timestamp()) as f64;
+        let time_remaining_pct =
+            ((seconds_remaining / window_seconds) * 100.0f64).clamp(0.0, 100.0);
+        let pace_delta = usage_remaining_pct - time_remaining_pct;
+        let abs_delta = pace_delta.abs().round();
+
+        if pace_delta.abs() <= WEEKLY_PACE_ON_TRACK_EPSILON_PERCENT {
+            Some("on pace".to_string())
+        } else if pace_delta < 0.0 {
+            Some(format!("over {abs_delta:.0}%"))
+        } else {
+            Some(format!("under {abs_delta:.0}%"))
+        }
     }
 
     fn status_line_reasoning_effort_label(effort: Option<ReasoningEffortConfig>) -> &'static str {
