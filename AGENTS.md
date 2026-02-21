@@ -12,7 +12,8 @@ Do not push feature commits directly to `origin/main`.
 Recommended commands:
 
 - `git sync-main` updates `main` as a mirror of upstream and keeps `origin/main` aligned.
-- `git sync-carry` rebases `carry/main` on upstream `main` and pushes only `origin/carry/main`.
+- `git sync-carry` merges `upstream/main` into `carry/main` and pushes `origin/carry/main` (no shared-branch rebase).
+- avoid force-push on `carry/main` during normal sync; use `--force-with-lease` only for exceptional repair operations.
 
 Branch tracking should remain:
 

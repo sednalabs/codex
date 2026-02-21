@@ -6,10 +6,11 @@ GitHub default branch is `carry/main` so downstream behavior is the repository l
 ## Branch Policy
 
 - `main`: fast-forward mirror of upstream `main` (no local commits)
-- `carry/main`: upstream + downstream patches (rebased carry-forward branch)
+- `carry/main`: upstream + downstream patches (merge-based carry-forward branch)
 - do not push feature commits to `origin/main`
 - use `git sync-main` to update `main` as an upstream mirror
-- use `git sync-carry` to rebase `carry/main` on top of upstream `main` and push `origin/carry/main`
+- use `git sync-carry` to merge `upstream/main` into `carry/main` and push `origin/carry/main`
+- avoid force-push on `carry/main` during normal sync; reserve `--force-with-lease` for exceptional repair only
 - new feature branches: create from `carry/main` by default
 - upstream-only compatibility/test probes: create from `main`, then cherry-pick to `carry/main` if retained downstream
 

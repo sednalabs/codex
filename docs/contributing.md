@@ -32,6 +32,7 @@ If you are invited by a fork maintainer to contribute a PR, here is the recommen
 
 - Create a _topic branch_ from `carry/main` - e.g. `feat/interactive-prompt`.
 - `main` is a read-only upstream mirror and is not a PR target in this fork.
+- Upstream sync for `carry/main` is merge-based (`upstream/main` -> `carry/main`), not rebase-based.
 - Keep your changes focused. Multiple unrelated fixes should be opened as separate PRs.
 - Ensure your change is free of lint warnings and test failures.
 
