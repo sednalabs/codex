@@ -57,6 +57,12 @@ pub(crate) enum StatusRateLimitData {
 /// Maximum age before a snapshot is considered stale in status output.
 pub(crate) const RATE_LIMIT_STALE_THRESHOLD_MINUTES: i64 = 15;
 
+/// Returns true when a captured snapshot is older than the staleness threshold.
+pub(crate) fn is_snapshot_stale(captured_at: DateTime<Local>, now: DateTime<Local>) -> bool {
+    now.signed_duration_since(captured_at)
+        > ChronoDuration::minutes(RATE_LIMIT_STALE_THRESHOLD_MINUTES)
+}
+
 /// Display-friendly representation of one usage window from a snapshot.
 #[derive(Debug, Clone)]
 pub(crate) struct RateLimitWindowDisplay {
@@ -180,8 +186,7 @@ pub(crate) fn compose_rate_limit_data_many(
     let mut stale = false;
 
     for snapshot in snapshots {
-        stale |= now.signed_duration_since(snapshot.captured_at)
-            > ChronoDuration::minutes(RATE_LIMIT_STALE_THRESHOLD_MINUTES);
+        stale |= is_snapshot_stale(snapshot.captured_at, now);
 
         let limit_bucket_label = snapshot.limit_name.clone();
         let show_limit_prefix = !limit_bucket_label.eq_ignore_ascii_case("codex");
@@ -348,10 +353,13 @@ fn format_credit_balance(raw: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::CreditsSnapshotDisplay;
+    use super::RATE_LIMIT_STALE_THRESHOLD_MINUTES;
     use super::RateLimitSnapshotDisplay;
     use super::RateLimitWindowDisplay;
     use super::StatusRateLimitData;
     use super::compose_rate_limit_data_many;
+    use super::is_snapshot_stale;
+    use chrono::Duration as ChronoDuration;
     use chrono::Local;
     use pretty_assertions::assert_eq;
 
@@ -442,5 +450,23 @@ mod tests {
                 "Weekly limit".to_string(),
             ]
         );
+    }
+
+    #[test]
+    fn stale_threshold_boundary_is_not_stale() {
+        let now = Local::now();
+        let captured_at = now - ChronoDuration::minutes(RATE_LIMIT_STALE_THRESHOLD_MINUTES);
+
+        assert!(!is_snapshot_stale(captured_at, now));
+    }
+
+    #[test]
+    fn stale_threshold_plus_one_second_is_stale() {
+        let now = Local::now();
+        let captured_at = now
+            - ChronoDuration::minutes(RATE_LIMIT_STALE_THRESHOLD_MINUTES)
+            - ChronoDuration::seconds(1);
+
+        assert!(is_snapshot_stale(captured_at, now));
     }
 }
