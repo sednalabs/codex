@@ -7695,6 +7695,22 @@ async fn status_line_weekly_limit_pacing_falls_back_when_time_data_missing() {
 }
 
 #[tokio::test]
+async fn status_line_weekly_limit_pacing_uses_snapshot_capture_time() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(None).await;
+    let resets_at = chrono::Local::now().timestamp() + (6048 * 60);
+    chat.on_rate_limit_snapshot(Some(weekly_snapshot(37.0, Some(10080), Some(resets_at))));
+
+    let snapshot = chat
+        .rate_limit_snapshots_by_limit_id
+        .get_mut("codex")
+        .expect("codex rate-limit snapshot should be cached");
+    snapshot.captured_at = chrono::Local::now() + chrono::Duration::hours(24);
+
+    let value = chat.status_line_value_for_item(&StatusLineItem::WeeklyLimit);
+    assert_eq!(value.as_deref(), Some("weekly 63% (under 17%)"));
+}
+
+#[tokio::test]
 async fn status_line_branch_state_resets_when_git_branch_disabled() {
     let (mut chat, _rx, _op_rx) = make_chatwidget_manual(None).await;
     chat.status_line_branch = Some("main".to_string());
