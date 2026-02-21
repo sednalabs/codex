@@ -1,5 +1,24 @@
 # Rust/codex-rs
 
+## Fork Branch Policy
+
+This repository is using a two-branch fork flow:
+
+- `origin/main` mirrors `upstream/main`.
+- `origin/carry/main` is the PR branch for local work and is intentionally ahead of `origin/main`.
+
+Do not push feature commits directly to `origin/main`.
+
+Recommended commands:
+
+- `git sync-main` updates `main` as a mirror of upstream and keeps `origin/main` aligned.
+- `git sync-carry` rebases `carry/main` on upstream `main` and pushes only `origin/carry/main`.
+
+Branch tracking should remain:
+
+- `main` tracks `origin/main`.
+- `carry/main` tracks `origin/carry/main`.
+
 In the codex-rs folder where the rust code lives:
 
 - Crate names are prefixed with `codex-`. For example, the `core` folder's crate is named `codex-core`
