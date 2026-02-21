@@ -7745,6 +7745,38 @@ async fn status_line_weekly_limit_pacing_shows_stale_when_snapshot_stale() {
 }
 
 #[tokio::test]
+async fn status_line_weekly_limit_pacing_at_stale_threshold_remains_non_stale() {
+    let (chat, _rx, _op_rx) = make_chatwidget_manual(None).await;
+    let captured_at = chrono::Local::now();
+    let window = RateLimitWindowDisplay {
+        used_percent: 37.0,
+        resets_at: None,
+        resets_at_unix_seconds: Some(captured_at.timestamp() + (6048 * 60)),
+        window_minutes: Some(10080),
+    };
+    let rendered_at = captured_at + chrono::Duration::minutes(15);
+
+    let signal = chat.status_line_weekly_signal(&window, captured_at, rendered_at);
+    assert_eq!(signal.as_deref(), Some("on pace"));
+}
+
+#[tokio::test]
+async fn status_line_weekly_limit_pacing_one_second_past_stale_threshold_shows_stale() {
+    let (chat, _rx, _op_rx) = make_chatwidget_manual(None).await;
+    let captured_at = chrono::Local::now();
+    let window = RateLimitWindowDisplay {
+        used_percent: 37.0,
+        resets_at: None,
+        resets_at_unix_seconds: Some(captured_at.timestamp() + (6048 * 60)),
+        window_minutes: Some(10080),
+    };
+    let rendered_at = captured_at + chrono::Duration::minutes(15) + chrono::Duration::seconds(1);
+
+    let signal = chat.status_line_weekly_signal(&window, captured_at, rendered_at);
+    assert_eq!(signal.as_deref(), Some("stale"));
+}
+
+#[tokio::test]
 async fn status_line_weekly_limit_pacing_shows_stale_when_snapshot_stale_and_time_data_missing() {
     let (mut chat, _rx, _op_rx) = make_chatwidget_manual(None).await;
     chat.on_rate_limit_snapshot(Some(weekly_snapshot(20.0, Some(10080), None)));
