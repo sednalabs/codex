@@ -6,32 +6,55 @@ GitHub default branch is `carry/main` so downstream behavior is the repository l
 ## Branch Policy
 
 - `main`: fast-forward mirror of upstream `main` (no local commits)
-- `carry/main`: upstream + downstream patches (merge-based carry-forward; no rebases)
+- `carry/main`: upstream + downstream patches (rebased carry-forward branch)
+- do not push feature commits to `origin/main`
+- use `git sync-main` to update `main` as an upstream mirror
+- use `git sync-carry` to rebase `carry/main` on top of upstream `main` and push `origin/carry/main`
 - new feature branches: create from `carry/main` by default
 - upstream-only compatibility/test probes: create from `main`, then cherry-pick to `carry/main` if retained downstream
 
 ## Divergence Summary
 
-### TUI: Queue slash commands and model selection while busy
+### TUI: Queue slash metadata preparation and recall
 
 Why:
-- Allow queueing follow-up actions while a task is running (without retyping / losing intent)
+- Preserve slash-command arguments/metadata and make queued recall/edit paths consistent.
 
 User-visible behavior:
-- Some slash commands can be queued while a task is in progress and will run after the task completes.
+- Queued slash commands and queued message drafts are shown in one queue preview.
+- `Alt+Up` recalls queued items in strict reverse-chronological order across both entry types.
 - `/status` remains immediate (not queued).
-- `/model` opens the picker immediately (the picker action is not queued).
-- Selecting a model while busy queues the model change to apply when the current task completes.
+- `/model` still opens the picker immediately; selecting a model while busy queues the model switch.
 
 Key files:
 - `codex-rs/tui/src/chatwidget.rs`
 - `codex-rs/tui/src/app_event.rs`
 - `codex-rs/tui/src/app.rs`
 - `codex-rs/tui/src/bottom_pane/chat_composer.rs`
+- `codex-rs/tui/src/bottom_pane/queued_user_messages.rs`
 - `codex-rs/tui/src/chatwidget/tests.rs`
 - `docs/tui-chat-composer.md`
 
-### Core tests: unified_exec race-tolerant assertion (test-only)
+### TUI: Weekly usage pacing signal + stale handling
+
+Why:
+- Show a compact weekly pacing indicator without displaying misleading percentages when snapshot data is stale.
+
+User-visible behavior:
+- Weekly status line shows `weekly {remaining:.0}%` as the base value.
+- Fresh snapshot adds one compact suffix: `(on pace)`, `(over {n}%)`, or `(under {n}%)`.
+- Stale snapshot shows `weekly {remaining:.0}% (stale)` and hides pace percentage.
+- `/status` and footer use the same stale predicate helper to keep stale behavior consistent.
+
+Key files:
+- `codex-rs/tui/src/status/rate_limits.rs`
+- `codex-rs/tui/src/status/mod.rs`
+- `codex-rs/tui/src/chatwidget.rs`
+- `codex-rs/tui/src/bottom_pane/status_line_setup.rs`
+- `codex-rs/tui/src/chatwidget/tests.rs`
+- `docs/tui-weekly-usage-pacing-status-line.md`
+
+### Core tests: unified_exec race-tolerant completed-process polling (test-only)
 
 - Scope: test-only divergence; no product behavior change.
 - Reason: post-`exit` polling can race between final terminal response and process-store removal.
