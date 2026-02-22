@@ -4459,6 +4459,20 @@ async fn slash_quit_requests_exit() {
 }
 
 #[tokio::test]
+async fn slash_quit_is_not_queued_while_task_running() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(None).await;
+    chat.bottom_pane.set_task_running(true);
+
+    chat.dispatch_command(SlashCommand::Quit);
+
+    assert!(
+        chat.queued_slash_commands.is_empty(),
+        "expected /quit to bypass queued slash-command flow"
+    );
+    assert_matches!(rx.try_recv(), Ok(AppEvent::Exit(ExitMode::ShutdownFirst)));
+}
+
+#[tokio::test]
 async fn slash_exit_requests_exit() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(None).await;
 

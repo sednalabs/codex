@@ -3428,6 +3428,10 @@ impl ChatWidget {
     }
 
     fn dispatch_command(&mut self, cmd: SlashCommand) {
+        if matches!(cmd, SlashCommand::Quit | SlashCommand::Exit) {
+            self.request_quit_without_confirmation();
+            return;
+        }
         if matches!(cmd, SlashCommand::Model) && self.bottom_pane.is_task_running() {
             self.open_model_popup();
             return;
