@@ -8,6 +8,7 @@ use crate::analytics_client::build_track_events_context;
 use crate::codex::Session;
 use crate::codex::TurnContext;
 use crate::config::types::AppToolApproval;
+use crate::config::types::McpServerConfig;
 use crate::connectors;
 use crate::mcp::CODEX_APPS_MCP_SERVER_NAME;
 use crate::protocol::EventMsg;
@@ -67,6 +68,7 @@ pub(crate) async fn handle_mcp_tool_call(
     };
 
     let metadata = lookup_mcp_tool_metadata(sess.as_ref(), &server, &tool_name).await;
+    let server_policy = turn_context.config.mcp_servers.get().get(&server);
     let app_tool_policy = if server == CODEX_APPS_MCP_SERVER_NAME {
         connectors::app_tool_policy(
             &turn_context.config,
@@ -85,6 +87,17 @@ pub(crate) async fn handle_mcp_tool_call(
         connectors::AppToolPolicy::default()
     };
 
+    if let Some(reason) = mcp_tool_policy_block_reason(server_policy, metadata.as_ref()) {
+        let result =
+            notify_mcp_tool_call_skip(sess.as_ref(), turn_context, &call_id, invocation, reason)
+                .await;
+        let status = if result.is_ok() { "ok" } else { "error" };
+        turn_context
+            .otel_manager
+            .counter("codex.mcp.call", 1, &[("status", status)]);
+        return ResponseInputItem::McpToolCallOutput { call_id, result };
+    }
+
     if server == CODEX_APPS_MCP_SERVER_NAME && !app_tool_policy.enabled {
         let result = notify_mcp_tool_call_skip(
             sess.as_ref(),
@@ -92,6 +105,26 @@ pub(crate) async fn handle_mcp_tool_call(
             &call_id,
             invocation,
             "MCP tool call blocked by app configuration".to_string(),
+        )
+        .await;
+        let status = if result.is_ok() { "ok" } else { "error" };
+        turn_context
+            .otel_manager
+            .counter("codex.mcp.call", 1, &[("status", status)]);
+        return ResponseInputItem::McpToolCallOutput { call_id, result };
+    }
+
+    let require_mutation_approval =
+        mcp_tool_policy_requires_mutation_approval(server_policy, metadata.as_ref());
+    if require_mutation_approval
+        && approval_policy_rejects_mcp_elicitations(turn_context.approval_policy.value())
+    {
+        let result = notify_mcp_tool_call_skip(
+            sess.as_ref(),
+            turn_context,
+            &call_id,
+            invocation,
+            "MCP tool call blocked by server policy: approval path is disabled".to_string(),
         )
         .await;
         let status = if result.is_ok() { "ok" } else { "error" };
@@ -308,6 +341,51 @@ enum McpToolApprovalDecision {
     AcceptAndRemember,
     Decline,
     Cancel,
+}
+
+fn mcp_tool_policy_block_reason(
+    server_config: Option<&McpServerConfig>,
+    metadata: Option<&McpToolApprovalMetadata>,
+) -> Option<String> {
+    let server_config = server_config?;
+    if !server_config.read_only && !server_config.strict_tool_classification {
+        return None;
+    }
+
+    let read_only_hint = metadata
+        .and_then(|meta| meta.annotations.as_ref())
+        .and_then(|annotations| annotations.read_only_hint);
+    if server_config.strict_tool_classification && read_only_hint.is_none() {
+        return Some(
+            "MCP tool call blocked by server policy: tool is missing read_only classification"
+                .to_string(),
+        );
+    }
+    if server_config.read_only && read_only_hint == Some(false) {
+        return Some("MCP tool call blocked by server read_only policy".to_string());
+    }
+    None
+}
+
+fn mcp_tool_policy_requires_mutation_approval(
+    server_config: Option<&McpServerConfig>,
+    metadata: Option<&McpToolApprovalMetadata>,
+) -> bool {
+    server_config.is_some_and(|cfg| cfg.require_approval_for_mutating)
+        && metadata
+            .and_then(|meta| meta.annotations.as_ref())
+            .and_then(|annotations| annotations.read_only_hint)
+            == Some(false)
+}
+
+fn approval_policy_rejects_mcp_elicitations(policy: AskForApproval) -> bool {
+    match policy {
+        AskForApproval::Never => true,
+        AskForApproval::Reject(reject_config) => reject_config.rejects_mcp_elicitations(),
+        AskForApproval::OnFailure | AskForApproval::OnRequest | AskForApproval::UnlessTrusted => {
+            false
+        }
+    }
 }
 
 struct McpToolApprovalMetadata {
@@ -615,6 +693,7 @@ async fn notify_mcp_tool_call_skip(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::types::McpServerTransportConfig;
     use pretty_assertions::assert_eq;
 
     fn annotations(
@@ -628,6 +707,30 @@ mod tests {
             open_world_hint: open_world,
             read_only_hint: read_only,
             title: None,
+        }
+    }
+
+    fn server_config() -> McpServerConfig {
+        McpServerConfig {
+            transport: McpServerTransportConfig::Stdio {
+                command: "echo".to_string(),
+                args: Vec::new(),
+                env: None,
+                env_vars: Vec::new(),
+                cwd: None,
+            },
+            enabled: true,
+            required: false,
+            disabled_reason: None,
+            startup_timeout_sec: None,
+            tool_timeout_sec: None,
+            enabled_tools: None,
+            disabled_tools: None,
+            scopes: None,
+            enable_elicitation: false,
+            read_only: false,
+            strict_tool_classification: false,
+            require_approval_for_mutating: false,
         }
     }
 
@@ -647,6 +750,58 @@ mod tests {
     fn approval_required_when_destructive_even_if_read_only_true() {
         let annotations = annotations(Some(true), Some(true), Some(true));
         assert_eq!(requires_mcp_tool_approval(&annotations), true);
+    }
+
+    #[test]
+    fn read_only_policy_blocks_mutating_tool() {
+        let mut cfg = server_config();
+        cfg.read_only = true;
+        let metadata = McpToolApprovalMetadata {
+            annotations: Some(annotations(Some(false), Some(true), Some(true))),
+            connector_id: None,
+            connector_name: None,
+            tool_title: None,
+        };
+        let reason = mcp_tool_policy_block_reason(Some(&cfg), Some(&metadata));
+        assert_eq!(
+            reason.as_deref(),
+            Some("MCP tool call blocked by server read_only policy")
+        );
+    }
+
+    #[test]
+    fn strict_classification_policy_blocks_unclassified_tool() {
+        let mut cfg = server_config();
+        cfg.strict_tool_classification = true;
+        let metadata = McpToolApprovalMetadata {
+            annotations: Some(annotations(None, None, None)),
+            connector_id: None,
+            connector_name: None,
+            tool_title: None,
+        };
+        let reason = mcp_tool_policy_block_reason(Some(&cfg), Some(&metadata));
+        assert_eq!(
+            reason.as_deref(),
+            Some(
+                "MCP tool call blocked by server policy: tool is missing read_only classification"
+            )
+        );
+    }
+
+    #[test]
+    fn mutation_policy_requires_approval_for_mutating_tool() {
+        let mut cfg = server_config();
+        cfg.require_approval_for_mutating = true;
+        let metadata = McpToolApprovalMetadata {
+            annotations: Some(annotations(Some(false), None, Some(true))),
+            connector_id: None,
+            connector_name: None,
+            tool_title: None,
+        };
+        assert!(mcp_tool_policy_requires_mutation_approval(
+            Some(&cfg),
+            Some(&metadata)
+        ));
     }
 
     #[test]
