@@ -13,7 +13,7 @@
 //! - Directory paths (current dir, project root)
 //! - Git information (branch name)
 //! - Context usage (remaining %, used %, window size)
-//! - Usage limits (5-hour, weekly)
+//! - Usage limits (5-hour, weekly, pacing, time-to-reset)
 //! - Session info (ID, tokens used)
 //! - Application version
 
@@ -74,6 +74,12 @@ pub(crate) enum StatusLineItem {
     /// Remaining usage on the weekly rate limit.
     WeeklyLimit,
 
+    /// Weekly pacing signal versus linear usage.
+    WeeklyPacing,
+
+    /// Percentage of weekly window time remaining until reset.
+    WeeklyTimeRemaining,
+
     /// Codex application version.
     CodexVersion,
 
@@ -112,7 +118,13 @@ impl StatusLineItem {
                 "Remaining usage on 5-hour usage limit (omitted when unavailable)"
             }
             StatusLineItem::WeeklyLimit => {
-                "Remaining usage on weekly usage limit plus pacing signal (omitted when unavailable)"
+                "Remaining weekly usage with time-remaining denominator (omitted when unavailable)"
+            }
+            StatusLineItem::WeeklyPacing => {
+                "Weekly pacing signal versus time to reset (on pace/over/under; omitted when unavailable)"
+            }
+            StatusLineItem::WeeklyTimeRemaining => {
+                "Percentage of weekly time remaining before reset (omitted when unavailable)"
             }
             StatusLineItem::CodexVersion => "Codex application version",
             StatusLineItem::ContextWindowSize => {
@@ -141,7 +153,9 @@ impl StatusLineItem {
             StatusLineItem::ContextRemaining => "18% left",
             StatusLineItem::ContextUsed => "82% used",
             StatusLineItem::FiveHourLimit => "5h 100%",
-            StatusLineItem::WeeklyLimit => "weekly 98% (on pace)",
+            StatusLineItem::WeeklyLimit => "weekly 98% / 62%",
+            StatusLineItem::WeeklyPacing => "weekly pace under 4%",
+            StatusLineItem::WeeklyTimeRemaining => "weekly time 62%",
             StatusLineItem::CodexVersion => "v0.93.0",
             StatusLineItem::ContextWindowSize => "258K window",
             StatusLineItem::UsedTokens => "27.3K used",

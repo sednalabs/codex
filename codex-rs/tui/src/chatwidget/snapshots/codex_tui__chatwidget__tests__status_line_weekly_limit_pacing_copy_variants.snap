@@ -3,8 +3,8 @@ source: tui/src/chatwidget/tests.rs
 assertion_line: 7571
 expression: "[on_pace, over, under_rounded, stale, unavailable].join(\"\\n\")"
 ---
-weekly 63% (on pace)
-weekly 50% (over 10%)
-weekly 53% (under 4%)
-weekly 63% (stale)
+weekly 63% / 60%
+weekly 50% / 60%
+weekly 53% / 50%
+weekly 63% / 60% (stale)
 weekly 80%

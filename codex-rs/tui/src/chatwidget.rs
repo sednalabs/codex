@@ -4488,15 +4488,11 @@ impl ChatWidget {
         self.add_to_history(history_cell::new_review_status_line(
             "<< Code review finished >>".to_string(),
         ));
-        if let Some(token_usage) = review_token_usage
-            && !token_usage.is_zero()
-        {
-            let usage_message =
-                codex_protocol::protocol::FinalOutput::from(token_usage).to_string();
-            self.add_to_history(history_cell::new_review_status_line(format!(
-                "<< Review {usage_message} >>"
-            )));
-        }
+        let usage_message =
+            codex_protocol::protocol::format_token_usage_summary(review_token_usage.as_ref());
+        self.add_to_history(history_cell::new_review_status_line(format!(
+            "<< Review {usage_message} >>"
+        )));
         self.request_redraw();
     }
 
@@ -4891,28 +4887,51 @@ impl ChatWidget {
                 self.status_line_limit_display(window, &label)
             }
             StatusLineItem::WeeklyLimit => {
-                let snapshot = self.rate_limit_snapshots_by_limit_id.get("codex");
-                let window = snapshot.and_then(|s| s.secondary.as_ref());
-                let captured_at = snapshot.map(|snapshot| snapshot.captured_at);
-                let rendered_at = Local::now();
-                let label = window
-                    .and_then(|window| window.window_minutes)
-                    .map(get_limits_duration)
-                    .unwrap_or_else(|| "weekly".to_string());
+                let (window, captured_at, rendered_at, label) = self.weekly_status_line_context();
                 self.status_line_limit_display(window, &label).map(|base| {
-                    let signal = match (window, captured_at) {
-                        (Some(window), Some(captured_at)) => {
-                            Self::classify_weekly_pacing_signal(window, captured_at, rendered_at)
-                        }
-                        _ => WeeklyPacingSignal::Unavailable,
-                    };
+                    let denominator = window
+                        .and_then(|window| {
+                            Self::weekly_time_remaining_percent(window, rendered_at.timestamp())
+                        })
+                        .map(|percent| format!(" / {percent:.0}%"))
+                        .unwrap_or_default();
+                    let is_stale = captured_at
+                        .map(|captured_at| is_snapshot_stale(captured_at, rendered_at))
+                        .unwrap_or(false);
 
-                    if let Some(suffix) = signal.status_line_suffix() {
-                        format!("{base} ({suffix})")
+                    if is_stale {
+                        format!("{base}{denominator} (stale)")
                     } else {
-                        base
+                        format!("{base}{denominator}")
                     }
                 })
+            }
+            StatusLineItem::WeeklyPacing => {
+                let (window, captured_at, rendered_at, label) = self.weekly_status_line_context();
+                let signal = match (window, captured_at) {
+                    (Some(window), Some(captured_at)) => {
+                        Self::classify_weekly_pacing_signal(window, captured_at, rendered_at)
+                    }
+                    _ => WeeklyPacingSignal::Unavailable,
+                };
+                signal
+                    .status_line_suffix()
+                    .map(|suffix| format!("{label} pace {suffix}"))
+            }
+            StatusLineItem::WeeklyTimeRemaining => {
+                let (window, captured_at, rendered_at, label) = self.weekly_status_line_context();
+                match (window, captured_at) {
+                    (Some(window), Some(captured_at)) => {
+                        let percent =
+                            Self::weekly_time_remaining_percent(window, rendered_at.timestamp())?;
+                        let mut value = format!("{label} time {percent:.0}%");
+                        if is_snapshot_stale(captured_at, rendered_at) {
+                            value.push_str(" (stale)");
+                        }
+                        Some(value)
+                    }
+                    _ => None,
+                }
             }
             StatusLineItem::CodexVersion => Some(CODEX_CLI_VERSION.to_string()),
             StatusLineItem::ContextWindowSize => self
@@ -4994,6 +5013,42 @@ impl ChatWidget {
         Some(format!("{label} {remaining:.0}%"))
     }
 
+    fn weekly_status_line_context(
+        &self,
+    ) -> (
+        Option<&RateLimitWindowDisplay>,
+        Option<DateTime<Local>>,
+        DateTime<Local>,
+        String,
+    ) {
+        let snapshot = self.rate_limit_snapshots_by_limit_id.get("codex");
+        let window = snapshot.and_then(|s| s.secondary.as_ref());
+        let captured_at = snapshot.map(|snapshot| snapshot.captured_at);
+        let rendered_at = Local::now();
+        let label = window
+            .and_then(|window| window.window_minutes)
+            .map(get_limits_duration)
+            .unwrap_or_else(|| "weekly".to_string());
+        (window, captured_at, rendered_at, label)
+    }
+
+    fn weekly_time_remaining_percent(
+        window: &RateLimitWindowDisplay,
+        reference_unix_seconds: i64,
+    ) -> Option<f64> {
+        let resets_at_unix_seconds = window.resets_at_unix_seconds?;
+        let window_minutes = window.window_minutes?;
+        if window_minutes <= 0 {
+            return None;
+        }
+
+        let window_seconds = window_minutes.saturating_mul(60) as f64;
+        let seconds_remaining_i128 =
+            i128::from(resets_at_unix_seconds) - i128::from(reference_unix_seconds);
+        let seconds_remaining = i64::try_from(seconds_remaining_i128).ok()? as f64;
+        Some(((seconds_remaining / window_seconds) * 100.0f64).clamp(0.0, 100.0))
+    }
+
     fn classify_weekly_pacing_signal(
         window: &RateLimitWindowDisplay,
         captured_at: DateTime<Local>,
@@ -5003,26 +5058,12 @@ impl ChatWidget {
             return WeeklyPacingSignal::Stale;
         }
 
-        let Some(resets_at_unix_seconds) = window.resets_at_unix_seconds else {
+        let Some(time_remaining_pct) =
+            Self::weekly_time_remaining_percent(window, captured_at.timestamp())
+        else {
             return WeeklyPacingSignal::Unavailable;
         };
-        let Some(window_minutes) = window.window_minutes else {
-            return WeeklyPacingSignal::Unavailable;
-        };
-        if window_minutes <= 0 {
-            return WeeklyPacingSignal::Unavailable;
-        }
-
         let usage_remaining_pct = (100.0f64 - window.used_percent).clamp(0.0f64, 100.0f64);
-        let window_seconds = window_minutes.saturating_mul(60) as f64;
-        let seconds_remaining_i128 =
-            i128::from(resets_at_unix_seconds) - i128::from(captured_at.timestamp());
-        let seconds_remaining = match i64::try_from(seconds_remaining_i128) {
-            Ok(seconds) => seconds as f64,
-            Err(_) => return WeeklyPacingSignal::Unavailable,
-        };
-        let time_remaining_pct =
-            ((seconds_remaining / window_seconds) * 100.0f64).clamp(0.0, 100.0);
         let pace_delta = usage_remaining_pct - time_remaining_pct;
         let abs_delta = PercentDelta::from_abs_delta(pace_delta.abs());
 
