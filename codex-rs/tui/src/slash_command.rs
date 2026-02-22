@@ -120,6 +120,15 @@ impl SlashCommand {
         )
     }
 
+    /// Whether follow-up queue draining should pause after dispatching this
+    /// command so an app event can complete first.
+    pub fn pauses_follow_up_queue_drain(self) -> bool {
+        matches!(
+            self,
+            SlashCommand::New | SlashCommand::Resume | SlashCommand::Fork
+        )
+    }
+
     /// Whether this command can be run while a task is in progress.
     pub fn available_during_task(self) -> bool {
         match self {

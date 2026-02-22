@@ -6145,6 +6145,29 @@ async fn queued_non_turn_slash_command_keeps_draining_follow_ups() {
 }
 
 #[tokio::test]
+async fn queued_session_switch_command_pauses_follow_up_drain() {
+    let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(None).await;
+    chat.bottom_pane.set_task_running(true);
+
+    chat.dispatch_command(SlashCommand::New);
+    chat.queue_user_message(UserMessage::from("queued follow-up".to_string()));
+    assert_matches!(op_rx.try_recv(), Err(TryRecvError::Empty));
+    let _ = drain_insert_history(&mut rx);
+
+    chat.on_task_complete(None, false);
+
+    assert_matches!(rx.try_recv(), Ok(AppEvent::NewSession));
+    assert_matches!(op_rx.try_recv(), Err(TryRecvError::Empty));
+    assert_eq!(chat.queued_user_messages.len(), 1);
+    assert_eq!(
+        chat.queued_user_messages
+            .front()
+            .map(|message| message.text.as_str()),
+        Some("queued follow-up")
+    );
+}
+
+#[tokio::test]
 async fn queued_inline_slash_command_runs_with_args_after_task_complete() {
     let (mut chat, _rx, mut op_rx) = make_chatwidget_manual(None).await;
     chat.bottom_pane.set_task_running(true);

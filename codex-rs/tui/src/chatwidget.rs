@@ -4591,7 +4591,12 @@ impl ChatWidget {
                     break;
                 }
                 QueuedFollowUpInput::SlashCommand(queued_command) => match queued_command {
-                    QueuedSlashCommand::Command(cmd) => self.dispatch_command(cmd),
+                    QueuedSlashCommand::Command(cmd) => {
+                        self.dispatch_command(cmd);
+                        if cmd.pauses_follow_up_queue_drain() {
+                            break;
+                        }
+                    }
                     QueuedSlashCommand::CommandWithArgs {
                         cmd,
                         args,
@@ -4599,15 +4604,20 @@ impl ChatWidget {
                         local_images,
                         remote_image_urls,
                         mention_bindings,
-                    } => self.dispatch_prepared_inline_command(
-                        cmd,
-                        args,
-                        text_elements,
-                        local_images,
-                        remote_image_urls,
-                        mention_bindings,
-                        false,
-                    ),
+                    } => {
+                        self.dispatch_prepared_inline_command(
+                            cmd,
+                            args,
+                            text_elements,
+                            local_images,
+                            remote_image_urls,
+                            mention_bindings,
+                            false,
+                        );
+                        if cmd.pauses_follow_up_queue_drain() {
+                            break;
+                        }
+                    }
                     QueuedSlashCommand::ModelSelection { model, effort } => {
                         self.apply_model_and_effort(model, effort);
                     }
