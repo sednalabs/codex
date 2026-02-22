@@ -1681,6 +1681,17 @@ impl fmt::Display for FinalOutput {
     }
 }
 
+/// Formats token usage using [`FinalOutput`] when available and non-zero,
+/// otherwise returns a stable unavailable fallback.
+pub fn format_token_usage_summary(token_usage: Option<&TokenUsage>) -> String {
+    match token_usage {
+        Some(token_usage) if !token_usage.is_zero() => {
+            FinalOutput::from(token_usage.clone()).to_string()
+        }
+        _ => "Token usage: unavailable".to_string(),
+    }
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, TS)]
 pub struct AgentMessageEvent {
     pub message: String,
@@ -3491,5 +3502,26 @@ mod tests {
             .expect("new_or_append should return info");
 
         assert_eq!(info.model_context_window, Some(258_400));
+    }
+
+    #[test]
+    fn format_token_usage_summary_uses_final_output_when_usage_present() {
+        let token_usage = TokenUsage {
+            input_tokens: 5,
+            cached_input_tokens: 0,
+            output_tokens: 3,
+            reasoning_output_tokens: 0,
+            total_tokens: 8,
+        };
+
+        assert_eq!(
+            format_token_usage_summary(Some(&token_usage)),
+            "Token usage: total=8 input=5 output=3"
+        );
+    }
+
+    #[test]
+    fn format_token_usage_summary_falls_back_when_usage_missing() {
+        assert_eq!(format_token_usage_summary(None), "Token usage: unavailable");
     }
 }

@@ -1,7 +1,6 @@
 use codex_core::config::Config;
 use codex_core::web_search::web_search_detail;
 use codex_protocol::items::TurnItem;
-use codex_protocol::num_format::format_with_separators;
 use codex_protocol::protocol::AgentMessageEvent;
 use codex_protocol::protocol::AgentReasoningRawContentEvent;
 use codex_protocol::protocol::AgentStatus;
@@ -29,6 +28,7 @@ use codex_protocol::protocol::PatchApplyBeginEvent;
 use codex_protocol::protocol::PatchApplyEndEvent;
 use codex_protocol::protocol::SessionConfiguredEvent;
 use codex_protocol::protocol::StreamErrorEvent;
+use codex_protocol::protocol::TokenUsage;
 use codex_protocol::protocol::TurnAbortReason;
 use codex_protocol::protocol::TurnCompleteEvent;
 use codex_protocol::protocol::TurnDiffEvent;
@@ -48,6 +48,8 @@ use crate::event_processor::EventProcessor;
 use crate::event_processor::handle_last_message;
 use codex_protocol::plan_tool::StepStatus;
 use codex_protocol::plan_tool::UpdatePlanArgs;
+use codex_protocol::protocol::FinalOutput;
+use codex_protocol::protocol::format_token_usage_summary;
 use codex_utils_sandbox_summary::create_config_summary_entries;
 
 /// This should be configurable. When used in CI, users may not want to impose
@@ -74,6 +76,8 @@ pub(crate) struct EventProcessorWithHumanOutput {
     show_raw_agent_reasoning: bool,
     last_message_path: Option<PathBuf>,
     last_total_token_usage: Option<codex_protocol::protocol::TokenUsageInfo>,
+    saw_review_completion: bool,
+    last_review_token_usage: Option<TokenUsage>,
     final_message: Option<String>,
     last_proposed_plan: Option<String>,
 }
@@ -101,6 +105,8 @@ impl EventProcessorWithHumanOutput {
                 show_raw_agent_reasoning: config.show_raw_agent_reasoning,
                 last_message_path,
                 last_total_token_usage: None,
+                saw_review_completion: false,
+                last_review_token_usage: None,
                 final_message: None,
                 last_proposed_plan: None,
             }
@@ -119,6 +125,8 @@ impl EventProcessorWithHumanOutput {
                 show_raw_agent_reasoning: config.show_raw_agent_reasoning,
                 last_message_path,
                 last_total_token_usage: None,
+                saw_review_completion: false,
+                last_review_token_usage: None,
                 final_message: None,
                 last_proposed_plan: None,
             }
@@ -612,6 +620,10 @@ impl EventProcessor for EventProcessorWithHumanOutput {
                 }
                 return CodexStatus::InitiateShutdown;
             }
+            EventMsg::ExitedReviewMode(review_event) => {
+                self.saw_review_completion = true;
+                self.last_review_token_usage = review_event.review_token_usage;
+            }
             EventMsg::ContextCompacted(_) => {
                 ts_msg!(self, "context compacted");
             }
@@ -791,7 +803,6 @@ impl EventProcessor for EventProcessorWithHumanOutput {
             | EventMsg::RawResponseItem(_)
             | EventMsg::UserMessage(_)
             | EventMsg::EnteredReviewMode(_)
-            | EventMsg::ExitedReviewMode(_)
             | EventMsg::AgentMessageDelta(_)
             | EventMsg::AgentReasoningDelta(_)
             | EventMsg::AgentReasoningRawContentDelta(_)
@@ -817,11 +828,28 @@ impl EventProcessor for EventProcessorWithHumanOutput {
     }
 
     fn print_final_output(&mut self) {
-        if let Some(usage_info) = &self.last_total_token_usage {
+        if self.saw_review_completion {
+            let review_usage_line = self
+                .last_review_token_usage
+                .as_ref()
+                .filter(|usage| !usage.is_zero())
+                .map(|usage| FinalOutput::from(usage.clone()).to_string())
+                .or_else(|| {
+                    self.last_total_token_usage
+                        .as_ref()
+                        .map(|usage| FinalOutput::from(usage.total_token_usage.clone()).to_string())
+                })
+                .unwrap_or_else(|| format_token_usage_summary(None));
             eprintln!(
                 "{}\n{}",
-                "tokens used".style(self.magenta).style(self.italic),
-                format_with_separators(usage_info.total_token_usage.blended_total())
+                "review token usage".style(self.magenta).style(self.italic),
+                review_usage_line
+            );
+        } else if let Some(usage_info) = &self.last_total_token_usage {
+            eprintln!(
+                "{}\n{}",
+                "token usage".style(self.magenta).style(self.italic),
+                FinalOutput::from(usage_info.total_token_usage.clone())
             );
         }
 
