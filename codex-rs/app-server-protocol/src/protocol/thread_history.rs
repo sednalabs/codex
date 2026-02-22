@@ -42,6 +42,7 @@ use codex_protocol::protocol::UserMessageEvent;
 use codex_protocol::protocol::ViewImageToolCallEvent;
 use codex_protocol::protocol::WebSearchBeginEvent;
 use codex_protocol::protocol::WebSearchEndEvent;
+use codex_protocol::protocol::format_token_usage_summary;
 use std::collections::HashMap;
 use tracing::warn;
 use uuid::Uuid;
@@ -687,11 +688,13 @@ impl ThreadHistoryBuilder {
         &mut self,
         payload: &codex_protocol::protocol::ExitedReviewModeEvent,
     ) {
-        let review = payload
+        let review_message = payload
             .review_output
             .as_ref()
             .map(render_review_output_text)
             .unwrap_or_else(|| REVIEW_FALLBACK_MESSAGE.to_string());
+        let usage_summary = format_token_usage_summary(payload.review_token_usage.as_ref());
+        let review = format!("{review_message}\n\n{usage_summary}");
         let id = self.next_item_id();
         self.ensure_turn()
             .items
@@ -1195,6 +1198,70 @@ mod tests {
                 id: "item-1".into(),
                 text: "Final reply".into(),
                 phase: Some(MessagePhase::FinalAnswer),
+            }
+        );
+    }
+
+    #[test]
+    fn exited_review_mode_appends_unavailable_usage_summary_when_missing() {
+        let events = vec![EventMsg::ExitedReviewMode(
+            codex_protocol::protocol::ExitedReviewModeEvent {
+                review_output: Some(ReviewOutputEvent {
+                    findings: Vec::new(),
+                    overall_correctness: "good".to_string(),
+                    overall_explanation: "Looks solid overall.".to_string(),
+                    overall_confidence_score: 0.75,
+                }),
+                review_token_usage: None,
+            },
+        )];
+
+        let items = events
+            .into_iter()
+            .map(RolloutItem::EventMsg)
+            .collect::<Vec<_>>();
+        let turns = build_turns_from_rollout_items(&items);
+        assert_eq!(turns.len(), 1);
+        assert_eq!(
+            turns[0].items[0],
+            ThreadItem::ExitedReviewMode {
+                id: "item-1".into(),
+                review: "Looks solid overall.\n\nToken usage: unavailable".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn exited_review_mode_appends_formatted_usage_summary_when_present() {
+        let events = vec![EventMsg::ExitedReviewMode(
+            codex_protocol::protocol::ExitedReviewModeEvent {
+                review_output: Some(ReviewOutputEvent {
+                    findings: Vec::new(),
+                    overall_correctness: "good".to_string(),
+                    overall_explanation: "Looks solid overall.".to_string(),
+                    overall_confidence_score: 0.75,
+                }),
+                review_token_usage: Some(codex_protocol::protocol::TokenUsage {
+                    input_tokens: 5,
+                    cached_input_tokens: 0,
+                    output_tokens: 3,
+                    reasoning_output_tokens: 0,
+                    total_tokens: 8,
+                }),
+            },
+        )];
+
+        let items = events
+            .into_iter()
+            .map(RolloutItem::EventMsg)
+            .collect::<Vec<_>>();
+        let turns = build_turns_from_rollout_items(&items);
+        assert_eq!(turns.len(), 1);
+        assert_eq!(
+            turns[0].items[0],
+            ThreadItem::ExitedReviewMode {
+                id: "item-1".into(),
+                review: "Looks solid overall.\n\nToken usage: total=8 input=5 output=3".to_string(),
             }
         );
     }

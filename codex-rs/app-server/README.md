@@ -515,13 +515,13 @@ containing an `exitedReviewMode` item with the final review text:
     "item": {
       "type": "exitedReviewMode",
       "id": "turn_900",
-      "review": "Looks solid overall...\n\n- Prefer Stylize helpers — app.rs:10-20\n  ..."
+      "review": "Looks solid overall...\n\n- Prefer Stylize helpers — app.rs:10-20\n  ...\n\nToken usage: total=123 input=100 output=23"
     }
   }
 }
 ```
 
-The `review` string is plain text that already bundles the overall explanation plus a bullet list for each structured finding (matching `ThreadItem::ExitedReviewMode` in the generated schema). Use this notification to render the reviewer output in your client.
+The `review` string is plain text that bundles the overall explanation, structured findings, and a trailing token-usage summary line (`Token usage: ...` or `Token usage: unavailable`) matching `ThreadItem::ExitedReviewMode`. Use this notification to render the reviewer output in your client.
 
 ### Example: One-off command execution
 
@@ -601,7 +601,7 @@ Today both notifications carry an empty `items` array even when item events were
 - `webSearch` — `{id, query, action?}` for a web search request issued by the agent; `action` mirrors the Responses API web_search action payload (`search`, `open_page`, `find_in_page`) and may be omitted until completion.
 - `imageView` — `{id, path}` emitted when the agent invokes the image viewer tool.
 - `enteredReviewMode` — `{id, review}` sent when the reviewer starts; `review` is a short user-facing label such as `"current changes"` or the requested target description.
-- `exitedReviewMode` — `{id, review}` emitted when the reviewer finishes; `review` is the full plain-text review (usually, overall notes plus bullet point findings).
+- `exitedReviewMode` — `{id, review}` emitted when the reviewer finishes; `review` is the full plain-text review plus a trailing token-usage summary (`Token usage: ...` or `Token usage: unavailable`).
 - `contextCompaction` — `{id}` emitted when codex compacts the conversation history. This can happen automatically.
 - `compacted` - `{threadId, turnId}` when codex compacts the conversation history. This can happen automatically. **Deprecated:** Use `contextCompaction` instead.
 

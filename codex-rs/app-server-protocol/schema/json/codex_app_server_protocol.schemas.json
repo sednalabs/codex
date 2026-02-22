@@ -3474,6 +3474,16 @@
                 }
               ]
             },
+            "review_token_usage": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/TokenUsage"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
             "type": {
               "enum": [
                 "exited_review_mode"

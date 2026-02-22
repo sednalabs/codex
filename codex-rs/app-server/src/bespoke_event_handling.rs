@@ -95,6 +95,7 @@ use codex_protocol::protocol::ReviewDecision;
 use codex_protocol::protocol::ReviewOutputEvent;
 use codex_protocol::protocol::TokenCountEvent;
 use codex_protocol::protocol::TurnDiffEvent;
+use codex_protocol::protocol::format_token_usage_summary;
 use codex_protocol::request_user_input::RequestUserInputAnswer as CoreRequestUserInputAnswer;
 use codex_protocol::request_user_input::RequestUserInputResponse as CoreRequestUserInputResponse;
 use codex_shell_command::parse_command::shlex_join;
@@ -940,10 +941,13 @@ pub(crate) async fn apply_bespoke_event_handling(
                 .await;
         }
         EventMsg::ExitedReviewMode(review_event) => {
-            let review = match review_event.review_output {
+            let review_message = match review_event.review_output {
                 Some(output) => render_review_output_text(&output),
                 None => REVIEW_FALLBACK_MESSAGE.to_string(),
             };
+            let usage_summary =
+                format_token_usage_summary(review_event.review_token_usage.as_ref());
+            let review = format!("{review_message}\n\n{usage_summary}");
             let item = ThreadItem::ExitedReviewMode {
                 id: event_turn_id.clone(),
                 review,

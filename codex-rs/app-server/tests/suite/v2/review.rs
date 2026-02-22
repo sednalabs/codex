@@ -22,6 +22,7 @@ use codex_app_server_protocol::ThreadStartResponse;
 use codex_app_server_protocol::TurnStartParams;
 use codex_app_server_protocol::TurnStatus;
 use codex_app_server_protocol::UserInput as V2UserInput;
+use core_test_support::responses;
 use serde_json::json;
 use tempfile::TempDir;
 use tokio::time::timeout;
@@ -131,6 +132,77 @@ async fn review_start_runs_review_turn_and_emits_code_review_item() -> Result<()
     let review = review_body.expect("did not observe a code review item");
     assert!(review.contains("Prefer Stylize helpers"));
     assert!(review.contains("/tmp/file.rs:10-20"));
+    assert!(review.contains("Token usage: unavailable"));
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn review_start_emits_token_usage_summary_when_usage_available() -> Result<()> {
+    let review_payload = json!({
+        "findings": [],
+        "overall_correctness": "good",
+        "overall_explanation": "Looks solid overall with minor polish suggested.",
+        "overall_confidence_score": 0.75
+    })
+    .to_string();
+    let response = responses::sse(vec![
+        responses::ev_response_created("resp-usage"),
+        responses::ev_assistant_message("msg-usage", &review_payload),
+        responses::ev_completed_with_tokens("resp-usage", 123),
+    ]);
+    let server = create_mock_responses_server_sequence(vec![response]).await;
+
+    let codex_home = TempDir::new()?;
+    create_config_toml(codex_home.path(), &server.uri())?;
+
+    let mut mcp = McpProcess::new(codex_home.path()).await?;
+    timeout(DEFAULT_READ_TIMEOUT, mcp.initialize()).await??;
+
+    let thread_id = start_default_thread(&mut mcp).await?;
+
+    let review_req = mcp
+        .send_review_start_request(ReviewStartParams {
+            thread_id,
+            delivery: Some(ReviewDelivery::Inline),
+            target: ReviewTarget::Commit {
+                sha: "89abcde".to_string(),
+                title: Some("Token usage summary test".to_string()),
+            },
+        })
+        .await?;
+    let review_resp: JSONRPCResponse = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(review_req)),
+    )
+    .await??;
+    let ReviewStartResponse { turn, .. } = to_response::<ReviewStartResponse>(review_resp)?;
+    let turn_id = turn.id.clone();
+
+    let mut review_body: Option<String> = None;
+    for _ in 0..10 {
+        let review_notif: JSONRPCNotification = timeout(
+            DEFAULT_READ_TIMEOUT,
+            mcp.read_stream_until_notification_message("item/completed"),
+        )
+        .await??;
+        let completed: ItemCompletedNotification =
+            serde_json::from_value(review_notif.params.expect("params must be present"))?;
+        match completed.item {
+            ThreadItem::ExitedReviewMode { id, review } => {
+                assert_eq!(id, turn_id);
+                review_body = Some(review);
+                break;
+            }
+            _ => continue,
+        }
+    }
+
+    let review = review_body.expect("did not observe a code review item");
+    assert!(
+        review.contains("Token usage: total=123 input=123 output=0"),
+        "expected populated token usage summary, got {review:?}"
+    );
 
     Ok(())
 }
