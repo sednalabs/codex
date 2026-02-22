@@ -4573,12 +4573,16 @@ impl ChatWidget {
         if self.bottom_pane.is_task_running() {
             return;
         }
-        if let Some(queued_input) = self.pop_next_queued_follow_up() {
+
+        while !self.bottom_pane.is_task_running() {
+            let Some(queued_input) = self.pop_next_queued_follow_up() else {
+                break;
+            };
             match queued_input {
                 QueuedFollowUpInput::UserMessage(user_message) => {
                     self.submit_user_message(user_message);
-                    self.refresh_queued_user_messages();
-                    return;
+                    // A user message may queue itself again when session config is unavailable.
+                    break;
                 }
                 QueuedFollowUpInput::SlashCommand(queued_command) => match queued_command {
                     QueuedSlashCommand::Command(cmd) => self.dispatch_command(cmd),
@@ -4600,12 +4604,6 @@ impl ChatWidget {
                     ),
                     QueuedSlashCommand::ModelSelection { model, effort } => {
                         self.apply_model_and_effort(model, effort);
-                        if !self.bottom_pane.is_task_running() {
-                            // Applying a queued model change does not start a turn, so continue
-                            // draining queued follow-ups immediately (e.g. queued `/compact`).
-                            self.maybe_send_next_queued_input();
-                            return;
-                        }
                     }
                 },
             }

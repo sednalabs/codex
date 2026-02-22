@@ -6074,6 +6074,42 @@ async fn queued_slash_command_runs_after_task_complete() {
 }
 
 #[tokio::test]
+async fn queued_non_turn_slash_command_keeps_draining_follow_ups() {
+    let (mut chat, _rx, mut op_rx) = make_chatwidget_manual(None).await;
+    chat.thread_id = Some(ThreadId::new());
+    chat.bottom_pane.set_task_running(true);
+
+    chat.dispatch_command(SlashCommand::MemoryDrop);
+    chat.queue_user_message(UserMessage::from("queued follow-up".to_string()));
+    assert_matches!(op_rx.try_recv(), Err(TryRecvError::Empty));
+
+    chat.on_task_complete(None, false);
+
+    let mut ops = Vec::new();
+    while let Ok(op) = op_rx.try_recv() {
+        ops.push(op);
+    }
+
+    assert!(
+        ops.iter().any(|op| matches!(op, Op::DropMemories)),
+        "expected queued non-turn slash command to run after task completion"
+    );
+    let submitted_items = ops
+        .iter()
+        .find_map(|op| match op {
+            Op::UserTurn { items, .. } => Some(items),
+            _ => None,
+        })
+        .expect("expected queued follow-up message to be submitted");
+    assert!(
+        submitted_items
+            .iter()
+            .any(|item| matches!(item, UserInput::Text { text, .. } if text == "queued follow-up")),
+        "expected queued follow-up text to be submitted after non-turn slash command"
+    );
+}
+
+#[tokio::test]
 async fn queued_inline_slash_command_runs_with_args_after_task_complete() {
     let (mut chat, _rx, mut op_rx) = make_chatwidget_manual(None).await;
     chat.bottom_pane.set_task_running(true);

@@ -141,7 +141,10 @@ pub(crate) async fn handle_mcp_tool_call(
         &server,
         &tool_name,
         metadata.as_ref(),
-        app_tool_policy.approval,
+        McpToolApprovalPolicy {
+            mode: app_tool_policy.approval,
+            force_approval: require_mutation_approval,
+        },
     )
     .await
     {
@@ -401,6 +404,12 @@ const MCP_TOOL_APPROVAL_ACCEPT_AND_REMEMBER: &str = "Approve this Session";
 const MCP_TOOL_APPROVAL_DECLINE: &str = "Deny";
 const MCP_TOOL_APPROVAL_CANCEL: &str = "Cancel";
 
+#[derive(Debug, Clone, Copy)]
+struct McpToolApprovalPolicy {
+    mode: AppToolApproval,
+    force_approval: bool,
+}
+
 #[derive(Debug, Serialize)]
 struct McpToolApprovalKey {
     server: String,
@@ -415,22 +424,19 @@ async fn maybe_request_mcp_tool_approval(
     server: &str,
     tool_name: &str,
     metadata: Option<&McpToolApprovalMetadata>,
-    approval_mode: AppToolApproval,
+    approval_policy: McpToolApprovalPolicy,
 ) -> Option<McpToolApprovalDecision> {
-    if approval_mode == AppToolApproval::Approve {
+    let annotations = metadata.and_then(|metadata| metadata.annotations.as_ref());
+    if !should_request_mcp_tool_approval(
+        approval_policy.mode,
+        is_full_access_mode(turn_context),
+        annotations,
+        approval_policy.force_approval,
+    ) {
         return None;
     }
-    let annotations = metadata.and_then(|metadata| metadata.annotations.as_ref());
-    if approval_mode == AppToolApproval::Auto {
-        if is_full_access_mode(turn_context) {
-            return None;
-        }
-        if !annotations.is_some_and(requires_mcp_tool_approval) {
-            return None;
-        }
-    }
 
-    let approval_key = if approval_mode == AppToolApproval::Auto {
+    let approval_key = if approval_policy.mode == AppToolApproval::Auto {
         let connector_id = metadata.and_then(|metadata| metadata.connector_id.clone());
         if server == CODEX_APPS_MCP_SERVER_NAME && connector_id.is_none() {
             None
@@ -468,7 +474,7 @@ async fn maybe_request_mcp_tool_approval(
         .await;
     let decision = normalize_approval_decision_for_mode(
         parse_mcp_tool_approval_response(response, &question_id),
-        approval_mode,
+        approval_policy.mode,
     );
     if matches!(decision, McpToolApprovalDecision::AcceptAndRemember)
         && let Some(key) = approval_key
@@ -484,6 +490,24 @@ fn is_full_access_mode(turn_context: &TurnContext) -> bool {
             turn_context.sandbox_policy.get(),
             SandboxPolicy::DangerFullAccess | SandboxPolicy::ExternalSandbox { .. }
         )
+}
+
+fn should_request_mcp_tool_approval(
+    approval_mode: AppToolApproval,
+    full_access_mode: bool,
+    annotations: Option<&ToolAnnotations>,
+    force_approval: bool,
+) -> bool {
+    if force_approval {
+        return true;
+    }
+    if approval_mode == AppToolApproval::Approve {
+        return false;
+    }
+    if approval_mode == AppToolApproval::Auto {
+        return !full_access_mode && annotations.is_some_and(requires_mcp_tool_approval);
+    }
+    true
 }
 
 async fn lookup_mcp_tool_metadata(
@@ -801,6 +825,27 @@ mod tests {
         assert!(mcp_tool_policy_requires_mutation_approval(
             Some(&cfg),
             Some(&metadata)
+        ));
+    }
+
+    #[test]
+    fn forced_policy_requires_prompt_in_auto_mode_without_other_hints() {
+        let annotations = annotations(Some(false), None, None);
+        assert!(should_request_mcp_tool_approval(
+            AppToolApproval::Auto,
+            false,
+            Some(&annotations),
+            true,
+        ));
+    }
+
+    #[test]
+    fn forced_policy_requires_prompt_even_in_approve_mode() {
+        assert!(should_request_mcp_tool_approval(
+            AppToolApproval::Approve,
+            false,
+            None,
+            true,
         ));
     }
 
