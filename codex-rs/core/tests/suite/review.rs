@@ -555,6 +555,143 @@ async fn review_uses_runtime_effort_after_model_override() {
     server.verify().await;
 }
 
+/// Ensure that when `review_model` is explicitly configured, review still uses
+/// runtime reasoning effort overrides when they are compatible with that model.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn review_uses_runtime_effort_with_explicit_review_model() {
+    skip_if_no_network!();
+
+    let sse_raw = r#"[
+        {"type":"response.completed", "response": {"id": "__ID__"}}
+    ]"#;
+    let (server, request_log) = start_responses_server_with_sse(sse_raw, 1).await;
+    let codex_home = Arc::new(TempDir::new().unwrap());
+    let codex = new_conversation_for_server(&server, codex_home.clone(), |cfg| {
+        cfg.model = Some("gpt-5.3-codex-spark".to_string());
+        cfg.model_reasoning_effort = Some(ReasoningEffort::XHigh);
+        cfg.review_model = Some("gpt-5.1-codex-mini".to_string());
+    })
+    .await;
+
+    codex
+        .submit(Op::OverrideTurnContext {
+            cwd: None,
+            approval_policy: None,
+            sandbox_policy: None,
+            windows_sandbox_level: None,
+            model: Some("gpt-5.3-codex-spark".to_string()),
+            effort: Some(Some(ReasoningEffort::High)),
+            summary: None,
+            collaboration_mode: None,
+            personality: None,
+        })
+        .await
+        .unwrap();
+
+    codex
+        .submit(Op::Review {
+            review_request: ReviewRequest {
+                target: ReviewTarget::Custom {
+                    instructions: "runtime override should apply with explicit review model"
+                        .to_string(),
+                },
+                user_facing_hint: None,
+            },
+        })
+        .await
+        .unwrap();
+
+    let _entered = wait_for_event(&codex, |ev| matches!(ev, EventMsg::EnteredReviewMode(_))).await;
+    let _closed = wait_for_event(&codex, |ev| {
+        matches!(
+            ev,
+            EventMsg::ExitedReviewMode(ExitedReviewModeEvent {
+                review_output: None,
+                ..
+            })
+        )
+    })
+    .await;
+    let _complete = wait_for_event(&codex, |ev| matches!(ev, EventMsg::TurnComplete(_))).await;
+
+    let request = request_log.single_request();
+    assert_eq!(request.path(), "/v1/responses");
+    let body = request.body_json();
+    assert_eq!(body["model"].as_str().unwrap(), "gpt-5.1-codex-mini");
+    assert_eq!(body["reasoning"]["effort"].as_str().unwrap(), "high");
+
+    let _codex_home_guard = codex_home;
+    server.verify().await;
+}
+
+/// Ensure that when `review_model` is explicitly configured, incompatible
+/// runtime reasoning effort is clamped to a supported value.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn review_clamps_runtime_effort_with_explicit_review_model() {
+    skip_if_no_network!();
+
+    let sse_raw = r#"[
+        {"type":"response.completed", "response": {"id": "__ID__"}}
+    ]"#;
+    let (server, request_log) = start_responses_server_with_sse(sse_raw, 1).await;
+    let codex_home = Arc::new(TempDir::new().unwrap());
+    let codex = new_conversation_for_server(&server, codex_home.clone(), |cfg| {
+        cfg.model = Some("gpt-5.3-codex-spark".to_string());
+        cfg.model_reasoning_effort = Some(ReasoningEffort::XHigh);
+        cfg.review_model = Some("gpt-5.1-codex-mini".to_string());
+    })
+    .await;
+
+    codex
+        .submit(Op::OverrideTurnContext {
+            cwd: None,
+            approval_policy: None,
+            sandbox_policy: None,
+            windows_sandbox_level: None,
+            model: Some("gpt-5.3-codex-spark".to_string()),
+            effort: Some(Some(ReasoningEffort::XHigh)),
+            summary: None,
+            collaboration_mode: None,
+            personality: None,
+        })
+        .await
+        .unwrap();
+
+    codex
+        .submit(Op::Review {
+            review_request: ReviewRequest {
+                target: ReviewTarget::Custom {
+                    instructions: "runtime unsupported effort should be clamped".to_string(),
+                },
+                user_facing_hint: None,
+            },
+        })
+        .await
+        .unwrap();
+
+    let _entered = wait_for_event(&codex, |ev| matches!(ev, EventMsg::EnteredReviewMode(_))).await;
+    let _closed = wait_for_event(&codex, |ev| {
+        matches!(
+            ev,
+            EventMsg::ExitedReviewMode(ExitedReviewModeEvent {
+                review_output: None,
+                ..
+            })
+        )
+    })
+    .await;
+    let _complete = wait_for_event(&codex, |ev| matches!(ev, EventMsg::TurnComplete(_))).await;
+
+    let request = request_log.single_request();
+    assert_eq!(request.path(), "/v1/responses");
+    let body = request.body_json();
+    assert_eq!(body["model"].as_str().unwrap(), "gpt-5.1-codex-mini");
+    assert_eq!(body["reasoning"]["effort"].as_str().unwrap(), "medium");
+
+    let _codex_home_guard = codex_home;
+    server.verify().await;
+}
+
 /// When a review session begins, it must not prepend prior chat history from
 /// the parent session. The request `input` should contain only the review
 /// prompt from the user.

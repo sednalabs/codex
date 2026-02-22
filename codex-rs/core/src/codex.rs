@@ -293,6 +293,26 @@ pub(crate) const SUBMISSION_CHANNEL_CAPACITY: usize = 512;
 const CYBER_VERIFY_URL: &str = "https://chatgpt.com/cyber";
 const CYBER_SAFETY_URL: &str = "https://developers.openai.com/codex/concepts/cyber-safety";
 
+fn resolve_reasoning_effort_for_model(
+    model_info: &ModelInfo,
+    current_reasoning_effort: Option<ReasoningEffortConfig>,
+) -> Option<ReasoningEffortConfig> {
+    let supported_reasoning_levels = model_info
+        .supported_reasoning_levels
+        .iter()
+        .map(|preset| preset.effort)
+        .collect::<Vec<_>>();
+    if let Some(current_reasoning_effort) = current_reasoning_effort
+        && supported_reasoning_levels.contains(&current_reasoning_effort)
+    {
+        return Some(current_reasoning_effort);
+    }
+    supported_reasoning_levels
+        .get(supported_reasoning_levels.len().saturating_sub(1) / 2)
+        .copied()
+        .or(model_info.default_reasoning_level)
+}
+
 impl Codex {
     /// Spawn a new [`Codex`] and initialize the session.
     #[allow(clippy::too_many_arguments)]
@@ -587,26 +607,8 @@ impl TurnContext {
         config.model = Some(model.clone());
         let model_info = models_manager.get_model_info(model.as_str(), &config).await;
         let truncation_policy = model_info.truncation_policy.into();
-        let supported_reasoning_levels = model_info
-            .supported_reasoning_levels
-            .iter()
-            .map(|preset| preset.effort)
-            .collect::<Vec<_>>();
-        let reasoning_effort = if let Some(current_reasoning_effort) = self.reasoning_effort {
-            if supported_reasoning_levels.contains(&current_reasoning_effort) {
-                Some(current_reasoning_effort)
-            } else {
-                supported_reasoning_levels
-                    .get(supported_reasoning_levels.len().saturating_sub(1) / 2)
-                    .copied()
-                    .or(model_info.default_reasoning_level)
-            }
-        } else {
-            supported_reasoning_levels
-                .get(supported_reasoning_levels.len().saturating_sub(1) / 2)
-                .copied()
-                .or(model_info.default_reasoning_level)
-        };
+        let reasoning_effort =
+            resolve_reasoning_effort_for_model(&model_info, self.reasoning_effort);
         config.model_reasoning_effort = reasoning_effort;
 
         let collaboration_mode =
@@ -4279,32 +4281,15 @@ async fn spawn_review_thread(
         .get_model_info(&model, &per_turn_config)
         .await;
     // For reviews, disable web_search and view_image regardless of global settings.
-    let mut review_features = sess.features.clone();
+    let mut review_features = parent_turn_context.features.clone();
     review_features
         .disable(crate::features::Feature::WebSearchRequest)
         .disable(crate::features::Feature::WebSearchCached);
     let review_web_search_mode = WebSearchMode::Disabled;
-    let supported_reasoning_levels = review_model_info
-        .supported_reasoning_levels
-        .iter()
-        .map(|preset| preset.effort)
-        .collect::<Vec<_>>();
-    let reasoning_effort =
-        if let Some(current_reasoning_effort) = parent_turn_context.reasoning_effort {
-            if supported_reasoning_levels.contains(&current_reasoning_effort) {
-                Some(current_reasoning_effort)
-            } else {
-                supported_reasoning_levels
-                    .get(supported_reasoning_levels.len().saturating_sub(1) / 2)
-                    .copied()
-                    .or(review_model_info.default_reasoning_level)
-            }
-        } else {
-            supported_reasoning_levels
-                .get(supported_reasoning_levels.len().saturating_sub(1) / 2)
-                .copied()
-                .or(review_model_info.default_reasoning_level)
-        };
+    let reasoning_effort = resolve_reasoning_effort_for_model(
+        &review_model_info,
+        parent_turn_context.reasoning_effort,
+    );
     per_turn_config.model = Some(model.clone());
     per_turn_config.model_reasoning_effort = reasoning_effort;
     per_turn_config.features = review_features.clone();
@@ -4354,9 +4339,7 @@ async fn spawn_review_thread(
         parent_turn_context.cwd.clone(),
         parent_turn_context.sandbox_policy.get(),
         parent_turn_context.windows_sandbox_level,
-        parent_turn_context
-            .features
-            .enabled(Feature::UseLinuxSandboxBwrap),
+        review_features.enabled(Feature::UseLinuxSandboxBwrap),
     ));
 
     let review_turn_context = TurnContext {
@@ -4370,7 +4353,7 @@ async fn spawn_review_thread(
         reasoning_summary,
         session_source,
         tools_config,
-        features: parent_turn_context.features.clone(),
+        features: review_features.clone(),
         ghost_snapshot: parent_turn_context.ghost_snapshot.clone(),
         developer_instructions: None,
         user_instructions: None,
