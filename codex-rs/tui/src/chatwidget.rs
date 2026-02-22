@@ -5867,9 +5867,7 @@ impl ChatWidget {
                         effort: choice_effort,
                     });
                 } else {
-                    tx.send(AppEvent::UpdateModel(model_for_action.clone()));
-                    tx.send(AppEvent::UpdateReasoningEffort(choice_effort));
-                    tx.send(AppEvent::PersistModelSelection {
+                    tx.send(AppEvent::SelectModel {
                         model: model_for_action.clone(),
                         effort: choice_effort,
                     });
@@ -5921,6 +5919,11 @@ impl ChatWidget {
             self.queue_slash_command(QueuedSlashCommand::ModelSelection { model, effort });
             return;
         }
+
+        // Keep local mode state in sync before draining any queued follow-ups so the next
+        // submission uses the selected model/effort even before app-level events are processed.
+        self.set_model(&model);
+        self.set_reasoning_effort(effort);
 
         self.app_event_tx
             .send(AppEvent::CodexOp(Op::OverrideTurnContext {

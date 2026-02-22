@@ -2248,15 +2248,12 @@ async fn reasoning_selection_in_plan_mode_without_effort_change_does_not_open_sc
     assert!(
         events.iter().any(|event| matches!(
             event,
-            AppEvent::UpdateModel(model) if model == "gpt-5.1-codex-max"
+            AppEvent::SelectModel {
+                model,
+                effort: Some(_),
+            } if model == "gpt-5.1-codex-max"
         )),
-        "expected model update event; events: {events:?}"
-    );
-    assert!(
-        events
-            .iter()
-            .any(|event| matches!(event, AppEvent::UpdateReasoningEffort(Some(_)))),
-        "expected reasoning update event; events: {events:?}"
+        "expected select-model event; events: {events:?}"
     );
 }
 
@@ -2333,15 +2330,12 @@ async fn reasoning_selection_in_plan_mode_model_switch_does_not_open_scope_promp
     assert!(
         events.iter().any(|event| matches!(
             event,
-            AppEvent::UpdateModel(model) if model == "gpt-5"
+            AppEvent::SelectModel {
+                model,
+                effort: Some(_),
+            } if model == "gpt-5"
         )),
-        "expected model update event; events: {events:?}"
-    );
-    assert!(
-        events
-            .iter()
-            .any(|event| matches!(event, AppEvent::UpdateReasoningEffort(Some(_)))),
-        "expected reasoning update event; events: {events:?}"
+        "expected select-model event; events: {events:?}"
     );
 }
 
@@ -6138,6 +6132,72 @@ async fn selected_model_change_queues_while_task_running() {
         saw_effort,
         "expected queued reasoning effort to apply after task completion"
     );
+}
+
+#[tokio::test]
+async fn queued_model_selection_applies_before_draining_queued_message() {
+    let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(Some("gpt-5.1-codex-max")).await;
+    chat.thread_id = Some(ThreadId::new());
+    chat.bottom_pane.set_task_running(true);
+    let _ = drain_insert_history(&mut rx);
+
+    chat.apply_model_and_effort(
+        "gpt-5.1-codex-mini".to_string(),
+        Some(ReasoningEffortConfig::Low),
+    );
+    chat.queue_user_message(UserMessage::from("queued follow-up".to_string()));
+    assert_matches!(op_rx.try_recv(), Err(TryRecvError::Empty));
+
+    chat.on_task_complete(None, false);
+
+    match next_submit_op(&mut op_rx) {
+        Op::UserTurn { model, effort, .. } => {
+            assert_eq!(model, "gpt-5.1-codex-mini");
+            assert_eq!(effort, Some(ReasoningEffortConfig::Low));
+        }
+        other => panic!("expected Op::UserTurn, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn reasoning_popup_selection_routes_through_select_model_while_task_running() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(Some("gpt-5.1-codex-max")).await;
+    chat.bottom_pane.set_task_running(true);
+
+    let preset = get_available_model(&chat, "gpt-5");
+    chat.open_reasoning_popup(preset);
+    chat.handle_key_event(KeyEvent::from(KeyCode::Enter));
+
+    let events = std::iter::from_fn(|| rx.try_recv().ok()).collect::<Vec<_>>();
+    assert!(
+        events.iter().any(|event| matches!(
+            event,
+            AppEvent::SelectModel { model, .. } if model == "gpt-5"
+        )),
+        "expected SelectModel event from reasoning popup; events: {events:?}"
+    );
+    assert!(
+        events.iter().all(|event| {
+            !matches!(
+                event,
+                AppEvent::UpdateModel(_) | AppEvent::PersistModelSelection { .. }
+            )
+        }),
+        "did not expect direct update/persist model events; events: {events:?}"
+    );
+
+    let (selected_model, selected_effort) = events
+        .into_iter()
+        .find_map(|event| match event {
+            AppEvent::SelectModel { model, effort } => Some((model, effort)),
+            _ => None,
+        })
+        .expect("expected SelectModel event");
+    chat.apply_model_and_effort(selected_model, selected_effort);
+    assert!(matches!(
+        chat.queued_slash_commands.front(),
+        Some(QueuedSlashCommand::ModelSelection { model, .. }) if model == "gpt-5"
+    ));
 }
 
 #[tokio::test]
