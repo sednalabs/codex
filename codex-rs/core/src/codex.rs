@@ -3489,7 +3489,7 @@ async fn submission_loop(sess: Arc<Session>, config: Arc<Config>, rx_sub: Receiv
                 }
             }
             Op::Review { review_request } => {
-                handlers::review(&sess, &config, sub.id.clone(), review_request).await;
+                handlers::review(&sess, sub.id.clone(), review_request).await;
             }
             _ => {} // Ignore unknown ops; enum is non_exhaustive to allow extensions.
         }
@@ -3502,10 +3502,9 @@ mod handlers {
     use crate::codex::Session;
     use crate::codex::SessionSettingsUpdate;
     use crate::codex::SteerInputError;
-
-    use crate::codex::spawn_review_thread;
     use crate::config::Config;
 
+    use crate::codex::spawn_review_thread;
     use crate::mcp::auth::compute_auth_statuses;
     use crate::mcp::collect_mcp_snapshot_from_manager;
     use crate::mcp::effective_mcp_servers;
@@ -4239,26 +4238,14 @@ mod handlers {
         true
     }
 
-    pub async fn review(
-        sess: &Arc<Session>,
-        config: &Arc<Config>,
-        sub_id: String,
-        review_request: ReviewRequest,
-    ) {
+    pub async fn review(sess: &Arc<Session>, sub_id: String, review_request: ReviewRequest) {
         let turn_context = sess.new_default_turn_with_sub_id(sub_id.clone()).await;
         sess.maybe_emit_unknown_model_warning_for_turn(turn_context.as_ref())
             .await;
         sess.refresh_mcp_servers_if_requested(&turn_context).await;
         match resolve_review_request(review_request, turn_context.cwd.as_path()) {
             Ok(resolved) => {
-                spawn_review_thread(
-                    Arc::clone(sess),
-                    Arc::clone(config),
-                    turn_context.clone(),
-                    sub_id,
-                    resolved,
-                )
-                .await;
+                spawn_review_thread(Arc::clone(sess), turn_context.clone(), sub_id, resolved).await;
             }
             Err(err) => {
                 let event = Event {
@@ -4277,19 +4264,19 @@ mod handlers {
 /// Spawn a review thread using the given prompt.
 async fn spawn_review_thread(
     sess: Arc<Session>,
-    config: Arc<Config>,
     parent_turn_context: Arc<TurnContext>,
     sub_id: String,
     resolved: crate::review_prompts::ResolvedReviewRequest,
 ) {
-    let model = config
+    let mut per_turn_config = (*parent_turn_context.config).clone();
+    let model = per_turn_config
         .review_model
         .clone()
         .unwrap_or_else(|| parent_turn_context.model_info.slug.clone());
     let review_model_info = sess
         .services
         .models_manager
-        .get_model_info(&model, &config)
+        .get_model_info(&model, &per_turn_config)
         .await;
     // For reviews, disable web_search and view_image regardless of global settings.
     let mut review_features = sess.features.clone();
@@ -4297,13 +4284,42 @@ async fn spawn_review_thread(
         .disable(crate::features::Feature::WebSearchRequest)
         .disable(crate::features::Feature::WebSearchCached);
     let review_web_search_mode = WebSearchMode::Disabled;
+    let supported_reasoning_levels = review_model_info
+        .supported_reasoning_levels
+        .iter()
+        .map(|preset| preset.effort)
+        .collect::<Vec<_>>();
+    let reasoning_effort =
+        if let Some(current_reasoning_effort) = parent_turn_context.reasoning_effort {
+            if supported_reasoning_levels.contains(&current_reasoning_effort) {
+                Some(current_reasoning_effort)
+            } else {
+                supported_reasoning_levels
+                    .get(supported_reasoning_levels.len().saturating_sub(1) / 2)
+                    .copied()
+                    .or(review_model_info.default_reasoning_level)
+            }
+        } else {
+            supported_reasoning_levels
+                .get(supported_reasoning_levels.len().saturating_sub(1) / 2)
+                .copied()
+                .or(review_model_info.default_reasoning_level)
+        };
+    per_turn_config.model = Some(model.clone());
+    per_turn_config.model_reasoning_effort = reasoning_effort;
+    per_turn_config.features = review_features.clone();
+    let collaboration_mode = parent_turn_context.collaboration_mode.with_updates(
+        Some(model.clone()),
+        Some(reasoning_effort),
+        None,
+    );
     let tools_config = ToolsConfig::new(&ToolsConfigParams {
         model_info: &review_model_info,
         features: &review_features,
         web_search_mode: Some(review_web_search_mode),
     })
-    .with_allow_login_shell(config.permissions.allow_login_shell)
-    .with_agent_roles(config.agent_roles.clone());
+    .with_allow_login_shell(per_turn_config.permissions.allow_login_shell)
+    .with_agent_roles(per_turn_config.agent_roles.clone());
 
     let review_prompt = resolved.prompt.clone();
     let provider = parent_turn_context.provider.clone();
@@ -4311,9 +4327,6 @@ async fn spawn_review_thread(
     let model_info = review_model_info.clone();
 
     // Build per‑turn client with the requested model/family.
-    let mut per_turn_config = (*config).clone();
-    per_turn_config.model = Some(model.clone());
-    per_turn_config.features = review_features.clone();
     if let Err(err) = per_turn_config.web_search_mode.set(review_web_search_mode) {
         let fallback_value = per_turn_config.web_search_mode.value();
         tracing::warn!(
@@ -4331,7 +4344,6 @@ async fn spawn_review_thread(
     let auth_manager_for_context = auth_manager.clone();
     let provider_for_context = provider.clone();
     let otel_manager_for_context = otel_manager.clone();
-    let reasoning_effort = per_turn_config.model_reasoning_effort;
     let reasoning_summary = per_turn_config.model_reasoning_summary;
     let session_source = parent_turn_context.session_source.clone();
 
@@ -4363,7 +4375,7 @@ async fn spawn_review_thread(
         developer_instructions: None,
         user_instructions: None,
         compact_prompt: parent_turn_context.compact_prompt.clone(),
-        collaboration_mode: parent_turn_context.collaboration_mode.clone(),
+        collaboration_mode,
         personality: parent_turn_context.personality,
         approval_policy: parent_turn_context.approval_policy.clone(),
         sandbox_policy: parent_turn_context.sandbox_policy.clone(),
