@@ -250,6 +250,10 @@ async fn run_add(config_overrides: &CliConfigOverrides, add_args: AddArgs) -> Re
         enabled_tools: None,
         disabled_tools: None,
         scopes: None,
+        enable_elicitation: false,
+        read_only: false,
+        strict_tool_classification: false,
+        require_approval_for_mutating: false,
     };
 
     servers.insert(name.clone(), new_entry);

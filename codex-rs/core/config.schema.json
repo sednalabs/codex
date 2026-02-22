@@ -1082,6 +1082,10 @@
           },
           "type": "array"
         },
+        "enable_elicitation": {
+          "default": null,
+          "type": "boolean"
+        },
         "enabled": {
           "default": null,
           "type": "boolean"
@@ -1120,6 +1124,14 @@
           },
           "type": "object"
         },
+        "read_only": {
+          "default": null,
+          "type": "boolean"
+        },
+        "require_approval_for_mutating": {
+          "default": null,
+          "type": "boolean"
+        },
         "required": {
           "default": null,
           "type": "boolean"
@@ -1141,6 +1153,10 @@
           "default": null,
           "format": "double",
           "type": "number"
+        },
+        "strict_tool_classification": {
+          "default": null,
+          "type": "boolean"
         },
         "tool_timeout_sec": {
           "default": null,

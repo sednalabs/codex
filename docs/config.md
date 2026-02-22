@@ -12,6 +12,14 @@ Codex can connect to MCP servers configured in `~/.codex/config.toml`. See the c
 
 - https://developers.openai.com/codex/config-reference
 
+For custom MCP servers, you can also apply server-local safety controls in each
+`[mcp_servers.<name>]` entry:
+
+- `enable_elicitation = true` to allow the server to issue MCP elicitation prompts.
+- `read_only = true` to block mutating tools (based on tool `read_only_hint` metadata).
+- `strict_tool_classification = true` to fail closed when tool mutability metadata is missing.
+- `require_approval_for_mutating = true` to force explicit approval before mutating tool calls.
+
 ## Apps (Connectors)
 
 Use `$` in the composer to insert a ChatGPT connector; the popover lists accessible

@@ -187,6 +187,18 @@ mod document_helpers {
         {
             entry["scopes"] = array_from_iter(scopes.iter().cloned());
         }
+        if config.enable_elicitation {
+            entry["enable_elicitation"] = value(true);
+        }
+        if config.read_only {
+            entry["read_only"] = value(true);
+        }
+        if config.strict_tool_classification {
+            entry["strict_tool_classification"] = value(true);
+        }
+        if config.require_approval_for_mutating {
+            entry["require_approval_for_mutating"] = value(true);
+        }
 
         entry
     }
@@ -1433,6 +1445,10 @@ gpt-5 = "gpt-5.1"
                 enabled_tools: Some(vec!["one".to_string(), "two".to_string()]),
                 disabled_tools: None,
                 scopes: None,
+                enable_elicitation: false,
+                read_only: false,
+                strict_tool_classification: false,
+                require_approval_for_mutating: false,
             },
         );
 
@@ -1457,6 +1473,10 @@ gpt-5 = "gpt-5.1"
                 enabled_tools: None,
                 disabled_tools: Some(vec!["forbidden".to_string()]),
                 scopes: None,
+                enable_elicitation: false,
+                read_only: false,
+                strict_tool_classification: false,
+                require_approval_for_mutating: false,
             },
         );
 
@@ -1524,6 +1544,10 @@ foo = { command = "cmd" }
                 enabled_tools: None,
                 disabled_tools: None,
                 scopes: None,
+                enable_elicitation: false,
+                read_only: false,
+                strict_tool_classification: false,
+                require_approval_for_mutating: false,
             },
         );
 
@@ -1570,6 +1594,10 @@ foo = { command = "cmd" } # keep me
                 enabled_tools: None,
                 disabled_tools: None,
                 scopes: None,
+                enable_elicitation: false,
+                read_only: false,
+                strict_tool_classification: false,
+                require_approval_for_mutating: false,
             },
         );
 
@@ -1615,6 +1643,10 @@ foo = { command = "cmd", args = ["--flag"] } # keep me
                 enabled_tools: None,
                 disabled_tools: None,
                 scopes: None,
+                enable_elicitation: false,
+                read_only: false,
+                strict_tool_classification: false,
+                require_approval_for_mutating: false,
             },
         );
 
@@ -1661,6 +1693,10 @@ foo = { command = "cmd" }
                 enabled_tools: None,
                 disabled_tools: None,
                 scopes: None,
+                enable_elicitation: false,
+                read_only: false,
+                strict_tool_classification: false,
+                require_approval_for_mutating: false,
             },
         );
 

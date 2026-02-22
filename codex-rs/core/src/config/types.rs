@@ -98,6 +98,26 @@ pub struct McpServerConfig {
     /// Optional OAuth scopes to request during MCP login.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scopes: Option<Vec<String>>,
+
+    /// Advertise MCP elicitation capability to this server.
+    ///
+    /// When enabled, the server can request user input through MCP elicitation.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub enable_elicitation: bool,
+
+    /// Enforce read-only behavior for this server by blocking mutating tools.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub read_only: bool,
+
+    /// Fail closed when a tool does not advertise read-only classification metadata.
+    ///
+    /// This applies only when read-only enforcement or mutation approval policy is enabled.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub strict_tool_classification: bool,
+
+    /// Require explicit user approval before running mutating tools.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub require_approval_for_mutating: bool,
 }
 
 // Raw MCP config shape used for deserialization and JSON Schema generation.
@@ -142,6 +162,14 @@ pub(crate) struct RawMcpServerConfig {
     pub disabled_tools: Option<Vec<String>>,
     #[serde(default)]
     pub scopes: Option<Vec<String>>,
+    #[serde(default)]
+    pub enable_elicitation: Option<bool>,
+    #[serde(default)]
+    pub read_only: Option<bool>,
+    #[serde(default)]
+    pub strict_tool_classification: Option<bool>,
+    #[serde(default)]
+    pub require_approval_for_mutating: Option<bool>,
 }
 
 impl<'de> Deserialize<'de> for McpServerConfig {
@@ -165,6 +193,16 @@ impl<'de> Deserialize<'de> for McpServerConfig {
         let enabled_tools = raw.enabled_tools.clone();
         let disabled_tools = raw.disabled_tools.clone();
         let scopes = raw.scopes.clone();
+        let enable_elicitation = raw.enable_elicitation.unwrap_or(false);
+        let read_only = raw.read_only.unwrap_or(false);
+        let strict_tool_classification = raw.strict_tool_classification.unwrap_or(false);
+        let require_approval_for_mutating = raw.require_approval_for_mutating.unwrap_or(false);
+
+        if require_approval_for_mutating && !enable_elicitation {
+            return Err(SerdeError::custom(
+                "require_approval_for_mutating requires enable_elicitation=true",
+            ));
+        }
 
         fn throw_if_set<E, T>(transport: &str, field: &str, value: Option<&T>) -> Result<(), E>
         where
@@ -221,6 +259,10 @@ impl<'de> Deserialize<'de> for McpServerConfig {
             enabled_tools,
             disabled_tools,
             scopes,
+            enable_elicitation,
+            read_only,
+            strict_tool_classification,
+            require_approval_for_mutating,
         })
     }
 }
@@ -1090,6 +1132,42 @@ mod tests {
 
         assert_eq!(cfg.enabled_tools, Some(vec!["allowed".to_string()]));
         assert_eq!(cfg.disabled_tools, Some(vec!["blocked".to_string()]));
+    }
+
+    #[test]
+    fn deserialize_server_config_with_elicitation_and_policy_flags() {
+        let cfg: McpServerConfig = toml::from_str(
+            r#"
+            command = "echo"
+            enable_elicitation = true
+            read_only = true
+            strict_tool_classification = true
+            require_approval_for_mutating = true
+        "#,
+        )
+        .expect("should deserialize policy flags");
+
+        assert!(cfg.enable_elicitation);
+        assert!(cfg.read_only);
+        assert!(cfg.strict_tool_classification);
+        assert!(cfg.require_approval_for_mutating);
+    }
+
+    #[test]
+    fn deserialize_rejects_mutation_approval_without_elicitation() {
+        let err = toml::from_str::<McpServerConfig>(
+            r#"
+            command = "echo"
+            require_approval_for_mutating = true
+        "#,
+        )
+        .expect_err("should reject invalid policy combination");
+
+        assert!(
+            err.to_string()
+                .contains("require_approval_for_mutating requires enable_elicitation=true"),
+            "unexpected error: {err}"
+        );
     }
 
     #[test]

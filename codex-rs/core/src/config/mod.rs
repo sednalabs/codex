@@ -2333,6 +2333,10 @@ mod tests {
             enabled_tools: None,
             disabled_tools: None,
             scopes: None,
+            enable_elicitation: false,
+            read_only: false,
+            strict_tool_classification: false,
+            require_approval_for_mutating: false,
         }
     }
 
@@ -2352,6 +2356,10 @@ mod tests {
             enabled_tools: None,
             disabled_tools: None,
             scopes: None,
+            enable_elicitation: false,
+            read_only: false,
+            strict_tool_classification: false,
+            require_approval_for_mutating: false,
         }
     }
 
@@ -3344,6 +3352,10 @@ profile = "project"
                 enabled_tools: None,
                 disabled_tools: None,
                 scopes: None,
+                enable_elicitation: false,
+                read_only: false,
+                strict_tool_classification: false,
+                require_approval_for_mutating: false,
             },
         );
 
@@ -3501,6 +3513,10 @@ bearer_token = "secret"
                 enabled_tools: None,
                 disabled_tools: None,
                 scopes: None,
+                enable_elicitation: false,
+                read_only: false,
+                strict_tool_classification: false,
+                require_approval_for_mutating: false,
             },
         )]);
 
@@ -3572,6 +3588,10 @@ ZIG_VAR = "3"
                 enabled_tools: None,
                 disabled_tools: None,
                 scopes: None,
+                enable_elicitation: false,
+                read_only: false,
+                strict_tool_classification: false,
+                require_approval_for_mutating: false,
             },
         )]);
 
@@ -3623,6 +3643,10 @@ ZIG_VAR = "3"
                 enabled_tools: None,
                 disabled_tools: None,
                 scopes: None,
+                enable_elicitation: false,
+                read_only: false,
+                strict_tool_classification: false,
+                require_approval_for_mutating: false,
             },
         )]);
 
@@ -3672,6 +3696,10 @@ ZIG_VAR = "3"
                 enabled_tools: None,
                 disabled_tools: None,
                 scopes: None,
+                enable_elicitation: false,
+                read_only: false,
+                strict_tool_classification: false,
+                require_approval_for_mutating: false,
             },
         )]);
 
@@ -3737,6 +3765,10 @@ startup_timeout_sec = 2.0
                 enabled_tools: None,
                 disabled_tools: None,
                 scopes: None,
+                enable_elicitation: false,
+                read_only: false,
+                strict_tool_classification: false,
+                require_approval_for_mutating: false,
             },
         )]);
         apply_blocking(
@@ -3814,6 +3846,10 @@ X-Auth = "DOCS_AUTH"
                 enabled_tools: None,
                 disabled_tools: None,
                 scopes: None,
+                enable_elicitation: false,
+                read_only: false,
+                strict_tool_classification: false,
+                require_approval_for_mutating: false,
             },
         )]);
 
@@ -3844,6 +3880,10 @@ X-Auth = "DOCS_AUTH"
                 enabled_tools: None,
                 disabled_tools: None,
                 scopes: None,
+                enable_elicitation: false,
+                read_only: false,
+                strict_tool_classification: false,
+                require_approval_for_mutating: false,
             },
         );
         apply_blocking(
@@ -3912,6 +3952,10 @@ url = "https://example.com/mcp"
                     enabled_tools: None,
                     disabled_tools: None,
                     scopes: None,
+                    enable_elicitation: false,
+                    read_only: false,
+                    strict_tool_classification: false,
+                    require_approval_for_mutating: false,
                 },
             ),
             (
@@ -3932,6 +3976,10 @@ url = "https://example.com/mcp"
                     enabled_tools: None,
                     disabled_tools: None,
                     scopes: None,
+                    enable_elicitation: false,
+                    read_only: false,
+                    strict_tool_classification: false,
+                    require_approval_for_mutating: false,
                 },
             ),
         ]);
@@ -4015,6 +4063,10 @@ url = "https://example.com/mcp"
                 enabled_tools: None,
                 disabled_tools: None,
                 scopes: None,
+                enable_elicitation: false,
+                read_only: false,
+                strict_tool_classification: false,
+                require_approval_for_mutating: false,
             },
         )]);
 
@@ -4060,6 +4112,10 @@ url = "https://example.com/mcp"
                 enabled_tools: None,
                 disabled_tools: None,
                 scopes: None,
+                enable_elicitation: false,
+                read_only: false,
+                strict_tool_classification: false,
+                require_approval_for_mutating: false,
             },
         )]);
 
@@ -4105,6 +4161,10 @@ url = "https://example.com/mcp"
                 enabled_tools: Some(vec!["allowed".to_string()]),
                 disabled_tools: Some(vec!["blocked".to_string()]),
                 scopes: None,
+                enable_elicitation: false,
+                read_only: false,
+                strict_tool_classification: false,
+                require_approval_for_mutating: false,
             },
         )]);
 

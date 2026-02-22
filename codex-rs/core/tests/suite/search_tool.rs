@@ -133,6 +133,10 @@ fn rmcp_server_config(command: String) -> McpServerConfig {
         enabled_tools: None,
         disabled_tools: None,
         scopes: None,
+        enable_elicitation: false,
+        read_only: false,
+        strict_tool_classification: false,
+        require_approval_for_mutating: false,
     }
 }
 

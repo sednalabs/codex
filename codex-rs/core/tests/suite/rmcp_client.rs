@@ -104,6 +104,10 @@ async fn stdio_server_round_trip() -> anyhow::Result<()> {
                     enabled_tools: None,
                     disabled_tools: None,
                     scopes: None,
+                    enable_elicitation: false,
+                    read_only: false,
+                    strict_tool_classification: false,
+                    require_approval_for_mutating: false,
                 },
             );
             config
@@ -246,6 +250,10 @@ async fn stdio_image_responses_round_trip() -> anyhow::Result<()> {
                     enabled_tools: None,
                     disabled_tools: None,
                     scopes: None,
+                    enable_elicitation: false,
+                    read_only: false,
+                    strict_tool_classification: false,
+                    require_approval_for_mutating: false,
                 },
             );
             config
@@ -462,6 +470,10 @@ async fn stdio_image_responses_are_sanitized_for_text_only_model() -> anyhow::Re
                     enabled_tools: None,
                     disabled_tools: None,
                     scopes: None,
+                    enable_elicitation: false,
+                    read_only: false,
+                    strict_tool_classification: false,
+                    require_approval_for_mutating: false,
                 },
             );
             config
@@ -580,6 +592,10 @@ async fn stdio_server_propagates_whitelisted_env_vars() -> anyhow::Result<()> {
                     enabled_tools: None,
                     disabled_tools: None,
                     scopes: None,
+                    enable_elicitation: false,
+                    read_only: false,
+                    strict_tool_classification: false,
+                    require_approval_for_mutating: false,
                 },
             );
             config
@@ -739,6 +755,10 @@ async fn streamable_http_tool_call_round_trip() -> anyhow::Result<()> {
                     enabled_tools: None,
                     disabled_tools: None,
                     scopes: None,
+                    enable_elicitation: false,
+                    read_only: false,
+                    strict_tool_classification: false,
+                    require_approval_for_mutating: false,
                 },
             );
             config
@@ -958,6 +978,10 @@ async fn streamable_http_with_oauth_round_trip_impl() -> anyhow::Result<()> {
                     enabled_tools: None,
                     disabled_tools: None,
                     scopes: None,
+                    enable_elicitation: false,
+                    read_only: false,
+                    strict_tool_classification: false,
+                    require_approval_for_mutating: false,
                 },
             );
             config
