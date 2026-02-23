@@ -4557,24 +4557,29 @@ async fn slash_clear_requests_ui_clear_when_idle() {
 }
 
 #[tokio::test]
-async fn slash_clear_is_disabled_while_task_running() {
+async fn slash_clear_queues_while_task_running() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(None).await;
     chat.bottom_pane.set_task_running(true);
 
     chat.dispatch_command(SlashCommand::Clear);
 
-    let event = rx.try_recv().expect("expected disabled command error");
-    match event {
-        AppEvent::InsertHistoryCell(cell) => {
-            let rendered = lines_to_single_string(&cell.display_lines(80));
-            assert!(
-                rendered.contains("'/clear' is disabled while a task is in progress."),
-                "expected /clear task-running error, got {rendered:?}"
-            );
-        }
-        other => panic!("expected InsertHistoryCell error, got {other:?}"),
-    }
-    assert!(rx.try_recv().is_err(), "expected no follow-up events");
+    assert_eq!(chat.queued_slash_commands.len(), 1);
+    assert!(matches!(
+        chat.queued_slash_commands.front(),
+        Some(QueuedSlashCommand::Command(SlashCommand::Clear))
+    ));
+
+    let cells = drain_insert_history(&mut rx);
+    let rendered = lines_to_single_string(cells.last().expect("expected queue info message"));
+    assert!(
+        rendered.contains("Queued '/clear'"),
+        "expected queued command message, got {rendered:?}"
+    );
+
+    chat.on_task_complete(None, false);
+
+    assert_matches!(rx.try_recv(), Ok(AppEvent::ClearUi));
+    assert!(chat.queued_slash_commands.is_empty());
 }
 
 #[tokio::test]
@@ -6176,6 +6181,38 @@ async fn queued_inline_slash_command_runs_with_args_after_task_complete() {
 }
 
 #[tokio::test]
+async fn queued_inline_slash_command_expands_pending_paste_payload_before_queueing() {
+    let (mut chat, _rx, mut op_rx) = make_chatwidget_manual(None).await;
+    chat.bottom_pane.set_task_running(true);
+    chat.bottom_pane
+        .set_composer_text("/review ".to_string(), Vec::new(), Vec::new());
+
+    let pasted = "x".repeat(1101);
+    chat.handle_paste(pasted.clone());
+    let composer_text = chat.bottom_pane.composer_text();
+    let args = composer_text
+        .strip_prefix("/review ")
+        .expect("composer should include /review prefix")
+        .to_string();
+    assert_ne!(
+        args, pasted,
+        "expected queued args to start from placeholder text"
+    );
+
+    chat.dispatch_command_with_args(SlashCommand::Review, args, Vec::new());
+    assert_matches!(op_rx.try_recv(), Err(TryRecvError::Empty));
+
+    assert_eq!(chat.queued_slash_commands.len(), 1);
+    match chat.queued_slash_commands.front() {
+        Some(QueuedSlashCommand::CommandWithArgs { cmd, args, .. }) => {
+            assert_eq!(*cmd, SlashCommand::Review);
+            assert_eq!(args, &pasted);
+        }
+        _ => panic!("expected queued inline /review command"),
+    }
+}
+
+#[tokio::test]
 async fn queued_inline_plan_slash_command_captures_prepared_mention_bindings() {
     let (mut chat, _rx, mut op_rx) = make_chatwidget_manual(None).await;
     chat.bottom_pane.set_task_running(true);
@@ -6894,6 +6931,98 @@ async fn interrupt_restores_queued_messages_into_composer() {
 
     // Drain rx to avoid unused warnings.
     let _ = drain_insert_history(&mut rx);
+}
+
+#[tokio::test]
+async fn interrupt_keeps_queued_slash_commands_pending() {
+    let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(None).await;
+    chat.bottom_pane.set_task_running(true);
+    chat.dispatch_command(SlashCommand::Clear);
+    assert_eq!(chat.queued_slash_commands.len(), 1);
+    let _ = drain_insert_history(&mut rx);
+
+    chat.handle_codex_event(Event {
+        id: "turn-1".into(),
+        msg: EventMsg::TurnAborted(codex_protocol::protocol::TurnAbortedEvent {
+            turn_id: Some("turn-1".to_string()),
+            reason: TurnAbortReason::Interrupted,
+        }),
+    });
+
+    assert_eq!(chat.queued_slash_commands.len(), 1);
+    assert_matches!(op_rx.try_recv(), Err(TryRecvError::Empty));
+
+    let mut saw_clear = false;
+    while let Ok(event) = rx.try_recv() {
+        if matches!(event, AppEvent::ClearUi) {
+            saw_clear = true;
+        }
+    }
+    assert!(
+        !saw_clear,
+        "queued slash command should remain pending after interrupt"
+    );
+}
+
+#[tokio::test]
+async fn interrupt_applies_queued_model_selection_immediately() {
+    let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(Some("gpt-5.1-codex-max")).await;
+    chat.mcp_startup_status = Some(HashMap::new());
+    chat.update_task_running_state();
+    let _ = drain_insert_history(&mut rx);
+
+    chat.apply_model_and_effort(
+        "gpt-5.1-codex-mini".to_string(),
+        Some(ReasoningEffortConfig::Low),
+    );
+    chat.dispatch_command(SlashCommand::Clear);
+    assert_eq!(chat.queued_slash_commands.len(), 2);
+    let _ = drain_insert_history(&mut rx);
+
+    chat.handle_codex_event(Event {
+        id: "turn-1".into(),
+        msg: EventMsg::TurnAborted(codex_protocol::protocol::TurnAbortedEvent {
+            turn_id: Some("turn-1".to_string()),
+            reason: TurnAbortReason::Interrupted,
+        }),
+    });
+
+    assert_eq!(chat.current_model(), "gpt-5.1-codex-mini");
+    assert_eq!(
+        chat.effective_reasoning_effort(),
+        Some(ReasoningEffortConfig::Low)
+    );
+    assert_eq!(chat.queued_slash_commands.len(), 1);
+    assert!(matches!(
+        chat.queued_slash_commands.front(),
+        Some(QueuedSlashCommand::Command(SlashCommand::Clear))
+    ));
+    assert_eq!(
+        chat.queued_follow_up_order,
+        VecDeque::from([QueuedFollowUpKind::SlashCommand])
+    );
+    assert_matches!(op_rx.try_recv(), Err(TryRecvError::Empty));
+
+    let events = std::iter::from_fn(|| rx.try_recv().ok()).collect::<Vec<_>>();
+    assert!(
+        events.iter().any(
+            |event| matches!(event, AppEvent::UpdateModel(model) if model == "gpt-5.1-codex-mini")
+        ),
+        "expected queued model selection to apply after interrupt"
+    );
+    assert!(
+        events.iter().any(|event| matches!(
+            event,
+            AppEvent::UpdateReasoningEffort(Some(ReasoningEffortConfig::Low))
+        )),
+        "expected queued reasoning effort to apply after interrupt"
+    );
+    assert!(
+        events
+            .iter()
+            .all(|event| !matches!(event, AppEvent::ClearUi)),
+        "queued slash commands other than model selection should remain pending after interrupt"
+    );
 }
 
 #[tokio::test]
