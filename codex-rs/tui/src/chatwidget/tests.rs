@@ -4557,29 +4557,24 @@ async fn slash_clear_requests_ui_clear_when_idle() {
 }
 
 #[tokio::test]
-async fn slash_clear_queues_while_task_running() {
+async fn slash_clear_is_disabled_while_task_running() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(None).await;
     chat.bottom_pane.set_task_running(true);
 
     chat.dispatch_command(SlashCommand::Clear);
 
-    assert_eq!(chat.queued_slash_commands.len(), 1);
-    assert!(matches!(
-        chat.queued_slash_commands.front(),
-        Some(QueuedSlashCommand::Command(SlashCommand::Clear))
-    ));
-
-    let cells = drain_insert_history(&mut rx);
-    let rendered = lines_to_single_string(cells.last().expect("expected queue info message"));
-    assert!(
-        rendered.contains("Queued '/clear'"),
-        "expected queued command message, got {rendered:?}"
-    );
-
-    chat.on_task_complete(None, false);
-
-    assert_matches!(rx.try_recv(), Ok(AppEvent::ClearUi));
-    assert!(chat.queued_slash_commands.is_empty());
+    let event = rx.try_recv().expect("expected disabled command error");
+    match event {
+        AppEvent::InsertHistoryCell(cell) => {
+            let rendered = lines_to_single_string(&cell.display_lines(80));
+            assert!(
+                rendered.contains("'/clear' is disabled while a task is in progress."),
+                "expected /clear task-running error, got {rendered:?}"
+            );
+        }
+        other => panic!("expected InsertHistoryCell error, got {other:?}"),
+    }
+    assert!(rx.try_recv().is_err(), "expected no follow-up events");
 }
 
 #[tokio::test]
@@ -6141,29 +6136,6 @@ async fn queued_non_turn_slash_command_keeps_draining_follow_ups() {
             .iter()
             .any(|item| matches!(item, UserInput::Text { text, .. } if text == "queued follow-up")),
         "expected queued follow-up text to be submitted after non-turn slash command"
-    );
-}
-
-#[tokio::test]
-async fn queued_session_switch_command_pauses_follow_up_drain() {
-    let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(None).await;
-    chat.bottom_pane.set_task_running(true);
-
-    chat.dispatch_command(SlashCommand::New);
-    chat.queue_user_message(UserMessage::from("queued follow-up".to_string()));
-    assert_matches!(op_rx.try_recv(), Err(TryRecvError::Empty));
-    let _ = drain_insert_history(&mut rx);
-
-    chat.on_task_complete(None, false);
-
-    assert_matches!(rx.try_recv(), Ok(AppEvent::NewSession));
-    assert_matches!(op_rx.try_recv(), Err(TryRecvError::Empty));
-    assert_eq!(chat.queued_user_messages.len(), 1);
-    assert_eq!(
-        chat.queued_user_messages
-            .front()
-            .map(|message| message.text.as_str()),
-        Some("queued follow-up")
     );
 }
 

@@ -410,10 +410,6 @@ struct McpToolApprovalPolicy {
     force_approval: bool,
 }
 
-fn should_remember_mcp_tool_approval(approval_policy: McpToolApprovalPolicy) -> bool {
-    approval_policy.mode == AppToolApproval::Auto && !approval_policy.force_approval
-}
-
 #[derive(Debug, Serialize)]
 struct McpToolApprovalKey {
     server: String,
@@ -440,7 +436,7 @@ async fn maybe_request_mcp_tool_approval(
         return None;
     }
 
-    let approval_key = if should_remember_mcp_tool_approval(approval_policy) {
+    let approval_key = if approval_policy.mode == AppToolApproval::Auto {
         let connector_id = metadata.and_then(|metadata| metadata.connector_id.clone());
         if server == CODEX_APPS_MCP_SERVER_NAME && connector_id.is_none() {
             None
@@ -851,22 +847,6 @@ mod tests {
             None,
             true,
         ));
-    }
-
-    #[test]
-    fn forced_policy_disables_approval_remembering() {
-        assert!(!should_remember_mcp_tool_approval(McpToolApprovalPolicy {
-            mode: AppToolApproval::Auto,
-            force_approval: true,
-        }));
-    }
-
-    #[test]
-    fn auto_policy_allows_approval_remembering_without_force() {
-        assert!(should_remember_mcp_tool_approval(McpToolApprovalPolicy {
-            mode: AppToolApproval::Auto,
-            force_approval: false,
-        }));
     }
 
     #[test]
