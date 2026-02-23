@@ -27,15 +27,6 @@ User-visible behavior:
 - `/status` remains immediate (not queued).
 - `/model` still opens the picker immediately; selecting a model while busy queues the model switch.
 
-Key files:
-- `codex-rs/tui/src/chatwidget.rs`
-- `codex-rs/tui/src/app_event.rs`
-- `codex-rs/tui/src/app.rs`
-- `codex-rs/tui/src/bottom_pane/chat_composer.rs`
-- `codex-rs/tui/src/bottom_pane/queued_user_messages.rs`
-- `codex-rs/tui/src/chatwidget/tests.rs`
-- `docs/tui-chat-composer.md`
-
 ### TUI: Weekly usage pacing signal + stale handling
 
 Why:
@@ -47,17 +38,31 @@ User-visible behavior:
 - Stale snapshot shows `weekly {remaining:.0}% (stale)` and hides pace percentage.
 - `/status` and footer use the same stale predicate helper to keep stale behavior consistent.
 
-Key files:
-- `codex-rs/tui/src/status/rate_limits.rs`
-- `codex-rs/tui/src/status/mod.rs`
-- `codex-rs/tui/src/chatwidget.rs`
-- `codex-rs/tui/src/bottom_pane/status_line_setup.rs`
-- `codex-rs/tui/src/chatwidget/tests.rs`
-- `docs/tui-weekly-usage-pacing-status-line.md`
+### TUI: Interrupted-turn queue handling and queued model ordering
+
+Why:
+- Keep `Esc` interrupts from auto-submitting queued turns while still applying queued model switches promptly.
+- Avoid stale model/effort on the next queued command when interrupt cleanup overlaps with MCP startup running-state.
+
+User-visible behavior:
+- On interrupt, queued user drafts are restored to the composer; non-model queued slash commands remain queued.
+- Queued model selections are applied immediately during interrupt cleanup.
+- Queued `/clear` remains queued while a task is running and is not executed during interrupt cleanup.
+- Inline queued slash command arguments preserve expanded pending-paste payload content.
+
+### Core: MCP forced approvals still participate in session remember keys
+
+Why:
+- Preserve Auto-mode approval-key caching even when a call is force-prompted.
+
+User-visible behavior:
+- Auto approval mode continues to use per-session remembered approvals for matching MCP tool calls, including force-prompted calls.
+- Repeated calls can still be approved from the current session memory instead of always re-prompting.
 
 ### Core tests: unified_exec race-tolerant completed-process polling (test-only)
 
-- Scope: test-only divergence; no product behavior change.
-- Reason: post-`exit` polling can race between final terminal response and process-store removal.
-- Reference: upstream issue `#12330`.
-- File: `codex-rs/core/src/unified_exec/mod.rs`.
+Why:
+- Post-`exit` polling can race between final terminal response and process-store removal in test runs.
+
+User-visible behavior:
+- No product behavior change; this divergence only makes downstream core tests more tolerant of completion/polling races.
