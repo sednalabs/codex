@@ -23,6 +23,10 @@ use crate::history_cell::UpdateAvailableHistoryCell;
 use crate::model_migration::ModelMigrationOutcome;
 use crate::model_migration::migration_copy_for_models;
 use crate::model_migration::run_model_migration_prompt;
+use crate::multi_agents::AgentPickerThreadEntry;
+use crate::multi_agents::agent_picker_status_dot_spans;
+use crate::multi_agents::format_agent_picker_item_name;
+use crate::multi_agents::sort_agent_picker_threads;
 use crate::pager_overlay::Overlay;
 use crate::render::highlight::highlight_bash_to_lines;
 use crate::render::renderable::Renderable;
@@ -99,6 +103,10 @@ use tokio::sync::mpsc::error::TryRecvError;
 use tokio::sync::mpsc::error::TrySendError;
 use tokio::sync::mpsc::unbounded_channel;
 use toml::Value as TomlValue;
+
+mod pending_interactive_replay;
+
+use self::pending_interactive_replay::PendingInteractiveReplayState;
 
 const EXTERNAL_EDITOR_HINT: &str = "Save and close external editor to continue.";
 const THREAD_EVENT_CHANNEL_CAPACITY: usize = 32768;
@@ -248,6 +256,7 @@ struct ThreadEventStore {
     session_configured: Option<Event>,
     buffer: VecDeque<Event>,
     user_message_ids: HashSet<String>,
+    pending_interactive_replay: PendingInteractiveReplayState,
     capacity: usize,
     active: bool,
 }
@@ -258,6 +267,7 @@ impl ThreadEventStore {
             session_configured: None,
             buffer: VecDeque::new(),
             user_message_ids: HashSet::new(),
+            pending_interactive_replay: PendingInteractiveReplayState::default(),
             capacity,
             active: false,
         }
@@ -270,6 +280,7 @@ impl ThreadEventStore {
     }
 
     fn push_event(&mut self, event: Event) {
+        self.pending_interactive_replay.note_event(&event);
         match &event.msg {
             EventMsg::SessionConfigured(_) => {
                 self.session_configured = Some(event);
@@ -304,18 +315,37 @@ impl ThreadEventStore {
         self.buffer.push_back(event);
         if self.buffer.len() > self.capacity
             && let Some(removed) = self.buffer.pop_front()
-            && matches!(removed.msg, EventMsg::UserMessage(_))
-            && !removed.id.is_empty()
         {
-            self.user_message_ids.remove(&removed.id);
+            self.pending_interactive_replay.note_evicted_event(&removed);
+            if matches!(removed.msg, EventMsg::UserMessage(_)) && !removed.id.is_empty() {
+                self.user_message_ids.remove(&removed.id);
+            }
         }
     }
 
     fn snapshot(&self) -> ThreadEventSnapshot {
         ThreadEventSnapshot {
             session_configured: self.session_configured.clone(),
-            events: self.buffer.iter().cloned().collect(),
+            // Thread switches replay buffered events into a rebuilt ChatWidget. Only replay
+            // interactive prompts that are still pending, or answered approvals/input will reappear.
+            events: self
+                .buffer
+                .iter()
+                .filter(|event| {
+                    self.pending_interactive_replay
+                        .should_replay_snapshot_event(event)
+                })
+                .cloned()
+                .collect(),
         }
+    }
+
+    fn note_outbound_op(&mut self, op: &Op) {
+        self.pending_interactive_replay.note_outbound_op(op);
+    }
+
+    fn op_can_change_pending_replay_state(op: &Op) -> bool {
+        PendingInteractiveReplayState::op_can_change_state(op)
     }
 }
 
@@ -576,6 +606,7 @@ pub(crate) struct App {
     windows_sandbox: WindowsSandboxState,
 
     thread_event_channels: HashMap<ThreadId, ThreadEventChannel>,
+    agent_picker_threads: HashMap<ThreadId, AgentPickerThreadEntry>,
     active_thread_id: Option<ThreadId>,
     active_thread_rx: Option<mpsc::Receiver<Event>>,
     primary_thread_id: Option<ThreadId>,
@@ -699,27 +730,27 @@ impl App {
         self.clear_ui_header_lines_with_version(width, CODEX_CLI_VERSION)
     }
 
-    fn clear_terminal_ui(&mut self, tui: &mut tui::Tui) -> Result<()> {
+    fn queue_clear_ui_header(&mut self, tui: &mut tui::Tui) {
+        let width = tui.terminal.last_known_screen_size.width;
+        let header_lines = self.clear_ui_header_lines(width);
+        if !header_lines.is_empty() {
+            tui.insert_history_lines(header_lines);
+            self.has_emitted_history_lines = true;
+        }
+    }
+
+    fn clear_terminal_ui(&mut self, tui: &mut tui::Tui, redraw_header: bool) -> Result<()> {
         let is_alt_screen_active = tui.is_alt_screen_active();
-        let use_apple_terminal_clear_workaround = !is_alt_screen_active
-            && matches!(
-                codex_core::terminal::terminal_info().name,
-                codex_core::terminal::TerminalName::AppleTerminal
-            );
 
         // Drop queued history insertions so stale transcript lines cannot be flushed after /clear.
         tui.clear_pending_history_lines();
 
         if is_alt_screen_active {
             tui.terminal.clear_visible_screen()?;
-        } else if use_apple_terminal_clear_workaround {
-            // Terminal.app can leave mixed old/new glyphs behind when we purge + clear.
-            // Use a stricter ANSI reset, then redraw only a fresh session header box instead of
-            // replaying the initialization transcript preamble.
-            tui.terminal.clear_scrollback_and_visible_screen_ansi()?;
         } else {
-            tui.terminal.clear_scrollback()?;
-            tui.terminal.clear_visible_screen()?;
+            // Some terminals (Terminal.app, Warp) do not reliably drop scrollback when purge and
+            // clear are emitted as separate backend commands. Prefer a single ANSI sequence.
+            tui.terminal.clear_scrollback_and_visible_screen_ansi()?;
         }
 
         let mut area = tui.terminal.viewport_area;
@@ -731,13 +762,19 @@ impl App {
         }
         self.has_emitted_history_lines = false;
 
-        let width = tui.terminal.last_known_screen_size.width;
-        let header_lines = self.clear_ui_header_lines(width);
-        if !header_lines.is_empty() {
-            tui.insert_history_lines(header_lines);
-            self.has_emitted_history_lines = true;
+        if redraw_header {
+            self.queue_clear_ui_header(tui);
         }
         Ok(())
+    }
+
+    fn reset_app_ui_state_after_clear(&mut self) {
+        self.overlay = None;
+        self.transcript_cells.clear();
+        self.deferred_history_lines.clear();
+        self.has_emitted_history_lines = false;
+        self.backtrack = BacktrackState::default();
+        self.backtrack_render_pending = false;
     }
 
     async fn shutdown_current_thread(&mut self) {
@@ -810,6 +847,20 @@ impl App {
         self.active_thread_rx = None;
     }
 
+    async fn note_active_thread_outbound_op(&mut self, op: &Op) {
+        if !ThreadEventStore::op_can_change_pending_replay_state(op) {
+            return;
+        }
+        let Some(thread_id) = self.active_thread_id else {
+            return;
+        };
+        let Some(channel) = self.thread_event_channels.get(&thread_id) else {
+            return;
+        };
+        let mut store = channel.store.lock().await;
+        store.note_outbound_op(op);
+    }
+
     async fn enqueue_thread_event(&mut self, thread_id: ThreadId, event: Event) -> Result<()> {
         let (sender, store) = {
             let channel = self.ensure_thread_channel(thread_id);
@@ -868,50 +919,55 @@ impl App {
 
     async fn open_agent_picker(&mut self) {
         let thread_ids: Vec<ThreadId> = self.thread_event_channels.keys().cloned().collect();
-        let mut agent_threads = Vec::new();
         for thread_id in thread_ids {
             match self.server.get_thread(thread_id).await {
                 Ok(thread) => {
                     let session_source = thread.config_snapshot().await.session_source;
-                    agent_threads.push((
+                    self.upsert_agent_picker_thread(
                         thread_id,
                         session_source.get_nickname(),
                         session_source.get_agent_role(),
-                    ));
+                        false,
+                    );
                 }
                 Err(_) => {
-                    self.thread_event_channels.remove(&thread_id);
+                    self.mark_agent_picker_thread_closed(thread_id);
                 }
             }
         }
 
-        if agent_threads.is_empty() {
+        if self.agent_picker_threads.is_empty() {
             self.chat_widget
                 .add_info_message("No agents available yet.".to_string(), None);
             return;
         }
 
-        agent_threads.sort_by(|(left, ..), (right, ..)| left.to_string().cmp(&right.to_string()));
+        let mut agent_threads: Vec<(ThreadId, AgentPickerThreadEntry)> = self
+            .agent_picker_threads
+            .iter()
+            .map(|(thread_id, entry)| (*thread_id, entry.clone()))
+            .collect();
+        sort_agent_picker_threads(&mut agent_threads);
 
         let mut initial_selected_idx = None;
         let items: Vec<SelectionItem> = agent_threads
             .iter()
             .enumerate()
-            .map(|(idx, (thread_id, agent_nickname, agent_role))| {
+            .map(|(idx, (thread_id, entry))| {
                 if self.active_thread_id == Some(*thread_id) {
                     initial_selected_idx = Some(idx);
                 }
                 let id = *thread_id;
                 let is_primary = self.primary_thread_id == Some(*thread_id);
                 let name = format_agent_picker_item_name(
-                    *thread_id,
-                    agent_nickname.as_deref(),
-                    agent_role.as_deref(),
+                    entry.agent_nickname.as_deref(),
+                    entry.agent_role.as_deref(),
                     is_primary,
                 );
                 let uuid = thread_id.to_string();
                 SelectionItem {
                     name: name.clone(),
+                    name_prefix_spans: agent_picker_status_dot_spans(entry.is_closed),
                     description: Some(uuid.clone()),
                     is_current: self.active_thread_id == Some(*thread_id),
                     actions: vec![Box::new(move |tx| {
@@ -934,20 +990,51 @@ impl App {
         });
     }
 
+    fn upsert_agent_picker_thread(
+        &mut self,
+        thread_id: ThreadId,
+        agent_nickname: Option<String>,
+        agent_role: Option<String>,
+        is_closed: bool,
+    ) {
+        self.agent_picker_threads.insert(
+            thread_id,
+            AgentPickerThreadEntry {
+                agent_nickname,
+                agent_role,
+                is_closed,
+            },
+        );
+    }
+
+    fn mark_agent_picker_thread_closed(&mut self, thread_id: ThreadId) {
+        if let Some(entry) = self.agent_picker_threads.get_mut(&thread_id) {
+            entry.is_closed = true;
+        } else {
+            self.upsert_agent_picker_thread(thread_id, None, None, true);
+        }
+    }
+
     async fn select_agent_thread(&mut self, tui: &mut tui::Tui, thread_id: ThreadId) -> Result<()> {
         if self.active_thread_id == Some(thread_id) {
             return Ok(());
         }
 
-        let thread = match self.server.get_thread(thread_id).await {
-            Ok(thread) => thread,
+        let live_thread = match self.server.get_thread(thread_id).await {
+            Ok(thread) => Some(thread),
             Err(err) => {
-                self.chat_widget.add_error_message(format!(
-                    "Failed to attach to agent thread {thread_id}: {err}"
-                ));
-                return Ok(());
+                if self.thread_event_channels.contains_key(&thread_id) {
+                    self.mark_agent_picker_thread_closed(thread_id);
+                    None
+                } else {
+                    self.chat_widget.add_error_message(format!(
+                        "Failed to attach to agent thread {thread_id}: {err}"
+                    ));
+                    return Ok(());
+                }
             }
         };
+        let is_replay_only = live_thread.is_none();
 
         let previous_thread_id = self.active_thread_id;
         self.store_active_thread_receiver().await;
@@ -965,11 +1052,22 @@ impl App {
         self.active_thread_rx = Some(receiver);
 
         let init = self.chatwidget_init_for_forked_or_resumed_thread(tui, self.config.clone());
-        let codex_op_tx = crate::chatwidget::spawn_op_forwarder(thread);
+        let codex_op_tx = if let Some(thread) = live_thread {
+            crate::chatwidget::spawn_op_forwarder(thread)
+        } else {
+            let (tx, _rx) = unbounded_channel();
+            tx
+        };
         self.chat_widget = ChatWidget::new_with_op_sender(init, codex_op_tx);
 
         self.reset_for_thread_switch(tui)?;
         self.replay_thread_snapshot(snapshot);
+        if is_replay_only {
+            self.chat_widget.add_info_message(
+                format!("Agent thread {thread_id} is closed. Replaying saved transcript."),
+                None,
+            );
+        }
         self.drain_active_thread_events(tui).await?;
 
         Ok(())
@@ -989,10 +1087,53 @@ impl App {
 
     fn reset_thread_event_state(&mut self) {
         self.thread_event_channels.clear();
+        self.agent_picker_threads.clear();
         self.active_thread_id = None;
         self.active_thread_rx = None;
         self.primary_thread_id = None;
         self.pending_primary_events.clear();
+    }
+
+    async fn start_fresh_session_with_summary_hint(&mut self, tui: &mut tui::Tui) {
+        // Start a fresh in-memory session while preserving resumability via persisted rollout
+        // history.
+        let model = self.chat_widget.current_model().to_string();
+        let summary = session_summary(
+            self.chat_widget.token_usage(),
+            self.chat_widget.thread_id(),
+            self.chat_widget.thread_name(),
+        );
+        self.shutdown_current_thread().await;
+        if let Err(err) = self.server.remove_and_close_all_threads().await {
+            tracing::warn!(error = %err, "failed to close all threads");
+        }
+        let init = crate::chatwidget::ChatWidgetInit {
+            config: self.config.clone(),
+            frame_requester: tui.frame_requester(),
+            app_event_tx: self.app_event_tx.clone(),
+            // New sessions start without prefilled message content.
+            initial_user_message: None,
+            enhanced_keys_supported: self.enhanced_keys_supported,
+            auth_manager: self.auth_manager.clone(),
+            models_manager: self.server.get_models_manager(),
+            feedback: self.feedback.clone(),
+            is_first_run: false,
+            feedback_audience: self.feedback_audience,
+            model: Some(model),
+            status_line_invalid_items_warned: self.status_line_invalid_items_warned.clone(),
+            otel_manager: self.otel_manager.clone(),
+        };
+        self.chat_widget = ChatWidget::new(init, self.server.clone());
+        self.reset_thread_event_state();
+        if let Some(summary) = summary {
+            let mut lines: Vec<Line<'static>> = vec![summary.usage_line.clone().into()];
+            if let Some(command) = summary.resume_command {
+                let spans = vec!["To continue this session, run ".into(), command.cyan()];
+                lines.push(spans.into());
+            }
+            self.chat_widget.add_plain_history_lines(lines);
+        }
+        tui.frame_requester().schedule_frame();
     }
 
     async fn drain_active_thread_events(&mut self, tui: &mut tui::Tui) -> Result<()> {
@@ -1294,6 +1435,7 @@ impl App {
             pending_shutdown_exit_thread_id: None,
             windows_sandbox: WindowsSandboxState::default(),
             thread_event_channels: HashMap::new(),
+            agent_picker_threads: HashMap::new(),
             active_thread_id: None,
             active_thread_rx: None,
             primary_thread_id: None,
@@ -1458,6 +1600,8 @@ impl App {
                     {
                         return Ok(AppRunControl::Continue);
                     }
+                    // Allow widgets to process any pending timers before rendering.
+                    self.chat_widget.pre_draw_tick();
                     tui.draw(
                         self.chat_widget.desired_height(tui.terminal.size()?.width),
                         |frame| {
@@ -1481,47 +1625,13 @@ impl App {
     async fn handle_event(&mut self, tui: &mut tui::Tui, event: AppEvent) -> Result<AppRunControl> {
         match event {
             AppEvent::NewSession => {
-                let model = self.chat_widget.current_model().to_string();
-                let summary = session_summary(
-                    self.chat_widget.token_usage(),
-                    self.chat_widget.thread_id(),
-                    self.chat_widget.thread_name(),
-                );
-                self.shutdown_current_thread().await;
-                if let Err(err) = self.server.remove_and_close_all_threads().await {
-                    tracing::warn!(error = %err, "failed to close all threads");
-                }
-                let init = crate::chatwidget::ChatWidgetInit {
-                    config: self.config.clone(),
-                    frame_requester: tui.frame_requester(),
-                    app_event_tx: self.app_event_tx.clone(),
-                    // New sessions start without prefilled message content.
-                    initial_user_message: None,
-                    enhanced_keys_supported: self.enhanced_keys_supported,
-                    auth_manager: self.auth_manager.clone(),
-                    models_manager: self.server.get_models_manager(),
-                    feedback: self.feedback.clone(),
-                    is_first_run: false,
-                    feedback_audience: self.feedback_audience,
-                    model: Some(model),
-                    status_line_invalid_items_warned: self.status_line_invalid_items_warned.clone(),
-                    otel_manager: self.otel_manager.clone(),
-                };
-                self.chat_widget = ChatWidget::new(init, self.server.clone());
-                self.reset_thread_event_state();
-                if let Some(summary) = summary {
-                    let mut lines: Vec<Line<'static>> = vec![summary.usage_line.clone().into()];
-                    if let Some(command) = summary.resume_command {
-                        let spans = vec!["To continue this session, run ".into(), command.cyan()];
-                        lines.push(spans.into());
-                    }
-                    self.chat_widget.add_plain_history_lines(lines);
-                }
-                tui.frame_requester().schedule_frame();
+                self.start_fresh_session_with_summary_hint(tui).await;
             }
             AppEvent::ClearUi => {
-                self.clear_terminal_ui(tui)?;
-                tui.frame_requester().schedule_frame();
+                self.clear_terminal_ui(tui, false)?;
+                self.reset_app_ui_state_after_clear();
+
+                self.start_fresh_session_with_summary_hint(tui).await;
             }
             AppEvent::OpenResumePicker => {
                 match crate::resume_picker::run_resume_picker(tui, &self.config, false).await? {
@@ -1754,7 +1864,12 @@ impl App {
                 return Ok(AppRunControl::Exit(ExitReason::Fatal(message)));
             }
             AppEvent::CodexOp(op) => {
-                self.chat_widget.submit_op(op);
+                let replay_state_op =
+                    ThreadEventStore::op_can_change_pending_replay_state(&op).then(|| op.clone());
+                let submitted = self.chat_widget.submit_op(op);
+                if submitted && let Some(op) = replay_state_op.as_ref() {
+                    self.note_active_thread_outbound_op(op).await;
+                }
             }
             AppEvent::DiffResult(text) => {
                 // Clear the in-progress state in the bottom pane
@@ -2646,6 +2761,22 @@ impl App {
                     ));
                 }
             },
+            #[cfg(not(target_os = "linux"))]
+            AppEvent::TranscriptionComplete { id, text } => {
+                self.chat_widget.replace_transcription(&id, &text);
+            }
+            #[cfg(not(target_os = "linux"))]
+            AppEvent::TranscriptionFailed { id, error: _ } => {
+                self.chat_widget.remove_transcription_placeholder(&id);
+            }
+            #[cfg(not(target_os = "linux"))]
+            AppEvent::UpdateRecordingMeter { id, text } => {
+                // Update in place to preserve the element id for subsequent frames.
+                let updated = self.chat_widget.update_transcription_in_place(&id, &text);
+                if updated {
+                    tui.frame_requester().schedule_frame();
+                }
+            }
             AppEvent::StatusLineSetup { items } => {
                 let ids = items.iter().map(ToString::to_string).collect::<Vec<_>>();
                 let edit = codex_core::config::edit::status_line_items_edit(&ids);
@@ -2755,7 +2886,7 @@ impl App {
         if let Some((closed_thread_id, primary_thread_id)) =
             self.active_non_primary_shutdown_target(&event.msg)
         {
-            self.thread_event_channels.remove(&closed_thread_id);
+            self.mark_agent_picker_thread_closed(closed_thread_id);
             self.select_agent_thread(tui, primary_thread_id).await?;
             if self.active_thread_id == Some(primary_thread_id) {
                 self.chat_widget.add_info_message(
@@ -2797,6 +2928,12 @@ impl App {
             }
         };
         let config_snapshot = thread.config_snapshot().await;
+        self.upsert_agent_picker_thread(
+            thread_id,
+            config_snapshot.session_source.get_nickname(),
+            config_snapshot.session_source.get_agent_role(),
+            false,
+        );
         let event = Event {
             id: String::new(),
             msg: EventMsg::SessionConfigured(SessionConfiguredEvent {
@@ -2986,6 +3123,25 @@ impl App {
                 tui.frame_requester().schedule_frame();
             }
             KeyEvent {
+                code: KeyCode::Char('l'),
+                modifiers: crossterm::event::KeyModifiers::CONTROL,
+                kind: KeyEventKind::Press,
+                ..
+            } => {
+                if !self.chat_widget.can_run_ctrl_l_clear_now() {
+                    return;
+                }
+                if let Err(err) = self.clear_terminal_ui(tui, false) {
+                    tracing::warn!(error = %err, "failed to clear terminal UI");
+                    self.chat_widget
+                        .add_error_message(format!("Failed to clear terminal UI: {err}"));
+                } else {
+                    self.reset_app_ui_state_after_clear();
+                    self.queue_clear_ui_header(tui);
+                    tui.frame_requester().schedule_frame();
+                }
+            }
+            KeyEvent {
                 code: KeyCode::Char('g'),
                 modifiers: crossterm::event::KeyModifiers::CONTROL,
                 kind: KeyEventKind::Press,
@@ -3043,7 +3199,7 @@ impl App {
                 self.chat_widget.handle_key_event(key_event);
             }
             _ => {
-                // Ignore Release key events.
+                self.chat_widget.handle_key_event(key_event);
             }
         };
     }
@@ -3078,28 +3234,6 @@ impl App {
                 });
             }
         });
-    }
-}
-
-fn format_agent_picker_item_name(
-    _thread_id: ThreadId,
-    agent_nickname: Option<&str>,
-    agent_role: Option<&str>,
-    is_primary: bool,
-) -> String {
-    if is_primary {
-        return "Main [default]".to_string();
-    }
-
-    let agent_nickname = agent_nickname
-        .map(str::trim)
-        .filter(|nickname| !nickname.is_empty());
-    let agent_role = agent_role.map(str::trim).filter(|role| !role.is_empty());
-    match (agent_nickname, agent_role) {
-        (Some(agent_nickname), Some(agent_role)) => format!("{agent_nickname} [{agent_role}]"),
-        (Some(agent_nickname), None) => agent_nickname.to_string(),
-        (None, Some(agent_role)) => format!("[{agent_role}]"),
-        (None, None) => "Agent".to_string(),
     }
 }
 
@@ -3271,7 +3405,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn open_agent_picker_prunes_missing_threads() -> Result<()> {
+    async fn open_agent_picker_keeps_missing_threads_for_replay() -> Result<()> {
         let mut app = make_test_app().await;
         let thread_id = ThreadId::new();
         app.thread_event_channels
@@ -3279,7 +3413,44 @@ mod tests {
 
         app.open_agent_picker().await;
 
-        assert_eq!(app.thread_event_channels.contains_key(&thread_id), false);
+        assert_eq!(app.thread_event_channels.contains_key(&thread_id), true);
+        assert_eq!(
+            app.agent_picker_threads.get(&thread_id),
+            Some(&AgentPickerThreadEntry {
+                agent_nickname: None,
+                agent_role: None,
+                is_closed: true,
+            })
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn open_agent_picker_keeps_cached_closed_threads() -> Result<()> {
+        let mut app = make_test_app().await;
+        let thread_id = ThreadId::new();
+        app.thread_event_channels
+            .insert(thread_id, ThreadEventChannel::new(1));
+        app.agent_picker_threads.insert(
+            thread_id,
+            AgentPickerThreadEntry {
+                agent_nickname: Some("Robie".to_string()),
+                agent_role: Some("explorer".to_string()),
+                is_closed: false,
+            },
+        );
+
+        app.open_agent_picker().await;
+
+        assert_eq!(app.thread_event_channels.contains_key(&thread_id), true);
+        assert_eq!(
+            app.agent_picker_threads.get(&thread_id),
+            Some(&AgentPickerThreadEntry {
+                agent_nickname: Some("Robie".to_string()),
+                agent_role: Some("explorer".to_string()),
+                is_closed: true,
+            })
+        );
         Ok(())
     }
 
@@ -3290,27 +3461,27 @@ mod tests {
         let snapshot = [
             format!(
                 "{} | {}",
-                format_agent_picker_item_name(thread_id, Some("Robie"), Some("explorer"), true),
+                format_agent_picker_item_name(Some("Robie"), Some("explorer"), true),
                 thread_id
             ),
             format!(
                 "{} | {}",
-                format_agent_picker_item_name(thread_id, Some("Robie"), Some("explorer"), false),
+                format_agent_picker_item_name(Some("Robie"), Some("explorer"), false),
                 thread_id
             ),
             format!(
                 "{} | {}",
-                format_agent_picker_item_name(thread_id, Some("Robie"), None, false),
+                format_agent_picker_item_name(Some("Robie"), None, false),
                 thread_id
             ),
             format!(
                 "{} | {}",
-                format_agent_picker_item_name(thread_id, None, Some("explorer"), false),
+                format_agent_picker_item_name(None, Some("explorer"), false),
                 thread_id
             ),
             format!(
                 "{} | {}",
-                format_agent_picker_item_name(thread_id, None, None, false),
+                format_agent_picker_item_name(None, None, false),
                 thread_id
             ),
         ]
@@ -3397,8 +3568,7 @@ mod tests {
         Ok(())
     }
 
-    #[tokio::test]
-    async fn clear_ui_after_long_transcript_snapshots_fresh_header_only() {
+    async fn render_clear_ui_header_after_long_transcript_for_snapshot() -> String {
         let mut app = make_test_app().await;
         app.config.cwd = PathBuf::from("/tmp/project");
         app.chat_widget.set_model("gpt-test");
@@ -3503,6 +3673,18 @@ mod tests {
             !rendered.contains("Bracken Ferry"),
             "clear header should not replay prior conversation turns"
         );
+        rendered
+    }
+
+    #[tokio::test]
+    async fn clear_ui_after_long_transcript_snapshots_fresh_header_only() {
+        let rendered = render_clear_ui_header_after_long_transcript_for_snapshot().await;
+        assert_snapshot!("clear_ui_after_long_transcript_fresh_header_only", rendered);
+    }
+
+    #[tokio::test]
+    async fn ctrl_l_clear_ui_after_long_transcript_reuses_clear_header_snapshot() {
+        let rendered = render_clear_ui_header_after_long_transcript_for_snapshot().await;
         assert_snapshot!("clear_ui_after_long_transcript_fresh_header_only", rendered);
     }
 
@@ -3551,6 +3733,7 @@ mod tests {
             pending_shutdown_exit_thread_id: None,
             windows_sandbox: WindowsSandboxState::default(),
             thread_event_channels: HashMap::new(),
+            agent_picker_threads: HashMap::new(),
             active_thread_id: None,
             active_thread_rx: None,
             primary_thread_id: None,
@@ -3609,6 +3792,7 @@ mod tests {
                 pending_shutdown_exit_thread_id: None,
                 windows_sandbox: WindowsSandboxState::default(),
                 thread_event_channels: HashMap::new(),
+                agent_picker_threads: HashMap::new(),
                 active_thread_id: None,
                 active_thread_rx: None,
                 primary_thread_id: None,
@@ -3780,7 +3964,7 @@ mod tests {
             .await
             .expect("config");
 
-        let available_models = all_model_presets();
+        let mut available_models = all_model_presets();
         let current = available_models
             .iter()
             .find(|preset| preset.model == "gpt-5.1-codex")
@@ -3792,6 +3976,13 @@ mod tests {
         );
 
         let upgrade = current.upgrade.as_ref().expect("upgrade configured");
+        // Test "hidden current model still prompts" even if bundled
+        // catalog data changes the target model's picker visibility.
+        available_models
+            .iter_mut()
+            .find(|preset| preset.model == upgrade.id)
+            .expect("upgrade target present")
+            .show_in_picker = true;
         assert!(
             should_show_model_migration_prompt(
                 &current.model,
@@ -4367,6 +4558,59 @@ mod tests {
             Ok(other) => panic!("expected Op::Shutdown, got {other:?}"),
             Err(_) => panic!("expected shutdown op to be sent"),
         }
+    }
+
+    #[tokio::test]
+    async fn clear_only_ui_reset_preserves_chat_session_state() {
+        let mut app = make_test_app().await;
+        let thread_id = ThreadId::new();
+        app.chat_widget.handle_codex_event(Event {
+            id: String::new(),
+            msg: EventMsg::SessionConfigured(SessionConfiguredEvent {
+                session_id: thread_id,
+                forked_from_id: None,
+                thread_name: Some("keep me".to_string()),
+                model: "gpt-test".to_string(),
+                model_provider_id: "test-provider".to_string(),
+                approval_policy: AskForApproval::Never,
+                sandbox_policy: SandboxPolicy::new_read_only_policy(),
+                cwd: PathBuf::from("/tmp/project"),
+                reasoning_effort: None,
+                history_log_id: 0,
+                history_entry_count: 0,
+                initial_messages: None,
+                network_proxy: None,
+                rollout_path: Some(PathBuf::new()),
+            }),
+        });
+        app.chat_widget
+            .apply_external_edit("draft prompt".to_string());
+        app.transcript_cells = vec![Arc::new(UserHistoryCell {
+            message: "old message".to_string(),
+            text_elements: Vec::new(),
+            local_image_paths: Vec::new(),
+            remote_image_urls: Vec::new(),
+        }) as Arc<dyn HistoryCell>];
+        app.overlay = Some(Overlay::new_transcript(app.transcript_cells.clone()));
+        app.deferred_history_lines = vec![Line::from("stale buffered line")];
+        app.has_emitted_history_lines = true;
+        app.backtrack.primed = true;
+        app.backtrack.overlay_preview_active = true;
+        app.backtrack.nth_user_message = 0;
+        app.backtrack_render_pending = true;
+
+        app.reset_app_ui_state_after_clear();
+
+        assert!(app.overlay.is_none());
+        assert!(app.transcript_cells.is_empty());
+        assert!(app.deferred_history_lines.is_empty());
+        assert!(!app.has_emitted_history_lines);
+        assert!(!app.backtrack.primed);
+        assert!(!app.backtrack.overlay_preview_active);
+        assert!(app.backtrack.pending_rollback.is_none());
+        assert!(!app.backtrack_render_pending);
+        assert_eq!(app.chat_widget.thread_id(), Some(thread_id));
+        assert_eq!(app.chat_widget.composer_text_with_pending(), "draft prompt");
     }
 
     #[tokio::test]

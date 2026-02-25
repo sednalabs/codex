@@ -115,8 +115,35 @@ pub use codex_git::GhostSnapshotConfig;
 /// the context window.
 pub(crate) const PROJECT_DOC_MAX_BYTES: usize = 32 * 1024; // 32 KiB
 pub(crate) const DEFAULT_AGENT_MAX_THREADS: Option<usize> = Some(6);
+pub(crate) const DEFAULT_AGENT_MAX_SPAWN_DEPTH: Option<usize> = Some(2);
 pub(crate) const DEFAULT_AGENT_MAX_DEPTH: i32 = 1;
+pub(crate) const DEFAULT_AGENT_JOB_MAX_RUNTIME_SECONDS: Option<u64> = None;
 
+pub const CONFIG_TOML_FILE: &str = "config.toml";
+
+fn default_sqlite_home(sandbox_policy: &SandboxPolicy, codex_home: &Path) -> PathBuf {
+    if matches!(sandbox_policy, SandboxPolicy::WorkspaceWrite { .. }) {
+        let mut path = std::env::temp_dir();
+        path.push("codex-sqlite");
+        path
+    } else {
+        codex_home.to_path_buf()
+    }
+}
+
+fn resolve_sqlite_home_env(resolved_cwd: &Path) -> Option<PathBuf> {
+    let raw = std::env::var(codex_state::SQLITE_HOME_ENV).ok()?;
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let path = PathBuf::from(trimmed);
+    if path.is_absolute() {
+        Some(path)
+    } else {
+        Some(resolved_cwd.join(path))
+    }
+}
 #[cfg(test)]
 pub(crate) fn test_config() -> Config {
     let codex_home = tempdir().expect("create temp dir");
@@ -330,6 +357,10 @@ pub struct Config {
 
     /// Maximum number of agent threads that can be open concurrently.
     pub agent_max_threads: Option<usize>,
+    /// Maximum depth for thread-spawned subagents.
+    pub agent_max_spawn_depth: Option<usize>,
+    /// Maximum runtime in seconds for agent job workers before they are failed.
+    pub agent_job_max_runtime_seconds: Option<u64>,
 
     /// Maximum nesting depth allowed for spawned agent threads.
     pub agent_max_depth: i32,
@@ -343,6 +374,9 @@ pub struct Config {
     /// Directory containing all Codex state (defaults to `~/.codex` but can be
     /// overridden by the `CODEX_HOME` environment variable).
     pub codex_home: PathBuf,
+
+    /// Directory where Codex stores the SQLite state DB.
+    pub sqlite_home: PathBuf,
 
     /// Directory where Codex writes log files (defaults to `$CODEX_HOME/log`).
     pub log_dir: PathBuf,
@@ -364,6 +398,11 @@ pub struct Config {
     ///
     /// When this program is invoked, arg0 will be set to `codex-linux-sandbox`.
     pub codex_linux_sandbox_exe: Option<PathBuf>,
+
+    /// Path to the `codex-execve-wrapper` executable used for shell
+    /// escalation. This cannot be set in the config file: it must be set in
+    /// code via [`ConfigOverrides`].
+    pub main_execve_wrapper_exe: Option<PathBuf>,
 
     /// Optional absolute path to the Node runtime used by `js_repl`.
     pub js_repl_node_path: Option<PathBuf>,
@@ -612,7 +651,8 @@ impl Config {
     /// designed to use [AskForApproval::Never] exclusively.
     ///
     /// Further, [ConfigOverrides] contains some options that are not supported
-    /// in [ConfigToml], such as `cwd` and `codex_linux_sandbox_exe`.
+    /// in [ConfigToml], such as `cwd`, `codex_linux_sandbox_exe`, and
+    /// `main_execve_wrapper_exe`.
     pub async fn load_with_cli_overrides_and_harness_overrides(
         cli_overrides: Vec<(String, TomlValue)>,
         harness_overrides: ConfigOverrides,
@@ -665,7 +705,7 @@ pub(crate) fn deserialize_config_toml_with_base(
 
 fn load_catalog_json(path: &AbsolutePathBuf) -> std::io::Result<ModelsResponse> {
     let file_contents = std::fs::read_to_string(path)?;
-    serde_json::from_str::<ModelsResponse>(&file_contents).map_err(|err| {
+    let catalog = serde_json::from_str::<ModelsResponse>(&file_contents).map_err(|err| {
         std::io::Error::new(
             ErrorKind::InvalidData,
             format!(
@@ -673,7 +713,17 @@ fn load_catalog_json(path: &AbsolutePathBuf) -> std::io::Result<ModelsResponse> 
                 path.display()
             ),
         )
-    })
+    })?;
+    if catalog.models.is_empty() {
+        return Err(std::io::Error::new(
+            ErrorKind::InvalidData,
+            format!(
+                "model_catalog_json path `{}` must contain at least one model",
+                path.display()
+            ),
+        ));
+    }
+    Ok(catalog)
 }
 
 fn load_model_catalog(
@@ -1076,7 +1126,7 @@ pub struct ConfigToml {
 
     /// Maximum poll window for background terminal output (`write_stdin`), in milliseconds.
     /// Default: `300000` (5 minutes).
-    pub background_terminal_timeout: Option<u64>,
+    pub background_terminal_max_timeout: Option<u64>,
 
     /// Optional absolute path to the Node runtime used by `js_repl`.
     pub js_repl_node_path: Option<AbsolutePathBuf>,
@@ -1097,6 +1147,11 @@ pub struct ConfigToml {
     /// Settings that govern if and what will be written to `~/.codex/history.jsonl`.
     #[serde(default)]
     pub history: Option<History>,
+
+    /// Directory where Codex stores the SQLite state DB.
+    /// Defaults to `$CODEX_SQLITE_HOME` when set. Otherwise uses a temp dir
+    /// under WorkspaceWrite sandboxing and `$CODEX_HOME` for other modes.
+    pub sqlite_home: Option<AbsolutePathBuf>,
 
     /// Directory where Codex writes log files, for example `codex-tui.log`.
     /// Defaults to `$CODEX_HOME/log`.
@@ -1285,11 +1340,16 @@ pub struct AgentsToml {
     /// When unset, no limit is enforced.
     #[schemars(range(min = 1))]
     pub max_threads: Option<usize>,
-
+    /// Maximum depth for thread-spawned subagents.
+    #[schemars(range(min = 1))]
+    pub max_spawn_depth: Option<usize>,
     /// Maximum nesting depth allowed for spawned agent threads.
     /// Root sessions start at depth 0.
     #[schemars(range(min = 1))]
     pub max_depth: Option<i32>,
+    /// Default maximum runtime in seconds for agent job workers.
+    #[schemars(range(min = 1))]
+    pub job_max_runtime_seconds: Option<u64>,
 
     /// User-defined role declarations keyed by role name.
     ///
@@ -1482,6 +1542,7 @@ pub struct ConfigOverrides {
     pub model_provider: Option<String>,
     pub config_profile: Option<String>,
     pub codex_linux_sandbox_exe: Option<PathBuf>,
+    pub main_execve_wrapper_exe: Option<PathBuf>,
     pub js_repl_node_path: Option<PathBuf>,
     pub js_repl_node_module_dirs: Option<Vec<PathBuf>>,
     pub zsh_path: Option<PathBuf>,
@@ -1611,6 +1672,7 @@ impl Config {
             model_provider,
             config_profile: config_profile_key,
             codex_linux_sandbox_exe,
+            main_execve_wrapper_exe,
             js_repl_node_path: js_repl_node_path_override,
             js_repl_node_module_dirs: js_repl_node_module_dirs_override,
             zsh_path: zsh_path_override,
@@ -1803,8 +1865,46 @@ impl Config {
             })
             .transpose()?
             .unwrap_or_default();
+        let agent_max_spawn_depth = cfg
+            .agents
+            .as_ref()
+            .and_then(|agents| agents.max_spawn_depth)
+            .or(DEFAULT_AGENT_MAX_SPAWN_DEPTH);
+        if agent_max_spawn_depth == Some(0) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "agents.max_spawn_depth must be at least 1",
+            ));
+        }
+        if let Some(max_spawn_depth) = agent_max_spawn_depth
+            && max_spawn_depth > i32::MAX as usize
+        {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "agents.max_spawn_depth must fit within a 32-bit signed integer",
+            ));
+        }
+        let agent_job_max_runtime_seconds = cfg
+            .agents
+            .as_ref()
+            .and_then(|agents| agents.job_max_runtime_seconds)
+            .or(DEFAULT_AGENT_JOB_MAX_RUNTIME_SECONDS);
+        if agent_job_max_runtime_seconds == Some(0) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "agents.job_max_runtime_seconds must be at least 1",
+            ));
+        }
+        if let Some(max_runtime_seconds) = agent_job_max_runtime_seconds
+            && max_runtime_seconds > i64::MAX as u64
+        {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "agents.job_max_runtime_seconds must fit within a 64-bit signed integer",
+            ));
+        }
         let background_terminal_max_timeout = cfg
-            .background_terminal_timeout
+            .background_terminal_max_timeout
             .unwrap_or(DEFAULT_MAX_BACKGROUND_TERMINAL_TIMEOUT_MS)
             .max(MIN_EMPTY_YIELD_TIME_MS);
 
@@ -1927,6 +2027,12 @@ impl Config {
                 p.push("log");
                 p
             });
+        let sqlite_home = cfg
+            .sqlite_home
+            .as_ref()
+            .map(AbsolutePathBuf::to_path_buf)
+            .or_else(|| resolve_sqlite_home_env(&resolved_cwd))
+            .unwrap_or_else(|| default_sqlite_home(&sandbox_policy, &codex_home));
 
         // Ensure that every field of ConfigRequirements is applied to the final
         // Config.
@@ -2043,13 +2149,17 @@ impl Config {
             agent_max_depth,
             agent_roles,
             memories: cfg.memories.unwrap_or_default().into(),
+            agent_max_spawn_depth,
+            agent_job_max_runtime_seconds,
             codex_home,
+            sqlite_home,
             log_dir,
             config_layer_stack,
             history,
             ephemeral: ephemeral.unwrap_or_default(),
             file_opener: cfg.file_opener.unwrap_or(UriBasedFileOpener::VsCode),
             codex_linux_sandbox_exe,
+            main_execve_wrapper_exe,
             js_repl_node_path,
             js_repl_node_module_dirs,
             zsh_path,
@@ -4437,7 +4547,9 @@ model = "gpt-5.1-codex"
         let cfg = ConfigToml {
             agents: Some(AgentsToml {
                 max_threads: None,
+                max_spawn_depth: None,
                 max_depth: None,
+                job_max_runtime_seconds: None,
                 roles: BTreeMap::from([(
                     "researcher".to_string(),
                     AgentRoleToml {
@@ -4523,6 +4635,32 @@ config_file = "./agents/researcher.toml"
         )?;
 
         assert_eq!(config.model_catalog, Some(catalog));
+        Ok(())
+    }
+
+    #[test]
+    fn model_catalog_json_rejects_empty_catalog() -> std::io::Result<()> {
+        let codex_home = TempDir::new()?;
+        let catalog_path = codex_home.path().join("catalog.json");
+        std::fs::write(&catalog_path, r#"{"models":[]}"#)?;
+
+        let cfg = ConfigToml {
+            model_catalog_json: Some(AbsolutePathBuf::from_absolute_path(catalog_path)?),
+            ..Default::default()
+        };
+
+        let err = Config::load_from_base_config_with_overrides(
+            cfg,
+            ConfigOverrides::default(),
+            codex_home.path().to_path_buf(),
+        )
+        .expect_err("empty custom catalog should fail config load");
+
+        assert_eq!(err.kind(), ErrorKind::InvalidData);
+        assert!(
+            err.to_string().contains("must contain at least one model"),
+            "unexpected error: {err}"
+        );
         Ok(())
     }
 
@@ -4685,7 +4823,10 @@ model_verbosity = "high"
                 agent_max_depth: DEFAULT_AGENT_MAX_DEPTH,
                 agent_roles: BTreeMap::new(),
                 memories: MemoriesConfig::default(),
+                agent_max_spawn_depth: DEFAULT_AGENT_MAX_SPAWN_DEPTH,
+                agent_job_max_runtime_seconds: DEFAULT_AGENT_JOB_MAX_RUNTIME_SECONDS,
                 codex_home: fixture.codex_home(),
+                sqlite_home: fixture.codex_home(),
                 log_dir: fixture.codex_home().join("log"),
                 config_layer_stack: Default::default(),
                 startup_warnings: Vec::new(),
@@ -4693,6 +4834,7 @@ model_verbosity = "high"
                 ephemeral: false,
                 file_opener: UriBasedFileOpener::VsCode,
                 codex_linux_sandbox_exe: None,
+                main_execve_wrapper_exe: None,
                 js_repl_node_path: None,
                 js_repl_node_module_dirs: Vec::new(),
                 zsh_path: None,
@@ -4808,7 +4950,10 @@ model_verbosity = "high"
             agent_max_depth: DEFAULT_AGENT_MAX_DEPTH,
             agent_roles: BTreeMap::new(),
             memories: MemoriesConfig::default(),
+            agent_max_spawn_depth: DEFAULT_AGENT_MAX_SPAWN_DEPTH,
+            agent_job_max_runtime_seconds: DEFAULT_AGENT_JOB_MAX_RUNTIME_SECONDS,
             codex_home: fixture.codex_home(),
+            sqlite_home: fixture.codex_home(),
             log_dir: fixture.codex_home().join("log"),
             config_layer_stack: Default::default(),
             startup_warnings: Vec::new(),
@@ -4816,6 +4961,7 @@ model_verbosity = "high"
             ephemeral: false,
             file_opener: UriBasedFileOpener::VsCode,
             codex_linux_sandbox_exe: None,
+            main_execve_wrapper_exe: None,
             js_repl_node_path: None,
             js_repl_node_module_dirs: Vec::new(),
             zsh_path: None,
@@ -4929,7 +5075,10 @@ model_verbosity = "high"
             agent_max_depth: DEFAULT_AGENT_MAX_DEPTH,
             agent_roles: BTreeMap::new(),
             memories: MemoriesConfig::default(),
+            agent_max_spawn_depth: DEFAULT_AGENT_MAX_SPAWN_DEPTH,
+            agent_job_max_runtime_seconds: DEFAULT_AGENT_JOB_MAX_RUNTIME_SECONDS,
             codex_home: fixture.codex_home(),
+            sqlite_home: fixture.codex_home(),
             log_dir: fixture.codex_home().join("log"),
             config_layer_stack: Default::default(),
             startup_warnings: Vec::new(),
@@ -4937,6 +5086,7 @@ model_verbosity = "high"
             ephemeral: false,
             file_opener: UriBasedFileOpener::VsCode,
             codex_linux_sandbox_exe: None,
+            main_execve_wrapper_exe: None,
             js_repl_node_path: None,
             js_repl_node_module_dirs: Vec::new(),
             zsh_path: None,
@@ -5036,7 +5186,10 @@ model_verbosity = "high"
             agent_max_depth: DEFAULT_AGENT_MAX_DEPTH,
             agent_roles: BTreeMap::new(),
             memories: MemoriesConfig::default(),
+            agent_max_spawn_depth: DEFAULT_AGENT_MAX_SPAWN_DEPTH,
+            agent_job_max_runtime_seconds: DEFAULT_AGENT_JOB_MAX_RUNTIME_SECONDS,
             codex_home: fixture.codex_home(),
+            sqlite_home: fixture.codex_home(),
             log_dir: fixture.codex_home().join("log"),
             config_layer_stack: Default::default(),
             startup_warnings: Vec::new(),
@@ -5044,6 +5197,7 @@ model_verbosity = "high"
             ephemeral: false,
             file_opener: UriBasedFileOpener::VsCode,
             codex_linux_sandbox_exe: None,
+            main_execve_wrapper_exe: None,
             js_repl_node_path: None,
             js_repl_node_module_dirs: Vec::new(),
             zsh_path: None,
