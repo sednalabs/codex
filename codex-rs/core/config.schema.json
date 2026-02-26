@@ -41,12 +41,6 @@
           "minimum": 1.0,
           "type": "integer"
         },
-        "max_spawn_depth": {
-          "description": "Maximum depth for thread-spawned subagents.",
-          "format": "uint",
-          "minimum": 1.0,
-          "type": "integer"
-        },
         "max_threads": {
           "description": "Maximum number of agent threads that can be open concurrently. When unset, no limit is enforced.",
           "format": "uint",
@@ -334,6 +328,9 @@
             "connectors": {
               "type": "boolean"
             },
+            "default_mode_request_user_input": {
+              "type": "boolean"
+            },
             "elevated_windows_sandbox": {
               "type": "boolean"
             },
@@ -410,9 +407,6 @@
               "type": "boolean"
             },
             "shell_zsh_fork": {
-              "type": "boolean"
-            },
-            "skill_approval": {
               "type": "boolean"
             },
             "skill_env_var_dependency_prompt": {
@@ -1643,6 +1637,9 @@
         "connectors": {
           "type": "boolean"
         },
+        "default_mode_request_user_input": {
+          "type": "boolean"
+        },
         "elevated_windows_sandbox": {
           "type": "boolean"
         },
@@ -1719,9 +1716,6 @@
           "type": "boolean"
         },
         "shell_zsh_fork": {
-          "type": "boolean"
-        },
-        "skill_approval": {
           "type": "boolean"
         },
         "skill_env_var_dependency_prompt": {
@@ -2074,7 +2068,7 @@
           "$ref": "#/definitions/AbsolutePathBuf"
         }
       ],
-      "description": "Directory where Codex stores the SQLite state DB. Defaults to `$CODEX_SQLITE_HOME` when set. Otherwise uses a temp dir under WorkspaceWrite sandboxing and `$CODEX_HOME` for other modes."
+      "description": "Directory where Codex stores the SQLite state DB. Defaults to `$CODEX_SQLITE_HOME` when set. Otherwise uses `$CODEX_HOME`."
     },
     "suppress_unstable_features_warning": {
       "description": "Suppress warnings about unstable (under development) features.",
