@@ -756,7 +756,7 @@ pub(crate) struct SessionConfiguration {
     provider: ModelProviderInfo,
 
     collaboration_mode: CollaborationMode,
-    model_reasoning_summary: ReasoningSummaryConfig,
+    model_reasoning_summary: Option<ReasoningSummaryConfig>,
 
     /// Developer instructions that supplement the base instructions.
     developer_instructions: Option<String>,
@@ -826,7 +826,7 @@ impl SessionConfiguration {
             next_configuration.collaboration_mode = collaboration_mode;
         }
         if let Some(summary) = updates.reasoning_summary {
-            next_configuration.model_reasoning_summary = summary;
+            next_configuration.model_reasoning_summary = Some(summary);
         }
         if let Some(personality) = updates.personality {
             next_configuration.personality = Some(personality);
@@ -987,7 +987,9 @@ impl Session {
         skills_outcome: Arc<SkillLoadOutcome>,
     ) -> TurnContext {
         let reasoning_effort = session_configuration.collaboration_mode.reasoning_effort();
-        let reasoning_summary = session_configuration.model_reasoning_summary;
+        let reasoning_summary = session_configuration
+            .model_reasoning_summary
+            .unwrap_or(model_info.default_reasoning_summary);
         let otel_manager = otel_manager.clone().with_model(
             session_configuration.collaboration_mode.model(),
             model_info.slug.as_str(),
@@ -1126,7 +1128,7 @@ impl Session {
         //
         // - initialize RolloutRecorder with new or resumed session info
         // - perform default shell discovery
-        // - load history metadata
+        // - load history metadata (skipped for subagents)
         let rollout_fut = async {
             if config.ephemeral {
                 Ok::<_, anyhow::Error>((None, None))
@@ -1143,7 +1145,16 @@ impl Session {
             }
         };
 
-        let history_meta_fut = crate::message_history::history_metadata(&config);
+        let history_meta_fut = async {
+            if matches!(
+                session_configuration.session_source,
+                SessionSource::SubAgent(_)
+            ) {
+                (0, 0)
+            } else {
+                crate::message_history::history_metadata(&config).await
+            }
+        };
         let auth_manager_clone = Arc::clone(&auth_manager);
         let config_for_mcp = Arc::clone(&config);
         let auth_and_mcp_fut = async move {
@@ -1264,7 +1275,9 @@ impl Session {
         otel_manager.conversation_starts(
             config.model_provider.name.as_str(),
             session_configuration.collaboration_mode.reasoning_effort(),
-            config.model_reasoning_summary,
+            config
+                .model_reasoning_summary
+                .unwrap_or(ReasoningSummaryConfig::Auto),
             config.model_context_window,
             config.model_auto_compact_token_limit,
             config.permissions.approval_policy.value(),
@@ -3079,8 +3092,15 @@ impl Session {
                 .serialize_to_text(),
             );
         }
+        let subagents = self
+            .services
+            .agent_control
+            .format_environment_context_subagents(self.conversation_id)
+            .await;
         contextual_user_sections.push(
-            EnvironmentContext::from_turn_context(turn_context, shell.as_ref()).serialize_to_xml(),
+            EnvironmentContext::from_turn_context(turn_context, shell.as_ref())
+                .with_subagents(subagents)
+                .serialize_to_xml(),
         );
 
         let mut items = Vec::with_capacity(2);
@@ -4623,7 +4643,10 @@ async fn spawn_review_thread(
     let auth_manager_for_context = auth_manager.clone();
     let provider_for_context = provider.clone();
     let otel_manager_for_context = otel_manager.clone();
-    let reasoning_summary = per_turn_config.model_reasoning_summary;
+    let reasoning_effort = per_turn_config.model_reasoning_effort;
+    let reasoning_summary = per_turn_config
+        .model_reasoning_summary
+        .unwrap_or(model_info.default_reasoning_summary);
     let session_source = parent_turn_context.session_source.clone();
 
     let per_turn_config = Arc::new(per_turn_config);

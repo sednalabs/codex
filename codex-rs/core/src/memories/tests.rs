@@ -88,6 +88,7 @@ async fn sync_rollout_summaries_and_raw_memories_file_keeps_latest_memories_only
         rollout_slug: None,
         rollout_path: PathBuf::from("/tmp/rollout-100.jsonl"),
         cwd: PathBuf::from("/tmp/workspace"),
+        git_branch: None,
         generated_at: Utc.timestamp_opt(101, 0).single().expect("timestamp"),
     }];
 
@@ -193,6 +194,7 @@ async fn sync_rollout_summaries_uses_timestamp_hash_and_sanitized_slug_filename(
         rollout_slug: Some("Unsafe Slug/With Spaces & Symbols + EXTRA_LONG_12345".to_string()),
         rollout_path: PathBuf::from("/tmp/rollout-200.jsonl"),
         cwd: PathBuf::from("/tmp/workspace"),
+        git_branch: Some("feature/memory-branch".to_string()),
         generated_at: Utc.timestamp_opt(201, 0).single().expect("timestamp"),
     }];
 
@@ -248,6 +250,7 @@ async fn sync_rollout_summaries_uses_timestamp_hash_and_sanitized_slug_filename(
         .expect("read rollout summary");
     assert!(summary.contains(&format!("thread_id: {thread_id}")));
     assert!(summary.contains("rollout_path: /tmp/rollout-200.jsonl"));
+    assert!(summary.contains("git_branch: feature/memory-branch"));
     assert!(
         !tokio::fs::try_exists(&stale_unslugged_path)
             .await
@@ -294,6 +297,7 @@ task_outcome: success
         rollout_slug: Some("Unsafe Slug/With Spaces & Symbols + EXTRA_LONG_12345".to_string()),
         rollout_path: PathBuf::from("/tmp/rollout-200.jsonl"),
         cwd: PathBuf::from("/tmp/workspace"),
+        git_branch: None,
         generated_at: Utc.timestamp_opt(201, 0).single().expect("timestamp"),
     }];
 
@@ -378,6 +382,7 @@ mod phase2 {
             rollout_slug: None,
             rollout_path: PathBuf::from("/tmp/rollout-summary.jsonl"),
             cwd: PathBuf::from("/tmp/workspace"),
+            git_branch: None,
             generated_at: chrono::DateTime::<Utc>::from_timestamp(source_updated_at + 1, 0)
                 .expect("valid generated_at timestamp"),
         }
@@ -559,7 +564,7 @@ mod phase2 {
     #[tokio::test]
     async fn dispatch_reclaims_stale_global_lock_and_starts_consolidation() {
         let harness = DispatchHarness::new().await;
-        harness.seed_stage1_output(100).await;
+        harness.seed_stage1_output(Utc::now().timestamp()).await;
 
         let stale_claim = harness
             .state_db
@@ -573,12 +578,18 @@ mod phase2 {
 
         phase2::run(&harness.session, Arc::clone(&harness.config)).await;
 
-        let running_claim = harness
+        let post_dispatch_claim = harness
             .state_db
             .try_claim_global_phase2_job(ThreadId::new(), 3_600)
             .await
-            .expect("claim while running");
-        pretty_assertions::assert_eq!(running_claim, Phase2JobClaimOutcome::SkippedRunning);
+            .expect("claim after stale lock dispatch");
+        assert!(
+            matches!(
+                post_dispatch_claim,
+                Phase2JobClaimOutcome::SkippedRunning | Phase2JobClaimOutcome::SkippedNotDirty
+            ),
+            "stale-lock dispatch should either keep the reclaimed job running or finish it before re-claim"
+        );
 
         let user_input_ops = harness.user_input_ops_count();
         pretty_assertions::assert_eq!(user_input_ops, 1);

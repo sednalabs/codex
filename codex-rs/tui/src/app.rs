@@ -1414,12 +1414,16 @@ impl App {
                 };
                 ChatWidget::new(init, thread_manager.clone())
             }
-            SessionSelection::Resume(path) => {
+            SessionSelection::Resume(target_session) => {
                 let resumed = thread_manager
-                    .resume_thread_from_rollout(config.clone(), path.clone(), auth_manager.clone())
+                    .resume_thread_from_rollout(
+                        config.clone(),
+                        target_session.path.clone(),
+                        auth_manager.clone(),
+                    )
                     .await
                     .wrap_err_with(|| {
-                        let path_display = path.display();
+                        let path_display = target_session.path.display();
                         format!("Failed to resume session from {path_display}")
                     })?;
                 let init = crate::chatwidget::ChatWidgetInit {
@@ -1444,13 +1448,18 @@ impl App {
                 };
                 ChatWidget::new_from_existing(init, resumed.thread, resumed.session_configured)
             }
-            SessionSelection::Fork(path) => {
+            SessionSelection::Fork(target_session) => {
                 otel_manager.counter("codex.thread.fork", 1, &[("source", "cli_subcommand")]);
                 let forked = thread_manager
-                    .fork_thread(usize::MAX, config.clone(), path.clone(), false)
+                    .fork_thread(
+                        usize::MAX,
+                        config.clone(),
+                        target_session.path.clone(),
+                        false,
+                    )
                     .await
                     .wrap_err_with(|| {
-                        let path_display = path.display();
+                        let path_display = target_session.path.display();
                         format!("Failed to fork session from {path_display}")
                     })?;
                 let init = crate::chatwidget::ChatWidgetInit {
@@ -1713,12 +1722,14 @@ impl App {
             }
             AppEvent::OpenResumePicker => {
                 match crate::resume_picker::run_resume_picker(tui, &self.config, false).await? {
-                    SessionSelection::Resume(path) => {
+                    SessionSelection::Resume(target_session) => {
                         let current_cwd = self.config.cwd.clone();
                         let resume_cwd = match crate::resolve_cwd_for_resume_or_fork(
                             tui,
+                            &self.config,
                             &current_cwd,
-                            &path,
+                            target_session.thread_id,
+                            &target_session.path,
                             CwdPromptAction::Resume,
                             true,
                         )
@@ -1754,7 +1765,7 @@ impl App {
                             .server
                             .resume_thread_from_rollout(
                                 resume_config.clone(),
-                                path.clone(),
+                                target_session.path.clone(),
                                 self.auth_manager.clone(),
                             )
                             .await
@@ -1788,7 +1799,7 @@ impl App {
                                 }
                             }
                             Err(err) => {
-                                let path_display = path.display();
+                                let path_display = target_session.path.display();
                                 self.chat_widget.add_error_message(format!(
                                     "Failed to resume session from {path_display}: {err}"
                                 ));
@@ -1925,19 +1936,9 @@ impl App {
             AppEvent::CodexEvent(event) => {
                 self.enqueue_primary_event(event).await?;
             }
-            AppEvent::Exit(mode) => match mode {
-                ExitMode::ShutdownFirst => {
-                    // Mark the thread we are explicitly shutting down for exit so
-                    // its shutdown completion does not trigger agent failover.
-                    self.pending_shutdown_exit_thread_id =
-                        self.active_thread_id.or(self.chat_widget.thread_id());
-                    self.chat_widget.submit_op(Op::Shutdown);
-                }
-                ExitMode::Immediate => {
-                    self.pending_shutdown_exit_thread_id = None;
-                    return Ok(AppRunControl::Exit(ExitReason::UserRequested));
-                }
-            },
+            AppEvent::Exit(mode) => {
+                return Ok(self.handle_exit_mode(mode));
+            }
             AppEvent::FatalExitRequest(message) => {
                 return Ok(AppRunControl::Exit(ExitReason::Fatal(message)));
             }
@@ -2917,6 +2918,27 @@ impl App {
         Ok(AppRunControl::Continue)
     }
 
+    fn handle_exit_mode(&mut self, mode: ExitMode) -> AppRunControl {
+        match mode {
+            ExitMode::ShutdownFirst => {
+                // Mark the thread we are explicitly shutting down for exit so
+                // its shutdown completion does not trigger agent failover.
+                self.pending_shutdown_exit_thread_id =
+                    self.active_thread_id.or(self.chat_widget.thread_id());
+                if self.chat_widget.submit_op(Op::Shutdown) {
+                    AppRunControl::Continue
+                } else {
+                    self.pending_shutdown_exit_thread_id = None;
+                    AppRunControl::Exit(ExitReason::UserRequested)
+                }
+            }
+            ExitMode::Immediate => {
+                self.pending_shutdown_exit_thread_id = None;
+                AppRunControl::Exit(ExitReason::UserRequested)
+            }
+        }
+    }
+
     fn handle_codex_event_now(&mut self, event: Event) {
         let needs_refresh = matches!(
             event.msg,
@@ -3392,15 +3414,21 @@ mod tests {
             true
         );
         assert_eq!(
-            App::should_wait_for_initial_session(&SessionSelection::Resume(PathBuf::from(
-                "/tmp/restore"
-            ))),
+            App::should_wait_for_initial_session(&SessionSelection::Resume(
+                crate::resume_picker::SessionTarget {
+                    path: PathBuf::from("/tmp/restore"),
+                    thread_id: ThreadId::new(),
+                }
+            )),
             false
         );
         assert_eq!(
-            App::should_wait_for_initial_session(&SessionSelection::Fork(PathBuf::from(
-                "/tmp/fork"
-            ))),
+            App::should_wait_for_initial_session(&SessionSelection::Fork(
+                crate::resume_picker::SessionTarget {
+                    path: PathBuf::from("/tmp/fork"),
+                    thread_id: ThreadId::new(),
+                }
+            )),
             false
         );
     }
@@ -3436,14 +3464,20 @@ mod tests {
     #[test]
     fn startup_waiting_gate_not_applied_for_resume_or_fork_session_selection() {
         let wait_for_resume = App::should_wait_for_initial_session(&SessionSelection::Resume(
-            PathBuf::from("/tmp/restore"),
+            crate::resume_picker::SessionTarget {
+                path: PathBuf::from("/tmp/restore"),
+                thread_id: ThreadId::new(),
+            },
         ));
         assert_eq!(
             App::should_handle_active_thread_events(wait_for_resume, true),
             true
         );
         let wait_for_fork = App::should_wait_for_initial_session(&SessionSelection::Fork(
-            PathBuf::from("/tmp/fork"),
+            crate::resume_picker::SessionTarget {
+                path: PathBuf::from("/tmp/fork"),
+                thread_id: ThreadId::new(),
+            },
         ));
         assert_eq!(
             App::should_handle_active_thread_events(wait_for_fork, true),
@@ -4704,6 +4738,34 @@ mod tests {
             Ok(other) => panic!("expected Op::Shutdown, got {other:?}"),
             Err(_) => panic!("expected shutdown op to be sent"),
         }
+    }
+
+    #[tokio::test]
+    async fn shutdown_first_exit_returns_immediate_exit_when_shutdown_submit_fails() {
+        let mut app = make_test_app().await;
+        let thread_id = ThreadId::new();
+        app.active_thread_id = Some(thread_id);
+
+        let control = app.handle_exit_mode(ExitMode::ShutdownFirst);
+
+        assert_eq!(app.pending_shutdown_exit_thread_id, None);
+        assert!(matches!(
+            control,
+            AppRunControl::Exit(ExitReason::UserRequested)
+        ));
+    }
+
+    #[tokio::test]
+    async fn shutdown_first_exit_waits_for_shutdown_when_submit_succeeds() {
+        let (mut app, _app_event_rx, mut op_rx) = make_test_app_with_channels().await;
+        let thread_id = ThreadId::new();
+        app.active_thread_id = Some(thread_id);
+
+        let control = app.handle_exit_mode(ExitMode::ShutdownFirst);
+
+        assert_eq!(app.pending_shutdown_exit_thread_id, Some(thread_id));
+        assert!(matches!(control, AppRunControl::Continue));
+        assert_eq!(op_rx.try_recv(), Ok(Op::Shutdown));
     }
 
     #[tokio::test]
