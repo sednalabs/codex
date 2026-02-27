@@ -15,17 +15,24 @@ use crate::tools::handlers::normalize_and_validate_additional_permissions;
 use crate::tools::handlers::parse_arguments;
 use crate::tools::registry::ToolHandler;
 use crate::tools::registry::ToolKind;
+use crate::truncate::TruncationPolicy;
+use crate::truncate::approx_token_count;
+use crate::truncate::formatted_truncate_text;
 use crate::unified_exec::ExecCommandRequest;
+use crate::unified_exec::MIN_EMPTY_YIELD_TIME_MS;
+use crate::unified_exec::UNIFIED_EXEC_OUTPUT_MAX_BYTES;
 use crate::unified_exec::UnifiedExecContext;
 use crate::unified_exec::UnifiedExecProcessManager;
 use crate::unified_exec::UnifiedExecResponse;
 use crate::unified_exec::WriteStdinRequest;
+use crate::unified_exec::resolve_max_tokens;
 use async_trait::async_trait;
 use codex_protocol::models::FunctionCallOutputBody;
 use codex_protocol::models::PermissionProfile;
 use serde::Deserialize;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Instant;
 
 pub struct UnifiedExecHandler;
 
@@ -64,6 +71,12 @@ struct WriteStdinArgs {
     yield_time_ms: u64,
     #[serde(default)]
     max_output_tokens: Option<usize>,
+    #[serde(default)]
+    wait_until_terminal: bool,
+    #[serde(default)]
+    max_wait_ms: Option<u64>,
+    #[serde(default)]
+    heartbeat_interval_ms: Option<u64>,
 }
 
 fn default_exec_yield_time_ms() -> u64 {
@@ -73,6 +86,8 @@ fn default_exec_yield_time_ms() -> u64 {
 fn default_write_stdin_yield_time_ms() -> u64 {
     250
 }
+
+const DEFAULT_WAIT_HEARTBEAT_INTERVAL_MS: u64 = 30_000;
 
 fn default_tty() -> bool {
     false
@@ -239,17 +254,131 @@ impl ToolHandler for UnifiedExecHandler {
             }
             "write_stdin" => {
                 let args: WriteStdinArgs = parse_arguments(&arguments)?;
-                let response = manager
-                    .write_stdin(WriteStdinRequest {
-                        process_id: &args.session_id.to_string(),
-                        input: &args.chars,
-                        yield_time_ms: args.yield_time_ms,
-                        max_output_tokens: args.max_output_tokens,
-                    })
-                    .await
-                    .map_err(|err| {
-                        FunctionCallError::RespondToModel(format!("write_stdin failed: {err}"))
+                if args.wait_until_terminal && !args.chars.is_empty() {
+                    return Err(FunctionCallError::RespondToModel(
+                        "wait_until_terminal=true requires chars to be empty; send stdin in one call, then wait in a separate call.".to_string(),
+                    ));
+                }
+
+                let response = if args.wait_until_terminal {
+                    let configured_max_wait_ms = manager.max_write_stdin_yield_time_ms();
+                    let effective_max_wait_ms = args
+                        .max_wait_ms
+                        .unwrap_or(configured_max_wait_ms)
+                        .clamp(MIN_EMPTY_YIELD_TIME_MS, configured_max_wait_ms);
+                    let heartbeat_interval_ms = args
+                        .heartbeat_interval_ms
+                        .unwrap_or(DEFAULT_WAIT_HEARTBEAT_INTERVAL_MS)
+                        .clamp(MIN_EMPTY_YIELD_TIME_MS, effective_max_wait_ms);
+
+                    let wait_started_at = Instant::now();
+                    let mut last_heartbeat_at = wait_started_at;
+                    let mut collected = Vec::new();
+                    let mut last_response: Option<UnifiedExecResponse> = None;
+                    let mut timed_out = false;
+
+                    loop {
+                        let elapsed_ms = wait_started_at.elapsed().as_millis() as u64;
+                        if elapsed_ms >= effective_max_wait_ms {
+                            timed_out = true;
+                            break;
+                        }
+
+                        let remaining_ms = effective_max_wait_ms.saturating_sub(elapsed_ms);
+                        let poll_yield_ms = remaining_ms
+                            .min(heartbeat_interval_ms)
+                            .max(MIN_EMPTY_YIELD_TIME_MS);
+                        let poll_response = manager
+                            .write_stdin(WriteStdinRequest {
+                                process_id: &args.session_id.to_string(),
+                                input: "",
+                                yield_time_ms: poll_yield_ms,
+                                max_output_tokens: args.max_output_tokens,
+                            })
+                            .await
+                            .map_err(|err| {
+                                FunctionCallError::RespondToModel(format!(
+                                    "write_stdin failed: {err}"
+                                ))
+                            })?;
+
+                        if !poll_response.raw_output.is_empty() {
+                            collected.extend_from_slice(&poll_response.raw_output);
+                            if collected.len() > UNIFIED_EXEC_OUTPUT_MAX_BYTES {
+                                let overflow = collected.len() - UNIFIED_EXEC_OUTPUT_MAX_BYTES;
+                                collected.drain(..overflow);
+                            }
+                        }
+
+                        let still_running =
+                            poll_response.process_id.is_some() && poll_response.exit_code.is_none();
+                        if still_running
+                            && (last_heartbeat_at.elapsed().as_millis() as u64)
+                                >= heartbeat_interval_ms
+                        {
+                            let running_for_secs = wait_started_at.elapsed().as_secs();
+                            let process_id =
+                                poll_response.process_id.as_deref().unwrap_or("unknown");
+                            session
+                                .notify_background_event(
+                                    turn.as_ref(),
+                                    format!(
+                                        "Process {process_id} still running after {running_for_secs}s (captured {} bytes).",
+                                        collected.len()
+                                    ),
+                                )
+                                .await;
+                            last_heartbeat_at = Instant::now();
+                        }
+
+                        last_response = Some(poll_response);
+                        if !still_running {
+                            break;
+                        }
+                    }
+
+                    let mut response = last_response.ok_or_else(|| {
+                        FunctionCallError::RespondToModel(
+                            "write_stdin failed: no process output captured while waiting"
+                                .to_string(),
+                        )
                     })?;
+
+                    let text = String::from_utf8_lossy(&collected).to_string();
+                    response.raw_output = collected;
+                    response.wall_time = wait_started_at.elapsed();
+                    response.output = formatted_truncate_text(
+                        &text,
+                        TruncationPolicy::Tokens(resolve_max_tokens(args.max_output_tokens)),
+                    );
+                    response.original_token_count = Some(approx_token_count(&text));
+
+                    if timed_out && response.process_id.is_some() && response.exit_code.is_none() {
+                        let waited_secs = response.wall_time.as_secs();
+                        let timeout_note = format!(
+                            "Wait timed out after {waited_secs}s; process is still running. Re-issue write_stdin with wait_until_terminal=true to continue waiting."
+                        );
+                        if response.output.is_empty() {
+                            response.output = timeout_note;
+                        } else {
+                            response.output = format!("{}\n\n{timeout_note}", response.output);
+                        }
+                    }
+
+                    response
+                } else {
+                    manager
+                        .write_stdin(WriteStdinRequest {
+                            process_id: &args.session_id.to_string(),
+                            input: &args.chars,
+                            yield_time_ms: args.yield_time_ms,
+                            max_output_tokens: args.max_output_tokens,
+                        })
+                        .await
+                        .map_err(|err| {
+                            FunctionCallError::RespondToModel(format!("write_stdin failed: {err}"))
+                        })?
+                };
 
                 let interaction = TerminalInteractionEvent {
                     call_id: response.event_call_id.clone(),

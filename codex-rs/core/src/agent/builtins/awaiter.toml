@@ -1,4 +1,4 @@
-background_terminal_max_timeout = 3600000
+background_terminal_max_timeout = 7200000
 model_reasoning_effort = "low"
 developer_instructions="""You are an awaiter.
 Your role is to await the completion of a specific command or task and report its status only when it is finished.

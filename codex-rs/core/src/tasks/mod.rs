@@ -196,12 +196,14 @@ impl Session {
 
         let mut active = self.active_turn.lock().await;
         let mut pending_input = Vec::<ResponseInputItem>::new();
+        let mut compaction_events_in_turn = 0;
         let mut should_clear_active_turn = false;
         if let Some(at) = active.as_mut()
             && at.remove_task(&turn_context.sub_id)
         {
             let mut ts = at.turn_state.lock().await;
             pending_input = ts.take_pending_input();
+            compaction_events_in_turn = ts.take_compaction_events_in_turn();
             should_clear_active_turn = true;
         }
         if should_clear_active_turn {
@@ -219,6 +221,7 @@ impl Session {
         let event = EventMsg::TurnComplete(TurnCompleteEvent {
             turn_id: turn_context.sub_id.clone(),
             last_agent_message,
+            compaction_events_in_turn,
         });
         self.send_event(turn_context.as_ref(), event).await;
     }

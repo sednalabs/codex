@@ -345,6 +345,33 @@ fn create_exec_command_tool(allow_login_shell: bool, request_permission_enabled:
                 ),
             },
         ),
+        (
+            "wait_until_terminal".to_string(),
+            JsonSchema::Boolean {
+                description: Some(
+                    "When true, blocks until the session exits or max_wait_ms is reached. Requires chars to be empty."
+                        .to_string(),
+                ),
+            },
+        ),
+        (
+            "max_wait_ms".to_string(),
+            JsonSchema::Number {
+                description: Some(
+                    "Maximum total wait time (milliseconds) when wait_until_terminal is true. Defaults to background_terminal_max_timeout."
+                        .to_string(),
+                ),
+            },
+        ),
+        (
+            "heartbeat_interval_ms".to_string(),
+            JsonSchema::Number {
+                description: Some(
+                    "Heartbeat cadence (milliseconds) while waiting. Emits compact background status messages."
+                        .to_string(),
+                ),
+            },
+        ),
     ]);
     if allow_login_shell {
         properties.insert(

@@ -55,7 +55,7 @@ pub(crate) const MIN_YIELD_TIME_MS: u64 = 250;
 // Minimum yield time for an empty `write_stdin`.
 pub(crate) const MIN_EMPTY_YIELD_TIME_MS: u64 = 5_000;
 pub(crate) const MAX_YIELD_TIME_MS: u64 = 30_000;
-pub(crate) const DEFAULT_MAX_BACKGROUND_TERMINAL_TIMEOUT_MS: u64 = 300_000;
+pub(crate) const DEFAULT_MAX_BACKGROUND_TERMINAL_TIMEOUT_MS: u64 = 7_200_000;
 pub(crate) const DEFAULT_MAX_OUTPUT_TOKENS: usize = 10_000;
 pub(crate) const UNIFIED_EXEC_OUTPUT_MAX_BYTES: usize = 1024 * 1024; // 1 MiB
 pub(crate) const UNIFIED_EXEC_OUTPUT_MAX_TOKENS: usize = UNIFIED_EXEC_OUTPUT_MAX_BYTES / 4;
@@ -142,6 +142,10 @@ impl UnifiedExecProcessManager {
             max_write_stdin_yield_time_ms: max_write_stdin_yield_time_ms
                 .max(MIN_EMPTY_YIELD_TIME_MS),
         }
+    }
+
+    pub(crate) fn max_write_stdin_yield_time_ms(&self) -> u64 {
+        self.max_write_stdin_yield_time_ms
     }
 }
 

@@ -2360,6 +2360,13 @@ impl Session {
 
     /// Persist the event to rollout and send it to clients.
     pub(crate) async fn send_event(&self, turn_context: &TurnContext, msg: EventMsg) {
+        if matches!(&msg, EventMsg::ContextCompacted(_)) {
+            let mut active = self.active_turn.lock().await;
+            if let Some(active_turn) = active.as_mut() {
+                let mut turn_state = active_turn.turn_state.lock().await;
+                turn_state.increment_compaction_events_in_turn();
+            }
+        }
         let legacy_source = msg.clone();
         let event = Event {
             id: turn_context.sub_id.clone(),
@@ -6179,7 +6186,28 @@ async fn try_run_sampling_request(
     // Persist one TurnContext marker per sampling request (not just per user turn) so rollout
     // analysis can reconstruct API-turn boundaries. `run_turn` persists model-visible context
     // diffs/full reinjection earlier in the same regular turn before reaching this path.
-    let rollout_item = RolloutItem::TurnContext(turn_context.to_turn_context_item());
+    let full_turn_context_item = turn_context.to_turn_context_item();
+    let mut rollout_turn_context_item = full_turn_context_item.clone();
+    {
+        let mut state = sess.state.lock().await;
+        let is_duplicate_turn_context = state
+            .last_sampling_turn_context
+            .as_ref()
+            .and_then(|previous| {
+                let previous = serde_json::to_value(previous).ok()?;
+                let current = serde_json::to_value(&full_turn_context_item).ok()?;
+                Some(previous == current)
+            })
+            .unwrap_or(false);
+        if is_duplicate_turn_context {
+            // Repeated sampling requests often share large static instruction payloads.
+            // Keep per-request boundary markers while dropping duplicate instruction blobs.
+            rollout_turn_context_item.user_instructions = None;
+            rollout_turn_context_item.developer_instructions = None;
+        }
+        state.last_sampling_turn_context = Some(full_turn_context_item);
+    }
+    let rollout_item = RolloutItem::TurnContext(rollout_turn_context_item);
 
     feedback_tags!(
         model = turn_context.model_info.slug.clone(),
@@ -7332,6 +7360,7 @@ mod tests {
                 codex_protocol::protocol::TurnCompleteEvent {
                     turn_id,
                     last_agent_message: None,
+                    compaction_events_in_turn: 0,
                 },
             )),
         ];
@@ -7380,6 +7409,7 @@ mod tests {
                 codex_protocol::protocol::TurnCompleteEvent {
                     turn_id: user_turn_id,
                     last_agent_message: None,
+                    compaction_events_in_turn: 0,
                 },
             )),
             // Standalone task turn (no UserMessage) should not consume rollback skips.
@@ -7394,6 +7424,7 @@ mod tests {
                 codex_protocol::protocol::TurnCompleteEvent {
                     turn_id: standalone_turn_id,
                     last_agent_message: None,
+                    compaction_events_in_turn: 0,
                 },
             )),
             RolloutItem::EventMsg(EventMsg::ThreadRolledBack(

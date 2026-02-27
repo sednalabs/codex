@@ -73,6 +73,7 @@ pub(crate) struct TurnState {
     pending_user_input: HashMap<String, oneshot::Sender<RequestUserInputResponse>>,
     pending_dynamic_tools: HashMap<String, oneshot::Sender<DynamicToolResponse>>,
     pending_input: Vec<ResponseInputItem>,
+    compaction_events_in_turn: u32,
 }
 
 impl TurnState {
@@ -96,6 +97,7 @@ impl TurnState {
         self.pending_user_input.clear();
         self.pending_dynamic_tools.clear();
         self.pending_input.clear();
+        self.compaction_events_in_turn = 0;
     }
 
     pub(crate) fn insert_pending_user_input(
@@ -144,6 +146,16 @@ impl TurnState {
 
     pub(crate) fn has_pending_input(&self) -> bool {
         !self.pending_input.is_empty()
+    }
+
+    pub(crate) fn increment_compaction_events_in_turn(&mut self) {
+        self.compaction_events_in_turn = self.compaction_events_in_turn.saturating_add(1);
+    }
+
+    pub(crate) fn take_compaction_events_in_turn(&mut self) -> u32 {
+        let count = self.compaction_events_in_turn;
+        self.compaction_events_in_turn = 0;
+        count
     }
 }
 

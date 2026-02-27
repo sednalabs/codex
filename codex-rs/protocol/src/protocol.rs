@@ -1460,6 +1460,8 @@ pub struct ContextCompactedEvent;
 pub struct TurnCompleteEvent {
     pub turn_id: String,
     pub last_agent_message: Option<String>,
+    #[serde(default)]
+    pub compaction_events_in_turn: u32,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, TS)]
