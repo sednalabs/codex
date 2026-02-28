@@ -143,6 +143,7 @@ fn codex_apps_mcp_server_config(config: &Config, auth: Option<&CodexAuth>) -> Mc
         read_only: false,
         strict_tool_classification: false,
         require_approval_for_mutating: false,
+        oauth_resource: None,
     }
 }
 

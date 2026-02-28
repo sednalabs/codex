@@ -119,6 +119,9 @@ pub struct McpServerConfig {
     /// Require explicit user approval before running mutating tools.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub require_approval_for_mutating: bool,
+    /// Optional OAuth resource parameter to include during MCP login (RFC 8707).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub oauth_resource: Option<String>,
 }
 
 // Raw MCP config shape used for deserialization and JSON Schema generation.
@@ -171,6 +174,7 @@ pub(crate) struct RawMcpServerConfig {
     pub strict_tool_classification: Option<bool>,
     #[serde(default)]
     pub require_approval_for_mutating: Option<bool>,
+    pub oauth_resource: Option<String>,
 }
 
 impl<'de> Deserialize<'de> for McpServerConfig {
@@ -204,6 +208,7 @@ impl<'de> Deserialize<'de> for McpServerConfig {
                 "require_approval_for_mutating requires enable_elicitation=true",
             ));
         }
+        let oauth_resource = raw.oauth_resource.clone();
 
         fn throw_if_set<E, T>(transport: &str, field: &str, value: Option<&T>) -> Result<(), E>
         where
@@ -227,6 +232,7 @@ impl<'de> Deserialize<'de> for McpServerConfig {
             throw_if_set("stdio", "bearer_token", raw.bearer_token.as_ref())?;
             throw_if_set("stdio", "http_headers", raw.http_headers.as_ref())?;
             throw_if_set("stdio", "env_http_headers", raw.env_http_headers.as_ref())?;
+            throw_if_set("stdio", "oauth_resource", raw.oauth_resource.as_ref())?;
             McpServerTransportConfig::Stdio {
                 command,
                 args: raw.args.clone().unwrap_or_default(),
@@ -264,6 +270,7 @@ impl<'de> Deserialize<'de> for McpServerConfig {
             read_only,
             strict_tool_classification,
             require_approval_for_mutating,
+            oauth_resource,
         })
     }
 }
@@ -404,6 +411,10 @@ pub struct FeedbackConfigToml {
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default, JsonSchema)]
 #[schemars(deny_unknown_fields)]
 pub struct MemoriesToml {
+    /// When `false`, newly created threads are stored with `memory_mode = "disabled"` in the state DB.
+    pub generate_memories: Option<bool>,
+    /// When `false`, skip injecting memory usage instructions into developer prompts.
+    pub use_memories: Option<bool>,
     /// Maximum number of recent raw memories retained for global consolidation.
     pub max_raw_memories_for_global: Option<usize>,
     /// Maximum number of days since a memory was last used before it becomes ineligible for phase 2 selection.
@@ -423,6 +434,8 @@ pub struct MemoriesToml {
 /// Effective memories settings after defaults are applied.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MemoriesConfig {
+    pub generate_memories: bool,
+    pub use_memories: bool,
     pub max_raw_memories_for_global: usize,
     pub max_unused_days: i64,
     pub max_rollout_age_days: i64,
@@ -435,6 +448,8 @@ pub struct MemoriesConfig {
 impl Default for MemoriesConfig {
     fn default() -> Self {
         Self {
+            generate_memories: true,
+            use_memories: true,
             max_raw_memories_for_global: DEFAULT_MEMORIES_MAX_RAW_MEMORIES_FOR_GLOBAL,
             max_unused_days: DEFAULT_MEMORIES_MAX_UNUSED_DAYS,
             max_rollout_age_days: DEFAULT_MEMORIES_MAX_ROLLOUT_AGE_DAYS,
@@ -450,6 +465,8 @@ impl From<MemoriesToml> for MemoriesConfig {
     fn from(toml: MemoriesToml) -> Self {
         let defaults = Self::default();
         Self {
+            generate_memories: toml.generate_memories.unwrap_or(defaults.generate_memories),
+            use_memories: toml.use_memories.unwrap_or(defaults.use_memories),
             max_raw_memories_for_global: toml
                 .max_raw_memories_for_global
                 .unwrap_or(defaults.max_raw_memories_for_global)
@@ -690,6 +707,14 @@ impl fmt::Display for NotificationMethod {
     }
 }
 
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, Default, JsonSchema)]
+#[schemars(deny_unknown_fields)]
+pub struct ModelAvailabilityNuxConfig {
+    /// Number of times a startup availability NUX has been shown per model slug.
+    #[serde(default, flatten)]
+    pub shown_count: HashMap<String, u32>,
+}
+
 /// Collection of settings that are specific to the TUI.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default, JsonSchema)]
 #[schemars(deny_unknown_fields)]
@@ -746,6 +771,10 @@ pub struct Tui {
     /// Use `/theme` in the TUI or see `$CODEX_HOME/themes` for custom themes.
     #[serde(default)]
     pub theme: Option<String>,
+
+    /// Startup tooltip availability NUX state persisted by the TUI.
+    #[serde(default)]
+    pub model_availability_nux: ModelAvailabilityNuxConfig,
 }
 
 const fn default_true() -> bool {
@@ -1143,6 +1172,22 @@ mod tests {
     }
 
     #[test]
+    fn deserialize_streamable_http_server_config_with_oauth_resource() {
+        let cfg: McpServerConfig = toml::from_str(
+            r#"
+            url = "https://example.com/mcp"
+            oauth_resource = "https://api.example.com"
+        "#,
+        )
+        .expect("should deserialize http config with oauth_resource");
+
+        assert_eq!(
+            cfg.oauth_resource,
+            Some("https://api.example.com".to_string())
+        );
+    }
+
+    #[test]
     fn deserialize_server_config_with_tool_filters() {
         let cfg: McpServerConfig = toml::from_str(
             r#"
@@ -1232,6 +1277,20 @@ mod tests {
         "#,
         )
         .expect_err("should reject env_http_headers for stdio transport");
+
+        let err = toml::from_str::<McpServerConfig>(
+            r#"
+            command = "echo"
+            oauth_resource = "https://api.example.com"
+        "#,
+        )
+        .expect_err("should reject oauth_resource for stdio transport");
+
+        assert!(
+            err.to_string()
+                .contains("oauth_resource is not supported for stdio"),
+            "unexpected error: {err}"
+        );
     }
 
     #[test]

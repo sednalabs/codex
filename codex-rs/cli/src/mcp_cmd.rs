@@ -254,6 +254,7 @@ async fn run_add(config_overrides: &CliConfigOverrides, add_args: AddArgs) -> Re
         read_only: false,
         strict_tool_classification: false,
         require_approval_for_mutating: false,
+        oauth_resource: None,
     };
 
     servers.insert(name.clone(), new_entry);
@@ -276,6 +277,7 @@ async fn run_add(config_overrides: &CliConfigOverrides, add_args: AddArgs) -> Re
                 oauth_config.http_headers,
                 oauth_config.env_http_headers,
                 &Vec::new(),
+                None,
                 config.mcp_oauth_callback_port,
                 config.mcp_oauth_callback_url.as_deref(),
             )
@@ -360,6 +362,7 @@ async fn run_login(config_overrides: &CliConfigOverrides, login_args: LoginArgs)
         http_headers,
         env_http_headers,
         &scopes,
+        server.oauth_resource.as_deref(),
         config.mcp_oauth_callback_port,
         config.mcp_oauth_callback_url.as_deref(),
     )

@@ -108,6 +108,7 @@ async fn stdio_server_round_trip() -> anyhow::Result<()> {
                     read_only: false,
                     strict_tool_classification: false,
                     require_approval_for_mutating: false,
+                    oauth_resource: None,
                 },
             );
             config
@@ -132,7 +133,7 @@ async fn stdio_server_round_trip() -> anyhow::Result<()> {
             sandbox_policy: SandboxPolicy::new_read_only_policy(),
             model: session_model,
             effort: None,
-            summary: ReasoningSummary::Auto,
+            summary: None,
             collaboration_mode: None,
             personality: None,
         })
@@ -254,6 +255,7 @@ async fn stdio_image_responses_round_trip() -> anyhow::Result<()> {
                     read_only: false,
                     strict_tool_classification: false,
                     require_approval_for_mutating: false,
+                    oauth_resource: None,
                 },
             );
             config
@@ -303,7 +305,7 @@ async fn stdio_image_responses_round_trip() -> anyhow::Result<()> {
             sandbox_policy: SandboxPolicy::new_read_only_policy(),
             model: session_model,
             effort: None,
-            summary: ReasoningSummary::Auto,
+            summary: None,
             collaboration_mode: None,
             personality: None,
         })
@@ -409,6 +411,7 @@ async fn stdio_image_responses_are_sanitized_for_text_only_model() -> anyhow::Re
                 default_reasoning_summary: ReasoningSummary::Auto,
                 support_verbosity: false,
                 default_verbosity: None,
+                availability_nux: None,
                 apply_patch_tool_type: None,
                 truncation_policy: TruncationPolicyConfig::bytes(10_000),
                 supports_parallel_tool_calls: false,
@@ -475,6 +478,7 @@ async fn stdio_image_responses_are_sanitized_for_text_only_model() -> anyhow::Re
                     read_only: false,
                     strict_tool_classification: false,
                     require_approval_for_mutating: false,
+                    oauth_resource: None,
                 },
             );
             config
@@ -505,7 +509,7 @@ async fn stdio_image_responses_are_sanitized_for_text_only_model() -> anyhow::Re
             sandbox_policy: SandboxPolicy::new_read_only_policy(),
             model: text_only_model_slug.to_string(),
             effort: None,
-            summary: ReasoningSummary::Auto,
+            summary: None,
             collaboration_mode: None,
             personality: None,
         })
@@ -597,6 +601,7 @@ async fn stdio_server_propagates_whitelisted_env_vars() -> anyhow::Result<()> {
                     read_only: false,
                     strict_tool_classification: false,
                     require_approval_for_mutating: false,
+                    oauth_resource: None,
                 },
             );
             config
@@ -621,7 +626,7 @@ async fn stdio_server_propagates_whitelisted_env_vars() -> anyhow::Result<()> {
             sandbox_policy: SandboxPolicy::new_read_only_policy(),
             model: session_model,
             effort: None,
-            summary: ReasoningSummary::Auto,
+            summary: None,
             collaboration_mode: None,
             personality: None,
         })
@@ -760,6 +765,7 @@ async fn streamable_http_tool_call_round_trip() -> anyhow::Result<()> {
                     read_only: false,
                     strict_tool_classification: false,
                     require_approval_for_mutating: false,
+                    oauth_resource: None,
                 },
             );
             config
@@ -784,7 +790,7 @@ async fn streamable_http_tool_call_round_trip() -> anyhow::Result<()> {
             sandbox_policy: SandboxPolicy::new_read_only_policy(),
             model: session_model,
             effort: None,
-            summary: ReasoningSummary::Auto,
+            summary: None,
             collaboration_mode: None,
             personality: None,
         })
@@ -983,6 +989,7 @@ async fn streamable_http_with_oauth_round_trip_impl() -> anyhow::Result<()> {
                     read_only: false,
                     strict_tool_classification: false,
                     require_approval_for_mutating: false,
+                    oauth_resource: None,
                 },
             );
             config
@@ -1007,7 +1014,7 @@ async fn streamable_http_with_oauth_round_trip_impl() -> anyhow::Result<()> {
             sandbox_policy: SandboxPolicy::new_read_only_policy(),
             model: session_model,
             effort: None,
-            summary: ReasoningSummary::Auto,
+            summary: None,
             collaboration_mode: None,
             personality: None,
         })
