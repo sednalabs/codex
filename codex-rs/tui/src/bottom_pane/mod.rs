@@ -230,10 +230,11 @@ impl BottomPane {
             status: None,
             esc_interrupt_requires_double_press: std::env::var(DOUBLE_ESC_INTERRUPT_ENV_VAR)
                 .map(|value| {
-                    !matches!(
-                        value.trim(),
-                        "0" | "false" | "FALSE" | "no" | "NO" | "off" | "OFF"
-                    )
+                    let normalized = value.trim();
+                    !(normalized == "0"
+                        || normalized.eq_ignore_ascii_case("false")
+                        || normalized.eq_ignore_ascii_case("no")
+                        || normalized.eq_ignore_ascii_case("off"))
                 })
                 .unwrap_or(true),
             pending_esc_interrupt_deadline: None,
@@ -361,10 +362,16 @@ impl BottomPane {
         {
             self.pending_esc_interrupt_deadline = None;
         }
-        if key_event.kind == KeyEventKind::Press
-            && !(key_event.code == KeyCode::Esc && key_event.modifiers.is_empty())
-        {
-            self.pending_esc_interrupt_deadline = None;
+        if key_event.kind == KeyEventKind::Press {
+            let is_bare_esc = key_event.code == KeyCode::Esc && key_event.modifiers.is_empty();
+            let esc_can_interrupt = is_bare_esc
+                && self.is_task_running
+                && self.view_stack.is_empty()
+                && !self.composer.popup_active()
+                && self.status.is_some();
+            if !esc_can_interrupt {
+                self.pending_esc_interrupt_deadline = None;
+            }
         }
 
         // Do not globally intercept space; only composer handles hold-to-talk.
@@ -424,7 +431,8 @@ impl BottomPane {
             // If a task is running and a status line is visible, allow Esc to
             // send an interrupt even while the composer has focus.
             // When a popup is active, prefer dismissing it over interrupting the task.
-            if key_event.code == KeyCode::Esc
+            if key_event.kind == KeyEventKind::Press
+                && key_event.code == KeyCode::Esc
                 && key_event.modifiers.is_empty()
                 && self.is_task_running
                 && !self.composer.popup_active()
@@ -1657,6 +1665,49 @@ mod tests {
         assert!(
             matches!(rx.try_recv(), Ok(AppEvent::CodexOp(Op::Interrupt))),
             "second Esc should send Op::Interrupt"
+        );
+    }
+
+    #[test]
+    fn esc_release_does_not_confirm_interrupt() {
+        let (tx_raw, mut rx) = unbounded_channel::<AppEvent>();
+        let tx = AppEventSender::new(tx_raw);
+        let mut pane = BottomPane::new(BottomPaneParams {
+            app_event_tx: tx,
+            frame_requester: FrameRequester::test_dummy(),
+            has_input_focus: true,
+            enhanced_keys_supported: true,
+            placeholder_text: "Ask Codex to do anything".to_string(),
+            disable_paste_burst: false,
+            animations_enabled: true,
+            skills: Some(Vec::new()),
+        });
+
+        pane.set_task_running(true);
+
+        pane.handle_key_event(KeyEvent::new_with_kind(
+            KeyCode::Esc,
+            KeyModifiers::NONE,
+            KeyEventKind::Press,
+        ));
+        pane.handle_key_event(KeyEvent::new_with_kind(
+            KeyCode::Esc,
+            KeyModifiers::NONE,
+            KeyEventKind::Release,
+        ));
+        assert!(
+            rx.try_recv().is_err(),
+            "Esc release should not count as a second interrupt confirmation press"
+        );
+
+        pane.handle_key_event(KeyEvent::new_with_kind(
+            KeyCode::Esc,
+            KeyModifiers::NONE,
+            KeyEventKind::Press,
+        ));
+        assert!(
+            matches!(rx.try_recv(), Ok(AppEvent::CodexOp(Op::Interrupt))),
+            "second Esc press should send Op::Interrupt"
         );
     }
 
