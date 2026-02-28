@@ -16,6 +16,40 @@ GitHub default branch is `carry/main` so downstream behavior is the repository l
 
 ## Divergence Summary
 
+This section tracks intentional downstream behavior differences from `upstream/main`.
+Last reviewed: 2026-02-28.
+
+### Core + protocol: blocking wait for `write_stdin` and compaction turn-count metadata
+
+Why:
+- Support "wait until terminal" semantics directly on `write_stdin` for long-running exact/tool-driven command flows.
+- Expose compaction count on turn completion so clients can distinguish "normal turn complete" from "turn completed after one or more compactions".
+
+User-visible behavior:
+- `write_stdin` supports blocking wait parameters (`wait_until_terminal`, `max_wait_ms`, `heartbeat_interval_ms`).
+- `exec_command` does not expose those wait parameters.
+- `TurnCompleteEvent` includes `compaction_events_in_turn`.
+
+### TUI: safer interrupt handling for Alt/meta terminals (double-`Esc` by default)
+
+Why:
+- Some terminals (especially mobile/SSH flows) encode Alt/meta as an `Esc` prefix, which can accidentally interrupt running turns.
+
+User-visible behavior:
+- Running-turn interrupt defaults to `Esc Esc` confirmation.
+- First `Esc` shows a confirmation hint (`Esc again to interrupt`) instead of interrupting immediately.
+- Bare `Esc` release events and `Esc`-prefixed Alt sequences do not trigger unintended interrupts.
+- `[tui].double_esc_interrupt` controls this behavior, with `CODEX_TUI_DOUBLE_ESC_INTERRUPT=0` as an override.
+
+### MCP config: retain downstream safety controls while supporting upstream OAuth resource
+
+Why:
+- Preserve downstream MCP mutability controls while remaining compatible with upstream OAuth improvements.
+
+User-visible behavior:
+- Downstream safety fields remain available per server (`enable_elicitation`, `read_only`, `strict_tool_classification`, `require_approval_for_mutating`).
+- Upstream `oauth_resource` is also supported in the same server config entry.
+
 ### TUI: Queue slash metadata preparation and recall
 
 Why:

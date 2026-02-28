@@ -19,6 +19,7 @@ For custom MCP servers, you can also apply server-local safety controls in each
 - `read_only = true` to block mutating tools (based on tool `read_only_hint` metadata).
 - `strict_tool_classification = true` to fail closed when tool mutability metadata is missing.
 - `require_approval_for_mutating = true` to force explicit approval before mutating tool calls.
+- `oauth_resource = "..."` to include an OAuth `resource` parameter (RFC 8707) during MCP login.
 
 ## Apps (Connectors)
 
@@ -58,3 +59,13 @@ override), not "inherit the global default". There is currently no separate
 config value for "follow the global default in Plan mode".
 
 Ctrl+C/Ctrl+D quitting uses a ~1 second double-press hint (`ctrl + c again to quit`).
+
+## TUI interrupt defaults
+
+By default, interrupting a running turn in the TUI uses double-`Esc` confirmation
+to reduce accidental interrupts on terminals that encode Alt/meta with a leading
+`Esc` byte.
+
+- `[tui].double_esc_interrupt = true` (default) requires `Esc Esc`.
+- `[tui].double_esc_interrupt = false` restores single-`Esc` interrupt behavior.
+- `CODEX_TUI_DOUBLE_ESC_INTERRUPT=0` overrides config and forces single-`Esc`.
