@@ -49,6 +49,7 @@ pub(crate) struct StatusIndicatorWidget {
     /// Optional suffix rendered after the elapsed/interrupt segment.
     inline_message: Option<String>,
     show_interrupt_hint: bool,
+    interrupt_requires_double_press: bool,
 
     elapsed_running: Duration,
     last_resume_at: Instant,
@@ -80,6 +81,7 @@ impl StatusIndicatorWidget {
         app_event_tx: AppEventSender,
         frame_requester: FrameRequester,
         animations_enabled: bool,
+        interrupt_requires_double_press: bool,
     ) -> Self {
         Self {
             header: String::from("Working"),
@@ -87,6 +89,7 @@ impl StatusIndicatorWidget {
             details_max_lines: STATUS_DETAILS_DEFAULT_MAX_LINES,
             inline_message: None,
             show_interrupt_hint: true,
+            interrupt_requires_double_press,
             elapsed_running: Duration::ZERO,
             last_resume_at: Instant::now(),
             is_paused: false,
@@ -125,7 +128,7 @@ impl StatusIndicatorWidget {
             });
     }
 
-    /// Update the inline suffix text shown after `({elapsed} • esc to interrupt)`.
+    /// Update the inline suffix text shown after the elapsed/interrupt hint.
     ///
     /// Callers should provide plain, already-contextualized text. Passing
     /// verbose status prose here can cause frequent width truncation and hide
@@ -258,11 +261,13 @@ impl Renderable for StatusIndicatorWidget {
         }
         spans.push(" ".into());
         if self.show_interrupt_hint {
-            spans.extend(vec![
-                format!("({pretty_elapsed} • ").dim(),
-                key_hint::plain(KeyCode::Esc).into(),
-                " to interrupt)".dim(),
-            ]);
+            spans.push(format!("({pretty_elapsed} • ").dim());
+            spans.push(key_hint::plain(KeyCode::Esc).into());
+            if self.interrupt_requires_double_press {
+                spans.push(" ".into());
+                spans.push(key_hint::plain(KeyCode::Esc).into());
+            }
+            spans.push(" to interrupt)".dim());
         } else {
             spans.push(format!("({pretty_elapsed})").dim());
         }
@@ -320,7 +325,8 @@ mod tests {
     fn renders_with_working_header() {
         let (tx_raw, _rx) = unbounded_channel::<AppEvent>();
         let tx = AppEventSender::new(tx_raw);
-        let w = StatusIndicatorWidget::new(tx, crate::tui::FrameRequester::test_dummy(), true);
+        let w =
+            StatusIndicatorWidget::new(tx, crate::tui::FrameRequester::test_dummy(), true, false);
 
         // Render into a fixed-size test terminal and snapshot the backend.
         let mut terminal = Terminal::new(TestBackend::new(80, 2)).expect("terminal");
@@ -334,7 +340,8 @@ mod tests {
     fn renders_truncated() {
         let (tx_raw, _rx) = unbounded_channel::<AppEvent>();
         let tx = AppEventSender::new(tx_raw);
-        let w = StatusIndicatorWidget::new(tx, crate::tui::FrameRequester::test_dummy(), true);
+        let w =
+            StatusIndicatorWidget::new(tx, crate::tui::FrameRequester::test_dummy(), true, false);
 
         // Render into a fixed-size test terminal and snapshot the backend.
         let mut terminal = Terminal::new(TestBackend::new(20, 2)).expect("terminal");
@@ -348,7 +355,8 @@ mod tests {
     fn renders_wrapped_details_panama_two_lines() {
         let (tx_raw, _rx) = unbounded_channel::<AppEvent>();
         let tx = AppEventSender::new(tx_raw);
-        let mut w = StatusIndicatorWidget::new(tx, crate::tui::FrameRequester::test_dummy(), false);
+        let mut w =
+            StatusIndicatorWidget::new(tx, crate::tui::FrameRequester::test_dummy(), false, false);
         w.update_details(
             Some("A man a plan a canal panama".to_string()),
             StatusDetailsCapitalization::CapitalizeFirst,
@@ -374,7 +382,7 @@ mod tests {
         let (tx_raw, _rx) = unbounded_channel::<AppEvent>();
         let tx = AppEventSender::new(tx_raw);
         let mut widget =
-            StatusIndicatorWidget::new(tx, crate::tui::FrameRequester::test_dummy(), true);
+            StatusIndicatorWidget::new(tx, crate::tui::FrameRequester::test_dummy(), true, false);
 
         let baseline = Instant::now();
         widget.last_resume_at = baseline;
@@ -395,7 +403,8 @@ mod tests {
     fn details_overflow_adds_ellipsis() {
         let (tx_raw, _rx) = unbounded_channel::<AppEvent>();
         let tx = AppEventSender::new(tx_raw);
-        let mut w = StatusIndicatorWidget::new(tx, crate::tui::FrameRequester::test_dummy(), true);
+        let mut w =
+            StatusIndicatorWidget::new(tx, crate::tui::FrameRequester::test_dummy(), true, false);
         w.update_details(
             Some("abcd abcd abcd abcd".to_string()),
             StatusDetailsCapitalization::CapitalizeFirst,
@@ -415,7 +424,8 @@ mod tests {
     fn details_args_can_disable_capitalization_and_limit_lines() {
         let (tx_raw, _rx) = unbounded_channel::<AppEvent>();
         let tx = AppEventSender::new(tx_raw);
-        let mut w = StatusIndicatorWidget::new(tx, crate::tui::FrameRequester::test_dummy(), true);
+        let mut w =
+            StatusIndicatorWidget::new(tx, crate::tui::FrameRequester::test_dummy(), true, false);
         w.update_details(
             Some("cargo test -p codex-core and then cargo test -p codex-tui".to_string()),
             StatusDetailsCapitalization::Preserve,
