@@ -1944,6 +1944,12 @@
         {
           "description": "Agent has completed all actions. v1 wire format uses `task_complete`; accept `turn_complete` for v2 interop.",
           "properties": {
+            "compaction_events_in_turn": {
+              "default": 0,
+              "format": "uint32",
+              "minimum": 0.0,
+              "type": "integer"
+            },
             "last_agent_message": {
               "type": [
                 "string",

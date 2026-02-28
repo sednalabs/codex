@@ -292,6 +292,9 @@ pub struct Config {
     /// `current-dir`.
     pub tui_status_line: Option<Vec<String>>,
 
+    /// Require `Esc Esc` (double-press) to interrupt in the TUI.
+    pub tui_double_esc_interrupt: bool,
+
     /// Syntax highlighting theme override (kebab-case name).
     pub tui_theme: Option<String>,
 
@@ -2193,6 +2196,11 @@ impl Config {
                 .map(|t| t.alternate_screen)
                 .unwrap_or_default(),
             tui_status_line: cfg.tui.as_ref().and_then(|t| t.status_line.clone()),
+            tui_double_esc_interrupt: cfg
+                .tui
+                .as_ref()
+                .map(|t| t.double_esc_interrupt)
+                .unwrap_or(true),
             tui_theme: cfg.tui.as_ref().and_then(|t| t.theme.clone()),
             otel: {
                 let t: OtelConfigToml = cfg.otel.unwrap_or_default();
@@ -2645,9 +2653,25 @@ theme = "dracula"
                 animations: true,
                 show_tooltips: true,
                 alternate_screen: AltScreenMode::Auto,
+                double_esc_interrupt: true,
                 status_line: None,
                 theme: None,
             }
+        );
+    }
+
+    #[test]
+    fn tui_double_esc_interrupt_deserializes_false() {
+        let cfg = r#"
+[tui]
+double_esc_interrupt = false
+"#;
+
+        let parsed = toml::from_str::<ConfigToml>(cfg)
+            .expect("TUI config with double_esc_interrupt should deserialize");
+        assert_eq!(
+            parsed.tui.as_ref().map(|t| t.double_esc_interrupt),
+            Some(false)
         );
     }
 
@@ -4855,6 +4879,7 @@ model_verbosity = "high"
                 feedback_enabled: true,
                 tui_alternate_screen: AltScreenMode::Auto,
                 tui_status_line: None,
+                tui_double_esc_interrupt: true,
                 tui_theme: None,
                 otel: OtelConfig::default(),
             },
@@ -4981,6 +5006,7 @@ model_verbosity = "high"
             feedback_enabled: true,
             tui_alternate_screen: AltScreenMode::Auto,
             tui_status_line: None,
+            tui_double_esc_interrupt: true,
             tui_theme: None,
             otel: OtelConfig::default(),
         };
@@ -5105,6 +5131,7 @@ model_verbosity = "high"
             feedback_enabled: true,
             tui_alternate_screen: AltScreenMode::Auto,
             tui_status_line: None,
+            tui_double_esc_interrupt: true,
             tui_theme: None,
             otel: OtelConfig::default(),
         };
@@ -5215,6 +5242,7 @@ model_verbosity = "high"
             feedback_enabled: true,
             tui_alternate_screen: AltScreenMode::Auto,
             tui_status_line: None,
+            tui_double_esc_interrupt: true,
             tui_theme: None,
             otel: OtelConfig::default(),
         };

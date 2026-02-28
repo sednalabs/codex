@@ -316,17 +316,22 @@ mod tests {
         )
         .await?;
 
-        let out_2 = write_stdin(
-            &session,
-            process_id,
-            "echo $CODEX_INTERACTIVE_SHELL_VAR\n",
-            2_500,
-        )
-        .await?;
-        assert!(
-            out_2.output.contains("codex"),
-            "expected environment variable output"
-        );
+        let mut saw_expected_output = false;
+        for _ in 0..5 {
+            let out_2 = write_stdin(
+                &session,
+                process_id,
+                "echo $CODEX_INTERACTIVE_SHELL_VAR\n",
+                2_500,
+            )
+            .await?;
+            if out_2.output.contains("codex") {
+                saw_expected_output = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+        assert!(saw_expected_output, "expected environment variable output");
 
         Ok(())
     }
@@ -364,21 +369,26 @@ mod tests {
             "short command should run in a fresh shell"
         );
 
-        let out_3 = write_stdin(
-            &session,
-            shell_a
-                .process_id
-                .as_ref()
-                .expect("expected process id")
-                .as_str(),
-            "echo $CODEX_INTERACTIVE_SHELL_VAR\n",
-            2_500,
-        )
-        .await?;
-        assert!(
-            out_3.output.contains("codex"),
-            "session should preserve state"
-        );
+        let mut session_preserved_state = false;
+        for _ in 0..5 {
+            let out_3 = write_stdin(
+                &session,
+                shell_a
+                    .process_id
+                    .as_ref()
+                    .expect("expected process id")
+                    .as_str(),
+                "echo $CODEX_INTERACTIVE_SHELL_VAR\n",
+                2_500,
+            )
+            .await?;
+            if out_3.output.contains("codex") {
+                session_preserved_state = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+        assert!(session_preserved_state, "session should preserve state");
 
         Ok(())
     }

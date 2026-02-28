@@ -3053,6 +3053,9 @@ impl ChatWidget {
         widget
             .bottom_pane
             .set_status_line_enabled(!widget.configured_status_line_items().is_empty());
+        widget
+            .bottom_pane
+            .set_esc_interrupt_requires_double_press(widget.config.tui_double_esc_interrupt);
         widget.bottom_pane.set_collaboration_modes_enabled(true);
         widget.sync_personality_command_enabled();
         widget
@@ -3229,6 +3232,9 @@ impl ChatWidget {
         widget
             .bottom_pane
             .set_status_line_enabled(!widget.configured_status_line_items().is_empty());
+        widget
+            .bottom_pane
+            .set_esc_interrupt_requires_double_press(widget.config.tui_double_esc_interrupt);
         widget.bottom_pane.set_collaboration_modes_enabled(true);
         widget.sync_personality_command_enabled();
         widget
@@ -3394,6 +3400,9 @@ impl ChatWidget {
         widget
             .bottom_pane
             .set_status_line_enabled(!widget.configured_status_line_items().is_empty());
+        widget
+            .bottom_pane
+            .set_esc_interrupt_requires_double_press(widget.config.tui_double_esc_interrupt);
         widget.bottom_pane.set_collaboration_modes_enabled(true);
         widget.sync_personality_command_enabled();
         widget

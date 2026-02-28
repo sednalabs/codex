@@ -113,8 +113,21 @@ pub(crate) use feedback_view::FeedbackNoteView;
 pub(crate) const QUIT_SHORTCUT_TIMEOUT: Duration = Duration::from_secs(1);
 const ESC_INTERRUPT_CONFIRM_TIMEOUT: Duration = Duration::from_secs(1);
 // Default to Esc-Esc to avoid accidental interrupts in terminals that emit bare ESC for Alt/meta.
-// Set CODEX_TUI_DOUBLE_ESC_INTERRUPT=0 to restore single-Esc interrupt behavior.
+// Config key: [tui].double_esc_interrupt (default true).
+// Env override: CODEX_TUI_DOUBLE_ESC_INTERRUPT=0 restores single-Esc behavior.
 const DOUBLE_ESC_INTERRUPT_ENV_VAR: &str = "CODEX_TUI_DOUBLE_ESC_INTERRUPT";
+
+fn esc_interrupt_requires_double_press_from_env() -> Option<bool> {
+    std::env::var(DOUBLE_ESC_INTERRUPT_ENV_VAR)
+        .ok()
+        .map(|value| {
+            let normalized = value.trim();
+            !(normalized == "0"
+                || normalized.eq_ignore_ascii_case("false")
+                || normalized.eq_ignore_ascii_case("no")
+                || normalized.eq_ignore_ascii_case("off"))
+        })
+}
 
 /// Whether Ctrl+C/Ctrl+D require a second press to quit.
 ///
@@ -228,14 +241,7 @@ impl BottomPane {
             disable_paste_burst,
             is_task_running: false,
             status: None,
-            esc_interrupt_requires_double_press: std::env::var(DOUBLE_ESC_INTERRUPT_ENV_VAR)
-                .map(|value| {
-                    let normalized = value.trim();
-                    !(normalized == "0"
-                        || normalized.eq_ignore_ascii_case("false")
-                        || normalized.eq_ignore_ascii_case("no")
-                        || normalized.eq_ignore_ascii_case("off"))
-                })
+            esc_interrupt_requires_double_press: esc_interrupt_requires_double_press_from_env()
                 .unwrap_or(true),
             pending_esc_interrupt_deadline: None,
             unified_exec_footer: UnifiedExecFooter::new(),
@@ -360,7 +366,7 @@ impl BottomPane {
             .pending_esc_interrupt_deadline
             .is_some_and(|deadline| Instant::now() > deadline)
         {
-            self.pending_esc_interrupt_deadline = None;
+            self.set_pending_esc_interrupt_deadline(None);
         }
         if key_event.kind == KeyEventKind::Press {
             let is_bare_esc = key_event.code == KeyCode::Esc && key_event.modifiers.is_empty();
@@ -370,7 +376,7 @@ impl BottomPane {
                 && !self.composer.popup_active()
                 && self.status.is_some();
             if !esc_can_interrupt {
-                self.pending_esc_interrupt_deadline = None;
+                self.set_pending_esc_interrupt_deadline(None);
             }
         }
 
@@ -440,11 +446,12 @@ impl BottomPane {
             {
                 let should_interrupt = if self.esc_interrupt_requires_double_press {
                     if self.pending_esc_interrupt_deadline.is_some() {
-                        self.pending_esc_interrupt_deadline = None;
+                        self.set_pending_esc_interrupt_deadline(None);
                         true
                     } else {
-                        self.pending_esc_interrupt_deadline =
-                            Some(Instant::now() + ESC_INTERRUPT_CONFIRM_TIMEOUT);
+                        self.set_pending_esc_interrupt_deadline(Some(
+                            Instant::now() + ESC_INTERRUPT_CONFIRM_TIMEOUT,
+                        ));
                         self.request_redraw_in(ESC_INTERRUPT_CONFIRM_TIMEOUT);
                         false
                     }
@@ -720,7 +727,7 @@ impl BottomPane {
         self.is_task_running = running;
         self.composer.set_task_running(running);
         if !running {
-            self.pending_esc_interrupt_deadline = None;
+            self.set_pending_esc_interrupt_deadline(None);
         }
 
         if running {
@@ -735,6 +742,7 @@ impl BottomPane {
                 }
                 if let Some(status) = self.status.as_mut() {
                     status.set_interrupt_hint_visible(true);
+                    status.set_interrupt_confirmation_deadline(self.pending_esc_interrupt_deadline);
                 }
                 self.sync_status_inline_message();
                 self.request_redraw();
@@ -760,7 +768,24 @@ impl BottomPane {
                 self.animations_enabled,
                 self.esc_interrupt_requires_double_press,
             ));
+            if let Some(status) = self.status.as_mut() {
+                status.set_interrupt_confirmation_deadline(self.pending_esc_interrupt_deadline);
+            }
             self.sync_status_inline_message();
+            self.request_redraw();
+        }
+    }
+
+    pub(crate) fn set_esc_interrupt_requires_double_press(&mut self, requires_double_press: bool) {
+        let effective_requires_double_press =
+            esc_interrupt_requires_double_press_from_env().unwrap_or(requires_double_press);
+        self.esc_interrupt_requires_double_press = effective_requires_double_press;
+        if let Some(status) = self.status.as_mut() {
+            status.set_interrupt_requires_double_press(effective_requires_double_press);
+        }
+        if !effective_requires_double_press {
+            self.set_pending_esc_interrupt_deadline(None);
+        } else {
             self.request_redraw();
         }
     }
@@ -962,6 +987,13 @@ impl BottomPane {
 
     pub(crate) fn request_redraw_in(&self, dur: Duration) {
         self.frame_requester.schedule_frame_in(dur);
+    }
+
+    fn set_pending_esc_interrupt_deadline(&mut self, deadline: Option<Instant>) {
+        self.pending_esc_interrupt_deadline = deadline;
+        if let Some(status) = self.status.as_mut() {
+            status.set_interrupt_confirmation_deadline(deadline);
+        }
     }
 
     // --- History helpers ---
@@ -1669,6 +1701,32 @@ mod tests {
     }
 
     #[test]
+    fn first_esc_renders_again_to_interrupt_hint() {
+        let (tx_raw, _rx) = unbounded_channel::<AppEvent>();
+        let tx = AppEventSender::new(tx_raw);
+        let mut pane = BottomPane::new(BottomPaneParams {
+            app_event_tx: tx,
+            frame_requester: FrameRequester::test_dummy(),
+            has_input_focus: true,
+            enhanced_keys_supported: false,
+            placeholder_text: "Ask Codex to do anything".to_string(),
+            disable_paste_burst: false,
+            animations_enabled: true,
+            skills: Some(Vec::new()),
+        });
+
+        pane.set_task_running(true);
+        pane.handle_key_event(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+
+        let area = Rect::new(0, 0, 64, pane.desired_height(64));
+        let rendered = render_snapshot(&pane, area);
+        assert!(
+            rendered.contains("again to interrupt"),
+            "expected first Esc hint to request confirmation, got: {rendered:?}"
+        );
+    }
+
+    #[test]
     fn esc_release_does_not_confirm_interrupt() {
         let (tx_raw, mut rx) = unbounded_channel::<AppEvent>();
         let tx = AppEventSender::new(tx_raw);
@@ -1708,6 +1766,55 @@ mod tests {
         assert!(
             matches!(rx.try_recv(), Ok(AppEvent::CodexOp(Op::Interrupt))),
             "second Esc press should send Op::Interrupt"
+        );
+    }
+
+    #[test]
+    fn android_alt_prefix_escape_sequence_does_not_interrupt() {
+        let (tx_raw, mut rx) = unbounded_channel::<AppEvent>();
+        let tx = AppEventSender::new(tx_raw);
+        let mut pane = BottomPane::new(BottomPaneParams {
+            app_event_tx: tx,
+            frame_requester: FrameRequester::test_dummy(),
+            has_input_focus: true,
+            enhanced_keys_supported: true,
+            placeholder_text: "Ask Codex to do anything".to_string(),
+            disable_paste_burst: false,
+            animations_enabled: true,
+            skills: Some(Vec::new()),
+        });
+
+        pane.set_task_running(true);
+
+        // Some terminals encode Alt+<key> as an ESC prefix followed by the base key.
+        pane.handle_key_event(KeyEvent::new_with_kind(
+            KeyCode::Esc,
+            KeyModifiers::NONE,
+            KeyEventKind::Press,
+        ));
+        pane.handle_key_event(KeyEvent::new_with_kind(
+            KeyCode::Char('f'),
+            KeyModifiers::NONE,
+            KeyEventKind::Press,
+        ));
+        assert!(
+            rx.try_recv().is_err(),
+            "expected ESC-prefixed Alt sequence to not interrupt the running task"
+        );
+
+        pane.handle_key_event(KeyEvent::new_with_kind(
+            KeyCode::Esc,
+            KeyModifiers::NONE,
+            KeyEventKind::Press,
+        ));
+        pane.handle_key_event(KeyEvent::new_with_kind(
+            KeyCode::Esc,
+            KeyModifiers::NONE,
+            KeyEventKind::Press,
+        ));
+        assert!(
+            matches!(rx.try_recv(), Ok(AppEvent::CodexOp(Op::Interrupt))),
+            "explicit double Esc should still interrupt after an ESC-prefixed sequence"
         );
     }
 

@@ -345,33 +345,6 @@ fn create_exec_command_tool(allow_login_shell: bool, request_permission_enabled:
                 ),
             },
         ),
-        (
-            "wait_until_terminal".to_string(),
-            JsonSchema::Boolean {
-                description: Some(
-                    "When true, blocks until the session exits or max_wait_ms is reached. Requires chars to be empty."
-                        .to_string(),
-                ),
-            },
-        ),
-        (
-            "max_wait_ms".to_string(),
-            JsonSchema::Number {
-                description: Some(
-                    "Maximum total wait time (milliseconds) when wait_until_terminal is true. Defaults to background_terminal_max_timeout."
-                        .to_string(),
-                ),
-            },
-        ),
-        (
-            "heartbeat_interval_ms".to_string(),
-            JsonSchema::Number {
-                description: Some(
-                    "Heartbeat cadence (milliseconds) while waiting. Emits compact background status messages."
-                        .to_string(),
-                ),
-            },
-        ),
     ]);
     if allow_login_shell {
         properties.insert(
@@ -426,6 +399,33 @@ fn create_write_stdin_tool() -> ToolSpec {
             JsonSchema::Number {
                 description: Some(
                     "Maximum number of tokens to return. Excess output will be truncated."
+                        .to_string(),
+                ),
+            },
+        ),
+        (
+            "wait_until_terminal".to_string(),
+            JsonSchema::Boolean {
+                description: Some(
+                    "When true, blocks until the session exits or max_wait_ms is reached. Requires chars to be empty."
+                        .to_string(),
+                ),
+            },
+        ),
+        (
+            "max_wait_ms".to_string(),
+            JsonSchema::Number {
+                description: Some(
+                    "Maximum total wait time (milliseconds) when wait_until_terminal is true. Defaults to background_terminal_max_timeout."
+                        .to_string(),
+                ),
+            },
+        ),
+        (
+            "heartbeat_interval_ms".to_string(),
+            JsonSchema::Number {
+                description: Some(
+                    "Heartbeat cadence (milliseconds) while waiting. Emits compact background status messages."
                         .to_string(),
                 ),
             },
@@ -2061,6 +2061,40 @@ mod tests {
             .find(|candidate| candidate.slug == slug)
             .unwrap_or_else(|| panic!("model slug {slug} is missing from models.json"));
         with_config_overrides(model, &config)
+    }
+
+    fn tool_properties(spec: &ToolSpec) -> &std::collections::BTreeMap<String, JsonSchema> {
+        let ToolSpec::Function(ResponsesApiTool {
+            parameters:
+                JsonSchema::Object {
+                    properties,
+                    required: _,
+                    additional_properties: _,
+                },
+            ..
+        }) = spec
+        else {
+            panic!("expected function tool with object parameters");
+        };
+        properties
+    }
+
+    #[test]
+    fn exec_command_schema_excludes_write_stdin_wait_fields() {
+        let spec = create_exec_command_tool(true, false);
+        let properties = tool_properties(&spec);
+        assert!(!properties.contains_key("wait_until_terminal"));
+        assert!(!properties.contains_key("max_wait_ms"));
+        assert!(!properties.contains_key("heartbeat_interval_ms"));
+    }
+
+    #[test]
+    fn write_stdin_schema_includes_wait_fields() {
+        let spec = create_write_stdin_tool();
+        let properties = tool_properties(&spec);
+        assert!(properties.contains_key("wait_until_terminal"));
+        assert!(properties.contains_key("max_wait_ms"));
+        assert!(properties.contains_key("heartbeat_interval_ms"));
     }
 
     #[test]

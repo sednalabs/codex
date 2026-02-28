@@ -50,6 +50,7 @@ pub(crate) struct StatusIndicatorWidget {
     inline_message: Option<String>,
     show_interrupt_hint: bool,
     interrupt_requires_double_press: bool,
+    interrupt_confirmation_deadline: Option<Instant>,
 
     elapsed_running: Duration,
     last_resume_at: Instant,
@@ -90,6 +91,7 @@ impl StatusIndicatorWidget {
             inline_message: None,
             show_interrupt_hint: true,
             interrupt_requires_double_press,
+            interrupt_confirmation_deadline: None,
             elapsed_running: Duration::ZERO,
             last_resume_at: Instant::now(),
             is_paused: false,
@@ -151,6 +153,17 @@ impl StatusIndicatorWidget {
 
     pub(crate) fn set_interrupt_hint_visible(&mut self, visible: bool) {
         self.show_interrupt_hint = visible;
+    }
+
+    pub(crate) fn set_interrupt_requires_double_press(&mut self, requires_double_press: bool) {
+        self.interrupt_requires_double_press = requires_double_press;
+        if !requires_double_press {
+            self.interrupt_confirmation_deadline = None;
+        }
+    }
+
+    pub(crate) fn set_interrupt_confirmation_deadline(&mut self, deadline: Option<Instant>) {
+        self.interrupt_confirmation_deadline = deadline;
     }
 
     #[cfg(test)]
@@ -250,6 +263,9 @@ impl Renderable for StatusIndicatorWidget {
         let now = Instant::now();
         let elapsed_duration = self.elapsed_duration_at(now);
         let pretty_elapsed = fmt_elapsed_compact(elapsed_duration.as_secs());
+        let interrupt_confirmation_pending = self
+            .interrupt_confirmation_deadline
+            .is_some_and(|deadline| deadline > now);
 
         let mut spans = Vec::with_capacity(5);
         spans.push(spinner(Some(self.last_resume_at), self.animations_enabled));
@@ -262,12 +278,17 @@ impl Renderable for StatusIndicatorWidget {
         spans.push(" ".into());
         if self.show_interrupt_hint {
             spans.push(format!("({pretty_elapsed} • ").dim());
-            spans.push(key_hint::plain(KeyCode::Esc).into());
-            if self.interrupt_requires_double_press {
-                spans.push(" ".into());
+            if interrupt_confirmation_pending {
                 spans.push(key_hint::plain(KeyCode::Esc).into());
+                spans.push(" again to interrupt)".dim());
+            } else {
+                spans.push(key_hint::plain(KeyCode::Esc).into());
+                if self.interrupt_requires_double_press {
+                    spans.push(" ".into());
+                    spans.push(key_hint::plain(KeyCode::Esc).into());
+                }
+                spans.push(" to interrupt)".dim());
             }
-            spans.push(" to interrupt)".dim());
         } else {
             spans.push(format!("({pretty_elapsed})").dim());
         }

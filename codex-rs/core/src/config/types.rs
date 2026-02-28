@@ -725,6 +725,13 @@ pub struct Tui {
     #[serde(default)]
     pub alternate_screen: AltScreenMode,
 
+    /// Require `Esc Esc` (double-press) to interrupt a running turn.
+    ///
+    /// Defaults to `true` to avoid accidental interruptions on terminals that emit
+    /// bare `Esc` for Alt/meta.
+    #[serde(default = "default_true")]
+    pub double_esc_interrupt: bool,
+
     /// Ordered list of status line item identifiers.
     ///
     /// When set, the TUI renders the selected items as the status line.
