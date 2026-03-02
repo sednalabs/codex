@@ -317,6 +317,9 @@ enum QueuedSlashCommand {
         model: String,
         effort: Option<ReasoningEffortConfig>,
     },
+    ReviewRequest {
+        review_request: ReviewRequest,
+    },
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -346,6 +349,18 @@ impl QueuedSlashCommand {
                     .unwrap_or_else(|| "default".to_string());
                 format!("/model {model} ({effort_label})")
             }
+            QueuedSlashCommand::ReviewRequest { review_request } => match &review_request.target {
+                ReviewTarget::UncommittedChanges => "/review uncommitted changes".to_string(),
+                ReviewTarget::BaseBranch { branch } => format!("/review against {branch}"),
+                ReviewTarget::Commit { sha, title } => {
+                    if let Some(title) = title {
+                        format!("/review commit {sha} ({title})")
+                    } else {
+                        format!("/review commit {sha}")
+                    }
+                }
+                ReviewTarget::Custom { instructions } => format!("/review {instructions}"),
+            },
         }
     }
 
@@ -391,6 +406,14 @@ impl QueuedSlashCommand {
             }
             // `/model` is picker-driven in the TUI, so restoring the command token is enough.
             QueuedSlashCommand::ModelSelection { .. } => UserMessage::from("/model".to_string()),
+            QueuedSlashCommand::ReviewRequest { review_request } => match review_request.target {
+                ReviewTarget::Custom { instructions } => {
+                    UserMessage::from(format!("/review {instructions}"))
+                }
+                ReviewTarget::UncommittedChanges
+                | ReviewTarget::BaseBranch { .. }
+                | ReviewTarget::Commit { .. } => UserMessage::from("/review".to_string()),
+            },
         }
     }
 }
@@ -3671,9 +3694,15 @@ impl ChatWidget {
             self.request_quit_without_confirmation();
             return;
         }
-        if matches!(cmd, SlashCommand::Model) && self.bottom_pane.is_task_running() {
-            self.open_model_popup();
-            return;
+        if self.bottom_pane.is_task_running() {
+            if matches!(cmd, SlashCommand::Model) {
+                self.open_model_popup();
+                return;
+            }
+            if matches!(cmd, SlashCommand::Review) {
+                self.open_review_popup();
+                return;
+            }
         }
         if !cmd.available_during_task() && self.bottom_pane.is_task_running() {
             self.queue_slash_command(QueuedSlashCommand::Command(cmd));
@@ -4037,13 +4066,11 @@ impl ChatWidget {
                 }
             }
             SlashCommand::Review => {
-                self.submit_op(Op::Review {
-                    review_request: ReviewRequest {
-                        target: ReviewTarget::Custom {
-                            instructions: prepared_args,
-                        },
-                        user_facing_hint: None,
+                self.submit_or_queue_review_request(ReviewRequest {
+                    target: ReviewTarget::Custom {
+                        instructions: prepared_args,
                     },
+                    user_facing_hint: None,
                 });
                 if drain_submission_state {
                     self.bottom_pane.drain_pending_submission_state();
@@ -4074,6 +4101,10 @@ impl ChatWidget {
         }
         let trimmed = args.trim();
         if trimmed.is_empty() {
+            if matches!(cmd, SlashCommand::Review) && self.bottom_pane.is_task_running() {
+                self.open_review_popup();
+                return;
+            }
             if !cmd.available_during_task() && self.bottom_pane.is_task_running() {
                 self.queue_slash_command(QueuedSlashCommand::Command(cmd));
                 self.bottom_pane.drain_pending_submission_state();
@@ -4931,6 +4962,9 @@ impl ChatWidget {
                     ),
                     QueuedSlashCommand::ModelSelection { model, effort } => {
                         self.apply_model_and_effort(model, effort);
+                    }
+                    QueuedSlashCommand::ReviewRequest { review_request } => {
+                        self.submit_or_queue_review_request(review_request);
                     }
                 },
             }
@@ -6464,6 +6498,15 @@ impl ChatWidget {
         }
 
         self.apply_model_and_effort_immediately(model, effort);
+    }
+
+    pub(crate) fn submit_or_queue_review_request(&mut self, review_request: ReviewRequest) {
+        if self.bottom_pane.is_task_running() {
+            self.queue_slash_command(QueuedSlashCommand::ReviewRequest { review_request });
+            return;
+        }
+
+        self.submit_op(Op::Review { review_request });
     }
 
     fn apply_model_and_effort_immediately(
@@ -8175,12 +8218,12 @@ impl ChatWidget {
         items.push(SelectionItem {
             name: "Review uncommitted changes".to_string(),
             actions: vec![Box::new(move |tx: &AppEventSender| {
-                tx.send(AppEvent::CodexOp(Op::Review {
+                tx.send(AppEvent::SelectReview {
                     review_request: ReviewRequest {
                         target: ReviewTarget::UncommittedChanges,
                         user_facing_hint: None,
                     },
-                }));
+                });
             })],
             dismiss_on_select: true,
             ..Default::default()
@@ -8228,14 +8271,14 @@ impl ChatWidget {
             items.push(SelectionItem {
                 name: format!("{current_branch} -> {branch}"),
                 actions: vec![Box::new(move |tx3: &AppEventSender| {
-                    tx3.send(AppEvent::CodexOp(Op::Review {
+                    tx3.send(AppEvent::SelectReview {
                         review_request: ReviewRequest {
                             target: ReviewTarget::BaseBranch {
                                 branch: branch.clone(),
                             },
                             user_facing_hint: None,
                         },
-                    }));
+                    });
                 })],
                 dismiss_on_select: true,
                 search_value: Some(option),
@@ -8265,7 +8308,7 @@ impl ChatWidget {
             items.push(SelectionItem {
                 name: subject.clone(),
                 actions: vec![Box::new(move |tx3: &AppEventSender| {
-                    tx3.send(AppEvent::CodexOp(Op::Review {
+                    tx3.send(AppEvent::SelectReview {
                         review_request: ReviewRequest {
                             target: ReviewTarget::Commit {
                                 sha: sha.clone(),
@@ -8273,7 +8316,7 @@ impl ChatWidget {
                             },
                             user_facing_hint: None,
                         },
-                    }));
+                    });
                 })],
                 dismiss_on_select: true,
                 search_value: Some(search_val),
@@ -8302,14 +8345,14 @@ impl ChatWidget {
                 if trimmed.is_empty() {
                     return;
                 }
-                tx.send(AppEvent::CodexOp(Op::Review {
+                tx.send(AppEvent::SelectReview {
                     review_request: ReviewRequest {
                         target: ReviewTarget::Custom {
                             instructions: trimmed,
                         },
                         user_facing_hint: None,
                     },
-                }));
+                });
             }),
         );
         self.bottom_pane.show_view(Box::new(view));
@@ -8589,7 +8632,7 @@ pub(crate) fn show_review_commit_picker_with_entries(
         items.push(SelectionItem {
             name: subject.clone(),
             actions: vec![Box::new(move |tx3: &AppEventSender| {
-                tx3.send(AppEvent::CodexOp(Op::Review {
+                tx3.send(AppEvent::SelectReview {
                     review_request: ReviewRequest {
                         target: ReviewTarget::Commit {
                             sha: sha.clone(),
@@ -8597,7 +8640,7 @@ pub(crate) fn show_review_commit_picker_with_entries(
                         },
                         user_facing_hint: None,
                     },
-                }));
+                });
             })],
             dismiss_on_select: true,
             search_value: Some(search_val),
