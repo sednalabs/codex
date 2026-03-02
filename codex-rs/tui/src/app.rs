@@ -2098,6 +2098,10 @@ impl App {
             AppEvent::SelectModel { model, effort } => {
                 self.chat_widget.apply_model_and_effort(model, effort);
             }
+            AppEvent::SelectReview { review_request } => {
+                self.chat_widget
+                    .submit_or_queue_review_request(review_request);
+            }
             AppEvent::OpenRealtimeAudioDeviceSelection { kind } => {
                 self.chat_widget.open_realtime_audio_device_selection(kind);
             }

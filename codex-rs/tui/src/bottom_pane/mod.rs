@@ -447,7 +447,7 @@ impl BottomPane {
                 && key_event.modifiers.is_empty()
                 && self.is_task_running
                 && !self.composer.popup_active()
-                && let Some(status) = &self.status
+                && self.status.is_some()
             {
                 let should_interrupt = if self.esc_interrupt_requires_double_press {
                     if self.pending_esc_interrupt_deadline.is_some() {
@@ -465,7 +465,9 @@ impl BottomPane {
                 };
                 if should_interrupt {
                     // Send Op::Interrupt
-                    status.interrupt();
+                    if let Some(status) = &self.status {
+                        status.interrupt();
+                    }
                 }
                 self.request_redraw();
                 return InputResult::None;

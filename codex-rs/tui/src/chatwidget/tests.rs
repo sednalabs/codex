@@ -5420,8 +5420,8 @@ async fn review_commit_picker_shows_subjects_without_timestamps() {
     );
 }
 
-/// Submitting the custom prompt view sends Op::Review with the typed prompt
-/// and uses the same text for the user-facing hint.
+/// Submitting the custom prompt view emits AppEvent::SelectReview with the
+/// typed prompt and uses the same text for the user-facing hint.
 #[tokio::test]
 async fn custom_prompt_submit_sends_review_op() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(None).await;
@@ -5431,10 +5431,10 @@ async fn custom_prompt_submit_sends_review_op() {
     chat.handle_paste("  please audit dependencies  ".to_string());
     chat.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
 
-    // Expect AppEvent::CodexOp(Op::Review { .. }) with trimmed prompt
+    // Expect AppEvent::SelectReview with trimmed prompt
     let evt = rx.try_recv().expect("expected one app event");
     match evt {
-        AppEvent::CodexOp(Op::Review { review_request }) => {
+        AppEvent::SelectReview { review_request } => {
             assert_eq!(
                 review_request,
                 ReviewRequest {
@@ -5445,7 +5445,7 @@ async fn custom_prompt_submit_sends_review_op() {
                 }
             );
         }
-        other => panic!("unexpected app event: {other:?}"),
+        other => panic!("expected AppEvent::SelectReview, got {other:?}"),
     }
 }
 
@@ -6764,6 +6764,56 @@ async fn queued_slash_command_runs_after_task_complete() {
     chat.on_task_complete(None, false);
 
     assert_matches!(op_rx.try_recv(), Ok(Op::DropMemories));
+    assert!(chat.queued_slash_commands.is_empty());
+}
+
+#[tokio::test]
+async fn selected_review_change_queues_while_task_running() {
+    let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(None).await;
+    chat.bottom_pane.set_task_running(true);
+
+    chat.dispatch_command(SlashCommand::Review);
+    // Select "Review uncommitted changes" from the review picker.
+    chat.handle_key_event(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    chat.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+    let review_request = std::iter::from_fn(|| rx.try_recv().ok())
+        .find_map(|event| match event {
+            AppEvent::SelectReview { review_request } => Some(review_request),
+            _ => None,
+        })
+        .expect("expected review selection event");
+
+    assert_eq!(
+        review_request,
+        ReviewRequest {
+            target: ReviewTarget::UncommittedChanges,
+            user_facing_hint: None,
+        }
+    );
+    assert_matches!(op_rx.try_recv(), Err(TryRecvError::Empty));
+
+    chat.submit_or_queue_review_request(review_request);
+    assert!(matches!(
+        chat.queued_slash_commands.front(),
+        Some(QueuedSlashCommand::ReviewRequest { review_request }) if review_request.target
+            == ReviewTarget::UncommittedChanges
+    ));
+
+    chat.on_task_complete(None, false);
+
+    match op_rx.try_recv() {
+        Ok(Op::Review { review_request }) => {
+            assert_eq!(
+                review_request,
+                ReviewRequest {
+                    target: ReviewTarget::UncommittedChanges,
+                    user_facing_hint: None,
+                }
+            );
+        }
+        other => panic!("expected Op::Review, got {other:?}"),
+    }
     assert!(chat.queued_slash_commands.is_empty());
 }
 
