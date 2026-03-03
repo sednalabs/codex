@@ -6225,6 +6225,7 @@ async fn try_run_sampling_request(
         state.last_sampling_turn_context = Some(full_turn_context_item);
     }
     let rollout_item = RolloutItem::TurnContext(rollout_turn_context_item);
+    sess.persist_rollout_items(&[rollout_item]).await;
 
     feedback_tags!(
         model = turn_context.model_info.slug.clone(),
