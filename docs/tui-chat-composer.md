@@ -123,6 +123,12 @@ While a task is running, queued follow-up entries are shown above the composer i
 preview includes both queued message drafts and queued slash commands. `Alt+Up` recalls queued
 entries for editing from that list in strict reverse-chronological order across both entry types.
 
+The composer also treats the textarea kill buffer as separate editing state from the visible draft.
+After submit or slash-command dispatch clears the textarea, the most recent `Ctrl+K` payload is
+still available for `Ctrl+Y`. This supports flows where a user kills part of a draft, runs a
+composer action such as changing reasoning level, and then yanks that text back into the cleared
+draft.
+
 ### Numeric auto-submit path
 
 When the slash popup is open and the first line matches a numeric-only custom prompt with
