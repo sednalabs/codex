@@ -17,7 +17,7 @@ GitHub default branch is `carry/main` so downstream behavior is the repository l
 ## Divergence Summary
 
 This section tracks intentional downstream behavior differences from `upstream/main`.
-Last reviewed: 2026-02-28.
+Last reviewed: 2026-03-04.
 
 ### Core + protocol: blocking wait for `write_stdin` and compaction turn-count metadata
 
@@ -100,3 +100,12 @@ Why:
 
 User-visible behavior:
 - No product behavior change; this divergence only makes downstream core tests more tolerant of completion/polling races.
+
+### TUI: disable `Ctrl+L` clear shortcut on carry branch
+
+Why:
+- Avoid accidental terminal/UI clears from `Ctrl+L` in local terminal workflows where the shortcut is easy to trigger unintentionally.
+
+User-visible behavior:
+- `Ctrl+L` no longer triggers terminal/UI clear behavior on `carry/main`.
+- `/clear` remains available and unchanged for explicit "clear + start fresh chat" behavior.
