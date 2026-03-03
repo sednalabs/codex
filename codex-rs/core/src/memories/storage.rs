@@ -13,21 +13,21 @@ use crate::memories::rollout_summaries_dir;
 pub(super) async fn rebuild_raw_memories_file_from_memories(
     root: &Path,
     memories: &[Stage1Output],
-    max_raw_memories_for_global: usize,
+    max_raw_memories_for_consolidation: usize,
 ) -> std::io::Result<()> {
     ensure_layout(root).await?;
-    rebuild_raw_memories_file(root, memories, max_raw_memories_for_global).await
+    rebuild_raw_memories_file(root, memories, max_raw_memories_for_consolidation).await
 }
 
 /// Syncs canonical rollout summary files from DB-backed stage-1 output rows.
 pub(super) async fn sync_rollout_summaries_from_memories(
     root: &Path,
     memories: &[Stage1Output],
-    max_raw_memories_for_global: usize,
+    max_raw_memories_for_consolidation: usize,
 ) -> std::io::Result<()> {
     ensure_layout(root).await?;
 
-    let retained = retained_memories(memories, max_raw_memories_for_global);
+    let retained = retained_memories(memories, max_raw_memories_for_consolidation);
     let keep = retained
         .iter()
         .map(rollout_summary_file_stem)
@@ -62,9 +62,9 @@ pub(super) async fn sync_rollout_summaries_from_memories(
 async fn rebuild_raw_memories_file(
     root: &Path,
     memories: &[Stage1Output],
-    max_raw_memories_for_global: usize,
+    max_raw_memories_for_consolidation: usize,
 ) -> std::io::Result<()> {
-    let retained = retained_memories(memories, max_raw_memories_for_global);
+    let retained = retained_memories(memories, max_raw_memories_for_consolidation);
     let mut body = String::from("# Raw Memories\n\n");
 
     if retained.is_empty() {
@@ -143,6 +143,9 @@ async fn write_rollout_summary_for_thread(
     writeln!(body, "rollout_path: {}", memory.rollout_path.display())
         .map_err(rollout_summary_format_error)?;
     writeln!(body, "cwd: {}", memory.cwd.display()).map_err(rollout_summary_format_error)?;
+    if let Some(git_branch) = memory.git_branch.as_deref() {
+        writeln!(body, "git_branch: {git_branch}").map_err(rollout_summary_format_error)?;
+    }
     writeln!(body).map_err(rollout_summary_format_error)?;
     body.push_str(&memory.rollout_summary);
     body.push('\n');
@@ -152,9 +155,9 @@ async fn write_rollout_summary_for_thread(
 
 fn retained_memories(
     memories: &[Stage1Output],
-    max_raw_memories_for_global: usize,
+    max_raw_memories_for_consolidation: usize,
 ) -> &[Stage1Output] {
-    &memories[..memories.len().min(max_raw_memories_for_global)]
+    &memories[..memories.len().min(max_raw_memories_for_consolidation)]
 }
 
 fn raw_memories_format_error(err: std::fmt::Error) -> std::io::Error {
@@ -273,6 +276,7 @@ mod tests {
             rollout_slug: rollout_slug.map(ToString::to_string),
             rollout_path: PathBuf::from("/tmp/rollout.jsonl"),
             cwd: PathBuf::from("/tmp/workspace"),
+            git_branch: None,
             generated_at: Utc.timestamp_opt(124, 0).single().expect("timestamp"),
         }
     }

@@ -214,11 +214,14 @@ pub fn format_labeled_items_snapshot(
 fn format_snapshot_text(text: &str, options: &ContextSnapshotOptions) -> String {
     match options.render_mode {
         ContextSnapshotRenderMode::RedactedText => {
-            canonicalize_snapshot_text(text).replace('\n', "\\n")
+            normalize_snapshot_line_endings(&canonicalize_snapshot_text(text)).replace('\n', "\\n")
         }
-        ContextSnapshotRenderMode::FullText => text.replace('\n', "\\n"),
+        ContextSnapshotRenderMode::FullText => {
+            normalize_snapshot_line_endings(text).replace('\n', "\\n")
+        }
         ContextSnapshotRenderMode::KindWithTextPrefix { max_chars } => {
-            let normalized = canonicalize_snapshot_text(text).replace('\n', "\\n");
+            let normalized = normalize_snapshot_line_endings(&canonicalize_snapshot_text(text))
+                .replace('\n', "\\n");
             if normalized.chars().count() <= max_chars {
                 normalized
             } else {
@@ -230,6 +233,10 @@ fn format_snapshot_text(text: &str, options: &ContextSnapshotOptions) -> String 
     }
 }
 
+fn normalize_snapshot_line_endings(text: &str) -> String {
+    text.replace("\r\n", "\n").replace('\r', "\n")
+}
+
 fn canonicalize_snapshot_text(text: &str) -> String {
     if text.starts_with("<permissions instructions>") {
         return "<PERMISSIONS_INSTRUCTIONS>".to_string();
@@ -238,15 +245,34 @@ fn canonicalize_snapshot_text(text: &str) -> String {
         return "<AGENTS_MD>".to_string();
     }
     if text.starts_with("<environment_context>") {
+        let subagent_count = text
+            .split_once("<subagents>")
+            .and_then(|(_, rest)| rest.split_once("</subagents>"))
+            .map(|(subagents, _)| {
+                subagents
+                    .lines()
+                    .filter(|line| line.trim_start().starts_with("- "))
+                    .count()
+            })
+            .unwrap_or(0);
+        let subagents_suffix = if subagent_count > 0 {
+            format!(":subagents={subagent_count}")
+        } else {
+            String::new()
+        };
         if let (Some(cwd_start), Some(cwd_end)) = (text.find("<cwd>"), text.find("</cwd>")) {
             let cwd = &text[cwd_start + "<cwd>".len()..cwd_end];
             return if cwd.ends_with("PRETURN_CONTEXT_DIFF_CWD") {
-                "<ENVIRONMENT_CONTEXT:cwd=PRETURN_CONTEXT_DIFF_CWD>".to_string()
+                format!("<ENVIRONMENT_CONTEXT:cwd=PRETURN_CONTEXT_DIFF_CWD{subagents_suffix}>")
             } else {
-                "<ENVIRONMENT_CONTEXT:cwd=<CWD>>".to_string()
+                format!("<ENVIRONMENT_CONTEXT:cwd=<CWD>{subagents_suffix}>")
             };
         }
-        return "<ENVIRONMENT_CONTEXT>".to_string();
+        return if subagent_count > 0 {
+            format!("<ENVIRONMENT_CONTEXT{subagents_suffix}>")
+        } else {
+            "<ENVIRONMENT_CONTEXT>".to_string()
+        };
     }
     if text.starts_with("You are performing a CONTEXT CHECKPOINT COMPACTION.") {
         return "<SUMMARIZATION_PROMPT>".to_string();
@@ -290,6 +316,25 @@ mod tests {
     }
 
     #[test]
+    fn full_text_mode_normalizes_crlf_line_endings() {
+        let items = vec![json!({
+            "type": "message",
+            "role": "user",
+            "content": [{
+                "type": "input_text",
+                "text": "line one\r\n\r\nline two"
+            }]
+        })];
+
+        let rendered = format_response_items_snapshot(
+            &items,
+            &ContextSnapshotOptions::default().render_mode(ContextSnapshotRenderMode::FullText),
+        );
+
+        assert_eq!(rendered, r"00:message/user:line one\n\nline two");
+    }
+
+    #[test]
     fn redacted_text_mode_keeps_canonical_placeholders() {
         let items = vec![json!({
             "type": "message",
@@ -306,6 +351,51 @@ mod tests {
         );
 
         assert_eq!(rendered, "00:message/user:<AGENTS_MD>");
+    }
+
+    #[test]
+    fn redacted_text_mode_normalizes_environment_context_with_subagents() {
+        let items = vec![json!({
+            "type": "message",
+            "role": "user",
+            "content": [{
+                "type": "input_text",
+                "text": "<environment_context>\n  <cwd>/tmp/example</cwd>\n  <shell>bash</shell>\n  <subagents>\n    - agent-1: atlas\n    - agent-2\n  </subagents>\n</environment_context>"
+            }]
+        })];
+
+        let rendered = format_response_items_snapshot(
+            &items,
+            &ContextSnapshotOptions::default().render_mode(ContextSnapshotRenderMode::RedactedText),
+        );
+
+        assert_eq!(
+            rendered,
+            "00:message/user:<ENVIRONMENT_CONTEXT:cwd=<CWD>:subagents=2>"
+        );
+    }
+
+    #[test]
+    fn kind_with_text_prefix_mode_normalizes_crlf_line_endings() {
+        let items = vec![json!({
+            "type": "message",
+            "role": "developer",
+            "content": [{
+                "type": "input_text",
+                "text": "<realtime_conversation>\r\nRealtime conversation started.\r\n\r\nYou are..."
+            }]
+        })];
+
+        let rendered = format_response_items_snapshot(
+            &items,
+            &ContextSnapshotOptions::default()
+                .render_mode(ContextSnapshotRenderMode::KindWithTextPrefix { max_chars: 64 }),
+        );
+
+        assert_eq!(
+            rendered,
+            r"00:message/developer:<realtime_conversation>\nRealtime conversation started.\n\nYou a..."
+        );
     }
 
     #[test]

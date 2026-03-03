@@ -18,7 +18,23 @@ pub struct Stage1Output {
     pub rollout_summary: String,
     pub rollout_slug: Option<String>,
     pub cwd: PathBuf,
+    pub git_branch: Option<String>,
     pub generated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Stage1OutputRef {
+    pub thread_id: ThreadId,
+    pub source_updated_at: DateTime<Utc>,
+    pub rollout_slug: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct Phase2InputSelection {
+    pub selected: Vec<Stage1Output>,
+    pub previous_selected: Vec<Stage1Output>,
+    pub retained_thread_ids: Vec<ThreadId>,
+    pub removed: Vec<Stage1OutputRef>,
 }
 
 #[derive(Debug)]
@@ -30,6 +46,7 @@ pub(crate) struct Stage1OutputRow {
     rollout_summary: String,
     rollout_slug: Option<String>,
     cwd: String,
+    git_branch: Option<String>,
     generated_at: i64,
 }
 
@@ -43,6 +60,7 @@ impl Stage1OutputRow {
             rollout_summary: row.try_get("rollout_summary")?,
             rollout_slug: row.try_get("rollout_slug")?,
             cwd: row.try_get("cwd")?,
+            git_branch: row.try_get("git_branch")?,
             generated_at: row.try_get("generated_at")?,
         })
     }
@@ -60,6 +78,7 @@ impl TryFrom<Stage1OutputRow> for Stage1Output {
             rollout_summary: row.rollout_summary,
             rollout_slug: row.rollout_slug,
             cwd: PathBuf::from(row.cwd),
+            git_branch: row.git_branch,
             generated_at: epoch_seconds_to_datetime(row.generated_at)?,
         })
     }
@@ -68,6 +87,18 @@ impl TryFrom<Stage1OutputRow> for Stage1Output {
 fn epoch_seconds_to_datetime(secs: i64) -> Result<DateTime<Utc>> {
     DateTime::<Utc>::from_timestamp(secs, 0)
         .ok_or_else(|| anyhow::anyhow!("invalid unix timestamp: {secs}"))
+}
+
+pub(crate) fn stage1_output_ref_from_parts(
+    thread_id: String,
+    source_updated_at: i64,
+    rollout_slug: Option<String>,
+) -> Result<Stage1OutputRef> {
+    Ok(Stage1OutputRef {
+        thread_id: ThreadId::try_from(thread_id)?,
+        source_updated_at: epoch_seconds_to_datetime(source_updated_at)?,
+        rollout_slug,
+    })
 }
 
 /// Result of trying to claim a stage-1 memory extraction job.

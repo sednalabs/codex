@@ -111,7 +111,15 @@ async fn responses_stream_includes_subagent_header_on_review() {
     }];
 
     let mut stream = client_session
-        .stream(&prompt, &model_info, &otel_manager, effort, summary, None)
+        .stream(
+            &prompt,
+            &model_info,
+            &otel_manager,
+            effort,
+            summary.unwrap_or(model_info.default_reasoning_summary),
+            None,
+            None,
+        )
         .await
         .expect("stream failed");
     while let Some(event) = stream.next().await {
@@ -216,7 +224,15 @@ async fn responses_stream_includes_subagent_header_on_other() {
     }];
 
     let mut stream = client_session
-        .stream(&prompt, &model_info, &otel_manager, effort, summary, None)
+        .stream(
+            &prompt,
+            &model_info,
+            &otel_manager,
+            effort,
+            summary.unwrap_or(model_info.default_reasoning_summary),
+            None,
+            None,
+        )
         .await
         .expect("stream failed");
     while let Some(event) = stream.next().await {
@@ -267,7 +283,7 @@ async fn responses_respects_model_info_overrides_from_config() {
     config.model_provider_id = provider.name.clone();
     config.model_provider = provider.clone();
     config.model_supports_reasoning_summaries = Some(true);
-    config.model_reasoning_summary = ReasoningSummary::Detailed;
+    config.model_reasoning_summary = Some(ReasoningSummary::Detailed);
     let effort = config.model_reasoning_effort;
     let summary = config.model_reasoning_summary;
     let model = config.model.clone().expect("model configured");
@@ -320,7 +336,15 @@ async fn responses_respects_model_info_overrides_from_config() {
     }];
 
     let mut stream = client_session
-        .stream(&prompt, &model_info, &otel_manager, effort, summary, None)
+        .stream(
+            &prompt,
+            &model_info,
+            &otel_manager,
+            effort,
+            summary.unwrap_or(model_info.default_reasoning_summary),
+            None,
+            None,
+        )
         .await
         .expect("stream failed");
     while let Some(event) = stream.next().await {
