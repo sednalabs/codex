@@ -3535,25 +3535,6 @@ impl App {
                 tui.frame_requester().schedule_frame();
             }
             KeyEvent {
-                code: KeyCode::Char('l'),
-                modifiers: crossterm::event::KeyModifiers::CONTROL,
-                kind: KeyEventKind::Press,
-                ..
-            } => {
-                if !self.chat_widget.can_run_ctrl_l_clear_now() {
-                    return;
-                }
-                if let Err(err) = self.clear_terminal_ui(tui, false) {
-                    tracing::warn!(error = %err, "failed to clear terminal UI");
-                    self.chat_widget
-                        .add_error_message(format!("Failed to clear terminal UI: {err}"));
-                } else {
-                    self.reset_app_ui_state_after_clear();
-                    self.queue_clear_ui_header(tui);
-                    tui.frame_requester().schedule_frame();
-                }
-            }
-            KeyEvent {
                 code: KeyCode::Char('g'),
                 modifiers: crossterm::event::KeyModifiers::CONTROL,
                 kind: KeyEventKind::Press,
@@ -4437,12 +4418,6 @@ mod tests {
 
     #[tokio::test]
     async fn clear_ui_after_long_transcript_snapshots_fresh_header_only() {
-        let rendered = render_clear_ui_header_after_long_transcript_for_snapshot().await;
-        assert_snapshot!("clear_ui_after_long_transcript_fresh_header_only", rendered);
-    }
-
-    #[tokio::test]
-    async fn ctrl_l_clear_ui_after_long_transcript_reuses_clear_header_snapshot() {
         let rendered = render_clear_ui_header_after_long_transcript_for_snapshot().await;
         assert_snapshot!("clear_ui_after_long_transcript_fresh_header_only", rendered);
     }
