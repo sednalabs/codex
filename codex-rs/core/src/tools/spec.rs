@@ -771,6 +771,15 @@ fn create_spawn_agent_tool(config: &ToolsConfig) -> ToolSpec {
             },
         ),
         (
+            "model".to_string(),
+            JsonSchema::String {
+                description: Some(
+                    "Optional model slug for the spawned sub-agent. When omitted, the child inherits the parent model."
+                        .to_string(),
+                ),
+            },
+        ),
+        (
             "fork_context".to_string(),
             JsonSchema::Boolean {
                 description: Some(

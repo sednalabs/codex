@@ -113,6 +113,7 @@ mod spawn {
         message: Option<String>,
         items: Option<Vec<UserInput>>,
         agent_type: Option<String>,
+        model: Option<String>,
         #[serde(default)]
         fork_context: bool,
     }
@@ -135,6 +136,23 @@ mod spawn {
             .as_deref()
             .map(str::trim)
             .filter(|role| !role.is_empty());
+        let requested_model = match args.model.as_deref().map(str::trim) {
+            Some("") => {
+                return Err(FunctionCallError::RespondToModel(
+                    "model must be a non-empty string".to_string(),
+                ));
+            }
+            Some(model) => Some(model.to_string()),
+            None => None,
+        };
+        let spawn_turn = if let Some(model) = requested_model {
+            Arc::new(
+                turn.with_model(model, &session.services.models_manager)
+                    .await,
+            )
+        } else {
+            turn.clone()
+        };
         let input_items = parse_collab_input(args.message, args.items)?;
         let prompt = input_preview(&input_items);
         let session_source = turn.session_source.clone();
@@ -157,11 +175,11 @@ mod spawn {
             )
             .await;
         let mut config =
-            build_agent_spawn_config(&session.get_base_instructions().await, turn.as_ref())?;
+            build_agent_spawn_config(&session.get_base_instructions().await, spawn_turn.as_ref())?;
         apply_role_to_config(&mut config, role_name)
             .await
             .map_err(FunctionCallError::RespondToModel)?;
-        apply_spawn_agent_runtime_overrides(&mut config, turn.as_ref())?;
+        apply_spawn_agent_runtime_overrides(&mut config, spawn_turn.as_ref())?;
         apply_spawn_agent_overrides(&mut config, child_depth);
 
         let result = session
@@ -1094,6 +1112,27 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn spawn_agent_rejects_empty_model() {
+        let (session, turn) = make_session_and_context().await;
+        let invocation = invocation(
+            Arc::new(session),
+            Arc::new(turn),
+            "spawn_agent",
+            function_payload(json!({
+                "message": "hello",
+                "model": "   "
+            })),
+        );
+        let Err(err) = MultiAgentHandler.handle(invocation).await else {
+            panic!("empty model should be rejected");
+        };
+        assert_eq!(
+            err,
+            FunctionCallError::RespondToModel("model must be a non-empty string".to_string())
+        );
+    }
+
+    #[tokio::test]
     async fn spawn_agent_rejects_when_message_and_items_are_both_set() {
         let (session, turn) = make_session_and_context().await;
         let invocation = invocation(
@@ -1267,6 +1306,58 @@ mod tests {
             .await;
         assert_eq!(snapshot.sandbox_policy, expected_sandbox);
         assert_eq!(snapshot.approval_policy, AskForApproval::OnRequest);
+    }
+
+    #[tokio::test]
+    async fn spawn_agent_uses_requested_model_override() {
+        #[derive(Debug, Deserialize)]
+        struct SpawnAgentResult {
+            agent_id: String,
+            nickname: Option<String>,
+        }
+
+        let (mut session, turn) = make_session_and_context().await;
+        let manager = thread_manager();
+        session.services.agent_control = manager.agent_control();
+        let requested_model = "gpt-5.1";
+
+        let invocation = invocation(
+            Arc::new(session),
+            Arc::new(turn),
+            "spawn_agent",
+            function_payload(json!({
+                "message": "inspect this repo",
+                "model": requested_model
+            })),
+        );
+        let output = MultiAgentHandler
+            .handle(invocation)
+            .await
+            .expect("spawn_agent should succeed");
+        let ToolOutput::Function {
+            body: FunctionCallOutputBody::Text(content),
+            ..
+        } = output
+        else {
+            panic!("expected function output");
+        };
+        let result: SpawnAgentResult =
+            serde_json::from_str(&content).expect("spawn_agent result should be json");
+        let agent_id = agent_id(&result.agent_id).expect("agent_id should be valid");
+        assert!(
+            result
+                .nickname
+                .as_deref()
+                .is_some_and(|nickname| !nickname.is_empty())
+        );
+
+        let snapshot = manager
+            .get_thread(agent_id)
+            .await
+            .expect("spawned agent thread should exist")
+            .config_snapshot()
+            .await;
+        assert_eq!(snapshot.model, requested_model);
     }
 
     #[tokio::test]
