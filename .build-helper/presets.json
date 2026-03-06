@@ -1,0 +1,47 @@
+[
+  {
+    "id": "codex.app-server-protocol-test",
+    "label": "Codex app-server protocol tests",
+    "cwd": "codex-rs",
+    "command": ["cargo", "test", "-p", "codex-app-server-protocol"],
+    "allow_extra_args": false
+  },
+  {
+    "id": "codex.app-server-elicitation-test",
+    "label": "Codex app-server elicitation test",
+    "cwd": "codex-rs",
+    "command": [
+      "cargo",
+      "test",
+      "-p",
+      "codex-app-server",
+      "mcp_server_elicitation",
+      "--",
+      "--nocapture"
+    ],
+    "allow_extra_args": false
+  },
+  {
+    "id": "codex.core-targeted-merge-test",
+    "label": "Codex core targeted merge test (filter + args)",
+    "cwd": "codex-rs",
+    "command": [
+      "/bin/bash",
+      "-lc",
+      "set -euo pipefail; export CODEX_JS_REPL_NODE_PATH=\"${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}\"; cargo test -p codex-core --test all \"$@\"",
+      "--"
+    ],
+    "allow_extra_args": true
+  },
+  {
+    "id": "codex.core-merge-validation",
+    "label": "Codex core merge validation chain",
+    "cwd": "codex-rs",
+    "command": [
+      "/bin/bash",
+      "-lc",
+      "set -euo pipefail; export CODEX_JS_REPL_NODE_PATH=\"${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}\"; cargo test -p codex-core --test all suite::compact::summarize_context_three_requests_and_instructions -- --nocapture; cargo test -p codex-core --test all suite::compact::auto_compact_persists_rollout_entries -- --nocapture; cargo test -p codex-core --test all apply_patch_cli_moves_file_to_new_directory -- --nocapture; cargo test -p codex-core --test all js_repl -- --nocapture; cargo test -p codex-core --test all view_image -- --nocapture; cargo test -p codex-core --test all mcp_call_marks_thread_memory_mode_polluted_when_configured -- --nocapture"
+    ],
+    "allow_extra_args": false
+  }
+]
