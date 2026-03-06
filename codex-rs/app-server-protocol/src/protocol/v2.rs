@@ -28,9 +28,9 @@ use codex_protocol::mcp::Resource as McpResource;
 use codex_protocol::mcp::ResourceTemplate as McpResourceTemplate;
 use codex_protocol::mcp::Tool as McpTool;
 use codex_protocol::models::FileSystemPermissions as CoreFileSystemPermissions;
-use codex_protocol::models::MacOsAutomationValue as CoreMacOsAutomationValue;
-use codex_protocol::models::MacOsPermissions as CoreMacOsPermissions;
-use codex_protocol::models::MacOsPreferencesValue as CoreMacOsPreferencesValue;
+use codex_protocol::models::MacOsAutomationPermission as CoreMacOsAutomationPermission;
+use codex_protocol::models::MacOsPreferencesPermission as CoreMacOsPreferencesPermission;
+use codex_protocol::models::MacOsSeatbeltProfileExtensions as CoreMacOsSeatbeltProfileExtensions;
 use codex_protocol::models::MessagePhase;
 use codex_protocol::models::NetworkPermissions as CoreNetworkPermissions;
 use codex_protocol::models::PermissionProfile as CorePermissionProfile;
@@ -629,7 +629,6 @@ pub struct NetworkRequirements {
     pub socks_port: Option<u16>,
     pub allow_upstream_proxy: Option<bool>,
     pub dangerously_allow_non_loopback_proxy: Option<bool>,
-    pub dangerously_allow_non_loopback_admin: Option<bool>,
     pub dangerously_allow_all_unix_sockets: Option<bool>,
     pub allowed_domains: Option<Vec<String>>,
     pub denied_domains: Option<Vec<String>>,
@@ -837,19 +836,19 @@ impl From<CoreFileSystemPermissions> for AdditionalFileSystemPermissions {
 #[serde(rename_all = "camelCase")]
 #[ts(export_to = "v2/")]
 pub struct AdditionalMacOsPermissions {
-    pub preferences: Option<CoreMacOsPreferencesValue>,
-    pub automations: Option<CoreMacOsAutomationValue>,
-    pub accessibility: Option<bool>,
-    pub calendar: Option<bool>,
+    pub preferences: CoreMacOsPreferencesPermission,
+    pub automations: CoreMacOsAutomationPermission,
+    pub accessibility: bool,
+    pub calendar: bool,
 }
 
-impl From<CoreMacOsPermissions> for AdditionalMacOsPermissions {
-    fn from(value: CoreMacOsPermissions) -> Self {
+impl From<CoreMacOsSeatbeltProfileExtensions> for AdditionalMacOsPermissions {
+    fn from(value: CoreMacOsSeatbeltProfileExtensions) -> Self {
         Self {
-            preferences: value.preferences,
-            automations: value.automations,
-            accessibility: value.accessibility,
-            calendar: value.calendar,
+            preferences: value.macos_preferences,
+            automations: value.macos_automation,
+            accessibility: value.macos_accessibility,
+            calendar: value.macos_calendar,
         }
     }
 }
@@ -1709,6 +1708,30 @@ pub struct AppInfo {
     /// ```
     #[serde(default = "default_enabled")]
     pub is_enabled: bool,
+    #[serde(default)]
+    pub plugin_display_names: Vec<String>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+/// EXPERIMENTAL - app metadata summary for plugin-install responses.
+pub struct AppSummary {
+    pub id: String,
+    pub name: String,
+    pub description: Option<String>,
+    pub install_url: Option<String>,
+}
+
+impl From<AppInfo> for AppSummary {
+    fn from(value: AppInfo) -> Self {
+        Self {
+            id: value.id,
+            name: value.name,
+            description: value.description,
+            install_url: value.install_url,
+        }
+    }
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
@@ -2372,6 +2395,23 @@ pub struct SkillsListResponse {
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export_to = "v2/")]
+pub struct PluginListParams {
+    /// Optional working directories used to discover repo marketplaces. When omitted,
+    /// only home-scoped marketplaces are considered.
+    #[ts(optional = nullable)]
+    pub cwds: Option<Vec<AbsolutePathBuf>>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct PluginListResponse {
+    pub marketplaces: Vec<PluginMarketplaceEntry>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
 pub struct SkillsRemoteReadParams {
     #[serde(default)]
     pub hazelnut_scope: HazelnutScope,
@@ -2535,6 +2575,34 @@ pub struct SkillsListEntry {
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export_to = "v2/")]
+pub struct PluginMarketplaceEntry {
+    pub name: String,
+    pub path: PathBuf,
+    pub plugins: Vec<PluginSummary>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct PluginSummary {
+    pub name: String,
+    pub source: PluginSource,
+    pub enabled: bool,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(tag = "type", rename_all = "camelCase")]
+#[ts(tag = "type")]
+#[ts(export_to = "v2/")]
+pub enum PluginSource {
+    #[serde(rename_all = "camelCase")]
+    #[ts(rename_all = "camelCase")]
+    Local { path: PathBuf },
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
 pub struct SkillsConfigWriteParams {
     pub path: PathBuf,
     pub enabled: bool,
@@ -2551,16 +2619,16 @@ pub struct SkillsConfigWriteResponse {
 #[serde(rename_all = "camelCase")]
 #[ts(export_to = "v2/")]
 pub struct PluginInstallParams {
-    pub marketplace_name: String,
+    pub marketplace_path: AbsolutePathBuf,
     pub plugin_name: String,
-    #[ts(optional = nullable)]
-    pub cwd: Option<PathBuf>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export_to = "v2/")]
-pub struct PluginInstallResponse {}
+pub struct PluginInstallResponse {
+    pub apps_needing_auth: Vec<AppSummary>,
+}
 
 impl From<CoreSkillMetadata> for SkillMetadata {
     fn from(value: CoreSkillMetadata) -> Self {
@@ -4502,6 +4570,46 @@ mod tests {
             err.to_string()
                 .contains("AbsolutePathBuf deserialized without a base path"),
             "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn command_execution_request_approval_accepts_macos_automation_bundle_ids_object() {
+        let params = serde_json::from_value::<CommandExecutionRequestApprovalParams>(json!({
+            "threadId": "thr_123",
+            "turnId": "turn_123",
+            "itemId": "call_123",
+            "command": "cat file",
+            "cwd": "/tmp",
+            "commandActions": null,
+            "reason": null,
+            "networkApprovalContext": null,
+            "additionalPermissions": {
+                "network": null,
+                "fileSystem": null,
+                "macos": {
+                    "preferences": "read_only",
+                    "automations": {
+                        "bundle_ids": ["com.apple.Notes"]
+                    },
+                    "accessibility": false,
+                    "calendar": false
+                }
+            },
+            "proposedExecpolicyAmendment": null,
+            "proposedNetworkPolicyAmendments": null,
+            "availableDecisions": null
+        }))
+        .expect("bundle_ids object should deserialize");
+
+        assert_eq!(
+            params
+                .additional_permissions
+                .and_then(|permissions| permissions.macos)
+                .map(|macos| macos.automations),
+            Some(CoreMacOsAutomationPermission::BundleIds(vec![
+                "com.apple.Notes".to_string(),
+            ]))
         );
     }
 

@@ -203,9 +203,11 @@ use crate::memories;
 use crate::mentions::build_connector_slug_counts;
 use crate::mentions::build_skill_name_counts;
 use crate::mentions::collect_explicit_app_ids;
+use crate::mentions::collect_explicit_plugin_mentions;
 use crate::mentions::collect_tool_mentions_from_messages;
 use crate::network_policy_decision::execpolicy_network_rule_amendment;
 use crate::plugins::PluginsManager;
+use crate::plugins::build_plugin_injections;
 use crate::project_doc::get_user_instructions;
 use crate::protocol::AgentMessageContentDeltaEvent;
 use crate::protocol::AgentReasoningSectionBreakEvent;
@@ -532,7 +534,7 @@ impl Codex {
             session_source_clone,
             skills_manager,
             plugins_manager,
-            mcp_manager,
+            mcp_manager.clone(),
             file_watcher,
             agent_control,
         )
@@ -1017,7 +1019,6 @@ impl Session {
             SessionNetworkProxyRuntime {
                 http_addr: proxy.http_addr().to_string(),
                 socks_addr: proxy.socks_addr().to_string(),
-                admin_addr: proxy.admin_addr().to_string(),
             }
         };
         Ok((network_proxy, session_network_proxy))
@@ -1532,8 +1533,8 @@ impl Session {
             tool_approvals: Mutex::new(ApprovalStore::default()),
             execve_session_approvals: RwLock::new(HashMap::new()),
             skills_manager,
-            plugins_manager,
-            mcp_manager,
+            plugins_manager: Arc::clone(&plugins_manager),
+            mcp_manager: Arc::clone(&mcp_manager),
             file_watcher,
             agent_control,
             network_proxy,
@@ -1617,6 +1618,7 @@ impl Session {
             .map(|(name, _)| name.clone())
             .collect();
         required_mcp_servers.sort();
+        let tool_plugin_provenance = mcp_manager.tool_plugin_provenance(config.as_ref());
         {
             let mut cancel_guard = sess.services.mcp_startup_cancellation_token.lock().await;
             cancel_guard.cancel();
@@ -1631,6 +1633,7 @@ impl Session {
             sandbox_state,
             config.codex_home.clone(),
             codex_apps_tools_cache_key(auth),
+            tool_plugin_provenance,
         )
         .await;
         {
@@ -3583,6 +3586,10 @@ impl Session {
     ) {
         let auth = self.services.auth_manager.auth().await;
         let config = self.get_config().await;
+        let tool_plugin_provenance = self
+            .services
+            .mcp_manager
+            .tool_plugin_provenance(config.as_ref());
         let mcp_servers = with_codex_apps_mcp(
             mcp_servers,
             self.features.enabled(Feature::Apps),
@@ -3610,6 +3617,7 @@ impl Session {
             sandbox_state,
             config.codex_home.clone(),
             codex_apps_tools_cache_key(auth.as_ref()),
+            tool_plugin_provenance,
         )
         .await;
         {
@@ -3941,6 +3949,7 @@ mod handlers {
     use crate::mcp::auth::compute_auth_statuses;
     use crate::mcp::collect_mcp_snapshot_from_manager;
     use crate::review_prompts::resolve_review_request;
+    use crate::rollout::RolloutRecorder;
     use crate::rollout::session_index;
     use crate::tasks::CompactTask;
     use crate::tasks::UndoTask;
@@ -3963,6 +3972,7 @@ mod handlers {
     use codex_protocol::protocol::RemoteSkillSummary;
     use codex_protocol::protocol::ReviewDecision;
     use codex_protocol::protocol::ReviewRequest;
+    use codex_protocol::protocol::RolloutItem;
     use codex_protocol::protocol::SkillsListEntry;
     use codex_protocol::protocol::ThreadNameUpdatedEvent;
     use codex_protocol::protocol::ThreadRolledBackEvent;
@@ -4537,25 +4547,86 @@ mod handlers {
         }
 
         let turn_context = sess.new_default_turn_with_sub_id(sub_id).await;
+        let rollout_path = {
+            let recorder = {
+                let guard = sess.services.rollout.lock().await;
+                guard.clone()
+            };
+            let Some(recorder) = recorder else {
+                sess.send_event_raw(Event {
+                    id: turn_context.sub_id.clone(),
+                    msg: EventMsg::Error(ErrorEvent {
+                        message: "thread rollback requires a persisted rollout path".to_string(),
+                        codex_error_info: Some(CodexErrorInfo::ThreadRollbackFailed),
+                    }),
+                })
+                .await;
+                return;
+            };
+            recorder.rollout_path().to_path_buf()
+        };
+        if let Some(recorder) = {
+            let guard = sess.services.rollout.lock().await;
+            guard.clone()
+        } && let Err(err) = recorder.flush().await
+        {
+            sess.send_event_raw(Event {
+                id: turn_context.sub_id.clone(),
+                msg: EventMsg::Error(ErrorEvent {
+                    message: format!(
+                        "failed to flush rollout `{}` for rollback replay: {err}",
+                        rollout_path.display()
+                    ),
+                    codex_error_info: Some(CodexErrorInfo::ThreadRollbackFailed),
+                }),
+            })
+            .await;
+            return;
+        }
 
-        let mut history = sess.clone_history().await;
-        // TODO(ccunningham): Fix rollback/backtracking baseline handling.
-        // We clear `reference_context_item` here, but should restore the
-        // post-rollback baseline from the surviving history/rollout instead.
-        // Truncating history should also invalidate/recompute `previous_turn_settings`
-        // so the next regular turn replays any dropped model/realtime
-        // instructions.
-        history.drop_last_n_user_turns(num_turns);
+        let initial_history =
+            match RolloutRecorder::get_rollout_history(rollout_path.as_path()).await {
+                Ok(history) => history,
+                Err(err) => {
+                    sess.send_event_raw(Event {
+                        id: turn_context.sub_id.clone(),
+                        msg: EventMsg::Error(ErrorEvent {
+                            message: format!(
+                                "failed to load rollout `{}` for rollback replay: {err}",
+                                rollout_path.display()
+                            ),
+                            codex_error_info: Some(CodexErrorInfo::ThreadRollbackFailed),
+                        }),
+                    })
+                    .await;
+                    return;
+                }
+            };
 
-        // Replace with the raw items. We don't want to replace with a normalized
-        // version of the history.
-        sess.replace_history(history.raw_items().to_vec(), None)
+        let rollback_event = ThreadRolledBackEvent { num_turns };
+        let replay_items = initial_history
+            .get_rollout_items()
+            .into_iter()
+            .chain(std::iter::once(RolloutItem::EventMsg(
+                EventMsg::ThreadRolledBack(rollback_event.clone()),
+            )))
+            .collect::<Vec<_>>();
+
+        let reconstructed = sess
+            .reconstruct_history_from_rollout(turn_context.as_ref(), replay_items.as_slice())
+            .await;
+        sess.replace_history(
+            reconstructed.history,
+            reconstructed.reference_context_item.clone(),
+        )
+        .await;
+        sess.set_previous_turn_settings(reconstructed.previous_turn_settings)
             .await;
         sess.recompute_token_usage(turn_context.as_ref()).await;
 
         sess.send_event_raw_flushed(Event {
             id: turn_context.sub_id.clone(),
-            msg: EventMsg::ThreadRolledBack(ThreadRolledBackEvent { num_turns }),
+            msg: EventMsg::ThreadRolledBack(rollback_event),
         })
         .await;
     }
@@ -4945,25 +5016,38 @@ pub(crate) async fn run_turn(
     sess.record_context_updates_and_set_reference_context_item(turn_context.as_ref())
         .await;
 
-    let available_connectors = if turn_context.config.features.enabled(Feature::Apps) {
-        let mcp_tools = match sess
-            .services
-            .mcp_connection_manager
-            .read()
-            .await
-            .list_all_tools()
-            .or_cancel(&cancellation_token)
-            .await
-        {
-            Ok(mcp_tools) => mcp_tools,
-            Err(_) => return None,
+    let loaded_plugins = sess
+        .services
+        .plugins_manager
+        .plugins_for_config(&turn_context.config);
+    // Plain-text @plugin mentions are resolved from the current session's
+    // enabled plugins, then converted into turn-scoped guidance below.
+    let mentioned_plugins =
+        collect_explicit_plugin_mentions(&input, loaded_plugins.capability_summaries());
+    let mcp_tools =
+        if turn_context.config.features.enabled(Feature::Apps) || !mentioned_plugins.is_empty() {
+            // Plugin mentions need raw MCP/app inventory even when app tools
+            // are normally hidden so we can describe the plugin's currently
+            // usable capabilities for this turn.
+            match sess
+                .services
+                .mcp_connection_manager
+                .read()
+                .await
+                .list_all_tools()
+                .or_cancel(&cancellation_token)
+                .await
+            {
+                Ok(mcp_tools) => mcp_tools,
+                Err(_) if turn_context.config.features.enabled(Feature::Apps) => return None,
+                Err(_) => HashMap::new(),
+            }
+        } else {
+            HashMap::new()
         };
-        let plugin_apps = sess
-            .services
-            .plugins_manager
-            .plugins_for_config(&turn_context.config);
+    let available_connectors = if turn_context.config.features.enabled(Feature::Apps) {
         let connectors = connectors::merge_plugin_apps_with_accessible(
-            plugin_apps.effective_apps(),
+            loaded_plugins.effective_apps(),
             connectors::accessible_connectors_from_mcp_tools(&mcp_tools),
         );
         connectors::with_app_enabled_state(connectors, &turn_context.config)
@@ -5024,12 +5108,29 @@ pub(crate) async fn run_turn(
             .await;
     }
 
+    let plugin_items =
+        build_plugin_injections(&mentioned_plugins, &mcp_tools, &available_connectors);
+
     let mut explicitly_enabled_connectors = collect_explicit_app_ids(&input);
     explicitly_enabled_connectors.extend(collect_explicit_app_ids_from_skill_items(
         &skill_items,
         &available_connectors,
         &skill_name_counts_lower,
     ));
+    // Explicit @plugin mentions can make a plugin's enabled apps callable for
+    // this turn without persisting those connectors as sticky user selections.
+    let mut turn_enabled_connectors = explicitly_enabled_connectors.clone();
+    turn_enabled_connectors.extend(
+        mentioned_plugins
+            .iter()
+            .flat_map(|plugin| plugin.app_connector_ids.iter())
+            .map(|connector_id| connector_id.0.clone())
+            .filter(|connector_id| {
+                available_connectors
+                    .iter()
+                    .any(|connector| connector.is_enabled && connector.id == *connector_id)
+            }),
+    );
     let connector_names_by_id = available_connectors
         .iter()
         .map(|connector| (connector.id.as_str(), connector.name.as_str()))
@@ -5065,6 +5166,10 @@ pub(crate) async fn run_turn(
 
     if !skill_items.is_empty() {
         sess.record_conversation_items(&turn_context, &skill_items)
+            .await;
+    }
+    if !plugin_items.is_empty() {
+        sess.record_conversation_items(&turn_context, &plugin_items)
             .await;
     }
 
@@ -5135,7 +5240,7 @@ pub(crate) async fn run_turn(
             &mut client_session,
             turn_metadata_header.as_deref(),
             sampling_request_input,
-            &explicitly_enabled_connectors,
+            &turn_enabled_connectors,
             skills_outcome,
             &mut server_model_warning_emitted_for_turn,
             cancellation_token.child_token(),
@@ -5681,17 +5786,17 @@ async fn built_tools(
         .or_cancel(cancellation_token)
         .await?;
     drop(mcp_connection_manager);
+    let loaded_plugins = sess
+        .services
+        .plugins_manager
+        .plugins_for_config(&turn_context.config);
 
     let mut effective_explicitly_enabled_connectors = explicitly_enabled_connectors.clone();
     effective_explicitly_enabled_connectors.extend(sess.get_connector_selection().await);
 
     let connectors = if turn_context.features.enabled(Feature::Apps) {
-        let plugin_apps = sess
-            .services
-            .plugins_manager
-            .plugins_for_config(&turn_context.config);
         let connectors = connectors::merge_plugin_apps_with_accessible(
-            plugin_apps.effective_apps(),
+            loaded_plugins.effective_apps(),
             connectors::accessible_connectors_from_mcp_tools(&mcp_tools),
         );
         Some(connectors::with_app_enabled_state(
@@ -5702,6 +5807,8 @@ async fn built_tools(
         None
     };
 
+    // Keep the connector-grouped app view around for the router even though
+    // app tools only become prompt-visible after explicit selection/discovery.
     let app_tools = connectors.as_ref().map(|connectors| {
         filter_codex_apps_mcp_tools(&mcp_tools, connectors, &turn_context.config)
     });
@@ -6245,7 +6352,9 @@ async fn handle_assistant_item_done_in_plan_mode(
     {
         maybe_complete_plan_item_from_message(sess, turn_context, state, item).await;
 
-        if let Some(turn_item) = handle_non_tool_response_item(item, true) {
+        if let Some(turn_item) =
+            handle_non_tool_response_item(item, true, Some(&turn_context.cwd)).await
+        {
             emit_turn_item_in_plan_mode(
                 sess,
                 turn_context,
@@ -6451,7 +6560,9 @@ async fn try_run_sampling_request(
                 needs_follow_up |= output_result.needs_follow_up;
             }
             ResponseEvent::OutputItemAdded(item) => {
-                if let Some(turn_item) = handle_non_tool_response_item(&item, plan_mode) {
+                if let Some(turn_item) =
+                    handle_non_tool_response_item(&item, plan_mode, Some(&turn_context.cwd)).await
+                {
                     let mut turn_item = turn_item;
                     let mut seeded_parsed: Option<ParsedAssistantTextDelta> = None;
                     let mut seeded_item_id: Option<String> = None;
@@ -6766,6 +6877,18 @@ mod tests {
         }
     }
 
+    fn assistant_message(text: &str) -> ResponseItem {
+        ResponseItem::Message {
+            id: None,
+            role: "assistant".to_string(),
+            content: vec![ContentItem::OutputText {
+                text: text.to_string(),
+            }],
+            end_turn: None,
+            phase: None,
+        }
+    }
+
     fn skill_message(text: &str) -> ResponseItem {
         ResponseItem::Message {
             id: None,
@@ -6809,6 +6932,7 @@ mod tests {
             install_url: None,
             is_accessible: true,
             is_enabled: true,
+            plugin_display_names: Vec::new(),
         }
     }
 
@@ -6896,6 +7020,7 @@ mod tests {
             },
             connector_id: connector_id.map(str::to_string),
             connector_name: connector_name.map(str::to_string),
+            plugin_display_names: Vec::new(),
         }
     }
 
@@ -7909,59 +8034,37 @@ mod tests {
     #[tokio::test]
     async fn thread_rollback_drops_last_turn_from_history() {
         let (sess, tc, rx) = make_session_and_context_with_rx().await;
+        let rollout_path = attach_rollout_recorder(&sess).await;
 
         let initial_context = sess.build_initial_context(tc.as_ref()).await;
-        sess.record_into_history(&initial_context, tc.as_ref())
-            .await;
-
         let turn_1 = vec![
-            ResponseItem::Message {
-                id: None,
-                role: "user".to_string(),
-                content: vec![ContentItem::InputText {
-                    text: "turn 1 user".to_string(),
-                }],
-                end_turn: None,
-                phase: None,
-            },
-            ResponseItem::Message {
-                id: None,
-                role: "assistant".to_string(),
-                content: vec![ContentItem::OutputText {
-                    text: "turn 1 assistant".to_string(),
-                }],
-                end_turn: None,
-                phase: None,
-            },
+            user_message("turn 1 user"),
+            assistant_message("turn 1 assistant"),
         ];
-        sess.record_into_history(&turn_1, tc.as_ref()).await;
-
         let turn_2 = vec![
-            ResponseItem::Message {
-                id: None,
-                role: "user".to_string(),
-                content: vec![ContentItem::InputText {
-                    text: "turn 2 user".to_string(),
-                }],
-                end_turn: None,
-                phase: None,
-            },
-            ResponseItem::Message {
-                id: None,
-                role: "assistant".to_string(),
-                content: vec![ContentItem::OutputText {
-                    text: "turn 2 assistant".to_string(),
-                }],
-                end_turn: None,
-                phase: None,
-            },
+            user_message("turn 2 user"),
+            assistant_message("turn 2 assistant"),
         ];
-        sess.record_into_history(&turn_2, tc.as_ref()).await;
+        let mut full_history = Vec::new();
+        full_history.extend(initial_context.clone());
+        full_history.extend(turn_1.clone());
+        full_history.extend(turn_2);
+        sess.replace_history(full_history.clone(), Some(tc.to_turn_context_item()))
+            .await;
+        let rollout_items: Vec<RolloutItem> = full_history
+            .into_iter()
+            .map(RolloutItem::ResponseItem)
+            .collect();
+        sess.persist_rollout_items(&rollout_items).await;
         sess.set_previous_turn_settings(Some(PreviousTurnSettings {
-            model: "previous-regular-model".to_string(),
+            model: "stale-model".to_string(),
             realtime_active: Some(tc.realtime_active),
         }))
         .await;
+        {
+            let mut state = sess.state.lock().await;
+            state.set_reference_context_item(Some(tc.to_turn_context_item()));
+        }
 
         handlers::thread_rollback(&sess, "sub-1".to_string(), 1).await;
 
@@ -7974,33 +8077,41 @@ mod tests {
 
         let history = sess.clone_history().await;
         assert_eq!(expected, history.raw_items());
-        assert_eq!(
-            sess.previous_turn_settings().await,
-            Some(PreviousTurnSettings {
-                model: "previous-regular-model".to_string(),
-                realtime_active: Some(tc.realtime_active),
-            })
-        );
+        assert_eq!(sess.previous_turn_settings().await, None);
+        assert!(sess.reference_context_item().await.is_none());
+
+        let InitialHistory::Resumed(resumed) = RolloutRecorder::get_rollout_history(&rollout_path)
+            .await
+            .expect("read rollout history")
+        else {
+            panic!("expected resumed rollout history");
+        };
+        assert!(resumed.history.iter().any(|item| {
+            matches!(
+                item,
+                RolloutItem::EventMsg(EventMsg::ThreadRolledBack(rollback))
+                if rollback.num_turns == 1
+            )
+        }));
     }
 
     #[tokio::test]
     async fn thread_rollback_clears_history_when_num_turns_exceeds_existing_turns() {
         let (sess, tc, rx) = make_session_and_context_with_rx().await;
+        attach_rollout_recorder(&sess).await;
 
         let initial_context = sess.build_initial_context(tc.as_ref()).await;
-        sess.record_into_history(&initial_context, tc.as_ref())
+        let turn_1 = vec![user_message("turn 1 user")];
+        let mut full_history = Vec::new();
+        full_history.extend(initial_context.clone());
+        full_history.extend(turn_1);
+        sess.replace_history(full_history.clone(), Some(tc.to_turn_context_item()))
             .await;
-
-        let turn_1 = vec![ResponseItem::Message {
-            id: None,
-            role: "user".to_string(),
-            content: vec![ContentItem::InputText {
-                text: "turn 1 user".to_string(),
-            }],
-            end_turn: None,
-            phase: None,
-        }];
-        sess.record_into_history(&turn_1, tc.as_ref()).await;
+        let rollout_items: Vec<RolloutItem> = full_history
+            .into_iter()
+            .map(RolloutItem::ResponseItem)
+            .collect();
+        sess.persist_rollout_items(&rollout_items).await;
 
         handlers::thread_rollback(&sess, "sub-1".to_string(), 99).await;
 
@@ -8009,6 +8120,230 @@ mod tests {
 
         let history = sess.clone_history().await;
         assert_eq!(initial_context, history.raw_items());
+    }
+
+    #[tokio::test]
+    async fn thread_rollback_fails_without_persisted_rollout_path() {
+        let (sess, tc, rx) = make_session_and_context_with_rx().await;
+
+        let initial_context = sess.build_initial_context(tc.as_ref()).await;
+        sess.record_into_history(&initial_context, tc.as_ref())
+            .await;
+
+        handlers::thread_rollback(&sess, "sub-1".to_string(), 1).await;
+
+        let error_event = wait_for_thread_rollback_failed(&rx).await;
+        assert_eq!(
+            error_event.message,
+            "thread rollback requires a persisted rollout path"
+        );
+        assert_eq!(
+            error_event.codex_error_info,
+            Some(CodexErrorInfo::ThreadRollbackFailed)
+        );
+        assert_eq!(sess.clone_history().await.raw_items(), initial_context);
+    }
+
+    #[tokio::test]
+    async fn thread_rollback_recomputes_previous_turn_settings_and_reference_context_from_replay() {
+        let (sess, tc, rx) = make_session_and_context_with_rx().await;
+        attach_rollout_recorder(&sess).await;
+
+        let first_context_item = tc.to_turn_context_item();
+        let first_turn_id = first_context_item
+            .turn_id
+            .clone()
+            .expect("turn context should have turn_id");
+        let mut rolled_back_context_item = first_context_item.clone();
+        rolled_back_context_item.turn_id = Some("rolled-back-turn".to_string());
+        rolled_back_context_item.model = "rolled-back-model".to_string();
+        let rolled_back_turn_id = rolled_back_context_item
+            .turn_id
+            .clone()
+            .expect("turn context should have turn_id");
+        let turn_one_user = user_message("turn 1 user");
+        let turn_one_assistant = assistant_message("turn 1 assistant");
+        let turn_two_user = user_message("turn 2 user");
+        let turn_two_assistant = assistant_message("turn 2 assistant");
+
+        sess.persist_rollout_items(&[
+            RolloutItem::EventMsg(EventMsg::TurnStarted(
+                codex_protocol::protocol::TurnStartedEvent {
+                    turn_id: first_turn_id.clone(),
+                    model_context_window: Some(128_000),
+                    collaboration_mode_kind: ModeKind::Default,
+                },
+            )),
+            RolloutItem::EventMsg(EventMsg::UserMessage(
+                codex_protocol::protocol::UserMessageEvent {
+                    message: "turn 1 user".to_string(),
+                    images: None,
+                    local_images: Vec::new(),
+                    text_elements: Vec::new(),
+                },
+            )),
+            RolloutItem::TurnContext(first_context_item.clone()),
+            RolloutItem::ResponseItem(turn_one_user.clone()),
+            RolloutItem::ResponseItem(turn_one_assistant.clone()),
+            RolloutItem::EventMsg(EventMsg::TurnComplete(TurnCompleteEvent {
+                turn_id: first_turn_id,
+                last_agent_message: None,
+            })),
+            RolloutItem::EventMsg(EventMsg::TurnStarted(
+                codex_protocol::protocol::TurnStartedEvent {
+                    turn_id: rolled_back_turn_id.clone(),
+                    model_context_window: Some(128_000),
+                    collaboration_mode_kind: ModeKind::Default,
+                },
+            )),
+            RolloutItem::EventMsg(EventMsg::UserMessage(
+                codex_protocol::protocol::UserMessageEvent {
+                    message: "turn 2 user".to_string(),
+                    images: None,
+                    local_images: Vec::new(),
+                    text_elements: Vec::new(),
+                },
+            )),
+            RolloutItem::TurnContext(rolled_back_context_item),
+            RolloutItem::ResponseItem(turn_two_user),
+            RolloutItem::ResponseItem(turn_two_assistant),
+            RolloutItem::EventMsg(EventMsg::TurnComplete(TurnCompleteEvent {
+                turn_id: rolled_back_turn_id,
+                last_agent_message: None,
+            })),
+        ])
+        .await;
+        sess.replace_history(
+            vec![assistant_message("stale history")],
+            Some(first_context_item.clone()),
+        )
+        .await;
+        sess.set_previous_turn_settings(Some(PreviousTurnSettings {
+            model: "stale-model".to_string(),
+            realtime_active: None,
+        }))
+        .await;
+
+        handlers::thread_rollback(&sess, "sub-1".to_string(), 1).await;
+        let rollback_event = wait_for_thread_rolled_back(&rx).await;
+        assert_eq!(rollback_event.num_turns, 1);
+
+        assert_eq!(
+            sess.clone_history().await.raw_items(),
+            vec![turn_one_user, turn_one_assistant]
+        );
+        assert_eq!(
+            sess.previous_turn_settings().await,
+            Some(PreviousTurnSettings {
+                model: tc.model_info.slug.clone(),
+                realtime_active: Some(tc.realtime_active),
+            })
+        );
+        assert_eq!(
+            serde_json::to_value(sess.reference_context_item().await)
+                .expect("serialize replay reference context item"),
+            serde_json::to_value(Some(first_context_item))
+                .expect("serialize expected reference context item")
+        );
+    }
+
+    #[tokio::test]
+    async fn thread_rollback_persists_marker_and_replays_cumulatively() {
+        let (sess, tc, rx) = make_session_and_context_with_rx().await;
+        let rollout_path = attach_rollout_recorder(&sess).await;
+        let turn_context_item = tc.to_turn_context_item();
+
+        sess.persist_rollout_items(&[
+            RolloutItem::EventMsg(EventMsg::TurnStarted(
+                codex_protocol::protocol::TurnStartedEvent {
+                    turn_id: "turn-1".to_string(),
+                    model_context_window: Some(128_000),
+                    collaboration_mode_kind: ModeKind::Default,
+                },
+            )),
+            RolloutItem::EventMsg(EventMsg::UserMessage(UserMessageEvent {
+                message: "turn 1 user".to_string(),
+                images: None,
+                local_images: Vec::new(),
+                text_elements: Vec::new(),
+            })),
+            RolloutItem::TurnContext(turn_context_item.clone()),
+            RolloutItem::ResponseItem(user_message("turn 1 user")),
+            RolloutItem::ResponseItem(assistant_message("turn 1 assistant")),
+            RolloutItem::EventMsg(EventMsg::TurnComplete(TurnCompleteEvent {
+                turn_id: "turn-1".to_string(),
+                last_agent_message: None,
+            })),
+            RolloutItem::EventMsg(EventMsg::TurnStarted(
+                codex_protocol::protocol::TurnStartedEvent {
+                    turn_id: "turn-2".to_string(),
+                    model_context_window: Some(128_000),
+                    collaboration_mode_kind: ModeKind::Default,
+                },
+            )),
+            RolloutItem::EventMsg(EventMsg::UserMessage(UserMessageEvent {
+                message: "turn 2 user".to_string(),
+                images: None,
+                local_images: Vec::new(),
+                text_elements: Vec::new(),
+            })),
+            RolloutItem::TurnContext(turn_context_item.clone()),
+            RolloutItem::ResponseItem(user_message("turn 2 user")),
+            RolloutItem::ResponseItem(assistant_message("turn 2 assistant")),
+            RolloutItem::EventMsg(EventMsg::TurnComplete(TurnCompleteEvent {
+                turn_id: "turn-2".to_string(),
+                last_agent_message: None,
+            })),
+            RolloutItem::EventMsg(EventMsg::TurnStarted(
+                codex_protocol::protocol::TurnStartedEvent {
+                    turn_id: "turn-3".to_string(),
+                    model_context_window: Some(128_000),
+                    collaboration_mode_kind: ModeKind::Default,
+                },
+            )),
+            RolloutItem::EventMsg(EventMsg::UserMessage(UserMessageEvent {
+                message: "turn 3 user".to_string(),
+                images: None,
+                local_images: Vec::new(),
+                text_elements: Vec::new(),
+            })),
+            RolloutItem::TurnContext(turn_context_item),
+            RolloutItem::ResponseItem(user_message("turn 3 user")),
+            RolloutItem::ResponseItem(assistant_message("turn 3 assistant")),
+            RolloutItem::EventMsg(EventMsg::TurnComplete(TurnCompleteEvent {
+                turn_id: "turn-3".to_string(),
+                last_agent_message: None,
+            })),
+        ])
+        .await;
+
+        handlers::thread_rollback(&sess, "sub-1".to_string(), 1).await;
+        let first_rollback = wait_for_thread_rolled_back(&rx).await;
+        assert_eq!(first_rollback.num_turns, 1);
+        handlers::thread_rollback(&sess, "sub-1".to_string(), 1).await;
+        let second_rollback = wait_for_thread_rolled_back(&rx).await;
+        assert_eq!(second_rollback.num_turns, 1);
+
+        assert_eq!(
+            sess.clone_history().await.raw_items(),
+            vec![
+                user_message("turn 1 user"),
+                assistant_message("turn 1 assistant")
+            ]
+        );
+
+        let InitialHistory::Resumed(resumed) = RolloutRecorder::get_rollout_history(&rollout_path)
+            .await
+            .expect("read rollout history")
+        else {
+            panic!("expected resumed rollout history");
+        };
+        let rollback_markers = resumed
+            .history
+            .iter()
+            .filter(|item| matches!(item, RolloutItem::EventMsg(EventMsg::ThreadRolledBack(_))))
+            .count();
+        assert_eq!(rollback_markers, 2);
     }
 
     #[tokio::test]
@@ -8425,6 +8760,33 @@ mod tests {
                 _ => continue,
             }
         }
+    }
+
+    async fn attach_rollout_recorder(session: &Arc<Session>) -> PathBuf {
+        let config = session.get_config().await;
+        let recorder = RolloutRecorder::new(
+            config.as_ref(),
+            RolloutRecorderParams::new(
+                ThreadId::default(),
+                None,
+                SessionSource::Exec,
+                BaseInstructions::default(),
+                Vec::new(),
+                EventPersistenceMode::Limited,
+            ),
+            None,
+            None,
+        )
+        .await
+        .expect("create rollout recorder");
+        let rollout_path = recorder.rollout_path().to_path_buf();
+        {
+            let mut rollout = session.services.rollout.lock().await;
+            *rollout = Some(recorder);
+        }
+        session.ensure_rollout_materialized().await;
+        session.flush_rollout().await;
+        rollout_path
     }
 
     fn text_block(s: &str) -> serde_json::Value {
