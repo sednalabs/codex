@@ -421,7 +421,7 @@ mod tests {
         fs::write(path, contents).unwrap();
     }
 
-    fn plugin_config_toml(plugin_root: &Path) -> String {
+    fn plugin_config_toml() -> String {
         let mut root = toml::map::Map::new();
 
         let mut features = toml::map::Map::new();
@@ -429,14 +429,10 @@ mod tests {
         root.insert("features".to_string(), Value::Table(features));
 
         let mut plugin = toml::map::Map::new();
-        plugin.insert(
-            "path".to_string(),
-            Value::String(plugin_root.display().to_string()),
-        );
         plugin.insert("enabled".to_string(), Value::Boolean(true));
 
         let mut plugins = toml::map::Map::new();
-        plugins.insert("sample".to_string(), Value::Table(plugin));
+        plugins.insert("sample@test".to_string(), Value::Table(plugin));
         root.insert("plugins".to_string(), Value::Table(plugins));
 
         toml::to_string(&Value::Table(root)).expect("plugin test config should serialize")
@@ -574,7 +570,10 @@ mod tests {
     fn codex_apps_mcp_url_uses_openai_connectors_gateway_when_feature_is_enabled() {
         let mut config = crate::config::test_config();
         config.chatgpt_base_url = "https://chatgpt.com".to_string();
-        config.features.enable(Feature::AppsMcpGateway);
+        config
+            .features
+            .enable(Feature::AppsMcpGateway)
+            .expect("test config should allow apps gateway");
 
         assert_eq!(
             codex_apps_mcp_url(&config),
@@ -590,7 +589,10 @@ mod tests {
         let mut servers = with_codex_apps_mcp(HashMap::new(), false, None, &config);
         assert!(!servers.contains_key(CODEX_APPS_MCP_SERVER_NAME));
 
-        config.features.enable(Feature::Apps);
+        config
+            .features
+            .enable(Feature::Apps)
+            .expect("test config should allow apps");
 
         servers = with_codex_apps_mcp(servers, true, None, &config);
         let server = servers
@@ -603,7 +605,10 @@ mod tests {
 
         assert_eq!(url, "https://chatgpt.com/backend-api/wham/apps");
 
-        config.features.enable(Feature::AppsMcpGateway);
+        config
+            .features
+            .enable(Feature::AppsMcpGateway)
+            .expect("test config should allow apps gateway");
         servers = with_codex_apps_mcp(servers, true, None, &config);
         let server = servers
             .get(CODEX_APPS_MCP_SERVER_NAME)
@@ -620,7 +625,10 @@ mod tests {
     #[tokio::test]
     async fn effective_mcp_servers_include_plugins_without_overriding_user_config() {
         let codex_home = tempfile::tempdir().expect("tempdir");
-        let plugin_root = codex_home.path().join("plugin-sample");
+        let plugin_root = codex_home
+            .path()
+            .join("plugins/cache")
+            .join("test/sample/local");
         write_file(
             &plugin_root.join(".codex-plugin/plugin.json"),
             r#"{"name":"sample"}"#,
@@ -642,7 +650,7 @@ mod tests {
         );
         write_file(
             &codex_home.path().join(CONFIG_TOML_FILE),
-            &plugin_config_toml(&plugin_root),
+            &plugin_config_toml(),
         );
 
         let mut config = ConfigBuilder::default()
@@ -669,6 +677,10 @@ mod tests {
                 enabled_tools: None,
                 disabled_tools: None,
                 scopes: None,
+                enable_elicitation: false,
+                read_only: false,
+                strict_tool_classification: false,
+                require_approval_for_mutating: false,
                 oauth_resource: None,
             },
         );

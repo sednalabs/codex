@@ -1,7 +1,5 @@
 //! Session-wide mutable state.
 
-use codex_artifact_presentation::PresentationArtifactManager;
-use codex_artifact_spreadsheet::SpreadsheetArtifactManager;
 use codex_protocol::models::ResponseItem;
 use std::collections::HashMap;
 use std::collections::HashSet;
@@ -17,12 +15,6 @@ use crate::protocol::TokenUsageInfo;
 use crate::tasks::RegularTask;
 use crate::truncate::TruncationPolicy;
 use codex_protocol::protocol::TurnContextItem;
-
-#[derive(Default)]
-pub(crate) struct SessionArtifacts {
-    pub(crate) presentation: PresentationArtifactManager,
-    pub(crate) spreadsheet: SpreadsheetArtifactManager,
-}
 
 /// Persistent, session-scoped state previously stored directly on `Session`.
 pub(crate) struct SessionState {
@@ -41,7 +33,6 @@ pub(crate) struct SessionState {
     pub(crate) active_mcp_tool_selection: Option<Vec<String>>,
     pub(crate) active_connector_selection: HashSet<String>,
     pub(crate) last_sampling_turn_context: Option<TurnContextItem>,
-    pub(crate) artifacts: SessionArtifacts,
 }
 
 impl SessionState {
@@ -60,7 +51,6 @@ impl SessionState {
             active_mcp_tool_selection: None,
             active_connector_selection: HashSet::new(),
             last_sampling_turn_context: None,
-            artifacts: SessionArtifacts::default(),
         }
     }
 

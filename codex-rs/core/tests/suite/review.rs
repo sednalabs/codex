@@ -514,6 +514,7 @@ async fn review_uses_runtime_effort_after_model_override() {
             model: Some("gpt-5.1-codex-mini".to_string()),
             effort: Some(Some(ReasoningEffort::High)),
             summary: None,
+            service_tier: None,
             collaboration_mode: None,
             personality: None,
         })
@@ -582,6 +583,7 @@ async fn review_uses_runtime_effort_with_explicit_review_model() {
             model: Some("gpt-5.3-codex-spark".to_string()),
             effort: Some(Some(ReasoningEffort::High)),
             summary: None,
+            service_tier: None,
             collaboration_mode: None,
             personality: None,
         })
@@ -651,6 +653,7 @@ async fn review_clamps_runtime_effort_with_explicit_review_model() {
             model: Some("gpt-5.3-codex-spark".to_string()),
             effort: Some(Some(ReasoningEffort::XHigh)),
             summary: None,
+            service_tier: None,
             collaboration_mode: None,
             personality: None,
         })

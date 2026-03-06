@@ -775,6 +775,7 @@ mod tests {
             read_only: false,
             strict_tool_classification: false,
             require_approval_for_mutating: false,
+            oauth_resource: None,
         }
     }
 

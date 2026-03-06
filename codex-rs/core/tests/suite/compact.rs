@@ -394,8 +394,8 @@ async fn summarize_context_three_requests_and_instructions() {
     }
 
     assert_eq!(
-        regular_turn_context_count, 2,
-        "rollout should contain one TurnContext entry per real user turn"
+        regular_turn_context_count, 4,
+        "rollout should contain one TurnContext entry per real user turn and one per sampling request"
     );
     assert!(
         saw_compacted_summary,
@@ -2086,8 +2086,8 @@ async fn auto_compact_persists_rollout_entries() {
     }
 
     assert_eq!(
-        turn_context_count, 3,
-        "rollout should contain one TurnContext entry per real user turn"
+        turn_context_count, 6,
+        "rollout should contain one TurnContext entry per real user turn and one per sampling request"
     );
 }
 
@@ -3112,7 +3112,7 @@ async fn snapshot_request_shape_pre_turn_compaction_strips_incoming_model_switch
         .with_config(move |config| {
             config.model_provider = model_provider;
             set_test_compact_prompt(config);
-            config
+            let _ = config
                 .features
                 .enable(codex_core::features::Feature::RemoteModels);
             config.model_auto_compact_token_limit = Some(200);
