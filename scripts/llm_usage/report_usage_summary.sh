@@ -12,7 +12,7 @@ Usage: report_usage_summary.sh [options]
 Options:
   --db-url URL          Postgres connection string. Defaults to LLM_USAGE_DB_URL or the postgres MCP DATABASE_URI in ~/.codex/config.toml.
   --schema NAME         Target schema. Defaults to LLM_USAGE_DB_SCHEMA or llm_usage.
-  --report NAME         One of: all, freshness, session, model, provider. Defaults to all.
+  --report NAME         One of: all, freshness, session, model, provider, reconciliation. Defaults to all.
   --days N              Limit usage queries to the last N days. Use 0 for all time. Defaults to 30.
   --limit N             Limit rows for session/model/provider reports. Defaults to 20.
   --help                Show this help.
@@ -61,7 +61,7 @@ done
 
 db_url=$(llm_usage_resolve_db_url "$db_url" || true)
 
-llm_usage_require_commands psql mktemp
+llm_usage_require_commands psql mktemp python3
 llm_usage_require_db_url "$db_url"
 llm_usage_require_schema_name "$db_schema"
 
@@ -76,7 +76,7 @@ if [[ ! "$limit" =~ ^[0-9]+$ ]] || [ "$limit" -lt 1 ]; then
 fi
 
 case "$report_name" in
-  all|freshness|session|model|provider)
+  all|freshness|session|model|provider|reconciliation)
     ;;
   *)
     echo "invalid --report value: $report_name" >&2
@@ -141,7 +141,10 @@ select
   cached_input_tokens,
   output_tokens,
   reasoning_tokens,
-  tool_tokens
+  tool_tokens,
+  succeeded_event_count,
+  aborted_event_count,
+  failed_event_count
 from __LLM_SCHEMA__.llm_session_usage_summary
 where $session_time_filter
 order by last_event_at desc
@@ -190,6 +193,35 @@ where $usage_time_filter
 group by 1, 2
 order by total_tokens desc, last_event_at desc
 limit $limit;
+SQL
+    ;;
+  reconciliation)
+    cat > "$sql_file" <<SQL
+\pset pager off
+select
+  parser_version,
+  source_system,
+  source_kind,
+  event_status,
+  count(*) as row_count,
+  min(event_ts) as first_event_ts,
+  max(event_ts) as last_event_ts,
+  max(ingested_at) as last_ingested_at
+from __LLM_SCHEMA__.llm_usage_events
+group by 1, 2, 3, 4
+order by parser_version desc, source_system, source_kind, event_status;
+
+select
+  parser_version,
+  source_system,
+  source_kind,
+  count(*) as row_count,
+  min(event_ts) as first_event_ts,
+  max(event_ts) as last_event_ts,
+  max(ingested_at) as last_ingested_at
+from __LLM_SCHEMA__.llm_quota_events
+group by 1, 2, 3
+order by parser_version desc, source_system, source_kind;
 SQL
     ;;
   all)
@@ -261,6 +293,35 @@ order by total_tokens desc, last_event_at desc
 limit $limit;
 
 \echo
+\echo == Reconciliation ==
+select
+  parser_version,
+  source_system,
+  source_kind,
+  event_status,
+  count(*) as row_count,
+  min(event_ts) as first_event_ts,
+  max(event_ts) as last_event_ts,
+  max(ingested_at) as last_ingested_at
+from __LLM_SCHEMA__.llm_usage_events
+group by 1, 2, 3, 4
+order by parser_version desc, source_system, source_kind, event_status;
+
+\echo
+\echo == Quota Reconciliation ==
+select
+  parser_version,
+  source_system,
+  source_kind,
+  count(*) as row_count,
+  min(event_ts) as first_event_ts,
+  max(event_ts) as last_event_ts,
+  max(ingested_at) as last_ingested_at
+from __LLM_SCHEMA__.llm_quota_events
+group by 1, 2, 3
+order by parser_version desc, source_system, source_kind;
+
+\echo
 \echo == Session Summary ($window_label) ==
 select
   source_system,
@@ -275,7 +336,10 @@ select
   cached_input_tokens,
   output_tokens,
   reasoning_tokens,
-  tool_tokens
+  tool_tokens,
+  succeeded_event_count,
+  aborted_event_count,
+  failed_event_count
 from __LLM_SCHEMA__.llm_session_usage_summary
 where $session_time_filter
 order by last_event_at desc
@@ -285,4 +349,4 @@ SQL
 esac
 
 llm_usage_render_sql_template "$sql_file" "$db_schema" "$rendered_sql"
-psql -X "$db_url" -v ON_ERROR_STOP=1 -f "$rendered_sql"
+llm_usage_psql "$db_url" -v ON_ERROR_STOP=1 -f "$rendered_sql"

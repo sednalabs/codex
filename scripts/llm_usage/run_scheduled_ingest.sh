@@ -7,6 +7,7 @@ db_schema=${LLM_USAGE_DB_SCHEMA:-llm_usage}
 log_dir=${LLM_USAGE_LOG_DIR:-$HOME/.local/state/codex/llm-usage}
 log_file=${LLM_USAGE_LOG_FILE:-$log_dir/scheduled-ingest.log}
 dry_run=0
+ensure_schema=0
 
 usage() {
   cat <<'USAGE'
@@ -16,6 +17,7 @@ Options:
   --schema NAME    Target schema. Defaults to LLM_USAGE_DB_SCHEMA or llm_usage.
   --log-file PATH  Log file. Defaults to LLM_USAGE_LOG_FILE or ~/.local/state/codex/llm-usage/scheduled-ingest.log.
   --dry-run        Run the ingest bundle in dry-run mode.
+  --ensure-schema  Apply schema before running the ingest bundle.
   --help           Show this help.
 USAGE
 }
@@ -34,6 +36,10 @@ while [ $# -gt 0 ]; do
       dry_run=1
       shift
       ;;
+    --ensure-schema)
+      ensure_schema=1
+      shift
+      ;;
     --help)
       usage
       exit 0
@@ -46,13 +52,19 @@ while [ $# -gt 0 ]; do
   esac
 done
 
+umask 077
 mkdir -p -- "$(dirname -- "$log_file")"
-lock_file="$log_dir/scheduled-ingest.lock"
 mkdir -p -- "$log_dir"
+log_dir=$(cd -- "$log_dir" && pwd)
+log_file=$(python3 -c 'import os,sys; print(os.path.abspath(sys.argv[1]))' "$log_file")
+touch "$log_file"
+chmod 600 "$log_file"
+lock_file="$log_dir/scheduled-ingest.lock"
 
 acquired_lock=0
 if command -v flock >/dev/null 2>&1; then
   exec 9>"$lock_file"
+  chmod 600 "$lock_file"
   if flock -n 9; then
     acquired_lock=1
   else
@@ -61,12 +73,18 @@ if command -v flock >/dev/null 2>&1; then
   fi
 fi
 
-cmd=("$script_dir/ingest_all_to_postgres.sh" --schema "$db_schema")
+cmd=("$script_dir/ingest_all_to_postgres.sh" --schema "$db_schema" --skip-schema)
 if [ "$dry_run" -eq 1 ]; then
   cmd+=(--dry-run)
 fi
+if [ "$ensure_schema" -eq 1 ]; then
+  cmd=("$script_dir/ingest_all_to_postgres.sh" --schema "$db_schema")
+  if [ "$dry_run" -eq 1 ]; then
+    cmd+=(--dry-run)
+  fi
+fi
 
-printf '[%s] starting scheduled ledger ingest (schema=%s dry_run=%s)\n' "$(date -Is)" "$db_schema" "$dry_run" >> "$log_file"
+printf '[%s] starting scheduled ledger ingest (schema=%s dry_run=%s ensure_schema=%s)\n' "$(date -Is)" "$db_schema" "$dry_run" "$ensure_schema" >> "$log_file"
 if "${cmd[@]}" >> "$log_file" 2>&1; then
   printf '[%s] scheduled ledger ingest completed successfully\n' "$(date -Is)" >> "$log_file"
 else

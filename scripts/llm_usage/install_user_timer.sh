@@ -62,6 +62,7 @@ env_file=$env_dir/llm-usage-ingest.env
 service_file=$user_systemd_dir/codex-llm-usage-ingest.service
 timer_file=$user_systemd_dir/codex-llm-usage-ingest.timer
 
+umask 077
 mkdir -p -- "$user_systemd_dir" "$env_dir"
 
 if [ ! -f "$env_file" ]; then
@@ -76,6 +77,7 @@ if [ ! -f "$env_file" ]; then
 # LLM_USAGE_LOG_FILE=
 ENV
 fi
+chmod 600 "$env_file"
 
 cat > "$service_file" <<SERVICE
 [Unit]
@@ -89,6 +91,7 @@ WorkingDirectory=$repo_root
 EnvironmentFile=-%h/.config/codex/llm-usage-ingest.env
 ExecStart=$repo_root/scripts/llm_usage/run_scheduled_ingest.sh --schema $db_schema
 SERVICE
+chmod 644 "$service_file"
 
 cat > "$timer_file" <<TIMER
 [Unit]
@@ -104,6 +107,7 @@ Unit=codex-llm-usage-ingest.service
 [Install]
 WantedBy=timers.target
 TIMER
+chmod 644 "$timer_file"
 
 printf 'Installed %s\n' "$service_file"
 printf 'Installed %s\n' "$timer_file"
@@ -116,6 +120,10 @@ fi
 if ! command -v systemctl >/dev/null 2>&1; then
   echo "systemctl not found; installed unit files but did not enable the timer" >&2
   exit 1
+fi
+
+if ! "$repo_root/scripts/llm_usage/ensure_schema.sh" --schema "$db_schema"; then
+  echo "warning: schema bootstrap failed during timer install; recurring runs will still try the ingest path" >&2
 fi
 
 systemctl --user daemon-reload

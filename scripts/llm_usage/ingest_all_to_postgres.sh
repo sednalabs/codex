@@ -9,11 +9,12 @@ Usage: ingest_all_to_postgres.sh [options]
 
 Options:
   --db-url URL          Postgres connection string. Defaults to LLM_USAGE_DB_URL or the postgres MCP DATABASE_URI in ~/.codex/config.toml.
-  --schema NAME        Target schema. Defaults to LLM_USAGE_DB_SCHEMA or llm_usage.
+  --schema NAME         Target schema. Defaults to LLM_USAGE_DB_SCHEMA or llm_usage.
   --sessions-root PATH  Codex rollout root. Defaults to CODEX_USAGE_ROLLOUTS_ROOT or ~/.codex/sessions.
   --state-root PATH     Gemini CLI state root. Defaults to GEMINI_CLI_STATE_ROOT or ~/.gemini/tmp.
   --ledger PATH         Gemini MCP usage ledger. Defaults to GEMINI_MCP_USAGE_LEDGER_PATH or ~/.local/state/gemini-cli-mcp/token-usage.jsonl.
   --dry-run             Generate normalized rows and print counts without touching Postgres.
+  --skip-schema         Do not apply schema before running the source ingestors.
   --help                Show this help.
 USAGE
 }
@@ -24,6 +25,7 @@ sessions_root=${CODEX_USAGE_ROLLOUTS_ROOT:-$HOME/.codex/sessions}
 state_root=${GEMINI_CLI_STATE_ROOT:-$HOME/.gemini/tmp}
 ledger=${GEMINI_MCP_USAGE_LEDGER_PATH:-$HOME/.local/state/gemini-cli-mcp/token-usage.jsonl}
 dry_run=0
+skip_schema=0
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -51,6 +53,10 @@ while [ $# -gt 0 ]; do
       dry_run=1
       shift
       ;;
+    --skip-schema)
+      skip_schema=1
+      shift
+      ;;
     --help)
       usage
       exit 0
@@ -63,12 +69,21 @@ while [ $# -gt 0 ]; do
   esac
 done
 
-common_args=(--schema "$db_schema")
+common_args=(--schema "$db_schema" --skip-schema)
 if [ -n "$db_url" ]; then
   common_args+=(--db-url "$db_url")
 fi
 if [ "$dry_run" -eq 1 ]; then
   common_args+=(--dry-run)
+fi
+
+if [ "$dry_run" -eq 0 ] && [ "$skip_schema" -eq 0 ]; then
+  echo "Ensuring ledger schema..."
+  ensure_args=(--schema "$db_schema")
+  if [ -n "$db_url" ]; then
+    ensure_args+=(--db-url "$db_url")
+  fi
+  "$script_dir/ensure_schema.sh" "${ensure_args[@]}"
 fi
 
 echo "Ingesting Codex rollout usage..."
@@ -81,11 +96,7 @@ echo "Ingesting Gemini interactive usage..."
   "${common_args[@]}" \
   --state-root "$state_root"
 
-if [ -f "$ledger" ]; then
-  echo "Ingesting Gemini MCP usage..."
-  "$script_dir/ingest_gemini_mcp_usage_to_postgres.sh" \
-    "${common_args[@]}" \
-    --ledger "$ledger"
-else
-  echo "Skipping Gemini MCP usage: ledger not found at $ledger"
-fi
+echo "Ingesting Gemini MCP usage..."
+"$script_dir/ingest_gemini_mcp_usage_to_postgres.sh" \
+  "${common_args[@]}" \
+  --ledger "$ledger"
