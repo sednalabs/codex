@@ -13,8 +13,7 @@ use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::ExitedReviewModeEvent;
 use codex_protocol::protocol::ItemCompletedEvent;
 use codex_protocol::protocol::ReviewOutputEvent;
-use codex_protocol::protocol::TokenCountEvent;
-use codex_protocol::protocol::TokenUsage;
+use codex_protocol::protocol::SubAgentSource;
 use tokio_util::sync::CancellationToken;
 
 use crate::codex::Session;
@@ -59,7 +58,7 @@ impl SessionTask for ReviewTask {
         let _ = session
             .session
             .services
-            .otel_manager
+            .session_telemetry
             .counter("codex.task.review", 1, &[]);
 
         // Start sub-codex conversation and get the receiver for events.
@@ -72,22 +71,16 @@ impl SessionTask for ReviewTask {
         .await
         {
             Some(receiver) => process_review_events(session.clone(), ctx.clone(), receiver).await,
-            None => (None, None),
+            None => None,
         };
         if !cancellation_token.is_cancelled() {
-            exit_review_mode(
-                session.clone_session(),
-                output.0.clone(),
-                output.1,
-                ctx.clone(),
-            )
-            .await;
+            exit_review_mode(session.clone_session(), output.clone(), ctx.clone()).await;
         }
         None
     }
 
     async fn abort(&self, session: Arc<SessionTaskContext>, ctx: Arc<TurnContext>) {
-        exit_review_mode(session.clone_session(), None, None, ctx).await;
+        exit_review_mode(session.clone_session(), None, ctx).await;
     }
 }
 
@@ -126,6 +119,8 @@ async fn start_review_conversation(
         session.clone_session(),
         ctx.clone(),
         cancellation_token,
+        SubAgentSource::Review,
+        None,
         None,
     )
     .await)
@@ -137,12 +132,8 @@ async fn process_review_events(
     session: Arc<SessionTaskContext>,
     ctx: Arc<TurnContext>,
     receiver: async_channel::Receiver<Event>,
-) -> (Option<ReviewOutputEvent>, Option<TokenUsage>) {
+) -> Option<ReviewOutputEvent> {
     let mut prev_agent_message: Option<Event> = None;
-    // TokenCount events in this flow come from the review subagent session, so
-    // initialize from the first subagent event rather than parent-session totals.
-    let mut previous_total_usage: Option<TokenUsage> = None;
-    let mut review_token_usage = TokenUsage::default();
     while let Ok(event) = receiver.recv().await {
         match event.clone().msg {
             EventMsg::AgentMessage(_) => {
@@ -163,33 +154,17 @@ async fn process_review_events(
             })
             | EventMsg::AgentMessageDelta(AgentMessageDeltaEvent { .. })
             | EventMsg::AgentMessageContentDelta(AgentMessageContentDeltaEvent { .. }) => {}
-            EventMsg::TokenCount(TokenCountEvent {
-                info: Some(info), ..
-            }) => {
-                let current_total_usage = info.total_token_usage.clone();
-                let delta = if let Some(previous_total_usage) = previous_total_usage.as_ref() {
-                    token_usage_delta(&current_total_usage, previous_total_usage)
-                } else {
-                    info.last_token_usage.clone()
-                };
-                review_token_usage.add_assign(&delta);
-                previous_total_usage = Some(current_total_usage);
-                session
-                    .clone_session()
-                    .send_event(ctx.as_ref(), event.msg)
-                    .await;
-            }
             EventMsg::TurnComplete(task_complete) => {
                 // Parse review output from the last agent message (if present).
                 let out = task_complete
                     .last_agent_message
                     .as_deref()
                     .map(parse_review_output_event);
-                return (out, Some(review_token_usage));
+                return out;
             }
             EventMsg::TurnAborted(_) => {
                 // Cancellation or abort: consumer will finalize with None.
-                return (None, Some(review_token_usage));
+                return None;
             }
             other => {
                 session
@@ -200,19 +175,7 @@ async fn process_review_events(
         }
     }
     // Channel closed without TurnComplete: treat as interrupted.
-    (None, Some(review_token_usage))
-}
-
-fn token_usage_delta(current: &TokenUsage, previous: &TokenUsage) -> TokenUsage {
-    TokenUsage {
-        input_tokens: (current.input_tokens - previous.input_tokens).max(0),
-        cached_input_tokens: (current.cached_input_tokens - previous.cached_input_tokens).max(0),
-        output_tokens: (current.output_tokens - previous.output_tokens).max(0),
-        reasoning_output_tokens: (current.reasoning_output_tokens
-            - previous.reasoning_output_tokens)
-            .max(0),
-        total_tokens: (current.total_tokens - previous.total_tokens).max(0),
-    }
+    None
 }
 
 /// Parse a ReviewOutputEvent from a text blob returned by the reviewer model.
@@ -242,7 +205,6 @@ fn parse_review_output_event(text: &str) -> ReviewOutputEvent {
 pub(crate) async fn exit_review_mode(
     session: Arc<Session>,
     review_output: Option<ReviewOutputEvent>,
-    review_token_usage: Option<TokenUsage>,
     ctx: Arc<TurnContext>,
 ) {
     const REVIEW_USER_MESSAGE_ID: &str = "review_rollout_user";
@@ -285,10 +247,7 @@ pub(crate) async fn exit_review_mode(
     session
         .send_event(
             ctx.as_ref(),
-            EventMsg::ExitedReviewMode(ExitedReviewModeEvent {
-                review_output,
-                review_token_usage,
-            }),
+            EventMsg::ExitedReviewMode(ExitedReviewModeEvent { review_output }),
         )
         .await;
     session

@@ -32,8 +32,8 @@ use codex_core::models_manager::collaboration_mode_presets::CollaborationModesCo
 use codex_core::models_manager::manager::ModelsManager;
 use codex_core::skills::model::SkillMetadata;
 use codex_core::terminal::TerminalName;
-use codex_otel::OtelManager;
 use codex_otel::RuntimeMetricsSummary;
+use codex_otel::SessionTelemetry;
 use codex_protocol::ThreadId;
 use codex_protocol::account::PlanType;
 use codex_protocol::config_types::CollaborationMode;
@@ -150,25 +150,6 @@ fn snapshot(percent: f64) -> RateLimitSnapshot {
             resets_at: None,
         }),
         secondary: None,
-        credits: None,
-        plan_type: None,
-    }
-}
-
-fn weekly_snapshot(
-    used_percent: f64,
-    window_minutes: Option<i64>,
-    resets_at: Option<i64>,
-) -> RateLimitSnapshot {
-    RateLimitSnapshot {
-        limit_id: None,
-        limit_name: None,
-        primary: None,
-        secondary: Some(RateLimitWindow {
-            used_percent,
-            window_minutes,
-            resets_at,
-        }),
         credits: None,
         plan_type: None,
     }
@@ -1608,63 +1589,12 @@ async fn review_restores_context_window_indicator() {
         id: "review-end".into(),
         msg: EventMsg::ExitedReviewMode(ExitedReviewModeEvent {
             review_output: None,
-            review_token_usage: None,
         }),
     });
     let _ = drain_insert_history(&mut rx);
 
     assert_eq!(chat.bottom_pane.context_window_percent(), Some(30));
     assert!(!chat.is_review_mode);
-}
-
-/// Exiting review renders a token-usage summary when usage is available.
-#[tokio::test]
-async fn review_exit_shows_usage_summary_line() {
-    let (mut chat, mut rx, _ops) = make_chatwidget_manual(None).await;
-
-    chat.handle_codex_event(Event {
-        id: "review-end".into(),
-        msg: EventMsg::ExitedReviewMode(ExitedReviewModeEvent {
-            review_output: None,
-            review_token_usage: Some(TokenUsage {
-                input_tokens: 5,
-                cached_input_tokens: 0,
-                output_tokens: 3,
-                reasoning_output_tokens: 0,
-                total_tokens: 8,
-            }),
-        }),
-    });
-
-    let cells = drain_insert_history(&mut rx);
-    let rendered = cells
-        .iter()
-        .map(|lines| lines_to_single_string(lines))
-        .collect::<Vec<_>>()
-        .join("\n");
-    assert!(rendered.contains("<< Review Token usage: total=8 input=5 output=3 >>"));
-}
-
-/// Exiting review renders an unavailable fallback when usage data is missing.
-#[tokio::test]
-async fn review_exit_shows_usage_unavailable_fallback() {
-    let (mut chat, mut rx, _ops) = make_chatwidget_manual(None).await;
-
-    chat.handle_codex_event(Event {
-        id: "review-end".into(),
-        msg: EventMsg::ExitedReviewMode(ExitedReviewModeEvent {
-            review_output: None,
-            review_token_usage: None,
-        }),
-    });
-
-    let cells = drain_insert_history(&mut rx);
-    let rendered = cells
-        .iter()
-        .map(|lines| lines_to_single_string(lines))
-        .collect::<Vec<_>>()
-        .join("\n");
-    assert!(rendered.contains("<< Review Token usage: unavailable >>"));
 }
 
 /// Receiving a TokenCount event without usage clears the context indicator.
@@ -1729,6 +1659,53 @@ async fn context_indicator_shows_used_tokens_when_window_unknown() {
     );
 }
 
+#[tokio::test]
+async fn turn_started_uses_runtime_context_window_before_first_token_count() {
+    let (mut chat, mut rx, _ops) = make_chatwidget_manual(None).await;
+
+    chat.config.model_context_window = Some(1_000_000);
+
+    chat.handle_codex_event(Event {
+        id: "turn-start".into(),
+        msg: EventMsg::TurnStarted(TurnStartedEvent {
+            turn_id: "turn-1".to_string(),
+            model_context_window: Some(950_000),
+            collaboration_mode_kind: ModeKind::Default,
+        }),
+    });
+
+    assert_eq!(
+        chat.status_line_value_for_item(&crate::bottom_pane::StatusLineItem::ContextWindowSize),
+        Some("950K window".to_string())
+    );
+    assert_eq!(chat.bottom_pane.context_window_percent(), Some(100));
+
+    chat.add_status_output();
+
+    let cells = drain_insert_history(&mut rx);
+    let context_line = cells
+        .last()
+        .expect("status output inserted")
+        .iter()
+        .map(|line| {
+            line.spans
+                .iter()
+                .map(|span| span.content.as_ref())
+                .collect::<String>()
+        })
+        .find(|line| line.contains("Context window"))
+        .expect("context window line");
+
+    assert!(
+        context_line.contains("950K"),
+        "expected /status to use TurnStarted context window, got: {context_line}"
+    );
+    assert!(
+        !context_line.contains("1M"),
+        "expected /status to avoid raw config context window, got: {context_line}"
+    );
+}
+
 #[cfg_attr(
     target_os = "macos",
     ignore = "system configuration APIs are blocked under macOS seatbelt"
@@ -1739,7 +1716,7 @@ async fn helpers_are_available_and_do_not_panic() {
     let tx = AppEventSender::new(tx_raw);
     let cfg = test_config().await;
     let resolved_model = codex_core::test_support::get_model_offline(cfg.model.as_deref());
-    let otel_manager = test_otel_manager(&cfg, resolved_model.as_str());
+    let session_telemetry = test_session_telemetry(&cfg, resolved_model.as_str());
     let thread_manager = Arc::new(
         codex_core::test_support::thread_manager_with_models_provider(
             CodexAuth::from_api_key("test"),
@@ -1762,16 +1739,16 @@ async fn helpers_are_available_and_do_not_panic() {
         model: Some(resolved_model),
         startup_tooltip_override: None,
         status_line_invalid_items_warned: Arc::new(AtomicBool::new(false)),
-        otel_manager,
+        session_telemetry,
     };
     let mut w = ChatWidget::new(init, thread_manager);
     // Basic construction sanity.
     let _ = &mut w;
 }
 
-fn test_otel_manager(config: &Config, model: &str) -> OtelManager {
+fn test_session_telemetry(config: &Config, model: &str) -> SessionTelemetry {
     let model_info = codex_core::test_support::construct_model_info_offline(model, config);
-    OtelManager::new(
+    SessionTelemetry::new(
         ThreadId::new(),
         model,
         model_info.slug.as_str(),
@@ -1804,7 +1781,7 @@ async fn make_chatwidget_manual(
         cfg.model = Some(model.to_string());
     }
     let prevent_idle_sleep = cfg.features.enabled(Feature::PreventIdleSleep);
-    let otel_manager = test_otel_manager(&cfg, resolved_model.as_str());
+    let session_telemetry = test_session_telemetry(&cfg, resolved_model.as_str());
     let mut bottom = BottomPane::new(BottomPaneParams {
         app_event_tx: app_event_tx.clone(),
         frame_requester: FrameRequester::test_dummy(),
@@ -1847,7 +1824,7 @@ async fn make_chatwidget_manual(
         active_collaboration_mask,
         auth_manager,
         models_manager,
-        otel_manager,
+        session_telemetry,
         session_header: SessionHeader::new(resolved_model.clone()),
         initial_user_message: None,
         token_info: None,
@@ -1889,9 +1866,8 @@ async fn make_chatwidget_manual(
         startup_tooltip_override: None,
         queued_user_messages: VecDeque::new(),
         pending_steers: VecDeque::new(),
+        submit_pending_steers_after_interrupt: false,
         queued_message_edit_binding: crate::key_hint::alt(KeyCode::Up),
-        queued_slash_commands: VecDeque::new(),
-        queued_follow_up_order: VecDeque::new(),
         suppress_session_configured_redraw: false,
         pending_notification: None,
         quit_shortcut_expires_at: None,
@@ -1934,6 +1910,17 @@ fn next_submit_op(op_rx: &mut tokio::sync::mpsc::UnboundedReceiver<Op>) -> Op {
             Ok(_) => continue,
             Err(TryRecvError::Empty) => panic!("expected a submit op but queue was empty"),
             Err(TryRecvError::Disconnected) => panic!("expected submit op but channel closed"),
+        }
+    }
+}
+
+fn next_interrupt_op(op_rx: &mut tokio::sync::mpsc::UnboundedReceiver<Op>) {
+    loop {
+        match op_rx.try_recv() {
+            Ok(Op::Interrupt) => return,
+            Ok(_) => continue,
+            Err(TryRecvError::Empty) => panic!("expected interrupt op but queue was empty"),
+            Err(TryRecvError::Disconnected) => panic!("expected interrupt op but channel closed"),
         }
     }
 }
@@ -2021,6 +2008,10 @@ fn lines_to_single_string(lines: &[ratatui::text::Line<'static>]) -> String {
         s.push('\n');
     }
     s
+}
+
+fn status_line_text(chat: &ChatWidget) -> Option<String> {
+    chat.status_line_text()
 }
 
 fn make_token_info(total_tokens: i64, context_window: i64) -> TokenUsageInfo {
@@ -2479,12 +2470,15 @@ async fn reasoning_selection_in_plan_mode_without_effort_change_does_not_open_sc
     assert!(
         events.iter().any(|event| matches!(
             event,
-            AppEvent::SelectModel {
-                model,
-                effort: Some(_),
-            } if model == "gpt-5.1-codex-max"
+            AppEvent::UpdateModel(model) if model == "gpt-5.1-codex-max"
         )),
-        "expected select-model event; events: {events:?}"
+        "expected model update event; events: {events:?}"
+    );
+    assert!(
+        events
+            .iter()
+            .any(|event| matches!(event, AppEvent::UpdateReasoningEffort(Some(_)))),
+        "expected reasoning update event; events: {events:?}"
     );
 }
 
@@ -2561,12 +2555,15 @@ async fn reasoning_selection_in_plan_mode_model_switch_does_not_open_scope_promp
     assert!(
         events.iter().any(|event| matches!(
             event,
-            AppEvent::SelectModel {
-                model,
-                effort: Some(_),
-            } if model == "gpt-5"
+            AppEvent::UpdateModel(model) if model == "gpt-5"
         )),
-        "expected select-model event; events: {events:?}"
+        "expected model update event; events: {events:?}"
+    );
+    assert!(
+        events
+            .iter()
+            .any(|event| matches!(event, AppEvent::UpdateReasoningEffort(Some(_)))),
+        "expected reasoning update event; events: {events:?}"
     );
 }
 
@@ -2907,7 +2904,6 @@ async fn plan_implementation_popup_skips_replayed_turn_complete() {
     chat.replay_initial_messages(vec![EventMsg::TurnComplete(TurnCompleteEvent {
         turn_id: "turn-1".to_string(),
         last_agent_message: Some("Plan details".to_string()),
-        compaction_events_in_turn: 0,
     })]);
 
     let popup = render_bottom_popup(&chat, 80);
@@ -2933,7 +2929,6 @@ async fn plan_implementation_popup_shows_once_when_replay_precedes_live_turn_com
     chat.replay_initial_messages(vec![EventMsg::TurnComplete(TurnCompleteEvent {
         turn_id: "turn-1".to_string(),
         last_agent_message: Some("Plan details".to_string()),
-        compaction_events_in_turn: 0,
     })]);
     let replay_popup = render_bottom_popup(&chat, 80);
     assert!(
@@ -2946,7 +2941,6 @@ async fn plan_implementation_popup_shows_once_when_replay_precedes_live_turn_com
         msg: EventMsg::TurnComplete(TurnCompleteEvent {
             turn_id: "turn-1".to_string(),
             last_agent_message: Some("Plan details".to_string()),
-            compaction_events_in_turn: 0,
         }),
     });
 
@@ -2968,7 +2962,6 @@ async fn plan_implementation_popup_shows_once_when_replay_precedes_live_turn_com
         msg: EventMsg::TurnComplete(TurnCompleteEvent {
             turn_id: "turn-1".to_string(),
             last_agent_message: Some("Plan details".to_string()),
-            compaction_events_in_turn: 0,
         }),
     });
     let duplicate_popup = render_bottom_popup(&chat, 80);
@@ -3207,6 +3200,7 @@ async fn exec_approval_emits_proposed_command_and_decision_history() {
         proposed_execpolicy_amendment: None,
         proposed_network_policy_amendments: None,
         additional_permissions: None,
+        skill_metadata: None,
         available_decisions: None,
         parsed_cmd: vec![],
     };
@@ -3257,6 +3251,7 @@ async fn exec_approval_uses_approval_id_when_present() {
             proposed_execpolicy_amendment: None,
             proposed_network_policy_amendments: None,
             additional_permissions: None,
+            skill_metadata: None,
             available_decisions: None,
             parsed_cmd: vec![],
         }),
@@ -3298,6 +3293,7 @@ async fn exec_approval_decision_truncates_multiline_and_long_commands() {
         proposed_execpolicy_amendment: None,
         proposed_network_policy_amendments: None,
         additional_permissions: None,
+        skill_metadata: None,
         available_decisions: None,
         parsed_cmd: vec![],
     };
@@ -3353,6 +3349,7 @@ async fn exec_approval_decision_truncates_multiline_and_long_commands() {
         proposed_execpolicy_amendment: None,
         proposed_network_policy_amendments: None,
         additional_permissions: None,
+        skill_metadata: None,
         available_decisions: None,
         parsed_cmd: vec![],
     };
@@ -3595,8 +3592,6 @@ async fn restore_thread_input_state_syncs_sleep_inhibitor_state() {
         composer: None,
         pending_steers: VecDeque::new(),
         queued_user_messages: VecDeque::new(),
-        queued_slash_commands: VecDeque::new(),
-        queued_follow_up_order: VecDeque::new(),
         current_collaboration_mode: chat.current_collaboration_mode.clone(),
         active_collaboration_mask: chat.active_collaboration_mask.clone(),
         agent_turn_running: true,
@@ -3715,131 +3710,6 @@ fn queued_message_edit_binding_mapping_covers_special_terminals() {
         queued_message_edit_binding_for_terminal(TerminalName::Iterm2),
         crate::key_hint::alt(KeyCode::Up)
     );
-}
-
-#[tokio::test]
-async fn alt_up_edits_most_recent_queued_slash_command() {
-    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(None).await;
-
-    // Simulate a running task so slash commands are queued.
-    chat.bottom_pane.set_task_running(true);
-    chat.dispatch_command(SlashCommand::MemoryDrop);
-    assert_eq!(chat.queued_slash_commands.len(), 1);
-
-    // Press Alt+Up to edit the queued slash command.
-    chat.handle_key_event(KeyEvent::new(KeyCode::Up, KeyModifiers::ALT));
-
-    assert_eq!(
-        chat.bottom_pane.composer_text(),
-        "/debug-m-drop".to_string()
-    );
-    assert!(chat.queued_slash_commands.is_empty());
-}
-
-#[tokio::test]
-async fn alt_up_restores_queued_slash_command_payload_for_edit() {
-    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(None).await;
-
-    let local_placeholder = "[Image #2]";
-    let args = format!("{local_placeholder} inspect $repo");
-    let mention_token = "$repo";
-    let mention_start = args.find(mention_token).expect("mention token exists");
-    let args_elements = vec![
-        TextElement::new(
-            (0..local_placeholder.len()).into(),
-            Some(local_placeholder.to_string()),
-        ),
-        TextElement::new(
-            (mention_start..mention_start + mention_token.len()).into(),
-            Some(mention_token.to_string()),
-        ),
-    ];
-    let local_images = vec![LocalImageAttachment {
-        placeholder: local_placeholder.to_string(),
-        path: PathBuf::from("/tmp/queued-plan.png"),
-    }];
-    let remote_image_urls = vec!["https://example.com/queued-remote.png".to_string()];
-    let mention_bindings = vec![MentionBinding {
-        mention: "repo".to_string(),
-        path: "/tmp/repo".to_string(),
-    }];
-
-    chat.queued_slash_commands
-        .push_back(QueuedSlashCommand::CommandWithArgs {
-            cmd: SlashCommand::Plan,
-            args: args.clone(),
-            text_elements: args_elements.clone(),
-            local_images: local_images.clone(),
-            remote_image_urls: remote_image_urls.clone(),
-            mention_bindings: mention_bindings.clone(),
-        });
-    chat.queued_follow_up_order
-        .push_back(QueuedFollowUpKind::SlashCommand);
-    chat.refresh_queued_user_messages();
-
-    chat.handle_key_event(KeyEvent::new(KeyCode::Up, KeyModifiers::ALT));
-
-    let command_prefix = format!("/{command} ", command = SlashCommand::Plan.command());
-    let expected_text = format!("{command_prefix}{args}");
-    let expected_elements = args_elements
-        .into_iter()
-        .map(|element| {
-            element.map_range(|range| {
-                (range.start + command_prefix.len()..range.end + command_prefix.len()).into()
-            })
-        })
-        .collect::<Vec<_>>();
-
-    assert_eq!(chat.bottom_pane.composer_text(), expected_text);
-    let composer_elements = chat.bottom_pane.composer_text_elements();
-    assert!(
-        composer_elements
-            .iter()
-            .any(|element| element.placeholder(expected_text.as_str()) == Some("/plan")),
-        "expected recalled composer draft to preserve slash command prefix metadata",
-    );
-    for expected_element in expected_elements {
-        assert!(
-            composer_elements.contains(&expected_element),
-            "expected recalled composer draft to preserve inline payload element metadata",
-        );
-    }
-    assert_eq!(chat.bottom_pane.composer_local_images(), local_images);
-    assert_eq!(chat.remote_image_urls(), remote_image_urls);
-    assert_eq!(chat.bottom_pane.take_mention_bindings(), mention_bindings);
-    assert!(chat.queued_slash_commands.is_empty());
-}
-
-#[tokio::test]
-async fn alt_up_uses_strict_chronological_queue_order() {
-    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(None).await;
-
-    // Simulate a running task so follow-up inputs are queued.
-    chat.bottom_pane.set_task_running(true);
-    chat.queue_user_message(UserMessage::from("first queued message".to_string()));
-    chat.dispatch_command(SlashCommand::MemoryDrop);
-    chat.queue_user_message(UserMessage::from("second queued message".to_string()));
-
-    chat.handle_key_event(KeyEvent::new(KeyCode::Up, KeyModifiers::ALT));
-    assert_eq!(
-        chat.bottom_pane.composer_text(),
-        "second queued message".to_string()
-    );
-
-    chat.handle_key_event(KeyEvent::new(KeyCode::Up, KeyModifiers::ALT));
-    assert_eq!(
-        chat.bottom_pane.composer_text(),
-        "/debug-m-drop".to_string()
-    );
-
-    chat.handle_key_event(KeyEvent::new(KeyCode::Up, KeyModifiers::ALT));
-    assert_eq!(
-        chat.bottom_pane.composer_text(),
-        "first queued message".to_string()
-    );
-
-    assert!(chat.queued_user_messages.is_empty());
-    assert!(chat.queued_slash_commands.is_empty());
 }
 
 /// Pressing Up to recall the most recent history entry and immediately queuing
@@ -4338,6 +4208,73 @@ async fn item_completed_pops_pending_steer_with_local_image_and_text_elements() 
     assert!(stored_remote_image_urls.is_empty());
 }
 
+#[tokio::test(flavor = "multi_thread")]
+async fn submit_user_message_emits_structured_plugin_mentions_from_bindings() {
+    let (mut chat, _rx, mut op_rx) = make_chatwidget_manual(None).await;
+    let conversation_id = ThreadId::new();
+    let rollout_file = NamedTempFile::new().unwrap();
+    let configured = codex_protocol::protocol::SessionConfiguredEvent {
+        session_id: conversation_id,
+        forked_from_id: None,
+        thread_name: None,
+        model: "test-model".to_string(),
+        model_provider_id: "test-provider".to_string(),
+        service_tier: None,
+        approval_policy: AskForApproval::Never,
+        sandbox_policy: SandboxPolicy::new_read_only_policy(),
+        cwd: PathBuf::from("/home/user/project"),
+        reasoning_effort: Some(ReasoningEffortConfig::default()),
+        history_log_id: 0,
+        history_entry_count: 0,
+        initial_messages: None,
+        network_proxy: None,
+        rollout_path: Some(rollout_file.path().to_path_buf()),
+    };
+    chat.handle_codex_event(Event {
+        id: "initial".into(),
+        msg: EventMsg::SessionConfigured(configured),
+    });
+    chat.set_feature_enabled(Feature::Plugins, true);
+    chat.bottom_pane.set_plugin_mentions(Some(vec![
+        codex_core::plugins::PluginCapabilitySummary {
+            config_name: "sample@test".to_string(),
+            display_name: "Sample Plugin".to_string(),
+            description: None,
+            has_skills: true,
+            mcp_server_names: Vec::new(),
+            app_connector_ids: Vec::new(),
+        },
+    ]));
+
+    chat.submit_user_message(UserMessage {
+        text: "$sample".to_string(),
+        local_images: Vec::new(),
+        remote_image_urls: Vec::new(),
+        text_elements: Vec::new(),
+        mention_bindings: vec![MentionBinding {
+            mention: "sample".to_string(),
+            path: "plugin://sample@test".to_string(),
+        }],
+    });
+
+    let Op::UserTurn { items, .. } = next_submit_op(&mut op_rx) else {
+        panic!("expected Op::UserTurn");
+    };
+    assert_eq!(
+        items,
+        vec![
+            UserInput::Text {
+                text: "$sample".to_string(),
+                text_elements: Vec::new(),
+            },
+            UserInput::Mention {
+                name: "Sample Plugin".to_string(),
+                path: "plugin://sample@test".to_string(),
+            },
+        ]
+    );
+}
+
 #[tokio::test]
 async fn steer_enter_during_final_stream_preserves_follow_up_prompts_in_order() {
     let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(None).await;
@@ -4451,6 +4388,107 @@ async fn manual_interrupt_restores_pending_steers_to_composer() {
             .iter()
             .all(|cell| !lines_to_single_string(cell).contains("queued while streaming"))
     );
+}
+
+#[tokio::test]
+async fn esc_interrupt_sends_all_pending_steers_immediately_and_keeps_existing_draft() {
+    let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(None).await;
+    chat.thread_id = Some(ThreadId::new());
+    chat.on_task_started();
+    chat.on_agent_message_delta("Final answer line\n".to_string());
+
+    chat.bottom_pane
+        .set_composer_text("first pending steer".to_string(), Vec::new(), Vec::new());
+    chat.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    match next_submit_op(&mut op_rx) {
+        Op::UserTurn { items, .. } => assert_eq!(
+            items,
+            vec![UserInput::Text {
+                text: "first pending steer".to_string(),
+                text_elements: Vec::new(),
+            }]
+        ),
+        other => panic!("expected Op::UserTurn, got {other:?}"),
+    }
+
+    chat.bottom_pane
+        .set_composer_text("second pending steer".to_string(), Vec::new(), Vec::new());
+    chat.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+    match next_submit_op(&mut op_rx) {
+        Op::UserTurn { items, .. } => assert_eq!(
+            items,
+            vec![UserInput::Text {
+                text: "second pending steer".to_string(),
+                text_elements: Vec::new(),
+            }]
+        ),
+        other => panic!("expected Op::UserTurn, got {other:?}"),
+    }
+
+    chat.queued_user_messages
+        .push_back(UserMessage::from("queued draft".to_string()));
+    chat.refresh_pending_input_preview();
+    chat.bottom_pane
+        .set_composer_text("still editing".to_string(), Vec::new(), Vec::new());
+
+    chat.handle_key_event(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    next_interrupt_op(&mut op_rx);
+
+    chat.on_interrupted_turn(TurnAbortReason::Interrupted);
+
+    match next_submit_op(&mut op_rx) {
+        Op::UserTurn { items, .. } => assert_eq!(
+            items,
+            vec![UserInput::Text {
+                text: "first pending steer\nsecond pending steer".to_string(),
+                text_elements: Vec::new(),
+            }]
+        ),
+        other => panic!("expected merged pending steers to submit, got {other:?}"),
+    }
+
+    assert!(chat.pending_steers.is_empty());
+    assert_eq!(chat.bottom_pane.composer_text(), "still editing");
+    assert_eq!(chat.queued_user_messages.len(), 1);
+    assert_eq!(
+        chat.queued_user_messages.front().unwrap().text,
+        "queued draft"
+    );
+
+    let inserted = drain_insert_history(&mut rx);
+    assert!(
+        inserted
+            .iter()
+            .any(|cell| lines_to_single_string(cell).contains("first pending steer"))
+    );
+    assert!(
+        inserted
+            .iter()
+            .any(|cell| lines_to_single_string(cell).contains("second pending steer"))
+    );
+}
+
+#[tokio::test]
+async fn esc_with_pending_steers_overrides_agent_command_interrupt_behavior() {
+    let (mut chat, _rx, mut op_rx) = make_chatwidget_manual(None).await;
+    chat.thread_id = Some(ThreadId::new());
+    chat.on_task_started();
+
+    chat.bottom_pane
+        .set_composer_text("pending steer".to_string(), Vec::new(), Vec::new());
+    chat.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    match next_submit_op(&mut op_rx) {
+        Op::UserTurn { .. } => {}
+        other => panic!("expected Op::UserTurn, got {other:?}"),
+    }
+
+    chat.bottom_pane
+        .set_composer_text("/agent ".to_string(), Vec::new(), Vec::new());
+    chat.handle_key_event(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+
+    next_interrupt_op(&mut op_rx);
+    assert_eq!(chat.bottom_pane.composer_text(), "/agent ");
 }
 
 #[tokio::test]
@@ -5013,7 +5051,6 @@ async fn unified_exec_wait_after_final_agent_message_snapshot() {
         msg: EventMsg::TurnComplete(TurnCompleteEvent {
             turn_id: "turn-1".to_string(),
             last_agent_message: Some("Final response.".into()),
-            compaction_events_in_turn: 0,
         }),
     });
 
@@ -5056,7 +5093,6 @@ async fn unified_exec_wait_before_streamed_agent_message_snapshot() {
         msg: EventMsg::TurnComplete(TurnCompleteEvent {
             turn_id: "turn-1".to_string(),
             last_agent_message: None,
-            compaction_events_in_turn: 0,
         }),
     });
 
@@ -5122,7 +5158,6 @@ async fn unified_exec_waiting_multiple_empty_snapshots() {
         msg: EventMsg::TurnComplete(TurnCompleteEvent {
             turn_id: "turn-1".to_string(),
             last_agent_message: None,
-            compaction_events_in_turn: 0,
         }),
     });
 
@@ -5201,7 +5236,6 @@ async fn unified_exec_non_empty_then_empty_snapshots() {
         msg: EventMsg::TurnComplete(TurnCompleteEvent {
             turn_id: "turn-1".to_string(),
             last_agent_message: None,
-            compaction_events_in_turn: 0,
         }),
     });
 
@@ -5493,7 +5527,7 @@ async fn collaboration_modes_defaults_to_code_on_startup() {
         .await
         .expect("config");
     let resolved_model = codex_core::test_support::get_model_offline(cfg.model.as_deref());
-    let otel_manager = test_otel_manager(&cfg, resolved_model.as_str());
+    let session_telemetry = test_session_telemetry(&cfg, resolved_model.as_str());
     let thread_manager = Arc::new(
         codex_core::test_support::thread_manager_with_models_provider(
             CodexAuth::from_api_key("test"),
@@ -5516,7 +5550,7 @@ async fn collaboration_modes_defaults_to_code_on_startup() {
         model: Some(resolved_model.clone()),
         startup_tooltip_override: None,
         status_line_invalid_items_warned: Arc::new(AtomicBool::new(false)),
-        otel_manager,
+        session_telemetry,
     };
 
     let chat = ChatWidget::new(init, thread_manager);
@@ -5543,7 +5577,7 @@ async fn experimental_mode_plan_is_ignored_on_startup() {
         .await
         .expect("config");
     let resolved_model = codex_core::test_support::get_model_offline(cfg.model.as_deref());
-    let otel_manager = test_otel_manager(&cfg, resolved_model.as_str());
+    let session_telemetry = test_session_telemetry(&cfg, resolved_model.as_str());
     let thread_manager = Arc::new(
         codex_core::test_support::thread_manager_with_models_provider(
             CodexAuth::from_api_key("test"),
@@ -5566,7 +5600,7 @@ async fn experimental_mode_plan_is_ignored_on_startup() {
         model: Some(resolved_model.clone()),
         startup_tooltip_override: None,
         status_line_invalid_items_warned: Arc::new(AtomicBool::new(false)),
-        otel_manager,
+        session_telemetry,
     };
 
     let chat = ChatWidget::new(init, thread_manager);
@@ -5708,20 +5742,6 @@ async fn slash_quit_requests_exit() {
 }
 
 #[tokio::test]
-async fn slash_quit_is_not_queued_while_task_running() {
-    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(None).await;
-    chat.bottom_pane.set_task_running(true);
-
-    chat.dispatch_command(SlashCommand::Quit);
-
-    assert!(
-        chat.queued_slash_commands.is_empty(),
-        "expected /quit to bypass queued slash-command flow"
-    );
-    assert_matches!(rx.try_recv(), Ok(AppEvent::Exit(ExitMode::ShutdownFirst)));
-}
-
-#[tokio::test]
 async fn slash_copy_state_tracks_turn_complete_final_reply() {
     let (mut chat, _rx, _op_rx) = make_chatwidget_manual(None).await;
 
@@ -5730,7 +5750,6 @@ async fn slash_copy_state_tracks_turn_complete_final_reply() {
         msg: EventMsg::TurnComplete(TurnCompleteEvent {
             turn_id: "turn-1".to_string(),
             last_agent_message: Some("Final reply **markdown**".to_string()),
-            compaction_events_in_turn: 0,
         }),
     });
 
@@ -5761,7 +5780,6 @@ async fn slash_copy_state_tracks_plan_item_completion() {
         msg: EventMsg::TurnComplete(TurnCompleteEvent {
             turn_id: "turn-1".to_string(),
             last_agent_message: None,
-            compaction_events_in_turn: 0,
         }),
     });
 
@@ -5795,7 +5813,6 @@ async fn slash_copy_state_is_preserved_during_running_task() {
         msg: EventMsg::TurnComplete(TurnCompleteEvent {
             turn_id: "turn-1".to_string(),
             last_agent_message: Some("Previous completed reply".to_string()),
-            compaction_events_in_turn: 0,
         }),
     });
     chat.on_task_started();
@@ -5815,7 +5832,6 @@ async fn slash_copy_state_clears_on_thread_rollback() {
         msg: EventMsg::TurnComplete(TurnCompleteEvent {
             turn_id: "turn-1".to_string(),
             last_agent_message: Some("Reply that will be rolled back".to_string()),
-            compaction_events_in_turn: 0,
         }),
     });
     chat.handle_codex_event(Event {
@@ -5843,7 +5859,6 @@ async fn slash_copy_is_unavailable_when_legacy_agent_message_is_not_repeated_on_
         msg: EventMsg::TurnComplete(TurnCompleteEvent {
             turn_id: "turn-1".to_string(),
             last_agent_message: None,
-            compaction_events_in_turn: 0,
         }),
     });
     let _ = drain_insert_history(&mut rx);
@@ -5873,7 +5888,6 @@ async fn slash_copy_is_unavailable_when_legacy_agent_message_item_is_not_repeate
         msg: EventMsg::TurnComplete(TurnCompleteEvent {
             turn_id: "turn-1".to_string(),
             last_agent_message: None,
-            compaction_events_in_turn: 0,
         }),
     });
     let _ = drain_insert_history(&mut rx);
@@ -5900,7 +5914,6 @@ async fn slash_copy_does_not_return_stale_output_after_thread_rollback() {
         msg: EventMsg::TurnComplete(TurnCompleteEvent {
             turn_id: "turn-1".to_string(),
             last_agent_message: Some("Reply that will be rolled back".to_string()),
-            compaction_events_in_turn: 0,
         }),
     });
     let _ = drain_insert_history(&mut rx);
@@ -5959,29 +5972,24 @@ async fn slash_clear_requests_ui_clear_when_idle() {
 }
 
 #[tokio::test]
-async fn slash_clear_queues_while_task_running() {
+async fn slash_clear_is_disabled_while_task_running() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(None).await;
     chat.bottom_pane.set_task_running(true);
 
     chat.dispatch_command(SlashCommand::Clear);
 
-    assert_eq!(chat.queued_slash_commands.len(), 1);
-    assert!(matches!(
-        chat.queued_slash_commands.front(),
-        Some(QueuedSlashCommand::Command(SlashCommand::Clear))
-    ));
-
-    let cells = drain_insert_history(&mut rx);
-    let rendered = lines_to_single_string(cells.last().expect("expected queue info message"));
-    assert!(
-        rendered.contains("Queued '/clear'"),
-        "expected queued command message, got {rendered:?}"
-    );
-
-    chat.on_task_complete(None, false);
-
-    assert_matches!(rx.try_recv(), Ok(AppEvent::ClearUi));
-    assert!(chat.queued_slash_commands.is_empty());
+    let event = rx.try_recv().expect("expected disabled command error");
+    match event {
+        AppEvent::InsertHistoryCell(cell) => {
+            let rendered = lines_to_single_string(&cell.display_lines(80));
+            assert!(
+                rendered.contains("'/clear' is disabled while a task is in progress."),
+                "expected /clear task-running error, got {rendered:?}"
+            );
+        }
+        other => panic!("expected InsertHistoryCell error, got {other:?}"),
+    }
+    assert!(rx.try_recv().is_err(), "expected no follow-up events");
 }
 
 #[tokio::test]
@@ -6018,43 +6026,6 @@ async fn slash_fork_requests_current_fork() {
     chat.dispatch_command(SlashCommand::Fork);
 
     assert_matches!(rx.try_recv(), Ok(AppEvent::ForkCurrentSession));
-}
-
-#[tokio::test]
-async fn slash_model_opens_picker_while_task_running() {
-    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(None).await;
-    chat.thread_id = Some(ThreadId::new());
-    chat.bottom_pane.set_task_running(true);
-
-    chat.dispatch_command(SlashCommand::Model);
-
-    let popup = render_bottom_popup(&chat, 80);
-    assert!(
-        popup.contains("Select Model"),
-        "expected model picker while task is running, got {popup:?}"
-    );
-    assert!(
-        chat.queued_slash_commands.is_empty(),
-        "expected /model command itself not to be queued"
-    );
-}
-
-#[tokio::test]
-async fn slash_status_is_not_queued_while_task_running() {
-    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(None).await;
-    chat.bottom_pane.set_task_running(true);
-
-    chat.dispatch_command(SlashCommand::Status);
-
-    assert!(
-        chat.queued_slash_commands.is_empty(),
-        "expected /status to run immediately without queueing"
-    );
-    let cells = drain_insert_history(&mut rx);
-    assert!(
-        !cells.is_empty(),
-        "expected /status output to render immediately"
-    );
 }
 
 #[tokio::test]
@@ -6245,8 +6216,8 @@ async fn review_commit_picker_shows_subjects_without_timestamps() {
     );
 }
 
-/// Submitting the custom prompt view emits AppEvent::SelectReview with the
-/// typed prompt and uses the same text for the user-facing hint.
+/// Submitting the custom prompt view sends Op::Review with the typed prompt
+/// and uses the same text for the user-facing hint.
 #[tokio::test]
 async fn custom_prompt_submit_sends_review_op() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(None).await;
@@ -6256,10 +6227,10 @@ async fn custom_prompt_submit_sends_review_op() {
     chat.handle_paste("  please audit dependencies  ".to_string());
     chat.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
 
-    // Expect AppEvent::SelectReview with trimmed prompt
+    // Expect AppEvent::CodexOp(Op::Review { .. }) with trimmed prompt
     let evt = rx.try_recv().expect("expected one app event");
     match evt {
-        AppEvent::SelectReview { review_request } => {
+        AppEvent::CodexOp(Op::Review { review_request }) => {
             assert_eq!(
                 review_request,
                 ReviewRequest {
@@ -6270,7 +6241,7 @@ async fn custom_prompt_submit_sends_review_op() {
                 }
             );
         }
-        other => panic!("expected AppEvent::SelectReview, got {other:?}"),
+        other => panic!("unexpected app event: {other:?}"),
     }
 }
 
@@ -6389,6 +6360,42 @@ async fn interrupted_turn_error_message_snapshot() {
     );
     let last = lines_to_single_string(cells.last().unwrap());
     assert_snapshot!("interrupted_turn_error_message", last);
+}
+
+// Snapshot test: interrupting specifically to submit pending steers shows an
+// informational banner instead of the generic "tell the model what to do
+// differently" error prompt.
+#[tokio::test]
+async fn interrupted_turn_pending_steers_message_snapshot() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(None).await;
+    chat.thread_id = Some(ThreadId::new());
+    chat.pending_steers.push_back(pending_steer("steer 1"));
+    chat.submit_pending_steers_after_interrupt = true;
+
+    chat.handle_codex_event(Event {
+        id: "task-1".into(),
+        msg: EventMsg::TurnStarted(TurnStartedEvent {
+            turn_id: "turn-1".to_string(),
+            model_context_window: None,
+            collaboration_mode_kind: ModeKind::Default,
+        }),
+    });
+
+    chat.handle_codex_event(Event {
+        id: "task-1".into(),
+        msg: EventMsg::TurnAborted(codex_protocol::protocol::TurnAbortedEvent {
+            turn_id: Some("turn-1".to_string()),
+            reason: TurnAbortReason::Interrupted,
+        }),
+    });
+
+    let cells = drain_insert_history(&mut rx);
+    let info = cells
+        .iter()
+        .map(|cell| lines_to_single_string(cell))
+        .find(|line| line.contains("Model interrupted to submit steer instructions."))
+        .expect("expected steer interrupt info message to be inserted");
+    assert_snapshot!("interrupted_turn_pending_steers_message", info);
 }
 
 /// Opening custom prompt from the review popup, pressing Esc returns to the
@@ -7136,6 +7143,35 @@ async fn experimental_popup_shows_js_repl_node_requirement() {
 }
 
 #[tokio::test]
+async fn experimental_popup_includes_guardian_approval() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(None).await;
+    let guardian_stage = FEATURES
+        .iter()
+        .find(|spec| spec.id == Feature::GuardianApproval)
+        .map(|spec| spec.stage)
+        .expect("expected guardian approval feature metadata");
+    let guardian_name = guardian_stage
+        .experimental_menu_name()
+        .expect("expected guardian approval experimental menu name");
+    let guardian_description = guardian_stage
+        .experimental_menu_description()
+        .expect("expected guardian approval experimental description");
+
+    chat.open_experimental_popup();
+
+    let popup = render_bottom_popup(&chat, 120);
+    let normalized_popup = popup.split_whitespace().collect::<Vec<_>>().join(" ");
+    assert!(
+        popup.contains(guardian_name),
+        "expected guardian approvals entry in experimental popup, got:\n{popup}"
+    );
+    assert!(
+        normalized_popup.contains(guardian_description),
+        "expected guardian approvals description in experimental popup, got:\n{popup}"
+    );
+}
+
+#[tokio::test]
 async fn multi_agent_enable_prompt_snapshot() {
     let (mut chat, _rx, _op_rx) = make_chatwidget_manual(None).await;
 
@@ -7676,374 +7712,22 @@ async fn user_shell_command_renders_output_not_exploring() {
 }
 
 #[tokio::test]
-async fn slash_command_queues_while_task_running() {
-    let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(None).await;
-    chat.bottom_pane.set_task_running(true);
-
-    chat.dispatch_command(SlashCommand::MemoryDrop);
-
-    assert_matches!(op_rx.try_recv(), Err(TryRecvError::Empty));
-    assert_eq!(chat.queued_slash_commands.len(), 1);
-    assert!(matches!(
-        chat.queued_slash_commands.front(),
-        Some(QueuedSlashCommand::Command(SlashCommand::MemoryDrop))
-    ));
-
-    let cells = drain_insert_history(&mut rx);
-    let rendered = lines_to_single_string(cells.last().expect("expected queue info message"));
-    assert!(
-        rendered.contains("Queued '/debug-m-drop'"),
-        "expected queued command message, got {rendered:?}"
-    );
-}
-
-#[tokio::test]
-async fn queued_slash_command_runs_after_task_complete() {
-    let (mut chat, _rx, mut op_rx) = make_chatwidget_manual(None).await;
-    chat.bottom_pane.set_task_running(true);
-
-    chat.dispatch_command(SlashCommand::MemoryDrop);
-    assert_matches!(op_rx.try_recv(), Err(TryRecvError::Empty));
-
-    chat.on_task_complete(None, false);
-
-    assert_matches!(op_rx.try_recv(), Ok(Op::DropMemories));
-    assert!(chat.queued_slash_commands.is_empty());
-}
-
-#[tokio::test]
-async fn selected_review_change_queues_while_task_running() {
-    let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(None).await;
-    chat.bottom_pane.set_task_running(true);
-
-    chat.dispatch_command(SlashCommand::Review);
-    // Select "Review uncommitted changes" from the review picker.
-    chat.handle_key_event(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
-    chat.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
-
-    let review_request = std::iter::from_fn(|| rx.try_recv().ok())
-        .find_map(|event| match event {
-            AppEvent::SelectReview { review_request } => Some(review_request),
-            _ => None,
-        })
-        .expect("expected review selection event");
-
-    assert_eq!(
-        review_request,
-        ReviewRequest {
-            target: ReviewTarget::UncommittedChanges,
-            user_facing_hint: None,
-        }
-    );
-    assert_matches!(op_rx.try_recv(), Err(TryRecvError::Empty));
-
-    chat.submit_or_queue_review_request(review_request);
-    assert!(matches!(
-        chat.queued_slash_commands.front(),
-        Some(QueuedSlashCommand::ReviewRequest { review_request }) if review_request.target
-            == ReviewTarget::UncommittedChanges
-    ));
-
-    chat.on_task_complete(None, false);
-
-    match op_rx.try_recv() {
-        Ok(Op::Review { review_request }) => {
-            assert_eq!(
-                review_request,
-                ReviewRequest {
-                    target: ReviewTarget::UncommittedChanges,
-                    user_facing_hint: None,
-                }
-            );
-        }
-        other => panic!("expected Op::Review, got {other:?}"),
-    }
-    assert!(chat.queued_slash_commands.is_empty());
-}
-
-#[tokio::test]
-async fn queued_non_turn_slash_command_keeps_draining_follow_ups() {
-    let (mut chat, _rx, mut op_rx) = make_chatwidget_manual(None).await;
-    chat.thread_id = Some(ThreadId::new());
-    chat.bottom_pane.set_task_running(true);
-
-    chat.dispatch_command(SlashCommand::MemoryDrop);
-    chat.queue_user_message(UserMessage::from("queued follow-up".to_string()));
-    assert_matches!(op_rx.try_recv(), Err(TryRecvError::Empty));
-
-    chat.on_task_complete(None, false);
-
-    let mut ops = Vec::new();
-    while let Ok(op) = op_rx.try_recv() {
-        ops.push(op);
-    }
-
-    assert!(
-        ops.iter().any(|op| matches!(op, Op::DropMemories)),
-        "expected queued non-turn slash command to run after task completion"
-    );
-    let submitted_items = ops
-        .iter()
-        .find_map(|op| match op {
-            Op::UserTurn { items, .. } => Some(items),
-            _ => None,
-        })
-        .expect("expected queued follow-up message to be submitted");
-    assert!(
-        submitted_items
-            .iter()
-            .any(|item| matches!(item, UserInput::Text { text, .. } if text == "queued follow-up")),
-        "expected queued follow-up text to be submitted after non-turn slash command"
-    );
-}
-
-#[tokio::test]
-async fn queued_inline_slash_command_runs_with_args_after_task_complete() {
-    let (mut chat, _rx, mut op_rx) = make_chatwidget_manual(None).await;
-    chat.bottom_pane.set_task_running(true);
-    chat.bottom_pane.set_composer_text(
-        "/review focus on error handling".to_string(),
-        Vec::new(),
-        Vec::new(),
-    );
-
-    chat.dispatch_command_with_args(
-        SlashCommand::Review,
-        "focus on error handling".to_string(),
-        Vec::new(),
-    );
-    assert_matches!(op_rx.try_recv(), Err(TryRecvError::Empty));
-
-    chat.on_task_complete(None, false);
-
-    match op_rx.try_recv() {
-        Ok(Op::Review { review_request }) => {
-            assert_eq!(
-                review_request,
-                ReviewRequest {
-                    target: ReviewTarget::Custom {
-                        instructions: "focus on error handling".to_string(),
-                    },
-                    user_facing_hint: None,
-                }
-            );
-        }
-        other => panic!("expected Op::Review, got {other:?}"),
-    }
-    assert!(chat.queued_slash_commands.is_empty());
-}
-
-#[tokio::test]
-async fn queued_inline_slash_command_expands_pending_paste_payload_before_queueing() {
-    let (mut chat, _rx, mut op_rx) = make_chatwidget_manual(None).await;
-    chat.bottom_pane.set_task_running(true);
-    chat.bottom_pane
-        .set_composer_text("/review ".to_string(), Vec::new(), Vec::new());
-
-    let pasted = "x".repeat(1101);
-    chat.handle_paste(pasted.clone());
-    let composer_text = chat.bottom_pane.composer_text();
-    let args = composer_text
-        .strip_prefix("/review ")
-        .expect("composer should include /review prefix")
-        .to_string();
-    assert_ne!(
-        args, pasted,
-        "expected queued args to start from placeholder text"
-    );
-
-    chat.dispatch_command_with_args(SlashCommand::Review, args, Vec::new());
-    assert_matches!(op_rx.try_recv(), Err(TryRecvError::Empty));
-
-    assert_eq!(chat.queued_slash_commands.len(), 1);
-    match chat.queued_slash_commands.front() {
-        Some(QueuedSlashCommand::CommandWithArgs { cmd, args, .. }) => {
-            assert_eq!(*cmd, SlashCommand::Review);
-            assert_eq!(args, &pasted);
-        }
-        _ => panic!("expected queued inline /review command"),
-    }
-}
-
-#[tokio::test]
-async fn queued_inline_plan_slash_command_captures_prepared_mention_bindings() {
-    let (mut chat, _rx, mut op_rx) = make_chatwidget_manual(None).await;
-    chat.bottom_pane.set_task_running(true);
-
-    let mention_bindings = vec![MentionBinding {
-        mention: "repo".to_string(),
-        path: "/tmp/repo".to_string(),
-    }];
-    chat.bottom_pane.set_composer_text_with_mention_bindings(
-        "/plan inspect $repo".to_string(),
-        Vec::new(),
-        Vec::new(),
-        mention_bindings.clone(),
-    );
-
-    chat.dispatch_command_with_args(SlashCommand::Plan, "inspect $repo".to_string(), Vec::new());
-    assert_matches!(op_rx.try_recv(), Err(TryRecvError::Empty));
-
-    assert_eq!(chat.queued_slash_commands.len(), 1);
-    match chat.queued_slash_commands.front() {
-        Some(QueuedSlashCommand::CommandWithArgs {
-            cmd,
-            args,
-            text_elements,
-            mention_bindings: queued_bindings,
-            ..
-        }) => {
-            assert_eq!(*cmd, SlashCommand::Plan);
-            assert_eq!(args, "inspect $repo");
-            assert_eq!(queued_bindings, &mention_bindings);
-            assert!(
-                text_elements
-                    .iter()
-                    .any(|element| element.placeholder(args.as_str()) == Some("$repo")),
-                "expected queued args to preserve mention element metadata",
-            );
-        }
-        _ => panic!("expected queued inline /plan command"),
-    }
-}
-
-#[tokio::test]
-async fn selected_model_change_queues_while_task_running() {
+async fn disabled_slash_command_while_task_running_snapshot() {
+    // Build a chat widget and simulate an active task
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(None).await;
     chat.bottom_pane.set_task_running(true);
 
-    chat.apply_model_and_effort(
-        "gpt-5.1-codex-mini".to_string(),
-        Some(ReasoningEffortConfig::Low),
-    );
+    // Dispatch a command that is unavailable while a task runs (e.g., /model)
+    chat.dispatch_command(SlashCommand::Model);
 
-    assert_eq!(chat.queued_slash_commands.len(), 1);
-    assert!(matches!(
-        chat.queued_slash_commands.front(),
-        Some(QueuedSlashCommand::ModelSelection {
-            model,
-            effort: Some(ReasoningEffortConfig::Low),
-        }) if model == "gpt-5.1-codex-mini"
-    ));
-
+    // Drain history and snapshot the rendered error line(s)
     let cells = drain_insert_history(&mut rx);
-    let rendered = lines_to_single_string(cells.last().expect("expected queue info message"));
     assert!(
-        rendered.contains("Queued '/model gpt-5.1-codex-mini"),
-        "expected queued model selection message, got {rendered:?}"
+        !cells.is_empty(),
+        "expected an error message history cell to be emitted",
     );
-
-    chat.on_task_complete(None, false);
-
-    let mut saw_model = false;
-    let mut saw_effort = false;
-    while let Ok(event) = rx.try_recv() {
-        match event {
-            AppEvent::UpdateModel(model) if model == "gpt-5.1-codex-mini" => saw_model = true,
-            AppEvent::UpdateReasoningEffort(Some(ReasoningEffortConfig::Low)) => saw_effort = true,
-            _ => {}
-        }
-    }
-    assert!(
-        saw_model,
-        "expected queued model to apply after task completion"
-    );
-    assert!(
-        saw_effort,
-        "expected queued reasoning effort to apply after task completion"
-    );
-}
-
-#[tokio::test]
-async fn queued_model_selection_applies_before_draining_queued_message() {
-    let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(Some("gpt-5.1-codex-max")).await;
-    chat.thread_id = Some(ThreadId::new());
-    chat.bottom_pane.set_task_running(true);
-    let _ = drain_insert_history(&mut rx);
-
-    chat.apply_model_and_effort(
-        "gpt-5.1-codex-mini".to_string(),
-        Some(ReasoningEffortConfig::Low),
-    );
-    chat.queue_user_message(UserMessage::from("queued follow-up".to_string()));
-    assert_matches!(op_rx.try_recv(), Err(TryRecvError::Empty));
-
-    chat.on_task_complete(None, false);
-
-    match next_submit_op(&mut op_rx) {
-        Op::UserTurn { model, effort, .. } => {
-            assert_eq!(model, "gpt-5.1-codex-mini");
-            assert_eq!(effort, Some(ReasoningEffortConfig::Low));
-        }
-        other => panic!("expected Op::UserTurn, got {other:?}"),
-    }
-}
-
-#[tokio::test]
-async fn reasoning_popup_selection_routes_through_select_model_while_task_running() {
-    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(Some("gpt-5.1-codex-max")).await;
-    chat.bottom_pane.set_task_running(true);
-
-    let preset = get_available_model(&chat, "gpt-5");
-    chat.open_reasoning_popup(preset);
-    chat.handle_key_event(KeyEvent::from(KeyCode::Enter));
-
-    let events = std::iter::from_fn(|| rx.try_recv().ok()).collect::<Vec<_>>();
-    assert!(
-        events.iter().any(|event| matches!(
-            event,
-            AppEvent::SelectModel { model, .. } if model == "gpt-5"
-        )),
-        "expected SelectModel event from reasoning popup; events: {events:?}"
-    );
-    assert!(
-        events.iter().all(|event| {
-            !matches!(
-                event,
-                AppEvent::UpdateModel(_) | AppEvent::PersistModelSelection { .. }
-            )
-        }),
-        "did not expect direct update/persist model events; events: {events:?}"
-    );
-
-    let (selected_model, selected_effort) = events
-        .into_iter()
-        .find_map(|event| match event {
-            AppEvent::SelectModel { model, effort } => Some((model, effort)),
-            _ => None,
-        })
-        .expect("expected SelectModel event");
-    chat.apply_model_and_effort(selected_model, selected_effort);
-    assert!(matches!(
-        chat.queued_slash_commands.front(),
-        Some(QueuedSlashCommand::ModelSelection { model, .. }) if model == "gpt-5"
-    ));
-}
-
-#[tokio::test]
-async fn queued_compact_runs_after_queued_model_selection() {
-    let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(None).await;
-    chat.bottom_pane.set_task_running(true);
-
-    chat.apply_model_and_effort(
-        "gpt-5.1-codex-mini".to_string(),
-        Some(ReasoningEffortConfig::Low),
-    );
-    chat.dispatch_command(SlashCommand::Compact);
-    assert_matches!(op_rx.try_recv(), Err(TryRecvError::Empty));
-
-    chat.on_task_complete(None, false);
-
-    while let Ok(_op) = op_rx.try_recv() {}
-    let mut saw_compact = false;
-    while let Ok(event) = rx.try_recv() {
-        if matches!(event, AppEvent::CodexOp(Op::Compact)) {
-            saw_compact = true;
-            break;
-        }
-    }
-    assert!(saw_compact, "expected queued /compact to emit Op::Compact");
-    assert!(chat.queued_slash_commands.is_empty());
+    let blob = lines_to_single_string(cells.last().unwrap());
+    assert_snapshot!(blob);
 }
 
 #[tokio::test]
@@ -8450,6 +8134,7 @@ async fn approval_modal_exec_snapshot() -> anyhow::Result<()> {
         ])),
         proposed_network_policy_amendments: None,
         additional_permissions: None,
+        skill_metadata: None,
         available_decisions: None,
         parsed_cmd: vec![],
     };
@@ -8511,6 +8196,7 @@ async fn approval_modal_exec_without_reason_snapshot() -> anyhow::Result<()> {
         ])),
         proposed_network_policy_amendments: None,
         additional_permissions: None,
+        skill_metadata: None,
         available_decisions: None,
         parsed_cmd: vec![],
     };
@@ -8559,6 +8245,7 @@ async fn approval_modal_exec_multiline_prefix_hides_execpolicy_option_snapshot()
         proposed_execpolicy_amendment: Some(ExecPolicyAmendment::new(command)),
         proposed_network_policy_amendments: None,
         additional_permissions: None,
+        skill_metadata: None,
         available_decisions: None,
         parsed_cmd: vec![],
     };
@@ -8668,98 +8355,6 @@ async fn interrupt_restores_queued_messages_into_composer() {
 
     // Drain rx to avoid unused warnings.
     let _ = drain_insert_history(&mut rx);
-}
-
-#[tokio::test]
-async fn interrupt_keeps_queued_slash_commands_pending() {
-    let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(None).await;
-    chat.bottom_pane.set_task_running(true);
-    chat.dispatch_command(SlashCommand::Clear);
-    assert_eq!(chat.queued_slash_commands.len(), 1);
-    let _ = drain_insert_history(&mut rx);
-
-    chat.handle_codex_event(Event {
-        id: "turn-1".into(),
-        msg: EventMsg::TurnAborted(codex_protocol::protocol::TurnAbortedEvent {
-            turn_id: Some("turn-1".to_string()),
-            reason: TurnAbortReason::Interrupted,
-        }),
-    });
-
-    assert_eq!(chat.queued_slash_commands.len(), 1);
-    assert_matches!(op_rx.try_recv(), Err(TryRecvError::Empty));
-
-    let mut saw_clear = false;
-    while let Ok(event) = rx.try_recv() {
-        if matches!(event, AppEvent::ClearUi) {
-            saw_clear = true;
-        }
-    }
-    assert!(
-        !saw_clear,
-        "queued slash command should remain pending after interrupt"
-    );
-}
-
-#[tokio::test]
-async fn interrupt_applies_queued_model_selection_immediately() {
-    let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(Some("gpt-5.1-codex-max")).await;
-    chat.mcp_startup_status = Some(HashMap::new());
-    chat.update_task_running_state();
-    let _ = drain_insert_history(&mut rx);
-
-    chat.apply_model_and_effort(
-        "gpt-5.1-codex-mini".to_string(),
-        Some(ReasoningEffortConfig::Low),
-    );
-    chat.dispatch_command(SlashCommand::Clear);
-    assert_eq!(chat.queued_slash_commands.len(), 2);
-    let _ = drain_insert_history(&mut rx);
-
-    chat.handle_codex_event(Event {
-        id: "turn-1".into(),
-        msg: EventMsg::TurnAborted(codex_protocol::protocol::TurnAbortedEvent {
-            turn_id: Some("turn-1".to_string()),
-            reason: TurnAbortReason::Interrupted,
-        }),
-    });
-
-    assert_eq!(chat.current_model(), "gpt-5.1-codex-mini");
-    assert_eq!(
-        chat.effective_reasoning_effort(),
-        Some(ReasoningEffortConfig::Low)
-    );
-    assert_eq!(chat.queued_slash_commands.len(), 1);
-    assert!(matches!(
-        chat.queued_slash_commands.front(),
-        Some(QueuedSlashCommand::Command(SlashCommand::Clear))
-    ));
-    assert_eq!(
-        chat.queued_follow_up_order,
-        VecDeque::from([QueuedFollowUpKind::SlashCommand])
-    );
-    assert_matches!(op_rx.try_recv(), Err(TryRecvError::Empty));
-
-    let events = std::iter::from_fn(|| rx.try_recv().ok()).collect::<Vec<_>>();
-    assert!(
-        events.iter().any(
-            |event| matches!(event, AppEvent::UpdateModel(model) if model == "gpt-5.1-codex-mini")
-        ),
-        "expected queued model selection to apply after interrupt"
-    );
-    assert!(
-        events.iter().any(|event| matches!(
-            event,
-            AppEvent::UpdateReasoningEffort(Some(ReasoningEffortConfig::Low))
-        )),
-        "expected queued reasoning effort to apply after interrupt"
-    );
-    assert!(
-        events
-            .iter()
-            .all(|event| !matches!(event, AppEvent::ClearUi)),
-        "queued slash commands other than model selection should remain pending after interrupt"
-    );
 }
 
 #[tokio::test]
@@ -8903,7 +8498,6 @@ async fn turn_complete_keeps_unified_exec_processes() {
         msg: EventMsg::TurnComplete(TurnCompleteEvent {
             turn_id: "turn-1".to_string(),
             last_agent_message: None,
-            compaction_events_in_turn: 0,
         }),
     });
 
@@ -9019,6 +8613,7 @@ async fn status_widget_and_approval_modal_snapshot() {
         ])),
         proposed_network_policy_amendments: None,
         additional_permissions: None,
+        skill_metadata: None,
         available_decisions: None,
         parsed_cmd: vec![],
     };
@@ -9874,407 +9469,6 @@ async fn status_line_invalid_items_warn_once() {
 }
 
 #[tokio::test]
-async fn status_line_weekly_limit_pacing_on_pace_within_tolerance() {
-    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(None).await;
-    let resets_at = chrono::Local::now().timestamp() + (6048 * 60);
-    chat.on_rate_limit_snapshot(Some(weekly_snapshot(37.0, Some(10080), Some(resets_at))));
-
-    let value = chat.status_line_value_for_item(&StatusLineItem::WeeklyLimit);
-    assert_eq!(value.as_deref(), Some("weekly 63% / 60%"));
-}
-
-#[tokio::test]
-async fn status_line_weekly_limit_pacing_on_pace_at_positive_epsilon_boundary() {
-    let (_chat, _rx, _op_rx) = make_chatwidget_manual(None).await;
-    let window_minutes = 10080;
-    let captured_at = chrono::Local::now();
-    let resets_at = captured_at.timestamp() + ((window_minutes * 60) / 2);
-    let window = RateLimitWindowDisplay {
-        used_percent: 47.0,
-        resets_at: None,
-        resets_at_unix_seconds: Some(resets_at),
-        window_minutes: Some(window_minutes),
-    };
-
-    let signal = ChatWidget::classify_weekly_pacing_signal(&window, captured_at, captured_at);
-    assert_eq!(signal, WeeklyPacingSignal::OnPace);
-}
-
-#[tokio::test]
-async fn status_line_weekly_limit_pacing_on_pace_at_negative_epsilon_boundary() {
-    let (_chat, _rx, _op_rx) = make_chatwidget_manual(None).await;
-    let window_minutes = 10080;
-    let captured_at = chrono::Local::now();
-    let resets_at = captured_at.timestamp() + ((window_minutes * 60) / 2);
-    let window = RateLimitWindowDisplay {
-        used_percent: 53.0,
-        resets_at: None,
-        resets_at_unix_seconds: Some(resets_at),
-        window_minutes: Some(window_minutes),
-    };
-
-    let signal = ChatWidget::classify_weekly_pacing_signal(&window, captured_at, captured_at);
-    assert_eq!(signal, WeeklyPacingSignal::OnPace);
-}
-
-#[tokio::test]
-async fn status_line_weekly_limit_pacing_over_when_usage_is_ahead_of_time() {
-    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(None).await;
-    let resets_at = chrono::Local::now().timestamp() + (6048 * 60);
-    chat.on_rate_limit_snapshot(Some(weekly_snapshot(50.0, Some(10080), Some(resets_at))));
-
-    let value = chat.status_line_value_for_item(&StatusLineItem::WeeklyLimit);
-    assert_eq!(value.as_deref(), Some("weekly 50% / 60%"));
-}
-
-#[tokio::test]
-async fn status_line_weekly_limit_pacing_under_when_usage_is_behind_time() {
-    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(None).await;
-    let resets_at = chrono::Local::now().timestamp() + (6048 * 60);
-    chat.on_rate_limit_snapshot(Some(weekly_snapshot(20.0, Some(10080), Some(resets_at))));
-
-    let value = chat.status_line_value_for_item(&StatusLineItem::WeeklyLimit);
-    assert_eq!(value.as_deref(), Some("weekly 80% / 60%"));
-}
-
-#[tokio::test]
-async fn status_line_weekly_limit_pacing_falls_back_when_time_data_missing() {
-    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(None).await;
-    chat.on_rate_limit_snapshot(Some(weekly_snapshot(20.0, Some(10080), None)));
-
-    let value = chat.status_line_value_for_item(&StatusLineItem::WeeklyLimit);
-    assert_eq!(value.as_deref(), Some("weekly 80%"));
-}
-
-#[tokio::test]
-async fn status_line_weekly_limit_pacing_shows_stale_when_snapshot_stale() {
-    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(None).await;
-    let resets_at = chrono::Local::now().timestamp() + (6048 * 60);
-    chat.on_rate_limit_snapshot(Some(weekly_snapshot(37.0, Some(10080), Some(resets_at))));
-
-    let snapshot = chat
-        .rate_limit_snapshots_by_limit_id
-        .get_mut("codex")
-        .expect("codex rate-limit snapshot should be cached");
-    snapshot.captured_at = chrono::Local::now() - chrono::Duration::minutes(16);
-
-    let value = chat.status_line_value_for_item(&StatusLineItem::WeeklyLimit);
-    assert_eq!(value.as_deref(), Some("weekly 63% / 60% (stale)"));
-}
-
-#[tokio::test]
-async fn status_line_weekly_limit_pacing_at_stale_threshold_remains_non_stale() {
-    let (_chat, _rx, _op_rx) = make_chatwidget_manual(None).await;
-    let captured_at = chrono::Local::now();
-    let window = RateLimitWindowDisplay {
-        used_percent: 37.0,
-        resets_at: None,
-        resets_at_unix_seconds: Some(captured_at.timestamp() + (6048 * 60)),
-        window_minutes: Some(10080),
-    };
-    let rendered_at = captured_at + chrono::Duration::minutes(15);
-
-    let signal = ChatWidget::classify_weekly_pacing_signal(&window, captured_at, rendered_at);
-    assert_eq!(signal, WeeklyPacingSignal::OnPace);
-}
-
-#[tokio::test]
-async fn status_line_weekly_limit_pacing_one_second_past_stale_threshold_shows_stale() {
-    let (_chat, _rx, _op_rx) = make_chatwidget_manual(None).await;
-    let captured_at = chrono::Local::now();
-    let window = RateLimitWindowDisplay {
-        used_percent: 37.0,
-        resets_at: None,
-        resets_at_unix_seconds: Some(captured_at.timestamp() + (6048 * 60)),
-        window_minutes: Some(10080),
-    };
-    let rendered_at = captured_at + chrono::Duration::minutes(15) + chrono::Duration::seconds(1);
-
-    let signal = ChatWidget::classify_weekly_pacing_signal(&window, captured_at, rendered_at);
-    assert_eq!(signal, WeeklyPacingSignal::Stale);
-}
-
-#[tokio::test]
-async fn status_line_weekly_limit_pacing_shows_stale_when_snapshot_stale_and_time_data_missing() {
-    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(None).await;
-    chat.on_rate_limit_snapshot(Some(weekly_snapshot(20.0, Some(10080), None)));
-
-    let snapshot = chat
-        .rate_limit_snapshots_by_limit_id
-        .get_mut("codex")
-        .expect("codex rate-limit snapshot should be cached");
-    snapshot.captured_at = chrono::Local::now() - chrono::Duration::minutes(16);
-
-    let value = chat.status_line_value_for_item(&StatusLineItem::WeeklyLimit);
-    assert_eq!(value.as_deref(), Some("weekly 80% (stale)"));
-}
-
-#[tokio::test]
-async fn status_line_weekly_limit_pacing_treats_future_capture_skew_as_stale() {
-    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(None).await;
-    let resets_at = chrono::Local::now().timestamp() + (6048 * 60);
-    chat.on_rate_limit_snapshot(Some(weekly_snapshot(37.0, Some(10080), Some(resets_at))));
-
-    let snapshot = chat
-        .rate_limit_snapshots_by_limit_id
-        .get_mut("codex")
-        .expect("codex rate-limit snapshot should be cached");
-    snapshot.captured_at = chrono::Local::now() + chrono::Duration::hours(24);
-
-    let value = chat.status_line_value_for_item(&StatusLineItem::WeeklyLimit);
-    assert_eq!(value.as_deref(), Some("weekly 63% / 60% (stale)"));
-}
-
-#[tokio::test]
-async fn status_line_weekly_limit_pacing_falls_back_when_seconds_remaining_overflows() {
-    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(None).await;
-    chat.on_rate_limit_snapshot(Some(weekly_snapshot(37.0, Some(10080), Some(i64::MIN))));
-
-    let value = chat.status_line_value_for_item(&StatusLineItem::WeeklyLimit);
-    assert_eq!(value.as_deref(), Some("weekly 63%"));
-}
-
-#[tokio::test]
-async fn status_line_weekly_limit_pacing_rounds_non_on_pace_delta_up_for_display() {
-    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(None).await;
-    let resets_at = chrono::Local::now().timestamp() + ((10080 * 60) / 2);
-    chat.on_rate_limit_snapshot(Some(weekly_snapshot(46.9, Some(10080), Some(resets_at))));
-
-    let value = chat.status_line_value_for_item(&StatusLineItem::WeeklyLimit);
-    assert_eq!(value.as_deref(), Some("weekly 53% / 50%"));
-}
-
-#[tokio::test]
-async fn status_line_weekly_pacing_item_renders_pacing_suffix() {
-    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(None).await;
-    let resets_at = chrono::Local::now().timestamp() + ((10080 * 60) / 2);
-    chat.on_rate_limit_snapshot(Some(weekly_snapshot(46.9, Some(10080), Some(resets_at))));
-
-    let value = chat.status_line_value_for_item(&StatusLineItem::WeeklyPacing);
-    assert_eq!(value.as_deref(), Some("weekly pace under 4%"));
-}
-
-#[tokio::test]
-async fn status_line_weekly_pacing_item_omits_when_time_data_missing() {
-    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(None).await;
-    chat.on_rate_limit_snapshot(Some(weekly_snapshot(20.0, Some(10080), None)));
-
-    let value = chat.status_line_value_for_item(&StatusLineItem::WeeklyPacing);
-    assert_eq!(value, None);
-}
-
-#[tokio::test]
-async fn status_line_weekly_time_remaining_item_renders_time_until_reset() {
-    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(None).await;
-    let resets_at = chrono::Local::now().timestamp() + (6048 * 60);
-    chat.on_rate_limit_snapshot(Some(weekly_snapshot(20.0, Some(10080), Some(resets_at))));
-
-    let value = chat.status_line_value_for_item(&StatusLineItem::WeeklyTimeRemaining);
-    assert_eq!(value.as_deref(), Some("weekly time 60%"));
-}
-
-#[tokio::test]
-async fn status_line_weekly_time_remaining_item_shows_stale_when_snapshot_stale() {
-    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(None).await;
-    let resets_at = chrono::Local::now().timestamp() + (6048 * 60);
-    chat.on_rate_limit_snapshot(Some(weekly_snapshot(20.0, Some(10080), Some(resets_at))));
-
-    let snapshot = chat
-        .rate_limit_snapshots_by_limit_id
-        .get_mut("codex")
-        .expect("codex rate-limit snapshot should be cached");
-    snapshot.captured_at = chrono::Local::now() - chrono::Duration::minutes(16);
-
-    let value = chat.status_line_value_for_item(&StatusLineItem::WeeklyTimeRemaining);
-    assert_eq!(value.as_deref(), Some("weekly time 60% (stale)"));
-}
-
-#[tokio::test]
-async fn status_line_weekly_limit_pacing_ignores_stale_non_codex_snapshot() {
-    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(None).await;
-    let resets_at = chrono::Local::now().timestamp() + (6048 * 60);
-    chat.on_rate_limit_snapshot(Some(weekly_snapshot(37.0, Some(10080), Some(resets_at))));
-    chat.on_rate_limit_snapshot(Some(RateLimitSnapshot {
-        limit_id: Some("codex-other".to_string()),
-        limit_name: Some("codex-other".to_string()),
-        primary: Some(RateLimitWindow {
-            used_percent: 1.0,
-            window_minutes: Some(60),
-            resets_at: None,
-        }),
-        secondary: None,
-        credits: None,
-        plan_type: None,
-    }));
-
-    let stale_other_snapshot = chat
-        .rate_limit_snapshots_by_limit_id
-        .get_mut("codex-other")
-        .expect("codex-other rate-limit snapshot should be cached");
-    stale_other_snapshot.captured_at = chrono::Local::now() - chrono::Duration::minutes(16);
-
-    let value = chat.status_line_value_for_item(&StatusLineItem::WeeklyLimit);
-    assert_eq!(value.as_deref(), Some("weekly 63% / 60%"));
-}
-
-#[tokio::test]
-async fn refresh_status_line_prunes_expired_non_codex_snapshots() {
-    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(None).await;
-    chat.on_rate_limit_snapshot(Some(weekly_snapshot(
-        37.0,
-        Some(10080),
-        Some(chrono::Local::now().timestamp() + (6048 * 60)),
-    )));
-    chat.on_rate_limit_snapshot(Some(RateLimitSnapshot {
-        limit_id: Some("codex-other".to_string()),
-        limit_name: Some("codex-other".to_string()),
-        primary: Some(RateLimitWindow {
-            used_percent: 1.0,
-            window_minutes: Some(60),
-            resets_at: None,
-        }),
-        secondary: None,
-        credits: None,
-        plan_type: None,
-    }));
-
-    let stale_other_snapshot = chat
-        .rate_limit_snapshots_by_limit_id
-        .get_mut("codex-other")
-        .expect("codex-other rate-limit snapshot should be cached");
-    stale_other_snapshot.captured_at = chrono::Local::now()
-        - chrono::Duration::minutes(NON_CODEX_RATE_LIMIT_SNAPSHOT_RETENTION_MINUTES + 1);
-
-    chat.refresh_status_line();
-
-    assert!(chat.rate_limit_snapshots_by_limit_id.contains_key("codex"));
-    assert!(
-        !chat
-            .rate_limit_snapshots_by_limit_id
-            .contains_key("codex-other")
-    );
-}
-
-#[tokio::test]
-async fn status_line_weekly_limit_pacing_copy_variants_snapshot() {
-    let captured_at = chrono::Local::now();
-    let align_snapshot_time = |chat: &mut ChatWidget, resets_at: Option<i64>| {
-        let snapshot = chat
-            .rate_limit_snapshots_by_limit_id
-            .get_mut("codex")
-            .expect("codex rate-limit snapshot should be cached");
-        snapshot.captured_at = captured_at;
-        if let Some(window) = snapshot.secondary.as_mut() {
-            window.resets_at_unix_seconds = resets_at;
-        }
-    };
-
-    let on_pace = {
-        let (mut chat, _rx, _op_rx) = make_chatwidget_manual(None).await;
-        let resets_at = captured_at.timestamp() + (6048 * 60);
-        chat.on_rate_limit_snapshot(Some(weekly_snapshot(37.0, Some(10080), Some(resets_at))));
-        align_snapshot_time(&mut chat, Some(resets_at));
-        chat.status_line_value_for_item(&StatusLineItem::WeeklyLimit)
-            .expect("weekly status line should render")
-    };
-
-    let over = {
-        let (mut chat, _rx, _op_rx) = make_chatwidget_manual(None).await;
-        let resets_at = captured_at.timestamp() + (6048 * 60);
-        chat.on_rate_limit_snapshot(Some(weekly_snapshot(50.0, Some(10080), Some(resets_at))));
-        align_snapshot_time(&mut chat, Some(resets_at));
-        chat.status_line_value_for_item(&StatusLineItem::WeeklyLimit)
-            .expect("weekly status line should render")
-    };
-
-    let under_rounded = {
-        let (mut chat, _rx, _op_rx) = make_chatwidget_manual(None).await;
-        let resets_at = captured_at.timestamp() + ((10080 * 60) / 2);
-        chat.on_rate_limit_snapshot(Some(weekly_snapshot(46.9, Some(10080), Some(resets_at))));
-        align_snapshot_time(&mut chat, Some(resets_at));
-        chat.status_line_value_for_item(&StatusLineItem::WeeklyLimit)
-            .expect("weekly status line should render")
-    };
-
-    let stale = {
-        let (mut chat, _rx, _op_rx) = make_chatwidget_manual(None).await;
-        let resets_at = captured_at.timestamp() + (6048 * 60);
-        chat.on_rate_limit_snapshot(Some(weekly_snapshot(37.0, Some(10080), Some(resets_at))));
-        let snapshot = chat
-            .rate_limit_snapshots_by_limit_id
-            .get_mut("codex")
-            .expect("codex rate-limit snapshot should be cached");
-        snapshot.captured_at = captured_at - chrono::Duration::minutes(16);
-        chat.status_line_value_for_item(&StatusLineItem::WeeklyLimit)
-            .expect("weekly status line should render")
-    };
-
-    let unavailable = {
-        let (mut chat, _rx, _op_rx) = make_chatwidget_manual(None).await;
-        chat.on_rate_limit_snapshot(Some(weekly_snapshot(20.0, Some(10080), None)));
-        align_snapshot_time(&mut chat, None);
-        chat.status_line_value_for_item(&StatusLineItem::WeeklyLimit)
-            .expect("weekly status line should render")
-    };
-
-    assert_snapshot!(
-        "status_line_weekly_limit_pacing_copy_variants",
-        [on_pace, over, under_rounded, stale, unavailable].join("\n")
-    );
-}
-
-#[tokio::test]
-async fn status_line_weekly_aux_items_copy_variants_snapshot() {
-    let captured_at = chrono::Local::now();
-    let align_snapshot_time = |chat: &mut ChatWidget, resets_at: Option<i64>| {
-        let snapshot = chat
-            .rate_limit_snapshots_by_limit_id
-            .get_mut("codex")
-            .expect("codex rate-limit snapshot should be cached");
-        snapshot.captured_at = captured_at;
-        if let Some(window) = snapshot.secondary.as_mut() {
-            window.resets_at_unix_seconds = resets_at;
-        }
-    };
-
-    let pacing_under = {
-        let (mut chat, _rx, _op_rx) = make_chatwidget_manual(None).await;
-        let resets_at = captured_at.timestamp() + ((10080 * 60) / 2);
-        chat.on_rate_limit_snapshot(Some(weekly_snapshot(46.9, Some(10080), Some(resets_at))));
-        align_snapshot_time(&mut chat, Some(resets_at));
-        chat.status_line_value_for_item(&StatusLineItem::WeeklyPacing)
-            .expect("weekly pacing status line should render")
-    };
-
-    let time_remaining = {
-        let (mut chat, _rx, _op_rx) = make_chatwidget_manual(None).await;
-        let resets_at = captured_at.timestamp() + (6048 * 60);
-        chat.on_rate_limit_snapshot(Some(weekly_snapshot(20.0, Some(10080), Some(resets_at))));
-        align_snapshot_time(&mut chat, Some(resets_at));
-        chat.status_line_value_for_item(&StatusLineItem::WeeklyTimeRemaining)
-            .expect("weekly time status line should render")
-    };
-
-    let stale_time_remaining = {
-        let (mut chat, _rx, _op_rx) = make_chatwidget_manual(None).await;
-        let resets_at = captured_at.timestamp() + (6048 * 60);
-        chat.on_rate_limit_snapshot(Some(weekly_snapshot(20.0, Some(10080), Some(resets_at))));
-        let snapshot = chat
-            .rate_limit_snapshots_by_limit_id
-            .get_mut("codex")
-            .expect("codex rate-limit snapshot should be cached");
-        snapshot.captured_at = captured_at - chrono::Duration::minutes(16);
-        chat.status_line_value_for_item(&StatusLineItem::WeeklyTimeRemaining)
-            .expect("weekly time status line should render")
-    };
-
-    assert_snapshot!(
-        "status_line_weekly_aux_items_copy_variants",
-        [pacing_under, time_remaining, stale_time_remaining].join("\n")
-    );
-}
-
-#[tokio::test]
 async fn status_line_branch_state_resets_when_git_branch_disabled() {
     let (mut chat, _rx, _op_rx) = make_chatwidget_manual(None).await;
     chat.status_line_branch = Some("main".to_string());
@@ -10301,7 +9495,6 @@ async fn status_line_branch_refreshes_after_turn_complete() {
         msg: EventMsg::TurnComplete(TurnCompleteEvent {
             turn_id: "turn-1".to_string(),
             last_agent_message: None,
-            compaction_events_in_turn: 0,
         }),
     });
 
@@ -10324,6 +9517,39 @@ async fn status_line_branch_refreshes_after_interrupt() {
     });
 
     assert!(chat.status_line_branch_pending);
+}
+
+#[tokio::test]
+async fn status_line_fast_mode_renders_on_and_off() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(None).await;
+    chat.config.tui_status_line = Some(vec!["fast-mode".to_string()]);
+
+    chat.refresh_status_line();
+    assert_eq!(status_line_text(&chat), Some("Fast off".to_string()));
+
+    chat.set_service_tier(Some(ServiceTier::Fast));
+    chat.refresh_status_line();
+    assert_eq!(status_line_text(&chat), Some("Fast on".to_string()));
+}
+
+#[tokio::test]
+async fn status_line_fast_mode_footer_snapshot() {
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(None).await;
+    chat.show_welcome_banner = false;
+    chat.config.tui_status_line = Some(vec!["fast-mode".to_string()]);
+    chat.set_service_tier(Some(ServiceTier::Fast));
+    chat.refresh_status_line();
+
+    let width = 80;
+    let height = chat.desired_height(width);
+    let mut terminal = Terminal::new(TestBackend::new(width, height)).expect("create terminal");
+    terminal
+        .draw(|f| chat.render(f.area(), f.buffer_mut()))
+        .expect("draw fast-mode footer");
+    assert_snapshot!("status_line_fast_mode_footer", terminal.backend());
 }
 
 #[tokio::test]
@@ -10433,7 +9659,6 @@ async fn multiple_agent_messages_in_single_turn_emit_multiple_headers() {
         msg: EventMsg::TurnComplete(TurnCompleteEvent {
             turn_id: "turn-1".to_string(),
             last_agent_message: None,
-            compaction_events_in_turn: 0,
         }),
     });
 
@@ -10664,7 +9889,6 @@ printf 'fenced within fenced\n'
         msg: EventMsg::TurnComplete(TurnCompleteEvent {
             turn_id: "turn-1".to_string(),
             last_agent_message: None,
-            compaction_events_in_turn: 0,
         }),
     });
     for lines in drain_insert_history(&mut rx) {
