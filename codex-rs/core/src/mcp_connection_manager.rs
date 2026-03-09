@@ -101,7 +101,6 @@ const CODEX_APPS_TOOLS_CACHE_DIR: &str = "cache/codex_apps_tools";
 const MCP_TOOLS_LIST_DURATION_METRIC: &str = "codex.mcp.tools.list.duration_ms";
 const MCP_TOOLS_FETCH_UNCACHED_DURATION_METRIC: &str = "codex.mcp.tools.fetch_uncached.duration_ms";
 const MCP_TOOLS_CACHE_WRITE_DURATION_METRIC: &str = "codex.mcp.tools.cache_write.duration_ms";
-const ELICITATION_RESPONSE_TIMEOUT: Duration = Duration::from_secs(300);
 
 /// The Responses API requires tool names to match `^[a-zA-Z0-9_-]+$`.
 /// MCP server/tool names are user-controlled, so sanitize the fully-qualified
@@ -296,25 +295,34 @@ impl ElicitationRequestManager {
                     return Ok(ElicitationResponse {
                         action: ElicitationAction::Decline,
                         content: None,
+                        meta: None,
                     });
                 }
 
                 let request = match elicitation {
                     CreateElicitationRequestParams::FormElicitationParams {
+                        meta,
                         message,
                         requested_schema,
-                        ..
                     } => ElicitationRequest::Form {
+                        meta: meta
+                            .map(serde_json::to_value)
+                            .transpose()
+                            .context("failed to serialize MCP elicitation metadata")?,
                         message,
                         requested_schema: serde_json::to_value(requested_schema)
                             .context("failed to serialize MCP elicitation schema")?,
                     },
                     CreateElicitationRequestParams::UrlElicitationParams {
+                        meta,
                         message,
                         url,
                         elicitation_id,
-                        ..
                     } => ElicitationRequest::Url {
+                        meta: meta
+                            .map(serde_json::to_value)
+                            .transpose()
+                            .context("failed to serialize MCP elicitation metadata")?,
                         message,
                         url,
                         elicitation_id,
@@ -323,25 +331,14 @@ impl ElicitationRequestManager {
                 let (tx, rx) = oneshot::channel();
                 {
                     let mut lock = elicitation_requests.lock().await;
-                    if lock.contains_key(&(server_name.clone(), id.clone())) {
-                        warn!(
-                            server_name,
-                            request_id = ?id,
-                            "duplicate MCP elicitation request id; declining new request",
-                        );
-                        return Ok(ElicitationResponse {
-                            action: ElicitationAction::Decline,
-                            content: None,
-                        });
-                    }
                     lock.insert((server_name.clone(), id.clone()), tx);
                 }
-                let server_name_for_event = server_name.clone();
-                if tx_event
+                let _ = tx_event
                     .send(Event {
                         id: "mcp_elicitation_request".to_string(),
                         msg: EventMsg::ElicitationRequest(ElicitationRequestEvent {
-                            server_name: server_name_for_event,
+                            turn_id: None,
+                            server_name,
                             id: match id.clone() {
                                 rmcp::model::NumberOrString::String(value) => {
                                     ProtocolRequestId::String(value.to_string())
@@ -353,35 +350,9 @@ impl ElicitationRequestManager {
                             request,
                         }),
                     })
-                    .await
-                    .is_err()
-                {
-                    let mut lock = elicitation_requests.lock().await;
-                    let _ = lock.remove(&(server_name.clone(), id.clone()));
-                    return Ok(ElicitationResponse {
-                        action: ElicitationAction::Decline,
-                        content: None,
-                    });
-                }
-                match tokio::time::timeout(ELICITATION_RESPONSE_TIMEOUT, rx).await {
-                    Ok(Ok(response)) => Ok(response),
-                    Ok(Err(_)) => {
-                        let mut lock = elicitation_requests.lock().await;
-                        let _ = lock.remove(&(server_name.clone(), id.clone()));
-                        Ok(ElicitationResponse {
-                            action: ElicitationAction::Decline,
-                            content: None,
-                        })
-                    }
-                    Err(_) => {
-                        let mut lock = elicitation_requests.lock().await;
-                        let _ = lock.remove(&(server_name.clone(), id.clone()));
-                        Ok(ElicitationResponse {
-                            action: ElicitationAction::Decline,
-                            content: None,
-                        })
-                    }
-                }
+                    .await;
+                rx.await
+                    .context("elicitation request channel closed unexpectedly")
             }
             .boxed()
         })
@@ -472,8 +443,6 @@ impl AsyncManagedClient {
         let startup_tool_filter = tool_filter;
         let startup_complete = Arc::new(AtomicBool::new(false));
         let startup_complete_for_fut = Arc::clone(&startup_complete);
-        let enable_elicitation =
-            config.enable_elicitation || server_name == CODEX_APPS_MCP_SERVER_NAME;
         let fut = async move {
             let outcome = async {
                 if let Err(error) = validate_mcp_server_name(&server_name) {
@@ -493,7 +462,6 @@ impl AsyncManagedClient {
                         tool_filter: startup_tool_filter,
                         tx_event,
                         elicitation_requests,
-                        enable_elicitation,
                         codex_apps_tools_cache_context,
                     },
                 )
@@ -1322,8 +1290,8 @@ impl From<anyhow::Error> for StartupOutcomeError {
     }
 }
 
-fn elicitation_capability_for_server(enable_elicitation: bool) -> Option<ElicitationCapability> {
-    if enable_elicitation {
+fn elicitation_capability_for_server(server_name: &str) -> Option<ElicitationCapability> {
+    if server_name == CODEX_APPS_MCP_SERVER_NAME {
         // https://modelcontextprotocol.io/specification/2025-06-18/client/elicitation#capabilities
         // indicates this should be an empty object.
         Some(ElicitationCapability {
@@ -1348,10 +1316,9 @@ async fn start_server_task(
         tool_filter,
         tx_event,
         elicitation_requests,
-        enable_elicitation,
         codex_apps_tools_cache_context,
     } = params;
-    let elicitation = elicitation_capability_for_server(enable_elicitation);
+    let elicitation = elicitation_capability_for_server(&server_name);
     let params = InitializeRequestParams {
         meta: None,
         capabilities: ClientCapabilities {
@@ -1429,7 +1396,6 @@ struct StartServerTaskParams {
     tool_filter: ToolFilter,
     tx_event: Sender<Event>,
     elicitation_requests: ElicitationRequestManager,
-    enable_elicitation: bool,
     codex_apps_tools_cache_context: Option<CodexAppsToolsCacheContext>,
 }
 
@@ -2205,8 +2171,8 @@ mod tests {
     }
 
     #[test]
-    fn elicitation_capability_enabled_when_requested() {
-        let codex_apps_capability = elicitation_capability_for_server(true);
+    fn elicitation_capability_enabled_only_for_codex_apps() {
+        let codex_apps_capability = elicitation_capability_for_server(CODEX_APPS_MCP_SERVER_NAME);
         assert!(matches!(
             codex_apps_capability,
             Some(ElicitationCapability {
@@ -2217,7 +2183,7 @@ mod tests {
             })
         ));
 
-        assert!(elicitation_capability_for_server(false).is_none());
+        assert!(elicitation_capability_for_server("custom_mcp").is_none());
     }
 
     #[test]
@@ -2239,10 +2205,6 @@ mod tests {
                 enabled_tools: None,
                 disabled_tools: None,
                 scopes: None,
-                enable_elicitation: false,
-                read_only: false,
-                strict_tool_classification: false,
-                require_approval_for_mutating: false,
                 oauth_resource: None,
             },
             auth_status: McpAuthStatus::Unsupported,
@@ -2291,10 +2253,6 @@ mod tests {
                 enabled_tools: None,
                 disabled_tools: None,
                 scopes: None,
-                enable_elicitation: false,
-                read_only: false,
-                strict_tool_classification: false,
-                require_approval_for_mutating: false,
                 oauth_resource: None,
             },
             auth_status: McpAuthStatus::Unsupported,

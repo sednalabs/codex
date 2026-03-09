@@ -28,6 +28,7 @@ use crate::render::renderable::RenderableItem;
 use crate::tui::FrameRequester;
 use bottom_pane_view::BottomPaneView;
 use codex_core::features::Features;
+use codex_core::plugins::PluginCapabilitySummary;
 use codex_core::skills::model::SkillMetadata;
 use codex_file_search::FileMatch;
 use codex_protocol::request_user_input::RequestUserInputEvent;
@@ -39,10 +40,10 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::text::Line;
 use std::time::Duration;
-use std::time::Instant;
 
 mod app_link_view;
 mod approval_overlay;
+mod mcp_server_elicitation;
 mod multi_select_picker;
 mod request_user_input;
 mod status_line_setup;
@@ -50,6 +51,9 @@ pub(crate) use app_link_view::AppLinkView;
 pub(crate) use app_link_view::AppLinkViewParams;
 pub(crate) use approval_overlay::ApprovalOverlay;
 pub(crate) use approval_overlay::ApprovalRequest;
+pub(crate) use approval_overlay::format_additional_permissions_rule;
+pub(crate) use mcp_server_elicitation::McpServerElicitationFormRequest;
+pub(crate) use mcp_server_elicitation::McpServerElicitationOverlay;
 pub(crate) use request_user_input::RequestUserInputOverlay;
 mod bottom_pane_view;
 
@@ -92,6 +96,7 @@ pub(crate) use feedback_view::feedback_upload_consent_params;
 pub(crate) use skills_toggle_view::SkillsToggleItem;
 pub(crate) use skills_toggle_view::SkillsToggleView;
 pub(crate) use status_line_setup::StatusLineItem;
+pub(crate) use status_line_setup::StatusLinePreviewData;
 pub(crate) use status_line_setup::StatusLineSetupView;
 mod paste_burst;
 mod pending_input_preview;
@@ -111,23 +116,6 @@ pub(crate) use feedback_view::FeedbackNoteView;
 ///
 /// Keeping a single value ensures Ctrl+C and Ctrl+D behave identically.
 pub(crate) const QUIT_SHORTCUT_TIMEOUT: Duration = Duration::from_secs(1);
-const ESC_INTERRUPT_CONFIRM_TIMEOUT: Duration = Duration::from_secs(1);
-// Default to Esc-Esc to avoid accidental interrupts in terminals that emit bare ESC for Alt/meta.
-// Config key: [tui].double_esc_interrupt (default true).
-// Env override: CODEX_TUI_DOUBLE_ESC_INTERRUPT=0 restores single-Esc behavior.
-const DOUBLE_ESC_INTERRUPT_ENV_VAR: &str = "CODEX_TUI_DOUBLE_ESC_INTERRUPT";
-
-fn esc_interrupt_requires_double_press_from_env() -> Option<bool> {
-    std::env::var(DOUBLE_ESC_INTERRUPT_ENV_VAR)
-        .ok()
-        .map(|value| {
-            let normalized = value.trim();
-            !(normalized == "0"
-                || normalized.eq_ignore_ascii_case("false")
-                || normalized.eq_ignore_ascii_case("no")
-                || normalized.eq_ignore_ascii_case("off"))
-        })
-}
 
 /// Whether Ctrl+C/Ctrl+D require a second press to quit.
 ///
@@ -185,8 +173,6 @@ pub(crate) struct BottomPane {
 
     /// Inline status indicator shown above the composer while a task is running.
     status: Option<StatusIndicatorWidget>,
-    esc_interrupt_requires_double_press: bool,
-    pending_esc_interrupt_deadline: Option<Instant>,
     /// Unified exec session summary source.
     ///
     /// When a status row exists, this summary is mirrored inline in that row;
@@ -242,9 +228,6 @@ impl BottomPane {
             disable_paste_burst,
             is_task_running: false,
             status: None,
-            esc_interrupt_requires_double_press: esc_interrupt_requires_double_press_from_env()
-                .unwrap_or(true),
-            pending_esc_interrupt_deadline: None,
             unified_exec_footer: UnifiedExecFooter::new(),
             pending_input_preview: PendingInputPreview::new(),
             pending_thread_approvals: PendingThreadApprovals::new(),
@@ -270,6 +253,11 @@ impl BottomPane {
 
     pub fn set_connectors_snapshot(&mut self, snapshot: Option<ConnectorsSnapshot>) {
         self.composer.set_connector_mentions(snapshot);
+        self.request_redraw();
+    }
+
+    pub fn set_plugin_mentions(&mut self, plugins: Option<Vec<PluginCapabilitySummary>>) {
+        self.composer.set_plugin_mentions(plugins);
         self.request_redraw();
     }
 
@@ -352,6 +340,10 @@ impl BottomPane {
         self.composer.skills()
     }
 
+    pub fn plugins(&self) -> Option<&Vec<PluginCapabilitySummary>> {
+        self.composer.plugins()
+    }
+
     #[cfg(test)]
     pub(crate) fn context_window_percent(&self) -> Option<i64> {
         self.context_window_percent
@@ -373,24 +365,6 @@ impl BottomPane {
 
     /// Forward a key event to the active view or the composer.
     pub fn handle_key_event(&mut self, key_event: KeyEvent) -> InputResult {
-        if self
-            .pending_esc_interrupt_deadline
-            .is_some_and(|deadline| Instant::now() > deadline)
-        {
-            self.set_pending_esc_interrupt_deadline(None);
-        }
-        if key_event.kind == KeyEventKind::Press {
-            let is_bare_esc = key_event.code == KeyCode::Esc && key_event.modifiers.is_empty();
-            let esc_can_interrupt = is_bare_esc
-                && self.is_task_running
-                && self.view_stack.is_empty()
-                && !self.composer.popup_active()
-                && self.status.is_some();
-            if !esc_can_interrupt {
-                self.set_pending_esc_interrupt_deadline(None);
-            }
-        }
-
         // Do not globally intercept space; only composer handles hold-to-talk.
         // While recording, route all keys to the composer so it can stop on release or next key.
         #[cfg(not(target_os = "linux"))]
@@ -455,34 +429,15 @@ impl BottomPane {
             // If a task is running and a status line is visible, allow Esc to
             // send an interrupt even while the composer has focus.
             // When a popup is active, prefer dismissing it over interrupting the task.
-            if key_event.kind == KeyEventKind::Press
-                && key_event.code == KeyCode::Esc
-                && key_event.modifiers.is_empty()
+            if key_event.code == KeyCode::Esc
+                && matches!(key_event.kind, KeyEventKind::Press | KeyEventKind::Repeat)
                 && self.is_task_running
                 && !is_agent_command
                 && !self.composer.popup_active()
-                && self.status.is_some()
+                && let Some(status) = &self.status
             {
-                let should_interrupt = if self.esc_interrupt_requires_double_press {
-                    if self.pending_esc_interrupt_deadline.is_some() {
-                        self.set_pending_esc_interrupt_deadline(None);
-                        true
-                    } else {
-                        self.set_pending_esc_interrupt_deadline(Some(
-                            Instant::now() + ESC_INTERRUPT_CONFIRM_TIMEOUT,
-                        ));
-                        self.request_redraw_in(ESC_INTERRUPT_CONFIRM_TIMEOUT);
-                        false
-                    }
-                } else {
-                    true
-                };
-                if should_interrupt {
-                    // Send Op::Interrupt
-                    if let Some(status) = &self.status {
-                        status.interrupt();
-                    }
-                }
+                // Send Op::Interrupt
+                status.interrupt();
                 self.request_redraw();
                 return InputResult::None;
             }
@@ -736,6 +691,11 @@ impl BottomPane {
         self.status.is_some()
     }
 
+    #[cfg(test)]
+    pub(crate) fn status_line_text(&self) -> Option<String> {
+        self.composer.status_line_text()
+    }
+
     pub(crate) fn show_esc_backtrack_hint(&mut self) {
         self.esc_backtrack_hint = true;
         self.composer.set_esc_backtrack_hint(true);
@@ -756,9 +716,6 @@ impl BottomPane {
         let was_running = self.is_task_running;
         self.is_task_running = running;
         self.composer.set_task_running(running);
-        if !running {
-            self.set_pending_esc_interrupt_deadline(None);
-        }
 
         if running {
             if !was_running {
@@ -767,12 +724,10 @@ impl BottomPane {
                         self.app_event_tx.clone(),
                         self.frame_requester.clone(),
                         self.animations_enabled,
-                        self.esc_interrupt_requires_double_press,
                     ));
                 }
                 if let Some(status) = self.status.as_mut() {
                     status.set_interrupt_hint_visible(true);
-                    status.set_interrupt_confirmation_deadline(self.pending_esc_interrupt_deadline);
                 }
                 self.sync_status_inline_message();
                 self.request_redraw();
@@ -796,26 +751,8 @@ impl BottomPane {
                 self.app_event_tx.clone(),
                 self.frame_requester.clone(),
                 self.animations_enabled,
-                self.esc_interrupt_requires_double_press,
             ));
-            if let Some(status) = self.status.as_mut() {
-                status.set_interrupt_confirmation_deadline(self.pending_esc_interrupt_deadline);
-            }
             self.sync_status_inline_message();
-            self.request_redraw();
-        }
-    }
-
-    pub(crate) fn set_esc_interrupt_requires_double_press(&mut self, requires_double_press: bool) {
-        let effective_requires_double_press =
-            esc_interrupt_requires_double_press_from_env().unwrap_or(requires_double_press);
-        self.esc_interrupt_requires_double_press = effective_requires_double_press;
-        if let Some(status) = self.status.as_mut() {
-            status.set_interrupt_requires_double_press(effective_requires_double_press);
-        }
-        if !effective_requires_double_press {
-            self.set_pending_esc_interrupt_deadline(None);
-        } else {
             self.request_redraw();
         }
     }
@@ -1003,6 +940,37 @@ impl BottomPane {
         self.push_view(Box::new(modal));
     }
 
+    pub(crate) fn push_mcp_server_elicitation_request(
+        &mut self,
+        request: McpServerElicitationFormRequest,
+    ) {
+        let request = if let Some(view) = self.view_stack.last_mut() {
+            match view.try_consume_mcp_server_elicitation_request(request) {
+                Some(request) => request,
+                None => {
+                    self.request_redraw();
+                    return;
+                }
+            }
+        } else {
+            request
+        };
+
+        let modal = McpServerElicitationOverlay::new(
+            request,
+            self.app_event_tx.clone(),
+            self.has_input_focus,
+            self.enhanced_keys_supported,
+            self.disable_paste_burst,
+        );
+        self.pause_status_timer_for_modal();
+        self.set_composer_input_enabled(
+            false,
+            Some("Respond to the MCP server request to continue.".to_string()),
+        );
+        self.push_view(Box::new(modal));
+    }
+
     fn on_active_view_complete(&mut self) {
         self.resume_status_timer_after_modal();
         self.set_composer_input_enabled(true, None);
@@ -1027,13 +995,6 @@ impl BottomPane {
 
     pub(crate) fn request_redraw_in(&self, dur: Duration) {
         self.frame_requester.schedule_frame_in(dur);
-    }
-
-    fn set_pending_esc_interrupt_deadline(&mut self, deadline: Option<Instant>) {
-        self.pending_esc_interrupt_deadline = deadline;
-        if let Some(status) = self.status.as_mut() {
-            status.set_interrupt_confirmation_deadline(deadline);
-        }
     }
 
     // --- History helpers ---
@@ -1797,7 +1758,7 @@ mod tests {
     }
 
     #[test]
-    fn esc_requires_double_press_for_interrupt_when_running_task_by_default() {
+    fn esc_interrupts_running_task_when_no_popup() {
         let (tx_raw, mut rx) = unbounded_channel::<AppEvent>();
         let tx = AppEventSender::new(tx_raw);
         let mut pane = BottomPane::new(BottomPaneParams {
@@ -1814,182 +1775,10 @@ mod tests {
         pane.set_task_running(true);
 
         pane.handle_key_event(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
-        assert!(
-            rx.try_recv().is_err(),
-            "first Esc should arm interrupt confirmation only"
-        );
 
-        pane.handle_key_event(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
         assert!(
             matches!(rx.try_recv(), Ok(AppEvent::CodexOp(Op::Interrupt))),
-            "second Esc should send Op::Interrupt"
-        );
-    }
-
-    #[test]
-    fn first_esc_renders_again_to_interrupt_hint() {
-        let (tx_raw, _rx) = unbounded_channel::<AppEvent>();
-        let tx = AppEventSender::new(tx_raw);
-        let mut pane = BottomPane::new(BottomPaneParams {
-            app_event_tx: tx,
-            frame_requester: FrameRequester::test_dummy(),
-            has_input_focus: true,
-            enhanced_keys_supported: false,
-            placeholder_text: "Ask Codex to do anything".to_string(),
-            disable_paste_burst: false,
-            animations_enabled: true,
-            skills: Some(Vec::new()),
-        });
-
-        pane.set_task_running(true);
-        pane.handle_key_event(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
-
-        let area = Rect::new(0, 0, 64, pane.desired_height(64));
-        let rendered = render_snapshot(&pane, area);
-        assert!(
-            rendered.contains("again to interrupt"),
-            "expected first Esc hint to request confirmation, got: {rendered:?}"
-        );
-    }
-
-    #[test]
-    fn esc_release_does_not_confirm_interrupt() {
-        let (tx_raw, mut rx) = unbounded_channel::<AppEvent>();
-        let tx = AppEventSender::new(tx_raw);
-        let mut pane = BottomPane::new(BottomPaneParams {
-            app_event_tx: tx,
-            frame_requester: FrameRequester::test_dummy(),
-            has_input_focus: true,
-            enhanced_keys_supported: true,
-            placeholder_text: "Ask Codex to do anything".to_string(),
-            disable_paste_burst: false,
-            animations_enabled: true,
-            skills: Some(Vec::new()),
-        });
-
-        pane.set_task_running(true);
-
-        pane.handle_key_event(KeyEvent::new_with_kind(
-            KeyCode::Esc,
-            KeyModifiers::NONE,
-            KeyEventKind::Press,
-        ));
-        pane.handle_key_event(KeyEvent::new_with_kind(
-            KeyCode::Esc,
-            KeyModifiers::NONE,
-            KeyEventKind::Release,
-        ));
-        assert!(
-            rx.try_recv().is_err(),
-            "Esc release should not count as a second interrupt confirmation press"
-        );
-
-        pane.handle_key_event(KeyEvent::new_with_kind(
-            KeyCode::Esc,
-            KeyModifiers::NONE,
-            KeyEventKind::Press,
-        ));
-        assert!(
-            matches!(rx.try_recv(), Ok(AppEvent::CodexOp(Op::Interrupt))),
-            "second Esc press should send Op::Interrupt"
-        );
-    }
-
-    #[test]
-    fn android_alt_prefix_escape_sequence_does_not_interrupt() {
-        let (tx_raw, mut rx) = unbounded_channel::<AppEvent>();
-        let tx = AppEventSender::new(tx_raw);
-        let mut pane = BottomPane::new(BottomPaneParams {
-            app_event_tx: tx,
-            frame_requester: FrameRequester::test_dummy(),
-            has_input_focus: true,
-            enhanced_keys_supported: true,
-            placeholder_text: "Ask Codex to do anything".to_string(),
-            disable_paste_burst: false,
-            animations_enabled: true,
-            skills: Some(Vec::new()),
-        });
-
-        pane.set_task_running(true);
-
-        // Some terminals encode Alt+<key> as an ESC prefix followed by the base key.
-        pane.handle_key_event(KeyEvent::new_with_kind(
-            KeyCode::Esc,
-            KeyModifiers::NONE,
-            KeyEventKind::Press,
-        ));
-        pane.handle_key_event(KeyEvent::new_with_kind(
-            KeyCode::Char('f'),
-            KeyModifiers::NONE,
-            KeyEventKind::Press,
-        ));
-        assert!(
-            rx.try_recv().is_err(),
-            "expected ESC-prefixed Alt sequence to not interrupt the running task"
-        );
-
-        pane.handle_key_event(KeyEvent::new_with_kind(
-            KeyCode::Esc,
-            KeyModifiers::NONE,
-            KeyEventKind::Press,
-        ));
-        pane.handle_key_event(KeyEvent::new_with_kind(
-            KeyCode::Esc,
-            KeyModifiers::NONE,
-            KeyEventKind::Press,
-        ));
-        assert!(
-            matches!(rx.try_recv(), Ok(AppEvent::CodexOp(Op::Interrupt))),
-            "explicit double Esc should still interrupt after an ESC-prefixed sequence"
-        );
-    }
-
-    #[test]
-    fn esc_with_modifiers_does_not_interrupt_running_task() {
-        let (tx_raw, mut rx) = unbounded_channel::<AppEvent>();
-        let tx = AppEventSender::new(tx_raw);
-        let mut pane = BottomPane::new(BottomPaneParams {
-            app_event_tx: tx,
-            frame_requester: FrameRequester::test_dummy(),
-            has_input_focus: true,
-            enhanced_keys_supported: false,
-            placeholder_text: "Ask Codex to do anything".to_string(),
-            disable_paste_burst: false,
-            animations_enabled: true,
-            skills: Some(Vec::new()),
-        });
-
-        pane.set_task_running(true);
-
-        pane.handle_key_event(KeyEvent::new(KeyCode::Esc, KeyModifiers::ALT));
-
-        assert!(
-            !matches!(rx.try_recv(), Ok(AppEvent::CodexOp(Op::Interrupt))),
-            "expected Alt+Esc to not send Op::Interrupt"
-        );
-    }
-
-    #[test]
-    fn esc_single_press_interrupts_when_double_press_disabled() {
-        let (tx_raw, mut rx) = unbounded_channel::<AppEvent>();
-        let tx = AppEventSender::new(tx_raw);
-        let mut pane = BottomPane::new(BottomPaneParams {
-            app_event_tx: tx,
-            frame_requester: FrameRequester::test_dummy(),
-            has_input_focus: true,
-            enhanced_keys_supported: false,
-            placeholder_text: "Ask Codex to do anything".to_string(),
-            disable_paste_burst: false,
-            animations_enabled: true,
-            skills: Some(Vec::new()),
-        });
-        pane.esc_interrupt_requires_double_press = false;
-        pane.set_task_running(true);
-
-        pane.handle_key_event(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
-        assert!(
-            matches!(rx.try_recv(), Ok(AppEvent::CodexOp(Op::Interrupt))),
-            "single Esc should send Op::Interrupt when double press is disabled"
+            "expected Esc to send Op::Interrupt while a task is running"
         );
     }
 

@@ -28,18 +28,19 @@ use schemars::JsonSchema;
 
 use crate::mcp::CallToolResult;
 
-/// Controls whether a command should use the session sandbox or bypass it.
+/// Controls the per-command sandbox override requested by a shell-like tool call.
 #[derive(
     Debug, Clone, Copy, Default, Eq, Hash, PartialEq, Serialize, Deserialize, JsonSchema, TS,
 )]
 #[serde(rename_all = "snake_case")]
 pub enum SandboxPermissions {
-    /// Run with the configured sandbox
+    /// Run with the turn's configured sandbox policy unchanged.
     #[default]
     UseDefault,
-    /// Request to run outside the sandbox
+    /// Request to run outside the sandbox.
     RequireEscalated,
-    /// Request to run in the sandbox with additional per-command permissions.
+    /// Request to stay in the sandbox while widening permissions for this
+    /// command only.
     WithAdditionalPermissions,
 }
 
@@ -49,9 +50,16 @@ impl SandboxPermissions {
         matches!(self, SandboxPermissions::RequireEscalated)
     }
 
-    /// True if SandboxPermissions requires permissions beyond UseDefault
-    pub fn requires_additional_permissions(self) -> bool {
+    /// True if SandboxPermissions requests any explicit per-command override
+    /// beyond `UseDefault`.
+    pub fn requests_sandbox_override(self) -> bool {
         !matches!(self, SandboxPermissions::UseDefault)
+    }
+
+    /// True if SandboxPermissions uses the sandboxed per-command permission
+    /// widening flow.
+    pub fn uses_additional_permissions(self) -> bool {
+        matches!(self, SandboxPermissions::WithAdditionalPermissions)
     }
 }
 
@@ -162,9 +170,13 @@ impl TryFrom<MacOsAutomationPermissionDe> for MacOsAutomationPermission {
 #[derive(Debug, Clone, PartialEq, Eq, Default, Hash, Serialize, Deserialize, JsonSchema, TS)]
 #[serde(default)]
 pub struct MacOsSeatbeltProfileExtensions {
+    #[serde(alias = "preferences")]
     pub macos_preferences: MacOsPreferencesPermission,
+    #[serde(alias = "automations")]
     pub macos_automation: MacOsAutomationPermission,
+    #[serde(alias = "accessibility")]
     pub macos_accessibility: bool,
+    #[serde(alias = "calendar")]
     pub macos_calendar: bool,
 }
 
@@ -871,6 +883,7 @@ pub struct LocalShellExecAction {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, JsonSchema, TS)]
 #[serde(tag = "type", rename_all = "snake_case")]
+#[schemars(rename = "ResponsesApiWebSearchAction")]
 pub enum WebSearchAction {
     Search {
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1306,6 +1319,41 @@ mod tests {
     use tempfile::tempdir;
 
     #[test]
+    fn sandbox_permissions_helpers_match_documented_semantics() {
+        let cases = [
+            (SandboxPermissions::UseDefault, false, false, false),
+            (SandboxPermissions::RequireEscalated, true, true, false),
+            (
+                SandboxPermissions::WithAdditionalPermissions,
+                false,
+                true,
+                true,
+            ),
+        ];
+
+        for (
+            sandbox_permissions,
+            requires_escalated_permissions,
+            requests_sandbox_override,
+            uses_additional_permissions,
+        ) in cases
+        {
+            assert_eq!(
+                sandbox_permissions.requires_escalated_permissions(),
+                requires_escalated_permissions
+            );
+            assert_eq!(
+                sandbox_permissions.requests_sandbox_override(),
+                requests_sandbox_override
+            );
+            assert_eq!(
+                sandbox_permissions.uses_additional_permissions(),
+                uses_additional_permissions
+            );
+        }
+    }
+
+    #[test]
     fn convert_mcp_content_to_items_preserves_data_urls() {
         let contents = vec![serde_json::json!({
             "type": "image",
@@ -1442,6 +1490,30 @@ mod tests {
                 ]),
                 macos_accessibility: false,
                 macos_calendar: false,
+            }
+        );
+    }
+
+    #[test]
+    fn macos_seatbelt_profile_extensions_deserializes_tool_schema_aliases() {
+        let permissions =
+            serde_json::from_value::<MacOsSeatbeltProfileExtensions>(serde_json::json!({
+                "preferences": "read_write",
+                "automations": ["com.apple.Notes"],
+                "accessibility": true,
+                "calendar": true
+            }))
+            .expect("deserialize macos permissions");
+
+        assert_eq!(
+            permissions,
+            MacOsSeatbeltProfileExtensions {
+                macos_preferences: MacOsPreferencesPermission::ReadWrite,
+                macos_automation: MacOsAutomationPermission::BundleIds(vec![
+                    "com.apple.Notes".to_string(),
+                ]),
+                macos_accessibility: true,
+                macos_calendar: true,
             }
         );
     }
