@@ -2409,6 +2409,16 @@ impl App {
                 self.chat_widget.set_model(&model);
                 self.refresh_status_line();
             }
+            AppEvent::SelectModel { model, effort } => {
+                self.chat_widget.set_model(&model);
+                self.on_update_reasoning_effort(effort);
+                self.refresh_status_line();
+                self.app_event_tx
+                    .send(AppEvent::PersistModelSelection { model, effort });
+            }
+            AppEvent::SelectReview { .. } => {
+                // Legacy event variant kept for compatibility with older producers.
+            }
             AppEvent::UpdateCollaborationMode(mask) => {
                 self.chat_widget.set_collaboration_mask(mask);
                 self.refresh_status_line();
@@ -4265,6 +4275,7 @@ mod tests {
                     msg: EventMsg::TurnComplete(TurnCompleteEvent {
                         turn_id: "turn-1".to_string(),
                         last_agent_message: None,
+                        compaction_events_in_turn: 0,
                     }),
                 }],
                 input_state: Some(input_state),
@@ -4347,6 +4358,7 @@ mod tests {
                     msg: EventMsg::TurnComplete(TurnCompleteEvent {
                         turn_id: "turn-1".to_string(),
                         last_agent_message: None,
+                        compaction_events_in_turn: 0,
                     }),
                 }],
                 input_state: Some(input_state),
@@ -4502,6 +4514,7 @@ mod tests {
                         msg: EventMsg::TurnComplete(TurnCompleteEvent {
                             turn_id: "turn-0".to_string(),
                             last_agent_message: None,
+                            compaction_events_in_turn: 0,
                         }),
                     },
                     Event {
@@ -4532,6 +4545,7 @@ mod tests {
             msg: EventMsg::TurnComplete(TurnCompleteEvent {
                 turn_id: "turn-1".to_string(),
                 last_agent_message: None,
+                compaction_events_in_turn: 0,
             }),
         });
 

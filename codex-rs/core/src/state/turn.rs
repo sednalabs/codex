@@ -82,6 +82,7 @@ pub(crate) struct TurnState {
     pending_dynamic_tools: HashMap<String, oneshot::Sender<DynamicToolResponse>>,
     pending_input: Vec<ResponseInputItem>,
     granted_permissions: Option<PermissionProfile>,
+    compaction_events_in_turn: u32,
     pub(crate) tool_calls: u64,
     pub(crate) token_usage_at_turn_start: TokenUsage,
 }
@@ -200,6 +201,10 @@ impl TurnState {
 
     pub(crate) fn granted_permissions(&self) -> Option<PermissionProfile> {
         self.granted_permissions.clone()
+    }
+
+    pub(crate) fn take_compaction_events_in_turn(&mut self) -> u32 {
+        std::mem::take(&mut self.compaction_events_in_turn)
     }
 }
 

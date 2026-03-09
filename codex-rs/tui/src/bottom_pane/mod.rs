@@ -724,6 +724,7 @@ impl BottomPane {
                         self.app_event_tx.clone(),
                         self.frame_requester.clone(),
                         self.animations_enabled,
+                        true,
                     ));
                 }
                 if let Some(status) = self.status.as_mut() {
@@ -751,6 +752,7 @@ impl BottomPane {
                 self.app_event_tx.clone(),
                 self.frame_requester.clone(),
                 self.animations_enabled,
+                true,
             ));
             self.sync_status_inline_message();
             self.request_redraw();
