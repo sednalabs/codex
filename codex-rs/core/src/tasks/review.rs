@@ -247,7 +247,10 @@ pub(crate) async fn exit_review_mode(
     session
         .send_event(
             ctx.as_ref(),
-            EventMsg::ExitedReviewMode(ExitedReviewModeEvent { review_output }),
+            EventMsg::ExitedReviewMode(ExitedReviewModeEvent {
+                review_output,
+                review_token_usage: None,
+            }),
         )
         .await;
     session

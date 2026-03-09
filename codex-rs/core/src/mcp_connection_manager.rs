@@ -2206,6 +2206,10 @@ mod tests {
                 disabled_tools: None,
                 scopes: None,
                 oauth_resource: None,
+                enable_elicitation: false,
+                read_only: false,
+                strict_tool_classification: false,
+                require_approval_for_mutating: false,
             },
             auth_status: McpAuthStatus::Unsupported,
         };
@@ -2254,6 +2258,10 @@ mod tests {
                 disabled_tools: None,
                 scopes: None,
                 oauth_resource: None,
+                enable_elicitation: false,
+                read_only: false,
+                strict_tool_classification: false,
+                require_approval_for_mutating: false,
             },
             auth_status: McpAuthStatus::Unsupported,
         };

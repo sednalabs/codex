@@ -47,6 +47,10 @@ fn stdio_mcp(command: &str) -> McpServerConfig {
         disabled_tools: None,
         scopes: None,
         oauth_resource: None,
+        enable_elicitation: false,
+        read_only: false,
+        strict_tool_classification: false,
+        require_approval_for_mutating: false,
     }
 }
 
@@ -67,6 +71,10 @@ fn http_mcp(url: &str) -> McpServerConfig {
         disabled_tools: None,
         scopes: None,
         oauth_resource: None,
+        enable_elicitation: false,
+        read_only: false,
+        strict_tool_classification: false,
+        require_approval_for_mutating: false,
     }
 }
 
@@ -173,6 +181,7 @@ fn config_toml_deserializes_model_availability_nux() {
             animations: true,
             show_tooltips: true,
             alternate_screen: AltScreenMode::default(),
+            double_esc_interrupt: true,
             status_line: None,
             theme: None,
             model_availability_nux: ModelAvailabilityNuxConfig {
@@ -707,6 +716,7 @@ fn tui_config_missing_notifications_field_defaults_to_enabled() {
             animations: true,
             show_tooltips: true,
             alternate_screen: AltScreenMode::Auto,
+            double_esc_interrupt: true,
             status_line: None,
             theme: None,
             model_availability_nux: ModelAvailabilityNuxConfig::default(),
@@ -1549,6 +1559,10 @@ async fn replace_mcp_servers_round_trips_entries() -> anyhow::Result<()> {
             disabled_tools: None,
             scopes: None,
             oauth_resource: None,
+            enable_elicitation: false,
+            read_only: false,
+            strict_tool_classification: false,
+            require_approval_for_mutating: false,
         },
     );
 
@@ -1705,6 +1719,10 @@ async fn replace_mcp_servers_serializes_env_sorted() -> anyhow::Result<()> {
             disabled_tools: None,
             scopes: None,
             oauth_resource: None,
+            enable_elicitation: false,
+            read_only: false,
+            strict_tool_classification: false,
+            require_approval_for_mutating: false,
         },
     )]);
 
@@ -1777,6 +1795,10 @@ async fn replace_mcp_servers_serializes_env_vars() -> anyhow::Result<()> {
             disabled_tools: None,
             scopes: None,
             oauth_resource: None,
+            enable_elicitation: false,
+            read_only: false,
+            strict_tool_classification: false,
+            require_approval_for_mutating: false,
         },
     )]);
 
@@ -1829,6 +1851,10 @@ async fn replace_mcp_servers_serializes_cwd() -> anyhow::Result<()> {
             disabled_tools: None,
             scopes: None,
             oauth_resource: None,
+            enable_elicitation: false,
+            read_only: false,
+            strict_tool_classification: false,
+            require_approval_for_mutating: false,
         },
     )]);
 
@@ -1879,6 +1905,10 @@ async fn replace_mcp_servers_streamable_http_serializes_bearer_token() -> anyhow
             disabled_tools: None,
             scopes: None,
             oauth_resource: None,
+            enable_elicitation: false,
+            read_only: false,
+            strict_tool_classification: false,
+            require_approval_for_mutating: false,
         },
     )]);
 
@@ -1945,6 +1975,10 @@ async fn replace_mcp_servers_streamable_http_serializes_custom_headers() -> anyh
             disabled_tools: None,
             scopes: None,
             oauth_resource: None,
+            enable_elicitation: false,
+            read_only: false,
+            strict_tool_classification: false,
+            require_approval_for_mutating: false,
         },
     )]);
     apply_blocking(
@@ -2023,6 +2057,10 @@ async fn replace_mcp_servers_streamable_http_removes_optional_sections() -> anyh
             disabled_tools: None,
             scopes: None,
             oauth_resource: None,
+            enable_elicitation: false,
+            read_only: false,
+            strict_tool_classification: false,
+            require_approval_for_mutating: false,
         },
     )]);
 
@@ -2054,6 +2092,10 @@ async fn replace_mcp_servers_streamable_http_removes_optional_sections() -> anyh
             disabled_tools: None,
             scopes: None,
             oauth_resource: None,
+            enable_elicitation: false,
+            read_only: false,
+            strict_tool_classification: false,
+            require_approval_for_mutating: false,
         },
     );
     apply_blocking(
@@ -2120,6 +2162,10 @@ async fn replace_mcp_servers_streamable_http_isolates_headers_between_servers() 
                 disabled_tools: None,
                 scopes: None,
                 oauth_resource: None,
+                enable_elicitation: false,
+                read_only: false,
+                strict_tool_classification: false,
+                require_approval_for_mutating: false,
             },
         ),
         (
@@ -2141,6 +2187,10 @@ async fn replace_mcp_servers_streamable_http_isolates_headers_between_servers() 
                 disabled_tools: None,
                 scopes: None,
                 oauth_resource: None,
+                enable_elicitation: false,
+                read_only: false,
+                strict_tool_classification: false,
+                require_approval_for_mutating: false,
             },
         ),
     ]);
@@ -2225,6 +2275,10 @@ async fn replace_mcp_servers_serializes_disabled_flag() -> anyhow::Result<()> {
             disabled_tools: None,
             scopes: None,
             oauth_resource: None,
+            enable_elicitation: false,
+            read_only: false,
+            strict_tool_classification: false,
+            require_approval_for_mutating: false,
         },
     )]);
 
@@ -2271,6 +2325,10 @@ async fn replace_mcp_servers_serializes_required_flag() -> anyhow::Result<()> {
             disabled_tools: None,
             scopes: None,
             oauth_resource: None,
+            enable_elicitation: false,
+            read_only: false,
+            strict_tool_classification: false,
+            require_approval_for_mutating: false,
         },
     )]);
 
@@ -2317,6 +2375,10 @@ async fn replace_mcp_servers_serializes_tool_filters() -> anyhow::Result<()> {
             disabled_tools: Some(vec!["blocked".to_string()]),
             scopes: None,
             oauth_resource: None,
+            enable_elicitation: false,
+            read_only: false,
+            strict_tool_classification: false,
+            require_approval_for_mutating: false,
         },
     )]);
 
@@ -2367,6 +2429,10 @@ async fn replace_mcp_servers_streamable_http_serializes_oauth_resource() -> anyh
             disabled_tools: None,
             scopes: None,
             oauth_resource: Some("https://resource.example.com".to_string()),
+            enable_elicitation: false,
+            read_only: false,
+            strict_tool_classification: false,
+            require_approval_for_mutating: false,
         },
     )]);
 
