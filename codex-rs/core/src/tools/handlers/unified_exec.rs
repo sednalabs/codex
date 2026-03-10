@@ -18,16 +18,13 @@ use crate::tools::handlers::parse_arguments_with_base_path;
 use crate::tools::handlers::resolve_workdir_base_path;
 use crate::tools::registry::ToolHandler;
 use crate::tools::registry::ToolKind;
-use crate::truncate::TruncationPolicy;
 use crate::truncate::approx_token_count;
-use crate::truncate::formatted_truncate_text;
 use crate::unified_exec::ExecCommandRequest;
 use crate::unified_exec::MIN_EMPTY_YIELD_TIME_MS;
 use crate::unified_exec::UNIFIED_EXEC_OUTPUT_MAX_BYTES;
 use crate::unified_exec::UnifiedExecContext;
 use crate::unified_exec::UnifiedExecProcessManager;
 use crate::unified_exec::WriteStdinRequest;
-use crate::unified_exec::resolve_max_tokens;
 use async_trait::async_trait;
 use codex_protocol::models::PermissionProfile;
 use serde::Deserialize;
@@ -304,7 +301,7 @@ impl ToolHandler for UnifiedExecHandler {
                     let wait_started_at = Instant::now();
                     let mut last_heartbeat_at = wait_started_at;
                     let mut collected = Vec::new();
-                    let mut last_response: Option<UnifiedExecResponse> = None;
+                    let mut last_response: Option<ExecCommandToolOutput> = None;
                     let mut timed_out = false;
 
                     loop {
@@ -374,26 +371,26 @@ impl ToolHandler for UnifiedExecHandler {
                         )
                     })?;
 
-                    let text = String::from_utf8_lossy(&collected).to_string();
                     response.raw_output = collected;
+                    response.max_output_tokens = args.max_output_tokens;
                     response.wall_time = wait_started_at.elapsed();
-                    response.output = formatted_truncate_text(
-                        &text,
-                        TruncationPolicy::Tokens(resolve_max_tokens(args.max_output_tokens)),
-                    );
-                    response.original_token_count = Some(approx_token_count(&text));
 
                     if timed_out && response.process_id.is_some() && response.exit_code.is_none() {
                         let waited_secs = response.wall_time.as_secs();
                         let timeout_note = format!(
                             "Wait timed out after {waited_secs}s; process is still running. Re-issue write_stdin with wait_until_terminal=true to continue waiting."
                         );
-                        if response.output.is_empty() {
-                            response.output = timeout_note;
+                        let current_text =
+                            String::from_utf8_lossy(&response.raw_output).to_string();
+                        if current_text.is_empty() {
+                            response.raw_output = timeout_note.into_bytes();
                         } else {
-                            response.output = format!("{}\n\n{timeout_note}", response.output);
+                            response.raw_output =
+                                format!("{current_text}\n\n{timeout_note}").into_bytes();
                         }
                     }
+                    let final_text = String::from_utf8_lossy(&response.raw_output).to_string();
+                    response.original_token_count = Some(approx_token_count(&final_text));
 
                     response
                 } else {

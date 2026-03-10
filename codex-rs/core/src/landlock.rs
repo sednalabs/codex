@@ -86,7 +86,9 @@ pub(crate) fn linux_sandbox_supports_split_policy_flags(codex_linux_sandbox_exe:
     static CACHE: OnceLock<Mutex<HashMap<PathBuf, bool>>> = OnceLock::new();
 
     let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
-    let mut cached = cache.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut cached = cache
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     if let Some(supports_split_policy) = cached.get(codex_linux_sandbox_exe) {
         return *supports_split_policy;
     }
