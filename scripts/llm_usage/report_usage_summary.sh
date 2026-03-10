@@ -13,6 +13,7 @@ Options:
   --db-url URL          Postgres connection string. Defaults to LLM_USAGE_DB_URL or the postgres MCP DATABASE_URI in ~/.codex/config.toml.
   --schema NAME         Target schema. Defaults to LLM_USAGE_DB_SCHEMA or llm_usage.
   --report NAME         One of: all, freshness, session, model, provider, cost, reconciliation. Defaults to all.
+  --cost-view NAME      One of: billing, observed. Defaults to billing.
   --days N              Limit usage queries to the last N days. Use 0 for all time. Defaults to 30.
   --limit N             Limit rows for session/model/provider reports. Defaults to 20.
   --help                Show this help.
@@ -22,6 +23,7 @@ USAGE
 db_url=${LLM_USAGE_DB_URL:-}
 db_schema=${LLM_USAGE_DB_SCHEMA:-llm_usage}
 report_name=all
+cost_view_name=billing
 days=30
 limit=20
 
@@ -37,6 +39,10 @@ while [ $# -gt 0 ]; do
       ;;
     --report)
       report_name=${2:-}
+      shift 2
+      ;;
+    --cost-view)
+      cost_view_name=${2:-}
       shift 2
       ;;
     --days)
@@ -80,6 +86,21 @@ case "$report_name" in
     ;;
   *)
     echo "invalid --report value: $report_name" >&2
+    exit 1
+    ;;
+esac
+
+case "$cost_view_name" in
+  billing)
+    cost_view_relation='__LLM_SCHEMA__.llm_usage_public_api_costs'
+    cost_view_label='billing canonical'
+    ;;
+  observed)
+    cost_view_relation='__LLM_SCHEMA__.llm_usage_public_api_costs_observed'
+    cost_view_label='observed rows'
+    ;;
+  *)
+    echo "invalid --cost-view value: $cost_view_name" >&2
     exit 1
     ;;
 esac
@@ -206,7 +227,7 @@ select
   round(sum(coalesce(aud_total_cost, 0)), 8) as aud_total_cost,
   round(sum(coalesce(source_total_cost, 0)), 8) as source_total_cost,
   max(event_ts) as last_event_at
-from __LLM_SCHEMA__.llm_usage_public_api_costs
+from $cost_view_relation
 where $usage_time_filter
 group by 1, 2, 3
 order by aud_total_cost desc nulls last, source_total_cost desc nulls last, last_event_at desc
@@ -311,7 +332,7 @@ order by total_tokens desc, last_event_at desc
 limit $limit;
 
 \echo
-\echo == Cost Summary ($window_label) ==
+\echo == Cost Summary ($window_label, $cost_view_label) ==
 select
   coalesce(provider, 'unknown') as provider,
   model_key,
@@ -320,7 +341,7 @@ select
   round(sum(coalesce(aud_total_cost, 0)), 8) as aud_total_cost,
   round(sum(coalesce(source_total_cost, 0)), 8) as source_total_cost,
   max(event_ts) as last_event_at
-from __LLM_SCHEMA__.llm_usage_public_api_costs
+from $cost_view_relation
 where $usage_time_filter
 group by 1, 2, 3
 order by aud_total_cost desc nulls last, source_total_cost desc nulls last, last_event_at desc

@@ -90,6 +90,8 @@ declare -A known_size
 
 declare -A known_mtime
 
+declare -A known_parser_version
+
 persist_run_record() {
   local status=$1
   local error_text=${2:-}
@@ -165,17 +167,21 @@ if [ "$dry_run" -eq 0 ]; then
   run_started_at=$(date -Is)
   persist_run_record 'running' '' ''
   llm_usage_fetch_artifact_state "$db_url" "$db_schema" gemini interactive_message "$artifact_state_lookup"
-  while IFS=$'\t' read -r path_hash size mtime _row_count; do
+  while IFS=$'\t' read -r path_hash size mtime parser_version _row_count; do
     [ -n "$path_hash" ] || continue
     known_size["$path_hash"]=$size
     known_mtime["$path_hash"]=$mtime
+    known_parser_version["$path_hash"]=$parser_version
   done < "$artifact_state_lookup"
 fi
 
 while IFS= read -r -d '' file; do
   read -r source_size source_mtime < <(llm_usage_file_metadata "$file")
   source_path_hash=$(llm_usage_hash_string "$file")
-  if [ "$dry_run" -eq 0 ] && [ "${known_size[$source_path_hash]-}" = "$source_size" ] && [ "${known_mtime[$source_path_hash]-}" = "$source_mtime" ]; then
+  if [ "$dry_run" -eq 0 ] \
+    && [ "${known_size[$source_path_hash]-}" = "$source_size" ] \
+    && [ "${known_mtime[$source_path_hash]-}" = "$source_mtime" ] \
+    && [ "${known_parser_version[$source_path_hash]-}" = "$(llm_usage_parser_version)" ]; then
     skipped_artifacts=$((skipped_artifacts + 1))
     continue
   fi

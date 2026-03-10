@@ -6,7 +6,7 @@ llm_usage_script_dir() {
 }
 
 llm_usage_parser_version() {
-  printf '%s\n' '2026-03-07-v2'
+  printf '%s\n' '2026-03-11-v3'
 }
 
 llm_usage_require_commands() {
@@ -308,6 +308,7 @@ select
   source_path_hash,
   coalesce(source_size_bytes::text, ''),
   coalesce(source_mtime_epoch::text, ''),
+  coalesce(parser_version, ''),
   coalesce(source_row_count::text, '')
 from __LLM_SCHEMA__.llm_source_artifacts
 where source_system = '$source_system'
@@ -434,6 +435,7 @@ INSERT INTO __LLM_SCHEMA__.llm_usage_events (
   event_ts,
   session_id,
   turn_id,
+  forked_from_session_id,
   project_key,
   project_path,
   cwd,
@@ -482,6 +484,7 @@ SELECT
   (raw->>'event_ts')::timestamptz AS event_ts,
   raw->>'session_id' AS session_id,
   nullif(raw->>'turn_id', '') AS turn_id,
+  nullif(raw->>'forked_from_session_id', '') AS forked_from_session_id,
   nullif(raw->>'project_key', '') AS project_key,
   nullif(raw->>'project_path', '') AS project_path,
   nullif(raw->>'cwd', '') AS cwd,
@@ -529,6 +532,7 @@ ON CONFLICT (logical_key) DO UPDATE SET
   event_ts = EXCLUDED.event_ts,
   session_id = EXCLUDED.session_id,
   turn_id = EXCLUDED.turn_id,
+  forked_from_session_id = EXCLUDED.forked_from_session_id,
   project_key = EXCLUDED.project_key,
   project_path = EXCLUDED.project_path,
   cwd = EXCLUDED.cwd,

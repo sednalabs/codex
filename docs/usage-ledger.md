@@ -211,11 +211,15 @@ Use the reporting command for operator summaries:
 ./scripts/llm_usage/report_usage_summary.sh --report session --days 7 --limit 20
 ./scripts/llm_usage/report_usage_summary.sh --report model --days 30 --limit 20
 ./scripts/llm_usage/report_usage_summary.sh --report provider --days 30 --limit 20
+./scripts/llm_usage/report_usage_summary.sh --report cost --days 30 --limit 20
+./scripts/llm_usage/report_usage_summary.sh --report cost --cost-view observed --days 30 --limit 20
 ./scripts/llm_usage/report_usage_summary.sh --report reconciliation
 ./scripts/llm_usage/report_usage_summary.sh --report freshness
 ```
 
 The report command also supports a `reconciliation` mode that groups rows by `parser_version`, `source_system`, `source_kind`, and `event_status` so schema migrations and parser upgrades are easy to audit later.
+
+Cost reporting now defaults to the billing-canonical view. For Codex, that means one billable row per `turn_id`, with the latest observation winning across resumed or forked sessions. Use `--cost-view observed` when you explicitly want the raw observed rows instead of billing-safe totals.
 
 The `session` view now includes:
 
