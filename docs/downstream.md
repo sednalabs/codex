@@ -17,18 +17,44 @@ GitHub default branch is `carry/main` so downstream behavior is the repository l
 ## Divergence Summary
 
 This section tracks intentional downstream behavior differences from `upstream/main`.
-Last reviewed: 2026-03-04.
+Last reviewed: 2026-03-11.
 
-### Core + protocol: blocking wait for `write_stdin` and compaction turn-count metadata
+Current state at review time:
+- `carry/main` is `74` commits ahead and `8` behind `upstream/main`
+- `main` remains a fast-forward mirror of `upstream/main`
+
+### Core + protocol: blocking wait for `write_stdin`, stable wait output, and compaction turn-count metadata
 
 Why:
 - Support "wait until terminal" semantics directly on `write_stdin` for long-running exact/tool-driven command flows.
+- Keep wait responses aligned with the current unified-exec output shape after upstream refactors.
 - Expose compaction count on turn completion so clients can distinguish "normal turn complete" from "turn completed after one or more compactions".
 
 User-visible behavior:
 - `write_stdin` supports blocking wait parameters (`wait_until_terminal`, `max_wait_ms`, `heartbeat_interval_ms`).
 - `exec_command` does not expose those wait parameters.
+- Wait-timeout notes are appended to emitted `raw_output`, and token accounting is derived from the final response text.
 - `TurnCompleteEvent` includes `compaction_events_in_turn`.
+
+### Usage ledger: Postgres-backed ingest, canonicalized billing turns, and AUD reporting
+
+Why:
+- Downstream tracks Codex and Gemini usage in Postgres with a durable schema and fork-local reporting flows.
+- Billing turns need stable canonical identities and historical AUD cost reporting that upstream does not provide.
+
+User-visible behavior:
+- Downstream ships `scripts/llm_usage/*` for schema setup, ingestion, scheduled runs, and reporting.
+- [usage-ledger.md](/home/grant/mmm/codex/docs/usage-ledger.md) documents the ledger workflow.
+- Billing turns are canonicalized before ingest, and historical AUD cost views are available downstream.
+
+### Repo tooling: build-helper presets for downstream validation and release
+
+Why:
+- Shared-host validation and release builds are more reliable when they run through build-helper MCP instead of ad hoc shell commands.
+
+User-visible behavior:
+- `.build-helper/presets.json` defines fork-local Codex presets for formatting, core tests, and release build/install flows.
+- Downstream instructions can reference those presets directly for reproducible validation and release steps.
 
 ### TUI: safer interrupt handling for Alt/meta terminals (double-`Esc` by default)
 
@@ -77,12 +103,23 @@ User-visible behavior:
 Why:
 - Keep `Esc` interrupts from auto-submitting queued turns while still applying queued model switches promptly.
 - Avoid stale model/effort on the next queued command when interrupt cleanup overlaps with MCP startup running-state.
+- Keep explicit task-control commands immediate only when they should be.
 
 User-visible behavior:
 - On interrupt, queued user drafts are restored to the composer; non-model queued slash commands remain queued.
 - Queued model selections are applied immediately during interrupt cleanup.
 - Queued `/clear` remains queued while a task is running and is not executed during interrupt cleanup.
+- `/quit` remains immediate while a task is running instead of being queued behind the active turn.
 - Inline queued slash command arguments preserve expanded pending-paste payload content.
+
+### Review + history: downstream accounting and runtime-context alignment
+
+Why:
+- Keep review token summaries, app-server history, and review-mode effort selection aligned with the live turn state rather than stale defaults.
+
+User-visible behavior:
+- Review token usage is aligned across live flows and app-server/history views.
+- Review flows reuse the runtime turn effort and preserve downstream sampling rollout context needed for faithful reconstruction.
 
 ### Core: MCP forced approvals still participate in session remember keys
 
