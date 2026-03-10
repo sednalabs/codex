@@ -103,6 +103,7 @@ use codex_protocol::protocol::TurnAbortReason;
 use codex_protocol::protocol::TurnContextItem;
 use codex_protocol::protocol::TurnContextNetworkItem;
 use codex_protocol::protocol::TurnStartedEvent;
+use codex_protocol::request_permissions::PermissionGrantScope;
 use codex_protocol::request_permissions::RequestPermissionsArgs;
 use codex_protocol::request_permissions::RequestPermissionsEvent;
 use codex_protocol::request_permissions::RequestPermissionsResponse;
@@ -305,6 +306,7 @@ use crate::windows_sandbox::WindowsSandboxLevelExt;
 use codex_async_utils::OrCancelExt;
 use codex_otel::SessionTelemetry;
 use codex_otel::TelemetryAuthMode;
+use codex_otel::metrics::names::THREAD_STARTED_METRIC;
 use codex_protocol::config_types::CollaborationMode;
 use codex_protocol::config_types::Personality;
 use codex_protocol::config_types::ReasoningSummary as ReasoningSummaryConfig;
@@ -401,6 +403,16 @@ impl Codex {
                 )
             };
             warn!("{message}");
+            config.startup_warnings.push(message);
+        }
+        if config.features.enabled(Feature::CodeMode)
+            && let Err(err) = resolve_compatible_node(config.js_repl_node_path.as_deref()).await
+        {
+            let message = format!(
+                "Disabled `code_mode` for this session because the configured Node runtime is unavailable or incompatible. {err}"
+            );
+            warn!("{message}");
+            let _ = config.features.disable(Feature::CodeMode);
             config.startup_warnings.push(message);
         }
 
@@ -949,6 +961,11 @@ impl SessionConfiguration {
 
     pub(crate) fn apply(&self, updates: &SessionSettingsUpdate) -> ConstraintResult<Self> {
         let mut next_configuration = self.clone();
+        let file_system_policy_matches_legacy = self.file_system_sandbox_policy
+            == FileSystemSandboxPolicy::from_legacy_sandbox_policy(
+                self.sandbox_policy.get(),
+                &self.cwd,
+            );
         if let Some(collaboration_mode) = updates.collaboration_mode.clone() {
             next_configuration.collaboration_mode = collaboration_mode;
         }
@@ -964,18 +981,29 @@ impl SessionConfiguration {
         if let Some(approval_policy) = updates.approval_policy {
             next_configuration.approval_policy.set(approval_policy)?;
         }
+        let mut sandbox_policy_changed = false;
         if let Some(sandbox_policy) = updates.sandbox_policy.clone() {
             next_configuration.sandbox_policy.set(sandbox_policy)?;
-            next_configuration.file_system_sandbox_policy =
-                FileSystemSandboxPolicy::from(next_configuration.sandbox_policy.get());
             next_configuration.network_sandbox_policy =
                 NetworkSandboxPolicy::from(next_configuration.sandbox_policy.get());
+            sandbox_policy_changed = true;
         }
         if let Some(windows_sandbox_level) = updates.windows_sandbox_level {
             next_configuration.windows_sandbox_level = windows_sandbox_level;
         }
+        let mut cwd_changed = false;
         if let Some(cwd) = updates.cwd.clone() {
             next_configuration.cwd = cwd;
+            cwd_changed = true;
+        }
+        if sandbox_policy_changed || (cwd_changed && file_system_policy_matches_legacy) {
+            // Preserve richer split policies across cwd-only updates; only
+            // rederive when the session is already using the legacy bridge.
+            next_configuration.file_system_sandbox_policy =
+                FileSystemSandboxPolicy::from_legacy_sandbox_policy(
+                    next_configuration.sandbox_policy.get(),
+                    &next_configuration.cwd,
+                );
         }
         if let Some(app_server_client_name) = updates.app_server_client_name.clone() {
             next_configuration.app_server_client_name = Some(app_server_client_name);
@@ -1412,7 +1440,7 @@ impl Session {
         };
         config.features.emit_metrics(&session_telemetry);
         session_telemetry.counter(
-            "codex.thread.started",
+            THREAD_STARTED_METRIC,
             1,
             &[(
                 "is_git",
@@ -1532,6 +1560,25 @@ impl Session {
                 (None, None)
             };
 
+        let mut hook_shell_argv = default_shell.derive_exec_args("", false);
+        let hook_shell_program = hook_shell_argv.remove(0);
+        let _ = hook_shell_argv.pop();
+        let hooks = Hooks::new(HooksConfig {
+            legacy_notify_argv: config.notify.clone(),
+            feature_enabled: config.features.enabled(Feature::CodexHooks),
+            config_layer_stack: Some(config.config_layer_stack.clone()),
+            shell_program: Some(hook_shell_program),
+            shell_args: hook_shell_argv,
+        });
+        for warning in hooks.startup_warnings() {
+            post_session_configured_events.push(Event {
+                id: INITIAL_SUBMIT_ID.to_owned(),
+                msg: EventMsg::Warning(WarningEvent {
+                    message: warning.clone(),
+                }),
+            });
+        }
+
         let services = SessionServices {
             // Initialize the MCP connection manager with an uninitialized
             // instance. It will be replaced with one created via
@@ -1553,9 +1600,7 @@ impl Session {
                 Arc::clone(&config),
                 Arc::clone(&auth_manager),
             ),
-            hooks: Hooks::new(HooksConfig {
-                legacy_notify_argv: config.notify.clone(),
-            }),
+            hooks,
             rollout: Mutex::new(rollout_recorder),
             user_shell: Arc::new(default_shell),
             shell_snapshot_tx,
@@ -1702,9 +1747,19 @@ impl Session {
         }
         sess.schedule_startup_prewarm(session_configuration.base_instructions.clone())
             .await;
+        let session_start_source = match &initial_history {
+            InitialHistory::Resumed(_) => codex_hooks::SessionStartSource::Resume,
+            InitialHistory::New | InitialHistory::Forked(_) => {
+                codex_hooks::SessionStartSource::Startup
+            }
+        };
 
         // record_initial_history can emit events. We record only after the SessionConfiguredEvent is emitted.
         sess.record_initial_history(initial_history).await;
+        {
+            let mut state = sess.state.lock().await;
+            state.set_pending_session_start_source(Some(session_start_source));
+        }
 
         memories::start_memories_startup_task(
             &sess,
@@ -2829,6 +2884,27 @@ impl Session {
         call_id: String,
         args: RequestPermissionsArgs,
     ) -> Option<RequestPermissionsResponse> {
+        match turn_context.approval_policy.value() {
+            AskForApproval::Never => {
+                return Some(RequestPermissionsResponse {
+                    permissions: PermissionProfile::default(),
+                    scope: PermissionGrantScope::Turn,
+                });
+            }
+            AskForApproval::Reject(reject_config)
+                if reject_config.rejects_request_permissions() =>
+            {
+                return Some(RequestPermissionsResponse {
+                    permissions: PermissionProfile::default(),
+                    scope: PermissionGrantScope::Turn,
+                });
+            }
+            AskForApproval::OnFailure
+            | AskForApproval::OnRequest
+            | AskForApproval::UnlessTrusted
+            | AskForApproval::Reject(_) => {}
+        }
+
         let (tx_response, rx_response) = oneshot::channel();
         let prev_entry = {
             let mut active = self.active_turn.lock().await;
@@ -2995,6 +3071,7 @@ impl Session {
         call_id: &str,
         response: RequestPermissionsResponse,
     ) {
+        let mut granted_for_session = None;
         let entry = {
             let mut active = self.active_turn.lock().await;
             match active.as_mut() {
@@ -3002,13 +3079,24 @@ impl Session {
                     let mut ts = at.turn_state.lock().await;
                     let entry = ts.remove_pending_request_permissions(call_id);
                     if entry.is_some() && !response.permissions.is_empty() {
-                        ts.record_granted_permissions(response.permissions.clone());
+                        match response.scope {
+                            PermissionGrantScope::Turn => {
+                                ts.record_granted_permissions(response.permissions.clone());
+                            }
+                            PermissionGrantScope::Session => {
+                                granted_for_session = Some(response.permissions.clone());
+                            }
+                        }
                     }
                     entry
                 }
                 None => None,
             }
         };
+        if let Some(permissions) = granted_for_session {
+            let mut state = self.state.lock().await;
+            state.record_granted_permissions(permissions);
+        }
         match entry {
             Some(tx_response) => {
                 tx_response.send(response).ok();
@@ -3024,6 +3112,11 @@ impl Session {
         let active = active.as_ref()?;
         let ts = active.turn_state.lock().await;
         ts.granted_permissions()
+    }
+
+    pub(crate) async fn granted_session_permissions(&self) -> Option<PermissionProfile> {
+        let state = self.state.lock().await;
+        state.granted_permissions()
     }
 
     pub async fn notify_dynamic_tool_response(&self, call_id: &str, response: DynamicToolResponse) {
@@ -3770,6 +3863,21 @@ impl Session {
 
     pub(crate) fn user_shell(&self) -> Arc<shell::Shell> {
         Arc::clone(&self.services.user_shell)
+    }
+
+    pub(crate) async fn current_rollout_path(&self) -> Option<PathBuf> {
+        let recorder = {
+            let guard = self.services.rollout.lock().await;
+            guard.clone()
+        };
+        recorder.map(|recorder| recorder.rollout_path().to_path_buf())
+    }
+
+    pub(crate) async fn take_pending_session_start_source(
+        &self,
+    ) -> Option<codex_hooks::SessionStartSource> {
+        let mut state = self.state.lock().await;
+        state.take_pending_session_start_source()
     }
 
     async fn refresh_mcp_servers_inner(
@@ -5401,6 +5509,8 @@ pub(crate) async fn run_turn(
     sess.maybe_start_ghost_snapshot(Arc::clone(&turn_context), cancellation_token.child_token())
         .await;
     let mut last_agent_message: Option<String> = None;
+    let mut stop_hook_active = false;
+    let mut pending_stop_hook_message: Option<String> = None;
     // Although from the perspective of codex.rs, TurnDiffTracker has the lifecycle of a Task which contains
     // many turns, from the perspective of the user, it is a single turn.
     let turn_diff_tracker = Arc::new(tokio::sync::Mutex::new(TurnDiffTracker::new()));
@@ -5412,6 +5522,55 @@ pub(crate) async fn run_turn(
         prewarmed_client_session.unwrap_or_else(|| sess.services.model_client.new_session());
 
     loop {
+        if let Some(session_start_source) = sess.take_pending_session_start_source().await {
+            let session_start_permission_mode = match turn_context.approval_policy.value() {
+                AskForApproval::Never => "bypassPermissions",
+                AskForApproval::UnlessTrusted
+                | AskForApproval::OnFailure
+                | AskForApproval::OnRequest
+                | AskForApproval::Reject(_) => "default",
+            }
+            .to_string();
+            let session_start_request = codex_hooks::SessionStartRequest {
+                session_id: sess.conversation_id,
+                cwd: turn_context.cwd.clone(),
+                transcript_path: sess.current_rollout_path().await,
+                model: turn_context.model_info.slug.clone(),
+                permission_mode: session_start_permission_mode,
+                source: session_start_source,
+            };
+            for run in sess.hooks().preview_session_start(&session_start_request) {
+                sess.send_event(
+                    &turn_context,
+                    EventMsg::HookStarted(crate::protocol::HookStartedEvent {
+                        turn_id: Some(turn_context.sub_id.clone()),
+                        run,
+                    }),
+                )
+                .await;
+            }
+            let session_start_outcome = sess
+                .hooks()
+                .run_session_start(session_start_request, Some(turn_context.sub_id.clone()))
+                .await;
+            for completed in session_start_outcome.hook_events {
+                sess.send_event(&turn_context, EventMsg::HookCompleted(completed))
+                    .await;
+            }
+            if session_start_outcome.should_stop {
+                break;
+            }
+            if let Some(additional_context) = session_start_outcome.additional_context {
+                let developer_message: ResponseItem =
+                    DeveloperInstructions::new(additional_context).into();
+                sess.record_conversation_items(
+                    &turn_context,
+                    std::slice::from_ref(&developer_message),
+                )
+                .await;
+            }
+        }
+
         // Note that pending_input would be something like a message the user
         // submitted through the UI while the model was running. Though the UI
         // may support this, the model might not.
@@ -5443,11 +5602,14 @@ pub(crate) async fn run_turn(
         }
 
         // Construct the input that we will send to the model.
-        let sampling_request_input: Vec<ResponseItem> = {
+        let mut sampling_request_input: Vec<ResponseItem> = {
             sess.clone_history()
                 .await
                 .for_prompt(&turn_context.model_info.input_modalities)
         };
+        if let Some(stop_hook_message) = pending_stop_hook_message.take() {
+            sampling_request_input.push(DeveloperInstructions::new(stop_hook_message).into());
+        }
 
         let sampling_request_input_messages = sampling_request_input
             .iter()
@@ -5510,6 +5672,57 @@ pub(crate) async fn run_turn(
 
                 if !needs_follow_up {
                     last_agent_message = sampling_request_last_agent_message;
+                    let stop_hook_permission_mode = match turn_context.approval_policy.value() {
+                        AskForApproval::Never => "bypassPermissions",
+                        AskForApproval::UnlessTrusted
+                        | AskForApproval::OnFailure
+                        | AskForApproval::OnRequest
+                        | AskForApproval::Reject(_) => "default",
+                    }
+                    .to_string();
+                    let stop_request = codex_hooks::StopRequest {
+                        session_id: sess.conversation_id,
+                        turn_id: turn_context.sub_id.clone(),
+                        cwd: turn_context.cwd.clone(),
+                        transcript_path: sess.current_rollout_path().await,
+                        model: turn_context.model_info.slug.clone(),
+                        permission_mode: stop_hook_permission_mode,
+                        stop_hook_active,
+                        last_assistant_message: last_agent_message.clone(),
+                    };
+                    for run in sess.hooks().preview_stop(&stop_request) {
+                        sess.send_event(
+                            &turn_context,
+                            EventMsg::HookStarted(crate::protocol::HookStartedEvent {
+                                turn_id: Some(turn_context.sub_id.clone()),
+                                run,
+                            }),
+                        )
+                        .await;
+                    }
+                    let stop_outcome = sess.hooks().run_stop(stop_request).await;
+                    for completed in stop_outcome.hook_events {
+                        sess.send_event(&turn_context, EventMsg::HookCompleted(completed))
+                            .await;
+                    }
+                    if stop_outcome.should_block {
+                        if stop_hook_active {
+                            sess.send_event(
+                                &turn_context,
+                                EventMsg::Warning(WarningEvent {
+                                    message: "Stop hook blocked twice in the same turn; ignoring the second block to avoid an infinite loop.".to_string(),
+                                }),
+                            )
+                            .await;
+                        } else {
+                            stop_hook_active = true;
+                            pending_stop_hook_message = stop_outcome.block_message_for_model;
+                            continue;
+                        }
+                    }
+                    if stop_outcome.should_stop {
+                        break;
+                    }
                     let hook_outcomes = sess
                         .hooks()
                         .dispatch(HookPayload {
@@ -6326,6 +6539,8 @@ fn realtime_text_for_event(msg: &EventMsg) -> Option<String> {
         | EventMsg::ExitedReviewMode(_)
         | EventMsg::RawResponseItem(_)
         | EventMsg::ItemStarted(_)
+        | EventMsg::HookStarted(_)
+        | EventMsg::HookCompleted(_)
         | EventMsg::AgentMessageContentDelta(_)
         | EventMsg::PlanDelta(_)
         | EventMsg::ReasoningContentDelta(_)
