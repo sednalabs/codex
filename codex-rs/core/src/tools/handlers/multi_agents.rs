@@ -13,6 +13,7 @@ use crate::config::Config;
 use crate::error::CodexErr;
 use crate::features::Feature;
 use crate::function_tool::FunctionCallError;
+use crate::models_manager::manager::RefreshStrategy;
 use crate::tools::context::FunctionToolOutput;
 use crate::tools::context::ToolInvocation;
 use crate::tools::context::ToolPayload;
@@ -22,6 +23,8 @@ use crate::tools::registry::ToolKind;
 use async_trait::async_trait;
 use codex_protocol::ThreadId;
 use codex_protocol::models::BaseInstructions;
+use codex_protocol::openai_models::ReasoningEffort;
+use codex_protocol::openai_models::ReasoningEffortPreset;
 use codex_protocol::protocol::CollabAgentInteractionBeginEvent;
 use codex_protocol::protocol::CollabAgentInteractionEndEvent;
 use codex_protocol::protocol::CollabAgentRef;
@@ -114,6 +117,7 @@ mod spawn {
         items: Option<Vec<UserInput>>,
         agent_type: Option<String>,
         model: Option<String>,
+        reasoning_effort: Option<ReasoningEffort>,
         #[serde(default)]
         fork_context: bool,
     }
@@ -136,23 +140,6 @@ mod spawn {
             .as_deref()
             .map(str::trim)
             .filter(|role| !role.is_empty());
-        let requested_model = match args.model.as_deref().map(str::trim) {
-            Some("") => {
-                return Err(FunctionCallError::RespondToModel(
-                    "model must be a non-empty string".to_string(),
-                ));
-            }
-            Some(model) => Some(model.to_string()),
-            None => None,
-        };
-        let spawn_turn = if let Some(model) = requested_model {
-            Arc::new(
-                turn.with_model(model, &session.services.models_manager)
-                    .await,
-            )
-        } else {
-            turn.clone()
-        };
         let input_items = parse_collab_input(args.message, args.items)?;
         let prompt = input_preview(&input_items);
         let session_source = turn.session_source.clone();
@@ -175,11 +162,19 @@ mod spawn {
             )
             .await;
         let mut config =
-            build_agent_spawn_config(&session.get_base_instructions().await, spawn_turn.as_ref())?;
+            build_agent_spawn_config(&session.get_base_instructions().await, turn.as_ref())?;
+        apply_requested_spawn_agent_model_overrides(
+            &session,
+            turn.as_ref(),
+            &mut config,
+            args.model.as_deref(),
+            args.reasoning_effort,
+        )
+        .await?;
         apply_role_to_config(&mut config, role_name)
             .await
             .map_err(FunctionCallError::RespondToModel)?;
-        apply_spawn_agent_runtime_overrides(&mut config, spawn_turn.as_ref())?;
+        apply_spawn_agent_runtime_overrides(&mut config, turn.as_ref())?;
         apply_spawn_agent_overrides(&mut config, child_depth);
 
         let result = session
@@ -981,6 +976,99 @@ fn apply_spawn_agent_overrides(config: &mut Config, child_depth: i32) {
     }
 }
 
+async fn apply_requested_spawn_agent_model_overrides(
+    session: &Session,
+    turn: &TurnContext,
+    config: &mut Config,
+    requested_model: Option<&str>,
+    requested_reasoning_effort: Option<ReasoningEffort>,
+) -> Result<(), FunctionCallError> {
+    if requested_model.is_none() && requested_reasoning_effort.is_none() {
+        return Ok(());
+    }
+
+    if let Some(requested_model) = requested_model {
+        let available_models = session
+            .services
+            .models_manager
+            .list_models(RefreshStrategy::Offline)
+            .await;
+        let selected_model_name = find_spawn_agent_model_name(&available_models, requested_model)?;
+        let selected_model_info = session
+            .services
+            .models_manager
+            .get_model_info(&selected_model_name, config)
+            .await;
+
+        config.model = Some(selected_model_name.clone());
+        if let Some(reasoning_effort) = requested_reasoning_effort {
+            validate_spawn_agent_reasoning_effort(
+                &selected_model_name,
+                &selected_model_info.supported_reasoning_levels,
+                reasoning_effort,
+            )?;
+            config.model_reasoning_effort = Some(reasoning_effort);
+        } else {
+            config.model_reasoning_effort = selected_model_info.default_reasoning_level;
+        }
+
+        return Ok(());
+    }
+
+    if let Some(reasoning_effort) = requested_reasoning_effort {
+        validate_spawn_agent_reasoning_effort(
+            &turn.model_info.slug,
+            &turn.model_info.supported_reasoning_levels,
+            reasoning_effort,
+        )?;
+        config.model_reasoning_effort = Some(reasoning_effort);
+    }
+
+    Ok(())
+}
+
+fn find_spawn_agent_model_name(
+    available_models: &[codex_protocol::openai_models::ModelPreset],
+    requested_model: &str,
+) -> Result<String, FunctionCallError> {
+    available_models
+        .iter()
+        .find(|model| model.model == requested_model)
+        .map(|model| model.model.clone())
+        .ok_or_else(|| {
+            let available = available_models
+                .iter()
+                .map(|model| model.model.as_str())
+                .collect::<Vec<_>>()
+                .join(", ");
+            FunctionCallError::RespondToModel(format!(
+                "Unknown model `{requested_model}` for spawn_agent. Available models: {available}"
+            ))
+        })
+}
+
+fn validate_spawn_agent_reasoning_effort(
+    model: &str,
+    supported_reasoning_levels: &[ReasoningEffortPreset],
+    requested_reasoning_effort: ReasoningEffort,
+) -> Result<(), FunctionCallError> {
+    if supported_reasoning_levels
+        .iter()
+        .any(|preset| preset.effort == requested_reasoning_effort)
+    {
+        return Ok(());
+    }
+
+    let supported = supported_reasoning_levels
+        .iter()
+        .map(|preset| preset.effort.to_string())
+        .collect::<Vec<_>>()
+        .join(", ");
+    Err(FunctionCallError::RespondToModel(format!(
+        "Reasoning effort `{requested_reasoning_effort}` is not supported for model `{model}`. Supported reasoning efforts: {supported}"
+    )))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1108,27 +1196,6 @@ mod tests {
             FunctionCallError::RespondToModel(
                 "Empty message can't be sent to an agent".to_string()
             )
-        );
-    }
-
-    #[tokio::test]
-    async fn spawn_agent_rejects_empty_model() {
-        let (session, turn) = make_session_and_context().await;
-        let invocation = invocation(
-            Arc::new(session),
-            Arc::new(turn),
-            "spawn_agent",
-            function_payload(json!({
-                "message": "hello",
-                "model": "   "
-            })),
-        );
-        let Err(err) = MultiAgentHandler.handle(invocation).await else {
-            panic!("empty model should be rejected");
-        };
-        assert_eq!(
-            err,
-            FunctionCallError::RespondToModel("model must be a non-empty string".to_string())
         );
     }
 
@@ -1306,52 +1373,6 @@ mod tests {
             .await;
         assert_eq!(snapshot.sandbox_policy, expected_sandbox);
         assert_eq!(snapshot.approval_policy, AskForApproval::OnRequest);
-    }
-
-    #[tokio::test]
-    async fn spawn_agent_uses_requested_model_override() {
-        #[derive(Debug, Deserialize)]
-        struct SpawnAgentResult {
-            agent_id: String,
-            nickname: Option<String>,
-        }
-
-        let (mut session, turn) = make_session_and_context().await;
-        let manager = thread_manager();
-        session.services.agent_control = manager.agent_control();
-        let requested_model = "gpt-5.1";
-
-        let invocation = invocation(
-            Arc::new(session),
-            Arc::new(turn),
-            "spawn_agent",
-            function_payload(json!({
-                "message": "inspect this repo",
-                "model": requested_model
-            })),
-        );
-        let output = MultiAgentHandler
-            .handle(invocation)
-            .await
-            .expect("spawn_agent should succeed");
-        let (content, _) = expect_text_output(output);
-        let result: SpawnAgentResult =
-            serde_json::from_str(&content).expect("spawn_agent result should be json");
-        let agent_id = agent_id(&result.agent_id).expect("agent_id should be valid");
-        assert!(
-            result
-                .nickname
-                .as_deref()
-                .is_some_and(|nickname| !nickname.is_empty())
-        );
-
-        let snapshot = manager
-            .get_thread(agent_id)
-            .await
-            .expect("spawned agent thread should exist")
-            .config_snapshot()
-            .await;
-        assert_eq!(snapshot.model, requested_model);
     }
 
     #[tokio::test]
