@@ -2,6 +2,7 @@
 
 use anyhow::Result;
 use codex_core::features::Feature;
+use core_test_support::path_node_satisfies_js_repl_requirement;
 use core_test_support::responses;
 use core_test_support::responses::ResponseMock;
 use core_test_support::responses::ResponsesRequest;
@@ -37,6 +38,8 @@ async fn run_code_mode_turn(
     let mut builder = test_codex().with_config(move |config| {
         let _ = config.features.enable(Feature::CodeMode);
         config.include_apply_patch_tool = include_apply_patch;
+        // Keep code_mode tests hermetic instead of inheriting a host-pinned Node path.
+        config.js_repl_node_path = None;
     });
     let test = builder.build(server).await?;
 
@@ -67,6 +70,9 @@ async fn run_code_mode_turn(
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn code_mode_can_return_exec_command_output() -> Result<()> {
     skip_if_no_network!(Ok(()));
+    if !path_node_satisfies_js_repl_requirement() {
+        return Ok(());
+    }
 
     let server = responses::start_mock_server().await;
     let (_test, second_mock) = run_code_mode_turn(
@@ -106,6 +112,9 @@ code_mode_exec_marker
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn code_mode_can_apply_patch_via_nested_tool() -> Result<()> {
     skip_if_no_network!(Ok(()));
+    if !path_node_satisfies_js_repl_requirement() {
+        return Ok(());
+    }
 
     let server = responses::start_mock_server().await;
     let file_name = "code_mode_apply_patch.txt";

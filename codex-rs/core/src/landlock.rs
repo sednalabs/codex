@@ -6,8 +6,13 @@ use codex_network_proxy::NetworkProxy;
 use codex_protocol::permissions::FileSystemSandboxPolicy;
 use codex_protocol::permissions::NetworkSandboxPolicy;
 use std::collections::HashMap;
+#[cfg(target_os = "linux")]
+use std::os::unix::process::CommandExt;
 use std::path::Path;
 use std::path::PathBuf;
+use std::process::Command;
+use std::sync::Mutex;
+use std::sync::OnceLock;
 use tokio::process::Child;
 
 /// Spawn a shell tool command under the Linux sandbox helper
@@ -36,15 +41,26 @@ where
     let file_system_sandbox_policy =
         FileSystemSandboxPolicy::from_legacy_sandbox_policy(sandbox_policy, sandbox_policy_cwd);
     let network_sandbox_policy = NetworkSandboxPolicy::from(sandbox_policy);
-    let args = create_linux_sandbox_command_args_for_policies(
-        command,
-        sandbox_policy,
-        &file_system_sandbox_policy,
-        network_sandbox_policy,
-        sandbox_policy_cwd,
-        use_bwrap_sandbox,
-        allow_network_for_proxy(false),
-    );
+    let allow_network_for_proxy = allow_network_for_proxy(false);
+    let args = if linux_sandbox_supports_split_policy_flags(codex_linux_sandbox_exe.as_ref()) {
+        create_linux_sandbox_command_args_for_policies(
+            command,
+            sandbox_policy,
+            &file_system_sandbox_policy,
+            network_sandbox_policy,
+            sandbox_policy_cwd,
+            use_bwrap_sandbox,
+            allow_network_for_proxy,
+        )
+    } else {
+        create_linux_sandbox_command_args_legacy(
+            command,
+            sandbox_policy,
+            sandbox_policy_cwd,
+            use_bwrap_sandbox,
+            allow_network_for_proxy,
+        )
+    };
     let arg0 = Some("codex-linux-sandbox");
     spawn_child_async(SpawnChildRequest {
         program: codex_linux_sandbox_exe.as_ref().to_path_buf(),
@@ -64,6 +80,78 @@ pub(crate) fn allow_network_for_proxy(enforce_managed_network: bool) -> bool {
     // networking from the Linux sandbox helper. Without managed requirements,
     // preserve existing behavior.
     enforce_managed_network
+}
+
+pub(crate) fn linux_sandbox_supports_split_policy_flags(codex_linux_sandbox_exe: &Path) -> bool {
+    static CACHE: OnceLock<Mutex<HashMap<PathBuf, bool>>> = OnceLock::new();
+
+    let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    let mut cached = cache.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some(supports_split_policy) = cached.get(codex_linux_sandbox_exe) {
+        return *supports_split_policy;
+    }
+
+    let sandbox_policy = SandboxPolicy::new_read_only_policy();
+    let file_system_sandbox_policy =
+        FileSystemSandboxPolicy::from_legacy_sandbox_policy(&sandbox_policy, Path::new("/tmp"));
+    let network_sandbox_policy = NetworkSandboxPolicy::from(&sandbox_policy);
+    let sandbox_policy_json = serde_json::to_string(&sandbox_policy)
+        .unwrap_or_else(|err| panic!("failed to serialize sandbox policy: {err}"));
+    let file_system_policy_json = serde_json::to_string(&file_system_sandbox_policy)
+        .unwrap_or_else(|err| panic!("failed to serialize filesystem sandbox policy: {err}"));
+    let network_policy_json = serde_json::to_string(&network_sandbox_policy)
+        .unwrap_or_else(|err| panic!("failed to serialize network sandbox policy: {err}"));
+
+    let mut command = Command::new(codex_linux_sandbox_exe);
+    #[cfg(target_os = "linux")]
+    command.arg0("codex-linux-sandbox");
+    let supports_split_policy = command
+        .arg("--sandbox-policy-cwd")
+        .arg("/tmp")
+        .arg("--sandbox-policy")
+        .arg(sandbox_policy_json)
+        .arg("--file-system-sandbox-policy")
+        .arg(file_system_policy_json)
+        .arg("--network-sandbox-policy")
+        .arg(network_policy_json)
+        .arg("--")
+        .arg("/bin/true")
+        .output()
+        .is_ok_and(|output| output.status.success());
+
+    cached.insert(codex_linux_sandbox_exe.to_path_buf(), supports_split_policy);
+    supports_split_policy
+}
+
+pub(crate) fn create_linux_sandbox_command_args_legacy(
+    command: Vec<String>,
+    sandbox_policy: &SandboxPolicy,
+    sandbox_policy_cwd: &Path,
+    use_bwrap_sandbox: bool,
+    allow_network_for_proxy: bool,
+) -> Vec<String> {
+    let sandbox_policy_json = serde_json::to_string(sandbox_policy)
+        .unwrap_or_else(|err| panic!("failed to serialize sandbox policy: {err}"));
+    let sandbox_policy_cwd = sandbox_policy_cwd
+        .to_str()
+        .unwrap_or_else(|| panic!("cwd must be valid UTF-8"))
+        .to_string();
+
+    let mut linux_cmd: Vec<String> = vec![
+        "--sandbox-policy-cwd".to_string(),
+        sandbox_policy_cwd,
+        "--sandbox-policy".to_string(),
+        sandbox_policy_json,
+    ];
+    if use_bwrap_sandbox {
+        linux_cmd.push("--use-bwrap-sandbox".to_string());
+    }
+    if allow_network_for_proxy {
+        linux_cmd.push("--allow-network-for-proxy".to_string());
+    }
+    linux_cmd.push("--".to_string());
+    linux_cmd.extend(command);
+    linux_cmd
 }
 
 /// Converts the sandbox policies into the CLI invocation for
@@ -179,6 +267,30 @@ mod tests {
         assert_eq!(
             args.contains(&"--allow-network-for-proxy".to_string()),
             true
+        );
+    }
+
+    #[test]
+    fn legacy_policy_args_exclude_split_flags() {
+        let command = vec!["/bin/true".to_string()];
+        let cwd = Path::new("/tmp");
+        let sandbox_policy = SandboxPolicy::new_read_only_policy();
+
+        let args =
+            create_linux_sandbox_command_args_legacy(command, &sandbox_policy, cwd, true, true);
+
+        assert_eq!(
+            args.windows(2)
+                .any(|window| window[0] == "--sandbox-policy" && !window[1].is_empty()),
+            true
+        );
+        assert_eq!(
+            args.contains(&"--file-system-sandbox-policy".to_string()),
+            false
+        );
+        assert_eq!(
+            args.contains(&"--network-sandbox-policy".to_string()),
+            false
         );
     }
 

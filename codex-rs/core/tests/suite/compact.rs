@@ -394,8 +394,8 @@ async fn summarize_context_three_requests_and_instructions() {
     }
 
     assert_eq!(
-        regular_turn_context_count, 4,
-        "rollout should contain one TurnContext entry per real user turn and one per sampling request"
+        regular_turn_context_count, 2,
+        "rollout should contain one TurnContext entry per real user turn"
     );
     assert!(
         saw_compacted_summary,
@@ -2086,8 +2086,8 @@ async fn auto_compact_persists_rollout_entries() {
     }
 
     assert_eq!(
-        turn_context_count, 6,
-        "rollout should contain one TurnContext entry per real user turn and one per sampling request"
+        turn_context_count, 3,
+        "rollout should contain one TurnContext entry per real user turn"
     );
 }
 

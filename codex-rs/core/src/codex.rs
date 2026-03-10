@@ -5140,10 +5140,32 @@ async fn spawn_review_thread(
     let provider = parent_turn_context.provider.clone();
     let auth_manager = parent_turn_context.auth_manager.clone();
     let model_info = review_model_info.clone();
+    let supported_reasoning_levels = review_model_info
+        .supported_reasoning_levels
+        .iter()
+        .map(|preset| preset.effort)
+        .collect::<Vec<_>>();
+    let review_reasoning_effort =
+        if let Some(current_reasoning_effort) = parent_turn_context.reasoning_effort {
+            if supported_reasoning_levels.contains(&current_reasoning_effort) {
+                Some(current_reasoning_effort)
+            } else {
+                supported_reasoning_levels
+                    .get(supported_reasoning_levels.len().saturating_sub(1) / 2)
+                    .copied()
+                    .or(review_model_info.default_reasoning_level)
+            }
+        } else {
+            supported_reasoning_levels
+                .get(supported_reasoning_levels.len().saturating_sub(1) / 2)
+                .copied()
+                .or(review_model_info.default_reasoning_level)
+        };
 
     // Build per‑turn client with the requested model/family.
     let mut per_turn_config = (*config).clone();
     per_turn_config.model = Some(model.clone());
+    per_turn_config.model_reasoning_effort = review_reasoning_effort;
     per_turn_config.features = review_features.clone();
     if let Err(err) = per_turn_config.web_search_mode.set(review_web_search_mode) {
         let fallback_value = per_turn_config.web_search_mode.value();
@@ -5162,7 +5184,7 @@ async fn spawn_review_thread(
     let auth_manager_for_context = auth_manager.clone();
     let provider_for_context = provider.clone();
     let session_telemetry_for_context = session_telemetry.clone();
-    let reasoning_effort = per_turn_config.model_reasoning_effort;
+    let reasoning_effort = review_reasoning_effort;
     let reasoning_summary = per_turn_config
         .model_reasoning_summary
         .unwrap_or(model_info.default_reasoning_summary);

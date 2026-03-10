@@ -33,7 +33,6 @@ pub(crate) struct SessionState {
     pub(crate) startup_regular_task: Option<JoinHandle<CodexResult<RegularTask>>>,
     pub(crate) active_mcp_tool_selection: Option<Vec<String>>,
     pub(crate) active_connector_selection: HashSet<String>,
-    pub(crate) last_sampling_turn_context: Option<TurnContextItem>,
     pub(crate) pending_session_start_source: Option<codex_hooks::SessionStartSource>,
     granted_permissions: Option<PermissionProfile>,
 }
@@ -53,7 +52,6 @@ impl SessionState {
             startup_regular_task: None,
             active_mcp_tool_selection: None,
             active_connector_selection: HashSet::new(),
-            last_sampling_turn_context: None,
             pending_session_start_source: None,
             granted_permissions: None,
         }
