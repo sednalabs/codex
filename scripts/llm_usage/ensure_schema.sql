@@ -271,9 +271,269 @@ CREATE INDEX IF NOT EXISTS llm_quota_events_session_event_ts_idx
 CREATE INDEX IF NOT EXISTS llm_quota_events_model_event_ts_idx
   ON __LLM_SCHEMA__.llm_quota_events (model_used, event_ts DESC);
 
+CREATE TABLE IF NOT EXISTS __LLM_SCHEMA__.llm_public_model_pricing_history (
+  pricing_id bigserial PRIMARY KEY,
+  provider text NOT NULL,
+  public_api_model_id text NOT NULL,
+  pricing_tier text NOT NULL,
+  pricing_currency text NOT NULL,
+  input_tokens_min bigint NOT NULL DEFAULT 0,
+  input_tokens_max bigint NOT NULL DEFAULT 9223372036854775807,
+  input_rate_per_1m numeric(18, 8) NOT NULL,
+  cached_input_rate_per_1m numeric(18, 8) NOT NULL,
+  output_rate_per_1m numeric(18, 8) NOT NULL,
+  effective_from timestamptz NOT NULL,
+  effective_to timestamptz,
+  source_url text NOT NULL,
+  source_observed_at timestamptz NOT NULL,
+  notes text,
+  raw jsonb NOT NULL DEFAULT '{}'::jsonb,
+  CHECK (input_tokens_min >= 0),
+  CHECK (input_tokens_max >= input_tokens_min)
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS llm_public_model_pricing_history_natural_key_idx
+  ON __LLM_SCHEMA__.llm_public_model_pricing_history (
+    provider,
+    public_api_model_id,
+    pricing_tier,
+    input_tokens_min,
+    input_tokens_max,
+    effective_from
+  );
+
+CREATE INDEX IF NOT EXISTS llm_public_model_pricing_history_lookup_idx
+  ON __LLM_SCHEMA__.llm_public_model_pricing_history (
+    provider,
+    public_api_model_id,
+    pricing_tier,
+    effective_from DESC,
+    effective_to
+  );
+
+INSERT INTO __LLM_SCHEMA__.llm_public_model_pricing_history (
+  provider,
+  public_api_model_id,
+  pricing_tier,
+  pricing_currency,
+  input_tokens_min,
+  input_tokens_max,
+  input_rate_per_1m,
+  cached_input_rate_per_1m,
+  output_rate_per_1m,
+  effective_from,
+  source_url,
+  source_observed_at,
+  notes
+)
+SELECT
+  seed.provider,
+  seed.public_api_model_id,
+  seed.pricing_tier,
+  seed.pricing_currency,
+  seed.input_tokens_min,
+  seed.input_tokens_max,
+  seed.input_rate_per_1m,
+  seed.cached_input_rate_per_1m,
+  seed.output_rate_per_1m,
+  seed.effective_from,
+  seed.source_url,
+  seed.source_observed_at,
+  seed.notes
+FROM (
+  VALUES
+    (
+      'openai',
+      'gpt-5.4',
+      'standard',
+      'USD',
+      0::bigint,
+      9223372036854775807::bigint,
+      2.50::numeric(18, 8),
+      0.25::numeric(18, 8),
+      15.00::numeric(18, 8),
+      timestamptz '2026-03-10 00:00:00+00',
+      'https://openai.com/api/pricing/',
+      timestamptz '2026-03-10 00:00:00+00',
+      'Verified on 2026-03-10; earlier intervals require explicit backfill.'
+    ),
+    (
+      'openai',
+      'gpt-5.3-codex',
+      'standard',
+      'USD',
+      0::bigint,
+      9223372036854775807::bigint,
+      1.75::numeric(18, 8),
+      0.175::numeric(18, 8),
+      14.00::numeric(18, 8),
+      timestamptz '2026-03-10 00:00:00+00',
+      'https://developers.openai.com/api/docs/models/gpt-5.3-codex',
+      timestamptz '2026-03-10 00:00:00+00',
+      'Verified on 2026-03-10; earlier intervals require explicit backfill.'
+    ),
+    (
+      'openai',
+      'gpt-5.2',
+      'standard',
+      'USD',
+      0::bigint,
+      9223372036854775807::bigint,
+      1.75::numeric(18, 8),
+      0.175::numeric(18, 8),
+      14.00::numeric(18, 8),
+      timestamptz '2026-03-10 00:00:00+00',
+      'https://platform.openai.com/docs/pricing/',
+      timestamptz '2026-03-10 00:00:00+00',
+      'Verified on 2026-03-10; earlier intervals require explicit backfill.'
+    ),
+    (
+      'openai',
+      'gpt-5.2-codex',
+      'standard',
+      'USD',
+      0::bigint,
+      9223372036854775807::bigint,
+      1.75::numeric(18, 8),
+      0.175::numeric(18, 8),
+      14.00::numeric(18, 8),
+      timestamptz '2026-03-10 00:00:00+00',
+      'https://platform.openai.com/docs/pricing/',
+      timestamptz '2026-03-10 00:00:00+00',
+      'Verified on 2026-03-10; earlier intervals require explicit backfill.'
+    ),
+    (
+      'openai',
+      'gpt-5.1-codex-mini',
+      'standard',
+      'USD',
+      0::bigint,
+      9223372036854775807::bigint,
+      0.25::numeric(18, 8),
+      0.025::numeric(18, 8),
+      2.00::numeric(18, 8),
+      timestamptz '2026-03-10 00:00:00+00',
+      'https://developers.openai.com/api/docs/models/gpt-5.1-codex-mini',
+      timestamptz '2026-03-10 00:00:00+00',
+      'Verified on 2026-03-10; earlier intervals require explicit backfill.'
+    ),
+    (
+      'gemini',
+      'gemini-3-flash-preview',
+      'standard',
+      'USD',
+      0::bigint,
+      9223372036854775807::bigint,
+      0.50::numeric(18, 8),
+      0.05::numeric(18, 8),
+      3.00::numeric(18, 8),
+      timestamptz '2026-03-10 00:00:00+00',
+      'https://ai.google.dev/gemini-api/docs/pricing',
+      timestamptz '2026-03-10 00:00:00+00',
+      'Verified on 2026-03-10; earlier intervals require explicit backfill.'
+    ),
+    (
+      'gemini',
+      'gemini-2.5-flash-lite',
+      'standard',
+      'USD',
+      0::bigint,
+      9223372036854775807::bigint,
+      0.10::numeric(18, 8),
+      0.01::numeric(18, 8),
+      0.40::numeric(18, 8),
+      timestamptz '2026-03-10 00:00:00+00',
+      'https://ai.google.dev/gemini-api/docs/pricing',
+      timestamptz '2026-03-10 00:00:00+00',
+      'Verified on 2026-03-10; earlier intervals require explicit backfill.'
+    ),
+    (
+      'gemini',
+      'gemini-2.5-pro',
+      'standard',
+      'USD',
+      0::bigint,
+      200000::bigint,
+      1.25::numeric(18, 8),
+      0.125::numeric(18, 8),
+      10.00::numeric(18, 8),
+      timestamptz '2026-03-10 00:00:00+00',
+      'https://ai.google.dev/gemini-api/docs/pricing',
+      timestamptz '2026-03-10 00:00:00+00',
+      'Verified on 2026-03-10; earlier intervals require explicit backfill.'
+    ),
+    (
+      'gemini',
+      'gemini-2.5-pro',
+      'standard',
+      'USD',
+      200001::bigint,
+      9223372036854775807::bigint,
+      2.50::numeric(18, 8),
+      0.25::numeric(18, 8),
+      15.00::numeric(18, 8),
+      timestamptz '2026-03-10 00:00:00+00',
+      'https://ai.google.dev/gemini-api/docs/pricing',
+      timestamptz '2026-03-10 00:00:00+00',
+      'Verified on 2026-03-10; earlier intervals require explicit backfill.'
+    )
+) AS seed (
+  provider,
+  public_api_model_id,
+  pricing_tier,
+  pricing_currency,
+  input_tokens_min,
+  input_tokens_max,
+  input_rate_per_1m,
+  cached_input_rate_per_1m,
+  output_rate_per_1m,
+  effective_from,
+  source_url,
+  source_observed_at,
+  notes
+)
+WHERE NOT EXISTS (
+  SELECT 1
+  FROM __LLM_SCHEMA__.llm_public_model_pricing_history existing
+  WHERE existing.provider = seed.provider
+    AND existing.public_api_model_id = seed.public_api_model_id
+    AND existing.pricing_tier = seed.pricing_tier
+    AND existing.input_tokens_min = seed.input_tokens_min
+    AND existing.input_tokens_max = seed.input_tokens_max
+    AND existing.effective_from = seed.effective_from
+);
+
+CREATE TABLE IF NOT EXISTS __LLM_SCHEMA__.llm_fx_rate_history (
+  fx_rate_id bigserial PRIMARY KEY,
+  base_currency text NOT NULL,
+  quote_currency text NOT NULL,
+  rate_date date NOT NULL,
+  rate_value numeric(18, 10) NOT NULL,
+  source_name text NOT NULL,
+  source_url text NOT NULL,
+  source_observed_at timestamptz NOT NULL,
+  raw jsonb NOT NULL DEFAULT '{}'::jsonb
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS llm_fx_rate_history_natural_key_idx
+  ON __LLM_SCHEMA__.llm_fx_rate_history (
+    base_currency,
+    quote_currency,
+    rate_date,
+    source_name
+  );
+
+CREATE INDEX IF NOT EXISTS llm_fx_rate_history_lookup_idx
+  ON __LLM_SCHEMA__.llm_fx_rate_history (
+    base_currency,
+    quote_currency,
+    rate_date DESC
+  );
+
 DROP VIEW IF EXISTS __LLM_SCHEMA__.llm_latest_rate_limits;
 DROP VIEW IF EXISTS __LLM_SCHEMA__.llm_latest_quota_events;
 DROP VIEW IF EXISTS __LLM_SCHEMA__.llm_session_usage_summary;
+DROP VIEW IF EXISTS __LLM_SCHEMA__.llm_usage_public_api_costs;
 
 CREATE OR REPLACE VIEW __LLM_SCHEMA__.llm_session_usage_summary AS
 SELECT
@@ -374,3 +634,230 @@ ORDER BY
   coalesce(model_used, 'unknown'),
   coalesce(tool_name, ''),
   event_ts DESC;
+
+CREATE OR REPLACE VIEW __LLM_SCHEMA__.llm_usage_public_api_costs AS
+WITH base_events AS (
+  SELECT
+    events.*,
+    coalesce(events.model_used, events.model_requested, 'unknown') AS model_key,
+    greatest(coalesce(events.input_tokens, 0) - coalesce(events.cached_input_tokens, 0), 0) AS billable_uncached_input_tokens,
+    coalesce(events.cached_input_tokens, 0) AS billable_cached_input_tokens,
+    coalesce(events.output_tokens, 0) AS billable_output_tokens
+  FROM __LLM_SCHEMA__.llm_usage_events events
+),
+gemini_rollup_presence AS (
+  SELECT
+    session_id,
+    project_key,
+    model_key,
+    bool_or(source_kind = 'mcp_tool_call') AS has_rollup
+  FROM base_events
+  WHERE source_system = 'gemini'
+  GROUP BY session_id, project_key, model_key
+),
+canonical_events AS (
+  SELECT events.*
+  FROM base_events events
+  LEFT JOIN gemini_rollup_presence rollups
+    ON events.source_system = 'gemini'
+   AND events.session_id = rollups.session_id
+   AND events.project_key IS NOT DISTINCT FROM rollups.project_key
+   AND events.model_key = rollups.model_key
+  WHERE
+    (events.source_system = 'codex' AND events.source_kind = 'interactive_turn')
+    OR (events.source_system = 'gemini' AND events.source_kind = 'mcp_tool_call')
+    OR (
+      events.source_system = 'gemini'
+      AND events.source_kind = 'interactive_message'
+      AND coalesce(rollups.has_rollup, false) = false
+    )
+),
+priced_events AS (
+  SELECT
+    events.*,
+    pricing.public_api_model_id,
+    pricing.pricing_tier,
+    pricing.pricing_currency AS source_pricing_currency,
+    pricing.input_rate_per_1m,
+    pricing.cached_input_rate_per_1m,
+    pricing.output_rate_per_1m,
+    pricing.effective_from AS pricing_effective_from,
+    pricing.effective_to AS pricing_effective_to,
+    pricing.source_url AS pricing_source_url,
+    pricing.source_observed_at AS pricing_source_observed_at
+  FROM canonical_events events
+  LEFT JOIN LATERAL (
+    SELECT history.*
+    FROM __LLM_SCHEMA__.llm_public_model_pricing_history history
+    WHERE history.provider = events.provider
+      AND history.public_api_model_id = events.model_key
+      AND history.pricing_tier = 'standard'
+      AND events.event_ts >= history.effective_from
+      AND (history.effective_to IS NULL OR events.event_ts < history.effective_to)
+      AND coalesce(events.input_tokens, 0) BETWEEN history.input_tokens_min AND history.input_tokens_max
+    ORDER BY history.effective_from DESC, history.pricing_id DESC
+    LIMIT 1
+  ) pricing ON true
+),
+fx_events AS (
+  SELECT
+    events.*,
+    fx.rate_date AS fx_rate_date,
+    fx.rate_value AS pricing_to_aud_rate,
+    fx.source_url AS fx_source_url
+  FROM priced_events events
+  LEFT JOIN LATERAL (
+    SELECT history.*
+    FROM __LLM_SCHEMA__.llm_fx_rate_history history
+    WHERE history.base_currency = 'USD'
+      AND history.quote_currency = 'AUD'
+      AND history.rate_date <= (events.event_ts AT TIME ZONE 'Australia/Sydney')::date
+    ORDER BY history.rate_date DESC, history.fx_rate_id DESC
+    LIMIT 1
+  ) fx ON events.source_pricing_currency = 'USD'
+),
+cost_components AS (
+  SELECT
+    events.*,
+    CASE
+      WHEN events.input_rate_per_1m IS NULL THEN NULL
+      ELSE round((events.billable_uncached_input_tokens::numeric / 1000000::numeric) * events.input_rate_per_1m, 8)
+    END AS source_uncached_input_cost,
+    CASE
+      WHEN events.cached_input_rate_per_1m IS NULL THEN NULL
+      ELSE round((events.billable_cached_input_tokens::numeric / 1000000::numeric) * events.cached_input_rate_per_1m, 8)
+    END AS source_cached_input_cost,
+    CASE
+      WHEN events.output_rate_per_1m IS NULL THEN NULL
+      ELSE round((events.billable_output_tokens::numeric / 1000000::numeric) * events.output_rate_per_1m, 8)
+    END AS source_output_cost
+  FROM fx_events events
+)
+SELECT
+  events.record_hash,
+  events.logical_key,
+  events.parser_version,
+  events.ingest_run_id,
+  events.source_system,
+  events.source_kind,
+  events.source_path,
+  events.source_path_hash,
+  events.source_row_id,
+  events.ingested_at,
+  events.event_ts,
+  events.session_id,
+  events.turn_id,
+  events.project_key,
+  events.project_path,
+  events.cwd,
+  events.tool_name,
+  events.actor,
+  events.provider,
+  events.model_requested,
+  events.model_used,
+  events.model_key,
+  events.ok,
+  events.event_status,
+  events.error_category,
+  events.input_tokens,
+  events.cached_input_tokens,
+  events.output_tokens,
+  events.reasoning_tokens,
+  events.tool_tokens,
+  events.total_tokens,
+  events.billable_uncached_input_tokens,
+  events.billable_cached_input_tokens,
+  events.billable_output_tokens,
+  events.cumulative_input_tokens,
+  events.cumulative_cached_input_tokens,
+  events.cumulative_output_tokens,
+  events.cumulative_reasoning_tokens,
+  events.cumulative_total_tokens,
+  events.context_window,
+  events.rate_limit_id,
+  events.rate_limit_name,
+  events.primary_used_percent,
+  events.primary_window_minutes,
+  events.primary_resets_at,
+  events.secondary_used_percent,
+  events.secondary_window_minutes,
+  events.secondary_resets_at,
+  events.credits_balance,
+  events.credits_unlimited,
+  events.raw,
+  events.public_api_model_id,
+  events.pricing_tier,
+  events.source_pricing_currency,
+  events.pricing_effective_from,
+  events.pricing_effective_to,
+  events.pricing_source_url,
+  events.pricing_source_observed_at,
+  events.fx_rate_date,
+  events.fx_source_url,
+  CASE
+    WHEN events.source_pricing_currency = 'AUD' THEN 1::numeric(18, 10)
+    WHEN events.source_pricing_currency = 'USD' THEN events.pricing_to_aud_rate
+    ELSE NULL
+  END AS pricing_to_aud_rate,
+  events.source_uncached_input_cost,
+  events.source_cached_input_cost,
+  events.source_output_cost,
+  CASE
+    WHEN events.source_uncached_input_cost IS NULL
+      OR events.source_cached_input_cost IS NULL
+      OR events.source_output_cost IS NULL
+    THEN NULL
+    ELSE round(
+      events.source_uncached_input_cost
+      + events.source_cached_input_cost
+      + events.source_output_cost,
+      8
+    )
+  END AS source_total_cost,
+  'AUD'::text AS reporting_currency,
+  CASE
+    WHEN events.source_pricing_currency = 'AUD' THEN events.source_uncached_input_cost
+    WHEN events.source_uncached_input_cost IS NULL OR events.pricing_to_aud_rate IS NULL THEN NULL
+    ELSE round(events.source_uncached_input_cost * events.pricing_to_aud_rate, 8)
+  END AS aud_uncached_input_cost,
+  CASE
+    WHEN events.source_pricing_currency = 'AUD' THEN events.source_cached_input_cost
+    WHEN events.source_cached_input_cost IS NULL OR events.pricing_to_aud_rate IS NULL THEN NULL
+    ELSE round(events.source_cached_input_cost * events.pricing_to_aud_rate, 8)
+  END AS aud_cached_input_cost,
+  CASE
+    WHEN events.source_pricing_currency = 'AUD' THEN events.source_output_cost
+    WHEN events.source_output_cost IS NULL OR events.pricing_to_aud_rate IS NULL THEN NULL
+    ELSE round(events.source_output_cost * events.pricing_to_aud_rate, 8)
+  END AS aud_output_cost,
+  CASE
+    WHEN events.source_pricing_currency = 'AUD' THEN round(
+      events.source_uncached_input_cost
+      + events.source_cached_input_cost
+      + events.source_output_cost,
+      8
+    )
+    WHEN events.source_uncached_input_cost IS NULL
+      OR events.source_cached_input_cost IS NULL
+      OR events.source_output_cost IS NULL
+      OR events.pricing_to_aud_rate IS NULL
+    THEN NULL
+    ELSE round(
+      (
+        events.source_uncached_input_cost
+        + events.source_cached_input_cost
+        + events.source_output_cost
+      ) * events.pricing_to_aud_rate,
+      8
+    )
+  END AS aud_total_cost,
+  CASE
+    WHEN events.provider IS NULL THEN 'unpriced_missing_provider'
+    WHEN events.model_key = 'unknown' THEN 'unpriced_missing_model'
+    WHEN events.source_pricing_currency IS NULL THEN 'unpriced_missing_price_history'
+    WHEN events.source_pricing_currency = 'AUD' THEN 'priced_exact'
+    WHEN events.source_pricing_currency = 'USD' AND events.pricing_to_aud_rate IS NULL THEN 'unpriced_missing_fx'
+    WHEN events.source_pricing_currency = 'USD' THEN 'priced_exact'
+    ELSE 'unpriced_missing_fx'
+  END AS cost_status
+FROM cost_components events;

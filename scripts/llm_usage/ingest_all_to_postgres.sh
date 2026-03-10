@@ -100,3 +100,7 @@ echo "Ingesting Gemini MCP usage..."
 "$script_dir/ingest_gemini_mcp_usage_to_postgres.sh" \
   "${common_args[@]}" \
   --ledger "$ledger"
+
+echo "Syncing RBA FX history..."
+"$script_dir/ingest_rba_fx_rates_to_postgres.sh" \
+  "${common_args[@]}"

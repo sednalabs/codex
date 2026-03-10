@@ -12,7 +12,7 @@ Usage: report_usage_summary.sh [options]
 Options:
   --db-url URL          Postgres connection string. Defaults to LLM_USAGE_DB_URL or the postgres MCP DATABASE_URI in ~/.codex/config.toml.
   --schema NAME         Target schema. Defaults to LLM_USAGE_DB_SCHEMA or llm_usage.
-  --report NAME         One of: all, freshness, session, model, provider, reconciliation. Defaults to all.
+  --report NAME         One of: all, freshness, session, model, provider, cost, reconciliation. Defaults to all.
   --days N              Limit usage queries to the last N days. Use 0 for all time. Defaults to 30.
   --limit N             Limit rows for session/model/provider reports. Defaults to 20.
   --help                Show this help.
@@ -76,7 +76,7 @@ if [[ ! "$limit" =~ ^[0-9]+$ ]] || [ "$limit" -lt 1 ]; then
 fi
 
 case "$report_name" in
-  all|freshness|session|model|provider|reconciliation)
+  all|freshness|session|model|provider|cost|reconciliation)
     ;;
   *)
     echo "invalid --report value: $report_name" >&2
@@ -195,6 +195,24 @@ order by total_tokens desc, last_event_at desc
 limit $limit;
 SQL
     ;;
+  cost)
+    cat > "$sql_file" <<SQL
+\pset pager off
+select
+  coalesce(provider, 'unknown') as provider,
+  model_key,
+  cost_status,
+  count(*) as event_count,
+  round(sum(coalesce(aud_total_cost, 0)), 8) as aud_total_cost,
+  round(sum(coalesce(source_total_cost, 0)), 8) as source_total_cost,
+  max(event_ts) as last_event_at
+from __LLM_SCHEMA__.llm_usage_public_api_costs
+where $usage_time_filter
+group by 1, 2, 3
+order by aud_total_cost desc nulls last, source_total_cost desc nulls last, last_event_at desc
+limit $limit;
+SQL
+    ;;
   reconciliation)
     cat > "$sql_file" <<SQL
 \pset pager off
@@ -290,6 +308,22 @@ from __LLM_SCHEMA__.llm_usage_events
 where $usage_time_filter
 group by 1, 2, 3, 4
 order by total_tokens desc, last_event_at desc
+limit $limit;
+
+\echo
+\echo == Cost Summary ($window_label) ==
+select
+  coalesce(provider, 'unknown') as provider,
+  model_key,
+  cost_status,
+  count(*) as event_count,
+  round(sum(coalesce(aud_total_cost, 0)), 8) as aud_total_cost,
+  round(sum(coalesce(source_total_cost, 0)), 8) as source_total_cost,
+  max(event_ts) as last_event_at
+from __LLM_SCHEMA__.llm_usage_public_api_costs
+where $usage_time_filter
+group by 1, 2, 3
+order by aud_total_cost desc nulls last, source_total_cost desc nulls last, last_event_at desc
 limit $limit;
 
 \echo
