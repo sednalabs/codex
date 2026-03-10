@@ -15,7 +15,7 @@ use core_test_support::skip_if_no_network;
 use core_test_support::test_codex::TestCodex;
 use core_test_support::test_codex::test_codex;
 use pretty_assertions::assert_eq;
-use regex_lite::Regex;
+use serde_json::Value;
 use std::fs;
 use wiremock::MockServer;
 
@@ -79,7 +79,9 @@ async fn code_mode_can_return_exec_command_output() -> Result<()> {
         &server,
         "use code_mode to run exec_command",
         r#"
-add_content(await exec_command({ cmd: "printf code_mode_exec_marker" }));
+import { exec_command } from "tools.js";
+
+add_content(JSON.stringify(await exec_command({ cmd: "printf code_mode_exec_marker" })));
 "#,
         false,
     )
@@ -92,19 +94,20 @@ add_content(await exec_command({ cmd: "printf code_mode_exec_marker" }));
         Some(false),
         "code_mode call failed unexpectedly: {output}"
     );
-    let regex = Regex::new(
-        r#"(?ms)^Chunk ID: [[:xdigit:]]+
-Wall time: [0-9]+(?:\.[0-9]+)? seconds
-Process exited with code 0
-Original token count: [0-9]+
-Output:
-code_mode_exec_marker
-?$"#,
-    )?;
+    let parsed: Value = serde_json::from_str(&output)?;
     assert!(
-        regex.is_match(&output),
-        "expected exec_command output envelope to match regex, got: {output}"
+        parsed
+            .get("chunk_id")
+            .and_then(Value::as_str)
+            .is_some_and(|chunk_id| !chunk_id.is_empty())
     );
+    assert_eq!(
+        parsed.get("output").and_then(Value::as_str),
+        Some("code_mode_exec_marker"),
+    );
+    assert_eq!(parsed.get("exit_code").and_then(Value::as_i64), Some(0));
+    assert!(parsed.get("wall_time_seconds").is_some());
+    assert!(parsed.get("session_id").is_none());
 
     Ok(())
 }
@@ -121,7 +124,9 @@ async fn code_mode_can_apply_patch_via_nested_tool() -> Result<()> {
     let patch = format!(
         "*** Begin Patch\n*** Add File: {file_name}\n+hello from code_mode\n*** End Patch\n"
     );
-    let code = format!("const items = await apply_patch({patch:?});\nadd_content(items);\n");
+    let code = format!(
+        "import {{ apply_patch }} from \"tools.js\";\nconst items = await apply_patch({patch:?});\nadd_content(items);\n"
+    );
 
     let (test, second_mock) =
         run_code_mode_turn(&server, "use code_mode to run apply_patch", &code, true).await?;

@@ -132,7 +132,12 @@ pub struct RealtimeAudioFrame {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq, JsonSchema, TS)]
-pub struct RealtimeHandoffMessage {
+pub struct RealtimeTranscriptDelta {
+    pub delta: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq, JsonSchema, TS)]
+pub struct RealtimeTranscriptEntry {
     pub role: String,
     pub text: String,
 }
@@ -142,7 +147,7 @@ pub struct RealtimeHandoffRequested {
     pub handoff_id: String,
     pub item_id: String,
     pub input_transcript: String,
-    pub messages: Vec<RealtimeHandoffMessage>,
+    pub active_transcript: Vec<RealtimeTranscriptEntry>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq, JsonSchema, TS)]
@@ -151,6 +156,8 @@ pub enum RealtimeEvent {
         session_id: String,
         instructions: Option<String>,
     },
+    InputTranscriptDelta(RealtimeTranscriptDelta),
+    OutputTranscriptDelta(RealtimeTranscriptDelta),
     AudioOut(RealtimeAudioFrame),
     ConversationItemAdded(Value),
     ConversationItemDone {
@@ -527,6 +534,7 @@ pub struct RejectConfig {
     /// Reject prompts triggered by execpolicy `prompt` rules.
     pub rules: bool,
     /// Reject approval prompts related to built-in permission requests.
+    #[serde(default)]
     pub request_permissions: bool,
     /// Reject MCP elicitation prompts.
     pub mcp_elicitations: bool,
@@ -3498,6 +3506,26 @@ mod tests {
                 mcp_elicitations: false,
             }
             .rejects_request_permissions()
+        );
+    }
+
+    #[test]
+    fn reject_config_defaults_missing_request_permissions_to_false() {
+        let decoded = serde_json::from_value::<RejectConfig>(serde_json::json!({
+            "sandbox_approval": true,
+            "rules": false,
+            "mcp_elicitations": true,
+        }))
+        .expect("legacy reject config should deserialize");
+
+        assert_eq!(
+            decoded,
+            RejectConfig {
+                sandbox_approval: true,
+                rules: false,
+                request_permissions: false,
+                mcp_elicitations: true,
+            }
         );
     }
 
