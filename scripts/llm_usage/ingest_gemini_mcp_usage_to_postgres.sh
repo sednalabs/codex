@@ -88,6 +88,7 @@ processed_artifacts=0
 skipped_artifacts=0
 known_size=''
 known_mtime=''
+known_parser_version=''
 known_row_count=''
 
 persist_run_record() {
@@ -165,11 +166,12 @@ if [ "$dry_run" -eq 0 ]; then
   run_started_at=$(date -Is)
   persist_run_record 'running' '' ''
   llm_usage_fetch_artifact_state "$db_url" "$db_schema" gemini mcp_tool_call "$artifact_state_lookup"
-  while IFS=$'\t' read -r path_hash size mtime row_count; do
+  while IFS=$'\t' read -r path_hash size mtime parser_version row_count; do
     [ -n "$path_hash" ] || continue
     if [ "$path_hash" = "$(llm_usage_hash_string "$ledger")" ]; then
       known_size=$size
       known_mtime=$mtime
+      known_parser_version=$parser_version
       known_row_count=$row_count
       break
     fi
@@ -182,14 +184,23 @@ ledger_hash=$(llm_usage_hash_string "$ledger")
 start_line=1
 line_offset=0
 
-if [ "$dry_run" -eq 0 ] && [ -n "$known_size" ] && [ -n "$known_mtime" ] && [ "$known_size" = "$source_size" ] && [ "$known_mtime" = "$source_mtime" ]; then
+if [ "$dry_run" -eq 0 ] \
+  && [ -n "$known_size" ] \
+  && [ -n "$known_mtime" ] \
+  && [ "$known_size" = "$source_size" ] \
+  && [ "$known_mtime" = "$source_mtime" ] \
+  && [ "$known_parser_version" = "$(llm_usage_parser_version)" ]; then
   skipped_artifacts=1
   echo "Gemini MCP ledger unchanged; skipping"
   run_status='succeeded'
   exit 0
 fi
 
-if [ "$dry_run" -eq 0 ] && [ -n "$known_row_count" ] && [ "$current_row_count" -ge "$known_row_count" ] && [ "$source_size" -ge "${known_size:-0}" ]; then
+if [ "$dry_run" -eq 0 ] \
+  && [ "$known_parser_version" = "$(llm_usage_parser_version)" ] \
+  && [ -n "$known_row_count" ] \
+  && [ "$current_row_count" -ge "$known_row_count" ] \
+  && [ "$source_size" -ge "${known_size:-0}" ]; then
   start_line=$((known_row_count + 1))
   line_offset=$((start_line - 1))
 fi

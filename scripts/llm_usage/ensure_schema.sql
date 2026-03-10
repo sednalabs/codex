@@ -58,6 +58,7 @@ CREATE TABLE IF NOT EXISTS __LLM_SCHEMA__.llm_usage_events (
   event_ts timestamptz NOT NULL,
   session_id text NOT NULL,
   turn_id text,
+  forked_from_session_id text,
   project_key text,
   project_path text,
   cwd text,
@@ -98,7 +99,8 @@ ALTER TABLE __LLM_SCHEMA__.llm_usage_events
   ADD COLUMN IF NOT EXISTS parser_version text,
   ADD COLUMN IF NOT EXISTS ingest_run_id text,
   ADD COLUMN IF NOT EXISTS source_path_hash text,
-  ADD COLUMN IF NOT EXISTS event_status text;
+  ADD COLUMN IF NOT EXISTS event_status text,
+  ADD COLUMN IF NOT EXISTS forked_from_session_id text;
 
 DROP INDEX IF EXISTS __LLM_SCHEMA__.llm_usage_events_logical_key_idx;
 
@@ -138,7 +140,7 @@ usage_dupes AS (
 UPDATE __LLM_SCHEMA__.llm_usage_events events
 SET
   logical_key = candidates.desired_logical_key,
-  parser_version = coalesce(events.parser_version, '2026-03-07-v2'),
+  parser_version = coalesce(events.parser_version, '2026-03-11-v3'),
   source_path_hash = coalesce(events.source_path_hash, md5(events.source_path)),
   event_status = coalesce(
     events.event_status,
@@ -182,6 +184,12 @@ CREATE INDEX IF NOT EXISTS llm_usage_events_project_event_ts_idx
 
 CREATE INDEX IF NOT EXISTS llm_usage_events_provider_event_ts_idx
   ON __LLM_SCHEMA__.llm_usage_events (provider, event_ts DESC);
+
+CREATE INDEX IF NOT EXISTS llm_usage_events_codex_turn_event_ts_idx
+  ON __LLM_SCHEMA__.llm_usage_events (turn_id, event_ts DESC, ingested_at DESC)
+  WHERE source_system = 'codex'
+    AND source_kind = 'interactive_turn'
+    AND turn_id IS NOT NULL;
 
 CREATE TABLE IF NOT EXISTS __LLM_SCHEMA__.llm_quota_events (
   record_hash text PRIMARY KEY,
@@ -534,6 +542,7 @@ DROP VIEW IF EXISTS __LLM_SCHEMA__.llm_latest_rate_limits;
 DROP VIEW IF EXISTS __LLM_SCHEMA__.llm_latest_quota_events;
 DROP VIEW IF EXISTS __LLM_SCHEMA__.llm_session_usage_summary;
 DROP VIEW IF EXISTS __LLM_SCHEMA__.llm_usage_public_api_costs;
+DROP VIEW IF EXISTS __LLM_SCHEMA__.llm_usage_public_api_costs_observed;
 
 CREATE OR REPLACE VIEW __LLM_SCHEMA__.llm_session_usage_summary AS
 SELECT
@@ -635,14 +644,37 @@ ORDER BY
   coalesce(tool_name, ''),
   event_ts DESC;
 
-CREATE OR REPLACE VIEW __LLM_SCHEMA__.llm_usage_public_api_costs AS
+CREATE OR REPLACE VIEW __LLM_SCHEMA__.llm_usage_public_api_costs_observed AS
 WITH base_events AS (
   SELECT
     events.*,
     coalesce(events.model_used, events.model_requested, 'unknown') AS model_key,
     greatest(coalesce(events.input_tokens, 0) - coalesce(events.cached_input_tokens, 0), 0) AS billable_uncached_input_tokens,
     coalesce(events.cached_input_tokens, 0) AS billable_cached_input_tokens,
-    coalesce(events.output_tokens, 0) AS billable_output_tokens
+    coalesce(events.output_tokens, 0) AS billable_output_tokens,
+    CASE
+      WHEN events.source_system = 'codex'
+        AND events.source_kind = 'interactive_turn'
+        AND events.turn_id IS NOT NULL
+      THEN events.turn_id
+      ELSE events.logical_key
+    END AS billing_identity_key,
+    CASE
+      WHEN events.source_system = 'codex'
+        AND events.source_kind = 'interactive_turn'
+        AND events.turn_id IS NOT NULL
+      THEN 'codex_turn_latest'
+      WHEN events.source_system = 'codex'
+        AND events.source_kind = 'interactive_turn'
+      THEN 'codex_logical_key_fallback'
+      WHEN events.source_system = 'gemini'
+        AND events.source_kind = 'mcp_tool_call'
+      THEN 'gemini_rollup'
+      WHEN events.source_system = 'gemini'
+        AND events.source_kind = 'interactive_message'
+      THEN 'gemini_detail_fallback'
+      ELSE 'logical_key_observed'
+    END AS billing_attribution_mode
   FROM __LLM_SCHEMA__.llm_usage_events events
 ),
 gemini_rollup_presence AS (
@@ -655,7 +687,7 @@ gemini_rollup_presence AS (
   WHERE source_system = 'gemini'
   GROUP BY session_id, project_key, model_key
 ),
-canonical_events AS (
+observed_events AS (
   SELECT events.*
   FROM base_events events
   LEFT JOIN gemini_rollup_presence rollups
@@ -672,6 +704,46 @@ canonical_events AS (
       AND coalesce(rollups.has_rollup, false) = false
     )
 ),
+codex_turn_stats AS (
+  SELECT
+    billing_identity_key,
+    count(*) AS billing_duplicate_row_count,
+    count(DISTINCT session_id) AS billing_duplicate_session_count
+  FROM observed_events
+  WHERE source_system = 'codex'
+    AND source_kind = 'interactive_turn'
+    AND turn_id IS NOT NULL
+  GROUP BY billing_identity_key
+),
+codex_turn_ranked AS (
+  SELECT
+    record_hash,
+    row_number() OVER (
+      PARTITION BY billing_identity_key
+      ORDER BY event_ts DESC, ingested_at DESC, record_hash DESC
+    ) AS billing_turn_rank
+  FROM observed_events
+  WHERE source_system = 'codex'
+    AND source_kind = 'interactive_turn'
+    AND turn_id IS NOT NULL
+),
+attributed_events AS (
+  SELECT
+    events.*,
+    coalesce(ranked.billing_turn_rank, 1) AS billing_turn_rank,
+    coalesce(stats.billing_duplicate_row_count, 1) AS billing_duplicate_row_count,
+    coalesce(stats.billing_duplicate_session_count, 1) AS billing_duplicate_session_count,
+    coalesce(ranked.billing_turn_rank, 1) = 1 AS billing_is_latest_observation,
+    coalesce(stats.billing_duplicate_session_count, 1) > 1 AS billing_replay_suspected
+  FROM observed_events events
+  LEFT JOIN codex_turn_ranked ranked
+    ON events.record_hash = ranked.record_hash
+  LEFT JOIN codex_turn_stats stats
+    ON events.billing_identity_key = stats.billing_identity_key
+   AND events.source_system = 'codex'
+   AND events.source_kind = 'interactive_turn'
+   AND events.turn_id IS NOT NULL
+),
 priced_events AS (
   SELECT
     events.*,
@@ -685,7 +757,7 @@ priced_events AS (
     pricing.effective_to AS pricing_effective_to,
     pricing.source_url AS pricing_source_url,
     pricing.source_observed_at AS pricing_source_observed_at
-  FROM canonical_events events
+  FROM attributed_events events
   LEFT JOIN LATERAL (
     SELECT history.*
     FROM __LLM_SCHEMA__.llm_public_model_pricing_history history
@@ -747,6 +819,7 @@ SELECT
   events.event_ts,
   events.session_id,
   events.turn_id,
+  events.forked_from_session_id,
   events.project_key,
   events.project_path,
   events.cwd,
@@ -785,6 +858,13 @@ SELECT
   events.credits_balance,
   events.credits_unlimited,
   events.raw,
+  events.billing_identity_key,
+  events.billing_attribution_mode,
+  events.billing_duplicate_row_count,
+  events.billing_duplicate_session_count,
+  events.billing_turn_rank,
+  events.billing_is_latest_observation,
+  events.billing_replay_suspected,
   events.public_api_model_id,
   events.pricing_tier,
   events.source_pricing_currency,
@@ -861,3 +941,8 @@ SELECT
     ELSE 'unpriced_missing_fx'
   END AS cost_status
 FROM cost_components events;
+
+CREATE OR REPLACE VIEW __LLM_SCHEMA__.llm_usage_public_api_costs AS
+SELECT *
+FROM __LLM_SCHEMA__.llm_usage_public_api_costs_observed
+WHERE billing_is_latest_observation;
