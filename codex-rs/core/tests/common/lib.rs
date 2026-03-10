@@ -13,6 +13,7 @@ use codex_core::config::ConfigOverrides;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use regex_lite::Regex;
 use std::path::PathBuf;
+use std::process::Command;
 
 pub mod apps_test_server;
 pub mod context_snapshot;
@@ -100,6 +101,37 @@ pub fn test_tmp_path() -> AbsolutePathBuf {
 
 pub fn test_tmp_path_buf() -> PathBuf {
     test_tmp_path().into_path_buf()
+}
+
+fn parse_semver_triplet(raw: &str) -> Option<(u32, u32, u32)> {
+    let version = raw.trim().trim_start_matches('v');
+    let mut parts = version.split('.');
+    let major = parts.next()?.parse().ok()?;
+    let minor = parts.next()?.parse().ok()?;
+    let patch = parts.next()?.parse().ok()?;
+    Some((major, minor, patch))
+}
+
+pub fn path_node_satisfies_js_repl_requirement() -> bool {
+    let repo_root = match codex_utils_cargo_bin::repo_root() {
+        Ok(path) => path,
+        Err(_) => return false,
+    };
+    let required = match std::fs::read_to_string(repo_root.join("codex-rs/node-version.txt"))
+        .ok()
+        .and_then(|text| parse_semver_triplet(&text))
+    {
+        Some(version) => version,
+        None => return false,
+    };
+    let found = match Command::new("node").arg("--version").output() {
+        Ok(output) if output.status.success() => String::from_utf8(output.stdout)
+            .ok()
+            .and_then(|text| parse_semver_triplet(&text)),
+        _ => None,
+    };
+
+    found.is_some_and(|version| version >= required)
 }
 
 /// Fetch a DotSlash resource and return the resolved executable/file path.

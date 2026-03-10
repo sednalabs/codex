@@ -18,6 +18,7 @@ use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::Op;
 use codex_protocol::protocol::SandboxPolicy;
 use codex_protocol::user_input::UserInput;
+use core_test_support::path_node_satisfies_js_repl_requirement;
 use core_test_support::responses;
 use core_test_support::responses::ev_assistant_message;
 use core_test_support::responses::ev_completed;
@@ -502,6 +503,9 @@ async fn view_image_tool_keeps_legacy_behavior_below_gpt5_3_codex() -> anyhow::R
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn js_repl_emit_image_attaches_local_image() -> anyhow::Result<()> {
     skip_if_no_network!(Ok(()));
+    if !path_node_satisfies_js_repl_requirement() {
+        return Ok(());
+    }
 
     let server = start_mock_server().await;
     let mut builder = test_codex().with_config(|config| {
@@ -622,6 +626,9 @@ await codex.emitImage(out);
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn js_repl_view_image_requires_explicit_emit() -> anyhow::Result<()> {
     skip_if_no_network!(Ok(()));
+    if !path_node_satisfies_js_repl_requirement() {
+        return Ok(());
+    }
 
     let server = start_mock_server().await;
     #[allow(clippy::expect_used)]
