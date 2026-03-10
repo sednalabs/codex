@@ -1744,7 +1744,7 @@
       "description": "Machine-local realtime audio device preferences used by realtime voice."
     },
     "background_terminal_max_timeout": {
-      "description": "Maximum poll window for background terminal output (`write_stdin`), in milliseconds. Default: `7200000` (2 hours).",
+      "description": "Maximum poll window for background terminal output (`write_stdin`), in milliseconds. Default: `300000` (5 minutes).",
       "format": "uint64",
       "minimum": 0.0,
       "type": "integer"

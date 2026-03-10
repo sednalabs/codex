@@ -1334,13 +1334,7 @@ mod tests {
             .handle(invocation)
             .await
             .expect("spawn_agent should succeed");
-        let ToolOutput::Function {
-            body: FunctionCallOutputBody::Text(content),
-            ..
-        } = output
-        else {
-            panic!("expected function output");
-        };
+        let (content, _) = expect_text_output(output);
         let result: SpawnAgentResult =
             serde_json::from_str(&content).expect("spawn_agent result should be json");
         let agent_id = agent_id(&result.agent_id).expect("agent_id should be valid");
