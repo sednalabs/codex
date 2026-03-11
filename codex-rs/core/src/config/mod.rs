@@ -23,6 +23,7 @@ use crate::config::types::ShellEnvironmentPolicyToml;
 use crate::config::types::SkillsConfig;
 use crate::config::types::Tui;
 use crate::config::types::UriBasedFileOpener;
+use crate::config::types::WeeklyLimitPacingStyle;
 use crate::config::types::WindowsSandboxModeToml;
 use crate::config::types::WindowsToml;
 use crate::config_loader::CloudRequirementsLoader;
@@ -316,6 +317,9 @@ pub struct Config {
     /// When unset, the TUI defaults to: `model-with-reasoning`, `context-remaining`, and
     /// `current-dir`.
     pub tui_status_line: Option<Vec<String>>,
+
+    /// Controls how fresh weekly status-line pacing details are rendered.
+    pub tui_weekly_limit_pacing_style: WeeklyLimitPacingStyle,
 
     /// Syntax highlighting theme override (kebab-case name).
     pub tui_theme: Option<String>,
@@ -2501,6 +2505,11 @@ impl Config {
                 .map(|t| t.alternate_screen)
                 .unwrap_or_default(),
             tui_status_line: cfg.tui.as_ref().and_then(|t| t.status_line.clone()),
+            tui_weekly_limit_pacing_style: cfg
+                .tui
+                .as_ref()
+                .map(|t| t.weekly_limit_pacing_style)
+                .unwrap_or_default(),
             tui_theme: cfg.tui.as_ref().and_then(|t| t.theme.clone()),
             otel: {
                 let t: OtelConfigToml = cfg.otel.unwrap_or_default();

@@ -58,6 +58,7 @@ use codex_core::config::Config;
 use codex_core::config::Constrained;
 use codex_core::config::ConstraintResult;
 use codex_core::config::types::Notifications;
+use codex_core::config::types::WeeklyLimitPacingStyle;
 use codex_core::config::types::WindowsSandboxModeToml;
 use codex_core::config_loader::ConfigLayerStackOrdering;
 use codex_core::features::FEATURES;
@@ -395,6 +396,12 @@ impl WeeklyPacingSignal {
             Self::Under { abs_delta_pct } => format!("under {abs_delta_pct}%"),
         }
     }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct WeeklyPacingSnapshot {
+    signal: WeeklyPacingSignal,
+    time_remaining_pct: i64,
 }
 
 #[derive(Default)]
@@ -5601,16 +5608,21 @@ impl ChatWidget {
         if is_snapshot_stale(captured_at, Local::now()) {
             return Some(format!("{base} (stale)"));
         }
-        let Some(signal) = Self::status_line_weekly_pace_signal(window, captured_at) else {
+        let Some(pacing) = Self::status_line_weekly_pacing_snapshot(window, captured_at) else {
             return Some(base);
         };
-        Some(format!("{base} ({})", signal.label()))
+        match self.config.tui_weekly_limit_pacing_style {
+            WeeklyLimitPacingStyle::Qualitative => {
+                Some(format!("{base} ({})", pacing.signal.label()))
+            }
+            WeeklyLimitPacingStyle::Ratio => Some(format!("{base}/{}%", pacing.time_remaining_pct)),
+        }
     }
 
-    fn status_line_weekly_pace_signal(
+    fn status_line_weekly_pacing_snapshot(
         window: &RateLimitWindowDisplay,
         captured_at: DateTime<Local>,
-    ) -> Option<WeeklyPacingSignal> {
+    ) -> Option<WeeklyPacingSnapshot> {
         let resets_at_unix_seconds = window.resets_at_unix_seconds?;
         let window_seconds = window.window_minutes?.checked_mul(60)?;
         if window_seconds <= 0 {
@@ -5623,16 +5635,21 @@ impl ChatWidget {
             ((seconds_remaining as f64 / window_seconds as f64) * 100.0f64).clamp(0.0f64, 100.0f64);
         let pace_delta = usage_remaining_pct - time_remaining_pct;
 
-        if pace_delta.abs() <= WEEKLY_PACE_ON_TRACK_EPSILON_PERCENT {
-            return Some(WeeklyPacingSignal::OnPace);
-        }
-
-        let abs_delta_pct = pace_delta.abs().ceil() as i64;
-        if pace_delta < 0.0 {
-            Some(WeeklyPacingSignal::Over { abs_delta_pct })
+        let signal = if pace_delta.abs() <= WEEKLY_PACE_ON_TRACK_EPSILON_PERCENT {
+            WeeklyPacingSignal::OnPace
         } else {
-            Some(WeeklyPacingSignal::Under { abs_delta_pct })
-        }
+            let abs_delta_pct = pace_delta.abs().ceil() as i64;
+            if pace_delta < 0.0 {
+                WeeklyPacingSignal::Over { abs_delta_pct }
+            } else {
+                WeeklyPacingSignal::Under { abs_delta_pct }
+            }
+        };
+
+        Some(WeeklyPacingSnapshot {
+            signal,
+            time_remaining_pct: time_remaining_pct.round() as i64,
+        })
     }
 
     fn status_line_reasoning_effort_label(effort: Option<ReasoningEffortConfig>) -> &'static str {

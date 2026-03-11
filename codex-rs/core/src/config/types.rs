@@ -715,6 +715,14 @@ impl fmt::Display for NotificationMethod {
     }
 }
 
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, JsonSchema, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum WeeklyLimitPacingStyle {
+    #[default]
+    Qualitative,
+    Ratio,
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, Default, JsonSchema)]
 #[schemars(deny_unknown_fields)]
 pub struct ModelAvailabilityNuxConfig {
@@ -772,6 +780,13 @@ pub struct Tui {
     /// `current-dir`.
     #[serde(default)]
     pub status_line: Option<Vec<String>>,
+
+    /// Controls how fresh weekly status-line pacing details are rendered.
+    ///
+    /// - `qualitative` (default): Show `(on pace)`, `(over N%)`, or `(under N%)`.
+    /// - `ratio`: Show `{usage_remaining}%/{week_remaining}%`.
+    #[serde(default)]
+    pub weekly_limit_pacing_style: WeeklyLimitPacingStyle,
 
     /// Syntax highlighting theme name (kebab-case).
     ///

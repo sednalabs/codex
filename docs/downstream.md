@@ -94,8 +94,11 @@ Why:
 
 User-visible behavior:
 - Weekly status line shows `weekly {remaining:.0}%` as the base value.
-- Fresh snapshot adds one compact suffix: `(on pace)`, `(over {n}%)`, or `(under {n}%)`.
+- Fresh snapshot supports two pacing render modes:
+  - default `qualitative`: `(on pace)`, `(over {n}%)`, or `(under {n}%)`
+  - optional `ratio`: `{usage_remaining}%/{week_remaining}%`
 - Stale snapshot shows `weekly {remaining:.0}% (stale)` and hides pace percentage.
+- `[tui].weekly_limit_pacing_style` selects the fresh-snapshot render mode.
 - `/status` and footer use the same stale predicate helper to keep stale behavior consistent.
 
 ### TUI: Interrupted-turn queue handling and queued model ordering

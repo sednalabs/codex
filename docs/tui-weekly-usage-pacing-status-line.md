@@ -1,7 +1,7 @@
 # Weekly Usage + Pacing Status-Line Copy Decision (Work Item 1135)
 
-This note records the copy/layout decision for adding a weekly pacing signal to the TUI status line.
-It is the UX decision artifact that unblocks implementation work in `1134`.
+This note records the downstream copy/layout decision for the weekly pacing signal in the TUI status line.
+It now reflects the carry implementation, not just the initial rollout decision in `1134`.
 
 ## Scope
 
@@ -11,8 +11,9 @@ It is the UX decision artifact that unblocks implementation work in `1134`.
 ## Current Behavior
 
 - Weekly limit item always starts from `weekly {remaining:.0}%`.
-- When pacing inputs are available and the snapshot is fresh, the footer appends a compact suffix:
-  - `(on pace)`, `(over {n}%)`, or `(under {n}%)`.
+- Fresh pacing inputs can be rendered in two supported styles:
+  - `qualitative` (default): `(on pace)`, `(over {n}%)`, or `(under {n}%)`
+  - `ratio`: `{usage_remaining}%/{week_remaining}%`
 - When the snapshot is stale, footer copy shows `(stale)` and intentionally hides pace percentage.
 - Footer-level truncation still applies globally and uses ellipsis when space is constrained.
 
@@ -24,20 +25,25 @@ It is the UX decision artifact that unblocks implementation work in `1134`.
 | B | Compact | `weekly 44% · pace -6%` | Very compact, mathematically direct | Sign semantics are easy to misread (`-` means over pace) |
 | C | Expressive | `weekly 44% remaining · over pace by 6%` | Maximum clarity in plain language | Long; high truncation pressure in multi-item status lines |
 | D | Expressive | `weekly remaining 44% · over by 6% vs time` | Explicit comparison target | Verbose and noisy in narrow widths |
+| E | Ratio | `weekly 44%/50%` | Shows usage remaining and week remaining directly | Less explicit about over/under classification |
 
 ## Decision
 
-Choose **Variant A** as the canonical status-line format because it best balances clarity and width.
+Keep **Variant A** as the default status-line format because it best balances clarity and width.
+Also support **Variant E** as an explicit downstream configuration mode for users who want the raw
+usage-versus-time comparison in the footer.
 
 ### Canonical Copy Rules
 
 - Base weekly value: `weekly {remaining:.0}%`
 - Stale snapshot: `weekly {remaining:.0}% (stale)` (takes precedence over pace detail)
-- Fresh + on pace: `weekly {remaining:.0}% (on pace)`
-- Fresh + over pace: `weekly {remaining:.0}% (over {abs_delta:.0}%)`
-- Fresh + under pace: `weekly {remaining:.0}% (under {abs_delta:.0}%)`
+- Fresh + `qualitative` + on pace: `weekly {remaining:.0}% (on pace)`
+- Fresh + `qualitative` + over pace: `weekly {remaining:.0}% (over {abs_delta:.0}%)`
+- Fresh + `qualitative` + under pace: `weekly {remaining:.0}% (under {abs_delta:.0}%)`
+- Fresh + `ratio`: `weekly {usage_remaining:.0}%/{time_remaining:.0}%`
 - Missing/invalid pacing data: render base weekly value with no pacing suffix.
 - Weekly stale state is derived from the codex weekly snapshot itself (not from unrelated limit buckets).
+- Style selection is controlled by `[tui].weekly_limit_pacing_style = "qualitative" | "ratio"`.
 
 ## Pacing Semantics and Thresholds
 
@@ -58,6 +64,7 @@ Display rules:
 - Display `abs_delta` using upward rounding (`ceil`) for non-on-pace states so labels do not understate out-of-band deltas.
 - Do not display signed percentages in user-facing copy.
 - If `resets_at - captured_at` cannot be represented safely, treat pacing as unavailable (base weekly value only).
+- Ratio mode rounds both usage remaining and time remaining to whole percentages for compact display.
 
 ## Stale Snapshot Semantics
 
@@ -81,9 +88,11 @@ Display rules:
 ## Maintenance Notes
 
 - Weekly signal internals now use a typed `WeeklyPacingSignal` representation in `chatwidget`, with suffix rendering centralized in one method.
+- Weekly footer rendering now supports a config-selected display mode via `WeeklyLimitPacingStyle`.
 - Non-codex limit snapshots are pruned after a retention window so stale orphan buckets do not linger indefinitely.
 - Tests cover:
   - epsilon boundaries for on-pace classification,
   - stale threshold exact-edge behavior,
+  - ratio rendering on fresh snapshots,
   - stale precedence over missing pacing inputs,
   - overflow-safe fallback when `seconds_remaining` cannot be computed.

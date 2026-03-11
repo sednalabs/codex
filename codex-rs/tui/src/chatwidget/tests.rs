@@ -23,6 +23,7 @@ use codex_core::config::ConfigBuilder;
 use codex_core::config::Constrained;
 use codex_core::config::ConstraintError;
 use codex_core::config::types::Notifications;
+use codex_core::config::types::WeeklyLimitPacingStyle;
 #[cfg(target_os = "windows")]
 use codex_core::config::types::WindowsSandboxModeToml;
 use codex_core::config_loader::RequirementSource;
@@ -9742,7 +9743,7 @@ async fn status_line_fast_mode_renders_on_and_off() {
 }
 
 #[tokio::test]
-async fn status_line_weekly_limit_shows_pacing_suffix_variants() {
+async fn status_line_weekly_limit_shows_qualitative_pacing_variants() {
     let (mut chat, _rx, _op_rx) = make_chatwidget_manual(None).await;
     chat.config.tui_status_line = Some(vec!["weekly-limit".to_string()]);
 
@@ -9808,9 +9809,72 @@ async fn status_line_weekly_limit_shows_pacing_suffix_variants() {
 }
 
 #[tokio::test]
+async fn status_line_weekly_limit_shows_ratio_pacing_style() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(None).await;
+    chat.config.tui_status_line = Some(vec!["weekly-limit".to_string()]);
+    chat.config.tui_weekly_limit_pacing_style = WeeklyLimitPacingStyle::Ratio;
+
+    let captured_at = chrono::Local::now();
+    let window_minutes = 10080_i64;
+    let window_seconds = (window_minutes * 60) as f64;
+    chat.rate_limit_snapshots_by_limit_id.insert(
+        "codex".to_string(),
+        RateLimitSnapshotDisplay {
+            limit_name: "codex".to_string(),
+            captured_at,
+            primary: None,
+            secondary: Some(RateLimitWindowDisplay {
+                used_percent: 56.0,
+                resets_at: Some("soon".to_string()),
+                resets_at_unix_seconds: Some(
+                    captured_at.timestamp() + (window_seconds * 0.50).round() as i64,
+                ),
+                window_minutes: Some(window_minutes),
+            }),
+            credits: None,
+        },
+    );
+
+    chat.refresh_status_line();
+    assert_eq!(status_line_text(&chat), Some("weekly 44%/50%".to_string()));
+}
+
+#[tokio::test]
 async fn status_line_weekly_limit_shows_stale_suffix_over_pace_details() {
     let (mut chat, _rx, _op_rx) = make_chatwidget_manual(None).await;
     chat.config.tui_status_line = Some(vec!["weekly-limit".to_string()]);
+
+    let captured_at = chrono::Local::now() - chrono::Duration::minutes(16);
+    chat.rate_limit_snapshots_by_limit_id.insert(
+        "codex".to_string(),
+        RateLimitSnapshotDisplay {
+            limit_name: "codex".to_string(),
+            captured_at,
+            primary: None,
+            secondary: Some(RateLimitWindowDisplay {
+                used_percent: 56.0,
+                resets_at: Some("soon".to_string()),
+                resets_at_unix_seconds: Some(
+                    captured_at.timestamp() + (0.50 * 10080.0 * 60.0) as i64,
+                ),
+                window_minutes: Some(10080),
+            }),
+            credits: None,
+        },
+    );
+
+    chat.refresh_status_line();
+    assert_eq!(
+        status_line_text(&chat),
+        Some("weekly 44% (stale)".to_string())
+    );
+}
+
+#[tokio::test]
+async fn status_line_weekly_limit_ratio_style_still_prioritizes_stale_state() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(None).await;
+    chat.config.tui_status_line = Some(vec!["weekly-limit".to_string()]);
+    chat.config.tui_weekly_limit_pacing_style = WeeklyLimitPacingStyle::Ratio;
 
     let captured_at = chrono::Local::now() - chrono::Duration::minutes(16);
     chat.rate_limit_snapshots_by_limit_id.insert(

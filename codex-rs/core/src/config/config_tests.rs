@@ -10,6 +10,7 @@ use crate::config::types::MemoriesToml;
 use crate::config::types::ModelAvailabilityNuxConfig;
 use crate::config::types::NotificationMethod;
 use crate::config::types::Notifications;
+use crate::config::types::WeeklyLimitPacingStyle;
 use crate::config_loader::RequirementSource;
 use crate::features::Feature;
 use assert_matches::assert_matches;
@@ -203,6 +204,7 @@ fn config_toml_deserializes_model_availability_nux() {
             alternate_screen: AltScreenMode::default(),
             double_esc_interrupt: true,
             status_line: None,
+            weekly_limit_pacing_style: WeeklyLimitPacingStyle::Qualitative,
             theme: None,
             model_availability_nux: ModelAvailabilityNuxConfig {
                 shown_count: HashMap::from([
@@ -888,10 +890,24 @@ fn tui_config_missing_notifications_field_defaults_to_enabled() {
             alternate_screen: AltScreenMode::Auto,
             double_esc_interrupt: true,
             status_line: None,
+            weekly_limit_pacing_style: WeeklyLimitPacingStyle::Qualitative,
             theme: None,
             model_availability_nux: ModelAvailabilityNuxConfig::default(),
         }
     );
+}
+
+#[test]
+fn tui_config_deserializes_weekly_limit_pacing_style() {
+    let cfg = r#"
+[tui]
+weekly_limit_pacing_style = "ratio"
+"#;
+
+    let parsed = toml::from_str::<ConfigToml>(cfg).expect("TUI config with weekly pacing style");
+    let tui = parsed.tui.expect("config should include tui section");
+
+    assert_eq!(tui.weekly_limit_pacing_style, WeeklyLimitPacingStyle::Ratio);
 }
 
 #[test]
@@ -3329,6 +3345,7 @@ fn test_precedence_fixture_with_o3_profile() -> std::io::Result<()> {
             feedback_enabled: true,
             tui_alternate_screen: AltScreenMode::Auto,
             tui_status_line: None,
+            tui_weekly_limit_pacing_style: WeeklyLimitPacingStyle::Qualitative,
             tui_theme: None,
             otel: OtelConfig::default(),
         },
@@ -3464,6 +3481,7 @@ fn test_precedence_fixture_with_gpt3_profile() -> std::io::Result<()> {
         feedback_enabled: true,
         tui_alternate_screen: AltScreenMode::Auto,
         tui_status_line: None,
+        tui_weekly_limit_pacing_style: WeeklyLimitPacingStyle::Qualitative,
         tui_theme: None,
         otel: OtelConfig::default(),
     };
@@ -3597,6 +3615,7 @@ fn test_precedence_fixture_with_zdr_profile() -> std::io::Result<()> {
         feedback_enabled: true,
         tui_alternate_screen: AltScreenMode::Auto,
         tui_status_line: None,
+        tui_weekly_limit_pacing_style: WeeklyLimitPacingStyle::Qualitative,
         tui_theme: None,
         otel: OtelConfig::default(),
     };
@@ -3716,6 +3735,7 @@ fn test_precedence_fixture_with_gpt5_profile() -> std::io::Result<()> {
         feedback_enabled: true,
         tui_alternate_screen: AltScreenMode::Auto,
         tui_status_line: None,
+        tui_weekly_limit_pacing_style: WeeklyLimitPacingStyle::Qualitative,
         tui_theme: None,
         otel: OtelConfig::default(),
     };

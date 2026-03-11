@@ -69,3 +69,15 @@ to reduce accidental interrupts on terminals that encode Alt/meta with a leading
 - `[tui].double_esc_interrupt = true` (default) requires `Esc Esc`.
 - `[tui].double_esc_interrupt = false` restores single-`Esc` interrupt behavior.
 - `CODEX_TUI_DOUBLE_ESC_INTERRUPT=0` overrides config and forces single-`Esc`.
+
+## TUI weekly pacing
+
+The weekly usage status-line item can render pacing in two ways when fresh
+weekly reset data is available:
+
+- `[tui].weekly_limit_pacing_style = "qualitative"` (default) shows
+  `weekly 44% (on pace)`, `weekly 44% (over 6%)`, or `weekly 44% (under 7%)`.
+- `[tui].weekly_limit_pacing_style = "ratio"` shows `weekly 44%/50%`, where
+  the numerator is weekly usage remaining and the denominator is week time remaining.
+
+Stale snapshots still render as `weekly {remaining}% (stale)` in either mode.
