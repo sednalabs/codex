@@ -86,7 +86,7 @@ impl UnifiedExecContext {
 #[derive(Debug)]
 pub(crate) struct ExecCommandRequest {
     pub command: Vec<String>,
-    pub process_id: String,
+    pub process_id: i32,
     pub yield_time_ms: u64,
     pub max_output_tokens: Option<usize>,
     pub workdir: Option<PathBuf>,
@@ -101,7 +101,7 @@ pub(crate) struct ExecCommandRequest {
 
 #[derive(Debug)]
 pub(crate) struct WriteStdinRequest<'a> {
-    pub process_id: &'a str,
+    pub process_id: i32,
     pub input: &'a str,
     pub yield_time_ms: u64,
     pub max_output_tokens: Option<usize>,
@@ -109,14 +109,14 @@ pub(crate) struct WriteStdinRequest<'a> {
 
 #[derive(Default)]
 pub(crate) struct ProcessStore {
-    processes: HashMap<String, ProcessEntry>,
-    reserved_process_ids: HashSet<String>,
+    processes: HashMap<i32, ProcessEntry>,
+    reserved_process_ids: HashSet<i32>,
 }
 
 impl ProcessStore {
-    fn remove(&mut self, process_id: &str) -> Option<ProcessEntry> {
-        self.reserved_process_ids.remove(process_id);
-        self.processes.remove(process_id)
+    fn remove(&mut self, process_id: i32) -> Option<ProcessEntry> {
+        self.reserved_process_ids.remove(&process_id);
+        self.processes.remove(&process_id)
     }
 }
 
@@ -148,7 +148,7 @@ impl Default for UnifiedExecProcessManager {
 struct ProcessEntry {
     process: Arc<UnifiedExecProcess>,
     call_id: String,
-    process_id: String,
+    process_id: i32,
     command: Vec<String>,
     tty: bool,
     network_approval_id: Option<String>,
@@ -242,7 +242,7 @@ mod tests {
 
     async fn write_stdin(
         session: &Arc<Session>,
-        process_id: &str,
+        process_id: i32,
         input: &str,
         yield_time_ms: u64,
     ) -> Result<ExecCommandToolOutput, UnifiedExecError> {
@@ -298,11 +298,7 @@ mod tests {
         let (session, turn) = test_session_and_turn().await;
 
         let open_shell = exec_command(&session, &turn, "bash -i", 2_500).await?;
-        let process_id = open_shell
-            .process_id
-            .as_ref()
-            .expect("expected process_id")
-            .as_str();
+        let process_id = open_shell.process_id.expect("expected process_id");
 
         write_stdin(
             &session,
@@ -339,15 +335,11 @@ mod tests {
         let (session, turn) = test_session_and_turn().await;
 
         let shell_a = exec_command(&session, &turn, "bash -i", 2_500).await?;
-        let session_a = shell_a
-            .process_id
-            .as_ref()
-            .expect("expected process id")
-            .clone();
+        let session_a = shell_a.process_id.expect("expected process id");
 
         write_stdin(
             &session,
-            session_a.as_str(),
+            session_a,
             "export CODEX_INTERACTIVE_SHELL_VAR=codex\n",
             2_500,
         )
@@ -369,11 +361,7 @@ mod tests {
         for _ in 0..5 {
             let out_3 = write_stdin(
                 &session,
-                shell_a
-                    .process_id
-                    .as_ref()
-                    .expect("expected process id")
-                    .as_str(),
+                session_a,
                 "echo $CODEX_INTERACTIVE_SHELL_VAR\n",
                 2_500,
             )
@@ -398,11 +386,7 @@ mod tests {
         let (session, turn) = test_session_and_turn().await;
 
         let open_shell = exec_command(&session, &turn, "bash -i", 2_500).await?;
-        let process_id = open_shell
-            .process_id
-            .as_ref()
-            .expect("expected process id")
-            .as_str();
+        let process_id = open_shell.process_id.expect("expected process id");
 
         write_stdin(
             &session,
@@ -515,11 +499,7 @@ mod tests {
         let (session, turn) = test_session_and_turn().await;
 
         let open_shell = exec_command(&session, &turn, "bash -i", 2_500).await?;
-        let process_id = open_shell
-            .process_id
-            .as_ref()
-            .expect("expected process id")
-            .as_str();
+        let process_id = open_shell.process_id.expect("expected process id");
 
         write_stdin(&session, process_id, "exit\n", 2_500).await?;
 

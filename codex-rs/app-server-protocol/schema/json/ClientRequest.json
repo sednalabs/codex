@@ -66,6 +66,10 @@
                 },
                 "sandbox_approval": {
                   "type": "boolean"
+                },
+                "skill_approval": {
+                  "default": false,
+                  "type": "boolean"
                 }
               },
               "required": [
@@ -2273,6 +2277,9 @@
             "string",
             "null"
           ]
+        },
+        "ephemeral": {
+          "type": "boolean"
         },
         "model": {
           "description": "Configuration overrides for the forked thread, if any.",
