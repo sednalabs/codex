@@ -663,7 +663,7 @@ WITH base_events AS (
       WHEN events.source_system = 'codex'
         AND events.source_kind = 'interactive_turn'
         AND events.turn_id IS NOT NULL
-      THEN 'codex_turn_latest'
+      THEN 'codex_turn_observed'
       WHEN events.source_system = 'codex'
         AND events.source_kind = 'interactive_turn'
       THEN 'codex_logical_key_fallback'
@@ -704,37 +704,124 @@ observed_events AS (
       AND coalesce(rollups.has_rollup, false) = false
     )
 ),
-codex_turn_stats AS (
-  SELECT
-    billing_identity_key,
-    count(*) AS billing_duplicate_row_count,
-    count(DISTINCT session_id) AS billing_duplicate_session_count
-  FROM observed_events
-  WHERE source_system = 'codex'
-    AND source_kind = 'interactive_turn'
-    AND turn_id IS NOT NULL
-  GROUP BY billing_identity_key
-),
 codex_turn_ranked AS (
   SELECT
-    record_hash,
+    events.record_hash,
+    events.billing_identity_key,
     row_number() OVER (
-      PARTITION BY billing_identity_key
-      ORDER BY event_ts DESC, ingested_at DESC, record_hash DESC
-    ) AS billing_turn_rank
-  FROM observed_events
-  WHERE source_system = 'codex'
-    AND source_kind = 'interactive_turn'
-    AND turn_id IS NOT NULL
+      PARTITION BY events.billing_identity_key
+      ORDER BY events.event_ts ASC, events.ingested_at ASC, events.record_hash ASC
+    ) AS billing_origin_rank,
+    row_number() OVER (
+      PARTITION BY events.billing_identity_key
+      ORDER BY events.event_ts DESC, events.ingested_at DESC, events.record_hash DESC
+    ) AS billing_latest_rank,
+    row_number() OVER (
+      PARTITION BY events.billing_identity_key
+      ORDER BY
+        (
+          CASE WHEN events.provider IS NOT NULL THEN 1 ELSE 0 END
+          + CASE WHEN events.model_requested IS NOT NULL THEN 1 ELSE 0 END
+          + CASE WHEN events.model_used IS NOT NULL THEN 1 ELSE 0 END
+          + CASE WHEN events.input_tokens IS NOT NULL THEN 1 ELSE 0 END
+          + CASE WHEN events.cached_input_tokens IS NOT NULL THEN 1 ELSE 0 END
+          + CASE WHEN events.output_tokens IS NOT NULL THEN 1 ELSE 0 END
+          + CASE WHEN events.reasoning_tokens IS NOT NULL THEN 1 ELSE 0 END
+          + CASE WHEN events.tool_tokens IS NOT NULL THEN 1 ELSE 0 END
+          + CASE WHEN events.total_tokens IS NOT NULL THEN 1 ELSE 0 END
+          + CASE WHEN events.context_window IS NOT NULL THEN 1 ELSE 0 END
+          + CASE WHEN events.raw IS NOT NULL AND events.raw <> '{}'::jsonb THEN 1 ELSE 0 END
+        ) DESC,
+        coalesce(events.total_tokens, 0) DESC,
+        (
+          coalesce(events.input_tokens, 0)
+          + coalesce(events.cached_input_tokens, 0)
+          + coalesce(events.output_tokens, 0)
+          + coalesce(events.reasoning_tokens, 0)
+          + coalesce(events.tool_tokens, 0)
+        ) DESC,
+        events.parser_version DESC NULLS LAST,
+        events.event_ts DESC,
+        events.ingested_at DESC,
+        events.record_hash DESC
+    ) AS billing_payload_rank
+  FROM observed_events events
+  WHERE events.source_system = 'codex'
+    AND events.source_kind = 'interactive_turn'
+    AND events.turn_id IS NOT NULL
+),
+codex_turn_stats AS (
+  SELECT
+    events.billing_identity_key,
+    count(*) AS billing_duplicate_row_count,
+    count(DISTINCT events.session_id) AS billing_duplicate_session_count,
+    max(events.event_ts) FILTER (WHERE ranked.billing_origin_rank = 1) AS billing_origin_event_ts,
+    max(events.event_ts) FILTER (WHERE ranked.billing_latest_rank = 1) AS billing_latest_event_ts,
+    max(events.session_id) FILTER (WHERE ranked.billing_origin_rank = 1) AS billing_origin_session_id,
+    max(events.session_id) FILTER (WHERE ranked.billing_latest_rank = 1) AS billing_latest_session_id,
+    max(events.forked_from_session_id) FILTER (WHERE ranked.billing_origin_rank = 1) AS billing_origin_forked_from_session_id,
+    max(events.forked_from_session_id) FILTER (WHERE ranked.billing_latest_rank = 1) AS billing_latest_forked_from_session_id,
+    max(events.record_hash) FILTER (WHERE ranked.billing_origin_rank = 1) AS billing_origin_record_hash,
+    max(events.record_hash) FILTER (WHERE ranked.billing_latest_rank = 1) AS billing_latest_record_hash,
+    max(events.record_hash) FILTER (WHERE ranked.billing_payload_rank = 1) AS billing_selected_record_hash,
+    max(events.parser_version) FILTER (WHERE ranked.billing_payload_rank = 1) AS billing_selected_parser_version,
+    max(events.logical_key) FILTER (WHERE ranked.billing_payload_rank = 1) AS billing_selected_logical_key,
+    count(DISTINCT jsonb_build_array(
+      events.provider,
+      events.model_requested,
+      events.model_used,
+      events.input_tokens,
+      events.cached_input_tokens,
+      events.output_tokens,
+      events.reasoning_tokens,
+      events.tool_tokens,
+      events.total_tokens,
+      events.context_window
+    )::text) > 1 AS billing_payload_conflict
+  FROM observed_events events
+  JOIN codex_turn_ranked ranked
+    ON events.record_hash = ranked.record_hash
+  GROUP BY events.billing_identity_key
 ),
 attributed_events AS (
   SELECT
     events.*,
-    coalesce(ranked.billing_turn_rank, 1) AS billing_turn_rank,
+    coalesce(ranked.billing_origin_rank, 1) AS billing_origin_rank,
+    coalesce(ranked.billing_latest_rank, 1) AS billing_latest_rank,
+    coalesce(ranked.billing_payload_rank, 1) AS billing_payload_rank,
+    coalesce(ranked.billing_latest_rank, 1) AS billing_turn_rank,
     coalesce(stats.billing_duplicate_row_count, 1) AS billing_duplicate_row_count,
     coalesce(stats.billing_duplicate_session_count, 1) AS billing_duplicate_session_count,
-    coalesce(ranked.billing_turn_rank, 1) = 1 AS billing_is_latest_observation,
-    coalesce(stats.billing_duplicate_session_count, 1) > 1 AS billing_replay_suspected
+    coalesce(ranked.billing_origin_rank, 1) = 1 AS billing_is_origin_observation,
+    coalesce(ranked.billing_latest_rank, 1) = 1 AS billing_is_latest_observation,
+    coalesce(ranked.billing_payload_rank, 1) = 1 AS billing_is_selected_observation,
+    coalesce(stats.billing_duplicate_session_count, 1) > 1 AS billing_replay_suspected,
+    coalesce(stats.billing_origin_event_ts, events.event_ts) AS billing_origin_event_ts,
+    coalesce(stats.billing_latest_event_ts, events.event_ts) AS billing_latest_event_ts,
+    coalesce(stats.billing_origin_session_id, events.session_id) AS billing_origin_session_id,
+    coalesce(stats.billing_latest_session_id, events.session_id) AS billing_latest_session_id,
+    coalesce(stats.billing_origin_forked_from_session_id, events.forked_from_session_id) AS billing_origin_forked_from_session_id,
+    coalesce(stats.billing_latest_forked_from_session_id, events.forked_from_session_id) AS billing_latest_forked_from_session_id,
+    coalesce(stats.billing_origin_record_hash, events.record_hash) AS billing_origin_record_hash,
+    coalesce(stats.billing_latest_record_hash, events.record_hash) AS billing_latest_record_hash,
+    coalesce(stats.billing_selected_record_hash, events.record_hash) AS billing_selected_record_hash,
+    coalesce(stats.billing_selected_parser_version, events.parser_version) AS billing_selected_parser_version,
+    coalesce(stats.billing_selected_logical_key, events.logical_key) AS billing_selected_logical_key,
+    coalesce(stats.billing_payload_conflict, false) AS billing_payload_conflict,
+    CASE
+      WHEN events.source_system = 'codex'
+        AND events.source_kind = 'interactive_turn'
+        AND events.turn_id IS NOT NULL
+      THEN 'richest_payload_origin_time'
+      ELSE 'observed_row'
+    END AS billing_observation_selection_mode,
+    CASE
+      WHEN events.source_system = 'codex'
+        AND events.source_kind = 'interactive_turn'
+        AND events.turn_id IS NOT NULL
+      THEN coalesce(stats.billing_origin_event_ts, events.event_ts)
+      ELSE events.event_ts
+    END AS pricing_basis_event_ts
   FROM observed_events events
   LEFT JOIN codex_turn_ranked ranked
     ON events.record_hash = ranked.record_hash
@@ -764,8 +851,8 @@ priced_events AS (
     WHERE history.provider = events.provider
       AND history.public_api_model_id = events.model_key
       AND history.pricing_tier = 'standard'
-      AND events.event_ts >= history.effective_from
-      AND (history.effective_to IS NULL OR events.event_ts < history.effective_to)
+      AND events.pricing_basis_event_ts >= history.effective_from
+      AND (history.effective_to IS NULL OR events.pricing_basis_event_ts < history.effective_to)
       AND coalesce(events.input_tokens, 0) BETWEEN history.input_tokens_min AND history.input_tokens_max
     ORDER BY history.effective_from DESC, history.pricing_id DESC
     LIMIT 1
@@ -783,7 +870,7 @@ fx_events AS (
     FROM __LLM_SCHEMA__.llm_fx_rate_history history
     WHERE history.base_currency = 'USD'
       AND history.quote_currency = 'AUD'
-      AND history.rate_date <= (events.event_ts AT TIME ZONE 'Australia/Sydney')::date
+      AND history.rate_date <= (events.pricing_basis_event_ts AT TIME ZONE 'Australia/Sydney')::date
     ORDER BY history.rate_date DESC, history.fx_rate_id DESC
     LIMIT 1
   ) fx ON events.source_pricing_currency = 'USD'
@@ -862,9 +949,28 @@ SELECT
   events.billing_attribution_mode,
   events.billing_duplicate_row_count,
   events.billing_duplicate_session_count,
+  events.billing_origin_rank,
+  events.billing_latest_rank,
+  events.billing_payload_rank,
   events.billing_turn_rank,
+  events.billing_is_origin_observation,
   events.billing_is_latest_observation,
+  events.billing_is_selected_observation,
   events.billing_replay_suspected,
+  events.billing_origin_event_ts,
+  events.billing_latest_event_ts,
+  events.billing_origin_session_id,
+  events.billing_latest_session_id,
+  events.billing_origin_forked_from_session_id,
+  events.billing_latest_forked_from_session_id,
+  events.billing_origin_record_hash,
+  events.billing_latest_record_hash,
+  events.billing_selected_record_hash,
+  events.billing_selected_parser_version,
+  events.billing_selected_logical_key,
+  events.billing_observation_selection_mode,
+  events.billing_payload_conflict,
+  events.pricing_basis_event_ts,
   events.public_api_model_id,
   events.pricing_tier,
   events.source_pricing_currency,
@@ -943,6 +1049,116 @@ SELECT
 FROM cost_components events;
 
 CREATE OR REPLACE VIEW __LLM_SCHEMA__.llm_usage_public_api_costs AS
-SELECT *
-FROM __LLM_SCHEMA__.llm_usage_public_api_costs_observed
-WHERE billing_is_latest_observation;
+SELECT
+  events.record_hash,
+  events.logical_key,
+  events.parser_version,
+  events.ingest_run_id,
+  events.source_system,
+  events.source_kind,
+  events.source_path,
+  events.source_path_hash,
+  events.source_row_id,
+  events.ingested_at,
+  CASE
+    WHEN events.source_system = 'codex'
+      AND events.source_kind = 'interactive_turn'
+      AND events.turn_id IS NOT NULL
+    THEN events.billing_origin_event_ts
+    ELSE events.event_ts
+  END AS event_ts,
+  events.session_id,
+  events.turn_id,
+  events.forked_from_session_id,
+  events.project_key,
+  events.project_path,
+  events.cwd,
+  events.tool_name,
+  events.actor,
+  events.provider,
+  events.model_requested,
+  events.model_used,
+  events.model_key,
+  events.ok,
+  events.event_status,
+  events.error_category,
+  events.input_tokens,
+  events.cached_input_tokens,
+  events.output_tokens,
+  events.reasoning_tokens,
+  events.tool_tokens,
+  events.total_tokens,
+  events.billable_uncached_input_tokens,
+  events.billable_cached_input_tokens,
+  events.billable_output_tokens,
+  events.cumulative_input_tokens,
+  events.cumulative_cached_input_tokens,
+  events.cumulative_output_tokens,
+  events.cumulative_reasoning_tokens,
+  events.cumulative_total_tokens,
+  events.context_window,
+  events.rate_limit_id,
+  events.rate_limit_name,
+  events.primary_used_percent,
+  events.primary_window_minutes,
+  events.primary_resets_at,
+  events.secondary_used_percent,
+  events.secondary_window_minutes,
+  events.secondary_resets_at,
+  events.credits_balance,
+  events.credits_unlimited,
+  events.raw,
+  events.billing_identity_key,
+  CASE
+    WHEN events.source_system = 'codex'
+      AND events.source_kind = 'interactive_turn'
+      AND events.turn_id IS NOT NULL
+    THEN 'codex_turn_origin'
+    ELSE events.billing_attribution_mode
+  END AS billing_attribution_mode,
+  events.billing_duplicate_row_count,
+  events.billing_duplicate_session_count,
+  events.billing_origin_rank,
+  events.billing_latest_rank,
+  events.billing_payload_rank,
+  events.billing_turn_rank,
+  events.billing_is_origin_observation,
+  events.billing_is_latest_observation,
+  events.billing_is_selected_observation,
+  events.billing_replay_suspected,
+  events.billing_origin_event_ts,
+  events.billing_latest_event_ts,
+  events.billing_origin_session_id,
+  events.billing_latest_session_id,
+  events.billing_origin_forked_from_session_id,
+  events.billing_latest_forked_from_session_id,
+  events.billing_origin_record_hash,
+  events.billing_latest_record_hash,
+  events.billing_selected_record_hash,
+  events.billing_selected_parser_version,
+  events.billing_selected_logical_key,
+  events.billing_observation_selection_mode,
+  events.billing_payload_conflict,
+  events.pricing_basis_event_ts,
+  events.public_api_model_id,
+  events.pricing_tier,
+  events.source_pricing_currency,
+  events.pricing_effective_from,
+  events.pricing_effective_to,
+  events.pricing_source_url,
+  events.pricing_source_observed_at,
+  events.fx_rate_date,
+  events.fx_source_url,
+  events.pricing_to_aud_rate,
+  events.source_uncached_input_cost,
+  events.source_cached_input_cost,
+  events.source_output_cost,
+  events.source_total_cost,
+  events.reporting_currency,
+  events.aud_uncached_input_cost,
+  events.aud_cached_input_cost,
+  events.aud_output_cost,
+  events.aud_total_cost,
+  events.cost_status
+FROM __LLM_SCHEMA__.llm_usage_public_api_costs_observed events
+WHERE events.billing_is_selected_observation;

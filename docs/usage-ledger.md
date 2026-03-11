@@ -219,7 +219,7 @@ Use the reporting command for operator summaries:
 
 The report command also supports a `reconciliation` mode that groups rows by `parser_version`, `source_system`, `source_kind`, and `event_status` so schema migrations and parser upgrades are easy to audit later.
 
-Cost reporting now defaults to the billing-canonical view. For Codex, that means one billable row per `turn_id`, with the latest observation winning across resumed or forked sessions. Use `--cost-view observed` when you explicitly want the raw observed rows instead of billing-safe totals.
+Cost reporting now defaults to the billing-canonical view. For Codex, that means one billable row per `turn_id`, with the richest observed payload retained but the billed `event_ts` and pricing basis pinned to the first-seen observation so replayed sessions do not shift spend into later hours. Use `--cost-view observed` when you explicitly want the raw observed rows instead of billing-safe totals. The canonical view also exposes `billing_origin_*`, `billing_latest_*`, `billing_selected_*`, and `pricing_basis_event_ts` columns so replay lineage stays inspectable without corrupting time-based cost reports.
 
 The `session` view now includes:
 

@@ -292,6 +292,7 @@ DECLARE
   observed_count integer;
   canonical_count integer;
   observed_row record;
+  latest_observed_row record;
   canonical_row record;
   fallback_row record;
   gemini_count integer;
@@ -322,8 +323,14 @@ BEGIN
   FROM __LLM_SCHEMA__.llm_usage_public_api_costs_observed
   WHERE record_hash = 'codex_turn_original';
 
+  IF NOT observed_row.billing_is_origin_observation THEN
+    RAISE EXCEPTION 'expected original row to be marked origin observation';
+  END IF;
   IF observed_row.billing_is_latest_observation THEN
-    RAISE EXCEPTION 'expected original replayed row to be non-canonical';
+    RAISE EXCEPTION 'expected original replayed row to be non-latest';
+  END IF;
+  IF observed_row.billing_is_selected_observation THEN
+    RAISE EXCEPTION 'expected original replayed row to be non-selected';
   END IF;
   IF observed_row.billing_duplicate_row_count <> 2 THEN
     RAISE EXCEPTION 'expected duplicate row count 2, got %', observed_row.billing_duplicate_row_count;
@@ -334,6 +341,42 @@ BEGIN
   IF NOT observed_row.billing_replay_suspected THEN
     RAISE EXCEPTION 'expected replay suspicion on original observed row';
   END IF;
+  IF observed_row.billing_origin_event_ts <> timestamptz '2026-03-10 01:00:00+00' THEN
+    RAISE EXCEPTION 'unexpected billing origin event ts %', observed_row.billing_origin_event_ts;
+  END IF;
+  IF observed_row.pricing_basis_event_ts <> timestamptz '2026-03-10 01:00:00+00' THEN
+    RAISE EXCEPTION 'unexpected pricing basis event ts %', observed_row.pricing_basis_event_ts;
+  END IF;
+
+  SELECT *
+  INTO latest_observed_row
+  FROM __LLM_SCHEMA__.llm_usage_public_api_costs_observed
+  WHERE record_hash = 'codex_turn_latest';
+
+  IF latest_observed_row.record_hash IS NULL THEN
+    RAISE EXCEPTION 'missing latest observed row';
+  END IF;
+  IF latest_observed_row.billing_origin_rank <> 2 THEN
+    RAISE EXCEPTION 'expected latest observed row origin rank 2, got %', latest_observed_row.billing_origin_rank;
+  END IF;
+  IF latest_observed_row.billing_latest_rank <> 1 THEN
+    RAISE EXCEPTION 'expected latest observed row latest rank 1, got %', latest_observed_row.billing_latest_rank;
+  END IF;
+  IF latest_observed_row.billing_payload_rank <> 1 THEN
+    RAISE EXCEPTION 'expected latest observed row payload rank 1, got %', latest_observed_row.billing_payload_rank;
+  END IF;
+  IF latest_observed_row.billing_turn_rank <> 1 THEN
+    RAISE EXCEPTION 'expected latest observed row billing_turn_rank 1, got %', latest_observed_row.billing_turn_rank;
+  END IF;
+  IF latest_observed_row.billing_is_origin_observation THEN
+    RAISE EXCEPTION 'expected latest observed row to be non-origin';
+  END IF;
+  IF NOT latest_observed_row.billing_is_latest_observation THEN
+    RAISE EXCEPTION 'expected latest observed row to be marked latest';
+  END IF;
+  IF NOT latest_observed_row.billing_is_selected_observation THEN
+    RAISE EXCEPTION 'expected latest observed row to be selected';
+  END IF;
 
   SELECT *
   INTO canonical_row
@@ -341,22 +384,49 @@ BEGIN
   WHERE record_hash = 'codex_turn_latest';
 
   IF canonical_row.record_hash IS NULL THEN
-    RAISE EXCEPTION 'missing latest canonical row';
+    RAISE EXCEPTION 'missing selected canonical row';
   END IF;
   IF canonical_row.billing_identity_key <> 'turn-1' THEN
     RAISE EXCEPTION 'expected billing identity key turn-1, got %', canonical_row.billing_identity_key;
   END IF;
-  IF canonical_row.billing_attribution_mode <> 'codex_turn_latest' THEN
-    RAISE EXCEPTION 'expected codex_turn_latest attribution, got %', canonical_row.billing_attribution_mode;
+  IF canonical_row.billing_attribution_mode <> 'codex_turn_origin' THEN
+    RAISE EXCEPTION 'expected codex_turn_origin attribution, got %', canonical_row.billing_attribution_mode;
   END IF;
-  IF canonical_row.billing_turn_rank <> 1 THEN
-    RAISE EXCEPTION 'expected billing_turn_rank 1, got %', canonical_row.billing_turn_rank;
+  IF canonical_row.billing_observation_selection_mode <> 'richest_payload_origin_time' THEN
+    RAISE EXCEPTION 'expected richest_payload_origin_time, got %', canonical_row.billing_observation_selection_mode;
   END IF;
-  IF NOT canonical_row.billing_is_latest_observation THEN
-    RAISE EXCEPTION 'expected latest canonical row to be marked canonical';
+  IF canonical_row.event_ts <> timestamptz '2026-03-10 01:00:00+00' THEN
+    RAISE EXCEPTION 'expected canonical event ts at origin, got %', canonical_row.event_ts;
+  END IF;
+  IF canonical_row.pricing_basis_event_ts <> timestamptz '2026-03-10 01:00:00+00' THEN
+    RAISE EXCEPTION 'expected canonical pricing basis at origin, got %', canonical_row.pricing_basis_event_ts;
+  END IF;
+  IF canonical_row.session_id <> 'session-b' THEN
+    RAISE EXCEPTION 'expected canonical row to keep selected payload session, got %', canonical_row.session_id;
+  END IF;
+  IF canonical_row.billing_origin_session_id <> 'session-a' THEN
+    RAISE EXCEPTION 'expected billing_origin_session_id session-a, got %', canonical_row.billing_origin_session_id;
+  END IF;
+  IF canonical_row.billing_latest_session_id <> 'session-b' THEN
+    RAISE EXCEPTION 'expected billing_latest_session_id session-b, got %', canonical_row.billing_latest_session_id;
+  END IF;
+  IF canonical_row.billing_selected_record_hash <> 'codex_turn_latest' THEN
+    RAISE EXCEPTION 'expected selected record hash codex_turn_latest, got %', canonical_row.billing_selected_record_hash;
+  END IF;
+  IF canonical_row.billing_origin_record_hash <> 'codex_turn_original' THEN
+    RAISE EXCEPTION 'expected origin record hash codex_turn_original, got %', canonical_row.billing_origin_record_hash;
+  END IF;
+  IF canonical_row.billing_latest_record_hash <> 'codex_turn_latest' THEN
+    RAISE EXCEPTION 'expected latest record hash codex_turn_latest, got %', canonical_row.billing_latest_record_hash;
+  END IF;
+  IF canonical_row.input_tokens <> 1200 OR canonical_row.cached_input_tokens <> 200 OR canonical_row.output_tokens <> 75 THEN
+    RAISE EXCEPTION 'expected canonical row to keep richest payload, got input=% cached=% output=%', canonical_row.input_tokens, canonical_row.cached_input_tokens, canonical_row.output_tokens;
   END IF;
   IF canonical_row.forked_from_session_id <> 'session-a' THEN
     RAISE EXCEPTION 'expected forked_from_session_id session-a, got %', canonical_row.forked_from_session_id;
+  END IF;
+  IF NOT canonical_row.billing_payload_conflict THEN
+    RAISE EXCEPTION 'expected payload conflict flag for differing duplicate payloads';
   END IF;
 
   SELECT *
@@ -372,6 +442,12 @@ BEGIN
   END IF;
   IF fallback_row.billing_identity_key <> 'codex|interactive_turn|session-c||row-no-turn' THEN
     RAISE EXCEPTION 'unexpected fallback identity key %', fallback_row.billing_identity_key;
+  END IF;
+  IF NOT fallback_row.billing_is_selected_observation THEN
+    RAISE EXCEPTION 'expected null-turn fallback row to stay selected';
+  END IF;
+  IF fallback_row.pricing_basis_event_ts <> fallback_row.event_ts THEN
+    RAISE EXCEPTION 'expected null-turn pricing basis to match event_ts';
   END IF;
 
   SELECT count(*)
