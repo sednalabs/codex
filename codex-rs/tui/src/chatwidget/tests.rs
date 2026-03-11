@@ -9742,6 +9742,128 @@ async fn status_line_fast_mode_renders_on_and_off() {
 }
 
 #[tokio::test]
+async fn status_line_weekly_limit_shows_pacing_suffix_variants() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(None).await;
+    chat.config.tui_status_line = Some(vec!["weekly-limit".to_string()]);
+
+    let captured_at = chrono::Local::now();
+    let window_minutes = 10080_i64;
+    let window_seconds = (window_minutes * 60) as f64;
+    let make_window = |used_percent: f64, time_remaining_pct: f64| RateLimitWindowDisplay {
+        used_percent,
+        resets_at: Some("soon".to_string()),
+        resets_at_unix_seconds: Some(
+            captured_at.timestamp() + (window_seconds * time_remaining_pct / 100.0).round() as i64,
+        ),
+        window_minutes: Some(window_minutes),
+    };
+
+    chat.rate_limit_snapshots_by_limit_id.insert(
+        "codex".to_string(),
+        RateLimitSnapshotDisplay {
+            limit_name: "codex".to_string(),
+            captured_at,
+            primary: None,
+            secondary: Some(make_window(56.0, 50.0)),
+            credits: None,
+        },
+    );
+    chat.refresh_status_line();
+    assert_eq!(
+        status_line_text(&chat),
+        Some("weekly 44% (over 6%)".to_string())
+    );
+
+    chat.rate_limit_snapshots_by_limit_id.insert(
+        "codex".to_string(),
+        RateLimitSnapshotDisplay {
+            limit_name: "codex".to_string(),
+            captured_at,
+            primary: None,
+            secondary: Some(make_window(56.0, 42.0)),
+            credits: None,
+        },
+    );
+    chat.refresh_status_line();
+    assert_eq!(
+        status_line_text(&chat),
+        Some("weekly 44% (on pace)".to_string())
+    );
+
+    chat.rate_limit_snapshots_by_limit_id.insert(
+        "codex".to_string(),
+        RateLimitSnapshotDisplay {
+            limit_name: "codex".to_string(),
+            captured_at,
+            primary: None,
+            secondary: Some(make_window(56.0, 37.0)),
+            credits: None,
+        },
+    );
+    chat.refresh_status_line();
+    assert_eq!(
+        status_line_text(&chat),
+        Some("weekly 44% (under 7%)".to_string())
+    );
+}
+
+#[tokio::test]
+async fn status_line_weekly_limit_shows_stale_suffix_over_pace_details() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(None).await;
+    chat.config.tui_status_line = Some(vec!["weekly-limit".to_string()]);
+
+    let captured_at = chrono::Local::now() - chrono::Duration::minutes(16);
+    chat.rate_limit_snapshots_by_limit_id.insert(
+        "codex".to_string(),
+        RateLimitSnapshotDisplay {
+            limit_name: "codex".to_string(),
+            captured_at,
+            primary: None,
+            secondary: Some(RateLimitWindowDisplay {
+                used_percent: 56.0,
+                resets_at: Some("soon".to_string()),
+                resets_at_unix_seconds: Some(
+                    captured_at.timestamp() + (0.50 * 10080.0 * 60.0) as i64,
+                ),
+                window_minutes: Some(10080),
+            }),
+            credits: None,
+        },
+    );
+
+    chat.refresh_status_line();
+    assert_eq!(
+        status_line_text(&chat),
+        Some("weekly 44% (stale)".to_string())
+    );
+}
+
+#[tokio::test]
+async fn status_line_weekly_limit_omits_pacing_when_inputs_are_missing() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(None).await;
+    chat.config.tui_status_line = Some(vec!["weekly-limit".to_string()]);
+
+    chat.rate_limit_snapshots_by_limit_id.insert(
+        "codex".to_string(),
+        RateLimitSnapshotDisplay {
+            limit_name: "codex".to_string(),
+            captured_at: chrono::Local::now(),
+            primary: None,
+            secondary: Some(RateLimitWindowDisplay {
+                used_percent: 56.0,
+                resets_at: Some("soon".to_string()),
+                resets_at_unix_seconds: None,
+                window_minutes: Some(10080),
+            }),
+            credits: None,
+        },
+    );
+
+    chat.refresh_status_line();
+    assert_eq!(status_line_text(&chat), Some("weekly 44%".to_string()));
+}
+
+#[tokio::test]
 async fn status_line_fast_mode_footer_snapshot() {
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
