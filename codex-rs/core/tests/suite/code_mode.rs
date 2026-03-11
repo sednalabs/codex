@@ -569,6 +569,108 @@ isError=false"
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn code_mode_exports_all_tools_metadata_for_builtin_tools() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+    if !path_node_satisfies_js_repl_requirement() {
+        return Ok(());
+    }
+
+    let server = responses::start_mock_server().await;
+    let code = r#"
+import { ALL_TOOLS } from "tools.js";
+
+const tool = ALL_TOOLS.find(({ module, name }) => module === "tools.js" && name === "view_image");
+add_content(JSON.stringify(tool));
+"#;
+
+    let (_test, second_mock) =
+        run_code_mode_turn(&server, "use exec to inspect ALL_TOOLS", code, false).await?;
+
+    let req = second_mock.single_request();
+    let (output, success) = custom_tool_output_body_and_success(&req, "call-1");
+    assert_ne!(
+        success,
+        Some(false),
+        "exec ALL_TOOLS lookup failed unexpectedly: {output}"
+    );
+
+    let parsed: Value = serde_json::from_str(&output)?;
+    assert_eq!(
+        parsed,
+        serde_json::json!({
+            "module": "tools.js",
+            "name": "view_image",
+            "description": r#"View a local image from the filesystem (only use if given a full filepath by the user, and the image isn't already attached to the thread context within <image ...> tags).
+
+Code mode declaration:
+```ts
+import { tools } from "tools.js";
+declare function view_image(args: {
+  path: string;
+}): Promise<unknown>;
+```"#,
+        })
+    );
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn code_mode_exports_all_tools_metadata_for_namespaced_mcp_tools() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+    if !path_node_satisfies_js_repl_requirement() {
+        return Ok(());
+    }
+
+    let server = responses::start_mock_server().await;
+    let code = r#"
+import { ALL_TOOLS } from "tools.js";
+
+const tool = ALL_TOOLS.find(
+  ({ module, name }) => module === "tools/mcp/rmcp.js" && name === "echo"
+);
+add_content(JSON.stringify(tool));
+"#;
+
+    let (_test, second_mock) =
+        run_code_mode_turn_with_rmcp(&server, "use exec to inspect ALL_TOOLS", code).await?;
+
+    let req = second_mock.single_request();
+    let (output, success) = custom_tool_output_body_and_success(&req, "call-1");
+    assert_ne!(
+        success,
+        Some(false),
+        "exec ALL_TOOLS MCP lookup failed unexpectedly: {output}"
+    );
+
+    let parsed: Value = serde_json::from_str(&output)?;
+    assert_eq!(
+        parsed,
+        serde_json::json!({
+            "module": "tools/mcp/rmcp.js",
+            "name": "echo",
+            "description": r#"Echo back the provided message and include environment data.
+
+Code mode declaration:
+```ts
+import { tools } from "tools/mcp/rmcp.js";
+declare function echo(args: {
+  env_var?: string;
+  message: string;
+}): Promise<{
+  _meta?: unknown;
+  content: Array<unknown>;
+  isError?: boolean;
+  structuredContent?: unknown;
+}>;
+```"#,
+        })
+    );
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn code_mode_can_print_content_only_mcp_tool_result_fields() -> Result<()> {
     skip_if_no_network!(Ok(()));
     if !path_node_satisfies_js_repl_requirement() {
@@ -669,6 +771,7 @@ async fn code_mode_can_store_and_load_values_across_turns() -> Result<()> {
     let server = responses::start_mock_server().await;
     let mut builder = test_codex().with_config(move |config| {
         let _ = config.features.enable(Feature::CodeMode);
+        config.js_repl_node_path = None;
     });
     let test = builder.build(&server).await?;
 

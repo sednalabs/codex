@@ -14,7 +14,7 @@ rules: boolean,
 /**
  * Reject approval prompts triggered by skill script execution.
  */
-  skill_approval: boolean,
+skill_approval: boolean, 
 /**
  * Reject approval prompts related to built-in permission requests.
  */
