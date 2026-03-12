@@ -54,7 +54,14 @@ impl AbsolutePathBuf {
 
     pub fn from_absolute_path<P: AsRef<Path>>(path: P) -> std::io::Result<Self> {
         let expanded = Self::maybe_expand_home_directory(path.as_ref());
-        let absolute_path = expanded.absolutize()?;
+        let absolute_path = if expanded.is_absolute() {
+            // `path-absolutize` consults the process cwd in `absolutize()`, even
+            // for already-absolute paths. Keep absolute inputs independent from
+            // cwd so callers continue to work after the cwd disappears.
+            expanded.absolutize_from(Path::new("/"))?
+        } else {
+            expanded.absolutize()?
+        };
         Ok(Self(absolute_path.into_owned()))
     }
 
