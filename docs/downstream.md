@@ -85,7 +85,7 @@ User-visible behavior:
 - Queued slash commands and queued message drafts are shown in one queue preview.
 - `Alt+Up` recalls queued items in strict reverse-chronological order across both entry types.
 - `/status` remains immediate (not queued).
-- `/model` still opens the picker immediately; selecting a model while busy queues the model switch.
+- Unavailable slash commands replay after the current task completes instead of being blocked.
 
 ### TUI: Weekly usage pacing signal + stale handling
 

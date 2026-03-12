@@ -1875,6 +1875,8 @@ async fn make_chatwidget_manual(
         pending_steers: VecDeque::new(),
         submit_pending_steers_after_interrupt: false,
         queued_message_edit_binding: crate::key_hint::alt(KeyCode::Up),
+        queued_slash_commands: VecDeque::new(),
+        queued_follow_up_order: VecDeque::new(),
         suppress_session_configured_redraw: false,
         pending_notification: None,
         quit_shortcut_expires_at: None,
@@ -3645,6 +3647,8 @@ async fn restore_thread_input_state_syncs_sleep_inhibitor_state() {
         composer: None,
         pending_steers: VecDeque::new(),
         queued_user_messages: VecDeque::new(),
+        queued_slash_commands: VecDeque::new(),
+        queued_follow_up_order: VecDeque::new(),
         current_collaboration_mode: chat.current_collaboration_mode.clone(),
         active_collaboration_mask: chat.active_collaboration_mask.clone(),
         agent_turn_running: true,
@@ -3994,6 +3998,35 @@ async fn steer_enter_queues_while_plan_stream_is_active() {
     assert!(chat.pending_steers.is_empty());
     assert_no_submit_op(&mut op_rx);
     assert!(drain_insert_history(&mut rx).is_empty());
+}
+
+#[tokio::test]
+async fn slash_approvals_enter_queues_while_task_running_and_replays_on_completion() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(None).await;
+    chat.bottom_pane.set_task_running(true);
+
+    chat.bottom_pane
+        .set_composer_text("/approvals".to_string(), Vec::new(), Vec::new());
+    chat.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+    let cells = drain_insert_history(&mut rx);
+    let rendered = lines_to_single_string(cells.last().expect("expected queue info message"));
+    assert!(
+        rendered.contains("Queued '/approvals'."),
+        "expected queued approvals message, got {rendered:?}"
+    );
+    assert!(
+        !chat.has_active_view(),
+        "expected /approvals to queue instead of opening immediately"
+    );
+
+    chat.on_task_complete(None, false);
+
+    let popup = render_bottom_popup(&chat, 80);
+    assert!(
+        popup.contains("Update Model Permissions"),
+        "expected approvals popup after queued replay, got {popup:?}"
+    );
 }
 
 #[tokio::test]
@@ -6036,24 +6069,30 @@ async fn slash_clear_requests_ui_clear_when_idle() {
 }
 
 #[tokio::test]
-async fn slash_clear_is_disabled_while_task_running() {
+async fn slash_approvals_queue_while_task_running_and_open_after_completion() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(None).await;
     chat.bottom_pane.set_task_running(true);
 
-    chat.dispatch_command(SlashCommand::Clear);
+    chat.dispatch_command(SlashCommand::Approvals);
 
-    let event = rx.try_recv().expect("expected disabled command error");
-    match event {
-        AppEvent::InsertHistoryCell(cell) => {
-            let rendered = lines_to_single_string(&cell.display_lines(80));
-            assert!(
-                rendered.contains("'/clear' is disabled while a task is in progress."),
-                "expected /clear task-running error, got {rendered:?}"
-            );
-        }
-        other => panic!("expected InsertHistoryCell error, got {other:?}"),
-    }
-    assert!(rx.try_recv().is_err(), "expected no follow-up events");
+    let cells = drain_insert_history(&mut rx);
+    let rendered = lines_to_single_string(cells.last().expect("expected queue info message"));
+    assert!(
+        rendered.contains("Queued '/approvals'."),
+        "expected queued approvals message, got {rendered:?}"
+    );
+    assert!(
+        rx.try_recv().is_err(),
+        "expected queued approvals not to open immediately"
+    );
+
+    chat.on_task_complete(None, false);
+
+    let popup = render_bottom_popup(&chat, 80);
+    assert!(
+        popup.contains("Update Model Permissions"),
+        "expected approvals popup after queued replay, got {popup:?}"
+    );
 }
 
 #[tokio::test]
@@ -7957,19 +7996,67 @@ async fn user_shell_command_renders_output_not_exploring() {
 }
 
 #[tokio::test]
-async fn disabled_slash_command_while_task_running_snapshot() {
-    // Build a chat widget and simulate an active task
+async fn queued_inline_slash_command_runs_with_args_after_task_complete() {
+    let (mut chat, _rx, mut op_rx) = make_chatwidget_manual(None).await;
+    chat.bottom_pane.set_task_running(true);
+    chat.bottom_pane.set_composer_text(
+        "/review focus on error handling".to_string(),
+        Vec::new(),
+        Vec::new(),
+    );
+
+    chat.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    assert_matches!(op_rx.try_recv(), Err(TryRecvError::Empty));
+
+    chat.on_task_complete(None, false);
+
+    match op_rx.try_recv() {
+        Ok(Op::Review { review_request }) => {
+            assert_eq!(
+                review_request,
+                ReviewRequest {
+                    target: ReviewTarget::Custom {
+                        instructions: "focus on error handling".to_string(),
+                    },
+                    user_facing_hint: None,
+                }
+            );
+        }
+        other => panic!("expected Op::Review, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn alt_up_restores_most_recent_queued_slash_command() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(None).await;
+    chat.bottom_pane.set_task_running(true);
+
+    chat.queue_user_message(UserMessage::from("queued draft".to_string()));
+    chat.dispatch_command(SlashCommand::Approvals);
+
+    chat.handle_key_event(KeyEvent::new(KeyCode::Up, KeyModifiers::ALT));
+
+    assert_eq!(chat.bottom_pane.composer_text(), "/approvals".to_string());
+    assert_eq!(
+        chat.queued_user_message_texts(),
+        vec!["queued draft".to_string()]
+    );
+}
+
+#[tokio::test]
+async fn queued_slash_command_while_task_running_snapshot() {
+    // Build a chat widget and simulate an active task.
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(None).await;
     chat.bottom_pane.set_task_running(true);
 
-    // Dispatch a command that is unavailable while a task runs (e.g., /model)
-    chat.dispatch_command(SlashCommand::Model);
+    // Dispatch a command that should queue while a task runs.
+    chat.dispatch_command(SlashCommand::Approvals);
 
-    // Drain history and snapshot the rendered error line(s)
+    // Drain history and snapshot the rendered queue line(s).
     let cells = drain_insert_history(&mut rx);
     assert!(
         !cells.is_empty(),
-        "expected an error message history cell to be emitted",
+        "expected a queue message history cell to be emitted",
     );
     let blob = lines_to_single_string(cells.last().unwrap());
     assert_snapshot!(blob);
