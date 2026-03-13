@@ -6,7 +6,7 @@ llm_usage_script_dir() {
 }
 
 llm_usage_parser_version() {
-  printf '%s\n' '2026-03-11-v3'
+  printf '%s\n' '2026-03-13-v4'
 }
 
 llm_usage_require_commands() {
@@ -384,7 +384,7 @@ with open(source_path, "r", encoding="utf-8") as handle, open(out_path, "w", enc
         if cwd_hash:
             payload["cwd"] = cwd_label
 
-        if payload.get("source_kind") in {"interactive_turn", "interactive_message", "mcp_tool_call"} and not payload.get("event_status"):
+        if payload.get("source_kind") in {"interactive_turn", "interactive_turn_segment", "interactive_message", "mcp_tool_call"} and not payload.get("event_status"):
             if payload.get("error_category") == "interrupted":
                 payload["event_status"] = "aborted"
             elif payload.get("ok") is True:

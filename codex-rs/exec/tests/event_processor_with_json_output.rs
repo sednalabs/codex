@@ -1291,6 +1291,8 @@ fn task_complete_produces_turn_completed_with_usage() {
         EventMsg::TokenCount(codex_protocol::protocol::TokenCountEvent {
             info: Some(info),
             rate_limits: None,
+            provider: None,
+            model_used: None,
         }),
     );
     assert!(ep.collect_thread_events(&token_count_event).is_empty());

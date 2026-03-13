@@ -1027,6 +1027,8 @@ mod tests {
                     model_context_window: None,
                 }),
                 rate_limits: None,
+                provider: None,
+                model_used: None,
             },
         ))];
         let override_updated_at =

@@ -660,6 +660,8 @@ mod tests {
                 msg: EventMsg::TokenCount(TokenCountEvent {
                     info: None,
                     rate_limits: None,
+                    provider: None,
+                    model_used: None,
                 }),
             })
             .await

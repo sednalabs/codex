@@ -154,6 +154,7 @@ select
   source_kind,
   session_id,
   project_key,
+  provider,
   model,
   started_at,
   last_event_at,
@@ -188,7 +189,7 @@ select
   sum(coalesce(output_tokens, 0)) as output_tokens,
   sum(coalesce(reasoning_tokens, 0)) as reasoning_tokens,
   max(event_ts) as last_event_at
-from __LLM_SCHEMA__.llm_usage_events
+from __LLM_SCHEMA__.llm_canonical_usage_events
 where $usage_time_filter
 group by 1, 2, 3, 4
 order by total_tokens desc, last_event_at desc
@@ -209,7 +210,7 @@ select
   sum(coalesce(output_tokens, 0)) as output_tokens,
   sum(coalesce(reasoning_tokens, 0)) as reasoning_tokens,
   max(event_ts) as last_event_at
-from __LLM_SCHEMA__.llm_usage_events
+from __LLM_SCHEMA__.llm_canonical_usage_events
 where $usage_time_filter
 group by 1, 2
 order by total_tokens desc, last_event_at desc

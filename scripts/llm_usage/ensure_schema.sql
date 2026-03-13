@@ -140,7 +140,7 @@ usage_dupes AS (
 UPDATE __LLM_SCHEMA__.llm_usage_events events
 SET
   logical_key = candidates.desired_logical_key,
-  parser_version = coalesce(events.parser_version, '2026-03-11-v3'),
+  parser_version = coalesce(events.parser_version, '2026-03-13-v4'),
   source_path_hash = coalesce(events.source_path_hash, md5(events.source_path)),
   event_status = coalesce(
     events.event_status,
@@ -189,6 +189,12 @@ CREATE INDEX IF NOT EXISTS llm_usage_events_codex_turn_event_ts_idx
   ON __LLM_SCHEMA__.llm_usage_events (turn_id, event_ts DESC, ingested_at DESC)
   WHERE source_system = 'codex'
     AND source_kind = 'interactive_turn'
+    AND turn_id IS NOT NULL;
+
+CREATE INDEX IF NOT EXISTS llm_usage_events_codex_turn_segment_event_ts_idx
+  ON __LLM_SCHEMA__.llm_usage_events (turn_id, source_row_id, event_ts DESC, ingested_at DESC)
+  WHERE source_system = 'codex'
+    AND source_kind = 'interactive_turn_segment'
     AND turn_id IS NOT NULL;
 
 CREATE TABLE IF NOT EXISTS __LLM_SCHEMA__.llm_quota_events (
@@ -541,8 +547,60 @@ CREATE INDEX IF NOT EXISTS llm_fx_rate_history_lookup_idx
 DROP VIEW IF EXISTS __LLM_SCHEMA__.llm_latest_rate_limits;
 DROP VIEW IF EXISTS __LLM_SCHEMA__.llm_latest_quota_events;
 DROP VIEW IF EXISTS __LLM_SCHEMA__.llm_session_usage_summary;
+DROP VIEW IF EXISTS __LLM_SCHEMA__.llm_canonical_usage_events;
 DROP VIEW IF EXISTS __LLM_SCHEMA__.llm_usage_public_api_costs;
 DROP VIEW IF EXISTS __LLM_SCHEMA__.llm_usage_public_api_costs_observed;
+
+CREATE OR REPLACE VIEW __LLM_SCHEMA__.llm_canonical_usage_events AS
+WITH base_events AS (
+  SELECT
+    events.*,
+    coalesce(events.model_used, events.model_requested, 'unknown') AS model_key
+  FROM __LLM_SCHEMA__.llm_usage_events events
+),
+gemini_rollup_presence AS (
+  SELECT
+    session_id,
+    project_key,
+    model_key,
+    bool_or(source_kind = 'mcp_tool_call') AS has_rollup
+  FROM base_events
+  WHERE source_system = 'gemini'
+  GROUP BY session_id, project_key, model_key
+),
+codex_segment_presence AS (
+  SELECT
+    turn_id,
+    bool_or(source_kind = 'interactive_turn_segment') AS has_segments
+  FROM base_events
+  WHERE source_system = 'codex'
+    AND turn_id IS NOT NULL
+  GROUP BY turn_id
+)
+SELECT events.*
+FROM base_events events
+LEFT JOIN gemini_rollup_presence rollups
+  ON events.source_system = 'gemini'
+ AND events.session_id = rollups.session_id
+ AND events.project_key IS NOT DISTINCT FROM rollups.project_key
+ AND events.model_key = rollups.model_key
+LEFT JOIN codex_segment_presence segments
+  ON events.source_system = 'codex'
+ AND events.turn_id IS NOT NULL
+ AND events.turn_id = segments.turn_id
+WHERE
+  (events.source_system = 'codex' AND events.source_kind = 'interactive_turn_segment')
+  OR (
+    events.source_system = 'codex'
+    AND events.source_kind = 'interactive_turn'
+    AND (events.turn_id IS NULL OR coalesce(segments.has_segments, false) = false)
+  )
+  OR (events.source_system = 'gemini' AND events.source_kind = 'mcp_tool_call')
+  OR (
+    events.source_system = 'gemini'
+    AND events.source_kind = 'interactive_message'
+    AND coalesce(rollups.has_rollup, false) = false
+  );
 
 CREATE OR REPLACE VIEW __LLM_SCHEMA__.llm_session_usage_summary AS
 SELECT
@@ -551,6 +609,7 @@ SELECT
   session_id,
   project_key,
   project_path,
+  coalesce(provider, 'unknown') AS provider,
   coalesce(model_used, model_requested, 'unknown') AS model,
   min(event_ts) AS started_at,
   max(event_ts) AS last_event_at,
@@ -566,13 +625,14 @@ SELECT
   sum(coalesce(total_tokens, 0)) AS summed_event_tokens,
   max(cumulative_total_tokens) AS max_cumulative_total_tokens,
   sum(coalesce(total_tokens, 0)) AS session_total_tokens
-FROM __LLM_SCHEMA__.llm_usage_events
+FROM __LLM_SCHEMA__.llm_canonical_usage_events
 GROUP BY
   source_system,
   source_kind,
   session_id,
   project_key,
   project_path,
+  coalesce(provider, 'unknown'),
   coalesce(model_used, model_requested, 'unknown');
 
 CREATE OR REPLACE VIEW __LLM_SCHEMA__.llm_latest_rate_limits AS
@@ -654,12 +714,20 @@ WITH base_events AS (
     coalesce(events.output_tokens, 0) AS billable_output_tokens,
     CASE
       WHEN events.source_system = 'codex'
+        AND events.source_kind = 'interactive_turn_segment'
+        AND events.turn_id IS NOT NULL
+      THEN coalesce(events.turn_id || '|' || events.source_row_id, events.logical_key)
+      WHEN events.source_system = 'codex'
         AND events.source_kind = 'interactive_turn'
         AND events.turn_id IS NOT NULL
       THEN events.turn_id
       ELSE events.logical_key
     END AS billing_identity_key,
     CASE
+      WHEN events.source_system = 'codex'
+        AND events.source_kind = 'interactive_turn_segment'
+        AND events.turn_id IS NOT NULL
+      THEN 'codex_turn_segment_observed'
       WHEN events.source_system = 'codex'
         AND events.source_kind = 'interactive_turn'
         AND events.turn_id IS NOT NULL
@@ -687,6 +755,15 @@ gemini_rollup_presence AS (
   WHERE source_system = 'gemini'
   GROUP BY session_id, project_key, model_key
 ),
+codex_segment_presence AS (
+  SELECT
+    turn_id,
+    bool_or(source_kind = 'interactive_turn_segment') AS has_segments
+  FROM base_events
+  WHERE source_system = 'codex'
+    AND turn_id IS NOT NULL
+  GROUP BY turn_id
+),
 observed_events AS (
   SELECT events.*
   FROM base_events events
@@ -695,8 +772,17 @@ observed_events AS (
    AND events.session_id = rollups.session_id
    AND events.project_key IS NOT DISTINCT FROM rollups.project_key
    AND events.model_key = rollups.model_key
+  LEFT JOIN codex_segment_presence segments
+    ON events.source_system = 'codex'
+   AND events.turn_id IS NOT NULL
+   AND events.turn_id = segments.turn_id
   WHERE
-    (events.source_system = 'codex' AND events.source_kind = 'interactive_turn')
+    (events.source_system = 'codex' AND events.source_kind = 'interactive_turn_segment')
+    OR (
+      events.source_system = 'codex'
+      AND events.source_kind = 'interactive_turn'
+      AND (events.turn_id IS NULL OR coalesce(segments.has_segments, false) = false)
+    )
     OR (events.source_system = 'gemini' AND events.source_kind = 'mcp_tool_call')
     OR (
       events.source_system = 'gemini'
@@ -704,7 +790,7 @@ observed_events AS (
       AND coalesce(rollups.has_rollup, false) = false
     )
 ),
-codex_turn_ranked AS (
+codex_identity_ranked AS (
   SELECT
     events.record_hash,
     events.billing_identity_key,
@@ -747,10 +833,9 @@ codex_turn_ranked AS (
     ) AS billing_payload_rank
   FROM observed_events events
   WHERE events.source_system = 'codex'
-    AND events.source_kind = 'interactive_turn'
     AND events.turn_id IS NOT NULL
 ),
-codex_turn_stats AS (
+codex_identity_stats AS (
   SELECT
     events.billing_identity_key,
     count(*) AS billing_duplicate_row_count,
@@ -779,7 +864,7 @@ codex_turn_stats AS (
       events.context_window
     )::text) > 1 AS billing_payload_conflict
   FROM observed_events events
-  JOIN codex_turn_ranked ranked
+  JOIN codex_identity_ranked ranked
     ON events.record_hash = ranked.record_hash
   GROUP BY events.billing_identity_key
 ),
@@ -810,25 +895,22 @@ attributed_events AS (
     coalesce(stats.billing_payload_conflict, false) AS billing_payload_conflict,
     CASE
       WHEN events.source_system = 'codex'
-        AND events.source_kind = 'interactive_turn'
         AND events.turn_id IS NOT NULL
       THEN 'richest_payload_origin_time'
       ELSE 'observed_row'
     END AS billing_observation_selection_mode,
     CASE
       WHEN events.source_system = 'codex'
-        AND events.source_kind = 'interactive_turn'
         AND events.turn_id IS NOT NULL
       THEN coalesce(stats.billing_origin_event_ts, events.event_ts)
       ELSE events.event_ts
     END AS pricing_basis_event_ts
   FROM observed_events events
-  LEFT JOIN codex_turn_ranked ranked
+  LEFT JOIN codex_identity_ranked ranked
     ON events.record_hash = ranked.record_hash
-  LEFT JOIN codex_turn_stats stats
+  LEFT JOIN codex_identity_stats stats
     ON events.billing_identity_key = stats.billing_identity_key
    AND events.source_system = 'codex'
-   AND events.source_kind = 'interactive_turn'
    AND events.turn_id IS NOT NULL
 ),
 priced_events AS (
@@ -1062,7 +1144,6 @@ SELECT
   events.ingested_at,
   CASE
     WHEN events.source_system = 'codex'
-      AND events.source_kind = 'interactive_turn'
       AND events.turn_id IS NOT NULL
     THEN events.billing_origin_event_ts
     ELSE events.event_ts
@@ -1110,6 +1191,10 @@ SELECT
   events.raw,
   events.billing_identity_key,
   CASE
+    WHEN events.source_system = 'codex'
+      AND events.source_kind = 'interactive_turn_segment'
+      AND events.turn_id IS NOT NULL
+    THEN 'codex_turn_segment_origin'
     WHEN events.source_system = 'codex'
       AND events.source_kind = 'interactive_turn'
       AND events.turn_id IS NOT NULL

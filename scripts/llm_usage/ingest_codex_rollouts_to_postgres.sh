@@ -107,7 +107,7 @@ persist_run_record() {
     --arg script_name "ingest_codex_rollouts_to_postgres.sh" \
     --arg parser_version "$(llm_usage_parser_version)" \
     --arg source_system "codex" \
-    --arg source_kind "interactive_turn" \
+    --arg source_kind "interactive_turn_segment" \
     --arg started_at "$run_started_at" \
     --arg completed_at "$completed_at" \
     --arg status "$status" \
@@ -165,7 +165,7 @@ if [ "$dry_run" -eq 0 ]; then
   run_id=$(llm_usage_new_run_id)
   run_started_at=$(date -Is)
   persist_run_record 'running' '' ''
-  llm_usage_fetch_artifact_state "$db_url" "$db_schema" codex interactive_turn "$artifact_state_lookup"
+  llm_usage_fetch_artifact_state "$db_url" "$db_schema" codex interactive_turn_segment "$artifact_state_lookup"
   while IFS=$'\t' read -r path_hash size mtime parser_version _row_count; do
     [ -n "$path_hash" ] || continue
     known_size["$path_hash"]=$size
@@ -223,79 +223,192 @@ while IFS= read -r -d '' file; do
         total_tokens: delta(curr.total_tokens; prev.total_tokens)
       };
 
+    def unique_non_null(curr; value):
+      if value == null then
+        (curr // [])
+      else
+        (((curr // []) + [value]) | unique)
+      end;
+
+    def segment_model_key($provider; $model):
+      (($provider // "unknown") + "::" + ($model // "unknown"));
+
+    def ensure_segment($turn; $provider; $model; $context_window; $timestamp):
+      ($turn.current_segment_id // null) as $current_segment_id
+      | ($turn.segments // {}) as $segments
+      | if $current_segment_id != null
+          and (($segments[$current_segment_id].provider // null) == $provider)
+          and (($segments[$current_segment_id].model // null) == $model)
+        then
+          $turn
+          | if $context_window != null then
+              .segments[$current_segment_id].model_context_window = $context_window
+            else
+              .
+            end
+        else
+          (($turn.segment_seq // -1) + 1) as $next_index
+          | ("seg-" + ($next_index | tostring)) as $segment_label
+          | (($turn.turn_id // "turn") + ":" + $segment_label) as $source_row_id
+          | $turn + {
+              segment_seq: $next_index,
+              current_segment_id: $source_row_id,
+              segments: ($segments + {
+                ($source_row_id): {
+                  source_row_id: $source_row_id,
+                  segment_index: $next_index,
+                  provider: $provider,
+                  model: $model,
+                  model_context_window: $context_window,
+                  usage_acc: zero_usage,
+                  token_count_events: 0,
+                  first_token_count_at: $timestamp,
+                  last_token_count_at: $timestamp
+                }
+              })
+            }
+        end;
+
+    def build_usage_row($session; $ctx; $turn; $segment; $segment_count; $row; $ok; $error_category; $event_status; $turn_usage; $is_last):
+      {
+        logical_key: ("codex|interactive_turn_segment|" + ($session.id // ($turn.turn_id // "turn")) + "|" + ($turn.turn_id // "") + "|" + ($segment.source_row_id // ($turn.turn_id // "segment"))),
+        ingest_run_id: (if ($run_id | length) > 0 then $run_id else null end),
+        source_system: "codex",
+        source_kind: "interactive_turn_segment",
+        source_path: $source_path,
+        source_row_id: ($segment.source_row_id // ($turn.turn_id // "segment")),
+        event_ts: ($segment.first_token_count_at // $segment.last_token_count_at // $row.timestamp),
+        session_id: ($session.id // ($turn.turn_id // "turn")),
+        turn_id: ($turn.turn_id // null),
+        forked_from_session_id: ($session.forked_from_id // null),
+        project_key: ($ctx.cwd // $session.cwd // null),
+        project_path: ($ctx.cwd // $session.cwd // null),
+        cwd: ($ctx.cwd // $session.cwd // null),
+        tool_name: null,
+        actor: "assistant",
+        provider: ($segment.provider // $ctx.provider // $turn.fallback_provider // $session.model_provider // "openai"),
+        model_requested: ($segment.model // $ctx.model // $turn.fallback_model // $session.model // null),
+        model_used: ($segment.model // $ctx.model // $turn.fallback_model // $session.model // null),
+        ok: $ok,
+        event_status: $event_status,
+        error_category: $error_category,
+        input_tokens: ($segment.usage_acc.input_tokens // null),
+        cached_input_tokens: ($segment.usage_acc.cached_input_tokens // null),
+        output_tokens: ($segment.usage_acc.output_tokens // null),
+        reasoning_tokens: ($segment.usage_acc.reasoning_output_tokens // null),
+        tool_tokens: null,
+        total_tokens: ($segment.usage_acc.total_tokens // null),
+        cumulative_input_tokens: (if $is_last and ($turn_usage.input_tokens != null) then $turn_usage.input_tokens else null end),
+        cumulative_cached_input_tokens: (if $is_last and ($turn_usage.cached_input_tokens != null) then $turn_usage.cached_input_tokens else null end),
+        cumulative_output_tokens: (if $is_last and ($turn_usage.output_tokens != null) then $turn_usage.output_tokens else null end),
+        cumulative_reasoning_tokens: (if $is_last and ($turn_usage.reasoning_output_tokens != null) then $turn_usage.reasoning_output_tokens else null end),
+        cumulative_total_tokens: (if $is_last and ($turn_usage.total_tokens != null) then $turn_usage.total_tokens else null end),
+        context_window: ($segment.model_context_window // $turn.model_context_window // $ctx.model_context_window // null),
+        rate_limit_id: ($turn.rate_limits.limit_id // $turn.rate_limits.id // $turn.rate_limits.name // null),
+        rate_limit_name: ($turn.rate_limits.limit_name // $turn.rate_limits.name // null),
+        primary_used_percent: ($turn.rate_limits.primary.used_percent // null),
+        primary_window_minutes: ($turn.rate_limits.primary.window_minutes // null),
+        primary_resets_at: (($turn.rate_limits.primary.resets_at // null) | if . == null then null else todateiso8601 end),
+        secondary_used_percent: ($turn.rate_limits.secondary.used_percent // null),
+        secondary_window_minutes: ($turn.rate_limits.secondary.window_minutes // null),
+        secondary_resets_at: (($turn.rate_limits.secondary.resets_at // null) | if . == null then null else todateiso8601 end),
+        credits_balance: ($turn.rate_limits.credits.balance // null),
+        credits_unlimited: ($turn.rate_limits.credits.unlimited // null),
+        raw: {
+          started_at: ($turn.started_at // null),
+          first_token_count_at: ($segment.first_token_count_at // null),
+          last_token_count_at: ($segment.last_token_count_at // null),
+          turn_last_token_count_at: ($turn.last_token_count_at // null),
+          token_count_events: ($turn.token_count_events // 0),
+          segment_token_count_events: ($segment.token_count_events // 0),
+          segment_index: ($segment.segment_index // 0),
+          segment_count: $segment_count,
+          segment_model_key: segment_model_key(($segment.provider // null); ($segment.model // null)),
+          mixed_model_turn: (($turn.models_seen // []) | length) > 1,
+          models_seen: ($turn.models_seen // []),
+          has_turn_context: ($turn.has_turn_context // false),
+          pre_turn_model: ($turn.pre_turn_model // null),
+          pre_turn_provider: ($turn.pre_turn_provider // null),
+          turn_context_model: ($ctx.model // null),
+          turn_context_provider: ($ctx.provider // null),
+          compaction_events_in_turn: ($row.payload.compaction_events_in_turn // null),
+          source_session_id: ($session.id // null),
+          forked_from_session_id: ($session.forked_from_id // null),
+          interrupted_reason: (if $event_status == "aborted" then $error_category else null end),
+          has_last_token_usage: ($turn.has_last_usage // false),
+          model_inference_basis: (
+            if $segment.model == null then
+              "unknown"
+            elif ($segment.explicit_model // false) then
+              "token_count_model_used"
+            elif ($segment.pre_turn_segment // false) then
+              "pre_turn_previous_model"
+            elif ($turn.has_turn_context // false) then
+              "turn_context_model"
+            else
+              "turn_started_or_session_model"
+            end
+          )
+        }
+      };
+
     def emit_turn($session; $row; $ok; $error_category; $event_status):
       ($row.payload.turn_id) as $turn_id
       | (.open_turns[$turn_id]) as $turn
       | (.contexts[$turn_id] // {}) as $ctx
-      | ($turn.latest_total_usage // {}) as $usage
+      | ($turn.latest_total_usage // {}) as $turn_usage
       | (.last_accounted_cumulative // {}) as $prev
-      | (if ($turn.has_last_usage // false) then ($turn.usage_acc // zero_usage) else fallback_usage($usage; $prev) end) as $event_usage
-      | ._emit = {
-          logical_key: ("codex|interactive_turn|" + ($session.id // $turn_id) + "|" + $turn_id + "|" + $turn_id),
-          ingest_run_id: (if ($run_id | length) > 0 then $run_id else null end),
-          source_system: "codex",
-          source_kind: "interactive_turn",
-          source_path: $source_path,
-          source_row_id: $turn_id,
-          event_ts: $row.timestamp,
-          session_id: ($session.id // $turn_id),
-          turn_id: $turn_id,
-          forked_from_session_id: ($session.forked_from_id // null),
-          project_key: ($ctx.cwd // $session.cwd // null),
-          project_path: ($ctx.cwd // $session.cwd // null),
-          cwd: ($ctx.cwd // $session.cwd // null),
-          tool_name: null,
-          actor: "assistant",
-          provider: ($ctx.provider // $session.model_provider // "openai"),
-          model_requested: ($ctx.model // $session.model // null),
-          model_used: ($ctx.model // $session.model // null),
-          ok: $ok,
-          event_status: $event_status,
-          error_category: $error_category,
-          input_tokens: $event_usage.input_tokens,
-          cached_input_tokens: $event_usage.cached_input_tokens,
-          output_tokens: $event_usage.output_tokens,
-          reasoning_tokens: $event_usage.reasoning_output_tokens,
-          tool_tokens: null,
-          total_tokens: $event_usage.total_tokens,
-          cumulative_input_tokens: ($usage.input_tokens // null),
-          cumulative_cached_input_tokens: ($usage.cached_input_tokens // null),
-          cumulative_output_tokens: ($usage.output_tokens // null),
-          cumulative_reasoning_tokens: ($usage.reasoning_output_tokens // null),
-          cumulative_total_tokens: ($usage.total_tokens // null),
-          context_window: ($turn.model_context_window // $ctx.model_context_window // null),
-          rate_limit_id: ($turn.rate_limits.limit_id // $turn.rate_limits.id // $turn.rate_limits.name // null),
-          rate_limit_name: ($turn.rate_limits.limit_name // $turn.rate_limits.name // null),
-          primary_used_percent: ($turn.rate_limits.primary.used_percent // null),
-          primary_window_minutes: ($turn.rate_limits.primary.window_minutes // null),
-          primary_resets_at: (($turn.rate_limits.primary.resets_at // null) | if . == null then null else todateiso8601 end),
-          secondary_used_percent: ($turn.rate_limits.secondary.used_percent // null),
-          secondary_window_minutes: ($turn.rate_limits.secondary.window_minutes // null),
-          secondary_resets_at: (($turn.rate_limits.secondary.resets_at // null) | if . == null then null else todateiso8601 end),
-          credits_balance: ($turn.rate_limits.credits.balance // null),
-          credits_unlimited: ($turn.rate_limits.credits.unlimited // null),
-          raw: {
-            started_at: ($turn.started_at // null),
-            last_token_count_at: ($turn.last_token_count_at // null),
-            token_count_events: ($turn.token_count_events // 0),
-            compaction_events_in_turn: ($row.payload.compaction_events_in_turn // null),
-            source_session_id: ($session.id // null),
-            forked_from_session_id: ($session.forked_from_id // null),
-            interrupted_reason: (if $event_status == "aborted" then $error_category else null end),
-            has_last_token_usage: ($turn.has_last_usage // false)
-          }
-        }
-      | if $usage.total_tokens != null then
+      | (($turn.segments // {}) | to_entries | sort_by(.value.segment_index // 0)) as $segment_entries
+      | (if ($turn.has_last_usage // false) then ($segment_entries | length) else 0 end) as $existing_segment_count
+      | (if $existing_segment_count > 0 then
+          ($segment_entries | map(.value))
+        else
+          [
+            {
+              source_row_id: (($turn_id // "turn") + ":seg-0"),
+              segment_index: 0,
+              provider: ($ctx.provider // $turn.fallback_provider // $session.model_provider // "openai"),
+              model: ($ctx.model // $turn.fallback_model // $session.model // null),
+              model_context_window: ($turn.model_context_window // $ctx.model_context_window // null),
+              usage_acc: (fallback_usage($turn_usage; $prev)),
+              token_count_events: 0,
+              first_token_count_at: ($turn.started_at // $row.timestamp),
+              last_token_count_at: ($turn.last_token_count_at // $row.timestamp),
+              explicit_model: false,
+              pre_turn_segment: false
+            }
+          ]
+        end) as $segments
+      | ($segments | length) as $segment_count
+      | ._emit = [
+          range(0; $segment_count) as $idx
+          | build_usage_row(
+              $session;
+              $ctx;
+              $turn;
+              ($segments[$idx]);
+              $segment_count;
+              $row;
+              $ok;
+              $error_category;
+              $event_status;
+              $turn_usage;
+              ($idx == ($segment_count - 1))
+            )
+        ]
+      | if $turn_usage.total_tokens != null then
           .last_accounted_cumulative = {
-            input_tokens: ($usage.input_tokens // null),
-            cached_input_tokens: ($usage.cached_input_tokens // null),
-            output_tokens: ($usage.output_tokens // null),
-            reasoning_output_tokens: ($usage.reasoning_output_tokens // null),
-            total_tokens: ($usage.total_tokens // null)
+            input_tokens: ($turn_usage.input_tokens // null),
+            cached_input_tokens: ($turn_usage.cached_input_tokens // null),
+            output_tokens: ($turn_usage.output_tokens // null),
+            reasoning_output_tokens: ($turn_usage.reasoning_output_tokens // null),
+            total_tokens: ($turn_usage.total_tokens // null)
           }
         else
           .
         end
+      | .last_completed_model = ($ctx.model // $turn.fallback_model // $session.model // null)
+      | .last_completed_provider = ($ctx.provider // $turn.fallback_provider // $session.model_provider // "openai")
       | del(.open_turns[$turn_id])
       | if .active_turn_id == $turn_id then .active_turn_id = null else . end;
 
@@ -308,9 +421,11 @@ while IFS= read -r -d '' file; do
           open_turns: {},
           active_turn_id: null,
           last_accounted_cumulative: null,
-          _emit: null
+          last_completed_model: null,
+          last_completed_provider: null,
+          _emit: []
         };
-        ._emit = null
+        ._emit = []
         | if $row.type == "turn_context" and ($row.payload.turn_id? != null) then
             .contexts[$row.payload.turn_id] = {
               cwd: ($row.payload.cwd // $session.cwd // null),
@@ -318,6 +433,17 @@ while IFS= read -r -d '' file; do
               provider: ($session.model_provider // null),
               model_context_window: ($row.payload.model_context_window // null)
             }
+            | if .open_turns[$row.payload.turn_id] != null then
+                (.open_turns[$row.payload.turn_id]) |= (
+                  . + {
+                    fallback_model: ($row.payload.model // .fallback_model // $session.model // null),
+                    fallback_provider: (.fallback_provider // $session.model_provider // "openai"),
+                    has_turn_context: true
+                  }
+                )
+              else
+                .
+              end
           elif $row.type == "event_msg" and $row.payload.type == "task_started" and ($row.payload.turn_id? != null) then
             .open_turns[$row.payload.turn_id] = {
               turn_id: $row.payload.turn_id,
@@ -331,27 +457,58 @@ while IFS= read -r -d '' file; do
               rate_limits: (.open_turns[$row.payload.turn_id].rate_limits // null),
               token_count_events: (.open_turns[$row.payload.turn_id].token_count_events // 0),
               last_token_count_at: (.open_turns[$row.payload.turn_id].last_token_count_at // null),
-              usage_acc: (.open_turns[$row.payload.turn_id].usage_acc // zero_usage),
-              has_last_usage: (.open_turns[$row.payload.turn_id].has_last_usage // false)
+              has_last_usage: (.open_turns[$row.payload.turn_id].has_last_usage // false),
+              has_turn_context: (.open_turns[$row.payload.turn_id].has_turn_context // false),
+              fallback_model: ($row.payload.model_used // .contexts[$row.payload.turn_id].model // $session.model // null),
+              fallback_provider: ($row.payload.provider // .contexts[$row.payload.turn_id].provider // $session.model_provider // "openai"),
+              pre_turn_model: (.last_completed_model // $session.model // null),
+              pre_turn_provider: (.last_completed_provider // $session.model_provider // "openai"),
+              segment_seq: (.open_turns[$row.payload.turn_id].segment_seq // -1),
+              current_segment_id: (.open_turns[$row.payload.turn_id].current_segment_id // null),
+              segments: (.open_turns[$row.payload.turn_id].segments // {}),
+              models_seen: (.open_turns[$row.payload.turn_id].models_seen // [])
             }
             | .active_turn_id = $row.payload.turn_id
           elif $row.type == "event_msg" and $row.payload.type == "token_count" and (.active_turn_id != null) and (.open_turns[.active_turn_id] != null) then
             (.open_turns[.active_turn_id]) |= (
-              . + {
-                model_context_window: ($row.payload.info.model_context_window // .model_context_window),
-                latest_total_usage: ($row.payload.info.total_token_usage // .latest_total_usage),
-                rate_limits: ($row.payload.rate_limits // .rate_limits),
-                token_count_events: ((.token_count_events // 0) + 1),
-                last_token_count_at: ($row.timestamp // null),
-                usage_acc: (
-                  if ($row.payload.info.last_token_usage? | type) == "object" then
-                    add_usage((.usage_acc // zero_usage); $row.payload.info.last_token_usage)
-                  else
-                    (.usage_acc // zero_usage)
-                  end
-                ),
-                has_last_usage: ((.has_last_usage // false) or (($row.payload.info.last_token_usage? | type) == "object"))
-              }
+              (if (.has_turn_context // false) then
+                 {
+                   provider: ($row.payload.provider // .fallback_provider // $session.model_provider // "openai"),
+                   model: ($row.payload.model_used // .fallback_model // $session.model // null),
+                   pre_turn_segment: false
+                 }
+               else
+                 {
+                   provider: ($row.payload.provider // .pre_turn_provider // .fallback_provider // $session.model_provider // "openai"),
+                   model: ($row.payload.model_used // .pre_turn_model // .fallback_model // $session.model // null),
+                   pre_turn_segment: true
+                 }
+               end) as $usage_model
+              | . + {
+                  model_context_window: ($row.payload.info.model_context_window // .model_context_window),
+                  latest_total_usage: ($row.payload.info.total_token_usage // .latest_total_usage),
+                  rate_limits: ($row.payload.rate_limits // .rate_limits),
+                  token_count_events: ((.token_count_events // 0) + 1),
+                  last_token_count_at: ($row.timestamp // null),
+                  has_last_usage: ((.has_last_usage // false) or (($row.payload.info.last_token_usage? | type) == "object"))
+                }
+              | if ($row.payload.info.last_token_usage? | type) == "object" then
+                  ensure_segment(.; $usage_model.provider; $usage_model.model; ($row.payload.info.model_context_window // null); ($row.timestamp // null))
+                  | (.segments[.current_segment_id]) |= (
+                      . + {
+                        token_count_events: ((.token_count_events // 0) + 1),
+                        last_token_count_at: ($row.timestamp // null),
+                        first_token_count_at: (.first_token_count_at // ($row.timestamp // null)),
+                        explicit_model: ($row.payload.model_used != null),
+                        pre_turn_segment: ($usage_model.pre_turn_segment // false),
+                        model_context_window: ($row.payload.info.model_context_window // .model_context_window),
+                        usage_acc: add_usage((.usage_acc // zero_usage); $row.payload.info.last_token_usage)
+                      }
+                    )
+                  | .models_seen = unique_non_null((.models_seen // []); segment_model_key($usage_model.provider; $usage_model.model))
+                else
+                  .
+                end
             )
           elif $row.type == "event_msg" and $row.payload.type == "task_complete" and ($row.payload.turn_id? != null) and (.open_turns[$row.payload.turn_id] != null) then
             emit_turn($session; $row; true; null; "succeeded")
@@ -360,7 +517,7 @@ while IFS= read -r -d '' file; do
           else
             .
           end;
-        ._emit // empty
+        ._emit[]?
       )
   ' "$file" >> "$usage_file"
 
@@ -368,7 +525,7 @@ while IFS= read -r -d '' file; do
   artifact_generated_rows=$((after_rows - before_rows))
   jq -nc \
     --arg source_system "codex" \
-    --arg source_kind "interactive_turn" \
+    --arg source_kind "interactive_turn_segment" \
     --arg source_path "$file" \
     --arg source_path_hash "$source_path_hash" \
     --arg parser_version "$(llm_usage_parser_version)" \
@@ -400,7 +557,7 @@ done < <(find "$sessions_root" -type f -name 'rollout-*.jsonl' -print0 | sort -z
 llm_usage_normalize_json_file "$usage_file"
 generated_rows=$(llm_usage_count_lines "$usage_file")
 
-echo "Generated $generated_rows Codex interactive usage row(s) from $sessions_root"
+echo "Generated $generated_rows Codex interactive segment usage row(s) from $sessions_root"
 
 if [ "$dry_run" -eq 1 ]; then
   if [ "$generated_rows" -gt 0 ]; then

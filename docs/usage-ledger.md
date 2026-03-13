@@ -130,13 +130,14 @@ Important columns:
 
 ### Codex interactive
 
-- Emits one row per completed turn and one row per aborted turn.
+- Emits one row per contiguous turn/model segment for completed and aborted turns. Older historical rows may still appear as legacy `interactive_turn` fallback rows until reingested.
 - Turn boundaries come from explicit `task_started`, `task_complete`, and `turn_aborted` events with the same `turn_id`.
-- Per-turn tokens prefer summed `token_count.info.last_token_usage` within the turn.
-- The latest `token_count.info.total_token_usage` is still kept as cumulative audit metadata.
+- Segment boundaries are created whenever the active model/provider changes within a turn. Exact `token_count.model_used` / `token_count.provider` metadata wins when present; otherwise ingest falls back to turn-context and pre-turn model inference for model-switch compaction.
+- Segment tokens prefer summed `token_count.info.last_token_usage` within the segment.
+- The latest `token_count.info.total_token_usage` is still kept as cumulative audit metadata on the final segment row.
 - Rate-limit snapshots are attached from the latest in-turn `token_count.rate_limits` payload.
 
-This closes the earlier undercount where interrupted turns disappeared entirely.
+This closes the earlier undercount where interrupted turns disappeared entirely and fixes mixed-model turns being flattened onto a single model.
 
 ### Gemini MCP
 
@@ -219,10 +220,11 @@ Use the reporting command for operator summaries:
 
 The report command also supports a `reconciliation` mode that groups rows by `parser_version`, `source_system`, `source_kind`, and `event_status` so schema migrations and parser upgrades are easy to audit later.
 
-Cost reporting now defaults to the billing-canonical view. For Codex, that means one billable row per `turn_id`, with the richest observed payload retained but the billed `event_ts` and pricing basis pinned to the first-seen observation so replayed sessions do not shift spend into later hours. Use `--cost-view observed` when you explicitly want the raw observed rows instead of billing-safe totals. The canonical view also exposes `billing_origin_*`, `billing_latest_*`, `billing_selected_*`, and `pricing_basis_event_ts` columns so replay lineage stays inspectable without corrupting time-based cost reports.
+Cost reporting now defaults to the billing-canonical view. For Codex, legacy `interactive_turn` rows are canonicalized one billable row per `turn_id`, while newer `interactive_turn_segment` rows remain one billable row per segment so mixed-model turns price against the actual model spans that generated usage. Replay-safe `event_ts` and pricing basis stay pinned to the first-seen observation so resumed sessions do not shift spend into later hours. Use `--cost-view observed` when you explicitly want the raw observed rows instead of billing-safe totals. The canonical view also exposes `billing_origin_*`, `billing_latest_*`, `billing_selected_*`, and `pricing_basis_event_ts` columns so replay lineage stays inspectable without corrupting time-based cost reports.
 
 The `session` view now includes:
 
+- `provider`
 - `succeeded_event_count`
 - `aborted_event_count`
 - `failed_event_count`

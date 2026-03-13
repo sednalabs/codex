@@ -2027,7 +2027,9 @@ async fn token_count_includes_rate_limits_snapshot() {
                 },
                 "credits": null,
                 "plan_type": null
-            }
+            },
+            "provider": "OpenAI",
+            "model_used": "gpt-5.3-codex"
         })
     );
 
@@ -2078,7 +2080,9 @@ async fn token_count_includes_rate_limits_snapshot() {
                 },
                 "credits": null,
                 "plan_type": null
-            }
+            },
+            "provider": "OpenAI",
+            "model_used": "gpt-5.3-codex"
         })
     );
     let usage = final_payload
