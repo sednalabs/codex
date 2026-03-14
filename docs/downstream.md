@@ -23,16 +23,16 @@ Current state at review time:
 - `carry/main` is `74` commits ahead and `8` behind `upstream/main`
 - `main` remains a fast-forward mirror of `upstream/main`
 
-### Core + protocol: blocking wait for `write_stdin`, stable wait output, and compaction turn-count metadata
+### Core + protocol: blocking wait for unified exec, stable wait output, and compaction turn-count metadata
 
 Why:
-- Support "wait until terminal" semantics directly on `write_stdin` for long-running exact/tool-driven command flows.
+- Support "wait until terminal" semantics directly on `exec_command` and `write_stdin` for long-running exact/tool-driven command flows.
 - Keep wait responses aligned with the current unified-exec output shape after upstream refactors.
 - Expose compaction count on turn completion so clients can distinguish "normal turn complete" from "turn completed after one or more compactions".
 
 User-visible behavior:
-- `write_stdin` supports blocking wait parameters (`wait_until_terminal`, `max_wait_ms`, `heartbeat_interval_ms`).
-- `exec_command` does not expose those wait parameters.
+- `exec_command` and `write_stdin` support blocking wait parameters (`wait_until_terminal`, `max_wait_ms`, `heartbeat_interval_ms`).
+- `write_stdin` still requires `chars` to be empty when `wait_until_terminal=true`.
 - Wait-timeout notes are appended to emitted `raw_output`, and token accounting is derived from the final response text.
 - `TurnCompleteEvent` includes `compaction_events_in_turn`.
 

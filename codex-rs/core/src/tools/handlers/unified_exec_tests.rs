@@ -151,6 +151,40 @@ fn test_get_command_ignores_explicit_shell_in_zsh_fork_mode() -> anyhow::Result<
 }
 
 #[test]
+fn exec_command_args_parse_blocking_wait_fields() -> anyhow::Result<()> {
+    let json = r#"{
+        "cmd": "echo hello",
+        "wait_until_terminal": true,
+        "max_wait_ms": 1234,
+        "heartbeat_interval_ms": 250
+    }"#;
+
+    let args: ExecCommandArgs = parse_arguments(json)?;
+
+    assert!(args.wait_until_terminal);
+    assert_eq!(args.max_wait_ms, Some(1234));
+    assert_eq!(args.heartbeat_interval_ms, Some(250));
+    Ok(())
+}
+
+#[test]
+fn write_stdin_args_parse_blocking_wait_fields() -> anyhow::Result<()> {
+    let json = r#"{
+        "session_id": 42,
+        "wait_until_terminal": true,
+        "max_wait_ms": 1234,
+        "heartbeat_interval_ms": 250
+    }"#;
+
+    let args: WriteStdinArgs = parse_arguments(json)?;
+
+    assert!(args.wait_until_terminal);
+    assert_eq!(args.max_wait_ms, Some(1234));
+    assert_eq!(args.heartbeat_interval_ms, Some(250));
+    Ok(())
+}
+
+#[test]
 fn exec_command_args_resolve_relative_additional_permissions_against_workdir() -> anyhow::Result<()>
 {
     let cwd = tempdir()?;

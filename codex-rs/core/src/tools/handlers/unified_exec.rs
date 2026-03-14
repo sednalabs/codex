@@ -17,9 +17,9 @@ use crate::tools::handlers::normalize_and_validate_additional_permissions;
 use crate::tools::handlers::parse_arguments;
 use crate::tools::handlers::parse_arguments_with_base_path;
 use crate::tools::handlers::resolve_workdir_base_path;
-use crate::tools::spec::UnifiedExecShellMode;
 use crate::tools::registry::ToolHandler;
 use crate::tools::registry::ToolKind;
+use crate::tools::spec::UnifiedExecShellMode;
 use crate::truncate::approx_token_count;
 use crate::unified_exec::ExecCommandRequest;
 use crate::unified_exec::MIN_EMPTY_YIELD_TIME_MS;
@@ -51,6 +51,12 @@ pub(crate) struct ExecCommandArgs {
     yield_time_ms: u64,
     #[serde(default)]
     max_output_tokens: Option<usize>,
+    #[serde(default)]
+    wait_until_terminal: bool,
+    #[serde(default)]
+    max_wait_ms: Option<u64>,
+    #[serde(default)]
+    heartbeat_interval_ms: Option<u64>,
     #[serde(default)]
     sandbox_permissions: SandboxPermissions,
     #[serde(default)]
@@ -91,6 +97,126 @@ const DEFAULT_WAIT_HEARTBEAT_INTERVAL_MS: u64 = 30_000;
 
 fn default_tty() -> bool {
     false
+}
+
+fn resolve_wait_bounds(
+    manager: &UnifiedExecProcessManager,
+    max_wait_ms: Option<u64>,
+    heartbeat_interval_ms: Option<u64>,
+) -> (u64, u64) {
+    let configured_max_wait_ms = manager.max_write_stdin_yield_time_ms();
+    let effective_max_wait_ms = max_wait_ms
+        .unwrap_or(configured_max_wait_ms)
+        .clamp(MIN_EMPTY_YIELD_TIME_MS, configured_max_wait_ms);
+    let effective_heartbeat_interval_ms = heartbeat_interval_ms
+        .unwrap_or(DEFAULT_WAIT_HEARTBEAT_INTERVAL_MS)
+        .clamp(MIN_EMPTY_YIELD_TIME_MS, effective_max_wait_ms);
+
+    (effective_max_wait_ms, effective_heartbeat_interval_ms)
+}
+
+async fn wait_for_terminal_completion(
+    manager: &UnifiedExecProcessManager,
+    session: &crate::codex::Session,
+    turn: &crate::codex::TurnContext,
+    process_id: i32,
+    max_output_tokens: Option<usize>,
+    max_wait_ms: u64,
+    heartbeat_interval_ms: u64,
+    initial_response: Option<ExecCommandToolOutput>,
+) -> Result<ExecCommandToolOutput, FunctionCallError> {
+    let wait_started_at = Instant::now();
+    let mut last_heartbeat_at = wait_started_at;
+    let mut collected = initial_response
+        .as_ref()
+        .map_or_else(Vec::new, |response| response.raw_output.clone());
+    if collected.len() > UNIFIED_EXEC_OUTPUT_MAX_BYTES {
+        let overflow = collected.len() - UNIFIED_EXEC_OUTPUT_MAX_BYTES;
+        collected.drain(..overflow);
+    }
+    let mut last_response = initial_response;
+    let mut timed_out = false;
+
+    loop {
+        let elapsed_ms = wait_started_at.elapsed().as_millis() as u64;
+        if elapsed_ms >= max_wait_ms {
+            timed_out = true;
+            break;
+        }
+
+        let remaining_ms = max_wait_ms.saturating_sub(elapsed_ms);
+        let poll_yield_ms = remaining_ms
+            .min(heartbeat_interval_ms)
+            .max(MIN_EMPTY_YIELD_TIME_MS);
+        let poll_response = manager
+            .write_stdin(WriteStdinRequest {
+                process_id,
+                input: "",
+                yield_time_ms: poll_yield_ms,
+                max_output_tokens,
+            })
+            .await
+            .map_err(|err| {
+                FunctionCallError::RespondToModel(format!("write_stdin failed: {err}"))
+            })?;
+
+        if !poll_response.raw_output.is_empty() {
+            collected.extend_from_slice(&poll_response.raw_output);
+            if collected.len() > UNIFIED_EXEC_OUTPUT_MAX_BYTES {
+                let overflow = collected.len() - UNIFIED_EXEC_OUTPUT_MAX_BYTES;
+                collected.drain(..overflow);
+            }
+        }
+
+        let still_running = poll_response.process_id.is_some() && poll_response.exit_code.is_none();
+        if still_running
+            && (last_heartbeat_at.elapsed().as_millis() as u64) >= heartbeat_interval_ms
+        {
+            let running_for_secs = wait_started_at.elapsed().as_secs();
+            session
+                .notify_background_event(
+                    turn,
+                    format!(
+                        "Process {process_id} still running after {running_for_secs}s (captured {} bytes).",
+                        collected.len()
+                    ),
+                )
+                .await;
+            last_heartbeat_at = Instant::now();
+        }
+
+        last_response = Some(poll_response);
+        if !still_running {
+            break;
+        }
+    }
+
+    let mut response = last_response.ok_or_else(|| {
+        FunctionCallError::RespondToModel(
+            "write_stdin failed: no process output captured while waiting".to_string(),
+        )
+    })?;
+
+    response.raw_output = collected;
+    response.max_output_tokens = max_output_tokens;
+    response.wall_time = wait_started_at.elapsed();
+
+    if timed_out && response.process_id.is_some() && response.exit_code.is_none() {
+        let waited_secs = response.wall_time.as_secs();
+        let timeout_note = format!(
+            "Wait timed out after {waited_secs}s; process is still running. Re-issue exec_command or write_stdin with wait_until_terminal=true to continue waiting."
+        );
+        let current_text = String::from_utf8_lossy(&response.raw_output).to_string();
+        if current_text.is_empty() {
+            response.raw_output = timeout_note.into_bytes();
+        } else {
+            response.raw_output = format!("{current_text}\n\n{timeout_note}").into_bytes();
+        }
+    }
+    let final_text = String::from_utf8_lossy(&response.raw_output).to_string();
+    response.original_token_count = Some(approx_token_count(&final_text));
+
+    Ok(response)
 }
 
 #[async_trait]
@@ -179,6 +305,9 @@ impl ToolHandler for UnifiedExecHandler {
                     tty,
                     yield_time_ms,
                     max_output_tokens,
+                    wait_until_terminal,
+                    max_wait_ms,
+                    heartbeat_interval_ms,
                     sandbox_permissions,
                     additional_permissions,
                     justification,
@@ -272,7 +401,7 @@ impl ToolHandler for UnifiedExecHandler {
                     });
                 }
 
-                manager
+                let response = manager
                     .exec_command(
                         ExecCommandRequest {
                             command,
@@ -297,7 +426,30 @@ impl ToolHandler for UnifiedExecHandler {
                         FunctionCallError::RespondToModel(format!(
                             "exec_command failed for `{command_for_display}`: {err:?}"
                         ))
-                    })?
+                    })?;
+
+                if wait_until_terminal {
+                    match response.process_id {
+                        Some(active_process_id) if response.exit_code.is_none() => {
+                            let (effective_max_wait_ms, effective_heartbeat_interval_ms) =
+                                resolve_wait_bounds(manager, max_wait_ms, heartbeat_interval_ms);
+                            wait_for_terminal_completion(
+                                manager,
+                                session.as_ref(),
+                                turn.as_ref(),
+                                active_process_id,
+                                max_output_tokens,
+                                effective_max_wait_ms,
+                                effective_heartbeat_interval_ms,
+                                Some(response),
+                            )
+                            .await?
+                        }
+                        _ => response,
+                    }
+                } else {
+                    response
+                }
             }
             "write_stdin" => {
                 let args: WriteStdinArgs = parse_arguments(&arguments)?;
@@ -308,112 +460,19 @@ impl ToolHandler for UnifiedExecHandler {
                 }
 
                 let response = if args.wait_until_terminal {
-                    let configured_max_wait_ms = manager.max_write_stdin_yield_time_ms();
-                    let effective_max_wait_ms = args
-                        .max_wait_ms
-                        .unwrap_or(configured_max_wait_ms)
-                        .clamp(MIN_EMPTY_YIELD_TIME_MS, configured_max_wait_ms);
-                    let heartbeat_interval_ms = args
-                        .heartbeat_interval_ms
-                        .unwrap_or(DEFAULT_WAIT_HEARTBEAT_INTERVAL_MS)
-                        .clamp(MIN_EMPTY_YIELD_TIME_MS, effective_max_wait_ms);
-
-                    let wait_started_at = Instant::now();
-                    let mut last_heartbeat_at = wait_started_at;
-                    let mut collected = Vec::new();
-                    let mut last_response: Option<ExecCommandToolOutput> = None;
-                    let mut timed_out = false;
-
-                    loop {
-                        let elapsed_ms = wait_started_at.elapsed().as_millis() as u64;
-                        if elapsed_ms >= effective_max_wait_ms {
-                            timed_out = true;
-                            break;
-                        }
-
-                        let remaining_ms = effective_max_wait_ms.saturating_sub(elapsed_ms);
-                        let poll_yield_ms = remaining_ms
-                            .min(heartbeat_interval_ms)
-                            .max(MIN_EMPTY_YIELD_TIME_MS);
-                        let poll_response = manager
-                            .write_stdin(WriteStdinRequest {
-                                process_id: args.session_id,
-                                input: "",
-                                yield_time_ms: poll_yield_ms,
-                                max_output_tokens: args.max_output_tokens,
-                            })
-                            .await
-                            .map_err(|err| {
-                                FunctionCallError::RespondToModel(format!(
-                                    "write_stdin failed: {err}"
-                                ))
-                            })?;
-
-                        if !poll_response.raw_output.is_empty() {
-                            collected.extend_from_slice(&poll_response.raw_output);
-                            if collected.len() > UNIFIED_EXEC_OUTPUT_MAX_BYTES {
-                                let overflow = collected.len() - UNIFIED_EXEC_OUTPUT_MAX_BYTES;
-                                collected.drain(..overflow);
-                            }
-                        }
-
-                        let still_running =
-                            poll_response.process_id.is_some() && poll_response.exit_code.is_none();
-                        if still_running
-                            && (last_heartbeat_at.elapsed().as_millis() as u64)
-                                >= heartbeat_interval_ms
-                        {
-                            let running_for_secs = wait_started_at.elapsed().as_secs();
-                            let process_id = poll_response
-                                .process_id
-                                .map_or_else(|| "unknown".to_string(), |id| id.to_string());
-                            session
-                                .notify_background_event(
-                                    turn.as_ref(),
-                                    format!(
-                                        "Process {process_id} still running after {running_for_secs}s (captured {} bytes).",
-                                        collected.len()
-                                    ),
-                                )
-                                .await;
-                            last_heartbeat_at = Instant::now();
-                        }
-
-                        last_response = Some(poll_response);
-                        if !still_running {
-                            break;
-                        }
-                    }
-
-                    let mut response = last_response.ok_or_else(|| {
-                        FunctionCallError::RespondToModel(
-                            "write_stdin failed: no process output captured while waiting"
-                                .to_string(),
-                        )
-                    })?;
-
-                    response.raw_output = collected;
-                    response.max_output_tokens = args.max_output_tokens;
-                    response.wall_time = wait_started_at.elapsed();
-
-                    if timed_out && response.process_id.is_some() && response.exit_code.is_none() {
-                        let waited_secs = response.wall_time.as_secs();
-                        let timeout_note = format!(
-                            "Wait timed out after {waited_secs}s; process is still running. Re-issue write_stdin with wait_until_terminal=true to continue waiting."
-                        );
-                        let current_text =
-                            String::from_utf8_lossy(&response.raw_output).to_string();
-                        if current_text.is_empty() {
-                            response.raw_output = timeout_note.into_bytes();
-                        } else {
-                            response.raw_output =
-                                format!("{current_text}\n\n{timeout_note}").into_bytes();
-                        }
-                    }
-                    let final_text = String::from_utf8_lossy(&response.raw_output).to_string();
-                    response.original_token_count = Some(approx_token_count(&final_text));
-
-                    response
+                    let (effective_max_wait_ms, effective_heartbeat_interval_ms) =
+                        resolve_wait_bounds(manager, args.max_wait_ms, args.heartbeat_interval_ms);
+                    wait_for_terminal_completion(
+                        manager,
+                        session.as_ref(),
+                        turn.as_ref(),
+                        args.session_id,
+                        args.max_output_tokens,
+                        effective_max_wait_ms,
+                        effective_heartbeat_interval_ms,
+                        None,
+                    )
+                    .await?
                 } else {
                     manager
                         .write_stdin(WriteStdinRequest {
