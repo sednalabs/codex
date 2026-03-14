@@ -679,7 +679,7 @@ impl SandboxManager {
                         &effective_file_system_policy,
                         effective_network_policy,
                         sandbox_policy_cwd,
-                        use_linux_sandbox_bwrap,
+                        use_legacy_landlock,
                         allow_proxy_network,
                     )
                 } else {
@@ -687,7 +687,7 @@ impl SandboxManager {
                         command.clone(),
                         &effective_policy,
                         sandbox_policy_cwd,
-                        use_linux_sandbox_bwrap,
+                        use_legacy_landlock,
                         allow_proxy_network,
                     )
                 };

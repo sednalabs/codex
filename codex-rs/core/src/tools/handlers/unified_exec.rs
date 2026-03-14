@@ -17,6 +17,7 @@ use crate::tools::handlers::normalize_and_validate_additional_permissions;
 use crate::tools::handlers::parse_arguments;
 use crate::tools::handlers::parse_arguments_with_base_path;
 use crate::tools::handlers::resolve_workdir_base_path;
+use crate::tools::spec::UnifiedExecShellMode;
 use crate::tools::registry::ToolHandler;
 use crate::tools::registry::ToolKind;
 use crate::truncate::approx_token_count;

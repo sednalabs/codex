@@ -49,7 +49,7 @@ where
             &file_system_sandbox_policy,
             network_sandbox_policy,
             sandbox_policy_cwd,
-            use_bwrap_sandbox,
+            use_legacy_landlock,
             allow_network_for_proxy,
         )
     } else {
@@ -57,7 +57,7 @@ where
             command,
             sandbox_policy,
             sandbox_policy_cwd,
-            use_bwrap_sandbox,
+            use_legacy_landlock,
             allow_network_for_proxy,
         )
     };
@@ -129,7 +129,7 @@ pub(crate) fn create_linux_sandbox_command_args_legacy(
     command: Vec<String>,
     sandbox_policy: &SandboxPolicy,
     sandbox_policy_cwd: &Path,
-    use_bwrap_sandbox: bool,
+    use_legacy_landlock: bool,
     allow_network_for_proxy: bool,
 ) -> Vec<String> {
     let sandbox_policy_json = serde_json::to_string(sandbox_policy)
@@ -145,8 +145,8 @@ pub(crate) fn create_linux_sandbox_command_args_legacy(
         "--sandbox-policy".to_string(),
         sandbox_policy_json,
     ];
-    if use_bwrap_sandbox {
-        linux_cmd.push("--use-bwrap-sandbox".to_string());
+    if use_legacy_landlock {
+        linux_cmd.push("--use-legacy-landlock".to_string());
     }
     if allow_network_for_proxy {
         linux_cmd.push("--allow-network-for-proxy".to_string());
@@ -243,20 +243,20 @@ mod tests {
     use pretty_assertions::assert_eq;
 
     #[test]
-    fn bwrap_flags_are_feature_gated() {
+    fn legacy_landlock_flag_is_included_when_requested() {
         let command = vec!["/bin/true".to_string()];
         let cwd = Path::new("/tmp");
 
-        let with_bwrap = create_linux_sandbox_command_args(command.clone(), cwd, true, false);
+        let default_bwrap = create_linux_sandbox_command_args(command.clone(), cwd, false, false);
         assert_eq!(
-            with_bwrap.contains(&"--use-bwrap-sandbox".to_string()),
-            true
+            default_bwrap.contains(&"--use-legacy-landlock".to_string()),
+            false
         );
 
-        let without_bwrap = create_linux_sandbox_command_args(command, cwd, false, false);
+        let legacy_landlock = create_linux_sandbox_command_args(command, cwd, true, false);
         assert_eq!(
-            without_bwrap.contains(&"--use-bwrap-sandbox".to_string()),
-            false
+            legacy_landlock.contains(&"--use-legacy-landlock".to_string()),
+            true
         );
     }
 

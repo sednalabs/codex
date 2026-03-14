@@ -1708,7 +1708,7 @@ mod mcp_init_error_display_tests {}
 mod tests {
     use super::*;
     use codex_protocol::protocol::McpAuthStatus;
-    use codex_protocol::protocol::RejectConfig;
+    use codex_protocol::protocol::GranularApprovalConfig;
     use rmcp::model::JsonObject;
     use std::collections::HashSet;
     use std::sync::Arc;
@@ -1773,8 +1773,8 @@ mod tests {
         assert!(!elicitation_is_rejected_by_policy(
             AskForApproval::UnlessTrusted
         ));
-        assert!(!elicitation_is_rejected_by_policy(AskForApproval::Reject(
-            RejectConfig {
+        assert!(!elicitation_is_rejected_by_policy(AskForApproval::Granular(
+            GranularApprovalConfig {
                 sandbox_approval: false,
                 rules: false,
                 skill_approval: false,
@@ -1787,8 +1787,8 @@ mod tests {
     #[test]
     fn elicitation_reject_policy_respects_never_and_reject_config() {
         assert!(elicitation_is_rejected_by_policy(AskForApproval::Never));
-        assert!(elicitation_is_rejected_by_policy(AskForApproval::Reject(
-            RejectConfig {
+        assert!(elicitation_is_rejected_by_policy(AskForApproval::Granular(
+            GranularApprovalConfig {
                 sandbox_approval: false,
                 rules: false,
                 skill_approval: false,

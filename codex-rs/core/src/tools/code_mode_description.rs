@@ -93,6 +93,10 @@ fn render_code_mode_tool_declaration(
     format!("{tool_name}({input_name}: {input_type}): Promise<{output_type}>;")
 }
 
+fn code_mode_local_name(tool_key: &str) -> String {
+    normalize_code_mode_identifier(tool_key)
+}
+
 pub(crate) fn normalize_code_mode_identifier(tool_key: &str) -> String {
     let mut identifier = String::new();
 
