@@ -7,11 +7,23 @@ use crate::features::Feature;
 use crate::features::Features;
 use crate::mcp_connection_manager::ToolInfo;
 use crate::models_manager::collaboration_mode_presets::CollaborationModesConfig;
+use crate::original_image_detail::can_request_original_image_detail;
+use crate::shell::Shell;
+use crate::shell::ShellType;
 use crate::tools::code_mode::PUBLIC_TOOL_NAME;
+use crate::tools::code_mode::WAIT_TOOL_NAME;
+use crate::tools::code_mode::is_code_mode_nested_tool;
+use crate::tools::code_mode::tool_description as code_mode_tool_description;
+use crate::tools::code_mode::wait_tool_description as code_mode_wait_tool_description;
 use crate::tools::code_mode_description::augment_tool_spec_for_code_mode;
+use crate::tools::discoverable::DiscoverablePluginInfo;
+use crate::tools::discoverable::DiscoverableTool;
+use crate::tools::discoverable::DiscoverableToolAction;
+use crate::tools::discoverable::DiscoverableToolType;
 use crate::tools::handlers::PLAN_TOOL;
-use crate::tools::handlers::SEARCH_TOOL_BM25_DEFAULT_LIMIT;
-use crate::tools::handlers::SEARCH_TOOL_BM25_TOOL_NAME;
+use crate::tools::handlers::TOOL_SEARCH_DEFAULT_LIMIT;
+use crate::tools::handlers::TOOL_SEARCH_TOOL_NAME;
+use crate::tools::handlers::TOOL_SUGGEST_TOOL_NAME;
 use crate::tools::handlers::agent_jobs::BatchJobHandler;
 use crate::tools::handlers::apply_patch::create_apply_patch_freeform_tool;
 use crate::tools::handlers::apply_patch::create_apply_patch_json_tool;
@@ -21,8 +33,10 @@ use crate::tools::handlers::multi_agents::MIN_WAIT_TIMEOUT_MS;
 use crate::tools::handlers::request_permissions_tool_description;
 use crate::tools::handlers::request_user_input_tool_description;
 use crate::tools::registry::ToolRegistryBuilder;
+use crate::tools::registry::tool_handler_key;
 use codex_protocol::config_types::WebSearchConfig;
 use codex_protocol::config_types::WebSearchMode;
+use codex_protocol::config_types::WindowsSandboxLevel;
 use codex_protocol::dynamic_tools::DynamicToolSpec;
 use codex_protocol::models::VIEW_IMAGE_TOOL_NAME;
 use codex_protocol::openai_models::ApplyPatchToolType;
@@ -31,17 +45,22 @@ use codex_protocol::openai_models::InputModality;
 use codex_protocol::openai_models::ModelInfo;
 use codex_protocol::openai_models::ModelPreset;
 use codex_protocol::openai_models::WebSearchToolType;
+use codex_protocol::protocol::SandboxPolicy;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::SubAgentSource;
+use codex_utils_absolute_path::AbsolutePathBuf;
 use serde::Deserialize;
 use serde::Serialize;
 use serde_json::Value as JsonValue;
 use serde_json::json;
 use std::collections::BTreeMap;
 use std::collections::HashMap;
+use std::path::PathBuf;
 
-const SEARCH_TOOL_BM25_DESCRIPTION_TEMPLATE: &str =
+const TOOL_SEARCH_DESCRIPTION_TEMPLATE: &str =
     include_str!("../../templates/search_tool/tool_description.md");
+const TOOL_SUGGEST_DESCRIPTION_TEMPLATE: &str =
+    include_str!("../../templates/search_tool/tool_suggest_description.md");
 const WEB_SEARCH_CONTENT_TYPES: [&str; 2] = ["text", "image"];
 
 fn unified_exec_output_schema() -> JsonValue {
@@ -77,16 +96,157 @@ fn unified_exec_output_schema() -> JsonValue {
         "additionalProperties": false
     })
 }
+
+fn agent_status_output_schema() -> JsonValue {
+    json!({
+        "oneOf": [
+            {
+                "type": "string",
+                "enum": ["pending_init", "running", "shutdown", "not_found"]
+            },
+            {
+                "type": "object",
+                "properties": {
+                    "completed": {
+                        "type": ["string", "null"]
+                    }
+                },
+                "required": ["completed"],
+                "additionalProperties": false
+            },
+            {
+                "type": "object",
+                "properties": {
+                    "errored": {
+                        "type": "string"
+                    }
+                },
+                "required": ["errored"],
+                "additionalProperties": false
+            }
+        ]
+    })
+}
+
+fn spawn_agent_output_schema() -> JsonValue {
+    json!({
+        "type": "object",
+        "properties": {
+            "agent_id": {
+                "type": "string",
+                "description": "Thread identifier for the spawned agent."
+            },
+            "nickname": {
+                "type": ["string", "null"],
+                "description": "User-facing nickname for the spawned agent when available."
+            }
+        },
+        "required": ["agent_id", "nickname"],
+        "additionalProperties": false
+    })
+}
+
+fn send_input_output_schema() -> JsonValue {
+    json!({
+        "type": "object",
+        "properties": {
+            "submission_id": {
+                "type": "string",
+                "description": "Identifier for the queued input submission."
+            }
+        },
+        "required": ["submission_id"],
+        "additionalProperties": false
+    })
+}
+
+fn resume_agent_output_schema() -> JsonValue {
+    json!({
+        "type": "object",
+        "properties": {
+            "status": agent_status_output_schema()
+        },
+        "required": ["status"],
+        "additionalProperties": false
+    })
+}
+
+fn wait_output_schema() -> JsonValue {
+    json!({
+        "type": "object",
+        "properties": {
+            "status": {
+                "type": "object",
+                "description": "Final statuses keyed by agent id for agents that finished before the timeout.",
+                "additionalProperties": agent_status_output_schema()
+            },
+            "timed_out": {
+                "type": "boolean",
+                "description": "Whether the wait call returned due to timeout before any agent reached a final status."
+            }
+        },
+        "required": ["status", "timed_out"],
+        "additionalProperties": false
+    })
+}
+
+fn close_agent_output_schema() -> JsonValue {
+    json!({
+        "type": "object",
+        "properties": {
+            "status": agent_status_output_schema()
+        },
+        "required": ["status"],
+        "additionalProperties": false
+    })
+}
+
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub enum ShellCommandBackendConfig {
     Classic,
     ZshFork,
 }
 
-#[derive(Debug, Clone, Copy, Eq, PartialEq)]
-pub enum UnifiedExecBackendConfig {
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub enum UnifiedExecShellMode {
     Direct,
-    ZshFork,
+    ZshFork(ZshForkConfig),
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct ZshForkConfig {
+    pub(crate) shell_zsh_path: AbsolutePathBuf,
+    pub(crate) main_execve_wrapper_exe: AbsolutePathBuf,
+}
+
+impl UnifiedExecShellMode {
+    pub fn for_session(
+        shell_command_backend: ShellCommandBackendConfig,
+        user_shell: &Shell,
+        shell_zsh_path: Option<&PathBuf>,
+        main_execve_wrapper_exe: Option<&PathBuf>,
+    ) -> Self {
+        if cfg!(unix)
+            && shell_command_backend == ShellCommandBackendConfig::ZshFork
+            && matches!(user_shell.shell_type, ShellType::Zsh)
+            && let (Some(shell_zsh_path), Some(main_execve_wrapper_exe)) =
+                (shell_zsh_path, main_execve_wrapper_exe)
+            && let (Ok(shell_zsh_path), Ok(main_execve_wrapper_exe)) = (
+                AbsolutePathBuf::try_from(shell_zsh_path.as_path())
+                    .inspect_err(|e| tracing::warn!("Failed to convert shell_zsh_path `{shell_zsh_path:?}`: {e:?}")),
+                AbsolutePathBuf::try_from(main_execve_wrapper_exe.as_path()).inspect_err(|e| {
+                    tracing::warn!("Failed to convert main_execve_wrapper_exe `{main_execve_wrapper_exe:?}`: {e:?}")
+                }),
+            )
+        {
+            Self::ZshFork(ZshForkConfig {
+                shell_zsh_path,
+                main_execve_wrapper_exe,
+            })
+        } else {
+            Self::Direct
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -94,7 +254,7 @@ pub(crate) struct ToolsConfig {
     pub available_models: Vec<ModelPreset>,
     pub shell_type: ConfigShellToolType,
     shell_command_backend: ShellCommandBackendConfig,
-    pub unified_exec_backend: UnifiedExecBackendConfig,
+    pub unified_exec_shell_mode: UnifiedExecShellMode,
     pub allow_login_shell: bool,
     pub apply_patch_tool_type: Option<ApplyPatchToolType>,
     pub web_search_mode: Option<WebSearchMode>,
@@ -103,11 +263,14 @@ pub(crate) struct ToolsConfig {
     pub image_gen_tool: bool,
     pub agent_roles: BTreeMap<String, AgentRoleConfig>,
     pub search_tool: bool,
-    pub request_permission_enabled: bool,
+    pub tool_suggest: bool,
+    pub exec_permission_approvals_enabled: bool,
     pub request_permissions_tool_enabled: bool,
     pub code_mode_enabled: bool,
+    pub code_mode_only_enabled: bool,
     pub js_repl_enabled: bool,
     pub js_repl_tools_only: bool,
+    pub can_request_original_image_detail: bool,
     pub collab_tools: bool,
     pub artifact_tools: bool,
     pub request_user_input: bool,
@@ -123,6 +286,21 @@ pub(crate) struct ToolsConfigParams<'a> {
     pub(crate) features: &'a Features,
     pub(crate) web_search_mode: Option<WebSearchMode>,
     pub(crate) session_source: SessionSource,
+    pub(crate) sandbox_policy: &'a SandboxPolicy,
+    pub(crate) windows_sandbox_level: WindowsSandboxLevel,
+}
+
+fn unified_exec_allowed_in_environment(
+    is_windows: bool,
+    sandbox_policy: &SandboxPolicy,
+    windows_sandbox_level: WindowsSandboxLevel,
+) -> bool {
+    !(is_windows
+        && windows_sandbox_level != WindowsSandboxLevel::Disabled
+        && !matches!(
+            sandbox_policy,
+            SandboxPolicy::DangerFullAccess | SandboxPolicy::ExternalSandbox { .. }
+        ))
 }
 
 impl ToolsConfig {
@@ -133,9 +311,12 @@ impl ToolsConfig {
             features,
             web_search_mode,
             session_source,
+            sandbox_policy,
+            windows_sandbox_level,
         } = params;
         let include_apply_patch_tool = features.enabled(Feature::ApplyPatchFreeform);
         let include_code_mode = features.enabled(Feature::CodeMode);
+        let include_code_mode_only = include_code_mode && features.enabled(Feature::CodeModeOnly);
         let include_js_repl = features.enabled(Feature::JsRepl);
         let include_js_repl_tools_only =
             include_js_repl && features.enabled(Feature::JsReplToolsOnly);
@@ -144,12 +325,14 @@ impl ToolsConfig {
         let include_request_user_input = !matches!(session_source, SessionSource::SubAgent(_));
         let include_default_mode_request_user_input =
             include_request_user_input && features.enabled(Feature::DefaultModeRequestUserInput);
-        let include_search_tool = features.enabled(Feature::Apps);
+        let include_search_tool = model_info.supports_search_tool;
+        let include_tool_suggest = include_search_tool && features.enabled(Feature::ToolSuggest);
+        let include_original_image_detail = can_request_original_image_detail(features, model_info);
         let include_artifact_tools =
             features.enabled(Feature::Artifact) && codex_artifacts::can_manage_artifact_runtime();
         let include_image_gen_tool =
             features.enabled(Feature::ImageGeneration) && supports_image_generation(model_info);
-        let request_permission_enabled = features.enabled(Feature::RequestPermissions);
+        let exec_permission_approvals_enabled = features.enabled(Feature::ExecPermissionApprovals);
         let request_permissions_tool_enabled = features.enabled(Feature::RequestPermissionsTool);
         let shell_command_backend =
             if features.enabled(Feature::ShellTool) && features.enabled(Feature::ShellZshFork) {
@@ -157,24 +340,25 @@ impl ToolsConfig {
             } else {
                 ShellCommandBackendConfig::Classic
             };
-        let unified_exec_backend =
-            if features.enabled(Feature::ShellTool) && features.enabled(Feature::ShellZshFork) {
-                UnifiedExecBackendConfig::ZshFork
-            } else {
-                UnifiedExecBackendConfig::Direct
-            };
-
+        let unified_exec_allowed = unified_exec_allowed_in_environment(
+            cfg!(target_os = "windows"),
+            sandbox_policy,
+            *windows_sandbox_level,
+        );
         let shell_type = if !features.enabled(Feature::ShellTool) {
             ConfigShellToolType::Disabled
         } else if features.enabled(Feature::ShellZshFork) {
             ConfigShellToolType::ShellCommand
-        } else if features.enabled(Feature::UnifiedExec) {
+        } else if features.enabled(Feature::UnifiedExec) && unified_exec_allowed {
             // If ConPTY not supported (for old Windows versions), fallback on ShellCommand.
             if codex_utils_pty::conpty_supported() {
                 ConfigShellToolType::UnifiedExec
             } else {
                 ConfigShellToolType::ShellCommand
             }
+        } else if model_info.shell_type == ConfigShellToolType::UnifiedExec && !unified_exec_allowed
+        {
+            ConfigShellToolType::ShellCommand
         } else {
             model_info.shell_type
         };
@@ -202,7 +386,7 @@ impl ToolsConfig {
             available_models: available_models_ref.to_vec(),
             shell_type,
             shell_command_backend,
-            unified_exec_backend,
+            unified_exec_shell_mode: UnifiedExecShellMode::Direct,
             allow_login_shell: true,
             apply_patch_tool_type,
             web_search_mode: *web_search_mode,
@@ -211,11 +395,14 @@ impl ToolsConfig {
             image_gen_tool: include_image_gen_tool,
             agent_roles: BTreeMap::new(),
             search_tool: include_search_tool,
-            request_permission_enabled,
+            tool_suggest: include_tool_suggest,
+            exec_permission_approvals_enabled,
             request_permissions_tool_enabled,
             code_mode_enabled: include_code_mode,
+            code_mode_only_enabled: include_code_mode_only,
             js_repl_enabled: include_js_repl,
             js_repl_tools_only: include_js_repl_tools_only,
+            can_request_original_image_detail: include_original_image_detail,
             collab_tools: include_collab_tools,
             artifact_tools: include_artifact_tools,
             request_user_input: include_request_user_input,
@@ -236,6 +423,29 @@ impl ToolsConfig {
         self
     }
 
+    pub fn with_unified_exec_shell_mode(
+        mut self,
+        unified_exec_shell_mode: UnifiedExecShellMode,
+    ) -> Self {
+        self.unified_exec_shell_mode = unified_exec_shell_mode;
+        self
+    }
+
+    pub fn with_unified_exec_shell_mode_for_session(
+        mut self,
+        user_shell: &Shell,
+        shell_zsh_path: Option<&PathBuf>,
+        main_execve_wrapper_exe: Option<&PathBuf>,
+    ) -> Self {
+        self.unified_exec_shell_mode = UnifiedExecShellMode::for_session(
+            self.shell_command_backend,
+            user_shell,
+            shell_zsh_path,
+            main_execve_wrapper_exe,
+        );
+        self
+    }
+
     pub fn with_web_search_config(mut self, web_search_config: Option<WebSearchConfig>) -> Self {
         self.web_search_config = web_search_config;
         self
@@ -244,6 +454,7 @@ impl ToolsConfig {
     pub fn for_code_mode_nested_tools(&self) -> Self {
         let mut nested = self.clone();
         nested.code_mode_enabled = false;
+        nested.code_mode_only_enabled = false;
         nested
     }
 }
@@ -344,44 +555,7 @@ fn create_file_system_permissions_schema() -> JsonSchema {
     }
 }
 
-fn create_macos_permissions_schema() -> JsonSchema {
-    JsonSchema::Object {
-        properties: BTreeMap::from([
-            (
-                "preferences".to_string(),
-                JsonSchema::String {
-                    description: Some(
-                        "macOS preferences access. Supported values: `none`, `read_only`, or `read_write`."
-                            .to_string(),
-                    ),
-                },
-            ),
-            (
-                "automations".to_string(),
-                JsonSchema::Array {
-                    items: Box::new(JsonSchema::String { description: None }),
-                    description: Some("macOS automation access as app bundle identifiers.".to_string()),
-                },
-            ),
-            (
-                "accessibility".to_string(),
-                JsonSchema::Boolean {
-                    description: Some("Whether to request macOS accessibility access.".to_string()),
-                },
-            ),
-            (
-                "calendar".to_string(),
-                JsonSchema::Boolean {
-                    description: Some("Whether to request macOS calendar access.".to_string()),
-                },
-            ),
-        ]),
-        required: None,
-        additional_properties: Some(false.into()),
-    }
-}
-
-fn create_permissions_schema() -> JsonSchema {
+fn create_additional_permissions_schema() -> JsonSchema {
     JsonSchema::Object {
         properties: BTreeMap::from([
             ("network".to_string(), create_network_permissions_schema()),
@@ -389,21 +563,36 @@ fn create_permissions_schema() -> JsonSchema {
                 "file_system".to_string(),
                 create_file_system_permissions_schema(),
             ),
-            ("macos".to_string(), create_macos_permissions_schema()),
         ]),
         required: None,
         additional_properties: Some(false.into()),
     }
 }
 
-fn create_approval_parameters(request_permission_enabled: bool) -> BTreeMap<String, JsonSchema> {
+fn create_request_permissions_schema() -> JsonSchema {
+    JsonSchema::Object {
+        properties: BTreeMap::from([
+            ("network".to_string(), create_network_permissions_schema()),
+            (
+                "file_system".to_string(),
+                create_file_system_permissions_schema(),
+            ),
+        ]),
+        required: None,
+        additional_properties: Some(false.into()),
+    }
+}
+
+fn create_approval_parameters(
+    exec_permission_approvals_enabled: bool,
+) -> BTreeMap<String, JsonSchema> {
     let mut properties = BTreeMap::from([
         (
             "sandbox_permissions".to_string(),
             JsonSchema::String {
                 description: Some(
-                    if request_permission_enabled {
-                        "Sandbox permissions for the command. Use \"with_additional_permissions\" to request additional sandboxed filesystem, network, or macOS permissions (preferred), or \"require_escalated\" to request running without sandbox restrictions; defaults to \"use_default\"."
+                    if exec_permission_approvals_enabled {
+                        "Sandbox permissions for the command. Use \"with_additional_permissions\" to request additional sandboxed filesystem or network permissions (preferred), or \"require_escalated\" to request running without sandbox restrictions; defaults to \"use_default\"."
                     } else {
                         "Sandbox permissions for the command. Set to \"require_escalated\" to request running without sandbox restrictions; defaults to \"use_default\"."
                     }
@@ -437,17 +626,20 @@ fn create_approval_parameters(request_permission_enabled: bool) -> BTreeMap<Stri
         )
     ]);
 
-    if request_permission_enabled {
+    if exec_permission_approvals_enabled {
         properties.insert(
             "additional_permissions".to_string(),
-            create_permissions_schema(),
+            create_additional_permissions_schema(),
         );
     }
 
     properties
 }
 
-fn create_exec_command_tool(allow_login_shell: bool, request_permission_enabled: bool) -> ToolSpec {
+fn create_exec_command_tool(
+    allow_login_shell: bool,
+    exec_permission_approvals_enabled: bool,
+) -> ToolSpec {
     let mut properties = BTreeMap::from([
         (
             "cmd".to_string(),
@@ -507,7 +699,9 @@ fn create_exec_command_tool(allow_login_shell: bool, request_permission_enabled:
             },
         );
     }
-    properties.extend(create_approval_parameters(request_permission_enabled));
+    properties.extend(create_approval_parameters(
+        exec_permission_approvals_enabled,
+    ));
 
     ToolSpec::Function(ResponsesApiTool {
         name: "exec_command".to_string(),
@@ -515,6 +709,7 @@ fn create_exec_command_tool(allow_login_shell: bool, request_permission_enabled:
             "Runs a command in a PTY, returning output or a session ID for ongoing interaction."
                 .to_string(),
         strict: false,
+        defer_loading: None,
         parameters: JsonSchema::Object {
             properties,
             required: Some(vec!["cmd".to_string()]),
@@ -563,6 +758,7 @@ fn create_write_stdin_tool() -> ToolSpec {
             "Writes characters to an existing unified exec session and returns recent output."
                 .to_string(),
         strict: false,
+        defer_loading: None,
         parameters: JsonSchema::Object {
             properties,
             required: Some(vec!["session_id".to_string()]),
@@ -572,7 +768,57 @@ fn create_write_stdin_tool() -> ToolSpec {
     })
 }
 
-fn create_shell_tool(request_permission_enabled: bool) -> ToolSpec {
+fn create_exec_wait_tool() -> ToolSpec {
+    let properties = BTreeMap::from([
+        (
+            "cell_id".to_string(),
+            JsonSchema::String {
+                description: Some("Identifier of the running exec cell.".to_string()),
+            },
+        ),
+        (
+            "yield_time_ms".to_string(),
+            JsonSchema::Number {
+                description: Some(
+                    "How long to wait (in milliseconds) for more output before yielding again."
+                        .to_string(),
+                ),
+            },
+        ),
+        (
+            "max_tokens".to_string(),
+            JsonSchema::Number {
+                description: Some(
+                    "Maximum number of output tokens to return for this wait call.".to_string(),
+                ),
+            },
+        ),
+        (
+            "terminate".to_string(),
+            JsonSchema::Boolean {
+                description: Some("Whether to terminate the running exec cell.".to_string()),
+            },
+        ),
+    ]);
+
+    ToolSpec::Function(ResponsesApiTool {
+        name: WAIT_TOOL_NAME.to_string(),
+        description: format!(
+            "Waits on a yielded `{PUBLIC_TOOL_NAME}` cell and returns new output or completion.\n{}",
+            code_mode_wait_tool_description().trim()
+        ),
+        strict: false,
+        parameters: JsonSchema::Object {
+            properties,
+            required: Some(vec!["cell_id".to_string()]),
+            additional_properties: Some(false.into()),
+        },
+        output_schema: None,
+        defer_loading: None,
+    })
+}
+
+fn create_shell_tool(exec_permission_approvals_enabled: bool) -> ToolSpec {
     let mut properties = BTreeMap::from([
         (
             "command".to_string(),
@@ -594,7 +840,9 @@ fn create_shell_tool(request_permission_enabled: bool) -> ToolSpec {
             },
         ),
     ]);
-    properties.extend(create_approval_parameters(request_permission_enabled));
+    properties.extend(create_approval_parameters(
+        exec_permission_approvals_enabled,
+    ));
 
     let description  = if cfg!(windows) {
         r#"Runs a Powershell command (Windows) and returns its output. Arguments to `shell` will be passed to CreateProcessW(). Most commands should be prefixed with ["powershell.exe", "-Command"].
@@ -617,6 +865,7 @@ Examples of valid command strings:
         name: "shell".to_string(),
         description,
         strict: false,
+        defer_loading: None,
         parameters: JsonSchema::Object {
             properties,
             required: Some(vec!["command".to_string()]),
@@ -628,7 +877,7 @@ Examples of valid command strings:
 
 fn create_shell_command_tool(
     allow_login_shell: bool,
-    request_permission_enabled: bool,
+    exec_permission_approvals_enabled: bool,
 ) -> ToolSpec {
     let mut properties = BTreeMap::from([
         (
@@ -663,7 +912,9 @@ fn create_shell_command_tool(
             },
         );
     }
-    properties.extend(create_approval_parameters(request_permission_enabled));
+    properties.extend(create_approval_parameters(
+        exec_permission_approvals_enabled,
+    ));
 
     let description = if cfg!(windows) {
         r#"Runs a Powershell command (Windows) and returns its output.
@@ -685,6 +936,7 @@ Examples of valid command strings:
         name: "shell_command".to_string(),
         description,
         strict: false,
+        defer_loading: None,
         parameters: JsonSchema::Object {
             properties,
             required: Some(vec!["command".to_string()]),
@@ -694,20 +946,31 @@ Examples of valid command strings:
     })
 }
 
-fn create_view_image_tool() -> ToolSpec {
+fn create_view_image_tool(can_request_original_image_detail: bool) -> ToolSpec {
     // Support only local filesystem path.
-    let properties = BTreeMap::from([(
+    let mut properties = BTreeMap::from([(
         "path".to_string(),
         JsonSchema::String {
             description: Some("Local filesystem path to an image file".to_string()),
         },
     )]);
+    if can_request_original_image_detail {
+        properties.insert(
+            "detail".to_string(),
+            JsonSchema::String {
+                description: Some(
+                    "Optional detail override. The only supported value is `original`; omit this field for default resized behavior. Use `original` to preserve the file's original resolution instead of resizing to fit. This is important when high-fidelity image perception or precise localization is needed, especially for CUA agents.".to_string(),
+                ),
+            },
+        );
+    }
 
     ToolSpec::Function(ResponsesApiTool {
         name: VIEW_IMAGE_TOOL_NAME.to_string(),
         description: "View a local image from the filesystem (only use if given a full filepath by the user, and the image isn't already attached to the thread context within <image ...> tags)."
             .to_string(),
         strict: false,
+        defer_loading: None,
         parameters: JsonSchema::Object {
             properties,
             required: Some(vec!["path".to_string()]),
@@ -823,7 +1086,10 @@ fn create_spawn_agent_tool(config: &ToolsConfig) -> ToolSpec {
         name: "spawn_agent".to_string(),
         description: format!(
             r#"
-        Only use `spawn_agent` if and only if the user explicitly asked for sub-agents or parallel agent work. Spawn a sub-agent for a well-scoped task. Returns the agent id (and user-facing nickname when available) to use to communicate with this agent. This spawn_agent tool provides you access to smaller but more efficient sub-agents. A mini model can solve many tasks faster than the main model. You should follow the rules and guidelines below to use this tool.
+        Only use `spawn_agent` if and only if the user explicitly asks for sub-agents, delegation, or parallel agent work.
+        Requests for depth, thoroughness, research, investigation, or detailed codebase analysis do not count as permission to spawn.
+        Agent-role guidance below only helps choose which agent to use after spawning is already authorized; it never authorizes spawning by itself.
+        Spawn a sub-agent for a well-scoped task. Returns the agent id (and user-facing nickname when available) to use to communicate with this agent. This spawn_agent tool provides you access to smaller but more efficient sub-agents. A mini model can solve many tasks faster than the main model. You should follow the rules and guidelines below to use this tool.
 
 {available_models_description}
 ### When to delegate vs. do the subtask yourself
@@ -843,7 +1109,7 @@ fn create_spawn_agent_tool(config: &ToolsConfig) -> ToolSpec {
 - For code-edit subtasks, decompose work so each delegated task has a disjoint write set.
 
 ### After you delegate
-- Call wait very sparingly. Only call wait when you need the result immediately for the next critical-path step and you are blocked until it returns.
+- Call wait_agent very sparingly. Only call wait_agent when you need the result immediately for the next critical-path step and you are blocked until it returns.
 - Do not redo delegated subagent tasks yourself; focus on integrating results or tackling non-overlapping work.
 - While the subagent is running in the background, do meaningful non-overlapping work immediately.
 - Do not repeatedly wait by reflex.
@@ -856,12 +1122,13 @@ fn create_spawn_agent_tool(config: &ToolsConfig) -> ToolSpec {
 - The key is to find opportunities to spawn multiple independent subtasks in parallel within the same round, while ensuring each subtask is well-defined, self-contained, and materially advances the main task."#
         ),
         strict: false,
+        defer_loading: None,
         parameters: JsonSchema::Object {
             properties,
             required: None,
             additional_properties: Some(false.into()),
         },
-        output_schema: None,
+        output_schema: Some(spawn_agent_output_schema()),
     })
 }
 
@@ -962,6 +1229,7 @@ fn create_spawn_agents_on_csv_tool() -> ToolSpec {
         description: "Process a CSV by spawning one worker sub-agent per row. The instruction string is a template where `{column}` placeholders are replaced with row values. Each worker must call `report_agent_job_result` with a JSON object (matching `output_schema` when provided); missing reports are treated as failures. This call blocks until all rows finish and automatically exports results to `output_csv_path` (or a default path)."
             .to_string(),
         strict: false,
+        defer_loading: None,
         parameters: JsonSchema::Object {
             properties,
             required: Some(vec!["csv_path".to_string(), "instruction".to_string()]),
@@ -1008,6 +1276,7 @@ fn create_report_agent_job_result_tool() -> ToolSpec {
             "Worker-only tool to report a result for an agent job item. Main agents should not call this."
                 .to_string(),
         strict: false,
+        defer_loading: None,
         parameters: JsonSchema::Object {
             properties,
             required: Some(vec![
@@ -1055,12 +1324,13 @@ fn create_send_input_tool() -> ToolSpec {
         description: "Send a message to an existing agent. Use interrupt=true to redirect work immediately. You should reuse the agent by send_input if you believe your assigned task is highly dependent on the context of a previous task."
             .to_string(),
         strict: false,
+        defer_loading: None,
         parameters: JsonSchema::Object {
             properties,
             required: Some(vec!["id".to_string()]),
             additional_properties: Some(false.into()),
         },
-        output_schema: None,
+        output_schema: Some(send_input_output_schema()),
     })
 }
 
@@ -1076,19 +1346,20 @@ fn create_resume_agent_tool() -> ToolSpec {
     ToolSpec::Function(ResponsesApiTool {
         name: "resume_agent".to_string(),
         description:
-            "Resume a previously closed agent by id so it can receive send_input and wait calls."
+            "Resume a previously closed agent by id so it can receive send_input and wait_agent calls."
                 .to_string(),
         strict: false,
+        defer_loading: None,
         parameters: JsonSchema::Object {
             properties,
             required: Some(vec!["id".to_string()]),
             additional_properties: Some(false.into()),
         },
-        output_schema: None,
+        output_schema: Some(resume_agent_output_schema()),
     })
 }
 
-fn create_wait_tool() -> ToolSpec {
+fn create_wait_agent_tool() -> ToolSpec {
     let mut properties = BTreeMap::new();
     properties.insert(
         "ids".to_string(),
@@ -1110,16 +1381,17 @@ fn create_wait_tool() -> ToolSpec {
     );
 
     ToolSpec::Function(ResponsesApiTool {
-        name: "wait".to_string(),
+        name: "wait_agent".to_string(),
         description: "Wait for agents to reach a final status. Completed statuses may include the agent's final message. Returns empty status when timed out. Once the agent reaches a final status, a notification message will be received containing the same completed status."
             .to_string(),
         strict: false,
+        defer_loading: None,
         parameters: JsonSchema::Object {
             properties,
             required: Some(vec!["ids".to_string()]),
             additional_properties: Some(false.into()),
         },
-        output_schema: None,
+        output_schema: Some(wait_output_schema()),
     })
 }
 
@@ -1200,6 +1472,7 @@ fn create_request_user_input_tool(
             collaboration_modes_config.default_mode_request_user_input,
         ),
         strict: false,
+        defer_loading: None,
         parameters: JsonSchema::Object {
             properties,
             required: Some(vec!["questions".to_string()]),
@@ -1219,12 +1492,16 @@ fn create_request_permissions_tool() -> ToolSpec {
             ),
         },
     );
-    properties.insert("permissions".to_string(), create_permissions_schema());
+    properties.insert(
+        "permissions".to_string(),
+        create_request_permissions_schema(),
+    );
 
     ToolSpec::Function(ResponsesApiTool {
         name: "request_permissions".to_string(),
         description: request_permissions_tool_description(),
         strict: false,
+        defer_loading: None,
         parameters: JsonSchema::Object {
             properties,
             required: Some(vec!["permissions".to_string()]),
@@ -1247,12 +1524,13 @@ fn create_close_agent_tool() -> ToolSpec {
         name: "close_agent".to_string(),
         description: "Close an agent when it is no longer needed and return its last known status. Don't keep agents open for too long if they are not needed anymore.".to_string(),
         strict: false,
+        defer_loading: None,
         parameters: JsonSchema::Object {
             properties,
             required: Some(vec!["id".to_string()]),
             additional_properties: Some(false.into()),
         },
-        output_schema: None,
+        output_schema: Some(close_agent_output_schema()),
     })
 }
 
@@ -1315,6 +1593,7 @@ fn create_test_sync_tool() -> ToolSpec {
         name: "test_sync_tool".to_string(),
         description: "Internal synchronization helper used by Codex integration tests.".to_string(),
         strict: false,
+        defer_loading: None,
         parameters: JsonSchema::Object {
             properties,
             required: None,
@@ -1367,6 +1646,7 @@ fn create_grep_files_tool() -> ToolSpec {
                       time."
             .to_string(),
         strict: false,
+        defer_loading: None,
         parameters: JsonSchema::Object {
             properties,
             required: Some(vec!["pattern".to_string()]),
@@ -1376,7 +1656,7 @@ fn create_grep_files_tool() -> ToolSpec {
     })
 }
 
-fn create_search_tool_bm25_tool(app_tools: &HashMap<String, ToolInfo>) -> ToolSpec {
+fn create_tool_search_tool(app_tools: &HashMap<String, ToolInfo>) -> ToolSpec {
     let properties = BTreeMap::from([
         (
             "query".to_string(),
@@ -1388,7 +1668,7 @@ fn create_search_tool_bm25_tool(app_tools: &HashMap<String, ToolInfo>) -> ToolSp
             "limit".to_string(),
             JsonSchema::Number {
                 description: Some(format!(
-                    "Maximum number of tools to return (defaults to {SEARCH_TOOL_BM25_DEFAULT_LIMIT})."
+                    "Maximum number of tools to return (defaults to {TOOL_SEARCH_DEFAULT_LIMIT})."
                 )),
             },
         ),
@@ -1402,24 +1682,149 @@ fn create_search_tool_bm25_tool(app_tools: &HashMap<String, ToolInfo>) -> ToolSp
     let app_names = app_names.join(", ");
 
     let description = if app_names.is_empty() {
-        SEARCH_TOOL_BM25_DESCRIPTION_TEMPLATE
+        TOOL_SEARCH_DESCRIPTION_TEMPLATE
             .replace("({{app_names}})", "(None currently enabled)")
             .replace("{{app_names}}", "available apps")
     } else {
-        SEARCH_TOOL_BM25_DESCRIPTION_TEMPLATE.replace("{{app_names}}", app_names.as_str())
+        TOOL_SEARCH_DESCRIPTION_TEMPLATE.replace("{{app_names}}", app_names.as_str())
     };
 
-    ToolSpec::Function(ResponsesApiTool {
-        name: SEARCH_TOOL_BM25_TOOL_NAME.to_string(),
+    ToolSpec::ToolSearch {
+        execution: "client".to_string(),
         description,
-        strict: false,
         parameters: JsonSchema::Object {
             properties,
             required: Some(vec!["query".to_string()]),
             additional_properties: Some(false.into()),
         },
+    }
+}
+
+fn create_tool_suggest_tool(discoverable_tools: &[DiscoverableTool]) -> ToolSpec {
+    let discoverable_tool_ids = discoverable_tools
+        .iter()
+        .map(DiscoverableTool::id)
+        .collect::<Vec<_>>()
+        .join(", ");
+    let properties = BTreeMap::from([
+        (
+            "tool_type".to_string(),
+            JsonSchema::String {
+                description: Some(
+                    "Type of discoverable tool to suggest. Use \"connector\" or \"plugin\"."
+                        .to_string(),
+                ),
+            },
+        ),
+        (
+            "action_type".to_string(),
+            JsonSchema::String {
+                description: Some(
+                    "Suggested action for the tool. Use \"install\" or \"enable\".".to_string(),
+                ),
+            },
+        ),
+        (
+            "tool_id".to_string(),
+            JsonSchema::String {
+                description: Some(format!(
+                    "Connector or plugin id to suggest. Must be one of: {discoverable_tool_ids}."
+                )),
+            },
+        ),
+        (
+            "suggest_reason".to_string(),
+            JsonSchema::String {
+                description: Some(
+                    "Concise one-line user-facing reason why this tool can help with the current request."
+                        .to_string(),
+                ),
+            },
+        ),
+    ]);
+    let description = TOOL_SUGGEST_DESCRIPTION_TEMPLATE.replace(
+        "{{discoverable_tools}}",
+        format_discoverable_tools(discoverable_tools).as_str(),
+    );
+
+    ToolSpec::Function(ResponsesApiTool {
+        name: TOOL_SUGGEST_TOOL_NAME.to_string(),
+        description,
+        strict: false,
+        defer_loading: None,
+        parameters: JsonSchema::Object {
+            properties,
+            required: Some(vec![
+                "tool_type".to_string(),
+                "action_type".to_string(),
+                "tool_id".to_string(),
+                "suggest_reason".to_string(),
+            ]),
+            additional_properties: Some(false.into()),
+        },
         output_schema: None,
     })
+}
+
+fn format_discoverable_tools(discoverable_tools: &[DiscoverableTool]) -> String {
+    let mut discoverable_tools = discoverable_tools.to_vec();
+    discoverable_tools.sort_by(|left, right| {
+        left.name()
+            .cmp(right.name())
+            .then_with(|| left.id().cmp(right.id()))
+    });
+
+    discoverable_tools
+        .into_iter()
+        .map(|tool| {
+            let description = tool
+                .description()
+                .filter(|description| !description.trim().is_empty())
+                .map(ToString::to_string)
+                .unwrap_or_else(|| match &tool {
+                    DiscoverableTool::Connector(_) => "No description provided.".to_string(),
+                    DiscoverableTool::Plugin(plugin) => format_plugin_summary(plugin.as_ref()),
+                });
+            let default_action = match tool.tool_type() {
+                DiscoverableToolType::Connector => DiscoverableToolAction::Install,
+                DiscoverableToolType::Plugin => DiscoverableToolAction::Enable,
+            };
+            format!(
+                "- {} (id: `{}`, type: {}, action: {}): {}",
+                tool.name(),
+                tool.id(),
+                tool.tool_type().as_str(),
+                default_action.as_str(),
+                description
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn format_plugin_summary(plugin: &DiscoverablePluginInfo) -> String {
+    let mut details = Vec::new();
+    if plugin.has_skills {
+        details.push("skills".to_string());
+    }
+    if !plugin.mcp_server_names.is_empty() {
+        details.push(format!(
+            "MCP servers: {}",
+            plugin.mcp_server_names.join(", ")
+        ));
+    }
+    if !plugin.app_connector_ids.is_empty() {
+        details.push(format!(
+            "app connectors: {}",
+            plugin.app_connector_ids.join(", ")
+        ));
+    }
+
+    if details.is_empty() {
+        "No description provided.".to_string()
+    } else {
+        details.join("; ")
+    }
 }
 
 fn create_read_file_tool() -> ToolSpec {
@@ -1517,6 +1922,7 @@ fn create_read_file_tool() -> ToolSpec {
             "Reads a local file with 1-indexed line numbers, supporting slice and indentation-aware block modes."
                 .to_string(),
         strict: false,
+        defer_loading: None,
         parameters: JsonSchema::Object {
             properties,
             required: Some(vec!["file_path".to_string()]),
@@ -1564,6 +1970,7 @@ fn create_list_dir_tool() -> ToolSpec {
             "Lists entries in a local directory with 1-indexed entry numbers and simple type labels."
                 .to_string(),
         strict: false,
+        defer_loading: None,
         parameters: JsonSchema::Object {
             properties,
             required: Some(vec!["dir_path".to_string()]),
@@ -1639,6 +2046,7 @@ fn create_js_repl_reset_tool() -> ToolSpec {
             "Restarts the js_repl kernel for this run and clears persisted top-level bindings."
                 .to_string(),
         strict: false,
+        defer_loading: None,
         parameters: JsonSchema::Object {
             properties: BTreeMap::new(),
             required: None,
@@ -1648,11 +2056,14 @@ fn create_js_repl_reset_tool() -> ToolSpec {
     })
 }
 
-fn create_code_mode_tool(enabled_tool_names: &[String]) -> ToolSpec {
+fn create_code_mode_tool(
+    enabled_tools: &[(String, String)],
+    code_mode_only_enabled: bool,
+) -> ToolSpec {
     const CODE_MODE_FREEFORM_GRAMMAR: &str = r#"
-start: source
-source: /[\s\S]+/
-"#;
+start: pragma_source | plain_source
+pragma_source: PRAGMA_LINE NEWLINE SOURCE
+plain_source: SOURCE
 
     let enabled_list = if enabled_tool_names.is_empty() {
         "none".to_string()
@@ -1665,17 +2076,13 @@ source: /[\s\S]+/
 
     ToolSpec::Freeform(FreeformTool {
         name: PUBLIC_TOOL_NAME.to_string(),
-        description,
+        description: code_mode_tool_description(enabled_tools, code_mode_only_enabled),
         format: FreeformToolFormat {
             r#type: "grammar".to_string(),
             syntax: "lark".to_string(),
             definition: CODE_MODE_FREEFORM_GRAMMAR.to_string(),
         },
     })
-}
-
-fn is_code_mode_nested_tool(spec: &ToolSpec) -> bool {
-    spec.name() != PUBLIC_TOOL_NAME && matches!(spec, ToolSpec::Function(_) | ToolSpec::Freeform(_))
 }
 
 fn create_list_mcp_resources_tool() -> ToolSpec {
@@ -1704,6 +2111,7 @@ fn create_list_mcp_resources_tool() -> ToolSpec {
         name: "list_mcp_resources".to_string(),
         description: "Lists resources provided by MCP servers. Resources allow servers to share data that provides context to language models, such as files, database schemas, or application-specific information. Prefer resources over web search when possible.".to_string(),
         strict: false,
+        defer_loading: None,
         parameters: JsonSchema::Object {
             properties,
             required: None,
@@ -1739,6 +2147,7 @@ fn create_list_mcp_resource_templates_tool() -> ToolSpec {
         name: "list_mcp_resource_templates".to_string(),
         description: "Lists resource templates provided by MCP servers. Parameterized resource templates allow servers to share data that takes parameters and provides context to language models, such as files, database schemas, or application-specific information. Prefer resource templates over web search when possible.".to_string(),
         strict: false,
+        defer_loading: None,
         parameters: JsonSchema::Object {
             properties,
             required: None,
@@ -1776,6 +2185,7 @@ fn create_read_mcp_resource_tool() -> ToolSpec {
             "Read a specific resource from an MCP server given the server name and resource URI."
                 .to_string(),
         strict: false,
+        defer_loading: None,
         parameters: JsonSchema::Object {
             properties,
             required: Some(vec!["server".to_string(), "uri".to_string()]),
@@ -1825,6 +2235,59 @@ pub(crate) fn mcp_tool_to_openai_tool(
     fully_qualified_name: String,
     tool: rmcp::model::Tool,
 ) -> Result<ResponsesApiTool, serde_json::Error> {
+    let (description, input_schema, output_schema) = mcp_tool_to_openai_tool_parts(tool)?;
+
+    Ok(ResponsesApiTool {
+        name: fully_qualified_name,
+        description,
+        strict: false,
+        defer_loading: None,
+        parameters: input_schema,
+        output_schema,
+    })
+}
+
+pub(crate) fn mcp_tool_to_deferred_openai_tool(
+    name: String,
+    tool: rmcp::model::Tool,
+) -> Result<ResponsesApiTool, serde_json::Error> {
+    let (description, input_schema, _) = mcp_tool_to_openai_tool_parts(tool)?;
+
+    Ok(ResponsesApiTool {
+        name,
+        description,
+        strict: false,
+        defer_loading: Some(true),
+        parameters: input_schema,
+        output_schema: None,
+    })
+}
+
+fn dynamic_tool_to_openai_tool(
+    tool: &DynamicToolSpec,
+) -> Result<ResponsesApiTool, serde_json::Error> {
+    let input_schema = parse_tool_input_schema(&tool.input_schema)?;
+
+    Ok(ResponsesApiTool {
+        name: tool.name.clone(),
+        description: tool.description.clone(),
+        strict: false,
+        defer_loading: None,
+        parameters: input_schema,
+        output_schema: None,
+    })
+}
+
+/// Parse the tool input_schema or return an error for invalid schema
+pub fn parse_tool_input_schema(input_schema: &JsonValue) -> Result<JsonSchema, serde_json::Error> {
+    let mut input_schema = input_schema.clone();
+    sanitize_json_schema(&mut input_schema);
+    serde_json::from_value::<JsonSchema>(input_schema)
+}
+
+fn mcp_tool_to_openai_tool_parts(
+    tool: rmcp::model::Tool,
+) -> Result<(String, JsonSchema, Option<JsonValue>), serde_json::Error> {
     let rmcp::model::Tool {
         description,
         input_schema,
@@ -1859,35 +2322,9 @@ pub(crate) fn mcp_tool_to_openai_tool(
     let output_schema = Some(mcp_call_tool_result_output_schema(
         structured_content_schema,
     ));
+    let description = description.map(Into::into).unwrap_or_default();
 
-    Ok(ResponsesApiTool {
-        name: fully_qualified_name,
-        description: description.map(Into::into).unwrap_or_default(),
-        strict: false,
-        parameters: input_schema,
-        output_schema,
-    })
-}
-
-fn dynamic_tool_to_openai_tool(
-    tool: &DynamicToolSpec,
-) -> Result<ResponsesApiTool, serde_json::Error> {
-    let input_schema = parse_tool_input_schema(&tool.input_schema)?;
-
-    Ok(ResponsesApiTool {
-        name: tool.name.clone(),
-        description: tool.description.clone(),
-        strict: false,
-        parameters: input_schema,
-        output_schema: None,
-    })
-}
-
-/// Parse the tool input_schema or return an error for invalid schema
-pub fn parse_tool_input_schema(input_schema: &JsonValue) -> Result<JsonSchema, serde_json::Error> {
-    let mut input_schema = input_schema.clone();
-    sanitize_json_schema(&mut input_schema);
-    serde_json::from_value::<JsonSchema>(input_schema)
+    Ok((description, input_schema, output_schema))
 }
 
 fn mcp_call_tool_result_output_schema(structured_content_schema: JsonValue) -> JsonValue {
@@ -2021,15 +2458,27 @@ fn sanitize_json_schema(value: &mut JsonValue) {
 }
 
 /// Builds the tool registry builder while collecting tool specs for later serialization.
+#[cfg(test)]
 pub(crate) fn build_specs(
     config: &ToolsConfig,
     mcp_tools: Option<HashMap<String, rmcp::model::Tool>>,
     app_tools: Option<HashMap<String, ToolInfo>>,
     dynamic_tools: &[DynamicToolSpec],
 ) -> ToolRegistryBuilder {
+    build_specs_with_discoverable_tools(config, mcp_tools, app_tools, None, dynamic_tools)
+}
+
+pub(crate) fn build_specs_with_discoverable_tools(
+    config: &ToolsConfig,
+    mcp_tools: Option<HashMap<String, rmcp::model::Tool>>,
+    app_tools: Option<HashMap<String, ToolInfo>>,
+    discoverable_tools: Option<Vec<DiscoverableTool>>,
+    dynamic_tools: &[DynamicToolSpec],
+) -> ToolRegistryBuilder {
     use crate::tools::handlers::ApplyPatchHandler;
     use crate::tools::handlers::ArtifactsHandler;
-    use crate::tools::handlers::CodeModeHandler;
+    use crate::tools::handlers::CodeModeExecuteHandler;
+    use crate::tools::handlers::CodeModeWaitHandler;
     use crate::tools::handlers::DynamicToolHandler;
     use crate::tools::handlers::GrepFilesHandler;
     use crate::tools::handlers::JsReplHandler;
@@ -2037,17 +2486,22 @@ pub(crate) fn build_specs(
     use crate::tools::handlers::ListDirHandler;
     use crate::tools::handlers::McpHandler;
     use crate::tools::handlers::McpResourceHandler;
-    use crate::tools::handlers::MultiAgentHandler;
     use crate::tools::handlers::PlanHandler;
     use crate::tools::handlers::ReadFileHandler;
     use crate::tools::handlers::RequestPermissionsHandler;
     use crate::tools::handlers::RequestUserInputHandler;
-    use crate::tools::handlers::SearchToolBm25Handler;
     use crate::tools::handlers::ShellCommandHandler;
     use crate::tools::handlers::ShellHandler;
     use crate::tools::handlers::TestSyncHandler;
+    use crate::tools::handlers::ToolSearchHandler;
+    use crate::tools::handlers::ToolSuggestHandler;
     use crate::tools::handlers::UnifiedExecHandler;
     use crate::tools::handlers::ViewImageHandler;
+    use crate::tools::handlers::multi_agents::CloseAgentHandler;
+    use crate::tools::handlers::multi_agents::ResumeAgentHandler;
+    use crate::tools::handlers::multi_agents::SendInputHandler;
+    use crate::tools::handlers::multi_agents::SpawnAgentHandler;
+    use crate::tools::handlers::multi_agents::WaitAgentHandler;
     use std::sync::Arc;
 
     let mut builder = ToolRegistryBuilder::new();
@@ -2065,44 +2519,58 @@ pub(crate) fn build_specs(
     let request_user_input_handler = Arc::new(RequestUserInputHandler {
         default_mode_request_user_input: config.default_mode_request_user_input,
     });
-    let search_tool_handler = Arc::new(SearchToolBm25Handler);
-    let code_mode_handler = Arc::new(CodeModeHandler);
+    let tool_suggest_handler = Arc::new(ToolSuggestHandler);
+    let code_mode_handler = Arc::new(CodeModeExecuteHandler);
+    let code_mode_wait_handler = Arc::new(CodeModeWaitHandler);
     let js_repl_handler = Arc::new(JsReplHandler);
     let js_repl_reset_handler = Arc::new(JsReplResetHandler);
     let artifacts_handler = Arc::new(ArtifactsHandler);
-    let request_permission_enabled = config.request_permission_enabled;
+    let exec_permission_approvals_enabled = config.exec_permission_approvals_enabled;
 
     if config.code_mode_enabled {
         let nested_config = config.for_code_mode_nested_tools();
-        let (nested_specs, _) = build_specs(
+        let (nested_specs, _) = build_specs_with_discoverable_tools(
             &nested_config,
             mcp_tools.clone(),
             app_tools.clone(),
+            None,
             dynamic_tools,
         )
         .build();
-        let mut enabled_tool_names = nested_specs
+        let mut enabled_tools = nested_specs
             .into_iter()
-            .map(|spec| spec.spec)
-            .filter(is_code_mode_nested_tool)
-            .map(|spec| spec.name().to_string())
+            .filter_map(|spec| {
+                let (name, description) = match augment_tool_spec_for_code_mode(spec.spec, true) {
+                    ToolSpec::Function(tool) => (tool.name, tool.description),
+                    ToolSpec::Freeform(tool) => (tool.name, tool.description),
+                    _ => return None,
+                };
+                is_code_mode_nested_tool(&name).then_some((name, description))
+            })
             .collect::<Vec<_>>();
-        enabled_tool_names.sort();
-        enabled_tool_names.dedup();
+        enabled_tools.sort_by(|left, right| left.0.cmp(&right.0));
+        enabled_tools.dedup_by(|left, right| left.0 == right.0);
         push_tool_spec(
             &mut builder,
-            create_code_mode_tool(&enabled_tool_names),
+            create_code_mode_tool(&enabled_tools, config.code_mode_only_enabled),
             false,
             config.code_mode_enabled,
         );
         builder.register_handler(PUBLIC_TOOL_NAME, code_mode_handler);
+        push_tool_spec(
+            &mut builder,
+            create_exec_wait_tool(),
+            false,
+            config.code_mode_enabled,
+        );
+        builder.register_handler(WAIT_TOOL_NAME, code_mode_wait_handler);
     }
 
     match &config.shell_type {
         ConfigShellToolType::Default => {
             push_tool_spec(
                 &mut builder,
-                create_shell_tool(request_permission_enabled),
+                create_shell_tool(exec_permission_approvals_enabled),
                 true,
                 config.code_mode_enabled,
             );
@@ -2118,7 +2586,10 @@ pub(crate) fn build_specs(
         ConfigShellToolType::UnifiedExec => {
             push_tool_spec(
                 &mut builder,
-                create_exec_command_tool(config.allow_login_shell, request_permission_enabled),
+                create_exec_command_tool(
+                    config.allow_login_shell,
+                    exec_permission_approvals_enabled,
+                ),
                 true,
                 config.code_mode_enabled,
             );
@@ -2137,7 +2608,10 @@ pub(crate) fn build_specs(
         ConfigShellToolType::ShellCommand => {
             push_tool_spec(
                 &mut builder,
-                create_shell_command_tool(config.allow_login_shell, request_permission_enabled),
+                create_shell_command_tool(
+                    config.allow_login_shell,
+                    exec_permission_approvals_enabled,
+                ),
                 true,
                 config.code_mode_enabled,
             );
@@ -2223,15 +2697,33 @@ pub(crate) fn build_specs(
         builder.register_handler("request_permissions", request_permissions_handler);
     }
 
-    if config.search_tool {
-        let app_tools = app_tools.unwrap_or_default();
+    if config.search_tool
+        && let Some(app_tools) = app_tools
+    {
+        let search_tool_handler = Arc::new(ToolSearchHandler::new(app_tools.clone()));
         push_tool_spec(
             &mut builder,
-            create_search_tool_bm25_tool(&app_tools),
+            create_tool_search_tool(&app_tools),
             true,
             config.code_mode_enabled,
         );
-        builder.register_handler(SEARCH_TOOL_BM25_TOOL_NAME, search_tool_handler);
+        builder.register_handler(TOOL_SEARCH_TOOL_NAME, search_tool_handler);
+
+        for tool in app_tools.values() {
+            let alias_name =
+                tool_handler_key(tool.tool_name.as_str(), Some(tool.tool_namespace.as_str()));
+
+            builder.register_handler(alias_name, mcp_handler.clone());
+        }
+    }
+
+    if config.tool_suggest
+        && let Some(discoverable_tools) = discoverable_tools
+            .as_ref()
+            .filter(|tools| !tools.is_empty())
+    {
+        builder.push_spec_with_parallel_support(create_tool_suggest_tool(discoverable_tools), true);
+        builder.register_handler(TOOL_SUGGEST_TOOL_NAME, tool_suggest_handler);
     }
 
     if let Some(apply_patch_tool_type) = &config.apply_patch_tool_type {
@@ -2366,7 +2858,7 @@ pub(crate) fn build_specs(
 
     push_tool_spec(
         &mut builder,
-        create_view_image_tool(),
+        create_view_image_tool(config.can_request_original_image_detail),
         true,
         config.code_mode_enabled,
     );
@@ -2383,7 +2875,6 @@ pub(crate) fn build_specs(
     }
 
     if config.collab_tools {
-        let multi_agent_handler = Arc::new(MultiAgentHandler);
         push_tool_spec(
             &mut builder,
             create_spawn_agent_tool(config),
@@ -2404,7 +2895,7 @@ pub(crate) fn build_specs(
         );
         push_tool_spec(
             &mut builder,
-            create_wait_tool(),
+            create_wait_agent_tool(),
             false,
             config.code_mode_enabled,
         );
@@ -2414,11 +2905,11 @@ pub(crate) fn build_specs(
             false,
             config.code_mode_enabled,
         );
-        builder.register_handler("spawn_agent", multi_agent_handler.clone());
-        builder.register_handler("send_input", multi_agent_handler.clone());
-        builder.register_handler("resume_agent", multi_agent_handler.clone());
-        builder.register_handler("wait", multi_agent_handler.clone());
-        builder.register_handler("close_agent", multi_agent_handler);
+        builder.register_handler("spawn_agent", Arc::new(SpawnAgentHandler));
+        builder.register_handler("send_input", Arc::new(SendInputHandler));
+        builder.register_handler("resume_agent", Arc::new(ResumeAgentHandler));
+        builder.register_handler("wait_agent", Arc::new(WaitAgentHandler));
+        builder.register_handler("close_agent", Arc::new(CloseAgentHandler));
     }
 
     if config.agent_jobs_tools {

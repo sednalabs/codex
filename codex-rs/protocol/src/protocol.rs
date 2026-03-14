@@ -14,6 +14,7 @@ use std::time::Duration;
 
 use crate::ThreadId;
 use crate::approvals::ElicitationRequestEvent;
+use crate::config_types::ApprovalsReviewer;
 use crate::config_types::CollaborationMode;
 use crate::config_types::ModeKind;
 use crate::config_types::Personality;
@@ -60,6 +61,9 @@ pub use crate::approvals::ElicitationAction;
 pub use crate::approvals::ExecApprovalRequestEvent;
 pub use crate::approvals::ExecApprovalRequestSkillMetadata;
 pub use crate::approvals::ExecPolicyAmendment;
+pub use crate::approvals::GuardianAssessmentEvent;
+pub use crate::approvals::GuardianAssessmentStatus;
+pub use crate::approvals::GuardianRiskLevel;
 pub use crate::approvals::NetworkApprovalContext;
 pub use crate::approvals::NetworkApprovalProtocol;
 pub use crate::approvals::NetworkPolicyAmendment;
@@ -281,6 +285,10 @@ pub enum Op {
         #[serde(skip_serializing_if = "Option::is_none")]
         approval_policy: Option<AskForApproval>,
 
+        /// Updated approval reviewer for future approval prompts.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        approvals_reviewer: Option<ApprovalsReviewer>,
+
         /// Updated sandbox policy for tool calls.
         #[serde(skip_serializing_if = "Option::is_none")]
         sandbox_policy: Option<SandboxPolicy>,
@@ -478,6 +486,47 @@ pub enum Op {
     ListModels,
 }
 
+impl Op {
+    pub fn kind(&self) -> &'static str {
+        match self {
+            Self::Interrupt => "interrupt",
+            Self::CleanBackgroundTerminals => "clean_background_terminals",
+            Self::RealtimeConversationStart(_) => "realtime_conversation_start",
+            Self::RealtimeConversationAudio(_) => "realtime_conversation_audio",
+            Self::RealtimeConversationText(_) => "realtime_conversation_text",
+            Self::RealtimeConversationClose => "realtime_conversation_close",
+            Self::UserInput { .. } => "user_input",
+            Self::UserTurn { .. } => "user_turn",
+            Self::OverrideTurnContext { .. } => "override_turn_context",
+            Self::ExecApproval { .. } => "exec_approval",
+            Self::PatchApproval { .. } => "patch_approval",
+            Self::ResolveElicitation { .. } => "resolve_elicitation",
+            Self::UserInputAnswer { .. } => "user_input_answer",
+            Self::RequestPermissionsResponse { .. } => "request_permissions_response",
+            Self::DynamicToolResponse { .. } => "dynamic_tool_response",
+            Self::AddToHistory { .. } => "add_to_history",
+            Self::GetHistoryEntryRequest { .. } => "get_history_entry_request",
+            Self::ListMcpTools => "list_mcp_tools",
+            Self::RefreshMcpServers { .. } => "refresh_mcp_servers",
+            Self::ReloadUserConfig => "reload_user_config",
+            Self::ListCustomPrompts => "list_custom_prompts",
+            Self::ListSkills { .. } => "list_skills",
+            Self::ListRemoteSkills { .. } => "list_remote_skills",
+            Self::DownloadRemoteSkill { .. } => "download_remote_skill",
+            Self::Compact => "compact",
+            Self::DropMemories => "drop_memories",
+            Self::UpdateMemories => "update_memories",
+            Self::SetThreadName { .. } => "set_thread_name",
+            Self::Undo => "undo",
+            Self::ThreadRollback { .. } => "thread_rollback",
+            Self::Review { .. } => "review",
+            Self::Shutdown => "shutdown",
+            Self::RunUserShellCommand { .. } => "run_user_shell_command",
+            Self::ListModels => "list_models",
+        }
+    }
+}
+
 /// Determines the conditions under which the user is consulted to approve
 /// running the command proposed by Codex.
 #[derive(
@@ -516,11 +565,13 @@ pub enum AskForApproval {
     #[default]
     OnRequest,
 
-    /// Fine-grained rejection controls for approval prompts.
+    /// Fine-grained controls for individual approval flows.
     ///
-    /// When a field is `true`, prompts of that category are automatically
-    /// rejected instead of shown to the user.
-    Reject(RejectConfig),
+    /// When a field is `true`, commands in that category are allowed. When it
+    /// is `false`, those requests are automatically rejected instead of shown
+    /// to the user.
+    #[strum(serialize = "granular")]
+    Granular(GranularApprovalConfig),
 
     /// Never ask the user to approve commands. Failures are immediately returned
     /// to the model, and never escalated to the user for approval.
@@ -528,39 +579,40 @@ pub enum AskForApproval {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema, TS)]
-pub struct RejectConfig {
-    /// Reject approval prompts related to sandbox escalation.
+pub struct GranularApprovalConfig {
+    /// Whether to allow shell command approval requests, including inline
+    /// `with_additional_permissions` and `require_escalated` requests.
     pub sandbox_approval: bool,
-    /// Reject prompts triggered by execpolicy `prompt` rules.
+    /// Whether to allow prompts triggered by execpolicy `prompt` rules.
     pub rules: bool,
-    /// Reject approval prompts triggered by skill script execution.
+    /// Whether to allow approval prompts triggered by skill script execution.
     #[serde(default)]
     pub skill_approval: bool,
-    /// Reject approval prompts related to built-in permission requests.
+    /// Whether to allow prompts triggered by the `request_permissions` tool.
     #[serde(default)]
     pub request_permissions: bool,
-    /// Reject MCP elicitation prompts.
+    /// Whether to allow MCP elicitation prompts.
     pub mcp_elicitations: bool,
 }
 
-impl RejectConfig {
-    pub const fn rejects_sandbox_approval(self) -> bool {
+impl GranularApprovalConfig {
+    pub const fn allows_sandbox_approval(self) -> bool {
         self.sandbox_approval
     }
 
-    pub const fn rejects_rules_approval(self) -> bool {
+    pub const fn allows_rules_approval(self) -> bool {
         self.rules
     }
 
-    pub const fn rejects_skill_approval(self) -> bool {
+    pub const fn allows_skill_approval(self) -> bool {
         self.skill_approval
     }
 
-    pub const fn rejects_request_permissions(self) -> bool {
+    pub const fn allows_request_permissions(self) -> bool {
         self.request_permissions
     }
 
-    pub const fn rejects_mcp_elicitations(self) -> bool {
+    pub const fn allows_mcp_elicitations(self) -> bool {
         self.mcp_elicitations
     }
 }
@@ -1187,6 +1239,9 @@ pub enum EventMsg {
     ElicitationRequest(ElicitationRequestEvent),
 
     ApplyPatchApprovalRequest(ApplyPatchApprovalRequestEvent),
+
+    /// Structured lifecycle event for a guardian-reviewed approval request.
+    GuardianAssessment(GuardianAssessmentEvent),
 
     /// Notification advising the user that something they are using has been
     /// deprecated and should be phased out.
@@ -3009,6 +3064,12 @@ pub struct SessionConfiguredEvent {
     /// When to escalate for approval for execution
     pub approval_policy: AskForApproval,
 
+    /// Configures who approval requests are routed to for review once they have
+    /// been escalated. This does not disable separate safety checks such as
+    /// ARC.
+    #[serde(default)]
+    pub approvals_reviewer: ApprovalsReviewer,
+
     /// How to sandbox commands executed in the system
     pub sandbox_policy: SandboxPolicy,
 
@@ -3197,6 +3258,10 @@ pub struct CollabAgentSpawnEndEvent {
     /// Initial prompt sent to the agent. Can be empty to prevent CoT leaking at the
     /// beginning.
     pub prompt: String,
+    /// Model requested for the spawned agent.
+    pub model: String,
+    /// Reasoning effort requested for the spawned agent.
+    pub reasoning_effort: ReasoningEffortConfig,
     /// Last known status of the new agent reported to the sender agent.
     pub status: AgentStatus,
 }
@@ -3479,89 +3544,89 @@ mod tests {
     }
 
     #[test]
-    fn reject_config_mcp_elicitation_flag_is_field_driven() {
+    fn granular_approval_config_mcp_elicitation_flag_is_field_driven() {
         assert!(
-            RejectConfig {
+            GranularApprovalConfig {
                 sandbox_approval: false,
                 rules: false,
                 skill_approval: false,
                 request_permissions: false,
                 mcp_elicitations: true,
             }
-            .rejects_mcp_elicitations()
+            .allows_mcp_elicitations()
         );
         assert!(
-            !RejectConfig {
+            !GranularApprovalConfig {
                 sandbox_approval: false,
                 rules: false,
                 skill_approval: false,
                 request_permissions: false,
                 mcp_elicitations: false,
             }
-            .rejects_mcp_elicitations()
+            .allows_mcp_elicitations()
         );
     }
 
     #[test]
-    fn reject_config_skill_approval_flag_is_field_driven() {
+    fn granular_approval_config_skill_approval_flag_is_field_driven() {
         assert!(
-            RejectConfig {
+            GranularApprovalConfig {
                 sandbox_approval: false,
                 rules: false,
                 skill_approval: true,
                 request_permissions: false,
                 mcp_elicitations: false,
             }
-            .rejects_skill_approval()
+            .allows_skill_approval()
         );
         assert!(
-            !RejectConfig {
+            !GranularApprovalConfig {
                 sandbox_approval: false,
                 rules: false,
                 skill_approval: false,
                 request_permissions: false,
                 mcp_elicitations: false,
             }
-            .rejects_skill_approval()
+            .allows_skill_approval()
         );
     }
 
     #[test]
-    fn reject_config_request_permissions_flag_is_field_driven() {
+    fn granular_approval_config_request_permissions_flag_is_field_driven() {
         assert!(
-            RejectConfig {
+            GranularApprovalConfig {
                 sandbox_approval: false,
                 rules: false,
                 skill_approval: false,
                 request_permissions: true,
                 mcp_elicitations: false,
             }
-            .rejects_request_permissions()
+            .allows_request_permissions()
         );
         assert!(
-            !RejectConfig {
+            !GranularApprovalConfig {
                 sandbox_approval: false,
                 rules: false,
                 skill_approval: false,
                 request_permissions: false,
                 mcp_elicitations: false,
             }
-            .rejects_request_permissions()
+            .allows_request_permissions()
         );
     }
 
     #[test]
-    fn reject_config_defaults_missing_optional_flags_to_false() {
-        let decoded = serde_json::from_value::<RejectConfig>(serde_json::json!({
+    fn granular_approval_config_defaults_missing_optional_flags_to_false() {
+        let decoded = serde_json::from_value::<GranularApprovalConfig>(serde_json::json!({
             "sandbox_approval": true,
             "rules": false,
             "mcp_elicitations": true,
         }))
-        .expect("legacy reject config should deserialize");
+        .expect("granular approval config should deserialize");
 
         assert_eq!(
             decoded,
-            RejectConfig {
+            GranularApprovalConfig {
                 sandbox_approval: true,
                 rules: false,
                 skill_approval: false,
@@ -4242,6 +4307,7 @@ mod tests {
                 model_provider_id: "openai".to_string(),
                 service_tier: None,
                 approval_policy: AskForApproval::Never,
+                approvals_reviewer: ApprovalsReviewer::User,
                 sandbox_policy: SandboxPolicy::new_read_only_policy(),
                 cwd: PathBuf::from("/home/user/project"),
                 reasoning_effort: Some(ReasoningEffortConfig::default()),
@@ -4261,6 +4327,7 @@ mod tests {
                 "model": "codex-mini-latest",
                 "model_provider_id": "openai",
                 "approval_policy": "never",
+                "approvals_reviewer": "user",
                 "sandbox_policy": {
                     "type": "read-only"
                 },

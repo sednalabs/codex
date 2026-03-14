@@ -66,6 +66,7 @@ fn test_model_info(
         input_modalities: default_input_modalities(),
         prefer_websockets: false,
         used_fallback_model_metadata: false,
+        supports_search_tool: false,
         priority: 1,
         upgrade: None,
         base_instructions: "base instructions".to_string(),
@@ -179,6 +180,24 @@ async fn spawn_agent_description_lists_visible_models_and_reasoning_efforts() ->
     assert!(
         !description.contains("Hidden Model"),
         "hidden picker model should be omitted from spawn_agent description: {description:?}"
+    );
+    assert!(
+        description.contains(
+            "Only use `spawn_agent` if and only if the user explicitly asks for sub-agents, delegation, or parallel agent work."
+        ),
+        "expected explicit authorization rule in spawn_agent description: {description:?}"
+    );
+    assert!(
+        description.contains(
+            "Requests for depth, thoroughness, research, investigation, or detailed codebase analysis do not count as permission to spawn."
+        ),
+        "expected non-authorization clarification in spawn_agent description: {description:?}"
+    );
+    assert!(
+        description.contains(
+            "Agent-role guidance below only helps choose which agent to use after spawning is already authorized; it never authorizes spawning by itself."
+        ),
+        "expected agent-role clarification in spawn_agent description: {description:?}"
     );
 
     Ok(())
