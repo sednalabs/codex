@@ -636,6 +636,36 @@ fn create_approval_parameters(
     properties
 }
 
+fn add_blocking_wait_parameters(properties: &mut BTreeMap<String, JsonSchema>) {
+    properties.insert(
+        "wait_until_terminal".to_string(),
+        JsonSchema::Boolean {
+            description: Some(
+                "When true, block until the process exits or `max_wait_ms` elapses. Defaults to false."
+                    .to_string(),
+            ),
+        },
+    );
+    properties.insert(
+        "max_wait_ms".to_string(),
+        JsonSchema::Number {
+            description: Some(
+                "Maximum total wait window for `wait_until_terminal`, in milliseconds. Defaults to the configured background terminal limit."
+                    .to_string(),
+            ),
+        },
+    );
+    properties.insert(
+        "heartbeat_interval_ms".to_string(),
+        JsonSchema::Number {
+            description: Some(
+                "Heartbeat cadence while `wait_until_terminal` is active, in milliseconds. Defaults to 30000 and is clamped to the effective wait window."
+                    .to_string(),
+            ),
+        },
+    );
+}
+
 fn create_exec_command_tool(
     allow_login_shell: bool,
     exec_permission_approvals_enabled: bool,
@@ -699,6 +729,7 @@ fn create_exec_command_tool(
             },
         );
     }
+    add_blocking_wait_parameters(&mut properties);
     properties.extend(create_approval_parameters(
         exec_permission_approvals_enabled,
     ));
@@ -706,7 +737,7 @@ fn create_exec_command_tool(
     ToolSpec::Function(ResponsesApiTool {
         name: "exec_command".to_string(),
         description:
-            "Runs a command in a PTY, returning output or a session ID for ongoing interaction."
+            "Runs a command in a PTY, returning output or a session ID for ongoing interaction. Use `wait_until_terminal=true` to block until the process exits or the wait window elapses."
                 .to_string(),
         strict: false,
         defer_loading: None,
@@ -720,7 +751,7 @@ fn create_exec_command_tool(
 }
 
 fn create_write_stdin_tool() -> ToolSpec {
-    let properties = BTreeMap::from([
+    let mut properties = BTreeMap::from([
         (
             "session_id".to_string(),
             JsonSchema::Number {
@@ -730,7 +761,10 @@ fn create_write_stdin_tool() -> ToolSpec {
         (
             "chars".to_string(),
             JsonSchema::String {
-                description: Some("Bytes to write to stdin (may be empty to poll).".to_string()),
+                description: Some(
+                    "Bytes to write to stdin (may be empty to poll or to use `wait_until_terminal`)."
+                        .to_string(),
+                ),
             },
         ),
         (
@@ -751,6 +785,7 @@ fn create_write_stdin_tool() -> ToolSpec {
             },
         ),
     ]);
+    add_blocking_wait_parameters(&mut properties);
 
     ToolSpec::Function(ResponsesApiTool {
         name: "write_stdin".to_string(),

@@ -2667,6 +2667,34 @@ fn code_mode_exec_description_omits_nested_tool_details_when_not_code_mode_only(
 }
 
 #[test]
+fn exec_command_tool_exposes_blocking_wait_parameters() {
+    let ToolSpec::Function(tool) = create_exec_command_tool(true, false) else {
+        panic!("expected exec_command function tool")
+    };
+    let JsonSchema::Object { properties, .. } = tool.parameters else {
+        panic!("expected object schema")
+    };
+
+    assert!(properties.contains_key("wait_until_terminal"));
+    assert!(properties.contains_key("max_wait_ms"));
+    assert!(properties.contains_key("heartbeat_interval_ms"));
+}
+
+#[test]
+fn write_stdin_tool_exposes_blocking_wait_parameters() {
+    let ToolSpec::Function(tool) = create_write_stdin_tool() else {
+        panic!("expected write_stdin function tool")
+    };
+    let JsonSchema::Object { properties, .. } = tool.parameters else {
+        panic!("expected object schema")
+    };
+
+    assert!(properties.contains_key("wait_until_terminal"));
+    assert!(properties.contains_key("max_wait_ms"));
+    assert!(properties.contains_key("heartbeat_interval_ms"));
+}
+
+#[test]
 fn chat_tools_include_top_level_name() {
     let properties =
         BTreeMap::from([("foo".to_string(), JsonSchema::String { description: None })]);
