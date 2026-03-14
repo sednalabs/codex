@@ -36,16 +36,16 @@ User-visible behavior:
 - Wait-timeout notes are appended to emitted `raw_output`, and token accounting is derived from the final response text.
 - `TurnCompleteEvent` includes `compaction_events_in_turn`.
 
-### Usage ledger: Postgres-backed ingest, canonicalized billing turns, and AUD reporting
+### Usage ledger: shared ledger owned by `agent-usage-ledger`
 
 Why:
-- Downstream tracks Codex and Gemini usage in Postgres with a durable schema and fork-local reporting flows.
-- Billing turns need stable canonical identities and historical AUD cost reporting that upstream does not provide.
+- Downstream still participates in the shared usage ledger, but the schema, ingest, and reporting implementation now live in the dedicated `agent-usage-ledger` repo instead of this fork.
+- Billing turns still need stable canonical identities and historical AUD cost reporting that upstream does not provide.
 
 User-visible behavior:
-- Downstream ships `scripts/llm_usage/*` for schema setup, ingestion, scheduled runs, and reporting.
-- [usage-ledger.md](/home/grant/mmm/codex/docs/usage-ledger.md) documents the ledger workflow.
-- Billing turns are canonicalized before ingest, and historical AUD cost views are available downstream.
+- Shared usage-ledger scripts and docs live in [`agent-usage-ledger`](/home/grant/mmm/agent-usage-ledger).
+- [usage-ledger.md](/home/grant/mmm/agent-usage-ledger/docs/usage-ledger.md) documents the ledger workflow.
+- Billing turns are canonicalized before ingest, and historical AUD cost views remain available downstream through that shared repo.
 
 ### Repo tooling: build-helper presets for downstream validation and release
 
