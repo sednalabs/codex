@@ -164,6 +164,10 @@ select
   output_tokens,
   reasoning_tokens,
   tool_tokens,
+  tool_call_count,
+  tool_call_count_known_event_count,
+  tool_call_count_unknown_event_count,
+  tool_call_count_coverage,
   succeeded_event_count,
   aborted_event_count,
   failed_event_count

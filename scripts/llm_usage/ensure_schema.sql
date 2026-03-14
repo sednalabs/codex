@@ -547,6 +547,7 @@ CREATE INDEX IF NOT EXISTS llm_fx_rate_history_lookup_idx
 DROP VIEW IF EXISTS __LLM_SCHEMA__.llm_latest_rate_limits;
 DROP VIEW IF EXISTS __LLM_SCHEMA__.llm_latest_quota_events;
 DROP VIEW IF EXISTS __LLM_SCHEMA__.llm_session_usage_summary;
+DROP VIEW IF EXISTS __LLM_SCHEMA__.llm_session_tool_call_summary;
 DROP VIEW IF EXISTS __LLM_SCHEMA__.llm_canonical_usage_events;
 DROP VIEW IF EXISTS __LLM_SCHEMA__.llm_usage_public_api_costs;
 DROP VIEW IF EXISTS __LLM_SCHEMA__.llm_usage_public_api_costs_observed;
@@ -602,38 +603,121 @@ WHERE
     AND coalesce(rollups.has_rollup, false) = false
   );
 
-CREATE OR REPLACE VIEW __LLM_SCHEMA__.llm_session_usage_summary AS
+CREATE OR REPLACE VIEW __LLM_SCHEMA__.llm_session_tool_call_summary AS
+WITH session_tool_call_events AS (
+  SELECT
+    source_system,
+    source_kind,
+    session_id,
+    project_key,
+    project_path,
+    coalesce(provider, 'unknown') AS provider,
+    coalesce(model_used, model_requested, 'unknown') AS model,
+    event_ts,
+    CASE
+      WHEN source_system = 'gemini' AND source_kind = 'interactive_message'
+        THEN coalesce(nullif(raw->>'tool_call_count', '')::bigint, 0)
+      ELSE NULL
+    END AS tool_call_count
+  FROM __LLM_SCHEMA__.llm_canonical_usage_events
+)
 SELECT
   source_system,
   source_kind,
   session_id,
   project_key,
   project_path,
-  coalesce(provider, 'unknown') AS provider,
-  coalesce(model_used, model_requested, 'unknown') AS model,
+  provider,
+  model,
   min(event_ts) AS started_at,
   max(event_ts) AS last_event_at,
-  count(*) AS event_count,
-  count(*) FILTER (WHERE event_status = 'succeeded') AS succeeded_event_count,
-  count(*) FILTER (WHERE event_status = 'aborted') AS aborted_event_count,
-  count(*) FILTER (WHERE event_status = 'failed') AS failed_event_count,
-  sum(coalesce(input_tokens, 0)) AS input_tokens,
-  sum(coalesce(cached_input_tokens, 0)) AS cached_input_tokens,
-  sum(coalesce(output_tokens, 0)) AS output_tokens,
-  sum(coalesce(reasoning_tokens, 0)) AS reasoning_tokens,
-  sum(coalesce(tool_tokens, 0)) AS tool_tokens,
-  sum(coalesce(total_tokens, 0)) AS summed_event_tokens,
-  max(cumulative_total_tokens) AS max_cumulative_total_tokens,
-  sum(coalesce(total_tokens, 0)) AS session_total_tokens
-FROM __LLM_SCHEMA__.llm_canonical_usage_events
+  sum(coalesce(tool_call_count, 0)) AS tool_call_count,
+  count(*) FILTER (WHERE tool_call_count IS NOT NULL) AS tool_call_count_known_event_count,
+  count(*) FILTER (WHERE tool_call_count IS NULL) AS tool_call_count_unknown_event_count,
+  CASE
+    WHEN count(*) FILTER (WHERE tool_call_count IS NULL) = 0 THEN 'complete'
+    WHEN count(*) FILTER (WHERE tool_call_count IS NOT NULL) = 0 THEN 'unsupported'
+    ELSE 'partial'
+  END AS tool_call_count_coverage
+FROM session_tool_call_events
 GROUP BY
   source_system,
   source_kind,
   session_id,
   project_key,
   project_path,
-  coalesce(provider, 'unknown'),
-  coalesce(model_used, model_requested, 'unknown');
+  provider,
+  model;
+
+CREATE OR REPLACE VIEW __LLM_SCHEMA__.llm_session_usage_summary AS
+WITH usage_summary AS (
+  SELECT
+    source_system,
+    source_kind,
+    session_id,
+    project_key,
+    project_path,
+    coalesce(provider, 'unknown') AS provider,
+    coalesce(model_used, model_requested, 'unknown') AS model,
+    min(event_ts) AS started_at,
+    max(event_ts) AS last_event_at,
+    count(*) AS event_count,
+    count(*) FILTER (WHERE event_status = 'succeeded') AS succeeded_event_count,
+    count(*) FILTER (WHERE event_status = 'aborted') AS aborted_event_count,
+    count(*) FILTER (WHERE event_status = 'failed') AS failed_event_count,
+    sum(coalesce(input_tokens, 0)) AS input_tokens,
+    sum(coalesce(cached_input_tokens, 0)) AS cached_input_tokens,
+    sum(coalesce(output_tokens, 0)) AS output_tokens,
+    sum(coalesce(reasoning_tokens, 0)) AS reasoning_tokens,
+    sum(coalesce(tool_tokens, 0)) AS tool_tokens,
+    sum(coalesce(total_tokens, 0)) AS summed_event_tokens,
+    max(cumulative_total_tokens) AS max_cumulative_total_tokens,
+    sum(coalesce(total_tokens, 0)) AS session_total_tokens
+  FROM __LLM_SCHEMA__.llm_canonical_usage_events
+  GROUP BY
+    source_system,
+    source_kind,
+    session_id,
+    project_key,
+    project_path,
+    coalesce(provider, 'unknown'),
+    coalesce(model_used, model_requested, 'unknown')
+)
+SELECT
+  usage_summary.source_system,
+  usage_summary.source_kind,
+  usage_summary.session_id,
+  usage_summary.project_key,
+  usage_summary.project_path,
+  usage_summary.provider,
+  usage_summary.model,
+  usage_summary.started_at,
+  usage_summary.last_event_at,
+  usage_summary.event_count,
+  usage_summary.succeeded_event_count,
+  usage_summary.aborted_event_count,
+  usage_summary.failed_event_count,
+  usage_summary.input_tokens,
+  usage_summary.cached_input_tokens,
+  usage_summary.output_tokens,
+  usage_summary.reasoning_tokens,
+  usage_summary.tool_tokens,
+  usage_summary.summed_event_tokens,
+  usage_summary.max_cumulative_total_tokens,
+  usage_summary.session_total_tokens,
+  coalesce(tool_calls.tool_call_count, 0) AS tool_call_count,
+  coalesce(tool_calls.tool_call_count_known_event_count, 0) AS tool_call_count_known_event_count,
+  coalesce(tool_calls.tool_call_count_unknown_event_count, usage_summary.event_count) AS tool_call_count_unknown_event_count,
+  coalesce(tool_calls.tool_call_count_coverage, 'unsupported') AS tool_call_count_coverage
+FROM usage_summary
+LEFT JOIN __LLM_SCHEMA__.llm_session_tool_call_summary tool_calls
+  ON usage_summary.source_system = tool_calls.source_system
+ AND usage_summary.source_kind = tool_calls.source_kind
+ AND usage_summary.session_id = tool_calls.session_id
+ AND usage_summary.project_key IS NOT DISTINCT FROM tool_calls.project_key
+ AND usage_summary.project_path IS NOT DISTINCT FROM tool_calls.project_path
+ AND usage_summary.provider = tool_calls.provider
+ AND usage_summary.model = tool_calls.model;
 
 CREATE OR REPLACE VIEW __LLM_SCHEMA__.llm_latest_rate_limits AS
 SELECT DISTINCT ON (

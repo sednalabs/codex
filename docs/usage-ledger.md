@@ -55,6 +55,7 @@ The schema now creates or maintains:
 - `llm_usage.llm_usage_events`
 - `llm_usage.llm_quota_events`
 - `llm_usage.llm_session_usage_summary`
+- `llm_usage.llm_session_tool_call_summary`
 - `llm_usage.llm_latest_rate_limits`
 - `llm_usage.llm_latest_quota_events`
 
@@ -105,6 +106,7 @@ Important columns:
 - `model_requested`, `model_used`
 - `ok`, `event_status`, `error_category`
 - `input_tokens`, `cached_input_tokens`, `output_tokens`, `reasoning_tokens`, `tool_tokens`, `total_tokens`
+- `tool_call_count`, `tool_call_count_known_event_count`, `tool_call_count_unknown_event_count`, `tool_call_count_coverage` in `llm_session_usage_summary` for explicit tool-call activity accounting
 - `cumulative_total_tokens` when the source exposes cumulative counters
 - Codex rate-limit snapshot fields
 
@@ -290,6 +292,8 @@ select
   started_at,
   last_event_at,
   session_total_tokens,
+  tool_call_count,
+  tool_call_count_coverage,
   succeeded_event_count,
   aborted_event_count,
   failed_event_count
