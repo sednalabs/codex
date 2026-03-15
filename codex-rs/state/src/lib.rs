@@ -49,6 +49,9 @@ pub use runtime::logs_db_filename;
 pub use runtime::logs_db_path;
 pub use runtime::state_db_filename;
 pub use runtime::state_db_path;
+pub use runtime::usage::UsageLogger;
+pub use runtime::usage_db_filename;
+pub use runtime::usage_db_path;
 
 /// Environment variable for overriding the SQLite state database home directory.
 pub const SQLITE_HOME_ENV: &str = "CODEX_SQLITE_HOME";
@@ -57,6 +60,8 @@ pub const LOGS_DB_FILENAME: &str = "logs";
 pub const LOGS_DB_VERSION: u32 = 1;
 pub const STATE_DB_FILENAME: &str = "state";
 pub const STATE_DB_VERSION: u32 = 5;
+pub const USAGE_DB_FILENAME: &str = "usage";
+pub const USAGE_DB_VERSION: u32 = 1;
 
 /// Errors encountered during DB operations. Tags: [stage]
 pub const DB_ERROR_METRIC: &str = "codex.db.error";

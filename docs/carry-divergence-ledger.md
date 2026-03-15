@@ -50,6 +50,29 @@ live divergence.
 - Primary files:
   - `docs/downstream.md`
 
+### Usage Event Logging And Metadata Capture
+
+- Sessions record a downstream-only usage log database that tracks token,
+  provider, tool, and spawn metadata per thread so downstream reporting can
+  export a full list of agents, tool calls, weighting/effort metadata, rate-
+  limit snapshots, and completion/forging regions for downstream billing and
+  audit workflows.
+- The new `usage` SQLite DB stores `usage_threads`, `usage_provider_calls`,
+  `usage_tool_calls`, `usage_quota_snapshots`, `usage_spawn_requests`, and
+  `usage_fork_snapshots`, capturing per-turn requested model/provider hints,
+  tool invocation lifecycles, rate-limit snapshots, and parent/child thread
+  relationships for spawn requests.
+- Primary files:
+  - `codex-rs/core/src/codex.rs`
+  - `codex-rs/core/src/state/service.rs`
+  - `codex-rs/protocol/src/protocol.rs`
+  - `codex-rs/state/src/lib.rs`
+  - `codex-rs/state/src/migrations.rs`
+  - `codex-rs/state/src/runtime.rs`
+  - `codex-rs/state/src/runtime/usage.rs`
+  - `codex-rs/state/usage_migrations/0001_usage_tables.sql`
+  - `codex-rs/state/Cargo.toml`
+
 ### CLI Git Metadata And Rebuild Triggers
 
 - CLI builds embed `git describe` metadata.

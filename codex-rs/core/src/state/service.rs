@@ -22,7 +22,10 @@ use crate::tools::sandboxing::ApprovalStore;
 use crate::unified_exec::UnifiedExecProcessManager;
 use codex_hooks::Hooks;
 use codex_otel::SessionTelemetry;
+use codex_protocol::protocol::Event;
+use codex_state::UsageLogger;
 use codex_utils_absolute_path::AbsolutePathBuf;
+use log::warn;
 use std::path::PathBuf;
 use tokio::sync::Mutex;
 use tokio::sync::RwLock;
@@ -61,4 +64,32 @@ pub(crate) struct SessionServices {
     /// Session-scoped model client shared across turns.
     pub(crate) model_client: ModelClient,
     pub(crate) code_mode_service: CodeModeService,
+    pub(crate) usage_logger: Option<Mutex<UsageLogger>>,
+}
+
+impl SessionServices {
+    pub(crate) async fn log_usage_event(&self, event: &Event) {
+        if let Some(logger) = &self.usage_logger {
+            let mut guard = logger.lock().await;
+            if let Some(logger) = guard.as_mut() {
+                if let Err(err) = logger.record_event(event).await {
+                    warn!("failed to record usage event: {err}");
+                }
+            }
+        }
+    }
+
+    pub(crate) async fn update_usage_turn_snapshot(
+        &self,
+        turn_id: &str,
+        requested_model: Option<String>,
+        requested_provider: Option<String>,
+    ) {
+        if let Some(logger) = &self.usage_logger {
+            let mut guard = logger.lock().await;
+            if let Some(logger) = guard.as_mut() {
+                logger.update_turn_snapshot(turn_id, requested_model, requested_provider);
+            }
+        }
+    }
 }
