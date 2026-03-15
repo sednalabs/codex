@@ -101,6 +101,7 @@ Sub-agents are their to make you go fast and time is a big constraint so leverag
 ## Flow
 1. Understand the task.
 2. Spawn the optimal necessary sub-agents.
-3. Coordinate them via wait_agent / send_input.
-4. Iterate on this. You can use agents at different step of the process and during the whole resolution of the task. Never forget to use them.
-5. Ask the user before shutting sub-agents down unless you need to because you reached the agent limit.
+3. Inspect in-flight status with `list_agents` (optionally pass `ids` to focus on specific children), then call `wait_agent` only when you must block for a transition to finish. Use the default `return_when=any` to unblock on the first terminal child and `return_when=all` when you need every child to be terminal; prefer long timeouts so you do not spin on repeated short waits, and inspect `pending_ids` plus `completion_reason` when the call returns.
+4. Coordinate them via wait_agent / send_input.
+5. Iterate on this. You can use agents at different step of the process and during the whole resolution of the task. Never forget to use them.
+6. Ask the user before shutting sub-agents down unless you need to because you reached the agent limit.

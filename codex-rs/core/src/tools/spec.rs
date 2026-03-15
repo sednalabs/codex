@@ -27,7 +27,6 @@ use crate::tools::handlers::TOOL_SUGGEST_TOOL_NAME;
 use crate::tools::handlers::agent_jobs::BatchJobHandler;
 use crate::tools::handlers::apply_patch::create_apply_patch_freeform_tool;
 use crate::tools::handlers::apply_patch::create_apply_patch_json_tool;
-use crate::tools::handlers::multi_agents::DEFAULT_WAIT_TIMEOUT_MS;
 use crate::tools::handlers::multi_agents::MAX_WAIT_TIMEOUT_MS;
 use crate::tools::handlers::multi_agents::MIN_WAIT_TIMEOUT_MS;
 use crate::tools::handlers::request_permissions_tool_description;
@@ -128,20 +127,99 @@ fn agent_status_output_schema() -> JsonValue {
     })
 }
 
-fn spawn_agent_output_schema() -> JsonValue {
+fn collab_agent_list_item_schema() -> JsonValue {
     json!({
         "type": "object",
         "properties": {
             "agent_id": {
                 "type": "string",
-                "description": "Thread identifier for the spawned agent."
+                "description": "Thread identifier for the agent."
             },
             "nickname": {
                 "type": ["string", "null"],
-                "description": "User-facing nickname for the spawned agent when available."
+                "description": "User-facing nickname for the agent when available."
+            },
+            "role": {
+                "type": ["string", "null"],
+                "description": "Role assigned to the agent at spawn time."
+            },
+            "status": {
+                "oneOf": [
+                    {
+                        "type": "string",
+                        "enum": ["pending_init", "running", "shutdown", "not_found"]
+                    },
+                    {
+                        "type": "object",
+                        "properties": {
+                            "completed": {
+                                "type": ["string", "null"]
+                            }
+                        },
+                        "required": ["completed"],
+                        "additionalProperties": false
+                    },
+                    {
+                        "type": "object",
+                        "properties": {
+                            "errored": {
+                                "type": "string"
+                            }
+                        },
+                        "required": ["errored"],
+                        "additionalProperties": false
+                    }
+                ],
+                "description": "Agent status at the time the tool response was generated."
+            },
+            "identity_source": {
+                "type": "string",
+                "description": "Identity source used for inherited agent settings."
+            },
+            "effective_model": {
+                "type": ["string", "null"],
+                "description":
+                    "Effective thread config model value for this spawned agent."
+            },
+            "effective_reasoning_effort": {
+                "type": ["string", "null"],
+                "description":
+                    "Effective thread config reasoning effort for this spawned agent."
+            },
+            "effective_model_provider_id": {
+                "type": "string",
+                "description": "Effective model provider identifier from the thread config snapshot."
             }
         },
-        "required": ["agent_id", "nickname"],
+        "required": [
+            "agent_id",
+            "nickname",
+            "role",
+            "status",
+            "identity_source",
+            "effective_model",
+            "effective_reasoning_effort",
+            "effective_model_provider_id"
+        ],
+        "additionalProperties": false
+    })
+}
+
+fn spawn_agent_output_schema() -> JsonValue {
+    collab_agent_list_item_schema()
+}
+
+fn list_agents_output_schema() -> JsonValue {
+    json!({
+        "type": "object",
+        "properties": {
+            "agents": {
+                "type": "array",
+                "description": "Current list of visible agent snapshots.",
+                "items": collab_agent_list_item_schema()
+            }
+        },
+        "required": ["agents"],
         "additionalProperties": false
     })
 }
@@ -177,15 +255,36 @@ fn wait_output_schema() -> JsonValue {
         "properties": {
             "status": {
                 "type": "object",
-                "description": "Final statuses keyed by agent id for agents that finished before the timeout.",
+                "description":
+                    "Agent statuses keyed by id for the return point. Always includes the subset of agents that satisfied `return_when` (final statuses for those agents). Use `pending_ids` to see which requests are still in flight.",
                 "additionalProperties": agent_status_output_schema()
+            },
+            "requested_ids": {
+                "type": "array",
+                "description": "Original agent ids provided in the call, preserving order.",
+                "items": {
+                    "type": "string"
+                }
+            },
+            "pending_ids": {
+                "type": "array",
+                "description": "Agents that had not reached a final status when the call returned.",
+                "items": {
+                    "type": "string"
+                }
+            },
+            "completion_reason": {
+                "type": "string",
+                "enum": ["terminal", "timeout"],
+                "description": "Explains whether the call ended because the requested goal was reached (`terminal`) or because the timeout expired (`timeout`)."
             },
             "timed_out": {
                 "type": "boolean",
-                "description": "Whether the wait call returned due to timeout before any agent reached a final status."
+                "description":
+                    "Whether the call returned due to timeout before the requested condition was reached."
             }
         },
-        "required": ["status", "timed_out"],
+        "required": ["status", "requested_ids", "pending_ids", "completion_reason", "timed_out"],
         "additionalProperties": false
     })
 }
@@ -1147,7 +1246,7 @@ fn create_spawn_agent_tool(config: &ToolsConfig) -> ToolSpec {
 - Call wait_agent very sparingly. Only call wait_agent when you need the result immediately for the next critical-path step and you are blocked until it returns.
 - Do not redo delegated subagent tasks yourself; focus on integrating results or tackling non-overlapping work.
 - While the subagent is running in the background, do meaningful non-overlapping work immediately.
-- Do not repeatedly wait by reflex.
+- Do not repeatedly wait by reflex. Use `list_agents` for a quick progress snapshot and only call `wait_agent` when you need a blocking transition.
 - When a delegated coding task returns, quickly review the uploaded changes, then integrate or refine them.
 
 ### Parallel delegation patterns
@@ -1369,6 +1468,33 @@ fn create_send_input_tool() -> ToolSpec {
     })
 }
 
+fn create_list_agents_tool() -> ToolSpec {
+    let mut properties = BTreeMap::new();
+    properties.insert(
+        "ids".to_string(),
+        JsonSchema::Array {
+            items: Box::new(JsonSchema::String { description: None }),
+            description: Some(
+                "Optional filter of agent IDs to return. Direct children that match are returned with live metadata; requested ids that are missing or not visible to the current thread are returned as explicit `not_found` entries."
+                    .to_string(),
+            ),
+        },
+    );
+    ToolSpec::Function(ResponsesApiTool {
+        name: "list_agents".to_string(),
+        description: "List spawned agents and return a snapshot for each agent owned by the current thread, including role, identity source, and effective model settings. Use this while delegation is in progress to inspect non-blocking progress before deciding whether to call `wait_agent`."
+            .to_string(),
+        strict: false,
+        defer_loading: None,
+        parameters: JsonSchema::Object {
+            properties,
+            required: None,
+            additional_properties: Some(false.into()),
+        },
+        output_schema: Some(list_agents_output_schema()),
+    })
+}
+
 fn create_resume_agent_tool() -> ToolSpec {
     let mut properties = BTreeMap::new();
     properties.insert(
@@ -1397,27 +1523,37 @@ fn create_resume_agent_tool() -> ToolSpec {
 fn create_wait_agent_tool() -> ToolSpec {
     let mut properties = BTreeMap::new();
     properties.insert(
-        "ids".to_string(),
-        JsonSchema::Array {
-            items: Box::new(JsonSchema::String { description: None }),
-            description: Some(
-                "Agent ids to wait on. Pass multiple ids to wait for whichever finishes first."
-                    .to_string(),
-            ),
-        },
-    );
+            "ids".to_string(),
+            JsonSchema::Array {
+                items: Box::new(JsonSchema::String { description: None }),
+                description: Some(
+                    "One or more agent IDs to wait for. Returns when any requested agent matches `return_when`.".
+                        to_string(),
+                ),
+            },
+        );
     properties.insert(
         "timeout_ms".to_string(),
         JsonSchema::Number {
             description: Some(format!(
-                "Optional timeout in milliseconds. Defaults to {DEFAULT_WAIT_TIMEOUT_MS}, min {MIN_WAIT_TIMEOUT_MS}, max {MAX_WAIT_TIMEOUT_MS}. Prefer longer waits (minutes) to avoid busy polling."
+                "Optional blocking timeout in milliseconds. Defaults to the configured background terminal max timeout, min {MIN_WAIT_TIMEOUT_MS}, max {MAX_WAIT_TIMEOUT_MS}. Prefer longer values (minutes) to avoid short-polling loops."
             )),
         },
     );
+    properties.insert(
+            "return_when".to_string(),
+            JsonSchema::String {
+                description: Some(
+                    "Optional return mode. `any` (default) returns once any requested agent reaches a final status. `all` waits until every requested agent reaches a final status before returning."
+                        .to_string(),
+                ),
+            },
+        );
 
     ToolSpec::Function(ResponsesApiTool {
         name: "wait_agent".to_string(),
-        description: "Wait for agents to reach a final status. Completed statuses may include the agent's final message. Returns empty status when timed out. Once the agent reaches a final status, a notification message will be received containing the same completed status."
+        description: "Use this for blocking coordination while awaiting sub-agent completion. The call blocks until the requested `return_when` condition is met or the timeout is reached. Prefer longer timeouts (minutes) to avoid short-polling loops, and favor `list_agents` for non-blocking snapshots before calling `wait_agent` when you really need the transition to finish.
+When `return_when` is `any`, the call returns as soon as one requested agent becomes terminal. When `return_when` is `all`, it waits for every requested agent to reach a terminal state before returning."
             .to_string(),
         strict: false,
         defer_loading: None,
@@ -2529,6 +2665,7 @@ pub(crate) fn build_specs_with_discoverable_tools(
     use crate::tools::handlers::UnifiedExecHandler;
     use crate::tools::handlers::ViewImageHandler;
     use crate::tools::handlers::multi_agents::CloseAgentHandler;
+    use crate::tools::handlers::multi_agents::ListAgentsHandler;
     use crate::tools::handlers::multi_agents::ResumeAgentHandler;
     use crate::tools::handlers::multi_agents::SendInputHandler;
     use crate::tools::handlers::multi_agents::SpawnAgentHandler;
@@ -2914,6 +3051,12 @@ pub(crate) fn build_specs_with_discoverable_tools(
         );
         push_tool_spec(
             &mut builder,
+            create_list_agents_tool(),
+            false,
+            config.code_mode_enabled,
+        );
+        push_tool_spec(
+            &mut builder,
             create_send_input_tool(),
             false,
             config.code_mode_enabled,
@@ -2937,6 +3080,7 @@ pub(crate) fn build_specs_with_discoverable_tools(
             config.code_mode_enabled,
         );
         builder.register_handler("spawn_agent", Arc::new(SpawnAgentHandler));
+        builder.register_handler("list_agents", Arc::new(ListAgentsHandler));
         builder.register_handler("send_input", Arc::new(SendInputHandler));
         builder.register_handler("resume_agent", Arc::new(ResumeAgentHandler));
         builder.register_handler("wait_agent", Arc::new(WaitAgentHandler));
@@ -3179,6 +3323,7 @@ mod tests {
     fn tool_name(tool: &ToolSpec) -> &str {
         match tool {
             ToolSpec::Function(ResponsesApiTool { name, .. }) => name,
+            ToolSpec::ToolSearch { .. } => "tool_search",
             ToolSpec::LocalShell {} => "local_shell",
             ToolSpec::ImageGeneration { .. } => "image_generation",
             ToolSpec::WebSearch { .. } => "web_search",
@@ -3270,7 +3415,8 @@ mod tests {
             ToolSpec::Function(ResponsesApiTool { parameters, .. }) => {
                 strip_descriptions_schema(parameters);
             }
-            ToolSpec::Freeform(_)
+            ToolSpec::ToolSearch { .. }
+            | ToolSpec::Freeform(_)
             | ToolSpec::LocalShell {}
             | ToolSpec::ImageGeneration { .. }
             | ToolSpec::WebSearch { .. } => {}
@@ -3301,6 +3447,8 @@ mod tests {
             features: &features,
             web_search_mode: Some(WebSearchMode::Live),
             session_source: SessionSource::Cli,
+            sandbox_policy: &SandboxPolicy::DangerFullAccess,
+            windows_sandbox_level: WindowsSandboxLevel::Disabled,
         });
         let (tools, _) = build_specs(&config, None, None, &[]).build();
 
@@ -3335,12 +3483,18 @@ mod tests {
                 search_context_size: None,
                 search_content_types: None,
             },
-            create_view_image_tool(),
+            create_view_image_tool(false),
+            create_spawn_agent_tool(&config),
+            create_list_agents_tool(),
+            create_send_input_tool(),
+            create_resume_agent_tool(),
+            create_wait_agent_tool(),
+            create_close_agent_tool(),
         ] {
             expected.insert(tool_name(&spec).to_string(), spec);
         }
 
-        if config.request_permission_enabled {
+        if config.request_permissions_tool_enabled {
             let spec = create_request_permissions_tool();
             expected.insert(tool_name(&spec).to_string(), spec);
         }
@@ -3374,11 +3528,19 @@ mod tests {
             features: &features,
             web_search_mode: Some(WebSearchMode::Cached),
             session_source: SessionSource::Cli,
+            sandbox_policy: &SandboxPolicy::DangerFullAccess,
+            windows_sandbox_level: WindowsSandboxLevel::Disabled,
         });
         let (tools, _) = build_specs(&tools_config, None, None, &[]).build();
         assert_contains_tool_names(
             &tools,
-            &["spawn_agent", "send_input", "wait", "close_agent"],
+            &[
+                "spawn_agent",
+                "list_agents",
+                "send_input",
+                "wait_agent",
+                "close_agent",
+            ],
         );
         assert_lacks_tool_name(&tools, "spawn_agents_on_csv");
     }
@@ -3398,14 +3560,17 @@ mod tests {
             features: &features,
             web_search_mode: Some(WebSearchMode::Cached),
             session_source: SessionSource::Cli,
+            sandbox_policy: &SandboxPolicy::DangerFullAccess,
+            windows_sandbox_level: WindowsSandboxLevel::Disabled,
         });
         let (tools, _) = build_specs(&tools_config, None, None, &[]).build();
         assert_contains_tool_names(
             &tools,
             &[
                 "spawn_agent",
+                "list_agents",
                 "send_input",
-                "wait",
+                "wait_agent",
                 "close_agent",
                 "spawn_agents_on_csv",
             ],
@@ -3428,6 +3593,8 @@ mod tests {
             features: &features,
             web_search_mode: Some(WebSearchMode::Cached),
             session_source: SessionSource::Cli,
+            sandbox_policy: &SandboxPolicy::DangerFullAccess,
+            windows_sandbox_level: WindowsSandboxLevel::Disabled,
         });
         let (tools, _) = build_specs(&tools_config, None, None, &[]).build();
         assert_contains_tool_names(&tools, &["artifacts"]);
@@ -3451,15 +3618,18 @@ mod tests {
             session_source: SessionSource::SubAgent(SubAgentSource::Other(
                 "agent_job:test".to_string(),
             )),
+            sandbox_policy: &SandboxPolicy::DangerFullAccess,
+            windows_sandbox_level: WindowsSandboxLevel::Disabled,
         });
         let (tools, _) = build_specs(&tools_config, None, None, &[]).build();
         assert_contains_tool_names(
             &tools,
             &[
                 "spawn_agent",
+                "list_agents",
                 "send_input",
                 "resume_agent",
-                "wait",
+                "wait_agent",
                 "close_agent",
                 "spawn_agents_on_csv",
                 "report_agent_job_result",
@@ -3481,6 +3651,8 @@ mod tests {
             features: &features,
             web_search_mode: Some(WebSearchMode::Cached),
             session_source: SessionSource::Cli,
+            sandbox_policy: &SandboxPolicy::DangerFullAccess,
+            windows_sandbox_level: WindowsSandboxLevel::Disabled,
         });
         let (tools, _) = build_specs(&tools_config, None, None, &[]).build();
         let request_user_input_tool = find_tool(&tools, "request_user_input");
@@ -3497,6 +3669,8 @@ mod tests {
             features: &features,
             web_search_mode: Some(WebSearchMode::Cached),
             session_source: SessionSource::Cli,
+            sandbox_policy: &SandboxPolicy::DangerFullAccess,
+            windows_sandbox_level: WindowsSandboxLevel::Disabled,
         });
         let (tools, _) = build_specs(&tools_config, None, None, &[]).build();
         let request_user_input_tool = find_tool(&tools, "request_user_input");
@@ -3521,6 +3695,8 @@ mod tests {
             features: &features,
             web_search_mode: Some(WebSearchMode::Cached),
             session_source: SessionSource::Cli,
+            sandbox_policy: &SandboxPolicy::DangerFullAccess,
+            windows_sandbox_level: WindowsSandboxLevel::Disabled,
         });
         let (tools, _) = build_specs(&tools_config, None, None, &[]).build();
         assert_lacks_tool_name(&tools, "request_permissions");
@@ -3534,6 +3710,8 @@ mod tests {
             features: &features,
             web_search_mode: Some(WebSearchMode::Cached),
             session_source: SessionSource::Cli,
+            sandbox_policy: &SandboxPolicy::DangerFullAccess,
+            windows_sandbox_level: WindowsSandboxLevel::Disabled,
         });
         let (tools, _) = build_specs(&tools_config, None, None, &[]).build();
         let request_permissions_tool = find_tool(&tools, "request_permissions");
@@ -3549,7 +3727,7 @@ mod tests {
         let model_info =
             ModelsManager::construct_model_info_offline_for_tests("gpt-5-codex", &config);
         let mut features = Features::with_defaults();
-        features.enable(Feature::RequestPermissions);
+        features.enable(Feature::ExecPermissionApprovals);
         let available_models = Vec::new();
         let tools_config = ToolsConfig::new(&ToolsConfigParams {
             model_info: &model_info,
@@ -3557,6 +3735,8 @@ mod tests {
             features: &features,
             web_search_mode: Some(WebSearchMode::Cached),
             session_source: SessionSource::Cli,
+            sandbox_policy: &SandboxPolicy::DangerFullAccess,
+            windows_sandbox_level: WindowsSandboxLevel::Disabled,
         });
         let (tools, _) = build_specs(&tools_config, None, None, &[]).build();
 
@@ -3577,6 +3757,8 @@ mod tests {
             features: &features,
             web_search_mode: Some(WebSearchMode::Cached),
             session_source: SessionSource::Cli,
+            sandbox_policy: &SandboxPolicy::DangerFullAccess,
+            windows_sandbox_level: WindowsSandboxLevel::Disabled,
         });
         let (tools, _) = build_specs(&tools_config, None, None, &[]).build();
         assert!(
@@ -3599,6 +3781,8 @@ mod tests {
             features: &features,
             web_search_mode: Some(WebSearchMode::Cached),
             session_source: SessionSource::Cli,
+            sandbox_policy: &SandboxPolicy::DangerFullAccess,
+            windows_sandbox_level: WindowsSandboxLevel::Disabled,
         });
         let (tools, _) = build_specs(&tools_config, None, None, &[]).build();
 
@@ -3627,6 +3811,8 @@ mod tests {
             features: &features,
             web_search_mode: Some(WebSearchMode::Cached),
             session_source: SessionSource::Cli,
+            sandbox_policy: &SandboxPolicy::DangerFullAccess,
+            windows_sandbox_level: WindowsSandboxLevel::Disabled,
         });
         let (tools, _) = build_specs(&tools_config, None, None, &[]).build();
         assert_contains_tool_names(&tools, &["js_repl", "js_repl_reset"]);
@@ -3651,6 +3837,8 @@ mod tests {
             features: &default_features,
             web_search_mode: Some(WebSearchMode::Cached),
             session_source: SessionSource::Cli,
+            sandbox_policy: &SandboxPolicy::DangerFullAccess,
+            windows_sandbox_level: WindowsSandboxLevel::Disabled,
         });
         let (default_tools, _) = build_specs(&default_tools_config, None, None, &[]).build();
         assert!(
@@ -3666,6 +3854,8 @@ mod tests {
             features: &image_generation_features,
             web_search_mode: Some(WebSearchMode::Cached),
             session_source: SessionSource::Cli,
+            sandbox_policy: &SandboxPolicy::DangerFullAccess,
+            windows_sandbox_level: WindowsSandboxLevel::Disabled,
         });
         let (supported_tools, _) = build_specs(&supported_tools_config, None, None, &[]).build();
         assert_contains_tool_names(&supported_tools, &["image_generation"]);
@@ -3684,6 +3874,8 @@ mod tests {
             features: &image_generation_features,
             web_search_mode: Some(WebSearchMode::Cached),
             session_source: SessionSource::Cli,
+            sandbox_policy: &SandboxPolicy::DangerFullAccess,
+            windows_sandbox_level: WindowsSandboxLevel::Disabled,
         });
         let (tools, _) = build_specs(&tools_config, None, None, &[]).build();
         assert!(
@@ -3724,6 +3916,8 @@ mod tests {
             features,
             web_search_mode,
             session_source: SessionSource::Cli,
+            sandbox_policy: &SandboxPolicy::DangerFullAccess,
+            windows_sandbox_level: WindowsSandboxLevel::Disabled,
         });
         let (tools, _) = build_specs(&tools_config, None, None, &[]).build();
         let tool_names = tools.iter().map(|t| t.spec.name()).collect::<Vec<_>>();
@@ -3760,6 +3954,8 @@ mod tests {
             features: &features,
             web_search_mode: Some(WebSearchMode::Cached),
             session_source: SessionSource::Cli,
+            sandbox_policy: &SandboxPolicy::DangerFullAccess,
+            windows_sandbox_level: WindowsSandboxLevel::Disabled,
         });
         let (tools, _) = build_specs(&tools_config, None, None, &[]).build();
 
@@ -3790,6 +3986,8 @@ mod tests {
             features: &features,
             web_search_mode: Some(WebSearchMode::Live),
             session_source: SessionSource::Cli,
+            sandbox_policy: &SandboxPolicy::DangerFullAccess,
+            windows_sandbox_level: WindowsSandboxLevel::Disabled,
         });
         let (tools, _) = build_specs(&tools_config, None, None, &[]).build();
 
@@ -3831,6 +4029,8 @@ mod tests {
             model_info: &model_info,
             available_models: &available_models,
             features: &features,
+            sandbox_policy: &SandboxPolicy::DangerFullAccess,
+            windows_sandbox_level: WindowsSandboxLevel::Disabled,
             web_search_mode: Some(WebSearchMode::Live),
             session_source: SessionSource::Cli,
         })
@@ -3869,6 +4069,8 @@ mod tests {
             features: &features,
             web_search_mode: Some(WebSearchMode::Live),
             session_source: SessionSource::Cli,
+            sandbox_policy: &SandboxPolicy::DangerFullAccess,
+            windows_sandbox_level: WindowsSandboxLevel::Disabled,
         });
         let (tools, _) = build_specs(&tools_config, None, None, &[]).build();
 
@@ -3903,6 +4105,8 @@ mod tests {
             features: &features,
             web_search_mode: Some(WebSearchMode::Cached),
             session_source: SessionSource::Cli,
+            sandbox_policy: &SandboxPolicy::DangerFullAccess,
+            windows_sandbox_level: WindowsSandboxLevel::Disabled,
         });
         let (tools, _) = build_specs(&tools_config, None, None, &[]).build();
 
@@ -3928,6 +4132,8 @@ mod tests {
             features: &features,
             web_search_mode: Some(WebSearchMode::Cached),
             session_source: SessionSource::Cli,
+            sandbox_policy: &SandboxPolicy::DangerFullAccess,
+            windows_sandbox_level: WindowsSandboxLevel::Disabled,
         });
         let (tools, _) = build_specs(&tools_config, Some(HashMap::new()), None, &[]).build();
 
@@ -3955,6 +4161,12 @@ mod tests {
                 "apply_patch",
                 "web_search",
                 "view_image",
+                "spawn_agent",
+                "list_agents",
+                "send_input",
+                "resume_agent",
+                "wait_agent",
+                "close_agent",
             ],
         );
     }
@@ -3973,6 +4185,12 @@ mod tests {
                 "apply_patch",
                 "web_search",
                 "view_image",
+                "spawn_agent",
+                "list_agents",
+                "send_input",
+                "resume_agent",
+                "wait_agent",
+                "close_agent",
             ],
         );
     }
@@ -3993,6 +4211,12 @@ mod tests {
                 "apply_patch",
                 "web_search",
                 "view_image",
+                "spawn_agent",
+                "list_agents",
+                "send_input",
+                "resume_agent",
+                "wait_agent",
+                "close_agent",
             ],
         );
     }
@@ -4013,6 +4237,12 @@ mod tests {
                 "apply_patch",
                 "web_search",
                 "view_image",
+                "spawn_agent",
+                "list_agents",
+                "send_input",
+                "resume_agent",
+                "wait_agent",
+                "close_agent",
             ],
         );
     }
@@ -4031,6 +4261,12 @@ mod tests {
                 "apply_patch",
                 "web_search",
                 "view_image",
+                "spawn_agent",
+                "list_agents",
+                "send_input",
+                "resume_agent",
+                "wait_agent",
+                "close_agent",
             ],
         );
     }
@@ -4049,6 +4285,12 @@ mod tests {
                 "apply_patch",
                 "web_search",
                 "view_image",
+                "spawn_agent",
+                "list_agents",
+                "send_input",
+                "resume_agent",
+                "wait_agent",
+                "close_agent",
             ],
         );
     }
@@ -4066,6 +4308,12 @@ mod tests {
                 "request_user_input",
                 "web_search",
                 "view_image",
+                "spawn_agent",
+                "list_agents",
+                "send_input",
+                "resume_agent",
+                "wait_agent",
+                "close_agent",
             ],
         );
     }
@@ -4084,6 +4332,12 @@ mod tests {
                 "apply_patch",
                 "web_search",
                 "view_image",
+                "spawn_agent",
+                "list_agents",
+                "send_input",
+                "resume_agent",
+                "wait_agent",
+                "close_agent",
             ],
         );
     }
@@ -4104,6 +4358,12 @@ mod tests {
                 "apply_patch",
                 "web_search",
                 "view_image",
+                "spawn_agent",
+                "list_agents",
+                "send_input",
+                "resume_agent",
+                "wait_agent",
+                "close_agent",
             ],
         );
     }
@@ -4121,6 +4381,8 @@ mod tests {
             features: &features,
             web_search_mode: Some(WebSearchMode::Live),
             session_source: SessionSource::Cli,
+            sandbox_policy: &SandboxPolicy::DangerFullAccess,
+            windows_sandbox_level: WindowsSandboxLevel::Disabled,
         });
         let (tools, _) = build_specs(&tools_config, Some(HashMap::new()), None, &[]).build();
 
@@ -4147,6 +4409,8 @@ mod tests {
             features: &features,
             web_search_mode: Some(WebSearchMode::Live),
             session_source: SessionSource::Cli,
+            sandbox_policy: &SandboxPolicy::DangerFullAccess,
+            windows_sandbox_level: WindowsSandboxLevel::Disabled,
         });
 
         assert_eq!(tools_config.shell_type, ConfigShellToolType::ShellCommand);
@@ -4154,9 +4418,42 @@ mod tests {
             tools_config.shell_command_backend,
             ShellCommandBackendConfig::ZshFork
         );
+        let user_shell = Shell {
+            shell_type: ShellType::Zsh,
+            shell_path: PathBuf::from("/bin/zsh"),
+            shell_snapshot: crate::shell::empty_shell_snapshot_receiver(),
+        };
         assert_eq!(
-            tools_config.unified_exec_backend,
-            UnifiedExecBackendConfig::ZshFork
+            tools_config.unified_exec_shell_mode,
+            UnifiedExecShellMode::Direct
+        );
+        assert_eq!(
+            tools_config
+                .with_unified_exec_shell_mode_for_session(
+                    &user_shell,
+                    Some(&PathBuf::from(if cfg!(windows) {
+                        r"C:\opt\codex\zsh"
+                    } else {
+                        "/opt/codex/zsh"
+                    })),
+                    Some(&PathBuf::from(if cfg!(windows) {
+                        r"C:\opt\codex\codex-execve-wrapper"
+                    } else {
+                        "/opt/codex/codex-execve-wrapper"
+                    })),
+                )
+                .unified_exec_shell_mode,
+            if cfg!(unix) {
+                UnifiedExecShellMode::ZshFork(ZshForkConfig {
+                    shell_zsh_path: AbsolutePathBuf::from_absolute_path("/opt/codex/zsh").unwrap(),
+                    main_execve_wrapper_exe: AbsolutePathBuf::from_absolute_path(
+                        "/opt/codex/codex-execve-wrapper",
+                    )
+                    .unwrap(),
+                })
+            } else {
+                UnifiedExecShellMode::Direct
+            }
         );
     }
 
@@ -4175,6 +4472,8 @@ mod tests {
             features: &features,
             web_search_mode: Some(WebSearchMode::Cached),
             session_source: SessionSource::Cli,
+            sandbox_policy: &SandboxPolicy::DangerFullAccess,
+            windows_sandbox_level: WindowsSandboxLevel::Disabled,
         });
         let (tools, _) = build_specs(&tools_config, None, None, &[]).build();
 
@@ -4203,6 +4502,8 @@ mod tests {
             features: &features,
             web_search_mode: Some(WebSearchMode::Cached),
             session_source: SessionSource::Cli,
+            sandbox_policy: &SandboxPolicy::DangerFullAccess,
+            windows_sandbox_level: WindowsSandboxLevel::Disabled,
         });
         let (tools, _) = build_specs(&tools_config, None, None, &[]).build();
 
@@ -4237,6 +4538,8 @@ mod tests {
             features: &features,
             web_search_mode: Some(WebSearchMode::Live),
             session_source: SessionSource::Cli,
+            sandbox_policy: &SandboxPolicy::DangerFullAccess,
+            windows_sandbox_level: WindowsSandboxLevel::Disabled,
         });
         let (tools, _) = build_specs(
             &tools_config,
@@ -4309,6 +4612,7 @@ mod tests {
                 },
                 description: "Do something cool".to_string(),
                 strict: false,
+                defer_loading: None,
                 output_schema: Some(mcp_call_tool_result_output_schema(serde_json::json!({}))),
             })
         );
@@ -4327,6 +4631,8 @@ mod tests {
             features: &features,
             web_search_mode: Some(WebSearchMode::Cached),
             session_source: SessionSource::Cli,
+            sandbox_policy: &SandboxPolicy::DangerFullAccess,
+            windows_sandbox_level: WindowsSandboxLevel::Disabled,
         });
 
         // Intentionally construct a map with keys that would sort alphabetically.
@@ -4363,9 +4669,10 @@ mod tests {
 
     #[test]
     fn search_tool_description_includes_only_codex_apps_connector_names() {
-        let config = test_config();
-        let model_info =
-            ModelsManager::construct_model_info_offline_for_tests("gpt-5-codex", &config);
+        let model_info = ModelInfo {
+            supports_search_tool: true,
+            ..model_info_from_models_json("gpt-5-codex")
+        };
         let mut features = Features::with_defaults();
         features.enable(Feature::Apps);
         let available_models = Vec::new();
@@ -4375,6 +4682,8 @@ mod tests {
             features: &features,
             web_search_mode: Some(WebSearchMode::Cached),
             session_source: SessionSource::Cli,
+            sandbox_policy: &SandboxPolicy::DangerFullAccess,
+            windows_sandbox_level: WindowsSandboxLevel::Disabled,
         });
 
         let (tools, _) = build_specs(
@@ -4398,6 +4707,7 @@ mod tests {
                     "mcp__codex_apps__calendar_create_event".to_string(),
                     ToolInfo {
                         server_name: crate::mcp::CODEX_APPS_MCP_SERVER_NAME.to_string(),
+                        tool_namespace: "mcp__codex_apps__".to_string(),
                         tool_name: "calendar_create_event".to_string(),
                         tool: mcp_tool(
                             "calendar_create_event",
@@ -4407,16 +4717,19 @@ mod tests {
                         connector_id: Some("calendar".to_string()),
                         connector_name: Some("Calendar".to_string()),
                         plugin_display_names: Vec::new(),
+                        connector_description: Some("Calendar".to_string()),
                     },
                 ),
                 (
                     "mcp__rmcp__echo".to_string(),
                     ToolInfo {
                         server_name: "rmcp".to_string(),
+                        tool_namespace: "mcp__rmcp__".to_string(),
                         tool_name: "echo".to_string(),
                         tool: mcp_tool("echo", "Echo", serde_json::json!({"type": "object"})),
                         connector_id: None,
                         connector_name: None,
+                        connector_description: None,
                         plugin_display_names: Vec::new(),
                     },
                 ),
@@ -4426,8 +4739,8 @@ mod tests {
         .build();
 
         let search_tool = find_tool(&tools, TOOL_SEARCH_TOOL_NAME);
-        let ToolSpec::Function(ResponsesApiTool { description, .. }) = &search_tool.spec else {
-            panic!("expected function tool");
+        let ToolSpec::ToolSearch { description, .. } = &search_tool.spec else {
+            panic!("expected tool_search tool");
         };
         assert!(description.contains("Calendar"));
         assert!(!description.contains("mcp__rmcp__echo"));
@@ -4435,13 +4748,15 @@ mod tests {
 
     #[test]
     fn search_tool_requires_apps_feature_flag_only() {
-        let config = test_config();
-        let model_info =
-            ModelsManager::construct_model_info_offline_for_tests("gpt-5-codex", &config);
+        let model_info = ModelInfo {
+            supports_search_tool: true,
+            ..model_info_from_models_json("gpt-5-codex")
+        };
         let app_tools = Some(HashMap::from([(
             "mcp__codex_apps__calendar_create_event".to_string(),
             ToolInfo {
                 server_name: crate::mcp::CODEX_APPS_MCP_SERVER_NAME.to_string(),
+                tool_namespace: "mcp__codex_apps__".to_string(),
                 tool_name: "calendar_create_event".to_string(),
                 tool: mcp_tool(
                     "calendar_create_event",
@@ -4450,6 +4765,7 @@ mod tests {
                 ),
                 connector_id: Some("calendar".to_string()),
                 connector_name: Some("Calendar".to_string()),
+                connector_description: Some("Calendar".to_string()),
                 plugin_display_names: Vec::new(),
             },
         )]));
@@ -4457,11 +4773,16 @@ mod tests {
         let features = Features::with_defaults();
         let available_models = Vec::new();
         let tools_config = ToolsConfig::new(&ToolsConfigParams {
-            model_info: &model_info,
+            model_info: &ModelInfo {
+                supports_search_tool: false,
+                ..model_info.clone()
+            },
             available_models: &available_models,
             features: &features,
             web_search_mode: Some(WebSearchMode::Cached),
             session_source: SessionSource::Cli,
+            sandbox_policy: &SandboxPolicy::DangerFullAccess,
+            windows_sandbox_level: WindowsSandboxLevel::Disabled,
         });
         let (tools, _) = build_specs(&tools_config, None, app_tools.clone(), &[]).build();
         assert_lacks_tool_name(&tools, TOOL_SEARCH_TOOL_NAME);
@@ -4475,6 +4796,8 @@ mod tests {
             features: &features,
             web_search_mode: Some(WebSearchMode::Cached),
             session_source: SessionSource::Cli,
+            sandbox_policy: &SandboxPolicy::DangerFullAccess,
+            windows_sandbox_level: WindowsSandboxLevel::Disabled,
         });
         let (tools, _) = build_specs(&tools_config, None, app_tools, &[]).build();
         assert_contains_tool_names(&tools, &[TOOL_SEARCH_TOOL_NAME]);
@@ -4482,9 +4805,10 @@ mod tests {
 
     #[test]
     fn search_tool_description_handles_no_enabled_apps() {
-        let config = test_config();
-        let model_info =
-            ModelsManager::construct_model_info_offline_for_tests("gpt-5-codex", &config);
+        let model_info = ModelInfo {
+            supports_search_tool: true,
+            ..model_info_from_models_json("gpt-5-codex")
+        };
         let mut features = Features::with_defaults();
         features.enable(Feature::Apps);
         let available_models = Vec::new();
@@ -4494,16 +4818,17 @@ mod tests {
             features: &features,
             web_search_mode: Some(WebSearchMode::Cached),
             session_source: SessionSource::Cli,
+            sandbox_policy: &SandboxPolicy::DangerFullAccess,
+            windows_sandbox_level: WindowsSandboxLevel::Disabled,
         });
 
         let (tools, _) = build_specs(&tools_config, None, Some(HashMap::new()), &[]).build();
         let search_tool = find_tool(&tools, TOOL_SEARCH_TOOL_NAME);
-        let ToolSpec::Function(ResponsesApiTool { description, .. }) = &search_tool.spec else {
-            panic!("expected function tool");
+        let ToolSpec::ToolSearch { description, .. } = &search_tool.spec else {
+            panic!("expected tool_search tool");
         };
 
         assert!(description.contains("(None currently enabled)"));
-        assert!(description.contains("available apps."));
         assert!(!description.contains("{{app_names}}"));
     }
 
@@ -4521,6 +4846,8 @@ mod tests {
             features: &features,
             web_search_mode: Some(WebSearchMode::Cached),
             session_source: SessionSource::Cli,
+            sandbox_policy: &SandboxPolicy::DangerFullAccess,
+            windows_sandbox_level: WindowsSandboxLevel::Disabled,
         });
 
         let (tools, _) = build_specs(
@@ -4560,6 +4887,7 @@ mod tests {
                 },
                 description: "Search docs".to_string(),
                 strict: false,
+                defer_loading: None,
                 output_schema: Some(mcp_call_tool_result_output_schema(serde_json::json!({}))),
             })
         );
@@ -4579,6 +4907,8 @@ mod tests {
             features: &features,
             web_search_mode: Some(WebSearchMode::Cached),
             session_source: SessionSource::Cli,
+            sandbox_policy: &SandboxPolicy::DangerFullAccess,
+            windows_sandbox_level: WindowsSandboxLevel::Disabled,
         });
 
         let (tools, _) = build_specs(
@@ -4614,6 +4944,7 @@ mod tests {
                 },
                 description: "Pagination".to_string(),
                 strict: false,
+                defer_loading: None,
                 output_schema: Some(mcp_call_tool_result_output_schema(serde_json::json!({}))),
             })
         );
@@ -4634,6 +4965,8 @@ mod tests {
             features: &features,
             web_search_mode: Some(WebSearchMode::Cached),
             session_source: SessionSource::Cli,
+            sandbox_policy: &SandboxPolicy::DangerFullAccess,
+            windows_sandbox_level: WindowsSandboxLevel::Disabled,
         });
 
         let (tools, _) = build_specs(
@@ -4672,6 +5005,7 @@ mod tests {
                 },
                 description: "Tags".to_string(),
                 strict: false,
+                defer_loading: None,
                 output_schema: Some(mcp_call_tool_result_output_schema(serde_json::json!({}))),
             })
         );
@@ -4691,6 +5025,8 @@ mod tests {
             features: &features,
             web_search_mode: Some(WebSearchMode::Cached),
             session_source: SessionSource::Cli,
+            sandbox_policy: &SandboxPolicy::DangerFullAccess,
+            windows_sandbox_level: WindowsSandboxLevel::Disabled,
         });
 
         let (tools, _) = build_specs(
@@ -4728,6 +5064,7 @@ mod tests {
                 },
                 description: "AnyOf Value".to_string(),
                 strict: false,
+                defer_loading: None,
                 output_schema: Some(mcp_call_tool_result_output_schema(serde_json::json!({}))),
             })
         );
@@ -4782,7 +5119,7 @@ Examples of valid command strings:
             panic!("expected sandbox_permissions description");
         };
         assert!(description.contains("with_additional_permissions"));
-        assert!(description.contains("macOS permissions"));
+        assert!(description.contains("filesystem or network permissions"));
 
         let Some(JsonSchema::Object {
             properties: additional_properties,
@@ -4793,7 +5130,7 @@ Examples of valid command strings:
         };
         assert!(additional_properties.contains_key("network"));
         assert!(additional_properties.contains_key("file_system"));
-        assert!(additional_properties.contains_key("macos"));
+        assert!(!additional_properties.contains_key("macos"));
     }
 
     #[test]
@@ -4817,7 +5154,7 @@ Examples of valid command strings:
         assert_eq!(additional_properties, &Some(false.into()));
         assert!(permission_properties.contains_key("network"));
         assert!(permission_properties.contains_key("file_system"));
-        assert!(permission_properties.contains_key("macos"));
+        assert!(!permission_properties.contains_key("macos"));
 
         let Some(JsonSchema::Object {
             properties: network_properties,
@@ -4848,7 +5185,7 @@ Examples of valid command strings:
             ..
         }) = permission_properties.get("macos")
         else {
-            panic!("expected macos object");
+            return;
         };
         assert_eq!(additional_properties, &Some(false.into()));
         assert!(macos_properties.contains_key("preferences"));
@@ -4900,6 +5237,8 @@ Examples of valid command strings:
             features: &features,
             web_search_mode: Some(WebSearchMode::Cached),
             session_source: SessionSource::Cli,
+            sandbox_policy: &SandboxPolicy::DangerFullAccess,
+            windows_sandbox_level: WindowsSandboxLevel::Disabled,
         });
         let (tools, _) = build_specs(
             &tools_config,
@@ -4989,6 +5328,7 @@ Examples of valid command strings:
                 },
                 description: "Do something cool".to_string(),
                 strict: false,
+                defer_loading: None,
                 output_schema: Some(mcp_call_tool_result_output_schema(serde_json::json!({}))),
             })
         );
@@ -5009,6 +5349,8 @@ Examples of valid command strings:
             features: &features,
             web_search_mode: Some(WebSearchMode::Cached),
             session_source: SessionSource::Cli,
+            sandbox_policy: &SandboxPolicy::DangerFullAccess,
+            windows_sandbox_level: WindowsSandboxLevel::Disabled,
         });
 
         let (tools, _) = build_specs(&tools_config, None, None, &[]).build();
@@ -5020,7 +5362,7 @@ Examples of valid command strings:
 
         assert_eq!(
             description,
-            "View a local image from the filesystem (only use if given a full filepath by the user, and the image isn't already attached to the thread context within <image ...> tags).\n\nCode mode declaration:\n```ts\nimport { tools } from \"tools.js\";\ndeclare function view_image(args: {\n  path: string;\n}): Promise<unknown>;\n```"
+            "View a local image from the filesystem (only use if given a full filepath by the user, and the image isn't already attached to the thread context within <image ...> tags).\n\nCode mode declaration:\n```ts\nimport { tools } from \"tools.js\";\ndeclare function view_image(args: { path: string; }): Promise<unknown>;\n```"
         );
     }
 
@@ -5039,6 +5381,8 @@ Examples of valid command strings:
             features: &features,
             web_search_mode: Some(WebSearchMode::Cached),
             session_source: SessionSource::Cli,
+            sandbox_policy: &SandboxPolicy::DangerFullAccess,
+            windows_sandbox_level: WindowsSandboxLevel::Disabled,
         });
 
         let (tools, _) = build_specs(
@@ -5071,7 +5415,7 @@ Examples of valid command strings:
 
         assert_eq!(
             description,
-            "Echo text\n\nCode mode declaration:\n```ts\nimport { tools } from \"tools/mcp/sample.js\";\ndeclare function echo(args: {\n  message: string;\n}): Promise<{\n  _meta?: unknown;\n  content: Array<unknown>;\n  isError?: boolean;\n  structuredContent?: unknown;\n}>;\n```"
+            "Echo text\n\nCode mode declaration:\n```ts\nimport { tools } from \"tools/mcp/sample.js\";\ndeclare function echo(args: { message: string; }): Promise<{ _meta?: unknown; content: Array<unknown>; isError?: boolean; structuredContent?: unknown; }>;\n```"
         );
     }
 
@@ -5089,6 +5433,7 @@ Examples of valid command strings:
                 additional_properties: None,
             },
             output_schema: None,
+            defer_loading: None,
         })];
 
         let responses_json = create_tools_json_for_responses_api(&tools).unwrap();

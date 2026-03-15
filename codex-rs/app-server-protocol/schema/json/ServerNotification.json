@@ -2536,6 +2536,10 @@
               ],
               "description": "Current status of the collab tool call."
             },
+            "timedOut": {
+              "description": "Whether a wait call completed due to timeout.",
+              "type": "boolean"
+            },
             "tool": {
               "allOf": [
                 {
@@ -2558,6 +2562,7 @@
             "receiverThreadIds",
             "senderThreadId",
             "status",
+            "timedOut",
             "tool",
             "type"
           ],

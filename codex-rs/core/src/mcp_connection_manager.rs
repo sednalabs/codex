@@ -1707,8 +1707,8 @@ mod mcp_init_error_display_tests {}
 #[cfg(test)]
 mod tests {
     use super::*;
-    use codex_protocol::protocol::McpAuthStatus;
     use codex_protocol::protocol::GranularApprovalConfig;
+    use codex_protocol::protocol::McpAuthStatus;
     use rmcp::model::JsonObject;
     use std::collections::HashSet;
     use std::sync::Arc;
@@ -1718,6 +1718,7 @@ mod tests {
         ToolInfo {
             server_name: server_name.to_string(),
             tool_name: tool_name.to_string(),
+            tool_namespace: server_name.to_string(),
             tool: Tool {
                 name: tool_name.to_string().into(),
                 title: None,
@@ -1732,6 +1733,7 @@ mod tests {
             connector_id: None,
             connector_name: None,
             plugin_display_names: Vec::new(),
+            connector_description: None,
         }
     }
 
@@ -1773,15 +1775,15 @@ mod tests {
         assert!(!elicitation_is_rejected_by_policy(
             AskForApproval::UnlessTrusted
         ));
-        assert!(!elicitation_is_rejected_by_policy(AskForApproval::Granular(
-            GranularApprovalConfig {
+        assert!(!elicitation_is_rejected_by_policy(
+            AskForApproval::Granular(GranularApprovalConfig {
                 sandbox_approval: false,
                 rules: false,
                 skill_approval: false,
                 request_permissions: false,
                 mcp_elicitations: false,
-            }
-        )));
+            })
+        ));
     }
 
     #[test]

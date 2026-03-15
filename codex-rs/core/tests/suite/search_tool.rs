@@ -4,6 +4,8 @@
 use anyhow::Result;
 use codex_core::CodexAuth;
 use codex_core::config::Config;
+use codex_core::config::types::McpServerConfig;
+use codex_core::config::types::McpServerTransportConfig;
 use codex_core::features::Feature;
 use codex_protocol::openai_models::ModelsResponse;
 use codex_protocol::protocol::AskForApproval;
@@ -29,6 +31,7 @@ use core_test_support::wait_for_event;
 use pretty_assertions::assert_eq;
 use serde_json::Value;
 use serde_json::json;
+use std::time::Duration;
 
 const SEARCH_TOOL_DESCRIPTION_SNIPPETS: [&str; 1] = [
     "Tools of the apps (Calendar) are hidden until you search for them with this tool (`tool_search`).",
@@ -109,11 +112,7 @@ fn rmcp_server_config(command: String) -> McpServerConfig {
     }
 }
 
-fn configure_apps_with_optional_rmcp(
-    config: &mut Config,
-    apps_base_url: &str,
-    rmcp_server_bin: Option<String>,
-) {
+fn configure_apps(config: &mut Config, apps_base_url: &str) {
     config
         .features
         .enable(Feature::Apps)

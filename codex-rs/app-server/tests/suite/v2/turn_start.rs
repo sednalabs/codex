@@ -1781,6 +1781,7 @@ async fn turn_start_emits_spawn_agent_item_with_model_metadata_v2() -> Result<()
             prompt: Some(CHILD_PROMPT.to_string()),
             model: Some(REQUESTED_MODEL.to_string()),
             reasoning_effort: Some(REQUESTED_REASONING_EFFORT),
+            timed_out: false,
             agents_states: HashMap::new(),
         }
     );
@@ -1809,6 +1810,7 @@ async fn turn_start_emits_spawn_agent_item_with_model_metadata_v2() -> Result<()
         prompt,
         model,
         reasoning_effort,
+        timed_out,
         agents_states,
     } = spawn_completed
     else {
@@ -1822,6 +1824,7 @@ async fn turn_start_emits_spawn_agent_item_with_model_metadata_v2() -> Result<()
     assert_eq!(tool, CollabAgentTool::SpawnAgent);
     assert_eq!(status, CollabAgentToolCallStatus::Completed);
     assert_eq!(sender_thread_id, thread.id);
+    assert!(!timed_out);
     assert_eq!(receiver_thread_ids, vec![receiver_thread_id.clone()]);
     assert_eq!(prompt, Some(CHILD_PROMPT.to_string()));
     assert_eq!(model, Some(REQUESTED_MODEL.to_string()));

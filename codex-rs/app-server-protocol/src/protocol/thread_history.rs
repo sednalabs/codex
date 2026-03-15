@@ -557,6 +557,7 @@ impl ThreadHistoryBuilder {
             prompt: Some(payload.prompt.clone()),
             model: Some(payload.model.clone()),
             reasoning_effort: Some(payload.reasoning_effort),
+            timed_out: false,
             agents_states: HashMap::new(),
         };
         self.upsert_item_in_current_turn(item);
@@ -592,6 +593,7 @@ impl ThreadHistoryBuilder {
             prompt: Some(payload.prompt.clone()),
             model: Some(payload.model.clone()),
             reasoning_effort: Some(payload.reasoning_effort),
+            timed_out: false,
             agents_states,
         });
     }
@@ -609,6 +611,7 @@ impl ThreadHistoryBuilder {
             prompt: Some(payload.prompt.clone()),
             model: None,
             reasoning_effort: None,
+            timed_out: false,
             agents_states: HashMap::new(),
         };
         self.upsert_item_in_current_turn(item);
@@ -633,6 +636,7 @@ impl ThreadHistoryBuilder {
             prompt: Some(payload.prompt.clone()),
             model: None,
             reasoning_effort: None,
+            timed_out: false,
             agents_states: [(receiver_id, received_status)].into_iter().collect(),
         });
     }
@@ -654,6 +658,7 @@ impl ThreadHistoryBuilder {
             prompt: None,
             model: None,
             reasoning_effort: None,
+            timed_out: false,
             agents_states: HashMap::new(),
         };
         self.upsert_item_in_current_turn(item);
@@ -663,18 +668,23 @@ impl ThreadHistoryBuilder {
         &mut self,
         payload: &codex_protocol::protocol::CollabWaitingEndEvent,
     ) {
-        let status = if payload
-            .statuses
-            .values()
-            .any(|status| matches!(status, AgentStatus::Errored(_) | AgentStatus::NotFound))
+        let timed_out = payload.timed_out
+            || payload.completion_reason
+                == codex_protocol::protocol::CollabWaitingCompletionReason::Timeout;
+        let status = if payload.completion_reason
+            == codex_protocol::protocol::CollabWaitingCompletionReason::Terminal
+            && payload.statuses.is_empty()
+            && payload.receiver_thread_ids.is_empty()
         {
             CollabAgentToolCallStatus::Failed
         } else {
             CollabAgentToolCallStatus::Completed
         };
-        let mut receiver_thread_ids: Vec<String> =
-            payload.statuses.keys().map(ToString::to_string).collect();
-        receiver_thread_ids.sort();
+        let receiver_thread_ids: Vec<String> = payload
+            .receiver_thread_ids
+            .iter()
+            .map(ToString::to_string)
+            .collect();
         let agents_states = payload
             .statuses
             .iter()
@@ -689,6 +699,7 @@ impl ThreadHistoryBuilder {
             prompt: None,
             model: None,
             reasoning_effort: None,
+            timed_out,
             agents_states,
         });
     }
@@ -706,6 +717,7 @@ impl ThreadHistoryBuilder {
             prompt: None,
             model: None,
             reasoning_effort: None,
+            timed_out: false,
             agents_states: HashMap::new(),
         };
         self.upsert_item_in_current_turn(item);
@@ -732,6 +744,7 @@ impl ThreadHistoryBuilder {
             prompt: None,
             model: None,
             reasoning_effort: None,
+            timed_out: false,
             agents_states,
         });
     }
@@ -749,6 +762,7 @@ impl ThreadHistoryBuilder {
             prompt: None,
             model: None,
             reasoning_effort: None,
+            timed_out: false,
             agents_states: HashMap::new(),
         };
         self.upsert_item_in_current_turn(item);
@@ -778,6 +792,7 @@ impl ThreadHistoryBuilder {
             prompt: None,
             model: None,
             reasoning_effort: None,
+            timed_out: false,
             agents_states,
         });
     }
@@ -2425,6 +2440,7 @@ mod tests {
                 prompt: None,
                 model: None,
                 reasoning_effort: None,
+                timed_out: false,
                 agents_states: [(
                     "00000000-0000-0000-0000-000000000002".into(),
                     CollabAgentState {
@@ -2482,11 +2498,82 @@ mod tests {
                 prompt: Some("inspect the repo".into()),
                 model: Some("gpt-5.4-mini".into()),
                 reasoning_effort: Some(codex_protocol::openai_models::ReasoningEffort::Medium),
+                timed_out: false,
                 agents_states: [(
                     "00000000-0000-0000-0000-000000000002".into(),
                     CollabAgentState {
                         status: crate::protocol::v2::CollabAgentStatus::Running,
                         message: None,
+                    },
+                )]
+                .into_iter()
+                .collect(),
+            }
+        );
+    }
+
+    #[test]
+    fn reconstructs_collab_wait_end_item_preserves_requested_ids_and_marks_completed_on_errors() {
+        let requested = vec![
+            ThreadId::try_from("00000000-0000-0000-0000-000000000002")
+                .expect("valid receiver thread id"),
+            ThreadId::try_from("00000000-0000-0000-0000-000000000003")
+                .expect("valid receiver thread id"),
+        ];
+        let mut statuses = HashMap::new();
+        statuses.insert(
+            requested[0],
+            AgentStatus::Errored("agent failed".to_string()),
+        );
+
+        let events = vec![
+            EventMsg::UserMessage(UserMessageEvent {
+                message: "waiting...".into(),
+                images: None,
+                text_elements: Vec::new(),
+                local_images: Vec::new(),
+            }),
+            EventMsg::CollabWaitingEnd(codex_protocol::protocol::CollabWaitingEndEvent {
+                sender_thread_id: ThreadId::try_from("00000000-0000-0000-0000-000000000001")
+                    .expect("valid sender thread id"),
+                call_id: "wait-1".into(),
+                agent_statuses: vec![],
+                statuses,
+                receiver_thread_ids: requested.clone(),
+                pending_thread_ids: vec![requested[1]],
+                completion_reason:
+                    codex_protocol::protocol::CollabWaitingCompletionReason::Terminal,
+                timed_out: true,
+            }),
+        ];
+
+        let items = events
+            .into_iter()
+            .map(RolloutItem::EventMsg)
+            .collect::<Vec<_>>();
+        let turns = build_turns_from_rollout_items(&items);
+        assert_eq!(turns.len(), 1);
+        assert_eq!(turns[0].items.len(), 2);
+        assert_eq!(
+            turns[0].items[1],
+            ThreadItem::CollabAgentToolCall {
+                id: "wait-1".into(),
+                tool: CollabAgentTool::Wait,
+                status: CollabAgentToolCallStatus::Completed,
+                sender_thread_id: "00000000-0000-0000-0000-000000000001".into(),
+                receiver_thread_ids: vec![
+                    "00000000-0000-0000-0000-000000000002".into(),
+                    "00000000-0000-0000-0000-000000000003".into()
+                ],
+                prompt: None,
+                model: None,
+                reasoning_effort: None,
+                timed_out: true,
+                agents_states: [(
+                    "00000000-0000-0000-0000-000000000002".into(),
+                    CollabAgentState {
+                        status: crate::protocol::v2::CollabAgentStatus::Errored,
+                        message: Some("agent failed".to_string()),
                     },
                 )]
                 .into_iter()

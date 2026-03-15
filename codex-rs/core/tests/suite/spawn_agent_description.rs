@@ -31,11 +31,15 @@ use tokio::time::sleep;
 const SPAWN_AGENT_TOOL_NAME: &str = "spawn_agent";
 
 fn spawn_agent_description(body: &Value) -> Option<String> {
+    tool_description(body, SPAWN_AGENT_TOOL_NAME)
+}
+
+fn tool_description(body: &Value, tool_name: &str) -> Option<String> {
     body.get("tools")
         .and_then(Value::as_array)
         .and_then(|tools| {
             tools.iter().find_map(|tool| {
-                if tool.get("name").and_then(Value::as_str) == Some(SPAWN_AGENT_TOOL_NAME) {
+                if tool.get("name").and_then(Value::as_str) == Some(tool_name) {
                     tool.get("description")
                         .and_then(Value::as_str)
                         .map(str::to_string)
@@ -198,6 +202,86 @@ async fn spawn_agent_description_lists_visible_models_and_reasoning_efforts() ->
             "Agent-role guidance below only helps choose which agent to use after spawning is already authorized; it never authorizes spawning by itself."
         ),
         "expected agent-role clarification in spawn_agent description: {description:?}"
+    );
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn spawn_wait_and_list_agents_tool_descriptions_have_guidance_updates() -> Result<()> {
+    let server = start_mock_server().await;
+    let req = mount_sse_once(
+        &server,
+        sse(vec![ev_response_created("resp-1"), ev_completed("resp-1")]),
+    )
+    .await;
+
+    let mut builder = test_codex()
+        .with_auth(CodexAuth::create_dummy_chatgpt_auth_for_testing())
+        .with_model("visible-model")
+        .with_config(|config| {
+            config
+                .features
+                .enable(Feature::Collab)
+                .expect("test config should allow feature update");
+        });
+    mount_models_once(
+        &server,
+        ModelsResponse {
+            models: vec![test_model_info(
+                "visible-model",
+                "Visible Model",
+                "Fast and capable",
+                ModelVisibility::List,
+                ReasoningEffort::Medium,
+                vec![ReasoningEffortPreset {
+                    effort: ReasoningEffort::Medium,
+                    description: "Balanced".to_string(),
+                }],
+            )],
+        },
+    )
+    .await;
+    let test = builder.build(&server).await?;
+    wait_for_model_available(&test.thread_manager.get_models_manager(), "visible-model").await;
+
+    test.submit_turn("hello").await?;
+
+    let body = req.single_request().body_json();
+    let spawn_description = tool_description(&body, SPAWN_AGENT_TOOL_NAME)
+        .expect("spawn_agent description should be present");
+    let wait_description =
+        tool_description(&body, "wait_agent").expect("wait_agent description should be present");
+    let list_description =
+        tool_description(&body, "list_agents").expect("list_agents description should be present");
+
+    assert!(
+        spawn_description.contains("Call wait_agent very sparingly"),
+        "expected updated spawn guidance about blocking waits: {spawn_description:?}"
+    );
+    assert!(
+        spawn_description.contains("list_agents"),
+        "expected spawn guidance to mention list_agents: {spawn_description:?}"
+    );
+    assert!(
+        wait_description.contains("blocking coordination while awaiting sub-agent completion"),
+        "expected wait_agent guidance for blocking waits: {wait_description:?}"
+    );
+    assert!(
+        wait_description.contains("Prefer longer timeouts"),
+        "expected wait_agent timeout guidance: {wait_description:?}"
+    );
+    assert!(
+        wait_description.contains("When `return_when` is `any`"),
+        "expected wait_agent return_when any guidance: {wait_description:?}"
+    );
+    assert!(
+        wait_description.contains("When `return_when` is `all`"),
+        "expected wait_agent return_when all guidance: {wait_description:?}"
+    );
+    assert!(
+        list_description.contains("snapshot"),
+        "expected list_agents guidance content: {list_description:?}"
     );
 
     Ok(())

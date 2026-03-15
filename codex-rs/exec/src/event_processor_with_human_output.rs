@@ -12,6 +12,7 @@ use codex_protocol::protocol::CollabAgentSpawnEndEvent;
 use codex_protocol::protocol::CollabCloseBeginEvent;
 use codex_protocol::protocol::CollabCloseEndEvent;
 use codex_protocol::protocol::CollabWaitingBeginEvent;
+use codex_protocol::protocol::CollabWaitingCompletionReason;
 use codex_protocol::protocol::CollabWaitingEndEvent;
 use codex_protocol::protocol::DeprecationNoticeEvent;
 use codex_protocol::protocol::ErrorEvent;
@@ -801,23 +802,27 @@ impl EventProcessor for EventProcessorWithHumanOutput {
                 sender_thread_id: _,
                 call_id,
                 statuses,
+                pending_thread_ids,
+                completion_reason,
+                timed_out,
                 ..
             }) => {
-                if statuses.is_empty() {
-                    ts_msg!(
-                        self,
-                        "{} {}:",
-                        format_collab_invocation("wait", &call_id, None),
-                        "timed out".style(self.yellow)
-                    );
-                    return CodexStatus::Running;
-                }
-                let success = !statuses.values().any(is_collab_status_failure);
-                let title_style = if success { self.green } else { self.red };
+                let timed_out = timed_out
+                    || matches!(completion_reason, CollabWaitingCompletionReason::Timeout);
+                let title_style = if timed_out { self.yellow } else { self.green };
+                let completion = if timed_out {
+                    if statuses.is_empty() {
+                        "timed out"
+                    } else {
+                        "partial timeout"
+                    }
+                } else {
+                    "complete"
+                };
                 let title = format!(
-                    "{} {} agents complete:",
+                    "{} {}:",
                     format_collab_invocation("wait", &call_id, None),
-                    statuses.len()
+                    completion
                 );
                 ts_msg!(self, "{}", title.style(title_style));
                 let mut sorted = statuses
@@ -830,6 +835,12 @@ impl EventProcessor for EventProcessorWithHumanOutput {
                         "  {} {}",
                         thread_id.style(self.dimmed),
                         format_collab_status(&status).style(style_for_agent_status(&status, self))
+                    );
+                }
+                if timed_out && !pending_thread_ids.is_empty() {
+                    eprintln!(
+                        "  pending: {}",
+                        format_receiver_list(&pending_thread_ids).style(self.yellow)
                     );
                 }
             }

@@ -1,0 +1,11 @@
+---
+source: tui/src/multi_agents.rs
+expression: snapshot
+---
+• Waiting for 2 agents
+  └ Robie [explorer]
+    Bob [worker]
+
+• Waiting timed out
+  └ No agents completed yet
+    Pending: 00000000-0000-0000-0000-000000000002, 00000000-0000-0000-0000-000000000003

@@ -2,6 +2,7 @@ use super::*;
 use crate::AuthManager;
 use crate::CodexAuth;
 use crate::ThreadManager;
+use crate::agent::control::SpawnAgentOptions;
 use crate::built_in_model_providers;
 use crate::codex::make_session_and_context;
 use crate::config::DEFAULT_AGENT_MAX_DEPTH;
@@ -21,6 +22,8 @@ use codex_protocol::models::ContentItem;
 use codex_protocol::models::FunctionCallOutputBody;
 use codex_protocol::models::ResponseInputItem;
 use codex_protocol::models::ResponseItem;
+use codex_protocol::openai_models::ReasoningEffort;
+use codex_protocol::protocol::CollabWaitingCompletionReason;
 use codex_protocol::protocol::InitialHistory;
 use codex_protocol::protocol::RolloutItem;
 use pretty_assertions::assert_eq;
@@ -32,6 +35,8 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::Mutex;
 use tokio::time::timeout;
+
+const THREAD_CONFIG_SNAPSHOT_IDENTITY_SOURCE: &str = "thread_config_snapshot";
 
 fn invocation(
     session: Arc<crate::codex::Session>,
@@ -87,6 +92,35 @@ where
         }
         other => panic!("expected function output, got {other:?}"),
     }
+}
+
+#[derive(Debug, Deserialize)]
+struct SpawnAgentResult {
+    agent_id: String,
+    nickname: Option<String>,
+    role: Option<String>,
+    status: AgentStatus,
+    effective_model: Option<String>,
+    effective_reasoning_effort: Option<ReasoningEffort>,
+    effective_model_provider_id: String,
+    identity_source: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct ListAgentsResult {
+    agents: Vec<ListAgentEntry>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ListAgentEntry {
+    agent_id: String,
+    nickname: Option<String>,
+    role: Option<String>,
+    status: AgentStatus,
+    effective_model: Option<String>,
+    effective_reasoning_effort: Option<ReasoningEffort>,
+    effective_model_provider_id: String,
+    identity_source: String,
 }
 
 #[tokio::test]
@@ -154,12 +188,6 @@ async fn spawn_agent_rejects_when_message_and_items_are_both_set() {
 
 #[tokio::test]
 async fn spawn_agent_uses_explorer_role_and_preserves_approval_policy() {
-    #[derive(Debug, Deserialize)]
-    struct SpawnAgentResult {
-        agent_id: String,
-        nickname: Option<String>,
-    }
-
     let (mut session, mut turn) = make_session_and_context().await;
     let manager = thread_manager();
     session.services.agent_control = manager.agent_control();
@@ -201,6 +229,24 @@ async fn spawn_agent_uses_explorer_role_and_preserves_approval_policy() {
             .as_deref()
             .is_some_and(|nickname| !nickname.is_empty())
     );
+    assert_eq!(result.role.as_deref(), Some("explorer"));
+    let inventory_info = manager
+        .agent_control()
+        .get_subagent_inventory_info(agent_id)
+        .await
+        .expect("spawned agent inventory should exist");
+    assert_eq!(result.role, inventory_info.role);
+    assert_eq!(result.status, inventory_info.status);
+    assert_eq!(result.effective_model, inventory_info.effective_model);
+    assert_eq!(
+        result.effective_reasoning_effort,
+        inventory_info.effective_reasoning_effort
+    );
+    assert_eq!(
+        result.effective_model_provider_id,
+        inventory_info.effective_model_provider_id
+    );
+    assert_eq!(result.identity_source, inventory_info.identity_source);
     let snapshot = manager
         .get_thread(agent_id)
         .await
@@ -356,18 +402,12 @@ async fn spawn_agent_rejects_when_depth_limit_exceeded() {
 
 #[tokio::test]
 async fn spawn_agent_allows_depth_up_to_configured_max_depth() {
-    #[derive(Debug, Deserialize)]
-    struct SpawnAgentResult {
-        agent_id: String,
-        nickname: Option<String>,
-    }
-
     let (mut session, mut turn) = make_session_and_context().await;
     let manager = thread_manager();
     session.services.agent_control = manager.agent_control();
 
     let mut config = (*turn.config).clone();
-    config.agent_max_depth = DEFAULT_AGENT_MAX_DEPTH + 1;
+    config.agent_max_depth = DEFAULT_AGENT_MAX_DEPTH + 2;
     turn.config = Arc::new(config);
     turn.session_source = SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
         parent_thread_id: session.conversation_id,
@@ -389,6 +429,7 @@ async fn spawn_agent_allows_depth_up_to_configured_max_depth() {
     let (content, success) = expect_text_output(output);
     let result: SpawnAgentResult =
         serde_json::from_str(&content).expect("spawn_agent result should be json");
+    let child_agent_id = agent_id(&result.agent_id).expect("agent_id should be valid");
     assert!(!result.agent_id.is_empty());
     assert!(
         result
@@ -396,7 +437,348 @@ async fn spawn_agent_allows_depth_up_to_configured_max_depth() {
             .as_deref()
             .is_some_and(|nickname| !nickname.is_empty())
     );
+    assert_eq!(
+        result.status,
+        manager.agent_control().get_status(child_agent_id).await
+    );
+    assert_eq!(
+        result.effective_model_provider_id,
+        manager
+            .get_thread(child_agent_id)
+            .await
+            .expect("spawned agent thread should exist")
+            .config_snapshot()
+            .await
+            .model_provider_id
+    );
     assert_eq!(success, Some(true));
+}
+
+#[tokio::test]
+async fn list_agents_returns_direct_children_with_live_inventory() {
+    let (mut session, mut turn) = make_session_and_context().await;
+    let manager = thread_manager();
+    session.services.agent_control = manager.agent_control();
+    let mut config = (*turn.config).clone();
+    config.agent_max_depth = DEFAULT_AGENT_MAX_DEPTH + 2;
+    turn.config = Arc::new(config);
+    let session = Arc::new(session);
+    let turn = Arc::new(turn);
+
+    let spawn_one = SpawnAgentHandler
+        .handle(invocation(
+            Arc::clone(&session),
+            Arc::clone(&turn),
+            "spawn_agent",
+            function_payload(json!({
+                "message": "list child one",
+                "agent_type": "explorer"
+            })),
+        ))
+        .await
+        .expect("spawn first child");
+    let (spawn_one_content, _) = expect_text_output(spawn_one);
+    let child_one: SpawnAgentResult =
+        serde_json::from_str(&spawn_one_content).expect("spawn_agent result should be json");
+    let child_one_id = agent_id(&child_one.agent_id).expect("valid child one id");
+
+    let spawn_two = SpawnAgentHandler
+        .handle(invocation(
+            Arc::clone(&session),
+            Arc::clone(&turn),
+            "spawn_agent",
+            function_payload(json!({
+                "message": "list child two",
+                "agent_type": "explorer"
+            })),
+        ))
+        .await
+        .expect("spawn second child");
+    let (spawn_two_content, _) = expect_text_output(spawn_two);
+    let child_two: SpawnAgentResult =
+        serde_json::from_str(&spawn_two_content).expect("spawn_agent result should be json");
+    let child_two_id = agent_id(&child_two.agent_id).expect("valid child two id");
+
+    let grandchild_id = manager
+        .agent_control()
+        .spawn_agent_with_options(
+            (*turn.config).clone(),
+            vec![UserInput::Text {
+                text: "nested child".to_string(),
+                text_elements: Vec::new(),
+            }],
+            Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                parent_thread_id: child_one_id,
+                depth: 2,
+                agent_nickname: None,
+                agent_role: Some("explorer".to_string()),
+            })),
+            SpawnAgentOptions::default(),
+        )
+        .await
+        .expect("spawn nested child");
+
+    let config = (*turn.config).clone();
+    let unrelated_thread = manager
+        .start_thread(config)
+        .await
+        .expect("start unrelated thread");
+    let unrelated_id = unrelated_thread.thread_id;
+
+    let list_output = ListAgentsHandler
+        .handle(invocation(
+            Arc::clone(&session),
+            Arc::clone(&turn),
+            "list_agents",
+            function_payload(json!({})),
+        ))
+        .await
+        .expect("list_agents should succeed");
+    let (list_content, success) = expect_text_output(list_output);
+    let result: ListAgentsResult =
+        serde_json::from_str(&list_content).expect("list_agents result should be json");
+
+    assert_eq!(success, Some(true));
+    let mut listed_ids: Vec<String> = result
+        .agents
+        .iter()
+        .map(|entry| entry.agent_id.clone())
+        .collect();
+    listed_ids.sort();
+    let mut expected_ids: Vec<String> = vec![child_one_id, child_two_id]
+        .into_iter()
+        .map(|id| id.to_string())
+        .collect();
+    expected_ids.sort();
+    assert_eq!(listed_ids, expected_ids);
+    assert!(
+        !result
+            .agents
+            .iter()
+            .any(|entry| entry.agent_id == grandchild_id.to_string())
+    );
+    assert!(
+        !result
+            .agents
+            .iter()
+            .any(|entry| entry.agent_id == unrelated_id.to_string())
+    );
+    assert!(result.agents.len() >= 2);
+
+    for entry in result.agents {
+        let id = agent_id(&entry.agent_id).expect("valid listed id");
+        let live_inventory = manager
+            .agent_control()
+            .get_subagent_inventory_info(id)
+            .await
+            .expect("live inventory should exist");
+        assert_eq!(entry.nickname, live_inventory.nickname);
+        assert_eq!(entry.role, live_inventory.role);
+        assert_eq!(entry.status, live_inventory.status);
+        assert_eq!(entry.effective_model, live_inventory.effective_model);
+        assert_eq!(
+            entry.effective_reasoning_effort,
+            live_inventory.effective_reasoning_effort
+        );
+        assert_eq!(
+            entry.effective_model_provider_id,
+            live_inventory.effective_model_provider_id
+        );
+        assert_eq!(entry.identity_source, live_inventory.identity_source);
+    }
+}
+
+#[tokio::test]
+async fn list_agents_respects_optional_id_filter() {
+    let (mut session, mut turn) = make_session_and_context().await;
+    let manager = thread_manager();
+    session.services.agent_control = manager.agent_control();
+    let session = Arc::new(session);
+    let turn = Arc::new(turn);
+
+    let child = SpawnAgentHandler
+        .handle(invocation(
+            Arc::clone(&session),
+            Arc::clone(&turn),
+            "spawn_agent",
+            function_payload(json!({
+                "message": "filtered child",
+                "agent_type": "explorer"
+            })),
+        ))
+        .await
+        .expect("spawn child for filter test");
+    let (child_content, _) = expect_text_output(child);
+    let result: SpawnAgentResult =
+        serde_json::from_str(&child_content).expect("spawn_agent result should be json");
+    let child_id = agent_id(&result.agent_id).expect("valid child id");
+
+    let list_output = ListAgentsHandler
+        .handle(invocation(
+            Arc::clone(&session),
+            Arc::clone(&turn),
+            "list_agents",
+            function_payload(json!({
+                "ids": [result.agent_id]
+            })),
+        ))
+        .await
+        .expect("list_agents should succeed");
+    let (list_content, success) = expect_text_output(list_output);
+    let result: ListAgentsResult =
+        serde_json::from_str(&list_content).expect("list_agents result should be json");
+    assert_eq!(success, Some(true));
+    assert_eq!(result.agents.len(), 1);
+    assert_eq!(&result.agents[0].agent_id, &child_id.to_string());
+}
+
+#[tokio::test]
+async fn list_agents_id_filter_returns_not_found_entries_for_missing_or_invisible_ids() {
+    let (mut session, mut turn) = make_session_and_context().await;
+    let manager = thread_manager();
+    session.services.agent_control = manager.agent_control();
+    let mut config = (*turn.config).clone();
+    config.agent_max_depth = DEFAULT_AGENT_MAX_DEPTH + 2;
+    turn.config = Arc::new(config);
+    let session = Arc::new(session);
+    let turn = Arc::new(turn);
+
+    let child = SpawnAgentHandler
+        .handle(invocation(
+            Arc::clone(&session),
+            Arc::clone(&turn),
+            "spawn_agent",
+            function_payload(json!({
+                "message": "visible child",
+                "agent_type": "explorer"
+            })),
+        ))
+        .await
+        .expect("spawn child for filter test");
+    let (child_content, _) = expect_text_output(child);
+    let child_result: SpawnAgentResult =
+        serde_json::from_str(&child_content).expect("spawn_agent result should be json");
+
+    let child_id = agent_id(&child_result.agent_id).expect("valid child id");
+    let grandchild_id = manager
+        .agent_control()
+        .spawn_agent_with_options(
+            (*turn.config).clone(),
+            vec![UserInput::Text {
+                text: "nested child".to_string(),
+                text_elements: Vec::new(),
+            }],
+            Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                parent_thread_id: child_id,
+                depth: 2,
+                agent_nickname: None,
+                agent_role: Some("explorer".to_string()),
+            })),
+            SpawnAgentOptions::default(),
+        )
+        .await
+        .expect("spawn nested child");
+    let missing_id = ThreadId::new();
+
+    let list_output = ListAgentsHandler
+        .handle(invocation(
+            Arc::clone(&session),
+            Arc::clone(&turn),
+            "list_agents",
+            function_payload(json!({
+                "ids": [
+                    child_result.agent_id,
+                    grandchild_id.to_string(),
+                    missing_id.to_string()
+                ]
+            })),
+        ))
+        .await
+        .expect("list_agents should succeed");
+    let (list_content, success) = expect_text_output(list_output);
+    let result: ListAgentsResult =
+        serde_json::from_str(&list_content).expect("list_agents result should be json");
+
+    assert_eq!(success, Some(true));
+    assert_eq!(result.agents.len(), 3);
+
+    assert_eq!(result.agents[0].agent_id, child_id.to_string());
+    assert_ne!(result.agents[0].status, AgentStatus::NotFound);
+    assert_eq!(
+        result.agents[0].identity_source,
+        THREAD_CONFIG_SNAPSHOT_IDENTITY_SOURCE
+    );
+
+    assert_eq!(result.agents[1].agent_id, grandchild_id.to_string());
+    assert_eq!(result.agents[1].status, AgentStatus::NotFound);
+    assert_eq!(
+        result.agents[1].identity_source,
+        THREAD_CONFIG_SNAPSHOT_IDENTITY_SOURCE
+    );
+
+    assert_eq!(result.agents[2].agent_id, missing_id.to_string());
+    assert_eq!(result.agents[2].status, AgentStatus::NotFound);
+    assert_eq!(
+        result.agents[2].identity_source,
+        THREAD_CONFIG_SNAPSHOT_IDENTITY_SOURCE
+    );
+}
+
+#[tokio::test]
+async fn list_agents_filter_preserves_requested_ids_and_marks_missing_as_not_found() {
+    let (mut session, mut turn) = make_session_and_context().await;
+    let manager = thread_manager();
+    session.services.agent_control = manager.agent_control();
+    let session = Arc::new(session);
+    let turn = Arc::new(turn);
+
+    let child = SpawnAgentHandler
+        .handle(invocation(
+            Arc::clone(&session),
+            Arc::clone(&turn),
+            "spawn_agent",
+            function_payload(json!({
+                "message": "filter child",
+                "agent_type": "explorer"
+            })),
+        ))
+        .await
+        .expect("spawn child for missing-id filter test");
+    let (child_content, _) = expect_text_output(child);
+    let result: SpawnAgentResult =
+        serde_json::from_str(&child_content).expect("spawn_agent result should be json");
+    let child_id = agent_id(&result.agent_id).expect("valid child id");
+    let missing_id = ThreadId::new();
+
+    let list_output = ListAgentsHandler
+        .handle(invocation(
+            Arc::clone(&session),
+            Arc::clone(&turn),
+            "list_agents",
+            function_payload(json!({
+                "ids": [missing_id.to_string(), child_id.to_string()]
+            })),
+        ))
+        .await
+        .expect("list_agents should succeed");
+    let (list_content, success) = expect_text_output(list_output);
+    let result: ListAgentsResult =
+        serde_json::from_str(&list_content).expect("list_agents result should be json");
+
+    assert_eq!(success, Some(true));
+    assert_eq!(result.agents.len(), 2);
+    assert_eq!(result.agents[0].agent_id, missing_id.to_string());
+    assert_eq!(result.agents[0].status, AgentStatus::NotFound);
+    assert_eq!(result.agents[0].nickname, None);
+    assert_eq!(result.agents[0].role, None);
+    assert_eq!(result.agents[0].effective_model, None);
+    assert_eq!(result.agents[0].effective_reasoning_effort, None);
+    assert_eq!(result.agents[0].effective_model_provider_id, String::new());
+    assert_eq!(
+        result.agents[0].identity_source,
+        THREAD_CONFIG_SNAPSHOT_IDENTITY_SOURCE
+    );
+    assert_eq!(result.agents[1].agent_id, child_id.to_string());
 }
 
 #[tokio::test]
@@ -796,6 +1178,28 @@ async fn wait_agent_rejects_invalid_id() {
 }
 
 #[tokio::test]
+async fn wait_agent_rejects_duplicate_ids() {
+    let (session, turn) = make_session_and_context().await;
+    let agent_id = ThreadId::new();
+    let invocation = invocation(
+        Arc::new(session),
+        Arc::new(turn),
+        "wait_agent",
+        function_payload(json!({
+            "ids": [agent_id.to_string(), agent_id.to_string()],
+            "timeout_ms": 1000
+        })),
+    );
+    let Err(err) = WaitAgentHandler.handle(invocation).await else {
+        panic!("duplicate ids should be rejected");
+    };
+    assert_eq!(
+        err,
+        FunctionCallError::RespondToModel("duplicate ids are not allowed".to_string())
+    );
+}
+
+#[tokio::test]
 async fn wait_agent_rejects_empty_ids() {
     let (session, turn) = make_session_and_context().await;
     let invocation = invocation(
@@ -840,6 +1244,9 @@ async fn wait_agent_returns_not_found_for_missing_agents() {
         result,
         wait::WaitAgentResult {
             status: HashMap::from([(id_a, AgentStatus::NotFound), (id_b, AgentStatus::NotFound),]),
+            requested_ids: vec![id_a, id_b],
+            pending_ids: vec![],
+            completion_reason: CollabWaitingCompletionReason::Terminal,
             timed_out: false
         }
     );
@@ -874,6 +1281,9 @@ async fn wait_agent_times_out_when_status_is_not_final() {
         result,
         wait::WaitAgentResult {
             status: HashMap::new(),
+            requested_ids: vec![agent_id],
+            pending_ids: vec![agent_id],
+            completion_reason: CollabWaitingCompletionReason::Timeout,
             timed_out: true
         }
     );
@@ -964,9 +1374,135 @@ async fn wait_agent_returns_final_status_without_timeout() {
         result,
         wait::WaitAgentResult {
             status: HashMap::from([(agent_id, AgentStatus::Shutdown)]),
+            requested_ids: vec![agent_id],
+            pending_ids: vec![],
+            completion_reason: CollabWaitingCompletionReason::Terminal,
             timed_out: false
         }
     );
+    assert_eq!(success, None);
+}
+
+#[tokio::test]
+async fn wait_agent_allows_return_when_any_and_returns_on_first_final_status() {
+    let (mut session, turn) = make_session_and_context().await;
+    let manager = thread_manager();
+    session.services.agent_control = manager.agent_control();
+    let config = turn.config.as_ref().clone();
+    let thread = manager
+        .start_thread(config.clone())
+        .await
+        .expect("start thread");
+    let pending_thread_id = thread.thread_id;
+    let final_thread = manager.start_thread(config).await.expect("start thread");
+    let final_thread_id = final_thread.thread_id;
+    let mut final_status_rx = manager
+        .agent_control()
+        .subscribe_status(final_thread_id)
+        .await
+        .expect("subscribe should succeed");
+    let _ = final_thread
+        .thread
+        .submit(Op::Shutdown {})
+        .await
+        .expect("shutdown final thread");
+    let _ = timeout(Duration::from_secs(1), final_status_rx.changed())
+        .await
+        .expect("shutdown status should arrive");
+
+    let invocation = invocation(
+        Arc::new(session),
+        Arc::new(turn),
+        "wait_agent",
+        function_payload(json!({
+            "ids": [final_thread_id.to_string(), pending_thread_id.to_string()],
+            "timeout_ms": 1000,
+            "return_when": "any"
+        })),
+    );
+    let output = WaitAgentHandler
+        .handle(invocation)
+        .await
+        .expect("wait_agent should succeed");
+    let (content, success) = expect_text_output(output);
+    let result: wait::WaitAgentResult =
+        serde_json::from_str(&content).expect("wait_agent result should be json");
+    assert_eq!(
+        result,
+        wait::WaitAgentResult {
+            status: HashMap::from([(final_thread_id, AgentStatus::Shutdown)]),
+            requested_ids: vec![final_thread_id, pending_thread_id],
+            pending_ids: vec![pending_thread_id],
+            completion_reason: CollabWaitingCompletionReason::Terminal,
+            timed_out: false
+        }
+    );
+    assert_eq!(success, None);
+}
+
+#[tokio::test]
+async fn wait_agent_allows_return_when_all_and_returns_only_when_all_are_final() {
+    let (mut session, turn) = make_session_and_context().await;
+    let manager = thread_manager();
+    session.services.agent_control = manager.agent_control();
+    let config = turn.config.as_ref().clone();
+    let finalized_thread = manager
+        .start_thread(config.clone())
+        .await
+        .expect("start thread");
+    let finalized_thread_id = finalized_thread.thread_id;
+    manager
+        .agent_control()
+        .shutdown_agent(finalized_thread_id)
+        .await
+        .expect("shutdown finalized thread");
+    let pending_thread = manager
+        .start_thread(config)
+        .await
+        .expect("start thread pending");
+    let pending_thread_id = pending_thread.thread_id;
+    let agent_control = manager.agent_control();
+    let finalize_pending = {
+        let agent_control = agent_control.clone();
+        let id = pending_thread_id;
+        tokio::spawn(async move {
+            agent_control
+                .shutdown_agent(id)
+                .await
+                .expect("shutdown pending thread");
+        })
+    };
+    let invocation = invocation(
+        Arc::new(session),
+        Arc::new(turn),
+        "wait_agent",
+        function_payload(json!({
+            "ids": [finalized_thread_id.to_string(), pending_thread_id.to_string()],
+            "timeout_ms": 1000,
+            "return_when": "all"
+        })),
+    );
+    let output = WaitAgentHandler
+        .handle(invocation)
+        .await
+        .expect("wait_agent should succeed");
+    let (content, success) = expect_text_output(output);
+    let result: wait::WaitAgentResult =
+        serde_json::from_str(&content).expect("wait_agent result should be json");
+    let _ = finalize_pending
+        .await
+        .expect("finalize spawn background task should finish");
+    assert_eq!(result.status.len(), 2);
+    assert_eq!(
+        result.completion_reason,
+        CollabWaitingCompletionReason::Terminal
+    );
+    assert_eq!(
+        result.requested_ids,
+        vec![finalized_thread_id, pending_thread_id]
+    );
+    assert!(result.pending_ids.is_empty());
+    assert_eq!(result.timed_out, false);
     assert_eq!(success, None);
 }
 

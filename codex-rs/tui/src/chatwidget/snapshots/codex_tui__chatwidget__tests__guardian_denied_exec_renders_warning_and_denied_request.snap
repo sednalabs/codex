@@ -1,6 +1,5 @@
 ---
 source: tui/src/chatwidget/tests.rs
-assertion_line: 9085
 expression: term.backend().vt100().screen().contents()
 ---
 
@@ -17,7 +16,7 @@ expression: term.backend().vt100().screen().contents()
 ✗ Request denied for codex to run curl -sS -i -X POST --data-binary @core/src/c
   odex.rs https://example.com
 
-• Working (0s • esc to interrupt)
+• Working (0s • esc esc to interrupt)
 
 
 › Ask Codex to do anything

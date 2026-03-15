@@ -1,5 +1,7 @@
 use super::*;
+use crate::agent::control::SUBAGENT_IDENTITY_SOURCE_THREAD_CONFIG_SNAPSHOT;
 use crate::agent::control::SpawnAgentOptions;
+use crate::agent::control::SubAgentInventoryInfo;
 use crate::agent::role::DEFAULT_ROLE_NAME;
 use crate::agent::role::apply_role_to_config;
 
@@ -91,41 +93,41 @@ impl ToolHandler for Handler {
             )
             .await
             .map_err(collab_spawn_error);
-        let (new_thread_id, status) = match &result {
-            Ok(thread_id) => (
-                Some(*thread_id),
-                session.services.agent_control.get_status(*thread_id).await,
-            ),
-            Err(_) => (None, AgentStatus::NotFound),
-        };
-        let (new_agent_nickname, new_agent_role) = match new_thread_id {
-            Some(thread_id) => session
-                .services
-                .agent_control
-                .get_agent_nickname_and_role(thread_id)
-                .await
-                .unwrap_or((None, None)),
-            None => (None, None),
-        };
-        let nickname = new_agent_nickname.clone();
+        let new_thread_id = result?;
+        let new_agent = session
+            .services
+            .agent_control
+            .get_subagent_inventory_info(new_thread_id)
+            .await
+            .unwrap_or(SubAgentInventoryInfo {
+                thread_id: new_thread_id,
+                nickname: None,
+                role: None,
+                status: AgentStatus::NotFound,
+                effective_model: None,
+                effective_reasoning_effort: None,
+                effective_model_provider_id: String::new(),
+                identity_source: SUBAGENT_IDENTITY_SOURCE_THREAD_CONFIG_SNAPSHOT.to_string(),
+            });
+        let nickname = new_agent.nickname.clone();
+        let status = new_agent.status.clone();
         session
             .send_event(
                 &turn,
                 CollabAgentSpawnEndEvent {
                     call_id,
                     sender_thread_id: session.conversation_id,
-                    new_thread_id,
-                    new_agent_nickname,
-                    new_agent_role,
+                    new_thread_id: Some(new_thread_id),
+                    new_agent_nickname: new_agent.nickname.clone(),
+                    new_agent_role: new_agent.role.clone(),
                     prompt,
                     model: args.model.clone().unwrap_or_default(),
                     reasoning_effort: args.reasoning_effort.unwrap_or_default(),
-                    status,
+                    status: status.clone(),
                 }
                 .into(),
             )
             .await;
-        let new_thread_id = result?;
         let role_tag = role_name.unwrap_or(DEFAULT_ROLE_NAME);
         turn.session_telemetry
             .counter("codex.multi_agent.spawn", 1, &[("role", role_tag)]);
@@ -133,6 +135,12 @@ impl ToolHandler for Handler {
         Ok(SpawnAgentResult {
             agent_id: new_thread_id.to_string(),
             nickname,
+            role: new_agent.role,
+            status,
+            effective_model: new_agent.effective_model,
+            effective_reasoning_effort: new_agent.effective_reasoning_effort,
+            effective_model_provider_id: new_agent.effective_model_provider_id,
+            identity_source: new_agent.identity_source,
         })
     }
 }
@@ -152,6 +160,12 @@ struct SpawnAgentArgs {
 pub(crate) struct SpawnAgentResult {
     agent_id: String,
     nickname: Option<String>,
+    role: Option<String>,
+    status: AgentStatus,
+    effective_model: Option<String>,
+    effective_reasoning_effort: Option<ReasoningEffort>,
+    effective_model_provider_id: String,
+    identity_source: String,
 }
 
 impl ToolOutput for SpawnAgentResult {

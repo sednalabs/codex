@@ -509,6 +509,7 @@ async fn review_uses_runtime_effort_after_model_override() {
         .submit(Op::OverrideTurnContext {
             cwd: None,
             approval_policy: None,
+            approvals_reviewer: None,
             sandbox_policy: None,
             windows_sandbox_level: None,
             model: Some("gpt-5.1-codex-mini".to_string()),
@@ -578,6 +579,7 @@ async fn review_uses_runtime_effort_with_explicit_review_model() {
         .submit(Op::OverrideTurnContext {
             cwd: None,
             approval_policy: None,
+            approvals_reviewer: None,
             sandbox_policy: None,
             windows_sandbox_level: None,
             model: Some("gpt-5.3-codex-spark".to_string()),
@@ -648,6 +650,7 @@ async fn review_clamps_runtime_effort_with_explicit_review_model() {
         .submit(Op::OverrideTurnContext {
             cwd: None,
             approval_policy: None,
+            approvals_reviewer: None,
             sandbox_policy: None,
             windows_sandbox_level: None,
             model: Some("gpt-5.3-codex-spark".to_string()),

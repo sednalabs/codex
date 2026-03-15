@@ -849,7 +849,6 @@ mod tests {
     use super::*;
     use async_channel::bounded;
     use codex_protocol::models::NetworkPermissions;
-    use codex_protocol::models::PermissionProfile;
     use codex_protocol::models::ResponseItem;
     use codex_protocol::protocol::AgentStatus;
     use codex_protocol::protocol::EventMsg;
@@ -857,6 +856,7 @@ mod tests {
     use codex_protocol::protocol::TokenCountEvent;
     use codex_protocol::protocol::TurnAbortReason;
     use codex_protocol::protocol::TurnAbortedEvent;
+    use codex_protocol::request_permissions::RequestPermissionProfile;
     use codex_protocol::request_permissions::RequestPermissionsEvent;
     use codex_protocol::request_permissions::RequestPermissionsResponse;
     use pretty_assertions::assert_eq;
@@ -873,6 +873,7 @@ mod tests {
             rx_event: rx_events,
             agent_status,
             session: Arc::clone(&session),
+            session_loop_termination: completed_session_loop_termination(),
         });
 
         let (tx_out, rx_out) = bounded(1);
@@ -893,6 +894,7 @@ mod tests {
             tx_out.clone(),
             session,
             ctx,
+            Arc::new(Mutex::new(HashMap::new())),
             cancel.clone(),
         ));
 
@@ -946,6 +948,7 @@ mod tests {
             rx_event: rx_events,
             agent_status,
             session: Arc::clone(&session),
+            session_loop_termination: completed_session_loop_termination(),
         });
 
         let (tx_out, rx_out) = bounded(1);
@@ -955,6 +958,7 @@ mod tests {
             tx_out,
             session,
             ctx,
+            Arc::new(Mutex::new(HashMap::new())),
             cancel,
         ));
 
@@ -996,6 +1000,7 @@ mod tests {
             rx_event: rx_events,
             agent_status,
             session,
+            session_loop_termination: completed_session_loop_termination(),
         });
         let (tx_ops, rx_ops) = bounded(1);
         let cancel = CancellationToken::new();
@@ -1042,15 +1047,16 @@ mod tests {
             rx_event: rx_events_child,
             agent_status,
             session: Arc::clone(&parent_session),
+            session_loop_termination: completed_session_loop_termination(),
         });
 
         let call_id = "tool-call-1".to_string();
         let expected_response = RequestPermissionsResponse {
-            permissions: PermissionProfile {
+            permissions: RequestPermissionProfile {
                 network: Some(NetworkPermissions {
                     enabled: Some(true),
                 }),
-                ..PermissionProfile::default()
+                ..RequestPermissionProfile::default()
             },
             scope: PermissionGrantScope::Turn,
         };
@@ -1065,17 +1071,17 @@ mod tests {
             async move {
                 handle_request_permissions(
                     codex.as_ref(),
-                    parent_session.as_ref(),
-                    parent_ctx.as_ref(),
+                    &parent_session,
+                    &parent_ctx,
                     RequestPermissionsEvent {
                         call_id: request_call_id,
                         turn_id: "child-turn-1".to_string(),
                         reason: Some("need access".to_string()),
-                        permissions: PermissionProfile {
+                        permissions: RequestPermissionProfile {
                             network: Some(NetworkPermissions {
                                 enabled: Some(true),
                             }),
-                            ..PermissionProfile::default()
+                            ..RequestPermissionProfile::default()
                         },
                     },
                     &cancel_token,

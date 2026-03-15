@@ -464,6 +464,7 @@ fn test_full_toolset_specs_for_gpt5_codex_unified_exec_web_search() {
         },
         create_view_image_tool(config.can_request_original_image_detail),
         create_spawn_agent_tool(&config),
+        create_list_agents_tool(),
         create_send_input_tool(),
         create_resume_agent_tool(),
         create_wait_agent_tool(),
@@ -510,8 +511,7 @@ fn test_build_specs_collab_tools_enabled() {
     });
     let (tools, _) = build_specs(&tools_config, None, None, &[]).build();
     assert_contains_tool_names(
-        &tools,
-        &["spawn_agent", "send_input", "wait_agent", "close_agent"],
+        &["spawn_agent", "list_agents", "send_input", "wait_agent", "close_agent"],
     );
     assert_lacks_tool_name(&tools, "spawn_agents_on_csv");
 }
@@ -538,6 +538,7 @@ fn test_build_specs_enable_fanout_enables_agent_jobs_and_collab_tools() {
         &tools,
         &[
             "spawn_agent",
+            "list_agents",
             "send_input",
             "wait_agent",
             "close_agent",
@@ -658,6 +659,7 @@ fn test_build_specs_agent_job_worker_tools_enabled() {
         &tools,
         &[
             "spawn_agent",
+            "list_agents",
             "send_input",
             "resume_agent",
             "wait_agent",
@@ -667,6 +669,65 @@ fn test_build_specs_agent_job_worker_tools_enabled() {
         ],
     );
     assert_lacks_tool_name(&tools, "request_user_input");
+}
+
+#[test]
+fn test_wait_agent_tool_schema_and_description_document_return_when() {
+    let config = test_config();
+    let model_info = ModelsManager::construct_model_info_offline_for_tests("gpt-5-codex", &config);
+    let mut features = Features::with_defaults();
+    features.enable(Feature::Collab);
+    let available_models = Vec::new();
+    let tools_config = ToolsConfig::new(&ToolsConfigParams {
+        model_info: &model_info,
+        available_models: &available_models,
+        features: &features,
+        web_search_mode: Some(WebSearchMode::Cached),
+        session_source: SessionSource::Cli,
+        sandbox_policy: &SandboxPolicy::DangerFullAccess,
+        windows_sandbox_level: WindowsSandboxLevel::Disabled,
+    });
+    let (tools, _) = build_specs(&tools_config, None, None, &[]).build();
+    let ToolSpec::Function(ResponsesApiTool {
+        parameters,
+        description,
+        output_schema,
+        ..
+    }) = &find_tool(&tools, "wait_agent").spec
+    else {
+        panic!("expected function tool");
+    };
+    let JsonSchema::Object { properties, .. } = parameters else {
+        panic!("expected object parameters");
+    };
+    let Some(JsonSchema::Array { .. }) = properties.get("ids") else {
+        panic!("expected ids");
+    };
+    let Some(JsonSchema::Number { .. }) = properties.get("timeout_ms") else {
+        panic!("expected timeout_ms");
+    };
+    let Some(JsonSchema::String { description }) = properties.get("return_when") else {
+        panic!("expected return_when");
+    };
+    let Some(return_when_description) = description.as_deref() else {
+        panic!("expected return_when description");
+    };
+    assert!(return_when_description.contains("`any`"));
+    assert!(return_when_description.contains("`all`"));
+    assert!(description.contains("blocking coordination while awaiting sub-agent completion"));
+    assert!(description.contains("Prefer longer timeouts"));
+    assert!(description.contains("favor `list_agents`"));
+    assert!(description.contains("`timed_out`"));
+    assert!(description.contains("When `return_when` is `any`"));
+    assert!(description.contains("When `return_when` is `all`"));
+    assert_eq!(
+        output_schema
+            .as_ref()
+            .expect("wait_agent has output schema")
+            .get("required")
+            .expect("output schema includes required"),
+        &serde_json::json!(["status", "requested_ids", "pending_ids", "completion_reason", "timed_out"])
+    );
 }
 
 #[test]
@@ -1194,6 +1255,7 @@ fn test_build_specs_gpt5_codex_default() {
             "web_search",
             "view_image",
             "spawn_agent",
+            "list_agents",
             "send_input",
             "resume_agent",
             "wait_agent",
@@ -1217,6 +1279,7 @@ fn test_build_specs_gpt51_codex_default() {
             "web_search",
             "view_image",
             "spawn_agent",
+            "list_agents",
             "send_input",
             "resume_agent",
             "wait_agent",
@@ -1242,6 +1305,7 @@ fn test_build_specs_gpt5_codex_unified_exec_web_search() {
             "web_search",
             "view_image",
             "spawn_agent",
+            "list_agents",
             "send_input",
             "resume_agent",
             "wait_agent",
@@ -1267,6 +1331,7 @@ fn test_build_specs_gpt51_codex_unified_exec_web_search() {
             "web_search",
             "view_image",
             "spawn_agent",
+            "list_agents",
             "send_input",
             "resume_agent",
             "wait_agent",
@@ -1290,6 +1355,7 @@ fn test_gpt_5_1_codex_max_defaults() {
             "web_search",
             "view_image",
             "spawn_agent",
+            "list_agents",
             "send_input",
             "resume_agent",
             "wait_agent",
@@ -1313,6 +1379,7 @@ fn test_codex_5_1_mini_defaults() {
             "web_search",
             "view_image",
             "spawn_agent",
+            "list_agents",
             "send_input",
             "resume_agent",
             "wait_agent",
@@ -1335,6 +1402,7 @@ fn test_gpt_5_defaults() {
             "web_search",
             "view_image",
             "spawn_agent",
+            "list_agents",
             "send_input",
             "resume_agent",
             "wait_agent",
@@ -1358,6 +1426,7 @@ fn test_gpt_5_1_defaults() {
             "web_search",
             "view_image",
             "spawn_agent",
+            "list_agents",
             "send_input",
             "resume_agent",
             "wait_agent",
@@ -1383,6 +1452,7 @@ fn test_gpt_5_1_codex_max_unified_exec_web_search() {
             "web_search",
             "view_image",
             "spawn_agent",
+            "list_agents",
             "send_input",
             "resume_agent",
             "wait_agent",

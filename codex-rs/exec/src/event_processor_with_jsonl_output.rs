@@ -11,6 +11,7 @@ use crate::exec_events::CollabAgentStatus;
 use crate::exec_events::CollabTool;
 use crate::exec_events::CollabToolCallItem;
 use crate::exec_events::CollabToolCallStatus;
+use crate::exec_events::CollabWaitMetadata;
 use crate::exec_events::CommandExecutionItem;
 use crate::exec_events::CommandExecutionStatus;
 use crate::exec_events::ErrorItem;
@@ -97,6 +98,7 @@ struct RunningMcpToolCall {
 struct RunningCollabToolCall {
     tool: CollabTool,
     item_id: String,
+    receiver_thread_ids: Vec<String>,
 }
 
 impl EventProcessorWithJsonOutput {
@@ -448,6 +450,7 @@ impl EventProcessorWithJsonOutput {
             Some(ev.prompt.clone()),
             agents_states,
             status,
+            None,
         )
     }
 
@@ -483,6 +486,7 @@ impl EventProcessorWithJsonOutput {
             Some(ev.prompt.clone()),
             [(receiver_id, agent_state)].into_iter().collect(),
             status,
+            None,
         )
     }
 
@@ -500,17 +504,30 @@ impl EventProcessorWithJsonOutput {
     }
 
     fn handle_collab_wait_end(&mut self, ev: &CollabWaitingEndEvent) -> Vec<ThreadEvent> {
-        let status = if ev.statuses.values().any(is_collab_failure) {
-            CollabToolCallStatus::Failed
-        } else {
-            CollabToolCallStatus::Completed
-        };
-        let mut receiver_thread_ids = ev
-            .statuses
-            .keys()
-            .map(ToString::to_string)
-            .collect::<Vec<_>>();
-        receiver_thread_ids.sort();
+        let status = CollabToolCallStatus::Completed;
+        let (tool, receiver_thread_ids) =
+            match self.running_collab_tool_calls.get(&ev.call_id).cloned() {
+                Some(running) => (running.tool, running.receiver_thread_ids),
+                None => {
+                    warn!(
+                        call_id = &ev.call_id,
+                        "Received CollabWaitingEnd without begin; synthesizing new item"
+                    );
+                    let mut receiver_thread_ids = if !ev.receiver_thread_ids.is_empty() {
+                        ev.receiver_thread_ids
+                            .iter()
+                            .map(ToString::to_string)
+                            .collect::<Vec<_>>()
+                    } else {
+                        ev.statuses
+                            .keys()
+                            .map(ToString::to_string)
+                            .collect::<Vec<_>>()
+                    };
+                    receiver_thread_ids.sort();
+                    (CollabTool::Wait, receiver_thread_ids)
+                }
+            };
         let agents_states = ev
             .statuses
             .iter()
@@ -521,14 +538,26 @@ impl EventProcessorWithJsonOutput {
                 )
             })
             .collect();
+        let pending_thread_ids = ev
+            .pending_thread_ids
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>();
+        let wait_metadata = CollabWaitMetadata {
+            completion_reason: ev.completion_reason.clone(),
+            timed_out: ev.timed_out,
+            pending_thread_ids,
+            requested_thread_ids: receiver_thread_ids.clone(),
+        };
         self.finish_collab_tool_call(
             &ev.call_id,
-            CollabTool::Wait,
+            tool,
             ev.sender_thread_id.to_string(),
-            receiver_thread_ids,
+            receiver_thread_ids.clone(),
             None,
             agents_states,
             status,
+            Some(wait_metadata),
         )
     }
 
@@ -558,6 +587,7 @@ impl EventProcessorWithJsonOutput {
             None,
             [(receiver_id, agent_state)].into_iter().collect(),
             status,
+            None,
         )
     }
 
@@ -575,6 +605,7 @@ impl EventProcessorWithJsonOutput {
             RunningCollabToolCall {
                 tool: tool.clone(),
                 item_id: item_id.clone(),
+                receiver_thread_ids: receiver_thread_ids.clone(),
             },
         );
         let item = ThreadItem {
@@ -586,6 +617,7 @@ impl EventProcessorWithJsonOutput {
                 prompt,
                 agents_states: HashMap::new(),
                 status: CollabToolCallStatus::InProgress,
+                wait_metadata: None,
             }),
         };
         vec![ThreadEvent::ItemStarted(ItemStartedEvent { item })]
@@ -601,6 +633,7 @@ impl EventProcessorWithJsonOutput {
         prompt: Option<String>,
         agents_states: HashMap<String, CollabAgentState>,
         status: CollabToolCallStatus,
+        wait_metadata: Option<CollabWaitMetadata>,
     ) -> Vec<ThreadEvent> {
         let (tool, item_id) = match self.running_collab_tool_calls.remove(call_id) {
             Some(running) => (running.tool, running.item_id),
@@ -621,6 +654,7 @@ impl EventProcessorWithJsonOutput {
                 prompt,
                 agents_states,
                 status,
+                wait_metadata,
             }),
         };
         vec![ThreadEvent::ItemCompleted(ItemCompletedEvent { item })]

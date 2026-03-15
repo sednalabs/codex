@@ -1,9 +1,8 @@
 ---
 source: tui/src/chatwidget/tests.rs
-assertion_line: 9336
 expression: rendered
 ---
-• Reviewing 2 approval requests (0s • esc to interrupt)
+• Reviewing 2 approval requests (0s • esc esc to interrupt)
   └ • rm -rf '/tmp/guardian target 1'
     • rm -rf '/tmp/guardian target 2'
 

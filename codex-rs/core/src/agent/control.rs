@@ -15,6 +15,7 @@ use crate::thread_manager::ThreadManagerState;
 use codex_protocol::ThreadId;
 use codex_protocol::models::FunctionCallOutputPayload;
 use codex_protocol::models::ResponseItem;
+use codex_protocol::openai_models::ReasoningEffort;
 use codex_protocol::protocol::InitialHistory;
 use codex_protocol::protocol::Op;
 use codex_protocol::protocol::RolloutItem;
@@ -28,10 +29,23 @@ use tokio::sync::watch;
 
 const AGENT_NAMES: &str = include_str!("agent_names.txt");
 const FORKED_SPAWN_AGENT_OUTPUT_MESSAGE: &str = "You are the newly spawned agent. The prior conversation history was forked from your parent agent. Treat the next user message as your new task, and use the forked history only as background context.";
+pub(crate) const SUBAGENT_IDENTITY_SOURCE_THREAD_CONFIG_SNAPSHOT: &str = "thread_config_snapshot";
 
 #[derive(Clone, Debug, Default)]
 pub(crate) struct SpawnAgentOptions {
     pub(crate) fork_parent_spawn_call_id: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct SubAgentInventoryInfo {
+    pub(crate) thread_id: ThreadId,
+    pub(crate) nickname: Option<String>,
+    pub(crate) role: Option<String>,
+    pub(crate) status: AgentStatus,
+    pub(crate) effective_model: Option<String>,
+    pub(crate) effective_reasoning_effort: Option<ReasoningEffort>,
+    pub(crate) effective_model_provider_id: String,
+    pub(crate) identity_source: String,
 }
 
 fn default_agent_nickname_list() -> Vec<&'static str> {
@@ -360,6 +374,77 @@ impl AgentControl {
         ))
     }
 
+    pub(crate) async fn get_subagent_inventory_info(
+        &self,
+        thread_id: ThreadId,
+    ) -> Option<SubAgentInventoryInfo> {
+        let state = self.upgrade().ok()?;
+        let thread = state.get_thread(thread_id).await.ok()?;
+        let snapshot = thread.config_snapshot().await;
+        let SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+            agent_nickname,
+            agent_role,
+            ..
+        }) = snapshot.session_source
+        else {
+            return None;
+        };
+
+        Some(SubAgentInventoryInfo {
+            thread_id,
+            nickname: agent_nickname,
+            role: agent_role,
+            status: thread.agent_status().await,
+            effective_model: Some(snapshot.model),
+            effective_reasoning_effort: snapshot.reasoning_effort,
+            effective_model_provider_id: snapshot.model_provider_id,
+            identity_source: SUBAGENT_IDENTITY_SOURCE_THREAD_CONFIG_SNAPSHOT.to_string(),
+        })
+    }
+
+    pub(crate) async fn list_direct_child_subagent_inventory(
+        &self,
+        parent_thread_id: ThreadId,
+    ) -> Vec<SubAgentInventoryInfo> {
+        let Ok(state) = self.upgrade() else {
+            return Vec::new();
+        };
+        let mut agents = Vec::new();
+
+        for thread_id in state.list_thread_ids().await {
+            let Ok(thread) = state.get_thread(thread_id).await else {
+                continue;
+            };
+            let snapshot = thread.config_snapshot().await;
+            let SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                parent_thread_id: agent_parent_thread_id,
+                agent_nickname,
+                agent_role,
+                ..
+            }) = snapshot.session_source
+            else {
+                continue;
+            };
+            if agent_parent_thread_id != parent_thread_id {
+                continue;
+            }
+
+            agents.push(SubAgentInventoryInfo {
+                thread_id,
+                nickname: agent_nickname,
+                role: agent_role,
+                status: thread.agent_status().await,
+                effective_model: Some(snapshot.model),
+                effective_reasoning_effort: snapshot.reasoning_effort,
+                effective_model_provider_id: snapshot.model_provider_id,
+                identity_source: SUBAGENT_IDENTITY_SOURCE_THREAD_CONFIG_SNAPSHOT.to_string(),
+            });
+        }
+
+        agents.sort_by(|left, right| left.thread_id.to_string().cmp(&right.thread_id.to_string()));
+        agents
+    }
+
     /// Subscribe to status updates for `agent_id`, yielding the latest value and changes.
     pub(crate) async fn subscribe_status(
         &self,
@@ -384,34 +469,12 @@ impl AgentControl {
         &self,
         parent_thread_id: ThreadId,
     ) -> String {
-        let Ok(state) = self.upgrade() else {
-            return String::new();
-        };
-
-        let mut agents = Vec::new();
-        for thread_id in state.list_thread_ids().await {
-            let Ok(thread) = state.get_thread(thread_id).await else {
-                continue;
-            };
-            let snapshot = thread.config_snapshot().await;
-            let SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
-                parent_thread_id: agent_parent_thread_id,
-                agent_nickname,
-                ..
-            }) = snapshot.session_source
-            else {
-                continue;
-            };
-            if agent_parent_thread_id != parent_thread_id {
-                continue;
-            }
-            agents.push(format_subagent_context_line(
-                &thread_id.to_string(),
-                agent_nickname.as_deref(),
-            ));
-        }
-        agents.sort();
-        agents.join("\n")
+        self.list_direct_child_subagent_inventory(parent_thread_id)
+            .await
+            .into_iter()
+            .map(|agent| format_subagent_context_line(&agent))
+            .collect::<Vec<_>>()
+            .join("\n")
     }
 
     /// Starts a detached watcher for sub-agents spawned from another thread.
@@ -878,6 +941,7 @@ mod tests {
         let parent_spawn_call_id = "spawn-call-history".to_string();
         let parent_spawn_call = ResponseItem::FunctionCall {
             id: None,
+            namespace: None,
             name: "spawn_agent".to_string(),
             arguments: "{}".to_string(),
             call_id: parent_spawn_call_id.clone(),
@@ -960,6 +1024,7 @@ mod tests {
         let parent_spawn_call_id = "spawn-call-1".to_string();
         let parent_spawn_call = ResponseItem::FunctionCall {
             id: None,
+            namespace: None,
             name: "spawn_agent".to_string(),
             arguments: "{}".to_string(),
             call_id: parent_spawn_call_id.clone(),
@@ -1035,6 +1100,7 @@ mod tests {
         let parent_spawn_call_id = "spawn-call-unflushed".to_string();
         let parent_spawn_call = ResponseItem::FunctionCall {
             id: None,
+            namespace: None,
             name: "spawn_agent".to_string(),
             arguments: "{}".to_string(),
             call_id: parent_spawn_call_id.clone(),

@@ -5,6 +5,7 @@ use codex_exec::exec_events::CollabAgentStatus;
 use codex_exec::exec_events::CollabTool;
 use codex_exec::exec_events::CollabToolCallItem;
 use codex_exec::exec_events::CollabToolCallStatus;
+use codex_exec::exec_events::CollabWaitMetadata;
 use codex_exec::exec_events::CommandExecutionItem;
 use codex_exec::exec_events::CommandExecutionStatus;
 use codex_exec::exec_events::ErrorItem;
@@ -45,6 +46,8 @@ use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::CodexErrorInfo;
 use codex_protocol::protocol::CollabAgentSpawnBeginEvent;
 use codex_protocol::protocol::CollabAgentSpawnEndEvent;
+use codex_protocol::protocol::CollabWaitingBeginEvent;
+use codex_protocol::protocol::CollabWaitingCompletionReason;
 use codex_protocol::protocol::CollabWaitingEndEvent;
 use codex_protocol::protocol::ErrorEvent;
 use codex_protocol::protocol::Event;
@@ -567,6 +570,7 @@ fn collab_spawn_begin_and_end_emit_item_events() {
                     prompt: Some(prompt.clone()),
                     agents_states: std::collections::HashMap::new(),
                     status: CollabToolCallStatus::InProgress,
+                    wait_metadata: None,
                 }),
             },
         })]
@@ -607,6 +611,7 @@ fn collab_spawn_begin_and_end_emit_item_events() {
                     .into_iter()
                     .collect(),
                     status: CollabToolCallStatus::Completed,
+                    wait_metadata: None,
                 }),
             },
         })]
@@ -614,7 +619,7 @@ fn collab_spawn_begin_and_end_emit_item_events() {
 }
 
 #[test]
-fn collab_wait_end_without_begin_synthesizes_failed_item() {
+fn collab_wait_end_without_begin_synthesizes_completed_item() {
     let mut ep = EventProcessorWithJsonOutput::new(None);
     let sender_thread_id = ThreadId::from_string("67e55044-10b1-426f-9247-bb680e5fe0c8").unwrap();
     let running_thread_id = ThreadId::from_string("3f76d2a0-943e-4f43-8a38-b289c9c6c3d1").unwrap();
@@ -635,6 +640,10 @@ fn collab_wait_end_without_begin_synthesizes_failed_item() {
             call_id: "call-11".to_string(),
             agent_statuses: Vec::new(),
             statuses: statuses.clone(),
+            receiver_thread_ids: Vec::new(),
+            pending_thread_ids: Vec::new(),
+            completion_reason: CollabWaitingCompletionReason::Timeout,
+            timed_out: true,
         }),
     );
     let events = ep.collect_thread_events(&end);
@@ -646,7 +655,7 @@ fn collab_wait_end_without_begin_synthesizes_failed_item() {
                 details: ThreadItemDetails::CollabToolCall(CollabToolCallItem {
                     tool: CollabTool::Wait,
                     sender_thread_id: sender_thread_id.to_string(),
-                    receiver_thread_ids,
+                    receiver_thread_ids: receiver_thread_ids.clone(),
                     prompt: None,
                     agents_states: [
                         (
@@ -666,7 +675,88 @@ fn collab_wait_end_without_begin_synthesizes_failed_item() {
                     ]
                     .into_iter()
                     .collect(),
-                    status: CollabToolCallStatus::Failed,
+                    status: CollabToolCallStatus::Completed,
+                    wait_metadata: Some(CollabWaitMetadata {
+                        completion_reason: CollabWaitingCompletionReason::Timeout,
+                        timed_out: true,
+                        pending_thread_ids: Vec::new(),
+                        requested_thread_ids: receiver_thread_ids,
+                    }),
+                }),
+            },
+        })]
+    );
+}
+
+#[test]
+fn collab_wait_end_with_begin_preserves_requested_receivers_on_partial_timeout() {
+    let mut ep = EventProcessorWithJsonOutput::new(None);
+    let sender_thread_id = ThreadId::from_string("67e55044-10b1-426f-9247-bb680e5fe0c8").unwrap();
+    let running_thread_id = ThreadId::from_string("3f76d2a0-943e-4f43-8a38-b289c9c6c3d1").unwrap();
+    let pending_thread_id = ThreadId::from_string("c1dfd96e-1f0c-4f26-9b4f-1aa02c2d3c4d").unwrap();
+    let requested_thread_ids = vec![running_thread_id, pending_thread_id];
+
+    let _ = ep.collect_thread_events(&event(
+        "c1",
+        EventMsg::CollabWaitingBegin(CollabWaitingBeginEvent {
+            sender_thread_id,
+            receiver_thread_ids: requested_thread_ids.clone(),
+            receiver_agents: Vec::new(),
+            call_id: "call-12".to_string(),
+        }),
+    ));
+
+    let mut statuses = std::collections::HashMap::new();
+    statuses.insert(
+        running_thread_id,
+        AgentStatus::Completed(Some("done".to_string())),
+    );
+    let end = event(
+        "c2",
+        EventMsg::CollabWaitingEnd(CollabWaitingEndEvent {
+            sender_thread_id,
+            call_id: "call-12".to_string(),
+            agent_statuses: Vec::new(),
+            statuses: statuses.clone(),
+            receiver_thread_ids: Vec::new(),
+            pending_thread_ids: vec![pending_thread_id],
+            completion_reason: CollabWaitingCompletionReason::Timeout,
+            timed_out: true,
+        }),
+    );
+    let events = ep.collect_thread_events(&end);
+    assert_eq!(
+        events,
+        vec![ThreadEvent::ItemCompleted(ItemCompletedEvent {
+            item: ThreadItem {
+                id: "item_0".to_string(),
+                details: ThreadItemDetails::CollabToolCall(CollabToolCallItem {
+                    tool: CollabTool::Wait,
+                    sender_thread_id: sender_thread_id.to_string(),
+                    receiver_thread_ids: requested_thread_ids
+                        .iter()
+                        .map(ToString::to_string)
+                        .collect(),
+                    prompt: None,
+                    agents_states: [(
+                        running_thread_id.to_string(),
+                        CollabAgentState {
+                            status: CollabAgentStatus::Completed,
+                            message: Some("done".to_string()),
+                        },
+                    )]
+                    .into_iter()
+                    .collect(),
+                    status: CollabToolCallStatus::Completed,
+                    wait_metadata: Some(CollabWaitMetadata {
+                        completion_reason: CollabWaitingCompletionReason::Timeout,
+                        timed_out: true,
+                        pending_thread_ids: vec![pending_thread_id.to_string()],
+                        requested_thread_ids: requested_thread_ids
+                            .iter()
+                            .map(ToString::to_string)
+                            .collect(),
+                    }),
                 }),
             },
         })]

@@ -3330,6 +3330,29 @@ pub struct CollabWaitingEndEvent {
     pub agent_statuses: Vec<CollabAgentStatusEntry>,
     /// Last known status of the receiver agents reported to the sender agent.
     pub statuses: HashMap<ThreadId, AgentStatus>,
+    /// IDs requested by the wait call.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub receiver_thread_ids: Vec<ThreadId>,
+    /// IDs still waiting when the call completed.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[serde(alias = "pendingReceiverThreadIds")]
+    pub pending_thread_ids: Vec<ThreadId>,
+    /// How the wait call completed.
+    #[serde(default)]
+    pub completion_reason: CollabWaitingCompletionReason,
+    /// Whether the wait call hit its timeout.
+    #[serde(default)]
+    #[serde(rename = "timed_out")]
+    #[serde(alias = "timedOut")]
+    pub timed_out: bool,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq, Default, JsonSchema, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum CollabWaitingCompletionReason {
+    #[default]
+    Terminal,
+    Timeout,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, JsonSchema, TS)]

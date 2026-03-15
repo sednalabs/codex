@@ -4241,6 +4241,8 @@ pub enum ThreadItem {
         model: Option<String>,
         /// Reasoning effort requested for the spawned agent, when applicable.
         reasoning_effort: Option<ReasoningEffort>,
+        /// Whether a wait call completed due to timeout.
+        timed_out: bool,
         /// Last known status of the target agents, when available.
         agents_states: HashMap<String, CollabAgentState>,
     },

@@ -16,8 +16,9 @@ Behavior rules:
    - Stop awaiting unless explicitly instructed.
 
 3. Awaiting behavior:
-   - If the task is still running, continue polling using tool calls.
-   - Use repeated tool calls if necessary.
+   - If the task is still running, continue awaiting with blocking waits.
+   - Use `wait_agent` calls with longer timeouts rather than repeated short polling.
+   - If available, prefer `list_agents` for status snapshots before calling a blocking `wait_agent`.
    - Do not hallucinate completion.
    - Use long timeouts when awaiting for something. If you need multiple awaits, increase the timeouts/yield times exponentially.
 

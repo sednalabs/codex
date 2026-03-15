@@ -1,4 +1,5 @@
 use codex_protocol::models::WebSearchAction;
+use codex_protocol::protocol::CollabWaitingCompletionReason;
 use serde::Deserialize;
 use serde::Serialize;
 use serde_json::Value as JsonValue;
@@ -222,6 +223,16 @@ pub enum CollabTool {
     CloseAgent,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, TS)]
+pub struct CollabWaitMetadata {
+    pub completion_reason: CollabWaitingCompletionReason,
+    pub timed_out: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pending_thread_ids: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub requested_thread_ids: Vec<String>,
+}
+
 /// The status of a collab agent.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
 #[serde(rename_all = "snake_case")]
@@ -250,6 +261,8 @@ pub struct CollabToolCallItem {
     pub prompt: Option<String>,
     pub agents_states: HashMap<String, CollabAgentState>,
     pub status: CollabToolCallStatus,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wait_metadata: Option<CollabWaitMetadata>,
 }
 
 /// Result payload produced by an MCP tool invocation.
