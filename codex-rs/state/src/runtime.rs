@@ -16,9 +16,12 @@ use crate::SortKey;
 use crate::ThreadMetadata;
 use crate::ThreadMetadataBuilder;
 use crate::ThreadsPage;
+use crate::USAGE_DB_FILENAME;
+use crate::USAGE_DB_VERSION;
 use crate::apply_rollout_item;
 use crate::migrations::LOGS_MIGRATOR;
 use crate::migrations::STATE_MIGRATOR;
+use crate::migrations::USAGE_MIGRATOR;
 use crate::model::AgentJobRow;
 use crate::model::ThreadRow;
 use crate::model::anchor_from_item;
@@ -56,6 +59,7 @@ mod memories;
 #[cfg(test)]
 mod test_support;
 mod threads;
+pub mod usage;
 
 // "Partition" is the retention bucket we cap at 10 MiB:
 // - one bucket per non-null thread_id
@@ -70,6 +74,7 @@ pub struct StateRuntime {
     default_provider: String,
     pool: Arc<sqlx::SqlitePool>,
     logs_pool: Arc<sqlx::SqlitePool>,
+    usage_pool: Arc<sqlx::SqlitePool>,
 }
 
 impl StateRuntime {
@@ -96,8 +101,11 @@ impl StateRuntime {
             "logs",
         )
         .await;
+        let usage_name = usage_db_filename();
+        remove_legacy_db_files(&codex_home, usage_name.as_str(), USAGE_DB_FILENAME, "usage").await;
         let state_path = state_db_path(codex_home.as_path());
         let logs_path = logs_db_path(codex_home.as_path());
+        let usage_path = usage_db_path(codex_home.as_path());
         let pool = match open_sqlite(&state_path, &STATE_MIGRATOR).await {
             Ok(db) => Arc::new(db),
             Err(err) => {
@@ -112,9 +120,17 @@ impl StateRuntime {
                 return Err(err);
             }
         };
+        let usage_pool = match open_sqlite(&usage_path, &USAGE_MIGRATOR).await {
+            Ok(db) => Arc::new(db),
+            Err(err) => {
+                warn!("failed to open usage db at {}: {err}", usage_path.display());
+                return Err(err);
+            }
+        };
         let runtime = Arc::new(Self {
             pool,
             logs_pool,
+            usage_pool,
             codex_home,
             default_provider,
         });
@@ -124,6 +140,10 @@ impl StateRuntime {
     /// Return the configured Codex home directory for this runtime.
     pub fn codex_home(&self) -> &Path {
         self.codex_home.as_path()
+    }
+
+    pub fn usage_pool(&self) -> Arc<SqlitePool> {
+        Arc::clone(&self.usage_pool)
     }
 }
 
@@ -161,6 +181,14 @@ pub fn logs_db_filename() -> String {
 
 pub fn logs_db_path(codex_home: &Path) -> PathBuf {
     codex_home.join(logs_db_filename())
+}
+
+pub fn usage_db_filename() -> String {
+    db_filename(USAGE_DB_FILENAME, USAGE_DB_VERSION)
+}
+
+pub fn usage_db_path(codex_home: &Path) -> PathBuf {
+    codex_home.join(usage_db_filename())
 }
 
 async fn remove_legacy_db_files(

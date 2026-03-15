@@ -152,6 +152,8 @@ use tracing::trace_span;
 use tracing::warn;
 use uuid::Uuid;
 
+use codex_state::UsageLogger;
+
 use crate::ModelProviderInfo;
 use crate::client::ModelClient;
 use crate::client::ModelClientSession;
@@ -1508,6 +1510,42 @@ impl Session {
             .as_ref()
             .map(|rec| rec.rollout_path.clone());
 
+        let usage_logger = if let Some(state_db) = state_db_ctx.as_ref() {
+            let usage_source = state_builder
+                .as_ref()
+                .map(|builder| builder.source.clone())
+                .unwrap_or(session_configuration.session_source.clone());
+            let agent_nickname = state_builder
+                .as_ref()
+                .and_then(|builder| builder.agent_nickname.clone())
+                .or_else(|| usage_source.get_nickname());
+            let agent_role = state_builder
+                .as_ref()
+                .and_then(|builder| builder.agent_role.clone())
+                .or_else(|| usage_source.get_agent_role());
+            let forked_from_id = initial_history
+                .forked_from_id()
+                .or_else(|| session_configuration.session_source.parent_thread_id());
+            match UsageLogger::try_new(
+                state_db.clone(),
+                conversation_id,
+                usage_source,
+                forked_from_id,
+                agent_nickname,
+                agent_role,
+            )
+            .await
+            {
+                Ok(logger) => Some(Mutex::new(logger)),
+                Err(err) => {
+                    warn!("failed to initialize usage logger: {err}");
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
         let mut post_session_configured_events = Vec::<Event>::new();
 
         for usage in config.features.legacy_feature_usages() {
@@ -1777,6 +1815,7 @@ impl Session {
             network_proxy,
             network_approval: Arc::clone(&network_approval),
             state_db: state_db_ctx.clone(),
+            usage_logger,
             model_client: ModelClient::new(
                 Some(Arc::clone(&auth_manager)),
                 conversation_id,
@@ -2606,6 +2645,7 @@ impl Session {
 
     pub(crate) async fn send_event_raw(&self, event: Event) {
         // Persist the event into rollout (recorder filters as needed)
+        self.services.log_usage_event(&event).await;
         let rollout_items = vec![RolloutItem::EventMsg(event.msg.clone())];
         self.persist_rollout_items(&rollout_items).await;
         self.deliver_event_raw(event).await;
@@ -3614,6 +3654,13 @@ impl Session {
             self.record_conversation_items(turn_context, &context_items)
                 .await;
         }
+        self.services
+            .update_usage_turn_snapshot(
+                turn_context.sub_id.as_str(),
+                Some(turn_context.model_info.slug.clone()),
+                Some(turn_context.provider.name.clone()),
+            )
+            .await;
         // Persist one `TurnContextItem` per real user turn so resume/lazy replay can recover the
         // latest durable baseline even when this turn emitted no model-visible context diffs.
         self.persist_rollout_items(&[RolloutItem::TurnContext(turn_context_item.clone())])

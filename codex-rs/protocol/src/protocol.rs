@@ -2338,6 +2338,15 @@ impl SessionSource {
             _ => None,
         }
     }
+
+    pub fn parent_thread_id(&self) -> Option<ThreadId> {
+        match self {
+            SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                parent_thread_id, ..
+            }) => Some(*parent_thread_id),
+            _ => None,
+        }
+    }
 }
 
 impl fmt::Display for SubAgentSource {
