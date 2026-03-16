@@ -31,9 +31,10 @@ const AGENT_TYPE_UNAVAILABLE_ERROR: &str = "agent type is currently not availabl
 /// The role layer is inserted at session-flag precedence so it can override persisted config, but
 /// the caller's current `profile` and `model_provider` remain sticky runtime choices unless the
 /// role explicitly sets `profile`, explicitly sets `model_provider`, or rewrites the active
-/// profile's `model_provider` in place. Rebuilding the config without those overrides would make a
-/// spawned agent silently fall back to the default provider, which is the bug this preservation
-/// logic avoids.
+/// profile's `model_provider` in place. Likewise, the caller's already-selected model and
+/// reasoning settings remain sticky unless the role explicitly owns those fields. Rebuilding the
+/// config without reapplying those runtime choices would make a spawned agent silently drift back
+/// to inherited parent-profile settings, which is the bug this preservation logic avoids.
 pub(crate) async fn apply_role_to_config(
     config: &mut Config,
     role_name: Option<&str>,
@@ -75,13 +76,17 @@ pub(crate) async fn apply_role_to_config(
                 .ok_or_else(|| AGENT_TYPE_UNAVAILABLE_ERROR.to_string())?,
         )
     };
-    deserialize_config_toml_with_base(role_config_toml.clone(), role_config_base)
+    let role_config = deserialize_config_toml_with_base(role_config_toml.clone(), role_config_base)
         .map_err(|_| AGENT_TYPE_UNAVAILABLE_ERROR.to_string())?;
     let role_layer_toml = resolve_relative_paths_in_config_toml(role_config_toml, role_config_base)
         .map_err(|_| AGENT_TYPE_UNAVAILABLE_ERROR.to_string())?;
-    let role_selects_provider = role_layer_toml.get("model_provider").is_some();
-    let role_selects_profile = role_layer_toml.get("profile").is_some();
-    let role_updates_active_profile_provider = config
+    let role_selects_model = role_config.model.is_some();
+    let role_selects_provider = role_config.model_provider.is_some();
+    let role_selects_profile = role_config.profile.is_some();
+    let role_selects_reasoning_effort = role_config.model_reasoning_effort.is_some();
+    let role_selects_reasoning_summary = role_config.model_reasoning_summary.is_some();
+    let role_selects_verbosity = role_config.model_verbosity.is_some();
+    let active_profile_updates = config
         .active_profile
         .as_ref()
         .and_then(|active_profile| {
@@ -90,14 +95,67 @@ pub(crate) async fn apply_role_to_config(
                 .and_then(TomlValue::as_table)
                 .and_then(|profiles| profiles.get(active_profile))
                 .and_then(TomlValue::as_table)
-                .map(|profile| profile.contains_key("model_provider"))
         })
-        .unwrap_or(false);
+        .cloned();
+    let role_updates_active_profile_model = active_profile_updates
+        .as_ref()
+        .is_some_and(|profile| profile.contains_key("model"));
+    let role_updates_active_profile_provider = active_profile_updates
+        .as_ref()
+        .is_some_and(|profile| profile.contains_key("model_provider"));
+    let role_updates_active_profile_reasoning_effort = active_profile_updates
+        .as_ref()
+        .is_some_and(|profile| profile.contains_key("model_reasoning_effort"));
+    let role_updates_active_profile_reasoning_summary = active_profile_updates
+        .as_ref()
+        .is_some_and(|profile| profile.contains_key("model_reasoning_summary"));
+    let role_updates_active_profile_verbosity = active_profile_updates
+        .as_ref()
+        .is_some_and(|profile| profile.contains_key("model_verbosity"));
     // A role that does not explicitly take ownership of model selection should inherit the
     // caller's current profile/provider choices across the config reload.
     let preserve_current_profile = !role_selects_provider && !role_selects_profile;
     let preserve_current_provider =
         preserve_current_profile && !role_updates_active_profile_provider;
+    let preserved_model = if preserve_current_profile && !role_updates_active_profile_model {
+        if role_selects_model {
+            role_config.model.clone()
+        } else {
+            config.model.clone()
+        }
+    } else {
+        None
+    };
+    let preserved_reasoning_effort =
+        if preserve_current_profile && !role_updates_active_profile_reasoning_effort {
+            if role_selects_reasoning_effort {
+                role_config.model_reasoning_effort
+            } else {
+                config.model_reasoning_effort
+            }
+        } else {
+            None
+        };
+    let preserved_reasoning_summary =
+        if preserve_current_profile && !role_updates_active_profile_reasoning_summary {
+            if role_selects_reasoning_summary {
+                role_config.model_reasoning_summary
+            } else {
+                config.model_reasoning_summary
+            }
+        } else {
+            None
+        };
+    let preserved_verbosity = if preserve_current_profile && !role_updates_active_profile_verbosity
+    {
+        if role_selects_verbosity {
+            role_config.model_verbosity
+        } else {
+            config.model_verbosity
+        }
+    } else {
+        None
+    };
 
     let mut layers: Vec<ConfigLayerEntry> = config
         .config_layer_stack
@@ -123,6 +181,10 @@ pub(crate) async fn apply_role_to_config(
     let next_config = Config::load_config_with_layer_stack(
         merged_config,
         ConfigOverrides {
+            model: preserved_model,
+            model_reasoning_effort: preserved_reasoning_effort,
+            model_reasoning_summary: preserved_reasoning_summary,
+            model_verbosity: preserved_verbosity,
             cwd: Some(config.cwd.clone()),
             model_provider: preserve_current_provider.then(|| config.model_provider_id.clone()),
             config_profile: preserve_current_profile

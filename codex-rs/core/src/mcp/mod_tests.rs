@@ -235,6 +235,10 @@ async fn effective_mcp_servers_include_plugins_without_overriding_user_config() 
             disabled_tools: None,
             scopes: None,
             oauth_resource: None,
+            enable_elicitation: false,
+            read_only: false,
+            strict_tool_classification: false,
+            require_approval_for_mutating: false,
         },
     );
     config

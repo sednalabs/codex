@@ -80,6 +80,16 @@ Plan preset. The string value `none` means "no reasoning" (an explicit Plan
 override), not "inherit the global default". There is currently no separate
 config value for "follow the global default in Plan mode".
 
+## Sub-agent model precedence
+
+For economical orchestration, treat model selection as a three-level precedence stack:
+
+- Parent-session model settings are defaults for children.
+- Role TOML files provide role-level defaults and may also lock fields for a role.
+- Explicit `spawn_agent(model=..., reasoning_effort=...)` arguments are child-specific overrides.
+
+If a role explicitly sets `model` or `model_reasoning_effort`, that role remains authoritative for those fields. Otherwise, explicit spawn-time overrides should beat inherited parent-profile settings. This keeps role defaults useful without preventing per-task cost and capability control.
+
 ## Realtime start instructions
 
 `experimental_realtime_start_instructions` lets you replace the built-in

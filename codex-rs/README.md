@@ -26,6 +26,8 @@ The Rust implementation is now the maintained Codex CLI and serves as the defaul
 
 Codex supports a rich set of configuration options. Note that the Rust CLI uses `config.toml` instead of `config.json`. See [`docs/config.md`](../docs/config.md) for details.
 
+When you use sub-agents, treat parent-session model settings as defaults, role TOML files as role-level defaults or locks, and explicit `spawn_agent(model=..., reasoning_effort=...)` arguments as child-specific overrides. A role that explicitly sets `model` or `model_reasoning_effort` should stay authoritative for that role; otherwise explicit spawn-time overrides should beat inherited parent-profile settings.
+
 ### Model Context Protocol Support
 
 #### MCP client

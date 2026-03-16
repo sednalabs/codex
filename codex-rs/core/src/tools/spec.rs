@@ -1201,7 +1201,7 @@ fn create_spawn_agent_tool(config: &ToolsConfig) -> ToolSpec {
             "model".to_string(),
             JsonSchema::String {
                 description: Some(
-                    "Optional model override for the new agent. Replaces the inherited model."
+                    "Optional model override for the new agent. Replaces the inherited model for this child unless the selected role config locks the model explicitly."
                         .to_string(),
                 ),
             },
@@ -1210,7 +1210,7 @@ fn create_spawn_agent_tool(config: &ToolsConfig) -> ToolSpec {
             "reasoning_effort".to_string(),
             JsonSchema::String {
                 description: Some(
-                    "Optional reasoning effort override for the new agent. Replaces the inherited reasoning effort."
+                    "Optional reasoning effort override for the new agent. Replaces the inherited reasoning effort for this child unless the selected role config locks reasoning explicitly."
                         .to_string(),
                 ),
             },
@@ -1225,6 +1225,7 @@ fn create_spawn_agent_tool(config: &ToolsConfig) -> ToolSpec {
         Requests for depth, thoroughness, research, investigation, or detailed codebase analysis do not count as permission to spawn.
         Agent-role guidance below only helps choose which agent to use after spawning is already authorized; it never authorizes spawning by itself.
         Spawn a sub-agent for a well-scoped task. Returns the agent id (and user-facing nickname when available) to use to communicate with this agent. This spawn_agent tool provides you access to smaller but more efficient sub-agents. A mini model can solve many tasks faster than the main model. You should follow the rules and guidelines below to use this tool.
+        Explicit `model` and `reasoning_effort` arguments are child-specific overrides. They should beat inherited parent-session defaults, while a role config that explicitly sets those fields remains authoritative for that role.
 
 {available_models_description}
 ### When to delegate vs. do the subtask yourself

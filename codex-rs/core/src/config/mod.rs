@@ -1876,6 +1876,9 @@ fn add_additional_file_system_writes(
 #[derive(Default, Debug, Clone)]
 pub struct ConfigOverrides {
     pub model: Option<String>,
+    pub model_reasoning_effort: Option<ReasoningEffort>,
+    pub model_reasoning_summary: Option<ReasoningSummary>,
+    pub model_verbosity: Option<Verbosity>,
     pub review_model: Option<String>,
     pub cwd: Option<PathBuf>,
     pub approval_policy: Option<AskForApproval>,
@@ -2074,6 +2077,9 @@ impl Config {
         // Destructure ConfigOverrides fully to ensure all overrides are applied.
         let ConfigOverrides {
             model,
+            model_reasoning_effort: override_model_reasoning_effort,
+            model_reasoning_summary: override_model_reasoning_summary,
+            model_verbosity: override_model_verbosity,
             review_model: override_review_model,
             cwd,
             approval_policy: approval_policy_override,
@@ -2670,18 +2676,20 @@ impl Config {
                 .show_raw_agent_reasoning
                 .or(show_raw_agent_reasoning)
                 .unwrap_or(false),
-            model_reasoning_effort: config_profile
-                .model_reasoning_effort
+            model_reasoning_effort: override_model_reasoning_effort
+                .or(config_profile.model_reasoning_effort)
                 .or(cfg.model_reasoning_effort),
             plan_mode_reasoning_effort: config_profile
                 .plan_mode_reasoning_effort
                 .or(cfg.plan_mode_reasoning_effort),
-            model_reasoning_summary: config_profile
-                .model_reasoning_summary
+            model_reasoning_summary: override_model_reasoning_summary
+                .or(config_profile.model_reasoning_summary)
                 .or(cfg.model_reasoning_summary),
             model_supports_reasoning_summaries: cfg.model_supports_reasoning_summaries,
             model_catalog,
-            model_verbosity: config_profile.model_verbosity.or(cfg.model_verbosity),
+            model_verbosity: override_model_verbosity
+                .or(config_profile.model_verbosity)
+                .or(cfg.model_verbosity),
             chatgpt_base_url: config_profile
                 .chatgpt_base_url
                 .or(cfg.chatgpt_base_url)

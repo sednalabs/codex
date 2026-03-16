@@ -5,6 +5,10 @@ use crate::ThreadManager;
 use crate::agent::control::SpawnAgentOptions;
 use crate::built_in_model_providers;
 use crate::codex::make_session_and_context;
+use crate::config::AgentRoleConfig;
+use crate::config::CONFIG_TOML_FILE;
+use crate::config::ConfigBuilder;
+use crate::config::ConfigOverrides;
 use crate::config::DEFAULT_AGENT_MAX_DEPTH;
 use crate::config::types::ShellEnvironmentPolicy;
 use crate::function_tool::FunctionCallError;
@@ -33,6 +37,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
+use tempfile::TempDir;
 use tokio::sync::Mutex;
 use tokio::time::timeout;
 
@@ -255,6 +260,156 @@ async fn spawn_agent_uses_explorer_role_and_preserves_approval_policy() {
         .await;
     assert_eq!(snapshot.approval_policy, AskForApproval::OnRequest);
     assert_eq!(snapshot.model_provider_id, "ollama");
+}
+
+#[tokio::test]
+async fn spawn_agent_preserves_explicit_model_override_across_role_reload() {
+    let home = TempDir::new().expect("create temp dir");
+    tokio::fs::write(
+        home.path().join(CONFIG_TOML_FILE),
+        r#"
+[profiles.parent]
+model = "gpt-5.4"
+model_reasoning_effort = "high"
+"#,
+    )
+    .await
+    .expect("write config.toml");
+    let role_path = home.path().join("passthrough-role.toml");
+    tokio::fs::write(
+        &role_path,
+        r#"developer_instructions = "Inspect carefully""#,
+    )
+    .await
+    .expect("write role config");
+    let mut config = ConfigBuilder::default()
+        .codex_home(home.path().to_path_buf())
+        .harness_overrides(ConfigOverrides {
+            config_profile: Some("parent".to_string()),
+            ..Default::default()
+        })
+        .fallback_cwd(Some(home.path().to_path_buf()))
+        .build()
+        .await
+        .expect("load config");
+    config.agent_roles.insert(
+        "passthrough".to_string(),
+        AgentRoleConfig {
+            description: Some("Inspect carefully.".to_string()),
+            config_file: Some(role_path),
+            nickname_candidates: None,
+        },
+    );
+
+    let (mut session, mut turn) = make_session_and_context().await;
+    let manager = thread_manager();
+    session.services.agent_control = manager.agent_control();
+    turn.provider = config.model_provider.clone();
+    turn.config = Arc::new(config);
+
+    let invocation = invocation(
+        Arc::new(session),
+        Arc::new(turn),
+        "spawn_agent",
+        function_payload(json!({
+            "message": "inspect this repo",
+            "agent_type": "passthrough",
+            "model": "gpt-5.1-codex-mini",
+            "reasoning_effort": "low"
+        })),
+    );
+    let output = SpawnAgentHandler
+        .handle(invocation)
+        .await
+        .expect("spawn_agent should succeed");
+    let (content, _) = expect_text_output(output);
+    let result: SpawnAgentResult =
+        serde_json::from_str(&content).expect("spawn_agent result should be json");
+    let agent_id = agent_id(&result.agent_id).expect("agent_id should be valid");
+    let inventory_info = manager
+        .agent_control()
+        .get_subagent_inventory_info(agent_id)
+        .await
+        .expect("spawned agent inventory should exist");
+
+    assert_eq!(
+        result.effective_model.as_deref(),
+        Some("gpt-5.1-codex-mini")
+    );
+    assert_eq!(
+        result.effective_reasoning_effort,
+        Some(ReasoningEffort::Low)
+    );
+    assert_eq!(
+        inventory_info.effective_model.as_deref(),
+        Some("gpt-5.1-codex-mini")
+    );
+    assert_eq!(
+        inventory_info.effective_reasoning_effort,
+        Some(ReasoningEffort::Low)
+    );
+}
+
+#[tokio::test]
+async fn spawn_agent_keeps_role_locked_model_over_requested_override() {
+    let home = TempDir::new().expect("create temp dir");
+    let role_path = home.path().join("locked-model-role.toml");
+    tokio::fs::write(
+        &role_path,
+        r#"
+developer_instructions = "Research carefully"
+model = "gpt-5.4"
+model_reasoning_effort = "high"
+"#,
+    )
+    .await
+    .expect("write role config");
+    let mut config = ConfigBuilder::default()
+        .codex_home(home.path().to_path_buf())
+        .fallback_cwd(Some(home.path().to_path_buf()))
+        .build()
+        .await
+        .expect("load config");
+    config.agent_roles.insert(
+        "researcher".to_string(),
+        AgentRoleConfig {
+            description: Some("Research carefully.".to_string()),
+            config_file: Some(role_path),
+            nickname_candidates: None,
+        },
+    );
+
+    let (mut session, mut turn) = make_session_and_context().await;
+    let manager = thread_manager();
+    session.services.agent_control = manager.agent_control();
+    turn.provider = config.model_provider.clone();
+    turn.config = Arc::new(config);
+
+    let invocation = invocation(
+        Arc::new(session),
+        Arc::new(turn),
+        "spawn_agent",
+        function_payload(json!({
+            "message": "inspect this repo",
+            "agent_type": "researcher",
+            "model": "gpt-5.1-codex-mini",
+            "reasoning_effort": "low"
+        })),
+    );
+    let output = SpawnAgentHandler
+        .handle(invocation)
+        .await
+        .expect("spawn_agent should succeed");
+    let (content, _) = expect_text_output(output);
+    let result: SpawnAgentResult =
+        serde_json::from_str(&content).expect("spawn_agent result should be json");
+
+    assert_eq!(result.role.as_deref(), Some("researcher"));
+    assert_eq!(result.effective_model.as_deref(), Some("gpt-5.4"));
+    assert_eq!(
+        result.effective_reasoning_effort,
+        Some(ReasoningEffort::High)
+    );
 }
 
 #[tokio::test]

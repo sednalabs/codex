@@ -4,6 +4,8 @@ use crate::config::ConfigBuilder;
 use crate::config_loader::ConfigLayerStackOrdering;
 use crate::plugins::PluginsManager;
 use crate::skills::SkillsManager;
+use codex_protocol::config_types::ReasoningSummary;
+use codex_protocol::config_types::Verbosity;
 use codex_protocol::openai_models::ReasoningEffort;
 use pretty_assertions::assert_eq;
 use std::fs;
@@ -425,6 +427,118 @@ model_reasoning_effort = "high"
     assert_eq!(config.model_provider_id, "role-provider");
     assert_eq!(config.model_provider.name, "Role Provider");
     assert_eq!(config.model_reasoning_effort, Some(ReasoningEffort::High));
+}
+
+#[tokio::test]
+async fn apply_role_preserves_current_model_settings_when_role_does_not_own_them() {
+    let home = TempDir::new().expect("create temp dir");
+    tokio::fs::write(
+        home.path().join(CONFIG_TOML_FILE),
+        r#"
+[profiles.base-profile]
+model = "gpt-5.4"
+model_reasoning_effort = "high"
+model_reasoning_summary = "detailed"
+model_verbosity = "high"
+"#,
+    )
+    .await
+    .expect("write config.toml");
+    let mut config = ConfigBuilder::default()
+        .codex_home(home.path().to_path_buf())
+        .harness_overrides(ConfigOverrides {
+            config_profile: Some("base-profile".to_string()),
+            ..Default::default()
+        })
+        .fallback_cwd(Some(home.path().to_path_buf()))
+        .build()
+        .await
+        .expect("load config");
+    config.model = Some("gpt-5.1-codex-mini".to_string());
+    config.model_reasoning_effort = Some(ReasoningEffort::Low);
+    config.model_reasoning_summary = Some(ReasoningSummary::None);
+    config.model_verbosity = Some(Verbosity::Low);
+    let role_path = write_role_config(
+        &home,
+        "preserve-current-model.toml",
+        r#"developer_instructions = "Stay focused""#,
+    )
+    .await;
+    config.agent_roles.insert(
+        "custom".to_string(),
+        AgentRoleConfig {
+            description: None,
+            config_file: Some(role_path),
+            nickname_candidates: None,
+        },
+    );
+
+    apply_role_to_config(&mut config, Some("custom"))
+        .await
+        .expect("custom role should apply");
+
+    assert_eq!(config.active_profile.as_deref(), Some("base-profile"));
+    assert_eq!(config.model.as_deref(), Some("gpt-5.1-codex-mini"));
+    assert_eq!(config.model_reasoning_effort, Some(ReasoningEffort::Low));
+    assert_eq!(config.model_reasoning_summary, Some(ReasoningSummary::None));
+    assert_eq!(config.model_verbosity, Some(Verbosity::Low));
+}
+
+#[tokio::test]
+async fn apply_role_top_level_model_settings_override_inherited_active_profile() {
+    let home = TempDir::new().expect("create temp dir");
+    tokio::fs::write(
+        home.path().join(CONFIG_TOML_FILE),
+        r#"
+[profiles.base-profile]
+model = "gpt-5.4"
+model_reasoning_effort = "high"
+model_reasoning_summary = "detailed"
+model_verbosity = "high"
+"#,
+    )
+    .await
+    .expect("write config.toml");
+    let mut config = ConfigBuilder::default()
+        .codex_home(home.path().to_path_buf())
+        .harness_overrides(ConfigOverrides {
+            config_profile: Some("base-profile".to_string()),
+            ..Default::default()
+        })
+        .fallback_cwd(Some(home.path().to_path_buf()))
+        .build()
+        .await
+        .expect("load config");
+    let role_path = write_role_config(
+        &home,
+        "top-level-model-role.toml",
+        r#"
+developer_instructions = "Stay focused"
+model = "gpt-5.1-codex-mini"
+model_reasoning_effort = "low"
+model_reasoning_summary = "none"
+model_verbosity = "low"
+"#,
+    )
+    .await;
+    config.agent_roles.insert(
+        "custom".to_string(),
+        AgentRoleConfig {
+            description: None,
+            config_file: Some(role_path),
+            nickname_candidates: None,
+        },
+    );
+
+    apply_role_to_config(&mut config, Some("custom"))
+        .await
+        .expect("custom role should apply");
+
+    assert_eq!(config.active_profile.as_deref(), Some("base-profile"));
+    assert_eq!(config.model.as_deref(), Some("gpt-5.1-codex-mini"));
+    assert_eq!(config.model_reasoning_effort, Some(ReasoningEffort::Low));
+    assert_eq!(config.model_reasoning_summary, Some(ReasoningSummary::None));
+    assert_eq!(config.model_verbosity, Some(Verbosity::Low));
 }
 
 #[tokio::test]
