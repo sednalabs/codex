@@ -28,6 +28,12 @@ Codex supports a rich set of configuration options. Note that the Rust CLI uses 
 
 When you use sub-agents, treat parent-session model settings as defaults, role TOML files as role-level defaults or locks, and explicit `spawn_agent(model=..., reasoning_effort=...)` arguments as child-specific overrides. A role that explicitly sets `model` or `model_reasoning_effort` should stay authoritative for that role; otherwise explicit spawn-time overrides should beat inherited parent-profile settings.
 
+Downstream builds also maintain a local `usage.sqlite` store under
+`CODEX_SQLITE_HOME` for authoritative usage facts. That database keeps thread
+lineage, spawn metadata, tool calls, provider-call usage, quota snapshots, and
+fork snapshots so downstream ledger/reporting code can consume exact local
+facts without reconstructing them from rollout transcripts.
+
 ### Model Context Protocol Support
 
 #### MCP client

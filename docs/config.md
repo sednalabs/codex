@@ -45,6 +45,24 @@ Codex stores the SQLite-backed state DB under `sqlite_home` (config key) or the
 `CODEX_SQLITE_HOME` environment variable. When unset, WorkspaceWrite sandbox
 sessions default to a temp directory; other modes default to `CODEX_HOME`.
 
+Codex now keeps three local SQLite stores under that same directory:
+
+- `state.sqlite` for thread metadata and local runtime state
+- `logs.sqlite` for rollout/log mirroring
+- `usage.sqlite` for authoritative local usage facts
+
+`usage.sqlite` is the forward-looking billing and attribution source for
+downstream operator workflows. It stores thread lineage, spawn requests, tool
+calls, provider-call token usage, quota snapshots, and fork snapshots without
+depending on copied rollout history.
+
+Rollout JSONL files under `~/.codex/sessions` still exist for UX, debugging,
+and compatibility, but they should be treated as a fallback compatibility
+source rather than the primary accounting record for newly patched clients.
+
+If you need to inspect the local usage store directly, point SQLite tooling at
+`$CODEX_SQLITE_HOME/usage.sqlite` or the equivalent file under `sqlite_home`.
+
 ## Custom CA Certificates
 
 Codex can trust a custom root CA bundle for outbound HTTPS and secure websocket
