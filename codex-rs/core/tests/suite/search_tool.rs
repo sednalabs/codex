@@ -144,7 +144,7 @@ async fn search_tool_flag_adds_tool_search() -> Result<()> {
     skip_if_no_network!(Ok(()));
 
     let server = start_mock_server().await;
-    let apps_server = AppsTestServer::mount(&server).await?;
+    let apps_server = AppsTestServer::mount_searchable(&server).await?;
     let mock = mount_sse_once(
         &server,
         sse(vec![
@@ -240,7 +240,7 @@ async fn search_tool_adds_discovery_instructions_to_tool_description() -> Result
     skip_if_no_network!(Ok(()));
 
     let server = start_mock_server().await;
-    let apps_server = AppsTestServer::mount(&server).await?;
+    let apps_server = AppsTestServer::mount_searchable(&server).await?;
     let mock = mount_sse_once(
         &server,
         sse(vec![
@@ -282,7 +282,7 @@ async fn search_tool_hides_apps_tools_without_search() -> Result<()> {
     skip_if_no_network!(Ok(()));
 
     let server = start_mock_server().await;
-    let apps_server = AppsTestServer::mount(&server).await?;
+    let apps_server = AppsTestServer::mount_searchable(&server).await?;
     let mock = mount_sse_once(
         &server,
         sse(vec![
@@ -357,7 +357,7 @@ async fn tool_search_returns_deferred_tools_without_follow_up_tool_injection() -
     skip_if_no_network!(Ok(()));
 
     let server = start_mock_server().await;
-    let apps_server = AppsTestServer::mount(&server).await?;
+    let apps_server = AppsTestServer::mount_searchable(&server).await?;
     let call_id = "tool-search-1";
     let mock = mount_sse_sequence(
         &server,
