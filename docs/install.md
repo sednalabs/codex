@@ -49,6 +49,28 @@ just test
 cargo test --all-features
 ```
 
+## Local usage database
+
+Recent downstream builds also create a dedicated usage database under
+`CODEX_SQLITE_HOME` alongside the existing state and logs databases:
+
+- `state.sqlite`
+- `logs.sqlite`
+- `usage.sqlite`
+
+`usage.sqlite` is the authoritative local store for thread lineage, spawn
+metadata, tool calls, provider-call usage, quota snapshots, and fork snapshots.
+It exists so downstream accounting can consume exact local facts instead of
+reconstructing billing from copied rollout transcript history.
+
+If `CODEX_SQLITE_HOME` is unset, Codex uses the same default SQLite home rules
+described in [`docs/config.md`](./config.md#sqlite-state-db). A quick manual
+inspection looks like:
+
+```bash
+sqlite3 "${CODEX_SQLITE_HOME:-$HOME/.codex}/usage.sqlite" '.tables'
+```
+
 ## Tracing / verbose logging
 
 Codex is written in Rust, so it honors the `RUST_LOG` environment variable to configure its logging behavior.

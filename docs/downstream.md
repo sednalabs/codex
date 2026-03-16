@@ -46,6 +46,7 @@ User-visible behavior:
 - Shared usage-ledger scripts and docs live in [`agent-usage-ledger`](/home/grant/mmm/agent-usage-ledger).
 - [usage-ledger.md](/home/grant/mmm/agent-usage-ledger/docs/usage-ledger.md) documents the ledger workflow.
 - Billing turns are canonicalized before ingest, and historical AUD cost views remain available downstream through that shared repo.
+- Patched Codex clients now emit authoritative local usage facts into `usage.sqlite`; rollout JSONL remains a compatibility fallback for historical or unpatched installs.
 
 ### Repo tooling: build-helper presets for downstream validation and release
 
