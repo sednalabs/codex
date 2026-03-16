@@ -71,9 +71,22 @@ live divergence.
   - `codex-rs/state/src/runtime.rs`
   - `codex-rs/state/src/runtime/usage.rs`
   - `codex-rs/state/usage_migrations/0001_usage_tables.sql`
-  - `codex-rs/state/Cargo.toml`
+- `codex-rs/state/Cargo.toml`
 
 ### CLI Git Metadata And Rebuild Triggers
+
+### Sub-agent model override precedence
+
+- Keep downstream itineraries that explicitly call `spawn_agent(model=..., reasoning_effort=...)` aligned with the requested model/economy, even when a role is applied.
+- Roles still control locked models when they explicitly set `model`, `model_provider`, `model_reasoning_effort`, or `model_verbosity`, so downstream policy remains defendable.
+- The documentation and tooling now spell out the precedence stack for spawn-time overrides.
+
+Primary files:
+- `codex-rs/core/src/agent/role.rs`
+- `codex-rs/core/src/config/mod.rs`
+- `codex-rs/core/src/tools/handlers/multi_agents_tests.rs`
+- `codex-rs/core/src/tools/spec.rs`
+- `docs/config.md`
 
 - CLI builds embed `git describe` metadata.
 - CLI builds rerun when git state changes, including shared worktree git state.

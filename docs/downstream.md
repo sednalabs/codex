@@ -57,6 +57,24 @@ User-visible behavior:
 - `.build-helper/presets.json` defines fork-local Codex presets for formatting, core tests, and release build/install flows.
 - Downstream instructions can reference those presets directly for reproducible validation and release steps.
 
+### Sub-agent model override precedence
+
+Why:
+- Preserve explicit `spawn_agent(model=..., reasoning_effort=...)` overrides even when launching a role-backed sub-agent, so downstream economical deployments do not drift back to upstream parent defaults.
+- Let role defaults remain fixed when they intentionally set a model or reasoning effort, making the policy deterministic.
+
+User-visible behavior:
+- The spawn-agent response and inventory snapshot now report the advised `model`/`reasoning_effort` when a role does not lock those fields, so costs and capabilities stay under control.
+- Roles that explicitly set `model`, `model_provider`, `model_reasoning_effort`, or `model_verbosity` continue to be authoritative, even when a child requests a different setting.
+- Docs and tooling (e.g., `spawn_agent` spec, `docs/config.md`) now document the precedence stack.
+
+Primary files:
+- `codex-rs/core/src/agent/role.rs`
+- `codex-rs/core/src/config/mod.rs`
+- `codex-rs/core/src/tools/handlers/multi_agents_tests.rs`
+- `codex-rs/core/src/tools/spec.rs`
+- `docs/config.md`
+
 ### TUI: safer interrupt handling for Alt/meta terminals (double-`Esc` by default)
 
 Why:
