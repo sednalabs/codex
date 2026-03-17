@@ -2480,7 +2480,7 @@ impl Config {
             .or(cfg.model_instructions_file.as_ref());
         let file_base_instructions =
             Self::try_read_non_empty_file(model_instructions_path, "model instructions file")?;
-        let base_instructions = base_instructions.or(file_base_instructions);
+        let base_instructions = file_base_instructions.or(base_instructions);
         let developer_instructions = developer_instructions.or(cfg.developer_instructions);
         let personality = personality
             .or(config_profile.personality)

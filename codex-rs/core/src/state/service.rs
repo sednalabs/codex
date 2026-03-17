@@ -25,7 +25,6 @@ use codex_otel::SessionTelemetry;
 use codex_protocol::protocol::Event;
 use codex_state::UsageLogger;
 use codex_utils_absolute_path::AbsolutePathBuf;
-use log::warn;
 use std::path::PathBuf;
 use tokio::sync::Mutex;
 use tokio::sync::RwLock;
@@ -71,11 +70,7 @@ impl SessionServices {
     pub(crate) async fn log_usage_event(&self, event: &Event) {
         if let Some(logger) = &self.usage_logger {
             let mut guard = logger.lock().await;
-            if let Some(logger) = guard.as_mut() {
-                if let Err(err) = logger.record_event(event).await {
-                    warn!("failed to record usage event: {err}");
-                }
-            }
+            guard.record_event(event).await;
         }
     }
 
@@ -87,9 +82,7 @@ impl SessionServices {
     ) {
         if let Some(logger) = &self.usage_logger {
             let mut guard = logger.lock().await;
-            if let Some(logger) = guard.as_mut() {
-                logger.update_turn_snapshot(turn_id, requested_model, requested_provider);
-            }
+            guard.update_turn_snapshot(turn_id, requested_model, requested_provider);
         }
     }
 }

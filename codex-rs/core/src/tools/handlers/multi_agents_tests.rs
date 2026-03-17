@@ -315,7 +315,7 @@ model_reasoning_effort = "high"
             "message": "inspect this repo",
             "agent_type": "passthrough",
             "model": "gpt-5.1-codex-mini",
-            "reasoning_effort": "low"
+            "reasoning_effort": "medium"
         })),
     );
     let output = SpawnAgentHandler
@@ -338,7 +338,7 @@ model_reasoning_effort = "high"
     );
     assert_eq!(
         result.effective_reasoning_effort,
-        Some(ReasoningEffort::Low)
+        Some(ReasoningEffort::Medium)
     );
     assert_eq!(
         inventory_info.effective_model.as_deref(),
@@ -346,7 +346,7 @@ model_reasoning_effort = "high"
     );
     assert_eq!(
         inventory_info.effective_reasoning_effort,
-        Some(ReasoningEffort::Low)
+        Some(ReasoningEffort::Medium)
     );
 }
 
@@ -393,7 +393,7 @@ model_reasoning_effort = "high"
             "message": "inspect this repo",
             "agent_type": "researcher",
             "model": "gpt-5.1-codex-mini",
-            "reasoning_effort": "low"
+            "reasoning_effort": "medium"
         })),
     );
     let output = SpawnAgentHandler

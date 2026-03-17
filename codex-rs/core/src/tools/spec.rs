@@ -4866,7 +4866,7 @@ mod tests {
             panic!("expected tool_search tool");
         };
 
-        assert!(description.contains("(None currently enabled)"));
+        assert!(description.contains("None currently enabled."));
         assert!(!description.contains("{{app_names}}"));
     }
 

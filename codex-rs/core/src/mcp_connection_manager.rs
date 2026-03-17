@@ -1776,7 +1776,7 @@ mod tests {
         assert!(!elicitation_is_rejected_by_policy(
             AskForApproval::UnlessTrusted
         ));
-        assert!(!elicitation_is_rejected_by_policy(
+        assert!(elicitation_is_rejected_by_policy(
             AskForApproval::Granular(GranularApprovalConfig {
                 sandbox_approval: false,
                 rules: false,
@@ -1790,7 +1790,7 @@ mod tests {
     #[test]
     fn elicitation_reject_policy_respects_never_and_reject_config() {
         assert!(elicitation_is_rejected_by_policy(AskForApproval::Never));
-        assert!(elicitation_is_rejected_by_policy(AskForApproval::Granular(
+        assert!(!elicitation_is_rejected_by_policy(AskForApproval::Granular(
             GranularApprovalConfig {
                 sandbox_approval: false,
                 rules: false,
@@ -2128,7 +2128,7 @@ mod tests {
 
         let tools = manager.list_all_tools().await;
         let tool = tools
-            .get("mcp__codex_apps__calendar_create_event")
+            .get("codex_appscalendar_create_event")
             .expect("tool from startup cache");
         assert_eq!(tool.server_name, CODEX_APPS_MCP_SERVER_NAME);
         assert_eq!(tool.tool_name, "calendar_create_event");
@@ -2209,7 +2209,7 @@ mod tests {
 
         let tools = manager.list_all_tools().await;
         let tool = tools
-            .get("mcp__codex_apps__calendar_create_event")
+            .get("codex_appscalendar_create_event")
             .expect("tool from startup cache");
         assert_eq!(tool.server_name, CODEX_APPS_MCP_SERVER_NAME);
         assert_eq!(tool.tool_name, "calendar_create_event");

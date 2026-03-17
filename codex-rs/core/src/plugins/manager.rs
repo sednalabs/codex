@@ -1611,6 +1611,12 @@ mod tests {
         fs::write(path, contents).unwrap();
     }
 
+    const TEST_CURATED_PLUGIN_SHA: &str = "0123456789abcdef0123456789abcdef01234567";
+
+    fn write_curated_plugin_sha(codex_home: &Path, sha: &str) {
+        write_file(&codex_home.join(".tmp/plugins.sha"), &format!("{sha}\n"));
+    }
+
     fn write_plugin(root: &Path, dir_name: &str, manifest_name: &str) {
         let plugin_root = root.join(dir_name);
         fs::create_dir_all(plugin_root.join(".codex-plugin")).unwrap();
@@ -2799,6 +2805,7 @@ enabled = true
         let tmp = tempfile::tempdir().unwrap();
         let curated_root = curated_plugins_repo_path(tmp.path());
         write_openai_curated_marketplace(&curated_root, &["linear", "gmail", "calendar"]);
+        write_curated_plugin_sha(tmp.path(), TEST_CURATED_PLUGIN_SHA);
         write_plugin(
             &tmp.path().join("plugins/cache/openai-curated"),
             "linear/local",
@@ -2864,7 +2871,9 @@ enabled = true
         );
         assert!(
             tmp.path()
-                .join("plugins/cache/openai-curated/gmail/local")
+                .join(format!(
+                    "plugins/cache/openai-curated/gmail/{TEST_CURATED_PLUGIN_SHA}"
+                ))
                 .is_dir()
         );
         assert!(
@@ -2906,6 +2915,7 @@ enabled = true
         let tmp = tempfile::tempdir().unwrap();
         let curated_root = curated_plugins_repo_path(tmp.path());
         write_openai_curated_marketplace(&curated_root, &["linear"]);
+        write_curated_plugin_sha(tmp.path(), TEST_CURATED_PLUGIN_SHA);
         write_file(
             &tmp.path().join(CONFIG_TOML_FILE),
             r#"[features]
@@ -2961,6 +2971,7 @@ enabled = false
         let tmp = tempfile::tempdir().unwrap();
         let curated_root = curated_plugins_repo_path(tmp.path());
         write_openai_curated_marketplace(&curated_root, &["linear", "gmail"]);
+        write_curated_plugin_sha(tmp.path(), TEST_CURATED_PLUGIN_SHA);
         fs::remove_dir_all(curated_root.join("plugins/gmail")).unwrap();
         write_plugin(
             &tmp.path().join("plugins/cache/openai-curated"),
@@ -3050,6 +3061,7 @@ enabled = false
 }"#,
         )
         .unwrap();
+        write_curated_plugin_sha(tmp.path(), TEST_CURATED_PLUGIN_SHA);
         write_plugin(&curated_root, "plugins/gmail-first", "gmail");
         write_plugin(&curated_root, "plugins/gmail-second", "gmail");
         fs::write(curated_root.join("plugins/gmail-first/marker.txt"), "first").unwrap();
@@ -3098,8 +3110,9 @@ plugins = true
         );
         assert_eq!(
             fs::read_to_string(
-                tmp.path()
-                    .join("plugins/cache/openai-curated/gmail/local/marker.txt")
+                tmp.path().join(format!(
+                    "plugins/cache/openai-curated/gmail/{TEST_CURATED_PLUGIN_SHA}/marker.txt"
+                ))
             )
             .unwrap(),
             "first"
