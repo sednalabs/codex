@@ -46,6 +46,29 @@ install:
 test:
     cargo nextest run --no-fail-fast
 
+# Fast smoke checks for fragile codex-core integration buckets.
+core-test-smoke:
+    set -euo pipefail
+    export CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}"
+    cargo test -p codex-core --test all suite::rmcp_client::stdio_server_round_trip -- --exact --test-threads=1
+    cargo test -p codex-core --test all suite::code_mode::code_mode_exports_all_tools_metadata_for_namespaced_mcp_tools -- --exact --test-threads=1
+    cargo test -p codex-core --test all suite::plugins::plugin_mcp_tools_are_listed -- --exact --test-threads=1
+    cargo test -p codex-core --test all suite::truncation::mcp_tool_call_output_exceeds_limit_truncated_for_model -- --exact --test-threads=1
+    cargo test -p codex-core --test all suite::client::usage_limit_error_emits_rate_limit_event -- --exact --test-threads=1
+    cargo test -p codex-core --test all suite::client_websockets::responses_websocket_usage_limit_error_emits_rate_limit_event -- --exact --test-threads=1
+
+# Progressive codex-core ladder:
+# 1) smoke gate, 2) high-churn buckets, 3) full suite.
+core-test-progressive:
+    set -euo pipefail
+    export CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}"
+    just core-test-smoke
+    cargo test -p codex-core --test all suite::rmcp_client:: -- --test-threads=1
+    cargo test -p codex-core --test all suite::code_mode:: -- --test-threads=1
+    cargo test -p codex-core --test all suite::truncation:: -- --test-threads=1
+    cargo test -p codex-core --test all suite::plugins:: -- --test-threads=1
+    CARGO_BUILD_JOBS=1 cargo test -p codex-core -j1 -- --test-threads=1
+
 # Build and run Codex from source using Bazel.
 # Note we have to use the combination of `[no-cd]` and `--run_under="cd $PWD &&"`
 # to ensure that Bazel runs the command in the current working directory.
