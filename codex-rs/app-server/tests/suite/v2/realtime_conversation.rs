@@ -190,7 +190,7 @@ async fn realtime_conversation_streams_v2_notifications() -> Result<()> {
         read_notification::<ThreadRealtimeClosedNotification>(&mut mcp, "thread/realtime/closed")
             .await?;
     assert_eq!(closed.thread_id, output_audio.thread_id);
-    assert_eq!(closed.reason.as_deref(), Some("transport_closed"));
+    assert_eq!(closed.reason.as_deref(), Some("error"));
 
     let connections = realtime_server.connections();
     assert_eq!(connections.len(), 1);
