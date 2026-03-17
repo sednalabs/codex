@@ -1428,9 +1428,18 @@ pub struct HookCompletedEvent {
     pub run: HookRunSummary,
 }
 
+#[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum RealtimeConversationVersion {
+    #[default]
+    V1,
+    V2,
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, JsonSchema, TS)]
 pub struct RealtimeConversationStartedEvent {
     pub session_id: Option<String>,
+    pub version: RealtimeConversationVersion,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, JsonSchema, TS)]

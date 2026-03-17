@@ -9719,6 +9719,13 @@
           }
         ]
       },
+      "RealtimeConversationVersion": {
+        "enum": [
+          "v1",
+          "v2"
+        ],
+        "type": "string"
+      },
       "ReasoningEffort": {
         "description": "See https://platform.openai.com/docs/guides/reasoning?api-mode=responses#get-started-with-reasoning",
         "enum": [
@@ -12767,10 +12774,14 @@
           },
           "threadId": {
             "type": "string"
+          },
+          "version": {
+            "$ref": "#/definitions/v2/RealtimeConversationVersion"
           }
         },
         "required": [
-          "threadId"
+          "threadId",
+          "version"
         ],
         "title": "ThreadRealtimeStartedNotification",
         "type": "object"

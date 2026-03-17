@@ -938,6 +938,7 @@ mod tests {
     use codex_protocol::ThreadId;
     use codex_protocol::account::PlanType;
     use codex_protocol::parse_command::ParsedCommand;
+    use codex_protocol::protocol::RealtimeConversationVersion;
     use codex_utils_absolute_path::AbsolutePathBuf;
     use pretty_assertions::assert_eq;
     use serde_json::json;
@@ -1620,6 +1621,7 @@ mod tests {
             ServerNotification::ThreadRealtimeStarted(v2::ThreadRealtimeStartedNotification {
                 thread_id: "thr_123".to_string(),
                 session_id: Some("sess_456".to_string()),
+                version: RealtimeConversationVersion::V1,
             });
         let reason = crate::experimental_api::ExperimentalApi::experimental_reason(&notification);
         assert_eq!(reason, Some("thread/realtime/started"));
