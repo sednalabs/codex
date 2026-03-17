@@ -291,7 +291,6 @@ use crate::tasks::SessionTask;
 use crate::tasks::SessionTaskContext;
 use crate::tools::ToolRouter;
 use crate::tools::context::SharedTurnDiffTracker;
-use crate::tools::discoverable::DiscoverableTool;
 use crate::tools::js_repl::JsReplHandle;
 use crate::tools::js_repl::resolve_compatible_node;
 use crate::tools::network_approval::NetworkApprovalService;
@@ -6410,11 +6409,14 @@ pub(crate) async fn built_tools(
                 accessible_connectors.as_slice(),
             )
             .await
-            {
-                Ok(connectors) if connectors.is_empty() => None,
-                Ok(connectors) => {
-                    Some(connectors.into_iter().map(DiscoverableTool::from).collect())
-                }
+            .map(|discoverable_tools| {
+                crate::tools::discoverable::filter_tool_suggest_discoverable_tools_for_client(
+                    discoverable_tools,
+                    turn_context.app_server_client_name.as_deref(),
+                )
+            }) {
+                Ok(discoverable_tools) if discoverable_tools.is_empty() => None,
+                Ok(discoverable_tools) => Some(discoverable_tools),
                 Err(err) => {
                     warn!("failed to load discoverable tool suggestions: {err:#}");
                     None
