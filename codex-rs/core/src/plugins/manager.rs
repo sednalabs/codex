@@ -3,6 +3,7 @@ use super::curated_plugins_repo_path;
 use super::load_plugin_manifest;
 use super::manifest::PluginManifestInterfaceSummary;
 use super::marketplace::MarketplaceError;
+use super::marketplace::MarketplaceInterfaceSummary;
 use super::marketplace::MarketplacePluginAuthPolicy;
 use super::marketplace::MarketplacePluginInstallPolicy;
 use super::marketplace::MarketplacePluginSourceSummary;
@@ -121,7 +122,7 @@ pub struct PluginDetailSummary {
 pub struct ConfiguredMarketplaceSummary {
     pub name: String,
     pub path: AbsolutePathBuf,
-    pub display_name: Option<String>,
+    pub interface: Option<MarketplaceInterfaceSummary>,
     pub plugins: Vec<ConfiguredMarketplacePluginSummary>,
 }
 
@@ -846,7 +847,7 @@ impl PluginsManager {
                 (!plugins.is_empty()).then_some(ConfiguredMarketplaceSummary {
                     name: marketplace.name,
                     path: marketplace.path,
-                    display_name: marketplace.display_name,
+                    interface: marketplace.interface,
                     plugins,
                 })
             })
