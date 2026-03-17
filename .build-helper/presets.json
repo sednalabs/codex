@@ -59,5 +59,35 @@
       "set -euo pipefail; export CODEX_JS_REPL_NODE_PATH=\"${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}\"; cargo test -p codex-core --test all suite::compact::summarize_context_three_requests_and_instructions -- --nocapture; cargo test -p codex-core --test all suite::compact::auto_compact_persists_rollout_entries -- --nocapture; cargo test -p codex-core --test all apply_patch_cli_moves_file_to_new_directory -- --nocapture; cargo test -p codex-core --test all js_repl -- --nocapture; cargo test -p codex-core --test all view_image -- --nocapture; cargo test -p codex-core --test all mcp_call_marks_thread_memory_mode_polluted_when_configured -- --nocapture"
     ],
     "allow_extra_args": false
+  },
+  {
+    "id": "codex.core-test-smoke",
+    "label": "Codex core smoke gate",
+    "cwd": ".",
+    "command": [
+      "just",
+      "core-test-smoke"
+    ],
+    "allow_extra_args": false
+  },
+  {
+    "id": "codex.core-test-progressive",
+    "label": "Codex core progressive ladder",
+    "cwd": ".",
+    "command": [
+      "just",
+      "core-test-progressive"
+    ],
+    "allow_extra_args": false
+  },
+  {
+    "id": "codex.core-test",
+    "label": "Codex core tests (progressive default)",
+    "cwd": ".",
+    "command": [
+      "just",
+      "core-test-progressive"
+    ],
+    "allow_extra_args": false
   }
 ]
