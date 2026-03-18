@@ -205,6 +205,12 @@ use crate::file_watcher::FileWatcher;
 use crate::file_watcher::FileWatcherEvent;
 use crate::git_info::get_git_repo_root;
 use crate::guardian::GuardianReviewSessionManager;
+use crate::hook_runtime::PendingInputHookDisposition;
+use crate::hook_runtime::inspect_pending_input;
+use crate::hook_runtime::record_additional_contexts;
+use crate::hook_runtime::record_pending_input;
+use crate::hook_runtime::run_pending_session_start_hooks;
+use crate::hook_runtime::run_user_prompt_submit_hooks;
 use crate::instructions::UserInstructions;
 use crate::mcp::CODEX_APPS_MCP_SERVER_NAME;
 use crate::mcp::McpManager;
@@ -3850,6 +3856,18 @@ impl Session {
         }
     }
 
+    pub async fn prepend_pending_input(&self, input: Vec<ResponseInputItem>) -> Result<(), ()> {
+        let mut active = self.active_turn.lock().await;
+        match active.as_mut() {
+            Some(at) => {
+                let mut ts = at.turn_state.lock().await;
+                ts.prepend_pending_input(input);
+                Ok(())
+            }
+            None => Err(()),
+        }
+    }
+
     pub async fn get_pending_input(&self) -> Vec<ResponseInputItem> {
         let mut active = self.active_turn.lock().await;
         match active.as_mut() {
@@ -3972,6 +3990,11 @@ impl Session {
             guard.clone()
         };
         recorder.map(|recorder| recorder.rollout_path().to_path_buf())
+    }
+
+    pub(crate) async fn hook_transcript_path(&self) -> Option<PathBuf> {
+        self.ensure_rollout_materialized().await;
+        self.current_rollout_path().await
     }
 
     pub(crate) async fn take_pending_session_start_source(
@@ -5486,6 +5509,26 @@ pub(crate) async fn run_turn(
             invocation_type: Some(InvocationType::Explicit),
         })
         .collect::<Vec<_>>();
+
+    let initial_input_for_turn: ResponseInputItem = ResponseInputItem::from(input.clone());
+    let response_item: ResponseItem = initial_input_for_turn.clone().into();
+    let mut last_agent_message: Option<String> = None;
+    if run_pending_session_start_hooks(&sess, &turn_context).await {
+        return last_agent_message;
+    }
+    let user_prompt_submit_outcome =
+        run_user_prompt_submit_hooks(&sess, &turn_context, UserMessageItem::new(&input).message())
+            .await;
+    if user_prompt_submit_outcome.should_stop {
+        record_additional_contexts(
+            &sess,
+            &turn_context,
+            user_prompt_submit_outcome.additional_contexts,
+        )
+        .await;
+        return last_agent_message;
+    }
+    let additional_contexts = user_prompt_submit_outcome.additional_contexts;
     sess.services
         .analytics_events_client
         .track_app_mentioned(tracking.clone(), mentioned_app_invocations);
@@ -5496,11 +5539,9 @@ pub(crate) async fn run_turn(
     }
     sess.merge_connector_selection(explicitly_enabled_connectors.clone())
         .await;
-
-    let initial_input_for_turn: ResponseInputItem = ResponseInputItem::from(input.clone());
-    let response_item: ResponseItem = initial_input_for_turn.clone().into();
     sess.record_user_prompt_and_emit_turn_item(turn_context.as_ref(), &input, response_item)
         .await;
+    record_additional_contexts(&sess, &turn_context, additional_contexts).await;
     // Track the previous-turn baseline from the regular user-turn path only so
     // standalone tasks (compact/shell/review/undo) cannot suppress future
     // model/realtime injections.
@@ -5521,7 +5562,6 @@ pub(crate) async fn run_turn(
 
     sess.maybe_start_ghost_snapshot(Arc::clone(&turn_context), cancellation_token.child_token())
         .await;
-    let mut last_agent_message: Option<String> = None;
     let mut stop_hook_active = false;
     // Although from the perspective of codex.rs, TurnDiffTracker has the lifecycle of a Task which contains
     // many turns, from the perspective of the user, it is a single turn.
@@ -5534,83 +5574,53 @@ pub(crate) async fn run_turn(
         prewarmed_client_session.unwrap_or_else(|| sess.services.model_client.new_session());
 
     loop {
-        if let Some(session_start_source) = sess.take_pending_session_start_source().await {
-            let session_start_permission_mode = match turn_context.approval_policy.value() {
-                AskForApproval::Never => "bypassPermissions",
-                AskForApproval::UnlessTrusted
-                | AskForApproval::OnFailure
-                | AskForApproval::OnRequest
-                | AskForApproval::Granular(_) => "default",
-            }
-            .to_string();
-            let session_start_request = codex_hooks::SessionStartRequest {
-                session_id: sess.conversation_id,
-                cwd: turn_context.cwd.clone(),
-                transcript_path: sess.current_rollout_path().await,
-                model: turn_context.model_info.slug.clone(),
-                permission_mode: session_start_permission_mode,
-                source: session_start_source,
-            };
-            for run in sess.hooks().preview_session_start(&session_start_request) {
-                sess.send_event(
-                    &turn_context,
-                    EventMsg::HookStarted(crate::protocol::HookStartedEvent {
-                        turn_id: Some(turn_context.sub_id.clone()),
-                        run,
-                    }),
-                )
-                .await;
-            }
-            let session_start_outcome = sess
-                .hooks()
-                .run_session_start(session_start_request, Some(turn_context.sub_id.clone()))
-                .await;
-            for completed in session_start_outcome.hook_events {
-                sess.send_event(&turn_context, EventMsg::HookCompleted(completed))
-                    .await;
-            }
-            if session_start_outcome.should_stop {
-                break;
-            }
-            if let Some(additional_context) = session_start_outcome.additional_context {
-                let developer_message: ResponseItem =
-                    DeveloperInstructions::new(additional_context).into();
-                sess.record_conversation_items(
-                    &turn_context,
-                    std::slice::from_ref(&developer_message),
-                )
-                .await;
-            }
+        if run_pending_session_start_hooks(&sess, &turn_context).await {
+            break;
         }
 
         // Note that pending_input would be something like a message the user
         // submitted through the UI while the model was running. Though the UI
         // may support this, the model might not.
-        let pending_response_items = sess
-            .get_pending_input()
-            .await
-            .into_iter()
-            .map(ResponseItem::from)
-            .collect::<Vec<ResponseItem>>();
+        let pending_input = sess.get_pending_input().await;
 
-        if !pending_response_items.is_empty() {
-            for response_item in pending_response_items {
-                if let Some(TurnItem::UserMessage(user_message)) = parse_turn_item(&response_item) {
-                    // todo(aibrahim): move pending input to be UserInput only to keep TextElements. context: https://github.com/openai/codex/pull/10656#discussion_r2765522480
-                    sess.record_user_prompt_and_emit_turn_item(
-                        turn_context.as_ref(),
-                        &user_message.content,
-                        response_item,
-                    )
-                    .await;
-                } else {
-                    sess.record_conversation_items(
-                        &turn_context,
-                        std::slice::from_ref(&response_item),
-                    )
-                    .await;
+        let mut blocked_pending_input = false;
+        let mut blocked_pending_input_contexts = Vec::new();
+        let mut requeued_pending_input = false;
+        let mut accepted_pending_input = Vec::new();
+        if !pending_input.is_empty() {
+            let mut pending_input_iter = pending_input.into_iter();
+            while let Some(pending_input_item) = pending_input_iter.next() {
+                match inspect_pending_input(&sess, &turn_context, pending_input_item).await {
+                    PendingInputHookDisposition::Accepted(pending_input) => {
+                        accepted_pending_input.push(*pending_input);
+                    }
+                    PendingInputHookDisposition::Blocked {
+                        additional_contexts,
+                    } => {
+                        let remaining_pending_input = pending_input_iter.collect::<Vec<_>>();
+                        if !remaining_pending_input.is_empty() {
+                            let _ = sess.prepend_pending_input(remaining_pending_input).await;
+                            requeued_pending_input = true;
+                        }
+                        blocked_pending_input_contexts = additional_contexts;
+                        blocked_pending_input = true;
+                        break;
+                    }
                 }
             }
+        }
+
+        let has_accepted_pending_input = !accepted_pending_input.is_empty();
+        for pending_input in accepted_pending_input {
+            record_pending_input(&sess, &turn_context, pending_input).await;
+        }
+        record_additional_contexts(&sess, &turn_context, blocked_pending_input_contexts).await;
+
+        if blocked_pending_input && !has_accepted_pending_input {
+            if requeued_pending_input {
+                continue;
+            }
+            break;
         }
 
         // Construct the input that we will send to the model.
@@ -5693,7 +5703,7 @@ pub(crate) async fn run_turn(
                         session_id: sess.conversation_id,
                         turn_id: turn_context.sub_id.clone(),
                         cwd: turn_context.cwd.clone(),
-                        transcript_path: sess.current_rollout_path().await,
+                        transcript_path: sess.hook_transcript_path().await,
                         model: turn_context.model_info.slug.clone(),
                         permission_mode: stop_hook_permission_mode,
                         stop_hook_active,
