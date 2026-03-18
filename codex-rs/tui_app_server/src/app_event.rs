@@ -15,7 +15,6 @@ use codex_chatgpt::connectors::AppInfo;
 use codex_file_search::FileMatch;
 use codex_protocol::ThreadId;
 use codex_protocol::openai_models::ModelPreset;
-use codex_protocol::protocol::Event;
 use codex_protocol::protocol::Op;
 use codex_protocol::protocol::RateLimitSnapshot;
 use codex_utils_approval_presets::ApprovalPreset;
@@ -71,7 +70,6 @@ pub(crate) struct ConnectorsSnapshot {
 #[allow(clippy::large_enum_variant)]
 #[derive(Debug)]
 pub(crate) enum AppEvent {
-    CodexEvent(Event),
     /// Open the agent picker for switching active threads.
     OpenAgentPicker,
     /// Switch the active thread to the selected agent.
@@ -81,13 +79,6 @@ pub(crate) enum AppEvent {
     SubmitThreadOp {
         thread_id: ThreadId,
         op: Op,
-    },
-
-    /// Forward an event from a non-primary thread into the app-level thread router.
-    #[allow(dead_code)]
-    ThreadEvent {
-        thread_id: ThreadId,
-        event: Event,
     },
 
     /// Start a new session.
