@@ -46,28 +46,65 @@ install:
 test:
     cargo nextest run --no-fail-fast
 
+# Compile-focused guardrail for high-churn core + sandbox seams.
+core-compile-smoke:
+    set -euo pipefail
+    cargo check -p codex-linux-sandbox -p codex-core --tests
+
+# Carry-only downstream behavior smoke checks.
+core-carry-smoke:
+    set -euo pipefail
+    CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo test -p codex-core spawn_agent_preserves_explicit_model_override_across_role_reload --lib -- --exact
+    CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo test -p codex-core --test all suite::subagent_notifications::spawn_agent_requested_model_and_reasoning_override_inherited_settings_without_role -- --exact --test-threads=1
+    CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo test -p codex-core --test all suite::subagent_notifications::spawn_agent_role_overrides_requested_model_and_reasoning_settings -- --exact --test-threads=1
+    CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo test -p codex-core --test all suite::code_mode::code_mode_exports_all_tools_metadata_for_builtin_tools -- --exact --test-threads=1
+    CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo test -p codex-core --test all suite::code_mode::code_mode_exports_all_tools_metadata_for_namespaced_mcp_tools -- --exact --test-threads=1
+    CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo test -p codex-core --test all suite::unified_exec::exec_command_wait_until_terminal_returns_exit_metadata -- --exact --test-threads=1
+    CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo test -p codex-tui queued_inline_slash_command_runs_with_args_after_task_complete -- --exact --test-threads=1
+    CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo test -p codex-tui alt_up_restores_most_recent_queued_slash_command -- --exact --test-threads=1
+
+# Codex authoritative usage.sqlite logging contracts.
+core-ledger-smoke:
+    set -euo pipefail
+    cargo test -p codex-state usage_logger_records_requested_model_and_quota_snapshot -- --test-threads=1
+    cargo test -p codex-state usage_logger_tracks_tool_call_lifecycle -- --test-threads=1
+    cargo test -p codex-state usage_logger_captures_spawn_request_and_fork_snapshot -- --test-threads=1
+    cargo test -p codex-state usage_logger_resolves_root_thread_from_parent_or_fork -- --test-threads=1
+
+# Cross-repo ledger seam validation (agent-usage-ledger + Postgres).
+[no-cd]
+downstream-ledger-seam:
+    set -euo pipefail
+    [ -d "${LEDGER_REPO_ROOT:-../agent-usage-ledger}" ] || { echo "Skipping downstream-ledger-seam: missing ledger repo at ${LEDGER_REPO_ROOT:-../agent-usage-ledger}"; exit 0; }
+    command -v psql >/dev/null 2>&1 || { echo "Skipping downstream-ledger-seam: missing psql"; exit 0; }
+    "${LEDGER_REPO_ROOT:-../agent-usage-ledger}/scripts/llm_usage/ensure_schema.sh" --schema "${LLM_USAGE_DB_SCHEMA:-llm_usage}"
+    "${LEDGER_REPO_ROOT:-../agent-usage-ledger}/scripts/llm_usage/ingest_codex_rollouts_to_postgres.sh" --schema "${LLM_USAGE_DB_SCHEMA:-llm_usage}" --skip-schema
+    "${LEDGER_REPO_ROOT:-../agent-usage-ledger}/scripts/llm_usage/test_codex_copied_history_filter.sh"
+    "${LEDGER_REPO_ROOT:-../agent-usage-ledger}/scripts/llm_usage/test_codex_source_row_identity.sh"
+
 # Fast smoke checks for fragile codex-core integration buckets.
 core-test-smoke:
     set -euo pipefail
-    export CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}"
-    cargo test -p codex-core --test all suite::rmcp_client::stdio_server_round_trip -- --exact --test-threads=1
-    cargo test -p codex-core --test all suite::code_mode::code_mode_exports_all_tools_metadata_for_namespaced_mcp_tools -- --exact --test-threads=1
-    cargo test -p codex-core --test all suite::plugins::plugin_mcp_tools_are_listed -- --exact --test-threads=1
-    cargo test -p codex-core --test all suite::truncation::mcp_tool_call_output_exceeds_limit_truncated_for_model -- --exact --test-threads=1
-    cargo test -p codex-core --test all suite::client::usage_limit_error_emits_rate_limit_event -- --exact --test-threads=1
-    cargo test -p codex-core --test all suite::client_websockets::responses_websocket_usage_limit_error_emits_rate_limit_event -- --exact --test-threads=1
+    just core-compile-smoke
+    just core-carry-smoke
+    just core-ledger-smoke
+    CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo test -p codex-core --test all suite::rmcp_client::stdio_server_round_trip -- --exact --test-threads=1
+    CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo test -p codex-core --test all suite::code_mode::code_mode_exports_all_tools_metadata_for_namespaced_mcp_tools -- --exact --test-threads=1
+    CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo test -p codex-core --test all suite::plugins::plugin_mcp_tools_are_listed -- --exact --test-threads=1
+    CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo test -p codex-core --test all suite::truncation::mcp_tool_call_output_exceeds_limit_truncated_for_model -- --exact --test-threads=1
+    CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo test -p codex-core --test all suite::client::usage_limit_error_emits_rate_limit_event -- --exact --test-threads=1
+    CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo test -p codex-core --test all suite::client_websockets::responses_websocket_usage_limit_error_emits_rate_limit_event -- --exact --test-threads=1
 
 # Progressive codex-core ladder:
 # 1) smoke gate, 2) high-churn buckets, 3) full suite.
 core-test-progressive:
     set -euo pipefail
-    export CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}"
     just core-test-smoke
-    cargo test -p codex-core --test all suite::rmcp_client:: -- --test-threads=1
-    cargo test -p codex-core --test all suite::code_mode:: -- --test-threads=1
-    cargo test -p codex-core --test all suite::truncation:: -- --test-threads=1
-    cargo test -p codex-core --test all suite::plugins:: -- --test-threads=1
-    CARGO_BUILD_JOBS=1 cargo test -p codex-core -j1 -- --test-threads=1
+    CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo test -p codex-core --test all suite::rmcp_client:: -- --test-threads=1
+    CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo test -p codex-core --test all suite::code_mode:: -- --test-threads=1
+    CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo test -p codex-core --test all suite::truncation:: -- --test-threads=1
+    CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo test -p codex-core --test all suite::plugins:: -- --test-threads=1
+    CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" CARGO_BUILD_JOBS=1 cargo test -p codex-core -j1 -- --test-threads=1
 
 # Build and run Codex from source using Bazel.
 # Note we have to use the combination of `[no-cd]` and `--run_under="cd $PWD &&"`
