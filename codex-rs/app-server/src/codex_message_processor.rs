@@ -1943,6 +1943,7 @@ impl CodexMessageProcessor {
             config_overrides,
             typesafe_overrides,
             &cloud_requirements,
+            &listener_task_context.codex_home,
         )
         .await
         {
@@ -3392,6 +3393,7 @@ impl CodexMessageProcessor {
             typesafe_overrides,
             history_cwd,
             &cloud_requirements,
+            &self.config.codex_home,
         )
         .await
         {
@@ -3918,6 +3920,7 @@ impl CodexMessageProcessor {
             typesafe_overrides,
             history_cwd,
             &cloud_requirements,
+            &self.config.codex_home,
         )
         .await
         {
@@ -7016,6 +7019,7 @@ impl CodexMessageProcessor {
                 },
                 Some(command_cwd.clone()),
                 &cloud_requirements,
+                &config.codex_home,
             )
             .await;
             let setup_result = match derived_config {
@@ -7610,6 +7614,7 @@ async fn derive_config_from_params(
     request_overrides: Option<HashMap<String, serde_json::Value>>,
     typesafe_overrides: ConfigOverrides,
     cloud_requirements: &CloudRequirementsLoader,
+    codex_home: &Path,
 ) -> std::io::Result<Config> {
     let merged_cli_overrides = cli_overrides
         .iter()
@@ -7623,6 +7628,7 @@ async fn derive_config_from_params(
         .collect::<Vec<_>>();
 
     codex_core::config::ConfigBuilder::default()
+        .codex_home(codex_home.to_path_buf())
         .cli_overrides(merged_cli_overrides)
         .harness_overrides(typesafe_overrides)
         .cloud_requirements(cloud_requirements.clone())
@@ -7636,6 +7642,7 @@ async fn derive_config_for_cwd(
     typesafe_overrides: ConfigOverrides,
     cwd: Option<PathBuf>,
     cloud_requirements: &CloudRequirementsLoader,
+    codex_home: &Path,
 ) -> std::io::Result<Config> {
     let merged_cli_overrides = cli_overrides
         .iter()
@@ -7649,6 +7656,7 @@ async fn derive_config_for_cwd(
         .collect::<Vec<_>>();
 
     codex_core::config::ConfigBuilder::default()
+        .codex_home(codex_home.to_path_buf())
         .cli_overrides(merged_cli_overrides)
         .harness_overrides(typesafe_overrides)
         .fallback_cwd(cwd)
