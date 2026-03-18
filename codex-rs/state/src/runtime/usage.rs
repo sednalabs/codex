@@ -502,18 +502,120 @@ mod tests {
     use codex_protocol::protocol::RateLimitSnapshot;
     use codex_protocol::protocol::RateLimitWindow;
     use codex_protocol::protocol::SessionSource;
+    use codex_protocol::protocol::SubAgentSource;
     use codex_protocol::protocol::TokenCountEvent;
     use codex_protocol::protocol::TokenUsage;
     use codex_protocol::protocol::TokenUsageInfo;
+    use pretty_assertions::assert_eq;
     use sqlx::SqlitePool;
     use std::time::Duration;
+    use tempfile::TempDir;
     use tempfile::tempdir;
 
-    #[tokio::test]
-    async fn usage_logger_populates_tables() -> Result<()> {
+    #[derive(Debug, PartialEq, Eq, sqlx::FromRow)]
+    struct ProviderCallRow {
+        provider: Option<String>,
+        requested_model: Option<String>,
+        actual_model_used: Option<String>,
+        input_tokens_uncached: i64,
+        input_tokens_cached: i64,
+        output_tokens: i64,
+        total_tokens: i64,
+        status: Option<String>,
+    }
+
+    #[derive(Debug, PartialEq, sqlx::FromRow)]
+    struct QuotaSnapshotRow {
+        quota_source: Option<String>,
+        quota_percent_remaining: f64,
+        quota_percent_used: f64,
+    }
+
+    #[derive(Debug, PartialEq, Eq, sqlx::FromRow)]
+    struct ToolCallRow {
+        tool_name: String,
+        server_name: Option<String>,
+        status: Option<String>,
+        duration_ms: Option<i64>,
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq, sqlx::FromRow)]
+    struct SpawnRequestRow {
+        parent_thread_id: String,
+        child_thread_id: Option<String>,
+        requested_model: Option<String>,
+        requested_role: Option<String>,
+        requested_reasoning_effort: Option<String>,
+        status: Option<String>,
+        completed_at: Option<String>,
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq, sqlx::FromRow)]
+    struct ForkSnapshotRow {
+        parent_thread_id: String,
+        parent_last_provider_call_id: Option<String>,
+        parent_cumulative_uncached_tokens: Option<i64>,
+        parent_cumulative_cached_tokens: Option<i64>,
+        parent_cumulative_output_tokens: Option<i64>,
+        parent_cumulative_total_tokens: Option<i64>,
+    }
+
+    #[derive(Debug, PartialEq, Eq, sqlx::FromRow)]
+    struct ThreadRow {
+        parent_thread_id: Option<String>,
+        root_thread_id: Option<String>,
+        fork_parent_thread_id: Option<String>,
+        agent_nickname: Option<String>,
+        agent_role: Option<String>,
+        source: Option<String>,
+    }
+
+    fn token_count_event(turn_id: &str, include_rate_limit: bool) -> Event {
+        let usage = TokenUsage {
+            input_tokens: 10,
+            cached_input_tokens: 2,
+            output_tokens: 3,
+            reasoning_output_tokens: 1,
+            total_tokens: 16,
+        };
+        let info = TokenUsageInfo {
+            total_token_usage: usage.clone(),
+            last_token_usage: usage,
+            model_context_window: Some(4096),
+        };
+        let rate_limits = include_rate_limit.then_some(RateLimitSnapshot {
+            limit_id: None,
+            limit_name: Some("primary".to_string()),
+            primary: Some(RateLimitWindow {
+                used_percent: 12.5,
+                window_minutes: Some(60),
+                resets_at: Some(0),
+            }),
+            secondary: None,
+            credits: None,
+            plan_type: None,
+        });
+        Event {
+            id: turn_id.to_string(),
+            msg: EventMsg::TokenCount(TokenCountEvent {
+                info: Some(info),
+                rate_limits,
+                provider: Some("test-provider".to_string()),
+                model_used: Some("actual-model".to_string()),
+            }),
+        }
+    }
+
+    async fn init_runtime() -> Result<(Arc<StateRuntime>, TempDir)> {
         let tmp_dir = tempdir()?;
         let runtime =
             StateRuntime::init(tmp_dir.path().to_path_buf(), "test-provider".to_string()).await?;
+        Ok((runtime, tmp_dir))
+    }
+
+    #[tokio::test]
+    async fn usage_logger_records_requested_model_and_quota_snapshot() -> Result<()> {
+        let (runtime, _tmp_dir) = init_runtime().await?;
         let thread_id = ThreadId::new();
         let mut logger = UsageLogger::try_new(
             runtime.clone(),
@@ -532,6 +634,84 @@ mod tests {
             Some("requested-provider".into()),
         );
 
+        let token_event = token_count_event(turn_id, true);
+        logger.record_event(&token_event).await;
+
+        let pool_arc = runtime.usage_pool();
+        let pool: &SqlitePool = pool_arc.as_ref();
+
+        let provider_row: ProviderCallRow = sqlx::query_as(
+            r#"
+SELECT
+  provider,
+  requested_model,
+  actual_model_used,
+  input_tokens_uncached,
+  input_tokens_cached,
+  output_tokens,
+  total_tokens,
+  status
+FROM usage_provider_calls
+WHERE thread_id = ?
+"#,
+        )
+        .bind(thread_id.to_string())
+        .fetch_one(pool)
+        .await?;
+        assert_eq!(
+            provider_row,
+            ProviderCallRow {
+                provider: Some("test-provider".to_string()),
+                requested_model: Some("requested-model".to_string()),
+                actual_model_used: Some("actual-model".to_string()),
+                input_tokens_uncached: 8,
+                input_tokens_cached: 2,
+                output_tokens: 3,
+                total_tokens: 16,
+                status: Some("ok".to_string()),
+            }
+        );
+
+        let quota_row: QuotaSnapshotRow = sqlx::query_as(
+            r#"
+SELECT
+  quota_source,
+  quota_percent_remaining,
+  quota_percent_used
+FROM usage_quota_snapshots
+WHERE thread_id = ?
+"#,
+        )
+        .bind(thread_id.to_string())
+        .fetch_one(pool)
+        .await?;
+        assert_eq!(
+            quota_row,
+            QuotaSnapshotRow {
+                quota_source: Some("primary".to_string()),
+                quota_percent_remaining: 87.5,
+                quota_percent_used: 12.5,
+            }
+        );
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn usage_logger_tracks_tool_call_lifecycle() -> Result<()> {
+        let (runtime, _tmp_dir) = init_runtime().await?;
+        let thread_id = ThreadId::new();
+        let mut logger = UsageLogger::try_new(
+            runtime.clone(),
+            thread_id,
+            SessionSource::Cli,
+            None,
+            None,
+            None,
+        )
+        .await?;
+
+        let turn_id = "turn-tools";
         let tool_call_id = "tool-call";
         let tool_invocation = McpInvocation {
             server: "default-server".to_string(),
@@ -546,41 +726,6 @@ mod tests {
             }),
         };
         logger.record_event(&tool_begin).await;
-
-        let usage = TokenUsage {
-            input_tokens: 10,
-            cached_input_tokens: 2,
-            output_tokens: 3,
-            reasoning_output_tokens: 1,
-            total_tokens: 16,
-        };
-        let info = TokenUsageInfo {
-            total_token_usage: usage.clone(),
-            last_token_usage: usage,
-            model_context_window: Some(4096),
-        };
-        let rate_limits = RateLimitSnapshot {
-            limit_id: None,
-            limit_name: Some("primary".to_string()),
-            primary: Some(RateLimitWindow {
-                used_percent: 12.5,
-                window_minutes: Some(60),
-                resets_at: Some(0),
-            }),
-            secondary: None,
-            credits: None,
-            plan_type: None,
-        };
-        let token_event = Event {
-            id: turn_id.to_string(),
-            msg: EventMsg::TokenCount(TokenCountEvent {
-                info: Some(info),
-                rate_limits: Some(rate_limits),
-                provider: Some("test-provider".to_string()),
-                model_used: Some("actual-model".to_string()),
-            }),
-        };
-        logger.record_event(&token_event).await;
 
         let tool_end = Event {
             id: turn_id.to_string(),
@@ -597,6 +742,55 @@ mod tests {
             }),
         };
         logger.record_event(&tool_end).await;
+
+        let pool_arc = runtime.usage_pool();
+        let pool: &SqlitePool = pool_arc.as_ref();
+
+        let tool_row: ToolCallRow = sqlx::query_as(
+            r#"
+SELECT
+  tool_name,
+  server_name,
+  status,
+  duration_ms
+FROM usage_tool_calls
+WHERE tool_call_id = ?
+"#,
+        )
+        .bind(tool_call_id)
+        .fetch_one(pool)
+        .await?;
+        assert_eq!(
+            tool_row,
+            ToolCallRow {
+                tool_name: "test-tool".to_string(),
+                server_name: Some("default-server".to_string()),
+                status: Some("succeeded".to_string()),
+                duration_ms: Some(42),
+            }
+        );
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn usage_logger_captures_spawn_request_and_fork_snapshot() -> Result<()> {
+        let (runtime, _tmp_dir) = init_runtime().await?;
+        let thread_id = ThreadId::new();
+        let mut logger = UsageLogger::try_new(
+            runtime.clone(),
+            thread_id,
+            SessionSource::Cli,
+            None,
+            None,
+            None,
+        )
+        .await?;
+
+        let turn_id = "turn-spawn";
+        logger
+            .record_event(&token_count_event(turn_id, false))
+            .await;
 
         let spawn_call = "spawn-call";
         let spawn_child = ThreadId::new();
@@ -631,51 +825,177 @@ mod tests {
         let pool_arc = runtime.usage_pool();
         let pool: &SqlitePool = pool_arc.as_ref();
 
-        let recorded_thread: String =
-            sqlx::query_scalar("SELECT thread_id FROM usage_threads WHERE thread_id = ?")
-                .bind(thread_id.to_string())
-                .fetch_one(pool)
-                .await?;
-        assert_eq!(recorded_thread, thread_id.to_string());
-
-        let tool_name: String =
-            sqlx::query_scalar("SELECT tool_name FROM usage_tool_calls WHERE tool_call_id = ?")
-                .bind(tool_call_id)
-                .fetch_one(pool)
-                .await?;
-        assert_eq!(tool_name, "test-tool");
-
-        let actual_model: String = sqlx::query_scalar(
-            "SELECT actual_model_used FROM usage_provider_calls WHERE thread_id = ?",
-        )
-        .bind(thread_id.to_string())
-        .fetch_one(pool)
-        .await?;
-        assert_eq!(actual_model, "actual-model");
-
-        let quota_source: String = sqlx::query_scalar(
-            "SELECT quota_source FROM usage_quota_snapshots WHERE thread_id = ?",
-        )
-        .bind(thread_id.to_string())
-        .fetch_one(pool)
-        .await?;
-        assert_eq!(quota_source, "primary");
-
-        let spawn_status: String = sqlx::query_scalar(
-            "SELECT status FROM usage_spawn_requests WHERE spawn_request_id = ?",
+        let mut spawn_row: SpawnRequestRow = sqlx::query_as(
+            r#"
+SELECT
+  parent_thread_id,
+  child_thread_id,
+  requested_model,
+  requested_role,
+  requested_reasoning_effort,
+  status,
+  completed_at
+FROM usage_spawn_requests
+WHERE spawn_request_id = ?
+"#,
         )
         .bind(spawn_call)
         .fetch_one(pool)
         .await?;
-        assert_eq!(spawn_status, format!("{:?}", AgentStatus::Completed(None)));
+        assert!(
+            spawn_row.completed_at.is_some(),
+            "expected completed_at for spawn row"
+        );
+        spawn_row.completed_at = Some("<timestamp>".to_string());
+        assert_eq!(
+            spawn_row,
+            SpawnRequestRow {
+                parent_thread_id: thread_id.to_string(),
+                child_thread_id: Some(spawn_child.to_string()),
+                requested_model: Some("spawn-model".to_string()),
+                requested_role: None,
+                requested_reasoning_effort: Some("medium".to_string()),
+                status: Some(format!("{:?}", AgentStatus::Completed(None))),
+                completed_at: Some("<timestamp>".to_string()),
+            }
+        );
 
-        let child_thread: String = sqlx::query_scalar(
-            "SELECT child_thread_id FROM usage_fork_snapshots WHERE child_thread_id = ?",
+        let mut fork_row: ForkSnapshotRow = sqlx::query_as(
+            r#"
+SELECT
+  parent_thread_id,
+  parent_last_provider_call_id,
+  parent_cumulative_uncached_tokens,
+  parent_cumulative_cached_tokens,
+  parent_cumulative_output_tokens,
+  parent_cumulative_total_tokens
+FROM usage_fork_snapshots
+WHERE child_thread_id = ?
+"#,
         )
         .bind(spawn_child.to_string())
         .fetch_one(pool)
         .await?;
-        assert_eq!(child_thread, spawn_child.to_string());
+        assert!(
+            fork_row.parent_last_provider_call_id.is_some(),
+            "expected provider call id in fork snapshot"
+        );
+        fork_row.parent_last_provider_call_id = Some("<provider_call_id>".to_string());
+        assert_eq!(
+            fork_row,
+            ForkSnapshotRow {
+                parent_thread_id: thread_id.to_string(),
+                parent_last_provider_call_id: Some("<provider_call_id>".to_string()),
+                parent_cumulative_uncached_tokens: Some(8),
+                parent_cumulative_cached_tokens: Some(2),
+                parent_cumulative_output_tokens: Some(3),
+                parent_cumulative_total_tokens: Some(16),
+            }
+        );
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn usage_logger_resolves_root_thread_from_parent_or_fork() -> Result<()> {
+        let (runtime, _tmp_dir) = init_runtime().await?;
+        let parent_thread_id = ThreadId::new();
+        let _parent_logger = UsageLogger::try_new(
+            runtime.clone(),
+            parent_thread_id,
+            SessionSource::Cli,
+            None,
+            Some("Parent".to_string()),
+            Some("default".to_string()),
+        )
+        .await?;
+
+        let child_thread_id = ThreadId::new();
+        let child_source = SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+            parent_thread_id,
+            depth: 2,
+            agent_nickname: Some("Copernicus".to_string()),
+            agent_role: Some("explorer".to_string()),
+        });
+        let _child_logger = UsageLogger::try_new(
+            runtime.clone(),
+            child_thread_id,
+            child_source.clone(),
+            None,
+            Some("Copernicus".to_string()),
+            Some("explorer".to_string()),
+        )
+        .await?;
+
+        let fork_thread_id = ThreadId::new();
+        let _fork_logger = UsageLogger::try_new(
+            runtime.clone(),
+            fork_thread_id,
+            SessionSource::Cli,
+            Some(parent_thread_id),
+            None,
+            None,
+        )
+        .await?;
+
+        let pool_arc = runtime.usage_pool();
+        let pool: &SqlitePool = pool_arc.as_ref();
+
+        let child_row: ThreadRow = sqlx::query_as(
+            r#"
+SELECT
+  parent_thread_id,
+  root_thread_id,
+  fork_parent_thread_id,
+  agent_nickname,
+  agent_role,
+  source
+FROM usage_threads
+WHERE thread_id = ?
+"#,
+        )
+        .bind(child_thread_id.to_string())
+        .fetch_one(pool)
+        .await?;
+        assert_eq!(
+            child_row,
+            ThreadRow {
+                parent_thread_id: Some(parent_thread_id.to_string()),
+                root_thread_id: Some(parent_thread_id.to_string()),
+                fork_parent_thread_id: None,
+                agent_nickname: Some("Copernicus".to_string()),
+                agent_role: Some("explorer".to_string()),
+                source: Some(child_source.to_string()),
+            }
+        );
+
+        let fork_row: ThreadRow = sqlx::query_as(
+            r#"
+SELECT
+  parent_thread_id,
+  root_thread_id,
+  fork_parent_thread_id,
+  agent_nickname,
+  agent_role,
+  source
+FROM usage_threads
+WHERE thread_id = ?
+"#,
+        )
+        .bind(fork_thread_id.to_string())
+        .fetch_one(pool)
+        .await?;
+        assert_eq!(
+            fork_row,
+            ThreadRow {
+                parent_thread_id: None,
+                root_thread_id: Some(parent_thread_id.to_string()),
+                fork_parent_thread_id: Some(parent_thread_id.to_string()),
+                agent_nickname: None,
+                agent_role: None,
+                source: Some(SessionSource::Cli.to_string()),
+            }
+        );
 
         Ok(())
     }

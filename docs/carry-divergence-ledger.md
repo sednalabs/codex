@@ -35,6 +35,8 @@ live divergence.
 - Downstream sync policy is merge-based, not rebase-based.
 - Shared-host validation and release flows are standardized through build-helper
   presets.
+- Divergence regression ownership is tracked in
+  [`downstream-regression-matrix.md`](/home/grant/mmm/codex/docs/downstream-regression-matrix.md).
 - Primary files:
   - `.build-helper/presets.json`
   - `docs/contributing.md`

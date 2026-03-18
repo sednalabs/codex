@@ -61,6 +61,36 @@
     "allow_extra_args": false
   },
   {
+    "id": "codex.core-compile-smoke",
+    "label": "Codex core compile smoke",
+    "cwd": ".",
+    "command": [
+      "just",
+      "core-compile-smoke"
+    ],
+    "allow_extra_args": false
+  },
+  {
+    "id": "codex.core-carry-smoke",
+    "label": "Codex core carry divergence smoke",
+    "cwd": ".",
+    "command": [
+      "just",
+      "core-carry-smoke"
+    ],
+    "allow_extra_args": false
+  },
+  {
+    "id": "codex.core-ledger-smoke",
+    "label": "Codex core usage ledger smoke",
+    "cwd": ".",
+    "command": [
+      "just",
+      "core-ledger-smoke"
+    ],
+    "allow_extra_args": false
+  },
+  {
     "id": "codex.core-test-smoke",
     "label": "Codex core smoke gate",
     "cwd": ".",
@@ -77,6 +107,16 @@
     "command": [
       "just",
       "core-test-progressive"
+    ],
+    "allow_extra_args": false
+  },
+  {
+    "id": "codex.downstream-ledger-seam",
+    "label": "Codex downstream ledger seam checks",
+    "cwd": ".",
+    "command": [
+      "just",
+      "downstream-ledger-seam"
     ],
     "allow_extra_args": false
   },

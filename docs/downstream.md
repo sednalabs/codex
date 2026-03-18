@@ -56,6 +56,8 @@ Why:
 User-visible behavior:
 - `.build-helper/presets.json` defines fork-local Codex presets for formatting, core tests, and release build/install flows.
 - Downstream instructions can reference those presets directly for reproducible validation and release steps.
+- `codex.core-test` now maps to the progressive default path (`just core-test-progressive`), which runs compile, carry-divergence, and usage-ledger smoke gates before the larger codex-core suite.
+- [`downstream-regression-matrix.md`](/home/grant/mmm/codex/docs/downstream-regression-matrix.md) maps each intentional divergence to a concrete smoke/progressive lane.
 
 ### Sub-agent model override precedence
 
