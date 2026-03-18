@@ -27,6 +27,8 @@ Current state at review time:
 
 Why:
 - Support "wait until terminal" semantics directly on `exec_command` and `write_stdin` for long-running exact/tool-driven command flows.
+- Avoid model-layer short-poll loops that waste turns, duplicate context, and make orchestration look busy without changing state.
+- Let downstream operator workflows treat long-running shell work as an actual blocking join instead of repeated "check again" tool chatter.
 - Keep wait responses aligned with the current unified-exec output shape after upstream refactors.
 - Expose compaction count on turn completion so clients can distinguish "normal turn complete" from "turn completed after one or more compactions".
 
@@ -35,6 +37,8 @@ User-visible behavior:
 - `write_stdin` still requires `chars` to be empty when `wait_until_terminal=true`.
 - Wait-timeout notes are appended to emitted `raw_output`, and token accounting is derived from the final response text.
 - `TurnCompleteEvent` includes `compaction_events_in_turn`.
+- In downstream operator environments, this pairs cleanly with other blocking coordination primitives such as `wait_agent`, so agents can wait on real state transitions instead of spinning on repeated status polls.
+- This downstream blocking MCP tool pattern predates fully operational task support and exists specifically so the tool layer, not the transcript, absorbs the wait.
 
 ### Usage ledger: shared ledger owned by `agent-usage-ledger`
 
@@ -48,14 +52,15 @@ User-visible behavior:
 - Billing turns are canonicalized before ingest, and historical AUD cost views remain available downstream through that shared repo.
 - Patched Codex clients now emit authoritative local usage facts into `usage.sqlite`; rollout JSONL remains a compatibility fallback for historical or unpatched installs.
 
-### Repo tooling: build-helper presets for downstream validation and release
+### MCP tool orchestration: blocking waits before task support matured
 
 Why:
-- Shared-host validation and release builds are more reliable when they run through build-helper MCP instead of ad hoc shell commands.
+- Downstream operator workflows benefit when long-running MCP tool calls can block on a real state transition instead of relying on repeated model-driven status polling.
+- This fork implemented blocking wait semantics before task support was fully operational, so agents could coordinate against terminal states without transcript churn.
 
 User-visible behavior:
-- `.build-helper/presets.json` defines fork-local Codex presets for formatting, core tests, and release build/install flows.
-- Downstream instructions can reference those presets directly for reproducible validation and release steps.
+- Downstream docs and operator guidance prefer MCP tool surfaces that can block in-tool until useful state changes occur.
+- The intended execution model is: start work, block on the tool contract, resume on a terminal or timeout condition, rather than simulate a scheduler in the chat transcript.
 
 ### Sub-agent model override precedence
 
