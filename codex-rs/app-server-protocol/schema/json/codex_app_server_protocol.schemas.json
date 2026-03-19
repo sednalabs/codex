@@ -506,6 +506,30 @@
             },
             "method": {
               "enum": [
+                "thread/shellCommand"
+              ],
+              "title": "Thread/shellCommandRequestMethod",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/definitions/v2/ThreadShellCommandParams"
+            }
+          },
+          "required": [
+            "id",
+            "method",
+            "params"
+          ],
+          "title": "Thread/shellCommandRequest",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "id": {
+              "$ref": "#/definitions/v2/RequestId"
+            },
+            "method": {
+              "enum": [
                 "thread/rollback"
               ],
               "title": "Thread/rollbackRequestMethod",
@@ -6120,6 +6144,15 @@
         ],
         "title": "CommandExecutionOutputDeltaNotification",
         "type": "object"
+      },
+      "CommandExecutionSource": {
+        "enum": [
+          "agent",
+          "userShell",
+          "unifiedExecStartup",
+          "unifiedExecInteraction"
+        ],
+        "type": "string"
       },
       "CommandExecutionStatus": {
         "enum": [
@@ -12063,6 +12096,14 @@
                   "null"
                 ]
               },
+              "source": {
+                "allOf": [
+                  {
+                    "$ref": "#/definitions/v2/CommandExecutionSource"
+                  }
+                ],
+                "default": "agent"
+              },
               "status": {
                 "$ref": "#/definitions/v2/CommandExecutionStatus"
               },
@@ -13100,6 +13141,29 @@
       "ThreadSetNameResponse": {
         "$schema": "http://json-schema.org/draft-07/schema#",
         "title": "ThreadSetNameResponse",
+        "type": "object"
+      },
+      "ThreadShellCommandParams": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "properties": {
+          "command": {
+            "description": "Shell command string evaluated by the thread's configured shell. Unlike `command/exec`, this intentionally preserves shell syntax such as pipes, redirects, and quoting. This runs unsandboxed with full access rather than inheriting the thread sandbox policy.",
+            "type": "string"
+          },
+          "threadId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "command",
+          "threadId"
+        ],
+        "title": "ThreadShellCommandParams",
+        "type": "object"
+      },
+      "ThreadShellCommandResponse": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "title": "ThreadShellCommandResponse",
         "type": "object"
       },
       "ThreadSortKey": {
