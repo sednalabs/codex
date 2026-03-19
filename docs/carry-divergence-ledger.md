@@ -8,13 +8,13 @@ live divergence.
 
 ## Audit Baseline
 
-- Audited on: `2026-03-15`
-- `upstream/main`: `4b31848f5b3adb7f237dd5109f83428fbd2cf343`
-- `carry/main`: `e9b67a9ff9b6fc6b95a0b5294ff8adb02e64213c`
+- Audited on: `2026-03-19`
+- `upstream/main`: `01df50cf422b2eb89cb6ad8f845548e8c0d3c60c`
+- `carry/main`: `e4f56ea5c6d446c06f1794b23e792a55cc081222`
 - `main`: `70eddad6b075f26f0f93c66f7ec9a4e49cdadc93`
-- `carry/main` vs `upstream/main`: `135` ahead, `1` behind
-- Carry-only commits at audit time: `103` non-merge, `32` merge
-- Exact-subject upstream matches found during audit: `40`
+- `carry/main` vs `upstream/main`: `154` ahead, `0` behind
+- Carry-only commits at audit time: `115` non-merge, `39` merge
+- Exact-subject upstream matches found during audit: `41`
 
 ## Audit Rules
 
@@ -74,28 +74,27 @@ live divergence.
   - `codex-rs/state/src/runtime.rs`
   - `codex-rs/state/src/runtime/usage.rs`
   - `codex-rs/state/usage_migrations/0001_usage_tables.sql`
-- `codex-rs/state/Cargo.toml`
+  - `codex-rs/state/Cargo.toml`
 
 ### CLI Git Metadata And Rebuild Triggers
-
-### Sub-agent model override precedence
-
-- Keep downstream itineraries that explicitly call `spawn_agent(model=..., reasoning_effort=...)` aligned with the requested model/economy, even when a role is applied.
-- Roles still control locked models when they explicitly set `model`, `model_provider`, `model_reasoning_effort`, or `model_verbosity`, so downstream policy remains defendable.
-- The documentation and tooling now spell out the precedence stack for spawn-time overrides.
-
-Primary files:
-- `codex-rs/core/src/agent/role.rs`
-- `codex-rs/core/src/config/mod.rs`
-- `codex-rs/core/src/tools/handlers/multi_agents_tests.rs`
-- `codex-rs/core/src/tools/spec.rs`
-- `docs/config.md`
 
 - CLI builds embed `git describe` metadata.
 - CLI builds rerun when git state changes, including shared worktree git state.
 - Primary files:
   - `codex-rs/cli/build.rs`
   - `codex-rs/cli/src/main.rs`
+
+### Sub-agent model override precedence
+
+- Keep downstream itineraries that explicitly call `spawn_agent(model=..., reasoning_effort=...)` aligned with the requested model/economy, even when a role is applied.
+- Roles still control locked models when they explicitly set `model`, `model_provider`, `model_reasoning_effort`, or `model_verbosity`, so downstream policy remains defendable.
+- The documentation and tooling now spell out the precedence stack for spawn-time overrides.
+- Primary files:
+  - `codex-rs/core/src/agent/role.rs`
+  - `codex-rs/core/src/config/mod.rs`
+  - `codex-rs/core/src/tools/handlers/multi_agents_tests.rs`
+  - `codex-rs/core/src/tools/spec.rs`
+  - `docs/config.md`
 
 ### Dead-Cwd Absolute Path Handling
 
@@ -176,14 +175,13 @@ Primary files:
 - `upstream/main` still emits the older inline
   `declare const tools: { ... }` example.
 - This is a live carry-only divergence.
-- This divergence is not currently summarized in `docs/downstream.md`.
 - Primary files:
   - `codex-rs/core/src/tools/code_mode_description.rs`
 
 ## Not Counted As Standalone Live Divergences
 
 - Merge and sync history:
-  - `32` carry-only merge commits are sync history, not independent downstream
+  - `39` carry-only merge commits are sync history, not independent downstream
     behaviors.
 - Merge-repair and promotion-fix history:
   - examples include `Fix carry/main core regressions after upstream sync`,
@@ -198,57 +196,51 @@ Primary files:
   - `codex-rs/core/src/config/edit.rs`
   - `codex-rs/core/src/tools/spec.rs`
 
-## Known Stale Or Over-Broad Downstream Notes
-
-- `docs/downstream.md` still lists `Ctrl+L` disablement as a carry divergence.
-- That is not counted as a current live divergence in this ledger.
-- At audit time, both `upstream/main` and `carry/main` implement the same
-  task-running gate in `codex-rs/tui/src/chatwidget.rs`.
-
 ## Historical Carry Commits Now Upstream-Equivalent
 
 The following carry commits have exact-subject matches on `upstream/main`. They
 should not be treated as current fork-only behavior by title alone.
 
 ```text
-8af97ce4b -> 7f2232938 | Revert "Pass more params to compaction" (#14298)
-2cfa10609 -> fd4a67352 | Responses: set x-client-request-id as convesration_id when talking to responses (#14312)
-78280f872 -> f385199cc | fix(arc_monitor): api path (#14290)
-052ec629b -> 180a5820f | Add keyboard based fast switching between agents in TUI (#13923)
-816e447ea -> 12ee9eb6e | Add snippets annotated with types to tools when code mode enabled (#14284)
-cc417c39a -> a4d884c76 | Split spawn_csv from multi_agent (#14282)
-5b10b93ba -> 39c1bc1c6 | Add realtime start instructions config override (#14270)
-566897d42 -> 31bf1dbe6 | Make unified exec session_id numeric (#14279)
-24b8d443b -> 01792a4c6 | Prefix code mode output with success or failure message and include error stack (#14272)
-cec211cab -> da74da668 | render local file links from target paths (#13857)
-3f7cb0304 -> c8446d7cf | Stabilize websocket response.failed error delivery (#14017)
-567ad7faf -> 285b3a514 | Show spawned agent model and effort in TUI (#14273)
-37f51382f -> 8a099b3df | Rename code mode tool to exec (#14254)
-16daab66d -> e77b2fd92 | prompt changes to guardian (#14263)
-f6e966e64 -> 9b5078d3e | Stabilize pipe process stdin round-trip test (#14013)
-295b56bec -> c1a424691 | chore: add a separate reject-policy flag for skill approvals (#14271)
-18199d4e0 -> 83b22bb61 | Add store/load support for code mode (#14259)
-f8ef154a6 -> 2621ba17e | Pass more params to compaction (#14247)
-de2a73cd9 -> 889b4796f | feat: Add additional macOS Sandbox Permissions for Launch Services, Contacts, Reminders (#14155)
-e4bc35278 -> 8ac27b2a1 | Add ephemeral flag support to thread fork (#14248)
+027afb885 -> 3b1c78a5c | [skill-creator] Add forward-testing instructions (#13600)
 8b3348530 -> 07c22d20f | Add code_mode output helpers for text and images (#14244)
-bf936fa0c -> ce1d9abf1 | Clarify close_agent tool description (#14269)
-44bfd2f12 -> b1dddcb76 | Increase sdk workflow timeout to 15 minutes (#14252)
-b73228722 -> a67660da2 | Load agent metadata from role files (#14177)
-e79155902 -> 3d41ff0b7 | Add model-controlled truncation for code mode results (#14258)
-c7e28cffa -> ee8f84153 | Add output schema to MCP tools and expose MCP tool results in code mode (#14236)
-15163050d -> d5694529c | app-server: propagate nested experimental gating for AskForApproval::Reject (#14191)
-28934762d -> 722e8f08e | unifying all image saves to /tmp to bug-proof (#14149)
-2895d3571 -> 91ca20c7c | Add spawn_agent model overrides (#14160)
+e4bc35278 -> 8ac27b2a1 | Add ephemeral flag support to thread fork (#14248)
 22d0aea5b -> 3d4628c9c | Add granular metrics for cloud requirements load (#14108)
-2544bd02a -> d751e68f4 | feat: Allow sync with remote plugin status. (#14176)
-bda9e55c7 -> f2d66fadd | add(core): arc_monitor (#13936)
+052ec629b -> 180a5820f | Add keyboard based fast switching between agents in TUI (#13923)
+e79155902 -> 3d41ff0b7 | Add model-controlled truncation for code mode results (#14258)
 01e2c3b8d -> b7f8e9195 | Add OpenAI Docs skill (#13596)
-b33edebd6 -> 4ac604285 | Mark incomplete resumed turns interrupted when idle (#14125)
-46e6661d4 -> c4d35084f | Reuse McpToolOutput in McpHandler (#14229)
-77a02909a -> 52a7f4b68 | Stabilize split PTY output on Windows (#14003)
+c7e28cffa -> ee8f84153 | Add output schema to MCP tools and expose MCP tool results in code mode (#14236)
+5b10b93ba -> 39c1bc1c6 | Add realtime start instructions config override (#14270)
+816e447ea -> 12ee9eb6e | Add snippets annotated with types to tools when code mode enabled (#14284)
+2895d3571 -> 91ca20c7c | Add spawn_agent model overrides (#14160)
+18199d4e0 -> 83b22bb61 | Add store/load support for code mode (#14259)
+bda9e55c7 -> f2d66fadd | add(core): arc_monitor (#13936)
+15163050d -> d5694529c | app-server: propagate nested experimental gating for AskForApproval::Reject (#14191)
+295b56bec -> c1a424691 | chore: add a separate reject-policy flag for skill approvals (#14271)
+bf936fa0c -> ce1d9abf1 | Clarify close_agent tool description (#14269)
 e52afd28b -> 00ea8aa7e | Expose strongly-typed result for exec_command (#14183)
-e4edafe1a -> f9cba5cb1 | Log ChatGPT user ID for feedback tags (#13901)
+de2a73cd9 -> 889b4796f | feat: Add additional macOS Sandbox Permissions for Launch Services, Contacts, Reminders (#14155)
+2544bd02a -> d751e68f4 | feat: Allow sync with remote plugin status. (#14176)
 9a501ddb0 -> 026cfde02 | Fix Linux tmux segfault in user shell lookup (#13900)
 b90921eba -> 7144f84c6 | Fix release-mode integration test compiler failure (#13603)
+78280f872 -> f385199cc | fix(arc_monitor): api path (#14290)
+44bfd2f12 -> b1dddcb76 | Increase sdk workflow timeout to 15 minutes (#14252)
+b73228722 -> a67660da2 | Load agent metadata from role files (#14177)
+e4edafe1a -> f9cba5cb1 | Log ChatGPT user ID for feedback tags (#13901)
+566897d42 -> 31bf1dbe6 | Make unified exec session_id numeric (#14279)
+b33edebd6 -> 4ac604285 | Mark incomplete resumed turns interrupted when idle (#14125)
+f8ef154a6 -> 2621ba17e | Pass more params to compaction (#14247)
+24b8d443b -> 01792a4c6 | Prefix code mode output with success or failure message and include error stack (#14272)
+16daab66d -> e77b2fd92 | prompt changes to guardian (#14263)
+37f51382f -> 8a099b3df | Rename code mode tool to exec (#14254)
+cec211cab -> da74da668 | render local file links from target paths (#13857)
+2cfa10609 -> fd4a67352 | Responses: set x-client-request-id as convesration_id when talking to responses (#14312)
+46e6661d4 -> c4d35084f | Reuse McpToolOutput in McpHandler (#14229)
+8af97ce4b -> 7f2232938 | Revert "Pass more params to compaction" (#14298)
+567ad7faf -> 285b3a514 | Show spawned agent model and effort in TUI (#14273)
+cc417c39a -> a4d884c76 | Split spawn_csv from multi_agent (#14282)
+f6e966e64 -> 9b5078d3e | Stabilize pipe process stdin round-trip test (#14013)
+77a02909a -> 52a7f4b68 | Stabilize split PTY output on Windows (#14003)
+3f7cb0304 -> c8446d7cf | Stabilize websocket response.failed error delivery (#14017)
+28934762d -> 722e8f08e | unifying all image saves to /tmp to bug-proof (#14149)
 ```
