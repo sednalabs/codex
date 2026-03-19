@@ -17,11 +17,11 @@ GitHub default branch is `carry/main` so downstream behavior is the repository l
 ## Divergence Summary
 
 This section tracks intentional downstream behavior differences from `upstream/main`.
-Last reviewed: 2026-03-15.
+Last reviewed: 2026-03-19.
 
 Current state at review time:
-- `carry/main` is `135` commits ahead and `1` behind `upstream/main`
-- `main` is currently 1 commit behind `upstream/main` and should be fast-forwarded via `git sync-main`
+- `carry/main` is `154` commits ahead and `0` behind `upstream/main`
+- `main` is currently `101` commits behind `upstream/main` and should be fast-forwarded via `git sync-main`
 
 ### Core + protocol: blocking wait for unified exec, stable wait output, and compaction turn-count metadata
 
@@ -68,6 +68,17 @@ User-visible behavior:
 - For routine build-helper runs, downstream local guidance prefers `wait_until_terminal=true` so the tool layer, not the model transcript, absorbs the wait.
 - Downstream docs and operator guidance prefer MCP tool surfaces that can block in-tool until useful state changes occur.
 - The intended execution model is: start work, block on the tool contract, resume on a terminal or timeout condition, rather than simulate a scheduler in the chat transcript.
+
+### Code mode: imported tool declarations instead of inline `tools` const examples
+
+Why:
+- Keep downstream code-mode declarations aligned with the imported namespace pattern used by the current carry branch tool metadata exporter.
+- Preserve the downstream formatting that pairs builtin and namespaced MCP tool metadata with a shared imported `tools` namespace instead of an inline `declare const tools` example.
+
+User-visible behavior:
+- Code-mode declarations use the imported form `import { tools } from "..."; declare function ...`.
+- Builtin tool metadata and namespaced MCP tool metadata are documented and tested against the same imported namespace shape.
+- Downstream code-mode examples therefore differ slightly from upstream examples that still inline `declare const tools: { ... }`.
 
 ### Sub-agent model override precedence
 
@@ -171,12 +182,3 @@ Why:
 
 User-visible behavior:
 - No product behavior change; this divergence only makes downstream core tests more tolerant of completion/polling races.
-
-### TUI: disable `Ctrl+L` clear shortcut on carry branch
-
-Why:
-- Avoid accidental terminal/UI clears from `Ctrl+L` in local terminal workflows where the shortcut is easy to trigger unintentionally.
-
-User-visible behavior:
-- `Ctrl+L` no longer triggers terminal/UI clear behavior on `carry/main`.
-- `/clear` remains available and unchanged for explicit "clear + start fresh chat" behavior.
