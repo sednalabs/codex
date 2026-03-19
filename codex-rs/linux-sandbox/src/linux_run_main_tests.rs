@@ -44,6 +44,7 @@ fn inserts_bwrap_argv0_before_command_separator() {
         vec!["/bin/true".to_string()],
         &FileSystemSandboxPolicy::from(&sandbox_policy),
         Path::new("/"),
+        Path::new("/"),
         BwrapOptions {
             mount_proc: true,
             network_mode: BwrapNetworkMode::FullAccess,
@@ -80,6 +81,7 @@ fn inserts_unshare_net_when_network_isolation_requested() {
         vec!["/bin/true".to_string()],
         &FileSystemSandboxPolicy::from(&sandbox_policy),
         Path::new("/"),
+        Path::new("/"),
         BwrapOptions {
             mount_proc: true,
             network_mode: BwrapNetworkMode::Isolated,
@@ -95,6 +97,7 @@ fn inserts_unshare_net_when_proxy_only_network_mode_requested() {
     let argv = build_bwrap_argv(
         vec!["/bin/true".to_string()],
         &FileSystemSandboxPolicy::from(&sandbox_policy),
+        Path::new("/"),
         Path::new("/"),
         BwrapOptions {
             mount_proc: true,
@@ -164,8 +167,10 @@ fn managed_proxy_preflight_argv_is_wrapped_for_full_access_policy() {
     let mode = bwrap_network_mode(NetworkSandboxPolicy::Enabled, true);
     let argv = build_preflight_bwrap_argv(
         Path::new("/"),
+        Path::new("/"),
         &FileSystemSandboxPolicy::from(&SandboxPolicy::DangerFullAccess),
         mode,
+        true,
     )
     .args;
     assert!(argv.iter().any(|arg| arg == "--"));
@@ -176,6 +181,7 @@ fn managed_proxy_inner_command_includes_route_spec() {
     let sandbox_policy = SandboxPolicy::new_read_only_policy();
     let args = build_inner_seccomp_command(InnerSeccompCommandArgs {
         sandbox_policy_cwd: Path::new("/tmp"),
+        command_cwd: None,
         sandbox_policy: &sandbox_policy,
         file_system_sandbox_policy: &FileSystemSandboxPolicy::from(&sandbox_policy),
         network_sandbox_policy: NetworkSandboxPolicy::Restricted,
@@ -193,6 +199,7 @@ fn inner_command_includes_split_policy_flags() {
     let sandbox_policy = SandboxPolicy::new_read_only_policy();
     let args = build_inner_seccomp_command(InnerSeccompCommandArgs {
         sandbox_policy_cwd: Path::new("/tmp"),
+        command_cwd: None,
         sandbox_policy: &sandbox_policy,
         file_system_sandbox_policy: &FileSystemSandboxPolicy::from(&sandbox_policy),
         network_sandbox_policy: NetworkSandboxPolicy::Restricted,
@@ -210,6 +217,7 @@ fn non_managed_inner_command_omits_route_spec() {
     let sandbox_policy = SandboxPolicy::new_read_only_policy();
     let args = build_inner_seccomp_command(InnerSeccompCommandArgs {
         sandbox_policy_cwd: Path::new("/tmp"),
+        command_cwd: None,
         sandbox_policy: &sandbox_policy,
         file_system_sandbox_policy: &FileSystemSandboxPolicy::from(&sandbox_policy),
         network_sandbox_policy: NetworkSandboxPolicy::Restricted,
@@ -227,6 +235,7 @@ fn managed_proxy_inner_command_requires_route_spec() {
         let sandbox_policy = SandboxPolicy::new_read_only_policy();
         build_inner_seccomp_command(InnerSeccompCommandArgs {
             sandbox_policy_cwd: Path::new("/tmp"),
+            command_cwd: None,
             sandbox_policy: &sandbox_policy,
             file_system_sandbox_policy: &FileSystemSandboxPolicy::from(&sandbox_policy),
             network_sandbox_policy: NetworkSandboxPolicy::Restricted,

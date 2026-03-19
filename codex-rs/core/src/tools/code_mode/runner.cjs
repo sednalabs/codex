@@ -147,19 +147,23 @@ function codeModeWorkerMain() {
 
   function createAllToolsMetadata(enabledTools) {
     return Object.freeze(
-      enabledTools.map(({ global_name, description }) =>
-        Object.freeze({
-          name: global_name,
-          description,
-        })
-      )
+      enabledTools.map(({ global_name, module: modulePath, namespace, name, description }) => {
+        const metadata = { description };
+        if (Array.isArray(namespace) && namespace.length > 0) {
+          metadata.module = modulePath;
+          metadata.name = name;
+        } else {
+          metadata.name = global_name;
+        }
+        return Object.freeze(metadata);
+      })
     );
   }
 
   function createToolsModule(context, callTool, enabledTools) {
     const tools = createModuleToolsNamespace(callTool, enabledTools);
     const allTools = createAllToolsMetadata(enabledTools);
-    const exportNames = ['ALL_TOOLS'];
+    const exportNames = ['ALL_TOOLS', 'tools'];
 
     for (const { global_name } of enabledTools) {
       if (global_name !== 'ALL_TOOLS') {
@@ -173,8 +177,9 @@ function codeModeWorkerMain() {
       uniqueExportNames,
       function initToolsModule() {
         this.setExport('ALL_TOOLS', allTools);
+        this.setExport('tools', tools);
         for (const exportName of uniqueExportNames) {
-          if (exportName !== 'ALL_TOOLS') {
+          if (exportName !== 'ALL_TOOLS' && exportName !== 'tools') {
             this.setExport(exportName, tools[exportName]);
           }
         }

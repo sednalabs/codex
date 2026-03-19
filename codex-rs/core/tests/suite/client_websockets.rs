@@ -852,6 +852,8 @@ async fn responses_websocket_usage_limit_error_emits_rate_limit_event() {
         event_json,
         json!({
             "info": null,
+            "model_used": "gpt-5.3-codex",
+            "provider": "OpenAI",
             "rate_limits": {
                 "limit_id": "codex",
                 "limit_name": null,

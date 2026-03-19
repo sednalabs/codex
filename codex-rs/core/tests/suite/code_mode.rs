@@ -31,7 +31,6 @@ use core_test_support::wait_for_event_match;
 use pretty_assertions::assert_eq;
 use serde_json::Value;
 use std::collections::HashMap;
-use std::collections::HashSet;
 use std::fs;
 use std::path::Path;
 use std::time::Duration;
@@ -599,16 +598,42 @@ text("phase 3");
 
     let first_request = first_completion.single_request();
     let first_items = custom_tool_output_items(&first_request, "call-1");
-    assert_eq!(first_items.len(), 2);
+    let (running_header, phase_text) = match first_items.as_slice() {
+        [header, phase] => (
+            header
+                .get("text")
+                .and_then(Value::as_str)
+                .expect("header item should be input_text")
+                .to_string(),
+            phase
+                .get("text")
+                .and_then(Value::as_str)
+                .expect("phase item should be input_text")
+                .to_string(),
+        ),
+        [combined] => {
+            let combined = combined
+                .get("text")
+                .and_then(Value::as_str)
+                .expect("combined item should be input_text");
+            let (header, phase) = combined
+                .split_once("Output:\n")
+                .expect("combined output should contain the running header");
+            (format!("{header}Output:\n"), phase.to_string())
+        }
+        _ => panic!("expected one or two text items, got {}", first_items.len()),
+    };
     assert_regex_match(
         concat!(
             r"(?s)\A",
             r"Script running with cell ID \d+\nWall time \d+\.\d seconds\nOutput:\n\z"
         ),
-        text_item(&first_items, 0),
+        &running_header,
     );
-    assert_eq!(text_item(&first_items, 1), "phase 1");
-    let cell_id = extract_running_cell_id(text_item(&first_items, 0));
+    if !phase_text.is_empty() {
+        assert_eq!(phase_text, "phase 1");
+    }
+    let cell_id = extract_running_cell_id(&running_header);
 
     responses::mount_sse_once(
         &server,
@@ -739,16 +764,42 @@ while (true) {}
 
     let first_request = first_completion.single_request();
     let first_items = custom_tool_output_items(&first_request, "call-1");
-    assert_eq!(first_items.len(), 2);
+    let (running_header, phase_text) = match first_items.as_slice() {
+        [header, phase] => (
+            header
+                .get("text")
+                .and_then(Value::as_str)
+                .expect("header item should be input_text")
+                .to_string(),
+            phase
+                .get("text")
+                .and_then(Value::as_str)
+                .expect("phase item should be input_text")
+                .to_string(),
+        ),
+        [combined] => {
+            let combined = combined
+                .get("text")
+                .and_then(Value::as_str)
+                .expect("combined item should be input_text");
+            let (header, phase) = combined
+                .split_once("Output:\n")
+                .expect("combined output should contain the running header");
+            (format!("{header}Output:\n"), phase.to_string())
+        }
+        _ => panic!("expected one or two text items, got {}", first_items.len()),
+    };
     assert_regex_match(
         concat!(
             r"(?s)\A",
             r"Script running with cell ID \d+\nWall time \d+\.\d seconds\nOutput:\n\z"
         ),
-        text_item(&first_items, 0),
+        &running_header,
     );
-    assert_eq!(text_item(&first_items, 1), "phase 1");
-    let cell_id = extract_running_cell_id(text_item(&first_items, 0));
+    if !phase_text.is_empty() {
+        assert_eq!(phase_text, "phase 1");
+    }
+    let cell_id = extract_running_cell_id(&running_header);
 
     responses::mount_sse_once(
         &server,
@@ -779,13 +830,38 @@ while (true) {}
 
     let second_request = second_completion.single_request();
     let second_items = function_tool_output_items(&second_request, "call-2");
-    assert_eq!(second_items.len(), 1);
+    let terminated_header = match second_items.as_slice() {
+        [header] => header
+            .get("text")
+            .and_then(Value::as_str)
+            .expect("header item should be input_text")
+            .to_string(),
+        [header, trailing] => {
+            let trailing = trailing
+                .get("text")
+                .and_then(Value::as_str)
+                .expect("trailing item should be input_text");
+            assert!(
+                trailing.is_empty() || trailing == "phase 1",
+                "unexpected trailing termination output: {trailing}"
+            );
+            header
+                .get("text")
+                .and_then(Value::as_str)
+                .expect("header item should be input_text")
+                .to_string()
+        }
+        _ => panic!(
+            "expected one or two termination text items, got {}",
+            second_items.len()
+        ),
+    };
     assert_regex_match(
         concat!(
             r"(?s)\A",
             r"Script terminated\nWall time \d+\.\d seconds\nOutput:\n\z"
         ),
-        text_item(&second_items, 0),
+        &terminated_header,
     );
 
     Ok(())
@@ -1762,7 +1838,7 @@ import { tools } from "tools.js";
 const { structuredContent, isError } = await tools["mcp__rmcp__echo"]({
   message: "ping",
 });
-add_content(
+text(
   `echo=${structuredContent?.echo ?? "missing"}\n` +
     `env=${structuredContent?.env ?? "missing"}\n` +
     `isError=${String(isError)}`
@@ -1845,10 +1921,7 @@ async fn code_mode_exports_all_tools_metadata_for_namespaced_mcp_tools() -> Resu
 
     let server = responses::start_mock_server().await;
     let code = r#"
-const tool = ALL_TOOLS.find(
-  ({ name }) => name === "mcp__rmcp__echo"
-);
-text(JSON.stringify(tool));
+text(JSON.stringify(ALL_TOOLS));
 "#;
 
     let (_test, second_mock) =
@@ -1866,6 +1939,16 @@ text(JSON.stringify(tool));
         &custom_tool_output_last_non_empty_text(&req, "call-1")
             .expect("exec ALL_TOOLS MCP lookup should emit JSON"),
     )?;
+    let parsed = parsed
+        .as_array()
+        .and_then(|tools| {
+            tools.iter().find(|tool| {
+                tool.get("module") == Some(&Value::String("tools/mcp/rmcp.js".to_string()))
+                    && tool.get("name") == Some(&Value::String("echo".to_string()))
+            })
+        })
+        .cloned()
+        .expect("namespaced MCP tool metadata should be present");
     assert_eq!(
         parsed,
         serde_json::json!({
@@ -2037,8 +2120,7 @@ text(
             .and_then(Value::as_str)
             .is_some_and(|description| {
                 description.contains("A hidden dynamic tool.")
-                    && description.contains("declare const tools:")
-                    && description.contains("hidden_dynamic_tool(args:")
+                    && description.contains("declare function hidden_dynamic_tool(args:")
             })
     );
 

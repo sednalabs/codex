@@ -10,10 +10,13 @@ use codex_core::CodexThread;
 use codex_core::config::Config;
 use codex_core::config::ConfigBuilder;
 use codex_core::config::ConfigOverrides;
+#[cfg(target_os = "linux")]
+use codex_core::features::Feature;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use regex_lite::Regex;
 use std::path::PathBuf;
 use std::process::Command;
+use std::sync::Once;
 
 pub mod apps_test_server;
 pub mod context_snapshot;
@@ -174,12 +177,18 @@ pub fn fetch_dotslash_file(
 /// temporary directory. Using a per-test directory keeps tests hermetic and
 /// avoids clobbering a developer’s real `~/.codex`.
 pub async fn load_default_config_for_test(codex_home: &TempDir) -> Config {
-    ConfigBuilder::default()
+    let mut config = ConfigBuilder::default()
         .codex_home(codex_home.path().to_path_buf())
         .harness_overrides(default_test_overrides())
         .build()
         .await
-        .expect("defaults for test should always succeed")
+        .expect("defaults for test should always succeed");
+    #[cfg(target_os = "linux")]
+    config
+        .features
+        .enable(Feature::UseLegacyLandlock)
+        .expect("tests should allow enabling legacy Landlock fallback");
+    config
 }
 
 #[cfg(target_os = "linux")]
@@ -315,7 +324,35 @@ pub fn format_with_current_shell_display_non_login(command: &str) -> String {
 }
 
 pub fn stdio_server_bin() -> Result<String, CargoBinError> {
-    codex_utils_cargo_bin::cargo_bin("test_stdio_server").map(|p| p.to_string_lossy().to_string())
+    match codex_utils_cargo_bin::cargo_bin("test_stdio_server") {
+        Ok(path) => Ok(path.to_string_lossy().to_string()),
+        Err(_) => {
+            maybe_build_stdio_server_for_tests();
+            codex_utils_cargo_bin::cargo_bin("test_stdio_server")
+                .map(|path| path.to_string_lossy().to_string())
+        }
+    }
+}
+
+fn maybe_build_stdio_server_for_tests() {
+    static BUILD_ONCE: Once = Once::new();
+
+    BUILD_ONCE.call_once(|| {
+        let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_string());
+        let mut command = Command::new(cargo);
+        command
+            .arg("build")
+            .arg("-p")
+            .arg("codex-rmcp-client")
+            .arg("--bin")
+            .arg("test_stdio_server");
+
+        if let Ok(repo_root) = codex_utils_cargo_bin::repo_root() {
+            command.current_dir(repo_root.join("codex-rs"));
+        }
+
+        let _ = command.status();
+    });
 }
 
 pub mod fs_wait {
