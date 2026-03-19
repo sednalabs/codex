@@ -38,6 +38,7 @@ User-visible behavior:
 - Wait-timeout notes are appended to emitted `raw_output`, and token accounting is derived from the final response text.
 - `TurnCompleteEvent` includes `compaction_events_in_turn`.
 - In downstream operator environments, this pairs cleanly with other blocking coordination primitives such as `wait_agent` and build-helper `*_and_wait` flows, so agents can wait on real state transitions instead of spinning on repeated status polls.
+- This downstream blocking MCP tool pattern predates fully operational task support and exists specifically so the tool layer, not the transcript, absorbs the wait.
 
 ### Usage ledger: shared ledger owned by `agent-usage-ledger`
 
@@ -51,11 +52,13 @@ User-visible behavior:
 - Billing turns are canonicalized before ingest, and historical AUD cost views remain available downstream through that shared repo.
 - Patched Codex clients now emit authoritative local usage facts into `usage.sqlite`; rollout JSONL remains a compatibility fallback for historical or unpatched installs.
 
-### Repo tooling: build-helper presets for downstream validation and release
+### MCP tool orchestration: blocking waits before task support matured
 
 Why:
 - Shared-host validation and release builds are more reliable when they run through build-helper MCP instead of ad hoc shell commands.
 - The same downstream execution model should apply to build/test orchestration: prefer a blocking wait on a real task over repeated status polling from the model layer.
+- Downstream operator workflows benefit when long-running MCP tool calls can block on a real state transition instead of relying on repeated model-driven status polling.
+- This fork implemented blocking wait semantics before task support was fully operational, so agents could coordinate against terminal states without transcript churn.
 
 User-visible behavior:
 - `.build-helper/presets.json` defines fork-local Codex presets for formatting, core tests, and release build/install flows.
@@ -63,6 +66,8 @@ User-visible behavior:
 - `codex.core-test` now maps to the progressive default path (`just core-test-progressive`), which runs compile, carry-divergence, and usage-ledger smoke gates before the larger codex-core suite.
 - [`downstream-regression-matrix.md`](/home/grant/mmm/codex/docs/downstream-regression-matrix.md) maps each intentional divergence to a concrete smoke/progressive lane.
 - For routine build-helper runs, downstream local guidance prefers `wait_until_terminal=true` so the tool layer, not the model transcript, absorbs the wait.
+- Downstream docs and operator guidance prefer MCP tool surfaces that can block in-tool until useful state changes occur.
+- The intended execution model is: start work, block on the tool contract, resume on a terminal or timeout condition, rather than simulate a scheduler in the chat transcript.
 
 ### Sub-agent model override precedence
 

@@ -37,8 +37,9 @@ live divergence.
   presets.
 - Divergence regression ownership is tracked in
   [`downstream-regression-matrix.md`](/home/grant/mmm/codex/docs/downstream-regression-matrix.md).
+- Downstream operator workflows prefer MCP tool surfaces with blocking wait
+  semantics over transcript-driven polling when the tool contract supports it.
 - Primary files:
-  - `.build-helper/presets.json`
   - `docs/contributing.md`
   - `docs/downstream.md`
 
@@ -117,6 +118,8 @@ Primary files:
 - In local downstream operator workflows, this composes with existing blocking
   coordination primitives such as `wait_agent` and build-helper `*_and_wait`
   calls so joins happen on state transitions rather than transcript churn.
+- This blocking MCP tool pattern was carried downstream before task support was
+  fully operational.
 - `TurnCompleteEvent` carries `compaction_events_in_turn`.
 - Token-count events also carry provider and model context in downstream flow.
 - Primary files:
