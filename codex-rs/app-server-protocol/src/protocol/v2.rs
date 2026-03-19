@@ -1469,6 +1469,7 @@ pub enum SessionSource {
     VsCode,
     Exec,
     AppServer,
+    Custom(String),
     SubAgent(CoreSubAgentSource),
     #[serde(other)]
     Unknown,
@@ -1481,6 +1482,7 @@ impl From<CoreSessionSource> for SessionSource {
             CoreSessionSource::VSCode => SessionSource::VsCode,
             CoreSessionSource::Exec => SessionSource::Exec,
             CoreSessionSource::Mcp => SessionSource::AppServer,
+            CoreSessionSource::Custom(source) => SessionSource::Custom(source),
             CoreSessionSource::SubAgent(sub) => SessionSource::SubAgent(sub),
             CoreSessionSource::Unknown => SessionSource::Unknown,
         }
@@ -1494,6 +1496,7 @@ impl From<SessionSource> for CoreSessionSource {
             SessionSource::VsCode => CoreSessionSource::VSCode,
             SessionSource::Exec => CoreSessionSource::Exec,
             SessionSource::AppServer => CoreSessionSource::Mcp,
+            SessionSource::Custom(source) => CoreSessionSource::Custom(source),
             SessionSource::SubAgent(sub) => CoreSessionSource::SubAgent(sub),
             SessionSource::Unknown => CoreSessionSource::Unknown,
         }
@@ -4124,6 +4127,12 @@ pub enum ThreadItem {
     UserMessage { id: String, content: Vec<UserInput> },
     #[serde(rename_all = "camelCase")]
     #[ts(rename_all = "camelCase")]
+    HookPrompt {
+        id: String,
+        fragments: Vec<HookPromptFragment>,
+    },
+    #[serde(rename_all = "camelCase")]
+    #[ts(rename_all = "camelCase")]
     AgentMessage {
         id: String,
         text: String,
@@ -4259,10 +4268,19 @@ pub enum ThreadItem {
     ContextCompaction { id: String },
 }
 
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(rename_all = "camelCase", export_to = "v2/")]
+pub struct HookPromptFragment {
+    pub text: String,
+    pub hook_run_id: String,
+}
+
 impl ThreadItem {
     pub fn id(&self) -> &str {
         match self {
             ThreadItem::UserMessage { id, .. }
+            | ThreadItem::HookPrompt { id, .. }
             | ThreadItem::AgentMessage { id, .. }
             | ThreadItem::Plan { id, .. }
             | ThreadItem::Reasoning { id, .. }
@@ -4372,6 +4390,14 @@ impl From<CoreTurnItem> for ThreadItem {
                 id: user.id,
                 content: user.content.into_iter().map(UserInput::from).collect(),
             },
+            CoreTurnItem::HookPrompt(hook_prompt) => ThreadItem::HookPrompt {
+                id: hook_prompt.id,
+                fragments: hook_prompt
+                    .fragments
+                    .into_iter()
+                    .map(HookPromptFragment::from)
+                    .collect(),
+            },
             CoreTurnItem::AgentMessage(agent) => {
                 let text = agent
                     .content
@@ -4410,6 +4436,15 @@ impl From<CoreTurnItem> for ThreadItem {
             CoreTurnItem::ContextCompaction(compaction) => {
                 ThreadItem::ContextCompaction { id: compaction.id }
             }
+        }
+    }
+}
+
+impl From<codex_protocol::items::HookPromptFragment> for HookPromptFragment {
+    fn from(value: codex_protocol::items::HookPromptFragment) -> Self {
+        Self {
+            text: value.text,
+            hook_run_id: value.hook_run_id,
         }
     }
 }

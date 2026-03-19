@@ -59,7 +59,7 @@ use chrono::Local;
 use chrono::Utc;
 use codex_app_server_protocol::McpServerElicitationRequest;
 use codex_app_server_protocol::McpServerElicitationRequestParams;
-use codex_environment::Environment;
+use codex_exec_server::Environment;
 use codex_hooks::HookEvent;
 use codex_hooks::HookEventAfterAgent;
 use codex_hooks::HookPayload;
@@ -87,6 +87,7 @@ use codex_protocol::dynamic_tools::DynamicToolSpec;
 use codex_protocol::items::PlanItem;
 use codex_protocol::items::TurnItem;
 use codex_protocol::items::UserMessageItem;
+use codex_protocol::items::build_hook_prompt_message;
 use codex_protocol::mcp::CallToolResult;
 use codex_protocol::models::BaseInstructions;
 use codex_protocol::models::PermissionProfile;
@@ -125,8 +126,6 @@ use futures::future::BoxFuture;
 use futures::future::Shared;
 use futures::prelude::*;
 use futures::stream::FuturesOrdered;
-use reqwest::header::HeaderMap;
-use reqwest::header::HeaderValue;
 use rmcp::model::ListResourceTemplatesResult;
 use rmcp::model::ListResourcesResult;
 use rmcp::model::PaginatedRequestParams;
@@ -4004,45 +4003,6 @@ impl Session {
             .await
     }
 
-    pub(crate) async fn sync_mcp_request_headers_for_turn(&self, turn_context: &TurnContext) {
-        let mut request_headers = HeaderMap::new();
-        let session_id = self.conversation_id.to_string();
-        if let Ok(value) = HeaderValue::from_str(&session_id) {
-            request_headers.insert("session_id", value.clone());
-            request_headers.insert("x-client-request-id", value);
-        }
-        if let Some(turn_metadata) = turn_context.turn_metadata_state.current_header_value()
-            && let Ok(value) = HeaderValue::from_str(&turn_metadata)
-        {
-            request_headers.insert(crate::X_CODEX_TURN_METADATA_HEADER, value);
-        }
-
-        let request_headers = if request_headers.is_empty() {
-            None
-        } else {
-            Some(request_headers)
-        };
-        self.services
-            .mcp_connection_manager
-            .read()
-            .await
-            .set_request_headers_for_server(
-                crate::mcp::CODEX_APPS_MCP_SERVER_NAME,
-                request_headers,
-            );
-    }
-
-    pub(crate) async fn clear_mcp_request_headers(&self) {
-        self.services
-            .mcp_connection_manager
-            .read()
-            .await
-            .set_request_headers_for_server(
-                crate::mcp::CODEX_APPS_MCP_SERVER_NAME,
-                /*request_headers*/ None,
-            );
-    }
-
     pub(crate) async fn parse_mcp_tool_name(
         &self,
         name: &str,
@@ -5849,13 +5809,12 @@ pub(crate) async fn run_turn(
                             .await;
                     }
                     if stop_outcome.should_block {
-                        if let Some(continuation_prompt) = stop_outcome.continuation_prompt.clone()
+                        if let Some(hook_prompt_message) =
+                            build_hook_prompt_message(&stop_outcome.continuation_fragments)
                         {
-                            let developer_message: ResponseItem =
-                                DeveloperInstructions::new(continuation_prompt).into();
                             sess.record_conversation_items(
                                 &turn_context,
-                                std::slice::from_ref(&developer_message),
+                                std::slice::from_ref(&hook_prompt_message),
                             )
                             .await;
                             stop_hook_active = true;

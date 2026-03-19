@@ -1427,7 +1427,7 @@ dependencies = [
  "codex-chatgpt",
  "codex-cloud-requirements",
  "codex-core",
- "codex-environment",
+ "codex-exec-server",
  "codex-feedback",
  "codex-file-search",
  "codex-login",
@@ -1843,7 +1843,7 @@ dependencies = [
  "codex-client",
  "codex-config",
  "codex-connectors",
- "codex-environment",
+ "codex-exec-server",
  "codex-execpolicy",
  "codex-file-search",
  "codex-git",
@@ -1948,17 +1948,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "codex-environment"
-version = "0.0.0"
-dependencies = [
- "async-trait",
- "codex-utils-absolute-path",
- "pretty_assertions",
- "tempfile",
- "tokio",
-]
-
-[[package]]
 name = "codex-exec"
 version = "0.0.0"
 dependencies = [
@@ -2008,13 +1997,16 @@ name = "codex-exec-server"
 version = "0.0.0"
 dependencies = [
  "anyhow",
+ "async-trait",
  "clap",
  "codex-app-server-protocol",
+ "codex-utils-absolute-path",
  "codex-utils-cargo-bin",
  "futures",
  "pretty_assertions",
  "serde",
  "serde_json",
+ "tempfile",
  "thiserror 2.0.18",
  "tokio",
  "tokio-tungstenite",
@@ -2346,6 +2338,7 @@ dependencies = [
  "icu_locale_core",
  "icu_provider",
  "pretty_assertions",
+ "quick-xml",
  "schemars 0.8.22",
  "serde",
  "serde_json",
@@ -2494,6 +2487,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sqlx",
+ "strum 0.27.2",
  "tempfile",
  "tokio",
  "tracing",
@@ -7272,6 +7266,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b66c2058c55a409d601666cffe35f04333cf1013010882cec174a7467cd4e21c"
 dependencies = [
  "memchr",
+ "serde",
 ]
 
 [[package]]
@@ -9391,6 +9386,9 @@ name = "strum"
 version = "0.27.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "af23d6f6c1a224baef9d3f61e287d2761385a5b88fdab4eb4c6f11aeb54c4bcf"
+dependencies = [
+ "strum_macros 0.27.2",
+]
 
 [[package]]
 name = "strum_macros"
@@ -9402,6 +9400,18 @@ dependencies = [
  "proc-macro2",
  "quote",
  "rustversion",
+ "syn 2.0.114",
+]
+
+[[package]]
+name = "strum_macros"
+version = "0.27.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7695ce3845ea4b33927c055a39dc438a45b059f7c1b3d91d38d10355fb8cbca7"
+dependencies = [
+ "heck",
+ "proc-macro2",
+ "quote",
  "syn 2.0.114",
 ]
 
