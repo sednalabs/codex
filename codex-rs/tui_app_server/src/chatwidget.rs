@@ -3308,6 +3308,7 @@ impl ChatWidget {
             prompt,
             model,
             reasoning_effort,
+            timed_out,
             agents_states,
         } = item
         else {
@@ -3447,6 +3448,19 @@ impl ChatWidget {
                             call_id: id,
                             agent_statuses,
                             statuses,
+                            receiver_thread_ids: receiver_thread_ids
+                                .iter()
+                                .filter_map(|thread_id| {
+                                    app_server_collab_thread_id_to_core(thread_id)
+                                })
+                                .collect(),
+                            pending_thread_ids: Vec::new(),
+                            completion_reason: if timed_out {
+                                codex_protocol::protocol::CollabWaitingCompletionReason::Timeout
+                            } else {
+                                codex_protocol::protocol::CollabWaitingCompletionReason::Terminal
+                            },
+                            timed_out,
                         },
                     ));
                 }
@@ -5743,6 +5757,7 @@ impl ChatWidget {
                 prompt,
                 model,
                 reasoning_effort,
+                timed_out,
                 agents_states,
             } => self.on_collab_agent_tool_call(ThreadItem::CollabAgentToolCall {
                 id,
@@ -5753,6 +5768,7 @@ impl ChatWidget {
                 prompt,
                 model,
                 reasoning_effort,
+                timed_out,
                 agents_states,
             }),
             ThreadItem::DynamicToolCall { .. } => {}
@@ -6198,6 +6214,7 @@ impl ChatWidget {
                 prompt,
                 model,
                 reasoning_effort,
+                timed_out,
                 agents_states,
             } => self.on_collab_agent_tool_call(ThreadItem::CollabAgentToolCall {
                 id,
@@ -6208,6 +6225,7 @@ impl ChatWidget {
                 prompt,
                 model,
                 reasoning_effort,
+                timed_out,
                 agents_states,
             }),
             ThreadItem::EnteredReviewMode { review, .. } => {
