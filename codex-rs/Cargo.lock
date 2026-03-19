@@ -2004,6 +2004,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "codex-exec-server"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "base64 0.22.1",
+ "clap",
+ "codex-app-server-protocol",
+ "codex-utils-cargo-bin",
+ "codex-utils-pty",
+ "futures",
+ "pretty_assertions",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-tungstenite",
+ "tracing",
+]
+
+[[package]]
 name = "codex-execpolicy"
 version = "0.0.0"
 dependencies = [
