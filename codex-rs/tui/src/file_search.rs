@@ -88,7 +88,7 @@ impl FileSearchManager {
                 ..Default::default()
             },
             reporter,
-            None,
+            /*cancel_flag*/ None,
         );
         match session {
             Ok(session) => st.session = Some(session),

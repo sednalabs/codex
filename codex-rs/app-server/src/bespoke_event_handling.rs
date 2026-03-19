@@ -27,6 +27,7 @@ use codex_app_server_protocol::CommandExecutionOutputDeltaNotification;
 use codex_app_server_protocol::CommandExecutionRequestApprovalParams;
 use codex_app_server_protocol::CommandExecutionRequestApprovalResponse;
 use codex_app_server_protocol::CommandExecutionRequestApprovalSkillMetadata;
+use codex_app_server_protocol::CommandExecutionSource;
 use codex_app_server_protocol::CommandExecutionStatus;
 use codex_app_server_protocol::ContextCompactedNotification;
 use codex_app_server_protocol::DeprecationNoticeNotification;
@@ -110,7 +111,6 @@ use codex_core::sandboxing::intersect_permission_profiles;
 use codex_protocol::ThreadId;
 use codex_protocol::dynamic_tools::DynamicToolCallOutputContentItem as CoreDynamicToolCallOutputContentItem;
 use codex_protocol::dynamic_tools::DynamicToolResponse as CoreDynamicToolResponse;
-use codex_protocol::models::PermissionProfile as CorePermissionProfile;
 use codex_protocol::plan_tool::UpdatePlanArgs;
 use codex_protocol::protocol::ApplyPatchApprovalRequestEvent;
 use codex_protocol::protocol::CodexErrorInfo as CoreCodexErrorInfo;
@@ -339,6 +339,7 @@ pub(crate) async fn apply_bespoke_event_handling(
                 let notification = ThreadRealtimeStartedNotification {
                     thread_id: conversation_id.to_string(),
                     session_id: event.session_id,
+                    version: event.version,
                 };
                 outgoing
                     .send_server_notification(ServerNotification::ThreadRealtimeStarted(
@@ -351,6 +352,20 @@ pub(crate) async fn apply_bespoke_event_handling(
             if let ApiVersion::V2 = api_version {
                 match event.payload {
                     RealtimeEvent::SessionUpdated { .. } => {}
+                    RealtimeEvent::InputAudioSpeechStarted(event) => {
+                        let notification = ThreadRealtimeItemAddedNotification {
+                            thread_id: conversation_id.to_string(),
+                            item: serde_json::json!({
+                                "type": "input_audio_buffer.speech_started",
+                                "item_id": event.item_id,
+                            }),
+                        };
+                        outgoing
+                            .send_server_notification(ServerNotification::ThreadRealtimeItemAdded(
+                                notification,
+                            ))
+                            .await;
+                    }
                     RealtimeEvent::InputTranscriptDelta(_) => {}
                     RealtimeEvent::OutputTranscriptDelta(_) => {}
                     RealtimeEvent::AudioOut(audio) => {
@@ -362,6 +377,20 @@ pub(crate) async fn apply_bespoke_event_handling(
                             .send_server_notification(
                                 ServerNotification::ThreadRealtimeOutputAudioDelta(notification),
                             )
+                            .await;
+                    }
+                    RealtimeEvent::ResponseCancelled(event) => {
+                        let notification = ThreadRealtimeItemAddedNotification {
+                            thread_id: conversation_id.to_string(),
+                            item: serde_json::json!({
+                                "type": "response.cancelled",
+                                "response_id": event.response_id,
+                            }),
+                        };
+                        outgoing
+                            .send_server_notification(ServerNotification::ThreadRealtimeItemAdded(
+                                notification,
+                            ))
                             .await;
                     }
                     RealtimeEvent::ConversationItemAdded(item) => {
@@ -775,7 +804,7 @@ pub(crate) async fn apply_bespoke_event_handling(
                     turn_id: request.turn_id.clone(),
                     item_id: request.call_id.clone(),
                     reason: request.reason,
-                    permissions: CorePermissionProfile::from(request.permissions).into(),
+                    permissions: request.permissions.into(),
                 };
                 let (pending_request_id, rx) = outgoing
                     .send_request(ServerRequestPayload::PermissionsRequestApproval(params))
@@ -1499,6 +1528,7 @@ pub(crate) async fn apply_bespoke_event_handling(
                 command,
                 cwd,
                 process_id,
+                source: exec_command_begin_event.source.into(),
                 status: CommandExecutionStatus::InProgress,
                 command_actions,
                 aggregated_output: None,
@@ -1516,7 +1546,6 @@ pub(crate) async fn apply_bespoke_event_handling(
         }
         EventMsg::ExecCommandOutputDelta(exec_command_output_delta_event) => {
             let item_id = exec_command_output_delta_event.call_id.clone();
-            let delta = String::from_utf8_lossy(&exec_command_output_delta_event.chunk).to_string();
             // The underlying EventMsg::ExecCommandOutputDelta is used for shell, unified_exec,
             // and apply_patch tool calls. We represent apply_patch with the FileChange item, and
             // everything else with the CommandExecution item.
@@ -1528,6 +1557,8 @@ pub(crate) async fn apply_bespoke_event_handling(
                 state.turn_summary.file_change_started.contains(&item_id)
             };
             if is_file_change {
+                let delta =
+                    String::from_utf8_lossy(&exec_command_output_delta_event.chunk).to_string();
                 let notification = FileChangeOutputDeltaNotification {
                     thread_id: conversation_id.to_string(),
                     turn_id: event_turn_id.clone(),
@@ -1544,7 +1575,8 @@ pub(crate) async fn apply_bespoke_event_handling(
                     thread_id: conversation_id.to_string(),
                     turn_id: event_turn_id.clone(),
                     item_id,
-                    delta,
+                    delta: String::from_utf8_lossy(&exec_command_output_delta_event.chunk)
+                        .to_string(),
                 };
                 outgoing
                     .send_server_notification(ServerNotification::CommandExecutionOutputDelta(
@@ -1577,6 +1609,7 @@ pub(crate) async fn apply_bespoke_event_handling(
                 aggregated_output,
                 exit_code,
                 duration,
+                source,
                 status,
                 ..
             } = exec_command_end_event;
@@ -1608,6 +1641,7 @@ pub(crate) async fn apply_bespoke_event_handling(
                 command: shlex_join(&command),
                 cwd,
                 process_id,
+                source: source.into(),
                 status,
                 command_actions,
                 aggregated_output,
@@ -1871,6 +1905,7 @@ async fn complete_command_execution_item(
     command: String,
     cwd: PathBuf,
     process_id: Option<String>,
+    source: CommandExecutionSource,
     command_actions: Vec<V2ParsedCommand>,
     status: CommandExecutionStatus,
     outgoing: &ThreadScopedOutgoingMessageSender,
@@ -1880,6 +1915,7 @@ async fn complete_command_execution_item(
         command,
         cwd,
         process_id,
+        source,
         status,
         command_actions,
         aggregated_output: None,
@@ -1953,7 +1989,7 @@ async fn handle_turn_interrupted(
         conversation_id,
         event_turn_id,
         TurnStatus::Interrupted,
-        None,
+        /*error*/ None,
         outgoing,
     )
     .await;
@@ -2349,7 +2385,7 @@ fn render_review_output_text(output: &ReviewOutputEvent) -> String {
         sections.push(explanation.to_string());
     }
     if !output.findings.is_empty() {
-        let findings = format_review_findings_block(&output.findings, None);
+        let findings = format_review_findings_block(&output.findings, /*selection*/ None);
         let trimmed = findings.trim();
         if !trimmed.is_empty() {
             sections.push(trimmed.to_string());
@@ -2547,7 +2583,8 @@ async fn on_command_execution_request_approval_response(
             item_id.clone(),
             completion_item.command,
             completion_item.cwd,
-            None,
+            /*process_id*/ None,
+            CommandExecutionSource::Agent,
             completion_item.command_actions,
             status,
             &outgoing,

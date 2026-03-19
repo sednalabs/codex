@@ -42,9 +42,16 @@ where
         FileSystemSandboxPolicy::from_legacy_sandbox_policy(sandbox_policy, sandbox_policy_cwd);
     let network_sandbox_policy = NetworkSandboxPolicy::from(sandbox_policy);
     let allow_network_for_proxy = allow_network_for_proxy(false);
-    let args = if linux_sandbox_supports_split_policy_flags(codex_linux_sandbox_exe.as_ref()) {
+    let supports_split_policy =
+        linux_sandbox_supports_split_policy_flags(codex_linux_sandbox_exe.as_ref());
+    let use_legacy_landlock = use_legacy_landlock
+        && !(supports_split_policy
+            && file_system_sandbox_policy
+                .needs_direct_runtime_enforcement(network_sandbox_policy, sandbox_policy_cwd));
+    let args = if supports_split_policy {
         create_linux_sandbox_command_args_for_policies(
             command,
+            command_cwd.as_path(),
             sandbox_policy,
             &file_system_sandbox_policy,
             network_sandbox_policy,
@@ -164,8 +171,9 @@ pub(crate) fn create_linux_sandbox_command_args_legacy(
 /// flags so the argv order matches the helper's CLI shape. See
 /// `docs/linux_sandbox.md` for the Linux semantics.
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn create_linux_sandbox_command_args_for_policies(
+pub fn create_linux_sandbox_command_args_for_policies(
     command: Vec<String>,
+    command_cwd: &Path,
     sandbox_policy: &SandboxPolicy,
     file_system_sandbox_policy: &FileSystemSandboxPolicy,
     network_sandbox_policy: NetworkSandboxPolicy,
@@ -183,10 +191,16 @@ pub(crate) fn create_linux_sandbox_command_args_for_policies(
         .to_str()
         .unwrap_or_else(|| panic!("cwd must be valid UTF-8"))
         .to_string();
+    let command_cwd = command_cwd
+        .to_str()
+        .unwrap_or_else(|| panic!("command cwd must be valid UTF-8"))
+        .to_string();
 
     let mut linux_cmd: Vec<String> = vec![
         "--sandbox-policy-cwd".to_string(),
         sandbox_policy_cwd,
+        "--command-cwd".to_string(),
+        command_cwd,
         "--sandbox-policy".to_string(),
         sandbox_policy_json,
         "--file-system-sandbox-policy".to_string(),
@@ -210,16 +224,26 @@ pub(crate) fn create_linux_sandbox_command_args_for_policies(
 #[cfg(test)]
 pub(crate) fn create_linux_sandbox_command_args(
     command: Vec<String>,
+    command_cwd: &Path,
     sandbox_policy_cwd: &Path,
     use_legacy_landlock: bool,
     allow_network_for_proxy: bool,
 ) -> Vec<String> {
+    let command_cwd = command_cwd
+        .to_str()
+        .unwrap_or_else(|| panic!("command cwd must be valid UTF-8"))
+        .to_string();
     let sandbox_policy_cwd = sandbox_policy_cwd
         .to_str()
         .unwrap_or_else(|| panic!("cwd must be valid UTF-8"))
         .to_string();
 
-    let mut linux_cmd: Vec<String> = vec!["--sandbox-policy-cwd".to_string(), sandbox_policy_cwd];
+    let mut linux_cmd: Vec<String> = vec![
+        "--sandbox-policy-cwd".to_string(),
+        sandbox_policy_cwd,
+        "--command-cwd".to_string(),
+        command_cwd,
+    ];
     if use_legacy_landlock {
         linux_cmd.push("--use-legacy-landlock".to_string());
     }
@@ -247,13 +271,14 @@ mod tests {
         let command = vec!["/bin/true".to_string()];
         let cwd = Path::new("/tmp");
 
-        let default_bwrap = create_linux_sandbox_command_args(command.clone(), cwd, false, false);
+        let default_bwrap =
+            create_linux_sandbox_command_args(command.clone(), cwd, cwd, false, false);
         assert_eq!(
             default_bwrap.contains(&"--use-legacy-landlock".to_string()),
             false
         );
 
-        let legacy_landlock = create_linux_sandbox_command_args(command, cwd, true, false);
+        let legacy_landlock = create_linux_sandbox_command_args(command, cwd, cwd, true, false);
         assert_eq!(
             legacy_landlock.contains(&"--use-legacy-landlock".to_string()),
             true
@@ -265,7 +290,7 @@ mod tests {
         let command = vec!["/bin/true".to_string()];
         let cwd = Path::new("/tmp");
 
-        let args = create_linux_sandbox_command_args(command, cwd, true, true);
+        let args = create_linux_sandbox_command_args(command, cwd, cwd, true, true);
         assert_eq!(
             args.contains(&"--allow-network-for-proxy".to_string()),
             true
@@ -306,6 +331,7 @@ mod tests {
 
         let args = create_linux_sandbox_command_args_for_policies(
             command,
+            cwd,
             &sandbox_policy,
             &file_system_sandbox_policy,
             network_sandbox_policy,

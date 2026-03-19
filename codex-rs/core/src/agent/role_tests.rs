@@ -246,6 +246,65 @@ model_provider = "test-provider"
 }
 
 #[tokio::test]
+async fn apply_role_top_level_profile_settings_override_preserved_profile() {
+    let home = TempDir::new().expect("create temp dir");
+    tokio::fs::write(
+        home.path().join(CONFIG_TOML_FILE),
+        r#"
+[profiles.base-profile]
+model = "profile-model"
+model_reasoning_effort = "low"
+model_reasoning_summary = "concise"
+model_verbosity = "low"
+"#,
+    )
+    .await
+    .expect("write config.toml");
+    let mut config = ConfigBuilder::default()
+        .codex_home(home.path().to_path_buf())
+        .harness_overrides(ConfigOverrides {
+            config_profile: Some("base-profile".to_string()),
+            ..Default::default()
+        })
+        .fallback_cwd(Some(home.path().to_path_buf()))
+        .build()
+        .await
+        .expect("load config");
+    let role_path = write_role_config(
+        &home,
+        "top-level-profile-settings-role.toml",
+        r#"developer_instructions = "Stay focused"
+model = "role-model"
+model_reasoning_effort = "high"
+model_reasoning_summary = "detailed"
+model_verbosity = "high"
+"#,
+    )
+    .await;
+    config.agent_roles.insert(
+        "custom".to_string(),
+        AgentRoleConfig {
+            description: None,
+            config_file: Some(role_path),
+            nickname_candidates: None,
+        },
+    );
+
+    apply_role_to_config(&mut config, Some("custom"))
+        .await
+        .expect("custom role should apply");
+
+    assert_eq!(config.active_profile.as_deref(), Some("base-profile"));
+    assert_eq!(config.model.as_deref(), Some("role-model"));
+    assert_eq!(config.model_reasoning_effort, Some(ReasoningEffort::High));
+    assert_eq!(
+        config.model_reasoning_summary,
+        Some(ReasoningSummary::Detailed)
+    );
+    assert_eq!(config.model_verbosity, Some(Verbosity::High));
+}
+
+#[tokio::test]
 async fn apply_role_uses_role_profile_instead_of_current_profile() {
     let home = TempDir::new().expect("create temp dir");
     tokio::fs::write(

@@ -30,6 +30,8 @@ use codex_protocol::items::TurnItem as CoreTurnItem;
 use codex_protocol::mcp::Resource as McpResource;
 use codex_protocol::mcp::ResourceTemplate as McpResourceTemplate;
 use codex_protocol::mcp::Tool as McpTool;
+use codex_protocol::memory_citation::MemoryCitation as CoreMemoryCitation;
+use codex_protocol::memory_citation::MemoryCitationEntry as CoreMemoryCitationEntry;
 use codex_protocol::models::FileSystemPermissions as CoreFileSystemPermissions;
 use codex_protocol::models::MacOsAutomationPermission as CoreMacOsAutomationPermission;
 use codex_protocol::models::MacOsContactsPermission as CoreMacOsContactsPermission;
@@ -50,6 +52,7 @@ use codex_protocol::protocol::AgentStatus as CoreAgentStatus;
 use codex_protocol::protocol::AskForApproval as CoreAskForApproval;
 use codex_protocol::protocol::CodexErrorInfo as CoreCodexErrorInfo;
 use codex_protocol::protocol::CreditsSnapshot as CoreCreditsSnapshot;
+use codex_protocol::protocol::ExecCommandSource as CoreExecCommandSource;
 use codex_protocol::protocol::ExecCommandStatus as CoreExecCommandStatus;
 use codex_protocol::protocol::GranularApprovalConfig as CoreGranularApprovalConfig;
 use codex_protocol::protocol::GuardianRiskLevel as CoreGuardianRiskLevel;
@@ -68,6 +71,7 @@ use codex_protocol::protocol::RateLimitSnapshot as CoreRateLimitSnapshot;
 use codex_protocol::protocol::RateLimitWindow as CoreRateLimitWindow;
 use codex_protocol::protocol::ReadOnlyAccess as CoreReadOnlyAccess;
 use codex_protocol::protocol::RealtimeAudioFrame as CoreRealtimeAudioFrame;
+use codex_protocol::protocol::RealtimeConversationVersion;
 use codex_protocol::protocol::ReviewDecision as CoreReviewDecision;
 use codex_protocol::protocol::SessionSource as CoreSessionSource;
 use codex_protocol::protocol::SkillDependencies as CoreSkillDependencies;
@@ -80,6 +84,7 @@ use codex_protocol::protocol::SubAgentSource as CoreSubAgentSource;
 use codex_protocol::protocol::TokenUsage as CoreTokenUsage;
 use codex_protocol::protocol::TokenUsageInfo as CoreTokenUsageInfo;
 use codex_protocol::request_permissions::PermissionGrantScope as CorePermissionGrantScope;
+use codex_protocol::request_permissions::RequestPermissionProfile as CoreRequestPermissionProfile;
 use codex_protocol::user_input::ByteRange as CoreByteRange;
 use codex_protocol::user_input::TextElement as CoreTextElement;
 use codex_protocol::user_input::UserInput as CoreUserInput;
@@ -88,6 +93,7 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 use serde::Serialize;
 use serde_json::Value as JsonValue;
+use serde_with::serde_as;
 use thiserror::Error;
 use ts_rs::TS;
 
@@ -341,7 +347,7 @@ v2_enum_from_core!(
 
 v2_enum_from_core!(
     pub enum HookEventName from CoreHookEventName {
-        SessionStart, Stop
+        SessionStart, UserPromptSubmit, Stop
     }
 );
 
@@ -1116,6 +1122,33 @@ impl From<AdditionalNetworkPermissions> for CoreNetworkPermissions {
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
 #[serde(rename_all = "camelCase")]
+#[serde(deny_unknown_fields)]
+#[ts(export_to = "v2/")]
+pub struct RequestPermissionProfile {
+    pub network: Option<AdditionalNetworkPermissions>,
+    pub file_system: Option<AdditionalFileSystemPermissions>,
+}
+
+impl From<CoreRequestPermissionProfile> for RequestPermissionProfile {
+    fn from(value: CoreRequestPermissionProfile) -> Self {
+        Self {
+            network: value.network.map(AdditionalNetworkPermissions::from),
+            file_system: value.file_system.map(AdditionalFileSystemPermissions::from),
+        }
+    }
+}
+
+impl From<RequestPermissionProfile> for CoreRequestPermissionProfile {
+    fn from(value: RequestPermissionProfile) -> Self {
+        Self {
+            network: value.network.map(CoreNetworkPermissions::from),
+            file_system: value.file_system.map(CoreFileSystemPermissions::from),
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
 #[ts(export_to = "v2/")]
 pub struct AdditionalPermissionProfile {
     pub network: Option<AdditionalNetworkPermissions>,
@@ -1146,51 +1179,6 @@ impl From<AdditionalPermissionProfile> for CorePermissionProfile {
 #[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq, Eq, JsonSchema, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export_to = "v2/")]
-pub struct GrantedMacOsPermissions {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
-    pub preferences: Option<CoreMacOsPreferencesPermission>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
-    pub automations: Option<CoreMacOsAutomationPermission>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
-    pub launch_services: Option<bool>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
-    pub accessibility: Option<bool>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
-    pub calendar: Option<bool>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
-    pub reminders: Option<bool>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
-    pub contacts: Option<CoreMacOsContactsPermission>,
-}
-
-impl From<GrantedMacOsPermissions> for CoreMacOsSeatbeltProfileExtensions {
-    fn from(value: GrantedMacOsPermissions) -> Self {
-        Self {
-            macos_preferences: value
-                .preferences
-                .unwrap_or(CoreMacOsPreferencesPermission::None),
-            macos_automation: value
-                .automations
-                .unwrap_or(CoreMacOsAutomationPermission::None),
-            macos_launch_services: value.launch_services.unwrap_or(false),
-            macos_accessibility: value.accessibility.unwrap_or(false),
-            macos_calendar: value.calendar.unwrap_or(false),
-            macos_reminders: value.reminders.unwrap_or(false),
-            macos_contacts: value.contacts.unwrap_or(CoreMacOsContactsPermission::None),
-        }
-    }
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq, Eq, JsonSchema, TS)]
-#[serde(rename_all = "camelCase")]
-#[ts(export_to = "v2/")]
 pub struct GrantedPermissionProfile {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
@@ -1198,32 +1186,14 @@ pub struct GrantedPermissionProfile {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub file_system: Option<AdditionalFileSystemPermissions>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
-    pub macos: Option<GrantedMacOsPermissions>,
 }
 
 impl From<GrantedPermissionProfile> for CorePermissionProfile {
     fn from(value: GrantedPermissionProfile) -> Self {
-        let macos = value.macos.and_then(|macos| {
-            if macos.preferences.is_none()
-                && macos.automations.is_none()
-                && macos.launch_services.is_none()
-                && macos.accessibility.is_none()
-                && macos.calendar.is_none()
-                && macos.reminders.is_none()
-                && macos.contacts.is_none()
-            {
-                None
-            } else {
-                Some(CoreMacOsSeatbeltProfileExtensions::from(macos))
-            }
-        });
-
         Self {
             network: value.network.map(CoreNetworkPermissions::from),
             file_system: value.file_system.map(CoreFileSystemPermissions::from),
-            macos,
+            macos: None,
         }
     }
 }
@@ -2906,6 +2876,23 @@ pub struct ThreadCompactStartResponse {}
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export_to = "v2/")]
+pub struct ThreadShellCommandParams {
+    pub thread_id: String,
+    /// Shell command string evaluated by the thread's configured shell.
+    /// Unlike `command/exec`, this intentionally preserves shell syntax
+    /// such as pipes, redirects, and quoting. This runs unsandboxed with full
+    /// access rather than inheriting the thread sandbox policy.
+    pub command: String,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ThreadShellCommandResponse {}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
 pub struct ThreadBackgroundTerminalsCleanParams {
     pub thread_id: String,
 }
@@ -3125,6 +3112,8 @@ pub struct PluginListParams {
 pub struct PluginListResponse {
     pub marketplaces: Vec<PluginMarketplaceEntry>,
     pub remote_sync_error: Option<String>,
+    #[serde(default)]
+    pub featured_plugin_ids: Vec<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
@@ -3140,73 +3129,6 @@ pub struct PluginReadParams {
 #[ts(export_to = "v2/")]
 pub struct PluginReadResponse {
     pub plugin: PluginDetail,
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
-#[serde(rename_all = "camelCase")]
-#[ts(export_to = "v2/")]
-pub struct SkillsRemoteReadParams {
-    #[serde(default)]
-    pub hazelnut_scope: HazelnutScope,
-    #[serde(default)]
-    pub product_surface: ProductSurface,
-    #[serde(default)]
-    pub enabled: bool,
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, JsonSchema, TS, Default)]
-#[serde(rename_all = "kebab-case")]
-#[ts(rename_all = "kebab-case")]
-#[ts(export_to = "v2/")]
-pub enum HazelnutScope {
-    #[default]
-    Example,
-    WorkspaceShared,
-    AllShared,
-    Personal,
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, JsonSchema, TS, Default)]
-#[serde(rename_all = "camelCase")]
-#[ts(rename_all = "camelCase")]
-#[ts(export_to = "v2/")]
-pub enum ProductSurface {
-    Chatgpt,
-    #[default]
-    Codex,
-    Api,
-    Atlas,
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
-#[serde(rename_all = "camelCase")]
-#[ts(export_to = "v2/")]
-pub struct RemoteSkillSummary {
-    pub id: String,
-    pub name: String,
-    pub description: String,
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
-#[serde(rename_all = "camelCase")]
-#[ts(export_to = "v2/")]
-pub struct SkillsRemoteReadResponse {
-    pub data: Vec<RemoteSkillSummary>,
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
-#[serde(rename_all = "camelCase")]
-#[ts(export_to = "v2/")]
-pub struct SkillsRemoteWriteParams {
-    pub hazelnut_id: String,
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
-#[serde(rename_all = "camelCase")]
-#[ts(export_to = "v2/")]
-pub struct SkillsRemoteWriteResponse {
-    pub id: String,
-    pub path: PathBuf,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, JsonSchema, TS)]
@@ -3311,7 +3233,15 @@ pub struct SkillsListEntry {
 pub struct PluginMarketplaceEntry {
     pub name: String,
     pub path: AbsolutePathBuf,
+    pub interface: Option<MarketplaceInterface>,
     pub plugins: Vec<PluginSummary>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct MarketplaceInterface {
+    pub display_name: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, JsonSchema, TS)]
@@ -3430,6 +3360,9 @@ pub struct SkillsConfigWriteResponse {
 pub struct PluginInstallParams {
     pub marketplace_path: AbsolutePathBuf,
     pub plugin_name: String,
+    /// When true, apply the remote plugin change before the local install flow.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub force_remote_sync: bool,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
@@ -3445,6 +3378,9 @@ pub struct PluginInstallResponse {
 #[ts(export_to = "v2/")]
 pub struct PluginUninstallParams {
     pub plugin_id: String,
+    /// When true, apply the remote plugin change before the local uninstall flow.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub force_remote_sync: bool,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
@@ -3655,6 +3591,44 @@ pub struct Turn {
     pub error: Option<TurnError>,
 }
 
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct MemoryCitation {
+    pub entries: Vec<MemoryCitationEntry>,
+    pub thread_ids: Vec<String>,
+}
+
+impl From<CoreMemoryCitation> for MemoryCitation {
+    fn from(value: CoreMemoryCitation) -> Self {
+        Self {
+            entries: value.entries.into_iter().map(Into::into).collect(),
+            thread_ids: value.rollout_ids,
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct MemoryCitationEntry {
+    pub path: String,
+    pub line_start: u32,
+    pub line_end: u32,
+    pub note: String,
+}
+
+impl From<CoreMemoryCitationEntry> for MemoryCitationEntry {
+    fn from(value: CoreMemoryCitationEntry) -> Self {
+        Self {
+            path: value.path,
+            line_start: value.line_start,
+            line_end: value.line_end,
+            note: value.note,
+        }
+    }
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS, Error)]
 #[serde(rename_all = "camelCase")]
 #[ts(export_to = "v2/")]
@@ -3687,6 +3661,7 @@ pub struct ThreadRealtimeAudioChunk {
     pub sample_rate: u32,
     pub num_channels: u16,
     pub samples_per_channel: Option<u32>,
+    pub item_id: Option<String>,
 }
 
 impl From<CoreRealtimeAudioFrame> for ThreadRealtimeAudioChunk {
@@ -3696,12 +3671,14 @@ impl From<CoreRealtimeAudioFrame> for ThreadRealtimeAudioChunk {
             sample_rate,
             num_channels,
             samples_per_channel,
+            item_id,
         } = value;
         Self {
             data,
             sample_rate,
             num_channels,
             samples_per_channel,
+            item_id,
         }
     }
 }
@@ -3713,12 +3690,14 @@ impl From<ThreadRealtimeAudioChunk> for CoreRealtimeAudioFrame {
             sample_rate,
             num_channels,
             samples_per_channel,
+            item_id,
         } = value;
         Self {
             data,
             sample_rate,
             num_channels,
             samples_per_channel,
+            item_id,
         }
     }
 }
@@ -3791,6 +3770,7 @@ pub struct ThreadRealtimeStopResponse {}
 pub struct ThreadRealtimeStartedNotification {
     pub thread_id: String,
     pub session_id: Option<String>,
+    pub version: RealtimeConversationVersion,
 }
 
 /// EXPERIMENTAL - raw non-audio thread realtime item emitted by the backend.
@@ -4149,6 +4129,8 @@ pub enum ThreadItem {
         text: String,
         #[serde(default)]
         phase: Option<MessagePhase>,
+        #[serde(default)]
+        memory_citation: Option<MemoryCitation>,
     },
     #[serde(rename_all = "camelCase")]
     #[ts(rename_all = "camelCase")]
@@ -4174,6 +4156,8 @@ pub enum ThreadItem {
         cwd: PathBuf,
         /// Identifier for the underlying PTY process (when available).
         process_id: Option<String>,
+        #[serde(default)]
+        source: CommandExecutionSource,
         status: CommandExecutionStatus,
         /// A best-effort parsing of the command to understand the action(s) it will perform.
         /// This returns a list of CommandAction objects because a single shell command may
@@ -4400,6 +4384,7 @@ impl From<CoreTurnItem> for ThreadItem {
                     id: agent.id,
                     text,
                     phase: agent.phase,
+                    memory_citation: agent.memory_citation.map(Into::into),
                 }
             }
             CoreTurnItem::Plan(plan) => ThreadItem::Plan {
@@ -4452,6 +4437,17 @@ impl From<&CoreExecCommandStatus> for CommandExecutionStatus {
             CoreExecCommandStatus::Failed => CommandExecutionStatus::Failed,
             CoreExecCommandStatus::Declined => CommandExecutionStatus::Declined,
         }
+    }
+}
+
+v2_enum_from_core! {
+    #[derive(Default)]
+    pub enum CommandExecutionSource from CoreExecCommandSource {
+        #[default]
+        Agent,
+        UserShell,
+        UnifiedExecStartup,
+        UnifiedExecInteraction,
     }
 }
 
@@ -4544,6 +4540,7 @@ pub enum CollabAgentToolCallStatus {
 pub enum CollabAgentStatus {
     PendingInit,
     Running,
+    Interrupted,
     Completed,
     Errored,
     Shutdown,
@@ -4567,6 +4564,10 @@ impl From<CoreAgentStatus> for CollabAgentState {
             },
             CoreAgentStatus::Running => Self {
                 status: CollabAgentStatus::Running,
+                message: None,
+            },
+            CoreAgentStatus::Interrupted => Self {
+                status: CollabAgentStatus::Interrupted,
                 message: None,
             },
             CoreAgentStatus::Completed(message) => Self {
@@ -4896,6 +4897,7 @@ pub struct TerminalInteractionNotification {
     pub stdin: String,
 }
 
+#[serde_as]
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export_to = "v2/")]
@@ -5609,7 +5611,7 @@ pub struct PermissionsRequestApprovalParams {
     pub turn_id: String,
     pub item_id: String,
     pub reason: Option<String>,
-    pub permissions: AdditionalPermissionProfile,
+    pub permissions: RequestPermissionProfile,
 }
 
 v2_enum_from_core!(
@@ -5889,6 +5891,17 @@ mod tests {
     }
 
     #[test]
+    fn collab_agent_state_maps_interrupted_status() {
+        assert_eq!(
+            CollabAgentState::from(CoreAgentStatus::Interrupted),
+            CollabAgentState {
+                status: CollabAgentStatus::Interrupted,
+                message: None,
+            }
+        );
+    }
+
+    #[test]
     fn command_execution_request_approval_rejects_relative_additional_permission_paths() {
         let err = serde_json::from_value::<CommandExecutionRequestApprovalParams>(json!({
             "threadId": "thr_123",
@@ -6036,192 +6049,164 @@ mod tests {
     }
 
     #[test]
-    fn permissions_request_approval_response_accepts_partial_macos_grants() {
-        let cases = vec![
-            (json!({}), Some(GrantedMacOsPermissions::default()), None),
-            (
-                json!({
-                    "preferences": "read_only",
-                }),
-                Some(GrantedMacOsPermissions {
-                    preferences: Some(CoreMacOsPreferencesPermission::ReadOnly),
-                    ..Default::default()
-                }),
-                Some(CoreMacOsSeatbeltProfileExtensions {
-                    macos_preferences: CoreMacOsPreferencesPermission::ReadOnly,
-                    macos_automation: CoreMacOsAutomationPermission::None,
-                    macos_launch_services: false,
-                    macos_accessibility: false,
-                    macos_calendar: false,
-                    macos_reminders: false,
-                    macos_contacts: CoreMacOsContactsPermission::None,
-                }),
-            ),
-            (
-                json!({
-                    "automations": {
-                        "bundle_ids": ["com.apple.Notes"],
-                    },
-                }),
-                Some(GrantedMacOsPermissions {
-                    automations: Some(CoreMacOsAutomationPermission::BundleIds(vec![
-                        "com.apple.Notes".to_string(),
-                    ])),
-                    ..Default::default()
-                }),
-                Some(CoreMacOsSeatbeltProfileExtensions {
-                    macos_preferences: CoreMacOsPreferencesPermission::None,
-                    macos_automation: CoreMacOsAutomationPermission::BundleIds(vec![
-                        "com.apple.Notes".to_string(),
-                    ]),
-                    macos_launch_services: false,
-                    macos_accessibility: false,
-                    macos_calendar: false,
-                    macos_reminders: false,
-                    macos_contacts: CoreMacOsContactsPermission::None,
-                }),
-            ),
-            (
-                json!({
-                    "launchServices": true,
-                }),
-                Some(GrantedMacOsPermissions {
-                    launch_services: Some(true),
-                    ..Default::default()
-                }),
-                Some(CoreMacOsSeatbeltProfileExtensions {
-                    macos_preferences: CoreMacOsPreferencesPermission::None,
-                    macos_automation: CoreMacOsAutomationPermission::None,
-                    macos_launch_services: true,
-                    macos_accessibility: false,
-                    macos_calendar: false,
-                    macos_reminders: false,
-                    macos_contacts: CoreMacOsContactsPermission::None,
-                }),
-            ),
-            (
-                json!({
-                    "accessibility": true,
-                }),
-                Some(GrantedMacOsPermissions {
-                    accessibility: Some(true),
-                    ..Default::default()
-                }),
-                Some(CoreMacOsSeatbeltProfileExtensions {
-                    macos_preferences: CoreMacOsPreferencesPermission::None,
-                    macos_automation: CoreMacOsAutomationPermission::None,
-                    macos_launch_services: false,
-                    macos_accessibility: true,
-                    macos_calendar: false,
-                    macos_reminders: false,
-                    macos_contacts: CoreMacOsContactsPermission::None,
-                }),
-            ),
-            (
-                json!({
-                    "calendar": true,
-                }),
-                Some(GrantedMacOsPermissions {
-                    calendar: Some(true),
-                    ..Default::default()
-                }),
-                Some(CoreMacOsSeatbeltProfileExtensions {
-                    macos_preferences: CoreMacOsPreferencesPermission::None,
-                    macos_automation: CoreMacOsAutomationPermission::None,
-                    macos_launch_services: false,
-                    macos_accessibility: false,
-                    macos_calendar: true,
-                    macos_reminders: false,
-                    macos_contacts: CoreMacOsContactsPermission::None,
-                }),
-            ),
-            (
-                json!({
-                    "reminders": true,
-                }),
-                Some(GrantedMacOsPermissions {
-                    reminders: Some(true),
-                    ..Default::default()
-                }),
-                Some(CoreMacOsSeatbeltProfileExtensions {
-                    macos_preferences: CoreMacOsPreferencesPermission::None,
-                    macos_automation: CoreMacOsAutomationPermission::None,
-                    macos_launch_services: false,
-                    macos_accessibility: false,
-                    macos_calendar: false,
-                    macos_reminders: true,
-                    macos_contacts: CoreMacOsContactsPermission::None,
-                }),
-            ),
-            (
-                json!({
-                    "contacts": "read_only",
-                }),
-                Some(GrantedMacOsPermissions {
-                    contacts: Some(CoreMacOsContactsPermission::ReadOnly),
-                    ..Default::default()
-                }),
-                Some(CoreMacOsSeatbeltProfileExtensions {
-                    macos_preferences: CoreMacOsPreferencesPermission::None,
-                    macos_automation: CoreMacOsAutomationPermission::None,
-                    macos_launch_services: false,
-                    macos_accessibility: false,
-                    macos_calendar: false,
-                    macos_reminders: false,
-                    macos_contacts: CoreMacOsContactsPermission::ReadOnly,
-                }),
-            ),
-        ];
-
-        for (macos_json, expected_granted_macos, expected_core_macos) in cases {
-            let response = serde_json::from_value::<PermissionsRequestApprovalResponse>(json!({
-                "permissions": {
-                    "macos": macos_json,
+    fn permissions_request_approval_uses_request_permission_profile() {
+        let read_only_path = if cfg!(windows) {
+            r"C:\tmp\read-only"
+        } else {
+            "/tmp/read-only"
+        };
+        let read_write_path = if cfg!(windows) {
+            r"C:\tmp\read-write"
+        } else {
+            "/tmp/read-write"
+        };
+        let params = serde_json::from_value::<PermissionsRequestApprovalParams>(json!({
+            "threadId": "thr_123",
+            "turnId": "turn_123",
+            "itemId": "call_123",
+            "reason": "Select a workspace root",
+            "permissions": {
+                "network": {
+                    "enabled": true,
                 },
-            }))
-            .expect("partial macos permissions response should deserialize");
+                "fileSystem": {
+                    "read": [read_only_path],
+                    "write": [read_write_path],
+                },
+            },
+        }))
+        .expect("permissions request should deserialize");
 
-            assert_eq!(
-                response.permissions,
-                GrantedPermissionProfile {
-                    macos: expected_granted_macos,
-                    ..Default::default()
-                }
-            );
+        assert_eq!(
+            params.permissions,
+            RequestPermissionProfile {
+                network: Some(AdditionalNetworkPermissions {
+                    enabled: Some(true),
+                }),
+                file_system: Some(AdditionalFileSystemPermissions {
+                    read: Some(vec![
+                        AbsolutePathBuf::try_from(PathBuf::from(read_only_path))
+                            .expect("path must be absolute"),
+                    ]),
+                    write: Some(vec![
+                        AbsolutePathBuf::try_from(PathBuf::from(read_write_path))
+                            .expect("path must be absolute"),
+                    ]),
+                }),
+            }
+        );
 
-            assert_eq!(
-                CorePermissionProfile::from(response.permissions),
-                CorePermissionProfile {
-                    macos: expected_core_macos,
-                    ..Default::default()
-                }
-            );
-        }
+        assert_eq!(
+            CoreRequestPermissionProfile::from(params.permissions),
+            CoreRequestPermissionProfile {
+                network: Some(CoreNetworkPermissions {
+                    enabled: Some(true),
+                }),
+                file_system: Some(CoreFileSystemPermissions {
+                    read: Some(vec![
+                        AbsolutePathBuf::try_from(PathBuf::from(read_only_path))
+                            .expect("path must be absolute"),
+                    ]),
+                    write: Some(vec![
+                        AbsolutePathBuf::try_from(PathBuf::from(read_write_path))
+                            .expect("path must be absolute"),
+                    ]),
+                }),
+            }
+        );
     }
 
     #[test]
-    fn permissions_request_approval_response_omits_ungranted_macos_keys_when_serialized() {
-        let response = PermissionsRequestApprovalResponse {
-            permissions: GrantedPermissionProfile {
-                macos: Some(GrantedMacOsPermissions {
-                    accessibility: Some(true),
-                    ..Default::default()
-                }),
-                ..Default::default()
+    fn permissions_request_approval_rejects_macos_permissions() {
+        let err = serde_json::from_value::<PermissionsRequestApprovalParams>(json!({
+            "threadId": "thr_123",
+            "turnId": "turn_123",
+            "itemId": "call_123",
+            "reason": "Select a workspace root",
+            "permissions": {
+                "network": null,
+                "fileSystem": null,
+                "macos": {
+                    "preferences": "read_only",
+                    "automations": "none",
+                    "launchServices": false,
+                    "accessibility": false,
+                    "calendar": false,
+                    "reminders": false,
+                    "contacts": "none",
+                },
             },
-            scope: PermissionGrantScope::Turn,
+        }))
+        .expect_err("permissions request should reject macos permissions");
+
+        assert!(
+            err.to_string().contains("unknown field `macos`"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn permissions_request_approval_response_uses_granted_permission_profile_without_macos() {
+        let read_only_path = if cfg!(windows) {
+            r"C:\tmp\read-only"
+        } else {
+            "/tmp/read-only"
         };
+        let read_write_path = if cfg!(windows) {
+            r"C:\tmp\read-write"
+        } else {
+            "/tmp/read-write"
+        };
+        let response = serde_json::from_value::<PermissionsRequestApprovalResponse>(json!({
+            "permissions": {
+                "network": {
+                    "enabled": true,
+                },
+                "fileSystem": {
+                    "read": [read_only_path],
+                    "write": [read_write_path],
+                },
+            },
+        }))
+        .expect("permissions response should deserialize");
 
         assert_eq!(
-            serde_json::to_value(response).expect("response should serialize"),
-            json!({
-                "permissions": {
-                    "macos": {
-                        "accessibility": true,
-                    },
-                },
-                "scope": "turn",
-            })
+            response.permissions,
+            GrantedPermissionProfile {
+                network: Some(AdditionalNetworkPermissions {
+                    enabled: Some(true),
+                }),
+                file_system: Some(AdditionalFileSystemPermissions {
+                    read: Some(vec![
+                        AbsolutePathBuf::try_from(PathBuf::from(read_only_path))
+                            .expect("path must be absolute"),
+                    ]),
+                    write: Some(vec![
+                        AbsolutePathBuf::try_from(PathBuf::from(read_write_path))
+                            .expect("path must be absolute"),
+                    ]),
+                }),
+            }
+        );
+
+        assert_eq!(
+            CorePermissionProfile::from(response.permissions),
+            CorePermissionProfile {
+                network: Some(CoreNetworkPermissions {
+                    enabled: Some(true),
+                }),
+                file_system: Some(CoreFileSystemPermissions {
+                    read: Some(vec![
+                        AbsolutePathBuf::try_from(PathBuf::from(read_only_path))
+                            .expect("path must be absolute"),
+                    ]),
+                    write: Some(vec![
+                        AbsolutePathBuf::try_from(PathBuf::from(read_write_path))
+                            .expect("path must be absolute"),
+                    ]),
+                }),
+                macos: None,
+            }
         );
     }
 
@@ -6361,6 +6346,40 @@ mod tests {
         let decoded =
             serde_json::from_value::<FsCopyParams>(value).expect("deserialize fs/copy params");
         assert_eq!(decoded, params);
+    }
+
+    #[test]
+    fn thread_shell_command_params_round_trip() {
+        let params = ThreadShellCommandParams {
+            thread_id: "thr_123".to_string(),
+            command: "printf 'hello world\\n'".to_string(),
+        };
+
+        let value = serde_json::to_value(&params).expect("serialize thread/shellCommand params");
+        assert_eq!(
+            value,
+            json!({
+                "threadId": "thr_123",
+                "command": "printf 'hello world\\n'",
+            })
+        );
+
+        let decoded = serde_json::from_value::<ThreadShellCommandParams>(value)
+            .expect("deserialize thread/shellCommand params");
+        assert_eq!(decoded, params);
+    }
+
+    #[test]
+    fn thread_shell_command_response_round_trip() {
+        let response = ThreadShellCommandResponse {};
+
+        let value =
+            serde_json::to_value(&response).expect("serialize thread/shellCommand response");
+        assert_eq!(value, json!({}));
+
+        let decoded = serde_json::from_value::<ThreadShellCommandResponse>(value)
+            .expect("deserialize thread/shellCommand response");
+        assert_eq!(decoded, response);
     }
 
     #[test]
@@ -6653,6 +6672,32 @@ mod tests {
         );
 
         let decoded = serde_json::from_value::<CommandExecOutputDeltaNotification>(value)
+            .expect("deserialize round-trip");
+        assert_eq!(decoded, notification);
+    }
+
+    #[test]
+    fn command_execution_output_delta_round_trips() {
+        let notification = CommandExecutionOutputDeltaNotification {
+            thread_id: "thread-1".to_string(),
+            turn_id: "turn-1".to_string(),
+            item_id: "item-1".to_string(),
+            delta: "\u{fffd}a\n".to_string(),
+        };
+
+        let value = serde_json::to_value(&notification)
+            .expect("serialize item/commandExecution/outputDelta notification");
+        assert_eq!(
+            value,
+            json!({
+                "threadId": "thread-1",
+                "turnId": "turn-1",
+                "itemId": "item-1",
+                "delta": "\u{fffd}a\n",
+            })
+        );
+
+        let decoded = serde_json::from_value::<CommandExecutionOutputDeltaNotification>(value)
             .expect("deserialize round-trip");
         assert_eq!(decoded, notification);
     }
@@ -7488,6 +7533,7 @@ mod tests {
                 },
             ],
             phase: None,
+            memory_citation: None,
         });
 
         assert_eq!(
@@ -7496,6 +7542,7 @@ mod tests {
                 id: "agent-1".to_string(),
                 text: "Hello world".to_string(),
                 phase: None,
+                memory_citation: None,
             }
         );
 
@@ -7505,6 +7552,15 @@ mod tests {
                 text: "final".to_string(),
             }],
             phase: Some(MessagePhase::FinalAnswer),
+            memory_citation: Some(CoreMemoryCitation {
+                entries: vec![CoreMemoryCitationEntry {
+                    path: "MEMORY.md".to_string(),
+                    line_start: 1,
+                    line_end: 2,
+                    note: "summary".to_string(),
+                }],
+                rollout_ids: vec!["rollout-1".to_string()],
+            }),
         });
 
         assert_eq!(
@@ -7513,6 +7569,15 @@ mod tests {
                 id: "agent-2".to_string(),
                 text: "final".to_string(),
                 phase: Some(MessagePhase::FinalAnswer),
+                memory_citation: Some(MemoryCitation {
+                    entries: vec![MemoryCitationEntry {
+                        path: "MEMORY.md".to_string(),
+                        line_start: 1,
+                        line_end: 2,
+                        note: "summary".to_string(),
+                    }],
+                    thread_ids: vec!["rollout-1".to_string()],
+                }),
             }
         );
 
@@ -7614,6 +7679,69 @@ mod tests {
             .unwrap(),
             json!({
                 "cwds": null,
+                "forceRemoteSync": true,
+            }),
+        );
+    }
+
+    #[test]
+    fn plugin_install_params_serialization_uses_force_remote_sync() {
+        let marketplace_path = if cfg!(windows) {
+            r"C:\plugins\marketplace.json"
+        } else {
+            "/plugins/marketplace.json"
+        };
+        let marketplace_path = AbsolutePathBuf::try_from(PathBuf::from(marketplace_path)).unwrap();
+        let marketplace_path_json = marketplace_path.as_path().display().to_string();
+        assert_eq!(
+            serde_json::to_value(PluginInstallParams {
+                marketplace_path: marketplace_path.clone(),
+                plugin_name: "gmail".to_string(),
+                force_remote_sync: false,
+            })
+            .unwrap(),
+            json!({
+                "marketplacePath": marketplace_path_json,
+                "pluginName": "gmail",
+            }),
+        );
+
+        assert_eq!(
+            serde_json::to_value(PluginInstallParams {
+                marketplace_path,
+                plugin_name: "gmail".to_string(),
+                force_remote_sync: true,
+            })
+            .unwrap(),
+            json!({
+                "marketplacePath": marketplace_path_json,
+                "pluginName": "gmail",
+                "forceRemoteSync": true,
+            }),
+        );
+    }
+
+    #[test]
+    fn plugin_uninstall_params_serialization_uses_force_remote_sync() {
+        assert_eq!(
+            serde_json::to_value(PluginUninstallParams {
+                plugin_id: "gmail@openai-curated".to_string(),
+                force_remote_sync: false,
+            })
+            .unwrap(),
+            json!({
+                "pluginId": "gmail@openai-curated",
+            }),
+        );
+
+        assert_eq!(
+            serde_json::to_value(PluginUninstallParams {
+                plugin_id: "gmail@openai-curated".to_string(),
+                force_remote_sync: true,
+            })
+            .unwrap(),
+            json!({
+                "pluginId": "gmail@openai-curated",
                 "forceRemoteSync": true,
             }),
         );

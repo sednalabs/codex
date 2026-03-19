@@ -215,9 +215,12 @@ impl ThreadHistoryBuilder {
         }
 
         let id = self.next_item_id();
-        self.ensure_turn()
-            .items
-            .push(ThreadItem::AgentMessage { id, text, phase });
+        self.ensure_turn().items.push(ThreadItem::AgentMessage {
+            id,
+            text,
+            phase,
+            memory_citation: None,
+        });
     }
 
     fn handle_agent_reasoning(&mut self, payload: &AgentReasoningEvent) {
@@ -332,6 +335,7 @@ impl ThreadHistoryBuilder {
             command,
             cwd: payload.cwd.clone(),
             process_id: payload.process_id.clone(),
+            source: payload.source.into(),
             status: CommandExecutionStatus::InProgress,
             command_actions,
             aggregated_output: None,
@@ -362,6 +366,7 @@ impl ThreadHistoryBuilder {
             command,
             cwd: payload.cwd.clone(),
             process_id: payload.process_id.clone(),
+            source: payload.source.into(),
             status,
             command_actions,
             aggregated_output,
@@ -1196,6 +1201,7 @@ mod tests {
             EventMsg::AgentMessage(AgentMessageEvent {
                 message: "Hi there".into(),
                 phase: None,
+                memory_citation: None,
             }),
             EventMsg::AgentReasoning(AgentReasoningEvent {
                 text: "thinking".into(),
@@ -1212,6 +1218,7 @@ mod tests {
             EventMsg::AgentMessage(AgentMessageEvent {
                 message: "Reply two".into(),
                 phase: None,
+                memory_citation: None,
             }),
         ];
 
@@ -1247,6 +1254,7 @@ mod tests {
                 id: "item-2".into(),
                 text: "Hi there".into(),
                 phase: None,
+                memory_citation: None,
             }
         );
         assert_eq!(
@@ -1278,6 +1286,7 @@ mod tests {
                 id: "item-5".into(),
                 text: "Reply two".into(),
                 phase: None,
+                memory_citation: None,
             }
         );
     }
@@ -1337,6 +1346,7 @@ mod tests {
         let events = vec![EventMsg::AgentMessage(AgentMessageEvent {
             message: "Final reply".into(),
             phase: Some(CoreMessagePhase::FinalAnswer),
+            memory_citation: None,
         })];
 
         let items = events
@@ -1351,6 +1361,7 @@ mod tests {
                 id: "item-1".into(),
                 text: "Final reply".into(),
                 phase: Some(MessagePhase::FinalAnswer),
+                memory_citation: None,
             }
         );
     }
@@ -1437,6 +1448,7 @@ mod tests {
             EventMsg::AgentMessage(AgentMessageEvent {
                 message: "interlude".into(),
                 phase: None,
+                memory_citation: None,
             }),
             EventMsg::AgentReasoning(AgentReasoningEvent {
                 text: "second summary".into(),
@@ -1482,6 +1494,7 @@ mod tests {
             EventMsg::AgentMessage(AgentMessageEvent {
                 message: "Working...".into(),
                 phase: None,
+                memory_citation: None,
             }),
             EventMsg::TurnAborted(TurnAbortedEvent {
                 turn_id: Some("turn-1".into()),
@@ -1496,6 +1509,7 @@ mod tests {
             EventMsg::AgentMessage(AgentMessageEvent {
                 message: "Second attempt complete.".into(),
                 phase: None,
+                memory_citation: None,
             }),
         ];
 
@@ -1525,6 +1539,7 @@ mod tests {
                 id: "item-2".into(),
                 text: "Working...".into(),
                 phase: None,
+                memory_citation: None,
             }
         );
 
@@ -1547,6 +1562,7 @@ mod tests {
                 id: "item-4".into(),
                 text: "Second attempt complete.".into(),
                 phase: None,
+                memory_citation: None,
             }
         );
     }
@@ -1563,6 +1579,7 @@ mod tests {
             EventMsg::AgentMessage(AgentMessageEvent {
                 message: "A1".into(),
                 phase: None,
+                memory_citation: None,
             }),
             EventMsg::UserMessage(UserMessageEvent {
                 message: "Second".into(),
@@ -1573,6 +1590,7 @@ mod tests {
             EventMsg::AgentMessage(AgentMessageEvent {
                 message: "A2".into(),
                 phase: None,
+                memory_citation: None,
             }),
             EventMsg::ThreadRolledBack(ThreadRolledBackEvent { num_turns: 1 }),
             EventMsg::UserMessage(UserMessageEvent {
@@ -1584,6 +1602,7 @@ mod tests {
             EventMsg::AgentMessage(AgentMessageEvent {
                 message: "A3".into(),
                 phase: None,
+                memory_citation: None,
             }),
         ];
 
@@ -1612,6 +1631,7 @@ mod tests {
                     id: "item-2".into(),
                     text: "A1".into(),
                     phase: None,
+                    memory_citation: None,
                 },
             ]
         );
@@ -1629,6 +1649,7 @@ mod tests {
                     id: "item-4".into(),
                     text: "A3".into(),
                     phase: None,
+                    memory_citation: None,
                 },
             ]
         );
@@ -1646,6 +1667,7 @@ mod tests {
             EventMsg::AgentMessage(AgentMessageEvent {
                 message: "A1".into(),
                 phase: None,
+                memory_citation: None,
             }),
             EventMsg::UserMessage(UserMessageEvent {
                 message: "Two".into(),
@@ -1656,6 +1678,7 @@ mod tests {
             EventMsg::AgentMessage(AgentMessageEvent {
                 message: "A2".into(),
                 phase: None,
+                memory_citation: None,
             }),
             EventMsg::ThreadRolledBack(ThreadRolledBackEvent { num_turns: 99 }),
         ];
@@ -1801,6 +1824,7 @@ mod tests {
                 command: "echo 'hello world'".into(),
                 cwd: PathBuf::from("/tmp"),
                 process_id: Some("pid-1".into()),
+                source: crate::protocol::v2::CommandExecutionSource::Agent,
                 status: CommandExecutionStatus::Completed,
                 command_actions: vec![CommandAction::Unknown {
                     command: "echo hello world".into(),
@@ -1949,6 +1973,7 @@ mod tests {
                 command: "ls".into(),
                 cwd: PathBuf::from("/tmp"),
                 process_id: Some("pid-2".into()),
+                source: crate::protocol::v2::CommandExecutionSource::Agent,
                 status: CommandExecutionStatus::Declined,
                 command_actions: vec![CommandAction::Unknown {
                     command: "ls".into(),
@@ -2045,6 +2070,7 @@ mod tests {
                 command: "echo done".into(),
                 cwd: PathBuf::from("/tmp"),
                 process_id: Some("pid-42".into()),
+                source: crate::protocol::v2::CommandExecutionSource::Agent,
                 status: CommandExecutionStatus::Completed,
                 command_actions: vec![CommandAction::Unknown {
                     command: "echo done".into(),
@@ -2299,6 +2325,7 @@ mod tests {
             EventMsg::AgentMessage(AgentMessageEvent {
                 message: "still in b".into(),
                 phase: None,
+                memory_citation: None,
             }),
             EventMsg::TurnComplete(TurnCompleteEvent {
                 turn_id: "turn-b".into(),
@@ -2355,6 +2382,7 @@ mod tests {
             EventMsg::AgentMessage(AgentMessageEvent {
                 message: "still in b".into(),
                 phase: None,
+                memory_citation: None,
             }),
         ];
 
@@ -2583,6 +2611,75 @@ mod tests {
     }
 
     #[test]
+    fn reconstructs_interrupted_send_input_as_completed_collab_call() {
+        // `send_input(interrupt=true)` first stops the child's active turn, then redirects it with
+        // new input. The transient interrupted status should remain visible in agent state, but the
+        // collab tool call itself is still a successful redirect rather than a failed operation.
+        let sender = ThreadId::try_from("00000000-0000-0000-0000-000000000001")
+            .expect("valid sender thread id");
+        let receiver = ThreadId::try_from("00000000-0000-0000-0000-000000000002")
+            .expect("valid receiver thread id");
+        let events = vec![
+            EventMsg::UserMessage(UserMessageEvent {
+                message: "redirect".into(),
+                images: None,
+                text_elements: Vec::new(),
+                local_images: Vec::new(),
+            }),
+            EventMsg::CollabAgentInteractionBegin(
+                codex_protocol::protocol::CollabAgentInteractionBeginEvent {
+                    call_id: "send-1".into(),
+                    sender_thread_id: sender,
+                    receiver_thread_id: receiver,
+                    prompt: "new task".into(),
+                },
+            ),
+            EventMsg::CollabAgentInteractionEnd(
+                codex_protocol::protocol::CollabAgentInteractionEndEvent {
+                    call_id: "send-1".into(),
+                    sender_thread_id: sender,
+                    receiver_thread_id: receiver,
+                    receiver_agent_nickname: None,
+                    receiver_agent_role: None,
+                    prompt: "new task".into(),
+                    status: AgentStatus::Interrupted,
+                },
+            ),
+        ];
+
+        let items = events
+            .into_iter()
+            .map(RolloutItem::EventMsg)
+            .collect::<Vec<_>>();
+        let turns = build_turns_from_rollout_items(&items);
+        assert_eq!(turns.len(), 1);
+        assert_eq!(turns[0].items.len(), 2);
+        assert_eq!(
+            turns[0].items[1],
+            ThreadItem::CollabAgentToolCall {
+                id: "send-1".into(),
+                tool: CollabAgentTool::SendInput,
+                status: CollabAgentToolCallStatus::Completed,
+                sender_thread_id: sender.to_string(),
+                receiver_thread_ids: vec![receiver.to_string()],
+                prompt: Some("new task".into()),
+                model: None,
+                reasoning_effort: None,
+                timed_out: false,
+                agents_states: [(
+                    receiver.to_string(),
+                    CollabAgentState {
+                        status: crate::protocol::v2::CollabAgentStatus::Interrupted,
+                        message: None,
+                    },
+                )]
+                .into_iter()
+                .collect(),
+            }
+        );
+    }
+
+    #[test]
     fn rollback_failed_error_does_not_mark_turn_failed() {
         let events = vec![
             EventMsg::UserMessage(UserMessageEvent {
@@ -2594,6 +2691,7 @@ mod tests {
             EventMsg::AgentMessage(AgentMessageEvent {
                 message: "done".into(),
                 phase: None,
+                memory_citation: None,
             }),
             EventMsg::Error(ErrorEvent {
                 message: "rollback failed".into(),

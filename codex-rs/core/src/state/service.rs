@@ -20,6 +20,7 @@ use crate::tools::network_approval::NetworkApprovalService;
 use crate::tools::runtimes::ExecveSessionApproval;
 use crate::tools::sandboxing::ApprovalStore;
 use crate::unified_exec::UnifiedExecProcessManager;
+use codex_environment::Environment;
 use codex_hooks::Hooks;
 use codex_otel::SessionTelemetry;
 use codex_protocol::protocol::Event;
@@ -45,7 +46,7 @@ pub(crate) struct SessionServices {
     pub(crate) user_shell: Arc<crate::shell::Shell>,
     pub(crate) shell_snapshot_tx: watch::Sender<Option<Arc<crate::shell_snapshot::ShellSnapshot>>>,
     pub(crate) show_raw_agent_reasoning: bool,
-    pub(crate) exec_policy: ExecPolicyManager,
+    pub(crate) exec_policy: Arc<ExecPolicyManager>,
     pub(crate) auth_manager: Arc<AuthManager>,
     pub(crate) models_manager: Arc<ModelsManager>,
     pub(crate) session_telemetry: SessionTelemetry,
@@ -64,6 +65,7 @@ pub(crate) struct SessionServices {
     pub(crate) model_client: ModelClient,
     pub(crate) code_mode_service: CodeModeService,
     pub(crate) usage_logger: Option<Mutex<UsageLogger>>,
+    pub(crate) environment: Arc<Environment>,
 }
 
 impl SessionServices {

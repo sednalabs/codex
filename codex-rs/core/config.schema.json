@@ -488,6 +488,9 @@
             "tool_suggest": {
               "type": "boolean"
             },
+            "tui_app_server": {
+              "type": "boolean"
+            },
             "undo": {
               "type": "boolean"
             },
@@ -873,6 +876,12 @@
           "default": false,
           "description": "Whether this provider supports the Responses API WebSocket transport.",
           "type": "boolean"
+        },
+        "websocket_connect_timeout_ms": {
+          "description": "Maximum time (in milliseconds) to wait for a websocket connection attempt before treating it as failed.",
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
         },
         "wire_api": {
           "allOf": [
@@ -1365,6 +1374,13 @@
       },
       "type": "object"
     },
+    "RealtimeConversationVersion": {
+      "enum": [
+        "v1",
+        "v2"
+      ],
+      "type": "string"
+    },
     "RealtimeToml": {
       "additionalProperties": false,
       "properties": {
@@ -1372,7 +1388,7 @@
           "$ref": "#/definitions/RealtimeWsMode"
         },
         "version": {
-          "$ref": "#/definitions/RealtimeWsVersion"
+          "$ref": "#/definitions/RealtimeConversationVersion"
         }
       },
       "type": "object"
@@ -1381,13 +1397,6 @@
       "enum": [
         "conversational",
         "transcription"
-      ],
-      "type": "string"
-    },
-    "RealtimeWsVersion": {
-      "enum": [
-        "v1",
-        "v2"
       ],
       "type": "string"
     },
@@ -1554,6 +1563,42 @@
         }
       },
       "type": "object"
+    },
+    "ToolSuggestConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "discoverables": {
+          "default": [],
+          "items": {
+            "$ref": "#/definitions/ToolSuggestDiscoverable"
+          },
+          "type": "array"
+        }
+      },
+      "type": "object"
+    },
+    "ToolSuggestDiscoverable": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "type": {
+          "$ref": "#/definitions/ToolSuggestDiscoverableType"
+        }
+      },
+      "required": [
+        "id",
+        "type"
+      ],
+      "type": "object"
+    },
+    "ToolSuggestDiscoverableType": {
+      "enum": [
+        "connector",
+        "plugin"
+      ],
+      "type": "string"
     },
     "ToolsToml": {
       "additionalProperties": false,
@@ -2073,6 +2118,9 @@
         "tool_suggest": {
           "type": "boolean"
         },
+        "tui_app_server": {
+          "type": "boolean"
+        },
         "undo": {
           "type": "boolean"
         },
@@ -2454,6 +2502,14 @@
       "format": "uint",
       "minimum": 0.0,
       "type": "integer"
+    },
+    "tool_suggest": {
+      "allOf": [
+        {
+          "$ref": "#/definitions/ToolSuggestConfig"
+        }
+      ],
+      "description": "Additional discoverable tools that can be suggested for installation."
     },
     "tools": {
       "allOf": [

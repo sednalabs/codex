@@ -55,6 +55,17 @@ function codeModeWorkerMain() {
     return JSON.parse(JSON.stringify(value));
   }
 
+  class CodeModeExitSignal extends Error {
+    constructor() {
+      super('code mode exit');
+      this.name = 'CodeModeExitSignal';
+    }
+  }
+
+  function isCodeModeExitSignal(error) {
+    return error instanceof CodeModeExitSignal;
+  }
+
   function createToolCaller() {
     let nextId = 0;
     const pending = new Map();
@@ -217,17 +228,51 @@ function codeModeWorkerMain() {
     return String(value);
   }
 
-  function normalizeOutputImageUrl(value) {
-    if (typeof value !== 'string' || !value) {
-      throw new TypeError('image expects a non-empty image URL string');
+  function normalizeOutputImage(value) {
+    let imageUrl;
+    let detail;
+    if (typeof value === 'string') {
+      imageUrl = value;
+    } else if (
+      value &&
+      typeof value === 'object' &&
+      !Array.isArray(value)
+    ) {
+      if (typeof value.image_url === 'string') {
+        imageUrl = value.image_url;
+      }
+      if (typeof value.detail === 'string') {
+        detail = value.detail;
+      } else if (
+        Object.prototype.hasOwnProperty.call(value, 'detail') &&
+        value.detail !== null &&
+        typeof value.detail !== 'undefined'
+      ) {
+        throw new TypeError('image detail must be a string when provided');
+      }
     }
-    if (/^(?:https?:\/\/|data:)/i.test(value)) {
-      return value;
+
+    if (typeof imageUrl !== 'string' || !imageUrl) {
+      throw new TypeError(
+        'image expects a non-empty image URL string or an object with image_url and optional detail'
+      );
     }
-    throw new TypeError('image expects an http(s) or data URL');
+    if (!/^(?:https?:\/\/|data:)/i.test(imageUrl)) {
+      throw new TypeError('image expects an http(s) or data URL');
+    }
+
+    if (typeof detail !== 'undefined' && !/^(?:auto|low|high|original)$/i.test(detail)) {
+      throw new TypeError('image detail must be one of: auto, low, high, original');
+    }
+
+    const normalized = { image_url: imageUrl };
+    if (typeof detail === 'string') {
+      normalized.detail = detail.toLowerCase();
+    }
+    return normalized;
   }
 
-  function createCodeModeHelpers(context, state) {
+  function createCodeModeHelpers(context, state, toolCallId) {
     const load = (key) => {
       if (typeof key !== 'string') {
         throw new TypeError('load key must be a string');
@@ -252,20 +297,37 @@ function codeModeWorkerMain() {
       return item;
     };
     const image = (value) => {
-      const item = {
-        type: 'input_image',
-        image_url: normalizeOutputImageUrl(value),
-      };
+      const item = Object.assign({ type: 'input_image' }, normalizeOutputImage(value));
       ensureContentItems(context).push(item);
       return item;
     };
     const yieldControl = () => {
       parentPort.postMessage({ type: 'yield' });
     };
+    const notify = (value) => {
+      const text = serializeOutputText(value);
+      if (text.trim().length === 0) {
+        throw new TypeError('notify expects non-empty text');
+      }
+      if (typeof toolCallId !== 'string' || toolCallId.length === 0) {
+        throw new TypeError('notify requires a valid tool call id');
+      }
+      parentPort.postMessage({
+        type: 'notify',
+        call_id: toolCallId,
+        text,
+      });
+      return text;
+    };
+    const exit = () => {
+      throw new CodeModeExitSignal();
+    };
 
     return Object.freeze({
+      exit,
       image,
       load,
+      notify,
       output_image: image,
       output_text: text,
       store,
@@ -276,10 +338,22 @@ function codeModeWorkerMain() {
 
   function createCodeModeModule(context, helpers) {
     return new SyntheticModule(
-      ['image', 'load', 'output_text', 'output_image', 'store', 'text', 'yield_control'],
+      [
+        'exit',
+        'image',
+        'load',
+        'notify',
+        'output_text',
+        'output_image',
+        'store',
+        'text',
+        'yield_control',
+      ],
       function initCodeModeModule() {
+        this.setExport('exit', helpers.exit);
         this.setExport('image', helpers.image);
         this.setExport('load', helpers.load);
+        this.setExport('notify', helpers.notify);
         this.setExport('output_text', helpers.output_text);
         this.setExport('output_image', helpers.output_image);
         this.setExport('store', helpers.store);
@@ -293,8 +367,10 @@ function codeModeWorkerMain() {
   function createBridgeRuntime(callTool, enabledTools, helpers) {
     return Object.freeze({
       ALL_TOOLS: createAllToolsMetadata(enabledTools),
+      exit: helpers.exit,
       image: helpers.image,
       load: helpers.load,
+      notify: helpers.notify,
       store: helpers.store,
       text: helpers.text,
       tools: createGlobalToolsNamespace(callTool, enabledTools),
@@ -427,6 +503,7 @@ function codeModeWorkerMain() {
 
   async function main() {
     const start = workerData ?? {};
+    const toolCallId = start.tool_call_id;
     const state = {
       storedValues: cloneJsonValue(start.stored_values ?? {}),
     };
@@ -436,7 +513,7 @@ function codeModeWorkerMain() {
     const context = vm.createContext({
       __codexContentItems: contentItems,
     });
-    const helpers = createCodeModeHelpers(context, state);
+    const helpers = createCodeModeHelpers(context, state, toolCallId);
     Object.defineProperty(context, '__codexRuntime', {
       value: createBridgeRuntime(callTool, enabledTools, helpers),
       configurable: true,
@@ -444,6 +521,7 @@ function codeModeWorkerMain() {
       writable: false,
     });
 
+    parentPort.postMessage({ type: 'started' });
     try {
       await runModule(context, start, callTool, helpers);
       parentPort.postMessage({
@@ -451,6 +529,13 @@ function codeModeWorkerMain() {
         stored_values: state.storedValues,
       });
     } catch (error) {
+      if (isCodeModeExitSignal(error)) {
+        parentPort.postMessage({
+          type: 'result',
+          stored_values: state.storedValues,
+        });
+        return;
+      }
       parentPort.postMessage({
         type: 'result',
         stored_values: state.storedValues,
@@ -546,6 +631,10 @@ function createProtocol() {
         return;
       }
       pending.delete(message.request_id + ':' + message.id);
+      if (typeof message.error_text === 'string') {
+        entry.reject(new Error(message.error_text));
+        return;
+      }
       entry.resolve(message.code_mode_result ?? '');
       return;
     }
@@ -602,6 +691,9 @@ function sessionWorkerSource() {
 }
 
 function startSession(protocol, sessions, start) {
+  if (typeof start.tool_call_id !== 'string' || start.tool_call_id.length === 0) {
+    throw new TypeError('start requires a valid tool_call_id');
+  }
   const maxOutputTokensPerExecCall =
     start.max_output_tokens == null
       ? DEFAULT_MAX_OUTPUT_TOKENS_PER_EXEC_CALL
@@ -611,6 +703,10 @@ function startSession(protocol, sessions, start) {
     content_items: [],
     default_yield_time_ms: normalizeYieldTime(start.default_yield_time_ms),
     id: start.cell_id,
+    initial_yield_time_ms:
+      start.yield_time_ms == null
+        ? normalizeYieldTime(start.default_yield_time_ms)
+        : normalizeYieldTime(start.yield_time_ms),
     initial_yield_timer: null,
     initial_yield_triggered: false,
     max_output_tokens_per_exec_call: maxOutputTokensPerExecCall,
@@ -623,11 +719,6 @@ function startSession(protocol, sessions, start) {
     }),
   };
   sessions.set(session.id, session);
-  const initialYieldTime =
-    start.yield_time_ms == null
-      ? session.default_yield_time_ms
-      : normalizeYieldTime(start.yield_time_ms);
-  scheduleInitialYield(protocol, session, initialYieldTime);
 
   session.worker.on('message', (message) => {
     void handleWorkerMessage(protocol, sessions, session, message).catch((error) => {
@@ -666,8 +757,29 @@ async function handleWorkerMessage(protocol, sessions, session, message) {
     return;
   }
 
+  if (message.type === 'started') {
+    scheduleInitialYield(protocol, session, session.initial_yield_time_ms);
+    return;
+  }
+
   if (message.type === 'yield') {
     void sendYielded(protocol, session);
+    return;
+  }
+
+  if (message.type === 'notify') {
+    if (typeof message.text !== 'string' || message.text.trim().length === 0) {
+      throw new TypeError('notify requires non-empty text');
+    }
+    if (typeof message.call_id !== 'string' || message.call_id.length === 0) {
+      throw new TypeError('notify requires a valid call id');
+    }
+    await protocol.send({
+      type: 'notify',
+      cell_id: session.id,
+      call_id: message.call_id,
+      text: message.text,
+    });
     return;
   }
 

@@ -672,9 +672,18 @@ impl SandboxManager {
                 let exe = codex_linux_sandbox_exe
                     .ok_or(SandboxTransformError::MissingLinuxSandboxExecutable)?;
                 let allow_proxy_network = allow_network_for_proxy(enforce_managed_network);
-                let mut args = if linux_sandbox_supports_split_policy_flags(exe.as_path()) {
+                let supports_split_policy =
+                    linux_sandbox_supports_split_policy_flags(exe.as_path());
+                let use_legacy_landlock = use_legacy_landlock
+                    && !(supports_split_policy
+                        && effective_file_system_policy.needs_direct_runtime_enforcement(
+                            effective_network_policy,
+                            sandbox_policy_cwd,
+                        ));
+                let mut args = if supports_split_policy {
                     create_linux_sandbox_command_args_for_policies(
                         command.clone(),
+                        spec.cwd.as_path(),
                         &effective_policy,
                         &effective_file_system_policy,
                         effective_network_policy,
@@ -740,7 +749,13 @@ pub async fn execute_env(
     stdout_stream: Option<StdoutStream>,
 ) -> crate::error::Result<ExecToolCallOutput> {
     let effective_policy = exec_request.sandbox_policy.clone();
-    execute_exec_request(exec_request, &effective_policy, stdout_stream, None).await
+    execute_exec_request(
+        exec_request,
+        &effective_policy,
+        stdout_stream,
+        /*after_spawn*/ None,
+    )
+    .await
 }
 
 pub async fn execute_exec_request_with_after_spawn(

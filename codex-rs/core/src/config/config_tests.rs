@@ -11,6 +11,7 @@ use crate::config::types::MemoriesToml;
 use crate::config::types::ModelAvailabilityNuxConfig;
 use crate::config::types::NotificationMethod;
 use crate::config::types::Notifications;
+use crate::config::types::ToolSuggestDiscoverableType;
 use crate::config::types::WeeklyLimitPacingStyle;
 use crate::config_loader::RequirementSource;
 use crate::features::Feature;
@@ -31,6 +32,7 @@ use pretty_assertions::assert_eq;
 
 use std::collections::BTreeMap;
 use std::collections::HashMap;
+use std::path::Path;
 use std::time::Duration;
 use tempfile::TempDir;
 
@@ -3075,6 +3077,67 @@ fn loads_compact_prompt_from_file() -> std::io::Result<()> {
 }
 
 #[test]
+fn load_config_uses_requirements_guardian_developer_instructions() -> std::io::Result<()> {
+    let codex_home = TempDir::new()?;
+    let config_layer_stack = ConfigLayerStack::new(
+        Vec::new(),
+        Default::default(),
+        crate::config_loader::ConfigRequirementsToml {
+            guardian_developer_instructions: Some(
+                "  Use the workspace-managed guardian policy.  ".to_string(),
+            ),
+            ..Default::default()
+        },
+    )
+    .map_err(std::io::Error::other)?;
+
+    let config = Config::load_config_with_layer_stack(
+        ConfigToml::default(),
+        ConfigOverrides {
+            cwd: Some(codex_home.path().to_path_buf()),
+            ..Default::default()
+        },
+        codex_home.path().to_path_buf(),
+        config_layer_stack,
+    )?;
+
+    assert_eq!(
+        config.guardian_developer_instructions.as_deref(),
+        Some("Use the workspace-managed guardian policy.")
+    );
+
+    Ok(())
+}
+
+#[test]
+fn load_config_ignores_empty_requirements_guardian_developer_instructions() -> std::io::Result<()> {
+    let codex_home = TempDir::new()?;
+    let config_layer_stack = ConfigLayerStack::new(
+        Vec::new(),
+        Default::default(),
+        crate::config_loader::ConfigRequirementsToml {
+            guardian_developer_instructions: Some("   ".to_string()),
+            ..Default::default()
+        },
+    )
+    .map_err(std::io::Error::other)?;
+
+    let config = Config::load_config_with_layer_stack(
+        ConfigToml::default(),
+        ConfigOverrides {
+            cwd: Some(codex_home.path().to_path_buf()),
+            ..Default::default()
+        },
+        codex_home.path().to_path_buf(),
+        config_layer_stack,
+    )?;
+
+    assert_eq!(config.guardian_developer_instructions, None);
+
+    Ok(())
+}
+
+#[test]
 fn load_config_rejects_missing_agent_role_config_file() -> std::io::Result<()> {
     let codex_home = TempDir::new()?;
     let missing_path = codex_home.path().join("agents").join("researcher.toml");
@@ -4158,6 +4221,7 @@ wire_api = "responses"
 request_max_retries = 4            # retry failed HTTP requests
 stream_max_retries = 10            # retry dropped SSE streams
 stream_idle_timeout_ms = 300000    # 5m idle timeout
+websocket_connect_timeout_ms = 15000
 
 [profiles.o3]
 model = "o3"
@@ -4212,6 +4276,7 @@ model_verbosity = "high"
         request_max_retries: Some(4),
         stream_max_retries: Some(10),
         stream_idle_timeout_ms: Some(300_000),
+        websocket_connect_timeout_ms: Some(15_000),
         requires_openai_auth: false,
         supports_websockets: false,
     };
@@ -4336,6 +4401,7 @@ fn test_precedence_fixture_with_o3_profile() -> std::io::Result<()> {
             experimental_realtime_ws_startup_context: None,
             base_instructions: None,
             developer_instructions: None,
+            guardian_developer_instructions: None,
             compact_prompt: None,
             commit_attribution: None,
             forced_chatgpt_workspace_id: None,
@@ -4361,6 +4427,7 @@ fn test_precedence_fixture_with_o3_profile() -> std::io::Result<()> {
             model_availability_nux: ModelAvailabilityNuxConfig::default(),
             analytics_enabled: Some(true),
             feedback_enabled: true,
+            tool_suggest: ToolSuggestConfig::default(),
             tui_alternate_screen: AltScreenMode::Auto,
             tui_status_line: None,
             tui_weekly_limit_pacing_style: WeeklyLimitPacingStyle::Qualitative,
@@ -4476,6 +4543,7 @@ fn test_precedence_fixture_with_gpt3_profile() -> std::io::Result<()> {
         experimental_realtime_ws_startup_context: None,
         base_instructions: None,
         developer_instructions: None,
+        guardian_developer_instructions: None,
         compact_prompt: None,
         commit_attribution: None,
         forced_chatgpt_workspace_id: None,
@@ -4501,6 +4569,7 @@ fn test_precedence_fixture_with_gpt3_profile() -> std::io::Result<()> {
         model_availability_nux: ModelAvailabilityNuxConfig::default(),
         analytics_enabled: Some(true),
         feedback_enabled: true,
+        tool_suggest: ToolSuggestConfig::default(),
         tui_alternate_screen: AltScreenMode::Auto,
         tui_status_line: None,
         tui_weekly_limit_pacing_style: WeeklyLimitPacingStyle::Qualitative,
@@ -4614,6 +4683,7 @@ fn test_precedence_fixture_with_zdr_profile() -> std::io::Result<()> {
         experimental_realtime_ws_startup_context: None,
         base_instructions: None,
         developer_instructions: None,
+        guardian_developer_instructions: None,
         compact_prompt: None,
         commit_attribution: None,
         forced_chatgpt_workspace_id: None,
@@ -4639,6 +4709,7 @@ fn test_precedence_fixture_with_zdr_profile() -> std::io::Result<()> {
         model_availability_nux: ModelAvailabilityNuxConfig::default(),
         analytics_enabled: Some(false),
         feedback_enabled: true,
+        tool_suggest: ToolSuggestConfig::default(),
         tui_alternate_screen: AltScreenMode::Auto,
         tui_status_line: None,
         tui_weekly_limit_pacing_style: WeeklyLimitPacingStyle::Qualitative,
@@ -4738,6 +4809,7 @@ fn test_precedence_fixture_with_gpt5_profile() -> std::io::Result<()> {
         experimental_realtime_ws_startup_context: None,
         base_instructions: None,
         developer_instructions: None,
+        guardian_developer_instructions: None,
         compact_prompt: None,
         commit_attribution: None,
         forced_chatgpt_workspace_id: None,
@@ -4763,6 +4835,7 @@ fn test_precedence_fixture_with_gpt5_profile() -> std::io::Result<()> {
         model_availability_nux: ModelAvailabilityNuxConfig::default(),
         analytics_enabled: Some(true),
         feedback_enabled: true,
+        tool_suggest: ToolSuggestConfig::default(),
         tui_alternate_screen: AltScreenMode::Auto,
         tui_status_line: None,
         tui_weekly_limit_pacing_style: WeeklyLimitPacingStyle::Qualitative,
@@ -4791,6 +4864,7 @@ fn test_requirements_web_search_mode_allowlist_does_not_warn_when_unset() -> any
         rules: None,
         enforce_residency: None,
         network: None,
+        guardian_developer_instructions: None,
     };
     let requirement_source = crate::config_loader::RequirementSource::Unknown;
     let requirement_source_for_error = requirement_source.clone();
@@ -5390,6 +5464,7 @@ async fn explicit_sandbox_mode_falls_back_when_disallowed_by_requirements() -> s
         rules: None,
         enforce_residency: None,
         network: None,
+        guardian_developer_instructions: None,
     };
 
     let config = ConfigBuilder::default()
@@ -5580,6 +5655,18 @@ shell_tool = true
     );
 
     Ok(())
+}
+
+#[test]
+fn missing_system_bwrap_warning_matches_system_bwrap_presence() {
+    #[cfg(target_os = "linux")]
+    assert_eq!(
+        missing_system_bwrap_warning().is_some(),
+        !Path::new("/usr/bin/bwrap").is_file()
+    );
+
+    #[cfg(not(target_os = "linux"))]
+    assert!(missing_system_bwrap_warning().is_none());
 }
 
 #[tokio::test]
@@ -5884,6 +5971,65 @@ async fn feature_requirements_reject_collab_legacy_alias() {
             .contains("use canonical feature key `multi_agent`"),
         "{err}"
     );
+}
+
+#[test]
+fn tool_suggest_discoverables_load_from_config_toml() -> std::io::Result<()> {
+    let cfg: ConfigToml = toml::from_str(
+        r#"
+[tool_suggest]
+discoverables = [
+  { type = "connector", id = "connector_alpha" },
+  { type = "plugin", id = "plugin_alpha@openai-curated" },
+  { type = "connector", id = "   " }
+]
+"#,
+    )
+    .expect("TOML deserialization should succeed");
+
+    assert_eq!(
+        cfg.tool_suggest,
+        Some(ToolSuggestConfig {
+            discoverables: vec![
+                ToolSuggestDiscoverable {
+                    kind: ToolSuggestDiscoverableType::Connector,
+                    id: "connector_alpha".to_string(),
+                },
+                ToolSuggestDiscoverable {
+                    kind: ToolSuggestDiscoverableType::Plugin,
+                    id: "plugin_alpha@openai-curated".to_string(),
+                },
+                ToolSuggestDiscoverable {
+                    kind: ToolSuggestDiscoverableType::Connector,
+                    id: "   ".to_string(),
+                },
+            ],
+        })
+    );
+
+    let codex_home = TempDir::new()?;
+    let config = Config::load_from_base_config_with_overrides(
+        cfg,
+        ConfigOverrides::default(),
+        codex_home.path().to_path_buf(),
+    )?;
+
+    assert_eq!(
+        config.tool_suggest,
+        ToolSuggestConfig {
+            discoverables: vec![
+                ToolSuggestDiscoverable {
+                    kind: ToolSuggestDiscoverableType::Connector,
+                    id: "connector_alpha".to_string(),
+                },
+                ToolSuggestDiscoverable {
+                    kind: ToolSuggestDiscoverableType::Plugin,
+                    id: "plugin_alpha@openai-curated".to_string(),
+                },
+            ],
+        }
+    );
+    Ok(())
 }
 
 #[test]

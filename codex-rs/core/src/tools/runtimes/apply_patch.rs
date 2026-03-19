@@ -278,7 +278,13 @@ impl Approvable<ApplyPatchRequest> for ApplyPatchRuntime {
             }
             if let Some(reason) = retry_reason {
                 let rx_approve = session
-                    .request_patch_approval(turn, call_id, changes.clone(), Some(reason), None)
+                    .request_patch_approval(
+                        turn,
+                        call_id,
+                        changes.clone(),
+                        Some(reason),
+                        /*grant_root*/ None,
+                    )
                     .await;
                 return rx_approve.await.unwrap_or_default();
             }
@@ -289,7 +295,9 @@ impl Approvable<ApplyPatchRequest> for ApplyPatchRuntime {
                 approval_keys,
                 || async move {
                     let rx_approve = session
-                        .request_patch_approval(turn, call_id, changes, None, None)
+                        .request_patch_approval(
+                            turn, call_id, changes, /*reason*/ None, /*grant_root*/ None,
+                        )
                         .await;
                     rx_approve.await.unwrap_or_default()
                 },

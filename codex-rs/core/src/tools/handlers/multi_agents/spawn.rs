@@ -93,14 +93,49 @@ impl ToolHandler for Handler {
             )
             .await
             .map_err(collab_spawn_error);
-        let new_thread_id = result?;
-        let new_agent = session
-            .services
-            .agent_control
-            .get_subagent_inventory_info(new_thread_id)
-            .await
-            .unwrap_or(SubAgentInventoryInfo {
-                thread_id: new_thread_id,
+        let spawned_thread_id = result.as_ref().ok().copied();
+        let new_agent = match spawned_thread_id {
+            Some(thread_id) => {
+                if let Some(agent) = session
+                    .services
+                    .agent_control
+                    .get_subagent_inventory_info(thread_id)
+                    .await
+                {
+                    agent
+                } else if let Some(snapshot) = session
+                    .services
+                    .agent_control
+                    .get_agent_config_snapshot(thread_id)
+                    .await
+                {
+                    SubAgentInventoryInfo {
+                        thread_id,
+                        nickname: snapshot.session_source.get_nickname(),
+                        role: snapshot.session_source.get_agent_role(),
+                        status: session.services.agent_control.get_status(thread_id).await,
+                        effective_model: Some(snapshot.model),
+                        effective_reasoning_effort: snapshot.reasoning_effort,
+                        effective_model_provider_id: snapshot.model_provider_id,
+                        identity_source: SUBAGENT_IDENTITY_SOURCE_THREAD_CONFIG_SNAPSHOT
+                            .to_string(),
+                    }
+                } else {
+                    SubAgentInventoryInfo {
+                        thread_id,
+                        nickname: None,
+                        role: None,
+                        status: session.services.agent_control.get_status(thread_id).await,
+                        effective_model: None,
+                        effective_reasoning_effort: None,
+                        effective_model_provider_id: String::new(),
+                        identity_source: SUBAGENT_IDENTITY_SOURCE_THREAD_CONFIG_SNAPSHOT
+                            .to_string(),
+                    }
+                }
+            }
+            None => SubAgentInventoryInfo {
+                thread_id: session.conversation_id,
                 nickname: None,
                 role: None,
                 status: AgentStatus::NotFound,
@@ -108,34 +143,42 @@ impl ToolHandler for Handler {
                 effective_reasoning_effort: None,
                 effective_model_provider_id: String::new(),
                 identity_source: SUBAGENT_IDENTITY_SOURCE_THREAD_CONFIG_SNAPSHOT.to_string(),
-            });
+            },
+        };
         let nickname = new_agent.nickname.clone();
+        let role = new_agent.role.clone();
         let status = new_agent.status.clone();
+        let effective_model = new_agent.effective_model.clone().unwrap_or_default();
+        let effective_reasoning_effort = new_agent.effective_reasoning_effort.unwrap_or_default();
         session
             .send_event(
                 &turn,
                 CollabAgentSpawnEndEvent {
                     call_id,
                     sender_thread_id: session.conversation_id,
-                    new_thread_id: Some(new_thread_id),
-                    new_agent_nickname: new_agent.nickname.clone(),
-                    new_agent_role: new_agent.role.clone(),
+                    new_thread_id: spawned_thread_id,
+                    new_agent_nickname: nickname.clone(),
+                    new_agent_role: role.clone(),
                     prompt,
-                    model: args.model.clone().unwrap_or_default(),
-                    reasoning_effort: args.reasoning_effort.unwrap_or_default(),
+                    model: effective_model,
+                    reasoning_effort: effective_reasoning_effort,
                     status: status.clone(),
                 }
                 .into(),
             )
             .await;
+        let new_thread_id = result?;
         let role_tag = role_name.unwrap_or(DEFAULT_ROLE_NAME);
-        turn.session_telemetry
-            .counter("codex.multi_agent.spawn", 1, &[("role", role_tag)]);
+        turn.session_telemetry.counter(
+            "codex.multi_agent.spawn",
+            /*inc*/ 1,
+            &[("role", role_tag)],
+        );
 
         Ok(SpawnAgentResult {
             agent_id: new_thread_id.to_string(),
             nickname,
-            role: new_agent.role,
+            role,
             status,
             effective_model: new_agent.effective_model,
             effective_reasoning_effort: new_agent.effective_reasoning_effort,

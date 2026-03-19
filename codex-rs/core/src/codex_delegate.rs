@@ -88,6 +88,8 @@ pub(crate) async fn run_codex_thread_interactive(
         persist_extended_history: false,
         metrics_service_name: None,
         inherited_shell_snapshot: None,
+        user_shell_override: None,
+        inherited_exec_policy: Some(Arc::clone(&parent_session.services.exec_policy)),
         parent_trace: None,
     })
     .await?;
@@ -477,7 +479,7 @@ async fn handle_exec_approval(
             parent_session,
             &approval_id_for_op,
             cancel_token,
-            None,
+            /*review_cancel_token*/ None,
         )
         .await
     };
@@ -583,7 +585,7 @@ async fn handle_patch_approval(
             parent_session,
             &approval_id,
             cancel_token,
-            None,
+            /*review_cancel_token*/ None,
         )
         .await
     };
@@ -671,7 +673,7 @@ async fn maybe_auto_review_mcp_request_user_input(
         Arc::clone(parent_session),
         Arc::clone(parent_ctx),
         build_guardian_mcp_tool_review_request(&event.call_id, &invocation, metadata.as_ref()),
-        None,
+        /*retry_reason*/ None,
         review_cancel.clone(),
     );
     let decision = await_approval_with_cancel(

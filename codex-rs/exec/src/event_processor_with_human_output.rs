@@ -791,7 +791,7 @@ impl EventProcessor for EventProcessorWithHumanOutput {
                     self,
                     "{} {}",
                     "collab".style(self.magenta),
-                    format_collab_invocation("wait", &call_id, None).style(self.bold)
+                    format_collab_invocation("wait", &call_id, /*prompt*/ None).style(self.bold)
                 );
                 eprintln!(
                     "  receivers: {}",
@@ -809,21 +809,41 @@ impl EventProcessor for EventProcessorWithHumanOutput {
             }) => {
                 let timed_out = timed_out
                     || matches!(completion_reason, CollabWaitingCompletionReason::Timeout);
-                let title_style = if timed_out { self.yellow } else { self.green };
-                let completion = if timed_out {
-                    if statuses.is_empty() {
+                if statuses.is_empty() {
+                    ts_msg!(
+                        self,
+                        "{} {}:",
+                        format_collab_invocation("wait", &call_id, /*prompt*/ None),
+                        "timed out".style(self.yellow)
+                    );
+                    return CodexStatus::Running;
+                }
+                let success = !statuses.values().any(is_collab_status_failure);
+                let title_style = if timed_out {
+                    self.yellow
+                } else if success {
+                    self.green
+                } else {
+                    self.red
+                };
+                let title = if timed_out {
+                    let completion = if pending_thread_ids.is_empty() {
                         "timed out"
                     } else {
                         "partial timeout"
-                    }
+                    };
+                    format!(
+                        "{} {}:",
+                        format_collab_invocation("wait", &call_id, /*prompt*/ None),
+                        completion
+                    )
                 } else {
-                    "complete"
+                    format!(
+                        "{} {} agents complete:",
+                        format_collab_invocation("wait", &call_id, /*prompt*/ None),
+                        statuses.len()
+                    )
                 };
-                let title = format!(
-                    "{} {}:",
-                    format_collab_invocation("wait", &call_id, None),
-                    completion
-                );
                 ts_msg!(self, "{}", title.style(title_style));
                 let mut sorted = statuses
                     .into_iter()
@@ -853,7 +873,8 @@ impl EventProcessor for EventProcessorWithHumanOutput {
                     self,
                     "{} {}",
                     "collab".style(self.magenta),
-                    format_collab_invocation("close_agent", &call_id, None).style(self.bold)
+                    format_collab_invocation("close_agent", &call_id, /*prompt*/ None)
+                        .style(self.bold)
                 );
                 eprintln!(
                     "  receiver: {}",
@@ -871,7 +892,7 @@ impl EventProcessor for EventProcessorWithHumanOutput {
                 let title_style = if success { self.green } else { self.red };
                 let title = format!(
                     "{} {}:",
-                    format_collab_invocation("close_agent", &call_id, None),
+                    format_collab_invocation("close_agent", &call_id, /*prompt*/ None),
                     format_collab_status(&status)
                 );
                 ts_msg!(self, "{}", title.style(title_style));
@@ -892,8 +913,6 @@ impl EventProcessor for EventProcessorWithHumanOutput {
             | EventMsg::McpListToolsResponse(_)
             | EventMsg::ListCustomPromptsResponse(_)
             | EventMsg::ListSkillsResponse(_)
-            | EventMsg::ListRemoteSkillsResponse(_)
-            | EventMsg::RemoteSkillDownloaded(_)
             | EventMsg::RawResponseItem(_)
             | EventMsg::UserMessage(_)
             | EventMsg::EnteredReviewMode(_)
@@ -1029,6 +1048,7 @@ impl EventProcessorWithHumanOutput {
     fn hook_event_name(event_name: HookEventName) -> &'static str {
         match event_name {
             HookEventName::SessionStart => "SessionStart",
+            HookEventName::UserPromptSubmit => "UserPromptSubmit",
             HookEventName::Stop => "Stop",
         }
     }
@@ -1070,8 +1090,6 @@ impl EventProcessorWithHumanOutput {
                     | EventMsg::McpListToolsResponse(_)
                     | EventMsg::ListCustomPromptsResponse(_)
                     | EventMsg::ListSkillsResponse(_)
-                    | EventMsg::ListRemoteSkillsResponse(_)
-                    | EventMsg::RemoteSkillDownloaded(_)
                     | EventMsg::RawResponseItem(_)
                     | EventMsg::UserMessage(_)
                     | EventMsg::EnteredReviewMode(_)
@@ -1288,7 +1306,7 @@ fn format_collab_invocation(tool: &str, call_id: &str, prompt: Option<&str>) -> 
     let prompt = prompt
         .map(str::trim)
         .filter(|prompt| !prompt.is_empty())
-        .map(|prompt| truncate_preview(prompt, 120));
+        .map(|prompt| truncate_preview(prompt, /*max_chars*/ 120));
     match prompt {
         Some(prompt) => format!("{tool}({call_id}, prompt=\"{prompt}\")"),
         None => format!("{tool}({call_id})"),
@@ -1299,8 +1317,9 @@ fn format_collab_status(status: &AgentStatus) -> String {
     match status {
         AgentStatus::PendingInit => "pending init".to_string(),
         AgentStatus::Running => "running".to_string(),
+        AgentStatus::Interrupted => "interrupted".to_string(),
         AgentStatus::Completed(Some(message)) => {
-            let preview = truncate_preview(message.trim(), 120);
+            let preview = truncate_preview(message.trim(), /*max_chars*/ 120);
             if preview.is_empty() {
                 "completed".to_string()
             } else {
@@ -1309,7 +1328,7 @@ fn format_collab_status(status: &AgentStatus) -> String {
         }
         AgentStatus::Completed(None) => "completed".to_string(),
         AgentStatus::Errored(message) => {
-            let preview = truncate_preview(message.trim(), 120);
+            let preview = truncate_preview(message.trim(), /*max_chars*/ 120);
             if preview.is_empty() {
                 "errored".to_string()
             } else {
@@ -1328,6 +1347,7 @@ fn style_for_agent_status(
     match status {
         AgentStatus::PendingInit | AgentStatus::Shutdown => processor.dimmed,
         AgentStatus::Running => processor.cyan,
+        AgentStatus::Interrupted => processor.yellow,
         AgentStatus::Completed(_) => processor.green,
         AgentStatus::Errored(_) | AgentStatus::NotFound => processor.red,
     }

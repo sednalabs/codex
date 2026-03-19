@@ -40,6 +40,7 @@ fn agent_status_label(status: &AgentStatus) -> &str {
     match status {
         AgentStatus::PendingInit => "pending_init",
         AgentStatus::Running => "running",
+        AgentStatus::Interrupted => "interrupted",
         AgentStatus::Completed(_) => "completed",
         AgentStatus::Errored(_) => "errored",
         AgentStatus::Shutdown => "shutdown",
