@@ -6047,6 +6047,7 @@ impl ChatWidget {
             | ServerNotification::RawResponseItemCompleted(_)
             | ServerNotification::CommandExecOutputDelta(_)
             | ServerNotification::McpToolCallProgress(_)
+            | ServerNotification::McpServerStatusUpdated(_)
             | ServerNotification::McpServerOauthLoginCompleted(_)
             | ServerNotification::AppListUpdated(_)
             | ServerNotification::ContextCompacted(_)
