@@ -190,7 +190,7 @@ impl ToolHandler for Handler {
                 CollabWaitingEndEvent {
                     sender_thread_id: session.conversation_id,
                     call_id,
-                    receiver_thread_ids: receiver_thread_ids,
+                    receiver_thread_ids,
                     pending_thread_ids: pending_ids,
                     completion_reason,
                     timed_out,
@@ -215,16 +215,13 @@ struct WaitArgs {
 
 #[derive(Debug, Deserialize, Clone, Copy)]
 #[serde(rename_all = "lowercase")]
+#[derive(Default)]
 enum ReturnWhen {
+    #[default]
     Any,
     All,
 }
 
-impl Default for ReturnWhen {
-    fn default() -> Self {
-        Self::Any
-    }
-}
 
 #[derive(Debug, Deserialize, Serialize, PartialEq, Eq)]
 pub(crate) struct WaitAgentResult {

@@ -112,6 +112,11 @@ Primary files:
 - `write_stdin` still requires an empty `chars` payload when
   `wait_until_terminal=true`.
 - Timeout notes are appended to returned `raw_output`.
+- The downstream intent is to absorb long-running shell waits in the tool layer
+  instead of spending model turns on repeated short-poll status checks.
+- In local downstream operator workflows, this composes with existing blocking
+  coordination primitives such as `wait_agent` and build-helper `*_and_wait`
+  calls so joins happen on state transitions rather than transcript churn.
 - `TurnCompleteEvent` carries `compaction_events_in_turn`.
 - Token-count events also carry provider and model context in downstream flow.
 - Primary files:

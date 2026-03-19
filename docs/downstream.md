@@ -27,6 +27,8 @@ Current state at review time:
 
 Why:
 - Support "wait until terminal" semantics directly on `exec_command` and `write_stdin` for long-running exact/tool-driven command flows.
+- Avoid model-layer short-poll loops that waste turns, duplicate context, and make orchestration look busy without changing state.
+- Let downstream operator workflows treat long-running shell work as an actual blocking join instead of repeated "check again" tool chatter.
 - Keep wait responses aligned with the current unified-exec output shape after upstream refactors.
 - Expose compaction count on turn completion so clients can distinguish "normal turn complete" from "turn completed after one or more compactions".
 
@@ -35,6 +37,7 @@ User-visible behavior:
 - `write_stdin` still requires `chars` to be empty when `wait_until_terminal=true`.
 - Wait-timeout notes are appended to emitted `raw_output`, and token accounting is derived from the final response text.
 - `TurnCompleteEvent` includes `compaction_events_in_turn`.
+- In downstream operator environments, this pairs cleanly with other blocking coordination primitives such as `wait_agent` and build-helper `*_and_wait` flows, so agents can wait on real state transitions instead of spinning on repeated status polls.
 
 ### Usage ledger: shared ledger owned by `agent-usage-ledger`
 
@@ -52,12 +55,14 @@ User-visible behavior:
 
 Why:
 - Shared-host validation and release builds are more reliable when they run through build-helper MCP instead of ad hoc shell commands.
+- The same downstream execution model should apply to build/test orchestration: prefer a blocking wait on a real task over repeated status polling from the model layer.
 
 User-visible behavior:
 - `.build-helper/presets.json` defines fork-local Codex presets for formatting, core tests, and release build/install flows.
 - Downstream instructions can reference those presets directly for reproducible validation and release steps.
 - `codex.core-test` now maps to the progressive default path (`just core-test-progressive`), which runs compile, carry-divergence, and usage-ledger smoke gates before the larger codex-core suite.
 - [`downstream-regression-matrix.md`](/home/grant/mmm/codex/docs/downstream-regression-matrix.md) maps each intentional divergence to a concrete smoke/progressive lane.
+- For routine build-helper runs, downstream local guidance prefers `wait_until_terminal=true` so the tool layer, not the model transcript, absorbs the wait.
 
 ### Sub-agent model override precedence
 

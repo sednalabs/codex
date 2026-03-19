@@ -75,7 +75,7 @@ pub(crate) enum BwrapNetworkMode {
 }
 
 impl BwrapNetworkMode {
-    fn should_unshare_network(self) -> bool {
+    pub(crate) fn should_unshare_network(self) -> bool {
         !matches!(self, Self::FullAccess)
     }
 }
@@ -97,6 +97,7 @@ pub(crate) fn create_bwrap_command_args(
     command: Vec<String>,
     file_system_sandbox_policy: &FileSystemSandboxPolicy,
     cwd: &Path,
+    _command_cwd: &Path,
     options: BwrapOptions,
 ) -> Result<BwrapArgs> {
     if file_system_sandbox_policy.has_full_disk_write_access() {
@@ -607,6 +608,7 @@ mod tests {
             command.clone(),
             &FileSystemSandboxPolicy::from(&SandboxPolicy::DangerFullAccess),
             Path::new("/"),
+            Path::new("/"),
             BwrapOptions {
                 mount_proc: true,
                 network_mode: BwrapNetworkMode::FullAccess,
@@ -623,6 +625,7 @@ mod tests {
         let args = create_bwrap_command_args(
             command,
             &FileSystemSandboxPolicy::from(&SandboxPolicy::DangerFullAccess),
+            Path::new("/"),
             Path::new("/"),
             BwrapOptions {
                 mount_proc: true,

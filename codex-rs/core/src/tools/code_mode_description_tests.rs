@@ -17,7 +17,7 @@ fn render_json_schema_to_typescript_renders_object_properties() {
 
     assert_eq!(
         render_json_schema_to_typescript(&schema),
-        "{ path: string; recursive?: boolean; }"
+        "{\n  path: string;\n  recursive?: boolean;\n}"
     );
 }
 
@@ -52,7 +52,7 @@ fn render_json_schema_to_typescript_renders_additional_properties() {
 
     assert_eq!(
         render_json_schema_to_typescript(&schema),
-        "{ tags?: Array<string>; [key: string]: number; }"
+        "{\n  tags?: Array<string>;\n  [key: string]: number;\n}"
     );
 }
 
@@ -71,7 +71,7 @@ fn render_json_schema_to_typescript_sorts_object_properties() {
 
     assert_eq!(
         render_json_schema_to_typescript(&schema),
-        "{ _meta?: string; content: Array<string>; isError?: boolean; structuredContent?: string; }"
+        "{\n  _meta?: string;\n  content: Array<string>;\n  isError?: boolean;\n  structuredContent?: string;\n}"
     );
 }
 

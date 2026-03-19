@@ -745,7 +745,7 @@ async fn list_agents_returns_direct_children_with_live_inventory() {
 
 #[tokio::test]
 async fn list_agents_respects_optional_id_filter() {
-    let (mut session, mut turn) = make_session_and_context().await;
+    let (mut session, turn) = make_session_and_context().await;
     let manager = thread_manager();
     session.services.agent_control = manager.agent_control();
     let session = Arc::new(session);
@@ -881,7 +881,7 @@ async fn list_agents_id_filter_returns_not_found_entries_for_missing_or_invisibl
 
 #[tokio::test]
 async fn list_agents_filter_preserves_requested_ids_and_marks_missing_as_not_found() {
-    let (mut session, mut turn) = make_session_and_context().await;
+    let (mut session, turn) = make_session_and_context().await;
     let manager = thread_manager();
     session.services.agent_control = manager.agent_control();
     let session = Arc::new(session);
@@ -1644,7 +1644,7 @@ async fn wait_agent_allows_return_when_all_and_returns_only_when_all_are_final()
     let (content, success) = expect_text_output(output);
     let result: wait::WaitAgentResult =
         serde_json::from_str(&content).expect("wait_agent result should be json");
-    let _ = finalize_pending
+    finalize_pending
         .await
         .expect("finalize spawn background task should finish");
     assert_eq!(result.status.len(), 2);

@@ -41,6 +41,10 @@ const NETWORK_TIMEOUT_MS: u64 = 2_000;
 const NETWORK_TIMEOUT_MS: u64 = 10_000;
 
 const BWRAP_UNAVAILABLE_ERR: &str = "build-time bubblewrap is not available in this build.";
+const BWRAP_PERMISSION_ERR_SNIPPETS: &[&str] = &[
+    "setting up uid map: Permission denied",
+    "No permissions to create a new namespace",
+];
 
 fn create_env_from_core_vars() -> HashMap<String, String> {
     let policy = ShellEnvironmentPolicy::default();
@@ -63,9 +67,17 @@ async fn run_cmd_output(
     writable_roots: &[PathBuf],
     timeout_ms: u64,
 ) -> codex_core::exec::ExecToolCallOutput {
-    run_cmd_result_with_writable_roots(cmd, writable_roots, timeout_ms, false, false)
-        .await
-        .expect("sandboxed command should execute")
+    match run_cmd_result_with_writable_roots(cmd, writable_roots, timeout_ms, false, false).await {
+        Ok(output) => output,
+        Err(CodexErr::Sandbox(SandboxErr::Denied { output, .. }))
+            if is_bwrap_unavailable_output(&output) =>
+        {
+            run_cmd_result_with_writable_roots(cmd, writable_roots, timeout_ms, true, false)
+                .await
+                .expect("sandboxed command should execute with legacy Landlock fallback")
+        }
+        Err(err) => panic!("sandboxed command should execute: {err:?}"),
+    }
 }
 
 async fn run_cmd_result_with_writable_roots(
@@ -142,6 +154,9 @@ async fn run_cmd_result_with_policies(
 
 fn is_bwrap_unavailable_output(output: &codex_core::exec::ExecToolCallOutput) -> bool {
     output.stderr.text.contains(BWRAP_UNAVAILABLE_ERR)
+        || BWRAP_PERMISSION_ERR_SNIPPETS
+            .iter()
+            .any(|snippet| output.stderr.text.contains(snippet))
         || (output
             .stderr
             .text

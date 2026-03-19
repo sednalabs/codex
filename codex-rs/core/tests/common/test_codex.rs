@@ -235,16 +235,20 @@ impl TestCodexBuilder {
         for hook in self.pre_build_hooks.drain(..) {
             hook(home.path());
         }
-        if let Ok(path) = codex_utils_cargo_bin::cargo_bin("codex") {
-            config.codex_linux_sandbox_exe = Some(path);
-        } else if let Ok(exe) = std::env::current_exe()
-            && let Some(path) = exe
-                .parent()
-                .and_then(|parent| parent.parent())
-                .map(|parent| parent.join("codex"))
-            && path.is_file()
-        {
-            config.codex_linux_sandbox_exe = Some(path);
+        if config.codex_linux_sandbox_exe.is_none() {
+            if let Ok(path) = codex_utils_cargo_bin::cargo_bin("codex-linux-sandbox") {
+                config.codex_linux_sandbox_exe = Some(path);
+            } else if let Ok(path) = codex_utils_cargo_bin::cargo_bin("codex") {
+                config.codex_linux_sandbox_exe = Some(path);
+            } else if let Ok(exe) = std::env::current_exe()
+                && let Some(path) = exe
+                    .parent()
+                    .and_then(|parent| parent.parent())
+                    .map(|parent| parent.join("codex"))
+                && path.is_file()
+            {
+                config.codex_linux_sandbox_exe = Some(path);
+            }
         }
 
         let mut mutators = vec![];

@@ -297,7 +297,12 @@ fn render_json_schema_object(map: &serde_json::Map<String, JsonValue>) -> String
         return "{}".to_string();
     }
 
-    format!("{{ {} }}", lines.join(" "))
+    let body = lines
+        .into_iter()
+        .map(|line| format!("  {line}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    format!("{{\n{body}\n}}")
 }
 
 fn render_json_schema_property_name(name: &str) -> String {

@@ -2169,6 +2169,8 @@ async fn usage_limit_error_emits_rate_limit_event() -> anyhow::Result<()> {
         event_json,
         json!({
             "info": null,
+            "model_used": "gpt-5.3-codex",
+            "provider": "OpenAI",
             "rate_limits": expected_limits
         })
     );

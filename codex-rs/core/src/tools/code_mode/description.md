@@ -13,5 +13,5 @@
 - `image(imageUrl: string)`: Appends an image item and returns it. `image_url` can be an HTTPS URL or a base64-encoded `data:` URL.
 - `store(key: string, value: any)`: stores a serializable value under a string key for later `exec` calls in the same session.
 - `load(key: string)`: returns the stored value for a string key, or `undefined` if it is missing.
-- `ALL_TOOLS`: metadata for the enabled nested tools as `{ name, description }` entries.
+- `ALL_TOOLS`: metadata for the enabled nested tools. Built-in tools expose `{ name, description }`; namespaced tools also include `module` and use the local function `name` from that module.
 - `yield_control()`: yields the accumulated output to the model immediately while the script keeps running.

@@ -93,6 +93,29 @@ fn build_command_spec_prefers_explicit_codex_exe() {
 }
 
 #[test]
+fn build_command_spec_uses_apply_patch_alias_for_linux_sandbox_helper_path() {
+    let sandbox_exe = PathBuf::from("/tmp/codex-linux-sandbox");
+    let request = sample_request(Some(sandbox_exe));
+
+    let launch = ApplyPatchRuntime::build_command_spec(&request, Path::new("/unused"))
+        .expect("linux sandbox helper path should build a command spec");
+
+    assert_eq!(
+        launch.launch_mode,
+        ApplyPatchLaunchMode::ConfiguredCodexLinuxSandboxExeViaApplyPatchAlias
+    );
+    assert!(
+        Path::new(&launch.spec.program)
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name == "apply_patch"),
+        "expected apply_patch executable path, got {}",
+        launch.spec.program
+    );
+    assert_eq!(launch.spec.args, vec![request.action.patch]);
+}
+
+#[test]
 fn launch_diagnostics_report_launch_mode_and_path_existence() {
     let request = sample_request(None);
     let missing_exe = request.action.cwd.join("missing-codex-apply-patch-helper");

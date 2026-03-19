@@ -3109,11 +3109,9 @@ plugins = true
             }
         );
         assert_eq!(
-            fs::read_to_string(
-                tmp.path().join(format!(
-                    "plugins/cache/openai-curated/gmail/{TEST_CURATED_PLUGIN_SHA}/marker.txt"
-                ))
-            )
+            fs::read_to_string(tmp.path().join(format!(
+                "plugins/cache/openai-curated/gmail/{TEST_CURATED_PLUGIN_SHA}/marker.txt"
+            )))
             .unwrap(),
             "first"
         );
