@@ -228,6 +228,7 @@ use codex_core::plugins::PluginInstallRequest;
 use codex_core::plugins::PluginReadRequest;
 use codex_core::plugins::PluginUninstallError as CorePluginUninstallError;
 use codex_core::plugins::load_plugin_apps;
+use codex_core::plugins::load_plugin_mcp_servers;
 use codex_core::read_head_for_summary;
 use codex_core::read_session_meta_line;
 use codex_core::rollout_date_parts;
@@ -311,6 +312,7 @@ use codex_app_server_protocol::ServerRequest;
 
 mod apps_list_helpers;
 mod plugin_app_helpers;
+mod plugin_mcp_oauth;
 
 use crate::filters::compute_source_filters;
 use crate::filters::source_kind_matches;
@@ -4587,20 +4589,28 @@ impl CodexMessageProcessor {
             }
         };
 
-        let configured_servers = self
-            .thread_manager
-            .mcp_manager()
-            .configured_servers(&config);
+        if let Err(error) = self.queue_mcp_server_refresh_for_config(&config).await {
+            self.outgoing.send_error(request_id, error).await;
+            return;
+        }
+
+        let response = McpServerRefreshResponse {};
+        self.outgoing.send_response(request_id, response).await;
+    }
+
+    async fn queue_mcp_server_refresh_for_config(
+        &self,
+        config: &Config,
+    ) -> Result<(), JSONRPCErrorError> {
+        let configured_servers = self.thread_manager.mcp_manager().configured_servers(config);
         let mcp_servers = match serde_json::to_value(configured_servers) {
             Ok(value) => value,
             Err(err) => {
-                let error = JSONRPCErrorError {
+                return Err(JSONRPCErrorError {
                     code: INTERNAL_ERROR_CODE,
                     message: format!("failed to serialize MCP servers: {err}"),
                     data: None,
-                };
-                self.outgoing.send_error(request_id, error).await;
-                return;
+                });
             }
         };
 
@@ -4608,15 +4618,13 @@ impl CodexMessageProcessor {
             match serde_json::to_value(config.mcp_oauth_credentials_store_mode) {
                 Ok(value) => value,
                 Err(err) => {
-                    let error = JSONRPCErrorError {
+                    return Err(JSONRPCErrorError {
                         code: INTERNAL_ERROR_CODE,
                         message: format!(
                             "failed to serialize MCP OAuth credentials store mode: {err}"
                         ),
                         data: None,
-                    };
-                    self.outgoing.send_error(request_id, error).await;
-                    return;
+                    });
                 }
             };
 
@@ -4629,8 +4637,7 @@ impl CodexMessageProcessor {
         // active turn to avoid work for threads that never resume.
         let thread_manager = Arc::clone(&self.thread_manager);
         thread_manager.refresh_mcp_servers(refresh_config).await;
-        let response = McpServerRefreshResponse {};
-        self.outgoing.send_response(request_id, response).await;
+        Ok(())
     }
 
     async fn mcp_server_oauth_login(
@@ -5742,6 +5749,22 @@ impl CodexMessageProcessor {
                         self.config.as_ref().clone()
                     }
                 };
+
+                self.clear_plugin_related_caches();
+
+                let plugin_mcp_servers = load_plugin_mcp_servers(result.installed_path.as_path());
+
+                if !plugin_mcp_servers.is_empty() {
+                    if let Err(err) = self.queue_mcp_server_refresh_for_config(&config).await {
+                        warn!(
+                            plugin = result.plugin_id.as_key(),
+                            "failed to queue MCP refresh after plugin install: {err:?}"
+                        );
+                    }
+                    self.start_plugin_mcp_oauth_logins(&config, plugin_mcp_servers)
+                        .await;
+                }
+
                 let plugin_apps = load_plugin_apps(result.installed_path.as_path());
                 let apps_needing_auth = if plugin_apps.is_empty()
                     || !config.features.apps_enabled(Some(&self.auth_manager)).await
@@ -5802,7 +5825,6 @@ impl CodexMessageProcessor {
                     )
                 };
 
-                self.clear_plugin_related_caches();
                 self.outgoing
                     .send_response(
                         request_id,
