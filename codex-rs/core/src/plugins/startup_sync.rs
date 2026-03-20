@@ -28,7 +28,6 @@ const CURATED_PLUGINS_SHA_FILE: &str = ".tmp/plugins.sha";
 const CURATED_PLUGINS_GIT_TIMEOUT: Duration = Duration::from_secs(30);
 const CURATED_PLUGINS_HTTP_TIMEOUT: Duration = Duration::from_secs(30);
 const STARTUP_REMOTE_PLUGIN_SYNC_MARKER_FILE: &str = ".tmp/app-server-remote-plugin-sync-v1";
-const STARTUP_REMOTE_PLUGIN_SYNC_PREREQUISITE_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[derive(Debug, Deserialize)]
 struct GitHubRepositorySummary {
@@ -154,11 +153,8 @@ pub(super) fn start_startup_remote_plugin_sync_once(
             return;
         }
 
-        if !wait_for_startup_remote_plugin_sync_prerequisites(codex_home.as_path()).await {
-            warn!(
-                codex_home = %codex_home.display(),
-                "skipping startup remote plugin sync because curated marketplace is not ready"
-            );
+        wait_for_startup_remote_plugin_sync_prerequisites(codex_home.as_path()).await;
+        if marker_path.is_file() {
             return;
         }
 
@@ -206,14 +202,10 @@ fn startup_remote_plugin_sync_prerequisites_ready(codex_home: &Path) -> bool {
         && codex_home.join(".tmp/plugins.sha").is_file()
 }
 
-async fn wait_for_startup_remote_plugin_sync_prerequisites(codex_home: &Path) -> bool {
-    let deadline = tokio::time::Instant::now() + STARTUP_REMOTE_PLUGIN_SYNC_PREREQUISITE_TIMEOUT;
+async fn wait_for_startup_remote_plugin_sync_prerequisites(codex_home: &Path) {
     loop {
         if startup_remote_plugin_sync_prerequisites_ready(codex_home) {
-            return true;
-        }
-        if tokio::time::Instant::now() >= deadline {
-            return false;
+            return;
         }
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
