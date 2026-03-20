@@ -84,10 +84,12 @@ live divergence.
   - `codex-rs/cli/build.rs`
   - `codex-rs/cli/src/main.rs`
 
-### Sub-agent model override precedence
+### Sub-agent override preservation across role reload
 
+- Upstream already supports explicit `spawn_agent(model=..., reasoning_effort=...)` child overrides; the live carry-only behavior is preserving those requests across role reload unless the role explicitly locks the fields.
 - Keep downstream itineraries that explicitly call `spawn_agent(model=..., reasoning_effort=...)` aligned with the requested model/economy, even when a role is applied.
 - Roles still control locked models when they explicitly set `model`, `model_provider`, `model_reasoning_effort`, or `model_verbosity`, so downstream policy remains defendable.
+- Spawn-agent result and inventory reporting expose the effective child model/economy after role application, so the surviving setting is visible.
 - The documentation and tooling now spell out the precedence stack for spawn-time overrides.
 - Primary files:
   - `codex-rs/core/src/agent/role.rs`

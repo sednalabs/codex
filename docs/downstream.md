@@ -80,14 +80,16 @@ User-visible behavior:
 - Builtin tool metadata and namespaced MCP tool metadata are documented and tested against the same imported namespace shape.
 - Downstream code-mode examples therefore differ slightly from upstream examples that still inline `declare const tools: { ... }`.
 
-### Sub-agent model override precedence
+### Sub-agent override preservation across role reload
 
 Why:
-- Preserve explicit `spawn_agent(model=..., reasoning_effort=...)` overrides even when launching a role-backed sub-agent, so downstream economical deployments do not drift back to upstream parent defaults.
+- Upstream already supports explicit `spawn_agent(model=..., reasoning_effort=...)` child overrides.
+- Preserve those explicit child overrides even when launching a role-backed sub-agent whose role file does not lock model/economy fields, so downstream economical deployments do not drift back to inherited parent-profile defaults during role reload.
 - Let role defaults remain fixed when they intentionally set a model or reasoning effort, making the policy deterministic.
 
 User-visible behavior:
-- The spawn-agent response and inventory snapshot now report the advised `model`/`reasoning_effort` when a role does not lock those fields, so costs and capabilities stay under control.
+- Explicit child `model`/`reasoning_effort` requests survive role application unless the selected role explicitly sets those fields.
+- The spawn-agent response and inventory snapshot now report the effective `model`/`reasoning_effort` when a role does not lock those fields, so costs and capabilities stay under control.
 - Roles that explicitly set `model`, `model_provider`, `model_reasoning_effort`, or `model_verbosity` continue to be authoritative, even when a child requests a different setting.
 - Docs and tooling (e.g., `spawn_agent` spec, `docs/config.md`) now document the precedence stack.
 
