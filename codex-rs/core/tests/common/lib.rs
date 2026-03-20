@@ -13,7 +13,7 @@ use codex_core::config::Config;
 use codex_core::config::ConfigBuilder;
 use codex_core::config::ConfigOverrides;
 #[cfg(target_os = "linux")]
-use codex_core::features::Feature;
+use codex_features::Feature;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use regex_lite::Regex;
 use std::path::PathBuf;

@@ -2120,7 +2120,6 @@ mod tests {
             CODEX_APPS_MCP_SERVER_NAME.to_string(),
             AsyncManagedClient {
                 client: pending_client,
-                request_headers: Arc::new(StdMutex::new(None)),
                 startup_snapshot: Some(startup_tools),
                 startup_complete: Arc::new(std::sync::atomic::AtomicBool::new(false)),
                 tool_plugin_provenance: Arc::new(ToolPluginProvenance::default()),
@@ -2147,7 +2146,6 @@ mod tests {
             CODEX_APPS_MCP_SERVER_NAME.to_string(),
             AsyncManagedClient {
                 client: pending_client,
-                request_headers: Arc::new(StdMutex::new(None)),
                 startup_snapshot: None,
                 startup_complete: Arc::new(std::sync::atomic::AtomicBool::new(false)),
                 tool_plugin_provenance: Arc::new(ToolPluginProvenance::default()),
@@ -2171,7 +2169,6 @@ mod tests {
             CODEX_APPS_MCP_SERVER_NAME.to_string(),
             AsyncManagedClient {
                 client: pending_client,
-                request_headers: Arc::new(StdMutex::new(None)),
                 startup_snapshot: Some(Vec::new()),
                 startup_complete: Arc::new(std::sync::atomic::AtomicBool::new(false)),
                 tool_plugin_provenance: Arc::new(ToolPluginProvenance::default()),
@@ -2204,7 +2201,6 @@ mod tests {
             CODEX_APPS_MCP_SERVER_NAME.to_string(),
             AsyncManagedClient {
                 client: failed_client,
-                request_headers: Arc::new(StdMutex::new(None)),
                 startup_snapshot: Some(startup_tools),
                 startup_complete,
                 tool_plugin_provenance: Arc::new(ToolPluginProvenance::default()),

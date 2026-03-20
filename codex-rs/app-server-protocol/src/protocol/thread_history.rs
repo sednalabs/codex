@@ -1486,6 +1486,7 @@ mod tests {
             RolloutItem::EventMsg(EventMsg::TurnComplete(TurnCompleteEvent {
                 turn_id: "turn-image".into(),
                 last_agent_message: None,
+                compaction_events_in_turn: 0,
             })),
         ];
 
@@ -2916,6 +2917,7 @@ mod tests {
             RolloutItem::EventMsg(EventMsg::TurnComplete(TurnCompleteEvent {
                 turn_id: "turn-a".into(),
                 last_agent_message: None,
+                compaction_events_in_turn: 0,
             })),
         ];
 
@@ -2961,6 +2963,7 @@ mod tests {
             RolloutItem::EventMsg(EventMsg::TurnComplete(TurnCompleteEvent {
                 turn_id: "turn-a".into(),
                 last_agent_message: None,
+                compaction_events_in_turn: 0,
             })),
         ];
 

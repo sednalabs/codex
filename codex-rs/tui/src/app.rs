@@ -2994,7 +2994,7 @@ impl App {
             AppEvent::SelectModel { model, effort } => {
                 self.chat_widget.set_model(&model);
                 self.on_update_reasoning_effort(effort);
-                self.refresh_status_line();
+                self.refresh_status_surfaces();
                 self.app_event_tx
                     .send(AppEvent::PersistModelSelection { model, effort });
             }

@@ -1609,7 +1609,7 @@ async fn wait_agent_allows_return_when_all_and_returns_only_when_all_are_final()
     let finalized_thread_id = finalized_thread.thread_id;
     manager
         .agent_control()
-        .shutdown_agent(finalized_thread_id)
+        .shutdown_live_agent(finalized_thread_id)
         .await
         .expect("shutdown finalized thread");
     let pending_thread = manager
@@ -1623,7 +1623,7 @@ async fn wait_agent_allows_return_when_all_and_returns_only_when_all_are_final()
         let id = pending_thread_id;
         tokio::spawn(async move {
             agent_control
-                .shutdown_agent(id)
+                .shutdown_live_agent(id)
                 .await
                 .expect("shutdown pending thread");
         })

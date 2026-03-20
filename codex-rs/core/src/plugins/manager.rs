@@ -2735,7 +2735,7 @@ enabled = false
                         policy: MarketplacePluginPolicy {
                             installation: MarketplacePluginInstallPolicy::Available,
                             authentication: MarketplacePluginAuthPolicy::OnInstall,
-                            products: vec![],
+                            products: None,
                         },
                         interface: None,
                         installed: true,
@@ -2753,7 +2753,7 @@ enabled = false
                         policy: MarketplacePluginPolicy {
                             installation: MarketplacePluginInstallPolicy::Available,
                             authentication: MarketplacePluginAuthPolicy::OnInstall,
-                            products: vec![],
+                            products: None,
                         },
                         interface: None,
                         installed: true,
@@ -2835,7 +2835,7 @@ plugins = true
                     policy: MarketplacePluginPolicy {
                         installation: MarketplacePluginInstallPolicy::Available,
                         authentication: MarketplacePluginAuthPolicy::OnInstall,
-                        products: vec![],
+                        products: None,
                     },
                     interface: None,
                     installed: false,
@@ -2938,7 +2938,7 @@ enabled = false
                 policy: MarketplacePluginPolicy {
                     installation: MarketplacePluginInstallPolicy::Available,
                     authentication: MarketplacePluginAuthPolicy::OnInstall,
-                    products: vec![],
+                    products: None,
                 },
                 interface: None,
                 installed: false,
@@ -2967,7 +2967,7 @@ enabled = false
                 policy: MarketplacePluginPolicy {
                     installation: MarketplacePluginInstallPolicy::Available,
                     authentication: MarketplacePluginAuthPolicy::OnInstall,
-                    products: vec![],
+                    products: None,
                 },
                 interface: None,
                 installed: false,
@@ -3050,7 +3050,7 @@ enabled = true
                     policy: MarketplacePluginPolicy {
                         installation: MarketplacePluginInstallPolicy::Available,
                         authentication: MarketplacePluginAuthPolicy::OnInstall,
-                        products: vec![],
+                        products: None,
                     },
                     interface: None,
                     installed: false,
@@ -3110,6 +3110,7 @@ enabled = true
             .sync_plugins_from_remote(
                 &config,
                 Some(&CodexAuth::create_dummy_chatgpt_auth_for_testing()),
+                /*additive_only*/ false,
             )
             .await
             .unwrap();
@@ -3201,6 +3202,7 @@ enabled = false
             .sync_plugins_from_remote(
                 &config,
                 Some(&CodexAuth::create_dummy_chatgpt_auth_for_testing()),
+                /*additive_only*/ false,
             )
             .await
             .unwrap();
@@ -3263,6 +3265,7 @@ enabled = false
             .sync_plugins_from_remote(
                 &config,
                 Some(&CodexAuth::create_dummy_chatgpt_auth_for_testing()),
+                /*additive_only*/ false,
             )
             .await
             .unwrap_err();
@@ -3352,6 +3355,7 @@ plugins = true
             .sync_plugins_from_remote(
                 &config,
                 Some(&CodexAuth::create_dummy_chatgpt_auth_for_testing()),
+                /*additive_only*/ false,
             )
             .await
             .unwrap();

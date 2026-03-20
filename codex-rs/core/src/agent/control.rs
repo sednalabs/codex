@@ -859,8 +859,8 @@ mod tests {
     use crate::config::ConfigBuilder;
     use crate::config_loader::LoaderOverrides;
     use crate::contextual_user_message::SUBAGENT_NOTIFICATION_OPEN_TAG;
-    use crate::features::Feature;
     use assert_matches::assert_matches;
+    use codex_features::Feature;
     use codex_protocol::config_types::ModeKind;
     use codex_protocol::models::ContentItem;
     use codex_protocol::models::ResponseItem;
@@ -1305,7 +1305,7 @@ mod tests {
 
         let _ = harness
             .control
-            .shutdown_agent(child_thread_id)
+            .shutdown_live_agent(child_thread_id)
             .await
             .expect("child shutdown should submit");
         let _ = parent_thread
@@ -1381,7 +1381,7 @@ mod tests {
 
         let _ = harness
             .control
-            .shutdown_agent(child_thread_id)
+            .shutdown_live_agent(child_thread_id)
             .await
             .expect("child shutdown should submit");
         let _ = parent_thread
@@ -1458,7 +1458,7 @@ mod tests {
 
         let _ = harness
             .control
-            .shutdown_agent(child_thread_id)
+            .shutdown_live_agent(child_thread_id)
             .await
             .expect("child shutdown should submit");
         let _ = parent_thread
@@ -1505,7 +1505,7 @@ mod tests {
         assert_eq!(seen_max_threads, max_threads);
 
         let _ = control
-            .shutdown_agent(first_agent_id)
+            .shutdown_live_agent(first_agent_id)
             .await
             .expect("shutdown agent");
     }
@@ -1530,7 +1530,7 @@ mod tests {
             .await
             .expect("spawn_agent should succeed");
         let _ = control
-            .shutdown_agent(first_agent_id)
+            .shutdown_live_agent(first_agent_id)
             .await
             .expect("shutdown agent");
 
@@ -1539,7 +1539,7 @@ mod tests {
             .await
             .expect("spawn_agent should succeed after shutdown");
         let _ = control
-            .shutdown_agent(second_agent_id)
+            .shutdown_live_agent(second_agent_id)
             .await
             .expect("shutdown agent");
     }
@@ -1575,7 +1575,7 @@ mod tests {
         assert_eq!(max_threads, 1);
 
         let _ = control
-            .shutdown_agent(first_agent_id)
+            .shutdown_live_agent(first_agent_id)
             .await
             .expect("shutdown agent");
     }
@@ -1600,7 +1600,7 @@ mod tests {
             .await
             .expect("spawn_agent should succeed");
         let _ = control
-            .shutdown_agent(resumable_id)
+            .shutdown_live_agent(resumable_id)
             .await
             .expect("shutdown resumable thread");
 
@@ -1622,7 +1622,7 @@ mod tests {
         assert_eq!(seen_max_threads, max_threads);
 
         let _ = control
-            .shutdown_agent(active_id)
+            .shutdown_live_agent(active_id)
             .await
             .expect("shutdown active thread");
     }
@@ -1652,7 +1652,7 @@ mod tests {
             .await
             .expect("spawn should succeed after failed resume");
         let _ = control
-            .shutdown_agent(resumed_id)
+            .shutdown_live_agent(resumed_id)
             .await
             .expect("shutdown resumed thread");
     }
@@ -1898,7 +1898,7 @@ mod tests {
 
         let _ = harness
             .control
-            .shutdown_agent(child_thread_id)
+            .shutdown_live_agent(child_thread_id)
             .await
             .expect("child shutdown should submit");
 
@@ -1941,7 +1941,7 @@ mod tests {
 
         let _ = harness
             .control
-            .shutdown_agent(resumed_thread_id)
+            .shutdown_live_agent(resumed_thread_id)
             .await
             .expect("resumed child shutdown should submit");
     }
