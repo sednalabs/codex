@@ -58,7 +58,7 @@ fn aborted_tool_output_serializes_detailed_shell_abort_message() {
         ResponseInputItem::FunctionCallOutput { call_id, output } => {
             assert_eq!(call_id, "call-1");
             assert_eq!(output.body, FunctionCallOutputBody::Text(message));
-            assert_eq!(output.success, Some(false));
+            assert_eq!(output.success, None);
         }
         other => panic!("expected FunctionCallOutput, got {other:?}"),
     }
