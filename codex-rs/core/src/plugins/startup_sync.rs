@@ -194,7 +194,9 @@ pub(super) fn start_startup_remote_plugin_sync_once(
             None
         } else {
             sync_state.running = true;
-            Some(StartupRemotePluginSyncStarted { codex_home })
+            Some(StartupRemotePluginSyncStarted {
+                codex_home: codex_home.clone(),
+            })
         }
     } {
         Some(startup_remote_plugin_sync_started) => startup_remote_plugin_sync_started,
