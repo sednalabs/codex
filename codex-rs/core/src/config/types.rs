@@ -813,6 +813,12 @@ pub struct Tui {
     /// - `ratio`: Show `{usage_remaining}%/{week_remaining}%`.
     #[serde(default)]
     pub weekly_limit_pacing_style: WeeklyLimitPacingStyle,
+    /// Ordered list of terminal title item identifiers.
+    ///
+    /// When set, the TUI renders the selected items into the terminal window/tab title.
+    /// When unset, the TUI defaults to: `spinner` and `project`.
+    #[serde(default)]
+    pub terminal_title: Option<Vec<String>>,
 
     /// Syntax highlighting theme name (kebab-case).
     ///

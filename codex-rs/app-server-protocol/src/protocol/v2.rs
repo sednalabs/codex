@@ -2035,6 +2035,7 @@ pub struct AppSummary {
     pub name: String,
     pub description: Option<String>,
     pub install_url: Option<String>,
+    pub needs_auth: bool,
 }
 
 impl From<AppInfo> for AppSummary {
@@ -2044,6 +2045,7 @@ impl From<AppInfo> for AppSummary {
             name: value.name,
             description: value.description,
             install_url: value.install_url,
+            needs_auth: false,
         }
     }
 }
@@ -4256,6 +4258,9 @@ pub enum ThreadItem {
         status: String,
         revised_prompt: Option<String>,
         result: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        saved_path: Option<String>,
     },
     #[serde(rename_all = "camelCase")]
     #[ts(rename_all = "camelCase")]
@@ -4432,6 +4437,7 @@ impl From<CoreTurnItem> for ThreadItem {
                 status: image.status,
                 revised_prompt: image.revised_prompt,
                 result: image.result,
+                saved_path: image.saved_path,
             },
             CoreTurnItem::ContextCompaction(compaction) => {
                 ThreadItem::ContextCompaction { id: compaction.id }
@@ -4999,6 +5005,25 @@ pub struct McpServerOauthLoginCompletedNotification {
     pub success: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
+    pub error: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub enum McpServerStartupState {
+    Starting,
+    Ready,
+    Failed,
+    Cancelled,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct McpServerStatusUpdatedNotification {
+    pub name: String,
+    pub status: McpServerStartupState,
     pub error: Option<String>,
 }
 

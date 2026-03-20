@@ -1,7 +1,7 @@
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
 use anyhow::Result;
-use codex_core::features::Feature;
+use codex_features::Feature;
 use codex_protocol::protocol::EventMsg;
 use core_test_support::path_node_satisfies_js_repl_requirement;
 use core_test_support::responses;

@@ -5,6 +5,7 @@
 //! `codex --codex-run-as-apply-patch`, and runs under the current
 //! `SandboxAttempt` with a minimal environment.
 use crate::error::CodexErr;
+use crate::exec::ExecCapturePolicy;
 use crate::exec::ExecToolCallOutput;
 use crate::guardian::GuardianApprovalRequest;
 use crate::guardian::review_approval_request;
@@ -205,6 +206,7 @@ impl ApplyPatchRuntime {
                 args,
                 cwd: req.action.cwd.clone(),
                 expiration: req.timeout_ms.into(),
+                capture_policy: ExecCapturePolicy::ShellTool,
                 // Run apply_patch with a minimal environment for determinism and to avoid leaks.
                 env: HashMap::new(),
                 sandbox_permissions: req.sandbox_permissions,

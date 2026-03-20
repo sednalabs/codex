@@ -6,6 +6,7 @@ mod manifest;
 mod marketplace;
 mod remote;
 mod render;
+mod startup_sync;
 mod store;
 #[cfg(test)]
 pub(crate) mod test_support;
@@ -36,6 +37,7 @@ pub use manager::PluginsManager;
 pub use manager::RemotePluginSyncResult;
 pub use manager::installed_plugin_telemetry_metadata;
 pub use manager::load_plugin_apps;
+pub use manager::load_plugin_mcp_servers;
 pub(crate) use manager::plugin_namespace_for_skill_path;
 pub use manager::plugin_telemetry_metadata_from_root;
 pub use manifest::PluginManifestInterface;

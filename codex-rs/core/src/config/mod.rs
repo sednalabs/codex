@@ -40,10 +40,6 @@ use crate::config_loader::McpServerRequirement;
 use crate::config_loader::ResidencyRequirement;
 use crate::config_loader::Sourced;
 use crate::config_loader::load_config_layers_state;
-use crate::features::Feature;
-use crate::features::FeatureOverrides;
-use crate::features::Features;
-use crate::features::FeaturesToml;
 use crate::git_info::resolve_root_git_project_for_trust;
 use crate::memories::memory_root;
 use crate::model_provider_info::LEGACY_OLLAMA_CHAT_PROVIDER_ID;
@@ -66,6 +62,11 @@ use crate::windows_sandbox::resolve_windows_sandbox_mode;
 use crate::windows_sandbox::resolve_windows_sandbox_private_desktop;
 use codex_app_server_protocol::Tools;
 use codex_app_server_protocol::UserSavedConfig;
+use codex_features::Feature;
+use codex_features::FeatureConfigSource;
+use codex_features::FeatureOverrides;
+use codex_features::Features;
+use codex_features::FeaturesToml;
 use codex_protocol::config_types::AltScreenMode;
 use codex_protocol::config_types::ForcedLoginMethod;
 use codex_protocol::config_types::Personality;
@@ -362,6 +363,10 @@ pub struct Config {
 
     /// Controls how fresh weekly status-line pacing details are rendered.
     pub tui_weekly_limit_pacing_style: WeeklyLimitPacingStyle,
+    /// Ordered list of terminal title item identifiers for the TUI.
+    ///
+    /// When unset, the TUI defaults to: `project` and `spinner`.
+    pub tui_terminal_title: Option<Vec<String>>,
 
     /// Syntax highlighting theme override (kebab-case name).
     pub tui_theme: Option<String>,
@@ -496,6 +501,10 @@ pub struct Config {
 
     /// Base URL for requests to ChatGPT (as opposed to the OpenAI API).
     pub chatgpt_base_url: String,
+
+    /// Experimental / do not use. Overrides the URL used when connecting to
+    /// a remote exec server.
+    pub experimental_exec_server_url: Option<String>,
 
     /// Machine-local realtime audio device preferences used by realtime voice.
     pub realtime_audio: RealtimeAudioConfig,
@@ -1397,6 +1406,10 @@ pub struct ConfigToml {
     /// Base URL override for the built-in `openai` model provider.
     pub openai_base_url: Option<String>,
 
+    /// Experimental / do not use. Overrides the URL used when connecting to
+    /// a remote exec server.
+    pub experimental_exec_server_url: Option<String>,
+
     /// Machine-local realtime audio device preferences used by realtime voice.
     #[serde(default)]
     pub audio: Option<RealtimeAudioToml>,
@@ -2186,7 +2199,23 @@ impl Config {
             web_search_request: override_tools_web_search_request,
         };
 
-        let configured_features = Features::from_config(&cfg, &config_profile, feature_overrides);
+        let configured_features = Features::from_sources(
+            FeatureConfigSource {
+                features: cfg.features.as_ref(),
+                include_apply_patch_tool: None,
+                experimental_use_freeform_apply_patch: cfg.experimental_use_freeform_apply_patch,
+                experimental_use_unified_exec_tool: cfg.experimental_use_unified_exec_tool,
+            },
+            FeatureConfigSource {
+                features: config_profile.features.as_ref(),
+                include_apply_patch_tool: config_profile.include_apply_patch_tool,
+                experimental_use_freeform_apply_patch: config_profile
+                    .experimental_use_freeform_apply_patch,
+                experimental_use_unified_exec_tool: config_profile
+                    .experimental_use_unified_exec_tool,
+            },
+            feature_overrides,
+        );
         let features = ManagedFeatures::from_configured(configured_features, feature_requirements)?;
         let windows_sandbox_mode = resolve_windows_sandbox_mode(&cfg, &config_profile);
         let windows_sandbox_private_desktop =
@@ -2757,6 +2786,7 @@ impl Config {
                 .chatgpt_base_url
                 .or(cfg.chatgpt_base_url)
                 .unwrap_or("https://chatgpt.com/backend-api/".to_string()),
+            experimental_exec_server_url: cfg.experimental_exec_server_url,
             realtime_audio: cfg
                 .audio
                 .map_or_else(RealtimeAudioConfig::default, |audio| RealtimeAudioConfig {
@@ -2831,6 +2861,7 @@ impl Config {
                 .as_ref()
                 .map(|t| t.weekly_limit_pacing_style)
                 .unwrap_or_default(),
+            tui_terminal_title: cfg.tui.as_ref().and_then(|t| t.terminal_title.clone()),
             tui_theme: cfg.tui.as_ref().and_then(|t| t.theme.clone()),
             otel: {
                 let t: OtelConfigToml = cfg.otel.unwrap_or_default();

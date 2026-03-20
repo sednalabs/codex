@@ -563,6 +563,7 @@ impl ThreadHistoryBuilder {
             status: String::new(),
             revised_prompt: None,
             result: String::new(),
+            saved_path: None,
         };
         self.upsert_item_in_current_turn(item);
     }
@@ -573,6 +574,7 @@ impl ThreadHistoryBuilder {
             status: payload.status.clone(),
             revised_prompt: payload.revised_prompt.clone(),
             result: payload.result.clone(),
+            saved_path: payload.saved_path.clone(),
         };
         self.upsert_item_in_current_turn(item);
     }
@@ -1456,6 +1458,61 @@ mod tests {
             ThreadItem::ExitedReviewMode {
                 id: "item-1".into(),
                 review: "Looks solid overall.\n\nToken usage: total=8 input=5 output=3".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn replays_image_generation_end_events_into_turn_history() {
+        let items = vec![
+            RolloutItem::EventMsg(EventMsg::TurnStarted(TurnStartedEvent {
+                turn_id: "turn-image".into(),
+                model_context_window: None,
+                collaboration_mode_kind: Default::default(),
+            })),
+            RolloutItem::EventMsg(EventMsg::UserMessage(UserMessageEvent {
+                message: "generate an image".into(),
+                images: None,
+                text_elements: Vec::new(),
+                local_images: Vec::new(),
+            })),
+            RolloutItem::EventMsg(EventMsg::ImageGenerationEnd(ImageGenerationEndEvent {
+                call_id: "ig_123".into(),
+                status: "completed".into(),
+                revised_prompt: Some("final prompt".into()),
+                result: "Zm9v".into(),
+                saved_path: Some("/tmp/ig_123.png".into()),
+            })),
+            RolloutItem::EventMsg(EventMsg::TurnComplete(TurnCompleteEvent {
+                turn_id: "turn-image".into(),
+                last_agent_message: None,
+            })),
+        ];
+
+        let turns = build_turns_from_rollout_items(&items);
+        assert_eq!(turns.len(), 1);
+        assert_eq!(
+            turns[0],
+            Turn {
+                id: "turn-image".into(),
+                status: TurnStatus::Completed,
+                error: None,
+                items: vec![
+                    ThreadItem::UserMessage {
+                        id: "item-1".into(),
+                        content: vec![UserInput::Text {
+                            text: "generate an image".into(),
+                            text_elements: Vec::new(),
+                        }],
+                    },
+                    ThreadItem::ImageGeneration {
+                        id: "ig_123".into(),
+                        status: "completed".into(),
+                        revised_prompt: Some("final prompt".into()),
+                        result: "Zm9v".into(),
+                        saved_path: Some("/tmp/ig_123.png".into()),
+                    },
+                ],
             }
         );
     }
