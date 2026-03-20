@@ -203,6 +203,7 @@ use codex_core::config_loader::CloudRequirementsLoader;
 use codex_core::default_client::set_default_client_residency_requirement;
 use codex_core::error::CodexErr;
 use codex_core::error::Result as CodexResult;
+use codex_core::exec::ExecCapturePolicy;
 use codex_core::exec::ExecExpiration;
 use codex_core::exec::ExecParams;
 use codex_core::exec_env::create_env;
@@ -1674,11 +1675,17 @@ impl CodexMessageProcessor {
                 None => ExecExpiration::DefaultTimeout,
             }
         };
+        let capture_policy = if disable_output_cap {
+            ExecCapturePolicy::FullBuffer
+        } else {
+            ExecCapturePolicy::ShellTool
+        };
         let sandbox_cwd = self.config.cwd.clone();
         let exec_params = ExecParams {
             command,
             cwd: cwd.clone(),
             expiration,
+            capture_policy,
             env,
             network: started_network_proxy
                 .as_ref()
