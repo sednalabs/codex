@@ -8,12 +8,12 @@ live divergence.
 
 ## Audit Baseline
 
-- Audited on: `2026-03-19`
-- `upstream/main`: `01df50cf422b2eb89cb6ad8f845548e8c0d3c60c`
-- `carry/main`: `e4f56ea5c6d446c06f1794b23e792a55cc081222`
-- `main`: `70eddad6b075f26f0f93c66f7ec9a4e49cdadc93`
-- `carry/main` vs `upstream/main`: `154` ahead, `0` behind
-- Carry-only commits at audit time: `115` non-merge, `39` merge
+- Audited on: `2026-03-20`
+- `upstream/main`: `461ba012fc20449fe2c81230387289abf2e6f0e6`
+- `carry/main`: `85c836acab2f198eaa3551892c1bd6673008541a`
+- `main`: `461ba012fc20449fe2c81230387289abf2e6f0e6`
+- `carry/main` vs `upstream/main`: `160` ahead, `0` behind
+- Carry-only commits at audit time: `119` non-merge, `41` merge
 - Exact-subject upstream matches found during audit: `41`
 
 ## Audit Rules
@@ -37,6 +37,10 @@ live divergence.
   presets.
 - Divergence regression ownership is tracked in
   [`downstream-regression-matrix.md`](/home/grant/mmm/codex/docs/downstream-regression-matrix.md).
+- Field-level native tool-surface deltas are summarized in
+  [`downstream-tool-surface-matrix.md`](/home/grant/mmm/codex/docs/downstream-tool-surface-matrix.md).
+- Future registry-plus-generation maintenance direction is captured in
+  [`downstream-divergence-tracking.md`](/home/grant/mmm/codex/docs/downstream-divergence-tracking.md).
 - Downstream operator workflows prefer MCP tool surfaces with blocking wait
   semantics over transcript-driven polling when the tool contract supports it.
 - Primary files:
@@ -84,19 +88,23 @@ live divergence.
   - `codex-rs/cli/build.rs`
   - `codex-rs/cli/src/main.rs`
 
-### Sub-agent override preservation across role reload
+### Sub-agent orchestration override preservation, inventory metadata, and wait joins
 
-- Upstream already supports explicit `spawn_agent(model=..., reasoning_effort=...)` child overrides; the live carry-only behavior is preserving those requests across role reload unless the role explicitly locks the fields.
+- Upstream already supports explicit `spawn_agent(model=..., reasoning_effort=...)` child overrides; the live carry divergence is preserving those requests across role reload unless the role explicitly locks the fields.
 - Keep downstream itineraries that explicitly call `spawn_agent(model=..., reasoning_effort=...)` aligned with the requested model/economy, even when a role is applied.
 - Roles still control locked models when they explicitly set `model`, `model_provider`, `model_reasoning_effort`, or `model_verbosity`, so downstream policy remains defendable.
-- Spawn-agent result and inventory reporting expose the effective child model/economy after role application, so the surviving setting is visible.
-- The documentation and tooling now spell out the precedence stack for spawn-time overrides.
+- Spawn-agent result and direct-child inventory reporting expose `role`, `status`, `identity_source`, `effective_model`, `effective_reasoning_effort`, and `effective_model_provider_id` after role application, so the surviving setting is visible.
+- `list_agents` is a first-class direct-child inventory tool on `carry/main`.
+- `wait_agent` adds `return_when=any|all` plus `requested_ids`, `pending_ids`, and `completion_reason` so downstream joins happen on explicit tool contracts rather than transcript polling.
 - Primary files:
   - `codex-rs/core/src/agent/role.rs`
-  - `codex-rs/core/src/config/mod.rs`
+  - `codex-rs/core/src/tools/handlers/multi_agents/list_agents.rs`
+  - `codex-rs/core/src/tools/handlers/multi_agents/spawn.rs`
+  - `codex-rs/core/src/tools/handlers/multi_agents/wait.rs`
   - `codex-rs/core/src/tools/handlers/multi_agents_tests.rs`
   - `codex-rs/core/src/tools/spec.rs`
   - `docs/config.md`
+  - `docs/downstream-tool-surface-matrix.md`
 
 ### Dead-Cwd Absolute Path Handling
 

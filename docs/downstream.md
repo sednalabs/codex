@@ -17,11 +17,15 @@ GitHub default branch is `carry/main` so downstream behavior is the repository l
 ## Divergence Summary
 
 This section tracks intentional downstream behavior differences from `upstream/main`.
-Last reviewed: 2026-03-19.
+Last reviewed: 2026-03-20.
 
-Current state at review time:
-- `carry/main` is `154` commits ahead and `0` behind `upstream/main`
-- `main` is currently `101` commits behind `upstream/main` and should be fast-forwarded via `git sync-main`
+Current state at review start:
+- `carry/main` is `160` commits ahead and `0` behind `upstream/main`
+- `main` matches `upstream/main` (`0` ahead, `0` behind)
+
+Supporting docs:
+- [`downstream-tool-surface-matrix.md`](downstream-tool-surface-matrix.md) captures the exact native tool-surface deltas that remain live on `carry/main`.
+- [`downstream-divergence-tracking.md`](downstream-divergence-tracking.md) sketches the next-step registry and generation model for keeping these notes current as the fork grows.
 
 ### Core + protocol: blocking wait for unified exec, stable wait output, and compaction turn-count metadata
 
@@ -80,25 +84,31 @@ User-visible behavior:
 - Builtin tool metadata and namespaced MCP tool metadata are documented and tested against the same imported namespace shape.
 - Downstream code-mode examples therefore differ slightly from upstream examples that still inline `declare const tools: { ... }`.
 
-### Sub-agent override preservation across role reload
+### Sub-agent orchestration: override preservation, richer inventory, and blocking joins
 
 Why:
-- Upstream already supports explicit `spawn_agent(model=..., reasoning_effort=...)` child overrides.
+- Upstream already supports explicit `spawn_agent(model=..., reasoning_effort=...)` child overrides, so the live downstream divergence is narrower than the historical carry title suggests.
 - Preserve those explicit child overrides even when launching a role-backed sub-agent whose role file does not lock model/economy fields, so downstream economical deployments do not drift back to inherited parent-profile defaults during role reload.
-- Let role defaults remain fixed when they intentionally set a model or reasoning effort, making the policy deterministic.
+- Surface the effective resolved child settings directly in the tool layer so operators can see what actually launched.
+- Let downstream multi-agent orchestration block on clear tool contracts (`list_agents`, `wait_agent(return_when=...)`) instead of transcript polling.
 
 User-visible behavior:
 - Explicit child `model`/`reasoning_effort` requests survive role application unless the selected role explicitly sets those fields.
-- The spawn-agent response and inventory snapshot now report the effective `model`/`reasoning_effort` when a role does not lock those fields, so costs and capabilities stay under control.
+- `spawn_agent` returns `role`, `status`, `identity_source`, `effective_model`, `effective_reasoning_effort`, and `effective_model_provider_id` instead of only `agent_id` and `nickname`.
+- `list_agents` is available to inspect direct-child inventory with the same effective-setting metadata.
+- `wait_agent` supports `return_when=any|all` and returns `requested_ids`, `pending_ids`, `completion_reason`, and `timed_out`.
 - Roles that explicitly set `model`, `model_provider`, `model_reasoning_effort`, or `model_verbosity` continue to be authoritative, even when a child requests a different setting.
-- Docs and tooling (e.g., `spawn_agent` spec, `docs/config.md`) now document the precedence stack.
+- Docs and tooling now spell out the precedence stack and the intended `list_agents`-before-`wait_agent` orchestration pattern.
 
 Primary files:
 - `codex-rs/core/src/agent/role.rs`
-- `codex-rs/core/src/config/mod.rs`
+- `codex-rs/core/src/tools/handlers/multi_agents/list_agents.rs`
+- `codex-rs/core/src/tools/handlers/multi_agents/spawn.rs`
+- `codex-rs/core/src/tools/handlers/multi_agents/wait.rs`
 - `codex-rs/core/src/tools/handlers/multi_agents_tests.rs`
 - `codex-rs/core/src/tools/spec.rs`
 - `docs/config.md`
+- `docs/downstream-tool-surface-matrix.md`
 
 ### TUI: safer interrupt handling for Alt/meta terminals (double-`Esc` by default)
 
