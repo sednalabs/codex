@@ -44,6 +44,27 @@ fn function_payloads_remain_function_outputs() {
 }
 
 #[test]
+fn aborted_tool_output_serializes_detailed_shell_abort_message() {
+    let payload = ToolPayload::Function {
+        arguments: "{}".to_string(),
+    };
+    let message = "Wall time: 1.2 seconds\naborted by user".to_string();
+    let response = AbortedToolOutput {
+        message: message.clone(),
+    }
+    .to_response_item("call-1", &payload);
+
+    match response {
+        ResponseInputItem::FunctionCallOutput { call_id, output } => {
+            assert_eq!(call_id, "call-1");
+            assert_eq!(output.body, FunctionCallOutputBody::Text(message));
+            assert_eq!(output.success, Some(false));
+        }
+        other => panic!("expected FunctionCallOutput, got {other:?}"),
+    }
+}
+
+#[test]
 fn mcp_code_mode_result_serializes_full_call_tool_result() {
     let output = CallToolResult {
         content: vec![serde_json::json!({
