@@ -70,6 +70,10 @@ pub(crate) struct ListAgentsResult {
     pub(crate) agents: Vec<ListAgentEntry>,
 }
 
+/// Serialized `list_agents` row.
+///
+/// `status` is live, while `effective_*` and `identity_source` are resolved
+/// inventory metadata from the current config snapshot.
 #[derive(Debug, Serialize)]
 pub(crate) struct ListAgentEntry {
     pub(crate) agent_id: String,

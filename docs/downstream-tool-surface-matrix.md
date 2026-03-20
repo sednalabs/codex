@@ -7,12 +7,12 @@ It intentionally excludes session-only developer wrappers such as
 `multi_tool_use.parallel`; those are runtime conveniences, not fork
 divergences.
 
-Last reviewed: `2026-03-20`
+Last reviewed: `2026-03-21`
 
 Review baseline:
 
-- `upstream/main`: `461ba012fc20449fe2c81230387289abf2e6f0e6`
-- `carry/main`: `85c836acab2f198eaa3551892c1bd6673008541a`
+- `upstream/main`: `e5f4d1fef59a5bef16ae768e3ef7d4c5dc526c9d`
+- `carry/main`: `727b187a328d991c4a56e5a5df13bf3cc084c1a5`
 
 | Surface | `upstream/main` | `carry/main` | Live divergence? | Guardrails |
 | --- | --- | --- | --- | --- |

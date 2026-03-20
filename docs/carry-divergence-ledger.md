@@ -8,12 +8,12 @@ live divergence.
 
 ## Audit Baseline
 
-- Audited on: `2026-03-20`
-- `upstream/main`: `461ba012fc20449fe2c81230387289abf2e6f0e6`
-- `carry/main`: `85c836acab2f198eaa3551892c1bd6673008541a`
-- `main`: `461ba012fc20449fe2c81230387289abf2e6f0e6`
-- `carry/main` vs `upstream/main`: `160` ahead, `0` behind
-- Carry-only commits at audit time: `119` non-merge, `41` merge
+- Audited on: `2026-03-21`
+- `upstream/main`: `e5f4d1fef59a5bef16ae768e3ef7d4c5dc526c9d`
+- `carry/main`: `727b187a328d991c4a56e5a5df13bf3cc084c1a5`
+- `main`: `e5f4d1fef59a5bef16ae768e3ef7d4c5dc526c9d`
+- `carry/main` vs `upstream/main`: `162` ahead, `0` behind
+- Carry-only commits at audit time: `120` non-merge, `42` merge
 - Exact-subject upstream matches found during audit: `41`
 
 ## Audit Rules

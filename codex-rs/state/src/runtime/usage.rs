@@ -46,6 +46,12 @@ struct TokenUsageTotals {
     total_tokens: i64,
 }
 
+/// Tracks usage for one thread plus the lineage anchors that tie it back to the
+/// downstream usage ledger.
+///
+/// `parent_thread_id` is the direct session-source parent, `root_thread_id` is the
+/// canonical persisted lineage root, and `fork_parent_thread_id` preserves explicit
+/// fork ancestry.
 pub struct UsageLogger {
     pool: Arc<SqlitePool>,
     thread_id: ThreadId,
@@ -71,6 +77,8 @@ impl UsageLogger {
     ) -> anyhow::Result<Self> {
         let pool = state.usage_pool();
         let parent_thread_id = Self::parent_thread_from_source(&source);
+        // Reuse the first persisted root we can find so spawned and forked descendants
+        // share one canonical root thread id in `usage_threads`.
         let root_thread_id =
             Self::resolve_root_thread_id(&pool, parent_thread_id.as_ref(), forked_from_id.as_ref())
                 .await?;

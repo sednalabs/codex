@@ -17,10 +17,10 @@ GitHub default branch is `carry/main` so downstream behavior is the repository l
 ## Divergence Summary
 
 This section tracks intentional downstream behavior differences from `upstream/main`.
-Last reviewed: 2026-03-20.
+Last reviewed: 2026-03-21.
 
 Current state at review start:
-- `carry/main` is `160` commits ahead and `0` behind `upstream/main`
+- `carry/main` is `162` commits ahead and `0` behind `upstream/main`
 - `main` matches `upstream/main` (`0` ahead, `0` behind)
 
 Supporting docs:

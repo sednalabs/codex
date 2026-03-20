@@ -43,6 +43,10 @@ pub(crate) struct SpawnAgentOptions {
     pub(crate) fork_parent_spawn_call_id: Option<String>,
 }
 
+/// Internal inventory snapshot for a spawned sub-agent.
+///
+/// `status` is the live agent state, while `effective_*` and `identity_source`
+/// are resolved from the config snapshot used to reconstruct the agent record.
 #[derive(Debug, Clone)]
 pub(crate) struct SubAgentInventoryInfo {
     pub(crate) thread_id: ThreadId,
