@@ -266,7 +266,7 @@ pub use public_widgets::composer_input::ComposerInput;
 pub async fn run_main(
     mut cli: Cli,
     arg0_paths: Arg0DispatchPaths,
-    _loader_overrides: LoaderOverrides,
+    loader_overrides: LoaderOverrides,
 ) -> std::io::Result<AppExitInfo> {
     let (sandbox_mode, approval_policy) = if cli.full_auto {
         (
@@ -569,9 +569,11 @@ pub async fn run_main(
 
     run_ratatui_app(
         cli,
+        arg0_paths,
         config,
         overrides,
         cli_kv_overrides,
+        loader_overrides,
         cloud_requirements,
         feedback,
     )
@@ -582,9 +584,11 @@ pub async fn run_main(
 #[allow(clippy::too_many_arguments)]
 async fn run_ratatui_app(
     cli: Cli,
+    arg0_paths: Arg0DispatchPaths,
     initial_config: Config,
     overrides: ConfigOverrides,
     cli_kv_overrides: Vec<(String, toml::Value)>,
+    loader_overrides: LoaderOverrides,
     mut cloud_requirements: CloudRequirementsLoader,
     feedback: codex_feedback::CodexFeedback,
 ) -> color_eyre::Result<AppExitInfo> {
@@ -985,6 +989,9 @@ async fn run_ratatui_app(
         auth_manager,
         config,
         cli_kv_overrides.clone(),
+        arg0_paths,
+        loader_overrides,
+        cloud_requirements,
         overrides.clone(),
         active_profile,
         prompt,
