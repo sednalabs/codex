@@ -10,10 +10,10 @@ live divergence.
 
 - Audited on: `2026-03-21`
 - `upstream/main`: `e5f4d1fef59a5bef16ae768e3ef7d4c5dc526c9d`
-- `carry/main`: `d24e498b63c64e4539b874d492125f80dd1e5aa4`
+- `carry/main`: `3b77a5588d7e1d58c8ceca1293d137649f788ee6`
 - `main`: `e5f4d1fef59a5bef16ae768e3ef7d4c5dc526c9d`
-- `carry/main` vs `upstream/main`: `170` ahead, `0` behind
-- Carry-only commits at audit time: `128` non-merge, `42` merge
+- `carry/main` vs `upstream/main`: `174` ahead, `0` behind
+- Carry-only commits at audit time: `132` non-merge, `42` merge
 - Exact-subject upstream matches found during audit: `41`
 
 ## Audit Rules
@@ -168,6 +168,8 @@ live divergence.
   files instead of giving up after a short timeout.
 - Repeated startup/config-triggered sync attempts collapse into a single
   in-process waiter until the marker file is written.
+- While that waiter is still pending, later triggers replace the stored
+  config/auth snapshot so the eventual sync uses the latest available inputs.
 - Primary files:
   - `codex-rs/core/src/plugins/startup_sync.rs`
   - `codex-rs/core/src/plugins/startup_sync_tests.rs`
