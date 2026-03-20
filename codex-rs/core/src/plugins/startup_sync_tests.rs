@@ -418,6 +418,78 @@ enabled = false
     assert_eq!(marker_contents, "ok\n");
 }
 
+#[tokio::test]
+async fn startup_remote_plugin_sync_is_single_flight_before_prerequisites_exist() {
+    let tmp = tempdir().expect("tempdir");
+    let curated_root = curated_plugins_repo_path(tmp.path());
+    write_file(
+        &tmp.path().join(CONFIG_TOML_FILE),
+        r#"[features]
+plugins = true
+
+[plugins."linear@openai-curated"]
+enabled = false
+"#,
+    );
+
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/backend-api/plugins/list"))
+        .and(header("authorization", "Bearer Access Token"))
+        .and(header("chatgpt-account-id", "account_id"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_delay(Duration::from_millis(200))
+                .set_body_string(
+                    r#"[
+  {"id":"1","name":"linear","marketplace_name":"openai-curated","version":"1.0.0","enabled":true}
+]"#,
+                ),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let mut config = crate::plugins::test_support::load_plugins_config(tmp.path()).await;
+    config.chatgpt_base_url = format!("{}/backend-api/", server.uri());
+    let manager = Arc::new(PluginsManager::new(tmp.path().to_path_buf()));
+    let auth_manager =
+        AuthManager::from_auth_for_testing(CodexAuth::create_dummy_chatgpt_auth_for_testing());
+
+    start_startup_remote_plugin_sync_once(
+        Arc::clone(&manager),
+        tmp.path().to_path_buf(),
+        config.clone(),
+        Arc::clone(&auth_manager),
+    );
+    start_startup_remote_plugin_sync_once(
+        Arc::clone(&manager),
+        tmp.path().to_path_buf(),
+        config,
+        auth_manager,
+    );
+
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    write_openai_curated_marketplace(&curated_root, &["linear"]);
+    write_curated_plugin_sha(tmp.path());
+
+    let marker_path = tmp.path().join(STARTUP_REMOTE_PLUGIN_SYNC_MARKER_FILE);
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            if marker_path.is_file() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("marker should be written after late prerequisites become available");
+
+    tokio::time::sleep(Duration::from_millis(250)).await;
+    let requests = server.requests().await;
+    assert_eq!(requests.len(), 1, "expected a single remote sync request");
+}
+
 fn curated_repo_zipball_bytes(sha: &str) -> Vec<u8> {
     let cursor = std::io::Cursor::new(Vec::new());
     let mut writer = ZipWriter::new(cursor);

@@ -1,10 +1,13 @@
 use crate::default_client::build_reqwest_client;
+use std::collections::HashSet;
 use std::path::Path;
 use std::path::PathBuf;
 use std::process::Command;
 use std::process::Output;
 use std::process::Stdio;
 use std::sync::Arc;
+use std::sync::Mutex;
+use std::sync::OnceLock;
 use std::time::Duration;
 
 use reqwest::Client;
@@ -28,6 +31,22 @@ const CURATED_PLUGINS_SHA_FILE: &str = ".tmp/plugins.sha";
 const CURATED_PLUGINS_GIT_TIMEOUT: Duration = Duration::from_secs(30);
 const CURATED_PLUGINS_HTTP_TIMEOUT: Duration = Duration::from_secs(30);
 const STARTUP_REMOTE_PLUGIN_SYNC_MARKER_FILE: &str = ".tmp/app-server-remote-plugin-sync-v1";
+static STARTUP_REMOTE_PLUGIN_SYNC_STARTED: OnceLock<Mutex<HashSet<PathBuf>>> = OnceLock::new();
+
+struct StartupRemotePluginSyncStarted {
+    codex_home: PathBuf,
+}
+
+impl Drop for StartupRemotePluginSyncStarted {
+    fn drop(&mut self) {
+        let started = STARTUP_REMOTE_PLUGIN_SYNC_STARTED.get_or_init(|| Mutex::new(HashSet::new()));
+        let mut started = match started.lock() {
+            Ok(guard) => guard,
+            Err(err) => err.into_inner(),
+        };
+        started.remove(&self.codex_home);
+    }
+}
 
 #[derive(Debug, Deserialize)]
 struct GitHubRepositorySummary {
@@ -147,8 +166,25 @@ pub(super) fn start_startup_remote_plugin_sync_once(
     if marker_path.is_file() {
         return;
     }
+    let startup_remote_plugin_sync_started = match {
+        let started = STARTUP_REMOTE_PLUGIN_SYNC_STARTED.get_or_init(|| Mutex::new(HashSet::new()));
+        let mut started = match started.lock() {
+            Ok(guard) => guard,
+            Err(err) => err.into_inner(),
+        };
+        let codex_home = codex_home.clone();
+        if !started.insert(codex_home.clone()) {
+            None
+        } else {
+            Some(StartupRemotePluginSyncStarted { codex_home })
+        }
+    } {
+        Some(startup_remote_plugin_sync_started) => startup_remote_plugin_sync_started,
+        None => return,
+    };
 
     tokio::spawn(async move {
+        let _startup_remote_plugin_sync_started = startup_remote_plugin_sync_started;
         if marker_path.is_file() {
             return;
         }
