@@ -1,5 +1,5 @@
 use crate::default_client::build_reqwest_client;
-use std::collections::HashSet;
+use std::collections::HashMap;
 use std::path::Path;
 use std::path::PathBuf;
 use std::process::Command;
@@ -31,7 +31,15 @@ const CURATED_PLUGINS_SHA_FILE: &str = ".tmp/plugins.sha";
 const CURATED_PLUGINS_GIT_TIMEOUT: Duration = Duration::from_secs(30);
 const CURATED_PLUGINS_HTTP_TIMEOUT: Duration = Duration::from_secs(30);
 const STARTUP_REMOTE_PLUGIN_SYNC_MARKER_FILE: &str = ".tmp/app-server-remote-plugin-sync-v1";
-static STARTUP_REMOTE_PLUGIN_SYNC_STARTED: OnceLock<Mutex<HashSet<PathBuf>>> = OnceLock::new();
+static STARTUP_REMOTE_PLUGIN_SYNC_STATE: OnceLock<
+    Mutex<HashMap<PathBuf, StartupRemotePluginSyncState>>,
+> = OnceLock::new();
+
+struct StartupRemotePluginSyncState {
+    config: Config,
+    auth_manager: Arc<AuthManager>,
+    running: bool,
+}
 
 struct StartupRemotePluginSyncStarted {
     codex_home: PathBuf,
@@ -39,12 +47,12 @@ struct StartupRemotePluginSyncStarted {
 
 impl Drop for StartupRemotePluginSyncStarted {
     fn drop(&mut self) {
-        let started = STARTUP_REMOTE_PLUGIN_SYNC_STARTED.get_or_init(|| Mutex::new(HashSet::new()));
-        let mut started = match started.lock() {
+        let state = STARTUP_REMOTE_PLUGIN_SYNC_STATE.get_or_init(|| Mutex::new(HashMap::new()));
+        let mut state = match state.lock() {
             Ok(guard) => guard,
             Err(err) => err.into_inner(),
         };
-        started.remove(&self.codex_home);
+        state.remove(&self.codex_home);
     }
 }
 
@@ -167,15 +175,25 @@ pub(super) fn start_startup_remote_plugin_sync_once(
         return;
     }
     let startup_remote_plugin_sync_started = match {
-        let started = STARTUP_REMOTE_PLUGIN_SYNC_STARTED.get_or_init(|| Mutex::new(HashSet::new()));
-        let mut started = match started.lock() {
+        let state = STARTUP_REMOTE_PLUGIN_SYNC_STATE.get_or_init(|| Mutex::new(HashMap::new()));
+        let mut state = match state.lock() {
             Ok(guard) => guard,
             Err(err) => err.into_inner(),
         };
-        let codex_home = codex_home.clone();
-        if !started.insert(codex_home.clone()) {
+        let sync_state =
+            state
+                .entry(codex_home.clone())
+                .or_insert_with(|| StartupRemotePluginSyncState {
+                    config: config.clone(),
+                    auth_manager: Arc::clone(&auth_manager),
+                    running: false,
+                });
+        sync_state.config = config;
+        sync_state.auth_manager = auth_manager;
+        if sync_state.running {
             None
         } else {
+            sync_state.running = true;
             Some(StartupRemotePluginSyncStarted { codex_home })
         }
     } {
@@ -194,6 +212,20 @@ pub(super) fn start_startup_remote_plugin_sync_once(
             return;
         }
 
+        let (config, auth_manager) = {
+            let state = STARTUP_REMOTE_PLUGIN_SYNC_STATE.get_or_init(|| Mutex::new(HashMap::new()));
+            let state = match state.lock() {
+                Ok(guard) => guard,
+                Err(err) => err.into_inner(),
+            };
+            let Some(sync_state) = state.get(codex_home.as_path()) else {
+                return;
+            };
+            (
+                sync_state.config.clone(),
+                Arc::clone(&sync_state.auth_manager),
+            )
+        };
         let auth = auth_manager.auth().await;
         match manager
             .sync_plugins_from_remote(&config, auth.as_ref(), /*additive_only*/ true)
