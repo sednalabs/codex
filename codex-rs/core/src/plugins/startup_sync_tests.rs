@@ -486,7 +486,7 @@ enabled = false
     .expect("marker should be written after late prerequisites become available");
 
     tokio::time::sleep(Duration::from_millis(250)).await;
-    let requests = server.requests().await;
+    let requests = server.received_requests().await.unwrap_or_default();
     assert_eq!(requests.len(), 1, "expected a single remote sync request");
 }
 
