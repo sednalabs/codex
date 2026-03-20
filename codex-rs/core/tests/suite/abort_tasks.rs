@@ -1,4 +1,3 @@
-use assert_matches::assert_matches;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -14,7 +13,6 @@ use core_test_support::responses::sse;
 use core_test_support::responses::start_mock_server;
 use core_test_support::test_codex::test_codex;
 use core_test_support::wait_for_event;
-use regex_lite::Regex;
 use serde_json::json;
 
 /// Integration test: spawn a long‑running shell_command tool via a mocked Responses SSE
@@ -143,28 +141,7 @@ async fn interrupt_tool_records_history_entries() {
     let output = response_mock
         .function_call_output_text(call_id)
         .expect("missing function_call_output text");
-    assert!(
-        output.contains("aborted by user"),
-        "expected aborted marker in function_call_output, got {output:?}"
-    );
-    let re = Regex::new(r"Wall time: ([0-9]+(?:\.[0-9]+)?) seconds").expect("compile regex");
-    let captures = re.captures(&output);
-    assert_matches!(
-        captures.as_ref(),
-        Some(caps) if caps.get(1).is_some(),
-        "aborted message with elapsed seconds"
-    );
-    let secs: f32 = captures
-        .expect("aborted message with elapsed seconds")
-        .get(1)
-        .unwrap()
-        .as_str()
-        .parse()
-        .unwrap();
-    assert!(
-        secs >= 0.0,
-        "expected a non-negative elapsed time, got {secs}"
-    );
+    assert_eq!(output, "aborted");
 }
 
 /// After an interrupt we persist a model-visible `<turn_aborted>` marker in the conversation
