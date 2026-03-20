@@ -20,7 +20,7 @@ This section tracks intentional downstream behavior differences from `upstream/m
 Last reviewed: 2026-03-21.
 
 Current state at review start:
-- `carry/main` is `162` commits ahead and `0` behind `upstream/main`
+- `carry/main` is `164` commits ahead and `0` behind `upstream/main`
 - `main` matches `upstream/main` (`0` ahead, `0` behind)
 
 Supporting docs:
@@ -95,7 +95,7 @@ Why:
 User-visible behavior:
 - Explicit child `model`/`reasoning_effort` requests survive role application unless the selected role explicitly sets those fields.
 - `spawn_agent` returns `role`, `status`, `identity_source`, `effective_model`, `effective_reasoning_effort`, and `effective_model_provider_id` instead of only `agent_id` and `nickname`.
-- `list_agents` is available to inspect direct-child inventory with the same effective-setting metadata.
+- `list_agents` is available to inspect direct-child inventory with the same provenance and effective-setting metadata, including `identity_source`.
 - `wait_agent` supports `return_when=any|all` and returns `requested_ids`, `pending_ids`, `completion_reason`, and `timed_out`.
 - Roles that explicitly set `model`, `model_provider`, `model_reasoning_effort`, or `model_verbosity` continue to be authoritative, even when a child requests a different setting.
 - Docs and tooling now spell out the precedence stack and the intended `list_agents`-before-`wait_agent` orchestration pattern.

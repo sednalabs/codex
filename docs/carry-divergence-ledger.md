@@ -10,10 +10,10 @@ live divergence.
 
 - Audited on: `2026-03-21`
 - `upstream/main`: `e5f4d1fef59a5bef16ae768e3ef7d4c5dc526c9d`
-- `carry/main`: `727b187a328d991c4a56e5a5df13bf3cc084c1a5`
+- `carry/main`: `a8d9e4ea8033826104e1cfec8b737da0203029df`
 - `main`: `e5f4d1fef59a5bef16ae768e3ef7d4c5dc526c9d`
-- `carry/main` vs `upstream/main`: `162` ahead, `0` behind
-- Carry-only commits at audit time: `120` non-merge, `42` merge
+- `carry/main` vs `upstream/main`: `164` ahead, `0` behind
+- Carry-only commits at audit time: `122` non-merge, `42` merge
 - Exact-subject upstream matches found during audit: `41`
 
 ## Audit Rules

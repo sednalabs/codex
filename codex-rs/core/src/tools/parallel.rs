@@ -179,3 +179,39 @@ impl ToolCallRuntime {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn tool_call(tool_name: &str) -> ToolCall {
+        ToolCall {
+            tool_name: tool_name.to_string(),
+            tool_namespace: None,
+            call_id: "call-1".to_string(),
+            payload: ToolPayload::Function {
+                arguments: "{}".to_string(),
+            },
+        }
+    }
+
+    #[test]
+    fn abort_message_uses_shell_style_for_shell_like_tools() {
+        let call = tool_call("shell_command");
+
+        assert_eq!(
+            ToolCallRuntime::abort_message(&call, 1.25),
+            "Wall time: 1.2 seconds\naborted by user"
+        );
+    }
+
+    #[test]
+    fn abort_message_uses_generic_style_for_other_tools() {
+        let call = tool_call("spawn_agent");
+
+        assert_eq!(
+            ToolCallRuntime::abort_message(&call, 1.25),
+            "aborted by user after 1.2s"
+        );
+    }
+}
