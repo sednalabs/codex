@@ -12,7 +12,7 @@ Last reviewed: `2026-03-21`
 Review baseline:
 
 - `upstream/main`: `e5f4d1fef59a5bef16ae768e3ef7d4c5dc526c9d`
-- `carry/main`: `a8d9e4ea8033826104e1cfec8b737da0203029df`
+- `carry/main`: `d24e498b63c64e4539b874d492125f80dd1e5aa4`
 
 | Surface | `upstream/main` | `carry/main` | Live divergence? | Guardrails |
 | --- | --- | --- | --- | --- |

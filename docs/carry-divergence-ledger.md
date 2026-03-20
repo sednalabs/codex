@@ -10,10 +10,10 @@ live divergence.
 
 - Audited on: `2026-03-21`
 - `upstream/main`: `e5f4d1fef59a5bef16ae768e3ef7d4c5dc526c9d`
-- `carry/main`: `a8d9e4ea8033826104e1cfec8b737da0203029df`
+- `carry/main`: `d24e498b63c64e4539b874d492125f80dd1e5aa4`
 - `main`: `e5f4d1fef59a5bef16ae768e3ef7d4c5dc526c9d`
-- `carry/main` vs `upstream/main`: `164` ahead, `0` behind
-- Carry-only commits at audit time: `122` non-merge, `42` merge
+- `carry/main` vs `upstream/main`: `170` ahead, `0` behind
+- Carry-only commits at audit time: `128` non-merge, `42` merge
 - Exact-subject upstream matches found during audit: `41`
 
 ## Audit Rules
@@ -161,6 +161,18 @@ live divergence.
   - `codex-rs/core/src/config/edit.rs`
   - `docs/config.md`
   - `docs/downstream.md`
+
+### Startup Plugin Sync Prerequisite Waiting And Single-Flight Guard
+
+- Startup remote plugin sync now waits for the curated marketplace prerequisite
+  files instead of giving up after a short timeout.
+- Repeated startup/config-triggered sync attempts collapse into a single
+  in-process waiter until the marker file is written.
+- Primary files:
+  - `codex-rs/core/src/plugins/startup_sync.rs`
+  - `codex-rs/core/src/plugins/startup_sync_tests.rs`
+  - `docs/downstream.md`
+  - `docs/downstream-regression-matrix.md`
 
 ### TUI Queue, Interrupt, And Weekly-Pacing Behavior
 

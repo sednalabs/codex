@@ -19,8 +19,8 @@ GitHub default branch is `carry/main` so downstream behavior is the repository l
 This section tracks intentional downstream behavior differences from `upstream/main`.
 Last reviewed: 2026-03-21.
 
-Current state at review start:
-- `carry/main` is `164` commits ahead and `0` behind `upstream/main`
+Current state at validated review baseline (`d24e498b6`):
+- `carry/main` is `170` commits ahead and `0` behind `upstream/main`
 - `main` matches `upstream/main` (`0` ahead, `0` behind)
 
 Supporting docs:
@@ -186,6 +186,16 @@ Why:
 User-visible behavior:
 - Auto approval mode continues to use per-session remembered approvals for matching MCP tool calls, including force-prompted calls.
 - Repeated calls can still be approved from the current session memory instead of always re-prompting.
+
+### Core: startup plugin sync waits for late prerequisites and stays single-flight
+
+Why:
+- Upstream startup sync can miss curated marketplace reconciliation when the local curated repo arrives after process startup.
+- Downstream waits for the prerequisite curated marketplace files to appear and collapses repeated in-process triggers into a single sync attempt until the marker is written.
+
+User-visible behavior:
+- Startup remote plugin sync no longer gives up after a short timeout when curated marketplace prerequisites arrive late.
+- Repeated startup/config-triggered sync attempts do not race multiple remote reconciliations inside one process before the startup marker is written.
 
 ### Core tests: unified_exec race-tolerant completed-process polling (test-only)
 
