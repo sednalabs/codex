@@ -2136,6 +2136,41 @@ async fn collab_spawn_end_shows_requested_model_and_effort() {
     );
 }
 
+#[tokio::test]
+async fn raw_response_subagent_notification_renders_history() {
+    let (mut chat, mut rx, _ops) = make_chatwidget_manual(None).await;
+    let payload = serde_json::to_string(&codex_protocol::items::SubagentNotificationItem {
+        agent_id: "agent-123".to_string(),
+        status: codex_protocol::protocol::AgentStatus::Completed(None),
+    })
+    .expect("subagent notification payload");
+
+    chat.handle_codex_event(Event {
+        id: "raw-response-1".into(),
+        msg: EventMsg::RawResponseItem(codex_protocol::protocol::RawResponseItemEvent {
+            item: codex_protocol::models::ResponseItem::Message {
+                id: Some("msg-1".to_string()),
+                role: "user".to_string(),
+                content: vec![codex_protocol::models::ContentItem::InputText {
+                    text: format!("<subagent_notification>{payload}</subagent_notification>"),
+                }],
+                end_turn: None,
+                phase: None,
+            },
+        }),
+    });
+
+    let cells = drain_insert_history(&mut rx);
+    let combined = cells
+        .iter()
+        .map(lines_to_single_string)
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert_snapshot!(combined, @"• Subagent update agent-123
+  └ Completed
+");
+}
+
 fn status_line_text(chat: &ChatWidget) -> Option<String> {
     chat.status_line_text()
 }

@@ -101,6 +101,16 @@
     "allow_extra_args": false
   },
   {
+    "id": "codex.core-subagent-notification-visibility-targeted",
+    "label": "Codex sub-agent notification parser + frontend compile slice",
+    "cwd": ".",
+    "command": [
+      "just",
+      "core-subagent-notification-visibility-targeted"
+    ],
+    "allow_extra_args": false
+  },
+  {
     "id": "codex.core-multi-agent-orchestration-targeted",
     "label": "Codex core multi-agent orchestration targeted slice",
     "cwd": ".",

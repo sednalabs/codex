@@ -113,6 +113,7 @@ use codex_protocol::config_types::Settings;
 use codex_protocol::config_types::WindowsSandboxLevel;
 use codex_protocol::items::AgentMessageContent;
 use codex_protocol::items::AgentMessageItem;
+use codex_protocol::items::parse_subagent_notification_response_item;
 use codex_protocol::models::MessagePhase;
 use codex_protocol::models::local_image_label_text;
 use codex_protocol::parse_command::ParsedCommand;
@@ -5892,6 +5893,17 @@ impl ChatWidget {
             ServerNotification::ItemCompleted(notification) => {
                 self.handle_item_completed_notification(notification, replay_kind);
             }
+            ServerNotification::RawResponseItemCompleted(notification) => {
+                if !from_replay
+                    && let Some(subagent_notification) =
+                        parse_subagent_notification_response_item(&notification.item)
+                {
+                    self.on_collab_event(multi_agents::subagent_notification(
+                        &subagent_notification.agent_id,
+                        &subagent_notification.status,
+                    ));
+                }
+            }
             ServerNotification::AgentMessageDelta(notification) => {
                 self.on_agent_message_delta(notification.delta);
             }
@@ -6076,7 +6088,6 @@ impl ChatWidget {
             | ServerNotification::ThreadStatusChanged(_)
             | ServerNotification::ThreadArchived(_)
             | ServerNotification::ThreadUnarchived(_)
-            | ServerNotification::RawResponseItemCompleted(_)
             | ServerNotification::CommandExecOutputDelta(_)
             | ServerNotification::McpToolCallProgress(_)
             | ServerNotification::McpServerStatusUpdated(_)
@@ -6568,8 +6579,15 @@ impl ChatWidget {
                     });
                 }
             }
-            EventMsg::RawResponseItem(_)
-            | EventMsg::ItemStarted(_)
+            EventMsg::RawResponseItem(ev) => {
+                if let Some(notification) = parse_subagent_notification_response_item(&ev.item) {
+                    self.on_collab_event(multi_agents::subagent_notification(
+                        &notification.agent_id,
+                        &notification.status,
+                    ));
+                }
+            }
+            EventMsg::ItemStarted(_)
             | EventMsg::AgentMessageContentDelta(_)
             | EventMsg::ReasoningContentDelta(_)
             | EventMsg::ReasoningRawContentDelta(_)

@@ -74,6 +74,15 @@ core-subagent-surface-targeted:
     CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo test -p codex-core spawn_agent_preserves_explicit_model_override_across_role_reload --lib -- --exact
     CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo test -p codex-core list_agents_returns_direct_children_with_live_inventory --lib -- --exact
 
+# Focused sub-agent completion-notification parser + frontend compile slice.
+# Keep this runnable on the vintage host while unrelated tui lib test-target
+# drift is repaired separately.
+core-subagent-notification-visibility-targeted:
+    set -euo pipefail
+    cargo test -p codex-protocol parse_subagent_notification_response_item_ --lib -- --test-threads=1
+    cargo build -p codex-tui
+    cargo build -p codex-tui-app-server
+
 # Focused multi-agent orchestration slice covering wait semantics and tool guidance.
 core-multi-agent-orchestration-targeted:
     set -euo pipefail
