@@ -81,6 +81,46 @@
     "allow_extra_args": false
   },
   {
+    "id": "codex.core-startup-sync-targeted",
+    "label": "Codex core startup sync targeted slice",
+    "cwd": ".",
+    "command": [
+      "just",
+      "core-startup-sync-targeted"
+    ],
+    "allow_extra_args": false
+  },
+  {
+    "id": "codex.core-subagent-surface-targeted",
+    "label": "Codex core sub-agent surface targeted slice",
+    "cwd": ".",
+    "command": [
+      "just",
+      "core-subagent-surface-targeted"
+    ],
+    "allow_extra_args": false
+  },
+  {
+    "id": "codex.core-multi-agent-orchestration-targeted",
+    "label": "Codex core multi-agent orchestration targeted slice",
+    "cwd": ".",
+    "command": [
+      "just",
+      "core-multi-agent-orchestration-targeted"
+    ],
+    "allow_extra_args": false
+  },
+  {
+    "id": "codex.core-context-serialization-targeted",
+    "label": "Codex core context serialization targeted slice",
+    "cwd": ".",
+    "command": [
+      "just",
+      "core-context-serialization-targeted"
+    ],
+    "allow_extra_args": false
+  },
+  {
     "id": "codex.core-ledger-smoke",
     "label": "Codex core usage ledger smoke",
     "cwd": ".",
@@ -117,6 +157,16 @@
     "command": [
       "just",
       "downstream-ledger-seam"
+    ],
+    "allow_extra_args": false
+  },
+  {
+    "id": "codex.downstream-docs-check",
+    "label": "Codex downstream docs diff check",
+    "cwd": ".",
+    "command": [
+      "just",
+      "downstream-docs-check"
     ],
     "allow_extra_args": false
   },

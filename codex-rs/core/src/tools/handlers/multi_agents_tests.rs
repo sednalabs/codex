@@ -23,6 +23,7 @@ use crate::tools::context::ToolOutput;
 use crate::turn_diff_tracker::TurnDiffTracker;
 use codex_features::Feature;
 use codex_protocol::ThreadId;
+use codex_protocol::config_types::ReasoningSummary;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::FunctionCallOutputBody;
 use codex_protocol::models::ResponseInputItem;
@@ -108,6 +109,7 @@ struct SpawnAgentResult {
     status: AgentStatus,
     effective_model: Option<String>,
     effective_reasoning_effort: Option<ReasoningEffort>,
+    model_reasoning_summary: Option<ReasoningSummary>,
     effective_model_provider_id: String,
     identity_source: String,
 }
@@ -125,6 +127,7 @@ struct ListAgentEntry {
     status: AgentStatus,
     effective_model: Option<String>,
     effective_reasoning_effort: Option<ReasoningEffort>,
+    model_reasoning_summary: Option<ReasoningSummary>,
     effective_model_provider_id: String,
     identity_source: String,
 }
@@ -272,6 +275,7 @@ async fn spawn_agent_preserves_explicit_model_override_across_role_reload() {
 [profiles.parent]
 model = "gpt-5.4"
 model_reasoning_effort = "high"
+model_reasoning_summary = "detailed"
 "#,
     )
     .await
@@ -341,6 +345,7 @@ model_reasoning_effort = "high"
         result.effective_reasoning_effort,
         Some(ReasoningEffort::Medium)
     );
+    assert_eq!(result.model_reasoning_summary, None);
     assert_eq!(
         inventory_info.effective_model.as_deref(),
         Some("gpt-5.1-codex-mini")
@@ -617,6 +622,7 @@ async fn list_agents_returns_direct_children_with_live_inventory() {
     session.services.agent_control = manager.agent_control();
     let mut config = (*turn.config).clone();
     config.agent_max_depth = DEFAULT_AGENT_MAX_DEPTH + 2;
+    config.model_reasoning_summary = Some(ReasoningSummary::Detailed);
     turn.config = Arc::new(config);
     let session = Arc::new(session);
     let turn = Arc::new(turn);
@@ -736,6 +742,7 @@ async fn list_agents_returns_direct_children_with_live_inventory() {
             entry.effective_reasoning_effort,
             live_inventory.effective_reasoning_effort
         );
+        assert_eq!(entry.model_reasoning_summary, None);
         assert_eq!(
             entry.effective_model_provider_id,
             live_inventory.effective_model_provider_id

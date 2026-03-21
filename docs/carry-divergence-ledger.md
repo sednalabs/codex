@@ -9,11 +9,11 @@ live divergence.
 ## Audit Baseline
 
 - Audited on: `2026-03-21`
-- `upstream/main`: `e5f4d1fef59a5bef16ae768e3ef7d4c5dc526c9d`
-- `carry/main`: `3b77a5588d7e1d58c8ceca1293d137649f788ee6`
-- `main`: `e5f4d1fef59a5bef16ae768e3ef7d4c5dc526c9d`
-- `carry/main` vs `upstream/main`: `174` ahead, `0` behind
-- Carry-only commits at audit time: `132` non-merge, `42` merge
+- `upstream/main`: `e5f4d1fef59a3309339394575052c7cc1fff0996`
+- `carry/main`: `5d474e652d91c7f371a28ad2069cc51a1c5b9ee8`
+- `main`: `e5f4d1fef59a3309339394575052c7cc1fff0996`
+- `carry/main` vs `upstream/main`: `175` ahead, `0` behind
+- Carry-only commits at audit time: `133` non-merge, `42` merge
 - Exact-subject upstream matches found during audit: `41`
 
 ## Audit Rules
@@ -136,6 +136,7 @@ live divergence.
   - `codex-rs/protocol/src/protocol.rs`
   - `codex-rs/core/src/codex.rs`
   - `docs/downstream.md`
+  - `docs/downstream-regression-matrix.md`
 
 ### Review And History Accounting Alignment
 
@@ -162,14 +163,19 @@ live divergence.
   - `docs/config.md`
   - `docs/downstream.md`
 
-### Startup Plugin Sync Prerequisite Waiting And Single-Flight Guard
+### Startup Plugin Sync Bounded Wait And Curated-Repo Completion Re-Arm
 
-- Startup remote plugin sync now waits for the curated marketplace prerequisite
-  files instead of giving up after a short timeout.
-- Repeated startup/config-triggered sync attempts collapse into a single
-  in-process waiter until the marker file is written.
-- While that waiter is still pending, later triggers replace the stored
-  config/auth snapshot so the eventual sync uses the latest available inputs.
+- Startup remote plugin sync keeps the initial curated-marketplace prerequisite
+  wait bounded to the startup race window, then parks the worker instead of
+  dropping the attempt when curated-repo sync is still in flight.
+- Curated-repo completion emits a signal that re-arms the parked worker so the
+  remote reconciliation resumes without a second concurrent sync; that wake now
+  happens on both success and failure paths.
+- While the worker is parked, repeated startup/config-triggered attempts still
+  collapse into a single in-process waiter, and they refresh the stored
+  config/auth snapshot that the eventual reconciliation will use.
+- The resumed reconciliation re-reads the latest snapshot before syncing, so
+  late config/auth updates made during the wait are still applied.
 - Primary files:
   - `codex-rs/core/src/plugins/startup_sync.rs`
   - `codex-rs/core/src/plugins/startup_sync_tests.rs`

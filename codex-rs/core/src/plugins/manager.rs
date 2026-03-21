@@ -18,7 +18,11 @@ use super::remote::enable_remote_plugin;
 use super::remote::fetch_remote_featured_plugin_ids;
 use super::remote::fetch_remote_plugin_status;
 use super::remote::uninstall_remote_plugin;
+use super::startup_sync::abort_startup_remote_plugin_sync;
+use super::startup_sync::signal_startup_remote_plugin_sync_completion;
 use super::startup_sync::start_startup_remote_plugin_sync_once;
+use super::startup_sync::startup_remote_plugin_sync_current_generation;
+use super::startup_sync::startup_remote_plugin_sync_is_active_generation;
 use super::store::DEFAULT_PLUGIN_VERSION;
 use super::store::PluginId;
 use super::store::PluginIdError;
@@ -56,11 +60,17 @@ use std::fs;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
+#[cfg(test)]
+use std::sync::Mutex as StdMutex;
+#[cfg(test)]
+use std::sync::OnceLock;
 use std::sync::RwLock;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
 use std::time::Instant;
 use tokio::sync::Mutex;
+#[cfg(test)]
+use tokio::sync::Notify;
 use toml_edit::value;
 use tracing::info;
 use tracing::warn;
@@ -73,6 +83,18 @@ static CURATED_REPO_SYNC_STARTED: AtomicBool = AtomicBool::new(false);
 const MAX_CAPABILITY_SUMMARY_DESCRIPTION_LEN: usize = 1024;
 const FEATURED_PLUGIN_IDS_CACHE_TTL: std::time::Duration =
     std::time::Duration::from_secs(60 * 60 * 3);
+
+#[cfg(test)]
+#[derive(Clone)]
+struct RemoteSyncTestPause {
+    entered: Arc<Notify>,
+    resume: Arc<Notify>,
+}
+
+#[cfg(test)]
+static STARTUP_REMOTE_PLUGIN_SYNC_TEST_PAUSES: OnceLock<
+    StdMutex<HashMap<PathBuf, RemoteSyncTestPause>>,
+> = OnceLock::new();
 
 #[derive(Clone, PartialEq, Eq)]
 struct FeaturedPluginIdsCacheKey {
@@ -373,6 +395,9 @@ pub struct RemotePluginSyncResult {
 
 #[derive(Debug, thiserror::Error)]
 pub enum PluginRemoteSyncError {
+    #[error("remote plugin sync aborted")]
+    Aborted,
+
     #[error("chatgpt authentication required to sync remote plugins")]
     AuthRequired,
 
@@ -457,6 +482,37 @@ impl From<RemotePluginFetchError> for PluginRemoteSyncError {
             RemotePluginFetchError::Decode { url, source } => Self::Decode { url, source },
         }
     }
+}
+
+#[cfg(test)]
+fn startup_remote_plugin_sync_test_pauses()
+-> &'static StdMutex<HashMap<PathBuf, RemoteSyncTestPause>> {
+    STARTUP_REMOTE_PLUGIN_SYNC_TEST_PAUSES.get_or_init(|| StdMutex::new(HashMap::new()))
+}
+
+#[cfg(test)]
+pub(crate) fn install_startup_remote_plugin_sync_test_pause(
+    codex_home: &Path,
+    entered: Arc<Notify>,
+    resume: Arc<Notify>,
+) {
+    let mut pauses = match startup_remote_plugin_sync_test_pauses().lock() {
+        Ok(guard) => guard,
+        Err(err) => err.into_inner(),
+    };
+    pauses.insert(
+        codex_home.to_path_buf(),
+        RemoteSyncTestPause { entered, resume },
+    );
+}
+
+#[cfg(test)]
+fn take_startup_remote_plugin_sync_test_pause(codex_home: &Path) -> Option<RemoteSyncTestPause> {
+    let mut pauses = match startup_remote_plugin_sync_test_pauses().lock() {
+        Ok(guard) => guard,
+        Err(err) => err.into_inner(),
+    };
+    pauses.remove(codex_home)
 }
 
 pub struct PluginsManager {
@@ -781,6 +837,8 @@ impl PluginsManager {
         additive_only: bool,
     ) -> Result<RemotePluginSyncResult, PluginRemoteSyncError> {
         let _remote_sync_guard = self.remote_sync_lock.lock().await;
+        let startup_remote_plugin_sync_generation =
+            startup_remote_plugin_sync_current_generation(self.codex_home.as_path());
 
         if !config.features.enabled(Feature::Plugins) {
             return Ok(RemotePluginSyncResult::default());
@@ -790,6 +848,19 @@ impl PluginsManager {
         let remote_plugins = fetch_remote_plugin_status(config, auth)
             .await
             .map_err(PluginRemoteSyncError::from)?;
+        #[cfg(test)]
+        if let Some(test_pause) =
+            take_startup_remote_plugin_sync_test_pause(self.codex_home.as_path())
+        {
+            test_pause.entered.notify_one();
+            test_pause.resume.notified().await;
+        }
+        if startup_remote_plugin_sync_generation.is_some_and(|generation| {
+            !startup_remote_plugin_sync_is_active_generation(self.codex_home.as_path(), generation)
+        }) {
+            self.clear_cache();
+            return Err(PluginRemoteSyncError::Aborted);
+        }
         let configured_plugins = configured_plugins_from_stack(&config.config_layer_stack);
         let curated_marketplace_root = curated_plugins_repo_path(self.codex_home.as_path());
         let curated_marketplace_path = AbsolutePathBuf::try_from(
@@ -936,20 +1007,56 @@ impl PluginsManager {
         }
 
         let store = self.store.clone();
+        let codex_home = self.codex_home.clone();
+        if startup_remote_plugin_sync_generation.is_some_and(|generation| {
+            !startup_remote_plugin_sync_is_active_generation(self.codex_home.as_path(), generation)
+        }) {
+            self.clear_cache();
+            return Err(PluginRemoteSyncError::Aborted);
+        }
+
         let store_result = tokio::task::spawn_blocking(move || {
+            let is_still_active = || {
+                startup_remote_plugin_sync_generation.is_none_or(|generation| {
+                    startup_remote_plugin_sync_is_active_generation(
+                        codex_home.as_path(),
+                        generation,
+                    )
+                })
+            };
+
+            if !is_still_active() {
+                return Err(PluginRemoteSyncError::Aborted);
+            }
             for (source_path, plugin_id, plugin_version) in installs {
+                if !is_still_active() {
+                    return Err(PluginRemoteSyncError::Aborted);
+                }
                 store.install_with_version(source_path, plugin_id, plugin_version)?;
             }
             for plugin_id in uninstalls {
+                if !is_still_active() {
+                    return Err(PluginRemoteSyncError::Aborted);
+                }
                 store.uninstall(&plugin_id)?;
             }
-            Ok::<(), PluginStoreError>(())
+            if !is_still_active() {
+                return Err(PluginRemoteSyncError::Aborted);
+            }
+            Ok::<(), PluginRemoteSyncError>(())
         })
         .await
         .map_err(PluginRemoteSyncError::join)?;
         if let Err(err) = store_result {
             self.clear_cache();
-            return Err(err.into());
+            return Err(err);
+        }
+
+        if startup_remote_plugin_sync_generation.is_some_and(|generation| {
+            !startup_remote_plugin_sync_is_active_generation(self.codex_home.as_path(), generation)
+        }) {
+            self.clear_cache();
+            return Err(PluginRemoteSyncError::Aborted);
         }
 
         let config_result = if config_edits.is_empty() {
@@ -960,8 +1067,26 @@ impl PluginsManager {
                 .apply()
                 .await
         };
+        let aborted_after_config =
+            startup_remote_plugin_sync_generation.is_some_and(|generation| {
+                !startup_remote_plugin_sync_is_active_generation(
+                    self.codex_home.as_path(),
+                    generation,
+                )
+            });
         self.clear_cache();
-        config_result?;
+        match config_result {
+            Ok(()) => {}
+            Err(err) => {
+                if aborted_after_config {
+                    return Err(PluginRemoteSyncError::Aborted);
+                }
+                return Err(err.into());
+            }
+        }
+        if aborted_after_config {
+            return Err(PluginRemoteSyncError::Aborted);
+        }
 
         info!(
             marketplace = %marketplace_name,
@@ -1175,21 +1300,19 @@ impl PluginsManager {
         }
         let manager = Arc::clone(self);
         let codex_home = self.codex_home.clone();
+        let spawn_codex_home = codex_home.clone();
         if let Err(err) = std::thread::Builder::new()
             .name("plugins-curated-repo-sync".to_string())
             .spawn(
-                move || match sync_openai_plugins_repo(codex_home.as_path()) {
+                move || match sync_openai_plugins_repo(spawn_codex_home.as_path()) {
                     Ok(curated_plugin_version) => {
-                        match refresh_curated_plugin_cache(
-                            codex_home.as_path(),
+                        match Self::complete_curated_repo_sync_postprocessing(
+                            manager.as_ref(),
+                            spawn_codex_home.as_path(),
                             &curated_plugin_version,
                             &configured_curated_plugin_ids,
                         ) {
-                            Ok(cache_refreshed) => {
-                                if cache_refreshed {
-                                    manager.clear_cache();
-                                }
-                            }
+                            Ok(_) => {}
                             Err(err) => {
                                 manager.clear_cache();
                                 CURATED_REPO_SYNC_STARTED.store(false, Ordering::SeqCst);
@@ -1198,15 +1321,37 @@ impl PluginsManager {
                         }
                     }
                     Err(err) => {
+                        abort_startup_remote_plugin_sync(spawn_codex_home.as_path());
                         CURATED_REPO_SYNC_STARTED.store(false, Ordering::SeqCst);
                         warn!("failed to sync curated plugins repo: {err}");
                     }
                 },
             )
         {
+            abort_startup_remote_plugin_sync(codex_home.as_path());
             CURATED_REPO_SYNC_STARTED.store(false, Ordering::SeqCst);
             warn!("failed to start curated plugins repo sync task: {err}");
         }
+    }
+
+    pub(crate) fn complete_curated_repo_sync_postprocessing(
+        manager: &PluginsManager,
+        codex_home: &Path,
+        curated_plugin_version: &str,
+        configured_curated_plugin_ids: &[PluginId],
+    ) -> Result<bool, String> {
+        let cache_result = refresh_curated_plugin_cache(
+            codex_home,
+            curated_plugin_version,
+            configured_curated_plugin_ids,
+        );
+        if let Ok(cache_refreshed) = &cache_result
+            && *cache_refreshed
+        {
+            manager.clear_cache();
+        }
+        signal_startup_remote_plugin_sync_completion(codex_home);
+        cache_result
     }
 
     fn configured_plugin_states(&self, config: &Config) -> (HashSet<String>, HashSet<String>) {

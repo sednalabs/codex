@@ -88,6 +88,32 @@ fn aborted_tool_output_serializes_mcp_error_result() {
 }
 
 #[test]
+fn aborted_tool_output_serializes_custom_abort_message() {
+    let payload = ToolPayload::Custom {
+        input: "patch".to_string(),
+    };
+    let message = "aborted by user after 1.2s".to_string();
+    let response = AbortedToolOutput {
+        message: message.clone(),
+    }
+    .to_response_item("call-1", &payload);
+
+    match response {
+        ResponseInputItem::CustomToolCallOutput {
+            call_id,
+            name,
+            output,
+        } => {
+            assert_eq!(call_id, "call-1");
+            assert_eq!(name, None);
+            assert_eq!(output.body, FunctionCallOutputBody::Text(message));
+            assert_eq!(output.success, None);
+        }
+        other => panic!("expected CustomToolCallOutput, got {other:?}"),
+    }
+}
+
+#[test]
 fn mcp_code_mode_result_serializes_full_call_tool_result() {
     let output = CallToolResult {
         content: vec![serde_json::json!({

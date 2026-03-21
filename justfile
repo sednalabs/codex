@@ -63,6 +63,30 @@ core-carry-smoke:
     CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo test -p codex-tui queued_inline_slash_command_runs_with_args_after_task_complete -- --exact --test-threads=1
     CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo test -p codex-tui alt_up_restores_most_recent_queued_slash_command -- --exact --test-threads=1
 
+# Focused startup sync regression slice for bounded-wait and abort/re-arm behavior.
+core-startup-sync-targeted:
+    set -euo pipefail
+    cargo test -p codex-core --lib startup_remote_plugin_sync_ -- --test-threads=1
+
+# Focused downstream sub-agent surface contract slice.
+core-subagent-surface-targeted:
+    set -euo pipefail
+    CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo test -p codex-core spawn_agent_preserves_explicit_model_override_across_role_reload --lib -- --exact
+    CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo test -p codex-core list_agents_returns_direct_children_with_live_inventory --lib -- --exact
+
+# Focused multi-agent orchestration slice covering wait semantics and tool guidance.
+core-multi-agent-orchestration-targeted:
+    set -euo pipefail
+    CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo test -p codex-core wait_agent_allows_return_when_ --lib -- --test-threads=1
+    CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo test -p codex-core --test all suite::spawn_agent_description::spawn_wait_and_list_agents_tool_descriptions_have_guidance_updates -- --exact --test-threads=1
+
+# Focused tool-context serialization slice for custom/function/abort outputs.
+core-context-serialization-targeted:
+    set -euo pipefail
+    cargo test -p codex-core tools::context::tests::custom_tool_calls_should_roundtrip_as_custom_outputs --lib -- --exact
+    cargo test -p codex-core tools::context::tests::function_payloads_remain_function_outputs --lib -- --exact
+    cargo test -p codex-core tools::context::tests::aborted_tool_output_serializes_ --lib -- --test-threads=1
+
 # Codex authoritative usage.sqlite logging contracts.
 core-ledger-smoke:
     set -euo pipefail
@@ -81,6 +105,11 @@ downstream-ledger-seam:
     "${LEDGER_REPO_ROOT:-../agent-usage-ledger}/scripts/llm_usage/ingest_codex_rollouts_to_postgres.sh" --schema "${LLM_USAGE_DB_SCHEMA:-llm_usage}" --skip-schema
     "${LEDGER_REPO_ROOT:-../agent-usage-ledger}/scripts/llm_usage/test_codex_copied_history_filter.sh"
     "${LEDGER_REPO_ROOT:-../agent-usage-ledger}/scripts/llm_usage/test_codex_source_row_identity.sh"
+
+[no-cd]
+downstream-docs-check:
+    set -euo pipefail
+    git diff --check -- docs/downstream.md docs/carry-divergence-ledger.md docs/downstream-regression-matrix.md docs/downstream-tool-surface-matrix.md
 
 # Fast smoke checks for fragile codex-core integration buckets.
 core-test-smoke:

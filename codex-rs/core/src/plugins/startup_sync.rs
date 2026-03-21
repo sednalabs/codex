@@ -1,5 +1,6 @@
 use crate::default_client::build_reqwest_client;
 use std::collections::HashMap;
+use std::collections::hash_map::Entry;
 use std::path::Path;
 use std::path::PathBuf;
 use std::process::Command;
@@ -12,6 +13,7 @@ use std::time::Duration;
 
 use reqwest::Client;
 use serde::Deserialize;
+use tokio::sync::Notify;
 use tracing::info;
 use tracing::warn;
 use zip::ZipArchive;
@@ -19,6 +21,7 @@ use zip::ZipArchive;
 use crate::AuthManager;
 use crate::config::Config;
 
+use super::PluginRemoteSyncError;
 use super::PluginsManager;
 
 const GITHUB_API_BASE_URL: &str = "https://api.github.com";
@@ -31,28 +34,45 @@ const CURATED_PLUGINS_SHA_FILE: &str = ".tmp/plugins.sha";
 const CURATED_PLUGINS_GIT_TIMEOUT: Duration = Duration::from_secs(30);
 const CURATED_PLUGINS_HTTP_TIMEOUT: Duration = Duration::from_secs(30);
 const STARTUP_REMOTE_PLUGIN_SYNC_MARKER_FILE: &str = ".tmp/app-server-remote-plugin-sync-v1";
+#[cfg(not(test))]
+const STARTUP_REMOTE_PLUGIN_SYNC_PREREQUISITE_TIMEOUT: Duration = Duration::from_secs(30);
+#[cfg(test)]
+const STARTUP_REMOTE_PLUGIN_SYNC_PREREQUISITE_TIMEOUT: Duration = Duration::from_secs(2);
 static STARTUP_REMOTE_PLUGIN_SYNC_STATE: OnceLock<
     Mutex<HashMap<PathBuf, StartupRemotePluginSyncState>>,
 > = OnceLock::new();
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum StartupRemotePluginSyncPhase {
+    WaitingForPrerequisites,
+    WaitingForCuratedRepoCompletion,
+    Syncing,
+    Aborted,
+}
+
+enum StartupRemotePluginSyncWaitResult {
+    Ready,
+    Signaled,
+    TimedOut,
+}
+
 struct StartupRemotePluginSyncState {
+    generation: u64,
     config: Config,
     auth_manager: Arc<AuthManager>,
-    running: bool,
+    phase: StartupRemotePluginSyncPhase,
+    completion_signal: Arc<Notify>,
+    abort_signal: Arc<Notify>,
 }
 
 struct StartupRemotePluginSyncStarted {
     codex_home: PathBuf,
+    generation: u64,
 }
 
 impl Drop for StartupRemotePluginSyncStarted {
     fn drop(&mut self) {
-        let state = STARTUP_REMOTE_PLUGIN_SYNC_STATE.get_or_init(|| Mutex::new(HashMap::new()));
-        let mut state = match state.lock() {
-            Ok(guard) => guard,
-            Err(err) => err.into_inner(),
-        };
-        state.remove(&self.codex_home);
+        remove_startup_remote_plugin_sync_state(self.codex_home.as_path(), self.generation);
     }
 }
 
@@ -172,67 +192,160 @@ pub(super) fn start_startup_remote_plugin_sync_once(
 ) {
     let marker_path = startup_remote_plugin_sync_marker_path(codex_home.as_path());
     if marker_path.is_file() {
-        return;
-    }
-    let startup_remote_plugin_sync_started = match {
         let state = STARTUP_REMOTE_PLUGIN_SYNC_STATE.get_or_init(|| Mutex::new(HashMap::new()));
         let mut state = match state.lock() {
             Ok(guard) => guard,
             Err(err) => err.into_inner(),
         };
-        let sync_state =
-            state
-                .entry(codex_home.clone())
-                .or_insert_with(|| StartupRemotePluginSyncState {
-                    config: config.clone(),
-                    auth_manager: Arc::clone(&auth_manager),
-                    running: false,
+        state.remove(codex_home.as_path());
+        return;
+    }
+
+    let maybe_started = {
+        let state = STARTUP_REMOTE_PLUGIN_SYNC_STATE.get_or_init(|| Mutex::new(HashMap::new()));
+        let mut state = match state.lock() {
+            Ok(guard) => guard,
+            Err(err) => err.into_inner(),
+        };
+        match state.entry(codex_home.clone()) {
+            Entry::Occupied(mut entry) => {
+                let sync_state = entry.get_mut();
+                if sync_state.phase == StartupRemotePluginSyncPhase::Aborted {
+                    let generation = sync_state.generation + 1;
+                    let completion_signal = Arc::new(Notify::new());
+                    let abort_signal = Arc::new(Notify::new());
+                    *sync_state = StartupRemotePluginSyncState {
+                        generation,
+                        config,
+                        auth_manager,
+                        phase: StartupRemotePluginSyncPhase::WaitingForPrerequisites,
+                        completion_signal: Arc::clone(&completion_signal),
+                        abort_signal: Arc::clone(&abort_signal),
+                    };
+                    Some((
+                        completion_signal,
+                        StartupRemotePluginSyncStarted {
+                            codex_home: codex_home.clone(),
+                            generation,
+                        },
+                    ))
+                } else {
+                    sync_state.config = config;
+                    sync_state.auth_manager = auth_manager;
+                    None
+                }
+            }
+            Entry::Vacant(entry) => {
+                let completion_signal = Arc::new(Notify::new());
+                let abort_signal = Arc::new(Notify::new());
+                entry.insert(StartupRemotePluginSyncState {
+                    generation: 1,
+                    config,
+                    auth_manager,
+                    phase: StartupRemotePluginSyncPhase::WaitingForPrerequisites,
+                    completion_signal: Arc::clone(&completion_signal),
+                    abort_signal: Arc::clone(&abort_signal),
                 });
-        sync_state.config = config;
-        sync_state.auth_manager = auth_manager;
-        if sync_state.running {
-            None
-        } else {
-            sync_state.running = true;
-            Some(StartupRemotePluginSyncStarted {
-                codex_home: codex_home.clone(),
-            })
+                Some((
+                    completion_signal,
+                    StartupRemotePluginSyncStarted {
+                        codex_home: codex_home.clone(),
+                        generation: 1,
+                    },
+                ))
+            }
         }
-    } {
-        Some(startup_remote_plugin_sync_started) => startup_remote_plugin_sync_started,
+    };
+    let (completion_signal, startup_remote_plugin_sync_started) = match maybe_started {
+        Some((completion_signal, startup_remote_plugin_sync_started)) => {
+            (completion_signal, startup_remote_plugin_sync_started)
+        }
         None => return,
     };
 
     tokio::spawn(async move {
-        let _startup_remote_plugin_sync_started = startup_remote_plugin_sync_started;
+        let startup_remote_plugin_sync_started = startup_remote_plugin_sync_started;
+        let generation = startup_remote_plugin_sync_started.generation;
         if marker_path.is_file() {
+            remove_startup_remote_plugin_sync_state(codex_home.as_path(), generation);
             return;
         }
 
-        wait_for_startup_remote_plugin_sync_prerequisites(codex_home.as_path()).await;
+        let wait_result = wait_for_startup_remote_plugin_sync_prerequisites(
+            codex_home.as_path(),
+            &completion_signal,
+        )
+        .await;
+        match wait_result {
+            StartupRemotePluginSyncWaitResult::Ready => {}
+            StartupRemotePluginSyncWaitResult::Signaled => {
+                if startup_remote_plugin_sync_snapshot(codex_home.as_path(), generation).is_none() {
+                    return;
+                }
+                info!(
+                    codex_home = %codex_home.display(),
+                    "resuming startup remote plugin sync after curated repo completion signal"
+                );
+                set_startup_remote_plugin_sync_phase(
+                    codex_home.as_path(),
+                    generation,
+                    StartupRemotePluginSyncPhase::WaitingForCuratedRepoCompletion,
+                );
+                wait_for_startup_remote_plugin_sync_prerequisites_after_completion(
+                    codex_home.as_path(),
+                    marker_path.as_path(),
+                    generation,
+                )
+                .await;
+            }
+            StartupRemotePluginSyncWaitResult::TimedOut => {
+                warn!(
+                    codex_home = %codex_home.display(),
+                    "startup remote plugin sync will resume when curated repo sync completes"
+                );
+                set_startup_remote_plugin_sync_phase(
+                    codex_home.as_path(),
+                    generation,
+                    StartupRemotePluginSyncPhase::WaitingForCuratedRepoCompletion,
+                );
+                wait_for_startup_remote_plugin_sync_completion(&completion_signal).await;
+                wait_for_startup_remote_plugin_sync_prerequisites_after_completion(
+                    codex_home.as_path(),
+                    marker_path.as_path(),
+                    generation,
+                )
+                .await;
+            }
+        }
+        if startup_remote_plugin_sync_snapshot(codex_home.as_path(), generation).is_none() {
+            return;
+        }
         if marker_path.is_file() {
+            remove_startup_remote_plugin_sync_state(codex_home.as_path(), generation);
             return;
         }
 
-        let (config, auth_manager) = {
-            let state = STARTUP_REMOTE_PLUGIN_SYNC_STATE.get_or_init(|| Mutex::new(HashMap::new()));
-            let state = match state.lock() {
-                Ok(guard) => guard,
-                Err(err) => err.into_inner(),
-            };
-            let Some(sync_state) = state.get(codex_home.as_path()) else {
-                return;
-            };
-            (
-                sync_state.config.clone(),
-                Arc::clone(&sync_state.auth_manager),
-            )
+        let Some((config, auth_manager, _abort_signal)) =
+            startup_remote_plugin_sync_snapshot(codex_home.as_path(), generation)
+        else {
+            return;
         };
+        set_startup_remote_plugin_sync_phase(
+            codex_home.as_path(),
+            generation,
+            StartupRemotePluginSyncPhase::Syncing,
+        );
         let auth = auth_manager.auth().await;
-        match manager
+        if startup_remote_plugin_sync_snapshot(codex_home.as_path(), generation).is_none() {
+            return;
+        }
+        let sync_result = manager
             .sync_plugins_from_remote(&config, auth.as_ref(), /*additive_only*/ true)
-            .await
-        {
+            .await;
+        if startup_remote_plugin_sync_snapshot(codex_home.as_path(), generation).is_none() {
+            return;
+        }
+        match sync_result {
             Ok(sync_result) => {
                 info!(
                     installed_plugin_ids = ?sync_result.installed_plugin_ids,
@@ -250,15 +363,68 @@ pub(super) fn start_startup_remote_plugin_sync_once(
                         "failed to persist startup remote plugin sync marker"
                     );
                 }
+                if startup_remote_plugin_sync_snapshot(codex_home.as_path(), generation).is_none() {
+                    if let Err(err) = tokio::fs::remove_file(marker_path.as_path()).await {
+                        warn!(
+                            error = %err,
+                            path = %marker_path.display(),
+                            "failed to remove stale startup remote plugin sync marker"
+                        );
+                    }
+                    return;
+                }
+                remove_startup_remote_plugin_sync_state(codex_home.as_path(), generation);
+            }
+            Err(PluginRemoteSyncError::Aborted) => {
+                remove_startup_remote_plugin_sync_state(codex_home.as_path(), generation);
             }
             Err(err) => {
                 warn!(
                     error = %err,
                     "startup remote plugin sync failed; will retry on next app-server start"
                 );
+                remove_startup_remote_plugin_sync_state(codex_home.as_path(), generation);
             }
         }
     });
+}
+
+pub(super) fn signal_startup_remote_plugin_sync_completion(codex_home: &Path) {
+    let state = STARTUP_REMOTE_PLUGIN_SYNC_STATE.get_or_init(|| Mutex::new(HashMap::new()));
+    let mut state = match state.lock() {
+        Ok(guard) => guard,
+        Err(err) => err.into_inner(),
+    };
+    let Some(sync_state) = state.get_mut(codex_home) else {
+        return;
+    };
+    if sync_state.phase == StartupRemotePluginSyncPhase::Aborted {
+        return;
+    }
+    if sync_state.phase != StartupRemotePluginSyncPhase::Syncing {
+        sync_state.phase = StartupRemotePluginSyncPhase::WaitingForCuratedRepoCompletion;
+    }
+    sync_state.completion_signal.notify_one();
+}
+
+pub(super) fn abort_startup_remote_plugin_sync(codex_home: &Path) {
+    let (completion_signal, abort_signal) = {
+        let state = STARTUP_REMOTE_PLUGIN_SYNC_STATE.get_or_init(|| Mutex::new(HashMap::new()));
+        let mut state = match state.lock() {
+            Ok(guard) => guard,
+            Err(err) => err.into_inner(),
+        };
+        let Some(sync_state) = state.get_mut(codex_home) else {
+            return;
+        };
+        sync_state.phase = StartupRemotePluginSyncPhase::Aborted;
+        (
+            Arc::clone(&sync_state.completion_signal),
+            Arc::clone(&sync_state.abort_signal),
+        )
+    };
+    completion_signal.notify_one();
+    abort_signal.notify_one();
 }
 
 fn startup_remote_plugin_sync_marker_path(codex_home: &Path) -> PathBuf {
@@ -272,9 +438,172 @@ fn startup_remote_plugin_sync_prerequisites_ready(codex_home: &Path) -> bool {
         && codex_home.join(".tmp/plugins.sha").is_file()
 }
 
-async fn wait_for_startup_remote_plugin_sync_prerequisites(codex_home: &Path) {
+fn remove_startup_remote_plugin_sync_state(codex_home: &Path, generation: u64) {
+    let state = STARTUP_REMOTE_PLUGIN_SYNC_STATE.get_or_init(|| Mutex::new(HashMap::new()));
+    let mut state = match state.lock() {
+        Ok(guard) => guard,
+        Err(err) => err.into_inner(),
+    };
+    if state
+        .get(codex_home)
+        .is_some_and(|sync_state| sync_state.generation == generation)
+    {
+        state.remove(codex_home);
+    }
+}
+
+pub(super) fn startup_remote_plugin_sync_current_generation(codex_home: &Path) -> Option<u64> {
+    let state = STARTUP_REMOTE_PLUGIN_SYNC_STATE.get_or_init(|| Mutex::new(HashMap::new()));
+    let state = match state.lock() {
+        Ok(guard) => guard,
+        Err(err) => err.into_inner(),
+    };
+    state
+        .get(codex_home)
+        .map(|sync_state| sync_state.generation)
+}
+
+pub(super) fn startup_remote_plugin_sync_is_active_generation(
+    codex_home: &Path,
+    generation: u64,
+) -> bool {
+    let state = STARTUP_REMOTE_PLUGIN_SYNC_STATE.get_or_init(|| Mutex::new(HashMap::new()));
+    let state = match state.lock() {
+        Ok(guard) => guard,
+        Err(err) => err.into_inner(),
+    };
+    state.get(codex_home).is_some_and(|sync_state| {
+        sync_state.generation == generation
+            && sync_state.phase != StartupRemotePluginSyncPhase::Aborted
+    })
+}
+
+fn startup_remote_plugin_sync_snapshot(
+    codex_home: &Path,
+    generation: u64,
+) -> Option<(Config, Arc<AuthManager>, Arc<Notify>)> {
+    let state = STARTUP_REMOTE_PLUGIN_SYNC_STATE.get_or_init(|| Mutex::new(HashMap::new()));
+    let state = match state.lock() {
+        Ok(guard) => guard,
+        Err(err) => err.into_inner(),
+    };
+    state.get(codex_home).and_then(|sync_state| {
+        if sync_state.generation == generation
+            && sync_state.phase != StartupRemotePluginSyncPhase::Aborted
+        {
+            Some((
+                sync_state.config.clone(),
+                Arc::clone(&sync_state.auth_manager),
+                Arc::clone(&sync_state.abort_signal),
+            ))
+        } else {
+            None
+        }
+    })
+}
+
+#[cfg(test)]
+fn startup_remote_plugin_sync_state_snapshot_for_test(
+    codex_home: &Path,
+) -> Option<(u64, StartupRemotePluginSyncPhase)> {
+    let state = STARTUP_REMOTE_PLUGIN_SYNC_STATE.get_or_init(|| Mutex::new(HashMap::new()));
+    let state = match state.lock() {
+        Ok(guard) => guard,
+        Err(err) => err.into_inner(),
+    };
+    state
+        .get(codex_home)
+        .map(|sync_state| (sync_state.generation, sync_state.phase))
+}
+
+#[cfg(test)]
+fn startup_remote_plugin_sync_install_state_for_test(
+    codex_home: &Path,
+    generation: u64,
+    phase: StartupRemotePluginSyncPhase,
+    config: Config,
+    auth_manager: Arc<AuthManager>,
+) {
+    let state = STARTUP_REMOTE_PLUGIN_SYNC_STATE.get_or_init(|| Mutex::new(HashMap::new()));
+    let mut state = match state.lock() {
+        Ok(guard) => guard,
+        Err(err) => err.into_inner(),
+    };
+    state.insert(
+        codex_home.to_path_buf(),
+        StartupRemotePluginSyncState {
+            generation,
+            config,
+            auth_manager,
+            phase,
+            completion_signal: Arc::new(Notify::new()),
+            abort_signal: Arc::new(Notify::new()),
+        },
+    );
+}
+
+fn set_startup_remote_plugin_sync_phase(
+    codex_home: &Path,
+    generation: u64,
+    phase: StartupRemotePluginSyncPhase,
+) {
+    let state = STARTUP_REMOTE_PLUGIN_SYNC_STATE.get_or_init(|| Mutex::new(HashMap::new()));
+    let mut state = match state.lock() {
+        Ok(guard) => guard,
+        Err(err) => err.into_inner(),
+    };
+    if let Some(sync_state) = state.get_mut(codex_home)
+        && sync_state.generation == generation
+    {
+        sync_state.phase = phase;
+    }
+}
+
+async fn wait_for_startup_remote_plugin_sync_prerequisites(
+    codex_home: &Path,
+    completion_signal: &Arc<Notify>,
+) -> StartupRemotePluginSyncWaitResult {
+    let deadline = tokio::time::Instant::now() + STARTUP_REMOTE_PLUGIN_SYNC_PREREQUISITE_TIMEOUT;
+    let notified = completion_signal.notified();
+    tokio::pin!(notified);
     loop {
         if startup_remote_plugin_sync_prerequisites_ready(codex_home) {
+            return StartupRemotePluginSyncWaitResult::Ready;
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return StartupRemotePluginSyncWaitResult::TimedOut;
+        }
+        // Register the wake before entering `select!` so a completion signal
+        // cannot be lost if the sleep branch wins the race.
+        notified.as_mut().enable();
+        tokio::select! {
+            _ = &mut notified => {
+                return StartupRemotePluginSyncWaitResult::Signaled;
+            }
+            _ = tokio::time::sleep(Duration::from_millis(50)) => {}
+        }
+    }
+}
+
+async fn wait_for_startup_remote_plugin_sync_completion(completion_signal: &Arc<Notify>) {
+    completion_signal.notified().await;
+}
+
+async fn wait_for_startup_remote_plugin_sync_prerequisites_after_completion(
+    codex_home: &Path,
+    marker_path: &Path,
+    generation: u64,
+) {
+    loop {
+        if marker_path.is_file() {
+            return;
+        }
+        if startup_remote_plugin_sync_prerequisites_ready(codex_home)
+            && startup_remote_plugin_sync_snapshot(codex_home, generation).is_some()
+        {
+            return;
+        }
+        if startup_remote_plugin_sync_snapshot(codex_home, generation).is_none() {
             return;
         }
         tokio::time::sleep(Duration::from_millis(50)).await;

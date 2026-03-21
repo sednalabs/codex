@@ -19,8 +19,8 @@ GitHub default branch is `carry/main` so downstream behavior is the repository l
 This section tracks intentional downstream behavior differences from `upstream/main`.
 Last reviewed: 2026-03-21.
 
-Current state at validated review baseline (`3b77a5588`):
-- `carry/main` is `174` commits ahead and `0` behind `upstream/main`
+Current state at validated review baseline (`5d474e652d91c7f371a28ad2069cc51a1c5b9ee8`):
+- `carry/main` is `175` commits ahead and `0` behind `upstream/main`
 - `main` matches `upstream/main` (`0` ahead, `0` behind)
 
 Supporting docs:
@@ -41,6 +41,7 @@ User-visible behavior:
 - `write_stdin` still requires `chars` to be empty when `wait_until_terminal=true`.
 - Wait-timeout notes are appended to emitted `raw_output`, and token accounting is derived from the final response text.
 - `TurnCompleteEvent` includes `compaction_events_in_turn`.
+- Guardrails for the carry-only turn-complete compaction count currently live in `codex.app-server-protocol-test` (`preserves_compaction_only_turn`) plus broader `TurnCompleteEvent` shape coverage in `codex-core`, `codex-exec`, and `codex-tui` tests.
 - In downstream operator environments, this pairs cleanly with other blocking coordination primitives such as `wait_agent` and build-helper `*_and_wait` flows, so agents can wait on real state transitions instead of spinning on repeated status polls.
 - This downstream blocking MCP tool pattern predates fully operational task support and exists specifically so the tool layer, not the transcript, absorbs the wait.
 
@@ -93,8 +94,9 @@ Why:
 - Let downstream multi-agent orchestration block on clear tool contracts (`list_agents`, `wait_agent(return_when=...)`) instead of transcript polling.
 
 User-visible behavior:
-- Explicit child `model`/`reasoning_effort` requests survive role application unless the selected role explicitly sets those fields.
-- `spawn_agent` returns `role`, `status`, `identity_source`, `effective_model`, `effective_reasoning_effort`, and `effective_model_provider_id` instead of only `agent_id` and `nickname`.
+- Explicit child `model` and `model_reasoning_effort` requests survive role application unless the selected role explicitly sets those fields or locks the summary, and the `model_reasoning_summary` is preserved internally so downstream metadata can keep the intended reasoning context even though it is not part of the tool response.
+- `spawn_agent` returns `role`, `status`, `identity_source`, `effective_model`, `effective_reasoning_effort`, and `effective_model_provider_id`, letting operators see the resolved settings that actually launched after the role/profile overrides. That preserved `model_reasoning_summary` stays available through our internal metadata, not the raw tool response or inventory fields.
+- Active-profile updates (parent/session config/role) that set `model`, `model_reasoning_summary`, or `model_reasoning_effort` continue to override child requests; the precedence stack is role-defined fields > active profile overrides > child requests, and `core/src/agent/role.rs` contains the precise logic we rely on.
 - `list_agents` is available to inspect direct-child inventory with the same provenance and effective-setting metadata, including `identity_source`.
 - `wait_agent` supports `return_when=any|all` and returns `requested_ids`, `pending_ids`, `completion_reason`, and `timed_out`.
 - Roles that explicitly set `model`, `model_provider`, `model_reasoning_effort`, or `model_verbosity` continue to be authoritative, even when a child requests a different setting.
@@ -187,16 +189,18 @@ User-visible behavior:
 - Auto approval mode continues to use per-session remembered approvals for matching MCP tool calls, including force-prompted calls.
 - Repeated calls can still be approved from the current session memory instead of always re-prompting.
 
-### Core: startup plugin sync waits for late prerequisites and stays single-flight
+### Core: startup plugin sync uses a bounded race window and a curated-repo completion signal
 
 Why:
-- Upstream startup sync can miss curated marketplace reconciliation when the local curated repo arrives after process startup.
-- Downstream waits for the prerequisite curated marketplace files to appear and collapses repeated in-process triggers into a single sync attempt until the marker is written.
+- Upstream startup sync can miss curated marketplace reconciliation when the local curated repo finishes after process startup.
+- Downstream keeps the initial startup wait bounded to the curated-repo sync window, then parks the single-flight worker until curated-repo completion explicitly re-arms it.
 
 User-visible behavior:
-- Startup remote plugin sync no longer gives up after a short timeout when curated marketplace prerequisites arrive late.
-- Repeated startup/config-triggered sync attempts do not race multiple remote reconciliations inside one process before the startup marker is written.
-- While that single-flight waiter is still pending, newer startup/config-triggered attempts refresh the stored config and auth snapshot so the eventual reconciliation uses the latest inputs rather than stale ones.
+- Startup remote plugin sync waits up to 30 seconds for curated marketplace prerequisites during the startup race window.
+- If curated-repo sync finishes after that window, the existing worker is re-armed by a completion signal and resumes using the latest stored config/auth snapshot.
+- That completion signal now fires on both curated-repo success and failure paths.
+- Repeated startup/config-triggered sync attempts still collapse into a single in-process reconciliation per `codex_home`, so the remote sync does not run concurrently in duplicate.
+- If curated-repo sync has not completed yet, the worker stays parked waiting for completion instead of dropping the attempt and missing the eventual reconciliation.
 
 ### Core tests: unified_exec race-tolerant completed-process polling (test-only)
 
