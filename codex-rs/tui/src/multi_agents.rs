@@ -369,6 +369,21 @@ pub(crate) fn resume_end(ev: CollabResumeEndEvent) -> PlainHistoryCell {
     )
 }
 
+pub(crate) fn subagent_notification(agent_id: &str, status: &AgentStatus) -> PlainHistoryCell {
+    let mut spans = vec![Span::from("Subagent update ").bold()];
+    if let Ok(thread_id) = ThreadId::from_string(agent_id) {
+        spans.extend(agent_label_spans(AgentLabel {
+            thread_id: Some(thread_id),
+            nickname: None,
+            role: None,
+        }));
+    } else {
+        spans.push(Span::from(agent_id.to_string()).cyan());
+    }
+
+    collab_event(title_spans_line(spans), vec![status_summary_line(status)])
+}
+
 fn collab_event(title: Line<'static>, details: Vec<Line<'static>>) -> PlainHistoryCell {
     let mut lines: Vec<Line<'static>> = vec![title];
     if !details.is_empty() {

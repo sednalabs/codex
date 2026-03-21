@@ -34,6 +34,7 @@ use codex_app_server_protocol::ItemGuardianApprovalReviewStartedNotification;
 use codex_app_server_protocol::ItemStartedNotification;
 use codex_app_server_protocol::PatchApplyStatus as AppServerPatchApplyStatus;
 use codex_app_server_protocol::PatchChangeKind;
+use codex_app_server_protocol::RawResponseItemCompletedNotification;
 use codex_app_server_protocol::ServerNotification;
 use codex_app_server_protocol::ThreadClosedNotification;
 use codex_app_server_protocol::ThreadItem as AppServerThreadItem;
@@ -4458,6 +4459,42 @@ async fn live_app_server_collab_spawn_completed_renders_requested_model_and_effo
         "app_server_collab_spawn_completed_renders_requested_model_and_effort",
         combined
     );
+}
+
+#[tokio::test]
+async fn live_app_server_raw_response_subagent_notification_renders_history() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(None).await;
+    let payload = serde_json::to_string(&codex_protocol::items::SubagentNotificationItem {
+        agent_id: "agent-123".to_string(),
+        status: codex_protocol::protocol::AgentStatus::Running,
+    })
+    .expect("subagent notification payload");
+
+    chat.handle_server_notification(
+        ServerNotification::RawResponseItemCompleted(RawResponseItemCompletedNotification {
+            thread_id: "thread-1".to_string(),
+            turn_id: "turn-1".to_string(),
+            item: codex_protocol::models::ResponseItem::Message {
+                id: Some("msg-1".to_string()),
+                role: "user".to_string(),
+                content: vec![codex_protocol::models::ContentItem::InputText {
+                    text: format!("<subagent_notification>{payload}</subagent_notification>"),
+                }],
+                end_turn: None,
+                phase: None,
+            },
+        }),
+        None,
+    );
+
+    let combined = drain_insert_history(&mut rx)
+        .into_iter()
+        .map(|lines| lines_to_single_string(&lines))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert_snapshot!(combined, @"• Subagent update agent-123
+  └ Running
+");
 }
 
 #[tokio::test]

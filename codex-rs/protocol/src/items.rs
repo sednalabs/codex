@@ -6,6 +6,7 @@ use crate::models::WebSearchAction;
 use crate::protocol::AgentMessageEvent;
 use crate::protocol::AgentReasoningEvent;
 use crate::protocol::AgentReasoningRawContentEvent;
+use crate::protocol::AgentStatus;
 use crate::protocol::ContextCompactedEvent;
 use crate::protocol::EventMsg;
 use crate::protocol::ImageGenerationEndEvent;
@@ -55,6 +56,12 @@ pub struct HookPromptFragment {
     pub hook_run_id: String,
 }
 
+#[derive(Debug, Clone, Deserialize, Serialize, TS, JsonSchema, PartialEq, Eq)]
+pub struct SubagentNotificationItem {
+    pub agent_id: String,
+    pub status: AgentStatus,
+}
+
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(rename = "hook_prompt")]
 struct HookPromptXml {
@@ -63,6 +70,9 @@ struct HookPromptXml {
     #[serde(rename = "$text")]
     text: String,
 }
+
+const SUBAGENT_NOTIFICATION_OPEN_TAG: &str = "<subagent_notification>";
+const SUBAGENT_NOTIFICATION_CLOSE_TAG: &str = "</subagent_notification>";
 
 #[derive(Debug, Clone, Deserialize, Serialize, TS, JsonSchema)]
 #[serde(tag = "type")]
@@ -301,6 +311,51 @@ pub fn parse_hook_prompt_fragment(text: &str) -> Option<HookPromptFragment> {
     Some(HookPromptFragment { text, hook_run_id })
 }
 
+pub fn parse_subagent_notification_response_item(
+    item: &ResponseItem,
+) -> Option<SubagentNotificationItem> {
+    let ResponseItem::Message { role, content, .. } = item else {
+        return None;
+    };
+    if role != "user" {
+        return None;
+    }
+
+    let mut parsed = None;
+    for content_item in content {
+        let text = match content_item {
+            ContentItem::InputText { text } | ContentItem::OutputText { text } => text,
+            ContentItem::InputImage { .. } => return None,
+        };
+        let item = parse_subagent_notification_fragment(text)?;
+        if parsed.replace(item).is_some() {
+            return None;
+        }
+    }
+
+    parsed
+}
+
+fn parse_subagent_notification_fragment(text: &str) -> Option<SubagentNotificationItem> {
+    let trimmed = text.trim();
+    let lower_trimmed = trimmed.to_ascii_lowercase();
+    if !lower_trimmed.starts_with(SUBAGENT_NOTIFICATION_OPEN_TAG)
+        || !lower_trimmed.ends_with(SUBAGENT_NOTIFICATION_CLOSE_TAG)
+    {
+        return None;
+    }
+
+    let payload_start = SUBAGENT_NOTIFICATION_OPEN_TAG.len();
+    let payload_end = trimmed.len() - SUBAGENT_NOTIFICATION_CLOSE_TAG.len();
+    let payload = trimmed.get(payload_start..payload_end)?.trim();
+    let parsed: SubagentNotificationItem = serde_json::from_str(payload).ok()?;
+    if parsed.agent_id.trim().is_empty() {
+        return None;
+    }
+
+    Some(parsed)
+}
+
 fn serialize_hook_prompt_fragment(text: &str, hook_run_id: &str) -> Option<String> {
     if hook_run_id.trim().is_empty() {
         return None;
@@ -444,5 +499,72 @@ mod tests {
                 hook_run_id: "hook-run-1".to_string(),
             }
         );
+    }
+
+    #[test]
+    fn parse_subagent_notification_response_item_accepts_case_insensitive_tag() {
+        let payload = serde_json::to_string(&SubagentNotificationItem {
+            agent_id: "agent-123".to_string(),
+            status: AgentStatus::Running,
+        })
+        .expect("subagent notification payload");
+        let item = ResponseItem::Message {
+            id: Some("msg-1".to_string()),
+            role: "user".to_string(),
+            content: vec![ContentItem::InputText {
+                text: format!("<SUBAGENT_NOTIFICATION>{payload}</subagent_notification>"),
+            }],
+            end_turn: None,
+            phase: None,
+        };
+
+        assert_eq!(
+            parse_subagent_notification_response_item(&item),
+            Some(SubagentNotificationItem {
+                agent_id: "agent-123".to_string(),
+                status: AgentStatus::Running,
+            })
+        );
+    }
+
+    #[test]
+    fn parse_subagent_notification_response_item_accepts_completed_status_payload() {
+        let payload = serde_json::to_string(&SubagentNotificationItem {
+            agent_id: "agent-123".to_string(),
+            status: AgentStatus::Completed(None),
+        })
+        .expect("subagent notification payload");
+        let item = ResponseItem::Message {
+            id: Some("msg-1".to_string()),
+            role: "user".to_string(),
+            content: vec![ContentItem::InputText {
+                text: format!("<subagent_notification>{payload}</subagent_notification>"),
+            }],
+            end_turn: None,
+            phase: None,
+        };
+
+        assert_eq!(
+            parse_subagent_notification_response_item(&item),
+            Some(SubagentNotificationItem {
+                agent_id: "agent-123".to_string(),
+                status: AgentStatus::Completed(None),
+            })
+        );
+    }
+
+    #[test]
+    fn parse_subagent_notification_response_item_rejects_non_notification_messages() {
+        let item = ResponseItem::Message {
+            id: Some("msg-1".to_string()),
+            role: "user".to_string(),
+            content: vec![ContentItem::InputText {
+                text: "hello world".to_string(),
+            }],
+            end_turn: None,
+            phase: None,
+        };
+
+        assert_eq!(parse_subagent_notification_response_item(&item), None);
     }
 }

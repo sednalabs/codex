@@ -85,6 +85,7 @@ use codex_protocol::approvals::ExecApprovalRequestEvent;
 use codex_protocol::config_types::Personality;
 #[cfg(target_os = "windows")]
 use codex_protocol::config_types::WindowsSandboxLevel;
+use codex_protocol::items::parse_subagent_notification_response_item;
 use codex_protocol::openai_models::ModelAvailabilityNux;
 use codex_protocol::openai_models::ModelPreset;
 use codex_protocol::openai_models::ModelUpgrade;
@@ -483,10 +484,14 @@ struct ThreadEventStore {
 
 impl ThreadEventStore {
     fn event_survives_session_refresh(event: &ThreadBufferedEvent) -> bool {
-        matches!(
-            event,
-            ThreadBufferedEvent::Request(_) | ThreadBufferedEvent::LegacyWarning(_)
-        )
+        match event {
+            ThreadBufferedEvent::Request(_) | ThreadBufferedEvent::LegacyWarning(_) => true,
+            ThreadBufferedEvent::Notification(notification) => {
+                is_replay_safe_subagent_completion_notification(notification)
+            }
+            ThreadBufferedEvent::HistoryEntryResponse(_)
+            | ThreadBufferedEvent::LegacyRollback { .. } => false,
+        }
     }
 
     fn new(capacity: usize) -> Self {
@@ -4829,9 +4834,16 @@ impl App {
 
     fn handle_thread_event_replay(&mut self, event: ThreadBufferedEvent) {
         match event {
-            ThreadBufferedEvent::Notification(notification) => self
-                .chat_widget
-                .handle_server_notification(notification, Some(ReplayKind::ThreadSnapshot)),
+            ThreadBufferedEvent::Notification(notification) => {
+                let replay_kind = if is_replay_safe_subagent_completion_notification(&notification)
+                {
+                    None
+                } else {
+                    Some(ReplayKind::ThreadSnapshot)
+                };
+                self.chat_widget
+                    .handle_server_notification(notification, replay_kind);
+            }
             ThreadBufferedEvent::Request(request) => self
                 .chat_widget
                 .handle_server_request(request, Some(ReplayKind::ThreadSnapshot)),
@@ -5206,6 +5218,15 @@ impl App {
                 });
             }
         });
+    }
+}
+
+fn is_replay_safe_subagent_completion_notification(notification: &ServerNotification) -> bool {
+    match notification {
+        ServerNotification::RawResponseItemCompleted(notification) => {
+            parse_subagent_notification_response_item(&notification.item).is_some()
+        }
+        _ => false,
     }
 }
 
@@ -5960,6 +5981,37 @@ mod tests {
         }
 
         assert!(saw_warning, "expected replayed legacy warning history cell");
+    }
+
+    #[tokio::test]
+    async fn replay_thread_snapshot_replays_subagent_completion_notification_history() {
+        let (mut app, mut app_event_rx, _op_rx) = make_test_app_with_channels().await;
+        let thread_id = ThreadId::new();
+
+        app.replay_thread_snapshot(
+            ThreadEventSnapshot {
+                session: None,
+                turns: Vec::new(),
+                events: vec![ThreadBufferedEvent::Notification(
+                    subagent_completion_raw_response_notification(thread_id, "turn-1", "agent-123"),
+                )],
+                input_state: None,
+            },
+            false,
+        );
+
+        let mut saw_subagent_update = false;
+        while let Ok(event) = app_event_rx.try_recv() {
+            if let AppEvent::InsertHistoryCell(cell) = event {
+                let transcript = lines_to_single_string(&cell.transcript_lines(80));
+                saw_subagent_update |= transcript.contains("Subagent update agent-123");
+            }
+        }
+
+        assert!(
+            saw_subagent_update,
+            "expected replayed subagent completion notification history cell"
+        );
     }
 
     #[tokio::test]
@@ -8016,6 +8068,32 @@ guardian_approval = true
         })
     }
 
+    fn subagent_completion_raw_response_notification(
+        thread_id: ThreadId,
+        turn_id: &str,
+        agent_id: &str,
+    ) -> ServerNotification {
+        let payload = serde_json::to_string(&codex_protocol::items::SubagentNotificationItem {
+            agent_id: agent_id.to_string(),
+            status: codex_protocol::protocol::AgentStatus::Completed(None),
+        })
+        .expect("subagent notification payload");
+        let text = format!("<subagent_notification>{payload}</subagent_notification>");
+        ServerNotification::RawResponseItemCompleted(
+            codex_app_server_protocol::RawResponseItemCompletedNotification {
+                thread_id: thread_id.to_string(),
+                turn_id: turn_id.to_string(),
+                item: codex_protocol::models::ResponseItem::Message {
+                    id: Some("raw-response-item".to_string()),
+                    role: "user".to_string(),
+                    content: vec![codex_protocol::models::ContentItem::InputText { text }],
+                    end_turn: None,
+                    phase: None,
+                },
+            },
+        )
+    }
+
     fn exec_approval_request(
         thread_id: ThreadId,
         turn_id: &str,
@@ -8106,6 +8184,28 @@ guardian_approval = true
         let snapshot = store.snapshot();
         assert!(snapshot.events.is_empty());
         assert_eq!(store.has_pending_thread_approvals(), false);
+    }
+
+    #[test]
+    fn thread_event_store_rebase_preserves_subagent_completion_notification() {
+        let thread_id = ThreadId::new();
+        let mut store = ThreadEventStore::new(8);
+        store.push_notification(subagent_completion_raw_response_notification(
+            thread_id,
+            "turn-1",
+            "agent-123",
+        ));
+
+        store.rebase_buffer_after_session_refresh();
+
+        let snapshot = store.snapshot();
+        assert_eq!(snapshot.events.len(), 1);
+        assert!(matches!(
+            snapshot.events.first(),
+            Some(ThreadBufferedEvent::Notification(
+                ServerNotification::RawResponseItemCompleted(_)
+            ))
+        ));
     }
 
     #[test]
