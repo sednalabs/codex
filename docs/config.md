@@ -74,8 +74,8 @@ The config lives under `[memories]` in `config.toml`. The main knobs are:
 - `generate_memories`
 - `use_memories`
 - `no_memories_if_mcp_or_web_search`
-- `extract_model`
-- `consolidation_model`
+- `extract_model` defaults to `gpt-5.1-codex-mini` with `Low` reasoning effort when unset
+- `consolidation_model` defaults to `gpt-5.3-codex` with `Medium` reasoning effort when unset
 - `max_rollout_age_days`
 - `min_rollout_idle_hours`
 - `max_rollouts_per_startup`
