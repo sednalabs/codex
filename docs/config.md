@@ -63,6 +63,25 @@ source rather than the primary accounting record for newly patched clients.
 If you need to inspect the local usage store directly, point SQLite tooling at
 `$CODEX_SQLITE_HOME/usage.sqlite` or the equivalent file under `sqlite_home`.
 
+## Memories
+
+Codex also has a local memory pipeline that runs at session startup and writes
+bounded memory artifacts under `~/.codex/memories`. See
+[Memories](./memories.md) for the behavior and retention model.
+
+The config lives under `[memories]` in `config.toml`. The main knobs are:
+
+- `generate_memories`
+- `use_memories`
+- `no_memories_if_mcp_or_web_search`
+- `extract_model`
+- `consolidation_model`
+- `max_rollout_age_days`
+- `min_rollout_idle_hours`
+- `max_rollouts_per_startup`
+- `max_raw_memories_for_consolidation`
+- `max_unused_days`
+
 ## Custom CA Certificates
 
 Codex can trust a custom root CA bundle for outbound HTTPS and secure websocket
