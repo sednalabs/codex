@@ -97,6 +97,11 @@ core-multi-agent-orchestration-targeted:
     CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo test -p codex-core wait_agent_allows_return_when_ --lib -- --test-threads=1
     CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo test -p codex-core --test all suite::spawn_agent_description::spawn_wait_and_list_agents_tool_descriptions_have_guidance_updates -- --exact --test-threads=1
 
+# Focused persisted-descendant inventory slice for subtree close/resume behavior.
+core-persisted-subagent-descendants-targeted:
+    set -euo pipefail
+    cargo test -p codex-core persisted_spawn_descendants_reflect_closed_status --lib -- --test-threads=1
+
 # Focused tool-context serialization slice for custom/function/abort outputs.
 core-context-serialization-targeted:
     set -euo pipefail

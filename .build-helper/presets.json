@@ -131,6 +131,16 @@
     "allow_extra_args": false
   },
   {
+    "id": "codex.core-persisted-subagent-descendants-targeted",
+    "label": "Codex core persisted subagent descendants targeted slice",
+    "cwd": ".",
+    "command": [
+      "just",
+      "core-persisted-subagent-descendants-targeted"
+    ],
+    "allow_extra_args": false
+  },
+  {
     "id": "codex.core-context-serialization-targeted",
     "label": "Codex core context serialization targeted slice",
     "cwd": ".",

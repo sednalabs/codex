@@ -809,6 +809,28 @@ impl AgentControl {
         }
     }
 
+    #[cfg(test)]
+    /// Enumerate persisted descendants and filter them by the desired spawn-edge status.
+    pub(crate) async fn list_persisted_subagent_descendants(
+        &self,
+        root_thread_id: ThreadId,
+        status: DirectionalThreadSpawnEdgeStatus,
+    ) -> CodexResult<Vec<ThreadId>> {
+        let state = self.upgrade()?;
+        let thread = state.get_thread(root_thread_id).await?;
+        let Some(state_db_ctx) = thread.state_db() else {
+            return Ok(Vec::new());
+        };
+        state_db_ctx
+            .list_thread_spawn_descendants_with_status(root_thread_id, status)
+            .await
+            .map_err(|err| {
+                CodexErr::Fatal(format!(
+                    "failed to list persisted thread-spawn descendants for {root_thread_id}: {err}"
+                ))
+            })
+    }
+
     async fn live_thread_spawn_descendants(
         &self,
         root_thread_id: ThreadId,
@@ -876,6 +898,7 @@ mod tests {
     use codex_protocol::protocol::TurnAbortedEvent;
     use codex_protocol::protocol::TurnCompleteEvent;
     use codex_protocol::protocol::TurnStartedEvent;
+    use codex_state::DirectionalThreadSpawnEdgeStatus;
     use pretty_assertions::assert_eq;
     use tempfile::TempDir;
     use tokio::time::Duration;
@@ -996,6 +1019,42 @@ mod tests {
             }
         };
         timeout(Duration::from_secs(2), wait).await.is_ok()
+    }
+
+    async fn persist_thread_for_tree_resume(thread: &Arc<CodexThread>, message: &str) {
+        thread
+            .inject_user_message_without_turn(message.to_string())
+            .await;
+        thread.codex.session.ensure_rollout_materialized().await;
+        thread.codex.session.flush_rollout().await;
+    }
+
+    async fn wait_for_live_thread_spawn_children(
+        control: &AgentControl,
+        parent_thread_id: ThreadId,
+        expected_children: &[ThreadId],
+    ) {
+        let mut expected_children = expected_children.to_vec();
+        expected_children.sort_by_key(std::string::ToString::to_string);
+
+        timeout(Duration::from_secs(5), async {
+            loop {
+                let mut child_ids = control
+                    .open_thread_spawn_children(parent_thread_id)
+                    .await
+                    .expect("live child list should load")
+                    .into_iter()
+                    .map(|(thread_id, _)| thread_id)
+                    .collect::<Vec<_>>();
+                child_ids.sort_by_key(std::string::ToString::to_string);
+                if child_ids == expected_children {
+                    break;
+                }
+                sleep(Duration::from_millis(25)).await;
+            }
+        })
+        .await
+        .expect("expected persisted child tree");
     }
 
     #[tokio::test]
@@ -1948,5 +2007,133 @@ mod tests {
             .shutdown_live_agent(resumed_thread_id)
             .await
             .expect("resumed child shutdown should submit");
+    }
+
+    #[tokio::test]
+    async fn persisted_spawn_descendants_reflect_closed_status() {
+        let harness = AgentControlHarness::new().await;
+        let (parent_thread_id, parent_thread) = harness.start_thread().await;
+
+        let child_thread_id = harness
+            .control
+            .spawn_agent(
+                harness.config.clone(),
+                text_input("hello child"),
+                Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                    parent_thread_id,
+                    depth: 1,
+                    agent_nickname: None,
+                    agent_role: Some("explorer".to_string()),
+                })),
+            )
+            .await
+            .expect("child spawn should succeed");
+        let grandchild_thread_id = harness
+            .control
+            .spawn_agent(
+                harness.config.clone(),
+                text_input("hello grandchild"),
+                Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                    parent_thread_id: child_thread_id,
+                    depth: 2,
+                    agent_nickname: None,
+                    agent_role: Some("worker".to_string()),
+                })),
+            )
+            .await
+            .expect("grandchild spawn should succeed");
+
+        let child_thread = harness
+            .manager
+            .get_thread(child_thread_id)
+            .await
+            .expect("child thread should exist");
+        let grandchild_thread = harness
+            .manager
+            .get_thread(grandchild_thread_id)
+            .await
+            .expect("grandchild thread should exist");
+        persist_thread_for_tree_resume(&parent_thread, "parent persisted").await;
+        persist_thread_for_tree_resume(&child_thread, "child persisted").await;
+        persist_thread_for_tree_resume(&grandchild_thread, "grandchild persisted").await;
+        wait_for_live_thread_spawn_children(&harness.control, parent_thread_id, &[child_thread_id])
+            .await;
+        wait_for_live_thread_spawn_children(
+            &harness.control,
+            child_thread_id,
+            &[grandchild_thread_id],
+        )
+        .await;
+
+        let open_descendants = harness
+            .control
+            .list_persisted_subagent_descendants(
+                parent_thread_id,
+                DirectionalThreadSpawnEdgeStatus::Open,
+            )
+            .await
+            .expect("open descendants should load");
+        assert_eq!(
+            open_descendants,
+            vec![child_thread_id, grandchild_thread_id]
+        );
+
+        let child_open_descendants = harness
+            .control
+            .list_persisted_subagent_descendants(
+                child_thread_id,
+                DirectionalThreadSpawnEdgeStatus::Open,
+            )
+            .await
+            .expect("child open descendants should load");
+        assert_eq!(child_open_descendants, vec![grandchild_thread_id]);
+
+        let _ = harness
+            .control
+            .close_agent(child_thread_id)
+            .await
+            .expect("child close should succeed");
+
+        let closed_descendants = harness
+            .control
+            .list_persisted_subagent_descendants(
+                parent_thread_id,
+                DirectionalThreadSpawnEdgeStatus::Closed,
+            )
+            .await
+            .expect("closed descendants should load");
+        assert_eq!(closed_descendants, vec![child_thread_id]);
+
+        let report = harness
+            .manager
+            .shutdown_all_threads_bounded(Duration::from_secs(5))
+            .await;
+        assert_eq!(report.submit_failed, Vec::<ThreadId>::new());
+        assert_eq!(report.timed_out, Vec::<ThreadId>::new());
+
+        let resumed_parent_thread_id = harness
+            .control
+            .resume_agent_from_rollout(
+                harness.config.clone(),
+                parent_thread_id,
+                SessionSource::Exec,
+            )
+            .await
+            .expect("tree resume should succeed");
+        assert_eq!(resumed_parent_thread_id, parent_thread_id);
+        assert_eq!(
+            harness.control.get_status(child_thread_id).await,
+            AgentStatus::NotFound
+        );
+        assert_eq!(
+            harness.control.get_status(grandchild_thread_id).await,
+            AgentStatus::NotFound
+        );
+
+        let _ = harness
+            .control
+            .shutdown_agent_tree(parent_thread_id)
+            .await
+            .expect("cleanup should succeed");
     }
 }
