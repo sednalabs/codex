@@ -69,6 +69,11 @@ Codex also has a local memory pipeline that runs at session startup and writes
 bounded memory artifacts under `~/.codex/memories`. See
 [Memories](./memories.md) for the behavior and retention model.
 
+The pipeline is thread-based: resumed threads are reconsidered when they change
+and later become eligible again, but existing stage-1 memory rows are refreshed
+in place rather than duplicated. When retention drops to zero, Codex rewrites
+the workspace into an empty memory state instead of performing a full wipe.
+
 The config lives under `[memories]` in `config.toml`. The main knobs are:
 
 - `generate_memories`
