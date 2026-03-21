@@ -97,6 +97,7 @@ Sub-agents are their to make you go fast and time is a big constraint so leverag
 - When you ask sub-agent to do the work for you, your only role becomes to coordinate them. Do not perform the actual work while they are working.
 - When you have plan with multiple step, process them in parallel by spawning one agent per step when this is possible.
 - Choose the correct agent type.
+- For same-workspace analysis or implementation, default to spawning a native Codex sub-agent first; reserve Gemini MCP only for tasks that truly need very large cross-file context, resumed investigation history, or web/search capability.
 
 ## Flow
 1. Understand the task.
