@@ -1,6 +1,8 @@
 use super::*;
+use crate::session_prefix::format_subagent_notification_message;
 use codex_protocol::items::HookPromptFragment;
 use codex_protocol::items::build_hook_prompt_message;
+use codex_protocol::protocol::AgentStatus;
 
 #[test]
 fn detects_environment_context_fragment() {
@@ -34,6 +36,8 @@ fn ignores_regular_user_text() {
 
 #[test]
 fn classifies_memory_excluded_fragments() {
+    let subagent_notification =
+        format_subagent_notification_message("a", &AgentStatus::Completed(None));
     let cases = [
         (
             "# AGENTS.md instructions for /tmp\n\n<INSTRUCTIONS>\nbody\n</INSTRUCTIONS>",
@@ -47,10 +51,7 @@ fn classifies_memory_excluded_fragments() {
             "<environment_context>\n<cwd>/tmp</cwd>\n</environment_context>",
             false,
         ),
-        (
-            "<subagent_notification>{\"agent_id\":\"a\",\"status\":\"completed\"}</subagent_notification>",
-            false,
-        ),
+        (subagent_notification.as_str(), false),
     ];
 
     for (text, expected) in cases {

@@ -74,13 +74,21 @@ core-subagent-surface-targeted:
     CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo test -p codex-core spawn_agent_preserves_explicit_model_override_across_role_reload --lib -- --exact
     CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo test -p codex-core list_agents_returns_direct_children_with_live_inventory --lib -- --exact
 
-# Focused sub-agent completion-notification parser + frontend compile slice.
-# Keep this runnable on the vintage host while unrelated tui lib test-target
-# drift is repaired separately.
+# Focused core-side sub-agent notification contract slice.
+core-subagent-notification-contract-targeted:
+    set -euo pipefail
+    CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo test -p codex-core format_subagent_notification_message_round_trips_completed_status --lib -- --test-threads=1
+    CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo test -p codex-core classifies_memory_excluded_fragments --lib -- --test-threads=1
+    CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo test -p codex-core drop_last_n_user_turns_ignores_session_prefix_user_messages --lib -- --test-threads=1
+    CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo test -p codex-core serializes_memory_rollout_with_agents_removed_but_environment_kept --lib -- --test-threads=1
+
+# Focused sub-agent completion-notification parser + TUI render slice.
+# Keep `tui_app_server` at compile coverage for now while its broader lib test
+# target still has unrelated drift on this branch.
 core-subagent-notification-visibility-targeted:
     set -euo pipefail
     cargo test -p codex-protocol parse_subagent_notification_response_item_ --lib -- --test-threads=1
-    cargo build -p codex-tui
+    cargo test -p codex-tui raw_response_subagent_notification_renders_history -- --exact --test-threads=1
     cargo build -p codex-tui-app-server
 
 # Focused multi-agent orchestration slice covering wait semantics and tool guidance.

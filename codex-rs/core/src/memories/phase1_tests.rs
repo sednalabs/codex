@@ -2,14 +2,18 @@ use super::JobOutcome;
 use super::JobResult;
 use super::aggregate_stats;
 use super::job::serialize_filtered_rollout_response_items;
+use crate::session_prefix::format_subagent_notification_message;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::ResponseItem;
+use codex_protocol::protocol::AgentStatus;
 use codex_protocol::protocol::RolloutItem;
 use codex_protocol::protocol::TokenUsage;
 use pretty_assertions::assert_eq;
 
 #[test]
 fn serializes_memory_rollout_with_agents_removed_but_environment_kept() {
+    let subagent_notification =
+        format_subagent_notification_message("a", &AgentStatus::Completed(None));
     let mixed_contextual_message = ResponseItem::Message {
         id: None,
         role: "user".to_string(),
@@ -39,8 +43,7 @@ fn serializes_memory_rollout_with_agents_removed_but_environment_kept() {
         id: None,
         role: "user".to_string(),
         content: vec![ContentItem::InputText {
-            text: "<subagent_notification>{\"agent_id\":\"a\",\"status\":\"completed\"}</subagent_notification>"
-                .to_string(),
+            text: subagent_notification,
         }],
         end_turn: None,
         phase: None,

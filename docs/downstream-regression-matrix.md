@@ -19,6 +19,7 @@ Focused micro-slices for iterative work on the current carry seams:
 
 - `codex.core-startup-sync-targeted`
 - `codex.core-subagent-surface-targeted`
+- `codex.core-subagent-notification-contract-targeted`
 - `codex.core-subagent-notification-visibility-targeted`
 - `codex.core-multi-agent-orchestration-targeted`
 - `codex.core-context-serialization-targeted`
@@ -34,15 +35,16 @@ Focused preset used for protocol/event-history seams:
 | --- | --- | --- |
 | Sub-agent override preservation across role reload | `core-carry-smoke` | `spawn_agent_preserves_explicit_model_override_across_role_reload`; `spawn_agent_requested_model_and_reasoning_override_inherited_settings_without_role`; `spawn_agent_role_overrides_requested_model_and_reasoning_settings` |
 | Sub-agent surface contract (`spawn_agent`/`list_agents` omit raw `model_reasoning_summary`) | `codex.core-subagent-surface-targeted` | `spawn_agent_preserves_explicit_model_override_across_role_reload`; `list_agents_returns_direct_children_with_live_inventory` |
-| Sub-agent completion-notification parser + frontend compile surface (`protocol` + `tui` + `tui_app_server`) | `codex.core-subagent-notification-visibility-targeted` | `parse_subagent_notification_response_item_*`; `cargo build -p codex-tui`; `cargo build -p codex-tui-app-server` |
+| Core-side sub-agent notification contract (`codex-core`) | `codex.core-subagent-notification-contract-targeted` | `format_subagent_notification_message_round_trips_completed_status`; `classifies_memory_excluded_fragments`; `drop_last_n_user_turns_ignores_session_prefix_user_messages`; `serializes_memory_rollout_with_agents_removed_but_environment_kept` |
+| Sub-agent completion-notification parser + TUI render surface (`protocol` + `tui` + `tui_app_server`) | `codex.core-subagent-notification-visibility-targeted` | `parse_subagent_notification_response_item_*`; `raw_response_subagent_notification_renders_history`; `cargo build -p codex-tui-app-server` |
 | Sub-agent inventory + blocking join surface | `codex.core-multi-agent-orchestration-targeted` | `list_agents_returns_direct_children_with_live_inventory`; `wait_agent_allows_return_when_any_and_returns_on_first_final_status`; `wait_agent_allows_return_when_all_and_returns_only_when_all_are_final`; `spawn_wait_and_list_agents_tool_descriptions_have_guidance_updates` |
 | Code-mode declaration formatting + namespaced tool metadata | `core-carry-smoke` | `code_mode_exports_all_tools_metadata_for_builtin_tools`; `code_mode_exports_all_tools_metadata_for_namespaced_mcp_tools` |
 | Unified-exec blocking wait semantics | `core-carry-smoke` | `exec_command_wait_until_terminal_returns_exit_metadata`; `exec_command_tool_exposes_blocking_wait_parameters`; `write_stdin_tool_exposes_blocking_wait_parameters` |
 
 The dedicated `tui_app_server` replay assertions live in source alongside this carry patch, but
-the broader `codex-tui` and `codex-tui-app-server` lib test targets still have unrelated compile
-drift on this branch. Keep the preset green with the parser test plus frontend builds until that
-test-target drift is repaired.
+the broader `codex-tui-app-server` lib test target still has unrelated compile drift on this
+branch. Keep the preset green with the parser test, the exact `codex-tui` notification render
+test, and `codex-tui-app-server` compile coverage until that test-target drift is repaired.
 | Turn-complete compaction count metadata | `codex.app-server-protocol-test` | `preserves_compaction_only_turn`; broader `TurnCompleteEvent` shape coverage in `codex-core`, `codex-exec`, and `codex-tui` tests keeps `compaction_events_in_turn` wired through downstream consumers |
 | TUI queued slash recall + replay ordering | `core-carry-smoke` | `queued_inline_slash_command_runs_with_args_after_task_complete`; `alt_up_restores_most_recent_queued_slash_command` |
 | Startup plugin sync bounded wait + completion-signal re-arm + abort checkpointing | `codex.core-startup-sync-targeted` | `startup_remote_plugin_sync_waits_for_late_prerequisites`; `startup_remote_plugin_sync_is_single_flight_before_prerequisites_exist`; `startup_remote_plugin_sync_uses_latest_config_and_auth_snapshot`; `startup_remote_plugin_sync_rearms_after_curated_repo_completion_signal_uses_latest_config_and_auth_snapshot`; `startup_remote_plugin_sync_signals_after_failed_curated_postprocessing`; `startup_remote_plugin_sync_aborts_in_flight_before_stamping_marker`; `startup_remote_plugin_sync_relaunches_immediately_after_abort_even_if_late_completion_signal_arrives` |

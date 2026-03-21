@@ -1,4 +1,5 @@
 use super::*;
+use crate::session_prefix::format_subagent_notification_message;
 use crate::truncate;
 use crate::truncate::TruncationPolicy;
 use base64::Engine;
@@ -17,6 +18,7 @@ use codex_protocol::models::ReasoningItemContent;
 use codex_protocol::models::ReasoningItemReasoningSummary;
 use codex_protocol::openai_models::InputModality;
 use codex_protocol::openai_models::default_input_modalities;
+use codex_protocol::protocol::AgentStatus;
 use image::ImageBuffer;
 use image::ImageFormat;
 use image::Rgba;
@@ -699,6 +701,8 @@ fn drop_last_n_user_turns_preserves_prefix() {
 
 #[test]
 fn drop_last_n_user_turns_ignores_session_prefix_user_messages() {
+    let subagent_notification =
+        format_subagent_notification_message("a", &AgentStatus::Completed(None));
     let items = vec![
         user_input_text_msg("<environment_context>ctx</environment_context>"),
         user_input_text_msg(
@@ -708,9 +712,7 @@ fn drop_last_n_user_turns_ignores_session_prefix_user_messages() {
             "<skill>\n<name>demo</name>\n<path>skills/demo/SKILL.md</path>\nbody\n</skill>",
         ),
         user_input_text_msg("<user_shell_command>echo 42</user_shell_command>"),
-        user_input_text_msg(
-            "<subagent_notification>{\"agent_id\":\"a\",\"status\":\"completed\"}</subagent_notification>",
-        ),
+        user_input_text_msg(&subagent_notification),
         user_input_text_msg("turn 1 user"),
         assistant_msg("turn 1 assistant"),
         user_input_text_msg("turn 2 user"),
@@ -730,9 +732,7 @@ fn drop_last_n_user_turns_ignores_session_prefix_user_messages() {
             "<skill>\n<name>demo</name>\n<path>skills/demo/SKILL.md</path>\nbody\n</skill>",
         ),
         user_input_text_msg("<user_shell_command>echo 42</user_shell_command>"),
-        user_input_text_msg(
-            "<subagent_notification>{\"agent_id\":\"a\",\"status\":\"completed\"}</subagent_notification>",
-        ),
+        user_input_text_msg(&subagent_notification),
         user_input_text_msg("turn 1 user"),
         assistant_msg("turn 1 assistant"),
     ];
@@ -751,9 +751,7 @@ fn drop_last_n_user_turns_ignores_session_prefix_user_messages() {
             "<skill>\n<name>demo</name>\n<path>skills/demo/SKILL.md</path>\nbody\n</skill>",
         ),
         user_input_text_msg("<user_shell_command>echo 42</user_shell_command>"),
-        user_input_text_msg(
-            "<subagent_notification>{\"agent_id\":\"a\",\"status\":\"completed\"}</subagent_notification>",
-        ),
+        user_input_text_msg(&subagent_notification),
     ];
 
     let mut history = create_history_with_items(vec![
@@ -765,9 +763,7 @@ fn drop_last_n_user_turns_ignores_session_prefix_user_messages() {
             "<skill>\n<name>demo</name>\n<path>skills/demo/SKILL.md</path>\nbody\n</skill>",
         ),
         user_input_text_msg("<user_shell_command>echo 42</user_shell_command>"),
-        user_input_text_msg(
-            "<subagent_notification>{\"agent_id\":\"a\",\"status\":\"completed\"}</subagent_notification>",
-        ),
+        user_input_text_msg(&subagent_notification),
         user_input_text_msg("turn 1 user"),
         assistant_msg("turn 1 assistant"),
         user_input_text_msg("turn 2 user"),
@@ -785,9 +781,7 @@ fn drop_last_n_user_turns_ignores_session_prefix_user_messages() {
             "<skill>\n<name>demo</name>\n<path>skills/demo/SKILL.md</path>\nbody\n</skill>",
         ),
         user_input_text_msg("<user_shell_command>echo 42</user_shell_command>"),
-        user_input_text_msg(
-            "<subagent_notification>{\"agent_id\":\"a\",\"status\":\"completed\"}</subagent_notification>",
-        ),
+        user_input_text_msg(&subagent_notification),
         user_input_text_msg("turn 1 user"),
         assistant_msg("turn 1 assistant"),
         user_input_text_msg("turn 2 user"),

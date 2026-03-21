@@ -2163,7 +2163,7 @@ async fn raw_response_subagent_notification_renders_history() {
     let cells = drain_insert_history(&mut rx);
     let combined = cells
         .iter()
-        .map(lines_to_single_string)
+        .map(|lines| lines_to_single_string(lines))
         .collect::<Vec<_>>()
         .join("\n");
     assert_snapshot!(combined, @"• Subagent update agent-123
@@ -11032,6 +11032,7 @@ async fn status_line_branch_refreshes_after_turn_complete_when_terminal_title_us
         msg: EventMsg::TurnComplete(TurnCompleteEvent {
             turn_id: "turn-1".to_string(),
             last_agent_message: None,
+            compaction_events_in_turn: 0,
         }),
     });
 
@@ -11096,7 +11097,7 @@ async fn status_line_weekly_limit_shows_qualitative_pacing_variants() {
             credits: None,
         },
     );
-    chat.refresh_status_line();
+    chat.refresh_status_surfaces();
     assert_eq!(
         status_line_text(&chat),
         Some("weekly 44% (over 6%)".to_string())
@@ -11112,7 +11113,7 @@ async fn status_line_weekly_limit_shows_qualitative_pacing_variants() {
             credits: None,
         },
     );
-    chat.refresh_status_line();
+    chat.refresh_status_surfaces();
     assert_eq!(
         status_line_text(&chat),
         Some("weekly 44% (on pace)".to_string())
@@ -11128,7 +11129,7 @@ async fn status_line_weekly_limit_shows_qualitative_pacing_variants() {
             credits: None,
         },
     );
-    chat.refresh_status_line();
+    chat.refresh_status_surfaces();
     assert_eq!(
         status_line_text(&chat),
         Some("weekly 44% (under 7%)".to_string())
@@ -11162,7 +11163,7 @@ async fn status_line_weekly_limit_shows_ratio_pacing_style() {
         },
     );
 
-    chat.refresh_status_line();
+    chat.refresh_status_surfaces();
     assert_eq!(status_line_text(&chat), Some("weekly 44%/50%".to_string()));
 }
 
@@ -11190,7 +11191,7 @@ async fn status_line_weekly_limit_shows_stale_suffix_over_pace_details() {
         },
     );
 
-    chat.refresh_status_line();
+    chat.refresh_status_surfaces();
     assert_eq!(
         status_line_text(&chat),
         Some("weekly 44% (stale)".to_string())
@@ -11222,7 +11223,7 @@ async fn status_line_weekly_limit_ratio_style_still_prioritizes_stale_state() {
         },
     );
 
-    chat.refresh_status_line();
+    chat.refresh_status_surfaces();
     assert_eq!(
         status_line_text(&chat),
         Some("weekly 44% (stale)".to_string())
@@ -11250,7 +11251,7 @@ async fn status_line_weekly_limit_omits_pacing_when_inputs_are_missing() {
         },
     );
 
-    chat.refresh_status_line();
+    chat.refresh_status_surfaces();
     assert_eq!(status_line_text(&chat), Some("weekly 44%".to_string()));
 }
 

@@ -101,8 +101,18 @@
     "allow_extra_args": false
   },
   {
+    "id": "codex.core-subagent-notification-contract-targeted",
+    "label": "Codex core sub-agent notification contract targeted slice",
+    "cwd": ".",
+    "command": [
+      "just",
+      "core-subagent-notification-contract-targeted"
+    ],
+    "allow_extra_args": false
+  },
+  {
     "id": "codex.core-subagent-notification-visibility-targeted",
-    "label": "Codex sub-agent notification parser + frontend compile slice",
+    "label": "Codex sub-agent notification parser + TUI render slice",
     "cwd": ".",
     "command": [
       "just",
