@@ -24,6 +24,17 @@ The pipeline runs in two phases:
 1. Phase 1 scans recent eligible rollouts and extracts a structured memory from each one.
 2. Phase 2 consolidates the retained memories into the on-disk memory workspace.
 
+## Resume and refresh behavior
+
+Resumed sessions are tracked at the thread level, not from a special resume checkpoint.
+
+- If a thread has not changed since its last successful stage-1 extraction, Codex skips it as already up to date.
+- If a thread has new activity and later becomes eligible again, stage 1 reprocesses the persisted rollout for that thread and updates the same stored memory record in place.
+- This means Codex does not create duplicate stage-1 database rows for the same thread just because it was revisited later.
+- The persisted rollout is the source of truth for re-ingest. If earlier history was compacted away or never persisted, the memory pipeline cannot recover it.
+
+This is the main reason long-lived resumed sessions can still incur fresh summarization cost later: the thread can be reconsidered after new activity, and stage 1 reads the persisted rollout again before applying its prompt-size bounds.
+
 ## How growth is bounded
 
 Memories do not accumulate forever.
@@ -40,6 +51,17 @@ The built-in defaults are intentionally conservative:
 - `max_rollouts_per_startup = 16`
 - `max_raw_memories_for_consolidation = 256`
 - `max_unused_days = 30`
+
+Stage 1 input is also bounded when a retained rollout is large. Codex truncates the extracted rollout context before sending it to the memory model, and the shared memory summary injected into prompts is separately capped so the memory layer stays bounded even when individual sessions grow.
+
+## Discard and reset behavior
+
+There are two different ways memory state can disappear:
+
+- Normal retention-driven discard: if phase 2 has no retained memories left, Codex rewrites `raw_memories.md` to an empty stub and removes `MEMORY.md`, `memory_summary.md`, and `skills/`.
+- Full reset: maintenance helpers can clear the memory root on disk and clear memory rows and jobs from the local state database.
+
+That distinction matters because an empty retained set is not the same as a full wipe. The normal consolidation path leaves the memory workspace in a valid empty state rather than deleting every file unconditionally.
 
 ## Config knobs
 
