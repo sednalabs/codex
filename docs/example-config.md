@@ -14,5 +14,6 @@ min_rollout_idle_hours = 6
 max_rollouts_per_startup = 16
 max_raw_memories_for_consolidation = 256
 max_unused_days = 30
-# extract_model and consolidation_model are unset by default.
+# extract_model defaults to gpt-5.1-codex-mini (Low reasoning effort).
+# consolidation_model defaults to gpt-5.3-codex (Medium reasoning effort).
 ```

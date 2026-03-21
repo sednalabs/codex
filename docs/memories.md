@@ -48,7 +48,12 @@ The settings live under `[memories]` in `config.toml`.
 - `generate_memories` controls whether new threads are stored in memory mode.
 - `use_memories` controls whether memory usage instructions are injected into prompts.
 - `no_memories_if_mcp_or_web_search` marks threads as polluted when web search or MCP tool use is detected.
-- `extract_model` selects the phase-1 summarization model when you override it; otherwise the built-in phase default is used.
-- `consolidation_model` selects the phase-2 consolidation model when you override it; otherwise the built-in phase default is used.
+- `extract_model` overrides the phase-1 summarization model. When unset, Codex uses `gpt-5.1-codex-mini` with `Low` reasoning effort.
+- `consolidation_model` overrides the phase-2 consolidation model. When unset, Codex uses `gpt-5.3-codex` with `Medium` reasoning effort.
+
+The built-in memory pipeline defaults are:
+
+- Phase 1 extraction: `gpt-5.1-codex-mini`
+- Phase 2 consolidation: `gpt-5.3-codex`
 
 If you want the system to stay compact, keep the defaults. If you want to tune recall or reduce startup work, adjust the retention caps carefully and re-check the resulting memory workspace.
