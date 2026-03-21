@@ -495,6 +495,7 @@ ON CONFLICT(thread_id) DO UPDATE SET
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::DirectionalThreadSpawnEdgeStatus;
     use anyhow::Result;
     use codex_protocol::ThreadId;
     use codex_protocol::mcp::CallToolResult;
@@ -1002,6 +1003,144 @@ WHERE thread_id = ?
                 agent_nickname: None,
                 agent_role: None,
                 source: Some(SessionSource::Cli.to_string()),
+            }
+        );
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn usage_spawn_lineage_matches_persisted_state_edge_for_child_thread() -> Result<()> {
+        let (runtime, _tmp_dir) = init_runtime().await?;
+        let parent_thread_id = ThreadId::new();
+        let mut parent_logger = UsageLogger::try_new(
+            runtime.clone(),
+            parent_thread_id,
+            SessionSource::Cli,
+            None,
+            None,
+            None,
+        )
+        .await?;
+
+        let spawn_call = "spawn-lineage-contract";
+        let child_thread_id = ThreadId::new();
+        let spawn_begin = Event {
+            id: "turn-spawn-contract".to_string(),
+            msg: EventMsg::CollabAgentSpawnBegin(CollabAgentSpawnBeginEvent {
+                call_id: spawn_call.to_string(),
+                sender_thread_id: parent_thread_id,
+                prompt: String::new(),
+                model: "spawn-model".to_string(),
+                reasoning_effort: ReasoningEffortConfig::default(),
+            }),
+        };
+        parent_logger.record_event(&spawn_begin).await;
+
+        let spawn_end = Event {
+            id: "turn-spawn-contract".to_string(),
+            msg: EventMsg::CollabAgentSpawnEnd(CollabAgentSpawnEndEvent {
+                call_id: spawn_call.to_string(),
+                sender_thread_id: parent_thread_id,
+                new_thread_id: Some(child_thread_id),
+                new_agent_nickname: Some("Copernicus".to_string()),
+                new_agent_role: Some("explorer".to_string()),
+                prompt: String::new(),
+                model: "spawn-model".to_string(),
+                reasoning_effort: ReasoningEffortConfig::default(),
+                status: AgentStatus::Completed(None),
+            }),
+        };
+        parent_logger.record_event(&spawn_end).await;
+
+        runtime
+            .upsert_thread_spawn_edge(
+                parent_thread_id,
+                child_thread_id,
+                DirectionalThreadSpawnEdgeStatus::Open,
+            )
+            .await?;
+
+        let child_source = SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+            parent_thread_id,
+            depth: 1,
+            agent_nickname: Some("Copernicus".to_string()),
+            agent_role: Some("explorer".to_string()),
+        });
+        let _child_logger = UsageLogger::try_new(
+            runtime.clone(),
+            child_thread_id,
+            child_source.clone(),
+            None,
+            Some("Copernicus".to_string()),
+            Some("explorer".to_string()),
+        )
+        .await?;
+
+        let children = runtime
+            .list_thread_spawn_children_with_status(
+                parent_thread_id,
+                DirectionalThreadSpawnEdgeStatus::Open,
+            )
+            .await?;
+        assert_eq!(children, vec![child_thread_id]);
+
+        let pool_arc = runtime.usage_pool();
+        let pool: &SqlitePool = pool_arc.as_ref();
+
+        let spawn_row: SpawnRequestRow = sqlx::query_as(
+            r#"
+SELECT
+  parent_thread_id,
+  child_thread_id,
+  requested_model,
+  requested_role,
+  requested_reasoning_effort,
+  status,
+  completed_at
+FROM usage_spawn_requests
+WHERE spawn_request_id = ?
+"#,
+        )
+        .bind(spawn_call)
+        .fetch_one(pool)
+        .await?;
+        assert_eq!(
+            spawn_row.parent_thread_id,
+            parent_thread_id.to_string(),
+            "usage spawn request should keep the same parent as the persisted edge"
+        );
+        assert_eq!(
+            spawn_row.child_thread_id,
+            Some(child_thread_id.to_string()),
+            "usage spawn request should keep the same child as the persisted edge"
+        );
+
+        let child_row: ThreadRow = sqlx::query_as(
+            r#"
+SELECT
+  parent_thread_id,
+  root_thread_id,
+  fork_parent_thread_id,
+  agent_nickname,
+  agent_role,
+  source
+FROM usage_threads
+WHERE thread_id = ?
+"#,
+        )
+        .bind(child_thread_id.to_string())
+        .fetch_one(pool)
+        .await?;
+        assert_eq!(
+            child_row,
+            ThreadRow {
+                parent_thread_id: Some(parent_thread_id.to_string()),
+                root_thread_id: Some(parent_thread_id.to_string()),
+                fork_parent_thread_id: None,
+                agent_nickname: Some("Copernicus".to_string()),
+                agent_role: Some("explorer".to_string()),
+                source: Some(child_source.to_string()),
             }
         );
 

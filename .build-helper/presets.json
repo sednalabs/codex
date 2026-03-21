@@ -151,6 +151,16 @@
     "allow_extra_args": false
   },
   {
+    "id": "codex.state-spawn-lineage-contract-targeted",
+    "label": "Codex state spawn-lineage contract targeted slice",
+    "cwd": ".",
+    "command": [
+      "just",
+      "core-state-spawn-lineage-contract-targeted"
+    ],
+    "allow_extra_args": false
+  },
+  {
     "id": "codex.core-test-smoke",
     "label": "Codex core smoke gate",
     "cwd": ".",
