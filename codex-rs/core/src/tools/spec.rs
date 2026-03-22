@@ -1531,7 +1531,7 @@ fn create_list_agents_tool() -> ToolSpec {
         JsonSchema::Array {
             items: Box::new(JsonSchema::String { description: None }),
             description: Some(
-                "Optional filter of agent IDs to return. By default only direct children are visible. When `include_descendants=true`, requested descendant IDs can also resolve from persisted spawn-edge state; unresolved IDs are returned as explicit `not_found` entries."
+                "Optional filter of agent IDs to return. By default only direct children are visible. When `include_descendants=true`, requested IDs can resolve from the full live subtree and persisted spawn-edge state; unresolved IDs are returned as explicit `not_found` entries."
                     .to_string(),
             ),
         },
@@ -1540,14 +1540,14 @@ fn create_list_agents_tool() -> ToolSpec {
         "include_descendants".to_string(),
         JsonSchema::Boolean {
             description: Some(
-                "When true, include descendants from persisted spawn-edge state (open and closed) in addition to live direct children."
+                "When true, include the full live descendant subtree and persisted spawn-edge rows (open and closed)."
                     .to_string(),
             ),
         },
     );
     ToolSpec::Function(ResponsesApiTool {
         name: "list_agents".to_string(),
-        description: "List spawned agents and return a snapshot for each agent owned by the current thread, including role, identity source, and effective model settings. Defaults to direct children; set include_descendants=true to surface persisted subtree rows (including closed descendants). Use this while delegation is in progress to inspect non-blocking progress before deciding whether to call `wait_agent`."
+        description: "List spawned agents and return a snapshot for each agent owned by the current thread, including role, identity source, and effective model settings. Defaults to direct children; set include_descendants=true to include the full live subtree plus persisted subtree rows (including closed descendants). Use this while delegation is in progress to inspect non-blocking progress before deciding whether to call `wait_agent`."
             .to_string(),
         strict: false,
         defer_loading: None,

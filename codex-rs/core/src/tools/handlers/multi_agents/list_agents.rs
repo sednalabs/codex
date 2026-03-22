@@ -35,11 +35,19 @@ impl ToolHandler for Handler {
                     .collect::<Result<Vec<_>, FunctionCallError>>()
             })
             .transpose()?;
-        let live_agents = session
-            .services
-            .agent_control
-            .list_direct_child_subagent_inventory(session.conversation_id)
-            .await;
+        let live_agents = if include_descendants {
+            session
+                .services
+                .agent_control
+                .list_live_subagent_descendant_inventory(session.conversation_id)
+                .await
+        } else {
+            session
+                .services
+                .agent_control
+                .list_direct_child_subagent_inventory(session.conversation_id)
+                .await
+        };
         let mut persisted_descendant_edge_statuses =
             HashMap::<ThreadId, ListAgentSpawnEdgeStatus>::new();
         if include_descendants {

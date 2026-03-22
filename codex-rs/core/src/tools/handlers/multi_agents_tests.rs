@@ -1097,6 +1097,86 @@ async fn list_agents_include_descendants_reports_persisted_open_and_closed_desce
 }
 
 #[tokio::test]
+async fn list_agents_include_descendants_hydrates_live_nested_descendant_inventory() {
+    let (mut session, mut turn) = make_session_and_context().await;
+    let manager = thread_manager();
+    session.services.agent_control = manager.agent_control();
+    let mut config = (*turn.config).clone();
+    config.agent_max_depth = DEFAULT_AGENT_MAX_DEPTH + 2;
+    turn.config = Arc::new(config);
+    let session = Arc::new(session);
+    let turn = Arc::new(turn);
+
+    let child_output = SpawnAgentHandler
+        .handle(invocation(
+            Arc::clone(&session),
+            Arc::clone(&turn),
+            "spawn_agent",
+            function_payload(json!({
+                "message": "live child",
+                "agent_type": "explorer"
+            })),
+        ))
+        .await
+        .expect("child spawn should succeed");
+    let (child_content, child_success) = expect_text_output(child_output);
+    let child_result: SpawnAgentResult =
+        serde_json::from_str(&child_content).expect("child spawn result should be json");
+    let child_thread_id = agent_id(&child_result.agent_id).expect("child agent_id should be valid");
+    assert_eq!(child_success, Some(true));
+
+    let grandchild_thread_id = manager
+        .agent_control()
+        .spawn_agent_with_options(
+            (*turn.config).clone(),
+            vec![UserInput::Text {
+                text: "live grandchild".to_string(),
+                text_elements: Vec::new(),
+            }],
+            Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                parent_thread_id: child_thread_id,
+                depth: 2,
+                agent_nickname: None,
+                agent_role: Some("explorer".to_string()),
+            })),
+            SpawnAgentOptions::default(),
+        )
+        .await
+        .expect("grandchild spawn should succeed");
+
+    let list_output = ListAgentsHandler
+        .handle(invocation(
+            Arc::clone(&session),
+            Arc::clone(&turn),
+            "list_agents",
+            function_payload(json!({
+                "ids": [child_thread_id.to_string(), grandchild_thread_id.to_string()],
+                "include_descendants": true
+            })),
+        ))
+        .await
+        .expect("list_agents should include live descendants");
+    let (list_content, list_success) = expect_text_output(list_output);
+    let result: ListAgentsResult =
+        serde_json::from_str(&list_content).expect("list_agents result should be json");
+
+    assert_eq!(list_success, Some(true));
+    assert_eq!(result.agents.len(), 2);
+    assert_eq!(result.agents[0].agent_id, child_thread_id.to_string());
+    assert_ne!(result.agents[0].status, AgentStatus::NotFound);
+    assert_eq!(
+        result.agents[0].identity_source,
+        THREAD_CONFIG_SNAPSHOT_IDENTITY_SOURCE
+    );
+    assert_eq!(result.agents[1].agent_id, grandchild_thread_id.to_string());
+    assert_ne!(result.agents[1].status, AgentStatus::NotFound);
+    assert_eq!(
+        result.agents[1].identity_source,
+        THREAD_CONFIG_SNAPSHOT_IDENTITY_SOURCE
+    );
+}
+
+#[tokio::test]
 async fn send_input_rejects_empty_message() {
     let (session, turn) = make_session_and_context().await;
     let invocation = invocation(

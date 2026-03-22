@@ -607,6 +607,44 @@ impl AgentControl {
         agents
     }
 
+    /// Return live sub-agent inventory for the entire in-memory spawn subtree rooted at
+    /// `root_thread_id`, including direct children and deeper descendants.
+    pub(crate) async fn list_live_subagent_descendant_inventory(
+        &self,
+        root_thread_id: ThreadId,
+    ) -> Vec<SubAgentInventoryInfo> {
+        let Ok(mut children_by_parent) = self.live_thread_spawn_children().await else {
+            return Vec::new();
+        };
+        let mut descendant_thread_ids = Vec::new();
+        let mut stack = children_by_parent
+            .remove(&root_thread_id)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|(child_thread_id, _)| child_thread_id)
+            .rev()
+            .collect::<Vec<_>>();
+
+        while let Some(thread_id) = stack.pop() {
+            descendant_thread_ids.push(thread_id);
+            if let Some(children) = children_by_parent.remove(&thread_id) {
+                for (child_thread_id, _) in children.into_iter().rev() {
+                    stack.push(child_thread_id);
+                }
+            }
+        }
+
+        let mut agents = Vec::new();
+        for thread_id in descendant_thread_ids {
+            if let Some(agent) = self.get_subagent_inventory_info(thread_id).await {
+                agents.push(agent);
+            }
+        }
+
+        agents.sort_by(|left, right| left.thread_id.to_string().cmp(&right.thread_id.to_string()));
+        agents
+    }
+
     pub(crate) async fn get_agent_config_snapshot(
         &self,
         agent_id: ThreadId,
