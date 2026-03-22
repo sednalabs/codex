@@ -28,6 +28,7 @@ use codex_protocol::protocol::TokenUsage;
 use codex_protocol::user_input::UserInput;
 use codex_state::DirectionalThreadSpawnEdgeStatus;
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::collections::VecDeque;
 use std::sync::Arc;
 use std::sync::Weak;
@@ -829,6 +830,44 @@ impl AgentControl {
                     "failed to list persisted thread-spawn descendants for {root_thread_id}: {err}"
                 ))
             })
+    }
+
+    /// Enumerate persisted descendants and include each child's directional edge status.
+    pub(crate) async fn list_persisted_subagent_descendants_with_edge_status(
+        &self,
+        root_thread_id: ThreadId,
+    ) -> CodexResult<Vec<(ThreadId, DirectionalThreadSpawnEdgeStatus)>> {
+        let state = self.upgrade()?;
+        let thread = state.get_thread(root_thread_id).await?;
+        let Some(state_db_ctx) = thread.state_db() else {
+            return Ok(Vec::new());
+        };
+        let mut descendants = Vec::new();
+        let mut visited = HashSet::from([root_thread_id]);
+        let mut queue = VecDeque::from([root_thread_id]);
+        while let Some(parent_thread_id) = queue.pop_front() {
+            for edge_status in [
+                DirectionalThreadSpawnEdgeStatus::Open,
+                DirectionalThreadSpawnEdgeStatus::Closed,
+            ] {
+                let child_ids = state_db_ctx
+                    .list_thread_spawn_children_with_status(parent_thread_id, edge_status)
+                    .await
+                    .map_err(|err| {
+                        CodexErr::Fatal(format!(
+                            "failed to list persisted thread-spawn children for {parent_thread_id} with {edge_status} status: {err}"
+                        ))
+                    })?;
+                for child_thread_id in child_ids {
+                    descendants.push((child_thread_id, edge_status));
+                    if visited.insert(child_thread_id) {
+                        queue.push_back(child_thread_id);
+                    }
+                }
+            }
+        }
+
+        Ok(descendants)
     }
 
     async fn live_thread_spawn_descendants(

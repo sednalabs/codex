@@ -119,12 +119,20 @@ struct ListAgentsResult {
     agents: Vec<ListAgentEntry>,
 }
 
+#[derive(Debug, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+enum ListAgentSpawnEdgeStatus {
+    Open,
+    Closed,
+}
+
 #[derive(Debug, Deserialize)]
 struct ListAgentEntry {
     agent_id: String,
     nickname: Option<String>,
     role: Option<String>,
     status: AgentStatus,
+    spawn_edge_status: Option<ListAgentSpawnEdgeStatus>,
     effective_model: Option<String>,
     effective_reasoning_effort: Option<ReasoningEffort>,
     model_reasoning_summary: Option<ReasoningSummary>,
@@ -942,6 +950,150 @@ async fn list_agents_filter_preserves_requested_ids_and_marks_missing_as_not_fou
         THREAD_CONFIG_SNAPSHOT_IDENTITY_SOURCE
     );
     assert_eq!(result.agents[1].agent_id, child_id.to_string());
+}
+
+#[tokio::test]
+async fn list_agents_include_descendants_reports_persisted_open_and_closed_descendants() {
+    let (_session, turn) = make_session_and_context().await;
+    let manager = thread_manager();
+    let mut config = turn.config.as_ref().clone();
+    config.agent_max_depth = 3;
+    config
+        .features
+        .enable(Feature::Sqlite)
+        .expect("test config should allow sqlite");
+
+    let parent = manager
+        .start_thread(config.clone())
+        .await
+        .expect("parent thread should start");
+    let parent_thread_id = parent.thread_id;
+    let parent_session = parent.thread.codex.session.clone();
+
+    let child_output = SpawnAgentHandler
+        .handle(invocation(
+            parent_session.clone(),
+            parent_session.new_default_turn().await,
+            "spawn_agent",
+            function_payload(json!({"message": "hello child"})),
+        ))
+        .await
+        .expect("child spawn should succeed");
+    let (child_content, child_success) = expect_text_output(child_output);
+    let child_result: SpawnAgentResult =
+        serde_json::from_str(&child_content).expect("child spawn result should be json");
+    let child_thread_id = agent_id(&child_result.agent_id).expect("child agent_id should be valid");
+    assert_eq!(child_success, Some(true));
+
+    let child_thread = manager
+        .get_thread(child_thread_id)
+        .await
+        .expect("child thread should exist");
+    let child_session = child_thread.codex.session.clone();
+
+    let grandchild_output = SpawnAgentHandler
+        .handle(invocation(
+            child_session.clone(),
+            child_session.new_default_turn().await,
+            "spawn_agent",
+            function_payload(json!({"message": "hello grandchild"})),
+        ))
+        .await
+        .expect("grandchild spawn should succeed");
+    let (grandchild_content, grandchild_success) = expect_text_output(grandchild_output);
+    let grandchild_result: SpawnAgentResult =
+        serde_json::from_str(&grandchild_content).expect("grandchild spawn result should be json");
+    let grandchild_thread_id =
+        agent_id(&grandchild_result.agent_id).expect("grandchild agent_id should be valid");
+    assert_eq!(grandchild_success, Some(true));
+
+    let close_child_output = CloseAgentHandler
+        .handle(invocation(
+            parent_session.clone(),
+            parent_session.new_default_turn().await,
+            "close_agent",
+            function_payload(json!({"id": child_thread_id.to_string()})),
+        ))
+        .await
+        .expect("close_agent should close the child subtree");
+    let (_close_child_content, close_child_success) = expect_text_output(close_child_output);
+    assert_eq!(close_child_success, Some(true));
+    assert_eq!(
+        manager.agent_control().get_status(child_thread_id).await,
+        AgentStatus::NotFound
+    );
+    assert_eq!(
+        manager
+            .agent_control()
+            .get_status(grandchild_thread_id)
+            .await,
+        AgentStatus::NotFound
+    );
+
+    manager
+        .agent_control()
+        .shutdown_live_agent(parent_thread_id)
+        .await
+        .expect("parent shutdown should succeed");
+    assert_eq!(
+        manager.agent_control().get_status(parent_thread_id).await,
+        AgentStatus::NotFound
+    );
+
+    let operator = manager
+        .start_thread(config)
+        .await
+        .expect("operator thread should start");
+    let operator_session = operator.thread.codex.session.clone();
+
+    let parent_resume_output = ResumeAgentHandler
+        .handle(invocation(
+            operator_session.clone(),
+            operator_session.new_default_turn().await,
+            "resume_agent",
+            function_payload(json!({"id": parent_thread_id.to_string()})),
+        ))
+        .await
+        .expect("resume_agent should reopen the parent thread");
+    let (_parent_resume_content, parent_resume_success) = expect_text_output(parent_resume_output);
+    assert_eq!(parent_resume_success, Some(true));
+
+    let resumed_parent = manager
+        .get_thread(parent_thread_id)
+        .await
+        .expect("resumed parent thread should exist");
+    let resumed_parent_session = resumed_parent.codex.session.clone();
+
+    let list_output = ListAgentsHandler
+        .handle(invocation(
+            resumed_parent_session.clone(),
+            resumed_parent_session.new_default_turn().await,
+            "list_agents",
+            function_payload(json!({
+                "ids": [child_thread_id.to_string(), grandchild_thread_id.to_string()],
+                "include_descendants": true
+            })),
+        ))
+        .await
+        .expect("list_agents should succeed with descendant mode");
+    let (list_content, list_success) = expect_text_output(list_output);
+    let result: ListAgentsResult =
+        serde_json::from_str(&list_content).expect("list_agents result should be json");
+
+    assert_eq!(list_success, Some(true));
+    assert_eq!(result.agents.len(), 2);
+    assert_eq!(result.agents[0].agent_id, child_thread_id.to_string());
+    assert_eq!(result.agents[0].status, AgentStatus::NotFound);
+    assert_eq!(
+        result.agents[0].spawn_edge_status,
+        Some(ListAgentSpawnEdgeStatus::Closed)
+    );
+    assert_eq!(result.agents[1].agent_id, grandchild_thread_id.to_string());
+    assert_eq!(result.agents[1].status, AgentStatus::NotFound);
+    assert_eq!(
+        result.agents[1].spawn_edge_status,
+        Some(ListAgentSpawnEdgeStatus::Open)
+    );
 }
 
 #[tokio::test]
