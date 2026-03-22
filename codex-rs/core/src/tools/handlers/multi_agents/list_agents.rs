@@ -27,6 +27,17 @@ impl ToolHandler for Handler {
         let arguments = function_arguments(payload)?;
         let args: ListAgentsArgs = parse_arguments(&arguments)?;
         let include_descendants = args.include_descendants;
+        if args.descendant_edge_status.is_some() && !include_descendants {
+            return Err(FunctionCallError::RespondToModel(
+                "descendant_edge_status requires include_descendants=true".to_string(),
+            ));
+        }
+        if args.descendant_edge_status.is_some() && args.ids.is_some() {
+            return Err(FunctionCallError::RespondToModel(
+                "descendant_edge_status can't be combined with ids".to_string(),
+            ));
+        }
+        let descendant_edge_status = args.descendant_edge_status;
         let filter_ids = args
             .ids
             .map(|ids| {
@@ -107,12 +118,16 @@ impl ToolHandler for Handler {
                 let mut entry = ListAgentEntry::from(live_agent);
                 entry.spawn_edge_status =
                     persisted_descendant_edge_statuses.get(&thread_id).copied();
-                agents_by_id.insert(thread_id, entry);
+                if descendant_filter_matches(entry.spawn_edge_status, descendant_edge_status) {
+                    agents_by_id.insert(thread_id, entry);
+                }
             }
             for (descendant_id, edge_status) in &persisted_descendant_edge_statuses {
-                agents_by_id.entry(*descendant_id).or_insert_with(|| {
-                    ListAgentEntry::not_found(*descendant_id, Some(*edge_status))
-                });
+                if descendant_filter_matches(Some(*edge_status), descendant_edge_status) {
+                    agents_by_id.entry(*descendant_id).or_insert_with(|| {
+                        ListAgentEntry::not_found(*descendant_id, Some(*edge_status))
+                    });
+                }
             }
             let mut entries = agents_by_id.into_values().collect::<Vec<_>>();
             entries.sort_by(|left, right| left.agent_id.cmp(&right.agent_id));
@@ -131,9 +146,11 @@ struct ListAgentsArgs {
     ids: Option<Vec<String>>,
     #[serde(default)]
     include_descendants: bool,
+    #[serde(default)]
+    descendant_edge_status: Option<ListAgentSpawnEdgeStatus>,
 }
 
-#[derive(Debug, Clone, Copy, Serialize)]
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum ListAgentSpawnEdgeStatus {
     Open,
@@ -147,6 +164,13 @@ impl From<DirectionalThreadSpawnEdgeStatus> for ListAgentSpawnEdgeStatus {
             DirectionalThreadSpawnEdgeStatus::Closed => Self::Closed,
         }
     }
+}
+
+fn descendant_filter_matches(
+    candidate: Option<ListAgentSpawnEdgeStatus>,
+    requested: Option<ListAgentSpawnEdgeStatus>,
+) -> bool {
+    requested.is_none_or(|status| Some(status) == candidate)
 }
 
 #[derive(Debug, Serialize)]

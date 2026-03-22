@@ -1254,6 +1254,57 @@ async fn list_agents_include_descendants_reports_persisted_open_and_closed_desce
         result.agents[1].spawn_edge_status,
         Some(ListAgentSpawnEdgeStatus::Open)
     );
+
+    let closed_only_output = ListAgentsHandler
+        .handle(invocation(
+            resumed_parent_session.clone(),
+            resumed_parent_session.new_default_turn().await,
+            "list_agents",
+            function_payload(json!({
+                "include_descendants": true,
+                "descendant_edge_status": "closed"
+            })),
+        ))
+        .await
+        .expect("list_agents should filter closed descendants");
+    let (closed_only_content, closed_only_success) = expect_text_output(closed_only_output);
+    let closed_only_result: ListAgentsResult = serde_json::from_str(&closed_only_content)
+        .expect("closed-only list_agents result should be json");
+
+    assert_eq!(closed_only_success, Some(true));
+    assert_eq!(closed_only_result.agents.len(), 1);
+    assert_eq!(closed_only_result.agents[0].agent_id, child_thread_id.to_string());
+    assert_eq!(
+        closed_only_result.agents[0].spawn_edge_status,
+        Some(ListAgentSpawnEdgeStatus::Closed)
+    );
+
+    let open_only_output = ListAgentsHandler
+        .handle(invocation(
+            resumed_parent_session.clone(),
+            resumed_parent_session.new_default_turn().await,
+            "list_agents",
+            function_payload(json!({
+                "include_descendants": true,
+                "descendant_edge_status": "open"
+            })),
+        ))
+        .await
+        .expect("list_agents should filter open descendants");
+    let (open_only_content, open_only_success) = expect_text_output(open_only_output);
+    let open_only_result: ListAgentsResult =
+        serde_json::from_str(&open_only_content).expect("open-only list_agents result should be json");
+
+    assert_eq!(open_only_success, Some(true));
+    assert_eq!(open_only_result.agents.len(), 1);
+    assert_eq!(
+        open_only_result.agents[0].agent_id,
+        grandchild_thread_id.to_string()
+    );
+    assert_eq!(
+        open_only_result.agents[0].spawn_edge_status,
+        Some(ListAgentSpawnEdgeStatus::Open)
+    );
 }
 
 #[tokio::test]
@@ -1333,6 +1384,56 @@ async fn list_agents_include_descendants_hydrates_live_nested_descendant_invento
     assert_eq!(
         result.agents[1].identity_source,
         THREAD_CONFIG_SNAPSHOT_IDENTITY_SOURCE
+    );
+}
+
+#[tokio::test]
+async fn list_agents_rejects_descendant_edge_status_without_descendant_mode() {
+    let (session, turn) = make_session_and_context().await;
+    let invocation = invocation(
+        Arc::new(session),
+        Arc::new(turn),
+        "list_agents",
+        function_payload(json!({
+            "descendant_edge_status": "open"
+        })),
+    );
+
+    let Err(err) = ListAgentsHandler.handle(invocation).await else {
+        panic!("list_agents should reject descendant_edge_status without descendant mode");
+    };
+
+    assert_eq!(
+        err,
+        FunctionCallError::RespondToModel(
+            "descendant_edge_status requires include_descendants=true".to_string()
+        )
+    );
+}
+
+#[tokio::test]
+async fn list_agents_rejects_descendant_edge_status_with_ids() {
+    let (session, turn) = make_session_and_context().await;
+    let invocation = invocation(
+        Arc::new(session),
+        Arc::new(turn),
+        "list_agents",
+        function_payload(json!({
+            "include_descendants": true,
+            "descendant_edge_status": "closed",
+            "ids": [ThreadId::new().to_string()]
+        })),
+    );
+
+    let Err(err) = ListAgentsHandler.handle(invocation).await else {
+        panic!("list_agents should reject descendant_edge_status when ids are provided");
+    };
+
+    assert_eq!(
+        err,
+        FunctionCallError::RespondToModel(
+            "descendant_edge_status can't be combined with ids".to_string()
+        )
     );
 }
 

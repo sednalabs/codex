@@ -1557,9 +1557,19 @@ fn create_list_agents_tool() -> ToolSpec {
             ),
         },
     );
+    properties.insert(
+        "descendant_edge_status".to_string(),
+        JsonSchema::String {
+            description: Some(
+                "Optional subtree filter for `include_descendants=true`. Use `open` or `closed` to limit returned descendant rows by persisted spawn-edge status. Cannot be combined with `ids`."
+                    .to_string(),
+            ),
+            enum_values: Some(vec!["open".to_string(), "closed".to_string()]),
+        },
+    );
     ToolSpec::Function(ResponsesApiTool {
         name: "list_agents".to_string(),
-        description: "List spawned agents and return a snapshot for each agent owned by the current thread, including role, identity source, and effective model settings. Defaults to direct children; set include_descendants=true to include the full live subtree plus persisted subtree rows (including closed descendants). Use this while delegation is in progress to inspect non-blocking progress before deciding whether to call `wait_agent`."
+        description: "List spawned agents and return a snapshot for each agent owned by the current thread, including role, identity source, and effective model settings. Defaults to direct children; set include_descendants=true to include the full live subtree plus persisted subtree rows (including closed descendants). Optionally set descendant_edge_status=open|closed to focus subtree inspection. Use this while delegation is in progress to inspect non-blocking progress before deciding whether to call `wait_agent`."
             .to_string(),
         strict: false,
         defer_loading: None,
