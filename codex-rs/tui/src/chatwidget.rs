@@ -829,6 +829,7 @@ pub(crate) struct ChatWidget {
     connectors_partial_snapshot: Option<ConnectorsSnapshot>,
     connectors_prefetch_in_flight: bool,
     connectors_force_refetch_pending: bool,
+    pending_mcp_output_requests: usize,
     plugins_cache: PluginsCacheState,
     plugins_fetch_state: PluginListFetchState,
     // Queue of interruptive UI events deferred during an active write cycle
@@ -1545,6 +1546,7 @@ impl ChatWidget {
         self.refresh_model_display();
         self.sync_fast_command_enabled();
         self.sync_personality_command_enabled();
+        self.sync_plugins_command_enabled();
         self.refresh_plugin_mentions();
         let startup_tooltip_override = self.startup_tooltip_override.take();
         let show_fast_status = self.should_show_fast_status(&model_for_header, event.service_tier);
@@ -1570,9 +1572,6 @@ impl ChatWidget {
             cwds: Vec::new(),
             force_reload: true,
         });
-        if self.connectors_enabled() {
-            self.prefetch_connectors();
-        }
         if let Some(user_message) = self.initial_user_message.take() {
             self.submit_user_message(user_message);
         }
@@ -2298,6 +2297,7 @@ impl ChatWidget {
     }
 
     fn on_mcp_startup_complete(&mut self, ev: McpStartupCompleteEvent) {
+        let codex_apps_ready = ev.ready.iter().any(|server| server == "codex_apps");
         let mut parts = Vec::new();
         if !ev.failed.is_empty() {
             let failed_servers: Vec<_> = ev.failed.iter().map(|f| f.server.clone()).collect();
@@ -2316,6 +2316,11 @@ impl ChatWidget {
         self.mcp_startup_status = None;
         self.update_task_running_state();
         self.maybe_send_next_queued_input();
+        if self.connectors_enabled() && codex_apps_ready {
+            // Populate `$` app mentions from the session's already-started MCP manager
+            // instead of doing a separate TUI-side connector prefetch.
+            self.submit_op(Op::ListMcpTools);
+        }
         self.request_redraw();
     }
 
@@ -3787,6 +3792,7 @@ impl ChatWidget {
             connectors_partial_snapshot: None,
             connectors_prefetch_in_flight: false,
             connectors_force_refetch_pending: false,
+            pending_mcp_output_requests: 0,
             plugins_cache: PluginsCacheState::default(),
             plugins_fetch_state: PluginListFetchState::default(),
             interrupts: InterruptManager::new(),
@@ -3863,6 +3869,7 @@ impl ChatWidget {
             .set_collaboration_modes_enabled(/*enabled*/ true);
         widget.sync_fast_command_enabled();
         widget.sync_personality_command_enabled();
+        widget.sync_plugins_command_enabled();
         widget
             .bottom_pane
             .set_queued_message_edit_binding(widget.queued_message_edit_binding);
@@ -3989,6 +3996,7 @@ impl ChatWidget {
             connectors_partial_snapshot: None,
             connectors_prefetch_in_flight: false,
             connectors_force_refetch_pending: false,
+            pending_mcp_output_requests: 0,
             plugins_cache: PluginsCacheState::default(),
             plugins_fetch_state: PluginListFetchState::default(),
             interrupts: InterruptManager::new(),
@@ -4065,6 +4073,7 @@ impl ChatWidget {
             .set_collaboration_modes_enabled(/*enabled*/ true);
         widget.sync_fast_command_enabled();
         widget.sync_personality_command_enabled();
+        widget.sync_plugins_command_enabled();
         widget
             .bottom_pane
             .set_queued_message_edit_binding(widget.queued_message_edit_binding);
@@ -4183,6 +4192,7 @@ impl ChatWidget {
             connectors_partial_snapshot: None,
             connectors_prefetch_in_flight: false,
             connectors_force_refetch_pending: false,
+            pending_mcp_output_requests: 0,
             plugins_cache: PluginsCacheState::default(),
             plugins_fetch_state: PluginListFetchState::default(),
             interrupts: InterruptManager::new(),
@@ -4259,6 +4269,7 @@ impl ChatWidget {
             .set_collaboration_modes_enabled(/*enabled*/ true);
         widget.sync_fast_command_enabled();
         widget.sync_personality_command_enabled();
+        widget.sync_plugins_command_enabled();
         widget
             .bottom_pane
             .set_queued_message_edit_binding(widget.queued_message_edit_binding);
@@ -6309,10 +6320,6 @@ impl ChatWidget {
         self.prefetch_connectors_with_options(force_refetch);
     }
 
-    fn prefetch_connectors(&mut self) {
-        self.prefetch_connectors_with_options(/*force_refetch*/ false);
-    }
-
     fn prefetch_connectors_with_options(&mut self, force_refetch: bool) {
         if !self.connectors_enabled() {
             return;
@@ -8193,6 +8200,7 @@ impl ChatWidget {
             self.sync_personality_command_enabled();
         }
         if feature == Feature::Plugins {
+            self.sync_plugins_command_enabled();
             self.refresh_plugin_mentions();
         }
         if feature == Feature::PreventIdleSleep {
@@ -8393,6 +8401,11 @@ impl ChatWidget {
     fn sync_personality_command_enabled(&mut self) {
         self.bottom_pane
             .set_personality_command_enabled(self.config.features.enabled(Feature::Personality));
+    }
+
+    fn sync_plugins_command_enabled(&mut self) {
+        self.bottom_pane
+            .set_plugins_command_enabled(self.config.features.enabled(Feature::Plugins));
     }
 
     fn current_model_supports_personality(&self) -> bool {
@@ -8728,8 +8741,8 @@ impl ChatWidget {
             .is_empty()
         {
             self.add_to_history(history_cell::empty_mcp_output());
-        } else {
-            self.submit_op(Op::ListMcpTools);
+        } else if self.submit_op(Op::ListMcpTools) {
+            self.pending_mcp_output_requests = self.pending_mcp_output_requests.saturating_add(1);
         }
     }
 
@@ -9191,13 +9204,77 @@ impl ChatWidget {
     }
 
     fn on_list_mcp_tools(&mut self, ev: McpListToolsResponseEvent) {
-        self.add_to_history(history_cell::new_mcp_tools_output(
-            &self.config,
-            ev.tools,
-            ev.resources,
-            ev.resource_templates,
-            &ev.auth_statuses,
-        ));
+        if self.connectors_enabled() {
+            let mut connectors_by_id: HashMap<String, connectors::AppInfo> = HashMap::new();
+            for tool in ev.tools.values() {
+                let Some(meta) = tool.meta.as_ref().and_then(serde_json::Value::as_object) else {
+                    continue;
+                };
+                let Some(connector_id) = meta
+                    .get("connector_id")
+                    .and_then(serde_json::Value::as_str)
+                    .filter(|id| !id.is_empty())
+                else {
+                    continue;
+                };
+                connectors_by_id
+                    .entry(connector_id.to_string())
+                    .or_insert_with(|| {
+                        let name = meta
+                            .get("connector_name")
+                            .or_else(|| meta.get("connector_display_name"))
+                            .and_then(serde_json::Value::as_str)
+                            .filter(|name| !name.trim().is_empty())
+                            .unwrap_or(connector_id)
+                            .to_string();
+                        let description = meta
+                            .get("connector_description")
+                            .or_else(|| meta.get("connectorDescription"))
+                            .and_then(serde_json::Value::as_str)
+                            .map(str::trim)
+                            .filter(|description| !description.is_empty())
+                            .map(ToString::to_string);
+                        connectors::AppInfo {
+                            id: connector_id.to_string(),
+                            name,
+                            description,
+                            logo_url: None,
+                            logo_url_dark: None,
+                            distribution_channel: None,
+                            branding: None,
+                            app_metadata: None,
+                            labels: None,
+                            install_url: None,
+                            is_accessible: true,
+                            is_enabled: true,
+                            plugin_display_names: Vec::new(),
+                        }
+                    });
+            }
+
+            let mut app_connectors = connectors_by_id.into_values().collect::<Vec<_>>();
+            app_connectors.sort_by(|left, right| {
+                left.name
+                    .cmp(&right.name)
+                    .then_with(|| left.id.cmp(&right.id))
+            });
+            let app_connectors = connectors::with_app_enabled_state(app_connectors, &self.config);
+            self.bottom_pane
+                .set_connectors_snapshot(Some(ConnectorsSnapshot {
+                    connectors: app_connectors,
+                }));
+        }
+
+        if self.pending_mcp_output_requests > 0 {
+            self.pending_mcp_output_requests -= 1;
+            self.add_to_history(history_cell::new_mcp_tools_output(
+                &self.config,
+                ev.tools,
+                ev.resources,
+                ev.resource_templates,
+                &ev.auth_statuses,
+            ));
+        }
     }
 
     fn on_list_custom_prompts(&mut self, ev: ListCustomPromptsResponseEvent) {

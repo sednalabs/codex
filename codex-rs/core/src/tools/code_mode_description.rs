@@ -1,30 +1,11 @@
 use crate::client_common::tools::ToolSpec;
-use crate::mcp::split_qualified_tool_name;
-use crate::tools::code_mode::PUBLIC_TOOL_NAME;
-use serde_json::Value as JsonValue;
 
-pub(crate) struct CodeModeToolReference {
-    pub(crate) module_path: String,
-    pub(crate) namespace: Vec<String>,
-    pub(crate) tool_key: String,
-}
-
-pub(crate) fn code_mode_tool_reference(tool_name: &str) -> CodeModeToolReference {
-    if let Some((server_name, tool_key)) = split_qualified_tool_name(tool_name) {
-        let namespace = vec!["mcp".to_string(), server_name];
-        return CodeModeToolReference {
-            module_path: format!("tools/{}.js", namespace.join("/")),
-            namespace,
-            tool_key,
-        };
-    }
-
-    CodeModeToolReference {
-        module_path: "tools.js".to_string(),
-        namespace: Vec::new(),
-        tool_key: tool_name.to_string(),
-    }
-}
+#[allow(unused_imports)]
+#[cfg(test)]
+pub(crate) use codex_code_mode::append_code_mode_sample;
+#[allow(unused_imports)]
+#[cfg(test)]
+pub(crate) use codex_code_mode::render_json_schema_to_typescript;
 
 pub(crate) fn augment_tool_spec_for_code_mode(spec: ToolSpec, code_mode_enabled: bool) -> ToolSpec {
     if !code_mode_enabled {
@@ -33,27 +14,27 @@ pub(crate) fn augment_tool_spec_for_code_mode(spec: ToolSpec, code_mode_enabled:
 
     match spec {
         ToolSpec::Function(mut tool) => {
-            if tool.name != PUBLIC_TOOL_NAME {
-                tool.description = append_code_mode_sample(
-                    &tool.description,
-                    &tool.name,
-                    "args",
-                    serde_json::to_value(&tool.parameters)
-                        .ok()
-                        .as_ref()
-                        .map(render_json_schema_to_typescript)
-                        .unwrap_or_else(|| "unknown".to_string()),
-                    tool.output_schema
-                        .as_ref()
-                        .map(render_json_schema_to_typescript)
-                        .unwrap_or_else(|| "unknown".to_string()),
-                );
-            }
+            let input_type = serde_json::to_value(&tool.parameters)
+                .ok()
+                .map(|schema| codex_code_mode::render_json_schema_to_typescript(&schema))
+                .unwrap_or_else(|| "unknown".to_string());
+            let output_type = tool
+                .output_schema
+                .as_ref()
+                .map(codex_code_mode::render_json_schema_to_typescript)
+                .unwrap_or_else(|| "unknown".to_string());
+            tool.description = codex_code_mode::append_code_mode_sample(
+                &tool.description,
+                &tool.name,
+                "args",
+                input_type,
+                output_type,
+            );
             ToolSpec::Function(tool)
         }
         ToolSpec::Freeform(mut tool) => {
-            if tool.name != PUBLIC_TOOL_NAME {
-                tool.description = append_code_mode_sample(
+            if tool.name != codex_code_mode::PUBLIC_TOOL_NAME {
+                tool.description = codex_code_mode::append_code_mode_sample(
                     &tool.description,
                     &tool.name,
                     "input",
