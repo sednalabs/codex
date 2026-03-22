@@ -61,6 +61,7 @@ impl ToolHandler for Handler {
         };
         let mut persisted_descendant_edge_statuses =
             HashMap::<ThreadId, ListAgentSpawnEdgeStatus>::new();
+        let mut persisted_descendant_lookup_failed = false;
         if include_descendants {
             match session
                 .services
@@ -76,12 +77,24 @@ impl ToolHandler for Handler {
                     );
                 }
                 Err(err) => {
+                    persisted_descendant_lookup_failed = true;
                     warn!(
                         "failed to load persisted descendants for {}: {err}",
                         session.conversation_id
                     );
                 }
             }
+        }
+        if descendant_edge_status.is_some()
+            && (persisted_descendant_lookup_failed
+                || !has_persisted_status_for_live_descendants(
+                    &live_agents,
+                    &persisted_descendant_edge_statuses,
+                ))
+        {
+            return Err(FunctionCallError::RespondToModel(
+                "descendant_edge_status requires persisted edge-status data for all live descendants".to_string(),
+            ));
         }
         let agents = if let Some(filter_ids) = filter_ids {
             let mut live_agents_by_id: HashMap<_, _> = live_agents
@@ -171,6 +184,15 @@ fn descendant_filter_matches(
     requested: Option<ListAgentSpawnEdgeStatus>,
 ) -> bool {
     requested.is_none_or(|status| Some(status) == candidate)
+}
+
+fn has_persisted_status_for_live_descendants(
+    live_agents: &[SubAgentInventoryInfo],
+    persisted_descendant_edge_statuses: &HashMap<ThreadId, ListAgentSpawnEdgeStatus>,
+) -> bool {
+    live_agents
+        .iter()
+        .all(|agent| persisted_descendant_edge_statuses.contains_key(&agent.thread_id))
 }
 
 #[derive(Debug, Serialize)]

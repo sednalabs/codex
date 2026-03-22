@@ -1273,7 +1273,10 @@ async fn list_agents_include_descendants_reports_persisted_open_and_closed_desce
 
     assert_eq!(closed_only_success, Some(true));
     assert_eq!(closed_only_result.agents.len(), 1);
-    assert_eq!(closed_only_result.agents[0].agent_id, child_thread_id.to_string());
+    assert_eq!(
+        closed_only_result.agents[0].agent_id,
+        child_thread_id.to_string()
+    );
     assert_eq!(
         closed_only_result.agents[0].spawn_edge_status,
         Some(ListAgentSpawnEdgeStatus::Closed)
@@ -1292,8 +1295,8 @@ async fn list_agents_include_descendants_reports_persisted_open_and_closed_desce
         .await
         .expect("list_agents should filter open descendants");
     let (open_only_content, open_only_success) = expect_text_output(open_only_output);
-    let open_only_result: ListAgentsResult =
-        serde_json::from_str(&open_only_content).expect("open-only list_agents result should be json");
+    let open_only_result: ListAgentsResult = serde_json::from_str(&open_only_content)
+        .expect("open-only list_agents result should be json");
 
     assert_eq!(open_only_success, Some(true));
     assert_eq!(open_only_result.agents.len(), 1);
@@ -1433,6 +1436,102 @@ async fn list_agents_rejects_descendant_edge_status_with_ids() {
         err,
         FunctionCallError::RespondToModel(
             "descendant_edge_status can't be combined with ids".to_string()
+        )
+    );
+}
+
+#[tokio::test]
+async fn list_agents_rejects_descendant_edge_status_with_ids_without_descendant_mode() {
+    let (session, turn) = make_session_and_context().await;
+    let invocation = invocation(
+        Arc::new(session),
+        Arc::new(turn),
+        "list_agents",
+        function_payload(json!({
+            "descendant_edge_status": "closed",
+            "ids": [ThreadId::new().to_string()]
+        })),
+    );
+
+    let Err(err) = ListAgentsHandler.handle(invocation).await else {
+        panic!(
+            "list_agents should reject descendant_edge_status+ids before descendant id filtering"
+        );
+    };
+
+    assert_eq!(
+        err,
+        FunctionCallError::RespondToModel(
+            "descendant_edge_status requires include_descendants=true".to_string()
+        )
+    );
+}
+
+#[tokio::test]
+async fn list_agents_rejects_descendant_edge_status_when_live_edges_lack_persisted_status() {
+    let (mut session, mut turn) = make_session_and_context().await;
+    let manager = thread_manager();
+    session.services.agent_control = manager.agent_control();
+    let mut config = (*turn.config).clone();
+    config.agent_max_depth = DEFAULT_AGENT_MAX_DEPTH + 2;
+    turn.config = Arc::new(config);
+    let session = Arc::new(session);
+    let turn = Arc::new(turn);
+
+    let child_output = SpawnAgentHandler
+        .handle(invocation(
+            Arc::clone(&session),
+            Arc::clone(&turn),
+            "spawn_agent",
+            function_payload(json!({
+                "message": "live child without sqlite persisted edges",
+                "agent_type": "explorer"
+            })),
+        ))
+        .await
+        .expect("child spawn should succeed");
+    let (child_content, child_success) = expect_text_output(child_output);
+    let child_result: SpawnAgentResult =
+        serde_json::from_str(&child_content).expect("child spawn result should be json");
+    let child_thread_id = agent_id(&child_result.agent_id).expect("child agent_id should be valid");
+    assert_eq!(child_success, Some(true));
+
+    manager
+        .agent_control()
+        .spawn_agent_with_options(
+            (*turn.config).clone(),
+            vec![UserInput::Text {
+                text: "live grandchild without sqlite persisted edges".to_string(),
+                text_elements: Vec::new(),
+            }],
+            Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                parent_thread_id: child_thread_id,
+                depth: 2,
+                agent_nickname: None,
+                agent_role: Some("explorer".to_string()),
+            })),
+            SpawnAgentOptions::default(),
+        )
+        .await
+        .expect("grandchild spawn should succeed");
+
+    let invocation = invocation(
+        Arc::clone(&session),
+        Arc::clone(&turn),
+        "list_agents",
+        function_payload(json!({
+            "include_descendants": true,
+            "descendant_edge_status": "open"
+        })),
+    );
+    let Err(err) = ListAgentsHandler.handle(invocation).await else {
+        panic!("descendant_edge_status should reject when persisted edge status is unavailable");
+    };
+    assert_eq!(
+        err,
+        FunctionCallError::RespondToModel(
+            "descendant_edge_status requires persisted edge-status data for all live descendants"
+                .to_string()
         )
     );
 }
