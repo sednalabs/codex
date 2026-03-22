@@ -536,6 +536,11 @@ impl AgentControl {
         result
     }
 
+    /// Submit a shutdown request to an existing agent thread.
+    pub(crate) async fn shutdown_agent(&self, agent_id: ThreadId) -> CodexResult<String> {
+        self.close_agent(agent_id).await
+    }
+
     /// Fetch the last known status for `agent_id`, returning `NotFound` when unavailable.
     pub(crate) async fn get_status(&self, agent_id: ThreadId) -> AgentStatus {
         let Ok(state) = self.upgrade() else {
