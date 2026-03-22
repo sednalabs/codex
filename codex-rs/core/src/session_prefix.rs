@@ -5,9 +5,13 @@ use codex_protocol::protocol::AgentStatus;
 /// messages but are not user intent.
 use crate::contextual_user_message::SUBAGENT_NOTIFICATION_FRAGMENT;
 
-pub(crate) fn format_subagent_notification_message(agent_id: &str, status: &AgentStatus) -> String {
+// TODO(jif) unify with structured schema
+pub(crate) fn format_subagent_notification_message(
+    agent_reference: &str,
+    status: &AgentStatus,
+) -> String {
     let payload_json = serde_json::json!({
-        "agent_id": agent_id,
+        "agent_path": agent_reference,
         "status": status,
     })
     .to_string();

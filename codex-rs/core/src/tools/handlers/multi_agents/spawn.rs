@@ -79,14 +79,16 @@ impl ToolHandler for Handler {
         let result = session
             .services
             .agent_control
-            .spawn_agent_with_options(
+            .spawn_agent_with_metadata(
                 config,
                 input_items,
                 Some(thread_spawn_source(
                     session.conversation_id,
+                    &turn.session_source,
                     child_depth,
                     role_name,
-                )),
+                    args.task_name.clone(),
+                )?),
                 SpawnAgentOptions {
                     fork_parent_spawn_call_id: args.fork_context.then(|| call_id.clone()),
                 },
@@ -167,7 +169,7 @@ impl ToolHandler for Handler {
                 .into(),
             )
             .await;
-        let new_thread_id = result?;
+        let new_thread_id = result?.thread_id;
         let role_tag = role_name.unwrap_or(DEFAULT_ROLE_NAME);
         turn.session_telemetry.counter(
             "codex.multi_agent.spawn",
@@ -176,7 +178,8 @@ impl ToolHandler for Handler {
         );
 
         Ok(SpawnAgentResult {
-            agent_id: new_thread_id.to_string(),
+            agent_id: task_name.is_none().then(|| new_thread_id.to_string()),
+            task_name,
             nickname,
             role,
             status,
@@ -192,6 +195,7 @@ impl ToolHandler for Handler {
 struct SpawnAgentArgs {
     message: Option<String>,
     items: Option<Vec<UserInput>>,
+    task_name: Option<String>,
     agent_type: Option<String>,
     model: Option<String>,
     reasoning_effort: Option<ReasoningEffort>,
@@ -201,7 +205,8 @@ struct SpawnAgentArgs {
 
 #[derive(Debug, Serialize)]
 pub(crate) struct SpawnAgentResult {
-    agent_id: String,
+    agent_id: Option<String>,
+    task_name: Option<String>,
     nickname: Option<String>,
     role: Option<String>,
     status: AgentStatus,
