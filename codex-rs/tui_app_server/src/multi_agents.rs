@@ -481,6 +481,16 @@ fn prompt_line(prompt: &str) -> Option<Line<'static>> {
     }
 }
 
+fn format_thread_id_list(ids: &[ThreadId]) -> String {
+    if ids.is_empty() {
+        return "none".to_string();
+    }
+    ids.iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
 fn merge_wait_receivers(
     receiver_thread_ids: &[ThreadId],
     mut receiver_agents: Vec<CollabAgentRef>,
