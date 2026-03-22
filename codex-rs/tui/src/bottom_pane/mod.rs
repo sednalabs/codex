@@ -441,6 +441,7 @@ impl BottomPane {
             // When a popup is active, prefer dismissing it over interrupting the task.
             if key_event.code == KeyCode::Esc
                 && matches!(key_event.kind, KeyEventKind::Press | KeyEventKind::Repeat)
+                && key_event.modifiers.is_empty()
                 && self.is_task_running
                 && !is_agent_command
                 && !self.composer.popup_active()
@@ -1866,6 +1867,31 @@ mod tests {
         assert!(
             matches!(rx.try_recv(), Ok(AppEvent::CodexOp(Op::Interrupt))),
             "expected Esc to send Op::Interrupt while a task is running"
+        );
+    }
+
+    #[test]
+    fn esc_with_alt_does_not_interrupt_running_task() {
+        let (tx_raw, mut rx) = unbounded_channel::<AppEvent>();
+        let tx = AppEventSender::new(tx_raw);
+        let mut pane = BottomPane::new(BottomPaneParams {
+            app_event_tx: tx,
+            frame_requester: FrameRequester::test_dummy(),
+            has_input_focus: true,
+            enhanced_keys_supported: false,
+            placeholder_text: "Ask Codex to do anything".to_string(),
+            disable_paste_burst: false,
+            animations_enabled: true,
+            skills: Some(Vec::new()),
+        });
+
+        pane.set_task_running(true);
+
+        pane.handle_key_event(KeyEvent::new(KeyCode::Esc, KeyModifiers::ALT));
+
+        assert!(
+            !matches!(rx.try_recv(), Ok(AppEvent::CodexOp(Op::Interrupt))),
+            "expected Alt+Esc to not send Op::Interrupt while a task is running"
         );
     }
 

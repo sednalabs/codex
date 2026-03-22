@@ -2535,7 +2535,7 @@ impl ChatComposer {
         }
         let first_line = self.textarea.text().lines().next().unwrap_or("");
         if let Some((name, rest, _rest_offset)) = parse_slash_name(first_line)
-            && rest.is_empty()
+            && rest.trim().is_empty()
             && let Some(cmd) =
                 slash_commands::find_builtin_command(name, self.builtin_command_flags())
         {
@@ -6708,6 +6708,35 @@ mod tests {
         }
         assert_eq!("/review these changes", composer.textarea.text());
 
+        assert!(
+            rx.try_recv().is_err(),
+            "composer should not emit history errors"
+        );
+    }
+
+    #[test]
+    fn slash_quit_with_trailing_space_dispatches_as_command_while_task_running() {
+        use crossterm::event::KeyCode;
+        use crossterm::event::KeyEvent;
+        use crossterm::event::KeyModifiers;
+
+        let (tx, mut rx) = unbounded_channel::<AppEvent>();
+        let sender = AppEventSender::new(tx);
+        let mut composer = ChatComposer::new(
+            true,
+            sender,
+            false,
+            "Ask Codex to do anything".to_string(),
+            false,
+        );
+        composer.set_task_running(true);
+        composer.textarea.set_text_clearing_elements("/quit ");
+
+        let (result, _needs_redraw) =
+            composer.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+        assert_eq!(result, InputResult::Command(SlashCommand::Quit));
+        assert!(composer.textarea.is_empty());
         assert!(
             rx.try_recv().is_err(),
             "composer should not emit history errors"
