@@ -18,6 +18,7 @@ use codex_protocol::protocol::CollabCloseEndEvent;
 use codex_protocol::protocol::CollabResumeBeginEvent;
 use codex_protocol::protocol::CollabResumeEndEvent;
 use codex_protocol::protocol::CollabWaitingBeginEvent;
+use codex_protocol::protocol::CollabWaitingCompletionReason;
 use codex_protocol::protocol::CollabWaitingEndEvent;
 use crossterm::event::KeyCode;
 use crossterm::event::KeyEvent;
@@ -271,10 +272,30 @@ pub(crate) fn waiting_end(ev: CollabWaitingEndEvent) -> PlainHistoryCell {
         sender_thread_id: _,
         agent_statuses,
         statuses,
-        ..
+        receiver_thread_ids: _,
+        pending_thread_ids,
+        completion_reason,
+        timed_out,
     } = ev;
-    let details = wait_complete_lines(&statuses, &agent_statuses);
-    collab_event(title_text("Finished waiting"), details)
+    let is_timed_out =
+        timed_out || matches!(completion_reason, CollabWaitingCompletionReason::Timeout);
+    let title = if is_timed_out {
+        if statuses.is_empty() {
+            title_text("Waiting timed out")
+        } else {
+            title_text("Waiting partially timed out")
+        }
+    } else {
+        title_text("Finished waiting")
+    };
+    let mut details = wait_complete_lines(&statuses, &agent_statuses);
+    if is_timed_out && !pending_thread_ids.is_empty() {
+        details.push(Line::from(vec![
+            Span::from("Pending: ").yellow(),
+            Span::from(format_thread_id_list(&pending_thread_ids)),
+        ]));
+    }
+    collab_event(title, details)
 }
 
 pub(crate) fn close_end(ev: CollabCloseEndEvent) -> PlainHistoryCell {
@@ -680,6 +701,10 @@ mod tests {
                 },
             ],
             statuses,
+            receiver_thread_ids: Vec::new(),
+            pending_thread_ids: vec![],
+            completion_reason: CollabWaitingCompletionReason::Terminal,
+            timed_out: false,
         });
 
         let close = close_end(CollabCloseEndEvent {

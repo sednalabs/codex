@@ -3467,7 +3467,21 @@ impl ChatWidget {
                                     app_server_collab_thread_id_to_core(thread_id)
                                 })
                                 .collect(),
-                            pending_thread_ids: Vec::new(),
+                            pending_thread_ids: receiver_thread_ids
+                                .iter()
+                                .filter(|thread_id| {
+                                    agents_states.get(*thread_id).is_none_or(|agent_state| {
+                                        matches!(
+                                            agent_state.status,
+                                            AppServerCollabAgentStatus::PendingInit
+                                                | AppServerCollabAgentStatus::Running
+                                        )
+                                    })
+                                })
+                                .filter_map(|thread_id| {
+                                    app_server_collab_thread_id_to_core(thread_id)
+                                })
+                                .collect(),
                             completion_reason: if timed_out {
                                 codex_protocol::protocol::CollabWaitingCompletionReason::Timeout
                             } else {
