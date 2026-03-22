@@ -5265,6 +5265,28 @@ async fn esc_with_pending_steers_overrides_agent_command_interrupt_behavior() {
 }
 
 #[tokio::test]
+async fn alt_esc_with_pending_steers_does_not_interrupt() {
+    let (mut chat, _rx, mut op_rx) = make_chatwidget_manual(None).await;
+    chat.thread_id = Some(ThreadId::new());
+    chat.on_task_started();
+
+    chat.bottom_pane
+        .set_composer_text("pending steer".to_string(), Vec::new(), Vec::new());
+    chat.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    match next_submit_op(&mut op_rx) {
+        Op::UserTurn { .. } => {}
+        other => panic!("expected Op::UserTurn, got {other:?}"),
+    }
+
+    chat.bottom_pane
+        .set_composer_text("/agent ".to_string(), Vec::new(), Vec::new());
+    chat.handle_key_event(KeyEvent::new(KeyCode::Esc, KeyModifiers::ALT));
+
+    assert_no_submit_op(&mut op_rx);
+    assert_eq!(chat.bottom_pane.composer_text(), "/agent ");
+}
+
+#[tokio::test]
 async fn manual_interrupt_restores_pending_steer_mention_bindings_to_composer() {
     let (mut chat, _rx, mut op_rx) = make_chatwidget_manual(None).await;
     chat.thread_id = Some(ThreadId::new());
@@ -8958,6 +8980,41 @@ async fn slash_model_queue_while_task_running_and_open_after_completion() {
         popup.contains("Select Model"),
         "expected model popup after queued replay, got {popup:?}"
     );
+}
+
+#[tokio::test]
+async fn queued_model_chooser_then_queued_input_drains_after_popup_close() {
+    let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(None).await;
+    chat.thread_id = Some(ThreadId::new());
+    chat.bottom_pane.set_task_running(true);
+
+    chat.dispatch_command(SlashCommand::Model);
+    chat.bottom_pane
+        .set_composer_text("queued follow-up".to_string(), Vec::new(), Vec::new());
+    chat.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+    let _ = drain_insert_history(&mut rx);
+    assert_no_submit_op(&mut op_rx);
+
+    chat.on_task_complete(None, false);
+    let popup = render_bottom_popup(&chat, 80);
+    assert!(
+        popup.contains("Select Model"),
+        "expected model popup after queued replay, got {popup:?}"
+    );
+
+    chat.handle_key_event(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+
+    match next_submit_op(&mut op_rx) {
+        Op::UserTurn { items, .. } => assert_eq!(
+            items,
+            vec![UserInput::Text {
+                text: "queued follow-up".to_string(),
+                text_elements: Vec::new(),
+            }]
+        ),
+        other => panic!("expected queued follow-up Op::UserTurn, got {other:?}"),
+    }
 }
 
 #[tokio::test]

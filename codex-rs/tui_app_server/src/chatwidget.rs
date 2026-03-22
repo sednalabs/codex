@@ -4450,6 +4450,7 @@ impl ChatWidget {
 
         if matches!(key_event.code, KeyCode::Esc)
             && matches!(key_event.kind, KeyEventKind::Press | KeyEventKind::Repeat)
+            && key_event.modifiers.is_empty()
             && !self.pending_steers.is_empty()
             && self.bottom_pane.is_task_running()
             && self.bottom_pane.no_modal_or_popup_active()
@@ -4472,80 +4473,91 @@ impl ChatWidget {
             {
                 self.cycle_collaboration_mode();
             }
-            _ => match self.bottom_pane.handle_key_event(key_event) {
-                InputResult::Submitted {
-                    text,
-                    text_elements,
-                } => {
-                    let local_images = self
-                        .bottom_pane
-                        .take_recent_submission_images_with_placeholders();
-                    let remote_image_urls = self.take_remote_image_urls();
-                    let user_message = UserMessage {
+            _ => {
+                let had_modal_or_popup_active = !self.bottom_pane.no_modal_or_popup_active();
+                match self.bottom_pane.handle_key_event(key_event) {
+                    InputResult::Submitted {
                         text,
-                        local_images,
-                        remote_image_urls,
                         text_elements,
-                        mention_bindings: self
+                    } => {
+                        let local_images = self
                             .bottom_pane
-                            .take_recent_submission_mention_bindings(),
-                    };
-                    if user_message.text.is_empty()
-                        && user_message.local_images.is_empty()
-                        && user_message.remote_image_urls.is_empty()
-                    {
-                        return;
+                            .take_recent_submission_images_with_placeholders();
+                        let remote_image_urls = self.take_remote_image_urls();
+                        let user_message = UserMessage {
+                            text,
+                            local_images,
+                            remote_image_urls,
+                            text_elements,
+                            mention_bindings: self
+                                .bottom_pane
+                                .take_recent_submission_mention_bindings(),
+                        };
+                        if user_message.text.is_empty()
+                            && user_message.local_images.is_empty()
+                            && user_message.remote_image_urls.is_empty()
+                        {
+                            return;
+                        }
+                        let Some(user_message) =
+                            self.maybe_defer_user_message_for_realtime(user_message)
+                        else {
+                            return;
+                        };
+                        let should_submit_now =
+                            self.is_session_configured() && !self.is_plan_streaming_in_tui();
+                        if should_submit_now {
+                            // Submitted is emitted when user submits.
+                            // Reset any reasoning header only when we are actually submitting a turn.
+                            self.reasoning_buffer.clear();
+                            self.full_reasoning_buffer.clear();
+                            self.set_status_header(String::from("Working"));
+                            self.submit_user_message(user_message);
+                        } else {
+                            self.queue_user_message(user_message);
+                        }
                     }
-                    let Some(user_message) =
-                        self.maybe_defer_user_message_for_realtime(user_message)
-                    else {
-                        return;
-                    };
-                    let should_submit_now =
-                        self.is_session_configured() && !self.is_plan_streaming_in_tui();
-                    if should_submit_now {
-                        // Submitted is emitted when user submits.
-                        // Reset any reasoning header only when we are actually submitting a turn.
-                        self.reasoning_buffer.clear();
-                        self.full_reasoning_buffer.clear();
-                        self.set_status_header(String::from("Working"));
-                        self.submit_user_message(user_message);
-                    } else {
+                    InputResult::Queued {
+                        text,
+                        text_elements,
+                    } => {
+                        let local_images = self
+                            .bottom_pane
+                            .take_recent_submission_images_with_placeholders();
+                        let remote_image_urls = self.take_remote_image_urls();
+                        let user_message = UserMessage {
+                            text,
+                            local_images,
+                            remote_image_urls,
+                            text_elements,
+                            mention_bindings: self
+                                .bottom_pane
+                                .take_recent_submission_mention_bindings(),
+                        };
+                        let Some(user_message) =
+                            self.maybe_defer_user_message_for_realtime(user_message)
+                        else {
+                            return;
+                        };
                         self.queue_user_message(user_message);
                     }
+                    InputResult::Command(cmd) => {
+                        self.dispatch_command(cmd);
+                    }
+                    InputResult::CommandWithArgs(cmd, args, text_elements) => {
+                        self.dispatch_command_with_args(cmd, args, text_elements);
+                    }
+                    InputResult::None => {}
                 }
-                InputResult::Queued {
-                    text,
-                    text_elements,
-                } => {
-                    let local_images = self
-                        .bottom_pane
-                        .take_recent_submission_images_with_placeholders();
-                    let remote_image_urls = self.take_remote_image_urls();
-                    let user_message = UserMessage {
-                        text,
-                        local_images,
-                        remote_image_urls,
-                        text_elements,
-                        mention_bindings: self
-                            .bottom_pane
-                            .take_recent_submission_mention_bindings(),
-                    };
-                    let Some(user_message) =
-                        self.maybe_defer_user_message_for_realtime(user_message)
-                    else {
-                        return;
-                    };
-                    self.queue_user_message(user_message);
+
+                if had_modal_or_popup_active
+                    && self.bottom_pane.no_modal_or_popup_active()
+                    && !self.bottom_pane.is_task_running()
+                    && self.has_queued_follow_up_actions()
+                {
+                    self.maybe_send_next_queued_input();
                 }
-                InputResult::Command(cmd) => {
-                    self.dispatch_command(cmd);
-                }
-                InputResult::CommandWithArgs(cmd, args, text_elements) => {
-                    self.dispatch_command_with_args(cmd, args, text_elements);
-                }
-                InputResult::None => {}
-            },
+            }
         }
     }
 
