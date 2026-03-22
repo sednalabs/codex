@@ -366,6 +366,12 @@ struct RunningCommand {
     source: ExecCommandSource,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum QueuedFollowUpKind {
+    UserMessage,
+    TaskCommand,
+}
+
 struct UnifiedExecProcessSummary {
     key: String,
     call_id: String,
@@ -421,6 +427,13 @@ fn is_standard_tool_call(parsed_cmd: &[ParsedCommand]) -> bool {
         && parsed_cmd
             .iter()
             .all(|parsed| !matches!(parsed, ParsedCommand::Unknown { .. }))
+}
+
+fn should_queue_while_task_running(cmd: SlashCommand) -> bool {
+    matches!(
+        cmd,
+        SlashCommand::Model | SlashCommand::Approvals | SlashCommand::Permissions
+    )
 }
 
 const RATE_LIMIT_WARNING_THRESHOLDS: [f64; 3] = [75.0, 90.0, 95.0];
@@ -799,6 +812,10 @@ pub(crate) struct ChatWidget {
     suppress_initial_user_message_submit: bool,
     // User messages queued while a turn is in progress
     queued_user_messages: VecDeque<UserMessage>,
+    // Slash commands queued while a turn is in progress.
+    queued_task_running_commands: VecDeque<SlashCommand>,
+    // Unified FIFO ordering across queued messages and queued slash commands.
+    queued_follow_up_order: VecDeque<QueuedFollowUpKind>,
     // Steers already submitted to core but not yet committed into history.
     //
     // The bottom pane shows these above queued drafts until core records the
@@ -951,6 +968,8 @@ pub(crate) struct ThreadInputState {
     composer: Option<ThreadComposerState>,
     pending_steers: VecDeque<UserMessage>,
     queued_user_messages: VecDeque<UserMessage>,
+    queued_task_running_commands: VecDeque<SlashCommand>,
+    queued_follow_up_order: VecDeque<QueuedFollowUpKind>,
     current_collaboration_mode: CollaborationMode,
     active_collaboration_mask: Option<CollaborationModeMask>,
     agent_turn_running: bool,
@@ -2164,7 +2183,7 @@ impl ChatWidget {
         let had_pending_steers = !self.pending_steers.is_empty();
         self.refresh_pending_input_preview();
 
-        if !from_replay && self.queued_user_messages.is_empty() && !had_pending_steers {
+        if !from_replay && !self.has_queued_follow_up_actions() && !had_pending_steers {
             self.maybe_prompt_plan_implementation();
         }
         // Keep this flag for replayed completion events so a subsequent live TurnComplete can
@@ -2186,7 +2205,7 @@ impl ChatWidget {
         if !self.collaboration_modes_enabled() {
             return;
         }
-        if !self.queued_user_messages.is_empty() {
+        if self.has_queued_follow_up_actions() {
             return;
         }
         if self.active_mode_kind() != ModeKind::Plan {
@@ -2658,6 +2677,8 @@ impl ChatWidget {
             .map(|steer| steer.user_message)
             .collect();
         to_merge.extend(self.queued_user_messages.drain(..));
+        self.queued_follow_up_order
+            .retain(|kind| !matches!(kind, QueuedFollowUpKind::UserMessage));
         if !existing_message.text.is_empty()
             || !existing_message.local_images.is_empty()
             || !existing_message.remote_image_urls.is_empty()
@@ -2703,6 +2724,8 @@ impl ChatWidget {
                 .map(|pending| pending.user_message.clone())
                 .collect(),
             queued_user_messages: self.queued_user_messages.clone(),
+            queued_task_running_commands: self.queued_task_running_commands.clone(),
+            queued_follow_up_order: self.queued_follow_up_order.clone(),
             current_collaboration_mode: self.current_collaboration_mode.clone(),
             active_collaboration_mask: self.active_collaboration_mask.clone(),
             agent_turn_running: self.agent_turn_running,
@@ -2745,6 +2768,8 @@ impl ChatWidget {
             self.queued_user_messages = input_state.pending_steers;
             self.queued_user_messages
                 .extend(input_state.queued_user_messages);
+            self.queued_task_running_commands = input_state.queued_task_running_commands;
+            self.queued_follow_up_order = input_state.queued_follow_up_order;
         } else {
             self.agent_turn_running = false;
             self.pending_steers.clear();
@@ -2757,6 +2782,8 @@ impl ChatWidget {
             );
             self.bottom_pane.set_composer_pending_pastes(Vec::new());
             self.queued_user_messages.clear();
+            self.queued_task_running_commands.clear();
+            self.queued_follow_up_order.clear();
         }
         self.turn_sleep_inhibitor
             .set_turn_running(self.agent_turn_running);
@@ -4265,6 +4292,8 @@ impl ChatWidget {
             thread_name: None,
             forked_from: None,
             queued_user_messages: VecDeque::new(),
+            queued_task_running_commands: VecDeque::new(),
+            queued_follow_up_order: VecDeque::new(),
             pending_steers: VecDeque::new(),
             submit_pending_steers_after_interrupt: false,
             queued_message_edit_binding,
@@ -4406,6 +4435,13 @@ impl ChatWidget {
         {
             if let Some(user_message) = self.queued_user_messages.pop_back() {
                 self.restore_user_message_to_composer(user_message);
+                if let Some(position) = self
+                    .queued_follow_up_order
+                    .iter()
+                    .rposition(|kind| matches!(kind, QueuedFollowUpKind::UserMessage))
+                {
+                    let _ = self.queued_follow_up_order.remove(position);
+                }
                 self.refresh_pending_input_preview();
                 self.request_redraw();
             }
@@ -4578,6 +4614,11 @@ impl ChatWidget {
     }
 
     fn dispatch_command(&mut self, cmd: SlashCommand) {
+        if self.bottom_pane.is_task_running() && should_queue_while_task_running(cmd) {
+            self.queue_task_running_command(cmd);
+            self.bottom_pane.drain_pending_submission_state();
+            return;
+        }
         if !cmd.available_during_task() && self.bottom_pane.is_task_running() {
             let message = format!(
                 "'/{}' is disabled while a task is in progress.",
@@ -5125,21 +5166,43 @@ impl ChatWidget {
             || self.is_review_mode
         {
             self.queued_user_messages.push_back(user_message);
+            self.queued_follow_up_order
+                .push_back(QueuedFollowUpKind::UserMessage);
             self.refresh_pending_input_preview();
         } else {
             self.submit_user_message(user_message);
         }
     }
 
+    fn queue_task_running_command(&mut self, cmd: SlashCommand) {
+        let command_text = format!("/{}", cmd.command());
+        self.queued_task_running_commands.push_back(cmd);
+        self.queued_follow_up_order
+            .push_back(QueuedFollowUpKind::TaskCommand);
+        self.refresh_pending_input_preview();
+        self.add_info_message(
+            format!("Queued '{command_text}'. It will run after the current task completes."),
+            None,
+        );
+    }
+
+    fn has_queued_follow_up_actions(&self) -> bool {
+        !self.queued_user_messages.is_empty() || !self.queued_task_running_commands.is_empty()
+    }
+
     fn submit_user_message(&mut self, user_message: UserMessage) {
         if !self.is_session_configured() {
             tracing::warn!("cannot submit user message before session is configured; queueing");
             self.queued_user_messages.push_front(user_message);
+            self.queued_follow_up_order
+                .push_front(QueuedFollowUpKind::UserMessage);
             self.refresh_pending_input_preview();
             return;
         }
         if self.is_review_mode {
             self.queued_user_messages.push_back(user_message);
+            self.queued_follow_up_order
+                .push_back(QueuedFollowUpKind::UserMessage);
             self.refresh_pending_input_preview();
             return;
         }
@@ -6826,8 +6889,33 @@ impl ChatWidget {
         if self.bottom_pane.is_task_running() {
             return;
         }
+        while let Some(kind) = self.queued_follow_up_order.pop_front() {
+            match kind {
+                QueuedFollowUpKind::UserMessage => {
+                    if let Some(user_message) = self.queued_user_messages.pop_front() {
+                        self.submit_user_message(user_message);
+                        self.refresh_pending_input_preview();
+                        return;
+                    }
+                }
+                QueuedFollowUpKind::TaskCommand => {
+                    if let Some(cmd) = self.queued_task_running_commands.pop_front() {
+                        self.dispatch_command(cmd);
+                        self.refresh_pending_input_preview();
+                        return;
+                    }
+                }
+            }
+        }
         if let Some(user_message) = self.queued_user_messages.pop_front() {
             self.submit_user_message(user_message);
+            self.refresh_pending_input_preview();
+            return;
+        }
+        if let Some(cmd) = self.queued_task_running_commands.pop_front() {
+            self.dispatch_command(cmd);
+            self.refresh_pending_input_preview();
+            return;
         }
         // Update the list to reflect the remaining queued messages (if any).
         self.refresh_pending_input_preview();
@@ -6835,11 +6923,39 @@ impl ChatWidget {
 
     /// Rebuild and update the bottom-pane pending-input preview.
     fn refresh_pending_input_preview(&mut self) {
-        let queued_messages: Vec<String> = self
-            .queued_user_messages
-            .iter()
-            .map(|m| m.text.clone())
-            .collect();
+        let mut queued_messages: Vec<String> = Vec::new();
+        let mut user_iter = self.queued_user_messages.iter();
+        let mut command_iter = self.queued_task_running_commands.iter();
+
+        if self.queued_follow_up_order.is_empty() {
+            queued_messages.extend(user_iter.by_ref().map(|message| message.text.clone()));
+            queued_messages.extend(
+                command_iter
+                    .by_ref()
+                    .map(|command| format!("/{}", command.command())),
+            );
+        } else {
+            for kind in &self.queued_follow_up_order {
+                match kind {
+                    QueuedFollowUpKind::UserMessage => {
+                        if let Some(message) = user_iter.next() {
+                            queued_messages.push(message.text.clone());
+                        }
+                    }
+                    QueuedFollowUpKind::TaskCommand => {
+                        if let Some(command) = command_iter.next() {
+                            queued_messages.push(format!("/{}", command.command()));
+                        }
+                    }
+                }
+            }
+            queued_messages.extend(user_iter.by_ref().map(|message| message.text.clone()));
+            queued_messages.extend(
+                command_iter
+                    .by_ref()
+                    .map(|command| format!("/{}", command.command())),
+            );
+        }
         let pending_steers: Vec<String> = self
             .pending_steers
             .iter()

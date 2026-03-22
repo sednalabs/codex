@@ -6764,6 +6764,18 @@ async fn slash_exit_requests_exit() {
 }
 
 #[tokio::test]
+async fn slash_quit_with_trailing_space_exits_while_task_running() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(None).await;
+    chat.bottom_pane.set_task_running(true);
+    chat.bottom_pane
+        .set_composer_text("/quit ".to_string(), Vec::new(), Vec::new());
+
+    chat.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+    assert_matches!(rx.try_recv(), Ok(AppEvent::Exit(ExitMode::ShutdownFirst)));
+}
+
+#[tokio::test]
 async fn slash_stop_submits_background_terminal_cleanup() {
     let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(None).await;
 
@@ -8922,22 +8934,57 @@ async fn bang_shell_command_submits_run_user_shell_command_in_app_server_tui() {
 }
 
 #[tokio::test]
-async fn disabled_slash_command_while_task_running_snapshot() {
-    // Build a chat widget and simulate an active task
+async fn slash_model_queue_while_task_running_and_open_after_completion() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(None).await;
     chat.bottom_pane.set_task_running(true);
 
-    // Dispatch a command that is unavailable while a task runs (e.g., /model)
     chat.dispatch_command(SlashCommand::Model);
 
-    // Drain history and snapshot the rendered error line(s)
     let cells = drain_insert_history(&mut rx);
+    let rendered = lines_to_single_string(cells.last().expect("expected queue info message"));
     assert!(
-        !cells.is_empty(),
-        "expected an error message history cell to be emitted",
+        rendered.contains("Queued '/model'."),
+        "expected queued model message, got {rendered:?}"
     );
-    let blob = lines_to_single_string(cells.last().unwrap());
-    assert_snapshot!(blob);
+    assert!(
+        rx.try_recv().is_err(),
+        "expected queued model not to open immediately"
+    );
+
+    chat.on_task_complete(None, false);
+
+    let popup = render_bottom_popup(&chat, 80);
+    assert!(
+        popup.contains("Select Model"),
+        "expected model popup after queued replay, got {popup:?}"
+    );
+}
+
+#[tokio::test]
+async fn slash_approvals_queue_while_task_running_and_open_after_completion() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(None).await;
+    chat.bottom_pane.set_task_running(true);
+
+    chat.dispatch_command(SlashCommand::Approvals);
+
+    let cells = drain_insert_history(&mut rx);
+    let rendered = lines_to_single_string(cells.last().expect("expected queue info message"));
+    assert!(
+        rendered.contains("Queued '/approvals'."),
+        "expected queued approvals message, got {rendered:?}"
+    );
+    assert!(
+        rx.try_recv().is_err(),
+        "expected queued approvals not to open immediately"
+    );
+
+    chat.on_task_complete(None, false);
+
+    let popup = render_bottom_popup(&chat, 80);
+    assert!(
+        popup.contains("Update Model Permissions"),
+        "expected approvals popup after queued replay, got {popup:?}"
+    );
 }
 
 #[tokio::test]
