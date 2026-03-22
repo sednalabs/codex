@@ -173,6 +173,19 @@ fn collab_agent_list_item_schema() -> JsonValue {
                 ],
                 "description": "Agent status at the time the tool response was generated."
             },
+            "spawn_edge_status": {
+                "oneOf": [
+                    {
+                        "type": "string",
+                        "enum": ["open", "closed"]
+                    },
+                    {
+                        "type": "null"
+                    }
+                ],
+                "description":
+                    "Persisted directional spawn-edge status when known. Present for subtree rows returned via `include_descendants`."
+            },
             "identity_source": {
                 "type": "string",
                 "description": "Identity source used for inherited agent settings."
@@ -197,6 +210,7 @@ fn collab_agent_list_item_schema() -> JsonValue {
             "nickname",
             "role",
             "status",
+            "spawn_edge_status",
             "identity_source",
             "effective_model",
             "effective_reasoning_effort",
@@ -1517,14 +1531,23 @@ fn create_list_agents_tool() -> ToolSpec {
         JsonSchema::Array {
             items: Box::new(JsonSchema::String { description: None }),
             description: Some(
-                "Optional filter of agent IDs to return. Direct children that match are returned with live metadata; requested ids that are missing or not visible to the current thread are returned as explicit `not_found` entries."
+                "Optional filter of agent IDs to return. By default only direct children are visible. When `include_descendants=true`, requested descendant IDs can also resolve from persisted spawn-edge state; unresolved IDs are returned as explicit `not_found` entries."
+                    .to_string(),
+            ),
+        },
+    );
+    properties.insert(
+        "include_descendants".to_string(),
+        JsonSchema::Boolean {
+            description: Some(
+                "When true, include descendants from persisted spawn-edge state (open and closed) in addition to live direct children."
                     .to_string(),
             ),
         },
     );
     ToolSpec::Function(ResponsesApiTool {
         name: "list_agents".to_string(),
-        description: "List spawned agents and return a snapshot for each agent owned by the current thread, including role, identity source, and effective model settings. Use this while delegation is in progress to inspect non-blocking progress before deciding whether to call `wait_agent`."
+        description: "List spawned agents and return a snapshot for each agent owned by the current thread, including role, identity source, and effective model settings. Defaults to direct children; set include_descendants=true to surface persisted subtree rows (including closed descendants). Use this while delegation is in progress to inspect non-blocking progress before deciding whether to call `wait_agent`."
             .to_string(),
         strict: false,
         defer_loading: None,
