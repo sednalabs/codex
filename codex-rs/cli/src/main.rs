@@ -48,11 +48,7 @@ use codex_core::config::Config;
 use codex_core::config::ConfigOverrides;
 use codex_core::config::edit::ConfigEditsBuilder;
 use codex_core::config::find_codex_home;
-const CODEX_VERSION: &str = concat!(
-    env!("CARGO_PKG_VERSION"),
-    "+",
-    env!("CODEX_GIT_DESCRIBE", "unknown")
-);
+const CODEX_VERSION: &str = env!("CODEX_CLI_VERSION");
 use codex_features::FEATURES;
 use codex_features::Stage;
 use codex_features::is_known_feature_key;
