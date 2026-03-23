@@ -40,7 +40,6 @@ git remote set-url origin git@github.com:SednaLabs/codex.git
 
 - local Build Helper runs are the default narrow lane for formatting, smoke tests, and targeted checks
 - heavy Rust tests, release-mode builds, and preview binaries should be offloaded to GitHub Actions after commit and push
-- on this old shared host, GitHub branch builds and heavy test runs are typically about 2-3x faster than local CPU-bound runs and avoid starving other agents while the work is in flight
 - branch artifacts are disposable and retain for 3 days
 - official releases are published only from the protected Sedna release workflow
 

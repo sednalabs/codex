@@ -21,6 +21,11 @@ Branch tracking should remain:
 - `main` tracks `origin/main`.
 - `upstream-main` tracks `origin/upstream-main`.
 
+## Local Agent Overlay
+
+- If a local-only `AGENTS.override.md` file exists next to this file, apply it after this file for this checkout.
+- Keep `AGENTS.override.md` machine-specific and operator-specific. Do not commit host details, private paths, or other local-only guidance back to the repository.
+
 In the codex-rs folder where the rust code lives:
 
 - Crate names are prefixed with `codex-`. For example, the `core` folder's crate is named `codex-core`
