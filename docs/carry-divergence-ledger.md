@@ -95,7 +95,7 @@ live divergence.
 - Roles still control locked models when they explicitly set `model`, `model_provider`, `model_reasoning_effort`, or `model_verbosity`, so downstream policy remains defendable.
 - Carry also preserves the requested `model_reasoning_summary`, so the summary the child asked for survives role reload unless a role or active profile explicitly locks it, and active-profile overrides that set these fields retain precedence per `core/src/agent/role.rs`.
 - Spawn-agent result and direct-child inventory reporting expose `role`, `status`, `identity_source`, `effective_model`, `effective_reasoning_effort`, and `effective_model_provider_id` after role application, so the surviving setting is visible.
-- `list_agents` is a first-class inventory tool on `carry/main`: it defaults to direct-child visibility and can optionally surface persisted subtree rows via `include_descendants=true`, including `spawn_edge_status` for open/closed descendant edges even when the descendants are no longer live.
+- `list_agents` is a first-class inventory tool on the downstream branch (`main`; historically `carry/main`): it defaults to direct-child visibility and can optionally surface persisted subtree rows via `include_descendants=true`, including `spawn_edge_status` for open/closed descendant edges even when the descendants are no longer live.
 - `wait_agent` adds `return_when=any|all` plus `requested_ids`, `pending_ids`, and `completion_reason` so downstream joins happen on explicit tool contracts rather than transcript polling.
 - Primary files:
   - `codex-rs/core/src/agent/role.rs`
@@ -201,7 +201,7 @@ live divergence.
 
 ### Code-Mode Declaration Formatting
 
-- `carry/main` still emits imported tool declarations of the form:
+- the downstream branch (`main`; historically `carry/main`) still emits imported tool declarations of the form:
   `import { tools } from "..."; declare function ...`
 - `upstream/main` still emits the older inline
   `declare const tools: { ... }` example.
@@ -215,7 +215,8 @@ live divergence.
   - `39` carry-only merge commits are sync history, not independent downstream
     behaviors.
 - Merge-repair and promotion-fix history:
-  - examples include `Fix carry/main core regressions after upstream sync`,
+  - examples include historical commits such as
+    `Fix carry/main core regressions after upstream sync`,
     `Fix carry/main promotion follow-ups`, and
     `Fix hybrid merge API drift in core/tui tests`
 - Generated and derivative churn:

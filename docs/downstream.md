@@ -19,10 +19,14 @@ If your clone still tracks the old carry-branch model, repoint it like this afte
 
 ```bash
 git fetch origin --prune
-git branch -m main upstream-main 2>/dev/null || true
-git branch -m carry/main main 2>/dev/null || true
-git branch -u origin/main main
-git branch -u origin/upstream-main upstream-main
+if git show-ref --verify --quiet refs/heads/main && ! git show-ref --verify --quiet refs/heads/upstream-main; then
+  git branch -m main upstream-main
+fi
+if git show-ref --verify --quiet refs/heads/carry/main && ! git show-ref --verify --quiet refs/heads/main; then
+  git branch -m carry/main main
+fi
+git branch --set-upstream-to=origin/main main
+git branch --set-upstream-to=origin/upstream-main upstream-main
 git switch main
 ```
 
@@ -43,7 +47,7 @@ git remote set-url origin git@github.com:SednaLabs/codex.git
 
 This section tracks intentional downstream behavior differences from `upstream-main`.
 References to `carry/main` elsewhere in the repo are historical pre-cutover baselines and should be
-read as prior names for the maintained downstream branch.
+read as prior names for the maintained downstream branch now published as `main`.
 
 Current state at the last validated pre-cutover review baseline (`5d474e652d91c7f371a28ad2069cc51a1c5b9ee8`):
 - downstream branch (then `carry/main`, now `main`) was `175` commits ahead and `0` behind `upstream/main`
