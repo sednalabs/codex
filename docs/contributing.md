@@ -30,9 +30,10 @@ For these reasons, we focus external contributions on discussion, analysis, and 
 
 If you are invited by a fork maintainer to contribute a PR, here is the recommended development workflow.
 
-- Create a _topic branch_ from `carry/main` - e.g. `feat/interactive-prompt`.
-- `main` is a read-only upstream mirror and is not a PR target in this fork.
-- Upstream sync for `carry/main` is merge-based (`upstream/main` -> `carry/main`), not rebase-based.
+- Create a _topic branch_ from `main` - e.g. `feat/interactive-prompt`.
+- `main` is the maintained downstream branch and the only public PR target in this fork.
+- `upstream-main` is a read-only upstream mirror and is not a PR target.
+- Upstream sync for `main` is merge-based (`upstream-main` -> `main`), not rebase-based.
 - Keep your changes focused. Multiple unrelated fixes should be opened as separate PRs.
 - Ensure your change is free of lint warnings and test failures.
 
@@ -56,8 +57,8 @@ When a change updates model catalogs or model metadata (`/models` payloads, pres
 
 - Fill in the PR template (or include similar information) - **What? Why? How?**
 - Include a link to a bug report or enhancement request in the issue tracker
-- Run **all** checks locally. Use the root `just` helpers so you stay consistent with the rest of the workspace: `just fmt`, `just fix -p <crate>` for the crate you touched, and the relevant tests (e.g., `cargo test -p codex-tui` or `just test` if you need a full sweep). CI failures that could have been caught locally slow down the process.
-- Make sure your branch is up-to-date with `carry/main` and that you have resolved merge conflicts.
+- Run the smallest relevant local checks first. Use the root `just` helpers so you stay consistent with the rest of the workspace: `just fmt`, `just fix -p <crate>` for the crate you touched, and the relevant crate-scoped tests. Heavy sweeps and release-mode validation should be offloaded to GitHub Actions after the branch is pushed.
+- Make sure your branch is up-to-date with `main` and that you have resolved merge conflicts.
 - Mark the PR as **Ready for review** only when you believe it is in a merge-able state.
 
 ### Review process

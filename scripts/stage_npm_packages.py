@@ -16,8 +16,8 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 BUILD_SCRIPT = REPO_ROOT / "codex-cli" / "scripts" / "build_npm_package.py"
 INSTALL_NATIVE_DEPS = REPO_ROOT / "codex-cli" / "scripts" / "install_native_deps.py"
-WORKFLOW_NAME = ".github/workflows/rust-release.yml"
-GITHUB_REPO = "openai/codex"
+WORKFLOW_NAME = os.environ.get("CODEX_RELEASE_WORKFLOW", ".github/workflows/rust-release.yml")
+RELEASE_TAG_PREFIX = os.environ.get("CODEX_RELEASE_TAG_PREFIX", "rust-v")
 
 _SPEC = importlib.util.spec_from_file_location("codex_build_npm_package", BUILD_SCRIPT)
 if _SPEC is None or _SPEC.loader is None:
@@ -85,7 +85,7 @@ def resolve_release_workflow(version: str) -> dict:
             "run",
             "list",
             "--branch",
-            f"rust-v{version}",
+            f"{RELEASE_TAG_PREFIX}{version}",
             "--json",
             "workflowName,url,headSha",
             "--workflow",
@@ -98,7 +98,7 @@ def resolve_release_workflow(version: str) -> dict:
     )
     workflow = json.loads(stdout or "null")
     if not workflow:
-        raise RuntimeError(f"Unable to find rust-release workflow for version {version}.")
+        raise RuntimeError(f"Unable to find release workflow for version {version}.")
     return workflow
 
 

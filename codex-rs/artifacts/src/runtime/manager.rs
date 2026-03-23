@@ -20,7 +20,11 @@ pub const DEFAULT_RELEASE_TAG_PREFIX: &str = "artifact-runtime-v";
 pub const DEFAULT_CACHE_ROOT_RELATIVE: &str = "packages/artifacts";
 
 /// Base URL used by default when downloading runtime assets from GitHub releases.
-pub const DEFAULT_RELEASE_BASE_URL: &str = "https://github.com/openai/codex/releases/download/";
+pub const DEFAULT_RELEASE_BASE_URL: &str =
+    match option_env!("CODEX_ARTIFACT_RUNTIME_RELEASE_BASE_URL") {
+        Some(url) => url,
+        None => "https://github.com/openai/codex/releases/download/",
+    };
 
 /// Describes where a particular artifact runtime release can be downloaded from.
 #[derive(Clone, Debug, PartialEq, Eq)]

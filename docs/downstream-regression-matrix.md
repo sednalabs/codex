@@ -1,7 +1,9 @@
 # Downstream Regression Matrix
 
-This matrix maps live `carry/main` divergences to the smallest default test lane
-that should fail if the behavior regresses.
+This matrix maps live downstream divergences to the smallest default test lane
+that should fail if the behavior regresses. Historical references to
+`carry/main` refer to the pre-cutover name for the maintained downstream
+branch.
 
 ## Core default path
 

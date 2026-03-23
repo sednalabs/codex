@@ -1,0 +1,102 @@
+name: _sedna-linux-rust
+
+on:
+  workflow_call:
+    inputs:
+      checkout_ref:
+        required: false
+        type: string
+        default: ""
+      summary_title:
+        required: true
+        type: string
+      run_command:
+        required: true
+        type: string
+      artifact_name:
+        required: false
+        type: string
+        default: ""
+      artifact_path:
+        required: false
+        type: string
+        default: ""
+      release_version:
+        required: false
+        type: string
+        default: ""
+      install_nextest:
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  run:
+    name: ${{ inputs.summary_title }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    defaults:
+      run:
+        working-directory: codex-rs
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          ref: ${{ inputs.checkout_ref != '' && inputs.checkout_ref || github.sha }}
+
+      - name: Set up Node.js for js_repl tests
+        uses: actions/setup-node@v6
+        with:
+          node-version-file: codex-rs/node-version.txt
+
+      - name: Install Linux build dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update -y
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends pkg-config libcap-dev
+
+      - name: Install DotSlash
+        uses: facebook/install-dotslash@v2
+
+      - uses: dtolnay/rust-toolchain@1.93.0
+        with:
+          targets: x86_64-unknown-linux-gnu
+
+      - uses: taiki-e/install-action@44c6d64aa62cd779e873306675c7a58e86d6d532 # v2
+        if: ${{ inputs.install_nextest }}
+        with:
+          tool: nextest
+          version: 0.9.103
+
+      - name: Enable unprivileged user namespaces (Linux)
+        if: ${{ inputs.install_nextest }}
+        shell: bash
+        run: |
+          sudo sysctl -w kernel.unprivileged_userns_clone=1
+          if sudo sysctl -a 2>/dev/null | grep -q '^kernel.apparmor_restrict_unprivileged_userns'; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
+
+      - name: Run requested command
+        shell: bash
+        run: |
+          set -euo pipefail
+          export CODEX_RELEASE_REPOSITORY='${{ github.repository }}'
+          export CODEX_RELEASE_TAG_PREFIX='v'
+          if [[ -n '${{ inputs.release_version }}' ]]; then
+            export CODEX_RELEASE_VERSION='${{ inputs.release_version }}'
+          fi
+          ${{ inputs.run_command }}
+
+      - name: Upload workflow artifacts
+        if: ${{ inputs.artifact_name != '' && inputs.artifact_path != '' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ inputs.artifact_name }}
+          path: ${{ inputs.artifact_path }}
+          retention-days: 3
+

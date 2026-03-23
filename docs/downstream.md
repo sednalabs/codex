@@ -1,30 +1,56 @@
 # Downstream / Fork Notes
 
-This fork tracks upstream `main` on the local `main` branch and carries additional patches on `carry/main`.
-GitHub default branch is `carry/main` so downstream behavior is the repository landing view, while `main` stays pristine.
+This fork publishes downstream behavior on `main` and keeps an exact upstream mirror on
+`upstream-main`.
 
 ## Branch Policy
 
-- `main`: fast-forward mirror of upstream `main` (no local commits)
-- `carry/main`: upstream + downstream patches (merge-based carry-forward branch)
-- do not push feature commits to `origin/main`
-- use `git sync-main` to update `main` as an upstream mirror
-- use `git sync-carry` to merge `upstream/main` into `carry/main` and push `origin/carry/main`
-- avoid force-push on `carry/main` during normal sync; reserve `--force-with-lease` for exceptional repair only
-- new feature branches: create from `carry/main` by default
-- upstream-only compatibility/test probes: create from `main`, then cherry-pick to `carry/main` if retained downstream
+- `main`: maintained downstream branch and public default branch
+- `upstream-main`: fast-forward mirror of `upstream/main` (no local feature commits)
+- do not push feature commits to `origin/upstream-main`
+- downstream sync is merge-based (`upstream-main` -> `main`), not rebase-based
+- avoid force-push on `main` during normal sync; reserve `--force-with-lease` for exceptional repair only
+- new feature branches: create from `main` by default
+- upstream-only compatibility/test probes: create from `upstream-main`, then cherry-pick to `main` if retained downstream
+
+## Local clone migration
+
+If your clone still tracks the old carry-branch model, repoint it like this after the cutover:
+
+```bash
+git fetch origin --prune
+git branch -m main upstream-main 2>/dev/null || true
+git branch -m carry/main main 2>/dev/null || true
+git branch -u origin/main main
+git branch -u origin/upstream-main upstream-main
+git switch main
+```
+
+If your `origin` remote still points at the personal namespace, update it:
+
+```bash
+git remote set-url origin git@github.com:SednaLabs/codex.git
+```
+
+## Validation policy
+
+- local Build Helper runs are the default narrow lane for formatting, smoke tests, and targeted checks
+- heavy Rust tests, release-mode builds, and preview binaries should be offloaded to GitHub Actions after commit and push
+- branch artifacts are disposable and retain for 3 days
+- official releases are published only from the protected Sedna release workflow
 
 ## Divergence Summary
 
-This section tracks intentional downstream behavior differences from `upstream/main`.
-Last reviewed: 2026-03-21.
+This section tracks intentional downstream behavior differences from `upstream-main`.
+References to `carry/main` elsewhere in the repo are historical pre-cutover baselines and should be
+read as prior names for the maintained downstream branch.
 
-Current state at validated review baseline (`5d474e652d91c7f371a28ad2069cc51a1c5b9ee8`):
-- `carry/main` is `175` commits ahead and `0` behind `upstream/main`
-- `main` matches `upstream/main` (`0` ahead, `0` behind)
+Current state at the last validated pre-cutover review baseline (`5d474e652d91c7f371a28ad2069cc51a1c5b9ee8`):
+- downstream branch (then `carry/main`, now `main`) was `175` commits ahead and `0` behind `upstream/main`
+- mirror branch (then `main`, now `upstream-main`) matched `upstream/main`
 
 Supporting docs:
-- [`downstream-tool-surface-matrix.md`](downstream-tool-surface-matrix.md) captures the exact native tool-surface deltas that remain live on `carry/main`.
+- [`downstream-tool-surface-matrix.md`](downstream-tool-surface-matrix.md) captures the exact native tool-surface deltas that remain live on the downstream branch.
 - [`downstream-divergence-tracking.md`](downstream-divergence-tracking.md) sketches the next-step registry and generation model for keeping these notes current as the fork grows.
 
 ### Core + protocol: blocking wait for unified exec, stable wait output, and compaction turn-count metadata

@@ -13,6 +13,9 @@ use std::path::Path;
 use std::path::PathBuf;
 
 use crate::version::CODEX_CLI_VERSION;
+use crate::version::CODEX_RELEASE_TAG_PREFIX;
+use crate::version::latest_release_api_url;
+use semver::Version;
 
 pub fn get_upgrade_version(config: &Config) -> Option<String> {
     if !config.check_for_update_on_startup {
@@ -57,7 +60,6 @@ struct VersionInfo {
 const VERSION_FILENAME: &str = "version.json";
 // We use the latest version from the cask if installation is via homebrew - homebrew does not immediately pick up the latest release and can lag behind.
 const HOMEBREW_CASK_API_URL: &str = "https://formulae.brew.sh/api/cask/codex.json";
-const LATEST_RELEASE_URL: &str = "https://api.github.com/repos/openai/codex/releases/latest";
 
 #[derive(Deserialize, Debug, Clone)]
 struct ReleaseInfo {
@@ -94,7 +96,7 @@ async fn check_for_update(version_file: &Path) -> anyhow::Result<()> {
             let ReleaseInfo {
                 tag_name: latest_tag_name,
             } = create_client()
-                .get(LATEST_RELEASE_URL)
+                .get(latest_release_api_url())
                 .send()
                 .await?
                 .error_for_status()?
@@ -128,8 +130,9 @@ fn is_newer(latest: &str, current: &str) -> Option<bool> {
 }
 
 fn extract_version_from_latest_tag(latest_tag_name: &str) -> anyhow::Result<String> {
-    latest_tag_name
-        .strip_prefix("rust-v")
+    [CODEX_RELEASE_TAG_PREFIX, "v", "rust-v"]
+        .into_iter()
+        .find_map(|prefix| latest_tag_name.strip_prefix(prefix))
         .map(str::to_owned)
         .ok_or_else(|| anyhow::anyhow!("Failed to parse latest tag name '{latest_tag_name}'"))
 }
@@ -169,12 +172,8 @@ pub async fn dismiss_version(config: &Config, version: &str) -> anyhow::Result<(
     Ok(())
 }
 
-fn parse_version(v: &str) -> Option<(u64, u64, u64)> {
-    let mut iter = v.trim().split('.');
-    let maj = iter.next()?.parse::<u64>().ok()?;
-    let min = iter.next()?.parse::<u64>().ok()?;
-    let pat = iter.next()?.parse::<u64>().ok()?;
-    Some((maj, min, pat))
+fn parse_version(v: &str) -> Option<Version> {
+    Version::parse(v.trim()).ok()
 }
 
 #[cfg(test)]
@@ -202,17 +201,27 @@ mod tests {
             extract_version_from_latest_tag("rust-v1.5.0").expect("failed to parse version"),
             "1.5.0"
         );
+        assert_eq!(
+            extract_version_from_latest_tag("v1.5.0-sedna.1").expect("failed to parse version"),
+            "1.5.0-sedna.1"
+        );
     }
 
     #[test]
-    fn latest_tag_without_prefix_is_invalid() {
-        assert!(extract_version_from_latest_tag("v1.5.0").is_err());
+    fn latest_tag_without_version_prefix_is_invalid() {
+        assert!(extract_version_from_latest_tag("release-1.5.0").is_err());
     }
 
     #[test]
     fn prerelease_version_is_not_considered_newer() {
-        assert_eq!(is_newer("0.11.0-beta.1", "0.11.0"), None);
-        assert_eq!(is_newer("1.0.0-rc.1", "1.0.0"), None);
+        assert_eq!(is_newer("0.11.0-beta.1", "0.11.0"), Some(false));
+        assert_eq!(is_newer("1.0.0-rc.1", "1.0.0"), Some(false));
+    }
+
+    #[test]
+    fn fork_release_suffixes_compare_correctly() {
+        assert_eq!(is_newer("0.117.0-sedna.2", "0.117.0-sedna.1"), Some(true));
+        assert_eq!(is_newer("0.117.0-sedna.1", "0.117.0+abcdef12"), Some(false));
     }
 
     #[test]
@@ -225,7 +234,10 @@ mod tests {
 
     #[test]
     fn whitespace_is_ignored() {
-        assert_eq!(parse_version(" 1.2.3 \n"), Some((1, 2, 3)));
+        assert_eq!(
+            parse_version(" 1.2.3 \n"),
+            Some(Version::parse("1.2.3").expect("valid semver"))
+        );
         assert_eq!(is_newer(" 1.2.3 ", "1.2.2"), Some(true));
     }
 }

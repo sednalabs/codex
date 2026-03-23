@@ -5,12 +5,9 @@ from upstream OpenAI releases.
 
 ### Public topology
 
-- Recommended public repository owner: `SednaLabs`
-- Recommended public default branch: `main`
-- Optional exact-upstream mirror branch: `upstream-main`
-
-The internal maintenance model can keep using `carry/main` while the public branch model is being
-transitioned. The release contract below does not depend on that migration being complete.
+- Public repository owner: `SednaLabs`
+- Public default branch: `main`
+- Exact-upstream mirror branch: `upstream-main`
 
 ### Release identity
 
@@ -38,9 +35,22 @@ Current workflow characteristics:
 - GitHub Release assets named with the Sedna release identity
 - No dependency on upstream runner groups or upstream release tags
 
+### Branch artifacts and heavy validation
+
+- `sedna-branch-build` produces disposable preview binaries from pushed same-repo branches
+- `sedna-heavy-tests` runs expensive remote validation without using the shared local machine as the
+  build factory
+- branch artifacts retain for 3 days and are never updater candidates
+- only `sedna-release` is allowed to publish official GitHub Releases
+- The initial Sedna release lane publishes direct GitHub release binaries. The legacy npm-style
+  installer packages and artifact-runtime assets remain upstream-hosted until Sedna reaches asset
+  parity for those families.
+
 ### Local versus CI builds
 
 - Local builds remain useful for development, targeted tests, and smoke checks
+- GitHub-hosted branch builds are the default offload path for preview binaries and heavy test
+  sweeps
 - GitHub-hosted release builds are the authoritative public release artifacts
 - Local non-release builds may still show the workspace placeholder version when
   `CODEX_RELEASE_VERSION` is not set; published releases should come from CI so the embedded release

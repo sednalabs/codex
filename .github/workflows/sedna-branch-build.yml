@@ -1,0 +1,99 @@
+name: sedna-branch-build
+
+on:
+  push:
+    branches-ignore:
+      - main
+      - upstream-main
+    paths-ignore:
+      - "**/*.md"
+      - "docs/**"
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Branch, tag, or commit to build
+        required: false
+        type: string
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'workflow_dispatch' && inputs.ref || github.ref_name }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  metadata:
+    name: Resolve preview metadata
+    runs-on: ubuntu-24.04
+    outputs:
+      checkout_ref: ${{ steps.meta.outputs.checkout_ref }}
+      display_ref: ${{ steps.meta.outputs.display_ref }}
+      preview_version: ${{ steps.meta.outputs.preview_version }}
+      artifact_name: ${{ steps.meta.outputs.artifact_name }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.ref || github.sha }}
+
+      - name: Compute preview version
+        id: meta
+        shell: bash
+        run: |
+          set -euo pipefail
+          checkout_ref='${{ github.event_name == 'workflow_dispatch' && inputs.ref || github.sha }}'
+          short_sha="$(git rev-parse --short=8 HEAD)"
+          latest_tag="$(git tag --merged HEAD --list 'v*-sedna.*' --sort=-version:refname | head -n 1)"
+          if [[ -n "${latest_tag}" ]]; then
+            base_version="${latest_tag#v}"
+          else
+            base_version="0.0.0-sedna.0"
+          fi
+
+          branch_name='${{ github.ref_name }}'
+          if [[ '${{ github.event_name }}' == 'workflow_dispatch' && -n '${{ inputs.ref }}' ]]; then
+            branch_name='${{ inputs.ref }}'
+          fi
+          branch_slug="$(printf '%s' "${branch_name}" | tr '/:@ ' '-' | tr -cd '[:alnum:]._-' | cut -c1-48)"
+          preview_version="${base_version}-ci.${GITHUB_RUN_NUMBER}+g${short_sha}"
+
+          echo "checkout_ref=${checkout_ref}" >> "$GITHUB_OUTPUT"
+          echo "display_ref=${branch_name}" >> "$GITHUB_OUTPUT"
+          echo "preview_version=${preview_version}" >> "$GITHUB_OUTPUT"
+          echo "artifact_name=sedna-branch-${branch_slug}-${short_sha}" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: metadata
+    uses: ./.github/workflows/_sedna-linux-rust.yml
+    with:
+      checkout_ref: ${{ needs.metadata.outputs.checkout_ref }}
+      summary_title: Branch build
+      release_version: ${{ needs.metadata.outputs.preview_version }}
+      artifact_name: ${{ needs.metadata.outputs.artifact_name }}
+      artifact_path: dist/*
+      run_command: |
+        mkdir -p ../dist
+        cargo build --locked --target x86_64-unknown-linux-gnu --release --bin codex --bin codex-responses-api-proxy
+
+        stage_dir="${RUNNER_TEMP}/sedna-branch/x86_64-unknown-linux-gnu"
+        file_version="${CODEX_RELEASE_VERSION//+/__}"
+        archive_base="codex-sedna-preview-${file_version}-x86_64-unknown-linux-gnu"
+
+        rm -rf "${stage_dir}"
+        mkdir -p "${stage_dir}"
+
+        install -Dm 0755 "target/x86_64-unknown-linux-gnu/release/codex" "${stage_dir}/codex"
+        install -Dm 0755 "target/x86_64-unknown-linux-gnu/release/codex-responses-api-proxy" "${stage_dir}/codex-responses-api-proxy"
+
+        tar -C "${stage_dir}" -czf "../dist/${archive_base}.tar.gz" .
+
+        cat > "../dist/${archive_base}.json" <<EOF
+        {
+          "repository": "${GITHUB_REPOSITORY}",
+          "commit": "$(git rev-parse HEAD)",
+          "ref": "${{ needs.metadata.outputs.display_ref }}",
+          "previewVersion": "${CODEX_RELEASE_VERSION}",
+          "workflow": "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+        }
+        EOF

@@ -1,21 +1,30 @@
+use crate::version::CODEX_UPDATE_BREW_CASK;
+use crate::version::CODEX_UPDATE_NPM_PACKAGE;
+
 /// Update action the CLI should perform after the TUI exits.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UpdateAction {
-    /// Update via `npm install -g @openai/codex@latest`.
+    /// Update via the configured npm package.
     NpmGlobalLatest,
-    /// Update via `bun install -g @openai/codex@latest`.
+    /// Update via the configured Bun package.
     BunGlobalLatest,
-    /// Update via `brew upgrade codex`.
+    /// Update via the configured Homebrew cask.
     BrewUpgrade,
 }
 
 impl UpdateAction {
     /// Returns the list of command-line arguments for invoking the update.
-    pub fn command_args(self) -> (&'static str, &'static [&'static str]) {
+    pub fn command_args(self) -> (&'static str, Vec<&'static str>) {
         match self {
-            UpdateAction::NpmGlobalLatest => ("npm", &["install", "-g", "@openai/codex"]),
-            UpdateAction::BunGlobalLatest => ("bun", &["install", "-g", "@openai/codex"]),
-            UpdateAction::BrewUpgrade => ("brew", &["upgrade", "--cask", "codex"]),
+            UpdateAction::NpmGlobalLatest => {
+                ("npm", vec!["install", "-g", CODEX_UPDATE_NPM_PACKAGE])
+            }
+            UpdateAction::BunGlobalLatest => {
+                ("bun", vec!["install", "-g", CODEX_UPDATE_NPM_PACKAGE])
+            }
+            UpdateAction::BrewUpgrade => {
+                ("brew", vec!["upgrade", "--cask", CODEX_UPDATE_BREW_CASK])
+            }
         }
     }
 

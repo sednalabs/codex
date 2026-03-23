@@ -1,0 +1,129 @@
+name: sedna-heavy-tests
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Branch, tag, or commit to validate
+        required: false
+        type: string
+      scope:
+        description: Validation scope
+        required: true
+        type: choice
+        options:
+          - protocol
+          - tui_app_server
+          - cli
+          - core
+          - workspace
+        default: core
+  pull_request:
+    types:
+      - labeled
+  schedule:
+    - cron: "15 16 * * *"
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/**"
+      - "codex-rs/cli/**"
+      - "codex-rs/common/**"
+      - "codex-rs/core/**"
+      - "codex-rs/protocol/**"
+      - "codex-rs/tui/**"
+      - "codex-rs/tui_app_server/**"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'workflow_dispatch' && inputs.ref || github.ref_name }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  metadata:
+    name: Resolve heavy-test scope
+    runs-on: ubuntu-24.04
+    if: >-
+      ${{
+        github.event_name != 'pull_request' ||
+        github.event.label.name == 'ci:heavy'
+      }}
+    outputs:
+      checkout_ref: ${{ steps.meta.outputs.checkout_ref }}
+      scope: ${{ steps.meta.outputs.scope }}
+      install_nextest: ${{ steps.meta.outputs.install_nextest }}
+      artifact_name: ${{ steps.meta.outputs.artifact_name }}
+      artifact_path: ${{ steps.meta.outputs.artifact_path }}
+      run_command: ${{ steps.meta.outputs.run_command }}
+    steps:
+      - name: Compute scope and command
+        id: meta
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          checkout_ref='${{ github.sha }}'
+          scope='workspace'
+
+          if [[ '${{ github.event_name }}' == 'workflow_dispatch' ]]; then
+            if [[ -n '${{ inputs.ref }}' ]]; then
+              checkout_ref='${{ inputs.ref }}'
+            fi
+            scope='${{ inputs.scope }}'
+          elif [[ '${{ github.event_name }}' == 'pull_request' ]]; then
+            checkout_ref='${{ github.event.pull_request.head.sha }}'
+            scope='workspace'
+          elif [[ '${{ github.event_name }}' == 'push' ]]; then
+            scope='workspace'
+          fi
+
+          install_nextest='false'
+          artifact_name=''
+          artifact_path=''
+          case "${scope}" in
+            protocol)
+              run_command='cargo test --locked -p codex-protocol'
+              ;;
+            tui_app_server)
+              run_command='cargo test --locked -p codex-tui-app-server'
+              ;;
+            cli)
+              run_command='cargo test --locked -p codex-cli'
+              ;;
+            core)
+              run_command='cargo test --locked -p codex-core'
+              ;;
+            workspace)
+              install_nextest='true'
+              artifact_name="sedna-heavy-tests-${GITHUB_RUN_ID}"
+              artifact_path='codex-rs/target/**/cargo-timings/cargo-timing.html'
+              run_command='cargo nextest run --locked --all-features --no-fail-fast --target x86_64-unknown-linux-gnu --cargo-profile ci-test --timings'
+              ;;
+            *)
+              echo "Unknown scope: ${scope}" >&2
+              exit 1
+              ;;
+          esac
+
+          echo "checkout_ref=${checkout_ref}" >> "$GITHUB_OUTPUT"
+          echo "scope=${scope}" >> "$GITHUB_OUTPUT"
+          echo "install_nextest=${install_nextest}" >> "$GITHUB_OUTPUT"
+          echo "artifact_name=${artifact_name}" >> "$GITHUB_OUTPUT"
+          echo "artifact_path=${artifact_path}" >> "$GITHUB_OUTPUT"
+          echo "run_command=${run_command}" >> "$GITHUB_OUTPUT"
+
+  run:
+    needs: metadata
+    if: ${{ needs.metadata.result == 'success' }}
+    uses: ./.github/workflows/_sedna-linux-rust.yml
+    with:
+      checkout_ref: ${{ needs.metadata.outputs.checkout_ref }}
+      summary_title: Heavy tests (${{ needs.metadata.outputs.scope }})
+      install_nextest: ${{ needs.metadata.outputs.install_nextest == 'true' }}
+      artifact_name: ${{ needs.metadata.outputs.artifact_name }}
+      artifact_path: ${{ needs.metadata.outputs.artifact_path }}
+      run_command: ${{ needs.metadata.outputs.run_command }}
+
