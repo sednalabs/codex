@@ -5,6 +5,13 @@ use std::process::Command;
 fn main() {
     emit_git_rerun_hints();
 
+    let package_version =
+        std::env::var("CARGO_PKG_VERSION").unwrap_or_else(|_| "0.0.0".to_string());
+    let release_version = std::env::var("CODEX_RELEASE_VERSION")
+        .ok()
+        .filter(|value| !value.is_empty())
+        .unwrap_or(package_version);
+
     let short_sha = Command::new("git")
         .args(["rev-parse", "--short=8", "HEAD"])
         .output()
@@ -49,11 +56,15 @@ fn main() {
         .filter(|describe| !describe.is_empty())
         .unwrap_or_else(|| git_info.clone());
 
+    let display_version = format!("{release_version}+{git_info}");
+
     println!("cargo:rustc-env=CODEX_GIT_SHA={git_info}");
     println!("cargo:rustc-env=CODEX_GIT_DESCRIBE={git_describe}");
+    println!("cargo:rustc-env=CODEX_CLI_VERSION={display_version}");
 }
 
 fn emit_git_rerun_hints() {
+    println!("cargo:rerun-if-env-changed=CODEX_RELEASE_VERSION");
     println!("cargo:rerun-if-env-changed=GIT_DIR");
     println!("cargo:rerun-if-env-changed=GIT_WORK_TREE");
 

@@ -1,0 +1,167 @@
+name: sedna-release
+
+on:
+  push:
+    tags:
+      - "v*-sedna.*"
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Sedna release tag, for example v0.117.0-sedna.1
+        required: true
+        type: string
+      draft:
+        description: Create the GitHub release as a draft
+        required: false
+        default: true
+        type: boolean
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.ref_name }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  id-token: write
+
+jobs:
+  release-linux:
+    name: Release Linux
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    defaults:
+      run:
+        working-directory: codex-rs
+    env:
+      TARGET: x86_64-unknown-linux-gnu
+
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Resolve release metadata
+        id: meta
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            release_tag="${{ inputs.release_tag }}"
+            draft="${{ inputs.draft }}"
+          else
+            release_tag="${GITHUB_REF_NAME}"
+            draft="false"
+          fi
+
+          if [[ ! "${release_tag}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([-.][0-9A-Za-z.]+)*-sedna\.[0-9]+$ ]]; then
+            echo "Release tag must look like v0.117.0-sedna.1"
+            echo "Got: ${release_tag}"
+            exit 1
+          fi
+
+          release_version="${release_tag#v}"
+
+          echo "release_tag=${release_tag}" >> "$GITHUB_OUTPUT"
+          echo "release_version=${release_version}" >> "$GITHUB_OUTPUT"
+          echo "draft=${draft}" >> "$GITHUB_OUTPUT"
+
+      - name: Install Linux build dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update -y
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends pkg-config libcap-dev
+
+      - uses: dtolnay/rust-toolchain@1.93.0
+        with:
+          targets: ${{ env.TARGET }}
+
+      - name: Build release binaries
+        shell: bash
+        env:
+          CODEX_RELEASE_REPOSITORY: ${{ github.repository }}
+          CODEX_RELEASE_TAG_PREFIX: v
+          CODEX_RELEASE_VERSION: ${{ steps.meta.outputs.release_version }}
+        run: |
+          set -euo pipefail
+          cargo build --locked --target "${TARGET}" --release --bin codex --bin codex-responses-api-proxy
+
+      - name: Sign Linux binaries
+        uses: ./.github/actions/linux-code-sign
+        with:
+          target: ${{ env.TARGET }}
+          artifacts-dir: ${{ github.workspace }}/codex-rs/target/${{ env.TARGET }}/release
+
+      - name: Stage release assets
+        shell: bash
+        env:
+          RELEASE_VERSION: ${{ steps.meta.outputs.release_version }}
+        run: |
+          set -euo pipefail
+
+          dist_dir="${GITHUB_WORKSPACE}/dist"
+          stage_dir="${RUNNER_TEMP}/sedna-release/${TARGET}"
+          archive_base="codex-sedna-${RELEASE_VERSION}-${TARGET}"
+
+          rm -rf "${stage_dir}"
+          mkdir -p "${dist_dir}" "${stage_dir}"
+
+          install -Dm 0755 "target/${TARGET}/release/codex" "${stage_dir}/codex"
+          install -Dm 0755 "target/${TARGET}/release/codex-responses-api-proxy" "${stage_dir}/codex-responses-api-proxy"
+
+          cp "target/${TARGET}/release/codex.sigstore" "${dist_dir}/${archive_base}-codex.sigstore"
+          cp "target/${TARGET}/release/codex-responses-api-proxy.sigstore" "${dist_dir}/${archive_base}-codex-responses-api-proxy.sigstore"
+
+          tar -C "${stage_dir}" -czf "${dist_dir}/${archive_base}.tar.gz" .
+
+          cat > "${dist_dir}/RELEASE-METADATA.txt" <<EOF
+          release_tag=${{ steps.meta.outputs.release_tag }}
+          release_version=${RELEASE_VERSION}
+          repository=${{ github.repository }}
+          target=${TARGET}
+          commit=${GITHUB_SHA}
+          EOF
+
+          (
+            cd "${dist_dir}"
+            sha256sum ./* > SHA256SUMS.txt
+          )
+
+      - name: Upload workflow artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: sedna-release-linux
+          path: ${{ github.workspace }}/dist/*
+
+      - name: Create or update GitHub release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ steps.meta.outputs.release_tag }}
+          RELEASE_VERSION: ${{ steps.meta.outputs.release_version }}
+          RELEASE_DRAFT: ${{ steps.meta.outputs.draft }}
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+
+          assets=("${GITHUB_WORKSPACE}"/dist/*)
+          if ((${#assets[@]} == 0)); then
+            echo "No release assets found"
+            exit 1
+          fi
+
+          draft_flag=()
+          if [[ "${RELEASE_DRAFT}" == "true" ]]; then
+            draft_flag+=(--draft)
+          fi
+
+          if gh release view "${RELEASE_TAG}" >/dev/null 2>&1; then
+            gh release upload "${RELEASE_TAG}" "${assets[@]}" --clobber
+          else
+            gh release create "${RELEASE_TAG}" "${assets[@]}" \
+              --title "Codex Sedna ${RELEASE_VERSION}" \
+              --generate-notes \
+              --target "${GITHUB_SHA}" \
+              "${draft_flag[@]}"
+          fi
