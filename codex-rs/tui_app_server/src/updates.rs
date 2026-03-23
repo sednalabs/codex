@@ -238,7 +238,10 @@ mod tests {
 
     #[test]
     fn whitespace_is_ignored() {
-        assert_eq!(parse_version(" 1.2.3 \n"), Some((1, 2, 3)));
+        assert_eq!(
+            parse_version(" 1.2.3 \n"),
+            Some(Version::parse("1.2.3").expect("valid semver"))
+        );
         assert_eq!(is_newer(" 1.2.3 ", "1.2.2"), Some(true));
     }
 }

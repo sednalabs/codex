@@ -1,7 +1,7 @@
 # Carry Divergence Ledger
 
-This document records the current live divergences of `carry/main` from
-`upstream/main`.
+This document records the current live divergences of the downstream branch
+(historically `carry/main`, now `main`) from `upstream/main`.
 
 It is an audit ledger, not a changelog. Ahead-count alone is not evidence of a
 live divergence.
@@ -10,16 +10,16 @@ live divergence.
 
 - Audited on: `2026-03-21`
 - `upstream/main`: `e5f4d1fef59a3309339394575052c7cc1fff0996`
-- `carry/main`: `5d474e652d91c7f371a28ad2069cc51a1c5b9ee8`
-- `main`: `e5f4d1fef59a3309339394575052c7cc1fff0996`
-- `carry/main` vs `upstream/main`: `175` ahead, `0` behind
+- historical downstream branch name `carry/main`: `5d474e652d91c7f371a28ad2069cc51a1c5b9ee8`
+- historical mirror branch name `main`: `e5f4d1fef59a3309339394575052c7cc1fff0996`
+- historical `carry/main` vs `upstream/main`: `175` ahead, `0` behind
 - Carry-only commits at audit time: `133` non-merge, `42` merge
 - Exact-subject upstream matches found during audit: `41`
 
 ## Audit Rules
 
-- Count a live divergence only when the current `carry/main` tree still differs
-  from `upstream/main`.
+- Count a live divergence only when the maintained downstream branch tree
+  (historically `carry/main`, now `main`) still differs from `upstream/main`.
 - Count generated schemas, snapshots, and inline test-module moves as
   derivative churn, not as standalone divergence items.
 - Track exact-subject upstream matches separately as historical carry history.
@@ -30,8 +30,8 @@ live divergence.
 
 ### Fork Workflow And Operator Policy
 
-- `carry/main` remains the default PR and integration branch, while `main`
-  remains an upstream mirror.
+- `main` is now the default PR and integration branch, while `upstream-main`
+  is the exact upstream mirror.
 - Downstream sync policy is merge-based, not rebase-based.
 - Shared-host validation and release flows are standardized through build-helper
   presets.

@@ -5,9 +5,11 @@ name: Bazel (experimental)
 
 on:
   pull_request: {}
+  merge_group: {}
   push:
     branches:
       - main
+      - upstream-main
   workflow_dispatch:
 
 concurrency:

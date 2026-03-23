@@ -1,0 +1,40 @@
+name: sedna-sync-upstream
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 */12 * * *"
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Configure git identity
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Fast-forward upstream mirror
+        shell: bash
+        run: |
+          set -euo pipefail
+          git remote add upstream https://github.com/openai/codex.git 2>/dev/null || true
+          git fetch upstream main
+          git fetch origin upstream-main || true
+
+          if git show-ref --verify --quiet refs/remotes/origin/upstream-main; then
+            if ! git merge-base --is-ancestor refs/remotes/origin/upstream-main refs/remotes/upstream/main; then
+              echo "origin/upstream-main is not an ancestor of upstream/main; refusing non-fast-forward sync" >&2
+              exit 1
+            fi
+          fi
+
+          git push origin refs/remotes/upstream/main:refs/heads/upstream-main

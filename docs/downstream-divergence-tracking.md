@@ -13,8 +13,9 @@ The current downstream docs are doing three jobs at once:
 - live divergence inventory
 - historical upstream-equivalent carry history
 
-That works when the carry branch is small. It will age badly as `carry/main`
-keeps moving further ahead of `upstream/main`.
+That works when the downstream carry branch is small. It will age badly as the
+maintained downstream branch (historically `carry/main`, now `main`) keeps
+moving further ahead of `upstream/main`.
 
 ## Recommended Split
 

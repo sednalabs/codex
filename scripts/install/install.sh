@@ -4,6 +4,8 @@ set -eu
 
 VERSION="${1:-latest}"
 INSTALL_DIR="${CODEX_INSTALL_DIR:-$HOME/.local/bin}"
+RELEASE_REPOSITORY="${CODEX_RELEASE_REPOSITORY:-openai/codex}"
+RELEASE_TAG_PREFIX="${CODEX_RELEASE_TAG_PREFIX:-v}"
 path_action="already"
 path_profile=""
 
@@ -12,9 +14,14 @@ step() {
 }
 
 normalize_version() {
+  configured_prefix="$RELEASE_TAG_PREFIX"
+
   case "$1" in
     "" | latest)
       printf 'latest\n'
+      ;;
+    "${configured_prefix}"*)
+      printf '%s\n' "${1#$configured_prefix}"
       ;;
     rust-v*)
       printf '%s\n' "${1#rust-v}"
@@ -99,9 +106,15 @@ add_to_path() {
 
 release_url_for_asset() {
   asset="$1"
-  resolved_version="$2"
+  release_tag="$2"
 
-  printf 'https://github.com/openai/codex/releases/download/rust-v%s/%s\n' "$resolved_version" "$asset"
+  printf 'https://github.com/%s/releases/download/%s/%s\n' "$RELEASE_REPOSITORY" "$release_tag" "$asset"
+}
+
+release_tag_for_version() {
+  resolved_version="$1"
+
+  printf '%s%s\n' "$RELEASE_TAG_PREFIX" "$resolved_version"
 }
 
 require_command() {
@@ -122,15 +135,15 @@ resolve_version() {
     return
   fi
 
-  release_json="$(download_text "https://api.github.com/repos/openai/codex/releases/latest")"
-  resolved="$(printf '%s\n' "$release_json" | sed -n 's/.*"tag_name":[[:space:]]*"rust-v\([^"]*\)".*/\1/p' | head -n 1)"
+  release_json="$(download_text "https://api.github.com/repos/$RELEASE_REPOSITORY/releases/latest")"
+  resolved="$(printf '%s\n' "$release_json" | sed -n 's/.*"tag_name":[[:space:]]*"\([^"]*\)".*/\1/p' | head -n 1)"
 
   if [ -z "$resolved" ]; then
     echo "Failed to resolve the latest Codex release version." >&2
     exit 1
   fi
 
-  printf '%s\n' "$resolved"
+  normalize_version "$resolved"
 }
 
 case "$(uname -s)" in
@@ -197,8 +210,9 @@ step "$install_mode Codex CLI"
 step "Detected platform: $platform_label"
 
 resolved_version="$(resolve_version)"
+release_tag="$(release_tag_for_version "$resolved_version")"
 asset="codex-npm-$npm_tag-$resolved_version.tgz"
-download_url="$(release_url_for_asset "$asset" "$resolved_version")"
+download_url="$(release_url_for_asset "$asset" "$release_tag")"
 
 step "Resolved version: $resolved_version"
 

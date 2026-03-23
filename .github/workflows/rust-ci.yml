@@ -1,9 +1,11 @@
 name: rust-ci
 on:
   pull_request: {}
+  merge_group: {}
   push:
     branches:
       - main
+      - upstream-main
   workflow_dispatch:
 
 # CI builds in debug (dev) for faster signal.

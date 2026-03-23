@@ -16,7 +16,7 @@ The GitHub Release also contains a [DotSlash](https://dotslash-cli.com/) file fo
 
 ```bash
 # Clone the repository and navigate to the root of the Cargo workspace.
-git clone https://github.com/openai/codex.git
+git clone https://github.com/SednaLabs/codex.git
 cd codex/codex-rs
 
 # Install the Rust toolchain, if necessary.

@@ -29,6 +29,7 @@ jobs:
     name: Release Linux
     runs-on: ubuntu-24.04
     timeout-minutes: 60
+    environment: release
     defaults:
       run:
         working-directory: codex-rs
@@ -133,6 +134,7 @@ jobs:
         with:
           name: sedna-release-linux
           path: ${{ github.workspace }}/dist/*
+          retention-days: 3
 
       - name: Create or update GitHub release
         shell: bash

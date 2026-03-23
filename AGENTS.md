@@ -2,23 +2,24 @@
 
 ## Fork Branch Policy
 
-This repository is using a two-branch fork flow:
+This repository uses a two-branch public fork flow:
 
-- `origin/main` mirrors `upstream/main`.
-- `origin/carry/main` is the PR branch for local work and is intentionally ahead of `origin/main`.
+- `origin/main` is the maintained downstream branch and the only public PR target.
+- `origin/upstream-main` is the exact mirror of `upstream/main` and stays fast-forward-only.
 
-Do not push feature commits directly to `origin/main`.
+Do not push feature commits directly to `origin/upstream-main`.
 
 Recommended commands:
 
-- `git sync-main` updates `main` as a mirror of upstream and keeps `origin/main` aligned.
-- `git sync-carry` merges `upstream/main` into `carry/main` and pushes `origin/carry/main` (no shared-branch rebase).
-- avoid force-push on `carry/main` during normal sync; use `--force-with-lease` only for exceptional repair operations.
+- `git fetch origin --prune` refreshes the downstream and mirror branch tips.
+- use the `sedna-sync-upstream` workflow (or an equivalent fast-forward push) to update `upstream-main` from `upstream/main`.
+- downstream syncs are merge-based (`upstream-main` -> `main`), not shared-branch rebases.
+- avoid force-push on `main` during normal sync; use `--force-with-lease` only for exceptional repair operations.
 
 Branch tracking should remain:
 
 - `main` tracks `origin/main`.
-- `carry/main` tracks `origin/carry/main`.
+- `upstream-main` tracks `origin/upstream-main`.
 
 In the codex-rs folder where the rust code lives:
 
@@ -61,14 +62,33 @@ In the codex-rs folder where the rust code lives:
   - When extracting code from a large module, move the related tests and module/type docs toward
     the new implementation so the invariants stay close to the code that owns them.
 
-Run `just fmt` (in `codex-rs` directory) automatically after you have finished making Rust code changes; do not ask for approval to run it. Additionally, run the tests:
+Run `just fmt` (in `codex-rs` directory) automatically after you have finished making Rust code changes; do not ask for approval to run it. Additionally, use this validation ladder:
 
-1. Run the test for the specific project that was changed. For example, if changes were made in `codex-rs/tui`, run `cargo test -p codex-tui`.
-2. Once those pass, if any changes were made in common, core, or protocol, run the complete test suite with `cargo test` (or `just test` if `cargo-nextest` is installed). Avoid `--all-features` for routine local runs because it expands the build matrix and can significantly increase `target/` disk usage; use it only when you specifically need full feature coverage. project-specific or individual tests can be run without asking the user, but do ask the user before running the complete test suite.
+1. Run the smallest relevant local check first. Prefer Build Helper presets or project-scoped tests over workspace-wide `cargo` commands on this shared machine.
+2. If you changed Rust behavior in a specific crate, run the narrowest crate-level validation that covers it.
+3. Heavy validation, release-mode builds, workspace-wide tests, and expensive `nextest` sweeps should go to GitHub Actions after the branch is committed and pushed unless the user explicitly asks for a local run.
+4. If any changes were made in common, core, or protocol and you still need a complete local test suite, ask the user before running it.
 
-Before finalizing a large change to `codex-rs`, run `just fix -p <project>` (in `codex-rs` directory) to fix any linter issues in the code. Prefer scoping with `-p` to avoid slow workspace‑wide Clippy builds; only run `just fix` without `-p` if you changed shared crates. Do not re-run tests after running `fix` or `fmt`.
+## Bug Investigation Workflow
+
+- For bug reports or regression investigations that concern core Codex behavior rather than clearly downstream-only behavior in this fork, use this workflow by default:
+  1. Check whether `upstream/main` already contains a fix that is not present locally. Prefer targeted commit/path inspection before doing deep local debugging.
+  2. If no upstream fix is present, check for related open GitHub issues or PRs in `openai/codex` so local investigation starts with known context and avoids duplicate diagnosis.
+  3. If neither an upstream fix nor a clearly matching issue exists, trace the problem locally in this repo and identify the failing path, gate, or state transition before proposing a change.
+- Treat “downstream-only behavior” as behavior introduced by fork-specific patches, branch policy, local wrappers, or local environment glue that does not exist in `openai/codex`.
+- When a regression appears to be upstream/core until proven otherwise, bias toward the upstream-fix -> upstream-issue -> local-trace order above.
+
+Before finalizing a large change to `codex-rs`, run `just fix -p <project>` (in `codex-rs` directory) to fix any linter issues in the code. Prefer scoping with `-p` to avoid slow workspace-wide Clippy builds; only run `just fix` without `-p` if you changed shared crates. Do not re-run tests after running `fix` or `fmt`.
 
 Also run `just argument-comment-lint` to ensure the codebase is clean of comment lint errors.
+
+## CI Offload Policy
+
+- Treat GitHub Actions as the default factory for branch binaries, heavy Rust tests, and official releases.
+- Local Build Helper remains the preferred narrow local lane for smoke checks, formatting, and targeted validation.
+- Do not run routine direct terminal `cargo build` or `cargo test` commands for expensive shared-host validation when the same work can be offloaded to GitHub CI.
+- Heavy remote CI only starts after the relevant work is committed and pushed.
+- Branch artifacts are disposable and non-release. Only the protected Sedna release workflow produces public release artifacts.
 
 ## TUI style conventions
 

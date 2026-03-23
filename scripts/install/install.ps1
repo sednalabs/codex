@@ -6,6 +6,16 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue"
+$ReleaseRepository = if ([string]::IsNullOrWhiteSpace($env:CODEX_RELEASE_REPOSITORY)) {
+    "openai/codex"
+} else {
+    $env:CODEX_RELEASE_REPOSITORY
+}
+$ReleaseTagPrefix = if ([string]::IsNullOrWhiteSpace($env:CODEX_RELEASE_TAG_PREFIX)) {
+    "v"
+} else {
+    $env:CODEX_RELEASE_TAG_PREFIX
+}
 
 function Write-Step {
     param(
@@ -24,6 +34,10 @@ function Normalize-Version {
         return "latest"
     }
 
+    if ($RawVersion.StartsWith($ReleaseTagPrefix)) {
+        return $RawVersion.Substring($ReleaseTagPrefix.Length)
+    }
+
     if ($RawVersion.StartsWith("rust-v")) {
         return $RawVersion.Substring(6)
     }
@@ -38,10 +52,18 @@ function Normalize-Version {
 function Get-ReleaseUrl {
     param(
         [string]$AssetName,
+        [string]$ReleaseTag
+    )
+
+    return "https://github.com/$ReleaseRepository/releases/download/$ReleaseTag/$AssetName"
+}
+
+function Get-ReleaseTag {
+    param(
         [string]$ResolvedVersion
     )
 
-    return "https://github.com/openai/codex/releases/download/rust-v$ResolvedVersion/$AssetName"
+    return "$ReleaseTagPrefix$ResolvedVersion"
 }
 
 function Path-Contains {
@@ -70,7 +92,7 @@ function Resolve-Version {
         return $normalizedVersion
     }
 
-    $release = Invoke-RestMethod -Uri "https://api.github.com/repos/openai/codex/releases/latest"
+    $release = Invoke-RestMethod -Uri "https://api.github.com/repos/$ReleaseRepository/releases/latest"
     if (-not $release.tag_name) {
         Write-Error "Failed to resolve the latest Codex release version."
         exit 1
@@ -111,7 +133,7 @@ switch ($architecture) {
 }
 
 if ([string]::IsNullOrWhiteSpace($env:CODEX_INSTALL_DIR)) {
-    $installDir = Join-Path $env:LOCALAPPDATA "Programs\OpenAI\Codex\bin"
+    $installDir = Join-Path $env:LOCALAPPDATA "Programs\SednaLabs\Codex\bin"
 } else {
     $installDir = $env:CODEX_INSTALL_DIR
 }
@@ -125,6 +147,7 @@ Write-Step "Detected platform: $platformLabel"
 New-Item -ItemType Directory -Force -Path $installDir | Out-Null
 
 $resolvedVersion = Resolve-Version
+$releaseTag = Get-ReleaseTag -ResolvedVersion $resolvedVersion
 Write-Step "Resolved version: $resolvedVersion"
 $packageAsset = "codex-npm-$npmTag-$resolvedVersion.tgz"
 
@@ -134,7 +157,7 @@ New-Item -ItemType Directory -Force -Path $tempDir | Out-Null
 try {
     $archivePath = Join-Path $tempDir $packageAsset
     $extractDir = Join-Path $tempDir "extract"
-    $url = Get-ReleaseUrl -AssetName $packageAsset -ResolvedVersion $resolvedVersion
+    $url = Get-ReleaseUrl -AssetName $packageAsset -ReleaseTag $releaseTag
 
     Write-Step "Downloading Codex CLI"
     Invoke-WebRequest -Uri $url -OutFile $archivePath

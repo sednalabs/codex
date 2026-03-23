@@ -1,7 +1,7 @@
 # Downstream Native Tool Surface Matrix
 
-This matrix compares the product-native tool surface on `carry/main` against
-`upstream/main`.
+This matrix compares the product-native tool surface on the downstream branch
+(historically `carry/main`, now `main`) against `upstream/main`.
 
 It intentionally excludes session-only developer wrappers such as
 `multi_tool_use.parallel`; those are runtime conveniences, not fork
