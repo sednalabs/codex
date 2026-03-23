@@ -13,6 +13,7 @@ on:
         type: choice
         options:
           - protocol
+          - tui
           - tui_app_server
           - cli
           - core
@@ -87,6 +88,9 @@ jobs:
             protocol)
               run_command='cargo test --locked -p codex-protocol'
               ;;
+            tui)
+              run_command='cargo test --locked -p codex-tui'
+              ;;
             tui_app_server)
               run_command='cargo test --locked -p codex-tui-app-server'
               ;;
@@ -126,4 +130,3 @@ jobs:
       artifact_name: ${{ needs.metadata.outputs.artifact_name }}
       artifact_path: ${{ needs.metadata.outputs.artifact_path }}
       run_command: ${{ needs.metadata.outputs.run_command }}
-
