@@ -218,7 +218,59 @@ fn collab_agent_list_item_schema() -> JsonValue {
 }
 
 fn spawn_agent_output_schema() -> JsonValue {
-    collab_agent_list_item_schema()
+    json!({
+        "type": "object",
+        "properties": {
+            "agent_id": {
+                "type": ["string", "null"],
+                "description": "Thread identifier for the spawned agent when no canonical task name is available."
+            },
+            "task_name": {
+                "type": ["string", "null"],
+                "description": "Canonical task path for the spawned agent when available."
+            },
+            "nickname": {
+                "type": ["string", "null"],
+                "description": "User-facing nickname for the agent when available."
+            },
+            "role": {
+                "type": ["string", "null"],
+                "description": "Role assigned to the agent at spawn time."
+            },
+            "status": {
+                "allOf": [agent_status_output_schema()],
+                "description": "Agent status at the time the tool response was generated."
+            },
+            "identity_source": {
+                "type": "string",
+                "description": "Identity source used for inherited agent settings."
+            },
+            "effective_model": {
+                "type": ["string", "null"],
+                "description": "Effective thread config model value for this spawned agent."
+            },
+            "effective_reasoning_effort": {
+                "type": ["string", "null"],
+                "description": "Effective thread config reasoning effort for this spawned agent."
+            },
+            "effective_model_provider_id": {
+                "type": "string",
+                "description": "Effective model provider identifier from the thread config snapshot."
+            }
+        },
+        "required": [
+            "agent_id",
+            "task_name",
+            "nickname",
+            "role",
+            "status",
+            "identity_source",
+            "effective_model",
+            "effective_reasoning_effort",
+            "effective_model_provider_id"
+        ],
+        "additionalProperties": false
+    })
 }
 
 fn list_agents_output_schema() -> JsonValue {
@@ -1328,7 +1380,7 @@ fn create_spawn_agent_tool(config: &ToolsConfig) -> ToolSpec {
             required: None,
             additional_properties: Some(false.into()),
         },
-        output_schema: Some(spawn_agent_output_schema(config.multi_agent_v2)),
+        output_schema: Some(spawn_agent_output_schema()),
     })
 }
 
@@ -1564,7 +1616,6 @@ fn create_list_agents_tool() -> ToolSpec {
                 "Optional subtree filter for `include_descendants=true`. Use `open` or `closed` to limit returned descendant rows by persisted spawn-edge status. Cannot be combined with `ids`."
                     .to_string(),
             ),
-            enum_values: Some(vec!["open".to_string(), "closed".to_string()]),
         },
     );
     ToolSpec::Function(ResponsesApiTool {
@@ -1646,7 +1697,7 @@ When `return_when` is `any`, the call returns as soon as one requested agent bec
         defer_loading: None,
         parameters: JsonSchema::Object {
             properties,
-            required: Some(vec!["targets".to_string()]),
+            required: Some(vec!["ids".to_string()]),
             additional_properties: Some(false.into()),
         },
         output_schema: Some(wait_output_schema()),

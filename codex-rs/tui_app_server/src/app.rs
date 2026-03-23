@@ -482,12 +482,11 @@ struct ThreadEventStore {
 impl ThreadEventStore {
     fn event_survives_session_refresh(event: &ThreadBufferedEvent) -> bool {
         match event {
-            ThreadBufferedEvent::Request(_) | ThreadBufferedEvent::LegacyWarning(_) => true,
+            ThreadBufferedEvent::Request(_) => true,
             ThreadBufferedEvent::Notification(notification) => {
                 is_replay_safe_subagent_completion_notification(notification)
             }
-            ThreadBufferedEvent::HistoryEntryResponse(_)
-            | ThreadBufferedEvent::LegacyRollback { .. } => false,
+            ThreadBufferedEvent::HistoryEntryResponse(_) => false,
         }
     }
 
@@ -5792,33 +5791,6 @@ mod tests {
             ),
             other => panic!("expected queued follow-up submission, got {other:?}"),
         }
-    }
-
-    #[tokio::test]
-    async fn replay_thread_snapshot_replays_legacy_warning_history() {
-        let (mut app, mut app_event_rx, _op_rx) = make_test_app_with_channels().await;
-
-        app.replay_thread_snapshot(
-            ThreadEventSnapshot {
-                session: None,
-                turns: Vec::new(),
-                events: vec![ThreadBufferedEvent::LegacyWarning(
-                    "legacy warning message".to_string(),
-                )],
-                input_state: None,
-            },
-            false,
-        );
-
-        let mut saw_warning = false;
-        while let Ok(event) = app_event_rx.try_recv() {
-            if let AppEvent::InsertHistoryCell(cell) = event {
-                let transcript = lines_to_single_string(&cell.transcript_lines(80));
-                saw_warning |= transcript.contains("legacy warning message");
-            }
-        }
-
-        assert!(saw_warning, "expected replayed legacy warning history cell");
     }
 
     #[tokio::test]

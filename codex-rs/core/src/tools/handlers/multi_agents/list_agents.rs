@@ -42,7 +42,13 @@ impl ToolHandler for Handler {
             .ids
             .map(|ids| {
                 ids.into_iter()
-                    .map(|id| agent_id(&id))
+                    .map(|id| {
+                        ThreadId::from_string(&id).map_err(|err| {
+                            FunctionCallError::RespondToModel(format!(
+                                "invalid agent id {id}: {err}"
+                            ))
+                        })
+                    })
                     .collect::<Result<Vec<_>, FunctionCallError>>()
             })
             .transpose()?;

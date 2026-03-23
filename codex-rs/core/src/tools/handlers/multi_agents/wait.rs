@@ -34,16 +34,37 @@ impl ToolHandler for Handler {
         } = invocation;
         let arguments = function_arguments(payload)?;
         let args: WaitArgs = parse_arguments(&arguments)?;
-        if args.ids.is_empty() {
-            return Err(FunctionCallError::RespondToModel(
-                "ids must be non-empty".to_string(),
-            ));
-        }
-        let receiver_thread_ids = args
-            .ids
-            .iter()
-            .map(|id| agent_id(id))
-            .collect::<Result<Vec<_>, _>>()?;
+        let receiver_thread_ids = match (&args.ids, &args.targets) {
+            (Some(ids), Some(targets)) if !ids.is_empty() && !targets.is_empty() => {
+                return Err(FunctionCallError::RespondToModel(
+                    "provide either ids or targets, but not both".to_string(),
+                ));
+            }
+            (Some(ids), _) => {
+                if ids.is_empty() {
+                    return Err(FunctionCallError::RespondToModel(
+                        "ids must be non-empty".to_string(),
+                    ));
+                }
+                ids.iter()
+                    .map(|id| {
+                        ThreadId::from_string(id).map_err(|err| {
+                            FunctionCallError::RespondToModel(format!(
+                                "invalid agent id {id}: {err}"
+                            ))
+                        })
+                    })
+                    .collect::<Result<Vec<_>, _>>()?
+            }
+            (None, Some(targets)) => {
+                resolve_agent_targets(&session, &turn, targets.clone()).await?
+            }
+            (None, None) => {
+                return Err(FunctionCallError::RespondToModel(
+                    "ids must be non-empty".to_string(),
+                ));
+            }
+        };
         let mut seen = HashSet::with_capacity(receiver_thread_ids.len());
         for id in &receiver_thread_ids {
             if !seen.insert(*id) {
@@ -53,21 +74,12 @@ impl ToolHandler for Handler {
             }
         }
         let mut receiver_agents = Vec::with_capacity(receiver_thread_ids.len());
-        let mut target_by_thread_id = HashMap::with_capacity(receiver_thread_ids.len());
         for receiver_thread_id in &receiver_thread_ids {
             let agent_metadata = session
                 .services
                 .agent_control
                 .get_agent_metadata(*receiver_thread_id)
                 .unwrap_or_default();
-            target_by_thread_id.insert(
-                *receiver_thread_id,
-                agent_metadata
-                    .agent_path
-                    .as_ref()
-                    .map(ToString::to_string)
-                    .unwrap_or_else(|| receiver_thread_id.to_string()),
-            );
             receiver_agents.push(CollabAgentRef {
                 thread_id: *receiver_thread_id,
                 agent_nickname: agent_metadata.agent_nickname,
@@ -203,7 +215,7 @@ impl ToolHandler for Handler {
                     completion_reason,
                     timed_out,
                     agent_statuses,
-                    statuses: statuses_by_id,
+                    statuses: statuses_map,
                 }
                 .into(),
             )
@@ -216,7 +228,9 @@ impl ToolHandler for Handler {
 #[derive(Debug, Deserialize)]
 struct WaitArgs {
     #[serde(default)]
-    targets: Vec<String>,
+    ids: Option<Vec<String>>,
+    #[serde(default)]
+    targets: Option<Vec<String>>,
     timeout_ms: Option<i64>,
     #[serde(default)]
     return_when: ReturnWhen,

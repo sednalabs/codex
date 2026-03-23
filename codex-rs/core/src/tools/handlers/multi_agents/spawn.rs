@@ -32,6 +32,7 @@ impl ToolHandler for Handler {
         } = invocation;
         let arguments = function_arguments(payload)?;
         let args: SpawnAgentArgs = parse_arguments(&arguments)?;
+        let task_name = args.task_name.clone();
         let role_name = args
             .agent_type
             .as_deref()
@@ -87,7 +88,7 @@ impl ToolHandler for Handler {
                     &turn.session_source,
                     child_depth,
                     role_name,
-                    args.task_name.clone(),
+                    task_name.clone(),
                 )?),
                 SpawnAgentOptions {
                     fork_parent_spawn_call_id: args.fork_context.then(|| call_id.clone()),
@@ -95,7 +96,8 @@ impl ToolHandler for Handler {
             )
             .await
             .map_err(collab_spawn_error);
-        let spawned_thread_id = result.as_ref().ok().copied();
+        let spawned_thread_id = result.as_ref().ok().map(|agent| agent.thread_id);
+        let spawned_agent_metadata = result.as_ref().ok().map(|agent| agent.metadata.clone());
         let new_agent = match spawned_thread_id {
             Some(thread_id) => {
                 if let Some(agent) = session
@@ -147,6 +149,9 @@ impl ToolHandler for Handler {
                 identity_source: SUBAGENT_IDENTITY_SOURCE_THREAD_CONFIG_SNAPSHOT.to_string(),
             },
         };
+        let task_name = spawned_agent_metadata
+            .as_ref()
+            .and_then(|metadata| metadata.agent_path.as_ref().map(ToString::to_string));
         let nickname = new_agent.nickname.clone();
         let role = new_agent.role.clone();
         let status = new_agent.status.clone();

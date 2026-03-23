@@ -523,7 +523,7 @@ impl HistoryCell for UpdateAvailableHistoryCell {
         } else {
             line![
                 "See ",
-                installation_options_url.as_str().cyan().underlined(),
+                installation_options_url.cyan().underlined(),
                 " for installation options."
             ]
         };
@@ -538,7 +538,7 @@ impl HistoryCell for UpdateAvailableHistoryCell {
             update_instruction,
             "",
             "See full release notes:",
-            release_notes_url.as_str().cyan().underlined(),
+            release_notes_url.cyan().underlined(),
         ];
 
         let inner_width = content
