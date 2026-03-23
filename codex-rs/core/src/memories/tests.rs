@@ -428,6 +428,8 @@ mod phase2 {
     use chrono::Utc;
     use codex_config::Constrained;
     use codex_protocol::ThreadId;
+    use codex_protocol::permissions::FileSystemSandboxPolicy;
+    use codex_protocol::permissions::NetworkSandboxPolicy;
     use codex_protocol::protocol::AskForApproval;
     use codex_protocol::protocol::Op;
     use codex_protocol::protocol::SandboxPolicy;
@@ -589,6 +591,48 @@ mod phase2 {
     }
 
     #[tokio::test]
+    async fn consolidation_artifacts_ready_requires_recent_non_empty_outputs() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let root = temp_dir.path();
+        let memory_index_path = root.join("MEMORY.md");
+        let memory_summary_path = root.join("memory_summary.md");
+
+        tokio::fs::write(&memory_index_path, "memory index\n")
+            .await
+            .expect("write memory index");
+        tokio::fs::write(&memory_summary_path, "memory summary\n")
+            .await
+            .expect("write memory summary");
+
+        assert!(
+            !phase2::agent::consolidation_artifacts_ready(
+                root,
+                std::time::SystemTime::now() + Duration::from_secs(60),
+            )
+            .await,
+            "artifacts should be rejected when they are older than the current consolidation run"
+        );
+
+        tokio::fs::write(&memory_summary_path, "")
+            .await
+            .expect("clear memory summary");
+        assert!(
+            !phase2::agent::consolidation_artifacts_ready(root, std::time::SystemTime::UNIX_EPOCH)
+                .await,
+            "artifacts should be rejected when memory_summary.md is empty"
+        );
+
+        tokio::fs::write(&memory_summary_path, "memory summary\n")
+            .await
+            .expect("rewrite memory summary");
+        assert!(
+            phase2::agent::consolidation_artifacts_ready(root, std::time::SystemTime::UNIX_EPOCH)
+                .await,
+            "artifacts should be accepted when both files are fresh and non-empty"
+        );
+    }
+
+    #[tokio::test]
     async fn dispatch_skips_when_global_job_is_not_dirty() {
         let harness = DispatchHarness::new().await;
 
@@ -673,6 +717,17 @@ mod phase2 {
         let config_snapshot = subagent.config_snapshot().await;
         pretty_assertions::assert_eq!(config_snapshot.approval_policy, AskForApproval::Never);
         pretty_assertions::assert_eq!(config_snapshot.cwd, memory_root(&harness.config.codex_home));
+        pretty_assertions::assert_eq!(
+            config_snapshot.file_system_sandbox_policy,
+            FileSystemSandboxPolicy::from_legacy_sandbox_policy(
+                &config_snapshot.sandbox_policy,
+                &config_snapshot.cwd,
+            )
+        );
+        pretty_assertions::assert_eq!(
+            config_snapshot.network_sandbox_policy,
+            NetworkSandboxPolicy::from(&config_snapshot.sandbox_policy)
+        );
         match config_snapshot.sandbox_policy {
             SandboxPolicy::WorkspaceWrite { writable_roots, .. } => {
                 assert!(

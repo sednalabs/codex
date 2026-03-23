@@ -12,6 +12,8 @@ use crate::memories::storage::sync_rollout_summaries_from_memories;
 use codex_config::Constrained;
 use codex_features::Feature;
 use codex_protocol::ThreadId;
+use codex_protocol::permissions::FileSystemSandboxPolicy;
+use codex_protocol::permissions::NetworkSandboxPolicy;
 use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::SandboxPolicy;
 use codex_protocol::protocol::SessionSource;
@@ -22,8 +24,11 @@ use codex_state::Stage1Output;
 use codex_state::StateRuntime;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use std::collections::HashSet;
+use std::path::Path;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
+use std::time::SystemTime;
 use tokio::sync::watch;
 use tracing::warn;
 
@@ -129,6 +134,7 @@ pub(super) async fn run(session: &Arc<Session>, config: Arc<Config>) {
     // 5. Spawn the agent
     let prompt = agent::get_prompt(config, &selection);
     let source = SessionSource::SubAgent(SubAgentSource::MemoryConsolidation);
+    let artifacts_not_before = SystemTime::now();
     let thread_id = match session
         .services
         .agent_control
@@ -150,6 +156,8 @@ pub(super) async fn run(session: &Arc<Session>, config: Arc<Config>) {
         new_watermark,
         raw_memories.clone(),
         thread_id,
+        root,
+        artifacts_not_before,
         phase_two_e2e_timer,
     );
 
@@ -259,7 +267,7 @@ mod job {
     }
 }
 
-mod agent {
+pub(super) mod agent {
     use super::*;
 
     pub(super) fn get_config(config: Arc<Config>) -> Option<Config> {
@@ -296,8 +304,15 @@ mod agent {
         agent_config
             .permissions
             .sandbox_policy
-            .set(consolidation_sandbox_policy)
+            .set(consolidation_sandbox_policy.clone())
             .ok()?;
+        agent_config.permissions.file_system_sandbox_policy =
+            FileSystemSandboxPolicy::from_legacy_sandbox_policy(
+                &consolidation_sandbox_policy,
+                &agent_config.cwd,
+            );
+        agent_config.permissions.network_sandbox_policy =
+            NetworkSandboxPolicy::from(&consolidation_sandbox_policy);
 
         agent_config.model = Some(
             config
@@ -330,6 +345,8 @@ mod agent {
         new_watermark: i64,
         selected_outputs: Vec<codex_state::Stage1Output>,
         thread_id: ThreadId,
+        root: PathBuf,
+        artifacts_not_before: SystemTime,
         phase_two_e2e_timer: Option<codex_otel::Timer>,
     ) {
         let Some(db) = session.services.state_db.clone() else {
@@ -365,15 +382,22 @@ mod agent {
                 if let Some(token_usage) = agent_control.get_total_token_usage(thread_id).await {
                     emit_token_usage_metrics(&session, &token_usage);
                 }
-                job::succeed(
-                    &session,
-                    &db,
-                    &claim,
-                    new_watermark,
-                    &selected_outputs,
-                    "succeeded",
-                )
-                .await;
+                if consolidation_artifacts_ready(root.as_path(), artifacts_not_before).await {
+                    job::succeed(
+                        &session,
+                        &db,
+                        &claim,
+                        new_watermark,
+                        &selected_outputs,
+                        "succeeded",
+                    )
+                    .await;
+                } else {
+                    tracing::warn!(
+                        "global memory consolidation agent {thread_id} completed without refreshing MEMORY.md and memory_summary.md"
+                    );
+                    job::failed(&session, &db, &claim, "failed_missing_artifacts").await;
+                }
             } else {
                 job::failed(&session, &db, &claim, "failed_agent").await;
             }
@@ -391,6 +415,28 @@ mod agent {
                 tracing::warn!("The agent was already gone");
             }
         });
+    }
+
+    pub(super) async fn consolidation_artifacts_ready(root: &Path, not_before: SystemTime) -> bool {
+        for path in [root.join("MEMORY.md"), root.join("memory_summary.md")] {
+            let Ok(metadata) = tokio::fs::metadata(&path).await else {
+                return false;
+            };
+            let Ok(modified) = metadata.modified() else {
+                return false;
+            };
+            if modified < not_before {
+                return false;
+            }
+            let Ok(contents) = tokio::fs::read_to_string(&path).await else {
+                return false;
+            };
+            if contents.trim().is_empty() {
+                return false;
+            }
+        }
+
+        true
     }
 
     async fn loop_agent(

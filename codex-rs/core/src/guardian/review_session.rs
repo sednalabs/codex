@@ -12,6 +12,8 @@ use codex_protocol::config_types::ReasoningSummary as ReasoningSummaryConfig;
 use codex_protocol::models::DeveloperInstructions;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::openai_models::ReasoningEffort as ReasoningEffortConfig;
+use codex_protocol::permissions::FileSystemSandboxPolicy;
+use codex_protocol::permissions::NetworkSandboxPolicy;
 use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::InitialHistory;
@@ -627,6 +629,7 @@ pub(crate) fn build_guardian_review_session_config(
     reasoning_effort: Option<codex_protocol::openai_models::ReasoningEffort>,
 ) -> anyhow::Result<Config> {
     let mut guardian_config = parent_config.clone();
+    let guardian_sandbox_policy = SandboxPolicy::new_read_only_policy();
     guardian_config.model = Some(active_model.to_string());
     guardian_config.model_reasoning_effort = reasoning_effort;
     guardian_config.developer_instructions = Some(
@@ -637,7 +640,14 @@ pub(crate) fn build_guardian_review_session_config(
     );
     guardian_config.permissions.approval_policy = Constrained::allow_only(AskForApproval::Never);
     guardian_config.permissions.sandbox_policy =
-        Constrained::allow_only(SandboxPolicy::new_read_only_policy());
+        Constrained::allow_only(guardian_sandbox_policy.clone());
+    guardian_config.permissions.file_system_sandbox_policy =
+        FileSystemSandboxPolicy::from_legacy_sandbox_policy(
+            &guardian_sandbox_policy,
+            &guardian_config.cwd,
+        );
+    guardian_config.permissions.network_sandbox_policy =
+        NetworkSandboxPolicy::from(&guardian_sandbox_policy);
     if let Some(live_network_config) = live_network_config
         && guardian_config.permissions.network.is_some()
     {
@@ -650,7 +660,7 @@ pub(crate) fn build_guardian_review_session_config(
         guardian_config.permissions.network = Some(NetworkProxySpec::from_config_and_constraints(
             live_network_config,
             network_constraints,
-            &SandboxPolicy::new_read_only_policy(),
+            &guardian_sandbox_policy,
         )?);
     }
     for feature in [
@@ -755,6 +765,32 @@ mod tests {
         assert_eq!(
             cached_reuse_key,
             GuardianReviewSessionReuseKey::from_spawn_config(&cached_spawn_config)
+        );
+    }
+
+    #[test]
+    fn guardian_review_session_config_rebuilds_split_sandbox_policies() {
+        let parent_config = crate::config::test_config();
+
+        let guardian_config =
+            build_guardian_review_session_config(&parent_config, None, "active-model", None)
+                .expect("guardian config");
+        let expected_sandbox_policy = SandboxPolicy::new_read_only_policy();
+
+        assert_eq!(
+            guardian_config.permissions.sandbox_policy.get().clone(),
+            expected_sandbox_policy
+        );
+        assert_eq!(
+            guardian_config.permissions.file_system_sandbox_policy,
+            FileSystemSandboxPolicy::from_legacy_sandbox_policy(
+                &expected_sandbox_policy,
+                &guardian_config.cwd,
+            )
+        );
+        assert_eq!(
+            guardian_config.permissions.network_sandbox_policy,
+            NetworkSandboxPolicy::from(&expected_sandbox_policy)
         );
     }
 
