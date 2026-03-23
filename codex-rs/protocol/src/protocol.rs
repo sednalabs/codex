@@ -2361,6 +2361,15 @@ impl SessionSource {
         }
     }
 
+    pub fn get_agent_path(&self) -> Option<AgentPath> {
+        match self {
+            SessionSource::SubAgent(SubAgentSource::ThreadSpawn { agent_path, .. }) => {
+                agent_path.clone()
+            }
+            _ => None,
+        }
+    }
+
     pub fn get_agent_role(&self) -> Option<String> {
         match self {
             SessionSource::SubAgent(SubAgentSource::ThreadSpawn { agent_role, .. }) => {
@@ -3562,6 +3571,23 @@ mod tests {
         assert_eq!(
             SessionSource::from_startup_arg(" Atlas ").unwrap(),
             SessionSource::Custom("atlas".to_string())
+        );
+    }
+
+    #[test]
+    fn session_source_returns_thread_spawn_agent_path() {
+        let agent_path = AgentPath::try_from("/root/researcher").expect("valid agent path");
+
+        assert_eq!(
+            SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                parent_thread_id: ThreadId::new(),
+                depth: 1,
+                agent_path: Some(agent_path.clone()),
+                agent_nickname: None,
+                agent_role: None,
+            })
+            .get_agent_path(),
+            Some(agent_path)
         );
     }
 
