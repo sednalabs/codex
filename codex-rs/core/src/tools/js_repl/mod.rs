@@ -40,7 +40,6 @@ use crate::exec_env::create_env;
 use crate::function_tool::FunctionCallError;
 use crate::original_image_detail::normalize_output_image_detail;
 use crate::sandboxing::ExecOptions;
-use crate::sandboxing::SandboxPermissions;
 use crate::tools::ToolRouter;
 use crate::tools::context::SharedTurnDiffTracker;
 use crate::truncate::TruncationPolicy;
@@ -1058,8 +1057,6 @@ impl JsReplManager {
         let options = ExecOptions {
             expiration: ExecExpiration::DefaultTimeout,
             capture_policy: ExecCapturePolicy::ShellTool,
-            sandbox_permissions: SandboxPermissions::UseDefault,
-            justification: None,
         };
         let exec_env = sandbox
             .transform(SandboxTransformRequest {
