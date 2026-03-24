@@ -409,6 +409,13 @@ enum EnsureConversationListenerResult {
     ConnectionClosed,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum RefreshTokenRequestOutcome {
+    NotAttemptedOrSucceeded,
+    FailedTransiently,
+    FailedPermanently,
+}
+
 pub(crate) struct CodexMessageProcessorArgs {
     pub(crate) auth_manager: Arc<AuthManager>,
     pub(crate) thread_manager: Arc<ThreadManager>,
@@ -1338,13 +1345,19 @@ impl CodexMessageProcessor {
         }
     }
 
-    async fn refresh_token_if_requested(&self, do_refresh: bool) {
+    async fn refresh_token_if_requested(&self, do_refresh: bool) -> RefreshTokenRequestOutcome {
         if self.auth_manager.is_external_auth_active() {
-            return;
+            return RefreshTokenRequestOutcome::NotAttemptedOrSucceeded;
         }
         if do_refresh && let Err(err) = self.auth_manager.refresh_token().await {
-            tracing::warn!("failed to refresh token while getting account: {err}");
+            let failed_reason = err.failed_reason();
+            if failed_reason.is_none() {
+                tracing::warn!("failed to refresh token while getting account: {err}");
+                return RefreshTokenRequestOutcome::FailedTransiently;
+            }
+            return RefreshTokenRequestOutcome::FailedPermanently;
         }
+        RefreshTokenRequestOutcome::NotAttemptedOrSucceeded
     }
 
     async fn get_auth_status(&self, request_id: ConnectionRequestId, params: GetAuthStatusParams) {
@@ -1367,18 +1380,25 @@ impl CodexMessageProcessor {
         } else {
             match self.auth_manager.auth().await {
                 Some(auth) => {
+                    let permanent_refresh_failure =
+                        self.auth_manager.refresh_failure_for_auth(&auth).is_some();
                     let auth_mode = auth.api_auth_mode();
-                    let (reported_auth_method, token_opt) = match auth.get_token() {
-                        Ok(token) if !token.is_empty() => {
-                            let tok = if include_token { Some(token) } else { None };
-                            (Some(auth_mode), tok)
-                        }
-                        Ok(_) => (None, None),
-                        Err(err) => {
-                            tracing::warn!("failed to get token for auth status: {err}");
-                            (None, None)
-                        }
-                    };
+                    let (reported_auth_method, token_opt) =
+                        if include_token && permanent_refresh_failure {
+                            (Some(auth_mode), None)
+                        } else {
+                            match auth.get_token() {
+                                Ok(token) if !token.is_empty() => {
+                                    let tok = if include_token { Some(token) } else { None };
+                                    (Some(auth_mode), tok)
+                                }
+                                Ok(_) => (None, None),
+                                Err(err) => {
+                                    tracing::warn!("failed to get token for auth status: {err}");
+                                    (None, None)
+                                }
+                            }
+                        };
                     GetAuthStatusResponse {
                         auth_method: reported_auth_method,
                         auth_token: token_opt,
