@@ -80,6 +80,7 @@ members = [
     "codex-experimental-api-macros",
     "test-macros",
     "package-manager",
+    "plugin",
     "artifacts",
 ]
 resolver = "2"
@@ -134,6 +135,7 @@ codex-mcp-server = { path = "mcp-server" }
 codex-network-proxy = { path = "network-proxy" }
 codex-ollama = { path = "ollama" }
 codex-otel = { path = "otel" }
+codex-plugin = { path = "plugin" }
 codex-process-hardening = { path = "process-hardening" }
 codex-protocol = { path = "protocol" }
 codex-rollout = { path = "rollout" }
