@@ -1403,7 +1403,12 @@ impl CodexMessageProcessor {
                 requires_openai_auth: Some(false),
             }
         } else {
-            match self.auth_manager.auth().await {
+            let auth = if do_refresh {
+                self.auth_manager.auth_cached()
+            } else {
+                self.auth_manager.auth().await
+            };
+            match auth {
                 Some(auth) => {
                     let permanent_refresh_failure =
                         self.auth_manager.refresh_failure_for_auth(&auth).is_some();
