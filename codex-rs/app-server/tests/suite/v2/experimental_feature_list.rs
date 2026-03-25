@@ -163,14 +163,24 @@ async fn experimental_feature_enablement_set_only_updates_named_features() -> Re
         .await?;
     let actual = set_experimental_feature_enablement(
         &mut mcp,
-        BTreeMap::from([("plugins".to_string(), true)]),
+        BTreeMap::from([
+            ("plugins".to_string(), true),
+            ("tool_search".to_string(), true),
+            ("tool_suggest".to_string(), true),
+            ("tool_call_mcp_elicitation".to_string(), false),
+        ]),
     )
     .await?;
 
     assert_eq!(
         actual,
         ExperimentalFeatureEnablementSetResponse {
-            enablement: BTreeMap::from([("plugins".to_string(), true)]),
+            enablement: BTreeMap::from([
+                ("plugins".to_string(), true),
+                ("tool_search".to_string(), true),
+                ("tool_suggest".to_string(), true),
+                ("tool_call_mcp_elicitation".to_string(), false),
+            ]),
         }
     );
 
@@ -189,6 +199,27 @@ async fn experimental_feature_enablement_set_only_updates_named_features() -> Re
             .get("features")
             .and_then(|features| features.get("plugins")),
         Some(&json!(true))
+    );
+    assert_eq!(
+        config
+            .additional
+            .get("features")
+            .and_then(|features| features.get("tool_search")),
+        Some(&json!(true))
+    );
+    assert_eq!(
+        config
+            .additional
+            .get("features")
+            .and_then(|features| features.get("tool_suggest")),
+        Some(&json!(true))
+    );
+    assert_eq!(
+        config
+            .additional
+            .get("features")
+            .and_then(|features| features.get("tool_call_mcp_elicitation")),
+        Some(&json!(false))
     );
 
     Ok(())
@@ -249,7 +280,13 @@ async fn experimental_feature_enablement_set_rejects_non_allowlisted_feature() -
         "{}",
         error.message
     );
-    assert!(error.message.contains("apps, plugins"), "{}", error.message);
+    assert!(
+        error
+            .message
+            .contains("apps, plugins, tool_search, tool_suggest, tool_call_mcp_elicitation"),
+        "{}",
+        error.message
+    );
 
     Ok(())
 }
