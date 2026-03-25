@@ -1570,7 +1570,7 @@ impl Session {
         })?;
         let rollout_path = rollout_recorder
             .as_ref()
-            .map(|rec| rec.rollout_path.clone());
+            .map(|rec| rec.rollout_path().to_path_buf());
 
         let mut post_session_configured_events = Vec::<Event>::new();
 
