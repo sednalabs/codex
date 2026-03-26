@@ -105,10 +105,8 @@ fn select_process_exec_tool_sandbox_type(
     windows_sandbox_level: codex_protocol::config_types::WindowsSandboxLevel,
     enforce_managed_network: bool,
 ) -> SandboxType {
-    if matches!(sandbox_policy, SandboxPolicy::ExternalSandbox { .. }) {
-        return SandboxType::None;
-    }
     SandboxManager::new().select_initial(
+        sandbox_policy,
         file_system_sandbox_policy,
         network_sandbox_policy,
         SandboxablePreference::Auto,

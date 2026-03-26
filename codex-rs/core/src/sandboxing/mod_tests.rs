@@ -49,6 +49,7 @@ fn symlink_dir(original: &Path, link: &Path) -> std::io::Result<()> {
 fn danger_full_access_defaults_to_no_sandbox_without_network_requirements() {
     let manager = SandboxManager::new();
     let sandbox = manager.select_initial(
+        &SandboxPolicy::new_workspace_write_policy(),
         &FileSystemSandboxPolicy::unrestricted(),
         NetworkSandboxPolicy::Enabled,
         SandboxablePreference::Auto,
@@ -63,6 +64,7 @@ fn danger_full_access_uses_platform_sandbox_with_network_requirements() {
     let manager = SandboxManager::new();
     let expected = crate::safety::get_platform_sandbox(false).unwrap_or(SandboxType::None);
     let sandbox = manager.select_initial(
+        &SandboxPolicy::new_workspace_write_policy(),
         &FileSystemSandboxPolicy::unrestricted(),
         NetworkSandboxPolicy::Enabled,
         SandboxablePreference::Auto,
@@ -76,6 +78,7 @@ fn danger_full_access_uses_platform_sandbox_with_network_requirements() {
 fn require_never_degrades_to_none() {
     let manager = SandboxManager::new();
     let sandbox = manager.select_initial(
+        &SandboxPolicy::new_workspace_write_policy(),
         &FileSystemSandboxPolicy::unrestricted(),
         NetworkSandboxPolicy::Enabled,
         SandboxablePreference::Require,
@@ -91,6 +94,7 @@ fn restricted_file_system_uses_platform_sandbox_without_managed_network() {
     let manager = SandboxManager::new();
     let expected = crate::safety::get_platform_sandbox(false).unwrap_or(SandboxType::None);
     let sandbox = manager.select_initial(
+        &SandboxPolicy::new_workspace_write_policy(),
         &FileSystemSandboxPolicy::restricted(vec![FileSystemSandboxEntry {
             path: FileSystemPath::Special {
                 value: FileSystemSpecialPath::Root,
@@ -103,6 +107,22 @@ fn restricted_file_system_uses_platform_sandbox_without_managed_network() {
         false,
     );
     assert_eq!(sandbox, expected);
+}
+
+#[test]
+fn external_sandbox_bypasses_platform_sandbox_with_network_requirements() {
+    let manager = SandboxManager::new();
+    let sandbox = manager.select_initial(
+        &SandboxPolicy::ExternalSandbox {
+            network_access: NetworkAccess::Restricted,
+        },
+        &FileSystemSandboxPolicy::unrestricted(),
+        NetworkSandboxPolicy::Enabled,
+        SandboxablePreference::Auto,
+        WindowsSandboxLevel::Disabled,
+        true,
+    );
+    assert_eq!(sandbox, SandboxType::None);
 }
 
 #[test]

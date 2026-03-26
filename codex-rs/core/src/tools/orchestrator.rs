@@ -180,6 +180,7 @@ impl ToolOrchestrator {
         let initial_sandbox = match tool.sandbox_mode_for_first_attempt(req) {
             SandboxOverride::BypassSandboxFirstAttempt => crate::exec::SandboxType::None,
             SandboxOverride::NoOverride => self.sandbox.select_initial(
+                &turn_ctx.sandbox_policy,
                 &turn_ctx.file_system_sandbox_policy,
                 turn_ctx.network_sandbox_policy,
                 tool.sandbox_preference(),

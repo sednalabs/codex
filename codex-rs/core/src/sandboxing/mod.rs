@@ -572,12 +572,16 @@ impl SandboxManager {
 
     pub(crate) fn select_initial(
         &self,
+        sandbox_policy: &SandboxPolicy,
         file_system_policy: &FileSystemSandboxPolicy,
         network_policy: NetworkSandboxPolicy,
         pref: SandboxablePreference,
         windows_sandbox_level: WindowsSandboxLevel,
         has_managed_network_requirements: bool,
     ) -> SandboxType {
+        if matches!(sandbox_policy, SandboxPolicy::ExternalSandbox { .. }) {
+            return SandboxType::None;
+        }
         match pref {
             SandboxablePreference::Forbid => SandboxType::None,
             SandboxablePreference::Require => {
