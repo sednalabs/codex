@@ -54,7 +54,7 @@ impl ToolHandler for Handler {
         for id in &receiver_thread_ids {
             if !seen.insert(*id) {
                 return Err(FunctionCallError::RespondToModel(
-                    "duplicate agent targets are not allowed".to_string(),
+                    "ids/targets must resolve to unique agents".to_string(),
                 ));
             }
         }

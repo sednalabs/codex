@@ -174,8 +174,10 @@ fn collab_agent_error(agent_id: ThreadId, err: CodexErr) -> FunctionCallError {
 }
 
 fn agent_id(id: &str) -> Result<ThreadId, FunctionCallError> {
-    ThreadId::from_string(id)
-        .map_err(|err| FunctionCallError::RespondToModel(format!("invalid agent id `{id}`: {err}")))
+    ThreadId::from_string(id).map_err(|err| {
+        tracing::debug!("invalid agent id `{id}`: {err}");
+        FunctionCallError::RespondToModel(format!("invalid agent id `{id}`"))
+    })
 }
 
 fn thread_spawn_source(
