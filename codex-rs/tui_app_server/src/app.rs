@@ -73,6 +73,7 @@ use codex_core::config::types::ApprovalsReviewer;
 use codex_core::config::types::ModelAvailabilityNuxConfig;
 use codex_core::config_loader::ConfigLayerStackOrdering;
 use codex_core::message_history;
+use codex_protocol::items::parse_subagent_notification_response_item;
 use codex_core::models_manager::collaboration_mode_presets::CollaborationModesConfig;
 use codex_core::models_manager::model_presets::HIDE_GPT_5_1_CODEX_MAX_MIGRATION_PROMPT_CONFIG;
 use codex_core::models_manager::model_presets::HIDE_GPT5_1_MIGRATION_PROMPT_CONFIG;
@@ -5543,17 +5544,23 @@ impl App {
     }
 }
 
-fn parse_subagent_notification(
+<<<<<<< HEAD
+fn parse_completed_subagent_notification(
     notification: &ServerNotification,
 ) -> Option<codex_protocol::items::SubagentNotificationItem> {
     let ServerNotification::RawResponseItemCompleted(notification) = notification else {
         return None;
     };
-    parse_subagent_notification_response_item(&notification.item)
+    let parsed = parse_subagent_notification_response_item(&notification.item)?;
+    matches!(parsed.status, codex_protocol::protocol::AgentStatus::Completed(_)).then_some(parsed)
 }
 
 fn is_replay_safe_subagent_completion_notification(notification: &ServerNotification) -> bool {
-    parse_subagent_notification(notification).is_some()
+    parse_completed_subagent_notification(notification).is_some()
+}
+
+fn subagent_completion_notification_agent_id(notification: &ServerNotification) -> Option<String> {
+    parse_completed_subagent_notification(notification).map(|notification| notification.agent_id)
 }
 
 /// Collect every MCP server status from the app-server by walking the paginated
