@@ -5052,15 +5052,8 @@ impl App {
         );
         match event {
             ThreadBufferedEvent::Notification(notification) => {
-                if let Some(agent_id) = subagent_completion_notification_agent_id(&notification) {
-                    self.chat_widget.add_info_message(
-                        format!("Subagent update {agent_id}"),
-                        /*hint*/ None,
-                    );
-                } else {
-                    self.chat_widget
-                        .handle_server_notification(notification, /*replay_kind*/ None);
-                }
+                self.chat_widget
+                    .handle_server_notification(notification, /*replay_kind*/ None);
             }
             ThreadBufferedEvent::Request(request) => {
                 self.chat_widget
@@ -5078,21 +5071,14 @@ impl App {
     fn handle_thread_event_replay(&mut self, event: ThreadBufferedEvent) {
         match event {
             ThreadBufferedEvent::Notification(notification) => {
-                if let Some(agent_id) = subagent_completion_notification_agent_id(&notification) {
-                    self.chat_widget.add_info_message(
-                        format!("Subagent update {agent_id}"),
-                        /*hint*/ None,
-                    );
+                let replay_kind = if is_replay_safe_subagent_completion_notification(&notification)
+                {
+                    None
                 } else {
-                    let replay_kind =
-                        if is_replay_safe_subagent_completion_notification(&notification) {
-                            None
-                        } else {
-                            Some(ReplayKind::ThreadSnapshot)
-                        };
-                    self.chat_widget
-                        .handle_server_notification(notification, replay_kind);
-                }
+                    Some(ReplayKind::ThreadSnapshot)
+                };
+                self.chat_widget
+                    .handle_server_notification(notification, replay_kind);
             }
             ThreadBufferedEvent::Request(request) => self
                 .chat_widget
@@ -5464,22 +5450,17 @@ impl App {
     }
 }
 
-fn parse_completed_subagent_notification(
+fn parse_subagent_notification(
     notification: &ServerNotification,
 ) -> Option<codex_protocol::items::SubagentNotificationItem> {
     let ServerNotification::RawResponseItemCompleted(notification) = notification else {
         return None;
     };
-    let parsed = parse_subagent_notification_response_item(&notification.item)?;
-    matches!(parsed.status, codex_protocol::protocol::AgentStatus::Completed(_)).then_some(parsed)
+    parse_subagent_notification_response_item(&notification.item)
 }
 
 fn is_replay_safe_subagent_completion_notification(notification: &ServerNotification) -> bool {
-    parse_completed_subagent_notification(notification).is_some()
-}
-
-fn subagent_completion_notification_agent_id(notification: &ServerNotification) -> Option<String> {
-    parse_completed_subagent_notification(notification).map(|notification| notification.agent_id)
+    parse_subagent_notification(notification).is_some()
 }
 
 /// Collect every MCP server status from the app-server by walking the paginated
@@ -6298,6 +6279,47 @@ mod tests {
         assert!(
             saw_subagent_update,
             "expected replayed subagent completion notification history cell"
+        );
+    }
+
+    #[tokio::test]
+    async fn replayed_interrupted_subagent_notification_history_preserves_status_detail() {
+        let (mut app, mut app_event_rx, _op_rx) = make_test_app_with_channels().await;
+        let thread_id = ThreadId::new();
+        app.replay_thread_snapshot(
+            ThreadEventSnapshot {
+                session: None,
+                turns: Vec::new(),
+                events: vec![ThreadBufferedEvent::Notification(
+                    subagent_status_raw_response_notification(
+                        thread_id,
+                        "turn-1",
+                        "agent-123",
+                        "interrupted",
+                    ),
+                )],
+                input_state: None,
+            },
+            false,
+        );
+
+        let mut saw_subagent_update = false;
+        let mut saw_interrupted_status = false;
+        while let Ok(event) = app_event_rx.try_recv() {
+            if let AppEvent::InsertHistoryCell(cell) = event {
+                let transcript = lines_to_single_string(&cell.transcript_lines(80));
+                saw_subagent_update |= transcript.contains("Subagent update agent-123");
+                saw_interrupted_status |= transcript.contains("Interrupted");
+            }
+        }
+
+        assert!(
+            saw_subagent_update,
+            "expected replayed interrupted subagent notification history cell"
+        );
+        assert!(
+            saw_interrupted_status,
+            "expected replayed interrupted subagent notification to preserve status detail"
         );
     }
 
@@ -8322,9 +8344,18 @@ guardian_approval = true
         turn_id: &str,
         agent_id: &str,
     ) -> ServerNotification {
+        subagent_status_raw_response_notification(thread_id, turn_id, agent_id, "completed")
+    }
+
+    fn subagent_status_raw_response_notification(
+        thread_id: ThreadId,
+        turn_id: &str,
+        agent_id: &str,
+        status: &str,
+    ) -> ServerNotification {
         let payload = serde_json::to_string(&serde_json::json!({
             "agent_id": agent_id,
-            "status": "completed",
+            "status": status,
         }))
         .expect("subagent notification payload");
         let text = format!("<subagent_notification>{payload}</subagent_notification>");
