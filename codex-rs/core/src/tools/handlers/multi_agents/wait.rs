@@ -34,16 +34,22 @@ impl ToolHandler for Handler {
         } = invocation;
         let arguments = function_arguments(payload)?;
         let args: WaitArgs = parse_arguments(&arguments)?;
-        if args.ids.is_empty() {
+        if !args.ids.is_empty() && !args.targets.is_empty() {
             return Err(FunctionCallError::RespondToModel(
-                "ids must be non-empty".to_string(),
+                "provide either ids or targets, but not both".to_string(),
             ));
         }
-        let receiver_thread_ids = args
-            .ids
-            .iter()
-            .map(|id| agent_id(id))
-            .collect::<Result<Vec<_>, _>>()?;
+        let raw_targets = if !args.targets.is_empty() {
+            args.targets
+        } else {
+            args.ids
+        };
+        if raw_targets.is_empty() {
+            return Err(FunctionCallError::RespondToModel(
+                "one of ids or targets must be non-empty".to_string(),
+            ));
+        }
+        let receiver_thread_ids = resolve_agent_targets(&session, &turn, raw_targets).await?;
         let mut seen = HashSet::with_capacity(receiver_thread_ids.len());
         for id in &receiver_thread_ids {
             if !seen.insert(*id) {
@@ -183,6 +189,7 @@ impl ToolHandler for Handler {
             CollabWaitingCompletionReason::Terminal
         };
         let statuses_map = final_statuses.clone();
+        let statuses_by_id = statuses_map.clone();
         let agent_statuses = build_wait_agent_statuses(&statuses_map, &receiver_agents);
         let result = WaitAgentResult {
             status: statuses_map.clone(),
@@ -215,6 +222,8 @@ impl ToolHandler for Handler {
 
 #[derive(Debug, Deserialize)]
 struct WaitArgs {
+    #[serde(default)]
+    ids: Vec<String>,
     #[serde(default)]
     targets: Vec<String>,
     timeout_ms: Option<i64>,

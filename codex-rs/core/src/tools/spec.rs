@@ -217,8 +217,64 @@ fn collab_agent_list_item_schema() -> JsonValue {
     })
 }
 
-fn spawn_agent_output_schema() -> JsonValue {
-    collab_agent_list_item_schema()
+fn spawn_agent_output_schema(_multi_agent_v2: bool) -> JsonValue {
+    let task_name_description = if _multi_agent_v2 {
+        "Canonical task name for the spawned agent."
+    } else {
+        "Canonical task name for the spawned agent when one was assigned."
+    };
+    json!({
+        "type": "object",
+        "properties": {
+            "agent_id": {
+                "type": ["string", "null"],
+                "description": "Thread identifier for the spawned agent when no task name was assigned."
+            },
+            "task_name": {
+                "type": ["string", "null"],
+                "description": task_name_description
+            },
+            "nickname": {
+                "type": ["string", "null"],
+                "description": "User-facing nickname for the spawned agent when available."
+            },
+            "role": {
+                "type": ["string", "null"],
+                "description": "Role assigned to the agent at spawn time."
+            },
+            "status": {
+                "allOf": [agent_status_output_schema()]
+            },
+            "effective_model": {
+                "type": ["string", "null"],
+                "description": "Effective thread config model value for the spawned agent."
+            },
+            "effective_reasoning_effort": {
+                "type": ["string", "null"],
+                "description": "Effective thread config reasoning effort for the spawned agent."
+            },
+            "effective_model_provider_id": {
+                "type": "string",
+                "description": "Effective model provider identifier from the spawned agent thread config snapshot."
+            },
+            "identity_source": {
+                "type": "string",
+                "description": "Identity source used for inherited spawned-agent settings."
+            }
+        },
+        "required": [
+            "agent_id",
+            "task_name",
+            "nickname",
+            "role",
+            "status",
+            "effective_model",
+            "effective_reasoning_effort",
+            "effective_model_provider_id",
+            "identity_source"
+        ],
+        "additionalProperties": false
+    })
 }
 
 fn list_agents_output_schema() -> JsonValue {
@@ -1223,7 +1279,7 @@ fn create_collab_input_items_schema() -> JsonSchema {
 
 fn create_spawn_agent_tool(config: &ToolsConfig) -> ToolSpec {
     let available_models_description = spawn_agent_models_description(&config.available_models);
-    let return_value_description = "Returns the canonical task name when the spawned agent was named, otherwise the agent id, plus the user-facing nickname when available.";
+    let _return_value_description = "Returns the canonical task name when the spawned agent was named, otherwise the agent id, plus the user-facing nickname when available.";
     let mut properties = BTreeMap::from([
         (
             "message".to_string(),
@@ -1564,7 +1620,6 @@ fn create_list_agents_tool() -> ToolSpec {
                 "Optional subtree filter for `include_descendants=true`. Use `open` or `closed` to limit returned descendant rows by persisted spawn-edge status. Cannot be combined with `ids`."
                     .to_string(),
             ),
-            enum_values: Some(vec!["open".to_string(), "closed".to_string()]),
         },
     );
     ToolSpec::Function(ResponsesApiTool {
@@ -1610,15 +1665,25 @@ fn create_resume_agent_tool() -> ToolSpec {
 fn create_wait_agent_tool() -> ToolSpec {
     let mut properties = BTreeMap::new();
     properties.insert(
-            "ids".to_string(),
-            JsonSchema::Array {
-                items: Box::new(JsonSchema::String { description: None }),
-                description: Some(
-                    "One or more agent IDs to wait for. Returns when any requested agent matches `return_when`.".
-                        to_string(),
-                ),
-            },
-        );
+        "ids".to_string(),
+        JsonSchema::Array {
+            items: Box::new(JsonSchema::String { description: None }),
+            description: Some(
+                "Optional raw agent IDs to wait for. Prefer `targets` when chaining from named sub-agents."
+                    .to_string(),
+            ),
+        },
+    );
+    properties.insert(
+        "targets".to_string(),
+        JsonSchema::Array {
+            items: Box::new(JsonSchema::String { description: None }),
+            description: Some(
+                "Optional agent ids or canonical task names to wait on. Prefer this when chaining from named sub-agents."
+                    .to_string(),
+            ),
+        },
+    );
     properties.insert(
         "timeout_ms".to_string(),
         JsonSchema::Number {
@@ -1628,14 +1693,14 @@ fn create_wait_agent_tool() -> ToolSpec {
         },
     );
     properties.insert(
-            "return_when".to_string(),
-            JsonSchema::String {
-                description: Some(
-                    "Optional return mode. `any` (default) returns once any requested agent reaches a final status. `all` waits until every requested agent reaches a final status before returning."
-                        .to_string(),
-                ),
-            },
-        );
+        "return_when".to_string(),
+        JsonSchema::String {
+            description: Some(
+                "Optional return mode. `any` (default) returns once any requested agent reaches a final status. `all` waits until every requested agent reaches a final status before returning."
+                    .to_string(),
+            ),
+        },
+    );
 
     ToolSpec::Function(ResponsesApiTool {
         name: "wait_agent".to_string(),
@@ -1646,7 +1711,7 @@ When `return_when` is `any`, the call returns as soon as one requested agent bec
         defer_loading: None,
         parameters: JsonSchema::Object {
             properties,
-            required: Some(vec!["targets".to_string()]),
+            required: None,
             additional_properties: Some(false.into()),
         },
         output_schema: Some(wait_output_schema()),

@@ -173,6 +173,11 @@ fn collab_agent_error(agent_id: ThreadId, err: CodexErr) -> FunctionCallError {
     }
 }
 
+fn agent_id(id: &str) -> Result<ThreadId, FunctionCallError> {
+    ThreadId::from_string(id)
+        .map_err(|err| FunctionCallError::RespondToModel(format!("invalid agent id `{id}`: {err}")))
+}
+
 fn thread_spawn_source(
     parent_thread_id: ThreadId,
     parent_session_source: &SessionSource,
@@ -374,6 +379,51 @@ async fn apply_requested_spawn_agent_model_overrides(
             reasoning_effort,
         )?;
         config.model_reasoning_effort = Some(reasoning_effort);
+    }
+
+    Ok(())
+}
+
+async fn normalize_spawn_agent_model_reasoning_after_role(
+    session: &Session,
+    config: &mut Config,
+    pre_role_reasoning_effort: Option<ReasoningEffort>,
+    requested_reasoning_effort_explicit: bool,
+) -> Result<(), FunctionCallError> {
+    let Some(model) = config.model.clone() else {
+        return Ok(());
+    };
+    let model_info = session
+        .services
+        .models_manager
+        .get_model_info(&model, config)
+        .await;
+
+    match config.model_reasoning_effort {
+        Some(reasoning_effort) => {
+            if model_info
+                .supported_reasoning_levels
+                .iter()
+                .any(|preset| preset.effort == reasoning_effort)
+            {
+                return Ok(());
+            }
+
+            let role_changed_reasoning_effort =
+                config.model_reasoning_effort != pre_role_reasoning_effort;
+            if requested_reasoning_effort_explicit || role_changed_reasoning_effort {
+                validate_spawn_agent_reasoning_effort(
+                    &model,
+                    &model_info.supported_reasoning_levels,
+                    reasoning_effort,
+                )?;
+            }
+
+            config.model_reasoning_effort = model_info.default_reasoning_level;
+        }
+        None => {
+            config.model_reasoning_effort = model_info.default_reasoning_level;
+        }
     }
 
     Ok(())
