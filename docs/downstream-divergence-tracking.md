@@ -124,8 +124,9 @@ The registry should be reconciled against live git state:
 - `git diff upstream/main...carry/main --name-only`
 - `git log --left-right --cherry-pick --oneline upstream/main...carry/main`
 
-Where useful, generator code can also read build-helper preset metadata so the
-guardrail lane names stay mechanically current.
+Where useful, generator code can also read local build-helper preset metadata,
+but the tracked docs should not depend on a committed preset file being present
+in the repository.
 
 ## Expected Workflow
 
