@@ -864,7 +864,7 @@ impl CoreShellCommandExecutor {
             self.network.is_some(),
         );
         let command = SandboxCommand {
-            program: program.clone(),
+            program: program.clone().into(),
             args: args.to_vec(),
             cwd: workdir.to_path_buf(),
             env,

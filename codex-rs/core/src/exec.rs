@@ -272,7 +272,7 @@ pub fn build_exec_request(
 
     let manager = SandboxManager::new();
     let command = SandboxCommand {
-        program: program.clone(),
+        program: program.clone().into(),
         args: args.to_vec(),
         cwd,
         env,

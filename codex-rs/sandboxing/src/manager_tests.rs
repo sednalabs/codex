@@ -76,7 +76,7 @@ fn transform_preserves_unrestricted_file_system_policy_for_restricted_network() 
     let exec_request = manager
         .transform(SandboxTransformRequest {
             command: SandboxCommand {
-                program: "true".to_string(),
+                program: "true".into(),
                 args: Vec::new(),
                 cwd: cwd.clone(),
                 env: HashMap::new(),
@@ -122,7 +122,7 @@ fn transform_additional_permissions_enable_network_for_external_sandbox() {
     let exec_request = manager
         .transform(SandboxTransformRequest {
             command: SandboxCommand {
-                program: "true".to_string(),
+                program: "true".into(),
                 args: Vec::new(),
                 cwd: cwd.clone(),
                 env: HashMap::new(),
@@ -181,7 +181,7 @@ fn transform_additional_permissions_preserves_denied_entries() {
     let exec_request = manager
         .transform(SandboxTransformRequest {
             command: SandboxCommand {
-                program: "true".to_string(),
+                program: "true".into(),
                 args: Vec::new(),
                 cwd: cwd.clone(),
                 env: HashMap::new(),
@@ -259,7 +259,7 @@ fn transform_linux_seccomp_request(
     manager
         .transform(SandboxTransformRequest {
             command: SandboxCommand {
-                program: "true".to_string(),
+                program: "true".into(),
                 args: Vec::new(),
                 cwd: cwd.clone(),
                 env: HashMap::new(),

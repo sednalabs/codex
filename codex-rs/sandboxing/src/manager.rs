@@ -18,6 +18,7 @@ use codex_protocol::permissions::FileSystemSandboxPolicy;
 use codex_protocol::permissions::NetworkSandboxPolicy;
 use codex_protocol::protocol::SandboxPolicy;
 use std::collections::HashMap;
+use std::ffi::OsString;
 use std::path::Path;
 use std::path::PathBuf;
 
@@ -65,7 +66,7 @@ pub fn get_platform_sandbox(windows_sandbox_enabled: bool) -> Option<SandboxType
 
 #[derive(Debug)]
 pub struct SandboxCommand {
-    pub program: String,
+    pub program: OsString,
     pub args: Vec<String>,
     pub cwd: PathBuf,
     pub env: HashMap<String, String>,
@@ -209,14 +210,14 @@ impl SandboxManager {
             effective_network_sandbox_policy(network_policy, additional_permissions.as_ref());
         let mut argv = Vec::with_capacity(1 + command.args.len());
         argv.push(command.program);
-        argv.append(&mut command.args);
+        argv.extend(command.args.into_iter().map(OsString::from));
 
         let (argv, arg0_override) = match sandbox {
-            SandboxType::None => (argv, None),
+            SandboxType::None => (os_argv_to_strings(argv), None),
             #[cfg(target_os = "macos")]
             SandboxType::MacosSeatbelt => {
                 let mut args = create_seatbelt_command_args_for_policies_with_extensions(
-                    argv.clone(),
+                    os_argv_to_strings(argv),
                     &effective_file_system_policy,
                     effective_network_policy,
                     sandbox_policy_cwd,
@@ -236,7 +237,7 @@ impl SandboxManager {
                     .ok_or(SandboxTransformError::MissingLinuxSandboxExecutable)?;
                 let allow_proxy_network = allow_network_for_proxy(enforce_managed_network);
                 let mut args = create_linux_sandbox_command_args_for_policies(
-                    argv.clone(),
+                    os_argv_to_strings(argv),
                     command.cwd.as_path(),
                     &effective_policy,
                     &effective_file_system_policy,
@@ -246,7 +247,7 @@ impl SandboxManager {
                     allow_proxy_network,
                 );
                 let mut full_command = Vec::with_capacity(1 + args.len());
-                full_command.push(exe.to_string_lossy().to_string());
+                full_command.push(os_string_to_command_component(exe.as_os_str().to_owned()));
                 full_command.append(&mut args);
                 (
                     full_command,
@@ -254,9 +255,9 @@ impl SandboxManager {
                 )
             }
             #[cfg(target_os = "windows")]
-            SandboxType::WindowsRestrictedToken => (argv, None),
+            SandboxType::WindowsRestrictedToken => (os_argv_to_strings(argv), None),
             #[cfg(not(target_os = "windows"))]
-            SandboxType::WindowsRestrictedToken => (argv, None),
+            SandboxType::WindowsRestrictedToken => (os_argv_to_strings(argv), None),
         };
 
         Ok(SandboxExecRequest {
@@ -275,9 +276,21 @@ impl SandboxManager {
     }
 }
 
+fn os_argv_to_strings(argv: Vec<OsString>) -> Vec<String> {
+    argv.into_iter()
+        .map(os_string_to_command_component)
+        .collect()
+}
+
+fn os_string_to_command_component(value: OsString) -> String {
+    value
+        .into_string()
+        .unwrap_or_else(|value| value.to_string_lossy().into_owned())
+}
+
 fn linux_sandbox_arg0_override(exe: &Path) -> String {
     if exe.file_name().and_then(|name| name.to_str()) == Some(CODEX_LINUX_SANDBOX_ARG0) {
-        exe.to_string_lossy().into_owned()
+        os_string_to_command_component(exe.as_os_str().to_owned())
     } else {
         CODEX_LINUX_SANDBOX_ARG0.to_string()
     }
