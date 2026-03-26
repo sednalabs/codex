@@ -1535,18 +1535,22 @@ mod phase2 {
 
     #[test]
     fn consolidation_agent_config_keeps_split_sandbox_policies_in_sync() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let codex_home = temp_dir.path().join("codex-home");
+        std::fs::create_dir_all(&codex_home).expect("create codex home");
         let mut config = test_config();
-        config.codex_home = PathBuf::from("/tmp/codex-home");
+        config.codex_home = codex_home;
         config.cwd = AbsolutePathBuf::from_absolute_path(PathBuf::from("/tmp/workspace"))
             .expect("workspace path");
         let config = Arc::new(config);
 
         let agent_config =
             phase2::test_consolidation_agent_config(config).expect("consolidation config");
+        let expected_memory_root = memory_root(&agent_config.codex_home);
 
         pretty_assertions::assert_eq!(
             agent_config.cwd.as_path(),
-            memory_root(&agent_config.codex_home).as_path()
+            expected_memory_root.as_path()
         );
         pretty_assertions::assert_eq!(
             agent_config.permissions.file_system_sandbox_policy,
@@ -1561,11 +1565,17 @@ mod phase2 {
         );
         match agent_config.permissions.sandbox_policy.get() {
             SandboxPolicy::WorkspaceWrite {
+                writable_roots,
                 network_access,
                 exclude_tmpdir_env_var,
                 exclude_slash_tmp,
                 ..
             } => {
+                pretty_assertions::assert_eq!(
+                    writable_roots.as_slice(),
+                    &[expected_memory_root.clone()],
+                    "consolidation subagent should use only the memory root as a writable root"
+                );
                 assert!(
                     !network_access,
                     "consolidation subagent should keep network disabled"
@@ -1649,10 +1659,10 @@ mod phase2 {
         pretty_assertions::assert_eq!(config_snapshot.cwd, memory_root(&harness.config.codex_home));
         match config_snapshot.sandbox_policy {
             SandboxPolicy::WorkspaceWrite { writable_roots, .. } => {
-                assert!(
-                    writable_roots
-                        .iter()
-                        .any(|root| root.as_path() == memory_root(&harness.config.codex_home)),
+                let expected_root = memory_root(&harness.config.codex_home);
+                pretty_assertions::assert_eq!(
+                    writable_roots,
+                    vec![expected_root],
                     "consolidation subagent should only need the memory root as a writable root"
                 );
             }

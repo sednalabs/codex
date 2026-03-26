@@ -353,11 +353,18 @@ pub(in crate::memories) mod agent {
             exclude_tmpdir_env_var: true,
             exclude_slash_tmp: true,
         };
+        let file_system_sandbox_policy = FileSystemSandboxPolicy::from_legacy_sandbox_policy(
+            &consolidation_sandbox_policy,
+            &agent_config.cwd,
+        );
+        let network_sandbox_policy = NetworkSandboxPolicy::from(&consolidation_sandbox_policy);
         agent_config
             .permissions
             .sandbox_policy
             .set(consolidation_sandbox_policy)
             .ok()?;
+        agent_config.permissions.file_system_sandbox_policy = file_system_sandbox_policy;
+        agent_config.permissions.network_sandbox_policy = network_sandbox_policy;
 
         agent_config.model = Some(
             config
@@ -588,17 +595,29 @@ pub(in crate::memories) mod agent {
                 && attestation.memory_summary_sha256 == current.memory_summary_sha256
                 && attestation.artifact_tree_sha256 == current.artifact_tree_sha256)
                 .then_some(current),
-            Ok(None) => match attestation_support_initialized(root) {
-                Ok(false) => supporting_tree_matches.then_some(current),
-                Ok(true) => None,
-                Err(err) => {
-                    tracing::warn!(
-                        error = %err,
-                        "failed to read global memory consolidation artifact attestation support state"
-                    );
-                    None
+            Ok(None) => {
+                let root = root.to_path_buf();
+                match tokio::task::spawn_blocking(move || attestation_support_initialized(&root))
+                    .await
+                {
+                    Ok(Ok(false)) => supporting_tree_matches.then_some(current),
+                    Ok(Ok(true)) => None,
+                    Ok(Err(err)) => {
+                        tracing::warn!(
+                            error = %err,
+                            "failed to read global memory consolidation artifact attestation support state"
+                        );
+                        None
+                    }
+                    Err(err) => {
+                        tracing::warn!(
+                            error = %err,
+                            "failed to join global memory consolidation attestation support task"
+                        );
+                        None
+                    }
                 }
-            },
+            }
             Err(err) => {
                 tracing::warn!(
                     error = %err,
@@ -612,18 +631,32 @@ pub(in crate::memories) mod agent {
     async fn current_consolidation_artifact_state(
         root: &Path,
     ) -> Option<ConsolidationArtifactState> {
-        validate_memory_root_path(root).ok()?;
-        let memory = artifact_file_state(root, "MEMORY.md").await?;
-        let memory_summary = artifact_file_state(root, "memory_summary.md").await?;
-        Some(ConsolidationArtifactState {
-            memory_modified: memory.modified,
-            memory_summary_modified: memory_summary.modified,
-            memory_sha256: memory.sha256,
-            memory_summary_sha256: memory_summary.sha256,
-            supporting_artifact_tree_sha256: supporting_artifact_tree_sha256(root)?,
-            artifact_tree_sha256: artifact_tree_sha256(root)?,
-            artifacts_freshly_rewritten: false,
+        let root = root.to_path_buf();
+        match tokio::task::spawn_blocking(move || {
+            validate_memory_root_path(root.as_path()).ok()?;
+            let memory = artifact_file_state(root.as_path(), "MEMORY.md")?;
+            let memory_summary = artifact_file_state(root.as_path(), "memory_summary.md")?;
+            Some(ConsolidationArtifactState {
+                memory_modified: memory.modified,
+                memory_summary_modified: memory_summary.modified,
+                memory_sha256: memory.sha256,
+                memory_summary_sha256: memory_summary.sha256,
+                supporting_artifact_tree_sha256: supporting_artifact_tree_sha256(root.as_path())?,
+                artifact_tree_sha256: artifact_tree_sha256(root.as_path())?,
+                artifacts_freshly_rewritten: false,
+            })
         })
+        .await
+        {
+            Ok(current) => current,
+            Err(err) => {
+                warn!(
+                    error = %err,
+                    "failed to join global memory consolidation artifact state task"
+                );
+                None
+            }
+        }
     }
 
     struct ArtifactFileState {
@@ -631,7 +664,7 @@ pub(in crate::memories) mod agent {
         sha256: String,
     }
 
-    async fn artifact_file_state(root: &Path, relative_name: &str) -> Option<ArtifactFileState> {
+    fn artifact_file_state(root: &Path, relative_name: &str) -> Option<ArtifactFileState> {
         let path = root.join(relative_name);
         let mut file = open_read_only_regular_file(&path).ok()?;
         let metadata = file.metadata().ok()?;
@@ -665,13 +698,20 @@ pub(in crate::memories) mod agent {
         };
         let contents = serde_json::to_vec_pretty(&attestation)
             .map_err(|err| std::io::Error::other(format!("serialize attestation: {err}")))?;
-        let path = consolidation_artifact_attestation_path(root)
-            .ok_or_else(|| std::io::Error::other("memory root is missing a codex_home parent"))?;
-        let mut file = open_write_regular_file_no_follow(&path)?;
-        use std::io::Write as _;
-        file.write_all(&contents)?;
-        file.flush()?;
-        write_consolidation_artifact_attestation_support_marker(root)
+        let root = root.to_path_buf();
+        tokio::task::spawn_blocking(move || -> std::io::Result<()> {
+            let path =
+                consolidation_artifact_attestation_path(root.as_path()).ok_or_else(|| {
+                    std::io::Error::other("memory root is missing a codex_home parent")
+                })?;
+            let mut file = open_write_regular_file_no_follow(&path)?;
+            use std::io::Write as _;
+            file.write_all(&contents)?;
+            file.flush()?;
+            write_consolidation_artifact_attestation_support_marker(root.as_path())
+        })
+        .await
+        .map_err(|err| std::io::Error::other(format!("join attestation write task: {err}")))?
     }
 
     #[cfg(test)]
@@ -714,23 +754,30 @@ pub(in crate::memories) mod agent {
     async fn read_consolidation_artifact_attestation(
         root: &Path,
     ) -> std::io::Result<Option<ConsolidationArtifactAttestation>> {
-        let path = consolidation_artifact_attestation_path(root)
-            .ok_or_else(|| std::io::Error::other("memory root is missing a codex_home parent"))?;
-        let mut file = match open_read_only_regular_file(&path) {
-            Ok(file) => file,
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-            Err(err) => return Err(err),
-        };
-        let mut contents = Vec::new();
-        use std::io::Read as _;
-        file.read_to_end(&mut contents)?;
-        let attestation = serde_json::from_slice(&contents).map_err(|err| {
-            std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                format!("parse attestation: {err}"),
-            )
-        })?;
-        Ok(Some(attestation))
+        let root = root.to_path_buf();
+        tokio::task::spawn_blocking(move || -> std::io::Result<Option<_>> {
+            let path =
+                consolidation_artifact_attestation_path(root.as_path()).ok_or_else(|| {
+                    std::io::Error::other("memory root is missing a codex_home parent")
+                })?;
+            let mut file = match open_read_only_regular_file(&path) {
+                Ok(file) => file,
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+                Err(err) => return Err(err),
+            };
+            let mut contents = Vec::new();
+            use std::io::Read as _;
+            file.read_to_end(&mut contents)?;
+            let attestation = serde_json::from_slice(&contents).map_err(|err| {
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!("parse attestation: {err}"),
+                )
+            })?;
+            Ok(Some(attestation))
+        })
+        .await
+        .map_err(|err| std::io::Error::other(format!("join attestation read task: {err}")))?
     }
 
     fn selection_fingerprint(selected_outputs: &[codex_state::Stage1Output]) -> String {
