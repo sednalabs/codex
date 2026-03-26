@@ -73,6 +73,7 @@ use codex_core::config::types::ApprovalsReviewer;
 use codex_core::config::types::ModelAvailabilityNuxConfig;
 use codex_core::config_loader::ConfigLayerStackOrdering;
 use codex_core::message_history;
+use codex_protocol::items::parse_subagent_notification_response_item;
 use codex_core::models_manager::collaboration_mode_presets::CollaborationModesConfig;
 use codex_core::models_manager::model_presets::HIDE_GPT_5_1_CODEX_MAX_MIGRATION_PROMPT_CONFIG;
 use codex_core::models_manager::model_presets::HIDE_GPT5_1_MIGRATION_PROMPT_CONFIG;
@@ -5463,40 +5464,22 @@ impl App {
     }
 }
 
-fn is_replay_safe_subagent_completion_notification(notification: &ServerNotification) -> bool {
-    match notification {
-        ServerNotification::RawResponseItemCompleted(notification) => matches!(
-            &notification.item,
-            codex_protocol::models::ResponseItem::Message { content, .. }
-                if content.iter().any(|item| matches!(
-                    item,
-                    codex_protocol::models::ContentItem::InputText { text }
-                        if text.contains("<subagent_notification>")
-                ))
-        ),
-        _ => false,
-    }
-}
-
-fn subagent_completion_notification_agent_id(notification: &ServerNotification) -> Option<String> {
+fn parse_completed_subagent_notification(
+    notification: &ServerNotification,
+) -> Option<codex_protocol::items::SubagentNotificationItem> {
     let ServerNotification::RawResponseItemCompleted(notification) = notification else {
         return None;
     };
-    let codex_protocol::models::ResponseItem::Message { content, .. } = &notification.item else {
-        return None;
-    };
-    let text = content.iter().find_map(|item| match item {
-        codex_protocol::models::ContentItem::InputText { text } => Some(text.as_str()),
-        _ => None,
-    })?;
-    let payload = text
-        .strip_prefix("<subagent_notification>")?
-        .strip_suffix("</subagent_notification>")?;
-    let payload: serde_json::Value = serde_json::from_str(payload).ok()?;
-    payload
-        .get("agent_id")
-        .and_then(|value| value.as_str())
-        .map(str::to_owned)
+    let parsed = parse_subagent_notification_response_item(&notification.item)?;
+    matches!(parsed.status, codex_protocol::protocol::AgentStatus::Completed(_)).then_some(parsed)
+}
+
+fn is_replay_safe_subagent_completion_notification(notification: &ServerNotification) -> bool {
+    parse_completed_subagent_notification(notification).is_some()
+}
+
+fn subagent_completion_notification_agent_id(notification: &ServerNotification) -> Option<String> {
+    parse_completed_subagent_notification(notification).map(|notification| notification.agent_id)
 }
 
 /// Collect every MCP server status from the app-server by walking the paginated
@@ -8345,6 +8328,14 @@ guardian_approval = true
         }))
         .expect("subagent notification payload");
         let text = format!("<subagent_notification>{payload}</subagent_notification>");
+        raw_response_item_completed_notification_with_text(thread_id, turn_id, text)
+    }
+
+    fn raw_response_item_completed_notification_with_text(
+        thread_id: ThreadId,
+        turn_id: &str,
+        text: String,
+    ) -> ServerNotification {
         ServerNotification::RawResponseItemCompleted(
             codex_app_server_protocol::RawResponseItemCompletedNotification {
                 thread_id: thread_id.to_string(),
@@ -8472,6 +8463,48 @@ guardian_approval = true
                 ServerNotification::RawResponseItemCompleted(_)
             ))
         ));
+    }
+
+    #[test]
+    fn thread_event_store_rebase_preserves_case_insensitive_subagent_completion_notification() {
+        let thread_id = ThreadId::new();
+        let payload = serde_json::to_string(&serde_json::json!({
+            "agent_id": "agent-123",
+            "status": "completed",
+        }))
+        .expect("subagent notification payload");
+        let mut store = ThreadEventStore::new(8);
+        store.push_notification(raw_response_item_completed_notification_with_text(
+            thread_id,
+            "turn-1",
+            format!("<SUBAGENT_NOTIFICATION>{payload}</subagent_notification>"),
+        ));
+
+        store.rebase_buffer_after_session_refresh();
+
+        let snapshot = store.snapshot();
+        assert_eq!(snapshot.events.len(), 1);
+    }
+
+    #[test]
+    fn thread_event_store_rebase_drops_malformed_subagent_completion_notification_text() {
+        let thread_id = ThreadId::new();
+        let payload = serde_json::to_string(&serde_json::json!({
+            "agent_id": "agent-123",
+            "status": "completed",
+        }))
+        .expect("subagent notification payload");
+        let mut store = ThreadEventStore::new(8);
+        store.push_notification(raw_response_item_completed_notification_with_text(
+            thread_id,
+            "turn-1",
+            format!("prefix <subagent_notification>{payload}</subagent_notification> suffix"),
+        ));
+
+        store.rebase_buffer_after_session_refresh();
+
+        let snapshot = store.snapshot();
+        assert!(snapshot.events.is_empty());
     }
 
     #[test]
