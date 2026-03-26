@@ -115,6 +115,10 @@ pub enum SandboxPreference {
 pub(crate) enum SandboxTransformError {
     #[error("missing codex-linux-sandbox executable path")]
     MissingLinuxSandboxExecutable,
+    #[error("sandbox was explicitly required but no platform sandbox is available")]
+    SandboxRequiredButUnavailable,
+    #[error("restrictive sandbox policy requires a platform sandbox or trusted external sandbox")]
+    RestrictivePolicyRequiresSandbox,
     #[cfg(not(target_os = "macos"))]
     #[error("seatbelt sandbox is only available on macOS")]
     SeatbeltUnavailable,
@@ -543,6 +547,25 @@ pub(crate) fn should_require_platform_sandbox(
 pub struct SandboxManager;
 
 impl SandboxManager {
+    fn required_platform_sandbox(_windows_sandbox_level: WindowsSandboxLevel) -> Option<SandboxType> {
+        #[cfg(target_os = "linux")]
+        {
+            Some(SandboxType::LinuxSeccomp)
+        }
+        #[cfg(target_os = "macos")]
+        {
+            Some(SandboxType::MacosSeatbelt)
+        }
+        #[cfg(target_os = "windows")]
+        {
+            Some(SandboxType::WindowsRestrictedToken)
+        }
+        #[cfg(all(not(target_os = "linux"), not(target_os = "macos"), not(target_os = "windows")))]
+        {
+            None
+        }
+    }
+
     pub fn new() -> Self {
         Self
     }
@@ -558,12 +581,8 @@ impl SandboxManager {
         match pref {
             SandboxablePreference::Forbid => SandboxType::None,
             SandboxablePreference::Require => {
-                // Require a platform sandbox when available; on Windows this
-                // respects the experimental_windows_sandbox feature.
-                crate::safety::get_platform_sandbox(
-                    windows_sandbox_level != WindowsSandboxLevel::Disabled,
-                )
-                .unwrap_or(SandboxType::None)
+                Self::required_platform_sandbox(windows_sandbox_level)
+                    .unwrap_or(SandboxType::WindowsRestrictedToken)
             }
             SandboxablePreference::Auto => {
                 if should_require_platform_sandbox(
@@ -637,6 +656,16 @@ impl SandboxManager {
             } else {
                 (file_system_policy.clone(), network_policy)
             };
+        if matches!(sandbox, SandboxType::None)
+            && should_require_platform_sandbox(
+                &effective_file_system_policy,
+                effective_network_policy,
+                enforce_managed_network,
+            )
+            && !matches!(effective_policy, SandboxPolicy::ExternalSandbox { .. })
+        {
+            return Err(SandboxTransformError::RestrictivePolicyRequiresSandbox);
+        }
         let mut env = spec.env;
         if !effective_network_policy.is_enabled() {
             env.insert(
@@ -672,6 +701,12 @@ impl SandboxManager {
             #[cfg(not(target_os = "macos"))]
             SandboxType::MacosSeatbelt => return Err(SandboxTransformError::SeatbeltUnavailable),
             SandboxType::LinuxSeccomp => {
+                #[cfg(not(target_os = "linux"))]
+                {
+                    return Err(SandboxTransformError::SandboxRequiredButUnavailable);
+                }
+                #[cfg(target_os = "linux")]
+                {
                 let exe = codex_linux_sandbox_exe
                     .ok_or(SandboxTransformError::MissingLinuxSandboxExecutable)?;
                 let allow_proxy_network = allow_network_for_proxy(enforce_managed_network);
@@ -711,15 +746,23 @@ impl SandboxManager {
                     HashMap::new(),
                     Some("codex-linux-sandbox".to_string()),
                 )
+                }
             }
             // On Windows, the restricted token sandbox executes in-process via the
             // codex-windows-sandbox crate. We leave the command unchanged here and
             // branch during execution based on the sandbox type.
             #[cfg(target_os = "windows")]
-            SandboxType::WindowsRestrictedToken => (command, HashMap::new(), None),
+            SandboxType::WindowsRestrictedToken => {
+                if windows_sandbox_level == WindowsSandboxLevel::Disabled {
+                    return Err(SandboxTransformError::SandboxRequiredButUnavailable);
+                }
+                (command, HashMap::new(), None)
+            }
             // When building for non-Windows targets, this variant is never constructed.
             #[cfg(not(target_os = "windows"))]
-            SandboxType::WindowsRestrictedToken => (command, HashMap::new(), None),
+            SandboxType::WindowsRestrictedToken => {
+                return Err(SandboxTransformError::SandboxRequiredButUnavailable);
+            }
         };
 
         env.extend(sandbox_env);
