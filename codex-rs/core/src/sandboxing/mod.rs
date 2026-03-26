@@ -585,7 +585,7 @@ impl SandboxManager {
         match pref {
             SandboxablePreference::Forbid => SandboxType::None,
             SandboxablePreference::Require => {
-                Self::required_platform_sandbox(windows_sandbox_level)
+                Self::required_platform_sandbox()
                     .unwrap_or(SandboxType::WindowsRestrictedToken)
             }
             SandboxablePreference::Auto => {
