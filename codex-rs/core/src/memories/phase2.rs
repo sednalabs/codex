@@ -138,12 +138,9 @@ pub(super) async fn run(session: &Arc<Session>, config: Arc<Config>) {
         job::failed(session, db, &claim, "failed_rebuild_raw_memories").await;
         return;
     }
-    let Some(prepared_supporting_artifact_tree_sha256) =
-        agent::supporting_artifact_tree_sha256(&root)
+    let Some(prepared_input_artifact_tree_sha256) = agent::prepared_input_artifact_tree_sha256(&root)
     else {
-        tracing::error!(
-            "failed to fingerprint prepared supporting artifacts for global consolidation"
-        );
+        tracing::error!("failed to fingerprint prepared immutable inputs for global consolidation");
         job::failed(session, db, &claim, "failed_prepare_artifacts").await;
         return;
     };
@@ -193,7 +190,7 @@ pub(super) async fn run(session: &Arc<Session>, config: Arc<Config>) {
         root,
         artifacts_not_before,
         allow_existing_artifacts_without_rewrite,
-        prepared_supporting_artifact_tree_sha256,
+        prepared_input_artifact_tree_sha256,
         phase_two_e2e_timer,
     );
 
@@ -402,7 +399,7 @@ pub(in crate::memories) mod agent {
         root: PathBuf,
         artifacts_not_before: SystemTime,
         allow_existing_artifacts_without_rewrite: bool,
-        prepared_supporting_artifact_tree_sha256: String,
+        prepared_input_artifact_tree_sha256: String,
         phase_two_e2e_timer: Option<codex_otel::Timer>,
     ) {
         let Some(db) = session.services.state_db.clone() else {
@@ -441,7 +438,7 @@ pub(in crate::memories) mod agent {
                 if let Some(validated_artifacts) = validated_consolidation_artifact_state(
                     root.as_path(),
                     artifacts_not_before,
-                    Some(prepared_supporting_artifact_tree_sha256.as_str()),
+                    Some(prepared_input_artifact_tree_sha256.as_str()),
                     allow_existing_artifacts_without_rewrite,
                     &config,
                     &selection,
@@ -505,13 +502,13 @@ pub(in crate::memories) mod agent {
         allow_existing_artifacts_without_rewrite: bool,
         selection: &codex_state::Phase2InputSelection,
     ) -> bool {
-        let expected_supporting_artifact_tree_sha256 = (!allow_existing_artifacts_without_rewrite)
-            .then(|| supporting_artifact_tree_sha256(root))
+        let expected_prepared_input_artifact_tree_sha256 = (!allow_existing_artifacts_without_rewrite)
+            .then(|| prepared_input_artifact_tree_sha256(root))
             .flatten();
         validated_consolidation_artifact_state(
             root,
             not_before,
-            expected_supporting_artifact_tree_sha256.as_deref(),
+            expected_prepared_input_artifact_tree_sha256.as_deref(),
             allow_existing_artifacts_without_rewrite,
             config,
             selection,
@@ -525,14 +522,14 @@ pub(in crate::memories) mod agent {
         root: &Path,
         config: &Config,
         not_before: SystemTime,
-        expected_supporting_artifact_tree_sha256: Option<&str>,
+        expected_prepared_input_artifact_tree_sha256: Option<&str>,
         allow_existing_artifacts_without_rewrite: bool,
         selection: &codex_state::Phase2InputSelection,
     ) -> bool {
         validated_consolidation_artifact_state(
             root,
             not_before,
-            expected_supporting_artifact_tree_sha256,
+            expected_prepared_input_artifact_tree_sha256,
             allow_existing_artifacts_without_rewrite,
             config,
             selection,
@@ -558,7 +555,7 @@ pub(in crate::memories) mod agent {
         memory_summary_modified: SystemTime,
         memory_sha256: String,
         memory_summary_sha256: String,
-        supporting_artifact_tree_sha256: String,
+        prepared_input_artifact_tree_sha256: String,
         artifact_tree_sha256: String,
         artifacts_freshly_rewritten: bool,
     }
@@ -566,7 +563,7 @@ pub(in crate::memories) mod agent {
     async fn validated_consolidation_artifact_state(
         root: &Path,
         not_before: SystemTime,
-        expected_supporting_artifact_tree_sha256: Option<&str>,
+        expected_prepared_input_artifact_tree_sha256: Option<&str>,
         allow_existing_artifacts_without_rewrite: bool,
         config: &Config,
         selection: &codex_state::Phase2InputSelection,
@@ -581,11 +578,11 @@ pub(in crate::memories) mod agent {
                 return None;
             }
         };
-        let supporting_tree_matches = expected_supporting_artifact_tree_sha256
-            .is_some_and(|expected| current.supporting_artifact_tree_sha256 == expected);
+        let prepared_input_tree_matches = expected_prepared_input_artifact_tree_sha256
+            .is_some_and(|expected| current.prepared_input_artifact_tree_sha256 == expected);
         if current.memory_modified >= not_before
             && current.memory_summary_modified >= not_before
-            && supporting_tree_matches
+            && prepared_input_tree_matches
         {
             current.artifacts_freshly_rewritten = true;
             return Some(current);
@@ -609,7 +606,7 @@ pub(in crate::memories) mod agent {
                 match tokio::task::spawn_blocking(move || attestation_support_initialized(&root))
                     .await
                 {
-                    Ok(Ok(false)) => supporting_tree_matches.then_some(current),
+                    Ok(Ok(false)) => prepared_input_tree_matches.then_some(current),
                     Ok(Ok(true)) => None,
                     Ok(Err(err)) => {
                         tracing::warn!(
@@ -650,7 +647,7 @@ pub(in crate::memories) mod agent {
                 memory_summary_modified: memory_summary.modified,
                 memory_sha256: memory.sha256,
                 memory_summary_sha256: memory_summary.sha256,
-                supporting_artifact_tree_sha256: supporting_artifact_tree_sha256(root.as_path())?,
+                prepared_input_artifact_tree_sha256: prepared_input_artifact_tree_sha256(root.as_path())?,
                 artifact_tree_sha256: artifact_tree_sha256(root.as_path())?,
                 artifacts_freshly_rewritten: false,
             })
@@ -976,10 +973,9 @@ pub(in crate::memories) mod agent {
         artifact_tree_sha256_filtered(root, |_| true)
     }
 
-    pub(super) fn supporting_artifact_tree_sha256(root: &Path) -> Option<String> {
+    pub(super) fn prepared_input_artifact_tree_sha256(root: &Path) -> Option<String> {
         artifact_tree_sha256_filtered(root, |relative_path| {
-            relative_path != Path::new("MEMORY.md")
-                && relative_path != Path::new("memory_summary.md")
+            relative_path == Path::new("raw_memories.md")
         })
     }
 
@@ -1030,8 +1026,8 @@ pub(in crate::memories) mod agent {
     }
 
     #[cfg(test)]
-    pub(super) fn test_supporting_artifact_tree_sha256(root: &Path) -> Option<String> {
-        supporting_artifact_tree_sha256(root)
+    pub(super) fn test_prepared_input_artifact_tree_sha256(root: &Path) -> Option<String> {
+        prepared_input_artifact_tree_sha256(root)
     }
 
     fn stable_path_identity_bytes(path: &Path) -> Vec<u8> {
@@ -1280,8 +1276,8 @@ pub(crate) fn test_consolidation_artifact_attestation_path(root: &Path) -> Optio
 }
 
 #[cfg(test)]
-pub(crate) fn test_supporting_artifact_tree_sha256(root: &Path) -> Option<String> {
-    agent::test_supporting_artifact_tree_sha256(root)
+pub(crate) fn test_prepared_input_artifact_tree_sha256(root: &Path) -> Option<String> {
+    agent::test_prepared_input_artifact_tree_sha256(root)
 }
 
 pub(super) fn get_watermark(
