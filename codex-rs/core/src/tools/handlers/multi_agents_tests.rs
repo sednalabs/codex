@@ -1972,7 +1972,7 @@ async fn wait_agent_rejects_empty_ids() {
     };
     assert_eq!(
         err,
-        FunctionCallError::RespondToModel("agent targets must be non-empty".to_string())
+        FunctionCallError::RespondToModel("one of ids or targets must be non-empty".to_string())
     );
 }
 

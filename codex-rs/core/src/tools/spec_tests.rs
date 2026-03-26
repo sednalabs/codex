@@ -602,7 +602,7 @@ fn test_build_specs_multi_agent_v2_uses_task_names_and_hides_resume() {
         panic!("wait_agent should use object params");
     };
     assert!(properties.contains_key("targets"));
-    assert_eq!(required.as_ref(), Some(&vec!["targets".to_string()]));
+    assert_eq!(required.as_ref(), None);
     let output_schema = output_schema
         .as_ref()
         .expect("wait_agent should define output schema");
