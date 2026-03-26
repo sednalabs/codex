@@ -1038,6 +1038,7 @@ impl JsReplManager {
             .network
             .is_some();
         let sandbox_type = sandbox.select_initial(
+            &turn.sandbox_policy,
             &turn.file_system_sandbox_policy,
             turn.network_sandbox_policy,
             SandboxablePreference::Auto,

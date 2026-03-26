@@ -437,10 +437,15 @@ fn effective_sandbox_policy(
 }
 
 pub fn should_require_platform_sandbox(
+    sandbox_policy: &SandboxPolicy,
     file_system_policy: &FileSystemSandboxPolicy,
     network_policy: NetworkSandboxPolicy,
     has_managed_network_requirements: bool,
 ) -> bool {
+    if matches!(sandbox_policy, SandboxPolicy::ExternalSandbox { .. }) {
+        return false;
+    }
+
     if has_managed_network_requirements {
         return true;
     }

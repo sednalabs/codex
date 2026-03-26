@@ -1037,6 +1037,7 @@ impl CoreShellCommandExecutor {
             .ok_or_else(|| anyhow::anyhow!("prepared command must not be empty"))?;
         let sandbox_manager = SandboxManager::new();
         let sandbox = sandbox_manager.select_initial(
+            sandbox_policy,
             file_system_sandbox_policy,
             network_sandbox_policy,
             SandboxablePreference::Auto,

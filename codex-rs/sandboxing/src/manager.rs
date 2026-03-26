@@ -111,6 +111,8 @@ pub struct SandboxTransformRequest<'a> {
 #[derive(Debug)]
 pub enum SandboxTransformError {
     MissingLinuxSandboxExecutable,
+    SandboxRequiredButUnavailable,
+    RestrictivePolicyRequiresSandbox,
     #[cfg(not(target_os = "macos"))]
     SeatbeltUnavailable,
 }
@@ -121,6 +123,18 @@ impl std::fmt::Display for SandboxTransformError {
             Self::MissingLinuxSandboxExecutable => {
                 write!(f, "missing codex-linux-sandbox executable path")
             }
+            Self::SandboxRequiredButUnavailable => {
+                write!(
+                    f,
+                    "sandbox was explicitly required but no platform sandbox is available"
+                )
+            }
+            Self::RestrictivePolicyRequiresSandbox => {
+                write!(
+                    f,
+                    "restrictive sandbox policy requires a platform sandbox or trusted external sandbox"
+                )
+            }
             #[cfg(not(target_os = "macos"))]
             Self::SeatbeltUnavailable => write!(f, "seatbelt sandbox is only available on macOS"),
         }
@@ -128,6 +142,26 @@ impl std::fmt::Display for SandboxTransformError {
 }
 
 impl std::error::Error for SandboxTransformError {}
+
+#[cfg(target_os = "linux")]
+fn required_platform_sandbox(_windows_sandbox_enabled: bool) -> Option<SandboxType> {
+    Some(SandboxType::LinuxSeccomp)
+}
+
+#[cfg(target_os = "macos")]
+fn required_platform_sandbox(_windows_sandbox_enabled: bool) -> Option<SandboxType> {
+    Some(SandboxType::MacosSeatbelt)
+}
+
+#[cfg(target_os = "windows")]
+fn required_platform_sandbox(_windows_sandbox_enabled: bool) -> Option<SandboxType> {
+    Some(SandboxType::WindowsRestrictedToken)
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+fn required_platform_sandbox(_windows_sandbox_enabled: bool) -> Option<SandboxType> {
+    None
+}
 
 #[derive(Default)]
 pub struct SandboxManager;
@@ -139,6 +173,7 @@ impl SandboxManager {
 
     pub fn select_initial(
         &self,
+        sandbox_policy: &SandboxPolicy,
         file_system_policy: &FileSystemSandboxPolicy,
         network_policy: NetworkSandboxPolicy,
         pref: SandboxablePreference,
@@ -146,13 +181,16 @@ impl SandboxManager {
         has_managed_network_requirements: bool,
     ) -> SandboxType {
         match pref {
-            SandboxablePreference::Forbid => SandboxType::None,
             SandboxablePreference::Require => {
-                get_platform_sandbox(windows_sandbox_level != WindowsSandboxLevel::Disabled)
-                    .unwrap_or(SandboxType::None)
+                required_platform_sandbox(windows_sandbox_level != WindowsSandboxLevel::Disabled)
+                    .unwrap_or(SandboxType::WindowsRestrictedToken)
             }
+            SandboxablePreference::Forbid => SandboxType::None,
             SandboxablePreference::Auto => {
-                if should_require_platform_sandbox(
+                if matches!(sandbox_policy, SandboxPolicy::ExternalSandbox { .. }) {
+                    SandboxType::None
+                } else if should_require_platform_sandbox(
+                    sandbox_policy,
                     file_system_policy,
                     network_policy,
                     has_managed_network_requirements,
@@ -206,6 +244,16 @@ impl SandboxManager {
         );
         let effective_network_policy =
             effective_network_sandbox_policy(network_policy, additional_permissions.as_ref());
+        if sandbox == SandboxType::None
+            && should_require_platform_sandbox(
+                &effective_policy,
+                &effective_file_system_policy,
+                effective_network_policy,
+                enforce_managed_network,
+            )
+        {
+            return Err(SandboxTransformError::RestrictivePolicyRequiresSandbox);
+        }
         let mut argv = Vec::with_capacity(1 + command.args.len());
         argv.push(command.program);
         argv.append(&mut command.args);
@@ -230,6 +278,7 @@ impl SandboxManager {
             }
             #[cfg(not(target_os = "macos"))]
             SandboxType::MacosSeatbelt => return Err(SandboxTransformError::SeatbeltUnavailable),
+            #[cfg(target_os = "linux")]
             SandboxType::LinuxSeccomp => {
                 let exe = codex_linux_sandbox_exe
                     .ok_or(SandboxTransformError::MissingLinuxSandboxExecutable)?;
@@ -249,10 +298,21 @@ impl SandboxManager {
                 full_command.append(&mut args);
                 (full_command, Some("codex-linux-sandbox".to_string()))
             }
+            #[cfg(not(target_os = "linux"))]
+            SandboxType::LinuxSeccomp => {
+                return Err(SandboxTransformError::SandboxRequiredButUnavailable);
+            }
             #[cfg(target_os = "windows")]
-            SandboxType::WindowsRestrictedToken => (argv, None),
+            SandboxType::WindowsRestrictedToken => {
+                if windows_sandbox_level == WindowsSandboxLevel::Disabled {
+                    return Err(SandboxTransformError::SandboxRequiredButUnavailable);
+                }
+                (argv, None)
+            }
             #[cfg(not(target_os = "windows"))]
-            SandboxType::WindowsRestrictedToken => (argv, None),
+            SandboxType::WindowsRestrictedToken => {
+                return Err(SandboxTransformError::SandboxRequiredButUnavailable);
+            }
         };
 
         Ok(SandboxExecRequest {
