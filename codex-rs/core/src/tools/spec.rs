@@ -1279,7 +1279,7 @@ fn create_collab_input_items_schema() -> JsonSchema {
 
 fn create_spawn_agent_tool(config: &ToolsConfig) -> ToolSpec {
     let available_models_description = spawn_agent_models_description(&config.available_models);
-    let _return_value_description = "Returns the canonical task name when the spawned agent was named, otherwise the agent id, plus the user-facing nickname when available.";
+    let _return_value_description = "Returns a structured object describing the spawned agent. `task_name` is the canonical task name when one was assigned; otherwise `agent_id` contains the raw thread identifier. The response can also include `nickname`, `role`, `status`, `effective_model`, `effective_reasoning_effort`, `effective_model_provider_id`, and `identity_source`.";
     let mut properties = BTreeMap::from([
         (
             "message".to_string(),

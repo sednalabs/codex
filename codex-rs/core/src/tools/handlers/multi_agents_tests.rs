@@ -1725,7 +1725,7 @@ async fn resume_agent_rejects_invalid_id() {
     let FunctionCallError::RespondToModel(msg) = err else {
         panic!("expected respond-to-model error");
     };
-    assert!(msg.starts_with("invalid agent id not-a-uuid:"));
+    assert_eq!(msg, "invalid agent id `not-a-uuid`");
 }
 
 #[tokio::test]
@@ -1954,7 +1954,30 @@ async fn wait_agent_rejects_duplicate_ids() {
     };
     assert_eq!(
         err,
-        FunctionCallError::RespondToModel("duplicate agent targets are not allowed".to_string())
+        FunctionCallError::RespondToModel("ids/targets must resolve to unique agents".to_string())
+    );
+}
+
+#[tokio::test]
+async fn wait_agent_rejects_ids_and_targets_together() {
+    let (session, turn) = make_session_and_context().await;
+    let invocation = invocation(
+        Arc::new(session),
+        Arc::new(turn),
+        "wait_agent",
+        function_payload(json!({
+            "ids": [ThreadId::new().to_string()],
+            "targets": [ThreadId::new().to_string()],
+        })),
+    );
+    let Err(err) = WaitAgentHandler.handle(invocation).await else {
+        panic!("supplying both ids and targets should be rejected");
+    };
+    assert_eq!(
+        err,
+        FunctionCallError::RespondToModel(
+            "provide either ids or targets, but not both".to_string()
+        )
     );
 }
 
