@@ -73,7 +73,6 @@ use codex_core::config::types::ApprovalsReviewer;
 use codex_core::config::types::ModelAvailabilityNuxConfig;
 use codex_core::config_loader::ConfigLayerStackOrdering;
 use codex_core::message_history;
-use codex_protocol::items::parse_subagent_notification_response_item;
 use codex_core::models_manager::collaboration_mode_presets::CollaborationModesConfig;
 use codex_core::models_manager::model_presets::HIDE_GPT_5_1_CODEX_MAX_MIGRATION_PROMPT_CONFIG;
 use codex_core::models_manager::model_presets::HIDE_GPT5_1_MIGRATION_PROMPT_CONFIG;
@@ -86,6 +85,7 @@ use codex_protocol::approvals::ExecApprovalRequestEvent;
 use codex_protocol::config_types::Personality;
 #[cfg(target_os = "windows")]
 use codex_protocol::config_types::WindowsSandboxLevel;
+use codex_protocol::items::parse_subagent_notification_response_item;
 use codex_protocol::openai_models::ModelAvailabilityNux;
 use codex_protocol::openai_models::ModelPreset;
 use codex_protocol::openai_models::ModelUpgrade;
@@ -1238,11 +1238,6 @@ impl App {
         thread_id: ThreadId,
         session: Option<&ThreadSessionState>,
     ) -> Result<Config> {
-        if session.is_none() && self.active_thread_id != Some(thread_id) {
-            return Err(color_eyre::eyre::eyre!(
-                "no authoritative cached session is available for target thread"
-            ));
-        }
         let current_cwd = self.config.cwd.clone();
         let mut config = match session {
             Some(session) => {
@@ -9399,6 +9394,41 @@ guardian_approval = true
         assert_eq!(config.permissions.approval_policy.value(), expected_policy);
         assert_eq!(config.permissions.sandbox_policy.get(), &expected_sandbox);
         assert_eq!(config.approvals_reviewer, expected_reviewer);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn rebuild_config_for_inactive_thread_without_session_uses_target_thread_override()
+    -> Result<()> {
+        let mut app = make_test_app().await;
+        let active_thread_id = ThreadId::new();
+        let target_thread_id = ThreadId::new();
+        let target_override = ThreadApprovalOverrideState {
+            approval_policy: AskForApproval::OnRequest,
+            approvals_reviewer: ApprovalsReviewer::GuardianSubagent,
+            sandbox_policy: SandboxPolicy::new_workspace_write_policy(),
+        };
+
+        app.active_thread_id = Some(active_thread_id);
+        app.thread_approval_overrides
+            .insert(target_thread_id, target_override.clone());
+
+        let config = app
+            .rebuild_config_for_thread_session_or_current(target_thread_id, None)
+            .await?;
+
+        assert_eq!(
+            config.permissions.approval_policy.value(),
+            target_override.approval_policy
+        );
+        assert_eq!(
+            config.permissions.sandbox_policy.get(),
+            &target_override.sandbox_policy
+        );
+        assert_eq!(
+            config.approvals_reviewer,
+            target_override.approvals_reviewer
+        );
         Ok(())
     }
 
