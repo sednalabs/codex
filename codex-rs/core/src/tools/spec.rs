@@ -329,7 +329,7 @@ fn wait_output_schema() -> JsonValue {
             },
             "requested_ids": {
                 "type": "array",
-                "description": "Original agent ids provided in the call, preserving order.",
+                "description": "Resolved agent thread ids requested by the call, preserving order after ids/targets resolution.",
                 "items": {
                     "type": "string"
                 }
@@ -1669,7 +1669,7 @@ fn create_wait_agent_tool() -> ToolSpec {
         JsonSchema::Array {
             items: Box::new(JsonSchema::String { description: None }),
             description: Some(
-                "Optional raw agent IDs to wait for. Prefer `targets` when chaining from named sub-agents."
+                "Optional raw agent IDs to wait for. Prefer `targets` when chaining from named sub-agents. Exactly one of `ids` or `targets` must be provided and non-empty."
                     .to_string(),
             ),
         },
@@ -1679,7 +1679,7 @@ fn create_wait_agent_tool() -> ToolSpec {
         JsonSchema::Array {
             items: Box::new(JsonSchema::String { description: None }),
             description: Some(
-                "Optional agent ids or canonical task names to wait on. Prefer this when chaining from named sub-agents."
+                "Optional agent ids or canonical task names to wait on. Prefer this when chaining from named sub-agents. Exactly one of `ids` or `targets` must be provided and non-empty."
                     .to_string(),
             ),
         },

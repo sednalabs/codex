@@ -1954,7 +1954,7 @@ async fn wait_agent_rejects_duplicate_ids() {
     };
     assert_eq!(
         err,
-        FunctionCallError::RespondToModel("duplicate ids are not allowed".to_string())
+        FunctionCallError::RespondToModel("duplicate agent targets are not allowed".to_string())
     );
 }
 
