@@ -115,12 +115,14 @@ pub enum ExecCapturePolicy {
 }
 
 fn select_process_exec_tool_sandbox_type(
+    sandbox_policy: &SandboxPolicy,
     file_system_sandbox_policy: &FileSystemSandboxPolicy,
     network_sandbox_policy: NetworkSandboxPolicy,
     windows_sandbox_level: codex_protocol::config_types::WindowsSandboxLevel,
     enforce_managed_network: bool,
 ) -> SandboxType {
     SandboxManager::new().select_initial(
+        sandbox_policy,
         file_system_sandbox_policy,
         network_sandbox_policy,
         SandboxablePreference::Auto,
@@ -240,6 +242,7 @@ pub fn build_exec_request(
     let windows_sandbox_level = params.windows_sandbox_level;
     let enforce_managed_network = params.network.is_some();
     let sandbox_type = select_process_exec_tool_sandbox_type(
+        sandbox_policy,
         file_system_sandbox_policy,
         network_sandbox_policy,
         windows_sandbox_level,
@@ -638,6 +641,18 @@ pub(crate) mod errors {
             match err {
                 SandboxTransformError::MissingLinuxSandboxExecutable => {
                     CodexErr::LandlockSandboxExecutableNotProvided
+                }
+                SandboxTransformError::SandboxRequiredButUnavailable => {
+                    CodexErr::UnsupportedOperation(
+                        "sandbox was explicitly required but no platform sandbox is available"
+                            .to_string(),
+                    )
+                }
+                SandboxTransformError::RestrictivePolicyRequiresSandbox => {
+                    CodexErr::UnsupportedOperation(
+                        "restrictive sandbox policy requires a platform sandbox or trusted external sandbox"
+                            .to_string(),
+                    )
                 }
                 #[cfg(not(target_os = "macos"))]
                 SandboxTransformError::SeatbeltUnavailable => CodexErr::UnsupportedOperation(

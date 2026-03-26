@@ -49,7 +49,12 @@ fn full_access_restricted_policy_skips_platform_sandbox_when_network_is_enabled(
     }]);
 
     assert_eq!(
-        should_require_platform_sandbox(&policy, NetworkSandboxPolicy::Enabled, false),
+        should_require_platform_sandbox(
+            &SandboxPolicy::DangerFullAccess,
+            &policy,
+            NetworkSandboxPolicy::Enabled,
+            false
+        ),
         false
     );
 }
@@ -75,7 +80,12 @@ fn root_write_policy_with_carveouts_still_uses_platform_sandbox() {
     ]);
 
     assert_eq!(
-        should_require_platform_sandbox(&policy, NetworkSandboxPolicy::Enabled, false),
+        should_require_platform_sandbox(
+            &SandboxPolicy::DangerFullAccess,
+            &policy,
+            NetworkSandboxPolicy::Enabled,
+            false
+        ),
         true
     );
 }
@@ -90,8 +100,33 @@ fn full_access_restricted_policy_still_uses_platform_sandbox_for_restricted_netw
     }]);
 
     assert_eq!(
-        should_require_platform_sandbox(&policy, NetworkSandboxPolicy::Restricted, false),
+        should_require_platform_sandbox(
+            &SandboxPolicy::DangerFullAccess,
+            &policy,
+            NetworkSandboxPolicy::Restricted,
+            false
+        ),
         true
+    );
+}
+
+#[test]
+fn external_sandbox_does_not_require_platform_sandbox_with_managed_network() {
+    assert_eq!(
+        should_require_platform_sandbox(
+            &SandboxPolicy::ExternalSandbox {
+                network_access: NetworkAccess::Restricted,
+            },
+            &FileSystemSandboxPolicy::restricted(vec![FileSystemSandboxEntry {
+                path: FileSystemPath::Special {
+                    value: FileSystemSpecialPath::Root,
+                },
+                access: FileSystemAccessMode::Write,
+            }]),
+            NetworkSandboxPolicy::Restricted,
+            true
+        ),
+        false
     );
 }
 
