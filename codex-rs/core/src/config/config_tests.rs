@@ -4417,6 +4417,7 @@ fn test_precedence_fixture_with_o3_profile() -> std::io::Result<()> {
             history: History::default(),
             ephemeral: false,
             file_opener: UriBasedFileOpener::VsCode,
+            codex_self_exe: None,
             codex_linux_sandbox_exe: None,
             main_execve_wrapper_exe: None,
             js_repl_node_path: None,
@@ -4559,6 +4560,7 @@ fn test_precedence_fixture_with_gpt3_profile() -> std::io::Result<()> {
         history: History::default(),
         ephemeral: false,
         file_opener: UriBasedFileOpener::VsCode,
+        codex_self_exe: None,
         codex_linux_sandbox_exe: None,
         main_execve_wrapper_exe: None,
         js_repl_node_path: None,
@@ -4699,6 +4701,7 @@ fn test_precedence_fixture_with_zdr_profile() -> std::io::Result<()> {
         history: History::default(),
         ephemeral: false,
         file_opener: UriBasedFileOpener::VsCode,
+        codex_self_exe: None,
         codex_linux_sandbox_exe: None,
         main_execve_wrapper_exe: None,
         js_repl_node_path: None,
@@ -4825,6 +4828,7 @@ fn test_precedence_fixture_with_gpt5_profile() -> std::io::Result<()> {
         history: History::default(),
         ephemeral: false,
         file_opener: UriBasedFileOpener::VsCode,
+        codex_self_exe: None,
         codex_linux_sandbox_exe: None,
         main_execve_wrapper_exe: None,
         js_repl_node_path: None,
@@ -5708,7 +5712,7 @@ fn system_bwrap_warning_reports_missing_system_bwrap() {
 
 #[cfg(target_os = "linux")]
 #[test]
-fn system_bwrap_warning_reports_too_old_system_bwrap() {
+fn system_bwrap_warning_skips_too_old_system_bwrap() {
     let fake_bwrap = write_fake_bwrap(
         r#"#!/bin/sh
 if [ "$1" = "--help" ]; then
@@ -5719,27 +5723,12 @@ exit 1
 "#,
     );
     let fake_bwrap_path: &Path = fake_bwrap.as_ref();
-    let warning = system_bwrap_warning_for_path(fake_bwrap_path)
-        .expect("old system bwrap should emit a warning");
 
-    assert!(warning.contains("too old to support `--argv0`"));
-}
-
-#[cfg(target_os = "linux")]
-#[test]
-fn system_bwrap_warning_skips_supported_system_bwrap() {
-    let fake_bwrap = write_fake_bwrap(
-        r#"#!/bin/sh
-if [ "$1" = "--help" ]; then
-  echo '  --argv0 PROGRAM'
-  exit 0
-fi
-exit 1
-"#,
+    assert_eq!(
+        system_bwrap_warning_for_path(fake_bwrap_path),
+        None,
+        "Do not warn even if bwrap does not support `--argv0`",
     );
-    let fake_bwrap_path: &Path = fake_bwrap.as_ref();
-
-    assert_eq!(system_bwrap_warning_for_path(fake_bwrap_path), None);
 }
 
 #[cfg(not(target_os = "linux"))]
