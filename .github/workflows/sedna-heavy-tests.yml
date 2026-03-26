@@ -38,7 +38,7 @@ on:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event_name == 'workflow_dispatch' && inputs.ref || github.ref_name }}
-  cancel-in-progress: ${{ github.ref_name != 'main' && github.ref_name != 'upstream-main' }}
+  cancel-in-progress: ${{ github.event_name != 'workflow_dispatch' && github.ref_name != 'main' && github.ref_name != 'upstream-main' }}
 
 permissions:
   contents: read
