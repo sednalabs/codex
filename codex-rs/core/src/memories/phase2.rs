@@ -12,9 +12,9 @@ use crate::memories::storage::sync_rollout_summaries_from_memories;
 use codex_config::Constrained;
 use codex_features::Feature;
 use codex_protocol::ThreadId;
-use codex_protocol::permissions::FileSystemSandboxPolicy;
-use codex_protocol::permissions::NetworkSandboxPolicy;
 use codex_protocol::protocol::AskForApproval;
+use codex_protocol::protocol::FileSystemSandboxPolicy;
+use codex_protocol::protocol::NetworkSandboxPolicy;
 use codex_protocol::protocol::SandboxPolicy;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::SubAgentSource;
@@ -23,6 +23,10 @@ use codex_protocol::user_input::UserInput;
 use codex_state::Stage1Output;
 use codex_state::StateRuntime;
 use codex_utils_absolute_path::AbsolutePathBuf;
+use serde::Deserialize;
+use serde::Serialize;
+use sha2::Digest as _;
+use sha2::Sha256;
 use std::collections::HashSet;
 use std::path::Path;
 use std::path::PathBuf;
@@ -31,6 +35,7 @@ use std::time::Duration;
 use std::time::SystemTime;
 use tokio::sync::watch;
 use tracing::warn;
+use walkdir::WalkDir;
 
 #[derive(Debug, Clone, Default)]
 struct Claim {
@@ -41,6 +46,22 @@ struct Claim {
 #[derive(Debug, Clone, Default)]
 struct Counters {
     input: i64,
+}
+
+const CONSOLIDATION_ARTIFACT_ATTESTATION_FILE_PREFIX: &str = ".phase2-artifact-attestation";
+const CONSOLIDATION_ARTIFACT_ATTESTATION_SUPPORT_FILE_PREFIX: &str =
+    ".phase2-artifact-attestation-support";
+const CONSOLIDATION_ARTIFACT_ATTESTATION_SCHEMA_VERSION: u32 = 4;
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+struct ConsolidationArtifactAttestation {
+    schema_version: u32,
+    artifacts_freshly_rewritten: bool,
+    selection_fingerprint: String,
+    consolidator_fingerprint: String,
+    memory_sha256: String,
+    memory_summary_sha256: String,
+    artifact_tree_sha256: String,
 }
 
 /// Runs memory phase 2 (aka consolidation) in strict order. The method represents the linear
@@ -117,6 +138,15 @@ pub(super) async fn run(session: &Arc<Session>, config: Arc<Config>) {
         job::failed(session, db, &claim, "failed_rebuild_raw_memories").await;
         return;
     }
+    let Some(prepared_supporting_artifact_tree_sha256) =
+        agent::supporting_artifact_tree_sha256(&root)
+    else {
+        tracing::error!(
+            "failed to fingerprint prepared supporting artifacts for global consolidation"
+        );
+        job::failed(session, db, &claim, "failed_prepare_artifacts").await;
+        return;
+    };
     if raw_memories.is_empty() {
         // We check only after sync of the file system.
         job::succeed(
@@ -132,9 +162,11 @@ pub(super) async fn run(session: &Arc<Session>, config: Arc<Config>) {
     }
 
     // 5. Spawn the agent
-    let prompt = agent::get_prompt(config, &selection);
+    let prompt = agent::get_prompt(&config, &selection);
     let source = SessionSource::SubAgent(SubAgentSource::MemoryConsolidation);
     let artifacts_not_before = SystemTime::now();
+    let allow_existing_artifacts_without_rewrite =
+        agent::can_reuse_existing_consolidation_artifacts(&selection);
     let thread_id = match session
         .services
         .agent_control
@@ -153,11 +185,15 @@ pub(super) async fn run(session: &Arc<Session>, config: Arc<Config>) {
     agent::handle(
         session,
         claim,
+        config,
+        selection,
         new_watermark,
         raw_memories.clone(),
         thread_id,
         root,
         artifacts_not_before,
+        allow_existing_artifacts_without_rewrite,
+        prepared_supporting_artifact_tree_sha256,
         phase_two_e2e_timer,
     );
 
@@ -267,14 +303,30 @@ mod job {
     }
 }
 
-pub(super) mod agent {
+pub(in crate::memories) mod agent {
     use super::*;
 
     pub(super) fn get_config(config: Arc<Config>) -> Option<Config> {
         let root = memory_root(&config.codex_home);
+        if let Err(err) = validate_memory_root_path(&root) {
+            warn!(
+                "memory phase-2 consolidation refusing untrusted memory root {}: {err}",
+                root.display()
+            );
+            return None;
+        }
         let mut agent_config = config.as_ref().clone();
 
-        agent_config.cwd = root;
+        match AbsolutePathBuf::from_absolute_path(root) {
+            Ok(root) => agent_config.cwd = root,
+            Err(err) => {
+                warn!(
+                    "memory phase-2 consolidation could not set cwd from codex_home {}: {err}",
+                    agent_config.codex_home.display()
+                );
+                return None;
+            }
+        }
         // Consolidation threads must never feed back into phase-1 memory generation.
         agent_config.memories.generate_memories = false;
         // Approval policy
@@ -286,33 +338,26 @@ pub(super) mod agent {
 
         // Sandbox policy
         let mut writable_roots = Vec::new();
-        match AbsolutePathBuf::from_absolute_path(agent_config.codex_home.clone()) {
-            Ok(codex_home) => writable_roots.push(codex_home),
+        match AbsolutePathBuf::from_absolute_path(agent_config.cwd.clone()) {
+            Ok(memory_root) => writable_roots.push(memory_root),
             Err(err) => warn!(
-                "memory phase-2 consolidation could not add codex_home writable root {}: {err}",
-                agent_config.codex_home.display()
+                "memory phase-2 consolidation could not add memory root writable root {}: {err}",
+                agent_config.cwd.display()
             ),
         }
-        // The consolidation agent only needs local codex_home write access and no network.
+        // The consolidation agent only needs local memory-root write access and no network.
         let consolidation_sandbox_policy = SandboxPolicy::WorkspaceWrite {
             writable_roots,
             read_only_access: Default::default(),
             network_access: false,
-            exclude_tmpdir_env_var: false,
-            exclude_slash_tmp: false,
+            exclude_tmpdir_env_var: true,
+            exclude_slash_tmp: true,
         };
         agent_config
             .permissions
             .sandbox_policy
-            .set(consolidation_sandbox_policy.clone())
+            .set(consolidation_sandbox_policy)
             .ok()?;
-        agent_config.permissions.file_system_sandbox_policy =
-            FileSystemSandboxPolicy::from_legacy_sandbox_policy(
-                &consolidation_sandbox_policy,
-                &agent_config.cwd,
-            );
-        agent_config.permissions.network_sandbox_policy =
-            NetworkSandboxPolicy::from(&consolidation_sandbox_policy);
 
         agent_config.model = Some(
             config
@@ -327,7 +372,7 @@ pub(super) mod agent {
     }
 
     pub(super) fn get_prompt(
-        config: Arc<Config>,
+        config: &Config,
         selection: &codex_state::Phase2InputSelection,
     ) -> Vec<UserInput> {
         let root = memory_root(&config.codex_home);
@@ -342,11 +387,15 @@ pub(super) mod agent {
     pub(super) fn handle(
         session: &Arc<Session>,
         claim: Claim,
+        config: Arc<Config>,
+        selection: codex_state::Phase2InputSelection,
         new_watermark: i64,
         selected_outputs: Vec<codex_state::Stage1Output>,
         thread_id: ThreadId,
         root: PathBuf,
         artifacts_not_before: SystemTime,
+        allow_existing_artifacts_without_rewrite: bool,
+        prepared_supporting_artifact_tree_sha256: String,
         phase_two_e2e_timer: Option<codex_otel::Timer>,
     ) {
         let Some(db) = session.services.state_db.clone() else {
@@ -382,19 +431,43 @@ pub(super) mod agent {
                 if let Some(token_usage) = agent_control.get_total_token_usage(thread_id).await {
                     emit_token_usage_metrics(&session, &token_usage);
                 }
-                if consolidation_artifacts_ready(root.as_path(), artifacts_not_before).await {
-                    job::succeed(
-                        &session,
-                        &db,
-                        &claim,
-                        new_watermark,
-                        &selected_outputs,
-                        "succeeded",
+                if let Some(validated_artifacts) = validated_consolidation_artifact_state(
+                    root.as_path(),
+                    artifacts_not_before,
+                    Some(prepared_supporting_artifact_tree_sha256.as_str()),
+                    allow_existing_artifacts_without_rewrite,
+                    &config,
+                    &selection,
+                )
+                .await
+                {
+                    if let Err(err) = write_consolidation_artifact_attestation(
+                        root.as_path(),
+                        &config,
+                        &selection,
+                        &validated_artifacts,
                     )
-                    .await;
+                    .await
+                    {
+                        tracing::warn!(
+                            error = %err,
+                            "global memory consolidation agent {thread_id} completed but artifact attestation could not be recorded"
+                        );
+                        job::failed(&session, &db, &claim, "failed_record_artifacts").await;
+                    } else {
+                        job::succeed(
+                            &session,
+                            &db,
+                            &claim,
+                            new_watermark,
+                            &selected_outputs,
+                            "succeeded",
+                        )
+                        .await;
+                    }
                 } else {
                     tracing::warn!(
-                        "global memory consolidation agent {thread_id} completed without refreshing MEMORY.md and memory_summary.md"
+                        "global memory consolidation agent {thread_id} completed without refreshing non-empty MEMORY.md and memory_summary.md artifacts"
                     );
                     job::failed(&session, &db, &claim, "failed_missing_artifacts").await;
                 }
@@ -417,26 +490,632 @@ pub(super) mod agent {
         });
     }
 
-    pub(super) async fn consolidation_artifacts_ready(root: &Path, not_before: SystemTime) -> bool {
-        for path in [root.join("MEMORY.md"), root.join("memory_summary.md")] {
-            let Ok(metadata) = tokio::fs::metadata(&path).await else {
-                return false;
-            };
-            let Ok(modified) = metadata.modified() else {
-                return false;
-            };
-            if modified < not_before {
-                return false;
-            }
-            let Ok(contents) = tokio::fs::read_to_string(&path).await else {
-                return false;
-            };
-            if contents.trim().is_empty() {
-                return false;
-            }
+    #[cfg(test)]
+    pub(in crate::memories) async fn consolidation_artifacts_ready(
+        root: &Path,
+        config: &Config,
+        not_before: SystemTime,
+        allow_existing_artifacts_without_rewrite: bool,
+        selection: &codex_state::Phase2InputSelection,
+    ) -> bool {
+        let expected_supporting_artifact_tree_sha256 = (!allow_existing_artifacts_without_rewrite)
+            .then(|| supporting_artifact_tree_sha256(root))
+            .flatten();
+        validated_consolidation_artifact_state(
+            root,
+            not_before,
+            expected_supporting_artifact_tree_sha256.as_deref(),
+            allow_existing_artifacts_without_rewrite,
+            config,
+            selection,
+        )
+        .await
+        .is_some()
+    }
+
+    #[cfg(test)]
+    pub(in crate::memories) async fn consolidation_artifacts_ready_with_expected_supporting_tree(
+        root: &Path,
+        config: &Config,
+        not_before: SystemTime,
+        expected_supporting_artifact_tree_sha256: Option<&str>,
+        allow_existing_artifacts_without_rewrite: bool,
+        selection: &codex_state::Phase2InputSelection,
+    ) -> bool {
+        validated_consolidation_artifact_state(
+            root,
+            not_before,
+            expected_supporting_artifact_tree_sha256,
+            allow_existing_artifacts_without_rewrite,
+            config,
+            selection,
+        )
+        .await
+        .is_some()
+    }
+
+    pub(super) fn can_reuse_existing_consolidation_artifacts(
+        selection: &codex_state::Phase2InputSelection,
+    ) -> bool {
+        selection.removed.is_empty()
+            && selection.selected == selection.previous_selected
+            && selection.selected.len() == selection.retained_thread_ids.len()
+            && selection
+                .selected
+                .iter()
+                .all(|output| selection.retained_thread_ids.contains(&output.thread_id))
+    }
+
+    struct ConsolidationArtifactState {
+        memory_modified: SystemTime,
+        memory_summary_modified: SystemTime,
+        memory_sha256: String,
+        memory_summary_sha256: String,
+        supporting_artifact_tree_sha256: String,
+        artifact_tree_sha256: String,
+        artifacts_freshly_rewritten: bool,
+    }
+
+    async fn validated_consolidation_artifact_state(
+        root: &Path,
+        not_before: SystemTime,
+        expected_supporting_artifact_tree_sha256: Option<&str>,
+        allow_existing_artifacts_without_rewrite: bool,
+        config: &Config,
+        selection: &codex_state::Phase2InputSelection,
+    ) -> Option<ConsolidationArtifactState> {
+        let mut current = current_consolidation_artifact_state(root).await?;
+        let supporting_tree_matches = expected_supporting_artifact_tree_sha256
+            .is_some_and(|expected| current.supporting_artifact_tree_sha256 == expected);
+        if current.memory_modified >= not_before
+            && current.memory_summary_modified >= not_before
+            && supporting_tree_matches
+        {
+            current.artifacts_freshly_rewritten = true;
+            return Some(current);
+        }
+        if !allow_existing_artifacts_without_rewrite {
+            return None;
         }
 
-        true
+        match read_consolidation_artifact_attestation(root).await {
+            Ok(Some(attestation)) => (attestation.schema_version
+                == CONSOLIDATION_ARTIFACT_ATTESTATION_SCHEMA_VERSION
+                && attestation.selection_fingerprint == selection_fingerprint(&selection.selected)
+                && attestation.consolidator_fingerprint
+                    == consolidator_fingerprint(config, root, selection)
+                && attestation.memory_sha256 == current.memory_sha256
+                && attestation.memory_summary_sha256 == current.memory_summary_sha256
+                && attestation.artifact_tree_sha256 == current.artifact_tree_sha256)
+                .then_some(current),
+            Ok(None) => match attestation_support_initialized(root) {
+                Ok(false) => supporting_tree_matches.then_some(current),
+                Ok(true) => None,
+                Err(err) => {
+                    tracing::warn!(
+                        error = %err,
+                        "failed to read global memory consolidation artifact attestation support state"
+                    );
+                    None
+                }
+            },
+            Err(err) => {
+                tracing::warn!(
+                    error = %err,
+                    "failed to read global memory consolidation artifact attestation"
+                );
+                None
+            }
+        }
+    }
+
+    async fn current_consolidation_artifact_state(
+        root: &Path,
+    ) -> Option<ConsolidationArtifactState> {
+        validate_memory_root_path(root).ok()?;
+        let memory = artifact_file_state(root, "MEMORY.md").await?;
+        let memory_summary = artifact_file_state(root, "memory_summary.md").await?;
+        Some(ConsolidationArtifactState {
+            memory_modified: memory.modified,
+            memory_summary_modified: memory_summary.modified,
+            memory_sha256: memory.sha256,
+            memory_summary_sha256: memory_summary.sha256,
+            supporting_artifact_tree_sha256: supporting_artifact_tree_sha256(root)?,
+            artifact_tree_sha256: artifact_tree_sha256(root)?,
+            artifacts_freshly_rewritten: false,
+        })
+    }
+
+    struct ArtifactFileState {
+        modified: SystemTime,
+        sha256: String,
+    }
+
+    async fn artifact_file_state(root: &Path, relative_name: &str) -> Option<ArtifactFileState> {
+        let path = root.join(relative_name);
+        let mut file = open_read_only_regular_file(&path).ok()?;
+        let metadata = file.metadata().ok()?;
+        let modified = metadata.modified().ok()?;
+        let mut contents = String::new();
+        use std::io::Read as _;
+        file.read_to_string(&mut contents).ok()?;
+        if contents.trim().is_empty() {
+            return None;
+        }
+        Some(ArtifactFileState {
+            modified,
+            sha256: sha256_hex(contents.as_bytes()),
+        })
+    }
+
+    async fn write_consolidation_artifact_attestation(
+        root: &Path,
+        config: &Config,
+        selection: &codex_state::Phase2InputSelection,
+        artifacts: &ConsolidationArtifactState,
+    ) -> std::io::Result<()> {
+        let attestation = ConsolidationArtifactAttestation {
+            schema_version: CONSOLIDATION_ARTIFACT_ATTESTATION_SCHEMA_VERSION,
+            artifacts_freshly_rewritten: artifacts.artifacts_freshly_rewritten,
+            selection_fingerprint: selection_fingerprint(&selection.selected),
+            consolidator_fingerprint: consolidator_fingerprint(config, root, selection),
+            memory_sha256: artifacts.memory_sha256.clone(),
+            memory_summary_sha256: artifacts.memory_summary_sha256.clone(),
+            artifact_tree_sha256: artifacts.artifact_tree_sha256.clone(),
+        };
+        let contents = serde_json::to_vec_pretty(&attestation)
+            .map_err(|err| std::io::Error::other(format!("serialize attestation: {err}")))?;
+        let path = consolidation_artifact_attestation_path(root)
+            .ok_or_else(|| std::io::Error::other("memory root is missing a codex_home parent"))?;
+        let mut file = open_write_regular_file_no_follow(&path)?;
+        use std::io::Write as _;
+        file.write_all(&contents)?;
+        file.flush()?;
+        write_consolidation_artifact_attestation_support_marker(root)
+    }
+
+    #[cfg(test)]
+    pub(super) async fn write_current_consolidation_artifact_attestation(
+        config: &Config,
+        root: &Path,
+        selection: &codex_state::Phase2InputSelection,
+    ) -> std::io::Result<()> {
+        let artifacts = current_consolidation_artifact_state(root)
+            .await
+            .ok_or_else(|| std::io::Error::other("missing non-empty consolidation artifacts"))?;
+        write_consolidation_artifact_attestation(root, config, selection, &artifacts).await
+    }
+
+    #[cfg(test)]
+    pub(super) async fn write_current_consolidation_artifact_attestation_with_fingerprint(
+        root: &Path,
+        selection: &codex_state::Phase2InputSelection,
+        consolidator_fingerprint: String,
+    ) -> std::io::Result<()> {
+        let artifacts = current_consolidation_artifact_state(root)
+            .await
+            .ok_or_else(|| std::io::Error::other("missing non-empty consolidation artifacts"))?;
+        let attestation = ConsolidationArtifactAttestation {
+            schema_version: CONSOLIDATION_ARTIFACT_ATTESTATION_SCHEMA_VERSION,
+            artifacts_freshly_rewritten: artifacts.artifacts_freshly_rewritten,
+            selection_fingerprint: selection_fingerprint(&selection.selected),
+            consolidator_fingerprint,
+            memory_sha256: artifacts.memory_sha256,
+            memory_summary_sha256: artifacts.memory_summary_sha256,
+            artifact_tree_sha256: artifacts.artifact_tree_sha256,
+        };
+        let contents = serde_json::to_vec_pretty(&attestation)
+            .map_err(|err| std::io::Error::other(format!("serialize attestation: {err}")))?;
+        let path = consolidation_artifact_attestation_path(root)
+            .ok_or_else(|| std::io::Error::other("memory root is missing a codex_home parent"))?;
+        tokio::fs::write(path, contents).await
+    }
+
+    async fn read_consolidation_artifact_attestation(
+        root: &Path,
+    ) -> std::io::Result<Option<ConsolidationArtifactAttestation>> {
+        let path = consolidation_artifact_attestation_path(root)
+            .ok_or_else(|| std::io::Error::other("memory root is missing a codex_home parent"))?;
+        let mut file = match open_read_only_regular_file(&path) {
+            Ok(file) => file,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(err) => return Err(err),
+        };
+        let mut contents = Vec::new();
+        use std::io::Read as _;
+        file.read_to_end(&mut contents)?;
+        let attestation = serde_json::from_slice(&contents).map_err(|err| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("parse attestation: {err}"),
+            )
+        })?;
+        Ok(Some(attestation))
+    }
+
+    fn selection_fingerprint(selected_outputs: &[codex_state::Stage1Output]) -> String {
+        #[derive(Serialize)]
+        struct SelectionRef<'a> {
+            thread_id: codex_protocol::ThreadId,
+            source_updated_at: chrono::DateTime<chrono::Utc>,
+            rollout_slug: Option<&'a str>,
+        }
+
+        let refs = selected_outputs
+            .iter()
+            .map(|output| SelectionRef {
+                thread_id: output.thread_id,
+                source_updated_at: output.source_updated_at,
+                rollout_slug: output.rollout_slug.as_deref(),
+            })
+            .collect::<Vec<_>>();
+        let bytes = serde_json::to_vec(&refs).expect("serialize phase-2 selection refs");
+        sha256_hex(&bytes)
+    }
+
+    fn sha256_hex(bytes: &[u8]) -> String {
+        let digest = Sha256::digest(bytes);
+        format!("{digest:x}")
+    }
+
+    fn consolidator_fingerprint(
+        config: &Config,
+        root: &Path,
+        selection: &codex_state::Phase2InputSelection,
+    ) -> String {
+        let model = config
+            .memories
+            .consolidation_model
+            .as_deref()
+            .unwrap_or(phase_two::MODEL);
+        let prompt = build_consolidation_prompt(root, selection);
+        consolidator_contract_fingerprint(
+            &config.model_provider_id,
+            model,
+            &format!("{:?}", phase_two::REASONING_EFFORT),
+            &prompt,
+            root,
+        )
+    }
+
+    fn consolidator_contract_fingerprint(
+        model_provider_id: &str,
+        model: &str,
+        reasoning_effort: &str,
+        prompt: &str,
+        root: &Path,
+    ) -> String {
+        #[derive(Serialize)]
+        struct ConsolidatorFingerprint<'a> {
+            attestation_schema_version: u32,
+            model_provider_id: &'a str,
+            model: &'a str,
+            reasoning_effort: &'a str,
+            prompt_sha256: String,
+            approval_policy: AskForApproval,
+            sandbox_policy: SandboxPolicy,
+            file_system_sandbox_policy: FileSystemSandboxPolicy,
+            network_sandbox_policy: NetworkSandboxPolicy,
+        }
+
+        let sandbox_policy = SandboxPolicy::WorkspaceWrite {
+            writable_roots: vec![
+                AbsolutePathBuf::from_absolute_path(root.to_path_buf())
+                    .expect("memory root should be absolute"),
+            ],
+            read_only_access: Default::default(),
+            network_access: false,
+            exclude_tmpdir_env_var: true,
+            exclude_slash_tmp: true,
+        };
+        let file_system_sandbox_policy =
+            FileSystemSandboxPolicy::from_legacy_sandbox_policy(&sandbox_policy, root);
+        let network_sandbox_policy = NetworkSandboxPolicy::from(&sandbox_policy);
+        let fingerprint = ConsolidatorFingerprint {
+            attestation_schema_version: CONSOLIDATION_ARTIFACT_ATTESTATION_SCHEMA_VERSION,
+            model_provider_id,
+            model,
+            reasoning_effort,
+            prompt_sha256: sha256_hex(prompt.as_bytes()),
+            approval_policy: AskForApproval::Never,
+            sandbox_policy,
+            file_system_sandbox_policy,
+            network_sandbox_policy,
+        };
+        let bytes =
+            serde_json::to_vec(&fingerprint).expect("serialize phase-2 consolidator fingerprint");
+        sha256_hex(&bytes)
+    }
+
+    #[cfg(test)]
+    pub(super) fn test_consolidator_contract_fingerprint(
+        model_provider_id: &str,
+        model: &str,
+        reasoning_effort: &str,
+        prompt: &str,
+        root: &Path,
+    ) -> String {
+        consolidator_contract_fingerprint(model_provider_id, model, reasoning_effort, prompt, root)
+    }
+
+    fn consolidation_artifact_attestation_path(root: &Path) -> Option<PathBuf> {
+        let root_hash = sha256_hex(&stable_path_identity_bytes(root));
+        Some(root.parent()?.join(format!(
+            "{CONSOLIDATION_ARTIFACT_ATTESTATION_FILE_PREFIX}-{root_hash}.json"
+        )))
+    }
+
+    fn consolidation_artifact_attestation_support_path(root: &Path) -> Option<PathBuf> {
+        let root_hash = sha256_hex(&stable_path_identity_bytes(root));
+        Some(root.parent()?.join(format!(
+            "{CONSOLIDATION_ARTIFACT_ATTESTATION_SUPPORT_FILE_PREFIX}-{root_hash}.json"
+        )))
+    }
+
+    #[cfg(test)]
+    pub(super) fn test_consolidation_artifact_attestation_path(root: &Path) -> Option<PathBuf> {
+        consolidation_artifact_attestation_path(root)
+    }
+
+    fn attestation_support_initialized(root: &Path) -> std::io::Result<bool> {
+        let path = consolidation_artifact_attestation_support_path(root)
+            .ok_or_else(|| std::io::Error::other("memory root is missing a codex_home parent"))?;
+        match open_read_only_regular_file(&path) {
+            Ok(_) => Ok(true),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(false),
+            Err(err) => Err(err),
+        }
+    }
+
+    fn write_consolidation_artifact_attestation_support_marker(root: &Path) -> std::io::Result<()> {
+        let path = consolidation_artifact_attestation_support_path(root)
+            .ok_or_else(|| std::io::Error::other("memory root is missing a codex_home parent"))?;
+        let mut file = open_write_regular_file_no_follow(&path)?;
+        use std::io::Write as _;
+        file.write_all(br#"{"attestation_support_initialized":true}"#)?;
+        file.flush()
+    }
+
+    fn validate_memory_root_path(root: &Path) -> std::io::Result<()> {
+        let codex_home = root
+            .parent()
+            .ok_or_else(|| std::io::Error::other("memory root is missing codex_home parent"))?;
+        for ancestor in codex_home.ancestors() {
+            validate_non_redirecting_path_component(ancestor)?;
+        }
+        match std::fs::symlink_metadata(root) {
+            Ok(metadata) => validate_non_redirecting_metadata(root, &metadata),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(err) => Err(err),
+        }
+    }
+
+    fn validate_non_redirecting_path_component(path: &Path) -> std::io::Result<()> {
+        let metadata = std::fs::symlink_metadata(path)?;
+        validate_non_redirecting_metadata(path, &metadata)
+    }
+
+    fn validate_non_redirecting_metadata(
+        path: &Path,
+        metadata: &std::fs::Metadata,
+    ) -> std::io::Result<()> {
+        if metadata.file_type().is_symlink() {
+            return Err(std::io::Error::other(format!(
+                "path {} is a symlink",
+                path.display()
+            )));
+        }
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::MetadataExt;
+            use windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT;
+
+            if metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+                return Err(std::io::Error::other(format!(
+                    "path {} is a reparse point",
+                    path.display()
+                )));
+            }
+        }
+        Ok(())
+    }
+
+    fn artifact_tree_sha256(root: &Path) -> Option<String> {
+        artifact_tree_sha256_filtered(root, |_| true)
+    }
+
+    pub(super) fn supporting_artifact_tree_sha256(root: &Path) -> Option<String> {
+        artifact_tree_sha256_filtered(root, |relative_path| {
+            relative_path != Path::new("MEMORY.md")
+                && relative_path != Path::new("memory_summary.md")
+        })
+    }
+
+    fn artifact_tree_sha256_filtered(
+        root: &Path,
+        include_relative_path: impl Fn(&Path) -> bool,
+    ) -> Option<String> {
+        #[derive(Serialize)]
+        struct ArtifactTreeEntry {
+            path_identity: Vec<u8>,
+            sha256: String,
+        }
+
+        let mut manifest_entries = Vec::new();
+
+        for entry in WalkDir::new(root).follow_links(false) {
+            let entry = entry.ok()?;
+            if entry.depth() == 0 {
+                continue;
+            }
+            if entry.path_is_symlink() {
+                return None;
+            }
+            if entry.file_type().is_dir() {
+                continue;
+            }
+            if !entry.file_type().is_file() {
+                return None;
+            }
+
+            let relative_path = entry.path().strip_prefix(root).ok()?;
+            if !include_relative_path(relative_path) {
+                continue;
+            }
+            let mut file = open_read_only_regular_file(entry.path()).ok()?;
+            let mut contents = Vec::new();
+            use std::io::Read as _;
+            file.read_to_end(&mut contents).ok()?;
+            manifest_entries.push(ArtifactTreeEntry {
+                path_identity: stable_path_identity_bytes(relative_path),
+                sha256: sha256_hex(&contents),
+            });
+        }
+
+        manifest_entries.sort_by(|a, b| a.path_identity.cmp(&b.path_identity));
+        let manifest = serde_json::to_vec(&manifest_entries).ok()?;
+        Some(sha256_hex(&manifest))
+    }
+
+    #[cfg(test)]
+    pub(super) fn test_supporting_artifact_tree_sha256(root: &Path) -> Option<String> {
+        supporting_artifact_tree_sha256(root)
+    }
+
+    fn stable_path_identity_bytes(path: &Path) -> Vec<u8> {
+        #[cfg(unix)]
+        {
+            use std::os::unix::ffi::OsStrExt;
+
+            path.as_os_str().as_bytes().to_vec()
+        }
+        #[cfg(windows)]
+        {
+            use std::os::windows::ffi::OsStrExt;
+
+            path.as_os_str()
+                .encode_wide()
+                .flat_map(|unit| unit.to_le_bytes())
+                .collect()
+        }
+        #[cfg(all(not(unix), not(windows)))]
+        {
+            path.to_string_lossy().into_owned().into_bytes()
+        }
+    }
+
+    fn open_read_only_regular_file(path: &Path) -> std::io::Result<std::fs::File> {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            use std::os::unix::fs::OpenOptionsExt;
+
+            let file = std::fs::OpenOptions::new()
+                .read(true)
+                .custom_flags(libc::O_NOFOLLOW)
+                .open(path)?;
+            let metadata = file.metadata()?;
+            if metadata.nlink() > 1 {
+                return Err(std::io::Error::other("path has multiple hard links"));
+            }
+            if !metadata.is_file() {
+                return Err(std::io::Error::other("path is not a regular file"));
+            }
+            Ok(file)
+        }
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::MetadataExt;
+            use std::os::windows::fs::OpenOptionsExt;
+            use windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT;
+            use windows_sys::Win32::Storage::FileSystem::FILE_FLAG_OPEN_REPARSE_POINT;
+
+            let file = std::fs::OpenOptions::new()
+                .read(true)
+                .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
+                .open(path)?;
+            let metadata = file.metadata()?;
+            if metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+                return Err(std::io::Error::other("path is a reparse point"));
+            }
+            if metadata.number_of_links() > 1 {
+                return Err(std::io::Error::other("path has multiple hard links"));
+            }
+            if !metadata.is_file() {
+                return Err(std::io::Error::other("path is not a regular file"));
+            }
+            Ok(file)
+        }
+        #[cfg(all(not(unix), not(windows)))]
+        {
+            let file = std::fs::OpenOptions::new().read(true).open(path)?;
+            let metadata = file.metadata()?;
+            if !metadata.is_file() {
+                return Err(std::io::Error::other("path is not a regular file"));
+            }
+            Ok(file)
+        }
+    }
+
+    fn open_write_regular_file_no_follow(path: &Path) -> std::io::Result<std::fs::File> {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            use std::os::unix::fs::OpenOptionsExt;
+
+            let file = std::fs::OpenOptions::new()
+                .write(true)
+                .create(true)
+                .custom_flags(libc::O_NOFOLLOW)
+                .open(path)?;
+            let metadata = file.metadata()?;
+            if metadata.nlink() > 1 {
+                return Err(std::io::Error::other("path has multiple hard links"));
+            }
+            if !metadata.is_file() {
+                return Err(std::io::Error::other("path is not a regular file"));
+            }
+            file.set_len(0)?;
+            Ok(file)
+        }
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::MetadataExt;
+            use std::os::windows::fs::OpenOptionsExt;
+            use windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT;
+            use windows_sys::Win32::Storage::FileSystem::FILE_FLAG_OPEN_REPARSE_POINT;
+
+            let file = std::fs::OpenOptions::new()
+                .write(true)
+                .create(true)
+                .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
+                .open(path)?;
+            let metadata = file.metadata()?;
+            if metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+                return Err(std::io::Error::other("path is a reparse point"));
+            }
+            if metadata.number_of_links() > 1 {
+                return Err(std::io::Error::other("path has multiple hard links"));
+            }
+            if !metadata.is_file() {
+                return Err(std::io::Error::other("path is not a regular file"));
+            }
+            file.set_len(0)?;
+            Ok(file)
+        }
+        #[cfg(all(not(unix), not(windows)))]
+        {
+            let file = std::fs::OpenOptions::new()
+                .write(true)
+                .create(true)
+                .open(path)?;
+            let metadata = file.metadata()?;
+            if !metadata.is_file() {
+                return Err(std::io::Error::other("path is not a regular file"));
+            }
+            file.set_len(0)?;
+            Ok(file)
+        }
     }
 
     async fn loop_agent(
@@ -489,6 +1168,68 @@ pub(super) mod agent {
             }
         }
     }
+}
+
+#[cfg(test)]
+pub(crate) fn test_consolidation_agent_config(config: Arc<Config>) -> Option<Config> {
+    agent::get_config(config)
+}
+
+#[cfg(test)]
+pub(crate) fn test_can_reuse_existing_consolidation_artifacts(
+    selection: &codex_state::Phase2InputSelection,
+) -> bool {
+    agent::can_reuse_existing_consolidation_artifacts(selection)
+}
+
+#[cfg(test)]
+pub(crate) async fn test_write_consolidation_artifact_attestation(
+    config: Arc<Config>,
+    root: &Path,
+    selection: &codex_state::Phase2InputSelection,
+) -> std::io::Result<()> {
+    agent::write_current_consolidation_artifact_attestation(&config, root, selection).await
+}
+
+#[cfg(test)]
+pub(crate) async fn test_write_consolidation_artifact_attestation_with_fingerprint(
+    root: &Path,
+    selection: &codex_state::Phase2InputSelection,
+    consolidator_fingerprint: String,
+) -> std::io::Result<()> {
+    agent::write_current_consolidation_artifact_attestation_with_fingerprint(
+        root,
+        selection,
+        consolidator_fingerprint,
+    )
+    .await
+}
+
+#[cfg(test)]
+pub(crate) fn test_consolidator_contract_fingerprint(
+    model_provider_id: &str,
+    model: &str,
+    reasoning_effort: &str,
+    prompt: &str,
+    root: &Path,
+) -> String {
+    agent::test_consolidator_contract_fingerprint(
+        model_provider_id,
+        model,
+        reasoning_effort,
+        prompt,
+        root,
+    )
+}
+
+#[cfg(test)]
+pub(crate) fn test_consolidation_artifact_attestation_path(root: &Path) -> Option<PathBuf> {
+    agent::test_consolidation_artifact_attestation_path(root)
+}
+
+#[cfg(test)]
+pub(crate) fn test_supporting_artifact_tree_sha256(root: &Path) -> Option<String> {
+    agent::test_supporting_artifact_tree_sha256(root)
 }
 
 pub(super) fn get_watermark(
