@@ -125,9 +125,11 @@ use std::time::Duration;
 use std::time::Instant;
 use tokio::select;
 use tokio::sync::Mutex;
-use tokio::sync::mpsc::UnboundedReceiver;
-use tokio::sync::mpsc::UnboundedSender;
+use tokio::sync::mpsc::Receiver;
+use tokio::sync::mpsc::Sender;
+use tokio::sync::mpsc::channel as mpsc_channel;
 use tokio::sync::mpsc::error::TryRecvError;
+use tokio::sync::mpsc::error::TrySendError;
 use tokio::sync::mpsc::unbounded_channel;
 use tokio::task::JoinHandle;
 use toml::Value as TomlValue;
@@ -694,8 +696,8 @@ impl ThreadEventStore {
 
 #[derive(Debug)]
 struct ThreadEventChannel {
-    sender: UnboundedSender<QueuedThreadEvent>,
-    receiver: Option<UnboundedReceiver<QueuedThreadEvent>>,
+    sender: Sender<QueuedThreadEvent>,
+    receiver: Option<Receiver<QueuedThreadEvent>>,
     store: Arc<Mutex<ThreadEventStore>>,
 }
 
@@ -706,7 +708,7 @@ struct ParkedThreadState {
 
 impl ThreadEventChannel {
     fn new(capacity: usize) -> Self {
-        let (sender, receiver) = unbounded_channel();
+        let (sender, receiver) = mpsc_channel(capacity);
         Self {
             sender,
             receiver: Some(receiver),
@@ -716,7 +718,7 @@ impl ThreadEventChannel {
 
     #[cfg_attr(not(test), allow(dead_code))]
     fn new_with_session(capacity: usize, session: ThreadSessionState, turns: Vec<Turn>) -> Self {
-        let (sender, receiver) = unbounded_channel();
+        let (sender, receiver) = mpsc_channel(capacity);
         Self {
             sender,
             receiver: Some(receiver),
@@ -1016,7 +1018,7 @@ pub(crate) struct App {
     thread_event_listener_tasks: HashMap<ThreadId, JoinHandle<()>>,
     agent_navigation: AgentNavigationState,
     active_thread_id: Option<ThreadId>,
-    active_thread_rx: Option<UnboundedReceiver<QueuedThreadEvent>>,
+    active_thread_rx: Option<Receiver<QueuedThreadEvent>>,
     primary_thread_id: Option<ThreadId>,
     primary_session_configured: Option<ThreadSessionState>,
     pending_primary_events: VecDeque<ThreadBufferedEvent>,
@@ -1746,8 +1748,9 @@ impl App {
             let mut store = channel.store.lock().await;
             store.active = false;
             store.input_state = input_state;
+            let capacity = store.capacity;
             drop(store);
-            let (sender, receiver) = unbounded_channel();
+            let (sender, receiver) = mpsc_channel(capacity);
             channel.sender = sender;
             channel.receiver = Some(receiver);
             return Some(ParkedThreadState {
@@ -1760,7 +1763,7 @@ impl App {
     async fn activate_thread_for_replay(
         &mut self,
         thread_id: ThreadId,
-    ) -> Option<(UnboundedReceiver<QueuedThreadEvent>, ThreadEventSnapshot)> {
+    ) -> Option<(Receiver<QueuedThreadEvent>, ThreadEventSnapshot)> {
         let channel = self.thread_event_channels.get_mut(&thread_id)?;
         let receiver = channel.receiver.take()?;
         let store = channel.store.lock().await;
@@ -1822,7 +1825,7 @@ impl App {
     async fn restore_thread_after_failed_replay_activation(
         &mut self,
         thread_id: ThreadId,
-        receiver: UnboundedReceiver<QueuedThreadEvent>,
+        receiver: Receiver<QueuedThreadEvent>,
     ) {
         if let Some(channel) = self.thread_event_channels.get_mut(&thread_id) {
             channel.receiver = Some(receiver);
@@ -2464,8 +2467,17 @@ impl App {
         };
 
         if let Some(queued_event) = queued_event {
-            if let Err(err) = sender.send(queued_event) {
-                tracing::warn!("thread {thread_id} event channel closed: {err}");
+            if let Err(err) = sender.try_send(queued_event) {
+                match err {
+                    TrySendError::Full(_) => {
+                        tracing::warn!(
+                            "thread {thread_id} live event channel full; dropping queued notification"
+                        );
+                    }
+                    TrySendError::Closed(_) => {
+                        tracing::warn!("thread {thread_id} event channel closed");
+                    }
+                }
             }
         }
         self.refresh_pending_thread_approvals().await;
@@ -2530,8 +2542,17 @@ impl App {
         };
 
         if let Some(queued_event) = queued_event {
-            if let Err(err) = sender.send(queued_event) {
-                tracing::warn!("thread {thread_id} event channel closed: {err}");
+            if let Err(err) = sender.try_send(queued_event) {
+                match err {
+                    TrySendError::Full(_) => {
+                        tracing::warn!(
+                            "thread {thread_id} live event channel full; dropping queued request"
+                        );
+                    }
+                    TrySendError::Closed(_) => {
+                        tracing::warn!("thread {thread_id} event channel closed");
+                    }
+                }
             }
         } else if let Some(request) = inactive_interactive_request {
             match request {
@@ -2582,8 +2603,17 @@ impl App {
         };
 
         if let Some(queued_event) = queued_event {
-            if let Err(err) = sender.send(queued_event) {
-                tracing::warn!("thread {thread_id} event channel closed: {err}");
+            if let Err(err) = sender.try_send(queued_event) {
+                match err {
+                    TrySendError::Full(_) => {
+                        tracing::warn!(
+                            "thread {thread_id} live event channel full; dropping queued history event"
+                        );
+                    }
+                    TrySendError::Closed(_) => {
+                        tracing::warn!("thread {thread_id} event channel closed");
+                    }
+                }
             }
         }
         Ok(())
@@ -9939,7 +9969,7 @@ guardian_approval = true
             thread_id,
             ThreadEventChannel::new_with_session(4, initial_session.clone(), Vec::new()),
         );
-        let (tx, rx) = unbounded_channel();
+        let (tx, rx) = mpsc_channel(8);
         app.active_thread_id = Some(thread_id);
         app.active_thread_rx = Some(rx);
         tx.send(QueuedThreadEvent::new(
@@ -9954,6 +9984,7 @@ guardian_approval = true
                 },
             )),
         ))
+        .await
         .expect("stale event should queue");
 
         let resumed_session = ThreadSessionState {
@@ -10046,7 +10077,7 @@ guardian_approval = true
     async fn thread_rollback_response_marks_pre_rollback_events_stale_and_preserves_new_ones() {
         let mut app = make_test_app().await;
         let thread_id = ThreadId::new();
-        let (tx, rx) = unbounded_channel();
+        let (tx, rx) = mpsc_channel(8);
         app.active_thread_id = Some(thread_id);
         app.active_thread_rx = Some(rx);
         app.thread_event_channels
@@ -10063,6 +10094,7 @@ guardian_approval = true
                 },
             )),
         ))
+        .await
         .expect("event should queue");
 
         app.handle_thread_rollback_response(
@@ -10103,6 +10135,7 @@ guardian_approval = true
                 },
             )),
         ))
+        .await
         .expect("fresh event should queue");
 
         let stale = {
