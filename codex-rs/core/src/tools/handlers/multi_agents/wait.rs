@@ -34,16 +34,10 @@ impl ToolHandler for Handler {
         } = invocation;
         let arguments = function_arguments(payload)?;
         let args: WaitArgs = parse_arguments(&arguments)?;
-        if args.ids.is_empty() {
-            return Err(FunctionCallError::RespondToModel(
-                "ids must be non-empty".to_string(),
-            ));
-        }
-        let receiver_thread_ids = args
-            .ids
-            .iter()
-            .map(|id| agent_id(id))
-            .collect::<Result<Vec<_>, _>>()?;
+        let return_when = args.return_when;
+        let timeout_ms_arg = args.timeout_ms;
+        let receiver_thread_ids =
+            resolve_agent_targets(&session, &turn, args.resolve_targets()?).await?;
         let mut seen = HashSet::with_capacity(receiver_thread_ids.len());
         for id in &receiver_thread_ids {
             if !seen.insert(*id) {
@@ -53,21 +47,12 @@ impl ToolHandler for Handler {
             }
         }
         let mut receiver_agents = Vec::with_capacity(receiver_thread_ids.len());
-        let mut target_by_thread_id = HashMap::with_capacity(receiver_thread_ids.len());
         for receiver_thread_id in &receiver_thread_ids {
             let agent_metadata = session
                 .services
                 .agent_control
                 .get_agent_metadata(*receiver_thread_id)
                 .unwrap_or_default();
-            target_by_thread_id.insert(
-                *receiver_thread_id,
-                agent_metadata
-                    .agent_path
-                    .as_ref()
-                    .map(ToString::to_string)
-                    .unwrap_or_else(|| receiver_thread_id.to_string()),
-            );
             receiver_agents.push(CollabAgentRef {
                 thread_id: *receiver_thread_id,
                 agent_nickname: agent_metadata.agent_nickname,
@@ -75,9 +60,8 @@ impl ToolHandler for Handler {
             });
         }
 
-        let timeout_ms = args
-            .timeout_ms
-            .unwrap_or(turn.config.background_terminal_max_timeout as i64);
+        let timeout_ms =
+            timeout_ms_arg.unwrap_or(turn.config.background_terminal_max_timeout as i64);
         let timeout_ms = match timeout_ms {
             ms if ms <= 0 => {
                 return Err(FunctionCallError::RespondToModel(
@@ -143,7 +127,7 @@ impl ToolHandler for Handler {
         }
 
         let mut timed_out = false;
-        if !has_return_condition(&final_statuses, &receiver_thread_ids, args.return_when) {
+        if !has_return_condition(&final_statuses, &receiver_thread_ids, return_when) {
             let deadline = Instant::now() + Duration::from_millis(timeout_ms as u64);
             let mut futures = FuturesUnordered::new();
             for (id, rx) in status_rxs.into_iter() {
@@ -154,11 +138,8 @@ impl ToolHandler for Handler {
                 match timeout_at(deadline, futures.next()).await {
                     Ok(Some(Some((id, status)))) => {
                         final_statuses.insert(id, status);
-                        if has_return_condition(
-                            &final_statuses,
-                            &receiver_thread_ids,
-                            args.return_when,
-                        ) {
+                        if has_return_condition(&final_statuses, &receiver_thread_ids, return_when)
+                        {
                             break;
                         }
                     }
@@ -184,10 +165,12 @@ impl ToolHandler for Handler {
         };
         let statuses_map = final_statuses.clone();
         let agent_statuses = build_wait_agent_statuses(&statuses_map, &receiver_agents);
+        let pending_progress = collect_agent_progress_by_id(session.as_ref(), &pending_ids).await;
         let result = WaitAgentResult {
             status: statuses_map.clone(),
             requested_ids: receiver_thread_ids.clone(),
             pending_ids: pending_ids.clone(),
+            pending_progress: pending_progress.clone(),
             completion_reason,
             timed_out,
         };
@@ -203,7 +186,7 @@ impl ToolHandler for Handler {
                     completion_reason,
                     timed_out,
                     agent_statuses,
-                    statuses: statuses_by_id,
+                    statuses: statuses_map,
                 }
                 .into(),
             )
@@ -216,10 +199,27 @@ impl ToolHandler for Handler {
 #[derive(Debug, Deserialize)]
 struct WaitArgs {
     #[serde(default)]
+    ids: Vec<String>,
+    #[serde(default)]
     targets: Vec<String>,
     timeout_ms: Option<i64>,
     #[serde(default)]
     return_when: ReturnWhen,
+}
+
+impl WaitArgs {
+    fn resolve_targets(self) -> Result<Vec<String>, FunctionCallError> {
+        if !self.ids.is_empty() && !self.targets.is_empty() {
+            return Err(FunctionCallError::RespondToModel(
+                "provide either ids or targets, not both".to_string(),
+            ));
+        }
+        if !self.ids.is_empty() {
+            Ok(self.ids)
+        } else {
+            Ok(self.targets)
+        }
+    }
 }
 
 #[derive(Debug, Deserialize, Clone, Copy)]
@@ -236,6 +236,7 @@ pub(crate) struct WaitAgentResult {
     pub(crate) status: HashMap<ThreadId, AgentStatus>,
     pub(crate) requested_ids: Vec<ThreadId>,
     pub(crate) pending_ids: Vec<ThreadId>,
+    pub(crate) pending_progress: HashMap<String, AgentProgressSnapshot>,
     pub(crate) completion_reason: CollabWaitingCompletionReason,
     pub(crate) timed_out: bool,
 }

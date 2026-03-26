@@ -50,6 +50,7 @@ pub use runtime::logs_db_filename;
 pub use runtime::logs_db_path;
 pub use runtime::state_db_filename;
 pub use runtime::state_db_path;
+pub use runtime::usage::UsageHeartbeatSummary;
 pub use runtime::usage::UsageLogger;
 pub use runtime::usage_db_filename;
 pub use runtime::usage_db_path;

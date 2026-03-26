@@ -149,7 +149,24 @@ impl ToolHandler for Handler {
             live_agents.into_iter().map(ListAgentEntry::from).collect()
         };
 
-        Ok(ListAgentsResult { agents })
+        let progress_thread_ids = agents
+            .iter()
+            .filter(|entry| {
+                matches!(
+                    entry.status,
+                    AgentStatus::PendingInit | AgentStatus::Running
+                )
+            })
+            .map(|entry| agent_id(&entry.agent_id))
+            .filter_map(Result::ok)
+            .collect::<Vec<_>>();
+        let progress_by_id =
+            collect_agent_progress_by_id(session.as_ref(), &progress_thread_ids).await;
+
+        Ok(ListAgentsResult {
+            agents,
+            progress_by_id,
+        })
     }
 }
 
@@ -198,6 +215,7 @@ fn has_persisted_status_for_live_descendants(
 #[derive(Debug, Serialize)]
 pub(crate) struct ListAgentsResult {
     pub(crate) agents: Vec<ListAgentEntry>,
+    pub(crate) progress_by_id: HashMap<String, AgentProgressSnapshot>,
 }
 
 /// Serialized `list_agents` row.

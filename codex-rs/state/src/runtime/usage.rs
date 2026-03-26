@@ -15,6 +15,7 @@ use log::warn;
 use sqlx::Row;
 use sqlx::SqlitePool;
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::sync::Arc;
 use uuid::Uuid;
 
@@ -44,6 +45,121 @@ struct TokenUsageTotals {
     cached_input_tokens: i64,
     output_tokens: i64,
     total_tokens: i64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct UsageHeartbeatSummary {
+    pub latest_turn_id: Option<String>,
+    pub latest_provider: Option<String>,
+    pub latest_model: Option<String>,
+    pub latest_started_at: Option<String>,
+    pub latest_completed_at: Option<String>,
+    pub recent_provider_call_count: i64,
+    pub recent_models: Vec<String>,
+    pub recent_total_tokens: i64,
+}
+
+impl StateRuntime {
+    pub async fn usage_heartbeats_by_thread(
+        &self,
+        thread_ids: &[ThreadId],
+        recent_since_rfc3339: &str,
+        max_recent_models: usize,
+    ) -> anyhow::Result<HashMap<ThreadId, UsageHeartbeatSummary>> {
+        if thread_ids.is_empty() {
+            return Ok(HashMap::new());
+        }
+        let mut by_thread = HashMap::with_capacity(thread_ids.len());
+        let mut seen = HashSet::with_capacity(thread_ids.len());
+        let usage_pool = self.usage_pool();
+        for thread_id in thread_ids {
+            if !seen.insert(*thread_id) {
+                continue;
+            }
+            let thread_id_str = thread_id.to_string();
+            let latest_row = sqlx::query(
+                r#"
+SELECT
+  turn_id,
+  provider,
+  actual_model_used,
+  started_at,
+  completed_at
+FROM usage_provider_calls
+WHERE thread_id = ?
+ORDER BY started_at DESC
+LIMIT 1
+"#,
+            )
+            .bind(&thread_id_str)
+            .fetch_optional(usage_pool.as_ref())
+            .await?;
+            let aggregate_row = sqlx::query(
+                r#"
+SELECT
+  COUNT(*) AS call_count,
+  COALESCE(SUM(total_tokens), 0) AS total_tokens
+FROM usage_provider_calls
+WHERE thread_id = ?
+  AND started_at >= ?
+"#,
+            )
+            .bind(&thread_id_str)
+            .bind(recent_since_rfc3339)
+            .fetch_one(usage_pool.as_ref())
+            .await?;
+            let model_rows = sqlx::query(
+                r#"
+SELECT
+  actual_model_used
+FROM usage_provider_calls
+WHERE thread_id = ?
+  AND started_at >= ?
+  AND actual_model_used IS NOT NULL
+GROUP BY actual_model_used
+ORDER BY MAX(started_at) DESC
+LIMIT ?
+"#,
+            )
+            .bind(&thread_id_str)
+            .bind(recent_since_rfc3339)
+            .bind(max_recent_models as i64)
+            .fetch_all(usage_pool.as_ref())
+            .await?;
+            let recent_models = model_rows
+                .into_iter()
+                .filter_map(|row| row.try_get::<Option<String>, _>("actual_model_used").ok())
+                .flatten()
+                .collect::<Vec<_>>();
+            let summary = UsageHeartbeatSummary {
+                latest_turn_id: latest_row
+                    .as_ref()
+                    .and_then(|row| row.try_get::<Option<String>, _>("turn_id").ok())
+                    .flatten(),
+                latest_provider: latest_row
+                    .as_ref()
+                    .and_then(|row| row.try_get::<Option<String>, _>("provider").ok())
+                    .flatten(),
+                latest_model: latest_row
+                    .as_ref()
+                    .and_then(|row| row.try_get::<Option<String>, _>("actual_model_used").ok())
+                    .flatten(),
+                latest_started_at: latest_row
+                    .as_ref()
+                    .and_then(|row| row.try_get::<Option<String>, _>("started_at").ok())
+                    .flatten(),
+                latest_completed_at: latest_row
+                    .as_ref()
+                    .and_then(|row| row.try_get::<Option<String>, _>("completed_at").ok())
+                    .flatten(),
+                recent_provider_call_count: aggregate_row.try_get::<i64, _>("call_count")?,
+                recent_total_tokens: aggregate_row.try_get::<i64, _>("total_tokens")?,
+                recent_models,
+            };
+            by_thread.insert(*thread_id, summary);
+        }
+        Ok(by_thread)
+    }
 }
 
 /// Tracks usage for one thread plus the lineage anchors that tie it back to the

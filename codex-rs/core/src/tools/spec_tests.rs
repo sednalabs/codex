@@ -823,7 +823,7 @@ fn test_wait_agent_tool_schema_and_description_document_return_when() {
             .expect("wait_agent has output schema")
             .get("required")
             .expect("output schema includes required"),
-        &serde_json::json!(["status", "requested_ids", "pending_ids", "completion_reason", "timed_out"])
+        &serde_json::json!(["status", "requested_ids", "pending_ids", "pending_progress", "completion_reason", "timed_out"])
     );
 }
 
