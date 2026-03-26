@@ -547,7 +547,7 @@ pub(crate) fn should_require_platform_sandbox(
 pub struct SandboxManager;
 
 impl SandboxManager {
-    fn required_platform_sandbox(_windows_sandbox_level: WindowsSandboxLevel) -> Option<SandboxType> {
+    fn required_platform_sandbox() -> Option<SandboxType> {
         #[cfg(target_os = "linux")]
         {
             Some(SandboxType::LinuxSeccomp)
