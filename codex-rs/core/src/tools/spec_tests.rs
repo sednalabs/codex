@@ -602,13 +602,14 @@ fn test_build_specs_multi_agent_v2_uses_task_names_and_hides_resume() {
         panic!("wait_agent should use object params");
     };
     assert!(properties.contains_key("targets"));
+    assert!(!properties.contains_key("ids"));
     assert_eq!(required.as_ref(), Some(&vec!["targets".to_string()]));
     let output_schema = output_schema
         .as_ref()
         .expect("wait_agent should define output schema");
     assert_eq!(
         output_schema["properties"]["status"]["description"],
-        json!("Final statuses keyed by canonical task name when available, otherwise by agent id.")
+        json!("Agent statuses keyed by resolved thread id for the return point. Always includes the subset of agents that satisfied `return_when` (final statuses for those agents). Use `pending_ids` to see which requests are still in flight.")
     );
     assert_lacks_tool_name(&tools, "resume_agent");
 }
@@ -794,12 +795,19 @@ fn test_wait_agent_tool_schema_and_description_document_return_when() {
     else {
         panic!("expected function tool");
     };
-    let JsonSchema::Object { properties, .. } = parameters else {
+    let JsonSchema::Object {
+        properties,
+        required,
+        ..
+    } = parameters
+    else {
         panic!("expected object parameters");
     };
     let Some(JsonSchema::Array { .. }) = properties.get("ids") else {
         panic!("expected ids");
     };
+    assert!(!properties.contains_key("targets"));
+    assert_eq!(required.as_ref(), Some(&vec!["ids".to_string()]));
     let Some(JsonSchema::Number { .. }) = properties.get("timeout_ms") else {
         panic!("expected timeout_ms");
     };

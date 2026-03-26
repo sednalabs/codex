@@ -1960,7 +1960,46 @@ async fn wait_agent_rejects_duplicate_ids() {
 }
 
 #[tokio::test]
+async fn wait_agent_rejects_ids_and_targets_together() {
+    let (session, turn) = make_session_and_context().await;
+    let invocation = invocation(
+        Arc::new(session),
+        Arc::new(turn),
+        "wait_agent",
+        function_payload(json!({
+            "ids": [ThreadId::new().to_string()],
+            "targets": [ThreadId::new().to_string()],
+        })),
+    );
+    let Err(err) = WaitAgentHandler.handle(invocation).await else {
+        panic!("ids and targets together should be rejected");
+    };
+    assert_eq!(
+        err,
+        FunctionCallError::RespondToModel("provide either ids or targets, not both".to_string())
+    );
+}
+
+#[tokio::test]
 async fn wait_agent_rejects_empty_ids() {
+    let (session, turn) = make_session_and_context().await;
+    let invocation = invocation(
+        Arc::new(session),
+        Arc::new(turn),
+        "wait_agent",
+        function_payload(json!({"ids": []})),
+    );
+    let Err(err) = WaitAgentHandler.handle(invocation).await else {
+        panic!("empty ids should be rejected");
+    };
+    assert_eq!(
+        err,
+        FunctionCallError::RespondToModel("agent targets must be non-empty".to_string())
+    );
+}
+
+#[tokio::test]
+async fn wait_agent_rejects_empty_targets() {
     let (session, turn) = make_session_and_context().await;
     let invocation = invocation(
         Arc::new(session),
@@ -1969,7 +2008,7 @@ async fn wait_agent_rejects_empty_ids() {
         function_payload(json!({"targets": []})),
     );
     let Err(err) = WaitAgentHandler.handle(invocation).await else {
-        panic!("empty ids should be rejected");
+        panic!("empty targets should be rejected");
     };
     assert_eq!(
         err,

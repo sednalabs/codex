@@ -350,12 +350,12 @@ fn wait_output_schema() -> JsonValue {
             "status": {
                 "type": "object",
                 "description":
-                    "Agent statuses keyed by id for the return point. Always includes the subset of agents that satisfied `return_when` (final statuses for those agents). Use `pending_ids` to see which requests are still in flight.",
+                    "Agent statuses keyed by resolved thread id for the return point. Always includes the subset of agents that satisfied `return_when` (final statuses for those agents). Use `pending_ids` to see which requests are still in flight.",
                 "additionalProperties": agent_status_output_schema()
             },
             "requested_ids": {
                 "type": "array",
-                "description": "Original agent ids provided in the call, preserving order.",
+                "description": "Resolved agent ids for the request, preserving the input order after target resolution.",
                 "items": {
                     "type": "string"
                 }
@@ -1694,18 +1694,35 @@ fn create_resume_agent_tool() -> ToolSpec {
     })
 }
 
-fn create_wait_agent_tool() -> ToolSpec {
+fn create_wait_agent_tool(config: &ToolsConfig) -> ToolSpec {
     let mut properties = BTreeMap::new();
+    let (target_key, target_description) = if config.multi_agent_v2 {
+        (
+            "targets",
+            "Optional agent references to wait for. Accepts raw IDs or canonical task names returned by `spawn_agent`. Prefer this when chaining from a named spawn.",
+        )
+    } else {
+        (
+            "ids",
+            "One or more agent IDs to wait for. Use this when you already have concrete thread IDs.",
+        )
+    };
     properties.insert(
-            "ids".to_string(),
-            JsonSchema::Array {
-                items: Box::new(JsonSchema::String { description: None }),
-                description: Some(
-                    "One or more agent IDs to wait for. Returns when any requested agent matches `return_when`.".
-                        to_string(),
-                ),
-            },
-        );
+        target_key.to_string(),
+        JsonSchema::Array {
+            items: Box::new(JsonSchema::String { description: None }),
+            description: Some(target_description.to_string()),
+        },
+    );
+    properties.insert(
+        "return_when".to_string(),
+        JsonSchema::String {
+            description: Some(
+                "Optional return mode. `any` (default) returns once any requested agent reaches a final status. `all` waits until every requested agent reaches a final status before returning."
+                    .to_string(),
+            ),
+        },
+    );
     properties.insert(
         "timeout_ms".to_string(),
         JsonSchema::Number {
@@ -1714,15 +1731,6 @@ fn create_wait_agent_tool() -> ToolSpec {
             )),
         },
     );
-    properties.insert(
-            "return_when".to_string(),
-            JsonSchema::String {
-                description: Some(
-                    "Optional return mode. `any` (default) returns once any requested agent reaches a final status. `all` waits until every requested agent reaches a final status before returning."
-                        .to_string(),
-                ),
-            },
-        );
 
     ToolSpec::Function(ResponsesApiTool {
         name: "wait_agent".to_string(),
@@ -1733,7 +1741,7 @@ When `return_when` is `any`, the call returns as soon as one requested agent bec
         defer_loading: None,
         parameters: JsonSchema::Object {
             properties,
-            required: Some(vec!["targets".to_string()]),
+            required: Some(vec![target_key.to_string()]),
             additional_properties: Some(false.into()),
         },
         output_schema: Some(wait_output_schema()),
@@ -3292,7 +3300,7 @@ pub(crate) fn build_specs_with_discoverable_tools(
         }
         push_tool_spec(
             &mut builder,
-            create_wait_agent_tool(),
+            create_wait_agent_tool(config),
             /*supports_parallel_tool_calls*/ false,
             config.code_mode_enabled,
         );
@@ -3710,7 +3718,7 @@ mod tests {
             create_list_agents_tool(),
             create_send_input_tool(),
             create_resume_agent_tool(),
-            create_wait_agent_tool(),
+            create_wait_agent_tool(&config),
             create_close_agent_tool(),
         ] {
             expected.insert(tool_name(&spec).to_string(), spec);
