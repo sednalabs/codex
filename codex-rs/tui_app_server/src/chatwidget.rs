@@ -311,6 +311,7 @@ use crate::diff_render::display_path_for;
 use crate::exec_cell::CommandOutput;
 use crate::exec_cell::ExecCell;
 use crate::exec_cell::new_active_exec_command;
+use crate::exec_command::split_command_string;
 use crate::exec_command::strip_bash_lc_and_escape;
 use crate::get_git_diff::get_git_diff;
 use crate::history_cell;
@@ -1261,7 +1262,11 @@ fn exec_approval_request_from_params(
 ) -> ExecApprovalRequestEvent {
     ExecApprovalRequestEvent {
         call_id: params.item_id,
-        command: params.command.into_iter().collect(),
+        command: params
+            .command
+            .as_deref()
+            .map(split_command_string)
+            .unwrap_or_default(),
         cwd: params.cwd.unwrap_or_default(),
         reason: params.reason,
         network_approval_context: params
@@ -5809,7 +5814,7 @@ impl ChatWidget {
                         call_id: id,
                         process_id,
                         turn_id: turn_id.clone(),
-                        command: vec![command],
+                        command: split_command_string(&command),
                         cwd,
                         parsed_cmd: command_actions
                             .into_iter()
@@ -5824,7 +5829,7 @@ impl ChatWidget {
                         call_id: id,
                         process_id,
                         turn_id: turn_id.clone(),
-                        command: vec![command],
+                        command: split_command_string(&command),
                         cwd,
                         parsed_cmd: command_actions
                             .into_iter()
@@ -6391,7 +6396,7 @@ impl ChatWidget {
                     call_id: id,
                     process_id,
                     turn_id: notification.turn_id,
-                    command: vec![command],
+                    command: split_command_string(&command),
                     cwd,
                     parsed_cmd: command_actions
                         .into_iter()
