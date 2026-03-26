@@ -217,6 +217,83 @@ fn collab_agent_list_item_schema() -> JsonValue {
     })
 }
 
+fn collab_agent_progress_snapshot_schema() -> JsonValue {
+    json!({
+        "type": "object",
+        "properties": {
+            "movement": {
+                "type": "string",
+                "enum": ["active", "quiet", "unknown"],
+                "description": "Compact movement signal derived from bounded session-tail and usage-heartbeat evidence."
+            },
+            "observed_at": {
+                "type": "string",
+                "description": "RFC3339 timestamp for when this progress snapshot was computed."
+            },
+            "freshness_seconds": {
+                "type": ["number", "null"],
+                "description": "Smallest age in seconds across the available progress evidence."
+            },
+            "session_tail": {
+                "oneOf": [
+                    {
+                        "type": "object",
+                        "properties": {
+                            "latest_at": { "type": "string" },
+                            "age_seconds": { "type": "number" },
+                            "lines": {
+                                "type": "array",
+                                "items": { "type": "string" }
+                            }
+                        },
+                        "required": ["latest_at", "age_seconds", "lines"],
+                        "additionalProperties": false
+                    },
+                    { "type": "null" }
+                ],
+                "description": "Bounded thread-local log tail for recent meaningful activity."
+            },
+            "usage_heartbeat": {
+                "oneOf": [
+                    {
+                        "type": "object",
+                        "properties": {
+                            "latest_turn_id": { "type": ["string", "null"] },
+                            "latest_started_at": { "type": ["string", "null"] },
+                            "latest_completed_at": { "type": ["string", "null"] },
+                            "latest_provider": { "type": ["string", "null"] },
+                            "latest_model": { "type": ["string", "null"] },
+                            "latest_activity_age_seconds": { "type": ["number", "null"] },
+                            "recent_provider_call_count": { "type": "number" },
+                            "recent_total_tokens": { "type": "number" },
+                            "recent_models": {
+                                "type": "array",
+                                "items": { "type": "string" }
+                            }
+                        },
+                        "required": [
+                            "latest_turn_id",
+                            "latest_started_at",
+                            "latest_completed_at",
+                            "latest_provider",
+                            "latest_model",
+                            "latest_activity_age_seconds",
+                            "recent_provider_call_count",
+                            "recent_total_tokens",
+                            "recent_models"
+                        ],
+                        "additionalProperties": false
+                    },
+                    { "type": "null" }
+                ],
+                "description": "Bounded usage-ledger heartbeat for recent provider-call/token movement."
+            }
+        },
+        "required": ["movement", "observed_at", "freshness_seconds", "session_tail", "usage_heartbeat"],
+        "additionalProperties": false
+    })
+}
+
 fn spawn_agent_output_schema() -> JsonValue {
     collab_agent_list_item_schema()
 }
@@ -229,9 +306,14 @@ fn list_agents_output_schema() -> JsonValue {
                 "type": "array",
                 "description": "Current list of visible agent snapshots.",
                 "items": collab_agent_list_item_schema()
+            },
+            "progress_by_id": {
+                "type": "object",
+                "description": "Bounded progress evidence keyed by thread id for currently active agents in this snapshot.",
+                "additionalProperties": collab_agent_progress_snapshot_schema()
             }
         },
-        "required": ["agents"],
+        "required": ["agents", "progress_by_id"],
         "additionalProperties": false
     })
 }
@@ -285,6 +367,11 @@ fn wait_output_schema() -> JsonValue {
                     "type": "string"
                 }
             },
+            "pending_progress": {
+                "type": "object",
+                "description": "Bounded progress evidence keyed by thread id for entries in `pending_ids`.",
+                "additionalProperties": collab_agent_progress_snapshot_schema()
+            },
             "completion_reason": {
                 "type": "string",
                 "enum": ["terminal", "timeout"],
@@ -296,7 +383,7 @@ fn wait_output_schema() -> JsonValue {
                     "Whether the call returned due to timeout before the requested condition was reached."
             }
         },
-        "required": ["status", "requested_ids", "pending_ids", "completion_reason", "timed_out"],
+        "required": ["status", "requested_ids", "pending_ids", "pending_progress", "completion_reason", "timed_out"],
         "additionalProperties": false
     })
 }

@@ -121,6 +121,7 @@ struct SpawnAgentResult {
 #[derive(Debug, Deserialize)]
 struct ListAgentsResult {
     agents: Vec<ListAgentEntry>,
+    progress_by_id: HashMap<String, serde_json::Value>,
 }
 
 #[derive(Debug, Deserialize, PartialEq, Eq)]
@@ -2005,6 +2006,10 @@ async fn multi_agent_v2_wait_agent_accepts_targets_argument() {
         result,
         wait::WaitAgentResult {
             status: HashMap::from([(target, AgentStatus::NotFound)]),
+            requested_ids: vec![ThreadId::from_string(&target).expect("valid target id")],
+            pending_ids: vec![],
+            pending_progress: HashMap::new(),
+            completion_reason: CollabWaitingCompletionReason::Terminal,
             timed_out: false,
         }
     );
@@ -2040,6 +2045,7 @@ async fn wait_agent_returns_not_found_for_missing_agents() {
             status: HashMap::from([(id_a, AgentStatus::NotFound), (id_b, AgentStatus::NotFound),]),
             requested_ids: vec![id_a, id_b],
             pending_ids: vec![],
+            pending_progress: HashMap::new(),
             completion_reason: CollabWaitingCompletionReason::Terminal,
             timed_out: false
         }
@@ -2077,6 +2083,7 @@ async fn wait_agent_times_out_when_status_is_not_final() {
             status: HashMap::new(),
             requested_ids: vec![agent_id],
             pending_ids: vec![agent_id],
+            pending_progress: HashMap::new(),
             completion_reason: CollabWaitingCompletionReason::Timeout,
             timed_out: true
         }
@@ -2170,6 +2177,7 @@ async fn wait_agent_returns_final_status_without_timeout() {
             status: HashMap::from([(agent_id, AgentStatus::Shutdown)]),
             requested_ids: vec![agent_id],
             pending_ids: vec![],
+            pending_progress: HashMap::new(),
             completion_reason: CollabWaitingCompletionReason::Terminal,
             timed_out: false
         }
@@ -2227,6 +2235,7 @@ async fn wait_agent_allows_return_when_any_and_returns_on_first_final_status() {
             status: HashMap::from([(final_thread_id, AgentStatus::Shutdown)]),
             requested_ids: vec![final_thread_id, pending_thread_id],
             pending_ids: vec![pending_thread_id],
+            pending_progress: HashMap::new(),
             completion_reason: CollabWaitingCompletionReason::Terminal,
             timed_out: false
         }
@@ -2298,6 +2307,47 @@ async fn wait_agent_allows_return_when_all_and_returns_only_when_all_are_final()
     assert!(result.pending_ids.is_empty());
     assert_eq!(result.timed_out, false);
     assert_eq!(success, None);
+}
+
+#[test]
+fn progress_snapshot_serializes_with_non_empty_usage_heartbeat_payload() {
+    let now = chrono::Utc::now();
+    let summary = codex_state::UsageHeartbeatSummary {
+        latest_turn_id: Some("turn-progress-1".to_string()),
+        latest_provider: Some("openai".to_string()),
+        latest_model: Some("gpt-5.4".to_string()),
+        latest_started_at: Some((now - chrono::Duration::seconds(12)).to_rfc3339()),
+        latest_completed_at: Some((now - chrono::Duration::seconds(9)).to_rfc3339()),
+        recent_provider_call_count: 3,
+        recent_models: vec!["gpt-5.4".to_string()],
+        recent_total_tokens: 777,
+    };
+    let usage = build_usage_progress(&summary, now).expect("usage heartbeat should be populated");
+    let freshness_seconds = usage.latest_activity_age_seconds;
+    let movement = classify_progress_movement(None, Some(&usage), freshness_seconds);
+    assert_eq!(movement, AgentProgressMovement::Active);
+
+    let snapshot = AgentProgressSnapshot {
+        movement,
+        observed_at: now.to_rfc3339(),
+        freshness_seconds,
+        session_tail: None,
+        usage_heartbeat: Some(usage),
+    };
+    let payload = serde_json::to_value(&snapshot).expect("snapshot should serialize");
+    assert_eq!(payload["movement"], serde_json::json!("active"));
+    assert_eq!(
+        payload["usage_heartbeat"]["latest_turn_id"],
+        "turn-progress-1"
+    );
+    assert_eq!(
+        payload["usage_heartbeat"]["recent_provider_call_count"],
+        serde_json::json!(3)
+    );
+    assert_eq!(
+        payload["usage_heartbeat"]["recent_total_tokens"],
+        serde_json::json!(777)
+    );
 }
 
 #[tokio::test]

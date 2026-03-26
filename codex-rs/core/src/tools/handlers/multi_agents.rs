@@ -23,6 +23,10 @@ use crate::tools::handlers::parse_arguments;
 use crate::tools::registry::ToolHandler;
 use crate::tools::registry::ToolKind;
 use async_trait::async_trait;
+use chrono::DateTime;
+use chrono::Duration;
+use chrono::SecondsFormat;
+use chrono::Utc;
 use codex_features::Feature;
 use codex_protocol::AgentPath;
 use codex_protocol::ThreadId;
@@ -45,11 +49,15 @@ use codex_protocol::protocol::CollabWaitingEndEvent;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::SubAgentSource;
 use codex_protocol::user_input::UserInput;
+use codex_state::LogQuery;
+use codex_state::UsageHeartbeatSummary;
 use serde::Deserialize;
 use serde::Serialize;
 use serde_json::Value as JsonValue;
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::sync::Arc;
+use tracing::warn;
 
 pub(crate) use close_agent::Handler as CloseAgentHandler;
 pub(crate) use list_agents::Handler as ListAgentsHandler;
@@ -62,6 +70,11 @@ pub(crate) use wait::Handler as WaitAgentHandler;
 pub(crate) const MIN_WAIT_TIMEOUT_MS: i64 = 10_000;
 pub(crate) const DEFAULT_WAIT_TIMEOUT_MS: i64 = 30_000;
 pub(crate) const MAX_WAIT_TIMEOUT_MS: i64 = 3600 * 1000;
+const PROGRESS_SESSION_TAIL_ROWS: usize = 16;
+const PROGRESS_SESSION_TAIL_LINES: usize = 3;
+const PROGRESS_RECENT_WINDOW_MINUTES: i64 = 15;
+const PROGRESS_MAX_MODELS: usize = 3;
+const PROGRESS_ACTIVE_FRESHNESS_SECONDS: i64 = 90;
 
 fn function_arguments(payload: ToolPayload) -> Result<String, FunctionCallError> {
     match payload {
@@ -146,6 +159,227 @@ fn build_wait_agent_statuses(
     extras.sort_by(|left, right| left.thread_id.to_string().cmp(&right.thread_id.to_string()));
     entries.extend(extras);
     entries
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum AgentProgressMovement {
+    Active,
+    Quiet,
+    Unknown,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+pub(crate) struct AgentSessionTailProgress {
+    pub(crate) latest_at: String,
+    pub(crate) age_seconds: i64,
+    pub(crate) lines: Vec<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+pub(crate) struct AgentUsageHeartbeatProgress {
+    pub(crate) latest_turn_id: Option<String>,
+    pub(crate) latest_started_at: Option<String>,
+    pub(crate) latest_completed_at: Option<String>,
+    pub(crate) latest_provider: Option<String>,
+    pub(crate) latest_model: Option<String>,
+    pub(crate) latest_activity_age_seconds: Option<i64>,
+    pub(crate) recent_provider_call_count: i64,
+    pub(crate) recent_total_tokens: i64,
+    pub(crate) recent_models: Vec<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+pub(crate) struct AgentProgressSnapshot {
+    pub(crate) movement: AgentProgressMovement,
+    pub(crate) observed_at: String,
+    pub(crate) freshness_seconds: Option<i64>,
+    pub(crate) session_tail: Option<AgentSessionTailProgress>,
+    pub(crate) usage_heartbeat: Option<AgentUsageHeartbeatProgress>,
+}
+
+pub(crate) async fn collect_agent_progress_by_id(
+    session: &Session,
+    thread_ids: &[ThreadId],
+) -> HashMap<String, AgentProgressSnapshot> {
+    let Some(state_db) = session.services.state_db.as_ref() else {
+        return HashMap::new();
+    };
+    let mut unique_thread_ids = Vec::with_capacity(thread_ids.len());
+    let mut seen = HashSet::with_capacity(thread_ids.len());
+    for thread_id in thread_ids {
+        if seen.insert(*thread_id) {
+            unique_thread_ids.push(*thread_id);
+        }
+    }
+    if unique_thread_ids.is_empty() {
+        return HashMap::new();
+    }
+
+    let now = Utc::now();
+    let recent_since = now - Duration::minutes(PROGRESS_RECENT_WINDOW_MINUTES);
+    let usage_heartbeats = match state_db
+        .usage_heartbeats_by_thread(
+            &unique_thread_ids,
+            &recent_since.to_rfc3339(),
+            PROGRESS_MAX_MODELS,
+        )
+        .await
+    {
+        Ok(rows) => rows,
+        Err(err) => {
+            warn!("failed to read usage heartbeat rows: {err}");
+            HashMap::new()
+        }
+    };
+
+    let mut progress_by_id = HashMap::with_capacity(unique_thread_ids.len());
+    for thread_id in unique_thread_ids {
+        let thread_id_str = thread_id.to_string();
+        let session_tail = read_session_tail_progress(state_db, &thread_id_str, now).await;
+        let usage_heartbeat = usage_heartbeats
+            .get(&thread_id)
+            .and_then(|summary| build_usage_progress(summary, now));
+        let freshness_seconds = [
+            session_tail.as_ref().map(|tail| tail.age_seconds),
+            usage_heartbeat
+                .as_ref()
+                .and_then(|usage| usage.latest_activity_age_seconds),
+        ]
+        .into_iter()
+        .flatten()
+        .min();
+        let movement = classify_progress_movement(
+            session_tail.as_ref(),
+            usage_heartbeat.as_ref(),
+            freshness_seconds,
+        );
+
+        progress_by_id.insert(
+            thread_id_str,
+            AgentProgressSnapshot {
+                movement,
+                observed_at: now.to_rfc3339_opts(SecondsFormat::Secs, true),
+                freshness_seconds,
+                session_tail,
+                usage_heartbeat,
+            },
+        );
+    }
+
+    progress_by_id
+}
+
+fn classify_progress_movement(
+    session_tail: Option<&AgentSessionTailProgress>,
+    usage_heartbeat: Option<&AgentUsageHeartbeatProgress>,
+    freshness_seconds: Option<i64>,
+) -> AgentProgressMovement {
+    if freshness_seconds.is_some_and(|age| age <= PROGRESS_ACTIVE_FRESHNESS_SECONDS) {
+        return AgentProgressMovement::Active;
+    }
+    if session_tail.is_some() || usage_heartbeat.is_some() {
+        return AgentProgressMovement::Quiet;
+    }
+    AgentProgressMovement::Unknown
+}
+
+fn build_usage_progress(
+    summary: &UsageHeartbeatSummary,
+    now: DateTime<Utc>,
+) -> Option<AgentUsageHeartbeatProgress> {
+    if summary.latest_started_at.is_none()
+        && summary.latest_completed_at.is_none()
+        && summary.recent_provider_call_count == 0
+        && summary.recent_total_tokens == 0
+        && summary.recent_models.is_empty()
+    {
+        return None;
+    }
+    let latest_activity_age_seconds = summary
+        .latest_completed_at
+        .as_ref()
+        .or(summary.latest_started_at.as_ref())
+        .and_then(|ts| parse_rfc3339_age_seconds(ts, now));
+    Some(AgentUsageHeartbeatProgress {
+        latest_turn_id: summary.latest_turn_id.clone(),
+        latest_started_at: summary.latest_started_at.clone(),
+        latest_completed_at: summary.latest_completed_at.clone(),
+        latest_provider: summary.latest_provider.clone(),
+        latest_model: summary.latest_model.clone(),
+        latest_activity_age_seconds,
+        recent_provider_call_count: summary.recent_provider_call_count,
+        recent_total_tokens: summary.recent_total_tokens,
+        recent_models: summary.recent_models.clone(),
+    })
+}
+
+async fn read_session_tail_progress(
+    state_db: &crate::state_db::StateDbHandle,
+    thread_id: &str,
+    now: DateTime<Utc>,
+) -> Option<AgentSessionTailProgress> {
+    let rows = state_db
+        .query_logs(&LogQuery {
+            thread_ids: vec![thread_id.to_string()],
+            limit: Some(PROGRESS_SESSION_TAIL_ROWS),
+            descending: true,
+            ..Default::default()
+        })
+        .await
+        .ok()?;
+    if rows.is_empty() {
+        return None;
+    }
+    let mut lines = Vec::with_capacity(PROGRESS_SESSION_TAIL_LINES);
+    let mut latest_at = None;
+    let mut latest_age_seconds = None;
+    for row in rows {
+        if latest_at.is_none() {
+            let ts_nanos = u32::try_from(row.ts_nanos).unwrap_or_default();
+            if let Some(ts) = DateTime::<Utc>::from_timestamp(row.ts, ts_nanos) {
+                latest_age_seconds = Some((now - ts).num_seconds().max(0));
+                latest_at = Some(ts.to_rfc3339_opts(SecondsFormat::Secs, true));
+            }
+        }
+        if let Some(message) = row.message.as_deref().map(str::trim)
+            && !message.is_empty()
+            && lines.len() < PROGRESS_SESSION_TAIL_LINES
+        {
+            lines.push(truncate_progress_line(message));
+        }
+        if lines.len() >= PROGRESS_SESSION_TAIL_LINES {
+            break;
+        }
+    }
+
+    latest_at.map(|latest_at| AgentSessionTailProgress {
+        latest_at,
+        age_seconds: latest_age_seconds.unwrap_or(i64::MAX),
+        lines,
+    })
+}
+
+fn parse_rfc3339_age_seconds(ts: &str, now: DateTime<Utc>) -> Option<i64> {
+    DateTime::parse_from_rfc3339(ts)
+        .ok()
+        .map(|parsed| (now - parsed.with_timezone(&Utc)).num_seconds().max(0))
+}
+
+fn truncate_progress_line(line: &str) -> String {
+    const MAX_CHARS: usize = 120;
+    let mut chars = line.chars();
+    let mut buf = String::with_capacity(MAX_CHARS + 3);
+    for _ in 0..MAX_CHARS {
+        let Some(ch) = chars.next() else {
+            return line.to_string();
+        };
+        buf.push(ch);
+    }
+    if chars.next().is_some() {
+        buf.push_str("...");
+    }
+    buf
 }
 
 fn collab_spawn_error(err: CodexErr) -> FunctionCallError {
