@@ -39,17 +39,18 @@ impl ToolHandler for Handler {
                 "provide either ids or targets, but not both".to_string(),
             ));
         }
-        let raw_targets = if !args.targets.is_empty() {
-            args.targets
-        } else {
+        let receiver_thread_ids = if !args.targets.is_empty() {
+            resolve_agent_targets(&session, &turn, args.targets).await?
+        } else if !args.ids.is_empty() {
             args.ids
-        };
-        if raw_targets.is_empty() {
+                .iter()
+                .map(|id| agent_id(id))
+                .collect::<Result<Vec<_>, _>>()?
+        } else {
             return Err(FunctionCallError::RespondToModel(
                 "one of ids or targets must be non-empty".to_string(),
             ));
-        }
-        let receiver_thread_ids = resolve_agent_targets(&session, &turn, raw_targets).await?;
+        };
         let mut seen = HashSet::with_capacity(receiver_thread_ids.len());
         for id in &receiver_thread_ids {
             if !seen.insert(*id) {

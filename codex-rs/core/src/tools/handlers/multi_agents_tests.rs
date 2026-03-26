@@ -2039,6 +2039,28 @@ async fn multi_agent_v2_wait_agent_accepts_targets_argument() {
 }
 
 #[tokio::test]
+async fn wait_agent_ids_require_strict_thread_ids() {
+    let (mut session, turn) = make_session_and_context().await;
+    let manager = thread_manager();
+    session.services.agent_control = manager.agent_control();
+    let invocation = invocation(
+        Arc::new(session),
+        Arc::new(turn),
+        "wait_agent",
+        function_payload(json!({
+            "ids": ["named-agent-target"],
+        })),
+    );
+    let Err(err) = WaitAgentHandler.handle(invocation).await else {
+        panic!("non-thread ids should be rejected on the ids path");
+    };
+    assert!(
+        matches!(err, FunctionCallError::RespondToModel(message) if message.contains("invalid agent id")),
+        "unexpected error: {err:?}"
+    );
+}
+
+#[tokio::test]
 async fn wait_agent_returns_not_found_for_missing_agents() {
     let (mut session, turn) = make_session_and_context().await;
     let manager = thread_manager();
