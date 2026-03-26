@@ -423,20 +423,25 @@ mod phase2 {
     use crate::config::test_config;
     use crate::memories::memory_root;
     use crate::memories::phase2;
+    use crate::memories::prompts::build_consolidation_prompt;
     use crate::memories::raw_memories_file;
     use crate::memories::rollout_summaries_dir;
     use chrono::Utc;
     use codex_config::Constrained;
     use codex_protocol::ThreadId;
-    use codex_protocol::permissions::FileSystemSandboxPolicy;
-    use codex_protocol::permissions::NetworkSandboxPolicy;
     use codex_protocol::protocol::AskForApproval;
+    use codex_protocol::protocol::FileSystemSandboxPolicy;
+    use codex_protocol::protocol::NetworkSandboxPolicy;
     use codex_protocol::protocol::Op;
     use codex_protocol::protocol::SandboxPolicy;
     use codex_protocol::protocol::SessionSource;
+    use codex_state::Phase2InputSelection;
     use codex_state::Phase2JobClaimOutcome;
     use codex_state::Stage1Output;
+    use codex_state::Stage1OutputRef;
     use codex_state::ThreadMetadataBuilder;
+    use codex_utils_absolute_path::AbsolutePathBuf;
+    use core_test_support::PathBufExt;
     use std::path::PathBuf;
     use std::sync::Arc;
     use std::time::Duration;
@@ -458,6 +463,24 @@ mod phase2 {
         }
     }
 
+    fn selection_for_attested_outputs(selected: Vec<Stage1Output>) -> Phase2InputSelection {
+        Phase2InputSelection {
+            previous_selected: selected.clone(),
+            retained_thread_ids: selected.iter().map(|output| output.thread_id).collect(),
+            selected,
+            removed: Vec::new(),
+        }
+    }
+
+    fn config_for_memory_root(root: &std::path::Path) -> Arc<Config> {
+        let mut config = test_config();
+        config.codex_home = root
+            .parent()
+            .expect("memory root should have a codex home parent")
+            .to_path_buf();
+        Arc::new(config)
+    }
+
     struct DispatchHarness {
         _codex_home: TempDir,
         config: Arc<Config>,
@@ -471,7 +494,7 @@ mod phase2 {
             let codex_home = tempfile::tempdir().expect("create temp codex home");
             let mut config = test_config();
             config.codex_home = codex_home.path().to_path_buf();
-            config.cwd = config.codex_home.clone();
+            config.cwd = config.codex_home.abs();
             let config = Arc::new(config);
 
             let state_db = codex_state::StateRuntime::init(
@@ -509,7 +532,7 @@ mod phase2 {
                 Utc::now(),
                 SessionSource::Cli,
             );
-            metadata_builder.cwd = self.config.cwd.clone();
+            metadata_builder.cwd = self.config.cwd.to_path_buf();
             metadata_builder.model_provider = Some(self.config.model_provider_id.clone());
             let metadata = metadata_builder.build(&self.config.model_provider_id);
 
@@ -591,9 +614,12 @@ mod phase2 {
     }
 
     #[tokio::test]
-    async fn consolidation_artifacts_ready_requires_recent_non_empty_outputs() {
+    async fn consolidation_artifacts_ready_requires_recent_non_empty_outputs_when_selection_changed()
+     {
         let temp_dir = tempfile::tempdir().expect("temp dir");
         let root = temp_dir.path();
+        let config = config_for_memory_root(root);
+        let selection = selection_for_attested_outputs(Vec::new());
         let memory_index_path = root.join("MEMORY.md");
         let memory_summary_path = root.join("memory_summary.md");
 
@@ -607,28 +633,861 @@ mod phase2 {
         assert!(
             !phase2::agent::consolidation_artifacts_ready(
                 root,
+                &config,
                 std::time::SystemTime::now() + Duration::from_secs(60),
+                false,
+                &selection,
             )
             .await,
             "artifacts should be rejected when they are older than the current consolidation run"
         );
 
+        assert!(
+            phase2::agent::consolidation_artifacts_ready(
+                root,
+                &config,
+                std::time::SystemTime::UNIX_EPOCH,
+                false,
+                &selection,
+            )
+            .await,
+            "artifacts should be accepted when both files are fresh enough and non-empty"
+        );
+
+        tokio::fs::write(&memory_index_path, "")
+            .await
+            .expect("clear memory index");
+        assert!(
+            !phase2::agent::consolidation_artifacts_ready(
+                root,
+                &config,
+                std::time::SystemTime::UNIX_EPOCH,
+                false,
+                &selection,
+            )
+            .await,
+            "artifacts should be rejected when MEMORY.md is empty"
+        );
+
+        tokio::fs::write(&memory_index_path, "memory index\n")
+            .await
+            .expect("rewrite memory index");
         tokio::fs::write(&memory_summary_path, "")
             .await
             .expect("clear memory summary");
         assert!(
-            !phase2::agent::consolidation_artifacts_ready(root, std::time::SystemTime::UNIX_EPOCH)
-                .await,
+            !phase2::agent::consolidation_artifacts_ready(
+                root,
+                &config,
+                std::time::SystemTime::UNIX_EPOCH,
+                false,
+                &selection,
+            )
+            .await,
             "artifacts should be rejected when memory_summary.md is empty"
         );
+    }
 
+    #[tokio::test]
+    async fn consolidation_artifacts_ready_allows_existing_outputs_when_selection_is_unchanged() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let codex_home = temp_dir.path().join("codex-home");
+        let root = memory_root(&codex_home);
+        let config = config_for_memory_root(&root);
+        let memory_index_path = root.join("MEMORY.md");
+        let memory_summary_path = root.join("memory_summary.md");
+        tokio::fs::create_dir_all(&root)
+            .await
+            .expect("create memory root");
+
+        tokio::fs::write(&memory_index_path, "memory index\n")
+            .await
+            .expect("write memory index");
         tokio::fs::write(&memory_summary_path, "memory summary\n")
             .await
-            .expect("rewrite memory summary");
+            .expect("write memory summary");
+
+        let selected_outputs = vec![stage1_output_with_source_updated_at(200)];
+        let selection = selection_for_attested_outputs(selected_outputs.clone());
+        phase2::test_write_consolidation_artifact_attestation(
+            Arc::clone(&config),
+            &root,
+            &selection,
+        )
+        .await
+        .expect("write attestation");
+
         assert!(
-            phase2::agent::consolidation_artifacts_ready(root, std::time::SystemTime::UNIX_EPOCH)
-                .await,
-            "artifacts should be accepted when both files are fresh and non-empty"
+            phase2::agent::consolidation_artifacts_ready(
+                &root,
+                &config,
+                std::time::SystemTime::now() + Duration::from_secs(60),
+                true,
+                &selection,
+            )
+            .await,
+            "unchanged selections should accept existing non-empty artifacts even if mtimes do not advance"
+        );
+    }
+
+    #[tokio::test]
+    async fn consolidation_artifacts_ready_still_requires_non_empty_outputs_when_reuse_is_allowed()
+    {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let codex_home = temp_dir.path().join("codex-home");
+        let root = memory_root(&codex_home);
+        let config = config_for_memory_root(&root);
+        let selection = selection_for_attested_outputs(Vec::new());
+        let memory_index_path = root.join("MEMORY.md");
+        let memory_summary_path = root.join("memory_summary.md");
+        tokio::fs::create_dir_all(&root)
+            .await
+            .expect("create memory root");
+
+        tokio::fs::write(&memory_index_path, "")
+            .await
+            .expect("write empty memory index");
+        tokio::fs::write(&memory_summary_path, "memory summary\n")
+            .await
+            .expect("write memory summary");
+
+        assert!(
+            !phase2::agent::consolidation_artifacts_ready(
+                &root,
+                &config,
+                std::time::SystemTime::now() + Duration::from_secs(60),
+                true,
+                &selection,
+            )
+            .await,
+            "reuse should still fail closed when MEMORY.md is empty"
+        );
+    }
+
+    #[tokio::test]
+    async fn consolidation_artifacts_ready_bootstraps_matching_existing_artifacts_without_attestation()
+     {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let codex_home = temp_dir.path().join("codex-home");
+        let root = memory_root(&codex_home);
+        let config = config_for_memory_root(&root);
+        let memory_index_path = root.join("MEMORY.md");
+        let memory_summary_path = root.join("memory_summary.md");
+        tokio::fs::create_dir_all(&root)
+            .await
+            .expect("create memory root");
+
+        tokio::fs::write(&memory_index_path, "memory index\n")
+            .await
+            .expect("write memory index");
+        tokio::fs::write(&memory_summary_path, "memory summary\n")
+            .await
+            .expect("write memory summary");
+
+        let selected_outputs = vec![stage1_output_with_source_updated_at(200)];
+        let selection = selection_for_attested_outputs(selected_outputs);
+        let expected_supporting_tree =
+            phase2::test_supporting_artifact_tree_sha256(&root).expect("supporting tree hash");
+
+        assert!(
+            phase2::agent::consolidation_artifacts_ready_with_expected_supporting_tree(
+                &root,
+                &config,
+                std::time::SystemTime::now() + Duration::from_secs(60),
+                Some(expected_supporting_tree.as_str()),
+                true,
+                &selection,
+            )
+            .await,
+            "first-rollout unchanged selections should bootstrap from matching existing artifacts even before an attestation exists"
+        );
+    }
+
+    #[tokio::test]
+    async fn consolidation_artifacts_ready_rejects_malformed_attestation_when_reuse_is_allowed() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let codex_home = temp_dir.path().join("codex-home");
+        let root = memory_root(&codex_home);
+        let config = config_for_memory_root(&root);
+        let memory_index_path = root.join("MEMORY.md");
+        let memory_summary_path = root.join("memory_summary.md");
+        tokio::fs::create_dir_all(&root)
+            .await
+            .expect("create memory root");
+
+        tokio::fs::write(&memory_index_path, "memory index\n")
+            .await
+            .expect("write memory index");
+        tokio::fs::write(&memory_summary_path, "memory summary\n")
+            .await
+            .expect("write memory summary");
+
+        let selected_outputs = vec![stage1_output_with_source_updated_at(200)];
+        let selection = selection_for_attested_outputs(selected_outputs);
+        let expected_supporting_tree =
+            phase2::test_supporting_artifact_tree_sha256(&root).expect("supporting tree hash");
+        let attestation_path =
+            phase2::test_consolidation_artifact_attestation_path(&root).expect("attestation path");
+        tokio::fs::write(attestation_path, b"{ not valid json")
+            .await
+            .expect("write malformed attestation");
+
+        assert!(
+            !phase2::agent::consolidation_artifacts_ready_with_expected_supporting_tree(
+                &root,
+                &config,
+                std::time::SystemTime::now() + Duration::from_secs(60),
+                Some(expected_supporting_tree.as_str()),
+                true,
+                &selection,
+            )
+            .await,
+            "malformed attestations should remain fail-closed"
+        );
+    }
+
+    #[tokio::test]
+    async fn consolidation_artifacts_ready_rejects_missing_attestation_after_support_initialized() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let codex_home = temp_dir.path().join("codex-home");
+        let root = memory_root(&codex_home);
+        let config = config_for_memory_root(&root);
+        let memory_index_path = root.join("MEMORY.md");
+        let memory_summary_path = root.join("memory_summary.md");
+        tokio::fs::create_dir_all(&root)
+            .await
+            .expect("create memory root");
+
+        tokio::fs::write(&memory_index_path, "memory index\n")
+            .await
+            .expect("write memory index");
+        tokio::fs::write(&memory_summary_path, "memory summary\n")
+            .await
+            .expect("write memory summary");
+
+        let selected_outputs = vec![stage1_output_with_source_updated_at(200)];
+        let selection = selection_for_attested_outputs(selected_outputs);
+        let expected_supporting_tree =
+            phase2::test_supporting_artifact_tree_sha256(&root).expect("supporting tree hash");
+
+        phase2::test_write_consolidation_artifact_attestation(
+            Arc::clone(&config),
+            &root,
+            &selection,
+        )
+        .await
+        .expect("write attestation");
+
+        let attestation_path =
+            phase2::test_consolidation_artifact_attestation_path(&root).expect("attestation path");
+        tokio::fs::remove_file(attestation_path)
+            .await
+            .expect("remove attestation");
+
+        assert!(
+            !phase2::agent::consolidation_artifacts_ready_with_expected_supporting_tree(
+                &root,
+                &config,
+                std::time::SystemTime::now() + Duration::from_secs(60),
+                Some(expected_supporting_tree.as_str()),
+                true,
+                &selection,
+            )
+            .await,
+            "once attestation support has been initialized, missing attestations should remain fail-closed"
+        );
+    }
+
+    #[tokio::test]
+    async fn consolidation_artifacts_ready_rejects_tampered_outputs_when_reuse_is_allowed() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let codex_home = temp_dir.path().join("codex-home");
+        let root = memory_root(&codex_home);
+        let memory_index_path = root.join("MEMORY.md");
+        let memory_summary_path = root.join("memory_summary.md");
+        let selected_outputs = vec![stage1_output_with_source_updated_at(200)];
+        let selection = selection_for_attested_outputs(selected_outputs.clone());
+        let config = config_for_memory_root(&root);
+        tokio::fs::create_dir_all(&root)
+            .await
+            .expect("create memory root");
+
+        tokio::fs::write(&memory_index_path, "memory index\n")
+            .await
+            .expect("write memory index");
+        tokio::fs::write(&memory_summary_path, "memory summary\n")
+            .await
+            .expect("write memory summary");
+        phase2::test_write_consolidation_artifact_attestation(
+            Arc::clone(&config),
+            &root,
+            &selection,
+        )
+        .await
+        .expect("write attestation");
+
+        tokio::fs::write(&memory_index_path, "tampered memory index\n")
+            .await
+            .expect("tamper memory index");
+
+        assert!(
+            !phase2::agent::consolidation_artifacts_ready(
+                &root,
+                &config,
+                std::time::SystemTime::now() + Duration::from_secs(60),
+                true,
+                &selection,
+            )
+            .await,
+            "reuse should fail closed when non-empty artifacts no longer match the last attested successful state"
+        );
+    }
+
+    #[tokio::test]
+    async fn consolidation_artifacts_ready_rejects_stale_skill_artifacts_when_reuse_is_allowed() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let codex_home = temp_dir.path().join("codex-home");
+        let root = memory_root(&codex_home);
+        let config = config_for_memory_root(&root);
+        let selection =
+            selection_for_attested_outputs(vec![stage1_output_with_source_updated_at(200)]);
+
+        tokio::fs::create_dir_all(root.join("skills/demo"))
+            .await
+            .expect("create skills dir");
+        tokio::fs::write(root.join("MEMORY.md"), "memory index\n")
+            .await
+            .expect("write memory index");
+        tokio::fs::write(root.join("memory_summary.md"), "memory summary\n")
+            .await
+            .expect("write memory summary");
+        tokio::fs::write(root.join("skills/demo/SKILL.md"), "trusted skill\n")
+            .await
+            .expect("write skill");
+
+        phase2::test_write_consolidation_artifact_attestation(
+            Arc::clone(&config),
+            &root,
+            &selection,
+        )
+        .await
+        .expect("write attestation");
+
+        tokio::fs::write(root.join("skills/demo/SKILL.md"), "tampered skill\n")
+            .await
+            .expect("tamper skill");
+
+        assert!(
+            !phase2::agent::consolidation_artifacts_ready(
+                &root,
+                &config,
+                std::time::SystemTime::now() + Duration::from_secs(60),
+                true,
+                &selection,
+            )
+            .await,
+            "reuse should fail closed when managed skill artifacts drift from the attested tree state"
+        );
+    }
+
+    #[tokio::test]
+    async fn consolidation_artifacts_ready_rejects_stale_supporting_artifacts_even_when_outputs_are_fresh()
+     {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let root = temp_dir.path();
+        let config = config_for_memory_root(root);
+        let selection = selection_for_attested_outputs(Vec::new());
+        let memory_index_path = root.join("MEMORY.md");
+        let memory_summary_path = root.join("memory_summary.md");
+
+        tokio::fs::create_dir_all(root.join("skills/demo"))
+            .await
+            .expect("create skills dir");
+        tokio::fs::write(&memory_index_path, "memory index\n")
+            .await
+            .expect("write memory index");
+        tokio::fs::write(&memory_summary_path, "memory summary\n")
+            .await
+            .expect("write memory summary");
+        tokio::fs::write(root.join("skills/demo/SKILL.md"), "trusted skill\n")
+            .await
+            .expect("write skill");
+
+        let expected_supporting_tree = phase2::test_supporting_artifact_tree_sha256(root)
+            .expect("fingerprint prepared supporting tree");
+
+        tokio::fs::write(root.join("skills/demo/SKILL.md"), "tampered skill\n")
+            .await
+            .expect("tamper skill");
+        tokio::fs::write(&memory_index_path, "fresh memory index\n")
+            .await
+            .expect("refresh memory index");
+        tokio::fs::write(&memory_summary_path, "fresh memory summary\n")
+            .await
+            .expect("refresh memory summary");
+
+        assert!(
+            !phase2::agent::consolidation_artifacts_ready_with_expected_supporting_tree(
+                root,
+                &config,
+                std::time::SystemTime::UNIX_EPOCH,
+                Some(expected_supporting_tree.as_str()),
+                false,
+                &selection,
+            )
+            .await,
+            "fresh outputs should still fail closed when prepared supporting artifacts drift before validation"
+        );
+    }
+
+    #[tokio::test]
+    async fn consolidation_attestation_is_isolated_per_memory_root() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let codex_home_a = temp_dir.path().join("codex-home-a");
+        let codex_home_b = temp_dir.path().join("codex-home-b");
+        let root_a = memory_root(&codex_home_a);
+        let root_b = memory_root(&codex_home_b);
+        let config_a = config_for_memory_root(&root_a);
+        let config_b = config_for_memory_root(&root_b);
+        let selected_outputs = vec![stage1_output_with_source_updated_at(200)];
+        let selection = selection_for_attested_outputs(selected_outputs);
+
+        for root in [&root_a, &root_b] {
+            tokio::fs::create_dir_all(root)
+                .await
+                .expect("create memory root");
+            tokio::fs::write(root.join("MEMORY.md"), "memory index\n")
+                .await
+                .expect("write memory index");
+            tokio::fs::write(root.join("memory_summary.md"), "memory summary\n")
+                .await
+                .expect("write memory summary");
+        }
+
+        phase2::test_write_consolidation_artifact_attestation(
+            Arc::clone(&config_a),
+            &root_a,
+            &selection,
+        )
+        .await
+        .expect("write attestation for root A");
+
+        assert!(
+            phase2::agent::consolidation_artifacts_ready(
+                &root_a,
+                &config_a,
+                std::time::SystemTime::now() + Duration::from_secs(60),
+                true,
+                &selection,
+            )
+            .await,
+            "root A should accept its own attestation"
+        );
+        assert!(
+            !phase2::agent::consolidation_artifacts_ready(
+                &root_b,
+                &config_b,
+                std::time::SystemTime::now() + Duration::from_secs(60),
+                true,
+                &selection,
+            )
+            .await,
+            "root B should not reuse a sibling root's attestation"
+        );
+    }
+
+    #[tokio::test]
+    async fn consolidation_attestation_rejects_provider_drift() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let codex_home = temp_dir.path().join("codex-home");
+        let root = memory_root(&codex_home);
+        let config = config_for_memory_root(&root);
+        let mut drifted_config = (*config).clone();
+        drifted_config.model_provider_id = "different-provider".to_string();
+        let drifted_config = Arc::new(drifted_config);
+        let selected_outputs = vec![stage1_output_with_source_updated_at(200)];
+        let selection = selection_for_attested_outputs(selected_outputs);
+
+        tokio::fs::create_dir_all(&root)
+            .await
+            .expect("create memory root");
+        tokio::fs::write(root.join("MEMORY.md"), "memory index\n")
+            .await
+            .expect("write memory index");
+        tokio::fs::write(root.join("memory_summary.md"), "memory summary\n")
+            .await
+            .expect("write memory summary");
+
+        phase2::test_write_consolidation_artifact_attestation(
+            Arc::clone(&config),
+            &root,
+            &selection,
+        )
+        .await
+        .expect("write attestation");
+
+        assert!(
+            !phase2::agent::consolidation_artifacts_ready(
+                &root,
+                &drifted_config,
+                std::time::SystemTime::now() + Duration::from_secs(60),
+                true,
+                &selection,
+            )
+            .await,
+            "reuse should fail closed when the consolidator provider contract changes"
+        );
+    }
+
+    #[tokio::test]
+    async fn consolidation_attestation_rejects_model_drift() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let codex_home = temp_dir.path().join("codex-home");
+        let root = memory_root(&codex_home);
+        let config = config_for_memory_root(&root);
+        let mut drifted_config = (*config).clone();
+        drifted_config.memories.consolidation_model = Some("other-model".to_string());
+        let drifted_config = Arc::new(drifted_config);
+        let selection =
+            selection_for_attested_outputs(vec![stage1_output_with_source_updated_at(200)]);
+
+        tokio::fs::create_dir_all(&root)
+            .await
+            .expect("create memory root");
+        tokio::fs::write(root.join("MEMORY.md"), "memory index\n")
+            .await
+            .expect("write memory index");
+        tokio::fs::write(root.join("memory_summary.md"), "memory summary\n")
+            .await
+            .expect("write memory summary");
+
+        phase2::test_write_consolidation_artifact_attestation(
+            Arc::clone(&config),
+            &root,
+            &selection,
+        )
+        .await
+        .expect("write attestation");
+
+        assert!(
+            !phase2::agent::consolidation_artifacts_ready(
+                &root,
+                &drifted_config,
+                std::time::SystemTime::now() + Duration::from_secs(60),
+                true,
+                &selection,
+            )
+            .await,
+            "reuse should fail closed when the consolidator model changes"
+        );
+    }
+
+    #[tokio::test]
+    async fn consolidation_attestation_rejects_prompt_contract_drift() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let codex_home = temp_dir.path().join("codex-home");
+        let root = memory_root(&codex_home);
+        let config = config_for_memory_root(&root);
+        let selected_output = stage1_output_with_source_updated_at(200);
+        let selection = selection_for_attested_outputs(vec![selected_output.clone()]);
+        let prompt_drift_selection = Phase2InputSelection {
+            previous_selected: Vec::new(),
+            retained_thread_ids: Vec::new(),
+            selected: vec![selected_output.clone()],
+            removed: vec![Stage1OutputRef {
+                thread_id: selected_output.thread_id,
+                source_updated_at: selected_output.source_updated_at,
+                rollout_slug: selected_output.rollout_slug.clone(),
+            }],
+        };
+
+        tokio::fs::create_dir_all(&root)
+            .await
+            .expect("create memory root");
+        tokio::fs::write(root.join("MEMORY.md"), "memory index\n")
+            .await
+            .expect("write memory index");
+        tokio::fs::write(root.join("memory_summary.md"), "memory summary\n")
+            .await
+            .expect("write memory summary");
+
+        phase2::test_write_consolidation_artifact_attestation(
+            Arc::clone(&config),
+            &root,
+            &selection,
+        )
+        .await
+        .expect("write attestation");
+
+        assert!(
+            !phase2::agent::consolidation_artifacts_ready(
+                &root,
+                &config,
+                std::time::SystemTime::now() + Duration::from_secs(60),
+                true,
+                &prompt_drift_selection,
+            )
+            .await,
+            "reuse should fail closed when the consolidation prompt contract changes"
+        );
+    }
+
+    #[tokio::test]
+    async fn consolidation_attestation_rejects_reasoning_effort_drift() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let codex_home = temp_dir.path().join("codex-home");
+        let root = memory_root(&codex_home);
+        let config = config_for_memory_root(&root);
+        let selection =
+            selection_for_attested_outputs(vec![stage1_output_with_source_updated_at(200)]);
+        let model = config
+            .memories
+            .consolidation_model
+            .as_deref()
+            .unwrap_or("gpt-5.3-codex");
+        let prompt = build_consolidation_prompt(&root, &selection);
+        let drifted_fingerprint = phase2::test_consolidator_contract_fingerprint(
+            &config.model_provider_id,
+            model,
+            "High",
+            &prompt,
+            &root,
+        );
+
+        tokio::fs::create_dir_all(&root)
+            .await
+            .expect("create memory root");
+        tokio::fs::write(root.join("MEMORY.md"), "memory index\n")
+            .await
+            .expect("write memory index");
+        tokio::fs::write(root.join("memory_summary.md"), "memory summary\n")
+            .await
+            .expect("write memory summary");
+
+        phase2::test_write_consolidation_artifact_attestation_with_fingerprint(
+            &root,
+            &selection,
+            drifted_fingerprint,
+        )
+        .await
+        .expect("write attestation");
+
+        assert!(
+            !phase2::agent::consolidation_artifacts_ready(
+                &root,
+                &config,
+                std::time::SystemTime::now() + Duration::from_secs(60),
+                true,
+                &selection,
+            )
+            .await,
+            "reuse should fail closed when the reasoning-effort contract changes"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn consolidation_artifacts_ready_rejects_symlinked_artifacts() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let codex_home = temp_dir.path().join("codex-home");
+        let root = memory_root(&codex_home);
+        let config = config_for_memory_root(&root);
+        let selection =
+            selection_for_attested_outputs(vec![stage1_output_with_source_updated_at(200)]);
+        let external_dir = temp_dir.path().join("external");
+        let external_memory = external_dir.join("MEMORY.md");
+        let external_summary = external_dir.join("memory_summary.md");
+
+        tokio::fs::create_dir_all(&root)
+            .await
+            .expect("create memory root");
+        tokio::fs::create_dir_all(&external_dir)
+            .await
+            .expect("create external dir");
+        tokio::fs::write(&external_memory, "external memory index\n")
+            .await
+            .expect("write external memory index");
+        tokio::fs::write(&external_summary, "external memory summary\n")
+            .await
+            .expect("write external memory summary");
+
+        std::os::unix::fs::symlink(&external_memory, root.join("MEMORY.md"))
+            .expect("symlink memory index");
+        std::os::unix::fs::symlink(&external_summary, root.join("memory_summary.md"))
+            .expect("symlink memory summary");
+
+        assert!(
+            !phase2::agent::consolidation_artifacts_ready(
+                &root,
+                &config,
+                std::time::SystemTime::UNIX_EPOCH,
+                false,
+                &selection,
+            )
+            .await,
+            "symlinked artifacts should be rejected even when they point to non-empty files"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn writing_attestation_rejects_symlinked_attestation_path() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let codex_home = temp_dir.path().join("codex-home");
+        let root = memory_root(&codex_home);
+        let config = config_for_memory_root(&root);
+        let selection =
+            selection_for_attested_outputs(vec![stage1_output_with_source_updated_at(200)]);
+        let external_dir = temp_dir.path().join("external");
+        let external_attestation = external_dir.join("attestation.json");
+
+        tokio::fs::create_dir_all(&root)
+            .await
+            .expect("create memory root");
+        tokio::fs::create_dir_all(&external_dir)
+            .await
+            .expect("create external dir");
+        tokio::fs::write(root.join("MEMORY.md"), "memory index\n")
+            .await
+            .expect("write memory index");
+        tokio::fs::write(root.join("memory_summary.md"), "memory summary\n")
+            .await
+            .expect("write memory summary");
+        tokio::fs::write(&external_attestation, "placeholder\n")
+            .await
+            .expect("write external attestation placeholder");
+
+        let attestation_path =
+            phase2::test_consolidation_artifact_attestation_path(&root).expect("attestation path");
+        std::os::unix::fs::symlink(&external_attestation, &attestation_path)
+            .expect("symlink attestation");
+
+        let err = phase2::test_write_consolidation_artifact_attestation(
+            Arc::clone(&config),
+            &root,
+            &selection,
+        )
+        .await
+        .expect_err("symlinked attestation path should be rejected");
+
+        assert!(
+            err.to_string().contains("symlink"),
+            "expected a symlink safety error, got: {err}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn writing_attestation_rejects_hard_linked_attestation_path_without_truncating_target() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let codex_home = temp_dir.path().join("codex-home");
+        let root = memory_root(&codex_home);
+        let config = config_for_memory_root(&root);
+        let selection =
+            selection_for_attested_outputs(vec![stage1_output_with_source_updated_at(200)]);
+        let external_dir = temp_dir.path().join("external");
+        let protected_target = external_dir.join("protected.json");
+        let original_contents = "{\n  \"protected\": true\n}\n";
+
+        tokio::fs::create_dir_all(&root)
+            .await
+            .expect("create memory root");
+        tokio::fs::create_dir_all(&external_dir)
+            .await
+            .expect("create external dir");
+        tokio::fs::write(root.join("MEMORY.md"), "memory index\n")
+            .await
+            .expect("write memory index");
+        tokio::fs::write(root.join("memory_summary.md"), "memory summary\n")
+            .await
+            .expect("write memory summary");
+        tokio::fs::write(&protected_target, original_contents)
+            .await
+            .expect("write protected target");
+
+        let attestation_path =
+            phase2::test_consolidation_artifact_attestation_path(&root).expect("attestation path");
+        std::fs::hard_link(&protected_target, &attestation_path)
+            .expect("create hard-linked attestation path");
+
+        let err = phase2::test_write_consolidation_artifact_attestation(
+            Arc::clone(&config),
+            &root,
+            &selection,
+        )
+        .await
+        .expect_err("hard-linked attestation path should be rejected");
+
+        assert!(
+            err.to_string().contains("multiple hard links"),
+            "expected a hard-link safety error, got: {err}"
+        );
+        let preserved_contents = tokio::fs::read_to_string(&protected_target)
+            .await
+            .expect("read protected target after rejection");
+        assert_eq!(
+            preserved_contents, original_contents,
+            "rejecting a hard-linked attestation path should not truncate the linked target"
+        );
+    }
+
+    #[test]
+    fn unchanged_selection_reuse_only_applies_to_exact_previous_snapshot() {
+        let thread_id = ThreadId::new();
+        let unchanged = Phase2InputSelection {
+            selected: vec![Stage1Output {
+                thread_id,
+                ..stage1_output_with_source_updated_at(200)
+            }],
+            previous_selected: vec![Stage1Output {
+                thread_id,
+                ..stage1_output_with_source_updated_at(200)
+            }],
+            retained_thread_ids: vec![thread_id],
+            removed: Vec::new(),
+        };
+        assert!(
+            phase2::test_can_reuse_existing_consolidation_artifacts(&unchanged),
+            "exact retained snapshots should allow existing artifacts"
+        );
+
+        let changed_timestamp = Phase2InputSelection {
+            selected: vec![Stage1Output {
+                thread_id,
+                ..stage1_output_with_source_updated_at(201)
+            }],
+            previous_selected: vec![Stage1Output {
+                thread_id,
+                ..stage1_output_with_source_updated_at(200)
+            }],
+            retained_thread_ids: Vec::new(),
+            removed: Vec::new(),
+        };
+        assert!(
+            !phase2::test_can_reuse_existing_consolidation_artifacts(&changed_timestamp),
+            "changed snapshots must require a rewrite even when the same thread id remains selected"
+        );
+
+        let removed = Phase2InputSelection {
+            selected: vec![Stage1Output {
+                thread_id,
+                ..stage1_output_with_source_updated_at(200)
+            }],
+            previous_selected: vec![Stage1Output {
+                thread_id,
+                ..stage1_output_with_source_updated_at(200)
+            }],
+            retained_thread_ids: vec![thread_id],
+            removed: vec![Stage1OutputRef {
+                thread_id: ThreadId::new(),
+                source_updated_at: chrono::DateTime::<Utc>::from_timestamp(100, 0)
+                    .expect("valid removed timestamp"),
+                rollout_slug: None,
+            }],
+        };
+        assert!(
+            !phase2::test_can_reuse_existing_consolidation_artifacts(&removed),
+            "removed rows must force a rewrite"
         );
     }
 
@@ -674,6 +1533,77 @@ mod phase2 {
         pretty_assertions::assert_eq!(thread_ids.len(), 0);
     }
 
+    #[test]
+    fn consolidation_agent_config_keeps_split_sandbox_policies_in_sync() {
+        let mut config = test_config();
+        config.codex_home = PathBuf::from("/tmp/codex-home");
+        config.cwd = AbsolutePathBuf::from_absolute_path(PathBuf::from("/tmp/workspace"))
+            .expect("workspace path");
+        let config = Arc::new(config);
+
+        let agent_config =
+            phase2::test_consolidation_agent_config(config).expect("consolidation config");
+
+        pretty_assertions::assert_eq!(
+            agent_config.cwd.as_path(),
+            memory_root(&agent_config.codex_home).as_path()
+        );
+        pretty_assertions::assert_eq!(
+            agent_config.permissions.file_system_sandbox_policy,
+            FileSystemSandboxPolicy::from_legacy_sandbox_policy(
+                agent_config.permissions.sandbox_policy.get(),
+                &agent_config.cwd,
+            )
+        );
+        pretty_assertions::assert_eq!(
+            agent_config.permissions.network_sandbox_policy,
+            NetworkSandboxPolicy::from(agent_config.permissions.sandbox_policy.get())
+        );
+        match agent_config.permissions.sandbox_policy.get() {
+            SandboxPolicy::WorkspaceWrite {
+                network_access,
+                exclude_tmpdir_env_var,
+                exclude_slash_tmp,
+                ..
+            } => {
+                assert!(
+                    !network_access,
+                    "consolidation subagent should keep network disabled"
+                );
+                assert!(
+                    *exclude_tmpdir_env_var,
+                    "consolidation subagent should not inherit writable TMPDIR access"
+                );
+                assert!(
+                    *exclude_slash_tmp,
+                    "consolidation subagent should not inherit writable /tmp access"
+                );
+            }
+            other => panic!("unexpected sandbox policy: {other:?}"),
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn consolidation_agent_config_rejects_symlinked_codex_home() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let real_codex_home = temp_dir.path().join("real-codex-home");
+        std::fs::create_dir_all(&real_codex_home).expect("create real codex home");
+        let linked_codex_home = temp_dir.path().join("linked-codex-home");
+        std::os::unix::fs::symlink(&real_codex_home, &linked_codex_home)
+            .expect("symlink codex home");
+
+        let mut config = test_config();
+        config.codex_home = linked_codex_home;
+        config.cwd = AbsolutePathBuf::from_absolute_path(PathBuf::from("/tmp/workspace"))
+            .expect("workspace path");
+
+        assert!(
+            phase2::test_consolidation_agent_config(Arc::new(config)).is_none(),
+            "symlinked codex_home should be rejected before building consolidation agent config"
+        );
+    }
+
     #[tokio::test]
     async fn dispatch_reclaims_stale_global_lock_and_starts_consolidation() {
         let harness = DispatchHarness::new().await;
@@ -717,24 +1647,13 @@ mod phase2 {
         let config_snapshot = subagent.config_snapshot().await;
         pretty_assertions::assert_eq!(config_snapshot.approval_policy, AskForApproval::Never);
         pretty_assertions::assert_eq!(config_snapshot.cwd, memory_root(&harness.config.codex_home));
-        pretty_assertions::assert_eq!(
-            config_snapshot.file_system_sandbox_policy,
-            FileSystemSandboxPolicy::from_legacy_sandbox_policy(
-                &config_snapshot.sandbox_policy,
-                &config_snapshot.cwd,
-            )
-        );
-        pretty_assertions::assert_eq!(
-            config_snapshot.network_sandbox_policy,
-            NetworkSandboxPolicy::from(&config_snapshot.sandbox_policy)
-        );
         match config_snapshot.sandbox_policy {
             SandboxPolicy::WorkspaceWrite { writable_roots, .. } => {
                 assert!(
                     writable_roots
                         .iter()
-                        .any(|root| root.as_path() == harness.config.codex_home.as_path()),
-                    "consolidation subagent should have codex_home as writable root"
+                        .any(|root| root.as_path() == memory_root(&harness.config.codex_home)),
+                    "consolidation subagent should only need the memory root as a writable root"
                 );
             }
             other => panic!("unexpected sandbox policy: {other:?}"),
@@ -937,7 +1856,7 @@ mod phase2 {
         let codex_home = tempfile::tempdir().expect("create temp codex home");
         let mut config = test_config();
         config.codex_home = codex_home.path().to_path_buf();
-        config.cwd = config.codex_home.clone();
+        config.cwd = config.codex_home.abs();
         let config = Arc::new(config);
 
         let state_db = codex_state::StateRuntime::init(
@@ -959,7 +1878,7 @@ mod phase2 {
             Utc::now(),
             SessionSource::Cli,
         );
-        metadata_builder.cwd = config.cwd.clone();
+        metadata_builder.cwd = config.cwd.to_path_buf();
         metadata_builder.model_provider = Some(config.model_provider_id.clone());
         let metadata = metadata_builder.build(&config.model_provider_id);
         state_db
