@@ -85,7 +85,6 @@ use codex_protocol::approvals::ExecApprovalRequestEvent;
 use codex_protocol::config_types::Personality;
 #[cfg(target_os = "windows")]
 use codex_protocol::config_types::WindowsSandboxLevel;
-use codex_protocol::items::parse_subagent_notification_response_item;
 use codex_protocol::openai_models::ModelAvailabilityNux;
 use codex_protocol::openai_models::ModelPreset;
 use codex_protocol::openai_models::ModelUpgrade;
@@ -125,9 +124,9 @@ use std::time::Duration;
 use std::time::Instant;
 use tokio::select;
 use tokio::sync::Mutex;
-use tokio::sync::mpsc;
+use tokio::sync::mpsc::UnboundedReceiver;
+use tokio::sync::mpsc::UnboundedSender;
 use tokio::sync::mpsc::error::TryRecvError;
-use tokio::sync::mpsc::error::TrySendError;
 use tokio::sync::mpsc::unbounded_channel;
 use tokio::task::JoinHandle;
 use toml::Value as TomlValue;
@@ -220,6 +219,13 @@ fn default_exec_approval_decisions(
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct GuardianApprovalsMode {
+    approval_policy: AskForApproval,
+    approvals_reviewer: ApprovalsReviewer,
+    sandbox_policy: SandboxPolicy,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct ThreadApprovalOverrideState {
     approval_policy: AskForApproval,
     approvals_reviewer: ApprovalsReviewer,
     sandbox_policy: SandboxPolicy,
@@ -467,27 +473,46 @@ enum ThreadBufferedEvent {
     HistoryEntryResponse(GetHistoryEntryResponseEvent),
 }
 
+#[derive(Clone, Debug)]
+struct QueuedThreadEvent {
+    sequence: u64,
+    generation: u64,
+    event: ThreadBufferedEvent,
+}
+
+impl QueuedThreadEvent {
+    fn new(sequence: u64, generation: u64, event: ThreadBufferedEvent) -> Self {
+        Self {
+            sequence,
+            generation,
+            event,
+        }
+    }
+}
+
 #[derive(Debug)]
 struct ThreadEventStore {
     session: Option<ThreadSessionState>,
     turns: Vec<Turn>,
-    buffer: VecDeque<ThreadBufferedEvent>,
+    buffer: VecDeque<QueuedThreadEvent>,
     pending_interactive_replay: PendingInteractiveReplayState,
+    pending_local_legacy_rollback: Option<usize>,
     active_turn_id: Option<String>,
     input_state: Option<ThreadInputState>,
     capacity: usize,
     active: bool,
+    generation: u64,
+    next_event_sequence: u64,
 }
 
 impl ThreadEventStore {
     fn event_survives_session_refresh(event: &ThreadBufferedEvent) -> bool {
         match event {
-            ThreadBufferedEvent::Request(_) | ThreadBufferedEvent::LegacyWarning(_) => true,
+            ThreadBufferedEvent::Request(_) => true,
             ThreadBufferedEvent::Notification(notification) => {
                 is_replay_safe_subagent_completion_notification(notification)
             }
-            ThreadBufferedEvent::HistoryEntryResponse(_)
-            | ThreadBufferedEvent::LegacyRollback { .. } => false,
+            ThreadBufferedEvent::HistoryEntryResponse(_) => false,
         }
     }
 
@@ -497,10 +522,13 @@ impl ThreadEventStore {
             turns: Vec::new(),
             buffer: VecDeque::new(),
             pending_interactive_replay: PendingInteractiveReplayState::default(),
+            pending_local_legacy_rollback: None,
             active_turn_id: None,
             input_state: None,
             capacity,
             active: false,
+            generation: 0,
+            next_event_sequence: 0,
         }
     }
 
@@ -517,8 +545,21 @@ impl ThreadEventStore {
         self.set_turns(turns);
     }
 
+    fn apply_session_refresh(&mut self, session: ThreadSessionState, turns: Vec<Turn>) {
+        self.set_session(session, turns);
+    }
+
+    fn begin_session_refresh(&mut self) {
+        self.generation = self.generation.wrapping_add(1);
+        self.rebase_buffer_after_session_refresh();
+    }
+
     fn rebase_buffer_after_session_refresh(&mut self) {
-        self.buffer.retain(Self::event_survives_session_refresh);
+        let current_generation = self.generation;
+        self.buffer.retain(|queued| {
+            queued.generation == current_generation
+                || Self::event_survives_session_refresh(&queued.event)
+        });
     }
 
     fn set_turns(&mut self, turns: Vec<Turn>) {
@@ -547,11 +588,11 @@ impl ThreadEventStore {
             }
             _ => {}
         }
-        self.buffer
-            .push_back(ThreadBufferedEvent::Notification(notification));
+        let queued_event = self.make_queued_event(ThreadBufferedEvent::Notification(notification));
+        self.buffer.push_back(queued_event);
         if self.buffer.len() > self.capacity
             && let Some(removed) = self.buffer.pop_front()
-            && let ThreadBufferedEvent::Request(request) = &removed
+            && let ThreadBufferedEvent::Request(request) = &removed.event
         {
             self.pending_interactive_replay
                 .note_evicted_server_request(request);
@@ -561,10 +602,11 @@ impl ThreadEventStore {
     fn push_request(&mut self, request: ServerRequest) {
         self.pending_interactive_replay
             .note_server_request(&request);
-        self.buffer.push_back(ThreadBufferedEvent::Request(request));
+        let queued_event = self.make_queued_event(ThreadBufferedEvent::Request(request));
+        self.buffer.push_back(queued_event);
         if self.buffer.len() > self.capacity
             && let Some(removed) = self.buffer.pop_front()
-            && let ThreadBufferedEvent::Request(request) = &removed
+            && let ThreadBufferedEvent::Request(request) = &removed.event
         {
             self.pending_interactive_replay
                 .note_evicted_server_request(request);
@@ -575,7 +617,10 @@ impl ThreadEventStore {
         self.turns = response.thread.turns.clone();
         self.buffer.clear();
         self.pending_interactive_replay = PendingInteractiveReplayState::default();
+        self.pending_local_legacy_rollback = None;
         self.active_turn_id = None;
+        self.input_state = None;
+        self.generation = self.generation.wrapping_add(1);
     }
 
     fn snapshot(&self) -> ThreadEventSnapshot {
@@ -587,14 +632,17 @@ impl ThreadEventStore {
             events: self
                 .buffer
                 .iter()
-                .filter(|event| match event {
-                    ThreadBufferedEvent::Request(request) => self
-                        .pending_interactive_replay
-                        .should_replay_snapshot_request(request),
-                    ThreadBufferedEvent::Notification(_)
-                    | ThreadBufferedEvent::HistoryEntryResponse(_) => true,
+                .filter(|queued| {
+                    queued.generation == self.current_generation()
+                        || match &queued.event {
+                            ThreadBufferedEvent::Request(request) => self
+                                .pending_interactive_replay
+                                .should_replay_snapshot_request(request),
+                            ThreadBufferedEvent::Notification(_)
+                            | ThreadBufferedEvent::HistoryEntryResponse(_) => true,
+                        }
                 })
-                .cloned()
+                .map(|queued| queued.event.clone())
                 .collect(),
             input_state: self.input_state.clone(),
         }
@@ -622,18 +670,42 @@ impl ThreadEventStore {
     fn active_turn_id(&self) -> Option<&str> {
         self.active_turn_id.as_deref()
     }
+
+    fn note_local_thread_rollback(&mut self, turn_index: usize) {
+        self.pending_local_legacy_rollback = Some(turn_index);
+    }
+
+    fn consume_pending_local_legacy_rollback(&mut self, turn_index: usize) -> bool {
+        self.pending_local_legacy_rollback == Some(turn_index)
+            && self.pending_local_legacy_rollback.take().is_some()
+    }
+
+    fn current_generation(&self) -> u64 {
+        self.generation
+    }
+
+    fn make_queued_event(&mut self, event: ThreadBufferedEvent) -> QueuedThreadEvent {
+        let sequence = self.next_event_sequence;
+        self.next_event_sequence = self.next_event_sequence.wrapping_add(1);
+        QueuedThreadEvent::new(sequence, self.current_generation(), event)
+    }
 }
 
 #[derive(Debug)]
 struct ThreadEventChannel {
-    sender: mpsc::Sender<ThreadBufferedEvent>,
-    receiver: Option<mpsc::Receiver<ThreadBufferedEvent>>,
+    sender: UnboundedSender<QueuedThreadEvent>,
+    receiver: Option<UnboundedReceiver<QueuedThreadEvent>>,
     store: Arc<Mutex<ThreadEventStore>>,
+}
+
+#[derive(Clone)]
+struct ParkedThreadState {
+    thread_id: ThreadId,
 }
 
 impl ThreadEventChannel {
     fn new(capacity: usize) -> Self {
-        let (sender, receiver) = mpsc::channel(capacity);
+        let (sender, receiver) = unbounded_channel();
         Self {
             sender,
             receiver: Some(receiver),
@@ -643,7 +715,7 @@ impl ThreadEventChannel {
 
     #[cfg_attr(not(test), allow(dead_code))]
     fn new_with_session(capacity: usize, session: ThreadSessionState, turns: Vec<Turn>) -> Self {
-        let (sender, receiver) = mpsc::channel(capacity);
+        let (sender, receiver) = unbounded_channel();
         Self {
             sender,
             receiver: Some(receiver),
@@ -896,8 +968,7 @@ pub(crate) struct App {
     pub(crate) active_profile: Option<String>,
     cli_kv_overrides: Vec<(String, TomlValue)>,
     harness_overrides: ConfigOverrides,
-    runtime_approval_policy_override: Option<AskForApproval>,
-    runtime_sandbox_policy_override: Option<SandboxPolicy>,
+    thread_approval_overrides: HashMap<ThreadId, ThreadApprovalOverrideState>,
 
     pub(crate) file_search: FileSearchManager,
 
@@ -944,7 +1015,7 @@ pub(crate) struct App {
     thread_event_listener_tasks: HashMap<ThreadId, JoinHandle<()>>,
     agent_navigation: AgentNavigationState,
     active_thread_id: Option<ThreadId>,
-    active_thread_rx: Option<mpsc::Receiver<ThreadBufferedEvent>>,
+    active_thread_rx: Option<UnboundedReceiver<QueuedThreadEvent>>,
     primary_thread_id: Option<ThreadId>,
     primary_session_configured: Option<ThreadSessionState>,
     pending_primary_events: VecDeque<ThreadBufferedEvent>,
@@ -1017,9 +1088,18 @@ impl App {
 
     async fn refresh_in_memory_config_from_disk(&mut self) -> Result<()> {
         let mut config = self
-            .rebuild_config_for_cwd(self.chat_widget.config_ref().cwd.clone())
+            .rebuild_config_for_cwd(self.chat_widget.config_ref().cwd.to_path_buf())
             .await?;
-        self.apply_runtime_policy_overrides(&mut config);
+        let thread_id = self.active_or_primary_thread_id();
+        let session = self.active_thread_session_snapshot().await;
+        let approval_override = thread_id
+            .and_then(|thread_id| self.thread_approval_overrides.get(&thread_id))
+            .cloned();
+        self.apply_thread_restore_state_to_config(
+            &mut config,
+            session.as_ref(),
+            approval_override.as_ref(),
+        )?;
         self.config = config;
         Ok(())
     }
@@ -1057,22 +1137,176 @@ impl App {
         }
     }
 
-    fn apply_runtime_policy_overrides(&mut self, config: &mut Config) {
-        if let Some(policy) = self.runtime_approval_policy_override.as_ref()
-            && let Err(err) = config.permissions.approval_policy.set(*policy)
-        {
-            tracing::warn!(%err, "failed to carry forward approval policy override");
-            self.chat_widget.add_error_message(format!(
-                "Failed to carry forward approval policy override: {err}"
+    async fn active_thread_session_snapshot(&self) -> Option<ThreadSessionState> {
+        let thread_id = self.active_or_primary_thread_id()?;
+
+        if let Some(channel) = self.thread_event_channels.get(&thread_id) {
+            let guard = channel.store.lock().await;
+            if let Some(session) = guard.session.clone() {
+                return Some(session);
+            }
+        }
+
+        (self.primary_thread_id == Some(thread_id))
+            .then(|| self.primary_session_configured.clone())
+            .flatten()
+    }
+
+    fn active_or_primary_thread_id(&self) -> Option<ThreadId> {
+        self.active_thread_id.or(self.primary_thread_id)
+    }
+
+    fn apply_thread_session_to_config(
+        &mut self,
+        config: &mut Config,
+        session: &ThreadSessionState,
+    ) -> Result<()> {
+        if !self.try_set_approval_policy_on_config(
+            config,
+            session.approval_policy,
+            "Failed to restore thread approval policy",
+            "failed to restore thread approval policy from cached thread session",
+        ) {
+            return Err(std::io::Error::other("failed to restore thread approval policy").into());
+        }
+        if !self.try_set_sandbox_policy_on_config(
+            config,
+            session.sandbox_policy.clone(),
+            "Failed to restore thread sandbox policy",
+            "failed to restore thread sandbox policy from cached thread session",
+        ) {
+            return Err(std::io::Error::other("failed to restore thread sandbox policy").into());
+        }
+        config.approvals_reviewer = session.approvals_reviewer;
+        if !session.model.trim().is_empty() {
+            config.model = Some(session.model.clone());
+        }
+        Ok(())
+    }
+
+    fn apply_thread_approval_override_to_config(
+        &mut self,
+        config: &mut Config,
+        approval_override: &ThreadApprovalOverrideState,
+    ) -> Result<()> {
+        if !self.try_set_approval_policy_on_config(
+            config,
+            approval_override.approval_policy,
+            "Failed to restore thread approval policy",
+            "failed to restore thread approval policy from explicit thread override",
+        ) {
+            return Err(std::io::Error::other("failed to restore thread approval policy").into());
+        }
+        if !self.try_set_sandbox_policy_on_config(
+            config,
+            approval_override.sandbox_policy.clone(),
+            "Failed to restore thread sandbox policy",
+            "failed to restore thread sandbox policy from explicit thread override",
+        ) {
+            return Err(std::io::Error::other("failed to restore thread sandbox policy").into());
+        }
+        config.approvals_reviewer = approval_override.approvals_reviewer;
+        Ok(())
+    }
+
+    fn apply_thread_restore_state_to_config(
+        &mut self,
+        config: &mut Config,
+        session: Option<&ThreadSessionState>,
+        approval_override: Option<&ThreadApprovalOverrideState>,
+    ) -> Result<()> {
+        if let Some(session) = session {
+            self.apply_thread_session_to_config(config, session)?;
+        } else if let Some(approval_override) = approval_override {
+            self.apply_thread_approval_override_to_config(config, approval_override)?;
+        }
+        Ok(())
+    }
+
+    fn apply_thread_approval_override_to_session(
+        session: &mut ThreadSessionState,
+        approval_override: &ThreadApprovalOverrideState,
+    ) {
+        session.approval_policy = approval_override.approval_policy;
+        session.sandbox_policy = approval_override.sandbox_policy.clone();
+        session.approvals_reviewer = approval_override.approvals_reviewer;
+    }
+
+    async fn rebuild_config_for_thread_session_or_current(
+        &mut self,
+        thread_id: ThreadId,
+        session: Option<&ThreadSessionState>,
+    ) -> Result<Config> {
+        if session.is_none() && self.active_thread_id != Some(thread_id) {
+            return Err(color_eyre::eyre::eyre!(
+                "no authoritative cached session is available for target thread"
             ));
         }
-        if let Some(policy) = self.runtime_sandbox_policy_override.as_ref()
-            && let Err(err) = config.permissions.sandbox_policy.set(policy.clone())
+        let current_cwd = self.config.cwd.clone();
+        let mut config = match session {
+            Some(session) => {
+                self.rebuild_config_for_resume_or_fallback(&current_cwd, session.cwd.clone())
+                    .await?
+            }
+            None => {
+                self.rebuild_config_for_cwd(self.chat_widget.config_ref().cwd.to_path_buf())
+                    .await?
+            }
+        };
+        let approval_override = self.thread_approval_overrides.get(&thread_id).cloned();
+        self.apply_thread_restore_state_to_config(
+            &mut config,
+            session,
+            approval_override.as_ref(),
+        )?;
+        Ok(config)
+    }
+
+    async fn sync_active_thread_session_from_current_config(&mut self) {
+        let Some(thread_id) = self.active_or_primary_thread_id() else {
+            return;
+        };
+
+        let approval_policy = self.config.permissions.approval_policy.value();
+        let sandbox_policy = self.config.permissions.sandbox_policy.get().clone();
+        let approvals_reviewer = self.config.approvals_reviewer;
+        let cwd = self.chat_widget.config_ref().cwd.clone();
+        let model = self.chat_widget.current_model().to_string();
+        let approval_override = ThreadApprovalOverrideState {
+            approval_policy,
+            approvals_reviewer,
+            sandbox_policy: sandbox_policy.clone(),
+        };
+        let mut has_cached_session = false;
+
+        if self.primary_thread_id == Some(thread_id)
+            && let Some(session) = self.primary_session_configured.as_mut()
         {
-            tracing::warn!(%err, "failed to carry forward sandbox policy override");
-            self.chat_widget.add_error_message(format!(
-                "Failed to carry forward sandbox policy override: {err}"
-            ));
+            session.approval_policy = approval_policy;
+            session.sandbox_policy = sandbox_policy.clone();
+            session.approvals_reviewer = approvals_reviewer;
+            session.cwd = cwd.clone().to_path_buf();
+            session.model = model.clone();
+            has_cached_session = true;
+        }
+
+        if let Some(channel) = self.thread_event_channels.get(&thread_id) {
+            let mut guard = channel.store.lock().await;
+            if let Some(session) = guard.session.as_mut() {
+                session.approval_policy = approval_policy;
+                session.sandbox_policy = sandbox_policy;
+                session.approvals_reviewer = approvals_reviewer;
+                session.cwd = cwd.to_path_buf();
+                session.model = model;
+                has_cached_session = true;
+            }
+        }
+
+        if has_cached_session {
+            self.thread_approval_overrides.remove(&thread_id);
+        } else {
+            self.thread_approval_overrides
+                .insert(thread_id, approval_override);
         }
     }
 
@@ -1322,9 +1556,12 @@ impl App {
             let replay_state_op =
                 ThreadEventStore::op_can_change_pending_replay_state(&op).then(|| op.clone());
             let submitted = self.chat_widget.submit_op(op);
-            if submitted && let Some(op) = replay_state_op.as_ref() {
-                self.note_active_thread_outbound_op(op).await;
-                self.refresh_pending_thread_approvals().await;
+            if submitted {
+                self.sync_active_thread_session_from_current_config().await;
+                if let Some(op) = replay_state_op.as_ref() {
+                    self.note_active_thread_outbound_op(op).await;
+                    self.refresh_pending_thread_approvals().await;
+                }
             }
         }
 
@@ -1383,7 +1620,7 @@ impl App {
                 self.chat_widget.current_model(),
                 self.chat_widget.current_service_tier(),
             ),
-            self.config.cwd.clone(),
+            self.config.cwd.to_path_buf(),
             version,
         )
         .display_lines(width)
@@ -1495,32 +1732,99 @@ impl App {
         self.refresh_pending_thread_approvals().await;
     }
 
-    async fn store_active_thread_receiver(&mut self) {
+    async fn store_active_thread_receiver(&mut self) -> Option<ParkedThreadState> {
         let Some(active_id) = self.active_thread_id else {
-            return;
+            return None;
         };
         let input_state = self.chat_widget.capture_thread_input_state();
         if let Some(channel) = self.thread_event_channels.get_mut(&active_id) {
-            let receiver = self.active_thread_rx.take();
+            let _old_receiver = self.active_thread_rx.take();
             let mut store = channel.store.lock().await;
             store.active = false;
             store.input_state = input_state;
-            if let Some(receiver) = receiver {
-                channel.receiver = Some(receiver);
-            }
+            drop(store);
+            let (sender, receiver) = unbounded_channel();
+            channel.sender = sender;
+            channel.receiver = Some(receiver);
+            return Some(ParkedThreadState {
+                thread_id: active_id,
+            });
         }
+        None
     }
 
     async fn activate_thread_for_replay(
         &mut self,
         thread_id: ThreadId,
-    ) -> Option<(mpsc::Receiver<ThreadBufferedEvent>, ThreadEventSnapshot)> {
+    ) -> Option<(UnboundedReceiver<QueuedThreadEvent>, ThreadEventSnapshot)> {
         let channel = self.thread_event_channels.get_mut(&thread_id)?;
         let receiver = channel.receiver.take()?;
-        let mut store = channel.store.lock().await;
-        store.active = true;
+        let store = channel.store.lock().await;
         let snapshot = store.snapshot();
         Some((receiver, snapshot))
+    }
+
+    async fn finalize_replay_activation(
+        &mut self,
+        thread_id: ThreadId,
+    ) -> Option<ThreadEventSnapshot> {
+        let channel = self.thread_event_channels.get(&thread_id)?;
+        let mut store = channel.store.lock().await;
+        let snapshot = store.snapshot();
+        store.active = true;
+        Some(snapshot)
+    }
+
+    async fn restore_parked_thread_after_failed_switch(
+        &mut self,
+        tui: &mut tui::Tui,
+        parked_previous_thread: Option<&ParkedThreadState>,
+    ) -> Result<()> {
+        let Some(parked_previous_thread) = parked_previous_thread else {
+            return Ok(());
+        };
+
+        let Some((receiver, _)) = self
+            .activate_thread_for_replay(parked_previous_thread.thread_id)
+            .await
+        else {
+            return Ok(());
+        };
+        let Some(snapshot) = self
+            .finalize_replay_activation(parked_previous_thread.thread_id)
+            .await
+        else {
+            self.restore_thread_after_failed_replay_activation(
+                parked_previous_thread.thread_id,
+                receiver,
+            )
+            .await;
+            return Ok(());
+        };
+        self.active_thread_id = Some(parked_previous_thread.thread_id);
+        self.active_thread_rx = Some(receiver);
+
+        let init = self.chatwidget_init_for_forked_or_resumed_thread(tui, self.config.clone());
+        self.chat_widget = ChatWidget::new_with_app_event(init);
+        self.sync_active_agent_label();
+        self.reset_for_thread_switch(tui)?;
+        self.replay_thread_snapshot(snapshot, /*resume_restored_queue*/ true);
+        self.drain_active_thread_events(tui).await?;
+        self.refresh_pending_thread_approvals().await;
+
+        Ok(())
+    }
+
+    async fn restore_thread_after_failed_replay_activation(
+        &mut self,
+        thread_id: ThreadId,
+        receiver: UnboundedReceiver<QueuedThreadEvent>,
+    ) {
+        if let Some(channel) = self.thread_event_channels.get_mut(&thread_id) {
+            channel.receiver = Some(receiver);
+            let mut store = channel.store.lock().await;
+            store.active = false;
+        }
     }
 
     async fn clear_active_thread(&mut self) {
@@ -1679,7 +1983,7 @@ impl App {
                     cwd: self
                         .thread_cwd(thread_id)
                         .await
-                        .unwrap_or_else(|| self.config.cwd.clone()),
+                        .unwrap_or_else(|| self.config.cwd.to_path_buf()),
                     changes: HashMap::new(),
                 }),
             ),
@@ -2136,30 +2440,28 @@ impl App {
             (channel.sender.clone(), Arc::clone(&channel.store))
         };
 
-        let should_send = {
+        let queued_event = {
             let mut guard = store.lock().await;
             if guard.session.is_none()
-                && let Some(session) = inferred_session
+                && let Some(mut session) = inferred_session
             {
+                if let Some(approval_override) = self.thread_approval_overrides.get(&thread_id) {
+                    Self::apply_thread_approval_override_to_session(
+                        &mut session,
+                        approval_override,
+                    );
+                }
                 guard.session = Some(session);
             }
             guard.push_notification(notification.clone());
-            guard.active
+            guard.active.then(|| {
+                guard.make_queued_event(ThreadBufferedEvent::Notification(notification.clone()))
+            })
         };
 
-        if should_send {
-            match sender.try_send(ThreadBufferedEvent::Notification(notification)) {
-                Ok(()) => {}
-                Err(TrySendError::Full(event)) => {
-                    tokio::spawn(async move {
-                        if let Err(err) = sender.send(event).await {
-                            tracing::warn!("thread {thread_id} event channel closed: {err}");
-                        }
-                    });
-                }
-                Err(TrySendError::Closed(_)) => {
-                    tracing::warn!("thread {thread_id} event channel closed");
-                }
+        if let Some(queued_event) = queued_event {
+            if let Err(err) = sender.send(queued_event) {
+                tracing::warn!("thread {thread_id} event channel closed: {err}");
             }
         }
         self.refresh_pending_thread_approvals().await;
@@ -2215,25 +2517,17 @@ impl App {
             (channel.sender.clone(), Arc::clone(&channel.store))
         };
 
-        let should_send = {
+        let queued_event = {
             let mut guard = store.lock().await;
             guard.push_request(request.clone());
-            guard.active
+            guard
+                .active
+                .then(|| guard.make_queued_event(ThreadBufferedEvent::Request(request.clone())))
         };
 
-        if should_send {
-            match sender.try_send(ThreadBufferedEvent::Request(request)) {
-                Ok(()) => {}
-                Err(TrySendError::Full(event)) => {
-                    tokio::spawn(async move {
-                        if let Err(err) = sender.send(event).await {
-                            tracing::warn!("thread {thread_id} event channel closed: {err}");
-                        }
-                    });
-                }
-                Err(TrySendError::Closed(_)) => {
-                    tracing::warn!("thread {thread_id} event channel closed");
-                }
+        if let Some(queued_event) = queued_event {
+            if let Err(err) = sender.send(queued_event) {
+                tracing::warn!("thread {thread_id} event channel closed: {err}");
             }
         } else if let Some(request) = inactive_interactive_request {
             match request {
@@ -2260,35 +2554,32 @@ impl App {
             (channel.sender.clone(), Arc::clone(&channel.store))
         };
 
-        let should_send = {
+        let queued_event = {
             let mut guard = store.lock().await;
-            guard
-                .buffer
-                .push_back(ThreadBufferedEvent::HistoryEntryResponse(event.clone()));
+            let generation = guard.current_generation();
+            let sequence = guard.next_event_sequence;
+            guard.buffer.push_back(QueuedThreadEvent::new(
+                sequence,
+                generation,
+                ThreadBufferedEvent::HistoryEntryResponse(event.clone()),
+            ));
+            guard.next_event_sequence = guard.next_event_sequence.wrapping_add(1);
             if guard.buffer.len() > guard.capacity
                 && let Some(removed) = guard.buffer.pop_front()
-                && let ThreadBufferedEvent::Request(request) = &removed
+                && let ThreadBufferedEvent::Request(request) = &removed.event
             {
                 guard
                     .pending_interactive_replay
                     .note_evicted_server_request(request);
             }
-            guard.active
+            guard.active.then(|| {
+                guard.make_queued_event(ThreadBufferedEvent::HistoryEntryResponse(event.clone()))
+            })
         };
 
-        if should_send {
-            match sender.try_send(ThreadBufferedEvent::HistoryEntryResponse(event)) {
-                Ok(()) => {}
-                Err(TrySendError::Full(event)) => {
-                    tokio::spawn(async move {
-                        if let Err(err) = sender.send(event).await {
-                            tracing::warn!("thread {thread_id} event channel closed: {err}");
-                        }
-                    });
-                }
-                Err(TrySendError::Closed(_)) => {
-                    tracing::warn!("thread {thread_id} event channel closed");
-                }
+        if let Some(queued_event) = queued_event {
+            if let Err(err) = sender.send(queued_event) {
+                tracing::warn!("thread {thread_id} event channel closed: {err}");
             }
         }
         Ok(())
@@ -2302,6 +2593,7 @@ impl App {
         let thread_id = session.thread_id;
         self.primary_thread_id = Some(thread_id);
         self.primary_session_configured = Some(session.clone());
+        self.thread_approval_overrides.remove(&thread_id);
         self.upsert_agent_picker_thread(
             thread_id, /*agent_nickname*/ None, /*agent_role*/ None,
             /*is_closed*/ false,
@@ -2368,22 +2660,36 @@ impl App {
         thread_id: ThreadId,
         is_replay_only: bool,
         snapshot: &mut ThreadEventSnapshot,
-    ) {
+    ) -> bool {
         let should_refresh = !is_replay_only
-            && snapshot.session.as_ref().is_none_or(|session| {
-                session.model.trim().is_empty() || session.rollout_path.is_none()
-            });
+            && (self.thread_approval_overrides.contains_key(&thread_id)
+                || snapshot.session.as_ref().is_none_or(|session| {
+                    session.model.trim().is_empty() || session.rollout_path.is_none()
+                }));
         if !should_refresh {
-            return;
+            return true;
         }
 
-        match app_server
-            .resume_thread(self.config.clone(), thread_id)
+        let refresh_config = match self
+            .rebuild_config_for_thread_session_or_current(thread_id, snapshot.session.as_ref())
             .await
         {
+            Ok(config) => config,
+            Err(err) => {
+                tracing::warn!(
+                    thread_id = %thread_id,
+                    error = %err,
+                    "failed to build target-thread config before snapshot refresh"
+                );
+                return false;
+            }
+        };
+
+        match app_server.resume_thread(refresh_config, thread_id).await {
             Ok(started) => {
                 self.apply_refreshed_snapshot_thread(thread_id, started, snapshot)
-                    .await
+                    .await;
+                true
             }
             Err(err) => {
                 tracing::warn!(
@@ -2391,6 +2697,7 @@ impl App {
                     error = %err,
                     "failed to refresh inferred thread session before replay"
                 );
+                false
             }
         }
     }
@@ -2402,16 +2709,21 @@ impl App {
         snapshot: &mut ThreadEventSnapshot,
     ) {
         let AppServerStartedThread { session, turns } = started;
-        if let Some(channel) = self.thread_event_channels.get(&thread_id) {
+        let refreshed_snapshot = if let Some(channel) = self.thread_event_channels.get(&thread_id) {
             let mut store = channel.store.lock().await;
-            store.set_session(session.clone(), turns.clone());
-            store.rebase_buffer_after_session_refresh();
-        }
-        snapshot.session = Some(session);
-        snapshot.turns = turns;
-        snapshot
-            .events
-            .retain(ThreadEventStore::event_survives_session_refresh);
+            store.begin_session_refresh();
+            store.apply_session_refresh(session.clone(), turns.clone());
+            store.snapshot()
+        } else {
+            ThreadEventSnapshot {
+                session: Some(session.clone()),
+                turns: turns.clone(),
+                events: Vec::new(),
+                input_state: snapshot.input_state.clone(),
+            }
+        };
+        self.thread_approval_overrides.remove(&thread_id);
+        *snapshot = refreshed_snapshot;
     }
 
     /// Opens the `/agent` picker after refreshing cached labels for known threads.
@@ -2538,35 +2850,114 @@ impl App {
             .is_some_and(|entry| entry.is_closed);
 
         let previous_thread_id = self.active_thread_id;
-        self.store_active_thread_receiver().await;
+        let parked_previous_thread = self.store_active_thread_receiver().await;
         self.active_thread_id = None;
         let Some((receiver, mut snapshot)) = self.activate_thread_for_replay(thread_id).await
         else {
             self.chat_widget
                 .add_error_message(format!("Agent thread {thread_id} is already active."));
-            if let Some(previous_thread_id) = previous_thread_id {
-                self.activate_thread_channel(previous_thread_id).await;
+            if previous_thread_id.is_some() {
+                self.restore_parked_thread_after_failed_switch(
+                    tui,
+                    parked_previous_thread.as_ref(),
+                )
+                .await?;
             }
             return Ok(());
         };
 
-        self.refresh_snapshot_session_if_needed(
-            app_server,
-            thread_id,
-            is_replay_only,
-            &mut snapshot,
-        )
-        .await;
+        if !self
+            .refresh_snapshot_session_if_needed(
+                app_server,
+                thread_id,
+                is_replay_only,
+                &mut snapshot,
+            )
+            .await
+        {
+            self.restore_thread_after_failed_replay_activation(thread_id, receiver)
+                .await;
+            self.chat_widget.add_error_message(format!(
+                "Failed to refresh authoritative thread configuration for {thread_id}."
+            ));
+            if previous_thread_id.is_some() {
+                self.restore_parked_thread_after_failed_switch(
+                    tui,
+                    parked_previous_thread.as_ref(),
+                )
+                .await?;
+            }
+            return Ok(());
+        }
+
+        if snapshot.session.is_none() {
+            self.restore_thread_after_failed_replay_activation(thread_id, receiver)
+                .await;
+            self.chat_widget.add_error_message(format!(
+                "Failed to restore thread configuration for {thread_id}: no authoritative target session is available yet"
+            ));
+            if previous_thread_id.is_some() {
+                self.restore_parked_thread_after_failed_switch(
+                    tui,
+                    parked_previous_thread.as_ref(),
+                )
+                .await?;
+            }
+            return Ok(());
+        }
+
+        let target_config = match self
+            .rebuild_config_for_thread_session_or_current(thread_id, snapshot.session.as_ref())
+            .await
+        {
+            Ok(config) => config,
+            Err(err) => {
+                self.restore_thread_after_failed_replay_activation(thread_id, receiver)
+                    .await;
+                self.chat_widget.add_error_message(format!(
+                    "Failed to restore thread configuration for {thread_id}: {err}"
+                ));
+                if previous_thread_id.is_some() {
+                    self.restore_parked_thread_after_failed_switch(
+                        tui,
+                        parked_previous_thread.as_ref(),
+                    )
+                    .await?;
+                }
+                return Ok(());
+            }
+        };
+
+        let Some(snapshot) = self.finalize_replay_activation(thread_id).await else {
+            self.restore_thread_after_failed_replay_activation(thread_id, receiver)
+                .await;
+            self.chat_widget.add_error_message(format!(
+                "Failed to finalize replay activation for {thread_id}."
+            ));
+            if previous_thread_id.is_some() {
+                self.restore_parked_thread_after_failed_switch(
+                    tui,
+                    parked_previous_thread.as_ref(),
+                )
+                .await?;
+            }
+            return Ok(());
+        };
 
         self.active_thread_id = Some(thread_id);
         self.active_thread_rx = Some(receiver);
 
-        let init = self.chatwidget_init_for_forked_or_resumed_thread(tui, self.config.clone());
+        self.config = target_config.clone();
+        let init = self.chatwidget_init_for_forked_or_resumed_thread(tui, target_config);
         self.chat_widget = ChatWidget::new_with_app_event(init);
         self.sync_active_agent_label();
 
         self.reset_for_thread_switch(tui)?;
         self.replay_thread_snapshot(snapshot, !is_replay_only);
+        self.config = self.chat_widget.config_ref().clone();
+        tui.set_notification_method(self.config.tui_notification_method);
+        self.file_search
+            .update_search_dir(self.config.cwd.to_path_buf());
         if is_replay_only {
             self.chat_widget.add_info_message(
                 format!("Agent thread {thread_id} is closed. Replaying saved transcript."),
@@ -2594,6 +2985,7 @@ impl App {
     fn reset_thread_event_state(&mut self) {
         self.abort_all_thread_event_listeners();
         self.thread_event_channels.clear();
+        self.thread_approval_overrides.clear();
         self.agent_navigation.clear();
         self.active_thread_id = None;
         self.active_thread_rx = None;
@@ -2684,7 +3076,11 @@ impl App {
         let mut disconnected = false;
         loop {
             match rx.try_recv() {
-                Ok(event) => self.handle_thread_event_now(event),
+                Ok(event) => {
+                    if self.active_thread_event_is_current(&event).await {
+                        self.handle_thread_event_now(event.event);
+                    }
+                }
                 Err(TryRecvError::Empty) => break,
                 Err(TryRecvError::Disconnected) => {
                     disconnected = true;
@@ -2980,7 +3376,7 @@ impl App {
         chat_widget
             .maybe_prompt_windows_sandbox_enable(should_prompt_windows_sandbox_nux_at_startup);
 
-        let file_search = FileSearchManager::new(config.cwd.clone(), app_event_tx.clone());
+        let file_search = FileSearchManager::new(config.cwd.to_path_buf(), app_event_tx.clone());
         #[cfg(not(debug_assertions))]
         let upgrade_version = crate::updates::get_upgrade_version(&config);
 
@@ -2993,8 +3389,7 @@ impl App {
             active_profile,
             cli_kv_overrides,
             harness_overrides,
-            runtime_approval_policy_override: None,
-            runtime_sandbox_policy_override: None,
+            thread_approval_overrides: HashMap::new(),
             file_search,
             enhanced_keys_supported,
             transcript_cells: Vec::new(),
@@ -3103,13 +3498,17 @@ impl App {
                         app.active_thread_rx.is_some()
                     ) => {
                         if let Some(event) = active {
-                            if let Err(err) = app.handle_active_thread_event(tui, &mut app_server, event).await {
+                            if !app.active_thread_event_is_current(&event).await {
+                                AppRunControl::Continue
+                            } else if let Err(err) = app.handle_active_thread_event(tui, &mut app_server, event.event).await {
                                 break Err(err);
+                            } else {
+                                AppRunControl::Continue
                             }
                         } else {
                             app.clear_active_thread().await;
+                            AppRunControl::Continue
                         }
-                        AppRunControl::Continue
                     }
                     Some(event) = tui_events.next() => {
                         match app.handle_tui_event(tui, &mut app_server, event).await {
@@ -3274,7 +3673,7 @@ impl App {
                     SessionSelection::Resume(target_session) => {
                         let current_cwd = self.config.cwd.clone();
                         let resume_cwd = if self.remote_app_server_url.is_some() {
-                            current_cwd.clone()
+                            current_cwd.clone().to_path_buf()
                         } else {
                             match crate::resolve_cwd_for_resume_or_fork(
                                 tui,
@@ -3288,7 +3687,9 @@ impl App {
                             .await?
                             {
                                 crate::ResolveCwdOutcome::Continue(Some(cwd)) => cwd,
-                                crate::ResolveCwdOutcome::Continue(None) => current_cwd.clone(),
+                                crate::ResolveCwdOutcome::Continue(None) => {
+                                    current_cwd.clone().to_path_buf()
+                                }
                                 crate::ResolveCwdOutcome::Exit => {
                                     return Ok(AppRunControl::Exit(ExitReason::UserRequested));
                                 }
@@ -3306,7 +3707,6 @@ impl App {
                                 return Ok(AppRunControl::Continue);
                             }
                         };
-                        self.apply_runtime_policy_overrides(&mut resume_config);
                         let summary = session_summary(
                             self.chat_widget.token_usage(),
                             self.chat_widget.thread_id(),
@@ -3320,7 +3720,8 @@ impl App {
                                 self.shutdown_current_thread(app_server).await;
                                 self.config = resume_config;
                                 tui.set_notification_method(self.config.tui_notification_method);
-                                self.file_search.update_search_dir(self.config.cwd.clone());
+                                self.file_search
+                                    .update_search_dir(self.config.cwd.to_path_buf());
                                 match self
                                     .replace_chat_widget_with_app_server_thread(tui, resumed)
                                     .await
@@ -4122,10 +4523,9 @@ impl App {
                     return Ok(AppRunControl::Continue);
                 }
                 self.config = config;
-                self.runtime_approval_policy_override =
-                    Some(self.config.permissions.approval_policy.value());
                 self.chat_widget
                     .set_approval_policy(self.config.permissions.approval_policy.value());
+                self.sync_active_thread_session_from_current_config().await;
             }
             AppEvent::UpdateSandboxPolicy(policy) => {
                 #[cfg(target_os = "windows")]
@@ -4152,8 +4552,7 @@ impl App {
                         .add_error_message(format!("Failed to set sandbox policy: {err}"));
                     return Ok(AppRunControl::Continue);
                 }
-                self.runtime_sandbox_policy_override =
-                    Some(self.config.permissions.sandbox_policy.get().clone());
+                self.sync_active_thread_session_from_current_config().await;
 
                 // If sandbox policy becomes workspace-write or read-only, run the Windows world-writable scan.
                 #[cfg(target_os = "windows")]
@@ -4188,6 +4587,7 @@ impl App {
             AppEvent::UpdateApprovalsReviewer(policy) => {
                 self.config.approvals_reviewer = policy;
                 self.chat_widget.set_approvals_reviewer(policy);
+                self.sync_active_thread_session_from_current_config().await;
                 let profile = self.active_profile.as_deref();
                 let segments = if let Some(profile) = profile {
                     vec![
@@ -4581,6 +4981,7 @@ impl App {
                     }
                 }
             }
+            _ => {}
         }
         Ok(AppRunControl::Continue)
     }
@@ -4627,29 +5028,19 @@ impl App {
             let mut store = channel.store.lock().await;
             store.apply_thread_rollback(response);
         }
-        if self.active_thread_id == Some(thread_id)
-            && let Some(mut rx) = self.active_thread_rx.take()
-        {
-            let mut disconnected = false;
-            loop {
-                match rx.try_recv() {
-                    Ok(_) => {}
-                    Err(TryRecvError::Empty) => break,
-                    Err(TryRecvError::Disconnected) => {
-                        disconnected = true;
-                        break;
-                    }
-                }
-            }
-
-            if !disconnected {
-                self.active_thread_rx = Some(rx);
-            } else {
-                self.clear_active_thread().await;
-            }
-        }
         self.handle_backtrack_rollback_succeeded(num_turns);
         self.chat_widget.handle_thread_rolled_back();
+    }
+
+    async fn active_thread_event_is_current(&self, event: &QueuedThreadEvent) -> bool {
+        let Some(thread_id) = self.active_thread_id else {
+            return false;
+        };
+        let Some(channel) = self.thread_event_channels.get(&thread_id) else {
+            return false;
+        };
+        let store = channel.store.lock().await;
+        event.generation == store.current_generation()
     }
 
     fn handle_thread_event_now(&mut self, event: ThreadBufferedEvent) {
@@ -4660,8 +5051,15 @@ impl App {
         );
         match event {
             ThreadBufferedEvent::Notification(notification) => {
-                self.chat_widget
-                    .handle_server_notification(notification, /*replay_kind*/ None);
+                if let Some(agent_id) = subagent_completion_notification_agent_id(&notification) {
+                    self.chat_widget.add_info_message(
+                        format!("Subagent update {agent_id}"),
+                        /*hint*/ None,
+                    );
+                } else {
+                    self.chat_widget
+                        .handle_server_notification(notification, /*replay_kind*/ None);
+                }
             }
             ThreadBufferedEvent::Request(request) => {
                 self.chat_widget
@@ -4679,14 +5077,21 @@ impl App {
     fn handle_thread_event_replay(&mut self, event: ThreadBufferedEvent) {
         match event {
             ThreadBufferedEvent::Notification(notification) => {
-                let replay_kind = if is_replay_safe_subagent_completion_notification(&notification)
-                {
-                    None
+                if let Some(agent_id) = subagent_completion_notification_agent_id(&notification) {
+                    self.chat_widget.add_info_message(
+                        format!("Subagent update {agent_id}"),
+                        /*hint*/ None,
+                    );
                 } else {
-                    Some(ReplayKind::ThreadSnapshot)
-                };
-                self.chat_widget
-                    .handle_server_notification(notification, replay_kind);
+                    let replay_kind =
+                        if is_replay_safe_subagent_completion_notification(&notification) {
+                            None
+                        } else {
+                            Some(ReplayKind::ThreadSnapshot)
+                        };
+                    self.chat_widget
+                        .handle_server_notification(notification, replay_kind);
+                }
             }
             ThreadBufferedEvent::Request(request) => self
                 .chat_widget
@@ -5060,11 +5465,38 @@ impl App {
 
 fn is_replay_safe_subagent_completion_notification(notification: &ServerNotification) -> bool {
     match notification {
-        ServerNotification::RawResponseItemCompleted(notification) => {
-            parse_subagent_notification_response_item(&notification.item).is_some()
-        }
+        ServerNotification::RawResponseItemCompleted(notification) => matches!(
+            &notification.item,
+            codex_protocol::models::ResponseItem::Message { content, .. }
+                if content.iter().any(|item| matches!(
+                    item,
+                    codex_protocol::models::ContentItem::InputText { text }
+                        if text.contains("<subagent_notification>")
+                ))
+        ),
         _ => false,
     }
+}
+
+fn subagent_completion_notification_agent_id(notification: &ServerNotification) -> Option<String> {
+    let ServerNotification::RawResponseItemCompleted(notification) = notification else {
+        return None;
+    };
+    let codex_protocol::models::ResponseItem::Message { content, .. } = &notification.item else {
+        return None;
+    };
+    let text = content.iter().find_map(|item| match item {
+        codex_protocol::models::ContentItem::InputText { text } => Some(text.as_str()),
+        _ => None,
+    })?;
+    let payload = text
+        .strip_prefix("<subagent_notification>")?
+        .strip_suffix("</subagent_notification>")?;
+    let payload: serde_json::Value = serde_json::from_str(payload).ok()?;
+    payload
+        .get("agent_id")
+        .and_then(|value| value.as_str())
+        .map(str::to_owned)
 }
 
 /// Collect every MCP server status from the app-server by walking the paginated
@@ -5443,14 +5875,14 @@ mod tests {
             .expect("channel closed unexpectedly");
 
         assert!(matches!(
-            &event,
+            &event.event,
             ThreadBufferedEvent::Request(ServerRequest::CommandExecutionRequestApproval {
                 params,
                 ..
             }) if params.turn_id == "turn-1"
         ));
 
-        app.handle_thread_event_now(event);
+        app.handle_thread_event_now(event.event);
         app.chat_widget
             .handle_key_event(KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE));
 
@@ -5625,23 +6057,28 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn enqueue_thread_event_does_not_block_when_channel_full() -> Result<()> {
+    async fn enqueue_thread_event_preserves_delivery_order() -> Result<()> {
         let mut app = make_test_app().await;
         let thread_id = ThreadId::new();
         app.thread_event_channels
             .insert(thread_id, ThreadEventChannel::new(1));
         app.set_thread_active(thread_id, true).await;
 
-        let event = thread_closed_notification(thread_id);
+        let first = ServerNotification::ConfigWarning(ConfigWarningNotification {
+            summary: "first".to_string(),
+            details: None,
+            path: None,
+            range: None,
+        });
+        let second = ServerNotification::ConfigWarning(ConfigWarningNotification {
+            summary: "second".to_string(),
+            details: None,
+            path: None,
+            range: None,
+        });
 
-        app.enqueue_thread_notification(thread_id, event.clone())
-            .await?;
-        time::timeout(
-            Duration::from_millis(50),
-            app.enqueue_thread_notification(thread_id, event),
-        )
-        .await
-        .expect("enqueue_thread_notification blocked on a full channel")?;
+        app.enqueue_thread_notification(thread_id, first).await?;
+        app.enqueue_thread_notification(thread_id, second).await?;
 
         let mut rx = app
             .thread_event_channels
@@ -5651,14 +6088,71 @@ mod tests {
             .take()
             .expect("missing receiver");
 
-        time::timeout(Duration::from_millis(50), rx.recv())
+        let first = time::timeout(Duration::from_millis(50), rx.recv())
             .await
             .expect("timed out waiting for first event")
             .expect("channel closed unexpectedly");
-        time::timeout(Duration::from_millis(50), rx.recv())
+        let second = time::timeout(Duration::from_millis(50), rx.recv())
             .await
             .expect("timed out waiting for second event")
             .expect("channel closed unexpectedly");
+        let QueuedThreadEvent {
+            event: ThreadBufferedEvent::Notification(ServerNotification::ConfigWarning(first)),
+            ..
+        } = first
+        else {
+            panic!("expected first warning");
+        };
+        let QueuedThreadEvent {
+            event: ThreadBufferedEvent::Notification(ServerNotification::ConfigWarning(second)),
+            ..
+        } = second
+        else {
+            panic!("expected second warning");
+        };
+        assert_eq!(first.summary, "first");
+        assert_eq!(second.summary, "second");
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn store_active_thread_receiver_discards_parked_receiver_backlog() -> Result<()> {
+        let mut app = make_test_app().await;
+        let thread_id = ThreadId::new();
+        app.thread_event_channels
+            .insert(thread_id, ThreadEventChannel::new(8));
+        app.set_thread_active(thread_id, true).await;
+
+        app.enqueue_thread_notification(
+            thread_id,
+            ServerNotification::ConfigWarning(ConfigWarningNotification {
+                summary: "persisted in store".to_string(),
+                details: None,
+                path: None,
+                range: None,
+            }),
+        )
+        .await?;
+
+        app.store_active_thread_receiver().await;
+
+        let channel = app
+            .thread_event_channels
+            .get_mut(&thread_id)
+            .expect("missing thread channel");
+        let receiver = channel
+            .receiver
+            .as_mut()
+            .expect("receiver should be parked");
+        assert!(
+            matches!(receiver.try_recv(), Err(TryRecvError::Empty)),
+            "parked receiver should be replaced with an empty receiver before replay"
+        );
+
+        let store = channel.store.lock().await;
+        let snapshot = store.snapshot();
+        assert_eq!(snapshot.events.len(), 1, "store remains authoritative");
 
         Ok(())
     }
@@ -5793,34 +6287,6 @@ mod tests {
             other => panic!("expected queued follow-up submission, got {other:?}"),
         }
     }
-
-    #[tokio::test]
-    async fn replay_thread_snapshot_replays_legacy_warning_history() {
-        let (mut app, mut app_event_rx, _op_rx) = make_test_app_with_channels().await;
-
-        app.replay_thread_snapshot(
-            ThreadEventSnapshot {
-                session: None,
-                turns: Vec::new(),
-                events: vec![ThreadBufferedEvent::LegacyWarning(
-                    "legacy warning message".to_string(),
-                )],
-                input_state: None,
-            },
-            false,
-        );
-
-        let mut saw_warning = false;
-        while let Ok(event) = app_event_rx.try_recv() {
-            if let AppEvent::InsertHistoryCell(cell) = event {
-                let transcript = lines_to_single_string(&cell.transcript_lines(80));
-                saw_warning |= transcript.contains("legacy warning message");
-            }
-        }
-
-        assert!(saw_warning, "expected replayed legacy warning history cell");
-    }
-
     #[tokio::test]
     async fn replay_thread_snapshot_replays_subagent_completion_notification_history() {
         let (mut app, mut app_event_rx, _op_rx) = make_test_app_with_channels().await;
@@ -6479,8 +6945,6 @@ mod tests {
             app.chat_widget.config_ref().approvals_reviewer,
             guardian_approvals.approvals_reviewer
         );
-        assert_eq!(app.runtime_approval_policy_override, None);
-        assert_eq!(app.runtime_sandbox_policy_override, None);
         assert_eq!(
             op_rx.try_recv(),
             Ok(Op::OverrideTurnContext {
@@ -6571,7 +7035,6 @@ mod tests {
             app.chat_widget.config_ref().approvals_reviewer,
             ApprovalsReviewer::User
         );
-        assert_eq!(app.runtime_approval_policy_override, None);
         assert_eq!(
             op_rx.try_recv(),
             Ok(Op::OverrideTurnContext {
@@ -7304,6 +7767,52 @@ guardian_approval = true
     }
 
     #[tokio::test]
+    async fn rebuild_config_for_thread_session_restores_target_permissions() -> Result<()> {
+        let mut app = make_test_app().await;
+        app.config
+            .permissions
+            .approval_policy
+            .set(AskForApproval::Never)
+            .expect("set current approval");
+        app.config
+            .permissions
+            .sandbox_policy
+            .set(SandboxPolicy::DangerFullAccess)
+            .expect("set current sandbox");
+        app.config.approvals_reviewer = ApprovalsReviewer::User;
+
+        let agent_session = ThreadSessionState {
+            approval_policy: AskForApproval::OnRequest,
+            approvals_reviewer: ApprovalsReviewer::GuardianSubagent,
+            sandbox_policy: SandboxPolicy::new_read_only_policy(),
+            rollout_path: Some(PathBuf::from("/tmp/agent-rollout.jsonl")),
+            model: "gpt-agent".to_string(),
+            ..test_thread_session(ThreadId::new(), PathBuf::from("/tmp/agent"))
+        };
+
+        let config = app
+            .rebuild_config_for_thread_session_or_current(
+                agent_session.thread_id,
+                Some(&agent_session),
+            )
+            .await?;
+
+        assert_eq!(config.cwd.to_path_buf(), PathBuf::from("/tmp/agent"));
+        assert_eq!(
+            config.permissions.approval_policy.value(),
+            agent_session.approval_policy
+        );
+        assert_eq!(
+            config.permissions.sandbox_policy.get(),
+            &agent_session.sandbox_policy
+        );
+        assert_eq!(config.approvals_reviewer, agent_session.approvals_reviewer);
+        assert_eq!(config.model, Some(agent_session.model));
+
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn inactive_thread_started_notification_preserves_primary_model_when_path_missing()
     -> Result<()> {
         let mut app = make_test_app().await;
@@ -7482,7 +7991,8 @@ guardian_approval = true
 
     async fn render_clear_ui_header_after_long_transcript_for_snapshot() -> String {
         let mut app = make_test_app().await;
-        app.config.cwd = PathBuf::from("/tmp/project");
+        app.config.cwd =
+            AbsolutePathBuf::try_from(PathBuf::from("/tmp/project")).expect("absolute cwd");
         app.chat_widget.set_model("gpt-test");
         app.chat_widget
             .set_reasoning_effort(Some(ReasoningEffortConfig::High));
@@ -7607,7 +8117,8 @@ guardian_approval = true
     #[tokio::test]
     async fn clear_ui_header_shows_fast_status_only_for_gpt54() {
         let mut app = make_test_app().await;
-        app.config.cwd = PathBuf::from("/tmp/project");
+        app.config.cwd =
+            AbsolutePathBuf::try_from(PathBuf::from("/tmp/project")).expect("absolute cwd");
         app.chat_widget.set_model("gpt-5.4");
         app.chat_widget
             .set_reasoning_effort(Some(ReasoningEffortConfig::XHigh));
@@ -7633,7 +8144,7 @@ guardian_approval = true
     async fn make_test_app() -> App {
         let (chat_widget, app_event_tx, _rx, _op_rx) = make_chatwidget_manual_with_sender().await;
         let config = chat_widget.config_ref().clone();
-        let file_search = FileSearchManager::new(config.cwd.clone(), app_event_tx.clone());
+        let file_search = FileSearchManager::new(config.cwd.to_path_buf(), app_event_tx.clone());
         let model = codex_core::test_support::get_model_offline(config.model.as_deref());
         let session_telemetry = test_session_telemetry(&config, model.as_str());
 
@@ -7646,8 +8157,7 @@ guardian_approval = true
             active_profile: None,
             cli_kv_overrides: Vec::new(),
             harness_overrides: ConfigOverrides::default(),
-            runtime_approval_policy_override: None,
-            runtime_sandbox_policy_override: None,
+            thread_approval_overrides: HashMap::new(),
             file_search,
             transcript_cells: Vec::new(),
             overlay: None,
@@ -7683,7 +8193,7 @@ guardian_approval = true
     ) {
         let (chat_widget, app_event_tx, rx, op_rx) = make_chatwidget_manual_with_sender().await;
         let config = chat_widget.config_ref().clone();
-        let file_search = FileSearchManager::new(config.cwd.clone(), app_event_tx.clone());
+        let file_search = FileSearchManager::new(config.cwd.to_path_buf(), app_event_tx.clone());
         let model = codex_core::test_support::get_model_offline(config.model.as_deref());
         let session_telemetry = test_session_telemetry(&config, model.as_str());
 
@@ -7697,8 +8207,7 @@ guardian_approval = true
                 active_profile: None,
                 cli_kv_overrides: Vec::new(),
                 harness_overrides: ConfigOverrides::default(),
-                runtime_approval_policy_override: None,
-                runtime_sandbox_policy_override: None,
+                thread_approval_overrides: HashMap::new(),
                 file_search,
                 transcript_cells: Vec::new(),
                 overlay: None,
@@ -7830,10 +8339,10 @@ guardian_approval = true
         turn_id: &str,
         agent_id: &str,
     ) -> ServerNotification {
-        let payload = serde_json::to_string(&codex_protocol::items::SubagentNotificationItem {
-            agent_id: agent_id.to_string(),
-            status: codex_protocol::protocol::AgentStatus::Completed(None),
-        })
+        let payload = serde_json::to_string(&serde_json::json!({
+            "agent_id": agent_id,
+            "status": "completed",
+        }))
         .expect("subagent notification payload");
         let text = format!("<subagent_notification>{payload}</subagent_notification>");
         ServerNotification::RawResponseItemCompleted(
@@ -8436,12 +8945,396 @@ guardian_approval = true
             }),
         });
 
-        assert_eq!(app.chat_widget.config_ref().cwd, next_cwd);
+        assert_eq!(app.chat_widget.config_ref().cwd.to_path_buf(), next_cwd);
         assert_eq!(app.config.cwd, original_cwd);
 
         app.refresh_in_memory_config_from_disk().await?;
 
         assert_eq!(app.config.cwd, app.chat_widget.config_ref().cwd);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn rebuild_config_for_thread_session_or_current_uses_cached_thread_permissions()
+    -> Result<()> {
+        let mut app = make_test_app().await;
+        let thread_id = ThreadId::new();
+        let session = ThreadSessionState {
+            approval_policy: AskForApproval::OnRequest,
+            approvals_reviewer: ApprovalsReviewer::GuardianSubagent,
+            sandbox_policy: SandboxPolicy::new_read_only_policy(),
+            cwd: PathBuf::from("/tmp/thread-session"),
+            model: "gpt-thread".to_string(),
+            ..test_thread_session(thread_id, PathBuf::from("/tmp/thread-session"))
+        };
+
+        let config = app
+            .rebuild_config_for_thread_session_or_current(thread_id, Some(&session))
+            .await?;
+
+        assert_eq!(config.cwd.to_path_buf(), session.cwd);
+        assert_eq!(
+            config.permissions.approval_policy.value(),
+            session.approval_policy
+        );
+        assert_eq!(
+            config.permissions.sandbox_policy.get(),
+            &session.sandbox_policy
+        );
+        assert_eq!(config.approvals_reviewer, session.approvals_reviewer);
+        assert_eq!(config.model.as_deref(), Some("gpt-thread"));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn apply_thread_session_to_config_errors_on_unsupported_permissions() -> Result<()> {
+        let mut app = make_test_app().await;
+        let thread_id = ThreadId::new();
+        let session = ThreadSessionState {
+            approval_policy: AskForApproval::OnRequest,
+            sandbox_policy: SandboxPolicy::new_workspace_write_policy(),
+            cwd: PathBuf::from("/tmp/thread-session"),
+            ..test_thread_session(thread_id, PathBuf::from("/tmp/thread-session"))
+        };
+        let mut config = app.config.clone();
+        config.permissions.approval_policy =
+            codex_core::config::Constrained::allow_only(AskForApproval::Never);
+        config.permissions.sandbox_policy =
+            codex_core::config::Constrained::allow_only(SandboxPolicy::new_read_only_policy());
+
+        let err = app
+            .apply_thread_session_to_config(&mut config, &session)
+            .expect_err("unsupported thread session policy should fail");
+
+        assert!(
+            err.to_string()
+                .contains("failed to restore thread approval policy")
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn refresh_in_memory_config_from_disk_preserves_active_thread_session_permissions()
+    -> Result<()> {
+        let mut app = make_test_app().await;
+        let thread_id = ThreadId::new();
+        let session = ThreadSessionState {
+            approval_policy: AskForApproval::OnRequest,
+            approvals_reviewer: ApprovalsReviewer::GuardianSubagent,
+            sandbox_policy: SandboxPolicy::new_read_only_policy(),
+            cwd: PathBuf::from("/tmp/thread-session"),
+            ..test_thread_session(thread_id, PathBuf::from("/tmp/thread-session"))
+        };
+        let other_thread_id = ThreadId::new();
+        app.thread_approval_overrides.insert(
+            other_thread_id,
+            ThreadApprovalOverrideState {
+                approval_policy: AskForApproval::Never,
+                approvals_reviewer: ApprovalsReviewer::User,
+                sandbox_policy: SandboxPolicy::new_workspace_write_policy(),
+            },
+        );
+
+        app.primary_thread_id = Some(thread_id);
+        app.active_thread_id = Some(thread_id);
+        app.primary_session_configured = Some(session.clone());
+        app.thread_event_channels.insert(
+            thread_id,
+            ThreadEventChannel::new_with_session(4, session.clone(), Vec::new()),
+        );
+        app.chat_widget.handle_thread_session(session.clone());
+        app.config
+            .permissions
+            .approval_policy
+            .set(AskForApproval::Never)?;
+        app.config
+            .permissions
+            .sandbox_policy
+            .set(SandboxPolicy::new_workspace_write_policy())?;
+        app.config.approvals_reviewer = ApprovalsReviewer::User;
+
+        app.refresh_in_memory_config_from_disk().await?;
+
+        assert_eq!(app.config.cwd.to_path_buf(), session.cwd);
+        assert_eq!(
+            app.config.permissions.approval_policy.value(),
+            session.approval_policy
+        );
+        assert_eq!(
+            app.config.permissions.sandbox_policy.get(),
+            &session.sandbox_policy
+        );
+        assert_eq!(app.config.approvals_reviewer, session.approvals_reviewer);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn refresh_in_memory_config_from_disk_preserves_active_thread_override_without_session_snapshot()
+    -> Result<()> {
+        let mut app = make_test_app().await;
+        let thread_id = ThreadId::new();
+        let approval_override = AskForApproval::OnRequest;
+        let sandbox_override = SandboxPolicy::new_workspace_write_policy();
+        let reviewer_override = ApprovalsReviewer::GuardianSubagent;
+
+        app.config
+            .permissions
+            .approval_policy
+            .set(approval_override)?;
+        app.config
+            .permissions
+            .sandbox_policy
+            .set(sandbox_override.clone())?;
+        app.config.approvals_reviewer = reviewer_override;
+        app.active_thread_id = Some(thread_id);
+        app.chat_widget.set_approval_policy(approval_override);
+        app.chat_widget
+            .set_sandbox_policy(sandbox_override.clone())?;
+        app.chat_widget.set_approvals_reviewer(reviewer_override);
+        app.sync_active_thread_session_from_current_config().await;
+
+        app.refresh_in_memory_config_from_disk().await?;
+
+        assert_eq!(
+            app.config.permissions.approval_policy.value(),
+            approval_override
+        );
+        assert_eq!(
+            app.config.permissions.sandbox_policy.get(),
+            &sandbox_override
+        );
+        assert_eq!(app.config.approvals_reviewer, reviewer_override);
+        assert_eq!(
+            app.thread_approval_overrides.get(&thread_id),
+            Some(&ThreadApprovalOverrideState {
+                approval_policy: approval_override,
+                approvals_reviewer: reviewer_override,
+                sandbox_policy: sandbox_override,
+            })
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn sync_active_thread_session_from_current_config_updates_cached_session() -> Result<()> {
+        let mut app = make_test_app().await;
+        let thread_id = ThreadId::new();
+        let session = ThreadSessionState {
+            approval_policy: AskForApproval::Never,
+            sandbox_policy: SandboxPolicy::new_read_only_policy(),
+            ..test_thread_session(thread_id, PathBuf::from("/tmp/thread-session"))
+        };
+
+        app.primary_thread_id = Some(thread_id);
+        app.active_thread_id = Some(thread_id);
+        app.primary_session_configured = Some(session.clone());
+        app.thread_event_channels.insert(
+            thread_id,
+            ThreadEventChannel::new_with_session(4, session, Vec::new()),
+        );
+        app.config
+            .permissions
+            .approval_policy
+            .set(AskForApproval::OnRequest)?;
+        app.config
+            .permissions
+            .sandbox_policy
+            .set(SandboxPolicy::new_workspace_write_policy())?;
+        app.config.approvals_reviewer = ApprovalsReviewer::GuardianSubagent;
+        app.chat_widget
+            .set_approval_policy(AskForApproval::OnRequest);
+        app.chat_widget
+            .set_sandbox_policy(SandboxPolicy::new_workspace_write_policy())?;
+        app.chat_widget
+            .set_approvals_reviewer(ApprovalsReviewer::GuardianSubagent);
+
+        app.sync_active_thread_session_from_current_config().await;
+
+        let store = app
+            .thread_event_channels
+            .get(&thread_id)
+            .expect("thread channel")
+            .store
+            .lock()
+            .await;
+        let session = store.session.as_ref().expect("cached session");
+        assert_eq!(session.approval_policy, AskForApproval::OnRequest);
+        assert_eq!(
+            session.sandbox_policy,
+            SandboxPolicy::new_workspace_write_policy()
+        );
+        assert_eq!(
+            session.approvals_reviewer,
+            ApprovalsReviewer::GuardianSubagent
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn inferred_thread_started_session_preserves_existing_thread_override() -> Result<()> {
+        let mut app = make_test_app().await;
+        let main_thread_id =
+            ThreadId::from_string("00000000-0000-0000-0000-000000000401").expect("valid thread");
+        let agent_thread_id =
+            ThreadId::from_string("00000000-0000-0000-0000-000000000402").expect("valid thread");
+        let primary_session = ThreadSessionState {
+            approval_policy: AskForApproval::Never,
+            sandbox_policy: SandboxPolicy::new_read_only_policy(),
+            approvals_reviewer: ApprovalsReviewer::User,
+            ..test_thread_session(main_thread_id, PathBuf::from("/tmp/main"))
+        };
+        let approval_override = ThreadApprovalOverrideState {
+            approval_policy: AskForApproval::OnRequest,
+            approvals_reviewer: ApprovalsReviewer::GuardianSubagent,
+            sandbox_policy: SandboxPolicy::new_workspace_write_policy(),
+        };
+
+        app.primary_thread_id = Some(main_thread_id);
+        app.active_thread_id = Some(main_thread_id);
+        app.primary_session_configured = Some(primary_session.clone());
+        app.thread_event_channels.insert(
+            main_thread_id,
+            ThreadEventChannel::new_with_session(4, primary_session, Vec::new()),
+        );
+        app.thread_approval_overrides
+            .insert(agent_thread_id, approval_override.clone());
+
+        app.enqueue_thread_notification(
+            agent_thread_id,
+            ServerNotification::ThreadStarted(ThreadStartedNotification {
+                thread: Thread {
+                    id: agent_thread_id.to_string(),
+                    preview: "agent thread".to_string(),
+                    ephemeral: false,
+                    model_provider: "agent-provider".to_string(),
+                    created_at: 1,
+                    updated_at: 2,
+                    status: codex_app_server_protocol::ThreadStatus::Idle,
+                    path: None,
+                    cwd: PathBuf::from("/tmp/agent"),
+                    cli_version: "0.0.0".to_string(),
+                    source: codex_app_server_protocol::SessionSource::Unknown,
+                    agent_nickname: Some("Robie".to_string()),
+                    agent_role: Some("explorer".to_string()),
+                    git_info: None,
+                    name: Some("agent thread".to_string()),
+                    turns: Vec::new(),
+                },
+            }),
+        )
+        .await?;
+
+        let store = app
+            .thread_event_channels
+            .get(&agent_thread_id)
+            .expect("agent thread channel")
+            .store
+            .lock()
+            .await;
+        let session = store.session.clone().expect("inferred session");
+        drop(store);
+
+        assert_eq!(session.approval_policy, approval_override.approval_policy);
+        assert_eq!(session.sandbox_policy, approval_override.sandbox_policy);
+        assert_eq!(
+            session.approvals_reviewer,
+            approval_override.approvals_reviewer
+        );
+
+        let rebuilt = app
+            .rebuild_config_for_thread_session_or_current(agent_thread_id, Some(&session))
+            .await?;
+        assert_eq!(
+            rebuilt.permissions.approval_policy.value(),
+            approval_override.approval_policy
+        );
+        assert_eq!(
+            rebuilt.permissions.sandbox_policy.get(),
+            &approval_override.sandbox_policy
+        );
+        assert_eq!(
+            rebuilt.approvals_reviewer,
+            approval_override.approvals_reviewer
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn refresh_in_memory_config_from_disk_uses_guardian_session_cache_after_feature_toggle()
+    -> Result<()> {
+        let (mut app, _app_event_rx, _op_rx) = make_test_app_with_channels().await;
+        let codex_home = tempdir()?;
+        let thread_id = ThreadId::new();
+        let session = test_thread_session(
+            thread_id,
+            PathBuf::from("/tmp/thread-session-cache-refresh"),
+        );
+        let guardian = guardian_approvals_mode();
+
+        app.config.codex_home = codex_home.path().to_path_buf();
+        app.primary_thread_id = Some(thread_id);
+        app.active_thread_id = Some(thread_id);
+        app.primary_session_configured = Some(session.clone());
+        app.thread_event_channels.insert(
+            thread_id,
+            ThreadEventChannel::new_with_session(4, session.clone(), Vec::new()),
+        );
+        app.chat_widget.handle_thread_session(session);
+
+        app.update_feature_flags(vec![(Feature::GuardianApproval, true)])
+            .await;
+
+        std::fs::write(codex_home.path().join("config.toml"), "")?;
+        app.config
+            .permissions
+            .approval_policy
+            .set(AskForApproval::Never)?;
+        app.config
+            .permissions
+            .sandbox_policy
+            .set(SandboxPolicy::new_read_only_policy())?;
+        app.config.approvals_reviewer = ApprovalsReviewer::User;
+
+        app.refresh_in_memory_config_from_disk().await?;
+
+        assert_eq!(
+            app.config.permissions.approval_policy.value(),
+            guardian.approval_policy
+        );
+        assert_eq!(
+            app.config.permissions.sandbox_policy.get(),
+            &guardian.sandbox_policy
+        );
+        assert_eq!(app.config.approvals_reviewer, guardian.approvals_reviewer);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn rebuild_config_for_thread_without_session_does_not_bleed_other_thread_override()
+    -> Result<()> {
+        let mut app = make_test_app().await;
+        let source_thread_id = ThreadId::new();
+        let target_thread_id = ThreadId::new();
+        let expected_policy = app.config.permissions.approval_policy.value();
+        let expected_sandbox = app.config.permissions.sandbox_policy.get().clone();
+        let expected_reviewer = app.config.approvals_reviewer;
+
+        app.thread_approval_overrides.insert(
+            source_thread_id,
+            ThreadApprovalOverrideState {
+                approval_policy: AskForApproval::OnRequest,
+                approvals_reviewer: ApprovalsReviewer::GuardianSubagent,
+                sandbox_policy: SandboxPolicy::new_workspace_write_policy(),
+            },
+        );
+
+        let config = app
+            .rebuild_config_for_thread_session_or_current(target_thread_id, None)
+            .await?;
+
+        assert_eq!(config.permissions.approval_policy.value(), expected_policy);
+        assert_eq!(config.permissions.sandbox_policy.get(), &expected_sandbox);
+        assert_eq!(config.approvals_reviewer, expected_reviewer);
         Ok(())
     }
 
@@ -8456,7 +9349,7 @@ guardian_approval = true
         let current_cwd = current_config.cwd.clone();
 
         let resume_config = app
-            .rebuild_config_for_resume_or_fallback(&current_cwd, current_cwd.clone())
+            .rebuild_config_for_resume_or_fallback(&current_cwd, current_cwd.clone().to_path_buf())
             .await?;
 
         assert_eq!(resume_config, current_config);
@@ -8817,14 +9710,43 @@ guardian_approval = true
     }
 
     #[tokio::test]
+    async fn reset_thread_event_state_clears_thread_approval_overrides() -> Result<()> {
+        let mut app = make_test_app().await;
+        app.thread_approval_overrides.insert(
+            ThreadId::new(),
+            ThreadApprovalOverrideState {
+                approval_policy: AskForApproval::OnRequest,
+                approvals_reviewer: ApprovalsReviewer::GuardianSubagent,
+                sandbox_policy: SandboxPolicy::new_workspace_write_policy(),
+            },
+        );
+
+        app.reset_thread_event_state();
+
+        assert!(app.thread_approval_overrides.is_empty());
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn refreshed_snapshot_session_persists_resumed_turns() {
         let mut app = make_test_app().await;
         let thread_id = ThreadId::new();
         let initial_session = test_thread_session(thread_id, PathBuf::from("/tmp/original"));
-        app.thread_event_channels.insert(
-            thread_id,
-            ThreadEventChannel::new_with_session(4, initial_session.clone(), Vec::new()),
-        );
+        let mut channel =
+            ThreadEventChannel::new_with_session(4, initial_session.clone(), Vec::new());
+        app.chat_widget
+            .handle_thread_session(initial_session.clone());
+        app.chat_widget
+            .apply_external_edit("restored draft".to_string());
+        let input_state = app
+            .chat_widget
+            .capture_thread_input_state()
+            .expect("captured draft state");
+        {
+            let mut store = channel.store.lock().await;
+            store.input_state = Some(input_state.clone());
+        }
+        app.thread_event_channels.insert(thread_id, channel);
 
         let resumed_turns = vec![test_turn(
             "turn-1",
@@ -8845,7 +9767,7 @@ guardian_approval = true
             session: Some(initial_session),
             turns: Vec::new(),
             events: Vec::new(),
-            input_state: None,
+            input_state: Some(input_state.clone()),
         };
 
         app.apply_refreshed_snapshot_thread(
@@ -8860,6 +9782,7 @@ guardian_approval = true
 
         assert_eq!(snapshot.session, Some(resumed_session.clone()));
         assert_eq!(snapshot.turns, resumed_turns);
+        assert_eq!(snapshot.input_state, Some(input_state.clone()));
 
         let store = app
             .thread_event_channels
@@ -8871,6 +9794,66 @@ guardian_approval = true
         let store_snapshot = store.snapshot();
         assert_eq!(store_snapshot.session, Some(resumed_session));
         assert_eq!(store_snapshot.turns, snapshot.turns);
+        assert_eq!(store_snapshot.input_state, Some(input_state));
+    }
+
+    #[tokio::test]
+    async fn refreshed_snapshot_session_invalidates_pre_refresh_active_events() {
+        let mut app = make_test_app().await;
+        let thread_id = ThreadId::new();
+        let initial_session = test_thread_session(thread_id, PathBuf::from("/tmp/original"));
+        app.thread_event_channels.insert(
+            thread_id,
+            ThreadEventChannel::new_with_session(4, initial_session.clone(), Vec::new()),
+        );
+        let (tx, rx) = unbounded_channel();
+        app.active_thread_id = Some(thread_id);
+        app.active_thread_rx = Some(rx);
+        tx.send(QueuedThreadEvent::new(
+            0,
+            0,
+            ThreadBufferedEvent::Notification(ServerNotification::ConfigWarning(
+                ConfigWarningNotification {
+                    summary: "stale warning".to_string(),
+                    details: None,
+                    path: None,
+                    range: None,
+                },
+            )),
+        ))
+        .expect("stale event should queue");
+
+        let resumed_session = ThreadSessionState {
+            cwd: PathBuf::from("/tmp/refreshed"),
+            ..initial_session.clone()
+        };
+        let mut snapshot = ThreadEventSnapshot {
+            session: Some(initial_session),
+            turns: Vec::new(),
+            events: Vec::new(),
+            input_state: None,
+        };
+
+        app.apply_refreshed_snapshot_thread(
+            thread_id,
+            AppServerStartedThread {
+                session: resumed_session,
+                turns: Vec::new(),
+            },
+            &mut snapshot,
+        )
+        .await;
+
+        let stale = app
+            .active_thread_rx
+            .as_mut()
+            .expect("active receiver should remain attached")
+            .try_recv()
+            .expect("stale event should still be queued");
+        assert!(
+            !app.active_thread_event_is_current(&stale).await,
+            "queued pre-refresh events should become stale once refresh is authoritative"
+        );
     }
 
     #[tokio::test]
@@ -8927,21 +9910,26 @@ guardian_approval = true
     }
 
     #[tokio::test]
-    async fn thread_rollback_response_discards_queued_active_thread_events() {
+    async fn thread_rollback_response_marks_pre_rollback_events_stale_and_preserves_new_ones() {
         let mut app = make_test_app().await;
         let thread_id = ThreadId::new();
-        let (tx, rx) = mpsc::channel(8);
+        let (tx, rx) = unbounded_channel();
         app.active_thread_id = Some(thread_id);
         app.active_thread_rx = Some(rx);
-        tx.send(ThreadBufferedEvent::Notification(
-            ServerNotification::ConfigWarning(ConfigWarningNotification {
-                summary: "stale warning".to_string(),
-                details: None,
-                path: None,
-                range: None,
-            }),
+        app.thread_event_channels
+            .insert(thread_id, ThreadEventChannel::new(8));
+        tx.send(QueuedThreadEvent::new(
+            0,
+            0,
+            ThreadBufferedEvent::Notification(ServerNotification::ConfigWarning(
+                ConfigWarningNotification {
+                    summary: "stale warning".to_string(),
+                    details: None,
+                    path: None,
+                    range: None,
+                },
+            )),
         ))
-        .await
         .expect("event should queue");
 
         app.handle_thread_rollback_response(
@@ -8970,11 +9958,49 @@ guardian_approval = true
         )
         .await;
 
-        let rx = app
-            .active_thread_rx
-            .as_mut()
-            .expect("active receiver should remain attached");
-        assert!(matches!(rx.try_recv(), Err(TryRecvError::Empty)));
+        tx.send(QueuedThreadEvent::new(
+            1,
+            1,
+            ThreadBufferedEvent::Notification(ServerNotification::ConfigWarning(
+                ConfigWarningNotification {
+                    summary: "fresh warning".to_string(),
+                    details: None,
+                    path: None,
+                    range: None,
+                },
+            )),
+        ))
+        .expect("fresh event should queue");
+
+        let stale = {
+            let rx = app
+                .active_thread_rx
+                .as_mut()
+                .expect("active receiver should remain attached");
+            rx.try_recv().expect("stale event should remain queued")
+        };
+        assert!(
+            !app.active_thread_event_is_current(&stale).await,
+            "pre-rollback events should become stale after rollback"
+        );
+        let fresh = {
+            let rx = app
+                .active_thread_rx
+                .as_mut()
+                .expect("active receiver should remain attached");
+            rx.try_recv().expect("fresh event should remain queued")
+        };
+        assert!(
+            app.active_thread_event_is_current(&fresh).await,
+            "post-rollback events should still be processable"
+        );
+        assert!(matches!(
+            app.active_thread_rx
+                .as_mut()
+                .expect("active receiver should remain attached")
+                .try_recv(),
+            Err(TryRecvError::Empty)
+        ));
     }
 
     #[tokio::test]
