@@ -1979,7 +1979,8 @@ async fn wait_agent_rejects_empty_ids() {
 #[tokio::test]
 async fn multi_agent_v2_wait_agent_accepts_targets_argument() {
     let (mut session, mut turn) = make_session_and_context().await;
-    let target = ThreadId::new().to_string();
+    let target_id = ThreadId::new();
+    let target = target_id.to_string();
     let manager = thread_manager();
     session.services.agent_control = manager.agent_control();
     let mut config = (*turn.config).clone();
@@ -2004,7 +2005,10 @@ async fn multi_agent_v2_wait_agent_accepts_targets_argument() {
     assert_eq!(
         result,
         wait::WaitAgentResult {
-            status: HashMap::from([(target, AgentStatus::NotFound)]),
+            status: HashMap::from([(target_id, AgentStatus::NotFound)]),
+            requested_ids: vec![target_id],
+            pending_ids: vec![],
+            completion_reason: CollabWaitingCompletionReason::Terminal,
             timed_out: false,
         }
     );

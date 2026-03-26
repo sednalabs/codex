@@ -566,7 +566,17 @@ fn test_build_specs_multi_agent_v2_uses_task_names_and_hides_resume() {
         .expect("spawn_agent should define output schema");
     assert_eq!(
         output_schema["required"],
-        json!(["agent_id", "task_name", "nickname"])
+        json!([
+            "agent_id",
+            "task_name",
+            "nickname",
+            "role",
+            "status",
+            "effective_model",
+            "effective_reasoning_effort",
+            "effective_model_provider_id",
+            "identity_source"
+        ])
     );
 
     let send_input = find_tool(&tools, "send_input");
@@ -608,7 +618,9 @@ fn test_build_specs_multi_agent_v2_uses_task_names_and_hides_resume() {
         .expect("wait_agent should define output schema");
     assert_eq!(
         output_schema["properties"]["status"]["description"],
-        json!("Final statuses keyed by canonical task name when available, otherwise by agent id.")
+        json!(
+            "Agent statuses keyed by id for the return point. Always includes the subset of agents that satisfied `return_when` (final statuses for those agents). Use `pending_ids` to see which requests are still in flight."
+        )
     );
     assert_lacks_tool_name(&tools, "resume_agent");
 }
