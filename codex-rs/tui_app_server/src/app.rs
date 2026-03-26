@@ -1179,6 +1179,8 @@ impl App {
             return Err(std::io::Error::other("failed to restore thread sandbox policy").into());
         }
         config.approvals_reviewer = session.approvals_reviewer;
+        config.service_tier = session.service_tier;
+        config.model_reasoning_effort = session.reasoning_effort;
         if !session.model.trim().is_empty() {
             config.model = Some(session.model.clone());
         }
@@ -1268,6 +1270,8 @@ impl App {
         let approvals_reviewer = self.config.approvals_reviewer;
         let cwd = self.chat_widget.config_ref().cwd.clone();
         let model = self.chat_widget.current_model().to_string();
+        let service_tier = self.chat_widget.current_service_tier();
+        let reasoning_effort = self.chat_widget.current_reasoning_effort();
         let approval_override = ThreadApprovalOverrideState {
             approval_policy,
             approvals_reviewer,
@@ -1283,6 +1287,8 @@ impl App {
             session.approvals_reviewer = approvals_reviewer;
             session.cwd = cwd.clone().to_path_buf();
             session.model = model.clone();
+            session.service_tier = service_tier;
+            session.reasoning_effort = reasoning_effort;
             has_cached_session = true;
         }
 
@@ -1294,6 +1300,8 @@ impl App {
                 session.approvals_reviewer = approvals_reviewer;
                 session.cwd = cwd.to_path_buf();
                 session.model = model;
+                session.service_tier = service_tier;
+                session.reasoning_effort = reasoning_effort;
                 has_cached_session = true;
             }
         }
@@ -3971,10 +3979,12 @@ impl App {
             }
             AppEvent::UpdateReasoningEffort(effort) => {
                 self.on_update_reasoning_effort(effort);
+                self.sync_active_thread_session_from_current_config().await;
                 self.refresh_status_line();
             }
             AppEvent::UpdateModel(model) => {
                 self.chat_widget.set_model(&model);
+                self.sync_active_thread_session_from_current_config().await;
                 self.refresh_status_line();
             }
             AppEvent::UpdateCollaborationMode(mask) => {
@@ -4443,6 +4453,7 @@ impl App {
                             message.push_str(" profile");
                         }
                         self.chat_widget.add_info_message(message, /*hint*/ None);
+                        self.sync_active_thread_session_from_current_config().await;
                     }
                     Err(err) => {
                         tracing::error!(error = %err, "failed to persist fast mode selection");
@@ -9024,6 +9035,8 @@ guardian_approval = true
             sandbox_policy: SandboxPolicy::new_read_only_policy(),
             cwd: PathBuf::from("/tmp/thread-session"),
             model: "gpt-thread".to_string(),
+            service_tier: Some(codex_protocol::config_types::ServiceTier::Fast),
+            reasoning_effort: Some(ReasoningEffortConfig::High),
             ..test_thread_session(thread_id, PathBuf::from("/tmp/thread-session"))
         };
 
@@ -9042,6 +9055,8 @@ guardian_approval = true
         );
         assert_eq!(config.approvals_reviewer, session.approvals_reviewer);
         assert_eq!(config.model.as_deref(), Some("gpt-thread"));
+        assert_eq!(config.service_tier, session.service_tier);
+        assert_eq!(config.model_reasoning_effort, session.reasoning_effort);
         Ok(())
     }
 
@@ -9082,6 +9097,8 @@ guardian_approval = true
             approvals_reviewer: ApprovalsReviewer::GuardianSubagent,
             sandbox_policy: SandboxPolicy::new_read_only_policy(),
             cwd: PathBuf::from("/tmp/thread-session"),
+            service_tier: Some(codex_protocol::config_types::ServiceTier::Fast),
+            reasoning_effort: Some(ReasoningEffortConfig::High),
             ..test_thread_session(thread_id, PathBuf::from("/tmp/thread-session"))
         };
         let other_thread_id = ThreadId::new();
@@ -9124,6 +9141,8 @@ guardian_approval = true
             &session.sandbox_policy
         );
         assert_eq!(app.config.approvals_reviewer, session.approvals_reviewer);
+        assert_eq!(app.config.service_tier, session.service_tier);
+        assert_eq!(app.config.model_reasoning_effort, session.reasoning_effort);
         Ok(())
     }
 
@@ -9201,14 +9220,29 @@ guardian_approval = true
             .set(SandboxPolicy::new_workspace_write_policy())?;
         app.config.approvals_reviewer = ApprovalsReviewer::GuardianSubagent;
         app.chat_widget
+            .set_service_tier(Some(codex_protocol::config_types::ServiceTier::Fast));
+        app.chat_widget
             .set_approval_policy(AskForApproval::OnRequest);
         app.chat_widget
             .set_sandbox_policy(SandboxPolicy::new_workspace_write_policy())?;
         app.chat_widget
             .set_approvals_reviewer(ApprovalsReviewer::GuardianSubagent);
+        app.on_update_reasoning_effort(Some(ReasoningEffortConfig::High));
 
         app.sync_active_thread_session_from_current_config().await;
 
+        let primary_session = app
+            .primary_session_configured
+            .as_ref()
+            .expect("primary session");
+        assert_eq!(
+            primary_session.service_tier,
+            Some(codex_protocol::config_types::ServiceTier::Fast)
+        );
+        assert_eq!(
+            primary_session.reasoning_effort,
+            Some(ReasoningEffortConfig::High)
+        );
         let store = app
             .thread_event_channels
             .get(&thread_id)
@@ -9226,6 +9260,11 @@ guardian_approval = true
             session.approvals_reviewer,
             ApprovalsReviewer::GuardianSubagent
         );
+        assert_eq!(
+            session.service_tier,
+            Some(codex_protocol::config_types::ServiceTier::Fast)
+        );
+        assert_eq!(session.reasoning_effort, Some(ReasoningEffortConfig::High));
         Ok(())
     }
 
