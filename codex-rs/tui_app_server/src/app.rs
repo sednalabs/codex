@@ -1090,19 +1090,41 @@ impl App {
     }
 
     async fn refresh_in_memory_config_from_disk(&mut self) -> Result<()> {
-        let mut config = self
-            .rebuild_config_for_cwd(self.chat_widget.config_ref().cwd.to_path_buf())
-            .await?;
-        let thread_id = self.active_or_primary_thread_id();
-        let session = self.active_thread_session_snapshot().await;
-        let approval_override = thread_id
-            .and_then(|thread_id| self.thread_approval_overrides.get(&thread_id))
-            .cloned();
-        self.apply_thread_restore_state_to_config(
-            &mut config,
-            session.as_ref(),
-            approval_override.as_ref(),
-        )?;
+        let config = if let Some(thread_id) = self.active_thread_id {
+            let mut config = self
+                .rebuild_config_for_cwd(self.chat_widget.config_ref().cwd.to_path_buf())
+                .await?;
+            let session = self.active_thread_session_snapshot().await;
+            let approval_override = self.thread_approval_overrides.get(&thread_id).cloned();
+            self.apply_thread_restore_state_to_config(
+                &mut config,
+                session.as_ref(),
+                approval_override.as_ref(),
+            )?;
+            config
+        } else if let Some(thread_id) = self.primary_thread_id {
+            let session = self
+                .thread_session_snapshot_for_thread_id(thread_id)
+                .await
+                .ok_or_else(|| {
+                    color_eyre::eyre::eyre!(
+                        "no authoritative cached session is available for primary thread"
+                    )
+                })?;
+            let approval_override = self.thread_approval_overrides.get(&thread_id).cloned();
+            let current_cwd = self.config.cwd.clone();
+            let mut config =
+                self.rebuild_config_for_resume_or_fallback(&current_cwd, session.cwd.clone()).await?;
+            self.apply_thread_restore_state_to_config(
+                &mut config,
+                Some(&session),
+                approval_override.as_ref(),
+            )?;
+            config
+        } else {
+            self.rebuild_config_for_cwd(self.chat_widget.config_ref().cwd.to_path_buf())
+                .await?
+        };
         self.config = config;
         Ok(())
     }
@@ -1142,7 +1164,13 @@ impl App {
 
     async fn active_thread_session_snapshot(&self) -> Option<ThreadSessionState> {
         let thread_id = self.active_or_primary_thread_id()?;
+        self.thread_session_snapshot_for_thread_id(thread_id).await
+    }
 
+    async fn thread_session_snapshot_for_thread_id(
+        &self,
+        thread_id: ThreadId,
+    ) -> Option<ThreadSessionState> {
         if let Some(channel) = self.thread_event_channels.get(&thread_id) {
             let guard = channel.store.lock().await;
             if let Some(session) = guard.session.clone() {
@@ -1242,6 +1270,19 @@ impl App {
         thread_id: ThreadId,
         session: Option<&ThreadSessionState>,
     ) -> Result<Config> {
+        let is_active_thread = self.active_thread_id == Some(thread_id);
+        if is_active_thread {
+            return Ok(self.chat_widget.config_ref().clone());
+        }
+        let session = match session {
+            Some(session) => Some(session.clone()),
+            None => self.thread_session_snapshot_for_thread_id(thread_id).await,
+        };
+        if session.is_none() && !is_active_thread {
+            return Err(color_eyre::eyre::eyre!(
+                "no authoritative cached session is available for target thread"
+            ));
+        }
         let current_cwd = self.config.cwd.clone();
         let mut config = match session {
             Some(session) => {
@@ -1254,11 +1295,7 @@ impl App {
             }
         };
         let approval_override = self.thread_approval_overrides.get(&thread_id).cloned();
-        self.apply_thread_restore_state_to_config(
-            &mut config,
-            session,
-            approval_override.as_ref(),
-        )?;
+        self.apply_thread_restore_state_to_config(&mut config, session.as_ref(), approval_override.as_ref())?;
         Ok(config)
     }
 
@@ -2632,10 +2669,13 @@ impl App {
         session: ThreadSessionState,
         turns: Vec<Turn>,
     ) -> Result<()> {
+        let mut session = session;
         let thread_id = session.thread_id;
+        if let Some(approval_override) = self.thread_approval_overrides.remove(&thread_id) {
+            Self::apply_thread_approval_override_to_session(&mut session, &approval_override);
+        }
         self.primary_thread_id = Some(thread_id);
         self.primary_session_configured = Some(session.clone());
-        self.thread_approval_overrides.remove(&thread_id);
         self.upsert_agent_picker_thread(
             thread_id, /*agent_nickname*/ None, /*agent_role*/ None,
             /*is_closed*/ false,
@@ -2703,12 +2743,18 @@ impl App {
         is_replay_only: bool,
         snapshot: &mut ThreadEventSnapshot,
     ) -> bool {
-        let should_refresh = !is_replay_only
-            && (self.thread_approval_overrides.contains_key(&thread_id)
-                || snapshot.session.as_ref().is_none_or(|session| {
-                    session.model.trim().is_empty() || session.rollout_path.is_none()
-                }));
+        let should_refresh = self.thread_approval_overrides.contains_key(&thread_id)
+            || snapshot.session.as_ref().is_none_or(|session| {
+                session.model.trim().is_empty() || session.rollout_path.is_none()
+            });
         if !should_refresh {
+            return true;
+        }
+        if is_replay_only {
+            tracing::debug!(
+                thread_id = %thread_id,
+                "skipping replay-only thread snapshot refresh to preserve non-mutating inspection"
+            );
             return true;
         }
 
@@ -2751,6 +2797,9 @@ impl App {
         snapshot: &mut ThreadEventSnapshot,
     ) {
         let AppServerStartedThread { session, turns } = started;
+        if self.primary_thread_id == Some(thread_id) {
+            self.primary_session_configured = Some(session.clone());
+        }
         let refreshed_snapshot = if let Some(channel) = self.thread_event_channels.get(&thread_id) {
             let mut store = channel.store.lock().await;
             store.begin_session_refresh();
@@ -6042,6 +6091,56 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn enqueue_primary_thread_session_merges_thread_approval_override() -> Result<()> {
+        let mut app = make_test_app().await;
+        let thread_id = ThreadId::new();
+        let approval_override = ThreadApprovalOverrideState {
+            approval_policy: AskForApproval::OnRequest,
+            approvals_reviewer: ApprovalsReviewer::GuardianSubagent,
+            sandbox_policy: SandboxPolicy::new_workspace_write_policy(),
+        };
+        app.thread_approval_overrides
+            .insert(thread_id, approval_override.clone());
+
+        let incoming_session = ThreadSessionState {
+            approval_policy: AskForApproval::Never,
+            approvals_reviewer: ApprovalsReviewer::User,
+            sandbox_policy: SandboxPolicy::new_read_only_policy(),
+            ..test_thread_session(thread_id, PathBuf::from("/tmp/project"))
+        };
+
+        app.enqueue_primary_thread_session(incoming_session, Vec::new())
+            .await?;
+
+        let channel = app
+            .thread_event_channels
+            .get(&thread_id)
+            .expect("cached primary session");
+        let guard = channel.store.lock().await;
+        let cached_session = guard.session.as_ref().expect("primary session cached");
+        assert_eq!(cached_session.approval_policy, approval_override.approval_policy);
+        assert_eq!(
+            cached_session.approvals_reviewer,
+            approval_override.approvals_reviewer
+        );
+        assert_eq!(cached_session.sandbox_policy, approval_override.sandbox_policy);
+
+        let primary_session = app
+            .primary_session_configured
+            .as_ref()
+            .expect("primary session configured");
+        assert_eq!(primary_session.approval_policy, approval_override.approval_policy);
+        assert_eq!(
+            primary_session.approvals_reviewer,
+            approval_override.approvals_reviewer
+        );
+        assert_eq!(primary_session.sandbox_policy, approval_override.sandbox_policy);
+        assert!(app.thread_approval_overrides.get(&thread_id).is_none());
+
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn reset_thread_event_state_aborts_listener_tasks() {
         struct NotifyOnDrop(Option<tokio::sync::oneshot::Sender<()>>);
 
@@ -9113,7 +9212,100 @@ guardian_approval = true
     }
 
     #[tokio::test]
-    async fn rebuild_config_for_thread_session_or_current_uses_cached_thread_permissions()
+    async fn rebuild_config_for_thread_session_or_current_uses_live_state_for_active_thread()
+    -> Result<()> {
+        let mut app = make_test_app().await;
+        let thread_id = ThreadId::new();
+        app.active_thread_id = Some(thread_id);
+        app.primary_thread_id = Some(thread_id);
+        app.chat_widget.handle_thread_session(ThreadSessionState {
+            approval_policy: AskForApproval::OnRequest,
+            approvals_reviewer: ApprovalsReviewer::GuardianSubagent,
+            sandbox_policy: SandboxPolicy::new_workspace_write_policy(),
+            model: "live-model".to_string(),
+            cwd: PathBuf::from("/tmp/live-thread"),
+            ..test_thread_session(thread_id, PathBuf::from("/tmp/live-thread"))
+        });
+        app.thread_event_channels.insert(
+            thread_id,
+            ThreadEventChannel::new_with_session(
+                4,
+                ThreadSessionState {
+                    approval_policy: AskForApproval::Never,
+                    approvals_reviewer: ApprovalsReviewer::User,
+                    sandbox_policy: SandboxPolicy::new_read_only_policy(),
+                    model: "cached-model".to_string(),
+                    cwd: PathBuf::from("/tmp/cached-thread"),
+                    ..test_thread_session(thread_id, PathBuf::from("/tmp/cached-thread"))
+                },
+                Vec::new(),
+            ),
+        );
+
+        let config = app
+            .rebuild_config_for_thread_session_or_current(
+                thread_id,
+                Some(&test_thread_session(thread_id, PathBuf::from("/tmp/ignored"))),
+            )
+            .await?;
+
+        let live_config = app.chat_widget.config_ref();
+        assert_eq!(config.cwd.to_path_buf(), live_config.cwd.to_path_buf());
+        assert_eq!(
+            config.permissions.approval_policy.value(),
+            live_config.permissions.approval_policy.value()
+        );
+        assert_eq!(
+            config.permissions.sandbox_policy.get(),
+            live_config.permissions.sandbox_policy.get()
+        );
+        assert_eq!(config.approvals_reviewer, live_config.approvals_reviewer);
+        assert_eq!(config.model, live_config.model);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn refresh_snapshot_session_if_needed_skips_resume_for_replay_only_refresh_needed()
+    -> Result<()> {
+        let mut app = make_test_app().await;
+        let thread_id = ThreadId::new();
+        let original_session = ThreadSessionState {
+            rollout_path: None,
+            ..test_thread_session(thread_id, PathBuf::from("/tmp/thread"))
+        };
+        let mut snapshot = ThreadEventSnapshot {
+            session: Some(original_session.clone()),
+            turns: Vec::new(),
+            events: Vec::new(),
+            input_state: None,
+        };
+
+        let mut app_server =
+            crate::start_embedded_app_server_for_picker(app.chat_widget.config_ref())
+                .await
+                .expect("embedded app server");
+
+        let refreshed = app
+            .refresh_snapshot_session_if_needed(
+                &mut app_server,
+                thread_id,
+                true,
+                &mut snapshot,
+            )
+            .await;
+
+        assert!(refreshed);
+        let session = snapshot.session.as_ref().expect("session preserved");
+        assert_eq!(session.thread_id, original_session.thread_id);
+        assert_eq!(session.model, original_session.model);
+        assert_eq!(session.cwd, original_session.cwd);
+        assert_eq!(session.rollout_path, original_session.rollout_path);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn rebuild_config_for_thread_session_or_current_uses_cached_thread_permissions_without_session_arg()
     -> Result<()> {
         let mut app = make_test_app().await;
         let thread_id = ThreadId::new();
@@ -9127,9 +9319,13 @@ guardian_approval = true
             reasoning_effort: Some(ReasoningEffortConfig::High),
             ..test_thread_session(thread_id, PathBuf::from("/tmp/thread-session"))
         };
+        app.thread_event_channels.insert(
+            thread_id,
+            ThreadEventChannel::new_with_session(4, session.clone(), Vec::new()),
+        );
 
         let config = app
-            .rebuild_config_for_thread_session_or_current(thread_id, Some(&session))
+            .rebuild_config_for_thread_session_or_current(thread_id, None)
             .await?;
 
         assert_eq!(config.cwd.to_path_buf(), session.cwd);
@@ -9496,17 +9692,65 @@ guardian_approval = true
     }
 
     #[tokio::test]
-    async fn rebuild_config_for_thread_without_session_does_not_bleed_other_thread_override()
+    async fn refresh_in_memory_config_from_disk_uses_primary_session_cache_without_active_thread()
+    -> Result<()> {
+        let (mut app, _app_event_rx, _op_rx) = make_test_app_with_channels().await;
+        let codex_home = tempdir()?;
+        let primary_cwd = tempdir()?;
+        let stale_widget_cwd = tempdir()?;
+        let thread_id = ThreadId::new();
+        let mut session = test_thread_session(thread_id, primary_cwd.path().to_path_buf());
+        let guardian = guardian_approvals_mode();
+        session.approval_policy = guardian.approval_policy;
+        session.sandbox_policy = guardian.sandbox_policy.clone();
+        session.approvals_reviewer = guardian.approvals_reviewer;
+
+        let stale_thread_id = ThreadId::new();
+        let stale_session =
+            test_thread_session(stale_thread_id, stale_widget_cwd.path().to_path_buf());
+
+        app.config.codex_home = codex_home.path().to_path_buf();
+        app.primary_thread_id = Some(thread_id);
+        app.active_thread_id = None;
+        app.primary_session_configured = Some(session.clone());
+        app.chat_widget.handle_thread_session(stale_session);
+
+        std::fs::write(codex_home.path().join("config.toml"), "")?;
+        app.config
+            .permissions
+            .approval_policy
+            .set(AskForApproval::Never)?;
+        app.config
+            .permissions
+            .sandbox_policy
+            .set(SandboxPolicy::new_read_only_policy())?;
+        app.config.approvals_reviewer = ApprovalsReviewer::User;
+
+        app.refresh_in_memory_config_from_disk().await?;
+
+        assert_eq!(app.config.cwd, session.cwd);
+        assert_eq!(
+            app.config.permissions.approval_policy.value(),
+            guardian.approval_policy
+        );
+        assert_eq!(
+            app.config.permissions.sandbox_policy.get(),
+            &guardian.sandbox_policy
+        );
+        assert_eq!(app.config.approvals_reviewer, guardian.approvals_reviewer);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn rebuild_config_for_thread_session_or_current_errors_when_only_override_exists()
     -> Result<()> {
         let mut app = make_test_app().await;
-        let source_thread_id = ThreadId::new();
         let target_thread_id = ThreadId::new();
-        let expected_policy = app.config.permissions.approval_policy.value();
-        let expected_sandbox = app.config.permissions.sandbox_policy.get().clone();
-        let expected_reviewer = app.config.approvals_reviewer;
+        let active_thread_id = ThreadId::new();
+        app.active_thread_id = Some(active_thread_id);
 
         app.thread_approval_overrides.insert(
-            source_thread_id,
+            target_thread_id,
             ThreadApprovalOverrideState {
                 approval_policy: AskForApproval::OnRequest,
                 approvals_reviewer: ApprovalsReviewer::GuardianSubagent,
@@ -9514,13 +9758,14 @@ guardian_approval = true
             },
         );
 
-        let config = app
+        let err = app
             .rebuild_config_for_thread_session_or_current(target_thread_id, None)
-            .await?;
-
-        assert_eq!(config.permissions.approval_policy.value(), expected_policy);
-        assert_eq!(config.permissions.sandbox_policy.get(), &expected_sandbox);
-        assert_eq!(config.approvals_reviewer, expected_reviewer);
+            .await
+            .expect_err("expected missing cached session to error");
+        assert_eq!(
+            err.to_string(),
+            "no authoritative cached session is available for target thread"
+        );
         Ok(())
     }
 
