@@ -144,10 +144,7 @@ jobs:
           bazel_args=(
             test
             --test_verbose_timeout_warnings
-            --build_metadata=REPO_URL=https://github.com/openai/codex.git
             --build_metadata=COMMIT_SHA=$(git rev-parse HEAD)
-            --build_metadata=ROLE=CI
-            --build_metadata=VISIBILITY=PUBLIC
           )
 
           bazel_targets=(
@@ -164,6 +161,13 @@ jobs:
             bazel_args+=("--test_env=CODEX_JS_REPL_NODE_PATH=${node_bin}")
           fi
 
+          ci_config=ci-linux
+          if [[ "${RUNNER_OS:-}" == "macOS" ]]; then
+            ci_config=ci-macos
+          elif [[ "${RUNNER_OS:-}" == "Windows" ]]; then
+            ci_config=ci-windows
+          fi
+
           if [[ -n "${BUILDBUDDY_API_KEY:-}" ]]; then
             echo "BuildBuddy API key is available; using remote Bazel configuration."
             # Work around Bazel 9 remote repo contents cache / overlay materialization failures
@@ -173,8 +177,8 @@ jobs:
             set +e
             bazel $BAZEL_STARTUP_ARGS \
               --noexperimental_remote_repo_contents_cache \
-              --bazelrc=.github/workflows/ci.bazelrc \
               "${bazel_args[@]}" \
+              "--config=${ci_config}" \
               "--remote_header=x-buildbuddy-api-key=$BUILDBUDDY_API_KEY" \
               -- \
               "${bazel_targets[@]}" \
