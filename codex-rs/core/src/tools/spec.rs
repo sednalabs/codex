@@ -1620,6 +1620,7 @@ fn create_list_agents_tool() -> ToolSpec {
                 "Optional subtree filter for `include_descendants=true`. Use `open` or `closed` to limit returned descendant rows by persisted spawn-edge status. Cannot be combined with `ids`."
                     .to_string(),
             ),
+            enum_values: Some(vec!["open".to_string(), "closed".to_string()]),
         },
     );
     ToolSpec::Function(ResponsesApiTool {
