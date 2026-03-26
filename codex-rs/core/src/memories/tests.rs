@@ -786,8 +786,8 @@ mod phase2 {
 
         let selected_outputs = vec![stage1_output_with_source_updated_at(200)];
         let selection = selection_for_attested_outputs(selected_outputs);
-        let expected_supporting_tree =
-            phase2::test_supporting_artifact_tree_sha256(&root).expect("supporting tree hash");
+        let expected_supporting_tree = phase2::test_prepared_input_artifact_tree_sha256(&root)
+            .expect("prepared input tree hash");
 
         assert!(
             phase2::agent::consolidation_artifacts_ready_with_expected_supporting_tree(
@@ -824,8 +824,8 @@ mod phase2 {
 
         let selected_outputs = vec![stage1_output_with_source_updated_at(200)];
         let selection = selection_for_attested_outputs(selected_outputs);
-        let expected_supporting_tree =
-            phase2::test_supporting_artifact_tree_sha256(&root).expect("supporting tree hash");
+        let expected_supporting_tree = phase2::test_prepared_input_artifact_tree_sha256(&root)
+            .expect("prepared input tree hash");
         let attestation_path =
             phase2::test_consolidation_artifact_attestation_path(&root).expect("attestation path");
         tokio::fs::write(attestation_path, b"{ not valid json")
@@ -867,8 +867,8 @@ mod phase2 {
 
         let selected_outputs = vec![stage1_output_with_source_updated_at(200)];
         let selection = selection_for_attested_outputs(selected_outputs);
-        let expected_supporting_tree =
-            phase2::test_supporting_artifact_tree_sha256(&root).expect("supporting tree hash");
+        let expected_supporting_tree = phase2::test_prepared_input_artifact_tree_sha256(&root)
+            .expect("prepared input tree hash");
 
         phase2::test_write_consolidation_artifact_attestation(
             Arc::clone(&config),
@@ -991,7 +991,7 @@ mod phase2 {
     }
 
     #[tokio::test]
-    async fn consolidation_artifacts_ready_rejects_stale_supporting_artifacts_even_when_outputs_are_fresh()
+    async fn consolidation_artifacts_ready_rejects_stale_prepared_inputs_even_when_outputs_are_fresh()
      {
         let temp_dir = tempfile::tempdir().expect("temp dir");
         let root = temp_dir.path();
@@ -999,26 +999,24 @@ mod phase2 {
         let selection = selection_for_attested_outputs(Vec::new());
         let memory_index_path = root.join("MEMORY.md");
         let memory_summary_path = root.join("memory_summary.md");
+        let raw_memories_path = root.join("raw_memories.md");
 
-        tokio::fs::create_dir_all(root.join("skills/demo"))
-            .await
-            .expect("create skills dir");
         tokio::fs::write(&memory_index_path, "memory index\n")
             .await
             .expect("write memory index");
         tokio::fs::write(&memory_summary_path, "memory summary\n")
             .await
             .expect("write memory summary");
-        tokio::fs::write(root.join("skills/demo/SKILL.md"), "trusted skill\n")
+        tokio::fs::write(&raw_memories_path, "# Raw Memories\n\ntrusted raw memories\n")
             .await
-            .expect("write skill");
+            .expect("write raw memories");
 
-        let expected_supporting_tree = phase2::test_supporting_artifact_tree_sha256(root)
-            .expect("fingerprint prepared supporting tree");
+        let expected_supporting_tree = phase2::test_prepared_input_artifact_tree_sha256(root)
+            .expect("fingerprint prepared immutable inputs");
 
-        tokio::fs::write(root.join("skills/demo/SKILL.md"), "tampered skill\n")
+        tokio::fs::write(&raw_memories_path, "# Raw Memories\n\ntampered raw memories\n")
             .await
-            .expect("tamper skill");
+            .expect("tamper raw memories");
         tokio::fs::write(&memory_index_path, "fresh memory index\n")
             .await
             .expect("refresh memory index");
@@ -1036,7 +1034,66 @@ mod phase2 {
                 &selection,
             )
             .await,
-            "fresh outputs should still fail closed when prepared supporting artifacts drift before validation"
+            "fresh outputs should still fail closed when prepared immutable inputs drift before validation"
+        );
+    }
+
+    #[tokio::test]
+    async fn consolidation_artifacts_ready_accepts_fresh_skill_updates_when_prepared_inputs_match()
+    {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let root = temp_dir.path();
+        let config = config_for_memory_root(root);
+        let selection = selection_for_attested_outputs(Vec::new());
+        let memory_index_path = root.join("MEMORY.md");
+        let memory_summary_path = root.join("memory_summary.md");
+        let raw_memories_path = root.join("raw_memories.md");
+        let skill_path = root.join("skills/demo/SKILL.md");
+
+        tokio::fs::create_dir_all(
+            skill_path
+                .parent()
+                .expect("skills subdirectory parent should exist"),
+        )
+        .await
+        .expect("create skills dir");
+        tokio::fs::write(&memory_index_path, "memory index\n")
+            .await
+            .expect("write memory index");
+        tokio::fs::write(&memory_summary_path, "memory summary\n")
+            .await
+            .expect("write memory summary");
+        tokio::fs::write(&raw_memories_path, "# Raw Memories\n\ntrusted raw memories\n")
+            .await
+            .expect("write raw memories");
+        tokio::fs::write(&skill_path, "old skill\n")
+            .await
+            .expect("write original skill");
+
+        let expected_supporting_tree = phase2::test_prepared_input_artifact_tree_sha256(root)
+            .expect("fingerprint prepared immutable inputs");
+
+        tokio::fs::write(&skill_path, "updated skill\n")
+            .await
+            .expect("update skill");
+        tokio::fs::write(&memory_index_path, "fresh memory index\n")
+            .await
+            .expect("refresh memory index");
+        tokio::fs::write(&memory_summary_path, "fresh memory summary\n")
+            .await
+            .expect("refresh memory summary");
+
+        assert!(
+            phase2::agent::consolidation_artifacts_ready_with_expected_supporting_tree(
+                root,
+                &config,
+                std::time::SystemTime::UNIX_EPOCH,
+                Some(expected_supporting_tree.as_str()),
+                false,
+                &selection,
+            )
+            .await,
+            "fresh outputs should still succeed when the agent updates skills but prepared immutable inputs remain unchanged"
         );
     }
 
