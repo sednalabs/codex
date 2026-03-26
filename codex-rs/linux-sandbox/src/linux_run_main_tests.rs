@@ -376,9 +376,10 @@ fn resolve_sandbox_policies_accepts_semantically_equivalent_workspace_write_inpu
     };
     let file_system_sandbox_policy =
         FileSystemSandboxPolicy::from(&SandboxPolicy::new_workspace_write_policy());
+    let sandbox_policy_cwd = workspace.as_path();
 
     let resolved = resolve_sandbox_policies(
-        temp_dir.path().join("workspace").as_path(),
+        sandbox_policy_cwd,
         Some(sandbox_policy.clone()),
         Some(file_system_sandbox_policy.clone()),
         Some(NetworkSandboxPolicy::Restricted),
@@ -393,6 +394,22 @@ fn resolve_sandbox_policies_accepts_semantically_equivalent_workspace_write_inpu
     assert_eq!(
         resolved.network_sandbox_policy,
         NetworkSandboxPolicy::Restricted
+    );
+    assert!(
+        resolved
+            .file_system_sandbox_policy
+            .get_writable_roots_with_cwd(sandbox_policy_cwd)
+            .iter()
+            .any(|root| root.root == workspace),
+        "workspace path should remain a writable root"
+    );
+    assert_eq!(
+        resolved
+            .sandbox_policy
+            .get_writable_roots_with_cwd(sandbox_policy_cwd),
+        resolved
+            .file_system_sandbox_policy
+            .get_writable_roots_with_cwd(sandbox_policy_cwd)
     );
 }
 
