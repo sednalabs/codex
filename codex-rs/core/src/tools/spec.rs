@@ -46,6 +46,7 @@ use codex_protocol::openai_models::WebSearchToolType;
 use codex_protocol::protocol::SandboxPolicy;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::SubAgentSource;
+use codex_tools::parse_mcp_tool;
 pub use codex_tools::parse_tool_input_schema;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use serde::Deserialize;
@@ -57,6 +58,9 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 pub type JsonSchema = codex_tools::JsonSchema;
+
+#[cfg(test)]
+pub(crate) use codex_tools::mcp_call_tool_result_output_schema;
 
 const TOOL_SEARCH_DESCRIPTION_TEMPLATE: &str =
     include_str!("../../templates/search_tool/tool_description.md");
@@ -2362,15 +2366,15 @@ pub(crate) fn mcp_tool_to_openai_tool(
     fully_qualified_name: String,
     tool: rmcp::model::Tool,
 ) -> Result<ResponsesApiTool, serde_json::Error> {
-    let (description, input_schema, output_schema) = mcp_tool_to_openai_tool_parts(tool)?;
+    let parsed_tool = parse_mcp_tool(&tool)?;
 
     Ok(ResponsesApiTool {
         name: fully_qualified_name,
-        description,
+        description: parsed_tool.description,
         strict: false,
         defer_loading: None,
-        parameters: input_schema,
-        output_schema,
+        parameters: parsed_tool.input_schema,
+        output_schema: Some(parsed_tool.output_schema),
     })
 }
 
@@ -2378,14 +2382,14 @@ pub(crate) fn mcp_tool_to_deferred_openai_tool(
     name: String,
     tool: rmcp::model::Tool,
 ) -> Result<ResponsesApiTool, serde_json::Error> {
-    let (description, input_schema, _) = mcp_tool_to_openai_tool_parts(tool)?;
+    let parsed_tool = parse_mcp_tool(&tool)?;
 
     Ok(ResponsesApiTool {
         name,
-        description,
+        description: parsed_tool.description,
         strict: false,
         defer_loading: Some(true),
-        parameters: input_schema,
+        parameters: parsed_tool.input_schema,
         output_schema: None,
     })
 }
@@ -2402,61 +2406,6 @@ fn dynamic_tool_to_openai_tool(
         defer_loading: None,
         parameters: input_schema,
         output_schema: None,
-    })
-}
-
-fn mcp_tool_to_openai_tool_parts(
-    tool: rmcp::model::Tool,
-) -> Result<(String, JsonSchema, Option<JsonValue>), serde_json::Error> {
-    let rmcp::model::Tool {
-        description,
-        input_schema,
-        output_schema,
-        ..
-    } = tool;
-
-    let mut serialized_input_schema = serde_json::Value::Object(input_schema.as_ref().clone());
-
-    // OpenAI models mandate the "properties" field in the schema. Some MCP
-    // servers omit it (or set it to null), so we insert an empty object to
-    // match the behavior of the Agents SDK.
-    if let serde_json::Value::Object(obj) = &mut serialized_input_schema
-        && obj.get("properties").is_none_or(serde_json::Value::is_null)
-    {
-        obj.insert(
-            "properties".to_string(),
-            serde_json::Value::Object(serde_json::Map::new()),
-        );
-    }
-
-    let input_schema = parse_tool_input_schema(&serialized_input_schema)?;
-    let structured_content_schema = output_schema
-        .map(|output_schema| serde_json::Value::Object(output_schema.as_ref().clone()))
-        .unwrap_or_else(|| JsonValue::Object(serde_json::Map::new()));
-    let output_schema = Some(mcp_call_tool_result_output_schema(
-        structured_content_schema,
-    ));
-    let description = description.map(Into::into).unwrap_or_default();
-
-    Ok((description, input_schema, output_schema))
-}
-
-fn mcp_call_tool_result_output_schema(structured_content_schema: JsonValue) -> JsonValue {
-    json!({
-        "type": "object",
-        "properties": {
-            "content": {
-                "type": "array",
-                "items": {}
-            },
-            "structuredContent": structured_content_schema,
-            "isError": {
-                "type": "boolean"
-            },
-            "_meta": {}
-        },
-        "required": ["content"],
-        "additionalProperties": false
     })
 }
 

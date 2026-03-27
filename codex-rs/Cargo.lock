@@ -2633,6 +2633,7 @@ name = "codex-tools"
 version = "0.0.0"
 dependencies = [
  "pretty_assertions",
+ "rmcp",
  "serde",
  "serde_json",
 ]
