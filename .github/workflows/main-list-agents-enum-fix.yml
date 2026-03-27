@@ -1,0 +1,55 @@
+name: main list_agents enum fix
+
+on:
+  push:
+    branches:
+      - main-list-agents-enum-fix
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: main-list-agents-enum-fix
+  cancel-in-progress: false
+
+jobs:
+  apply-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out branch
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            codex-rs
+
+      - name: Apply source fix and remove merged artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git apply --check patches/pr5-list-agents-descendant-edge-status-enum.patch
+          git apply patches/pr5-list-agents-descendant-edge-status-enum.patch
+          git rm patches/pr5-list-agents-descendant-edge-status-enum.patch
+          git rm .github/workflows/main-list-agents-enum-fix.yml
+          git add codex-rs/core/src/tools/spec.rs codex-rs/core/src/tools/spec_tests.rs
+          git commit -m "Fix list_agents descendant_edge_status enum contract"
+          git push origin HEAD:${GITHUB_REF_NAME}
+
+      - name: Run targeted codex-core tests
+        working-directory: codex-rs
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test -p codex-core list_agents_serialization_restores_descendant_edge_status_enum -- --exact
+          cargo test -p codex-core test_full_toolset_specs_for_gpt5_codex_unified_exec_web_search -- --exact
