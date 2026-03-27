@@ -2544,10 +2544,14 @@ impl App {
         if let Some(queued_event) = queued_event {
             if let Err(err) = sender.try_send(queued_event) {
                 match err {
-                    TrySendError::Full(_) => {
-                        tracing::warn!(
-                            "thread {thread_id} live event channel full; dropping queued request"
-                        );
+                    // Active-thread requests gate user input, so keep them alive even if the UI
+                    // loop is briefly behind and the bounded channel is momentarily full.
+                    TrySendError::Full(queued_event) => {
+                        tokio::spawn(async move {
+                            if let Err(err) = sender.send(queued_event).await {
+                                tracing::warn!("thread {thread_id} event channel closed: {err}");
+                            }
+                        });
                     }
                     TrySendError::Closed(_) => {
                         tracing::warn!("thread {thread_id} event channel closed");
@@ -5898,6 +5902,56 @@ mod tests {
         }
 
         panic!("expected approval action to submit a thread-scoped op");
+    }
+
+    #[tokio::test]
+    async fn active_thread_request_survives_channel_backpressure() -> Result<()> {
+        let mut app = make_test_app().await;
+        let thread_id = ThreadId::new();
+        app.thread_event_channels
+            .insert(thread_id, ThreadEventChannel::new(1));
+        app.activate_thread_channel(thread_id).await;
+
+        app.enqueue_thread_request(
+            thread_id,
+            exec_approval_request(thread_id, "turn-1", "call-1", None),
+        )
+        .await?;
+        app.enqueue_thread_request(
+            thread_id,
+            exec_approval_request(thread_id, "turn-2", "call-2", None),
+        )
+        .await?;
+
+        let rx = app
+            .active_thread_rx
+            .as_mut()
+            .expect("active thread receiver should be attached");
+        let first = time::timeout(Duration::from_millis(50), rx.recv())
+            .await
+            .expect("timed out waiting for first approval request")
+            .expect("channel closed unexpectedly");
+        assert!(matches!(
+            &first.event,
+            ThreadBufferedEvent::Request(ServerRequest::CommandExecutionRequestApproval {
+                params,
+                ..
+            }) if params.turn_id == "turn-1"
+        ));
+
+        let second = time::timeout(Duration::from_millis(50), rx.recv())
+            .await
+            .expect("timed out waiting for second approval request")
+            .expect("channel closed unexpectedly");
+        assert!(matches!(
+            &second.event,
+            ThreadBufferedEvent::Request(ServerRequest::CommandExecutionRequestApproval {
+                params,
+                ..
+            }) if params.turn_id == "turn-2"
+        ));
+
+        Ok(())
     }
 
     #[tokio::test]
