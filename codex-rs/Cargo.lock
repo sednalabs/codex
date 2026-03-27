@@ -2505,7 +2505,6 @@ dependencies = [
  "codex-network-proxy",
  "codex-protocol",
  "codex-utils-absolute-path",
- "dirs",
  "dunce",
  "libc",
  "pretty_assertions",

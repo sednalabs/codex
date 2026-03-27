@@ -292,8 +292,6 @@ pub fn build_exec_request(
             enforce_managed_network,
             network: network.as_ref(),
             sandbox_policy_cwd: sandbox_cwd,
-            #[cfg(target_os = "macos")]
-            macos_seatbelt_profile_extensions: None,
             codex_linux_sandbox_exe: codex_linux_sandbox_exe.as_ref(),
             use_legacy_landlock,
             windows_sandbox_level,
