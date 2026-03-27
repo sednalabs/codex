@@ -2469,10 +2469,14 @@ impl App {
         if let Some(queued_event) = queued_event {
             if let Err(err) = sender.try_send(queued_event) {
                 match err {
-                    TrySendError::Full(_) => {
-                        tracing::warn!(
-                            "thread {thread_id} live event channel full; dropping queued notification"
-                        );
+                    // Active-thread notifications drive live thread state, so keep them alive
+                    // even if the UI loop is momentarily backpressured.
+                    TrySendError::Full(queued_event) => {
+                        tokio::spawn(async move {
+                            if let Err(err) = sender.send(queued_event).await {
+                                tracing::warn!("thread {thread_id} event channel closed: {err}");
+                            }
+                        });
                     }
                     TrySendError::Closed(_) => {
                         tracing::warn!("thread {thread_id} event channel closed");
