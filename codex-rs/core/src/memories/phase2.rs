@@ -138,7 +138,8 @@ pub(super) async fn run(session: &Arc<Session>, config: Arc<Config>) {
         job::failed(session, db, &claim, "failed_rebuild_raw_memories").await;
         return;
     }
-    let Some(prepared_input_artifact_tree_sha256) = agent::prepared_input_artifact_tree_sha256(&root)
+    let Some(prepared_input_artifact_tree_sha256) =
+        agent::prepared_input_artifact_tree_sha256(&root)
     else {
         tracing::error!("failed to fingerprint prepared immutable inputs for global consolidation");
         job::failed(session, db, &claim, "failed_prepare_artifacts").await;
@@ -437,6 +438,7 @@ pub(in crate::memories) mod agent {
                 }
                 if let Some(validated_artifacts) = validated_consolidation_artifact_state(
                     root.as_path(),
+                    Some(db.as_ref()),
                     artifacts_not_before,
                     Some(prepared_input_artifact_tree_sha256.as_str()),
                     allow_existing_artifacts_without_rewrite,
@@ -447,6 +449,7 @@ pub(in crate::memories) mod agent {
                 {
                     if let Err(err) = write_consolidation_artifact_attestation(
                         root.as_path(),
+                        Some(db.as_ref()),
                         &config,
                         &selection,
                         &validated_artifacts,
@@ -502,11 +505,13 @@ pub(in crate::memories) mod agent {
         allow_existing_artifacts_without_rewrite: bool,
         selection: &codex_state::Phase2InputSelection,
     ) -> bool {
-        let expected_prepared_input_artifact_tree_sha256 = (!allow_existing_artifacts_without_rewrite)
-            .then(|| prepared_input_artifact_tree_sha256(root))
-            .flatten();
+        let expected_prepared_input_artifact_tree_sha256 =
+            (!allow_existing_artifacts_without_rewrite)
+                .then(|| prepared_input_artifact_tree_sha256(root))
+                .flatten();
         validated_consolidation_artifact_state(
             root,
+            None,
             not_before,
             expected_prepared_input_artifact_tree_sha256.as_deref(),
             allow_existing_artifacts_without_rewrite,
@@ -526,8 +531,31 @@ pub(in crate::memories) mod agent {
         allow_existing_artifacts_without_rewrite: bool,
         selection: &codex_state::Phase2InputSelection,
     ) -> bool {
+        consolidation_artifacts_ready_with_state_db_and_expected_prepared_input_tree(
+            root,
+            config,
+            None,
+            not_before,
+            expected_prepared_input_artifact_tree_sha256,
+            allow_existing_artifacts_without_rewrite,
+            selection,
+        )
+        .await
+    }
+
+    #[cfg(test)]
+    pub(in crate::memories) async fn consolidation_artifacts_ready_with_state_db_and_expected_prepared_input_tree(
+        root: &Path,
+        config: &Config,
+        state_db: Option<&StateRuntime>,
+        not_before: SystemTime,
+        expected_prepared_input_artifact_tree_sha256: Option<&str>,
+        allow_existing_artifacts_without_rewrite: bool,
+        selection: &codex_state::Phase2InputSelection,
+    ) -> bool {
         validated_consolidation_artifact_state(
             root,
+            state_db,
             not_before,
             expected_prepared_input_artifact_tree_sha256,
             allow_existing_artifacts_without_rewrite,
@@ -562,6 +590,7 @@ pub(in crate::memories) mod agent {
 
     async fn validated_consolidation_artifact_state(
         root: &Path,
+        state_db: Option<&StateRuntime>,
         not_before: SystemTime,
         expected_prepared_input_artifact_tree_sha256: Option<&str>,
         allow_existing_artifacts_without_rewrite: bool,
@@ -582,6 +611,25 @@ pub(in crate::memories) mod agent {
             return None;
         }
 
+        let attestation_required = if let Some(state_db) = state_db {
+            let memory_root_key = memory_root_attestation_key(root);
+            match state_db
+                .global_phase2_attestation_required_for_root(memory_root_key.as_str())
+                .await
+            {
+                Ok(required) => required,
+                Err(err) => {
+                    tracing::warn!(
+                        error = %err,
+                        "failed to read global memory consolidation attestation requirement state"
+                    );
+                    return None;
+                }
+            }
+        } else {
+            false
+        };
+
         match read_consolidation_artifact_attestation(root).await {
             Ok(Some(attestation)) => (attestation.schema_version
                 == CONSOLIDATION_ARTIFACT_ATTESTATION_SCHEMA_VERSION
@@ -593,25 +641,33 @@ pub(in crate::memories) mod agent {
                 && attestation.artifact_tree_sha256 == current.artifact_tree_sha256)
                 .then_some(current),
             Ok(None) => {
-                let root = root.to_path_buf();
-                match tokio::task::spawn_blocking(move || attestation_support_initialized(&root))
+                if attestation_required {
+                    None
+                } else if state_db.is_some() {
+                    None
+                } else {
+                    let root = root.to_path_buf();
+                    match tokio::task::spawn_blocking(move || {
+                        attestation_support_initialized(&root)
+                    })
                     .await
-                {
-                    Ok(Ok(false)) => prepared_input_tree_matches.then_some(current),
-                    Ok(Ok(true)) => None,
-                    Ok(Err(err)) => {
-                        tracing::warn!(
-                            error = %err,
-                            "failed to read global memory consolidation artifact attestation support state"
-                        );
-                        None
-                    }
-                    Err(err) => {
-                        tracing::warn!(
-                            error = %err,
-                            "failed to join global memory consolidation attestation support task"
-                        );
-                        None
+                    {
+                        Ok(Ok(false)) => prepared_input_tree_matches.then_some(current),
+                        Ok(Ok(true)) => None,
+                        Ok(Err(err)) => {
+                            tracing::warn!(
+                                error = %err,
+                                "failed to read global memory consolidation artifact attestation support state"
+                            );
+                            None
+                        }
+                        Err(err) => {
+                            tracing::warn!(
+                                error = %err,
+                                "failed to join global memory consolidation attestation support task"
+                            );
+                            None
+                        }
                     }
                 }
             }
@@ -638,7 +694,9 @@ pub(in crate::memories) mod agent {
                 memory_summary_modified: memory_summary.modified,
                 memory_sha256: memory.sha256,
                 memory_summary_sha256: memory_summary.sha256,
-                prepared_input_artifact_tree_sha256: prepared_input_artifact_tree_sha256(root.as_path())?,
+                prepared_input_artifact_tree_sha256: prepared_input_artifact_tree_sha256(
+                    root.as_path(),
+                )?,
                 artifact_tree_sha256: artifact_tree_sha256(root.as_path())?,
                 artifacts_freshly_rewritten: false,
             })
@@ -680,6 +738,7 @@ pub(in crate::memories) mod agent {
 
     async fn write_consolidation_artifact_attestation(
         root: &Path,
+        state_db: Option<&StateRuntime>,
         config: &Config,
         selection: &codex_state::Phase2InputSelection,
         artifacts: &ConsolidationArtifactState,
@@ -695,6 +754,16 @@ pub(in crate::memories) mod agent {
         };
         let contents = serde_json::to_vec_pretty(&attestation)
             .map_err(|err| std::io::Error::other(format!("serialize attestation: {err}")))?;
+        let memory_root_key = memory_root_attestation_key(root);
+        if let Some(state_db) = state_db {
+            state_db
+                .mark_global_phase2_attestation_required_for_root(memory_root_key.as_str())
+                .await
+                .map_err(|err| {
+                    std::io::Error::other(format!("persist attestation requirement state: {err}"))
+                })?;
+        }
+
         let root = root.to_path_buf();
         tokio::task::spawn_blocking(move || -> std::io::Result<()> {
             let path =
@@ -708,7 +777,9 @@ pub(in crate::memories) mod agent {
             write_consolidation_artifact_attestation_support_marker(root.as_path())
         })
         .await
-        .map_err(|err| std::io::Error::other(format!("join attestation write task: {err}")))?
+        .map_err(|err| std::io::Error::other(format!("join attestation write task: {err}")))??;
+
+        Ok(())
     }
 
     #[cfg(test)]
@@ -717,10 +788,24 @@ pub(in crate::memories) mod agent {
         root: &Path,
         selection: &codex_state::Phase2InputSelection,
     ) -> std::io::Result<()> {
+        write_current_consolidation_artifact_attestation_with_state_db(
+            config, root, selection, None,
+        )
+        .await
+    }
+
+    #[cfg(test)]
+    pub(super) async fn write_current_consolidation_artifact_attestation_with_state_db(
+        config: &Config,
+        root: &Path,
+        selection: &codex_state::Phase2InputSelection,
+        state_db: Option<&StateRuntime>,
+    ) -> std::io::Result<()> {
         let artifacts = current_consolidation_artifact_state(root)
             .await
             .ok_or_else(|| std::io::Error::other("missing non-empty consolidation artifacts"))?;
-        write_consolidation_artifact_attestation(root, config, selection, &artifacts).await
+        write_consolidation_artifact_attestation(root, state_db, config, selection, &artifacts)
+            .await
     }
 
     #[cfg(test)]
@@ -882,15 +967,19 @@ pub(in crate::memories) mod agent {
         consolidator_contract_fingerprint(model_provider_id, model, reasoning_effort, prompt, root)
     }
 
+    fn memory_root_attestation_key(root: &Path) -> String {
+        sha256_hex(&stable_path_identity_bytes(root))
+    }
+
     fn consolidation_artifact_attestation_path(root: &Path) -> Option<PathBuf> {
-        let root_hash = sha256_hex(&stable_path_identity_bytes(root));
+        let root_hash = memory_root_attestation_key(root);
         Some(root.parent()?.join(format!(
             "{CONSOLIDATION_ARTIFACT_ATTESTATION_FILE_PREFIX}-{root_hash}.json"
         )))
     }
 
     fn consolidation_artifact_attestation_support_path(root: &Path) -> Option<PathBuf> {
-        let root_hash = sha256_hex(&stable_path_identity_bytes(root));
+        let root_hash = memory_root_attestation_key(root);
         Some(root.parent()?.join(format!(
             "{CONSOLIDATION_ARTIFACT_ATTESTATION_SUPPORT_FILE_PREFIX}-{root_hash}.json"
         )))
@@ -899,6 +988,13 @@ pub(in crate::memories) mod agent {
     #[cfg(test)]
     pub(super) fn test_consolidation_artifact_attestation_path(root: &Path) -> Option<PathBuf> {
         consolidation_artifact_attestation_path(root)
+    }
+
+    #[cfg(test)]
+    pub(super) fn test_consolidation_artifact_attestation_support_path(
+        root: &Path,
+    ) -> Option<PathBuf> {
+        consolidation_artifact_attestation_support_path(root)
     }
 
     fn attestation_support_initialized(root: &Path) -> std::io::Result<bool> {
@@ -969,8 +1065,13 @@ pub(in crate::memories) mod agent {
     }
 
     pub(super) fn prepared_input_artifact_tree_sha256(root: &Path) -> Option<String> {
+        // Prepared immutable phase-2 inputs are the rebuilt raw memories file plus
+        // the canonical rollout summaries synced from stage-1 output. Fresh-run
+        // validation must cover this exact read-set while excluding mutable
+        // outputs the prompt explicitly allows the consolidator to rewrite.
         artifact_tree_sha256_filtered(root, |relative_path| {
             relative_path == Path::new("raw_memories.md")
+                || relative_path.starts_with(Path::new("rollout_summaries"))
         })
     }
 
@@ -1235,6 +1336,22 @@ pub(crate) async fn test_write_consolidation_artifact_attestation(
 }
 
 #[cfg(test)]
+pub(crate) async fn test_write_consolidation_artifact_attestation_with_state_db(
+    config: Arc<Config>,
+    root: &Path,
+    selection: &codex_state::Phase2InputSelection,
+    state_db: &StateRuntime,
+) -> std::io::Result<()> {
+    agent::write_current_consolidation_artifact_attestation_with_state_db(
+        &config,
+        root,
+        selection,
+        Some(state_db),
+    )
+    .await
+}
+
+#[cfg(test)]
 pub(crate) async fn test_write_consolidation_artifact_attestation_with_fingerprint(
     root: &Path,
     selection: &codex_state::Phase2InputSelection,
@@ -1244,6 +1361,28 @@ pub(crate) async fn test_write_consolidation_artifact_attestation_with_fingerpri
         root,
         selection,
         consolidator_fingerprint,
+    )
+    .await
+}
+
+#[cfg(test)]
+pub(crate) async fn test_consolidation_artifacts_ready_with_state_db_and_expected_prepared_input_tree(
+    root: &Path,
+    config: &Config,
+    state_db: &StateRuntime,
+    not_before: SystemTime,
+    expected_prepared_input_artifact_tree_sha256: Option<&str>,
+    allow_existing_artifacts_without_rewrite: bool,
+    selection: &codex_state::Phase2InputSelection,
+) -> bool {
+    agent::consolidation_artifacts_ready_with_state_db_and_expected_prepared_input_tree(
+        root,
+        config,
+        Some(state_db),
+        not_before,
+        expected_prepared_input_artifact_tree_sha256,
+        allow_existing_artifacts_without_rewrite,
+        selection,
     )
     .await
 }
@@ -1271,9 +1410,18 @@ pub(crate) fn test_consolidation_artifact_attestation_path(root: &Path) -> Optio
 }
 
 #[cfg(test)]
+pub(crate) fn test_consolidation_artifact_attestation_support_path(root: &Path) -> Option<PathBuf> {
+    agent::test_consolidation_artifact_attestation_support_path(root)
+}
+
+#[cfg(test)]
 pub(crate) fn test_prepared_input_artifact_tree_sha256(root: &Path) -> Option<String> {
     agent::test_prepared_input_artifact_tree_sha256(root)
 }
+
+#[cfg(test)]
+#[path = "phase2_attestation_tests.rs"]
+mod attestation_tests;
 
 pub(super) fn get_watermark(
     claimed_watermark: i64,
