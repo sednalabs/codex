@@ -86,9 +86,9 @@ jobs:
         with:
           path: |
             ~/.cache/bazel-repo-cache
-          key: bazel-cache-${{ matrix.os }}-${{ hashFiles('MODULE.bazel', 'codex-rs/Cargo.lock', 'codex-rs/Cargo.toml') }}
+          key: bazel-cache-${{ matrix.target }}-${{ hashFiles('MODULE.bazel', 'codex-rs/Cargo.lock', 'codex-rs/Cargo.toml') }}
           restore-keys: |
-            bazel-cache-${{ matrix.os }}
+            bazel-cache-${{ matrix.target }}
 
       - name: Configure Bazel startup args (Windows)
         if: runner.os == 'Windows'
@@ -230,4 +230,4 @@ jobs:
         with:
           path: |
             ~/.cache/bazel-repo-cache
-          key: bazel-cache-${{ matrix.os }}-${{ hashFiles('MODULE.bazel', 'codex-rs/Cargo.lock', 'codex-rs/Cargo.toml') }}
+          key: bazel-cache-${{ matrix.target }}-${{ hashFiles('MODULE.bazel', 'codex-rs/Cargo.lock', 'codex-rs/Cargo.toml') }}
