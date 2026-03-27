@@ -8,17 +8,12 @@ impl StateRuntime {
         &self,
         memory_root_key: &str,
     ) -> anyhow::Result<bool> {
-        let required = sqlx::query_scalar::<_, i64>(
-            r#"
-SELECT 1
-FROM phase2_attestation_roots
-WHERE memory_root_key = ?
-            "#,
+        let required = sqlx::query_scalar::<_, bool>(
+            r#"SELECT EXISTS(SELECT 1 FROM phase2_attestation_roots WHERE memory_root_key = ?)"#,
         )
         .bind(memory_root_key)
-        .fetch_optional(self.pool.as_ref())
-        .await?
-        .is_some();
+        .fetch_one(self.pool.as_ref())
+        .await?;
 
         Ok(required)
     }
