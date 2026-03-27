@@ -1007,16 +1007,22 @@ mod phase2 {
         tokio::fs::write(&memory_summary_path, "memory summary\n")
             .await
             .expect("write memory summary");
-        tokio::fs::write(&raw_memories_path, "# Raw Memories\n\ntrusted raw memories\n")
-            .await
-            .expect("write raw memories");
+        tokio::fs::write(
+            &raw_memories_path,
+            "# Raw Memories\n\ntrusted raw memories\n",
+        )
+        .await
+        .expect("write raw memories");
 
         let expected_supporting_tree = phase2::test_prepared_input_artifact_tree_sha256(root)
             .expect("fingerprint prepared immutable inputs");
 
-        tokio::fs::write(&raw_memories_path, "# Raw Memories\n\ntampered raw memories\n")
-            .await
-            .expect("tamper raw memories");
+        tokio::fs::write(
+            &raw_memories_path,
+            "# Raw Memories\n\ntampered raw memories\n",
+        )
+        .await
+        .expect("tamper raw memories");
         tokio::fs::write(&memory_index_path, "fresh memory index\n")
             .await
             .expect("refresh memory index");
@@ -1063,9 +1069,12 @@ mod phase2 {
         tokio::fs::write(&memory_summary_path, "memory summary\n")
             .await
             .expect("write memory summary");
-        tokio::fs::write(&raw_memories_path, "# Raw Memories\n\ntrusted raw memories\n")
-            .await
-            .expect("write raw memories");
+        tokio::fs::write(
+            &raw_memories_path,
+            "# Raw Memories\n\ntrusted raw memories\n",
+        )
+        .await
+        .expect("write raw memories");
         tokio::fs::write(&skill_path, "old skill\n")
             .await
             .expect("write original skill");
@@ -1605,10 +1614,7 @@ mod phase2 {
             phase2::test_consolidation_agent_config(config).expect("consolidation config");
         let expected_memory_root = memory_root(&agent_config.codex_home);
 
-        pretty_assertions::assert_eq!(
-            agent_config.cwd.as_path(),
-            expected_memory_root.as_path()
-        );
+        pretty_assertions::assert_eq!(agent_config.cwd.as_path(), expected_memory_root.as_path());
         pretty_assertions::assert_eq!(
             agent_config.permissions.file_system_sandbox_policy,
             FileSystemSandboxPolicy::from_legacy_sandbox_policy(

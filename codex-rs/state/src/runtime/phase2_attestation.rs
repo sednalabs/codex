@@ -48,8 +48,8 @@ ON CONFLICT(memory_root_key) DO UPDATE SET
 
 #[cfg(test)]
 mod tests {
-    use super::StateRuntime;
     use super::super::test_support::unique_temp_dir;
+    use super::StateRuntime;
 
     #[tokio::test]
     async fn global_phase2_attestation_requirement_is_root_scoped() {
