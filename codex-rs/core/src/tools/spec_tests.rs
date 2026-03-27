@@ -848,6 +848,21 @@ fn test_wait_agent_tool_schema_and_description_document_return_when() {
 }
 
 #[test]
+fn test_list_agents_output_schema_documents_interrupted_progress_visibility() {
+    let ToolSpec::Function(ResponsesApiTool { output_schema, .. }) = create_list_agents_tool()
+    else {
+        panic!("expected function tool");
+    };
+    let output_schema = output_schema.expect("list_agents should define output schema");
+    assert_eq!(
+        output_schema["properties"]["progress_by_id"]["description"],
+        json!(
+            "Bounded progress evidence keyed by thread id for non-final agents in this snapshot, including interrupted-but-resumable entries."
+        )
+    );
+}
+
+#[test]
 fn test_spawn_agent_tool_schema_defaults_to_agent_id_in_non_v2_mode() {
     let config = test_config();
     let model_info = ModelsManager::construct_model_info_offline_for_tests("gpt-5-codex", &config);

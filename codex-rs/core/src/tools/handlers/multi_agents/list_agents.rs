@@ -1,6 +1,7 @@
 use super::*;
 use crate::agent::control::SUBAGENT_IDENTITY_SOURCE_THREAD_CONFIG_SNAPSHOT;
 use crate::agent::control::SubAgentInventoryInfo;
+use crate::agent::status::is_final;
 use codex_protocol::openai_models::ReasoningEffort;
 use codex_state::DirectionalThreadSpawnEdgeStatus;
 use std::collections::HashMap;
@@ -151,12 +152,8 @@ impl ToolHandler for Handler {
 
         let progress_thread_ids = agents
             .iter()
-            .filter(|entry| {
-                matches!(
-                    entry.status,
-                    AgentStatus::PendingInit | AgentStatus::Running
-                )
-            })
+            // Interrupted agents remain resumable, so keep progress visible for all non-final rows.
+            .filter(|entry| !is_final(&entry.status))
             .map(|entry| agent_id(&entry.agent_id))
             .filter_map(Result::ok)
             .collect::<Vec<_>>();
