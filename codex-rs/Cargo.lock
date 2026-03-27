@@ -1417,6 +1417,7 @@ dependencies = [
  "codex-sandboxing",
  "codex-shell-command",
  "codex-state",
+ "codex-tools",
  "codex-utils-absolute-path",
  "codex-utils-cargo-bin",
  "codex-utils-cli",
@@ -1848,6 +1849,7 @@ dependencies = [
  "codex-shell-escalation",
  "codex-state",
  "codex-terminal-detection",
+ "codex-tools",
  "codex-utils-absolute-path",
  "codex-utils-cache",
  "codex-utils-cargo-bin",
@@ -2625,6 +2627,15 @@ version = "0.0.0"
 dependencies = [
  "pretty_assertions",
  "tracing",
+]
+
+[[package]]
+name = "codex-tools"
+version = "0.0.0"
+dependencies = [
+ "pretty_assertions",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
