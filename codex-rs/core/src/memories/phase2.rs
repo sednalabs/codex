@@ -316,7 +316,7 @@ pub(in crate::memories) mod agent {
         let mut agent_config = config.as_ref().clone();
 
         match AbsolutePathBuf::from_absolute_path(root) {
-            Ok(root) => agent_config.cwd = root,
+            Ok(root) => agent_config.cwd = root.into(),
             Err(err) => {
                 warn!(
                     "memory phase-2 consolidation could not set cwd from codex_home {}: {err}",
