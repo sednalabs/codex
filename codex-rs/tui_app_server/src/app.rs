@@ -1839,9 +1839,8 @@ impl App {
             return Ok(());
         }
 
-        self.chat_widget.add_error_message(format!(
-            "Not available in app-server TUI yet for thread {thread_id}."
-        ));
+        self.chat_widget
+            .add_error_message(format!("Not available in TUI yet for thread {thread_id}."));
         Ok(())
     }
 
@@ -3622,7 +3621,7 @@ impl App {
                     Ok(app_server) => app_server,
                     Err(err) => {
                         self.chat_widget.add_error_message(format!(
-                            "Failed to start app-server-backed session picker: {err}"
+                            "Failed to start TUI session picker: {err}"
                         ));
                         return Ok(AppRunControl::Continue);
                     }
@@ -3631,6 +3630,7 @@ impl App {
                     tui,
                     &self.config,
                     /*show_all*/ false,
+                    /*include_non_interactive*/ false,
                     picker_app_server,
                 )
                 .await?
@@ -5583,7 +5583,7 @@ async fn fetch_all_mcp_server_statuses(
                 },
             })
             .await
-            .wrap_err("mcpServerStatus/list failed in app-server TUI")?;
+            .wrap_err("mcpServerStatus/list failed in TUI")?;
         statuses.extend(response.data);
         if let Some(next_cursor) = response.next_cursor {
             cursor = Some(next_cursor);
@@ -5610,7 +5610,7 @@ async fn fetch_plugins_list(
             },
         })
         .await
-        .wrap_err("plugin/list failed in app-server TUI")
+        .wrap_err("plugin/list failed in TUI")
 }
 
 async fn fetch_plugin_detail(
@@ -5621,7 +5621,7 @@ async fn fetch_plugin_detail(
     request_handle
         .request_typed(ClientRequest::PluginRead { request_id, params })
         .await
-        .wrap_err("plugin/read failed in app-server TUI")
+        .wrap_err("plugin/read failed in TUI")
 }
 
 async fn fetch_plugin_install(
@@ -5640,7 +5640,7 @@ async fn fetch_plugin_install(
             },
         })
         .await
-        .wrap_err("plugin/install failed in app-server TUI")
+        .wrap_err("plugin/install failed in TUI")
 }
 
 async fn fetch_plugin_uninstall(
@@ -5657,12 +5657,12 @@ async fn fetch_plugin_uninstall(
             },
         })
         .await
-        .wrap_err("plugin/uninstall failed in app-server TUI")
+        .wrap_err("plugin/uninstall failed in TUI")
 }
 
 /// Convert flat `McpServerStatus` responses into the per-server maps used by the
 /// in-process MCP subsystem (tools keyed as `mcp__{server}__{tool}`, plus
-/// per-server resource/template/auth maps). Test-only because the app-server TUI
+/// per-server resource/template/auth maps). Test-only because the TUI
 /// renders directly from `McpServerStatus` rather than these maps.
 #[cfg(test)]
 type McpInventoryMaps = (
