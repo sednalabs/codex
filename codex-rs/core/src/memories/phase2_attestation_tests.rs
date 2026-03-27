@@ -69,9 +69,12 @@ async fn consolidation_artifacts_ready_rejects_rollout_summary_drift_even_when_o
     tokio::fs::write(&memory_summary_path, "memory summary\n")
         .await
         .expect("write memory summary");
-    tokio::fs::write(&raw_memories_path, "# Raw Memories\n\ntrusted raw memories\n")
-        .await
-        .expect("write raw memories");
+    tokio::fs::write(
+        &raw_memories_path,
+        "# Raw Memories\n\ntrusted raw memories\n",
+    )
+    .await
+    .expect("write raw memories");
     tokio::fs::write(&rollout_summary_path, "trusted rollout summary\n")
         .await
         .expect("write rollout summary");
@@ -104,7 +107,8 @@ async fn consolidation_artifacts_ready_rejects_rollout_summary_drift_even_when_o
 }
 
 #[tokio::test]
-async fn consolidation_artifacts_ready_rejects_missing_attestation_after_db_requirement_initialized_even_when_support_marker_is_deleted() {
+async fn consolidation_artifacts_ready_rejects_missing_attestation_after_db_requirement_initialized_even_when_support_marker_is_deleted()
+ {
     let temp_dir = tempfile::tempdir().expect("temp dir");
     let codex_home = temp_dir.path().join("codex-home");
     let root = memory_root(&codex_home);
@@ -130,8 +134,8 @@ async fn consolidation_artifacts_ready_rejects_missing_attestation_after_db_requ
 
     let selected_outputs = vec![stage1_output_with_source_updated_at(200)];
     let selection = selection_for_attested_outputs(selected_outputs);
-    let expected_prepared_input_tree = test_prepared_input_artifact_tree_sha256(&root)
-        .expect("prepared input tree hash");
+    let expected_prepared_input_tree =
+        test_prepared_input_artifact_tree_sha256(&root).expect("prepared input tree hash");
 
     test_write_consolidation_artifact_attestation_with_state_db(
         Arc::clone(&config),
@@ -142,8 +146,8 @@ async fn consolidation_artifacts_ready_rejects_missing_attestation_after_db_requ
     .await
     .expect("write attestation and persist db requirement state");
 
-    let attestation_path = test_consolidation_artifact_attestation_path(&root)
-        .expect("attestation path");
+    let attestation_path =
+        test_consolidation_artifact_attestation_path(&root).expect("attestation path");
     tokio::fs::remove_file(attestation_path)
         .await
         .expect("remove attestation");
@@ -165,5 +169,50 @@ async fn consolidation_artifacts_ready_rejects_missing_attestation_after_db_requ
         )
         .await,
         "once durable attestation state is initialized, deleting both sidecars must not reopen bootstrap reuse"
+    );
+}
+
+#[tokio::test]
+async fn consolidation_artifacts_ready_rejects_missing_attestation_when_state_db_row_is_absent() {
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let codex_home = temp_dir.path().join("codex-home");
+    let root = memory_root(&codex_home);
+    let config = config_for_memory_root(&root);
+    let state_db = codex_state::StateRuntime::init(
+        temp_dir.path().join("sqlite-home"),
+        config.model_provider_id.clone(),
+    )
+    .await
+    .expect("initialize state db");
+    let memory_index_path = root.join("MEMORY.md");
+    let memory_summary_path = root.join("memory_summary.md");
+
+    tokio::fs::create_dir_all(&root)
+        .await
+        .expect("create memory root");
+    tokio::fs::write(&memory_index_path, "memory index\n")
+        .await
+        .expect("write memory index");
+    tokio::fs::write(&memory_summary_path, "memory summary\n")
+        .await
+        .expect("write memory summary");
+
+    let selected_outputs = vec![stage1_output_with_source_updated_at(200)];
+    let selection = selection_for_attested_outputs(selected_outputs);
+    let expected_prepared_input_tree =
+        test_prepared_input_artifact_tree_sha256(&root).expect("prepared input tree hash");
+
+    assert!(
+        !test_consolidation_artifacts_ready_with_state_db_and_expected_prepared_input_tree(
+            &root,
+            &config,
+            state_db.as_ref(),
+            std::time::SystemTime::now() + Duration::from_secs(60),
+            Some(expected_prepared_input_tree.as_str()),
+            true,
+            &selection,
+        )
+        .await,
+        "with a state db present, missing attestation must fail closed even if the durable requirement row is absent"
     );
 }

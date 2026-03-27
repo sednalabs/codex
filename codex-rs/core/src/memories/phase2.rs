@@ -138,7 +138,8 @@ pub(super) async fn run(session: &Arc<Session>, config: Arc<Config>) {
         job::failed(session, db, &claim, "failed_rebuild_raw_memories").await;
         return;
     }
-    let Some(prepared_input_artifact_tree_sha256) = agent::prepared_input_artifact_tree_sha256(&root)
+    let Some(prepared_input_artifact_tree_sha256) =
+        agent::prepared_input_artifact_tree_sha256(&root)
     else {
         tracing::error!("failed to fingerprint prepared immutable inputs for global consolidation");
         job::failed(session, db, &claim, "failed_prepare_artifacts").await;
@@ -504,9 +505,10 @@ pub(in crate::memories) mod agent {
         allow_existing_artifacts_without_rewrite: bool,
         selection: &codex_state::Phase2InputSelection,
     ) -> bool {
-        let expected_prepared_input_artifact_tree_sha256 = (!allow_existing_artifacts_without_rewrite)
-            .then(|| prepared_input_artifact_tree_sha256(root))
-            .flatten();
+        let expected_prepared_input_artifact_tree_sha256 =
+            (!allow_existing_artifacts_without_rewrite)
+                .then(|| prepared_input_artifact_tree_sha256(root))
+                .flatten();
         validated_consolidation_artifact_state(
             root,
             None,
@@ -642,11 +644,13 @@ pub(in crate::memories) mod agent {
                 if attestation_required {
                     None
                 } else if state_db.is_some() {
-                    prepared_input_tree_matches.then_some(current)
+                    None
                 } else {
                     let root = root.to_path_buf();
-                    match tokio::task::spawn_blocking(move || attestation_support_initialized(&root))
-                        .await
+                    match tokio::task::spawn_blocking(move || {
+                        attestation_support_initialized(&root)
+                    })
+                    .await
                     {
                         Ok(Ok(false)) => prepared_input_tree_matches.then_some(current),
                         Ok(Ok(true)) => None,
@@ -690,7 +694,9 @@ pub(in crate::memories) mod agent {
                 memory_summary_modified: memory_summary.modified,
                 memory_sha256: memory.sha256,
                 memory_summary_sha256: memory_summary.sha256,
-                prepared_input_artifact_tree_sha256: prepared_input_artifact_tree_sha256(root.as_path())?,
+                prepared_input_artifact_tree_sha256: prepared_input_artifact_tree_sha256(
+                    root.as_path(),
+                )?,
                 artifact_tree_sha256: artifact_tree_sha256(root.as_path())?,
                 artifacts_freshly_rewritten: false,
             })
@@ -749,6 +755,15 @@ pub(in crate::memories) mod agent {
         let contents = serde_json::to_vec_pretty(&attestation)
             .map_err(|err| std::io::Error::other(format!("serialize attestation: {err}")))?;
         let memory_root_key = memory_root_attestation_key(root);
+        if let Some(state_db) = state_db {
+            state_db
+                .mark_global_phase2_attestation_required_for_root(memory_root_key.as_str())
+                .await
+                .map_err(|err| {
+                    std::io::Error::other(format!("persist attestation requirement state: {err}"))
+                })?;
+        }
+
         let root = root.to_path_buf();
         tokio::task::spawn_blocking(move || -> std::io::Result<()> {
             let path =
@@ -764,17 +779,6 @@ pub(in crate::memories) mod agent {
         .await
         .map_err(|err| std::io::Error::other(format!("join attestation write task: {err}")))??;
 
-        if let Some(state_db) = state_db {
-            state_db
-                .mark_global_phase2_attestation_required_for_root(memory_root_key.as_str())
-                .await
-                .map_err(|err| {
-                    std::io::Error::other(format!(
-                        "persist attestation requirement state: {err}"
-                    ))
-                })?;
-        }
-
         Ok(())
     }
 
@@ -785,10 +789,7 @@ pub(in crate::memories) mod agent {
         selection: &codex_state::Phase2InputSelection,
     ) -> std::io::Result<()> {
         write_current_consolidation_artifact_attestation_with_state_db(
-            config,
-            root,
-            selection,
-            None,
+            config, root, selection, None,
         )
         .await
     }
@@ -1409,9 +1410,7 @@ pub(crate) fn test_consolidation_artifact_attestation_path(root: &Path) -> Optio
 }
 
 #[cfg(test)]
-pub(crate) fn test_consolidation_artifact_attestation_support_path(
-    root: &Path,
-) -> Option<PathBuf> {
+pub(crate) fn test_consolidation_artifact_attestation_support_path(root: &Path) -> Option<PathBuf> {
     agent::test_consolidation_artifact_attestation_support_path(root)
 }
 
