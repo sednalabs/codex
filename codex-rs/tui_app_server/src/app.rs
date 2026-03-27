@@ -73,7 +73,6 @@ use codex_core::config::types::ApprovalsReviewer;
 use codex_core::config::types::ModelAvailabilityNuxConfig;
 use codex_core::config_loader::ConfigLayerStackOrdering;
 use codex_core::message_history;
-use codex_protocol::items::parse_subagent_notification_response_item;
 use codex_core::models_manager::collaboration_mode_presets::CollaborationModesConfig;
 use codex_core::models_manager::model_presets::HIDE_GPT_5_1_CODEX_MAX_MIGRATION_PROMPT_CONFIG;
 use codex_core::models_manager::model_presets::HIDE_GPT5_1_MIGRATION_PROMPT_CONFIG;
@@ -86,6 +85,7 @@ use codex_protocol::approvals::ExecApprovalRequestEvent;
 use codex_protocol::config_types::Personality;
 #[cfg(target_os = "windows")]
 use codex_protocol::config_types::WindowsSandboxLevel;
+use codex_protocol::items::parse_subagent_notification_response_item;
 use codex_protocol::items::parse_subagent_notification_response_item;
 use codex_protocol::openai_models::ModelAvailabilityNux;
 use codex_protocol::openai_models::ModelPreset;
@@ -1114,8 +1114,9 @@ impl App {
                 })?;
             let approval_override = self.thread_approval_overrides.get(&thread_id).cloned();
             let current_cwd = self.config.cwd.clone();
-            let mut config =
-                self.rebuild_config_for_resume_or_fallback(&current_cwd, session.cwd.clone()).await?;
+            let mut config = self
+                .rebuild_config_for_resume_or_fallback(&current_cwd, session.cwd.clone())
+                .await?;
             self.apply_thread_restore_state_to_config(
                 &mut config,
                 Some(&session),
@@ -1296,7 +1297,11 @@ impl App {
             }
         };
         let approval_override = self.thread_approval_overrides.get(&thread_id).cloned();
-        self.apply_thread_restore_state_to_config(&mut config, session.as_ref(), approval_override.as_ref())?;
+        self.apply_thread_restore_state_to_config(
+            &mut config,
+            session.as_ref(),
+            approval_override.as_ref(),
+        )?;
         Ok(config)
     }
 
@@ -5544,7 +5549,6 @@ impl App {
     }
 }
 
-<<<<<<< HEAD
 fn parse_completed_subagent_notification(
     notification: &ServerNotification,
 ) -> Option<codex_protocol::items::SubagentNotificationItem> {
@@ -5552,7 +5556,11 @@ fn parse_completed_subagent_notification(
         return None;
     };
     let parsed = parse_subagent_notification_response_item(&notification.item)?;
-    matches!(parsed.status, codex_protocol::protocol::AgentStatus::Completed(_)).then_some(parsed)
+    matches!(
+        parsed.status,
+        codex_protocol::protocol::AgentStatus::Completed(_)
+    )
+    .then_some(parsed)
 }
 
 fn is_replay_safe_subagent_completion_notification(notification: &ServerNotification) -> bool {
@@ -6125,23 +6133,35 @@ mod tests {
             .expect("cached primary session");
         let guard = channel.store.lock().await;
         let cached_session = guard.session.as_ref().expect("primary session cached");
-        assert_eq!(cached_session.approval_policy, approval_override.approval_policy);
+        assert_eq!(
+            cached_session.approval_policy,
+            approval_override.approval_policy
+        );
         assert_eq!(
             cached_session.approvals_reviewer,
             approval_override.approvals_reviewer
         );
-        assert_eq!(cached_session.sandbox_policy, approval_override.sandbox_policy);
+        assert_eq!(
+            cached_session.sandbox_policy,
+            approval_override.sandbox_policy
+        );
 
         let primary_session = app
             .primary_session_configured
             .as_ref()
             .expect("primary session configured");
-        assert_eq!(primary_session.approval_policy, approval_override.approval_policy);
+        assert_eq!(
+            primary_session.approval_policy,
+            approval_override.approval_policy
+        );
         assert_eq!(
             primary_session.approvals_reviewer,
             approval_override.approvals_reviewer
         );
-        assert_eq!(primary_session.sandbox_policy, approval_override.sandbox_policy);
+        assert_eq!(
+            primary_session.sandbox_policy,
+            approval_override.sandbox_policy
+        );
         assert!(app.thread_approval_overrides.get(&thread_id).is_none());
 
         Ok(())
@@ -9252,7 +9272,10 @@ guardian_approval = true
         let config = app
             .rebuild_config_for_thread_session_or_current(
                 thread_id,
-                Some(&test_thread_session(thread_id, PathBuf::from("/tmp/ignored"))),
+                Some(&test_thread_session(
+                    thread_id,
+                    PathBuf::from("/tmp/ignored"),
+                )),
             )
             .await?;
 
@@ -9293,12 +9316,7 @@ guardian_approval = true
                 .expect("embedded app server");
 
         let refreshed = app
-            .refresh_snapshot_session_if_needed(
-                &mut app_server,
-                thread_id,
-                true,
-                &mut snapshot,
-            )
+            .refresh_snapshot_session_if_needed(&mut app_server, thread_id, true, &mut snapshot)
             .await;
 
         assert!(refreshed);
