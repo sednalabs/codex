@@ -2057,6 +2057,7 @@ async fn make_chatwidget_manual(
         pending_guardian_review_status: PendingGuardianReviewStatus::default(),
         terminal_title_status_kind: TerminalTitleStatusKind::Working,
         last_copyable_output: None,
+        pending_turn_copyable_output: None,
         running_commands: HashMap::new(),
         collab_agent_metadata: HashMap::new(),
         pending_collab_spawn_requests: HashMap::new(),
@@ -7178,10 +7179,17 @@ async fn slash_copy_is_unavailable_when_legacy_agent_message_is_not_repeated_on_
 }
 
 #[tokio::test]
-async fn slash_copy_is_unavailable_when_legacy_agent_message_item_is_not_repeated_on_turn_complete()
-{
+async fn slash_copy_uses_agent_message_item_when_turn_complete_omits_final_text() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(None).await;
 
+    chat.handle_codex_event(Event {
+        id: "turn-1".into(),
+        msg: EventMsg::TurnStarted(TurnStartedEvent {
+            turn_id: "turn-1".to_string(),
+            model_context_window: None,
+            collaboration_mode_kind: ModeKind::Default,
+        }),
+    });
     complete_assistant_message(&mut chat, "msg-1", "Legacy item final message", None);
     let _ = drain_insert_history(&mut rx);
     chat.handle_codex_event(Event {
@@ -7199,10 +7207,14 @@ async fn slash_copy_is_unavailable_when_legacy_agent_message_item_is_not_repeate
     assert_eq!(cells.len(), 1, "expected one info message");
     let rendered = lines_to_single_string(&cells[0]);
     assert!(
-        rendered.contains(
+        !rendered.contains(
             "`/copy` is unavailable before the first Codex output or right after a rollback."
         ),
-        "expected unavailable message, got {rendered:?}"
+        "expected copy state to be available, got {rendered:?}"
+    );
+    assert_eq!(
+        chat.last_copyable_output,
+        Some("Legacy item final message".to_string())
     );
 }
 
@@ -7212,9 +7224,19 @@ async fn slash_copy_does_not_return_stale_output_after_thread_rollback() {
 
     chat.handle_codex_event(Event {
         id: "turn-1".into(),
+        msg: EventMsg::TurnStarted(TurnStartedEvent {
+            turn_id: "turn-1".to_string(),
+            model_context_window: None,
+            collaboration_mode_kind: ModeKind::Default,
+        }),
+    });
+    complete_assistant_message(&mut chat, "msg-1", "Reply that will be rolled back", None);
+    let _ = drain_insert_history(&mut rx);
+    chat.handle_codex_event(Event {
+        id: "turn-1".into(),
         msg: EventMsg::TurnComplete(TurnCompleteEvent {
             turn_id: "turn-1".to_string(),
-            last_agent_message: Some("Reply that will be rolled back".to_string()),
+            last_agent_message: None,
         }),
     });
     let _ = drain_insert_history(&mut rx);

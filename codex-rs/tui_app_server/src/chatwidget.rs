@@ -770,6 +770,9 @@ pub(crate) struct ChatWidget {
     plan_stream_controller: Option<PlanStreamController>,
     // Latest completed user-visible Codex output that `/copy` should place on the clipboard.
     last_copyable_output: Option<String>,
+    // Final-answer agent message observed during the active turn. App-server turn completion
+    // notifications do not repeat this payload, so we promote it when the turn completes.
+    pending_turn_copyable_output: Option<String>,
     running_commands: HashMap<String, RunningCommand>,
     collab_agent_metadata: HashMap<ThreadId, CollabAgentMetadata>,
     pending_collab_spawn_requests: HashMap<String, multi_agents::SpawnRequestSummary>,
@@ -1964,6 +1967,7 @@ impl ChatWidget {
         self.config.approvals_reviewer = event.approvals_reviewer;
         self.status_line_project_root_name_cache = None;
         self.last_copyable_output = None;
+        self.pending_turn_copyable_output = None;
         let forked_from_id = event.forked_from_id;
         let model_for_header = event.model.clone();
         self.session_header.set_model(&model_for_header);
@@ -2285,6 +2289,7 @@ impl ChatWidget {
         self.plan_item_active = false;
         self.adaptive_chunking.reset();
         self.plan_stream_controller = None;
+        self.pending_turn_copyable_output = None;
         self.turn_runtime_metrics = RuntimeMetricsSummary::default();
         self.session_telemetry.reset_runtime_metrics();
         self.bottom_pane.clear_quit_shortcut_hint();
@@ -2304,9 +2309,10 @@ impl ChatWidget {
 
     fn on_task_complete(&mut self, last_agent_message: Option<String>, from_replay: bool) {
         self.submit_pending_steers_after_interrupt = false;
-        if let Some(message) = last_agent_message.as_ref()
-            && !message.trim().is_empty()
-        {
+        let copyable_turn_output = last_agent_message
+            .filter(|message| !message.trim().is_empty())
+            .or_else(|| self.pending_turn_copyable_output.take());
+        if let Some(message) = copyable_turn_output.as_ref() {
             self.last_copyable_output = Some(message.clone());
         }
         // If a stream is currently active, finalize it.
@@ -2368,7 +2374,7 @@ impl ChatWidget {
         self.maybe_send_next_queued_input();
         // Emit a notification when the turn completes (suppressed if focused).
         self.notify(Notification::AgentTurnComplete {
-            response: last_agent_message.unwrap_or_default(),
+            response: copyable_turn_output.unwrap_or_default(),
         });
 
         self.maybe_show_pending_rate_limit_prompt();
@@ -2714,6 +2720,7 @@ impl ChatWidget {
         self.adaptive_chunking.reset();
         self.stream_controller = None;
         self.plan_stream_controller = None;
+        self.pending_turn_copyable_output = None;
         self.pending_status_indicator_restore = false;
         self.request_status_line_branch_refresh();
         self.maybe_show_pending_rate_limit_prompt();
@@ -3937,6 +3944,12 @@ impl ChatWidget {
         self.finalize_completed_assistant_message(
             (!message.is_empty()).then_some(message.as_str()),
         );
+        if self.agent_turn_running
+            && !message.is_empty()
+            && matches!(item.phase, Some(MessagePhase::FinalAnswer) | None)
+        {
+            self.pending_turn_copyable_output = Some(message.clone());
+        }
         self.pending_status_indicator_restore = match item.phase {
             // Models that don't support preambles only output AgentMessageItems on turn completion.
             Some(MessagePhase::FinalAnswer) | None => false,
@@ -4538,6 +4551,7 @@ impl ChatWidget {
             unified_exec_processes: Vec::new(),
             agent_turn_running: false,
             mcp_startup_status: None,
+            pending_turn_copyable_output: None,
             connectors_cache: ConnectorsCacheState::default(),
             connectors_partial_snapshot: None,
             connectors_prefetch_in_flight: false,
@@ -6407,6 +6421,7 @@ impl ChatWidget {
 
     pub(crate) fn handle_thread_rolled_back(&mut self) {
         self.last_copyable_output = None;
+        self.pending_turn_copyable_output = None;
     }
 
     fn on_mcp_server_elicitation_request(
@@ -6880,6 +6895,7 @@ impl ChatWidget {
                 // transcript cells, but we do not maintain rollback-aware raw-markdown history yet,
                 // so keeping the previous cache can return content that was just removed.
                 self.last_copyable_output = None;
+                self.pending_turn_copyable_output = None;
                 if from_replay {
                     self.app_event_tx.send(AppEvent::ApplyThreadRollback {
                         num_turns: rollback.num_turns,
