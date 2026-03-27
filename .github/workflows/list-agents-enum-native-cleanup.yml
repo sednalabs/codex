@@ -1,0 +1,150 @@
+name: list_agents enum native cleanup
+
+on:
+  pull_request:
+    branches:
+      - main
+    types:
+      - opened
+      - reopened
+      - synchronize
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: list-agents-enum-native-cleanup-${{ github.event.pull_request.head.ref || github.ref_name }}
+  cancel-in-progress: true
+
+jobs:
+  rewrite-commit-and-test:
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out PR head
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.ref || github.ref_name }}
+          fetch-depth: 0
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            codex-rs
+
+      - name: Rewrite JsonSchema string enums natively
+        shell: bash
+        run: |
+          set -euo pipefail
+          python <<'PY'
+          from pathlib import Path
+
+          files=['codex-rs/core/src/tools/spec.rs','codex-rs/core/src/tools/spec_tests.rs']
+
+          spec_path=Path(files[0])
+          spec=spec_path.read_text()
+          old='''    String {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        description: Option<String>,
+    },'''
+          new='''    String {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        description: Option<String>,
+        #[serde(rename = "enum", skip_serializing_if = "Option::is_none")]
+        enum_values: Option<Vec<String>>,
+    },'''
+          if old in spec:
+              spec=spec.replace(old,new,1)
+          spec_path.write_text(spec)
+
+          for rel in files:
+              p=Path(rel)
+              text=p.read_text()
+              text=text.replace('JsonSchema::String { description }','JsonSchema::String { description, .. }')
+              text=text.replace('JsonSchema::String { description })','JsonSchema::String { description, .. })')
+              text=text.replace('''JsonSchema::String {
+            description: Some(description),
+        })''','''JsonSchema::String {
+            description: Some(description),
+            ..
+        })''')
+              text=text.replace('''JsonSchema::String {
+        description: Some(description),
+    })''','''JsonSchema::String {
+        description: Some(description),
+        ..
+    })''')
+              lines=text.splitlines(True)
+              out=[]
+              i=0
+              while i < len(lines):
+                  line=lines[i]
+                  if 'JsonSchema::String {' in line and '}' not in line:
+                      start_indent=len(line)-len(line.lstrip(' '))
+                      block=[line]
+                      i+=1
+                      while i < len(lines):
+                          cur=lines[i]
+                          block.append(cur)
+                          cur_indent=len(cur)-len(cur.lstrip(' '))
+                          stripped=cur.lstrip(' ')
+                          if cur_indent==start_indent and (stripped.startswith('},') or stripped.startswith('}') or stripped.startswith('})')):
+                              break
+                          i+=1
+                      block_text=''.join(block)
+                      if 'enum_values' not in block_text and '..' not in block_text:
+                          indent=' '*(start_indent+4)
+                          block.insert(-1, indent+'enum_values: None\n' if block[-1].lstrip().startswith('})') else indent+'enum_values: None,\n')
+                      out.extend(block)
+                  else:
+                      if 'JsonSchema::String { description: None }' in line:
+                          line=line.replace('JsonSchema::String { description: None }','JsonSchema::String { description: None, enum_values: None }')
+                      out.append(line)
+                  i+=1
+              new_text=''.join(out)
+              new_text=new_text.replace('''        JsonSchema::String {
+            description: Some(
+                "Optional subtree filter for `include_descendants=true`. Use `open` or `closed` to limit returned descendant rows by persisted spawn-edge status. Cannot be combined with `ids`."
+                    .to_string(),
+            ),
+            enum_values: None,
+        },''','''        JsonSchema::String {
+            description: Some(
+                "Optional subtree filter for `include_descendants=true`. Use `open` or `closed` to limit returned descendant rows by persisted spawn-edge status. Cannot be combined with `ids`."
+                    .to_string(),
+            ),
+            enum_values: Some(vec!["open".to_string(), "closed".to_string()]),
+        },''')
+              p.write_text(new_text)
+          PY
+
+      - name: Format Rust code
+        working-directory: codex-rs
+        shell: bash
+        run: cargo fmt --all
+
+      - name: Commit cleanup before tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add codex-rs/core/src/tools/spec.rs codex-rs/core/src/tools/spec_tests.rs
+          git rm -f patches/pr5-list-agents-descendant-edge-status-enum.patch
+          git rm -f .github/workflows/list-agents-enum-native-cleanup.yml
+          if git diff --cached --quiet; then
+            echo 'No changes to commit.'
+          else
+            git commit -m "Use native JsonSchema enum support for list_agents descendant_edge_status"
+            git push origin HEAD:${{ github.event.pull_request.head.ref || github.ref_name }}
+          fi
+
+      - name: Run full Rust workspace test suite
+        working-directory: codex-rs
+        shell: bash
+        run: cargo test --workspace --locked
