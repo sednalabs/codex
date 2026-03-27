@@ -49,7 +49,7 @@ use codex_protocol::protocol::CollabWaitingEndEvent;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::SubAgentSource;
 use codex_protocol::user_input::UserInput;
-use codex_state::LogQuery;
+use codex_state::LogRow;
 use codex_state::UsageHeartbeatSummary;
 use serde::Deserialize;
 use serde::Serialize;
@@ -232,11 +232,26 @@ pub(crate) async fn collect_agent_progress_by_id(
             HashMap::new()
         }
     };
+    let session_logs_by_thread = match state_db
+        .latest_logs_by_thread(
+            &thread_id_strings(&unique_thread_ids),
+            PROGRESS_SESSION_TAIL_ROWS,
+        )
+        .await
+    {
+        Ok(rows) => rows,
+        Err(err) => {
+            warn!("failed to read session tail rows: {err}");
+            HashMap::new()
+        }
+    };
 
     let mut progress_by_id = HashMap::with_capacity(unique_thread_ids.len());
     for thread_id in unique_thread_ids {
         let thread_id_str = thread_id.to_string();
-        let session_tail = read_session_tail_progress(state_db, &thread_id_str, now).await;
+        let session_tail = session_logs_by_thread
+            .get(&thread_id_str)
+            .and_then(|rows| build_session_tail_progress(rows, now));
         let usage_heartbeat = usage_heartbeats
             .get(&thread_id)
             .and_then(|summary| build_usage_progress(summary, now));
@@ -284,6 +299,10 @@ fn classify_progress_movement(
     AgentProgressMovement::Unknown
 }
 
+fn thread_id_strings(thread_ids: &[ThreadId]) -> Vec<String> {
+    thread_ids.iter().map(ToString::to_string).collect()
+}
+
 fn build_usage_progress(
     summary: &UsageHeartbeatSummary,
     now: DateTime<Utc>,
@@ -314,20 +333,10 @@ fn build_usage_progress(
     })
 }
 
-async fn read_session_tail_progress(
-    state_db: &crate::state_db::StateDbHandle,
-    thread_id: &str,
+fn build_session_tail_progress(
+    rows: &[LogRow],
     now: DateTime<Utc>,
 ) -> Option<AgentSessionTailProgress> {
-    let rows = state_db
-        .query_logs(&LogQuery {
-            thread_ids: vec![thread_id.to_string()],
-            limit: Some(PROGRESS_SESSION_TAIL_ROWS),
-            descending: true,
-            ..Default::default()
-        })
-        .await
-        .ok()?;
     if rows.is_empty() {
         return None;
     }

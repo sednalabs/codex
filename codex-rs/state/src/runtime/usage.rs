@@ -12,7 +12,9 @@ use codex_protocol::protocol::RateLimitSnapshot;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::TokenCountEvent;
 use log::warn;
+use sqlx::QueryBuilder;
 use sqlx::Row;
+use sqlx::Sqlite;
 use sqlx::SqlitePool;
 use std::collections::HashMap;
 use std::collections::HashSet;
@@ -59,6 +61,29 @@ pub struct UsageHeartbeatSummary {
     pub recent_total_tokens: i64,
 }
 
+#[derive(Debug, sqlx::FromRow)]
+struct UsageLatestRow {
+    thread_id: String,
+    turn_id: Option<String>,
+    provider: Option<String>,
+    actual_model_used: Option<String>,
+    started_at: Option<String>,
+    completed_at: Option<String>,
+}
+
+#[derive(Debug, sqlx::FromRow)]
+struct UsageAggregateRow {
+    thread_id: String,
+    call_count: i64,
+    total_tokens: i64,
+}
+
+#[derive(Debug, sqlx::FromRow)]
+struct UsageRecentModelRow {
+    thread_id: String,
+    actual_model_used: String,
+}
+
 impl StateRuntime {
     pub async fn usage_heartbeats_by_thread(
         &self,
@@ -69,97 +94,220 @@ impl StateRuntime {
         if thread_ids.is_empty() {
             return Ok(HashMap::new());
         }
-        let mut by_thread = HashMap::with_capacity(thread_ids.len());
+        let mut unique_thread_ids = Vec::with_capacity(thread_ids.len());
         let mut seen = HashSet::with_capacity(thread_ids.len());
-        let usage_pool = self.usage_pool();
         for thread_id in thread_ids {
             if !seen.insert(*thread_id) {
                 continue;
             }
+            unique_thread_ids.push(*thread_id);
+        }
+        if unique_thread_ids.is_empty() {
+            return Ok(HashMap::new());
+        }
+
+        let usage_pool = self.usage_pool();
+        let thread_id_strings = unique_thread_ids
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>();
+        let latest_rows = fetch_latest_usage_rows(usage_pool.as_ref(), &thread_id_strings).await?;
+        let aggregate_rows = fetch_recent_usage_aggregates(
+            usage_pool.as_ref(),
+            &thread_id_strings,
+            recent_since_rfc3339,
+        )
+        .await?;
+        let recent_models = fetch_recent_models_by_thread(
+            usage_pool.as_ref(),
+            &thread_id_strings,
+            recent_since_rfc3339,
+            max_recent_models,
+        )
+        .await?;
+
+        let mut by_thread = HashMap::with_capacity(unique_thread_ids.len());
+        for thread_id in unique_thread_ids {
             let thread_id_str = thread_id.to_string();
-            let latest_row = sqlx::query(
-                r#"
-SELECT
-  turn_id,
-  provider,
-  actual_model_used,
-  started_at,
-  completed_at
-FROM usage_provider_calls
-WHERE thread_id = ?
-ORDER BY started_at DESC
-LIMIT 1
-"#,
-            )
-            .bind(&thread_id_str)
-            .fetch_optional(usage_pool.as_ref())
-            .await?;
-            let aggregate_row = sqlx::query(
-                r#"
-SELECT
-  COUNT(*) AS call_count,
-  COALESCE(SUM(total_tokens), 0) AS total_tokens
-FROM usage_provider_calls
-WHERE thread_id = ?
-  AND started_at >= ?
-"#,
-            )
-            .bind(&thread_id_str)
-            .bind(recent_since_rfc3339)
-            .fetch_one(usage_pool.as_ref())
-            .await?;
-            let model_rows = sqlx::query(
-                r#"
-SELECT
-  actual_model_used
-FROM usage_provider_calls
-WHERE thread_id = ?
-  AND started_at >= ?
-  AND actual_model_used IS NOT NULL
-GROUP BY actual_model_used
-ORDER BY MAX(started_at) DESC
-LIMIT ?
-"#,
-            )
-            .bind(&thread_id_str)
-            .bind(recent_since_rfc3339)
-            .bind(max_recent_models as i64)
-            .fetch_all(usage_pool.as_ref())
-            .await?;
-            let recent_models = model_rows
-                .into_iter()
-                .filter_map(|row| row.try_get::<Option<String>, _>("actual_model_used").ok())
-                .flatten()
-                .collect::<Vec<_>>();
+            let latest_row = latest_rows.get(&thread_id_str);
+            let aggregate_row = aggregate_rows.get(&thread_id_str);
             let summary = UsageHeartbeatSummary {
-                latest_turn_id: latest_row
-                    .as_ref()
-                    .and_then(|row| row.try_get::<Option<String>, _>("turn_id").ok())
-                    .flatten(),
-                latest_provider: latest_row
-                    .as_ref()
-                    .and_then(|row| row.try_get::<Option<String>, _>("provider").ok())
-                    .flatten(),
-                latest_model: latest_row
-                    .as_ref()
-                    .and_then(|row| row.try_get::<Option<String>, _>("actual_model_used").ok())
-                    .flatten(),
-                latest_started_at: latest_row
-                    .as_ref()
-                    .and_then(|row| row.try_get::<Option<String>, _>("started_at").ok())
-                    .flatten(),
-                latest_completed_at: latest_row
-                    .as_ref()
-                    .and_then(|row| row.try_get::<Option<String>, _>("completed_at").ok())
-                    .flatten(),
-                recent_provider_call_count: aggregate_row.try_get::<i64, _>("call_count")?,
-                recent_total_tokens: aggregate_row.try_get::<i64, _>("total_tokens")?,
-                recent_models,
+                latest_turn_id: latest_row.and_then(|row| row.turn_id.clone()),
+                latest_provider: latest_row.and_then(|row| row.provider.clone()),
+                latest_model: latest_row.and_then(|row| row.actual_model_used.clone()),
+                latest_started_at: latest_row.and_then(|row| row.started_at.clone()),
+                latest_completed_at: latest_row.and_then(|row| row.completed_at.clone()),
+                recent_provider_call_count: aggregate_row.map_or(0, |row| row.call_count),
+                recent_total_tokens: aggregate_row.map_or(0, |row| row.total_tokens),
+                recent_models: recent_models
+                    .get(&thread_id_str)
+                    .cloned()
+                    .unwrap_or_default(),
             };
-            by_thread.insert(*thread_id, summary);
+            by_thread.insert(thread_id, summary);
         }
         Ok(by_thread)
     }
+}
+
+fn push_thread_id_filter<'a>(builder: &mut QueryBuilder<'a, Sqlite>, thread_ids: &'a [String]) {
+    builder.push("thread_id IN (");
+    let mut separated = builder.separated(", ");
+    for thread_id in thread_ids {
+        separated.push_bind(thread_id);
+    }
+    separated.push_unseparated(")");
+}
+
+async fn fetch_latest_usage_rows(
+    pool: &SqlitePool,
+    thread_ids: &[String],
+) -> anyhow::Result<HashMap<String, UsageLatestRow>> {
+    let mut builder = QueryBuilder::<Sqlite>::new(
+        r#"
+WITH ranked_calls AS (
+    SELECT
+        thread_id,
+        turn_id,
+        provider,
+        actual_model_used,
+        started_at,
+        completed_at,
+        ROW_NUMBER() OVER (
+            PARTITION BY thread_id
+            ORDER BY started_at DESC, completed_at DESC, provider_call_id DESC
+        ) AS row_num
+    FROM usage_provider_calls
+    WHERE
+"#,
+    );
+    push_thread_id_filter(&mut builder, thread_ids);
+    builder.push(
+        r#"
+)
+SELECT
+    thread_id,
+    turn_id,
+    provider,
+    actual_model_used,
+    started_at,
+    completed_at
+FROM ranked_calls
+WHERE row_num = 1
+"#,
+    );
+
+    let rows = builder
+        .build_query_as::<UsageLatestRow>()
+        .fetch_all(pool)
+        .await?;
+    Ok(rows
+        .into_iter()
+        .map(|row| (row.thread_id.clone(), row))
+        .collect())
+}
+
+async fn fetch_recent_usage_aggregates(
+    pool: &SqlitePool,
+    thread_ids: &[String],
+    recent_since_rfc3339: &str,
+) -> anyhow::Result<HashMap<String, UsageAggregateRow>> {
+    let mut builder = QueryBuilder::<Sqlite>::new(
+        r#"
+SELECT
+    thread_id,
+    COUNT(*) AS call_count,
+    COALESCE(SUM(total_tokens), 0) AS total_tokens
+FROM usage_provider_calls
+WHERE
+"#,
+    );
+    push_thread_id_filter(&mut builder, thread_ids);
+    builder
+        .push(" AND started_at >= ")
+        .push_bind(recent_since_rfc3339)
+        .push(
+            r#"
+GROUP BY thread_id
+"#,
+        );
+
+    let rows = builder
+        .build_query_as::<UsageAggregateRow>()
+        .fetch_all(pool)
+        .await?;
+    Ok(rows
+        .into_iter()
+        .map(|row| (row.thread_id.clone(), row))
+        .collect())
+}
+
+async fn fetch_recent_models_by_thread(
+    pool: &SqlitePool,
+    thread_ids: &[String],
+    recent_since_rfc3339: &str,
+    max_recent_models: usize,
+) -> anyhow::Result<HashMap<String, Vec<String>>> {
+    if max_recent_models == 0 {
+        return Ok(HashMap::new());
+    }
+
+    let mut builder = QueryBuilder::<Sqlite>::new(
+        r#"
+WITH model_activity AS (
+    SELECT
+        thread_id,
+        actual_model_used,
+        MAX(started_at) AS latest_started_at
+    FROM usage_provider_calls
+    WHERE
+"#,
+    );
+    push_thread_id_filter(&mut builder, thread_ids);
+    builder
+        .push(" AND started_at >= ")
+        .push_bind(recent_since_rfc3339)
+        .push(
+            r#"
+      AND actual_model_used IS NOT NULL
+    GROUP BY thread_id, actual_model_used
+),
+ranked_models AS (
+    SELECT
+        thread_id,
+        actual_model_used,
+        ROW_NUMBER() OVER (
+            PARTITION BY thread_id
+            ORDER BY latest_started_at DESC, actual_model_used ASC
+        ) AS row_num
+    FROM model_activity
+)
+SELECT
+    thread_id,
+    actual_model_used
+FROM ranked_models
+WHERE row_num <=
+"#,
+        )
+        .push_bind(max_recent_models as i64)
+        .push(
+            r#"
+ORDER BY thread_id ASC, row_num ASC
+"#,
+        );
+
+    let rows = builder
+        .build_query_as::<UsageRecentModelRow>()
+        .fetch_all(pool)
+        .await?;
+    let mut by_thread = HashMap::with_capacity(thread_ids.len());
+    for row in rows {
+        by_thread
+            .entry(row.thread_id)
+            .or_insert_with(Vec::new)
+            .push(row.actual_model_used);
+    }
+    Ok(by_thread)
 }
 
 /// Tracks usage for one thread plus the lineage anchors that tie it back to the
@@ -738,6 +886,142 @@ mod tests {
         Ok((runtime, tmp_dir))
     }
 
+    async fn insert_provider_call(
+        pool: &SqlitePool,
+        thread_id: ThreadId,
+        turn_id: &str,
+        model: &str,
+        started_at: DateTime<Utc>,
+        total_tokens: i64,
+    ) -> Result<()> {
+        sqlx::query(
+            r#"
+INSERT INTO usage_provider_calls (
+    provider_call_id,
+    thread_id,
+    turn_id,
+    provider,
+    requested_model,
+    actual_model_used,
+    started_at,
+    completed_at,
+    input_tokens_uncached,
+    input_tokens_cached,
+    output_tokens,
+    total_tokens,
+    status
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+"#,
+        )
+        .bind(Uuid::new_v4().to_string())
+        .bind(thread_id.to_string())
+        .bind(turn_id)
+        .bind("test-provider")
+        .bind(Option::<String>::None)
+        .bind(model)
+        .bind(started_at.to_rfc3339())
+        .bind((started_at + chrono::Duration::seconds(1)).to_rfc3339())
+        .bind(total_tokens)
+        .bind(0_i64)
+        .bind(0_i64)
+        .bind(total_tokens)
+        .bind("ok")
+        .execute(pool)
+        .await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn usage_heartbeats_by_thread_batches_per_thread_summaries() -> Result<()> {
+        let (runtime, _tmp_dir) = init_runtime().await?;
+        let pool_arc = runtime.usage_pool();
+        let pool: &SqlitePool = pool_arc.as_ref();
+        let thread_a = ThreadId::new();
+        let thread_b = ThreadId::new();
+        let now = Utc::now();
+
+        insert_provider_call(
+            pool,
+            thread_a,
+            "turn-a-stale",
+            "gpt-4.1",
+            now - chrono::Duration::minutes(20),
+            11,
+        )
+        .await?;
+        insert_provider_call(
+            pool,
+            thread_a,
+            "turn-a-recent-1",
+            "gpt-5.4-mini",
+            now - chrono::Duration::minutes(5),
+            22,
+        )
+        .await?;
+        insert_provider_call(
+            pool,
+            thread_a,
+            "turn-a-recent-2",
+            "gpt-5.4",
+            now - chrono::Duration::minutes(2),
+            33,
+        )
+        .await?;
+        insert_provider_call(
+            pool,
+            thread_b,
+            "turn-b-recent-1",
+            "gpt-5.4",
+            now - chrono::Duration::minutes(4),
+            44,
+        )
+        .await?;
+
+        let summaries = runtime
+            .usage_heartbeats_by_thread(
+                &[thread_a, thread_b, thread_a],
+                &(now - chrono::Duration::minutes(10)).to_rfc3339(),
+                2,
+            )
+            .await?;
+
+        assert_eq!(summaries.len(), 2);
+        assert_eq!(
+            summaries.get(&thread_a),
+            Some(&UsageHeartbeatSummary {
+                latest_turn_id: Some("turn-a-recent-2".to_string()),
+                latest_provider: Some("test-provider".to_string()),
+                latest_model: Some("gpt-5.4".to_string()),
+                latest_started_at: Some((now - chrono::Duration::minutes(2)).to_rfc3339()),
+                latest_completed_at: Some(
+                    (now - chrono::Duration::minutes(2) + chrono::Duration::seconds(1))
+                        .to_rfc3339()
+                ),
+                recent_provider_call_count: 2,
+                recent_models: vec!["gpt-5.4".to_string(), "gpt-5.4-mini".to_string()],
+                recent_total_tokens: 55,
+            })
+        );
+        assert_eq!(
+            summaries.get(&thread_b),
+            Some(&UsageHeartbeatSummary {
+                latest_turn_id: Some("turn-b-recent-1".to_string()),
+                latest_provider: Some("test-provider".to_string()),
+                latest_model: Some("gpt-5.4".to_string()),
+                latest_started_at: Some((now - chrono::Duration::minutes(4)).to_rfc3339()),
+                latest_completed_at: Some(
+                    (now - chrono::Duration::minutes(4) + chrono::Duration::seconds(1))
+                        .to_rfc3339()
+                ),
+                recent_provider_call_count: 1,
+                recent_models: vec!["gpt-5.4".to_string()],
+                recent_total_tokens: 44,
+            })
+        );
+
+        Ok(())
+    }
+
     #[tokio::test]
     async fn usage_logger_records_requested_model_and_quota_snapshot() -> Result<()> {
         let (runtime, _tmp_dir) = init_runtime().await?;
@@ -1039,6 +1323,7 @@ WHERE child_thread_id = ?
         let child_source = SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
             parent_thread_id,
             depth: 2,
+            agent_path: None,
             agent_nickname: Some("Copernicus".to_string()),
             agent_role: Some("explorer".to_string()),
         });
@@ -1180,6 +1465,7 @@ WHERE thread_id = ?
         let child_source = SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
             parent_thread_id,
             depth: 1,
+            agent_path: None,
             agent_nickname: Some("Copernicus".to_string()),
             agent_role: Some("explorer".to_string()),
         });

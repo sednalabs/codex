@@ -1,4 +1,5 @@
 use super::*;
+use std::collections::HashMap;
 
 impl StateRuntime {
     pub async fn insert_log(&self, entry: &LogEntry) -> anyhow::Result<()> {
@@ -311,6 +312,87 @@ WHERE id IN (
             .fetch_all(self.logs_pool.as_ref())
             .await?;
         Ok(rows)
+    }
+
+    pub async fn latest_logs_by_thread(
+        &self,
+        thread_ids: &[String],
+        per_thread_limit: usize,
+    ) -> anyhow::Result<HashMap<String, Vec<LogRow>>> {
+        if thread_ids.is_empty() || per_thread_limit == 0 {
+            return Ok(HashMap::new());
+        }
+
+        let unique_thread_ids: BTreeSet<&str> = thread_ids.iter().map(String::as_str).collect();
+        let mut builder = QueryBuilder::<Sqlite>::new(
+            r#"
+WITH ranked_logs AS (
+    SELECT
+        id,
+        ts,
+        ts_nanos,
+        level,
+        target,
+        feedback_log_body AS message,
+        thread_id,
+        process_uuid,
+        file,
+        line,
+        ROW_NUMBER() OVER (
+            PARTITION BY thread_id
+            ORDER BY id DESC
+        ) AS row_num
+    FROM logs
+    WHERE thread_id IN (
+"#,
+        );
+        {
+            let mut separated = builder.separated(", ");
+            for thread_id in &unique_thread_ids {
+                separated.push_bind(*thread_id);
+            }
+        }
+        builder
+            .push(
+                r#"
+    )
+)
+SELECT
+    id,
+    ts,
+    ts_nanos,
+    level,
+    target,
+    message,
+    thread_id,
+    process_uuid,
+    file,
+    line
+FROM ranked_logs
+WHERE row_num <=
+"#,
+            )
+            .push_bind(per_thread_limit as i64)
+            .push(
+                r#"
+ORDER BY thread_id ASC, id DESC
+"#,
+            );
+
+        let rows = builder
+            .build_query_as::<LogRow>()
+            .fetch_all(self.logs_pool.as_ref())
+            .await?;
+        let mut rows_by_thread = HashMap::with_capacity(unique_thread_ids.len());
+        for row in rows {
+            if let Some(thread_id) = row.thread_id.clone() {
+                rows_by_thread
+                    .entry(thread_id)
+                    .or_insert_with(Vec::new)
+                    .push(row);
+            }
+        }
+        Ok(rows_by_thread)
     }
 
     /// Query per-thread feedback logs, capped to the per-thread SQLite retention budget.
@@ -715,6 +797,102 @@ mod tests {
 
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].message.as_deref(), Some("foo=2 alphabet"));
+
+        let _ = tokio::fs::remove_dir_all(codex_home).await;
+    }
+
+    #[tokio::test]
+    async fn latest_logs_by_thread_returns_bounded_rows_per_thread() {
+        let codex_home = unique_temp_dir();
+        let runtime = StateRuntime::init(codex_home.clone(), "test-provider".to_string())
+            .await
+            .expect("initialize runtime");
+
+        runtime
+            .insert_logs(&[
+                LogEntry {
+                    ts: 1,
+                    ts_nanos: 0,
+                    level: "INFO".to_string(),
+                    target: "cli".to_string(),
+                    message: Some("thread-1 oldest".to_string()),
+                    feedback_log_body: Some("thread-1 oldest".to_string()),
+                    thread_id: Some("thread-1".to_string()),
+                    process_uuid: None,
+                    file: Some("main.rs".to_string()),
+                    line: Some(1),
+                    module_path: None,
+                },
+                LogEntry {
+                    ts: 2,
+                    ts_nanos: 0,
+                    level: "INFO".to_string(),
+                    target: "cli".to_string(),
+                    message: Some("thread-2 oldest".to_string()),
+                    feedback_log_body: Some("thread-2 oldest".to_string()),
+                    thread_id: Some("thread-2".to_string()),
+                    process_uuid: None,
+                    file: Some("main.rs".to_string()),
+                    line: Some(2),
+                    module_path: None,
+                },
+                LogEntry {
+                    ts: 3,
+                    ts_nanos: 0,
+                    level: "INFO".to_string(),
+                    target: "cli".to_string(),
+                    message: Some("thread-1 newest".to_string()),
+                    feedback_log_body: Some("thread-1 newest".to_string()),
+                    thread_id: Some("thread-1".to_string()),
+                    process_uuid: None,
+                    file: Some("main.rs".to_string()),
+                    line: Some(3),
+                    module_path: None,
+                },
+                LogEntry {
+                    ts: 4,
+                    ts_nanos: 0,
+                    level: "INFO".to_string(),
+                    target: "cli".to_string(),
+                    message: Some("thread-2 newest".to_string()),
+                    feedback_log_body: Some("thread-2 newest".to_string()),
+                    thread_id: Some("thread-2".to_string()),
+                    process_uuid: None,
+                    file: Some("main.rs".to_string()),
+                    line: Some(4),
+                    module_path: None,
+                },
+            ])
+            .await
+            .expect("insert test logs");
+
+        let rows = runtime
+            .latest_logs_by_thread(
+                &[
+                    "thread-1".to_string(),
+                    "thread-2".to_string(),
+                    "thread-1".to_string(),
+                ],
+                2,
+            )
+            .await
+            .expect("load latest logs by thread");
+
+        assert_eq!(rows.len(), 2);
+        assert_eq!(
+            rows["thread-1"]
+                .iter()
+                .map(|row| row.ts)
+                .collect::<Vec<_>>(),
+            vec![3, 1]
+        );
+        assert_eq!(
+            rows["thread-2"]
+                .iter()
+                .map(|row| row.ts)
+                .collect::<Vec<_>>(),
+            vec![4, 2]
+        );
 
         let _ = tokio::fs::remove_dir_all(codex_home).await;
     }
