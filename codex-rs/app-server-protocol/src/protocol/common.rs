@@ -120,6 +120,41 @@ macro_rules! client_request_definitions {
             }
         }
 
+        /// Typed response from the server to the client.
+        #[derive(Serialize, Deserialize, Debug, Clone)]
+        #[serde(tag = "method", rename_all = "camelCase")]
+        pub enum ClientResponse {
+            $(
+                $(#[doc = $variant_doc])*
+                $(#[serde(rename = $wire)])?
+                $variant {
+                    #[serde(rename = "id")]
+                    request_id: RequestId,
+                    response: $response,
+                },
+            )*
+        }
+
+        impl ClientResponse {
+            pub fn id(&self) -> &RequestId {
+                match self {
+                    $(Self::$variant { request_id, .. } => request_id,)*
+                }
+            }
+
+            pub fn method(&self) -> String {
+                serde_json::to_value(self)
+                    .ok()
+                    .and_then(|value| {
+                        value
+                            .get("method")
+                            .and_then(serde_json::Value::as_str)
+                            .map(str::to_owned)
+                    })
+                    .unwrap_or_else(|| "<unknown>".to_string())
+            }
+        }
+
         impl crate::experimental_api::ExperimentalApi for ClientRequest {
             fn experimental_reason(&self) -> Option<&'static str> {
                 match self {
@@ -1261,6 +1296,84 @@ mod tests {
                 "id": 1,
             }),
             serde_json::to_value(&request)?,
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn serialize_client_response() -> Result<()> {
+        let response = ClientResponse::ThreadStart {
+            request_id: RequestId::Integer(7),
+            response: v2::ThreadStartResponse {
+                thread: v2::Thread {
+                    id: "67e55044-10b1-426f-9247-bb680e5fe0c8".to_string(),
+                    preview: "first prompt".to_string(),
+                    ephemeral: true,
+                    model_provider: "openai".to_string(),
+                    created_at: 1,
+                    updated_at: 2,
+                    status: v2::ThreadStatus::Idle,
+                    path: None,
+                    cwd: PathBuf::from("/tmp"),
+                    cli_version: "0.0.0".to_string(),
+                    source: v2::SessionSource::Exec,
+                    agent_nickname: None,
+                    agent_role: None,
+                    git_info: None,
+                    name: None,
+                    turns: Vec::new(),
+                },
+                model: "gpt-5".to_string(),
+                model_provider: "openai".to_string(),
+                service_tier: None,
+                cwd: PathBuf::from("/tmp"),
+                approval_policy: v2::AskForApproval::OnFailure,
+                approvals_reviewer: v2::ApprovalsReviewer::User,
+                sandbox: v2::SandboxPolicy::DangerFullAccess,
+                reasoning_effort: None,
+            },
+        };
+
+        assert_eq!(response.id(), &RequestId::Integer(7));
+        assert_eq!(response.method(), "thread/start");
+        assert_eq!(
+            json!({
+                "method": "thread/start",
+                "id": 7,
+                "response": {
+                    "thread": {
+                        "id": "67e55044-10b1-426f-9247-bb680e5fe0c8",
+                        "preview": "first prompt",
+                        "ephemeral": true,
+                        "modelProvider": "openai",
+                        "createdAt": 1,
+                        "updatedAt": 2,
+                        "status": {
+                            "type": "idle"
+                        },
+                        "path": null,
+                        "cwd": "/tmp",
+                        "cliVersion": "0.0.0",
+                        "source": "exec",
+                        "agentNickname": null,
+                        "agentRole": null,
+                        "gitInfo": null,
+                        "name": null,
+                        "turns": []
+                    },
+                    "model": "gpt-5",
+                    "modelProvider": "openai",
+                    "serviceTier": null,
+                    "cwd": "/tmp",
+                    "approvalPolicy": "on-failure",
+                    "approvalsReviewer": "user",
+                    "sandbox": {
+                        "type": "dangerFullAccess"
+                    },
+                    "reasoningEffort": null
+                }
+            }),
+            serde_json::to_value(&response)?,
         );
         Ok(())
     }
