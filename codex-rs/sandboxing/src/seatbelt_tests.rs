@@ -953,14 +953,6 @@ fn create_seatbelt_args_for_cwd_as_git_repo() {
     // - write access to WRITABLE_ROOT_0 (but not its .git or .codex), WRITABLE_ROOT_1, and cwd as WRITABLE_ROOT_2.
     let expected_policy = format!(
         r#"{MACOS_SEATBELT_BASE_POLICY}
-; allow readonly user preferences
-(allow ipc-posix-shm-read* (ipc-posix-name-prefix "apple.cfprefs."))
-(allow mach-lookup
-    (global-name "com.apple.cfprefsd.daemon")
-    (global-name "com.apple.cfprefsd.agent")
-    (local-name "com.apple.cfprefsd.agent"))
-(allow user-preference-read)
-
 ; allow read-only file operations
 (allow file-read*)
 (allow file-write*
