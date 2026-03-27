@@ -12,6 +12,21 @@ use tokio::time::timeout_at;
 
 pub(crate) struct Handler;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WaitTargetInputKind {
+    Ids,
+    Targets,
+}
+
+impl WaitTargetInputKind {
+    fn duplicate_input_error(self) -> &'static str {
+        match self {
+            Self::Ids => "duplicate ids are not allowed",
+            Self::Targets => "duplicate agent targets are not allowed",
+        }
+    }
+}
+
 #[async_trait]
 impl ToolHandler for Handler {
     type Output = WaitAgentResult;
@@ -36,13 +51,13 @@ impl ToolHandler for Handler {
         let args: WaitArgs = parse_arguments(&arguments)?;
         let return_when = args.return_when;
         let timeout_ms_arg = args.timeout_ms;
-        let receiver_thread_ids =
-            resolve_agent_targets(&session, &turn, args.resolve_targets()?).await?;
+        let (targets, input_kind) = args.resolve_targets(turn.tools_config.multi_agent_v2)?;
+        let receiver_thread_ids = resolve_agent_targets(&session, &turn, targets).await?;
         let mut seen = HashSet::with_capacity(receiver_thread_ids.len());
         for id in &receiver_thread_ids {
             if !seen.insert(*id) {
                 return Err(FunctionCallError::RespondToModel(
-                    "duplicate ids are not allowed".to_string(),
+                    input_kind.duplicate_input_error().to_string(),
                 ));
             }
         }
@@ -208,16 +223,36 @@ struct WaitArgs {
 }
 
 impl WaitArgs {
-    fn resolve_targets(self) -> Result<Vec<String>, FunctionCallError> {
+    fn resolve_targets(
+        self,
+        multi_agent_v2: bool,
+    ) -> Result<(Vec<String>, WaitTargetInputKind), FunctionCallError> {
         if !self.ids.is_empty() && !self.targets.is_empty() {
             return Err(FunctionCallError::RespondToModel(
                 "provide either ids or targets, not both".to_string(),
             ));
         }
-        if !self.ids.is_empty() {
-            Ok(self.ids)
+        if self.ids.is_empty() && self.targets.is_empty() {
+            return Err(FunctionCallError::RespondToModel(
+                "agent targets must be non-empty".to_string(),
+            ));
+        }
+        if multi_agent_v2 {
+            if !self.ids.is_empty() {
+                return Err(FunctionCallError::RespondToModel(
+                    "`ids` are not supported when MultiAgentV2 is enabled; use `targets` instead"
+                        .to_string(),
+                ));
+            }
+            Ok((self.targets, WaitTargetInputKind::Targets))
         } else {
-            Ok(self.targets)
+            if !self.targets.is_empty() {
+                return Err(FunctionCallError::RespondToModel(
+                    "`targets` are only supported when MultiAgentV2 is enabled; use `ids` in this mode"
+                        .to_string(),
+                ));
+            }
+            Ok((self.ids, WaitTargetInputKind::Ids))
         }
     }
 }

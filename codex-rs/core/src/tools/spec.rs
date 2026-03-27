@@ -294,8 +294,71 @@ fn collab_agent_progress_snapshot_schema() -> JsonValue {
     })
 }
 
-fn spawn_agent_output_schema() -> JsonValue {
-    collab_agent_list_item_schema()
+fn spawn_agent_output_schema(multi_agent_v2: bool) -> JsonValue {
+    let agent_id_description = if multi_agent_v2 {
+        "Thread identifier for the spawned agent. Null when a canonical `task_name` is returned instead."
+    } else {
+        "Thread identifier for the spawned agent."
+    };
+    let task_name_description = if multi_agent_v2 {
+        "Canonical task path for the spawned agent when named."
+    } else {
+        "Canonical task path for the spawned agent when named. Unnamed spawns return null."
+    };
+    let required = vec![
+        "agent_id",
+        "task_name",
+        "nickname",
+        "role",
+        "status",
+        "effective_model",
+        "effective_reasoning_effort",
+        "effective_model_provider_id",
+        "identity_source",
+    ];
+    json!({
+        "type": "object",
+        "properties": {
+            "agent_id": {
+                "type": ["string", "null"],
+                "description": agent_id_description
+            },
+            "task_name": {
+                "type": ["string", "null"],
+                "description": task_name_description
+            },
+            "nickname": {
+                "type": ["string", "null"],
+                "description": "User-facing nickname for the spawned agent when available."
+            },
+            "role": {
+                "type": ["string", "null"],
+                "description": "Role assigned to the agent at spawn time."
+            },
+            "status": {
+                "description": "Agent status at the time the tool response was generated.",
+                "allOf": [agent_status_output_schema()]
+            },
+            "effective_model": {
+                "type": ["string", "null"],
+                "description": "Effective thread config model value for this spawned agent."
+            },
+            "effective_reasoning_effort": {
+                "type": ["string", "null"],
+                "description": "Effective thread config reasoning effort for this spawned agent."
+            },
+            "effective_model_provider_id": {
+                "type": "string",
+                "description": "Effective model provider identifier from the thread config snapshot."
+            },
+            "identity_source": {
+                "type": "string",
+                "description": "Identity source used for inherited agent settings."
+            }
+        },
+        "required": required,
+        "additionalProperties": false
+    })
 }
 
 fn list_agents_output_schema() -> JsonValue {

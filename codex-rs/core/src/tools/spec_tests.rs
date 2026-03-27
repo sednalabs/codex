@@ -470,7 +470,7 @@ fn test_full_toolset_specs_for_gpt5_codex_unified_exec_web_search() {
         create_spawn_agent_tool(&config),
         create_list_agents_tool(),
         create_send_input_tool(),
-        create_wait_agent_tool(),
+        create_wait_agent_tool(&config),
         create_close_agent_tool(),
     ] {
         expected.insert(tool_name(&spec).to_string(), spec);
@@ -566,8 +566,20 @@ fn test_build_specs_multi_agent_v2_uses_task_names_and_hides_resume() {
         .expect("spawn_agent should define output schema");
     assert_eq!(
         output_schema["required"],
-        json!(["agent_id", "task_name", "nickname"])
+        json!([
+            "agent_id",
+            "task_name",
+            "nickname",
+            "role",
+            "status",
+            "effective_model",
+            "effective_reasoning_effort",
+            "effective_model_provider_id",
+            "identity_source"
+        ])
     );
+    assert!(output_schema["properties"].get("status").is_some());
+    assert!(output_schema["properties"].get("identity_source").is_some());
 
     let send_input = find_tool(&tools, "send_input");
     let ToolSpec::Function(ResponsesApiTool { parameters, .. }) = &send_input.spec else {
@@ -833,6 +845,49 @@ fn test_wait_agent_tool_schema_and_description_document_return_when() {
             .expect("output schema includes required"),
         &serde_json::json!(["status", "requested_ids", "pending_ids", "pending_progress", "completion_reason", "timed_out"])
     );
+}
+
+#[test]
+fn test_spawn_agent_tool_schema_defaults_to_agent_id_in_non_v2_mode() {
+    let config = test_config();
+    let model_info = ModelsManager::construct_model_info_offline_for_tests("gpt-5-codex", &config);
+    let mut features = Features::with_defaults();
+    features.enable(Feature::Collab);
+    let available_models = Vec::new();
+    let tools_config = ToolsConfig::new(&ToolsConfigParams {
+        model_info: &model_info,
+        available_models: &available_models,
+        features: &features,
+        web_search_mode: Some(WebSearchMode::Cached),
+        session_source: SessionSource::Cli,
+        sandbox_policy: &SandboxPolicy::DangerFullAccess,
+        windows_sandbox_level: WindowsSandboxLevel::Disabled,
+    });
+    let (tools, _) = build_specs(&tools_config, None, None, &[]).build();
+
+    let spawn_agent = find_tool(&tools, "spawn_agent");
+    let ToolSpec::Function(ResponsesApiTool { output_schema, .. }) = &spawn_agent.spec else {
+        panic!("spawn_agent should be a function tool");
+    };
+    let output_schema = output_schema
+        .as_ref()
+        .expect("spawn_agent should define output schema");
+    assert_eq!(
+        output_schema["required"],
+        json!([
+            "agent_id",
+            "task_name",
+            "nickname",
+            "role",
+            "status",
+            "effective_model",
+            "effective_reasoning_effort",
+            "effective_model_provider_id",
+            "identity_source"
+        ])
+    );
+    assert!(output_schema["properties"].get("task_name").is_some());
+    assert!(output_schema["properties"].get("status").is_some());
 }
 
 #[test]
