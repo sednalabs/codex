@@ -1395,6 +1395,120 @@ async fn list_agents_include_descendants_hydrates_live_nested_descendant_invento
 }
 
 #[tokio::test]
+async fn list_agents_keeps_progress_visible_for_interrupted_agents() {
+    let (_session, turn) = make_session_and_context().await;
+    let manager = thread_manager();
+    let mut config = turn.config.as_ref().clone();
+    config
+        .features
+        .enable(Feature::Sqlite)
+        .expect("test config should allow sqlite");
+
+    let parent = manager
+        .start_thread(config)
+        .await
+        .expect("parent thread should start");
+    let parent_session = parent.thread.codex.session.clone();
+    assert!(
+        parent_session.services.state_db.is_some(),
+        "list_agents progress snapshots require sqlite state"
+    );
+
+    let child_output = SpawnAgentHandler
+        .handle(invocation(
+            parent_session.clone(),
+            parent_session.new_default_turn().await,
+            "spawn_agent",
+            function_payload(json!({
+                "message": "interrupt this child",
+                "agent_type": "explorer"
+            })),
+        ))
+        .await
+        .expect("child spawn should succeed");
+    let (child_content, child_success) = expect_text_output(child_output);
+    let child_result: SpawnAgentResult =
+        serde_json::from_str(&child_content).expect("child spawn result should be json");
+    let child_thread_id = agent_id(&child_result.agent_id).expect("child agent_id should be valid");
+    assert_eq!(child_success, Some(true));
+
+    let mut status_rx = manager
+        .agent_control()
+        .subscribe_status(child_thread_id)
+        .await
+        .expect("status subscription should succeed");
+    if matches!(status_rx.borrow().clone(), AgentStatus::PendingInit) {
+        timeout(Duration::from_secs(5), async {
+            loop {
+                status_rx
+                    .changed()
+                    .await
+                    .expect("child status should advance past pending init");
+                if !matches!(status_rx.borrow().clone(), AgentStatus::PendingInit) {
+                    break;
+                }
+            }
+        })
+        .await
+        .expect("child should initialize before interrupt");
+    }
+
+    manager
+        .agent_control()
+        .interrupt_agent(child_thread_id)
+        .await
+        .expect("interrupt should submit");
+    timeout(Duration::from_secs(5), async {
+        loop {
+            if matches!(status_rx.borrow().clone(), AgentStatus::Interrupted) {
+                break;
+            }
+            status_rx
+                .changed()
+                .await
+                .expect("interrupted status should arrive");
+        }
+    })
+    .await
+    .expect("child should become interrupted");
+
+    let list_output = ListAgentsHandler
+        .handle(invocation(
+            parent_session.clone(),
+            parent_session.new_default_turn().await,
+            "list_agents",
+            function_payload(json!({
+                "ids": [child_thread_id.to_string()]
+            })),
+        ))
+        .await
+        .expect("list_agents should succeed");
+    let (list_content, list_success) = expect_text_output(list_output);
+    let result: ListAgentsResult =
+        serde_json::from_str(&list_content).expect("list_agents result should be json");
+
+    assert_eq!(list_success, Some(true));
+    assert_eq!(result.agents.len(), 1);
+    assert_eq!(result.agents[0].agent_id, child_thread_id.to_string());
+    assert_eq!(result.agents[0].status, AgentStatus::Interrupted);
+    assert!(
+        result
+            .progress_by_id
+            .contains_key(&child_thread_id.to_string())
+    );
+
+    let child_thread = manager
+        .get_thread(child_thread_id)
+        .await
+        .expect("child thread should still exist");
+    let _ = child_thread
+        .thread
+        .submit(Op::Shutdown {})
+        .await
+        .expect("shutdown should submit");
+}
+
+#[tokio::test]
 async fn list_agents_rejects_descendant_edge_status_without_descendant_mode() {
     let (session, turn) = make_session_and_context().await;
     let invocation = invocation(

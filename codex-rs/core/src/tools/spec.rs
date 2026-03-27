@@ -372,7 +372,7 @@ fn list_agents_output_schema() -> JsonValue {
             },
             "progress_by_id": {
                 "type": "object",
-                "description": "Bounded progress evidence keyed by thread id for currently active agents in this snapshot.",
+                "description": "Bounded progress evidence keyed by thread id for non-final agents in this snapshot, including interrupted-but-resumable entries.",
                 "additionalProperties": collab_agent_progress_snapshot_schema()
             }
         },
