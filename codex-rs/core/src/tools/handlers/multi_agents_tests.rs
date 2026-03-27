@@ -471,6 +471,7 @@ async fn multi_agent_v2_spawn_returns_path_and_send_input_accepts_relative_path(
         .enable(Feature::MultiAgentV2)
         .expect("test config should allow feature update");
     turn.config = Arc::new(config);
+    turn.tools_config.multi_agent_v2 = true;
 
     let session = Arc::new(session);
     let turn = Arc::new(turn);
@@ -543,6 +544,7 @@ async fn multi_agent_v2_spawn_includes_agent_id_key_when_named() {
         .enable(Feature::MultiAgentV2)
         .expect("test config should allow feature update");
     turn.config = Arc::new(config);
+    turn.tools_config.multi_agent_v2 = true;
 
     let output = SpawnAgentHandler
         .handle(invocation(
@@ -582,6 +584,7 @@ async fn multi_agent_v2_spawn_surfaces_task_name_validation_errors() {
         .enable(Feature::MultiAgentV2)
         .expect("test config should allow feature update");
     turn.config = Arc::new(config);
+    turn.tools_config.multi_agent_v2 = true;
 
     let invocation = invocation(
         Arc::new(session),
@@ -1906,7 +1909,7 @@ async fn wait_agent_rejects_non_positive_timeout() {
         Arc::new(turn),
         "wait_agent",
         function_payload(json!({
-            "targets": [ThreadId::new().to_string()],
+            "ids": [ThreadId::new().to_string()],
             "timeout_ms": 0
         })),
     );
@@ -1926,7 +1929,7 @@ async fn wait_agent_rejects_invalid_target() {
         Arc::new(session),
         Arc::new(turn),
         "wait_agent",
-        function_payload(json!({"targets": ["invalid"]})),
+        function_payload(json!({"ids": ["invalid"]})),
     );
     let Err(err) = WaitAgentHandler.handle(invocation).await else {
         panic!("invalid id should be rejected");
@@ -1956,6 +1959,29 @@ async fn wait_agent_rejects_duplicate_ids() {
     assert_eq!(
         err,
         FunctionCallError::RespondToModel("duplicate ids are not allowed".to_string())
+    );
+}
+
+#[tokio::test]
+async fn wait_agent_rejects_targets_in_default_mode() {
+    let (session, turn) = make_session_and_context().await;
+    let invocation = invocation(
+        Arc::new(session),
+        Arc::new(turn),
+        "wait_agent",
+        function_payload(json!({
+            "targets": [ThreadId::new().to_string()],
+        })),
+    );
+    let Err(err) = WaitAgentHandler.handle(invocation).await else {
+        panic!("targets should be rejected in default mode");
+    };
+    assert_eq!(
+        err,
+        FunctionCallError::RespondToModel(
+            "`targets` are only supported when MultiAgentV2 is enabled; use `ids` in this mode"
+                .to_string()
+        )
     );
 }
 
@@ -2028,6 +2054,7 @@ async fn multi_agent_v2_wait_agent_accepts_targets_argument() {
         .enable(Feature::MultiAgentV2)
         .expect("test config should allow feature update");
     turn.config = Arc::new(config);
+    turn.tools_config.multi_agent_v2 = true;
     let invocation = invocation(
         Arc::new(session),
         Arc::new(turn),
@@ -2056,6 +2083,36 @@ async fn multi_agent_v2_wait_agent_accepts_targets_argument() {
 }
 
 #[tokio::test]
+async fn multi_agent_v2_wait_agent_rejects_ids_argument() {
+    let (mut session, mut turn) = make_session_and_context().await;
+    let manager = thread_manager();
+    session.services.agent_control = manager.agent_control();
+    let mut config = (*turn.config).clone();
+    config
+        .features
+        .enable(Feature::MultiAgentV2)
+        .expect("test config should allow feature update");
+    turn.config = Arc::new(config);
+    turn.tools_config.multi_agent_v2 = true;
+    let invocation = invocation(
+        Arc::new(session),
+        Arc::new(turn),
+        "wait_agent",
+        function_payload(json!({"ids": [ThreadId::new().to_string()]})),
+    );
+    let Err(err) = WaitAgentHandler.handle(invocation).await else {
+        panic!("ids should be rejected in v2 mode");
+    };
+    assert_eq!(
+        err,
+        FunctionCallError::RespondToModel(
+            "`ids` are not supported when MultiAgentV2 is enabled; use `targets` instead"
+                .to_string()
+        )
+    );
+}
+
+#[tokio::test]
 async fn wait_agent_returns_not_found_for_missing_agents() {
     let (mut session, turn) = make_session_and_context().await;
     let manager = thread_manager();
@@ -2067,7 +2124,7 @@ async fn wait_agent_returns_not_found_for_missing_agents() {
         Arc::new(turn),
         "wait_agent",
         function_payload(json!({
-            "targets": [id_a.to_string(), id_b.to_string()],
+            "ids": [id_a.to_string(), id_b.to_string()],
             "timeout_ms": 1000
         })),
     );
@@ -2105,7 +2162,7 @@ async fn wait_agent_times_out_when_status_is_not_final() {
         Arc::new(turn),
         "wait_agent",
         function_payload(json!({
-            "targets": [agent_id.to_string()],
+            "ids": [agent_id.to_string()],
             "timeout_ms": MIN_WAIT_TIMEOUT_MS
         })),
     );
@@ -2149,7 +2206,7 @@ async fn wait_agent_clamps_short_timeouts_to_minimum() {
         Arc::new(turn),
         "wait_agent",
         function_payload(json!({
-            "targets": [agent_id.to_string()],
+            "ids": [agent_id.to_string()],
             "timeout_ms": 10
         })),
     );
@@ -2199,7 +2256,7 @@ async fn wait_agent_returns_final_status_without_timeout() {
         Arc::new(turn),
         "wait_agent",
         function_payload(json!({
-            "targets": [agent_id.to_string()],
+            "ids": [agent_id.to_string()],
             "timeout_ms": 1000
         })),
     );
