@@ -2570,11 +2570,36 @@ pub fn create_tools_json_for_responses_api(
     let mut tools_json = Vec::new();
 
     for tool in tools {
-        let json = serde_json::to_value(tool)?;
+        let mut json = serde_json::to_value(tool)?;
+        maybe_inject_tool_schema_enums(&mut json);
         tools_json.push(json);
     }
 
     Ok(tools_json)
+}
+
+fn maybe_inject_tool_schema_enums(tool_json: &mut serde_json::Value) {
+    let Some(tool_name) = tool_json.get("name").and_then(serde_json::Value::as_str) else {
+        return;
+    };
+
+    if tool_name != "list_agents" {
+        return;
+    }
+
+    let Some(descendant_edge_status) = tool_json
+        .get_mut("parameters")
+        .and_then(|parameters| parameters.get_mut("properties"))
+        .and_then(|properties| properties.get_mut("descendant_edge_status"))
+        .and_then(serde_json::Value::as_object_mut)
+    else {
+        return;
+    };
+
+    descendant_edge_status.insert(
+        "enum".to_string(),
+        serde_json::json!(["open", "closed"]),
+    );
 }
 
 fn push_tool_spec(
@@ -5616,6 +5641,16 @@ Examples of valid command strings:
         assert_eq!(
             description,
             "Echo text\n\nCode mode declaration:\n```ts\nimport { tools } from \"tools/mcp/sample.js\";\ndeclare function echo(args: {\n  message: string;\n}): Promise<{\n  _meta?: unknown;\n  content: Array<unknown>;\n  isError?: boolean;\n  structuredContent?: unknown;\n}>;\n```"
+        );
+    }
+
+    #[test]
+    fn list_agents_serialization_restores_descendant_edge_status_enum() {
+        let responses_json =
+            create_tools_json_for_responses_api(&[create_list_agents_tool()]).unwrap();
+        assert_eq!(
+            responses_json[0]["parameters"]["properties"]["descendant_edge_status"]["enum"],
+            serde_json::json!(["open", "closed"])
         );
     }
 
