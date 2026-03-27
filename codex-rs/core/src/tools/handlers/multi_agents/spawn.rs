@@ -41,6 +41,7 @@ impl ToolHandler for Handler {
         let prompt = input_preview(&input_items);
         let session_source = turn.session_source.clone();
         let child_depth = next_thread_spawn_depth(&session_source);
+        let requested_task_name = args.task_name.clone();
         let max_depth = turn.config.agent_max_depth;
         if exceeds_thread_spawn_depth_limit(child_depth, max_depth) {
             return Err(FunctionCallError::RespondToModel(
@@ -70,9 +71,17 @@ impl ToolHandler for Handler {
             args.reasoning_effort,
         )
         .await?;
+        let pre_role_reasoning_effort = config.model_reasoning_effort;
         apply_role_to_config(&mut config, role_name)
             .await
             .map_err(FunctionCallError::RespondToModel)?;
+        normalize_spawn_agent_model_reasoning_after_role(
+            &session,
+            &mut config,
+            pre_role_reasoning_effort,
+            args.reasoning_effort.is_some(),
+        )
+        .await?;
         apply_spawn_agent_runtime_overrides(&mut config, turn.as_ref())?;
         apply_spawn_agent_overrides(&mut config, child_depth);
 
@@ -87,7 +96,7 @@ impl ToolHandler for Handler {
                     &turn.session_source,
                     child_depth,
                     role_name,
-                    args.task_name.clone(),
+                    requested_task_name.clone(),
                 )?),
                 SpawnAgentOptions {
                     fork_parent_spawn_call_id: args.fork_context.then(|| call_id.clone()),
@@ -95,7 +104,11 @@ impl ToolHandler for Handler {
             )
             .await
             .map_err(collab_spawn_error);
-        let spawned_thread_id = result.as_ref().ok().copied();
+        let spawned_thread_id = result.as_ref().ok().map(|agent| agent.thread_id);
+        let task_name = result
+            .as_ref()
+            .ok()
+            .and_then(|agent| agent.metadata.agent_path.as_ref().map(ToString::to_string));
         let new_agent = match spawned_thread_id {
             Some(thread_id) => {
                 if let Some(agent) = session

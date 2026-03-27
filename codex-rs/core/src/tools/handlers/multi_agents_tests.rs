@@ -1725,7 +1725,7 @@ async fn resume_agent_rejects_invalid_id() {
     let FunctionCallError::RespondToModel(msg) = err else {
         panic!("expected respond-to-model error");
     };
-    assert!(msg.starts_with("invalid agent id not-a-uuid:"));
+    assert_eq!(msg, "invalid agent id `not-a-uuid`");
 }
 
 #[tokio::test]
@@ -1954,7 +1954,30 @@ async fn wait_agent_rejects_duplicate_ids() {
     };
     assert_eq!(
         err,
-        FunctionCallError::RespondToModel("duplicate ids are not allowed".to_string())
+        FunctionCallError::RespondToModel("ids/targets must resolve to unique agents".to_string())
+    );
+}
+
+#[tokio::test]
+async fn wait_agent_rejects_ids_and_targets_together() {
+    let (session, turn) = make_session_and_context().await;
+    let invocation = invocation(
+        Arc::new(session),
+        Arc::new(turn),
+        "wait_agent",
+        function_payload(json!({
+            "ids": [ThreadId::new().to_string()],
+            "targets": [ThreadId::new().to_string()],
+        })),
+    );
+    let Err(err) = WaitAgentHandler.handle(invocation).await else {
+        panic!("supplying both ids and targets should be rejected");
+    };
+    assert_eq!(
+        err,
+        FunctionCallError::RespondToModel(
+            "provide either ids or targets, but not both".to_string()
+        )
     );
 }
 
@@ -1972,14 +1995,15 @@ async fn wait_agent_rejects_empty_ids() {
     };
     assert_eq!(
         err,
-        FunctionCallError::RespondToModel("agent targets must be non-empty".to_string())
+        FunctionCallError::RespondToModel("one of ids or targets must be non-empty".to_string())
     );
 }
 
 #[tokio::test]
 async fn multi_agent_v2_wait_agent_accepts_targets_argument() {
     let (mut session, mut turn) = make_session_and_context().await;
-    let target = ThreadId::new().to_string();
+    let target_id = ThreadId::new();
+    let target = target_id.to_string();
     let manager = thread_manager();
     session.services.agent_control = manager.agent_control();
     let mut config = (*turn.config).clone();
@@ -2004,11 +2028,36 @@ async fn multi_agent_v2_wait_agent_accepts_targets_argument() {
     assert_eq!(
         result,
         wait::WaitAgentResult {
-            status: HashMap::from([(target, AgentStatus::NotFound)]),
+            status: HashMap::from([(target_id, AgentStatus::NotFound)]),
+            requested_ids: vec![target_id],
+            pending_ids: vec![],
+            completion_reason: CollabWaitingCompletionReason::Terminal,
             timed_out: false,
         }
     );
     assert_eq!(success, None);
+}
+
+#[tokio::test]
+async fn wait_agent_ids_require_strict_thread_ids() {
+    let (mut session, turn) = make_session_and_context().await;
+    let manager = thread_manager();
+    session.services.agent_control = manager.agent_control();
+    let invocation = invocation(
+        Arc::new(session),
+        Arc::new(turn),
+        "wait_agent",
+        function_payload(json!({
+            "ids": ["named-agent-target"],
+        })),
+    );
+    let Err(err) = WaitAgentHandler.handle(invocation).await else {
+        panic!("non-thread ids should be rejected on the ids path");
+    };
+    assert!(
+        matches!(err, FunctionCallError::RespondToModel(message) if message.contains("invalid agent id")),
+        "unexpected error: {err:?}"
+    );
 }
 
 #[tokio::test]
