@@ -1,6 +1,7 @@
 #[cfg(target_os = "macos")]
 use super::EffectiveSandboxPermissions;
 use super::SandboxManager;
+use super::SandboxTransformError;
 use super::effective_file_system_sandbox_policy;
 #[cfg(target_os = "macos")]
 use super::intersect_permission_profiles;
@@ -48,6 +49,7 @@ fn symlink_dir(original: &Path, link: &Path) -> std::io::Result<()> {
 fn danger_full_access_defaults_to_no_sandbox_without_network_requirements() {
     let manager = SandboxManager::new();
     let sandbox = manager.select_initial(
+        &SandboxPolicy::new_workspace_write_policy(),
         &FileSystemSandboxPolicy::unrestricted(),
         NetworkSandboxPolicy::Enabled,
         SandboxablePreference::Auto,
@@ -62,6 +64,7 @@ fn danger_full_access_uses_platform_sandbox_with_network_requirements() {
     let manager = SandboxManager::new();
     let expected = crate::safety::get_platform_sandbox(false).unwrap_or(SandboxType::None);
     let sandbox = manager.select_initial(
+        &SandboxPolicy::new_workspace_write_policy(),
         &FileSystemSandboxPolicy::unrestricted(),
         NetworkSandboxPolicy::Enabled,
         SandboxablePreference::Auto,
@@ -72,10 +75,26 @@ fn danger_full_access_uses_platform_sandbox_with_network_requirements() {
 }
 
 #[test]
+fn require_never_degrades_to_none() {
+    let manager = SandboxManager::new();
+    let sandbox = manager.select_initial(
+        &SandboxPolicy::new_workspace_write_policy(),
+        &FileSystemSandboxPolicy::unrestricted(),
+        NetworkSandboxPolicy::Enabled,
+        SandboxablePreference::Require,
+        WindowsSandboxLevel::Disabled,
+        false,
+    );
+
+    assert_ne!(sandbox, SandboxType::None);
+}
+
+#[test]
 fn restricted_file_system_uses_platform_sandbox_without_managed_network() {
     let manager = SandboxManager::new();
     let expected = crate::safety::get_platform_sandbox(false).unwrap_or(SandboxType::None);
     let sandbox = manager.select_initial(
+        &SandboxPolicy::new_workspace_write_policy(),
         &FileSystemSandboxPolicy::restricted(vec![FileSystemSandboxEntry {
             path: FileSystemPath::Special {
                 value: FileSystemSpecialPath::Root,
@@ -88,6 +107,22 @@ fn restricted_file_system_uses_platform_sandbox_without_managed_network() {
         false,
     );
     assert_eq!(sandbox, expected);
+}
+
+#[test]
+fn external_sandbox_bypasses_platform_sandbox_with_network_requirements() {
+    let manager = SandboxManager::new();
+    let sandbox = manager.select_initial(
+        &SandboxPolicy::ExternalSandbox {
+            network_access: NetworkAccess::Restricted,
+        },
+        &FileSystemSandboxPolicy::unrestricted(),
+        NetworkSandboxPolicy::Enabled,
+        SandboxablePreference::Auto,
+        WindowsSandboxLevel::Disabled,
+        true,
+    );
+    assert_eq!(sandbox, SandboxType::None);
 }
 
 #[test]
@@ -189,6 +224,125 @@ fn transform_preserves_unrestricted_file_system_policy_for_restricted_network() 
         exec_request.network_sandbox_policy,
         NetworkSandboxPolicy::Restricted
     );
+}
+
+#[test]
+fn transform_rejects_restrictive_policy_without_platform_or_external_sandbox() {
+    let manager = SandboxManager::new();
+    let cwd = std::env::current_dir().expect("current dir");
+    let err = manager
+        .transform(super::SandboxTransformRequest {
+            spec: super::CommandSpec {
+                program: "true".to_string(),
+                args: Vec::new(),
+                cwd: cwd.clone(),
+                env: HashMap::new(),
+                expiration: crate::exec::ExecExpiration::DefaultTimeout,
+                capture_policy: crate::exec::ExecCapturePolicy::ShellTool,
+                sandbox_permissions: super::SandboxPermissions::UseDefault,
+                additional_permissions: None,
+                justification: None,
+            },
+            policy: &SandboxPolicy::new_read_only_policy(),
+            file_system_policy: &FileSystemSandboxPolicy::unrestricted(),
+            network_policy: NetworkSandboxPolicy::Restricted,
+            sandbox: SandboxType::None,
+            enforce_managed_network: false,
+            network: None,
+            sandbox_policy_cwd: cwd.as_path(),
+            #[cfg(target_os = "macos")]
+            macos_seatbelt_profile_extensions: None,
+            codex_linux_sandbox_exe: None,
+            use_legacy_landlock: false,
+            windows_sandbox_level: WindowsSandboxLevel::Disabled,
+            windows_sandbox_private_desktop: false,
+        })
+        .expect_err("restrictive policies should fail closed without a platform or trusted external sandbox");
+
+    assert!(matches!(
+        err,
+        SandboxTransformError::RestrictivePolicyRequiresSandbox
+    ));
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn linux_seccomp_requires_linux_sandbox_executable_path() {
+    let manager = SandboxManager::new();
+    let cwd = std::env::current_dir().expect("current dir");
+    let err = manager
+        .transform(super::SandboxTransformRequest {
+            spec: super::CommandSpec {
+                program: "true".to_string(),
+                args: Vec::new(),
+                cwd: cwd.clone(),
+                env: HashMap::new(),
+                expiration: crate::exec::ExecExpiration::DefaultTimeout,
+                capture_policy: crate::exec::ExecCapturePolicy::ShellTool,
+                sandbox_permissions: super::SandboxPermissions::UseDefault,
+                additional_permissions: None,
+                justification: None,
+            },
+            policy: &SandboxPolicy::new_read_only_policy(),
+            file_system_policy: &FileSystemSandboxPolicy::restricted(vec![]),
+            network_policy: NetworkSandboxPolicy::Restricted,
+            sandbox: SandboxType::LinuxSeccomp,
+            enforce_managed_network: false,
+            network: None,
+            sandbox_policy_cwd: cwd.as_path(),
+            #[cfg(target_os = "macos")]
+            macos_seatbelt_profile_extensions: None,
+            codex_linux_sandbox_exe: None,
+            use_legacy_landlock: false,
+            windows_sandbox_level: WindowsSandboxLevel::Disabled,
+            windows_sandbox_private_desktop: false,
+        })
+        .expect_err("linux seccomp requires a helper path");
+
+    assert!(matches!(
+        err,
+        SandboxTransformError::MissingLinuxSandboxExecutable
+    ));
+}
+
+#[cfg(not(target_os = "windows"))]
+#[test]
+fn windows_restricted_token_fails_closed_off_windows() {
+    let manager = SandboxManager::new();
+    let cwd = std::env::current_dir().expect("current dir");
+    let err = manager
+        .transform(super::SandboxTransformRequest {
+            spec: super::CommandSpec {
+                program: "true".to_string(),
+                args: Vec::new(),
+                cwd: cwd.clone(),
+                env: HashMap::new(),
+                expiration: crate::exec::ExecExpiration::DefaultTimeout,
+                capture_policy: crate::exec::ExecCapturePolicy::ShellTool,
+                sandbox_permissions: super::SandboxPermissions::UseDefault,
+                additional_permissions: None,
+                justification: None,
+            },
+            policy: &SandboxPolicy::DangerFullAccess,
+            file_system_policy: &FileSystemSandboxPolicy::unrestricted(),
+            network_policy: NetworkSandboxPolicy::Enabled,
+            sandbox: SandboxType::WindowsRestrictedToken,
+            enforce_managed_network: false,
+            network: None,
+            sandbox_policy_cwd: cwd.as_path(),
+            #[cfg(target_os = "macos")]
+            macos_seatbelt_profile_extensions: None,
+            codex_linux_sandbox_exe: None,
+            use_legacy_landlock: false,
+            windows_sandbox_level: WindowsSandboxLevel::Disabled,
+            windows_sandbox_private_desktop: false,
+        })
+        .expect_err("windows sandbox should fail closed off-platform");
+
+    assert!(matches!(
+        err,
+        SandboxTransformError::SandboxRequiredButUnavailable
+    ));
 }
 
 #[test]
