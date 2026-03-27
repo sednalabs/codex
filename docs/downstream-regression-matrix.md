@@ -7,9 +7,9 @@ branch.
 
 ## Core default path
 
-Default build-helper preset for iterative validation:
+Default local iterative validation path:
 
-- `codex.core-test` (`just core-test-progressive`)
+- `just core-test-progressive`
 
 Fast lanes used by `core-test-smoke`:
 
@@ -29,7 +29,7 @@ Focused micro-slices for iterative work on the current carry seams:
 - `codex.state-spawn-lineage-contract-targeted`
 - `codex.downstream-docs-check`
 
-Focused preset used for protocol/event-history seams:
+Focused lane used for protocol/event-history seams:
 
 - `codex.app-server-protocol-test`
 
@@ -83,5 +83,5 @@ sqlite3 "${CODEX_SQLITE_HOME:-$HOME/.codex}/usage.sqlite" '.tables'
   `DATABASE_URI`).
 - Keep the broad ladders out of the inner loop on this host:
   use the focused `codex.core-*targeted` presets first, then promote to
-  `codex.core-test-smoke`, then `codex.core-test-progressive` only when you
+  `just core-test-smoke`, then `just core-test-progressive` only when you
   intentionally want a broader gate.

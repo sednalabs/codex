@@ -33,8 +33,9 @@ live divergence.
 - `main` is now the default PR and integration branch, while `upstream-main`
   is the exact upstream mirror.
 - Downstream sync policy is merge-based, not rebase-based.
-- Shared-host validation and release flows are standardized through build-helper
-  presets.
+- Shared-host validation and release flows may use local build-helper presets
+  where operators have them configured, but those presets are not a tracked
+  repository contract.
 - Divergence regression ownership is tracked in
   [`downstream-regression-matrix.md`](/home/grant/mmm/codex/docs/downstream-regression-matrix.md).
 - Field-level native tool-surface deltas are summarized in

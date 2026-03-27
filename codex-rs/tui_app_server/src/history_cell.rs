@@ -523,7 +523,7 @@ impl HistoryCell for UpdateAvailableHistoryCell {
         } else {
             line![
                 "See ",
-                installation_options_url.as_str().cyan().underlined(),
+                installation_options_url.cyan().underlined(),
                 " for installation options."
             ]
         };
@@ -538,7 +538,7 @@ impl HistoryCell for UpdateAvailableHistoryCell {
             update_instruction,
             "",
             "See full release notes:",
-            release_notes_url.as_str().cyan().underlined(),
+            release_notes_url.cyan().underlined(),
         ];
 
         let inner_width = content
@@ -1997,8 +1997,10 @@ pub(crate) fn new_mcp_tools_output_from_statuses(
         statuses_by_name.insert(status.name.as_str(), status);
     }
 
-    let mut server_names: Vec<String> = statuses.iter().map(|status| status.name.clone()).collect();
+    let mut server_names: Vec<String> = config.mcp_servers.get().keys().cloned().collect();
+    server_names.extend(statuses.iter().map(|status| status.name.clone()));
     server_names.sort();
+    server_names.dedup();
 
     let has_any_tools = statuses.iter().any(|status| !status.tools.is_empty());
     if !has_any_tools {
