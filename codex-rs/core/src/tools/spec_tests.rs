@@ -518,9 +518,13 @@ fn test_build_specs_collab_tools_enabled() {
         windows_sandbox_level: WindowsSandboxLevel::Disabled,
     });
     let (tools, _) = build_specs(&tools_config, None, None, &[]).build();
-    assert_contains_tool_names(
-        &["spawn_agent", "list_agents", "send_input", "wait_agent", "close_agent"],
-    );
+    assert_contains_tool_names(&[
+        "spawn_agent",
+        "list_agents",
+        "send_input",
+        "wait_agent",
+        "close_agent",
+    ]);
     assert_lacks_tool_name(&tools, "spawn_agents_on_csv");
 }
 
@@ -618,9 +622,9 @@ fn test_build_specs_multi_agent_v2_uses_task_names_and_hides_resume() {
         .as_ref()
         .expect("wait_agent should define output schema");
     assert_eq!(
-        output_schema["properties"]["status"]["description"],
+        output_schema["properties"]["message"]["description"],
         json!(
-            "Agent statuses keyed by id for the return point. Always includes the subset of agents that satisfied `return_when` (final statuses for those agents). Use `pending_ids` to see which requests are still in flight."
+            "Brief wait summary without embedding agent completion payloads. Use `completion_reason`, `pending_ids`, and `timed_out` to understand the return state."
         )
     );
     assert_lacks_tool_name(&tools, "resume_agent");
@@ -827,6 +831,7 @@ fn test_wait_agent_tool_schema_and_description_document_return_when() {
     assert!(description.contains("blocking coordination while awaiting sub-agent completion"));
     assert!(description.contains("Prefer longer timeouts"));
     assert!(description.contains("favor `list_agents`"));
+    assert!(description.contains("brief wait summary"));
     assert!(description.contains("`timed_out`"));
     assert!(description.contains("When `return_when` is `any`"));
     assert!(description.contains("When `return_when` is `all`"));
@@ -836,7 +841,13 @@ fn test_wait_agent_tool_schema_and_description_document_return_when() {
             .expect("wait_agent has output schema")
             .get("required")
             .expect("output schema includes required"),
-        &serde_json::json!(["status", "requested_ids", "pending_ids", "completion_reason", "timed_out"])
+        &serde_json::json!([
+            "message",
+            "requested_ids",
+            "pending_ids",
+            "completion_reason",
+            "timed_out"
+        ])
     );
 }
 

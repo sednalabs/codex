@@ -321,11 +321,10 @@ fn wait_output_schema() -> JsonValue {
     json!({
         "type": "object",
         "properties": {
-            "status": {
-                "type": "object",
+            "message": {
+                "type": "string",
                 "description":
-                    "Agent statuses keyed by id for the return point. Always includes the subset of agents that satisfied `return_when` (final statuses for those agents). Use `pending_ids` to see which requests are still in flight.",
-                "additionalProperties": agent_status_output_schema()
+                    "Brief wait summary without embedding agent completion payloads. Use `completion_reason`, `pending_ids`, and `timed_out` to understand the return state."
             },
             "requested_ids": {
                 "type": "array",
@@ -352,7 +351,7 @@ fn wait_output_schema() -> JsonValue {
                     "Whether the call returned due to timeout before the requested condition was reached."
             }
         },
-        "required": ["status", "requested_ids", "pending_ids", "completion_reason", "timed_out"],
+        "required": ["message", "requested_ids", "pending_ids", "completion_reason", "timed_out"],
         "additionalProperties": false
     })
 }
@@ -1713,6 +1712,7 @@ fn create_wait_agent_tool() -> ToolSpec {
     ToolSpec::Function(ResponsesApiTool {
         name: "wait_agent".to_string(),
         description: "Use this for blocking coordination while awaiting sub-agent completion. The call blocks until the requested `return_when` condition is met or the timeout is reached. Prefer longer timeouts (minutes) to avoid short-polling loops, and favor `list_agents` for non-blocking snapshots before calling `wait_agent` when you really need the transition to finish.
+Returns a brief wait summary instead of embedding the agent's final completion payload.
 When `return_when` is `any`, the call returns as soon as one requested agent becomes terminal. When `return_when` is `all`, it waits for every requested agent to reach a terminal state before returning."
             .to_string(),
         strict: false,
