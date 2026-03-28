@@ -3769,7 +3769,7 @@ impl App {
                     SessionSelection::Resume(target_session) => {
                         let current_cwd = self.config.cwd.clone();
                         let resume_cwd = if self.remote_app_server_url.is_some() {
-                            (*current_cwd).clone()
+                            current_cwd.clone()
                         } else {
                             match crate::resolve_cwd_for_resume_or_fork(
                                 tui,
@@ -3783,7 +3783,7 @@ impl App {
                             .await?
                             {
                                 crate::ResolveCwdOutcome::Continue(Some(cwd)) => cwd,
-                                crate::ResolveCwdOutcome::Continue(None) => (*current_cwd).clone(),
+                                crate::ResolveCwdOutcome::Continue(None) => current_cwd.clone(),
                                 crate::ResolveCwdOutcome::Exit => {
                                     return Ok(AppRunControl::Exit(ExitReason::UserRequested));
                                 }
