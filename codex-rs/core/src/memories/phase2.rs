@@ -182,17 +182,19 @@ pub(super) async fn run(session: &Arc<Session>, config: Arc<Config>) {
     // 6. Spawn the agent handler.
     agent::handle(
         session,
-        claim,
-        config,
-        selection,
-        new_watermark,
-        raw_memories.clone(),
-        thread_id,
-        root,
-        artifacts_not_before,
-        allow_existing_artifacts_without_rewrite,
-        prepared_input_artifact_tree_sha256,
-        phase_two_e2e_timer,
+        agent::HandleRequest {
+            claim,
+            config,
+            selection,
+            new_watermark,
+            selected_outputs: raw_memories.clone(),
+            thread_id,
+            root,
+            artifacts_not_before,
+            allow_existing_artifacts_without_rewrite,
+            prepared_input_artifact_tree_sha256,
+            phase_two_e2e_timer,
+        },
     );
 
     // 7. Metrics and logs.
@@ -304,6 +306,20 @@ mod job {
 pub(in crate::memories) mod agent {
     use super::*;
 
+    pub(super) struct HandleRequest {
+        pub(super) claim: Claim,
+        pub(super) config: Arc<Config>,
+        pub(super) selection: codex_state::Phase2InputSelection,
+        pub(super) new_watermark: i64,
+        pub(super) selected_outputs: Vec<codex_state::Stage1Output>,
+        pub(super) thread_id: ThreadId,
+        pub(super) root: PathBuf,
+        pub(super) artifacts_not_before: SystemTime,
+        pub(super) allow_existing_artifacts_without_rewrite: bool,
+        pub(super) prepared_input_artifact_tree_sha256: String,
+        pub(super) phase_two_e2e_timer: Option<codex_otel::Timer>,
+    }
+
     pub(super) fn get_config(config: Arc<Config>) -> Option<Config> {
         let root = memory_root(&config.codex_home);
         if let Err(err) = validate_memory_root_path(&root) {
@@ -390,20 +406,20 @@ pub(in crate::memories) mod agent {
     }
 
     /// Handle the agent while it is running.
-    pub(super) fn handle(
-        session: &Arc<Session>,
-        claim: Claim,
-        config: Arc<Config>,
-        selection: codex_state::Phase2InputSelection,
-        new_watermark: i64,
-        selected_outputs: Vec<codex_state::Stage1Output>,
-        thread_id: ThreadId,
-        root: PathBuf,
-        artifacts_not_before: SystemTime,
-        allow_existing_artifacts_without_rewrite: bool,
-        prepared_input_artifact_tree_sha256: String,
-        phase_two_e2e_timer: Option<codex_otel::Timer>,
-    ) {
+    pub(super) fn handle(session: &Arc<Session>, request: HandleRequest) {
+        let HandleRequest {
+            claim,
+            config,
+            selection,
+            new_watermark,
+            selected_outputs,
+            thread_id,
+            root,
+            artifacts_not_before,
+            allow_existing_artifacts_without_rewrite,
+            prepared_input_artifact_tree_sha256,
+            phase_two_e2e_timer,
+        } = request;
         let Some(db) = session.services.state_db.clone() else {
             return;
         };
@@ -642,9 +658,7 @@ pub(in crate::memories) mod agent {
                 && attestation.artifact_tree_sha256 == current.artifact_tree_sha256)
                 .then_some(current),
             Ok(None) => {
-                if attestation_required {
-                    None
-                } else if state_db.is_some() {
+                if attestation_required || state_db.is_some() {
                     None
                 } else {
                     let root = root.to_path_buf();
@@ -879,13 +893,17 @@ pub(in crate::memories) mod agent {
                 rollout_slug: output.rollout_slug.as_deref(),
             })
             .collect::<Vec<_>>();
-        let bytes = serde_json::to_vec(&refs).expect("serialize phase-2 selection refs");
+        let bytes = serialize_to_vec_or_panic(&refs, "serialize phase-2 selection refs");
         sha256_hex(&bytes)
     }
 
     fn sha256_hex(bytes: &[u8]) -> String {
         let digest = Sha256::digest(bytes);
         format!("{digest:x}")
+    }
+
+    fn serialize_to_vec_or_panic<T: Serialize>(value: &T, context: &str) -> Vec<u8> {
+        serde_json::to_vec(value).unwrap_or_else(|err| panic!("{context}: {err}"))
     }
 
     fn consolidator_fingerprint(
@@ -930,7 +948,8 @@ pub(in crate::memories) mod agent {
 
         let sandbox_policy = SandboxPolicy::WorkspaceWrite {
             writable_roots: vec![
-                AbsolutePathBuf::from_absolute_path(root).expect("memory root should be absolute"),
+                AbsolutePathBuf::from_absolute_path(root)
+                    .unwrap_or_else(|err| panic!("memory root should be absolute: {err}")),
             ],
             read_only_access: Default::default(),
             network_access: false,
@@ -952,7 +971,7 @@ pub(in crate::memories) mod agent {
             network_sandbox_policy,
         };
         let bytes =
-            serde_json::to_vec(&fingerprint).expect("serialize phase-2 consolidator fingerprint");
+            serialize_to_vec_or_panic(&fingerprint, "serialize phase-2 consolidator fingerprint");
         sha256_hex(&bytes)
     }
 
@@ -1144,7 +1163,7 @@ pub(in crate::memories) mod agent {
 
             path.as_os_str()
                 .encode_wide()
-                .flat_map(|unit| unit.to_le_bytes())
+                .flat_map(u16::to_le_bytes)
                 .collect()
         }
         #[cfg(all(not(unix), not(windows)))]

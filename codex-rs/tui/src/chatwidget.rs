@@ -4867,9 +4867,9 @@ impl ChatWidget {
         &mut self,
         cmd: SlashCommand,
         prepared_args: String,
-        prepared_elements: Vec<TextElement>,
-        local_images: Vec<LocalImageAttachment>,
-        remote_image_urls: Vec<String>,
+        _prepared_elements: Vec<TextElement>,
+        _local_images: Vec<LocalImageAttachment>,
+        _remote_image_urls: Vec<String>,
         mention_bindings: Vec<MentionBinding>,
         drain_submission_state: bool,
     ) {

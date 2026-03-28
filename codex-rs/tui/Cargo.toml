@@ -74,7 +74,6 @@ ratatui = { workspace = true, features = [
     "unstable-rendered-line-info",
     "unstable-widget-ref",
 ] }
-ratatui-macros = { workspace = true }
 regex-lite = { workspace = true }
 reqwest = { workspace = true, features = ["json", "multipart"] }
 rmcp = { workspace = true }
