@@ -17,10 +17,10 @@ Fast lanes used by `core-test-smoke`:
 - `core-carry-smoke`
 - `core-ledger-smoke`
 - `core-carry-smoke` now includes the `codex-tui-app-server`
-  replayed-queue and selected-agent footer regressions from PR `#14`, so
+  replayed-queue and selected-agent footer regressions, so
   downstream interactive behavior fails during the PR smoke pass.
 - `core-ledger-smoke` now includes the `usage.sqlite` cleanup, turn-reset, and
-  restart-lineage regressions from PR `#14`, so downstream accounting behavior
+  restart-lineage regressions, so downstream accounting behavior
   fails during the same smoke pass.
 
 Focused micro-slices for iterative work on the current carry seams:
