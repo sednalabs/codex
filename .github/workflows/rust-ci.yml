@@ -311,6 +311,7 @@ jobs:
           cargo_home="${GITHUB_WORKSPACE}/.cargo-home"
           mkdir -p "${cargo_home}/bin"
           echo "CARGO_HOME=${cargo_home}" >> "$GITHUB_ENV"
+          echo "RUSTUP_TOOLCHAIN=1.93.0" >> "$GITHUB_ENV"
           echo "${cargo_home}/bin" >> "$GITHUB_PATH"
           : > "${cargo_home}/config.toml"
 
@@ -393,7 +394,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          sudo mkdir -p /var/cache/apt/archives /var/lib/apt/lists
+          sudo mkdir -p /var/cache/apt/archives/partial /var/lib/apt/lists
           sudo chown -R "$USER:$USER" /var/cache/apt /var/lib/apt/lists
 
       - if: ${{ matrix.target == 'x86_64-unknown-linux-musl' || matrix.target == 'aarch64-unknown-linux-musl'}}
@@ -563,6 +564,15 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Save APT cache (musl)
+        if: always() && !cancelled() && (matrix.target == 'x86_64-unknown-linux-musl' || matrix.target == 'aarch64-unknown-linux-musl') && steps.cache_apt_restore.outputs.cache-hit != 'true'
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo mkdir -p /var/cache/apt/archives/partial /var/lib/apt/lists
+          sudo chown -R "$USER:$USER" /var/cache/apt /var/lib/apt/lists
+          tar -cf /dev/null /var/cache/apt
+      - name: Save APT cache archive (musl)
         if: always() && !cancelled() && (matrix.target == 'x86_64-unknown-linux-musl' || matrix.target == 'aarch64-unknown-linux-musl') && steps.cache_apt_restore.outputs.cache-hit != 'true'
         continue-on-error: true
         uses: actions/cache/save@v5
