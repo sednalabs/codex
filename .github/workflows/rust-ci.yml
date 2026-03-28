@@ -37,7 +37,7 @@ jobs:
             echo "Base SHA: $BASE_SHA"
             echo "Head SHA: $HEAD_SHA"
             # List files changed between base and PR head
-            mapfile -t files < <(git diff --name-only --no-renames "$BASE_SHA" "$HEAD_SHA")
+            mapfile -t files < <(git diff --name-only --no-renames "$BASE_SHA...$HEAD_SHA")
           else
             # On push / manual runs, default to running everything
             files=("codex-rs/force" ".github/force")
