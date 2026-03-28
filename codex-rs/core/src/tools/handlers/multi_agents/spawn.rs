@@ -71,16 +71,22 @@ impl ToolHandler for Handler {
         apply_role_to_config(&mut config, role_name)
             .await
             .map_err(FunctionCallError::RespondToModel)?;
+        let requested_model = if role_model_locks.model {
+            None
+        } else {
+            args.model.as_deref()
+        };
+        let requested_reasoning_effort = if role_model_locks.model_reasoning_effort {
+            None
+        } else {
+            args.reasoning_effort
+        };
         apply_requested_spawn_agent_model_overrides(
             &session,
             turn.as_ref(),
             &mut config,
-            (!role_model_locks.model)
-                .then_some(args.model.as_deref())
-                .flatten(),
-            (!role_model_locks.model_reasoning_effort)
-                .then_some(args.reasoning_effort)
-                .flatten(),
+            requested_model,
+            requested_reasoning_effort,
             role_model_locks.model_reasoning_effort,
         )
         .await?;

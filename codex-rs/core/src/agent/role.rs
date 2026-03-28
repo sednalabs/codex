@@ -128,25 +128,22 @@ fn role_profile_field_updates(
     profile_name: Option<&str>,
     role_layer_toml: &TomlValue,
 ) -> RoleActiveProfileFieldUpdates {
-    let Some(profile_name) = profile_name else {
-        return RoleActiveProfileFieldUpdates::default();
-    };
-    let Some(profile_updates) = role_layer_toml
-        .get("profiles")
-        .and_then(TomlValue::as_table)
-        .and_then(|profiles| profiles.get(profile_name))
-        .and_then(TomlValue::as_table)
-    else {
-        return RoleActiveProfileFieldUpdates::default();
-    };
-
-    RoleActiveProfileFieldUpdates {
-        model: profile_updates.contains_key("model"),
-        model_provider: profile_updates.contains_key("model_provider"),
-        model_reasoning_effort: profile_updates.contains_key("model_reasoning_effort"),
-        model_reasoning_summary: profile_updates.contains_key("model_reasoning_summary"),
-        model_verbosity: profile_updates.contains_key("model_verbosity"),
-    }
+    profile_name
+        .and_then(|name| {
+            role_layer_toml
+                .get("profiles")
+                .and_then(TomlValue::as_table)
+                .and_then(|profiles| profiles.get(name))
+                .and_then(TomlValue::as_table)
+        })
+        .map(|profile_updates| RoleActiveProfileFieldUpdates {
+            model: profile_updates.contains_key("model"),
+            model_provider: profile_updates.contains_key("model_provider"),
+            model_reasoning_effort: profile_updates.contains_key("model_reasoning_effort"),
+            model_reasoning_summary: profile_updates.contains_key("model_reasoning_summary"),
+            model_verbosity: profile_updates.contains_key("model_verbosity"),
+        })
+        .unwrap_or_default()
 }
 
 fn role_preserves_current_profile(role_config: &ConfigToml) -> bool {
@@ -182,6 +179,7 @@ fn role_layer_stack_with_session_flags(
 
 fn effective_role_profile_after_precedence(
     config: &Config,
+    role_config: &ConfigToml,
     role_name: &str,
     role_layer_toml: &TomlValue,
 ) -> Result<Option<String>, String> {
@@ -192,10 +190,13 @@ fn effective_role_profile_after_precedence(
         .map_err(|err| {
             format!("failed to deserialize merged config for agent type '{role_name}': {err}")
         })?;
+    let preserve_current_profile = role_preserves_current_profile(role_config);
 
-    Ok(merged_config
-        .profile
-        .or_else(|| config.active_profile.clone()))
+    Ok(merged_config.profile.or_else(|| {
+        preserve_current_profile
+            .then(|| config.active_profile.clone())
+            .flatten()
+    }))
 }
 
 /// Applies a named role layer to `config` while preserving caller-owned model selection.
@@ -317,7 +318,7 @@ pub(crate) async fn role_model_override_locks(
         return Ok(RoleModelOverrideLocks::default());
     };
     let effective_profile =
-        effective_role_profile_after_precedence(config, role_name, &role_layer_toml)?;
+        effective_role_profile_after_precedence(config, &role_config, role_name, &role_layer_toml)?;
     let active_profile_updates =
         role_profile_field_updates(effective_profile.as_deref(), &role_layer_toml);
 
