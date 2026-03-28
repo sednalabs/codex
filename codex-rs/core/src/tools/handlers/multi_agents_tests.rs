@@ -379,6 +379,85 @@ async fn assert_locked_role_model_uses_role_model_for_reasoning_validation(use_v
     assert_eq!(snapshot.reasoning_effort, Some(requested_reasoning_effort));
 }
 
+async fn assert_active_profile_role_model_locks_requested_overrides(use_v2_handler: bool) {
+    let (session, mut turn, manager) = prepare_spawn_session(use_v2_handler).await;
+    let available_models = session
+        .services
+        .models_manager
+        .list_models(RefreshStrategy::Offline)
+        .await;
+    assert!(
+        available_models.len() >= 2,
+        "test requires at least two models"
+    );
+    let requested_model = available_models[0].model.clone();
+    let role_model = available_models[1].model.clone();
+    assert_ne!(requested_model, role_model);
+
+    let role_model_info = session
+        .services
+        .models_manager
+        .get_model_info(&role_model, turn.config.as_ref())
+        .await;
+    let role_reasoning_effort = role_model_info
+        .default_reasoning_level
+        .or_else(|| {
+            role_model_info
+                .supported_reasoning_levels
+                .first()
+                .map(|preset| preset.effort)
+        })
+        .expect("role model should support at least one reasoning effort");
+    let requested_reasoning_effort = if role_reasoning_effort == ReasoningEffort::Low {
+        ReasoningEffort::High
+    } else {
+        ReasoningEffort::Low
+    };
+
+    let mut config = (*turn.config).clone();
+    config.active_profile = Some("base-profile".to_string());
+    turn.config = Arc::new(config);
+
+    let role_config = format!(
+        r#"developer_instructions = "Role prompt"
+
+[profiles.base-profile]
+model = "{role_model}"
+model_reasoning_effort = "{role_reasoning_effort}"
+"#,
+    );
+    let _role_dir = add_custom_role(&mut turn, "custom", &role_config).await;
+
+    let payload = if use_v2_handler {
+        json!({
+            "message": "inspect this repo",
+            "task_name": "worker",
+            "agent_type": "custom",
+            "model": requested_model,
+            "reasoning_effort": requested_reasoning_effort
+        })
+    } else {
+        json!({
+            "message": "inspect this repo",
+            "agent_type": "custom",
+            "model": requested_model,
+            "reasoning_effort": requested_reasoning_effort
+        })
+    };
+    let session = Arc::new(session);
+    let turn = Arc::new(turn);
+    let thread_id = spawn_agent_and_get_thread_id(use_v2_handler, session, turn, payload).await;
+    let snapshot = manager
+        .get_thread(thread_id)
+        .await
+        .expect("spawned agent thread should exist")
+        .config_snapshot()
+        .await;
+
+    assert_eq!(snapshot.model, role_model);
+    assert_eq!(snapshot.reasoning_effort, Some(role_reasoning_effort));
+}
+
 fn expect_text_output<T>(output: T) -> (String, Option<bool>)
 where
     T: ToolOutput,
@@ -758,6 +837,16 @@ async fn spawn_agent_validates_reasoning_override_against_locked_role_model() {
 #[tokio::test]
 async fn multi_agent_v2_spawn_validates_reasoning_override_against_locked_role_model() {
     assert_locked_role_model_uses_role_model_for_reasoning_validation(true).await;
+}
+
+#[tokio::test]
+async fn spawn_agent_cannot_bypass_active_profile_role_model_locks() {
+    assert_active_profile_role_model_locks_requested_overrides(false).await;
+}
+
+#[tokio::test]
+async fn multi_agent_v2_spawn_cannot_bypass_active_profile_role_model_locks() {
+    assert_active_profile_role_model_locks_requested_overrides(true).await;
 }
 
 #[tokio::test]

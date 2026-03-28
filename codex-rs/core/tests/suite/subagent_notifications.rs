@@ -47,6 +47,7 @@ const ROLE_REASONING_EFFORT: ReasoningEffort = ReasoningEffort::High;
 const LOCKED_ROLE_PARENT_MODEL: &str = "spawn-agent-parent";
 const LOCKED_ROLE_REQUESTED_MODEL: &str = "spawn-agent-requested";
 const LOCKED_ROLE_MODEL: &str = "spawn-agent-role";
+const LOCKED_ROLE_ACTIVE_PROFILE: &str = "locked-role-profile";
 const LOCKED_ROLE_PARENT_REASONING_EFFORT: ReasoningEffort = ReasoningEffort::Low;
 const LOCKED_ROLE_REQUESTED_REASONING_EFFORT: ReasoningEffort = ReasoningEffort::High;
 
@@ -575,6 +576,53 @@ async fn spawn_agent_locked_role_model_accepts_role_supported_reasoning_override
                 let role_path = config.codex_home.join("custom-role.toml");
                 std::fs::write(&role_path, format!("model = \"{LOCKED_ROLE_MODEL}\"\n"))
                     .expect("write role config");
+                config.agent_roles.insert(
+                    "custom".to_string(),
+                    AgentRoleConfig {
+                        description: Some("Custom role".to_string()),
+                        config_file: Some(role_path),
+                        nickname_candidates: None,
+                    },
+                );
+            })
+        },
+    )
+    .await?;
+
+    assert_eq!(child_snapshot.model, LOCKED_ROLE_MODEL);
+    assert_eq!(
+        child_snapshot.reasoning_effort,
+        Some(LOCKED_ROLE_REQUESTED_REASONING_EFFORT)
+    );
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn spawn_agent_active_profile_role_model_locks_requested_overrides() -> Result<()> {
+    let server = start_mock_server().await;
+    let child_snapshot = spawn_child_and_capture_snapshot(
+        &server,
+        json!({
+            "message": CHILD_PROMPT,
+            "agent_type": "custom",
+            "model": LOCKED_ROLE_REQUESTED_MODEL,
+            "reasoning_effort": LOCKED_ROLE_PARENT_REASONING_EFFORT,
+        }),
+        |builder| {
+            builder.with_config(|config| {
+                config.model_catalog = Some(locked_role_reasoning_model_catalog());
+                config.active_profile = Some(LOCKED_ROLE_ACTIVE_PROFILE.to_string());
+                config.model = Some(LOCKED_ROLE_PARENT_MODEL.to_string());
+                config.model_reasoning_effort = Some(LOCKED_ROLE_PARENT_REASONING_EFFORT);
+                let role_path = config.codex_home.join("custom-role.toml");
+                std::fs::write(
+                    &role_path,
+                    format!(
+                        "[profiles.{LOCKED_ROLE_ACTIVE_PROFILE}]\nmodel = \"{LOCKED_ROLE_MODEL}\"\nmodel_reasoning_effort = \"{LOCKED_ROLE_REQUESTED_REASONING_EFFORT}\"\n",
+                    ),
+                )
+                .expect("write role config");
                 config.agent_roles.insert(
                     "custom".to_string(),
                     AgentRoleConfig {

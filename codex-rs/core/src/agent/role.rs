@@ -32,6 +32,15 @@ pub(crate) struct RoleModelOverrideLocks {
     pub(crate) model_reasoning_effort: bool,
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct RoleActiveProfileFieldUpdates {
+    model: bool,
+    model_provider: bool,
+    model_reasoning_effort: bool,
+    model_reasoning_summary: bool,
+    model_verbosity: bool,
+}
+
 struct RoleLayerConfig {
     role_config: ConfigToml,
     role_layer_toml: TomlValue,
@@ -115,6 +124,31 @@ async fn load_role_layer_config(
     }))
 }
 
+fn role_active_profile_field_updates(
+    config: &Config,
+    role_layer_toml: &TomlValue,
+) -> RoleActiveProfileFieldUpdates {
+    let Some(active_profile) = config.active_profile.as_ref() else {
+        return RoleActiveProfileFieldUpdates::default();
+    };
+    let Some(profile_updates) = role_layer_toml
+        .get("profiles")
+        .and_then(TomlValue::as_table)
+        .and_then(|profiles| profiles.get(active_profile))
+        .and_then(TomlValue::as_table)
+    else {
+        return RoleActiveProfileFieldUpdates::default();
+    };
+
+    RoleActiveProfileFieldUpdates {
+        model: profile_updates.contains_key("model"),
+        model_provider: profile_updates.contains_key("model_provider"),
+        model_reasoning_effort: profile_updates.contains_key("model_reasoning_effort"),
+        model_reasoning_summary: profile_updates.contains_key("model_reasoning_summary"),
+        model_verbosity: profile_updates.contains_key("model_verbosity"),
+    }
+}
+
 /// Applies a named role layer to `config` while preserving caller-owned model selection.
 ///
 /// The role layer is inserted at session-flag precedence so it can override persisted config, but
@@ -142,38 +176,13 @@ pub(crate) async fn apply_role_to_config(
     let role_selects_reasoning_effort = role_config.model_reasoning_effort.is_some();
     let role_selects_reasoning_summary = role_config.model_reasoning_summary.is_some();
     let role_selects_verbosity = role_config.model_verbosity.is_some();
-    let active_profile_updates = config
-        .active_profile
-        .as_ref()
-        .and_then(|active_profile| {
-            role_layer_toml
-                .get("profiles")
-                .and_then(TomlValue::as_table)
-                .and_then(|profiles| profiles.get(active_profile))
-                .and_then(TomlValue::as_table)
-        })
-        .cloned();
-    let role_updates_active_profile_model = active_profile_updates
-        .as_ref()
-        .is_some_and(|profile| profile.contains_key("model"));
-    let role_updates_active_profile_provider = active_profile_updates
-        .as_ref()
-        .is_some_and(|profile| profile.contains_key("model_provider"));
-    let role_updates_active_profile_reasoning_effort = active_profile_updates
-        .as_ref()
-        .is_some_and(|profile| profile.contains_key("model_reasoning_effort"));
-    let role_updates_active_profile_reasoning_summary = active_profile_updates
-        .as_ref()
-        .is_some_and(|profile| profile.contains_key("model_reasoning_summary"));
-    let role_updates_active_profile_verbosity = active_profile_updates
-        .as_ref()
-        .is_some_and(|profile| profile.contains_key("model_verbosity"));
+    let active_profile_updates = role_active_profile_field_updates(config, &role_layer_toml);
     // A role that does not explicitly take ownership of model selection should inherit the
     // caller's current profile/provider choices across the config reload.
     let preserve_current_profile = !role_selects_provider && !role_selects_profile;
     let preserve_current_provider =
-        preserve_current_profile && !role_updates_active_profile_provider;
-    let preserved_model = if preserve_current_profile && !role_updates_active_profile_model {
+        preserve_current_profile && !active_profile_updates.model_provider;
+    let preserved_model = if preserve_current_profile && !active_profile_updates.model {
         if role_selects_model {
             role_config.model.clone()
         } else {
@@ -183,7 +192,7 @@ pub(crate) async fn apply_role_to_config(
         None
     };
     let preserved_reasoning_effort =
-        if preserve_current_profile && !role_updates_active_profile_reasoning_effort {
+        if preserve_current_profile && !active_profile_updates.model_reasoning_effort {
             if role_selects_reasoning_effort {
                 role_config.model_reasoning_effort
             } else {
@@ -193,7 +202,7 @@ pub(crate) async fn apply_role_to_config(
             None
         };
     let preserved_reasoning_summary =
-        if preserve_current_profile && !role_updates_active_profile_reasoning_summary {
+        if preserve_current_profile && !active_profile_updates.model_reasoning_summary {
             if role_selects_reasoning_summary {
                 role_config.model_reasoning_summary
             } else {
@@ -202,7 +211,7 @@ pub(crate) async fn apply_role_to_config(
         } else {
             None
         };
-    let preserved_verbosity = if preserve_current_profile && !role_updates_active_profile_verbosity
+    let preserved_verbosity = if preserve_current_profile && !active_profile_updates.model_verbosity
     {
         if role_selects_verbosity {
             role_config.model_verbosity
@@ -269,15 +278,19 @@ pub(crate) async fn role_model_override_locks(
     role_name: Option<&str>,
 ) -> Result<RoleModelOverrideLocks, String> {
     let role_name = role_name.unwrap_or(DEFAULT_ROLE_NAME);
-    let Some(RoleLayerConfig { role_config, .. }) =
-        load_role_layer_config(config, role_name).await?
+    let Some(RoleLayerConfig {
+        role_config,
+        role_layer_toml,
+    }) = load_role_layer_config(config, role_name).await?
     else {
         return Ok(RoleModelOverrideLocks::default());
     };
+    let active_profile_updates = role_active_profile_field_updates(config, &role_layer_toml);
 
     Ok(RoleModelOverrideLocks {
-        model: role_config.model.is_some(),
-        model_reasoning_effort: role_config.model_reasoning_effort.is_some(),
+        model: role_config.model.is_some() || active_profile_updates.model,
+        model_reasoning_effort: role_config.model_reasoning_effort.is_some()
+            || active_profile_updates.model_reasoning_effort,
     })
 }
 
