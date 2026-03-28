@@ -315,12 +315,12 @@ pub(in crate::memories) mod agent {
         }
         let mut agent_config = config.as_ref().clone();
 
-        match AbsolutePathBuf::from_absolute_path(root) {
-            Ok(root) => agent_config.cwd = root,
+        match AbsolutePathBuf::from_absolute_path(root.clone()) {
+            Ok(root) => agent_config.cwd = root.into(),
             Err(err) => {
                 warn!(
-                    "memory phase-2 consolidation could not set cwd from codex_home {}: {err}",
-                    agent_config.codex_home.display()
+                    "memory phase-2 consolidation could not set cwd from memory root {}: {err}",
+                    root.display()
                 );
                 return None;
             }
