@@ -1,3 +1,4 @@
+use super::ConfiguredToolSpec;
 use super::ResponsesApiWebSearchFilters;
 use super::ResponsesApiWebSearchUserLocation;
 use super::ToolSpec;
@@ -6,6 +7,7 @@ use crate::FreeformTool;
 use crate::FreeformToolFormat;
 use crate::JsonSchema;
 use crate::ResponsesApiTool;
+use crate::create_tools_json_for_responses_api;
 use codex_protocol::config_types::WebSearchContextSize;
 use codex_protocol::config_types::WebSearchFilters as ConfigWebSearchFilters;
 use codex_protocol::config_types::WebSearchUserLocation as ConfigWebSearchUserLocation;
@@ -80,6 +82,29 @@ fn tool_spec_name_covers_all_variants() {
 }
 
 #[test]
+fn configured_tool_spec_name_delegates_to_tool_spec() {
+    assert_eq!(
+        ConfiguredToolSpec::new(
+            ToolSpec::Function(ResponsesApiTool {
+                name: "lookup_order".to_string(),
+                description: "Look up an order".to_string(),
+                strict: false,
+                defer_loading: None,
+                parameters: JsonSchema::Object {
+                    properties: BTreeMap::new(),
+                    required: None,
+                    additional_properties: None,
+                },
+                output_schema: None,
+            }),
+            /*supports_parallel_tool_calls*/ true,
+        )
+        .name(),
+        "lookup_order"
+    );
+}
+
+#[test]
 fn web_search_config_converts_to_responses_api_types() {
     assert_eq!(
         ResponsesApiWebSearchFilters::from(ConfigWebSearchFilters {
@@ -104,6 +129,40 @@ fn web_search_config_converts_to_responses_api_types() {
             city: Some("San Francisco".to_string()),
             timezone: Some("America/Los_Angeles".to_string()),
         }
+    );
+}
+
+#[test]
+fn create_tools_json_for_responses_api_includes_top_level_name() {
+    assert_eq!(
+        create_tools_json_for_responses_api(&[ToolSpec::Function(ResponsesApiTool {
+            name: "demo".to_string(),
+            description: "A demo tool".to_string(),
+            strict: false,
+            defer_loading: None,
+            parameters: JsonSchema::Object {
+                properties: BTreeMap::from([(
+                    "foo".to_string(),
+                    JsonSchema::String { description: None },
+                )]),
+                required: None,
+                additional_properties: None,
+            },
+            output_schema: None,
+        })])
+        .expect("serialize tools"),
+        vec![json!({
+            "type": "function",
+            "name": "demo",
+            "description": "A demo tool",
+            "strict": false,
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "foo": { "type": "string" }
+                },
+            },
+        })]
     );
 }
 

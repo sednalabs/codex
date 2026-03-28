@@ -4,13 +4,13 @@ use crate::models_manager::model_info::with_config_overrides;
 use crate::shell::Shell;
 use crate::shell::ShellType;
 use crate::tools::ToolRouter;
-use crate::tools::registry::ConfiguredToolSpec;
 use crate::tools::router::ToolRouterParams;
 use codex_app_server_protocol::AppInfo;
 use codex_protocol::openai_models::InputModality;
 use codex_protocol::openai_models::ModelInfo;
 use codex_protocol::openai_models::ModelsResponse;
 use codex_tools::AdditionalProperties;
+use codex_tools::ConfiguredToolSpec;
 use codex_tools::FreeformTool;
 use codex_tools::ResponsesApiWebSearchFilters;
 use codex_tools::ResponsesApiWebSearchUserLocation;
@@ -107,16 +107,12 @@ fn deferred_responses_api_tool_serializes_with_defer_loading() {
     );
 }
 
-fn tool_name(tool: &ToolSpec) -> &str {
-    tool.name()
-}
-
 // Avoid order-based assertions; compare via set containment instead.
 fn assert_contains_tool_names(tools: &[ConfiguredToolSpec], expected_subset: &[&str]) {
     use std::collections::HashSet;
     let mut names = HashSet::new();
     let mut duplicates = Vec::new();
-    for name in tools.iter().map(|t| tool_name(&t.spec)) {
+    for name in tools.iter().map(ConfiguredToolSpec::name) {
         if !names.insert(name) {
             duplicates.push(name);
         }
@@ -136,7 +132,7 @@ fn assert_contains_tool_names(tools: &[ConfiguredToolSpec], expected_subset: &[&
 fn assert_lacks_tool_name(tools: &[ConfiguredToolSpec], expected_absent: &str) {
     let names = tools
         .iter()
-        .map(|tool| tool_name(&tool.spec))
+        .map(ConfiguredToolSpec::name)
         .collect::<Vec<_>>();
     assert!(
         !names.contains(&expected_absent),
@@ -157,7 +153,7 @@ fn shell_tool_name(config: &ToolsConfig) -> Option<&'static str> {
 fn find_tool<'a>(tools: &'a [ConfiguredToolSpec], expected_name: &str) -> &'a ConfiguredToolSpec {
     tools
         .iter()
-        .find(|tool| tool_name(&tool.spec) == expected_name)
+        .find(|tool| tool.name() == expected_name)
         .unwrap_or_else(|| panic!("expected tool {expected_name}"))
 }
 
@@ -289,7 +285,7 @@ fn test_full_toolset_specs_for_gpt5_codex_unified_exec_web_search() {
     let mut actual: BTreeMap<String, ToolSpec> = BTreeMap::from([]);
     let mut duplicate_names = Vec::new();
     for t in &tools {
-        let name = tool_name(&t.spec).to_string();
+        let name = t.name().to_string();
         if actual.insert(name.clone(), t.spec.clone()).is_some() {
             duplicate_names.push(name);
         }
@@ -318,7 +314,7 @@ fn test_full_toolset_specs_for_gpt5_codex_unified_exec_web_search() {
         },
         create_view_image_tool(config.can_request_original_image_detail),
     ] {
-        expected.insert(tool_name(&spec).to_string(), spec);
+        expected.insert(spec.name().to_string(), spec);
     }
     let collab_specs = if config.multi_agent_v2 {
         vec![
@@ -336,16 +332,16 @@ fn test_full_toolset_specs_for_gpt5_codex_unified_exec_web_search() {
         ]
     };
     for spec in collab_specs {
-        expected.insert(tool_name(&spec).to_string(), spec);
+        expected.insert(spec.name().to_string(), spec);
     }
     if !config.multi_agent_v2 {
         let spec = create_resume_agent_tool();
-        expected.insert(tool_name(&spec).to_string(), spec);
+        expected.insert(spec.name().to_string(), spec);
     }
 
     if config.exec_permission_approvals_enabled {
         let spec = create_request_permissions_tool();
-        expected.insert(tool_name(&spec).to_string(), spec);
+        expected.insert(spec.name().to_string(), spec);
     }
 
     // Exact name set match — this is the only test allowed to fail when tools change.
@@ -1679,11 +1675,7 @@ fn test_test_model_info_includes_sync_tool() {
     )
     .build();
 
-    assert!(
-        tools
-            .iter()
-            .any(|tool| tool_name(&tool.spec) == "test_sync_tool")
-    );
+    assert!(tools.iter().any(|tool| tool.name() == "test_sync_tool"));
 }
 
 #[test]
@@ -1817,7 +1809,7 @@ fn test_build_specs_mcp_tools_sorted_by_name() {
     // Only assert that the MCP tools themselves are sorted by fully-qualified name.
     let mcp_names: Vec<_> = tools
         .iter()
-        .map(|t| tool_name(&t.spec).to_string())
+        .map(|t| t.name().to_string())
         .filter(|n| n.starts_with("test_server/"))
         .collect();
     let expected = vec![
@@ -2064,7 +2056,7 @@ fn tool_suggest_is_not_registered_without_feature_flag() {
     assert!(
         !tools
             .iter()
-            .any(|tool| tool_name(&tool.spec) == TOOL_SUGGEST_TOOL_NAME)
+            .any(|tool| tool.name() == TOOL_SUGGEST_TOOL_NAME)
     );
 }
 
@@ -2155,7 +2147,7 @@ fn tool_suggest_requires_apps_and_plugins_features() {
         assert!(
             !tools
                 .iter()
-                .any(|tool| tool_name(&tool.spec) == TOOL_SUGGEST_TOOL_NAME),
+                .any(|tool| tool.name() == TOOL_SUGGEST_TOOL_NAME),
             "tool_suggest should be absent when {disabled_feature:?} is disabled"
         );
     }
@@ -3105,39 +3097,4 @@ fn code_mode_exec_description_omits_nested_tool_details_when_not_code_mode_only(
     ));
     assert!(!description.contains("### `update_plan` (`update_plan`)"));
     assert!(!description.contains("### `view_image` (`view_image`)"));
-}
-
-#[test]
-fn chat_tools_include_top_level_name() {
-    let properties =
-        BTreeMap::from([("foo".to_string(), JsonSchema::String { description: None })]);
-    let tools = vec![ToolSpec::Function(ResponsesApiTool {
-        name: "demo".to_string(),
-        description: "A demo tool".to_string(),
-        strict: false,
-        defer_loading: None,
-        parameters: JsonSchema::Object {
-            properties,
-            required: None,
-            additional_properties: None,
-        },
-        output_schema: None,
-    })];
-
-    let responses_json = create_tools_json_for_responses_api(&tools).unwrap();
-    assert_eq!(
-        responses_json,
-        vec![json!({
-            "type": "function",
-            "name": "demo",
-            "description": "A demo tool",
-            "strict": false,
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "foo": { "type": "string" }
-                },
-            },
-        })]
-    );
 }

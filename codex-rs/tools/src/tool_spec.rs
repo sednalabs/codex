@@ -6,6 +6,7 @@ use codex_protocol::config_types::WebSearchFilters as ConfigWebSearchFilters;
 use codex_protocol::config_types::WebSearchUserLocation as ConfigWebSearchUserLocation;
 use codex_protocol::config_types::WebSearchUserLocationType;
 use serde::Serialize;
+use serde_json::Value;
 
 /// When serialized as JSON, this produces a valid "Tool" in the OpenAI
 /// Responses API.
@@ -58,6 +59,41 @@ impl ToolSpec {
             ToolSpec::Freeform(tool) => tool.name.as_str(),
         }
     }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ConfiguredToolSpec {
+    pub spec: ToolSpec,
+    pub supports_parallel_tool_calls: bool,
+}
+
+impl ConfiguredToolSpec {
+    pub fn new(spec: ToolSpec, supports_parallel_tool_calls: bool) -> Self {
+        Self {
+            spec,
+            supports_parallel_tool_calls,
+        }
+    }
+
+    pub fn name(&self) -> &str {
+        self.spec.name()
+    }
+}
+
+/// Returns JSON values that are compatible with Function Calling in the
+/// Responses API:
+/// https://platform.openai.com/docs/guides/function-calling?api-mode=responses
+pub fn create_tools_json_for_responses_api(
+    tools: &[ToolSpec],
+) -> Result<Vec<Value>, serde_json::Error> {
+    let mut tools_json = Vec::new();
+
+    for tool in tools {
+        let json = serde_json::to_value(tool)?;
+        tools_json.push(json);
+    }
+
+    Ok(tools_json)
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]

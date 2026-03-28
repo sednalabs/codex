@@ -2351,22 +2351,6 @@ pub(crate) struct ApplyPatchToolArgs {
     pub(crate) input: String,
 }
 
-/// Returns JSON values that are compatible with Function Calling in the
-/// Responses API:
-/// https://platform.openai.com/docs/guides/function-calling?api-mode=responses
-pub fn create_tools_json_for_responses_api(
-    tools: &[ToolSpec],
-) -> crate::error::Result<Vec<serde_json::Value>> {
-    let mut tools_json = Vec::new();
-
-    for tool in tools {
-        let json = serde_json::to_value(tool)?;
-        tools_json.push(json);
-    }
-
-    Ok(tools_json)
-}
-
 fn push_tool_spec(
     builder: &mut ToolRegistryBuilder,
     spec: ToolSpec,
