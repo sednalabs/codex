@@ -35,25 +35,6 @@ on:
       - reopened
       - ready_for_review
       - labeled
-    paths:
-      - ".github/workflows/**"
-      - "codex-rs/app-server/**"
-      - "codex-rs/app-server-protocol/**"
-      - "codex-rs/cli/**"
-      - "codex-rs/common/**"
-      - "codex-rs/core/**"
-      - "codex-rs/hooks/**"
-      - "codex-rs/linux-sandbox/**"
-      - "codex-rs/protocol/**"
-      - "codex-rs/state/**"
-      - "codex-rs/tui/**"
-      - "codex-rs/tui_app_server/**"
-      - "codex-rs/windows-sandbox-rs/**"
-      - "docs/carry-divergence-ledger.md"
-      - "docs/downstream-regression-matrix.md"
-      - "docs/downstream-tool-surface-matrix.md"
-      - "docs/downstream.md"
-      - "justfile"
   merge_group: {}
   schedule:
     - cron: "15 16 * * *"
@@ -126,7 +107,7 @@ jobs:
 
             BASE_SHA='${{ github.event.pull_request.base.sha }}'
             HEAD_SHA='${{ github.event.pull_request.head.sha }}'
-            mapfile -t files < <(git diff --name-only --no-renames "$BASE_SHA" "$HEAD_SHA")
+            mapfile -t files < <(git diff --name-only --no-renames "$BASE_SHA...$HEAD_SHA")
 
             for f in "${files[@]}"; do
               case "$f" in
