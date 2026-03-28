@@ -2509,22 +2509,23 @@ impl App {
         };
 
         if let Some(queued_event) = queued_event
-            && let Err(err) = sender.try_send(queued_event) {
-                match err {
-                    // Active-thread notifications drive live thread state, so keep them alive
-                    // even if the UI loop is momentarily backpressured.
-                    TrySendError::Full(queued_event) => {
-                        tokio::spawn(async move {
-                            if let Err(err) = sender.send(queued_event).await {
-                                tracing::warn!("thread {thread_id} event channel closed: {err}");
-                            }
-                        });
-                    }
-                    TrySendError::Closed(_) => {
-                        tracing::warn!("thread {thread_id} event channel closed");
-                    }
+            && let Err(err) = sender.try_send(queued_event)
+        {
+            match err {
+                // Active-thread notifications drive live thread state, so keep them alive
+                // even if the UI loop is momentarily backpressured.
+                TrySendError::Full(queued_event) => {
+                    tokio::spawn(async move {
+                        if let Err(err) = sender.send(queued_event).await {
+                            tracing::warn!("thread {thread_id} event channel closed: {err}");
+                        }
+                    });
+                }
+                TrySendError::Closed(_) => {
+                    tracing::warn!("thread {thread_id} event channel closed");
                 }
             }
+        }
         self.refresh_pending_thread_approvals().await;
         Ok(())
     }
@@ -2652,18 +2653,19 @@ impl App {
         };
 
         if let Some(queued_event) = queued_event
-            && let Err(err) = sender.try_send(queued_event) {
-                match err {
-                    TrySendError::Full(_) => {
-                        tracing::warn!(
-                            "thread {thread_id} live event channel full; dropping queued history event"
-                        );
-                    }
-                    TrySendError::Closed(_) => {
-                        tracing::warn!("thread {thread_id} event channel closed");
-                    }
+            && let Err(err) = sender.try_send(queued_event)
+        {
+            match err {
+                TrySendError::Full(_) => {
+                    tracing::warn!(
+                        "thread {thread_id} live event channel full; dropping queued history event"
+                    );
+                }
+                TrySendError::Closed(_) => {
+                    tracing::warn!("thread {thread_id} event channel closed");
                 }
             }
+        }
         Ok(())
     }
 
@@ -3767,7 +3769,7 @@ impl App {
                     SessionSelection::Resume(target_session) => {
                         let current_cwd = self.config.cwd.clone();
                         let resume_cwd = if self.remote_app_server_url.is_some() {
-                            current_cwd.clone()
+                            (*current_cwd).clone()
                         } else {
                             match crate::resolve_cwd_for_resume_or_fork(
                                 tui,
@@ -3781,9 +3783,7 @@ impl App {
                             .await?
                             {
                                 crate::ResolveCwdOutcome::Continue(Some(cwd)) => cwd,
-                                crate::ResolveCwdOutcome::Continue(None) => {
-                                    current_cwd.clone()
-                                }
+                                crate::ResolveCwdOutcome::Continue(None) => (*current_cwd).clone(),
                                 crate::ResolveCwdOutcome::Exit => {
                                     return Ok(AppRunControl::Exit(ExitReason::UserRequested));
                                 }
