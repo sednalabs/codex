@@ -193,7 +193,11 @@ impl ToolHandler for Handler {
         let statuses_by_id = statuses_map.clone();
         let agent_statuses = build_wait_agent_statuses(&statuses_map, &receiver_agents);
         let result = WaitAgentResult {
-            status: statuses_map.clone(),
+            message: if timed_out {
+                "Wait timed out.".to_string()
+            } else {
+                "Wait completed.".to_string()
+            },
             requested_ids: receiver_thread_ids.clone(),
             pending_ids: pending_ids.clone(),
             completion_reason,
@@ -243,7 +247,7 @@ enum ReturnWhen {
 
 #[derive(Debug, Deserialize, Serialize, PartialEq, Eq)]
 pub(crate) struct WaitAgentResult {
-    pub(crate) status: HashMap<ThreadId, AgentStatus>,
+    pub(crate) message: String,
     pub(crate) requested_ids: Vec<ThreadId>,
     pub(crate) pending_ids: Vec<ThreadId>,
     pub(crate) completion_reason: CollabWaitingCompletionReason,
