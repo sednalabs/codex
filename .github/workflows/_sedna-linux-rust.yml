@@ -98,15 +98,19 @@ jobs:
           LANE_COMMAND: ${{ inputs.run_command }}
         run: |
           set -euo pipefail
+          command_file="${RUNNER_TEMP}/sedna-lane-command.sh"
           log_file="${RUNNER_TEMP}/sedna-lane.log"
+          echo "command_file=${command_file}" >> "$GITHUB_OUTPUT"
           echo "log_file=${log_file}" >> "$GITHUB_OUTPUT"
           export CODEX_RELEASE_REPOSITORY='${{ github.repository }}'
           export CODEX_RELEASE_TAG_PREFIX='v'
           if [[ -n '${{ inputs.release_version }}' ]]; then
             export CODEX_RELEASE_VERSION='${{ inputs.release_version }}'
           fi
+          printf '%s\n' 'set -euo pipefail' > "${command_file}"
+          printf '%s\n' "${LANE_COMMAND}" >> "${command_file}"
           set +e
-          bash -lc "${LANE_COMMAND}" 2>&1 | tee "${log_file}"
+          bash "${command_file}" 2>&1 | tee "${log_file}"
           exit_code=${PIPESTATUS[0]}
           set -e
           echo "exit_code=${exit_code}" >> "$GITHUB_OUTPUT"

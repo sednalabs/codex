@@ -319,7 +319,7 @@ mod tests {
             .await
             .expect("write usage backup");
 
-        let _runtime = StateRuntime::init(codex_home.clone(), "test-provider".to_string())
+        let runtime = StateRuntime::init(codex_home.clone(), "test-provider".to_string())
             .await
             .expect("initialize runtime");
 
@@ -384,6 +384,7 @@ mod tests {
             true
         );
 
+        drop(runtime);
         tokio::fs::remove_dir_all(codex_home)
             .await
             .expect("failed to clean up temp directory");
