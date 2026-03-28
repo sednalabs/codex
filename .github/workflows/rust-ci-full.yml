@@ -112,6 +112,8 @@ jobs:
           rustup default nightly-2025-09-18
       - name: Run argument comment lint on codex-rs via Bazel
         if: ${{ runner.os != 'Windows' }}
+        env:
+          BUILDBUDDY_API_KEY: ${{ secrets.BUILDBUDDY_API_KEY }}
         shell: bash
         run: |
           ./.github/scripts/run-bazel-ci.sh \
