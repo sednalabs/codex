@@ -26,6 +26,12 @@ use toml::Value as TomlValue;
 pub const DEFAULT_ROLE_NAME: &str = "default";
 const AGENT_TYPE_UNAVAILABLE_ERROR: &str = "agent type is currently not available";
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) struct RoleModelOverrideLocks {
+    pub(crate) model: bool,
+    pub(crate) model_reasoning_effort: bool,
+}
+
 /// Applies a named role layer to `config` while preserving caller-owned model selection.
 ///
 /// The role layer is inserted at session-flag precedence so it can override persisted config, but
@@ -202,6 +208,56 @@ pub(crate) async fn apply_role_to_config(
     *config = next_config;
 
     Ok(())
+}
+
+pub(crate) async fn role_model_override_locks(
+    config: &Config,
+    role_name: Option<&str>,
+) -> Result<RoleModelOverrideLocks, String> {
+    let role_name = role_name.unwrap_or(DEFAULT_ROLE_NAME);
+    let is_built_in = !config.agent_roles.contains_key(role_name);
+    let (config_file, is_built_in) = resolve_role_config(config, role_name)
+        .map(|role| (&role.config_file, is_built_in))
+        .ok_or_else(|| format!("unknown agent_type '{role_name}'"))?;
+    let Some(config_file) = config_file.as_ref() else {
+        return Ok(RoleModelOverrideLocks::default());
+    };
+
+    let (role_config_toml, role_config_base) = if is_built_in {
+        let role_config_contents = built_in::config_file_contents(config_file)
+            .map(str::to_owned)
+            .ok_or_else(|| AGENT_TYPE_UNAVAILABLE_ERROR.to_string())?;
+        let role_config_toml: TomlValue = toml::from_str(&role_config_contents)
+            .map_err(|_| AGENT_TYPE_UNAVAILABLE_ERROR.to_string())?;
+        (role_config_toml, config.codex_home.as_path())
+    } else {
+        let role_config_contents = tokio::fs::read_to_string(config_file)
+            .await
+            .map_err(|_| AGENT_TYPE_UNAVAILABLE_ERROR.to_string())?;
+        let role_config_toml = parse_agent_role_file_contents(
+            &role_config_contents,
+            config_file,
+            config_file
+                .parent()
+                .ok_or_else(|| AGENT_TYPE_UNAVAILABLE_ERROR.to_string())?,
+            Some(role_name),
+        )
+        .map_err(|_| AGENT_TYPE_UNAVAILABLE_ERROR.to_string())?
+        .config;
+        (
+            role_config_toml,
+            config_file
+                .parent()
+                .ok_or_else(|| AGENT_TYPE_UNAVAILABLE_ERROR.to_string())?,
+        )
+    };
+    let role_config = deserialize_config_toml_with_base(role_config_toml, role_config_base)
+        .map_err(|_| AGENT_TYPE_UNAVAILABLE_ERROR.to_string())?;
+
+    Ok(RoleModelOverrideLocks {
+        model: role_config.model.is_some(),
+        model_reasoning_effort: role_config.model_reasoning_effort.is_some(),
+    })
 }
 
 pub(crate) fn resolve_role_config<'a>(
