@@ -8,6 +8,10 @@ on:
       - upstream-main
   workflow_dispatch:
 
+concurrency:
+  group: concurrency-group::${{ github.workflow }}::${{ github.event.pull_request.number > 0 && format('pr-{0}', github.event.pull_request.number) || github.ref_name }}${{ (github.ref_name == 'main' || github.ref_name == 'upstream-main') && format('::{0}', github.run_id) || '' }}
+  cancel-in-progress: ${{ github.ref_name != 'main' && github.ref_name != 'upstream-main' }}
+
 # CI builds in debug (dev) for faster signal.
 
 jobs:
@@ -56,11 +60,13 @@ jobs:
             [[ $f == .github/* ]] && workflows=true
           done
 
-          echo "argument_comment_lint=$argument_comment_lint" >> "$GITHUB_OUTPUT"
-          echo "argument_comment_lint_package=$argument_comment_lint_package" >> "$GITHUB_OUTPUT"
-          echo "codex=$codex" >> "$GITHUB_OUTPUT"
-          echo "downstream_smoke=$downstream_smoke" >> "$GITHUB_OUTPUT"
-          echo "workflows=$workflows" >> "$GITHUB_OUTPUT"
+          {
+            echo "argument_comment_lint=$argument_comment_lint"
+            echo "argument_comment_lint_package=$argument_comment_lint_package"
+            echo "codex=$codex"
+            echo "downstream_smoke=$downstream_smoke"
+            echo "workflows=$workflows"
+          } >> "$GITHUB_OUTPUT"
 
   # --- CI that doesn't need specific targets ---------------------------------
   general:
@@ -130,7 +136,7 @@ jobs:
 
   argument_comment_lint_prebuilt:
     name: Argument comment lint - ${{ matrix.name }}
-    runs-on: ${{ github.repository_owner == 'openai' ? (matrix.runs_on || matrix.runner) : (matrix.runner_fallback || matrix.runner) }}
+    runs-on: ${{ (github.repository_owner == 'openai' && (matrix.runs_on || matrix.runner)) || matrix.runner_fallback || matrix.runner }}
     needs: changed
     if: ${{ needs.changed.outputs.argument_comment_lint == 'true' || needs.changed.outputs.workflows == 'true' || github.event_name == 'push' }}
     strategy:
@@ -168,7 +174,7 @@ jobs:
   # --- CI to validate on different os/targets --------------------------------
   lint_build:
     name: Lint/Build — ${{ matrix.runner }} - ${{ matrix.target }}${{ matrix.profile == 'release' && ' (release)' || '' }}
-    runs-on: ${{ github.repository_owner == 'openai' ? (matrix.runs_on || matrix.runner) : (matrix.runner_fallback || matrix.runner) }}
+    runs-on: ${{ (github.repository_owner == 'openai' && (matrix.runs_on || matrix.runner)) || matrix.runner_fallback || matrix.runner }}
     timeout-minutes: 30
     needs: changed
     # Keep job-level if to avoid spinning up runners when not needed
@@ -439,16 +445,6 @@ jobs:
         run: |
           set -euo pipefail
           # Clear global Rust flags so host/proc-macro builds don't pull in UBSan.
-          echo "RUSTFLAGS=" >> "$GITHUB_ENV"
-          echo "CARGO_ENCODED_RUSTFLAGS=" >> "$GITHUB_ENV"
-          echo "RUSTDOCFLAGS=" >> "$GITHUB_ENV"
-          # Override any runner-level Cargo config rustflags as well.
-          echo "CARGO_BUILD_RUSTFLAGS=" >> "$GITHUB_ENV"
-          echo "CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS=" >> "$GITHUB_ENV"
-          echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS=" >> "$GITHUB_ENV"
-          echo "CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_RUSTFLAGS=" >> "$GITHUB_ENV"
-          echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_RUSTFLAGS=" >> "$GITHUB_ENV"
-
           sanitize_flags() {
             local input="$1"
             input="${input//-fsanitize=undefined/}"
@@ -459,8 +455,19 @@ jobs:
 
           cflags="$(sanitize_flags "${CFLAGS-}")"
           cxxflags="$(sanitize_flags "${CXXFLAGS-}")"
-          echo "CFLAGS=${cflags}" >> "$GITHUB_ENV"
-          echo "CXXFLAGS=${cxxflags}" >> "$GITHUB_ENV"
+          {
+            echo "RUSTFLAGS="
+            echo "CARGO_ENCODED_RUSTFLAGS="
+            echo "RUSTDOCFLAGS="
+            # Override any runner-level Cargo config rustflags as well.
+            echo "CARGO_BUILD_RUSTFLAGS="
+            echo "CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS="
+            echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS="
+            echo "CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_RUSTFLAGS="
+            echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_RUSTFLAGS="
+            echo "CFLAGS=${cflags}"
+            echo "CXXFLAGS=${cxxflags}"
+          } >> "$GITHUB_ENV"
 
       - if: ${{ matrix.target == 'x86_64-unknown-linux-musl' || matrix.target == 'aarch64-unknown-linux-musl' }}
         name: Configure musl rusty_v8 artifact overrides
@@ -561,7 +568,7 @@ jobs:
 
   tests:
     name: Tests — ${{ matrix.runner }} - ${{ matrix.target }}
-    runs-on: ${{ github.repository_owner == 'openai' ? (matrix.runs_on || matrix.runner) : (matrix.runner_fallback || matrix.runner) }}
+    runs-on: ${{ (github.repository_owner == 'openai' && (matrix.runs_on || matrix.runner)) || matrix.runner_fallback || matrix.runner }}
     timeout-minutes: 30
     needs: changed
     if: ${{ needs.changed.outputs.codex == 'true' || needs.changed.outputs.workflows == 'true' || github.event_name == 'push' }}
@@ -719,6 +726,7 @@ jobs:
           set -euo pipefail
           export CODEX_TEST_REMOTE_ENV_CONTAINER_NAME=codex-remote-test-env
           source "${GITHUB_WORKSPACE}/scripts/test-remote-env.sh"
+          # shellcheck disable=SC2317
           echo "CODEX_TEST_REMOTE_ENV=${CODEX_TEST_REMOTE_ENV}" >> "$GITHUB_ENV"
 
       - name: tests
