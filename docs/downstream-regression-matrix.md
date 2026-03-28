@@ -33,6 +33,15 @@ Focused lane used for protocol/event-history seams:
 
 - `codex.app-server-protocol-test`
 
+GitHub Actions lane naming (`.github/workflows/sedna-heavy-tests.yml`):
+
+- Workflow shard names intentionally mirror this document's guardrail lane
+  identifiers where possible.
+- `workflow_dispatch` input `lane` uses these lane IDs directly (`all` runs
+  every shard).
+- Where the local `justfile` recipe name differs, workflow shards still retain
+  the docs lane ID and only translate at command execution time.
+
 ## Divergence mapping
 
 | Divergence | Guardrail lane | Primary checks |

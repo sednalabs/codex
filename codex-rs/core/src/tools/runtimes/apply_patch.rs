@@ -340,11 +340,13 @@ impl ToolRuntime<ApplyPatchRequest, ExecToolCallOutput> for ApplyPatchRuntime {
         let launch = Self::build_command_spec(req, &ctx.turn.config.codex_home)?;
         let launch_diagnostics =
             Self::launch_diagnostics(req, &launch.executable, launch.launch_mode);
-        let env = attempt.env_for(launch.spec, None).map_err(|err| {
-            ToolError::Rejected(format!(
-                "apply_patch failed to prepare helper launch ({launch_diagnostics}): {err}"
-            ))
-        })?;
+        let env = attempt
+            .env_for(launch.spec, /*network*/ None)
+            .map_err(|err| {
+                ToolError::Rejected(format!(
+                    "apply_patch failed to prepare helper launch ({launch_diagnostics}): {err}"
+                ))
+            })?;
         let out = execute_env(env, Self::stdout_stream(ctx))
             .await
             .map_err(|err| match err {
