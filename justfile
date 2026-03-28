@@ -62,7 +62,9 @@ core-carry-smoke:
     CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo test -p codex-core --test all suite::unified_exec::exec_command_wait_until_terminal_returns_exit_metadata -- --exact --test-threads=1
     CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo test -p codex-tui queued_inline_slash_command_runs_with_args_after_task_complete -- --exact --test-threads=1
     CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo test -p codex-tui alt_up_restores_most_recent_queued_slash_command -- --exact --test-threads=1
-    cargo test -p codex-tui-app-server replayed_turn_complete_ -- --test-threads=1
+    cargo test -p codex-tui-app-server replayed_turn_complete_submits_restored_queued_follow_up -- --exact --test-threads=1
+    cargo test -p codex-tui-app-server replayed_turn_complete_opens_restored_queued_approvals_command -- --exact --test-threads=1
+    cargo test -p codex-tui-app-server replayed_turn_complete_keeps_message_after_restored_queued_command_runs_first -- --exact --test-threads=1
     cargo test -p codex-tui-app-server sync_active_agent_label_updates_footer_for_selected_thread -- --exact --test-threads=1
 
 # Focused startup sync regression slice for bounded-wait and abort/re-arm behavior.
