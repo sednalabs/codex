@@ -1329,7 +1329,7 @@ impl App {
             session.approval_policy = approval_policy;
             session.sandbox_policy = sandbox_policy.clone();
             session.approvals_reviewer = approvals_reviewer;
-            session.cwd = cwd.clone().to_path_buf();
+            session.cwd = cwd.clone();
             session.model = model.clone();
             session.service_tier = service_tier;
             session.reasoning_effort = reasoning_effort;
@@ -2508,8 +2508,8 @@ impl App {
             })
         };
 
-        if let Some(queued_event) = queued_event {
-            if let Err(err) = sender.try_send(queued_event) {
+        if let Some(queued_event) = queued_event
+            && let Err(err) = sender.try_send(queued_event) {
                 match err {
                     // Active-thread notifications drive live thread state, so keep them alive
                     // even if the UI loop is momentarily backpressured.
@@ -2525,7 +2525,6 @@ impl App {
                     }
                 }
             }
-        }
         self.refresh_pending_thread_approvals().await;
         Ok(())
     }
@@ -2652,8 +2651,8 @@ impl App {
             })
         };
 
-        if let Some(queued_event) = queued_event {
-            if let Err(err) = sender.try_send(queued_event) {
+        if let Some(queued_event) = queued_event
+            && let Err(err) = sender.try_send(queued_event) {
                 match err {
                     TrySendError::Full(_) => {
                         tracing::warn!(
@@ -2665,7 +2664,6 @@ impl App {
                     }
                 }
             }
-        }
         Ok(())
     }
 
@@ -3769,7 +3767,7 @@ impl App {
                     SessionSelection::Resume(target_session) => {
                         let current_cwd = self.config.cwd.clone();
                         let resume_cwd = if self.remote_app_server_url.is_some() {
-                            current_cwd.clone().to_path_buf()
+                            current_cwd.clone()
                         } else {
                             match crate::resolve_cwd_for_resume_or_fork(
                                 tui,
@@ -3784,14 +3782,14 @@ impl App {
                             {
                                 crate::ResolveCwdOutcome::Continue(Some(cwd)) => cwd,
                                 crate::ResolveCwdOutcome::Continue(None) => {
-                                    current_cwd.clone().to_path_buf()
+                                    current_cwd.clone()
                                 }
                                 crate::ResolveCwdOutcome::Exit => {
                                     return Ok(AppRunControl::Exit(ExitReason::UserRequested));
                                 }
                             }
                         };
-                        let mut resume_config = match self
+                        let resume_config = match self
                             .rebuild_config_for_resume_or_fallback(&current_cwd, resume_cwd)
                             .await
                         {
@@ -5690,6 +5688,7 @@ mod tests {
     use crate::history_cell::UserHistoryCell;
     use crate::history_cell::new_session_info;
     use crate::multi_agents::AgentPickerThreadEntry;
+    use crate::test_backend::VT100Backend;
     use assert_matches::assert_matches;
 
     use codex_app_server_protocol::AdditionalNetworkPermissions;
@@ -6470,6 +6469,122 @@ mod tests {
             other => panic!("expected queued follow-up submission, got {other:?}"),
         }
     }
+
+    #[tokio::test]
+    async fn replayed_turn_complete_opens_restored_queued_approvals_command() {
+        let (mut capture_app, _app_event_rx, _op_rx) = make_test_app_with_channels().await;
+        let thread_id = ThreadId::new();
+        let session = test_thread_session(thread_id, PathBuf::from("/tmp/project"));
+        capture_app
+            .chat_widget
+            .handle_thread_session(session.clone());
+        capture_app
+            .chat_widget
+            .handle_server_notification(turn_started_notification(thread_id, "turn-1"), None);
+        capture_app.chat_widget.handle_server_notification(
+            agent_message_delta_notification(thread_id, "turn-1", "agent-1", "streaming"),
+            None,
+        );
+        capture_app
+            .chat_widget
+            .apply_external_edit("/approvals".to_string());
+        capture_app
+            .chat_widget
+            .handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        let input_state = capture_app
+            .chat_widget
+            .capture_thread_input_state()
+            .expect("expected queued approvals state");
+
+        let (mut replay_app, _replay_app_event_rx, mut replay_op_rx) =
+            make_test_app_with_channels().await;
+        replay_app.chat_widget.handle_thread_session(session);
+        while replay_op_rx.try_recv().is_ok() {}
+        replay_app.replay_thread_snapshot(
+            ThreadEventSnapshot {
+                session: None,
+                turns: Vec::new(),
+                events: vec![ThreadBufferedEvent::Notification(
+                    turn_completed_notification(thread_id, "turn-1", TurnStatus::Completed),
+                )],
+                input_state: Some(input_state),
+            },
+            true,
+        );
+        assert!(
+            replay_op_rx.try_recv().is_err(),
+            "restored approvals command should reopen the popup instead of emitting a user turn"
+        );
+        let screen = render_chat_widget_screen(&replay_app.chat_widget, 100, 24);
+        assert!(
+            screen.contains("Update Model Permissions"),
+            "expected restored /approvals command to reopen permissions after replay: {screen}"
+        );
+    }
+
+    #[tokio::test]
+    async fn replayed_turn_complete_keeps_message_after_restored_queued_command_runs_first() {
+        let (mut capture_app, _app_event_rx, _op_rx) = make_test_app_with_channels().await;
+        let thread_id = ThreadId::new();
+        let session = test_thread_session(thread_id, PathBuf::from("/tmp/project"));
+        capture_app
+            .chat_widget
+            .handle_thread_session(session.clone());
+        capture_app
+            .chat_widget
+            .handle_server_notification(turn_started_notification(thread_id, "turn-1"), None);
+        capture_app.chat_widget.handle_server_notification(
+            agent_message_delta_notification(thread_id, "turn-1", "agent-1", "streaming"),
+            None,
+        );
+        capture_app
+            .chat_widget
+            .apply_external_edit("/approvals".to_string());
+        capture_app
+            .chat_widget
+            .handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        capture_app
+            .chat_widget
+            .apply_external_edit("queued follow-up".to_string());
+        capture_app
+            .chat_widget
+            .handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        let input_state = capture_app
+            .chat_widget
+            .capture_thread_input_state()
+            .expect("expected mixed queued replay state");
+
+        let (mut replay_app, _replay_app_event_rx, mut replay_op_rx) =
+            make_test_app_with_channels().await;
+        replay_app.chat_widget.handle_thread_session(session);
+        while replay_op_rx.try_recv().is_ok() {}
+        replay_app.replay_thread_snapshot(
+            ThreadEventSnapshot {
+                session: None,
+                turns: Vec::new(),
+                events: vec![ThreadBufferedEvent::Notification(
+                    turn_completed_notification(thread_id, "turn-1", TurnStatus::Completed),
+                )],
+                input_state: Some(input_state),
+            },
+            true,
+        );
+        assert!(
+            replay_op_rx.try_recv().is_err(),
+            "the queued slash command should run before the queued message after replay"
+        );
+        assert_eq!(
+            replay_app.chat_widget.queued_user_message_texts(),
+            vec!["queued follow-up".to_string()],
+            "the queued message should remain deferred until the restored command finishes"
+        );
+        let screen = render_chat_widget_screen(&replay_app.chat_widget, 100, 24);
+        assert!(
+            screen.contains("Update Model Permissions"),
+            "expected the restored slash command to run first and reopen permissions: {screen}"
+        );
+    }
+
     #[tokio::test]
     async fn replay_thread_snapshot_replays_subagent_completion_notification_history() {
         let (mut app, mut app_event_rx, _op_rx) = make_test_app_with_channels().await;
@@ -7670,6 +7785,54 @@ guardian_approval = true
     }
 
     #[tokio::test]
+    async fn sync_active_agent_label_updates_footer_for_selected_thread() -> Result<()> {
+        let mut app = make_test_app().await;
+        let main_thread_id =
+            ThreadId::from_string("00000000-0000-0000-0000-000000000101").expect("valid thread");
+        let agent_thread_id =
+            ThreadId::from_string("00000000-0000-0000-0000-000000000202").expect("valid thread");
+        let main_session = test_thread_session(main_thread_id, PathBuf::from("/tmp/main"));
+        let agent_session = test_thread_session(agent_thread_id, PathBuf::from("/tmp/agent"));
+
+        app.primary_thread_id = Some(main_thread_id);
+        app.active_thread_id = Some(main_thread_id);
+        app.thread_event_channels.insert(
+            main_thread_id,
+            ThreadEventChannel::new_with_session(1, main_session.clone(), Vec::new()),
+        );
+        app.thread_event_channels.insert(
+            agent_thread_id,
+            ThreadEventChannel::new_with_session(1, agent_session.clone(), Vec::new()),
+        );
+        app.agent_navigation
+            .upsert(main_thread_id, None, None, /*is_closed*/ false);
+        app.agent_navigation.upsert(
+            agent_thread_id,
+            Some("Robie".to_string()),
+            Some("explorer".to_string()),
+            /*is_closed*/ false,
+        );
+
+        app.chat_widget.handle_thread_session(main_session);
+        app.sync_active_agent_label();
+        let main_screen = render_chat_widget_screen(&app.chat_widget, 100, 24);
+        assert!(
+            main_screen.contains("Main [default]"),
+            "expected the footer to label the main thread when it is selected: {main_screen}"
+        );
+
+        app.active_thread_id = Some(agent_thread_id);
+        app.chat_widget.handle_thread_session(agent_session);
+        app.sync_active_agent_label();
+        let agent_screen = render_chat_widget_screen(&app.chat_widget, 100, 24);
+        assert!(
+            agent_screen.contains("Robie [explorer]"),
+            "expected the footer to update when the displayed thread changes: {agent_screen}"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn refresh_pending_thread_approvals_only_lists_inactive_threads() {
         let mut app = make_test_app().await;
         let main_thread_id =
@@ -8215,8 +8378,9 @@ guardian_approval = true
 
     async fn render_clear_ui_header_after_long_transcript_for_snapshot() -> String {
         let mut app = make_test_app().await;
-        app.config.cwd =
-            AbsolutePathBuf::try_from(PathBuf::from("/tmp/project")).expect("absolute cwd");
+        app.config.cwd = AbsolutePathBuf::try_from(PathBuf::from("/tmp/project"))
+            .expect("absolute cwd")
+            .into();
         app.chat_widget.set_model("gpt-test");
         app.chat_widget
             .set_reasoning_effort(Some(ReasoningEffortConfig::High));
@@ -8341,8 +8505,9 @@ guardian_approval = true
     #[tokio::test]
     async fn clear_ui_header_shows_fast_status_only_for_gpt54() {
         let mut app = make_test_app().await;
-        app.config.cwd =
-            AbsolutePathBuf::try_from(PathBuf::from("/tmp/project")).expect("absolute cwd");
+        app.config.cwd = AbsolutePathBuf::try_from(PathBuf::from("/tmp/project"))
+            .expect("absolute cwd")
+            .into();
         app.chat_widget.set_model("gpt-5.4");
         app.chat_widget
             .set_reasoning_effort(Some(ReasoningEffortConfig::XHigh));
@@ -8461,6 +8626,20 @@ guardian_approval = true
             rx,
             op_rx,
         )
+    }
+
+    fn render_chat_widget_screen(
+        chat: &crate::chatwidget::ChatWidget,
+        width: u16,
+        height: u16,
+    ) -> String {
+        let mut terminal =
+            ratatui::Terminal::new(VT100Backend::new(width, height)).expect("create terminal");
+        terminal.set_viewport_area(ratatui::layout::Rect::new(0, 0, width, height));
+        terminal
+            .draw(|frame| chat.render(frame.area(), frame.buffer_mut()))
+            .expect("render chat widget");
+        terminal.backend().vt100().screen().contents()
     }
 
     fn test_thread_session(thread_id: ThreadId, cwd: PathBuf) -> ThreadSessionState {

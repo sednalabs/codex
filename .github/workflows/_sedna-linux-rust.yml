@@ -10,6 +10,10 @@ on:
       summary_title:
         required: true
         type: string
+      lane_id:
+        required: false
+        type: string
+        default: ""
       run_command:
         required: true
         type: string
@@ -72,6 +76,11 @@ jobs:
           tool: nextest
           version: 0.9.103
 
+      - name: Install just
+        uses: taiki-e/install-action@44c6d64aa62cd779e873306675c7a58e86d6d532 # v2
+        with:
+          tool: just
+
       - name: Enable unprivileged user namespaces (Linux)
         if: ${{ inputs.install_nextest }}
         shell: bash
@@ -82,15 +91,64 @@ jobs:
           fi
 
       - name: Run requested command
+        id: run_lane
         shell: bash
+        continue-on-error: true
+        env:
+          LANE_COMMAND: ${{ inputs.run_command }}
         run: |
           set -euo pipefail
+          log_file="${RUNNER_TEMP}/sedna-lane.log"
+          echo "log_file=${log_file}" >> "$GITHUB_OUTPUT"
           export CODEX_RELEASE_REPOSITORY='${{ github.repository }}'
           export CODEX_RELEASE_TAG_PREFIX='v'
           if [[ -n '${{ inputs.release_version }}' ]]; then
             export CODEX_RELEASE_VERSION='${{ inputs.release_version }}'
           fi
-          ${{ inputs.run_command }}
+          set +e
+          bash -lc "${LANE_COMMAND}" 2>&1 | tee "${log_file}"
+          exit_code=${PIPESTATUS[0]}
+          set -e
+          echo "exit_code=${exit_code}" >> "$GITHUB_OUTPUT"
+          exit "${exit_code}"
+
+      - name: Summarize lane failure output
+        if: ${{ steps.run_lane.outcome == 'failure' }}
+        shell: bash
+        env:
+          LANE_COMMAND: ${{ inputs.run_command }}
+        run: |
+          set -euo pipefail
+          lane='${{ inputs.lane_id != '' && inputs.lane_id || inputs.summary_title }}'
+          exit_code='${{ steps.run_lane.outputs.exit_code }}'
+          log_file='${{ steps.run_lane.outputs.log_file }}'
+
+          {
+            echo "### Downstream lane failed: ${lane}"
+            echo
+            echo "- Exit code: ${exit_code}"
+            echo "- Command:"
+            echo '```bash'
+            printf '%s\n' "${LANE_COMMAND}"
+            echo '```'
+            echo
+            echo "#### Tail (last 120 lines)"
+            echo '```text'
+            tail -n 120 "${log_file}" || true
+            echo '```'
+            echo
+            echo "#### Error-like lines"
+            echo '```text'
+            grep -En -m 60 "(^error:|^thread '.*' panicked|\\bFAILED\\b|failures:|error\\[|panic\\b)" "${log_file}" || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          echo "::error title=Downstream lane failed::${lane} failed (exit ${exit_code}). See step summary for command, tail, and error lines."
+
+      - name: Verify requested command passed
+        if: ${{ steps.run_lane.outcome == 'failure' }}
+        shell: bash
+        run: exit 1
 
       - name: Upload workflow artifacts
         if: ${{ inputs.artifact_name != '' && inputs.artifact_path != '' }}
@@ -99,4 +157,3 @@ jobs:
           name: ${{ inputs.artifact_name }}
           path: ${{ inputs.artifact_path }}
           retention-days: 3
-

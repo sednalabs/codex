@@ -955,7 +955,7 @@ impl EventProcessor for EventProcessorWithHumanOutput {
                         .as_ref()
                         .map(|usage| FinalOutput::from(usage.total_token_usage.clone()).to_string())
                 })
-                .unwrap_or_else(|| format_token_usage_summary(None));
+                .unwrap_or_else(|| format_token_usage_summary(/*token_usage*/ None));
             eprintln!(
                 "{}\n{}",
                 "review token usage".style(self.magenta).style(self.italic),

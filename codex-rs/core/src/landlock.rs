@@ -41,7 +41,8 @@ where
     let file_system_sandbox_policy =
         FileSystemSandboxPolicy::from_legacy_sandbox_policy(sandbox_policy, sandbox_policy_cwd);
     let network_sandbox_policy = NetworkSandboxPolicy::from(sandbox_policy);
-    let allow_network_for_proxy = allow_network_for_proxy(false);
+    let allow_network_for_proxy =
+        allow_network_for_proxy(/*enforce_managed_network*/ false);
     let supports_split_policy =
         linux_sandbox_supports_split_policy_flags(codex_linux_sandbox_exe.as_ref());
     let use_legacy_landlock = use_legacy_landlock

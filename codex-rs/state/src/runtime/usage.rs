@@ -83,8 +83,8 @@ impl UsageLogger {
             Self::resolve_root_thread_id(&pool, parent_thread_id.as_ref(), forked_from_id.as_ref())
                 .await?;
         let root_thread_id = root_thread_id
-            .or_else(|| parent_thread_id.as_ref().map(|id| id.to_string()))
-            .or_else(|| forked_from_id.as_ref().map(|id| id.to_string()))
+            .or_else(|| parent_thread_id.as_ref().map(std::string::ToString::to_string))
+            .or_else(|| forked_from_id.as_ref().map(std::string::ToString::to_string))
             .unwrap_or_else(|| thread_id.to_string());
         let created_at = Utc::now();
         let source_str = source.to_string();
@@ -102,9 +102,9 @@ ON CONFLICT(thread_id) DO UPDATE SET
                 "#,
         )
         .bind(thread_id.to_string())
-        .bind(parent_thread_id.as_ref().map(|id| id.to_string()))
+        .bind(parent_thread_id.as_ref().map(std::string::ToString::to_string))
         .bind(root_thread_id.clone())
-        .bind(forked_from_id.as_ref().map(|id| id.to_string()))
+        .bind(forked_from_id.as_ref().map(std::string::ToString::to_string))
         .bind(agent_nickname.as_deref())
         .bind(agent_role.as_deref())
         .bind(source_str)
@@ -244,7 +244,7 @@ ON CONFLICT(thread_id) DO UPDATE SET
             .or_else(|| token_count.model_used.clone());
         let provider = token_count.provider.clone();
         let provider_call_id = Uuid::new_v4().to_string();
-        let started_at = DateTime::<Utc>::from(Utc::now());
+        let started_at = Utc::now();
         let status = if token_count.info.is_some() {
             "ok"
         } else {
@@ -427,7 +427,7 @@ ON CONFLICT(thread_id) DO UPDATE SET
     async fn handle_spawn_end(&mut self, end: &CollabAgentSpawnEndEvent) -> anyhow::Result<()> {
         if let Some(request) = self.spawn_requests.remove(&end.call_id) {
             let status = format!("{:?}", end.status);
-            let child_thread = end.new_thread_id.as_ref().map(|id| id.to_string());
+            let child_thread = end.new_thread_id.as_ref().map(std::string::ToString::to_string);
             let completed_at = Utc::now().to_rfc3339();
             sqlx::query(
                 r#"UPDATE usage_spawn_requests SET
@@ -515,6 +515,7 @@ mod tests {
     use codex_protocol::protocol::TokenCountEvent;
     use codex_protocol::protocol::TokenUsage;
     use codex_protocol::protocol::TokenUsageInfo;
+    use codex_protocol::protocol::TurnCompleteEvent;
     use pretty_assertions::assert_eq;
     use sqlx::SqlitePool;
     use std::time::Duration;
@@ -701,6 +702,93 @@ WHERE thread_id = ?
                 quota_percent_remaining: 87.5,
                 quota_percent_used: 12.5,
             }
+        );
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn usage_logger_clears_turn_snapshot_after_turn_complete() -> Result<()> {
+        let (runtime, _tmp_dir) = init_runtime().await?;
+        let thread_id = ThreadId::new();
+        let mut logger = UsageLogger::try_new(
+            runtime.clone(),
+            thread_id,
+            SessionSource::Cli,
+            None,
+            None,
+            None,
+        )
+        .await?;
+
+        let turn_id = "turn-clear";
+        logger.update_turn_snapshot(
+            turn_id,
+            Some("requested-model".to_string()),
+            Some("requested-provider".to_string()),
+        );
+        logger
+            .record_event(&token_count_event(turn_id, false))
+            .await;
+        logger
+            .record_event(&Event {
+                id: turn_id.to_string(),
+                msg: EventMsg::TurnComplete(TurnCompleteEvent {
+                    turn_id: turn_id.to_string(),
+                    last_agent_message: None,
+                    compaction_events_in_turn: 0,
+                }),
+            })
+            .await;
+        logger
+            .record_event(&token_count_event(turn_id, false))
+            .await;
+
+        let pool_arc = runtime.usage_pool();
+        let pool: &SqlitePool = pool_arc.as_ref();
+        let provider_rows: Vec<ProviderCallRow> = sqlx::query_as(
+            r#"
+SELECT
+  provider,
+  requested_model,
+  actual_model_used,
+  input_tokens_uncached,
+  input_tokens_cached,
+  output_tokens,
+  total_tokens,
+  status
+FROM usage_provider_calls
+WHERE thread_id = ?
+ORDER BY rowid
+"#,
+        )
+        .bind(thread_id.to_string())
+        .fetch_all(pool)
+        .await?;
+        assert_eq!(
+            provider_rows,
+            vec![
+                ProviderCallRow {
+                    provider: Some("test-provider".to_string()),
+                    requested_model: Some("requested-model".to_string()),
+                    actual_model_used: Some("actual-model".to_string()),
+                    input_tokens_uncached: 8,
+                    input_tokens_cached: 2,
+                    output_tokens: 3,
+                    total_tokens: 16,
+                    status: Some("ok".to_string()),
+                },
+                ProviderCallRow {
+                    provider: Some("test-provider".to_string()),
+                    requested_model: Some("actual-model".to_string()),
+                    actual_model_used: Some("actual-model".to_string()),
+                    input_tokens_uncached: 8,
+                    input_tokens_cached: 2,
+                    output_tokens: 3,
+                    total_tokens: 16,
+                    status: Some("ok".to_string()),
+                },
+            ]
         );
 
         Ok(())
@@ -925,6 +1013,7 @@ WHERE child_thread_id = ?
             depth: 2,
             agent_nickname: Some("Copernicus".to_string()),
             agent_role: Some("explorer".to_string()),
+            agent_path: None,
         });
         let _child_logger = UsageLogger::try_new(
             runtime.clone(),
@@ -1010,6 +1099,143 @@ WHERE thread_id = ?
     }
 
     #[tokio::test]
+    async fn usage_logger_resolves_root_thread_from_persisted_lineage_after_restart() -> Result<()>
+    {
+        let tmp_dir = tempdir()?;
+        let root_thread_id = ThreadId::new();
+        let parent_thread_id = ThreadId::new();
+        {
+            let runtime =
+                StateRuntime::init(tmp_dir.path().to_path_buf(), "test-provider".to_string())
+                    .await?;
+            let _root_logger = UsageLogger::try_new(
+                runtime.clone(),
+                root_thread_id,
+                SessionSource::Cli,
+                None,
+                Some("Root".to_string()),
+                Some("default".to_string()),
+            )
+            .await?;
+            let _parent_logger = UsageLogger::try_new(
+                runtime.clone(),
+                parent_thread_id,
+                SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                    parent_thread_id: root_thread_id,
+                    depth: 1,
+                    agent_nickname: Some("Parent".to_string()),
+                    agent_role: Some("explorer".to_string()),
+                    agent_path: None,
+                }),
+                None,
+                Some("Parent".to_string()),
+                Some("explorer".to_string()),
+            )
+            .await?;
+        }
+
+        let reopened_runtime =
+            StateRuntime::init(tmp_dir.path().to_path_buf(), "test-provider".to_string()).await?;
+        let child_thread_id = ThreadId::new();
+        let _child_logger = UsageLogger::try_new(
+            reopened_runtime.clone(),
+            child_thread_id,
+            SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                parent_thread_id,
+                depth: 2,
+                agent_nickname: Some("Child".to_string()),
+                agent_role: Some("worker".to_string()),
+                agent_path: None,
+            }),
+            None,
+            Some("Child".to_string()),
+            Some("worker".to_string()),
+        )
+        .await?;
+
+        let fork_thread_id = ThreadId::new();
+        let _fork_logger = UsageLogger::try_new(
+            reopened_runtime.clone(),
+            fork_thread_id,
+            SessionSource::Cli,
+            Some(parent_thread_id),
+            Some("Fork".to_string()),
+            Some("reviewer".to_string()),
+        )
+        .await?;
+
+        let pool_arc = reopened_runtime.usage_pool();
+        let pool: &SqlitePool = pool_arc.as_ref();
+
+        let child_row: ThreadRow = sqlx::query_as(
+            r#"
+SELECT
+  parent_thread_id,
+  root_thread_id,
+  fork_parent_thread_id,
+  agent_nickname,
+  agent_role,
+  source
+FROM usage_threads
+WHERE thread_id = ?
+"#,
+        )
+        .bind(child_thread_id.to_string())
+        .fetch_one(pool)
+        .await?;
+        assert_eq!(
+            child_row,
+            ThreadRow {
+                parent_thread_id: Some(parent_thread_id.to_string()),
+                root_thread_id: Some(root_thread_id.to_string()),
+                fork_parent_thread_id: None,
+                agent_nickname: Some("Child".to_string()),
+                agent_role: Some("worker".to_string()),
+                source: Some(
+                    SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                        parent_thread_id,
+                        depth: 2,
+                        agent_nickname: Some("Child".to_string()),
+                        agent_role: Some("worker".to_string()),
+                        agent_path: None,
+                    })
+                    .to_string()
+                ),
+            }
+        );
+
+        let fork_row: ThreadRow = sqlx::query_as(
+            r#"
+SELECT
+  parent_thread_id,
+  root_thread_id,
+  fork_parent_thread_id,
+  agent_nickname,
+  agent_role,
+  source
+FROM usage_threads
+WHERE thread_id = ?
+"#,
+        )
+        .bind(fork_thread_id.to_string())
+        .fetch_one(pool)
+        .await?;
+        assert_eq!(
+            fork_row,
+            ThreadRow {
+                parent_thread_id: None,
+                root_thread_id: Some(root_thread_id.to_string()),
+                fork_parent_thread_id: Some(parent_thread_id.to_string()),
+                agent_nickname: Some("Fork".to_string()),
+                agent_role: Some("reviewer".to_string()),
+                source: Some(SessionSource::Cli.to_string()),
+            }
+        );
+
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn usage_spawn_lineage_matches_persisted_state_edge_for_child_thread() -> Result<()> {
         let (runtime, _tmp_dir) = init_runtime().await?;
         let parent_thread_id = ThreadId::new();
@@ -1066,6 +1292,7 @@ WHERE thread_id = ?
             depth: 1,
             agent_nickname: Some("Copernicus".to_string()),
             agent_role: Some("explorer".to_string()),
+            agent_path: None,
         });
         let _child_logger = UsageLogger::try_new(
             runtime.clone(),
