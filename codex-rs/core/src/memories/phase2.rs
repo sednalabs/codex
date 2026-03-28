@@ -930,8 +930,7 @@ pub(in crate::memories) mod agent {
 
         let sandbox_policy = SandboxPolicy::WorkspaceWrite {
             writable_roots: vec![
-                AbsolutePathBuf::from_absolute_path(root.to_path_buf())
-                    .expect("memory root should be absolute"),
+                AbsolutePathBuf::from_absolute_path(root).expect("memory root should be absolute"),
             ],
             read_only_access: Default::default(),
             network_access: false,

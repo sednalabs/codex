@@ -441,7 +441,6 @@ mod phase2 {
     use codex_state::Stage1OutputRef;
     use codex_state::ThreadMetadataBuilder;
     use codex_utils_absolute_path::AbsolutePathBuf;
-    use core_test_support::PathBufExt;
     use std::path::PathBuf;
     use std::sync::Arc;
     use std::time::Duration;
@@ -494,7 +493,7 @@ mod phase2 {
             let codex_home = tempfile::tempdir().expect("create temp codex home");
             let mut config = test_config();
             config.codex_home = codex_home.path().to_path_buf();
-            config.cwd = config.codex_home.abs();
+            config.cwd = config.codex_home.clone();
             let config = Arc::new(config);
 
             let state_db = codex_state::StateRuntime::init(
@@ -1671,7 +1670,9 @@ mod phase2 {
 
         let agent_config =
             phase2::test_consolidation_agent_config(config).expect("consolidation config");
-        let expected_memory_root = memory_root(&agent_config.codex_home);
+        let expected_memory_root =
+            AbsolutePathBuf::from_absolute_path(memory_root(&agent_config.codex_home))
+                .expect("memory root should be absolute");
 
         pretty_assertions::assert_eq!(agent_config.cwd.as_path(), expected_memory_root.as_path());
         pretty_assertions::assert_eq!(
@@ -1695,7 +1696,7 @@ mod phase2 {
             } => {
                 pretty_assertions::assert_eq!(
                     writable_roots.as_slice(),
-                    &[expected_memory_root.as_path().to_path_buf()],
+                    std::slice::from_ref(&expected_memory_root),
                     "consolidation subagent should use only the memory root as a writable root"
                 );
                 assert!(
@@ -1780,10 +1781,12 @@ mod phase2 {
         pretty_assertions::assert_eq!(config_snapshot.cwd, memory_root(&harness.config.codex_home));
         match config_snapshot.sandbox_policy {
             SandboxPolicy::WorkspaceWrite { writable_roots, .. } => {
-                let expected_root = memory_root(&harness.config.codex_home);
+                let expected_root =
+                    AbsolutePathBuf::from_absolute_path(memory_root(&harness.config.codex_home))
+                        .expect("memory root should be absolute");
                 pretty_assertions::assert_eq!(
                     writable_roots,
-                    vec![expected_root.as_path().to_path_buf()],
+                    vec![expected_root],
                     "consolidation subagent should only need the memory root as a writable root"
                 );
             }
@@ -1987,7 +1990,7 @@ mod phase2 {
         let codex_home = tempfile::tempdir().expect("create temp codex home");
         let mut config = test_config();
         config.codex_home = codex_home.path().to_path_buf();
-        config.cwd = config.codex_home.abs();
+        config.cwd = config.codex_home.clone();
         let config = Arc::new(config);
 
         let state_db = codex_state::StateRuntime::init(

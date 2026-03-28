@@ -221,6 +221,7 @@ async fn on_event_updates_status_from_task_complete() {
     let status = agent_status_from_event(&EventMsg::TurnComplete(TurnCompleteEvent {
         turn_id: "turn-1".to_string(),
         last_agent_message: Some("done".to_string()),
+        compaction_events_in_turn: 0,
     }));
     let expected = AgentStatus::Completed(Some("done".to_string()));
     assert_eq!(status, Some(expected));

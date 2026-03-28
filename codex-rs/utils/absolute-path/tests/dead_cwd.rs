@@ -1,13 +1,20 @@
+#[cfg(unix)]
 use codex_utils_absolute_path::AbsolutePathBuf;
+#[cfg(unix)]
 use pretty_assertions::assert_eq;
+#[cfg(unix)]
 use std::io;
+#[cfg(unix)]
 use std::path::PathBuf;
+#[cfg(unix)]
 use tempfile::tempdir;
 
+#[cfg(unix)]
 struct CurrentDirGuard {
     previous: PathBuf,
 }
 
+#[cfg(unix)]
 impl Drop for CurrentDirGuard {
     fn drop(&mut self) {
         let _ = std::env::set_current_dir(&self.previous);

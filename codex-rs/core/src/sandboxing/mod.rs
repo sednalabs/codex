@@ -14,9 +14,13 @@ use crate::exec::ExecToolCallOutput;
 use crate::exec::SandboxType;
 use crate::exec::StdoutStream;
 use crate::exec::execute_exec_request;
+#[cfg(target_os = "linux")]
 use crate::landlock::allow_network_for_proxy;
+#[cfg(target_os = "linux")]
 use crate::landlock::create_linux_sandbox_command_args_for_policies;
+#[cfg(target_os = "linux")]
 use crate::landlock::create_linux_sandbox_command_args_legacy;
+#[cfg(target_os = "linux")]
 use crate::landlock::linux_sandbox_supports_split_policy_flags;
 use crate::protocol::SandboxPolicy;
 #[cfg(target_os = "macos")]
@@ -624,7 +628,10 @@ impl SandboxManager {
             #[cfg(target_os = "macos")]
             macos_seatbelt_profile_extensions,
             codex_linux_sandbox_exe,
+            #[cfg(target_os = "linux")]
             use_legacy_landlock,
+            #[cfg(not(target_os = "linux"))]
+                use_legacy_landlock: _,
             windows_sandbox_level,
             windows_sandbox_private_desktop,
         } = request;

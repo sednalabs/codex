@@ -7872,16 +7872,17 @@ impl ChatWidget {
 
     #[cfg(target_os = "windows")]
     pub(crate) fn open_windows_sandbox_enable_prompt(&mut self, preset: ApprovalPreset) {
-        use ratatui_macros::line;
-
         if !codex_core::windows_sandbox::ELEVATED_SANDBOX_NUX_ENABLED {
             // Legacy flow (pre-NUX): explain the experimental sandbox and let the user enable it
             // directly (no elevation prompts).
             let mut header = ColumnRenderable::new();
             header.push(*Box::new(
                 Paragraph::new(vec![
-                    line!["Agent mode on Windows uses an experimental sandbox to limit network and filesystem access.".bold()],
-                    line!["Learn more: https://developers.openai.com/codex/windows"],
+                    Line::from(
+                        "Agent mode on Windows uses an experimental sandbox to limit network and filesystem access.",
+                    )
+                    .bold(),
+                    Line::from("Learn more: https://developers.openai.com/codex/windows"),
                 ])
                 .wrap(Wrap { trim: false }),
             ));
@@ -7929,9 +7930,9 @@ impl ChatWidget {
 
         let mut header = ColumnRenderable::new();
         header.push(*Box::new(
-            Paragraph::new(vec![
-                line!["Set up the Codex agent sandbox to protect your files and control network access. Learn more <https://developers.openai.com/codex/windows>"],
-            ])
+            Paragraph::new(vec![Line::from(
+                "Set up the Codex agent sandbox to protect your files and control network access. Learn more <https://developers.openai.com/codex/windows>",
+            )])
             .wrap(Wrap { trim: false }),
         ));
 
@@ -8002,19 +8003,16 @@ impl ChatWidget {
 
     #[cfg(target_os = "windows")]
     pub(crate) fn open_windows_sandbox_fallback_prompt(&mut self, preset: ApprovalPreset) {
-        use ratatui_macros::line;
-
         let mut lines = Vec::new();
-        lines.push(line![
-            "Couldn't set up your sandbox with Administrator permissions".bold()
-        ]);
-        lines.push(line![""]);
-        lines.push(line![
-            "You can still use Codex in a non-admin sandbox. It carries greater risk if prompt injected."
-        ]);
-        lines.push(line![
-            "Learn more <https://developers.openai.com/codex/windows>"
-        ]);
+        lines
+            .push(Line::from("Couldn't set up your sandbox with Administrator permissions").bold());
+        lines.push(Line::from(""));
+        lines.push(Line::from(
+            "You can still use Codex in a non-admin sandbox. It carries greater risk if prompt injected.",
+        ));
+        lines.push(Line::from(
+            "Learn more <https://developers.openai.com/codex/windows>",
+        ));
 
         let mut header = ColumnRenderable::new();
         header.push(*Box::new(Paragraph::new(lines).wrap(Wrap { trim: false })));

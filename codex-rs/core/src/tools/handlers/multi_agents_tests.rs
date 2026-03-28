@@ -37,7 +37,6 @@ use codex_protocol::protocol::TurnCompleteEvent;
 use pretty_assertions::assert_eq;
 use serde::Deserialize;
 use serde_json::json;
-use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -2064,7 +2063,7 @@ async fn wait_agent_ids_require_strict_thread_ids() {
         panic!("non-thread ids should be rejected on the ids path");
     };
     assert!(
-        matches!(err, FunctionCallError::RespondToModel(message) if message.contains("invalid agent id")),
+        matches!(&err, FunctionCallError::RespondToModel(message) if message.contains("invalid agent id")),
         "unexpected error: {err:?}"
     );
 }
@@ -2382,6 +2381,7 @@ async fn wait_agent_does_not_return_completed_content() {
             EventMsg::TurnComplete(TurnCompleteEvent {
                 turn_id: child_turn.sub_id.clone(),
                 last_agent_message: Some("sensitive child output".to_string()),
+                compaction_events_in_turn: 0,
             }),
         )
         .await;
