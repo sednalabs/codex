@@ -512,33 +512,34 @@ impl HistoryCell for UpdateAvailableHistoryCell {
         let release_notes_url = latest_release_notes_url();
         let update_instruction: Line<'static> = if let Some(update_action) = self.update_action {
             vec![
-                "Run ".into(),
-                update_action.command_str().to_string().cyan(),
-                " to update.".into(),
+                Span::from("Run "),
+                Span::from(update_action.command_str()).cyan(),
+                Span::from(" to update."),
             ]
             .into()
         } else {
             vec![
-                "See ".into(),
-                installation_options_url.cyan().underlined(),
-                " for installation options.".into(),
+                Span::from("See "),
+                Span::from(installation_options_url).cyan().underlined(),
+                Span::from(" for installation options."),
             ]
             .into()
         };
 
-        let content = Text::from(vec![
+        let content: Text<'static> = vec![
             vec![
                 padded_emoji("✨").bold().cyan(),
                 "Update available!".bold().cyan(),
-                " ".into(),
-                format!("{CODEX_CLI_VERSION} -> {}", self.latest_version).bold(),
+                Span::from(" "),
+                Span::from(format!("{CODEX_CLI_VERSION} -> {}", self.latest_version)).bold(),
             ]
             .into(),
             update_instruction,
-            "".into(),
-            "See full release notes:".into(),
-            release_notes_url.cyan().underlined().into(),
-        ]);
+            Line::from(""),
+            Line::from("See full release notes:"),
+            Line::from(vec![Span::from(release_notes_url).cyan().underlined()]),
+        ]
+        .into();
 
         let inner_width = content
             .width()
