@@ -7,6 +7,10 @@ on:
         description: Branch, tag, or commit to validate
         required: false
         type: string
+      test_filter:
+        description: Optional cargo test filter appended to the selected command
+        required: false
+        type: string
       scope:
         description: Validation scope
         required: true
@@ -115,6 +119,11 @@ jobs:
               exit 1
               ;;
           esac
+
+          test_filter='${{ inputs.test_filter }}'
+          if [[ -n "${test_filter}" ]]; then
+            run_command="${run_command} ${test_filter}"
+          fi
 
           echo "checkout_ref=${checkout_ref}" >> "$GITHUB_OUTPUT"
           echo "scope=${scope}" >> "$GITHUB_OUTPUT"
