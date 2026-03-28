@@ -247,11 +247,11 @@ pub fn append_code_mode_sample(
     input_type: String,
     output_type: String,
 ) -> String {
+    let (import_path, exported_name) = code_mode_import_and_exported_name(tool_name);
     let declaration = format!(
-        "declare const tools: {{ {} }};",
-        render_code_mode_tool_declaration(tool_name, input_name, input_type, output_type)
+        "import {{ tools }} from \"{import_path}\";\ndeclare function {exported_name}({input_name}: {input_type}): Promise<{output_type}>;"
     );
-    format!("{description}\n\nexec tool declaration:\n```ts\n{declaration}\n```")
+    format!("{description}\n\nCode mode declaration:\n```ts\n{declaration}\n```")
 }
 
 fn append_code_mode_sample_for_definition(definition: &ToolDefinition) -> String {
@@ -281,14 +281,20 @@ fn append_code_mode_sample_for_definition(definition: &ToolDefinition) -> String
     )
 }
 
-fn render_code_mode_tool_declaration(
-    tool_name: &str,
-    input_name: &str,
-    input_type: String,
-    output_type: String,
-) -> String {
-    let tool_name = normalize_code_mode_identifier(tool_name);
-    format!("{tool_name}({input_name}: {input_type}): Promise<{output_type}>;")
+fn code_mode_import_and_exported_name(tool_name: &str) -> (String, String) {
+    if let Some(rest) = tool_name.strip_prefix("mcp__")
+        && let Some((server_name, nested_tool_name)) = rest.split_once("__")
+    {
+        return (
+            format!("tools/mcp/{server_name}.js"),
+            normalize_code_mode_identifier(nested_tool_name),
+        );
+    }
+
+    (
+        "tools.js".to_string(),
+        normalize_code_mode_identifier(tool_name),
+    )
 }
 
 pub fn render_json_schema_to_typescript(schema: &JsonValue) -> String {
@@ -538,10 +544,11 @@ mod tests {
         };
 
         let description = augment_tool_definition(definition).description;
-        assert!(description.contains("declare const tools"));
+        assert!(description.contains("Code mode declaration:"));
+        assert!(description.contains("import { tools } from \"tools.js\";"));
         assert!(
             description.contains(
-                "hidden_dynamic_tool(args: { city: string; }): Promise<{ ok: boolean; }>;"
+                "declare function hidden_dynamic_tool(args: { city: string; }): Promise<{ ok: boolean; }>;"
             )
         );
     }
