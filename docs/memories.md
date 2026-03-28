@@ -63,8 +63,6 @@ There are two different ways memory state can disappear:
 
 That distinction matters because an empty retained set is not the same as a full wipe. The normal consolidation path leaves the memory workspace in a valid empty state rather than deleting every file unconditionally.
 
-There is also a valid no-op / reuse case during phase 2. If the retained memory workspace already has usable artifacts, consolidation can succeed without generating fresh content again. In practice that means `MEMORY.md` and `memory_summary.md` need to exist and be non-empty; stale timestamps alone do not make the run invalid.
-
 ## Config knobs
 
 The settings live under `[memories]` in `config.toml`.
