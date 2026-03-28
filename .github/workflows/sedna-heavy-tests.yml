@@ -93,10 +93,8 @@ jobs:
     runs-on: ubuntu-24.04
     outputs:
       checkout_ref: ${{ steps.meta.outputs.checkout_ref }}
-      run_all_lanes: ${{ steps.meta.outputs.run_all_lanes }}
-      run_core_family: ${{ steps.meta.outputs.run_core_family }}
-      run_ui_protocol_family: ${{ steps.meta.outputs.run_ui_protocol_family }}
-      run_docs_family: ${{ steps.meta.outputs.run_docs_family }}
+      run_selected_lanes: ${{ steps.meta.outputs.run_selected_lanes }}
+      selected_matrix: ${{ steps.meta.outputs.selected_matrix }}
     steps:
       - uses: actions/checkout@v6
         with:
@@ -150,75 +148,32 @@ jobs:
             run_all_lanes=true
           fi
 
-          echo "checkout_ref=${checkout_ref}" >> "$GITHUB_OUTPUT"
-          echo "run_all_lanes=${run_all_lanes}" >> "$GITHUB_OUTPUT"
-          echo "run_core_family=${run_core_family}" >> "$GITHUB_OUTPUT"
-          echo "run_ui_protocol_family=${run_ui_protocol_family}" >> "$GITHUB_OUTPUT"
-          echo "run_docs_family=${run_docs_family}" >> "$GITHUB_OUTPUT"
+          selected_json="$(
+            CHECKOUT_EVENT='${{ github.event_name }}' \
+            WORKFLOW_DISPATCH_LANE='${{ inputs.lane }}' \
+            RUN_ALL_LANES="${run_all_lanes}" \
+            RUN_CORE_FAMILY="${run_core_family}" \
+            RUN_UI_PROTOCOL_FAMILY="${run_ui_protocol_family}" \
+            RUN_DOCS_FAMILY="${run_docs_family}" \
+            python3 -c $'import json, os\nlane_specs = [\n    {"lane_id": "core-compile-smoke", "run_command": "just --justfile ../justfile core-compile-smoke", "group": "core"},\n    {"lane_id": "core-carry-smoke", "run_command": "just --justfile ../justfile core-carry-smoke", "group": "core"},\n    {"lane_id": "core-ledger-smoke", "run_command": "just --justfile ../justfile core-ledger-smoke", "group": "core"},\n    {"lane_id": "codex.core-startup-sync-targeted", "run_command": "just --justfile ../justfile core-startup-sync-targeted", "group": "core"},\n    {"lane_id": "codex.core-subagent-surface-targeted", "run_command": "just --justfile ../justfile core-subagent-surface-targeted", "group": "core"},\n    {"lane_id": "codex.core-subagent-notification-contract-targeted", "run_command": "just --justfile ../justfile core-subagent-notification-contract-targeted", "group": "core"},\n    {"lane_id": "codex.core-subagent-notification-visibility-targeted", "run_command": "just --justfile ../justfile core-subagent-notification-visibility-targeted", "group": "ui_protocol"},\n    {"lane_id": "codex.core-multi-agent-orchestration-targeted", "run_command": "just --justfile ../justfile core-multi-agent-orchestration-targeted", "group": "core"},\n    {"lane_id": "codex.core-persisted-subagent-descendants-targeted", "run_command": "just --justfile ../justfile core-persisted-subagent-descendants-targeted", "group": "core"},\n    {"lane_id": "codex.core-context-serialization-targeted", "run_command": "just --justfile ../justfile core-context-serialization-targeted", "group": "core"},\n    {"lane_id": "codex.state-spawn-lineage-contract-targeted", "run_command": "just --justfile ../justfile core-state-spawn-lineage-contract-targeted", "group": "core"},\n    {"lane_id": "codex.app-server-protocol-test", "run_command": "cargo test --locked -p codex-app-server-protocol", "group": "ui_protocol"},\n    {"lane_id": "codex.downstream-docs-check", "run_command": "just --justfile ../justfile downstream-docs-check", "group": "docs"},\n    {"lane_id": "downstream-ledger-seam", "run_command": "just --justfile ../justfile downstream-ledger-seam", "group": "core"},\n]\nevent_name = os.environ["CHECKOUT_EVENT"]\nrequested_lane = os.environ.get("WORKFLOW_DISPATCH_LANE", "")\nrun_all = os.environ["RUN_ALL_LANES"] == "true"\nrun_core = os.environ["RUN_CORE_FAMILY"] == "true"\nrun_ui = os.environ["RUN_UI_PROTOCOL_FAMILY"] == "true"\nrun_docs = os.environ["RUN_DOCS_FAMILY"] == "true"\nselected = []\nfor spec in lane_specs:\n    if event_name == "workflow_dispatch" and requested_lane and requested_lane != "all":\n        if spec["lane_id"] != requested_lane:\n            continue\n    elif not run_all:\n        if spec["group"] == "core" and not run_core:\n            continue\n        if spec["group"] == "ui_protocol" and not run_ui:\n            continue\n        if spec["group"] == "docs" and not run_docs:\n            continue\n    selected.append(spec)\nprint(json.dumps({"include": selected}, separators=(",", ":")))' 
+          )"
+
+          {
+            echo "checkout_ref=${checkout_ref}"
+            echo "run_selected_lanes=$([[ "${selected_json}" != '{"include":[]}' ]] && echo true || echo false)"
+            echo "selected_matrix=${selected_json}"
+          } >> "$GITHUB_OUTPUT"
 
   downstream_lanes:
     needs: metadata
     if: >-
       ${{
         needs.metadata.result == 'success' &&
-        (
-          github.event_name != 'workflow_dispatch' ||
-          inputs.lane == 'all' ||
-          inputs.lane == matrix.lane_id
-        ) &&
-        (
-          needs.metadata.outputs.run_all_lanes == 'true' ||
-          (matrix.auto_group == 'core' && needs.metadata.outputs.run_core_family == 'true') ||
-          (matrix.auto_group == 'ui_protocol' && needs.metadata.outputs.run_ui_protocol_family == 'true') ||
-          (matrix.auto_group == 'docs' && needs.metadata.outputs.run_docs_family == 'true')
-        )
+        needs.metadata.outputs.run_selected_lanes == 'true'
       }}
     strategy:
       fail-fast: false
-      matrix:
-        include:
-          - lane_id: core-compile-smoke
-            auto_group: core
-            run_command: just --justfile ../justfile core-compile-smoke
-          - lane_id: core-carry-smoke
-            auto_group: core
-            run_command: just --justfile ../justfile core-carry-smoke
-          - lane_id: core-ledger-smoke
-            auto_group: core
-            run_command: just --justfile ../justfile core-ledger-smoke
-          - lane_id: codex.core-startup-sync-targeted
-            auto_group: core
-            run_command: just --justfile ../justfile core-startup-sync-targeted
-          - lane_id: codex.core-subagent-surface-targeted
-            auto_group: core
-            run_command: just --justfile ../justfile core-subagent-surface-targeted
-          - lane_id: codex.core-subagent-notification-contract-targeted
-            auto_group: core
-            run_command: just --justfile ../justfile core-subagent-notification-contract-targeted
-          - lane_id: codex.core-subagent-notification-visibility-targeted
-            auto_group: ui_protocol
-            run_command: just --justfile ../justfile core-subagent-notification-visibility-targeted
-          - lane_id: codex.core-multi-agent-orchestration-targeted
-            auto_group: core
-            run_command: just --justfile ../justfile core-multi-agent-orchestration-targeted
-          - lane_id: codex.core-persisted-subagent-descendants-targeted
-            auto_group: core
-            run_command: just --justfile ../justfile core-persisted-subagent-descendants-targeted
-          - lane_id: codex.core-context-serialization-targeted
-            auto_group: core
-            run_command: just --justfile ../justfile core-context-serialization-targeted
-          - lane_id: codex.state-spawn-lineage-contract-targeted
-            auto_group: core
-            run_command: just --justfile ../justfile core-state-spawn-lineage-contract-targeted
-          - lane_id: codex.app-server-protocol-test
-            auto_group: ui_protocol
-            run_command: cargo test --locked -p codex-app-server-protocol
-          - lane_id: codex.downstream-docs-check
-            auto_group: docs
-            run_command: just --justfile ../justfile downstream-docs-check
-          - lane_id: downstream-ledger-seam
-            auto_group: core
-            run_command: just --justfile ../justfile downstream-ledger-seam
+      matrix: ${{ fromJson(needs.metadata.outputs.selected_matrix) }}
     uses: ./.github/workflows/_sedna-linux-rust.yml
     with:
       checkout_ref: ${{ needs.metadata.outputs.checkout_ref }}
