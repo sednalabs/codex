@@ -56,7 +56,7 @@ pub(crate) fn preferred_input_config(
             let channel_penalty = range.channels().abs_diff(PREFERRED_INPUT_CHANNELS);
             Some((
                 (sample_rate_penalty, channel_penalty, sample_format_rank),
-                range.with_sample_rate(sample_rate),
+                range.with_sample_rate(cpal::SampleRate(sample_rate)),
             ))
         })
         .min_by_key(|(score, _)| *score)
@@ -145,8 +145,8 @@ fn default_config(
 }
 
 fn preferred_input_sample_rate(range: &cpal::SupportedStreamConfigRange) -> u32 {
-    let min = range.min_sample_rate();
-    let max = range.max_sample_rate();
+    let min = range.min_sample_rate().0;
+    let max = range.max_sample_rate().0;
     if (min..=max).contains(&PREFERRED_INPUT_SAMPLE_RATE) {
         PREFERRED_INPUT_SAMPLE_RATE
     } else if PREFERRED_INPUT_SAMPLE_RATE < min {

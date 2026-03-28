@@ -10,7 +10,6 @@ use codex_login::AuthMode;
 use codex_login::CodexAuth;
 use codex_protocol::protocol::ConversationAudioParams;
 use codex_protocol::protocol::RealtimeAudioFrame;
-use cpal::SampleRate;
 use cpal::traits::DeviceTrait;
 use cpal::traits::HostTrait;
 use cpal::traits::StreamTrait;
@@ -29,7 +28,7 @@ use tracing::info;
 use tracing::trace;
 
 const AUDIO_MODEL: &str = "gpt-4o-mini-transcribe";
-const MODEL_AUDIO_SAMPLE_RATE: SampleRate = 24_000;
+const MODEL_AUDIO_SAMPLE_RATE: u32 = 24_000;
 const MODEL_AUDIO_CHANNELS: u16 = 1;
 
 struct TranscriptionAuthContext {
@@ -41,13 +40,13 @@ struct TranscriptionAuthContext {
 
 pub struct RecordedAudio {
     pub data: Vec<i16>,
-    pub sample_rate: SampleRate,
+    pub sample_rate: u32,
     pub channels: u16,
 }
 
 pub struct VoiceCapture {
     stream: Option<cpal::Stream>,
-    sample_rate: SampleRate,
+    sample_rate: u32,
     channels: u16,
     data: Arc<Mutex<Vec<i16>>>,
     stopped: Arc<AtomicBool>,
@@ -58,7 +57,7 @@ impl VoiceCapture {
     pub fn start() -> Result<Self, String> {
         let (device, config) = select_default_input_device_and_config()?;
 
-        let sample_rate = config.sample_rate();
+        let sample_rate = config.sample_rate().0;
         let channels = config.channels();
         let data: Arc<Mutex<Vec<i16>>> = Arc::new(Mutex::new(Vec::new()));
         let stopped = Arc::new(AtomicBool::new(false));
@@ -82,7 +81,7 @@ impl VoiceCapture {
     pub fn start_realtime(config: &Config, tx: AppEventSender) -> Result<Self, String> {
         let (device, config) = select_realtime_input_device_and_config(config)?;
 
-        let sample_rate = config.sample_rate();
+        let sample_rate = config.sample_rate().0;
         let channels = config.channels();
         let data: Arc<Mutex<Vec<i16>>> = Arc::new(Mutex::new(Vec::new()));
         let stopped = Arc::new(AtomicBool::new(false));
@@ -340,7 +339,7 @@ fn build_input_stream(
 fn build_realtime_input_stream(
     device: &cpal::Device,
     config: &cpal::SupportedStreamConfig,
-    sample_rate: SampleRate,
+    sample_rate: u32,
     channels: u16,
     tx: AppEventSender,
     last_peak: Arc<AtomicU16>,
@@ -391,7 +390,7 @@ fn build_realtime_input_stream(
 fn send_realtime_audio_chunk(
     tx: &AppEventSender,
     samples: Vec<i16>,
-    sample_rate: SampleRate,
+    sample_rate: u32,
     channels: u16,
 ) {
     if samples.is_empty() || sample_rate == 0 || channels == 0 {
@@ -485,7 +484,7 @@ fn convert_u16_to_i16_and_peak(input: &[u16], out: &mut Vec<i16>) -> u16 {
 pub(crate) struct RealtimeAudioPlayer {
     _stream: cpal::Stream,
     queue: Arc<Mutex<VecDeque<i16>>>,
-    output_sample_rate: SampleRate,
+    output_sample_rate: u32,
     output_channels: u16,
 }
 
@@ -493,7 +492,7 @@ impl RealtimeAudioPlayer {
     pub(crate) fn start(config: &Config) -> Result<Self, String> {
         let (device, config) =
             crate::audio_device::select_configured_output_device_and_config(config)?;
-        let output_sample_rate = config.sample_rate();
+        let output_sample_rate = config.sample_rate().0;
         let output_channels = config.channels();
         let queue = Arc::new(Mutex::new(VecDeque::new()));
         let stream = build_output_stream(&device, &config, Arc::clone(&queue))?;
@@ -617,9 +616,9 @@ fn fill_output_u16(output: &mut [u16], queue: &Arc<Mutex<VecDeque<i16>>>) {
 
 fn convert_pcm16(
     input: &[i16],
-    input_sample_rate: SampleRate,
+    input_sample_rate: u32,
     input_channels: u16,
-    output_sample_rate: SampleRate,
+    output_sample_rate: u32,
     output_channels: u16,
 ) -> Vec<i16> {
     if input.is_empty() || input_channels == 0 || output_channels == 0 {
