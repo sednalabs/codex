@@ -117,7 +117,7 @@ codex-windows-sandbox = { workspace = true }
 tokio-util = { workspace = true, features = ["time"] }
 
 [target.'cfg(not(target_os = "linux"))'.dependencies]
-cpal = { version = "0.15", optional = true }
+cpal = { version = "0.17", optional = true }
 hound = { version = "3.5", optional = true }
 
 [target.'cfg(unix)'.dependencies]
@@ -125,7 +125,7 @@ libc = { workspace = true }
 
 [target.'cfg(windows)'.dependencies]
 which = { workspace = true }
-windows-sys = { version = "0.52", features = [
+windows-sys = { version = "0.61", features = [
     "Win32_Foundation",
     "Win32_System_Console",
 ] }
