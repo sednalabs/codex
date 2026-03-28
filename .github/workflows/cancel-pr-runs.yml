@@ -29,6 +29,7 @@ jobs:
               'action_required',
             ];
             const headBranch = context.payload.pull_request.head.ref;
+            const headSha = context.payload.pull_request.head.sha;
             const prNumber = context.payload.pull_request.number;
 
             const candidates = [];
@@ -73,13 +74,17 @@ jobs:
                 Array.isArray(run.pull_requests) &&
                 run.pull_requests.some((pr) => pr.number === prNumber);
               const matchesBranchPush =
-                run.event === 'push' && run.head_branch === headBranch;
+                run.event === 'push' &&
+                run.head_branch === headBranch &&
+                run.head_sha === headSha;
 
               return matchesPullRequest || matchesBranchPush;
             });
 
             if (runsToCancel.length === 0) {
-              core.info(`No active runs found for PR #${prNumber} on ${headBranch}.`);
+              core.info(
+                `No active runs found for PR #${prNumber} on ${headBranch} @ ${headSha}.`,
+              );
               return;
             }
 
