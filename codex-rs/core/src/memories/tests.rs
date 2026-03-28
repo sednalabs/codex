@@ -1666,8 +1666,7 @@ mod phase2 {
         std::fs::create_dir_all(&codex_home).expect("create codex home");
         let mut config = test_config();
         config.codex_home = codex_home;
-        config.cwd = AbsolutePathBuf::from_absolute_path(PathBuf::from("/tmp/workspace"))
-            .expect("workspace path");
+        config.cwd = PathBuf::from("/tmp/workspace");
         let config = Arc::new(config);
 
         let agent_config =
@@ -1696,7 +1695,7 @@ mod phase2 {
             } => {
                 pretty_assertions::assert_eq!(
                     writable_roots.as_slice(),
-                    &[expected_memory_root.clone()],
+                    &[expected_memory_root.as_path().to_path_buf()],
                     "consolidation subagent should use only the memory root as a writable root"
                 );
                 assert!(
@@ -1728,8 +1727,7 @@ mod phase2 {
 
         let mut config = test_config();
         config.codex_home = linked_codex_home;
-        config.cwd = AbsolutePathBuf::from_absolute_path(PathBuf::from("/tmp/workspace"))
-            .expect("workspace path");
+        config.cwd = PathBuf::from("/tmp/workspace");
 
         assert!(
             phase2::test_consolidation_agent_config(Arc::new(config)).is_none(),
@@ -1785,7 +1783,7 @@ mod phase2 {
                 let expected_root = memory_root(&harness.config.codex_home);
                 pretty_assertions::assert_eq!(
                     writable_roots,
-                    vec![expected_root],
+                    vec![expected_root.as_path().to_path_buf()],
                     "consolidation subagent should only need the memory root as a writable root"
                 );
             }

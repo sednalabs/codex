@@ -43,8 +43,25 @@ on:
       - main
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event_name == 'workflow_dispatch' && inputs.ref || github.ref_name }}
-  cancel-in-progress: ${{ github.event_name != 'workflow_dispatch' && github.ref_name != 'main' && github.ref_name != 'upstream-main' }}
+  group: >-
+    ${{
+      github.event_name == 'pull_request' &&
+      github.event.action == 'labeled' &&
+      github.event.label.name != 'ci:heavy' &&
+      format('{0}-{1}-ignored-label-{2}', github.workflow, github.event.pull_request.number, github.run_id) ||
+      format('{0}-{1}', github.workflow, github.event_name == 'workflow_dispatch' && inputs.ref || github.ref_name)
+    }}
+  cancel-in-progress: >-
+    ${{
+      github.event_name != 'workflow_dispatch' &&
+      github.ref_name != 'main' &&
+      github.ref_name != 'upstream-main' &&
+      !(
+        github.event_name == 'pull_request' &&
+        github.event.action == 'labeled' &&
+        github.event.label.name != 'ci:heavy'
+      )
+    }}
 
 permissions:
   contents: read

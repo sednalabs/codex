@@ -1518,12 +1518,13 @@ mod tests {
 
         let child_thread_id = harness
             .control
-            .spawn_agent_with_options(
+            .spawn_agent_with_metadata(
                 harness.config.clone(),
                 text_input("child task"),
                 Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
                     parent_thread_id,
                     depth: 1,
+                    agent_path: None,
                     agent_nickname: None,
                     agent_role: None,
                 })),
@@ -1532,7 +1533,8 @@ mod tests {
                 },
             )
             .await
-            .expect("forked spawn should succeed");
+            .expect("forked spawn should succeed")
+            .thread_id;
 
         let child_thread = harness
             .manager
@@ -1601,12 +1603,13 @@ mod tests {
 
         let child_thread_id = harness
             .control
-            .spawn_agent_with_options(
+            .spawn_agent_with_metadata(
                 harness.config.clone(),
                 text_input("child task"),
                 Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
                     parent_thread_id,
                     depth: 1,
+                    agent_path: None,
                     agent_nickname: None,
                     agent_role: None,
                 })),
@@ -1615,7 +1618,8 @@ mod tests {
                 },
             )
             .await
-            .expect("forked spawn should succeed");
+            .expect("forked spawn should succeed")
+            .thread_id;
 
         let child_thread = harness
             .manager
@@ -1671,12 +1675,13 @@ mod tests {
 
         let child_thread_id = harness
             .control
-            .spawn_agent_with_options(
+            .spawn_agent_with_metadata(
                 harness.config.clone(),
                 text_input("child task"),
                 Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
                     parent_thread_id,
                     depth: 1,
+                    agent_path: None,
                     agent_nickname: None,
                     agent_role: None,
                 })),
@@ -1685,7 +1690,8 @@ mod tests {
                 },
             )
             .await
-            .expect("forked spawn should flush parent rollout before loading history");
+            .expect("forked spawn should flush parent rollout before loading history")
+            .thread_id;
 
         let child_thread = harness
             .manager
@@ -1930,6 +1936,7 @@ mod tests {
                 Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
                     parent_thread_id,
                     depth: 1,
+                    agent_path: None,
                     agent_nickname: None,
                     agent_role: Some("explorer".to_string()),
                 })),
@@ -1961,9 +1968,11 @@ mod tests {
             Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
                 parent_thread_id,
                 depth: 1,
+                agent_path: None,
                 agent_nickname: None,
                 agent_role: Some("explorer".to_string()),
             })),
+            child_thread_id.to_string(),
         );
 
         assert_eq!(wait_for_subagent_notification(&parent_thread).await, true);
@@ -2001,6 +2010,7 @@ mod tests {
                 Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
                     parent_thread_id,
                     depth: 1,
+                    agent_path: None,
                     agent_nickname: None,
                     agent_role: Some("explorer".to_string()),
                 })),
@@ -2018,6 +2028,7 @@ mod tests {
         let SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
             parent_thread_id: seen_parent_thread_id,
             depth,
+            agent_path: _,
             agent_nickname,
             agent_role,
         }) = snapshot.session_source
@@ -2051,6 +2062,7 @@ mod tests {
                 Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
                     parent_thread_id,
                     depth: 1,
+                    agent_path: None,
                     agent_nickname: None,
                     agent_role: Some("researcher".to_string()),
                 })),
@@ -2102,6 +2114,7 @@ mod tests {
                 Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
                     parent_thread_id,
                     depth: 1,
+                    agent_path: None,
                     agent_nickname: None,
                     agent_role: Some("explorer".to_string()),
                 })),
@@ -2170,6 +2183,7 @@ mod tests {
                 SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
                     parent_thread_id,
                     depth: 1,
+                    agent_path: None,
                     agent_nickname: None,
                     agent_role: None,
                 }),
@@ -2188,6 +2202,7 @@ mod tests {
         let SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
             parent_thread_id: resumed_parent_thread_id,
             depth: resumed_depth,
+            agent_path: _,
             agent_nickname: resumed_nickname,
             agent_role: resumed_role,
         }) = resumed_snapshot.session_source
@@ -2219,6 +2234,7 @@ mod tests {
                 Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
                     parent_thread_id,
                     depth: 1,
+                    agent_path: None,
                     agent_nickname: None,
                     agent_role: Some("explorer".to_string()),
                 })),
@@ -2233,6 +2249,7 @@ mod tests {
                 Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
                     parent_thread_id: child_thread_id,
                     depth: 2,
+                    agent_path: None,
                     agent_nickname: None,
                     agent_role: Some("worker".to_string()),
                 })),
