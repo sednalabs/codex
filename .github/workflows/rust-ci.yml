@@ -298,6 +298,11 @@ jobs:
           targets: ${{ matrix.target }}
           components: clippy
 
+      - name: Ensure musl Rust target is installed
+        if: ${{ matrix.target == 'x86_64-unknown-linux-musl' || matrix.target == 'aarch64-unknown-linux-musl' }}
+        shell: bash
+        run: rustup target add ${{ matrix.target }} --toolchain 1.93.0
+
       - if: ${{ matrix.target == 'x86_64-unknown-linux-musl' || matrix.target == 'aarch64-unknown-linux-musl'}}
         name: Use hermetic Cargo home (musl)
         shell: bash
@@ -643,6 +648,11 @@ jobs:
       - uses: dtolnay/rust-toolchain@1.93.0
         with:
           targets: ${{ matrix.target }}
+
+      - name: Ensure musl Rust target is installed
+        if: ${{ matrix.target == 'x86_64-unknown-linux-musl' || matrix.target == 'aarch64-unknown-linux-musl' }}
+        shell: bash
+        run: rustup target add ${{ matrix.target }} --toolchain 1.93.0
 
       - name: Compute lockfile hash
         id: lockhash
