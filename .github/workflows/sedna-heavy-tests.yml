@@ -52,6 +52,12 @@ permissions:
 jobs:
   metadata:
     name: Resolve heavy-test checkout ref and lane selection
+    if: >-
+      ${{
+        github.event_name != 'pull_request' ||
+        github.event.action != 'labeled' ||
+        github.event.label.name == 'ci:heavy'
+      }}
     runs-on: ubuntu-24.04
     outputs:
       checkout_ref: ${{ steps.meta.outputs.checkout_ref }}
