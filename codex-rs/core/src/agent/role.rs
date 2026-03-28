@@ -291,16 +291,21 @@ pub(crate) async fn role_model_override_locks(
     else {
         return Ok(RoleModelOverrideLocks::default());
     };
-    let effective_profile = role_config
+    let profile_changed = role_config
         .profile
         .as_deref()
-        .or(config.active_profile.as_deref());
-    let effective_profile_updates = role_profile_field_updates(effective_profile, &role_layer_toml);
+        .filter(|profile| Some(*profile) != config.active_profile.as_deref())
+        .is_some();
+    let active_profile_updates = if profile_changed {
+        RoleActiveProfileFieldUpdates::default()
+    } else {
+        role_profile_field_updates(config.active_profile.as_deref(), &role_layer_toml)
+    };
 
     Ok(RoleModelOverrideLocks {
-        model: role_config.model.is_some() || effective_profile_updates.model,
+        model: role_config.model.is_some() || active_profile_updates.model,
         model_reasoning_effort: role_config.model_reasoning_effort.is_some()
-            || effective_profile_updates.model_reasoning_effort,
+            || active_profile_updates.model_reasoning_effort,
     })
 }
 
