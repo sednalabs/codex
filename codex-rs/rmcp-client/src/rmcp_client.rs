@@ -1237,16 +1237,16 @@ mod tests {
         let app = Router::new()
             .route(
                 "/mcp",
-                delete({
-                    move |headers: AxumHeaderMap, State(seen_session_id): State<Arc<Mutex<Option<String>>>>| async move {
+                delete(
+                    |headers: AxumHeaderMap, State(seen_session_id): State<Arc<Mutex<Option<String>>>>| async move {
                         let session_id = headers
                             .get(HEADER_SESSION_ID)
                             .and_then(|value| value.to_str().ok())
                             .map(ToOwned::to_owned);
                         *seen_session_id.lock().await = session_id;
                         StatusCode::NOT_FOUND
-                    }
-                }),
+                    },
+                ),
             )
             .with_state(Arc::clone(&seen_session_id));
         let server = tokio::spawn(async move {
