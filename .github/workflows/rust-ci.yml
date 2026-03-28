@@ -140,7 +140,7 @@ jobs:
     needs: changed
     if: ${{ needs.changed.outputs.argument_comment_lint == 'true' || needs.changed.outputs.workflows == 'true' || github.event_name == 'push' }}
     strategy:
-      fail-fast: false
+      fail-fast: ${{ github.event_name != 'push' }}
       matrix:
         include:
           - name: Linux
@@ -193,7 +193,8 @@ jobs:
       CARGO_PROFILE_RELEASE_LTO: ${{ matrix.profile == 'release' && 'thin' || 'fat' }}
 
     strategy:
-      fail-fast: false
+      fail-fast: ${{ github.event_name != 'push' }}
+      max-parallel: 4
       matrix:
         include:
           - runner: macos-15-xlarge
@@ -599,7 +600,8 @@ jobs:
       SCCACHE_CACHE_SIZE: 10G
 
     strategy:
-      fail-fast: false
+      fail-fast: ${{ github.event_name != 'push' }}
+      max-parallel: 3
       matrix:
         include:
           - runner: macos-15-xlarge
@@ -751,7 +753,24 @@ jobs:
 
       - name: tests
         id: test
-        run: cargo nextest run --all-features --no-fail-fast --target ${{ matrix.target }} --cargo-profile ci-test --timings
+        shell: bash
+        run: |
+          set -euo pipefail
+          nextest_args=(
+            cargo
+            nextest
+            run
+            --all-features
+            --target
+            "${{ matrix.target }}"
+            --cargo-profile
+            ci-test
+            --timings
+          )
+          if [[ "${{ github.event_name }}" == "push" ]]; then
+            nextest_args+=(--no-fail-fast)
+          fi
+          "${nextest_args[@]}"
         env:
           RUST_BACKTRACE: 1
           NEXTEST_STATUS_LEVEL: leak

@@ -54,9 +54,15 @@ GitHub Actions lane naming (`.github/workflows/sedna-heavy-tests.yml`):
   - It runs on every `pull_request` update and `merge_group`.
   - `CI results (required)` is the single required gate, and it enforces
     `Downstream smoke` when downstream-facing paths change.
+  - PR and merge-group matrix jobs fail fast and cap their runner fan-out so a
+    known-bad head stops tying up the shared GitHub Actions pool.
+  - Protected-branch pushes still keep fuller in-lane failure signal where that
+    is more valuable than early cancellation.
 - `sedna-heavy-tests.yml` is the downstream-heavy lane workflow.
   - On ordinary PR updates, it auto-selects only the heavy lanes implied by the
     changed path class.
+  - Non-doc heavy runs must clear `core-test-smoke` before the broader lane
+    matrix fans out, and the heavy matrix itself is capped and fail-fast on PRs.
   - Changes to workflow wiring or the `justfile` promote the PR to the full
     heavy matrix so CI definitions fail closed.
   - Applying the `ci:heavy` label promotes the PR to the full heavy matrix.
