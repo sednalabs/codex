@@ -551,6 +551,64 @@ model_reasoning_effort = "high"
 }
 
 #[tokio::test]
+async fn role_model_override_locks_include_effective_profile_model_settings_when_provider_changes()
+{
+    let home = TempDir::new().expect("create temp dir");
+    tokio::fs::write(
+        home.path().join(CONFIG_TOML_FILE),
+        r#"
+[profiles.base-profile]
+model = "base-model"
+model_reasoning_effort = "low"
+"#,
+    )
+    .await
+    .expect("write config.toml");
+    let mut config = ConfigBuilder::default()
+        .codex_home(home.path().to_path_buf())
+        .harness_overrides(ConfigOverrides {
+            config_profile: Some("base-profile".to_string()),
+            ..Default::default()
+        })
+        .fallback_cwd(Some(home.path().to_path_buf()))
+        .build()
+        .await
+        .expect("load config");
+    let role_path = write_role_config(
+        &home,
+        "provider-and-profile-model-locks.toml",
+        r#"developer_instructions = "Stay focused"
+model_provider = "openai"
+
+[profiles.base-profile]
+model = "role-model"
+model_reasoning_effort = "high"
+"#,
+    )
+    .await;
+    config.agent_roles.insert(
+        "custom".to_string(),
+        AgentRoleConfig {
+            description: None,
+            config_file: Some(role_path),
+            nickname_candidates: None,
+        },
+    );
+
+    let locks = role_model_override_locks(&config, Some("custom"))
+        .await
+        .expect("custom role should resolve");
+
+    assert_eq!(
+        locks,
+        RoleModelOverrideLocks {
+            model: true,
+            model_reasoning_effort: true,
+        }
+    );
+}
+
+#[tokio::test]
 async fn role_model_override_locks_ignore_non_effective_active_profile_edits() {
     let home = TempDir::new().expect("create temp dir");
     tokio::fs::write(
