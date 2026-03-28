@@ -2,7 +2,6 @@ use super::*;
 use crate::AuthManager;
 use crate::CodexAuth;
 use crate::ThreadManager;
-use crate::agent::control::SpawnAgentOptions;
 use crate::built_in_model_providers;
 use crate::codex::make_session_and_context;
 use crate::config::AgentRoleConfig;
@@ -1051,7 +1050,7 @@ async fn list_agents_returns_direct_children_with_live_inventory() {
 
     let grandchild_id = manager
         .agent_control()
-        .spawn_agent_with_options(
+        .spawn_agent(
             (*turn.config).clone(),
             vec![UserInput::Text {
                 text: "nested child".to_string(),
@@ -1060,10 +1059,10 @@ async fn list_agents_returns_direct_children_with_live_inventory() {
             Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
                 parent_thread_id: child_one_id,
                 depth: 2,
+                agent_path: None,
                 agent_nickname: None,
                 agent_role: Some("explorer".to_string()),
             })),
-            SpawnAgentOptions::default(),
         )
         .await
         .expect("spawn nested child");
@@ -1213,7 +1212,7 @@ async fn list_agents_id_filter_returns_not_found_entries_for_missing_or_invisibl
     let child_id = agent_id(&child_result.agent_id).expect("valid child id");
     let grandchild_id = manager
         .agent_control()
-        .spawn_agent_with_options(
+        .spawn_agent(
             (*turn.config).clone(),
             vec![UserInput::Text {
                 text: "nested child".to_string(),
@@ -1222,10 +1221,10 @@ async fn list_agents_id_filter_returns_not_found_entries_for_missing_or_invisibl
             Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
                 parent_thread_id: child_id,
                 depth: 2,
+                agent_path: None,
                 agent_nickname: None,
                 agent_role: Some("explorer".to_string()),
             })),
-            SpawnAgentOptions::default(),
         )
         .await
         .expect("spawn nested child");
@@ -1561,7 +1560,7 @@ async fn list_agents_include_descendants_hydrates_live_nested_descendant_invento
 
     let grandchild_thread_id = manager
         .agent_control()
-        .spawn_agent_with_options(
+        .spawn_agent(
             (*turn.config).clone(),
             vec![UserInput::Text {
                 text: "live grandchild".to_string(),
@@ -1570,10 +1569,10 @@ async fn list_agents_include_descendants_hydrates_live_nested_descendant_invento
             Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
                 parent_thread_id: child_thread_id,
                 depth: 2,
+                agent_path: None,
                 agent_nickname: None,
                 agent_role: Some("explorer".to_string()),
             })),
-            SpawnAgentOptions::default(),
         )
         .await
         .expect("grandchild spawn should succeed");
@@ -1718,7 +1717,7 @@ async fn list_agents_rejects_descendant_edge_status_when_live_edges_lack_persist
 
     manager
         .agent_control()
-        .spawn_agent_with_options(
+        .spawn_agent(
             (*turn.config).clone(),
             vec![UserInput::Text {
                 text: "live grandchild without sqlite persisted edges".to_string(),
@@ -1727,10 +1726,10 @@ async fn list_agents_rejects_descendant_edge_status_when_live_edges_lack_persist
             Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
                 parent_thread_id: child_thread_id,
                 depth: 2,
+                agent_path: None,
                 agent_nickname: None,
                 agent_role: Some("explorer".to_string()),
             })),
-            SpawnAgentOptions::default(),
         )
         .await
         .expect("grandchild spawn should succeed");

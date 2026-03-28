@@ -99,7 +99,10 @@ async fn apply_role_returns_unavailable_for_missing_user_role_file() {
         .await
         .expect_err("missing role file should fail");
 
-    assert_eq!(err, AGENT_TYPE_UNAVAILABLE_ERROR);
+    assert!(
+        err.contains("failed to read config for agent type 'custom'"),
+        "unexpected error: {err}"
+    );
 }
 
 #[tokio::test]
@@ -119,7 +122,10 @@ async fn apply_role_returns_unavailable_for_invalid_user_role_toml() {
         .await
         .expect_err("invalid role file should fail");
 
-    assert_eq!(err, AGENT_TYPE_UNAVAILABLE_ERROR);
+    assert!(
+        err.contains("failed to parse config for agent type 'custom'"),
+        "unexpected error: {err}"
+    );
 }
 
 #[tokio::test]
