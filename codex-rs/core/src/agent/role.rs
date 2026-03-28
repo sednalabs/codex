@@ -153,6 +153,51 @@ fn role_preserves_current_profile(role_config: &ConfigToml) -> bool {
     role_config.model_provider.is_none() && role_config.profile.is_none()
 }
 
+fn role_layer_stack_with_session_flags(
+    config: &Config,
+    role_name: &str,
+    role_layer_toml: &TomlValue,
+) -> Result<ConfigLayerStack, String> {
+    let mut layers: Vec<ConfigLayerEntry> = config
+        .config_layer_stack
+        .get_layers(
+            ConfigLayerStackOrdering::LowestPrecedenceFirst,
+            /*include_disabled*/ true,
+        )
+        .into_iter()
+        .cloned()
+        .collect();
+    let layer = ConfigLayerEntry::new(ConfigLayerSource::SessionFlags, role_layer_toml.clone());
+    let insertion_index =
+        layers.partition_point(|existing_layer| existing_layer.name <= layer.name);
+    layers.insert(insertion_index, layer);
+
+    ConfigLayerStack::new(
+        layers,
+        config.config_layer_stack.requirements().clone(),
+        config.config_layer_stack.requirements_toml().clone(),
+    )
+    .map_err(|err| format!("failed to create layered config for agent type '{role_name}': {err}"))
+}
+
+fn effective_role_profile_after_precedence(
+    config: &Config,
+    role_name: &str,
+    role_layer_toml: &TomlValue,
+) -> Result<Option<String>, String> {
+    let config_layer_stack =
+        role_layer_stack_with_session_flags(config, role_name, role_layer_toml)?;
+    let merged_toml = config_layer_stack.effective_config();
+    let merged_config = deserialize_config_toml_with_base(merged_toml, &config.codex_home)
+        .map_err(|err| {
+            format!("failed to deserialize merged config for agent type '{role_name}': {err}")
+        })?;
+
+    Ok(merged_config
+        .profile
+        .or_else(|| config.active_profile.clone()))
+}
+
 /// Applies a named role layer to `config` while preserving caller-owned model selection.
 ///
 /// The role layer is inserted at session-flag precedence so it can override persisted config, but
@@ -225,28 +270,8 @@ pub(crate) async fn apply_role_to_config(
         None
     };
 
-    let mut layers: Vec<ConfigLayerEntry> = config
-        .config_layer_stack
-        .get_layers(
-            ConfigLayerStackOrdering::LowestPrecedenceFirst,
-            /*include_disabled*/ true,
-        )
-        .into_iter()
-        .cloned()
-        .collect();
-    let layer = ConfigLayerEntry::new(ConfigLayerSource::SessionFlags, role_layer_toml);
-    let insertion_index =
-        layers.partition_point(|existing_layer| existing_layer.name <= layer.name);
-    layers.insert(insertion_index, layer);
-
-    let config_layer_stack = ConfigLayerStack::new(
-        layers,
-        config.config_layer_stack.requirements().clone(),
-        config.config_layer_stack.requirements_toml().clone(),
-    )
-    .map_err(|err| {
-        format!("failed to create layered config for agent type '{role_name}': {err}")
-    })?;
+    let config_layer_stack =
+        role_layer_stack_with_session_flags(config, role_name, &role_layer_toml)?;
 
     let merged_toml = config_layer_stack.effective_config();
     let merged_config = deserialize_config_toml_with_base(merged_toml, &config.codex_home)
@@ -291,16 +316,10 @@ pub(crate) async fn role_model_override_locks(
     else {
         return Ok(RoleModelOverrideLocks::default());
     };
-    let profile_changed = role_config
-        .profile
-        .as_deref()
-        .filter(|profile| Some(*profile) != config.active_profile.as_deref())
-        .is_some();
-    let active_profile_updates = if profile_changed {
-        RoleActiveProfileFieldUpdates::default()
-    } else {
-        role_profile_field_updates(config.active_profile.as_deref(), &role_layer_toml)
-    };
+    let effective_profile =
+        effective_role_profile_after_precedence(config, role_name, &role_layer_toml)?;
+    let active_profile_updates =
+        role_profile_field_updates(effective_profile.as_deref(), &role_layer_toml);
 
     Ok(RoleModelOverrideLocks {
         model: role_config.model.is_some() || active_profile_updates.model,
