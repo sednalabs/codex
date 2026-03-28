@@ -118,18 +118,26 @@ core-ledger-smoke:
 
 # Focused persisted-state/usage lineage contract slice for subagent graph adoption.
 core-state-spawn-lineage-contract-targeted:
-    set -euo pipefail
     cargo test -p codex-state usage_spawn_lineage_matches_persisted_state_edge_for_child_thread -- --test-threads=1
 
 # Cross-repo ledger seam validation (agent-usage-ledger + Postgres).
 [no-cd]
 downstream-ledger-seam:
-    [ -d "${LEDGER_REPO_ROOT:-../agent-usage-ledger}" ] || { echo "Skipping downstream-ledger-seam: missing ledger repo at ${LEDGER_REPO_ROOT:-../agent-usage-ledger}"; exit 0; }
-    command -v psql >/dev/null 2>&1 || { echo "Skipping downstream-ledger-seam: missing psql"; exit 0; }
-    "${LEDGER_REPO_ROOT:-../agent-usage-ledger}/scripts/llm_usage/ensure_schema.sh" --schema "${LLM_USAGE_DB_SCHEMA:-llm_usage}"
-    "${LEDGER_REPO_ROOT:-../agent-usage-ledger}/scripts/llm_usage/ingest_codex_rollouts_to_postgres.sh" --schema "${LLM_USAGE_DB_SCHEMA:-llm_usage}" --skip-schema
-    "${LEDGER_REPO_ROOT:-../agent-usage-ledger}/scripts/llm_usage/test_codex_copied_history_filter.sh"
-    "${LEDGER_REPO_ROOT:-../agent-usage-ledger}/scripts/llm_usage/test_codex_source_row_identity.sh"
+    #!/usr/bin/env bash
+    set -euo pipefail
+    ledger_repo_root="${LEDGER_REPO_ROOT:-../agent-usage-ledger}"
+    if [[ ! -d "${ledger_repo_root}" ]]; then
+        echo "Skipping downstream-ledger-seam: missing ledger repo at ${ledger_repo_root}"
+        exit 0
+    fi
+    if ! command -v psql >/dev/null 2>&1; then
+        echo "Skipping downstream-ledger-seam: missing psql"
+        exit 0
+    fi
+    "${ledger_repo_root}/scripts/llm_usage/ensure_schema.sh" --schema "${LLM_USAGE_DB_SCHEMA:-llm_usage}"
+    "${ledger_repo_root}/scripts/llm_usage/ingest_codex_rollouts_to_postgres.sh" --schema "${LLM_USAGE_DB_SCHEMA:-llm_usage}" --skip-schema
+    "${ledger_repo_root}/scripts/llm_usage/test_codex_copied_history_filter.sh"
+    "${ledger_repo_root}/scripts/llm_usage/test_codex_source_row_identity.sh"
 
 [no-cd]
 downstream-docs-check:
