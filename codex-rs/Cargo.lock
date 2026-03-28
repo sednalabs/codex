@@ -1959,7 +1959,7 @@ dependencies = [
  "walkdir",
  "which 8.0.0",
  "wildmatch",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
  "wiremock",
  "zip",
  "zstd",
@@ -2674,7 +2674,7 @@ dependencies = [
  "vt100",
  "webbrowser",
  "which 8.0.0",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
  "winsplit",
 ]
 
@@ -2767,7 +2767,7 @@ dependencies = [
  "vt100",
  "webbrowser",
  "which 8.0.0",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
  "winsplit",
 ]
 
