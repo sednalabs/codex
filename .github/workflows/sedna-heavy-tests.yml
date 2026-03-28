@@ -30,7 +30,31 @@ on:
         default: all
   pull_request:
     types:
+      - opened
+      - synchronize
+      - reopened
+      - ready_for_review
       - labeled
+    paths:
+      - ".github/workflows/**"
+      - "codex-rs/app-server/**"
+      - "codex-rs/app-server-protocol/**"
+      - "codex-rs/cli/**"
+      - "codex-rs/common/**"
+      - "codex-rs/core/**"
+      - "codex-rs/hooks/**"
+      - "codex-rs/linux-sandbox/**"
+      - "codex-rs/protocol/**"
+      - "codex-rs/state/**"
+      - "codex-rs/tui/**"
+      - "codex-rs/tui_app_server/**"
+      - "codex-rs/windows-sandbox-rs/**"
+      - "docs/carry-divergence-ledger.md"
+      - "docs/downstream-regression-matrix.md"
+      - "docs/downstream-tool-surface-matrix.md"
+      - "docs/downstream.md"
+      - "justfile"
+  merge_group: {}
   schedule:
     - cron: "15 16 * * *"
   push:
@@ -41,10 +65,18 @@ on:
       - "codex-rs/cli/**"
       - "codex-rs/common/**"
       - "codex-rs/core/**"
+      - "codex-rs/hooks/**"
+      - "codex-rs/linux-sandbox/**"
       - "codex-rs/protocol/**"
       - "codex-rs/state/**"
       - "codex-rs/tui/**"
       - "codex-rs/tui_app_server/**"
+      - "codex-rs/app-server/**"
+      - "codex-rs/app-server-protocol/**"
+      - "codex-rs/windows-sandbox-rs/**"
+      - "docs/carry-divergence-ledger.md"
+      - "docs/downstream-tool-surface-matrix.md"
+      - "docs/downstream.md"
       - "docs/downstream-regression-matrix.md"
       - "justfile"
 
@@ -57,16 +89,20 @@ permissions:
 
 jobs:
   metadata:
-    name: Resolve heavy-test checkout ref
+    name: Resolve heavy-test checkout ref and lane selection
     runs-on: ubuntu-24.04
-    if: >-
-      ${{
-        github.event_name != 'pull_request' ||
-        github.event.label.name == 'ci:heavy'
-      }}
     outputs:
       checkout_ref: ${{ steps.meta.outputs.checkout_ref }}
+      run_all_lanes: ${{ steps.meta.outputs.run_all_lanes }}
+      run_core_family: ${{ steps.meta.outputs.run_core_family }}
+      run_ui_protocol_family: ${{ steps.meta.outputs.run_ui_protocol_family }}
+      run_docs_family: ${{ steps.meta.outputs.run_docs_family }}
     steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.ref || github.sha }}
+
       - name: Compute checkout ref
         id: meta
         shell: bash
@@ -74,13 +110,51 @@ jobs:
           set -euo pipefail
 
           checkout_ref='${{ github.sha }}'
+          run_all_lanes=false
+          run_core_family=false
+          run_ui_protocol_family=false
+          run_docs_family=false
+
           if [[ '${{ github.event_name }}' == 'workflow_dispatch' && -n '${{ inputs.ref }}' ]]; then
             checkout_ref='${{ inputs.ref }}'
           elif [[ '${{ github.event_name }}' == 'pull_request' ]]; then
             checkout_ref='${{ github.event.pull_request.head.sha }}'
           fi
 
+          if [[ '${{ github.event_name }}' == 'pull_request' ]]; then
+            if [[ "${{ contains(github.event.pull_request.labels.*.name, 'ci:heavy') }}" == 'true' ]]; then
+              run_all_lanes=true
+            fi
+
+            BASE_SHA='${{ github.event.pull_request.base.sha }}'
+            HEAD_SHA='${{ github.event.pull_request.head.sha }}'
+            mapfile -t files < <(git diff --name-only --no-renames "$BASE_SHA" "$HEAD_SHA")
+
+            for f in "${files[@]}"; do
+              case "$f" in
+                .github/workflows/*|justfile)
+                  run_all_lanes=true
+                  ;;
+                codex-rs/cli/*|codex-rs/common/*|codex-rs/core/*|codex-rs/hooks/*|codex-rs/linux-sandbox/*|codex-rs/state/*|codex-rs/windows-sandbox-rs/*)
+                  run_core_family=true
+                  ;;
+                codex-rs/app-server/*|codex-rs/app-server-protocol/*|codex-rs/protocol/*|codex-rs/tui/*|codex-rs/tui_app_server/*)
+                  run_ui_protocol_family=true
+                  ;;
+                docs/carry-divergence-ledger.md|docs/downstream-regression-matrix.md|docs/downstream-tool-surface-matrix.md|docs/downstream.md)
+                  run_docs_family=true
+                  ;;
+              esac
+            done
+          else
+            run_all_lanes=true
+          fi
+
           echo "checkout_ref=${checkout_ref}" >> "$GITHUB_OUTPUT"
+          echo "run_all_lanes=${run_all_lanes}" >> "$GITHUB_OUTPUT"
+          echo "run_core_family=${run_core_family}" >> "$GITHUB_OUTPUT"
+          echo "run_ui_protocol_family=${run_ui_protocol_family}" >> "$GITHUB_OUTPUT"
+          echo "run_docs_family=${run_docs_family}" >> "$GITHUB_OUTPUT"
 
   downstream_lanes:
     needs: metadata
@@ -91,6 +165,12 @@ jobs:
           github.event_name != 'workflow_dispatch' ||
           inputs.lane == 'all' ||
           inputs.lane == matrix.lane_id
+        ) &&
+        (
+          needs.metadata.outputs.run_all_lanes == 'true' ||
+          (matrix.auto_group == 'core' && needs.metadata.outputs.run_core_family == 'true') ||
+          (matrix.auto_group == 'ui_protocol' && needs.metadata.outputs.run_ui_protocol_family == 'true') ||
+          (matrix.auto_group == 'docs' && needs.metadata.outputs.run_docs_family == 'true')
         )
       }}
     strategy:
@@ -98,32 +178,46 @@ jobs:
       matrix:
         include:
           - lane_id: core-compile-smoke
+            auto_group: core
             run_command: just --justfile ../justfile core-compile-smoke
           - lane_id: core-carry-smoke
+            auto_group: core
             run_command: just --justfile ../justfile core-carry-smoke
           - lane_id: core-ledger-smoke
+            auto_group: core
             run_command: just --justfile ../justfile core-ledger-smoke
           - lane_id: codex.core-startup-sync-targeted
+            auto_group: core
             run_command: just --justfile ../justfile core-startup-sync-targeted
           - lane_id: codex.core-subagent-surface-targeted
+            auto_group: core
             run_command: just --justfile ../justfile core-subagent-surface-targeted
           - lane_id: codex.core-subagent-notification-contract-targeted
+            auto_group: core
             run_command: just --justfile ../justfile core-subagent-notification-contract-targeted
           - lane_id: codex.core-subagent-notification-visibility-targeted
+            auto_group: ui_protocol
             run_command: just --justfile ../justfile core-subagent-notification-visibility-targeted
           - lane_id: codex.core-multi-agent-orchestration-targeted
+            auto_group: core
             run_command: just --justfile ../justfile core-multi-agent-orchestration-targeted
           - lane_id: codex.core-persisted-subagent-descendants-targeted
+            auto_group: core
             run_command: just --justfile ../justfile core-persisted-subagent-descendants-targeted
           - lane_id: codex.core-context-serialization-targeted
+            auto_group: core
             run_command: just --justfile ../justfile core-context-serialization-targeted
           - lane_id: codex.state-spawn-lineage-contract-targeted
+            auto_group: core
             run_command: just --justfile ../justfile core-state-spawn-lineage-contract-targeted
           - lane_id: codex.app-server-protocol-test
+            auto_group: ui_protocol
             run_command: cargo test --locked -p codex-app-server-protocol
           - lane_id: codex.downstream-docs-check
+            auto_group: docs
             run_command: just --justfile ../justfile downstream-docs-check
           - lane_id: downstream-ledger-seam
+            auto_group: core
             run_command: just --justfile ../justfile downstream-ledger-seam
     uses: ./.github/workflows/_sedna-linux-rust.yml
     with:

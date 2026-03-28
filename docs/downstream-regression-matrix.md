@@ -16,6 +16,12 @@ Fast lanes used by `core-test-smoke`:
 - `core-compile-smoke`
 - `core-carry-smoke`
 - `core-ledger-smoke`
+- `core-carry-smoke` now includes the `codex-tui-app-server`
+  replayed-queue and selected-agent footer regressions from PR `#14`, so
+  downstream interactive behavior fails during the PR smoke pass.
+- `core-ledger-smoke` now includes the `usage.sqlite` cleanup, turn-reset, and
+  restart-lineage regressions from PR `#14`, so downstream accounting behavior
+  fails during the same smoke pass.
 
 Focused micro-slices for iterative work on the current carry seams:
 
@@ -41,6 +47,27 @@ GitHub Actions lane naming (`.github/workflows/sedna-heavy-tests.yml`):
   every shard).
 - Where the local `justfile` recipe name differs, workflow shards still retain
   the docs lane ID and only translate at command execution time.
+
+## GitHub trigger policy
+
+- `rust-ci.yml` is the default PR fail-fast workflow.
+  - It runs on every `pull_request` update and `merge_group`.
+  - `CI results (required)` is the single required gate, and it enforces
+    `Downstream smoke` when downstream-facing paths change.
+- `sedna-heavy-tests.yml` is the downstream-heavy lane workflow.
+  - On ordinary PR updates, it auto-selects only the heavy lanes implied by the
+    changed path class.
+  - Changes to workflow wiring or the `justfile` promote the PR to the full
+    heavy matrix so CI definitions fail closed.
+  - Applying the `ci:heavy` label promotes the PR to the full heavy matrix.
+  - `merge_group`, nightly schedule, `push` to `main`, and
+    `workflow_dispatch lane=all` all run the full heavy matrix.
+  - `workflow_dispatch` can still run one named lane when a single shard is the
+    right debugging tool.
+- `sedna-branch-build.yml` is the preview artifact path.
+  - It stays push-only for non-`main` branches plus manual dispatch.
+  - Treat it as artifact validation, not the primary downstream correctness
+    gate.
 
 ## Divergence mapping
 
