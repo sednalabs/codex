@@ -56,6 +56,7 @@ mod agent_jobs;
 mod backfill;
 mod logs;
 mod memories;
+mod phase2_attestation;
 #[cfg(test)]
 mod test_support;
 mod threads;
