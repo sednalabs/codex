@@ -30,8 +30,10 @@ use codex_protocol::models::ResponseInputItem;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::openai_models::ReasoningEffort;
 use codex_protocol::protocol::CollabWaitingCompletionReason;
+use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::InitialHistory;
 use codex_protocol::protocol::RolloutItem;
+use codex_protocol::protocol::TurnCompleteEvent;
 use pretty_assertions::assert_eq;
 use serde::Deserialize;
 use serde_json::json;
@@ -2035,7 +2037,7 @@ async fn multi_agent_v2_wait_agent_accepts_targets_argument() {
     assert_eq!(
         result,
         wait::WaitAgentResult {
-            status: HashMap::from([(target_id, AgentStatus::NotFound)]),
+            message: "Wait completed.".to_string(),
             requested_ids: vec![target_id],
             pending_ids: vec![],
             completion_reason: CollabWaitingCompletionReason::Terminal,
@@ -2093,7 +2095,7 @@ async fn wait_agent_returns_not_found_for_missing_agents() {
     assert_eq!(
         result,
         wait::WaitAgentResult {
-            status: HashMap::from([(id_a, AgentStatus::NotFound), (id_b, AgentStatus::NotFound),]),
+            message: "Wait completed.".to_string(),
             requested_ids: vec![id_a, id_b],
             pending_ids: vec![],
             completion_reason: CollabWaitingCompletionReason::Terminal,
@@ -2130,7 +2132,7 @@ async fn wait_agent_times_out_when_status_is_not_final() {
     assert_eq!(
         result,
         wait::WaitAgentResult {
-            status: HashMap::new(),
+            message: "Wait timed out.".to_string(),
             requested_ids: vec![agent_id],
             pending_ids: vec![agent_id],
             completion_reason: CollabWaitingCompletionReason::Timeout,
@@ -2223,7 +2225,7 @@ async fn wait_agent_returns_final_status_without_timeout() {
     assert_eq!(
         result,
         wait::WaitAgentResult {
-            status: HashMap::from([(agent_id, AgentStatus::Shutdown)]),
+            message: "Wait completed.".to_string(),
             requested_ids: vec![agent_id],
             pending_ids: vec![],
             completion_reason: CollabWaitingCompletionReason::Terminal,
@@ -2280,7 +2282,7 @@ async fn wait_agent_allows_return_when_any_and_returns_on_first_final_status() {
     assert_eq!(
         result,
         wait::WaitAgentResult {
-            status: HashMap::from([(final_thread_id, AgentStatus::Shutdown)]),
+            message: "Wait completed.".to_string(),
             requested_ids: vec![final_thread_id, pending_thread_id],
             pending_ids: vec![pending_thread_id],
             completion_reason: CollabWaitingCompletionReason::Terminal,
@@ -2342,7 +2344,7 @@ async fn wait_agent_allows_return_when_all_and_returns_only_when_all_are_final()
     finalize_pending
         .await
         .expect("finalize spawn background task should finish");
-    assert_eq!(result.status.len(), 2);
+    assert_eq!(result.message, "Wait completed.");
     assert_eq!(
         result.completion_reason,
         CollabWaitingCompletionReason::Terminal
@@ -2353,6 +2355,63 @@ async fn wait_agent_allows_return_when_all_and_returns_only_when_all_are_final()
     );
     assert!(result.pending_ids.is_empty());
     assert_eq!(result.timed_out, false);
+    assert_eq!(success, None);
+}
+
+#[tokio::test]
+async fn wait_agent_does_not_return_completed_content() {
+    let (mut session, mut turn) = make_session_and_context().await;
+    let manager = thread_manager();
+    session.services.agent_control = manager.agent_control();
+    let mut config = (*turn.config).clone();
+    config
+        .features
+        .enable(Feature::MultiAgentV2)
+        .expect("test config should allow feature update");
+    turn.config = Arc::new(config.clone());
+
+    let thread = manager.start_thread(config).await.expect("start thread");
+    let agent_id = thread.thread_id;
+    let child_turn = thread.thread.codex.session.new_default_turn().await;
+    thread
+        .thread
+        .codex
+        .session
+        .send_event(
+            child_turn.as_ref(),
+            EventMsg::TurnComplete(TurnCompleteEvent {
+                turn_id: child_turn.sub_id.clone(),
+                last_agent_message: Some("sensitive child output".to_string()),
+            }),
+        )
+        .await;
+
+    let output = WaitAgentHandler
+        .handle(invocation(
+            Arc::new(session),
+            Arc::new(turn),
+            "wait_agent",
+            function_payload(json!({
+                "targets": [agent_id.to_string()],
+                "timeout_ms": 1000
+            })),
+        ))
+        .await
+        .expect("wait_agent should succeed");
+    let (content, success) = expect_text_output(output);
+    let result: wait::WaitAgentResult =
+        serde_json::from_str(&content).expect("wait_agent result should be json");
+    assert_eq!(
+        result,
+        wait::WaitAgentResult {
+            message: "Wait completed.".to_string(),
+            requested_ids: vec![agent_id],
+            pending_ids: vec![],
+            completion_reason: CollabWaitingCompletionReason::Terminal,
+            timed_out: false,
+        }
+    );
+    assert!(!content.contains("sensitive child output"));
     assert_eq!(success, None);
 }
 

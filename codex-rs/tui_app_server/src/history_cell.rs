@@ -514,41 +514,44 @@ impl UpdateAvailableHistoryCell {
 
 impl HistoryCell for UpdateAvailableHistoryCell {
     fn display_lines(&self, width: u16) -> Vec<Line<'static>> {
-        let installation_options_url = installation_options_url().to_string();
-        let release_notes_url = latest_release_notes_url().to_string();
-        let update_instruction = if let Some(update_action) = self.update_action {
-            Line::from(vec![
-                "Run ".into(),
-                update_action.command_str().to_string().cyan(),
-                " to update.".into(),
-            ])
+        let installation_options_url = installation_options_url();
+        let release_notes_url = latest_release_notes_url();
+        let update_instruction: Line<'static> = if let Some(update_action) = self.update_action {
+            vec![
+                Span::from("Run "),
+                Span::from(update_action.command_str()).cyan(),
+                Span::from(" to update."),
+            ]
+            .into()
         } else {
-            Line::from(vec![
-                "See ".into(),
-                installation_options_url.cyan().underlined(),
-                " for installation options."
-                    .into(),
-            ])
+            vec![
+                Span::from("See "),
+                Span::from(installation_options_url).cyan().underlined(),
+                Span::from(" for installation options."),
+            ]
+            .into()
         };
 
-        let content = vec![
-            Line::from(vec![
+        let content: Text<'static> = vec![
+            vec![
                 padded_emoji("✨").bold().cyan(),
                 "Update available!".bold().cyan(),
-                " ".into(),
-                format!("{CODEX_CLI_VERSION} -> {}", self.latest_version).bold(),
-            ]),
+                Span::from(" "),
+                Span::from(format!("{CODEX_CLI_VERSION} -> {}", self.latest_version)).bold(),
+            ]
+            .into(),
             update_instruction,
-            "".into(),
-            "See full release notes:".into(),
-            Line::from(vec![release_notes_url.cyan().underlined()]),
-        ];
+            Line::from(""),
+            Line::from("See full release notes:"),
+            Line::from(vec![Span::from(release_notes_url).cyan().underlined()]),
+        ]
+        .into();
 
-        let inner_width = Text::from(content.clone())
+        let inner_width = content
             .width()
             .min(usize::from(width.saturating_sub(4)))
             .max(1);
-        with_border_with_inner_width(content, inner_width)
+        with_border_with_inner_width(content.lines, inner_width)
     }
 }
 
