@@ -62,6 +62,8 @@ core-carry-smoke:
     CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo test -p codex-core --test all suite::unified_exec::exec_command_wait_until_terminal_returns_exit_metadata -- --exact --test-threads=1
     CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo test -p codex-tui queued_inline_slash_command_runs_with_args_after_task_complete -- --exact --test-threads=1
     CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo test -p codex-tui alt_up_restores_most_recent_queued_slash_command -- --exact --test-threads=1
+    cargo test -p codex-tui-app-server replayed_turn_complete_ -- --test-threads=1
+    cargo test -p codex-tui-app-server sync_active_agent_label_updates_footer_for_selected_thread -- --exact --test-threads=1
 
 # Focused startup sync regression slice for bounded-wait and abort/re-arm behavior.
 core-startup-sync-targeted:
@@ -114,10 +116,13 @@ core-context-serialization-targeted:
 # Codex authoritative usage.sqlite logging contracts.
 core-ledger-smoke:
     set -euo pipefail
+    cargo test -p codex-state init_removes_legacy_logs_and_usage_db_files -- --test-threads=1
     cargo test -p codex-state usage_logger_records_requested_model_and_quota_snapshot -- --test-threads=1
     cargo test -p codex-state usage_logger_tracks_tool_call_lifecycle -- --test-threads=1
     cargo test -p codex-state usage_logger_captures_spawn_request_and_fork_snapshot -- --test-threads=1
     cargo test -p codex-state usage_logger_resolves_root_thread_from_parent_or_fork -- --test-threads=1
+    cargo test -p codex-state usage_logger_clears_turn_snapshot_after_turn_complete -- --test-threads=1
+    cargo test -p codex-state usage_logger_resolves_root_thread_from_persisted_lineage_after_restart -- --test-threads=1
 
 # Focused persisted-state/usage lineage contract slice for subagent graph adoption.
 core-state-spawn-lineage-contract-targeted:
