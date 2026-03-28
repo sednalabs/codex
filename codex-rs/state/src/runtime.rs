@@ -384,6 +384,8 @@ mod tests {
             true
         );
 
-        let _ = tokio::fs::remove_dir_all(codex_home).await;
+        tokio::fs::remove_dir_all(codex_home)
+            .await
+            .expect("failed to clean up temp directory");
     }
 }
