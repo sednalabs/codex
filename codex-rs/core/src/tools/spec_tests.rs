@@ -323,6 +323,7 @@ fn strip_descriptions_schema(schema: &mut JsonSchema) {
     match schema {
         JsonSchema::Boolean { description }
         | JsonSchema::String { description }
+        | JsonSchema::StringEnum { description, .. }
         | JsonSchema::Number { description } => {
             *description = None;
         }
@@ -2993,6 +2994,15 @@ fn write_stdin_tool_exposes_blocking_wait_parameters() {
     assert!(properties.contains_key("wait_until_terminal"));
     assert!(properties.contains_key("max_wait_ms"));
     assert!(properties.contains_key("heartbeat_interval_ms"));
+}
+
+#[test]
+fn list_agents_serialization_restores_descendant_edge_status_enum() {
+    let responses_json = create_tools_json_for_responses_api(&[create_list_agents_tool()]).unwrap();
+    assert_eq!(
+        responses_json[0]["parameters"]["properties"]["descendant_edge_status"]["enum"],
+        serde_json::json!(["open", "closed"])
+    );
 }
 
 #[test]
