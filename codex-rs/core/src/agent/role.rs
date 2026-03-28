@@ -149,6 +149,10 @@ fn role_active_profile_field_updates(
     }
 }
 
+fn role_preserves_current_profile(role_config: &ConfigToml) -> bool {
+    role_config.model_provider.is_none() && role_config.profile.is_none()
+}
+
 /// Applies a named role layer to `config` while preserving caller-owned model selection.
 ///
 /// The role layer is inserted at session-flag precedence so it can override persisted config, but
@@ -171,15 +175,13 @@ pub(crate) async fn apply_role_to_config(
         return Ok(());
     };
     let role_selects_model = role_config.model.is_some();
-    let role_selects_provider = role_config.model_provider.is_some();
-    let role_selects_profile = role_config.profile.is_some();
     let role_selects_reasoning_effort = role_config.model_reasoning_effort.is_some();
     let role_selects_reasoning_summary = role_config.model_reasoning_summary.is_some();
     let role_selects_verbosity = role_config.model_verbosity.is_some();
     let active_profile_updates = role_active_profile_field_updates(config, &role_layer_toml);
     // A role that does not explicitly take ownership of model selection should inherit the
     // caller's current profile/provider choices across the config reload.
-    let preserve_current_profile = !role_selects_provider && !role_selects_profile;
+    let preserve_current_profile = role_preserves_current_profile(&role_config);
     let preserve_current_provider =
         preserve_current_profile && !active_profile_updates.model_provider;
     let preserved_model = if preserve_current_profile && !active_profile_updates.model {
@@ -285,7 +287,9 @@ pub(crate) async fn role_model_override_locks(
     else {
         return Ok(RoleModelOverrideLocks::default());
     };
-    let active_profile_updates = role_active_profile_field_updates(config, &role_layer_toml);
+    let active_profile_updates = role_preserves_current_profile(&role_config)
+        .then(|| role_active_profile_field_updates(config, &role_layer_toml))
+        .unwrap_or_default();
 
     Ok(RoleModelOverrideLocks {
         model: role_config.model.is_some() || active_profile_updates.model,
