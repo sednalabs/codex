@@ -20,6 +20,7 @@ use codex_protocol::ThreadId;
 use codex_protocol::protocol::SubAgentSource;
 use std::collections::HashMap;
 use std::collections::HashSet;
+use std::collections::VecDeque;
 
 /// A subagent thread discovered by the spawn-tree walk, carrying just enough metadata for the
 /// TUI to register it in the navigation cache and rendering metadata map.
@@ -55,28 +56,32 @@ pub(crate) fn find_loaded_subagent_threads_for_primary(
         threads_by_id.insert(thread_id, thread);
     }
 
+    let mut children_by_parent = HashMap::new();
+    for (thread_id, thread) in &threads_by_id {
+        let SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+            parent_thread_id, ..
+        }) = &thread.source
+        else {
+            continue;
+        };
+
+        children_by_parent
+            .entry(*parent_thread_id)
+            .or_insert_with(Vec::new)
+            .push(*thread_id);
+    }
+
     let mut included = HashSet::new();
-    let mut pending = vec![primary_thread_id];
-    while let Some(parent_thread_id) = pending.pop() {
-        for (thread_id, thread) in &threads_by_id {
-            if included.contains(thread_id) {
-                continue;
+    let mut pending = VecDeque::from([primary_thread_id]);
+    while let Some(parent_thread_id) = pending.pop_front() {
+        let Some(child_thread_ids) = children_by_parent.get(&parent_thread_id) else {
+            continue;
+        };
+
+        for child_thread_id in child_thread_ids {
+            if included.insert(*child_thread_id) {
+                pending.push_back(*child_thread_id);
             }
-
-            let SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
-                parent_thread_id: source_parent_thread_id,
-                ..
-            }) = &thread.source
-            else {
-                continue;
-            };
-
-            if *source_parent_thread_id != parent_thread_id {
-                continue;
-            }
-
-            included.insert(*thread_id);
-            pending.push(*thread_id);
         }
     }
 

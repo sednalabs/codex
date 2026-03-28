@@ -203,21 +203,23 @@ fn command_execution_decision_to_review_decision(
 /// Only `ItemStarted` and `ItemCompleted` notifications with a `CollabAgentToolCall` item carry
 /// receiver thread ids. All other notification variants return `None`.
 fn collab_receiver_thread_ids(notification: &ServerNotification) -> Option<&[String]> {
+    fn collab_receiver_thread_ids_from_item(item: &ThreadItem) -> Option<&[String]> {
+        match item {
+            ThreadItem::CollabAgentToolCall {
+                receiver_thread_ids,
+                ..
+            } => Some(receiver_thread_ids),
+            _ => None,
+        }
+    }
+
     match notification {
-        ServerNotification::ItemStarted(notification) => match &notification.item {
-            ThreadItem::CollabAgentToolCall {
-                receiver_thread_ids,
-                ..
-            } => Some(receiver_thread_ids),
-            _ => None,
-        },
-        ServerNotification::ItemCompleted(notification) => match &notification.item {
-            ThreadItem::CollabAgentToolCall {
-                receiver_thread_ids,
-                ..
-            } => Some(receiver_thread_ids),
-            _ => None,
-        },
+        ServerNotification::ItemStarted(notification) => {
+            collab_receiver_thread_ids_from_item(&notification.item)
+        }
+        ServerNotification::ItemCompleted(notification) => {
+            collab_receiver_thread_ids_from_item(&notification.item)
+        }
         _ => None,
     }
 }
