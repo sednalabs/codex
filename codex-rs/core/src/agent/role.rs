@@ -124,17 +124,17 @@ async fn load_role_layer_config(
     }))
 }
 
-fn role_active_profile_field_updates(
-    config: &Config,
+fn role_profile_field_updates(
+    profile_name: Option<&str>,
     role_layer_toml: &TomlValue,
 ) -> RoleActiveProfileFieldUpdates {
-    let Some(active_profile) = config.active_profile.as_ref() else {
+    let Some(profile_name) = profile_name else {
         return RoleActiveProfileFieldUpdates::default();
     };
     let Some(profile_updates) = role_layer_toml
         .get("profiles")
         .and_then(TomlValue::as_table)
-        .and_then(|profiles| profiles.get(active_profile))
+        .and_then(|profiles| profiles.get(profile_name))
         .and_then(TomlValue::as_table)
     else {
         return RoleActiveProfileFieldUpdates::default();
@@ -178,7 +178,8 @@ pub(crate) async fn apply_role_to_config(
     let role_selects_reasoning_effort = role_config.model_reasoning_effort.is_some();
     let role_selects_reasoning_summary = role_config.model_reasoning_summary.is_some();
     let role_selects_verbosity = role_config.model_verbosity.is_some();
-    let active_profile_updates = role_active_profile_field_updates(config, &role_layer_toml);
+    let active_profile_updates =
+        role_profile_field_updates(config.active_profile.as_deref(), &role_layer_toml);
     // A role that does not explicitly take ownership of model selection should inherit the
     // caller's current profile/provider choices across the config reload.
     let preserve_current_profile = role_preserves_current_profile(&role_config);
@@ -290,14 +291,16 @@ pub(crate) async fn role_model_override_locks(
     else {
         return Ok(RoleModelOverrideLocks::default());
     };
-    let active_profile_updates = role_preserves_current_profile(&role_config)
-        .then(|| role_active_profile_field_updates(config, &role_layer_toml))
-        .unwrap_or_default();
+    let effective_profile = role_config
+        .profile
+        .as_deref()
+        .or(config.active_profile.as_deref());
+    let effective_profile_updates = role_profile_field_updates(effective_profile, &role_layer_toml);
 
     Ok(RoleModelOverrideLocks {
-        model: role_config.model.is_some() || active_profile_updates.model,
+        model: role_config.model.is_some() || effective_profile_updates.model,
         model_reasoning_effort: role_config.model_reasoning_effort.is_some()
-            || active_profile_updates.model_reasoning_effort,
+            || effective_profile_updates.model_reasoning_effort,
     })
 }
 
