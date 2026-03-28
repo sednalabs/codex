@@ -83,8 +83,16 @@ impl UsageLogger {
             Self::resolve_root_thread_id(&pool, parent_thread_id.as_ref(), forked_from_id.as_ref())
                 .await?;
         let root_thread_id = root_thread_id
-            .or_else(|| parent_thread_id.as_ref().map(std::string::ToString::to_string))
-            .or_else(|| forked_from_id.as_ref().map(std::string::ToString::to_string))
+            .or_else(|| {
+                parent_thread_id
+                    .as_ref()
+                    .map(std::string::ToString::to_string)
+            })
+            .or_else(|| {
+                forked_from_id
+                    .as_ref()
+                    .map(std::string::ToString::to_string)
+            })
             .unwrap_or_else(|| thread_id.to_string());
         let created_at = Utc::now();
         let source_str = source.to_string();
@@ -427,7 +435,10 @@ ON CONFLICT(thread_id) DO UPDATE SET
     async fn handle_spawn_end(&mut self, end: &CollabAgentSpawnEndEvent) -> anyhow::Result<()> {
         if let Some(request) = self.spawn_requests.remove(&end.call_id) {
             let status = format!("{:?}", end.status);
-            let child_thread = end.new_thread_id.as_ref().map(std::string::ToString::to_string);
+            let child_thread = end
+                .new_thread_id
+                .as_ref()
+                .map(std::string::ToString::to_string);
             let completed_at = Utc::now().to_rfc3339();
             sqlx::query(
                 r#"UPDATE usage_spawn_requests SET
