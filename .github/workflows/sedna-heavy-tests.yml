@@ -91,13 +91,8 @@ jobs:
             HEAD_SHA='${{ github.event.pull_request.head.sha }}'
             mapfile -t files < <(git diff --name-only --no-renames "$BASE_SHA...$HEAD_SHA")
           elif [[ '${{ github.event_name }}' == 'push' ]]; then
-            BASE_SHA='${{ github.event.before }}'
-            HEAD_SHA='${{ github.sha }}'
-            if [[ -z "$BASE_SHA" || "$BASE_SHA" == "0000000000000000000000000000000000000000" ]]; then
-              run_all_lanes=true
-            else
-              mapfile -t files < <(git diff --name-only --no-renames "$BASE_SHA" "$HEAD_SHA")
-            fi
+            # Pushes to protected main should always run the full heavy matrix.
+            run_all_lanes=true
           else
             run_all_lanes=true
           fi
