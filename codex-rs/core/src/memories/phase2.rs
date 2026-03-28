@@ -998,6 +998,11 @@ pub(in crate::memories) mod agent {
         consolidation_artifact_attestation_support_path(root)
     }
 
+    #[cfg(test)]
+    pub(super) fn test_memory_root_attestation_key(root: &Path) -> String {
+        memory_root_attestation_key(root)
+    }
+
     fn attestation_support_initialized(root: &Path) -> std::io::Result<bool> {
         let path = consolidation_artifact_attestation_support_path(root)
             .ok_or_else(|| std::io::Error::other("memory root is missing a codex_home parent"))?;
@@ -1405,6 +1410,11 @@ pub(crate) fn test_consolidation_artifact_attestation_path(root: &Path) -> Optio
 #[cfg(test)]
 pub(crate) fn test_consolidation_artifact_attestation_support_path(root: &Path) -> Option<PathBuf> {
     agent::test_consolidation_artifact_attestation_support_path(root)
+}
+
+#[cfg(test)]
+pub(crate) fn test_memory_root_attestation_key(root: &Path) -> String {
+    agent::test_memory_root_attestation_key(root)
 }
 
 #[cfg(test)]
