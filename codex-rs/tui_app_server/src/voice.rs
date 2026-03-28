@@ -10,6 +10,7 @@ use codex_login::AuthMode;
 use codex_login::CodexAuth;
 use codex_protocol::protocol::ConversationAudioParams;
 use codex_protocol::protocol::RealtimeAudioFrame;
+use cpal::SampleRate;
 use cpal::traits::DeviceTrait;
 use cpal::traits::HostTrait;
 use cpal::traits::StreamTrait;
@@ -28,7 +29,7 @@ use tracing::info;
 use tracing::trace;
 
 const AUDIO_MODEL: &str = "gpt-4o-mini-transcribe";
-const MODEL_AUDIO_SAMPLE_RATE: u32 = 24_000;
+const MODEL_AUDIO_SAMPLE_RATE: SampleRate = 24_000;
 const MODEL_AUDIO_CHANNELS: u16 = 1;
 
 struct TranscriptionAuthContext {
@@ -40,13 +41,13 @@ struct TranscriptionAuthContext {
 
 pub struct RecordedAudio {
     pub data: Vec<i16>,
-    pub sample_rate: u32,
+    pub sample_rate: SampleRate,
     pub channels: u16,
 }
 
 pub struct VoiceCapture {
     stream: Option<cpal::Stream>,
-    sample_rate: u32,
+    sample_rate: SampleRate,
     channels: u16,
     data: Arc<Mutex<Vec<i16>>>,
     stopped: Arc<AtomicBool>,
@@ -339,7 +340,7 @@ fn build_input_stream(
 fn build_realtime_input_stream(
     device: &cpal::Device,
     config: &cpal::SupportedStreamConfig,
-    sample_rate: u32,
+    sample_rate: SampleRate,
     channels: u16,
     tx: AppEventSender,
     last_peak: Arc<AtomicU16>,
@@ -390,7 +391,7 @@ fn build_realtime_input_stream(
 fn send_realtime_audio_chunk(
     tx: &AppEventSender,
     samples: Vec<i16>,
-    sample_rate: u32,
+    sample_rate: SampleRate,
     channels: u16,
 ) {
     if samples.is_empty() || sample_rate == 0 || channels == 0 {
@@ -484,7 +485,7 @@ fn convert_u16_to_i16_and_peak(input: &[u16], out: &mut Vec<i16>) -> u16 {
 pub(crate) struct RealtimeAudioPlayer {
     _stream: cpal::Stream,
     queue: Arc<Mutex<VecDeque<i16>>>,
-    output_sample_rate: u32,
+    output_sample_rate: SampleRate,
     output_channels: u16,
 }
 
@@ -616,9 +617,9 @@ fn fill_output_u16(output: &mut [u16], queue: &Arc<Mutex<VecDeque<i16>>>) {
 
 fn convert_pcm16(
     input: &[i16],
-    input_sample_rate: u32,
+    input_sample_rate: SampleRate,
     input_channels: u16,
-    output_sample_rate: u32,
+    output_sample_rate: SampleRate,
     output_channels: u16,
 ) -> Vec<i16> {
     if input.is_empty() || input_channels == 0 || output_channels == 0 {

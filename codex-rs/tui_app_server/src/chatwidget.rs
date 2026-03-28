@@ -8754,7 +8754,7 @@ impl ChatWidget {
             .as_ref()
             .map(|p| describe_policy(&p.sandbox))
             .unwrap_or_else(|| describe_policy(self.config.permissions.sandbox_policy.get()));
-        let info_line = if failed_scan {
+        let info_line: Line<'static> = if failed_scan {
             Line::from(vec![
                 "We couldn't complete the world-writable scan, so protections cannot be verified. "
                     .into(),
@@ -8773,7 +8773,7 @@ impl ChatWidget {
 
         if !sample_paths.is_empty() {
             // Show up to three examples and optionally an "and X more" line.
-            let mut lines: Vec<Line> = Vec::new();
+            let mut lines: Vec<Line<'static>> = Vec::new();
             lines.push(Line::from(""));
             for p in &sample_paths {
                 lines.push(Line::from(format!("  - {p}")));
@@ -8986,7 +8986,7 @@ impl ChatWidget {
 
     #[cfg(target_os = "windows")]
     pub(crate) fn open_windows_sandbox_fallback_prompt(&mut self, preset: ApprovalPreset) {
-        let mut lines = Vec::new();
+        let mut lines: Vec<Line<'static>> = Vec::new();
         lines
             .push(Line::from("Couldn't set up your sandbox with Administrator permissions").bold());
         lines.push(Line::from(""));

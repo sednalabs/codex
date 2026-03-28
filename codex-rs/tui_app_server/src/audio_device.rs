@@ -1,11 +1,12 @@
 use codex_core::config::Config;
+use cpal::SampleRate;
 use cpal::traits::DeviceTrait;
 use cpal::traits::HostTrait;
 use tracing::warn;
 
 use crate::app_event::RealtimeAudioDeviceKind;
 
-const PREFERRED_INPUT_SAMPLE_RATE: u32 = 24_000;
+const PREFERRED_INPUT_SAMPLE_RATE: SampleRate = 24_000;
 const PREFERRED_INPUT_CHANNELS: u16 = 1;
 
 pub(crate) fn list_realtime_audio_device_names(
@@ -144,7 +145,7 @@ fn default_config(
     }
 }
 
-fn preferred_input_sample_rate(range: &cpal::SupportedStreamConfigRange) -> u32 {
+fn preferred_input_sample_rate(range: &cpal::SupportedStreamConfigRange) -> SampleRate {
     let min = range.min_sample_rate();
     let max = range.max_sample_rate();
     if (min..=max).contains(&PREFERRED_INPUT_SAMPLE_RATE) {
