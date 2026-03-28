@@ -560,7 +560,11 @@ impl SandboxManager {
         {
             Some(SandboxType::WindowsRestrictedToken)
         }
-        #[cfg(all(not(target_os = "linux"), not(target_os = "macos"), not(target_os = "windows")))]
+        #[cfg(all(
+            not(target_os = "linux"),
+            not(target_os = "macos"),
+            not(target_os = "windows")
+        ))]
         {
             None
         }
@@ -585,8 +589,7 @@ impl SandboxManager {
         match pref {
             SandboxablePreference::Forbid => SandboxType::None,
             SandboxablePreference::Require => {
-                Self::required_platform_sandbox()
-                    .unwrap_or(SandboxType::WindowsRestrictedToken)
+                Self::required_platform_sandbox().unwrap_or(SandboxType::WindowsRestrictedToken)
             }
             SandboxablePreference::Auto => {
                 if should_require_platform_sandbox(
@@ -711,45 +714,45 @@ impl SandboxManager {
                 }
                 #[cfg(target_os = "linux")]
                 {
-                let exe = codex_linux_sandbox_exe
-                    .ok_or(SandboxTransformError::MissingLinuxSandboxExecutable)?;
-                let allow_proxy_network = allow_network_for_proxy(enforce_managed_network);
-                let supports_split_policy =
-                    linux_sandbox_supports_split_policy_flags(exe.as_path());
-                let use_legacy_landlock = use_legacy_landlock
-                    && !(supports_split_policy
-                        && effective_file_system_policy.needs_direct_runtime_enforcement(
+                    let exe = codex_linux_sandbox_exe
+                        .ok_or(SandboxTransformError::MissingLinuxSandboxExecutable)?;
+                    let allow_proxy_network = allow_network_for_proxy(enforce_managed_network);
+                    let supports_split_policy =
+                        linux_sandbox_supports_split_policy_flags(exe.as_path());
+                    let use_legacy_landlock = use_legacy_landlock
+                        && !(supports_split_policy
+                            && effective_file_system_policy.needs_direct_runtime_enforcement(
+                                effective_network_policy,
+                                sandbox_policy_cwd,
+                            ));
+                    let mut args = if supports_split_policy {
+                        create_linux_sandbox_command_args_for_policies(
+                            command.clone(),
+                            spec.cwd.as_path(),
+                            &effective_policy,
+                            &effective_file_system_policy,
                             effective_network_policy,
                             sandbox_policy_cwd,
-                        ));
-                let mut args = if supports_split_policy {
-                    create_linux_sandbox_command_args_for_policies(
-                        command.clone(),
-                        spec.cwd.as_path(),
-                        &effective_policy,
-                        &effective_file_system_policy,
-                        effective_network_policy,
-                        sandbox_policy_cwd,
-                        use_legacy_landlock,
-                        allow_proxy_network,
+                            use_legacy_landlock,
+                            allow_proxy_network,
+                        )
+                    } else {
+                        create_linux_sandbox_command_args_legacy(
+                            command.clone(),
+                            &effective_policy,
+                            sandbox_policy_cwd,
+                            use_legacy_landlock,
+                            allow_proxy_network,
+                        )
+                    };
+                    let mut full_command = Vec::with_capacity(1 + args.len());
+                    full_command.push(exe.to_string_lossy().to_string());
+                    full_command.append(&mut args);
+                    (
+                        full_command,
+                        HashMap::new(),
+                        Some("codex-linux-sandbox".to_string()),
                     )
-                } else {
-                    create_linux_sandbox_command_args_legacy(
-                        command.clone(),
-                        &effective_policy,
-                        sandbox_policy_cwd,
-                        use_legacy_landlock,
-                        allow_proxy_network,
-                    )
-                };
-                let mut full_command = Vec::with_capacity(1 + args.len());
-                full_command.push(exe.to_string_lossy().to_string());
-                full_command.append(&mut args);
-                (
-                    full_command,
-                    HashMap::new(),
-                    Some("codex-linux-sandbox".to_string()),
-                )
                 }
             }
             // On Windows, the restricted token sandbox executes in-process via the
