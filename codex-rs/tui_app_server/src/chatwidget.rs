@@ -5194,7 +5194,7 @@ impl ChatWidget {
         self.refresh_pending_input_preview();
         self.add_info_message(
             format!("Queued '{command_text}'. It will run after the current task completes."),
-            None,
+            /*hint*/ None,
         );
     }
 

@@ -451,6 +451,8 @@ fn server_notification_thread_events(
                         model_context_window: notification.token_usage.model_context_window,
                     }),
                     rate_limits: None,
+                    provider: None,
+                    model_used: None,
                 }),
             }],
         )),
@@ -723,6 +725,7 @@ fn append_terminal_turn_events(events: &mut Vec<Event>, turn: &Turn, include_fai
             msg: EventMsg::TurnComplete(TurnCompleteEvent {
                 turn_id: turn.id.clone(),
                 last_agent_message: None,
+                compaction_events_in_turn: 0,
             }),
         }),
         TurnStatus::Interrupted => events.push(Event {
@@ -750,6 +753,7 @@ fn append_terminal_turn_events(events: &mut Vec<Event>, turn: &Turn, include_fai
                 msg: EventMsg::TurnComplete(TurnCompleteEvent {
                     turn_id: turn.id.clone(),
                     last_agent_message: None,
+                    compaction_events_in_turn: 0,
                 }),
             });
         }

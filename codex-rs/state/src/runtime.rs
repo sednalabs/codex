@@ -259,3 +259,134 @@ fn should_remove_db_file(file_name: &str, current_name: &str, base_name: &str) -
     };
     !version_suffix.is_empty() && version_suffix.chars().all(|ch| ch.is_ascii_digit())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::StateRuntime;
+    use super::logs_db_filename;
+    use super::test_support::unique_temp_dir;
+    use super::usage_db_filename;
+    use crate::LOGS_DB_FILENAME;
+    use crate::LOGS_DB_VERSION;
+    use crate::USAGE_DB_FILENAME;
+    use crate::USAGE_DB_VERSION;
+    use pretty_assertions::assert_eq;
+
+    #[tokio::test]
+    async fn init_removes_legacy_logs_and_usage_db_files() {
+        let codex_home = unique_temp_dir();
+        tokio::fs::create_dir_all(&codex_home)
+            .await
+            .expect("create codex_home");
+
+        let current_logs_name = logs_db_filename();
+        let current_usage_name = usage_db_filename();
+        let previous_logs_version = LOGS_DB_VERSION.saturating_sub(1);
+        let previous_usage_version = USAGE_DB_VERSION.saturating_sub(1);
+        let unversioned_logs_name = format!("{LOGS_DB_FILENAME}.sqlite");
+        let unversioned_usage_name = format!("{USAGE_DB_FILENAME}.sqlite");
+
+        for suffix in ["", "-wal", "-shm", "-journal"] {
+            let legacy_logs_path = codex_home.join(format!("{unversioned_logs_name}{suffix}"));
+            tokio::fs::write(legacy_logs_path, b"legacy")
+                .await
+                .expect("write legacy logs file");
+            let old_logs_path = codex_home.join(format!(
+                "{LOGS_DB_FILENAME}_{previous_logs_version}.sqlite{suffix}"
+            ));
+            tokio::fs::write(old_logs_path, b"old_logs")
+                .await
+                .expect("write old logs file");
+
+            let legacy_usage_path = codex_home.join(format!("{unversioned_usage_name}{suffix}"));
+            tokio::fs::write(legacy_usage_path, b"legacy")
+                .await
+                .expect("write legacy usage file");
+            let old_usage_path = codex_home.join(format!(
+                "{USAGE_DB_FILENAME}_{previous_usage_version}.sqlite{suffix}"
+            ));
+            tokio::fs::write(old_usage_path, b"old_usage")
+                .await
+                .expect("write old usage file");
+        }
+
+        let logs_backup_path = codex_home.join("logs.sqlite_backup");
+        tokio::fs::write(&logs_backup_path, b"keep")
+            .await
+            .expect("write logs backup");
+        let usage_backup_path = codex_home.join("usage.sqlite_backup");
+        tokio::fs::write(&usage_backup_path, b"keep")
+            .await
+            .expect("write usage backup");
+
+        let runtime = StateRuntime::init(codex_home.clone(), "test-provider".to_string())
+            .await
+            .expect("initialize runtime");
+
+        for suffix in ["", "-wal", "-shm", "-journal"] {
+            let legacy_logs_path = codex_home.join(format!("{unversioned_logs_name}{suffix}"));
+            assert_eq!(
+                tokio::fs::try_exists(&legacy_logs_path)
+                    .await
+                    .expect("check legacy logs path"),
+                false
+            );
+            let old_logs_path = codex_home.join(format!(
+                "{LOGS_DB_FILENAME}_{previous_logs_version}.sqlite{suffix}"
+            ));
+            assert_eq!(
+                tokio::fs::try_exists(&old_logs_path)
+                    .await
+                    .expect("check old logs path"),
+                false
+            );
+
+            let legacy_usage_path = codex_home.join(format!("{unversioned_usage_name}{suffix}"));
+            assert_eq!(
+                tokio::fs::try_exists(&legacy_usage_path)
+                    .await
+                    .expect("check legacy usage path"),
+                false
+            );
+            let old_usage_path = codex_home.join(format!(
+                "{USAGE_DB_FILENAME}_{previous_usage_version}.sqlite{suffix}"
+            ));
+            assert_eq!(
+                tokio::fs::try_exists(&old_usage_path)
+                    .await
+                    .expect("check old usage path"),
+                false
+            );
+        }
+
+        assert_eq!(
+            tokio::fs::try_exists(codex_home.join(current_logs_name))
+                .await
+                .expect("check current logs db path"),
+            true
+        );
+        assert_eq!(
+            tokio::fs::try_exists(codex_home.join(current_usage_name))
+                .await
+                .expect("check current usage db path"),
+            true
+        );
+        assert_eq!(
+            tokio::fs::try_exists(&logs_backup_path)
+                .await
+                .expect("check logs backup path"),
+            true
+        );
+        assert_eq!(
+            tokio::fs::try_exists(&usage_backup_path)
+                .await
+                .expect("check usage backup path"),
+            true
+        );
+
+        drop(runtime);
+        tokio::fs::remove_dir_all(codex_home)
+            .await
+            .expect("failed to clean up temp directory");
+    }
+}

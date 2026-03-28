@@ -7,18 +7,27 @@ on:
         description: Branch, tag, or commit to validate
         required: false
         type: string
-      scope:
-        description: Validation scope
+      lane:
+        description: Downstream regression lane
         required: true
         type: choice
         options:
-          - protocol
-          - tui
-          - tui_app_server
-          - cli
-          - core
-          - workspace
-        default: core
+          - all
+          - core-compile-smoke
+          - core-carry-smoke
+          - core-ledger-smoke
+          - codex.core-startup-sync-targeted
+          - codex.core-subagent-surface-targeted
+          - codex.core-subagent-notification-contract-targeted
+          - codex.core-subagent-notification-visibility-targeted
+          - codex.core-multi-agent-orchestration-targeted
+          - codex.core-persisted-subagent-descendants-targeted
+          - codex.core-context-serialization-targeted
+          - codex.state-spawn-lineage-contract-targeted
+          - codex.app-server-protocol-test
+          - codex.downstream-docs-check
+          - downstream-ledger-seam
+        default: all
   pull_request:
     types:
       - labeled
@@ -33,8 +42,11 @@ on:
       - "codex-rs/common/**"
       - "codex-rs/core/**"
       - "codex-rs/protocol/**"
+      - "codex-rs/state/**"
       - "codex-rs/tui/**"
       - "codex-rs/tui_app_server/**"
+      - "docs/downstream-regression-matrix.md"
+      - "justfile"
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event_name == 'workflow_dispatch' && inputs.ref || github.ref_name }}
@@ -45,7 +57,7 @@ permissions:
 
 jobs:
   metadata:
-    name: Resolve heavy-test scope
+    name: Resolve heavy-test checkout ref
     runs-on: ubuntu-24.04
     if: >-
       ${{
@@ -54,79 +66,68 @@ jobs:
       }}
     outputs:
       checkout_ref: ${{ steps.meta.outputs.checkout_ref }}
-      scope: ${{ steps.meta.outputs.scope }}
-      install_nextest: ${{ steps.meta.outputs.install_nextest }}
-      artifact_name: ${{ steps.meta.outputs.artifact_name }}
-      artifact_path: ${{ steps.meta.outputs.artifact_path }}
-      run_command: ${{ steps.meta.outputs.run_command }}
     steps:
-      - name: Compute scope and command
+      - name: Compute checkout ref
         id: meta
         shell: bash
         run: |
           set -euo pipefail
 
           checkout_ref='${{ github.sha }}'
-          scope='workspace'
-
-          if [[ '${{ github.event_name }}' == 'workflow_dispatch' ]]; then
-            if [[ -n '${{ inputs.ref }}' ]]; then
-              checkout_ref='${{ inputs.ref }}'
-            fi
-            scope='${{ inputs.scope }}'
+          if [[ '${{ github.event_name }}' == 'workflow_dispatch' && -n '${{ inputs.ref }}' ]]; then
+            checkout_ref='${{ inputs.ref }}'
           elif [[ '${{ github.event_name }}' == 'pull_request' ]]; then
             checkout_ref='${{ github.event.pull_request.head.sha }}'
-            scope='workspace'
-          elif [[ '${{ github.event_name }}' == 'push' ]]; then
-            scope='workspace'
           fi
 
-          install_nextest='false'
-          artifact_name=''
-          artifact_path=''
-          case "${scope}" in
-            protocol)
-              run_command='cargo test --locked -p codex-protocol'
-              ;;
-            tui)
-              run_command='cargo test --locked -p codex-tui'
-              ;;
-            tui_app_server)
-              run_command='cargo test --locked -p codex-tui-app-server'
-              ;;
-            cli)
-              run_command='cargo test --locked -p codex-cli'
-              ;;
-            core)
-              run_command='cargo test --locked -p codex-core'
-              ;;
-            workspace)
-              install_nextest='true'
-              artifact_name="sedna-heavy-tests-${GITHUB_RUN_ID}"
-              artifact_path='codex-rs/target/**/cargo-timings/cargo-timing.html'
-              run_command='cargo nextest run --locked --all-features --no-fail-fast --target x86_64-unknown-linux-gnu --cargo-profile ci-test --timings'
-              ;;
-            *)
-              echo "Unknown scope: ${scope}" >&2
-              exit 1
-              ;;
-          esac
-
           echo "checkout_ref=${checkout_ref}" >> "$GITHUB_OUTPUT"
-          echo "scope=${scope}" >> "$GITHUB_OUTPUT"
-          echo "install_nextest=${install_nextest}" >> "$GITHUB_OUTPUT"
-          echo "artifact_name=${artifact_name}" >> "$GITHUB_OUTPUT"
-          echo "artifact_path=${artifact_path}" >> "$GITHUB_OUTPUT"
-          echo "run_command=${run_command}" >> "$GITHUB_OUTPUT"
 
-  run:
+  downstream_lanes:
     needs: metadata
-    if: ${{ needs.metadata.result == 'success' }}
+    if: >-
+      ${{
+        needs.metadata.result == 'success' &&
+        (
+          github.event_name != 'workflow_dispatch' ||
+          inputs.lane == 'all' ||
+          inputs.lane == matrix.lane_id
+        )
+      }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - lane_id: core-compile-smoke
+            run_command: just --justfile ../justfile core-compile-smoke
+          - lane_id: core-carry-smoke
+            run_command: just --justfile ../justfile core-carry-smoke
+          - lane_id: core-ledger-smoke
+            run_command: just --justfile ../justfile core-ledger-smoke
+          - lane_id: codex.core-startup-sync-targeted
+            run_command: just --justfile ../justfile core-startup-sync-targeted
+          - lane_id: codex.core-subagent-surface-targeted
+            run_command: just --justfile ../justfile core-subagent-surface-targeted
+          - lane_id: codex.core-subagent-notification-contract-targeted
+            run_command: just --justfile ../justfile core-subagent-notification-contract-targeted
+          - lane_id: codex.core-subagent-notification-visibility-targeted
+            run_command: just --justfile ../justfile core-subagent-notification-visibility-targeted
+          - lane_id: codex.core-multi-agent-orchestration-targeted
+            run_command: just --justfile ../justfile core-multi-agent-orchestration-targeted
+          - lane_id: codex.core-persisted-subagent-descendants-targeted
+            run_command: just --justfile ../justfile core-persisted-subagent-descendants-targeted
+          - lane_id: codex.core-context-serialization-targeted
+            run_command: just --justfile ../justfile core-context-serialization-targeted
+          - lane_id: codex.state-spawn-lineage-contract-targeted
+            run_command: just --justfile ../justfile core-state-spawn-lineage-contract-targeted
+          - lane_id: codex.app-server-protocol-test
+            run_command: cargo test --locked -p codex-app-server-protocol
+          - lane_id: codex.downstream-docs-check
+            run_command: just --justfile ../justfile downstream-docs-check
+          - lane_id: downstream-ledger-seam
+            run_command: just --justfile ../justfile downstream-ledger-seam
     uses: ./.github/workflows/_sedna-linux-rust.yml
     with:
       checkout_ref: ${{ needs.metadata.outputs.checkout_ref }}
-      summary_title: Heavy tests (${{ needs.metadata.outputs.scope }})
-      install_nextest: ${{ needs.metadata.outputs.install_nextest == 'true' }}
-      artifact_name: ${{ needs.metadata.outputs.artifact_name }}
-      artifact_path: ${{ needs.metadata.outputs.artifact_path }}
-      run_command: ${{ needs.metadata.outputs.run_command }}
+      lane_id: ${{ matrix.lane_id }}
+      summary_title: ${{ matrix.lane_id }}
+      run_command: ${{ matrix.run_command }}

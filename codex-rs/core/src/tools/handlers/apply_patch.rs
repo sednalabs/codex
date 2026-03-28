@@ -224,7 +224,7 @@ impl ToolHandler for ApplyPatchHandler {
                             changes,
                             apply.exec_approval_requirement,
                             effective_additional_permissions,
-                            None,
+                            /*timeout_ms*/ None,
                             turn.codex_linux_sandbox_exe.clone(),
                         );
 

@@ -19,6 +19,7 @@ jobs:
       argument_comment_lint: ${{ steps.detect.outputs.argument_comment_lint }}
       argument_comment_lint_package: ${{ steps.detect.outputs.argument_comment_lint_package }}
       codex: ${{ steps.detect.outputs.codex }}
+      downstream_smoke: ${{ steps.detect.outputs.downstream_smoke }}
       workflows: ${{ steps.detect.outputs.workflows }}
     steps:
       - uses: actions/checkout@v6
@@ -43,11 +44,13 @@ jobs:
           fi
 
           codex=false
+          downstream_smoke=false
           argument_comment_lint=false
           argument_comment_lint_package=false
           workflows=false
           for f in "${files[@]}"; do
             [[ $f == codex-rs/* ]] && codex=true
+            [[ $f == codex-rs/* || $f == justfile || $f == docs/downstream.md || $f == docs/carry-divergence-ledger.md || $f == docs/downstream-regression-matrix.md || $f == docs/downstream-tool-surface-matrix.md || $f == .github/* ]] && downstream_smoke=true
             [[ $f == codex-rs/* || $f == tools/argument-comment-lint/* || $f == justfile ]] && argument_comment_lint=true
             [[ $f == tools/argument-comment-lint/* || $f == .github/workflows/rust-ci.yml ]] && argument_comment_lint_package=true
             [[ $f == .github/* ]] && workflows=true
@@ -56,6 +59,7 @@ jobs:
           echo "argument_comment_lint=$argument_comment_lint" >> "$GITHUB_OUTPUT"
           echo "argument_comment_lint_package=$argument_comment_lint_package" >> "$GITHUB_OUTPUT"
           echo "codex=$codex" >> "$GITHUB_OUTPUT"
+          echo "downstream_smoke=$downstream_smoke" >> "$GITHUB_OUTPUT"
           echo "workflows=$workflows" >> "$GITHUB_OUTPUT"
 
   # --- CI that doesn't need specific targets ---------------------------------
@@ -773,6 +777,18 @@ jobs:
           echo "Tests failed. See logs for details."
           exit 1
 
+  downstream_smoke:
+    name: Downstream smoke
+    needs: changed
+    if: ${{ needs.changed.outputs.downstream_smoke == 'true' || github.event_name == 'push' }}
+    uses: ./.github/workflows/_sedna-linux-rust.yml
+    with:
+      lane_id: core-test-smoke
+      summary_title: core-test-smoke
+      run_command: |
+        just --justfile ../justfile core-test-smoke
+        just --justfile ../justfile downstream-docs-check
+
   # --- Gatherer job that you mark as the ONLY required status -----------------
   results:
     name: CI results (required)
@@ -785,6 +801,7 @@ jobs:
         argument_comment_lint_prebuilt,
         lint_build,
         tests,
+        downstream_smoke,
       ]
     if: always()
     runs-on: ubuntu-24.04
@@ -798,10 +815,11 @@ jobs:
           echo "shear  : ${{ needs.cargo_shear.result }}"
           echo "lint   : ${{ needs.lint_build.result }}"
           echo "tests  : ${{ needs.tests.result }}"
+          echo "downsmk: ${{ needs.downstream_smoke.result }}"
 
           # If nothing relevant changed (PR touching only root README, etc.),
           # declare success regardless of other jobs.
-          if [[ '${{ needs.changed.outputs.argument_comment_lint }}' != 'true' && '${{ needs.changed.outputs.codex }}' != 'true' && '${{ needs.changed.outputs.workflows }}' != 'true' && '${{ github.event_name }}' != 'push' ]]; then
+          if [[ '${{ needs.changed.outputs.argument_comment_lint }}' != 'true' && '${{ needs.changed.outputs.codex }}' != 'true' && '${{ needs.changed.outputs.downstream_smoke }}' != 'true' && '${{ needs.changed.outputs.workflows }}' != 'true' && '${{ github.event_name }}' != 'push' ]]; then
             echo 'No relevant changes -> CI not required.'
             exit 0
           fi
@@ -819,6 +837,10 @@ jobs:
             [[ '${{ needs.cargo_shear.result }}' == 'success' ]] || { echo 'cargo_shear failed'; exit 1; }
             [[ '${{ needs.lint_build.result }}' == 'success' ]] || { echo 'lint_build failed'; exit 1; }
             [[ '${{ needs.tests.result }}' == 'success' ]] || { echo 'tests failed'; exit 1; }
+          fi
+
+          if [[ '${{ needs.changed.outputs.downstream_smoke }}' == 'true' || '${{ github.event_name }}' == 'push' ]]; then
+            [[ '${{ needs.downstream_smoke.result }}' == 'success' ]] || { echo 'downstream_smoke failed'; exit 1; }
           fi
 
       - name: sccache summary note
