@@ -3,7 +3,15 @@ use codex_core::ThreadConfigSnapshot;
 use codex_core::config::AgentRoleConfig;
 use codex_features::Feature;
 use codex_protocol::ThreadId;
+use codex_protocol::config_types::ReasoningSummary;
+use codex_protocol::openai_models::ConfigShellToolType;
+use codex_protocol::openai_models::ModelInfo;
+use codex_protocol::openai_models::ModelVisibility;
+use codex_protocol::openai_models::ModelsResponse;
 use codex_protocol::openai_models::ReasoningEffort;
+use codex_protocol::openai_models::ReasoningEffortPreset;
+use codex_protocol::openai_models::TruncationPolicyConfig;
+use codex_protocol::openai_models::default_input_modalities;
 use core_test_support::responses::ResponsesRequest;
 use core_test_support::responses::ev_assistant_message;
 use core_test_support::responses::ev_completed;
@@ -36,6 +44,80 @@ const REQUESTED_MODEL: &str = "gpt-5.1";
 const REQUESTED_REASONING_EFFORT: ReasoningEffort = ReasoningEffort::Low;
 const ROLE_MODEL: &str = "gpt-5.1-codex-max";
 const ROLE_REASONING_EFFORT: ReasoningEffort = ReasoningEffort::High;
+const LOCKED_ROLE_PARENT_MODEL: &str = "spawn-agent-parent";
+const LOCKED_ROLE_REQUESTED_MODEL: &str = "spawn-agent-requested";
+const LOCKED_ROLE_MODEL: &str = "spawn-agent-role";
+const LOCKED_ROLE_PARENT_REASONING_EFFORT: ReasoningEffort = ReasoningEffort::Low;
+const LOCKED_ROLE_REQUESTED_REASONING_EFFORT: ReasoningEffort = ReasoningEffort::High;
+
+fn test_model_info(
+    slug: &str,
+    default_reasoning_level: ReasoningEffort,
+    supported_reasoning_levels: &[ReasoningEffort],
+) -> ModelInfo {
+    ModelInfo {
+        slug: slug.to_string(),
+        display_name: slug.to_string(),
+        description: Some(format!("Test model {slug}")),
+        default_reasoning_level: Some(default_reasoning_level),
+        supported_reasoning_levels: supported_reasoning_levels
+            .iter()
+            .map(|effort| ReasoningEffortPreset {
+                effort: *effort,
+                description: format!("{effort} reasoning"),
+            })
+            .collect(),
+        shell_type: ConfigShellToolType::ShellCommand,
+        visibility: ModelVisibility::List,
+        supported_in_api: true,
+        input_modalities: default_input_modalities(),
+        used_fallback_model_metadata: false,
+        supports_search_tool: false,
+        priority: 1,
+        upgrade: None,
+        base_instructions: "base instructions".to_string(),
+        model_messages: None,
+        supports_reasoning_summaries: false,
+        default_reasoning_summary: ReasoningSummary::Auto,
+        support_verbosity: false,
+        default_verbosity: None,
+        availability_nux: None,
+        apply_patch_tool_type: None,
+        web_search_tool_type: Default::default(),
+        truncation_policy: TruncationPolicyConfig::bytes(10_000),
+        supports_parallel_tool_calls: false,
+        supports_image_detail_original: false,
+        context_window: Some(272_000),
+        auto_compact_token_limit: None,
+        effective_context_window_percent: 95,
+        experimental_supported_tools: Vec::new(),
+    }
+}
+
+fn locked_role_reasoning_model_catalog() -> ModelsResponse {
+    ModelsResponse {
+        models: vec![
+            test_model_info(
+                LOCKED_ROLE_PARENT_MODEL,
+                LOCKED_ROLE_PARENT_REASONING_EFFORT,
+                &[LOCKED_ROLE_PARENT_REASONING_EFFORT],
+            ),
+            test_model_info(
+                LOCKED_ROLE_REQUESTED_MODEL,
+                LOCKED_ROLE_PARENT_REASONING_EFFORT,
+                &[LOCKED_ROLE_PARENT_REASONING_EFFORT],
+            ),
+            test_model_info(
+                LOCKED_ROLE_MODEL,
+                LOCKED_ROLE_PARENT_REASONING_EFFORT,
+                &[
+                    LOCKED_ROLE_PARENT_REASONING_EFFORT,
+                    LOCKED_ROLE_REQUESTED_REASONING_EFFORT,
+                ],
+            ),
+        ],
+    }
+}
 
 fn body_contains(req: &wiremock::Request, text: &str) -> bool {
     let is_zstd = req
@@ -470,6 +552,47 @@ async fn spawn_agent_role_overrides_requested_model_and_reasoning_settings() -> 
 
     assert_eq!(child_snapshot.model, ROLE_MODEL);
     assert_eq!(child_snapshot.reasoning_effort, Some(ROLE_REASONING_EFFORT));
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn spawn_agent_locked_role_model_accepts_role_supported_reasoning_override() -> Result<()> {
+    let server = start_mock_server().await;
+    let child_snapshot = spawn_child_and_capture_snapshot(
+        &server,
+        json!({
+            "message": CHILD_PROMPT,
+            "agent_type": "custom",
+            "model": LOCKED_ROLE_REQUESTED_MODEL,
+            "reasoning_effort": LOCKED_ROLE_REQUESTED_REASONING_EFFORT,
+        }),
+        |builder| {
+            builder.with_config(|config| {
+                config.model_catalog = Some(locked_role_reasoning_model_catalog());
+                config.model = Some(LOCKED_ROLE_PARENT_MODEL.to_string());
+                config.model_reasoning_effort = Some(LOCKED_ROLE_PARENT_REASONING_EFFORT);
+                let role_path = config.codex_home.join("custom-role.toml");
+                std::fs::write(&role_path, format!("model = \"{LOCKED_ROLE_MODEL}\"\n"))
+                    .expect("write role config");
+                config.agent_roles.insert(
+                    "custom".to_string(),
+                    AgentRoleConfig {
+                        description: Some("Custom role".to_string()),
+                        config_file: Some(role_path),
+                        nickname_candidates: None,
+                    },
+                );
+            })
+        },
+    )
+    .await?;
+
+    assert_eq!(child_snapshot.model, LOCKED_ROLE_MODEL);
+    assert_eq!(
+        child_snapshot.reasoning_effort,
+        Some(LOCKED_ROLE_REQUESTED_REASONING_EFFORT)
+    );
 
     Ok(())
 }

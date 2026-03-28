@@ -384,11 +384,24 @@ async fn apply_requested_spawn_agent_model_overrides(
     }
 
     if let Some(reasoning_effort) = requested_reasoning_effort {
-        validate_spawn_agent_reasoning_effort(
-            &turn.model_info.slug,
-            &turn.model_info.supported_reasoning_levels,
-            reasoning_effort,
-        )?;
+        if let Some(model) = config.model.clone() {
+            let model_info = session
+                .services
+                .models_manager
+                .get_model_info(&model, config)
+                .await;
+            validate_spawn_agent_reasoning_effort(
+                &model,
+                &model_info.supported_reasoning_levels,
+                reasoning_effort,
+            )?;
+        } else {
+            validate_spawn_agent_reasoning_effort(
+                &turn.model_info.slug,
+                &turn.model_info.supported_reasoning_levels,
+                reasoning_effort,
+            )?;
+        }
         config.model_reasoning_effort = Some(reasoning_effort);
     }
 

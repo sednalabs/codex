@@ -17,6 +17,7 @@ on:
           - tui_app_server
           - cli
           - core
+          - core_integration
           - workspace
         default: core
   pull_request:
@@ -99,6 +100,9 @@ jobs:
               ;;
             core)
               run_command='cargo test --locked -p codex-core'
+              ;;
+            core_integration)
+              run_command='cargo test --locked -p codex-core --test all'
               ;;
             workspace)
               install_nextest='true'

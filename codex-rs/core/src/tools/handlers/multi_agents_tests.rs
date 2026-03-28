@@ -278,6 +278,107 @@ async fn assert_reasoning_lock_survives_requested_model(use_v2_handler: bool) {
     assert_eq!(snapshot.reasoning_effort, Some(ReasoningEffort::High));
 }
 
+async fn assert_locked_role_model_uses_role_model_for_reasoning_validation(use_v2_handler: bool) {
+    let (session, mut turn, manager) = prepare_spawn_session(use_v2_handler).await;
+    let available_models = session
+        .services
+        .models_manager
+        .list_models(RefreshStrategy::Offline)
+        .await;
+    let mut requested_reasoning_effort = None;
+    let mut parent_model = None;
+    let mut role_model = None;
+
+    for parent in &available_models {
+        let parent_model_info = session
+            .services
+            .models_manager
+            .get_model_info(&parent.model, turn.config.as_ref())
+            .await;
+        let parent_supported_reasoning = parent_model_info
+            .supported_reasoning_levels
+            .iter()
+            .map(|preset| preset.effort)
+            .collect::<Vec<_>>();
+
+        for role in &available_models {
+            if role.model == parent.model {
+                continue;
+            }
+
+            let role_model_info = session
+                .services
+                .models_manager
+                .get_model_info(&role.model, turn.config.as_ref())
+                .await;
+            if let Some(reasoning_effort) = role_model_info
+                .supported_reasoning_levels
+                .iter()
+                .map(|preset| preset.effort)
+                .find(|effort| !parent_supported_reasoning.contains(effort))
+            {
+                requested_reasoning_effort = Some(reasoning_effort);
+                parent_model = Some(parent.model.clone());
+                role_model = Some(role.model.clone());
+                break;
+            }
+        }
+
+        if requested_reasoning_effort.is_some() {
+            break;
+        }
+    }
+
+    let requested_reasoning_effort = requested_reasoning_effort
+        .expect("test requires models with different supported reasoning efforts");
+    let parent_model = parent_model.expect("test should select a parent model");
+    let role_model = role_model.expect("test should select a role model");
+    let parent_model_info = session
+        .services
+        .models_manager
+        .get_model_info(&parent_model, turn.config.as_ref())
+        .await;
+    let mut config = (*turn.config).clone();
+    config.model = Some(parent_model.clone());
+    config.model_reasoning_effort = parent_model_info.default_reasoning_level;
+    turn.config = Arc::new(config);
+    turn.model_info = parent_model_info.clone();
+    turn.reasoning_effort = parent_model_info.default_reasoning_level;
+
+    let role_config =
+        format!("developer_instructions = \"Role prompt\"\nmodel = \"{role_model}\"\n");
+    let _role_dir = add_custom_role(&mut turn, "custom", &role_config).await;
+
+    let payload = if use_v2_handler {
+        json!({
+            "message": "inspect this repo",
+            "task_name": "worker",
+            "agent_type": "custom",
+            "model": parent_model,
+            "reasoning_effort": requested_reasoning_effort
+        })
+    } else {
+        json!({
+            "message": "inspect this repo",
+            "agent_type": "custom",
+            "model": parent_model,
+            "reasoning_effort": requested_reasoning_effort
+        })
+    };
+    let session = Arc::new(session);
+    let turn = Arc::new(turn);
+    let thread_id = spawn_agent_and_get_thread_id(use_v2_handler, session, turn, payload).await;
+    let snapshot = manager
+        .get_thread(thread_id)
+        .await
+        .expect("spawned agent thread should exist")
+        .config_snapshot()
+        .await;
+
+    assert_eq!(snapshot.model, role_model);
+    assert_eq!(snapshot.reasoning_effort, Some(requested_reasoning_effort));
+}
+
 fn expect_text_output<T>(output: T) -> (String, Option<bool>)
 where
     T: ToolOutput,
@@ -647,6 +748,16 @@ async fn spawn_agent_keeps_role_locked_reasoning_effort_when_model_is_requested(
 #[tokio::test]
 async fn multi_agent_v2_spawn_keeps_role_locked_reasoning_effort_when_model_is_requested() {
     assert_reasoning_lock_survives_requested_model(true).await;
+}
+
+#[tokio::test]
+async fn spawn_agent_validates_reasoning_override_against_locked_role_model() {
+    assert_locked_role_model_uses_role_model_for_reasoning_validation(false).await;
+}
+
+#[tokio::test]
+async fn multi_agent_v2_spawn_validates_reasoning_override_against_locked_role_model() {
+    assert_locked_role_model_uses_role_model_for_reasoning_validation(true).await;
 }
 
 #[tokio::test]
