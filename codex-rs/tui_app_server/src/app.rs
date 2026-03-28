@@ -3097,7 +3097,10 @@ impl App {
         app_server: &mut AppServerSession,
         thread_id: ThreadId,
     ) -> bool {
-        if self.thread_event_channels.contains_key(&thread_id) {
+        if self
+            .thread_channel_has_authoritative_session(thread_id)
+            .await
+        {
             return true;
         }
 
@@ -3189,6 +3192,13 @@ impl App {
                 false
             }
         }
+    }
+
+    async fn thread_channel_has_authoritative_session(&self, thread_id: ThreadId) -> bool {
+        let Some(channel) = self.thread_event_channels.get(&thread_id) else {
+            return false;
+        };
+        channel.store.lock().await.session.is_some()
     }
 
     async fn select_agent_thread(
@@ -6372,6 +6382,121 @@ mod tests {
             app.has_hydrated_agent_picker_thread_metadata(&child_thread_id),
             "hydrated metadata should survive attach"
         );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn ensure_selectable_thread_channel_resumes_hydrated_thread_with_placeholder_channel()
+    -> Result<()> {
+        let mut app = make_test_app().await;
+        let temp_dir = tempdir()?;
+        app.config.codex_home = temp_dir.path().to_path_buf();
+        let child_thread_id = ThreadId::new();
+        let rollout_path = temp_dir
+            .path()
+            .join("sessions")
+            .join("2025")
+            .join("01")
+            .join("05")
+            .join(format!(
+                "rollout-2025-01-05T12-00-00-{child_thread_id}.jsonl"
+            ));
+        std::fs::create_dir_all(
+            rollout_path
+                .parent()
+                .expect("rollout path should have a parent directory"),
+        )?;
+        let meta = SessionMeta {
+            id: child_thread_id,
+            forked_from_id: None,
+            timestamp: "2025-01-05T12:00:00Z".to_string(),
+            cwd: PathBuf::from("/tmp/agent"),
+            originator: "codex".to_string(),
+            cli_version: "0.0.0".to_string(),
+            source: SessionSource::Cli,
+            agent_path: None,
+            agent_nickname: Some("Scout".to_string()),
+            agent_role: Some("explorer".to_string()),
+            model_provider: Some("openai".to_string()),
+            base_instructions: None,
+            dynamic_tools: None,
+            memory_mode: None,
+        };
+        let meta_payload = serde_json::to_value(SessionMetaLine { meta, git: None })?;
+        let turn_context = TurnContextItem {
+            turn_id: None,
+            trace_id: None,
+            cwd: PathBuf::from("/tmp/agent"),
+            current_date: None,
+            timezone: None,
+            approval_policy: app.config.permissions.approval_policy.value(),
+            sandbox_policy: app.config.permissions.sandbox_policy.get().clone(),
+            network: None,
+            model: app
+                .config
+                .model
+                .clone()
+                .unwrap_or_else(|| "gpt-5.1-codex".to_string()),
+            personality: None,
+            collaboration_mode: None,
+            realtime_active: Some(false),
+            effort: app.config.model_reasoning_effort,
+            summary: app.config.model_reasoning_summary.unwrap_or_default(),
+            user_instructions: None,
+            developer_instructions: None,
+            final_output_json_schema: None,
+            truncation_policy: None,
+        };
+        let rollout_lines = [
+            serde_json::json!({
+                "timestamp": "2025-01-05T12:00:00Z",
+                "type": "session_meta",
+                "payload": meta_payload,
+            })
+            .to_string(),
+            serde_json::to_string(&RolloutLine {
+                timestamp: "2025-01-05T12:00:00Z".to_string(),
+                item: RolloutItem::TurnContext(turn_context),
+            })?,
+        ];
+        std::fs::write(&rollout_path, rollout_lines.join("\n") + "\n")?;
+
+        let mut app_server = crate::start_embedded_app_server_for_picker(&app.config)
+            .await
+            .expect("embedded app server");
+
+        app.upsert_hydrated_agent_picker_thread(
+            child_thread_id,
+            Some("Scout".to_string()),
+            Some("explorer".to_string()),
+            /*is_closed*/ false,
+        );
+        app.thread_event_channels.insert(
+            child_thread_id,
+            ThreadEventChannel::new(THREAD_EVENT_CHANNEL_CAPACITY),
+        );
+
+        assert!(
+            app.ensure_selectable_thread_channel(&mut app_server, child_thread_id)
+                .await
+        );
+
+        let snapshot = {
+            let store = &app
+                .thread_event_channels
+                .get(&child_thread_id)
+                .expect("child thread channel should be attached")
+                .store;
+            store.lock().await.snapshot()
+        };
+        let session = snapshot
+            .session
+            .expect("attached thread should have a session");
+        assert_eq!(session.thread_id, child_thread_id);
+        assert_eq!(session.model_provider_id, "openai");
+        assert_eq!(session.cwd, PathBuf::from("/tmp/agent"));
+        assert_eq!(session.rollout_path, Some(rollout_path));
+        assert_eq!(snapshot.turns, Vec::<Turn>::new());
         Ok(())
     }
 

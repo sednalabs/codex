@@ -3436,8 +3436,12 @@ impl ChatWidget {
         let first_receiver = receiver_thread_ids
             .first()
             .and_then(|thread_id| app_server_collab_thread_id_to_core(thread_id));
-        let first_receiver_metadata =
-            first_receiver.map(|thread_id| self.collab_agent_metadata(thread_id));
+        let (first_receiver_nickname, first_receiver_role) = first_receiver
+            .map(|thread_id| {
+                let metadata = self.collab_agent_metadata(thread_id);
+                (metadata.agent_nickname, metadata.agent_role)
+            })
+            .unwrap_or((None, None));
 
         match tool {
             CollabAgentTool::SpawnAgent => {
@@ -3468,12 +3472,8 @@ impl ChatWidget {
                             call_id: id,
                             sender_thread_id,
                             new_thread_id: first_receiver,
-                            new_agent_nickname: first_receiver_metadata
-                                .as_ref()
-                                .and_then(|metadata| metadata.agent_nickname.clone()),
-                            new_agent_role: first_receiver_metadata
-                                .as_ref()
-                                .and_then(|metadata| metadata.agent_role.clone()),
+                            new_agent_nickname: first_receiver_nickname.clone(),
+                            new_agent_role: first_receiver_role.clone(),
                             prompt: prompt.unwrap_or_default(),
                             model: String::new(),
                             reasoning_effort: ReasoningEffortConfig::Medium,
@@ -3498,12 +3498,8 @@ impl ChatWidget {
                             call_id: id,
                             sender_thread_id,
                             receiver_thread_id,
-                            receiver_agent_nickname: first_receiver_metadata
-                                .as_ref()
-                                .and_then(|metadata| metadata.agent_nickname.clone()),
-                            receiver_agent_role: first_receiver_metadata
-                                .as_ref()
-                                .and_then(|metadata| metadata.agent_role.clone()),
+                            receiver_agent_nickname: first_receiver_nickname.clone(),
+                            receiver_agent_role: first_receiver_role.clone(),
                             prompt: prompt.unwrap_or_default(),
                             status: receiver_thread_ids
                                 .iter()
@@ -3524,12 +3520,8 @@ impl ChatWidget {
                                 call_id: id,
                                 sender_thread_id,
                                 receiver_thread_id,
-                                receiver_agent_nickname: first_receiver_metadata
-                                    .as_ref()
-                                    .and_then(|metadata| metadata.agent_nickname.clone()),
-                                receiver_agent_role: first_receiver_metadata
-                                    .as_ref()
-                                    .and_then(|metadata| metadata.agent_role.clone()),
+                                receiver_agent_nickname: first_receiver_nickname.clone(),
+                                receiver_agent_role: first_receiver_role.clone(),
                             },
                         ));
                     } else {
@@ -3538,12 +3530,8 @@ impl ChatWidget {
                                 call_id: id,
                                 sender_thread_id,
                                 receiver_thread_id,
-                                receiver_agent_nickname: first_receiver_metadata
-                                    .as_ref()
-                                    .and_then(|metadata| metadata.agent_nickname.clone()),
-                                receiver_agent_role: first_receiver_metadata
-                                    .as_ref()
-                                    .and_then(|metadata| metadata.agent_role.clone()),
+                                receiver_agent_nickname: first_receiver_nickname.clone(),
+                                receiver_agent_role: first_receiver_role.clone(),
                                 status: receiver_thread_ids
                                     .iter()
                                     .find_map(|thread_id| agents_states.get(thread_id))
