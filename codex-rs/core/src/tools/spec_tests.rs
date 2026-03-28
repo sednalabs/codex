@@ -1,4 +1,3 @@
-use crate::client_common::tools::FreeformTool;
 use crate::config::test_config;
 use crate::models_manager::manager::ModelsManager;
 use crate::models_manager::model_info::with_config_overrides;
@@ -12,6 +11,9 @@ use codex_protocol::openai_models::InputModality;
 use codex_protocol::openai_models::ModelInfo;
 use codex_protocol::openai_models::ModelsResponse;
 use codex_tools::AdditionalProperties;
+use codex_tools::FreeformTool;
+use codex_tools::ResponsesApiWebSearchFilters;
+use codex_tools::ResponsesApiWebSearchUserLocation;
 use codex_tools::mcp_tool_to_deferred_responses_api_tool;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use pretty_assertions::assert_eq;
@@ -106,14 +108,7 @@ fn deferred_responses_api_tool_serializes_with_defer_loading() {
 }
 
 fn tool_name(tool: &ToolSpec) -> &str {
-    match tool {
-        ToolSpec::Function(ResponsesApiTool { name, .. }) => name,
-        ToolSpec::ToolSearch { .. } => "tool_search",
-        ToolSpec::LocalShell {} => "local_shell",
-        ToolSpec::ImageGeneration { .. } => "image_generation",
-        ToolSpec::WebSearch { .. } => "web_search",
-        ToolSpec::Freeform(FreeformTool { name, .. }) => name,
-    }
+    tool.name()
 }
 
 // Avoid order-based assertions; compare via set containment instead.
@@ -1205,10 +1200,10 @@ fn web_search_config_is_forwarded_to_tool_spec() {
             external_web_access: Some(true),
             filters: web_search_config
                 .filters
-                .map(crate::client_common::tools::ResponsesApiWebSearchFilters::from),
+                .map(ResponsesApiWebSearchFilters::from),
             user_location: web_search_config
                 .user_location
-                .map(crate::client_common::tools::ResponsesApiWebSearchUserLocation::from),
+                .map(ResponsesApiWebSearchUserLocation::from),
             search_context_size: web_search_config.search_context_size,
             search_content_types: None,
         }

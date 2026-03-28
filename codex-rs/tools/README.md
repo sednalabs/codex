@@ -11,10 +11,13 @@ schema and Responses API tool primitives that no longer need to live in
 - `JsonSchema`
 - `AdditionalProperties`
 - `ToolDefinition`
+- `ToolSpec`
 - `ResponsesApiTool`
 - `FreeformTool`
 - `FreeformToolFormat`
 - `ToolSearchOutputTool`
+- `ResponsesApiWebSearchFilters`
+- `ResponsesApiWebSearchUserLocation`
 - `ResponsesApiNamespace`
 - `ResponsesApiNamespaceTool`
 - `parse_tool_input_schema()`
