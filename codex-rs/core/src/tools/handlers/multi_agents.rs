@@ -341,6 +341,7 @@ async fn apply_requested_spawn_agent_model_overrides(
     config: &mut Config,
     requested_model: Option<&str>,
     requested_reasoning_effort: Option<ReasoningEffort>,
+    preserve_existing_reasoning_effort_on_model_override: bool,
 ) -> Result<(), FunctionCallError> {
     if requested_model.is_none() && requested_reasoning_effort.is_none() {
         return Ok(());
@@ -367,6 +368,14 @@ async fn apply_requested_spawn_agent_model_overrides(
                 reasoning_effort,
             )?;
             config.model_reasoning_effort = Some(reasoning_effort);
+        } else if preserve_existing_reasoning_effort_on_model_override {
+            if let Some(reasoning_effort) = config.model_reasoning_effort {
+                validate_spawn_agent_reasoning_effort(
+                    &selected_model_name,
+                    &selected_model_info.supported_reasoning_levels,
+                    reasoning_effort,
+                )?;
+            }
         } else {
             config.model_reasoning_effort = selected_model_info.default_reasoning_level;
         }
