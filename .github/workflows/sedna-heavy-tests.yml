@@ -41,25 +41,6 @@ on:
   push:
     branches:
       - main
-    paths:
-      - ".github/workflows/**"
-      - "codex-rs/cli/**"
-      - "codex-rs/common/**"
-      - "codex-rs/core/**"
-      - "codex-rs/hooks/**"
-      - "codex-rs/linux-sandbox/**"
-      - "codex-rs/protocol/**"
-      - "codex-rs/state/**"
-      - "codex-rs/tui/**"
-      - "codex-rs/tui_app_server/**"
-      - "codex-rs/app-server/**"
-      - "codex-rs/app-server-protocol/**"
-      - "codex-rs/windows-sandbox-rs/**"
-      - "docs/carry-divergence-ledger.md"
-      - "docs/downstream-tool-surface-matrix.md"
-      - "docs/downstream.md"
-      - "docs/downstream-regression-matrix.md"
-      - "justfile"
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event_name == 'workflow_dispatch' && inputs.ref || github.ref_name }}
@@ -93,6 +74,7 @@ jobs:
           run_core_family=false
           run_ui_protocol_family=false
           run_docs_family=false
+          files=()
 
           if [[ '${{ github.event_name }}' == 'workflow_dispatch' && -n '${{ inputs.ref }}' ]]; then
             checkout_ref='${{ inputs.ref }}'
@@ -108,26 +90,34 @@ jobs:
             BASE_SHA='${{ github.event.pull_request.base.sha }}'
             HEAD_SHA='${{ github.event.pull_request.head.sha }}'
             mapfile -t files < <(git diff --name-only --no-renames "$BASE_SHA...$HEAD_SHA")
-
-            for f in "${files[@]}"; do
-              case "$f" in
-                .github/workflows/*|justfile)
-                  run_all_lanes=true
-                  ;;
-                codex-rs/cli/*|codex-rs/common/*|codex-rs/core/*|codex-rs/hooks/*|codex-rs/linux-sandbox/*|codex-rs/state/*|codex-rs/windows-sandbox-rs/*)
-                  run_core_family=true
-                  ;;
-                codex-rs/app-server/*|codex-rs/app-server-protocol/*|codex-rs/protocol/*|codex-rs/tui/*|codex-rs/tui_app_server/*)
-                  run_ui_protocol_family=true
-                  ;;
-                docs/carry-divergence-ledger.md|docs/downstream-regression-matrix.md|docs/downstream-tool-surface-matrix.md|docs/downstream.md)
-                  run_docs_family=true
-                  ;;
-              esac
-            done
+          elif [[ '${{ github.event_name }}' == 'push' ]]; then
+            BASE_SHA='${{ github.event.before }}'
+            HEAD_SHA='${{ github.sha }}'
+            if [[ -z "$BASE_SHA" || "$BASE_SHA" == "0000000000000000000000000000000000000000" ]]; then
+              run_all_lanes=true
+            else
+              mapfile -t files < <(git diff --name-only --no-renames "$BASE_SHA" "$HEAD_SHA")
+            fi
           else
             run_all_lanes=true
           fi
+
+          for f in "${files[@]}"; do
+            case "$f" in
+              .github/workflows/*|justfile)
+                run_all_lanes=true
+                ;;
+              codex-rs/cli/*|codex-rs/common/*|codex-rs/core/*|codex-rs/hooks/*|codex-rs/linux-sandbox/*|codex-rs/state/*|codex-rs/windows-sandbox-rs/*)
+                run_core_family=true
+                ;;
+              codex-rs/app-server/*|codex-rs/app-server-protocol/*|codex-rs/protocol/*|codex-rs/tui/*|codex-rs/tui_app_server/*)
+                run_ui_protocol_family=true
+                ;;
+              docs/carry-divergence-ledger.md|docs/downstream-regression-matrix.md|docs/downstream-tool-surface-matrix.md|docs/downstream.md)
+                run_docs_family=true
+                ;;
+            esac
+          done
 
           selected_json="$(
             CHECKOUT_EVENT='${{ github.event_name }}' \
