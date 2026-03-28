@@ -5055,7 +5055,7 @@ impl ChatWidget {
             local_images,
             remote_image_urls,
             mention_bindings,
-            true,
+            /*drain_submission_state*/ true,
         );
     }
 
@@ -5163,7 +5163,7 @@ impl ChatWidget {
         self.refresh_pending_input_preview();
         self.add_info_message(
             format!("Queued '{command_text}'. It will run after the current task completes."),
-            None,
+            /*hint*/ None,
         );
     }
 
@@ -6042,7 +6042,7 @@ impl ChatWidget {
                         local_images,
                         remote_image_urls,
                         mention_bindings,
-                        false,
+                        /*drain_submission_state*/ false,
                     ),
                 },
             }

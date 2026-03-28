@@ -450,7 +450,7 @@ impl EventProcessorWithJsonOutput {
             Some(ev.prompt.clone()),
             agents_states,
             status,
-            None,
+            /*wait_metadata*/ None,
         )
     }
 
@@ -486,7 +486,7 @@ impl EventProcessorWithJsonOutput {
             Some(ev.prompt.clone()),
             [(receiver_id, agent_state)].into_iter().collect(),
             status,
-            None,
+            /*wait_metadata*/ None,
         )
     }
 
@@ -587,7 +587,7 @@ impl EventProcessorWithJsonOutput {
             /*prompt*/ None,
             [(receiver_id, agent_state)].into_iter().collect(),
             status,
-            None,
+            /*wait_metadata*/ None,
         )
     }
 

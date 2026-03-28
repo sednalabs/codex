@@ -3258,7 +3258,7 @@ pub(crate) fn build_specs_with_discoverable_tools(
         push_tool_spec(
             &mut builder,
             create_list_agents_tool(),
-            false,
+            /*supports_parallel_tool_calls*/ false,
             config.code_mode_enabled,
         );
         push_tool_spec(
