@@ -170,7 +170,7 @@ jobs:
     timeout-minutes: 30
     needs: changed
     # Keep job-level if to avoid spinning up runners when not needed
-    if: ${{ (needs.changed.outputs.codex == 'true' || needs.changed.outputs.workflows == 'true' || github.event_name == 'push') && (github.repository_owner == 'openai' || matrix.runner == 'ubuntu-24.04') }}
+    if: ${{ (needs.changed.outputs.codex == 'true' || needs.changed.outputs.workflows == 'true' || github.event_name == 'push') && (github.repository_owner == 'openai' || runner.os == 'Linux') }}
     defaults:
       run:
         working-directory: codex-rs
@@ -555,7 +555,7 @@ jobs:
     runs-on: ${{ (github.repository_owner == 'openai' && (matrix.runs_on || matrix.runner)) || matrix.runner }}
     timeout-minutes: 30
     needs: changed
-    if: ${{ (needs.changed.outputs.codex == 'true' || needs.changed.outputs.workflows == 'true' || github.event_name == 'push') && (github.repository_owner == 'openai' || matrix.runner == 'ubuntu-24.04') }}
+    if: ${{ (needs.changed.outputs.codex == 'true' || needs.changed.outputs.workflows == 'true' || github.event_name == 'push') && (github.repository_owner == 'openai' || runner.os == 'Linux') }}
     defaults:
       run:
         working-directory: codex-rs
