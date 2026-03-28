@@ -237,6 +237,10 @@ impl StreamableHttpClient for StreamableHttpResponseClient {
         if response.status() == reqwest::StatusCode::METHOD_NOT_ALLOWED {
             return Ok(());
         }
+        if response.status() == reqwest::StatusCode::NOT_FOUND {
+            // Session cleanup can race with server-side expiry or prior cleanup.
+            return Ok(());
+        }
 
         response
             .error_for_status()
@@ -1206,4 +1210,60 @@ async fn create_oauth_transport_and_runtime(
     );
 
     Ok((transport, runtime))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use axum::Router;
+    use axum::extract::State;
+    use axum::http::HeaderMap as AxumHeaderMap;
+    use axum::http::StatusCode;
+    use axum::routing::delete;
+    use tokio::sync::Mutex;
+
+    use super::HEADER_SESSION_ID;
+    use super::StreamableHttpClient;
+    use super::StreamableHttpResponseClient;
+
+    #[tokio::test]
+    async fn delete_session_treats_not_found_as_success() {
+        let seen_session_id = Arc::new(Mutex::new(None::<String>));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind test listener");
+        let addr = listener.local_addr().expect("listener local addr");
+        let app = Router::new()
+            .route(
+                "/mcp",
+                delete({
+                    move |headers: AxumHeaderMap, State(seen_session_id): State<Arc<Mutex<Option<String>>>>| async move {
+                        let session_id = headers
+                            .get(HEADER_SESSION_ID)
+                            .and_then(|value| value.to_str().ok())
+                            .map(ToOwned::to_owned);
+                        *seen_session_id.lock().await = session_id;
+                        StatusCode::NOT_FOUND
+                    }
+                }),
+            )
+            .with_state(Arc::clone(&seen_session_id));
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app).await.expect("serve test app");
+        });
+
+        let client = StreamableHttpResponseClient::new(reqwest::Client::new());
+        let result = client
+            .delete_session(
+                Arc::<str>::from(format!("http://{addr}/mcp")),
+                Arc::<str>::from("session-123"),
+                None,
+            )
+            .await;
+
+        server.abort();
+        assert!(result.is_ok(), "404 session delete should be ignored");
+        assert_eq!(seen_session_id.lock().await.as_deref(), Some("session-123"));
+    }
 }
