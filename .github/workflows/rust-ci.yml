@@ -154,8 +154,13 @@ jobs:
           components: llvm-tools-preview, rustc-dev, rust-src
       - uses: facebook/install-dotslash@1e4e7b3e07eaca387acb98f1d4720e0bee8dbb6a # v2
       - name: Run argument comment lint on codex-rs
+        if: ${{ runner.os == 'macOS' }}
         shell: bash
         run: ./tools/argument-comment-lint/run-prebuilt-linter.sh
+      - name: Run argument comment lint on codex-rs (default targets only)
+        if: ${{ runner.os != 'macOS' }}
+        shell: bash
+        run: ./tools/argument-comment-lint/run-prebuilt-linter.sh -- --lib --bins
 
   # --- CI to validate on different os/targets --------------------------------
   lint_build:

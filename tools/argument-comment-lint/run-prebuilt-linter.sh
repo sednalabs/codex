@@ -10,9 +10,39 @@ has_manifest_path=false
 has_package_selection=false
 has_library_selection=false
 has_no_deps=false
+has_cargo_target_selection=false
+has_fix=false
+after_separator=false
 expect_value=""
+lint_args=()
+cargo_args=()
 
 for arg in "$@"; do
+    if [[ "$after_separator" == true ]]; then
+        cargo_args+=("$arg")
+        case "$arg" in
+            --all-targets|--lib|--bins|--tests|--examples|--benches|--doc)
+                has_cargo_target_selection=true
+                ;;
+            --bin|--test|--example|--bench)
+                has_cargo_target_selection=true
+                ;;
+            --bin=*|--test=*|--example=*|--bench=*)
+                has_cargo_target_selection=true
+                ;;
+        esac
+        continue
+    fi
+
+    case "$arg" in
+        --)
+            after_separator=true
+            continue
+            ;;
+    esac
+
+    lint_args+=("$arg")
+
     if [[ -n "$expect_value" ]]; then
         case "$expect_value" in
             manifest_path)
@@ -30,9 +60,6 @@ for arg in "$@"; do
     fi
 
     case "$arg" in
-        --)
-            break
-            ;;
         --manifest-path)
             expect_value="manifest_path"
             ;;
@@ -44,6 +71,9 @@ for arg in "$@"; do
             ;;
         --package=*)
             has_package_selection=true
+            ;;
+        --fix)
+            has_fix=true
             ;;
         --lib|--lib-path)
             expect_value="library_selection"
@@ -60,17 +90,25 @@ for arg in "$@"; do
     esac
 done
 
-lint_args=()
+final_args=()
 if [[ "$has_manifest_path" == false ]]; then
-    lint_args+=(--manifest-path "$manifest_path")
+    final_args+=(--manifest-path "$manifest_path")
 fi
 if [[ "$has_package_selection" == false ]]; then
-    lint_args+=(--workspace)
+    final_args+=(--workspace)
 fi
 if [[ "$has_no_deps" == false ]]; then
-    lint_args+=(--no-deps)
+    final_args+=(--no-deps)
 fi
-lint_args+=("$@")
+if [[ "$has_fix" == false && "$has_cargo_target_selection" == false ]]; then
+    cargo_args+=(--all-targets)
+fi
+if [[ ${#lint_args[@]} -gt 0 ]]; then
+    final_args+=("${lint_args[@]}")
+fi
+if [[ ${#cargo_args[@]} -gt 0 ]]; then
+    final_args+=(-- "${cargo_args[@]}")
+fi
 
 if ! command -v dotslash >/dev/null 2>&1; then
     cat >&2 <<EOF
@@ -159,6 +197,6 @@ command=("$cargo_dylint" dylint --lib-path "$normalized_library_path")
 if [[ "$has_library_selection" == false ]]; then
     command+=(--all)
 fi
-command+=("${lint_args[@]}")
+command+=("${final_args[@]}")
 
 exec "${command[@]}"

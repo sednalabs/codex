@@ -132,6 +132,9 @@ just argument-comment-lint -p codex-core
 
 If no package selection is provided, `run-prebuilt-linter.sh` defaults to checking the
 `codex-rs` workspace with `--workspace --no-deps`.
+For non-`--fix` runs, both wrappers also default the underlying Cargo
+invocation to `--all-targets` unless you explicitly narrow the target set, so
+workspace and package lint runs both cover test-only call sites by default.
 
 Repo runs also promote `uncommented_anonymous_literal_argument` to an error by
 default:
@@ -152,7 +155,7 @@ CARGO_INCREMENTAL=1 \
   ./tools/argument-comment-lint/run.sh -p codex-core
 ```
 
-To expand target coverage for an ad hoc run:
+To override an explicitly narrow target selection, or to be explicit in scripts:
 
 ```bash
 ./tools/argument-comment-lint/run-prebuilt-linter.sh -p codex-core -- --all-targets
