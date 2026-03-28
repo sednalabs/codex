@@ -86,7 +86,6 @@ use codex_protocol::config_types::Personality;
 #[cfg(target_os = "windows")]
 use codex_protocol::config_types::WindowsSandboxLevel;
 use codex_protocol::items::parse_subagent_notification_response_item;
-use codex_protocol::items::parse_subagent_notification_response_item;
 use codex_protocol::openai_models::ModelAvailabilityNux;
 use codex_protocol::openai_models::ModelPreset;
 use codex_protocol::openai_models::ModelUpgrade;
@@ -1287,7 +1286,7 @@ impl App {
         }
         let current_cwd = self.config.cwd.clone();
         let mut config = match session {
-            Some(session) => {
+            Some(ref session) => {
                 self.rebuild_config_for_resume_or_fallback(&current_cwd, session.cwd.clone())
                     .await?
             }
