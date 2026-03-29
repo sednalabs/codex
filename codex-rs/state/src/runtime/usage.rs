@@ -137,12 +137,10 @@ ON CONFLICT(thread_id) DO UPDATE SET
 
     fn parent_thread_from_source(source: &SessionSource) -> Option<ThreadId> {
         match source {
-            SessionSource::SubAgent(sub) => match sub {
-                codex_protocol::protocol::SubAgentSource::ThreadSpawn {
-                    parent_thread_id, ..
-                } => Some(*parent_thread_id),
-                _ => None,
-            },
+            SessionSource::SubAgent(codex_protocol::protocol::SubAgentSource::ThreadSpawn {
+                parent_thread_id,
+                ..
+            }) => Some(*parent_thread_id),
             _ => None,
         }
     }
@@ -237,14 +235,13 @@ ON CONFLICT(thread_id) DO UPDATE SET
         token_count: &TokenCountEvent,
         turn_id: Option<&str>,
     ) -> anyhow::Result<()> {
-        let last_usage = token_count
+        let Some(usage) = token_count
             .info
             .as_ref()
-            .map(|info| info.last_token_usage.clone());
-        if last_usage.is_none() {
+            .map(|info| info.last_token_usage.clone())
+        else {
             return Ok(());
-        }
-        let usage = last_usage.unwrap();
+        };
         let turn_snapshot = turn_id.and_then(|id| self.turn_snapshots.get(id)).cloned();
         let requested_model = turn_snapshot
             .as_ref()
@@ -309,10 +306,9 @@ ON CONFLICT(thread_id) DO UPDATE SET
         turn_id: Option<&str>,
         snapshot: &RateLimitSnapshot,
     ) -> anyhow::Result<()> {
-        if snapshot.primary.is_none() {
+        let Some(primary) = snapshot.primary.as_ref() else {
             return Ok(());
-        }
-        let primary = snapshot.primary.as_ref().unwrap();
+        };
         let used = primary.used_percent;
         let remaining = (100.0 - used).max(0.0);
         let plan = snapshot.plan_type.as_ref().map(|plan| format!("{plan:?}"));
