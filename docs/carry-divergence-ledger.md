@@ -118,8 +118,10 @@ live divergence.
 - Carry also preserves the requested `model_reasoning_summary`, so the summary the child asked for survives role reload unless a role or active profile explicitly locks it, and active-profile overrides that set these fields retain precedence per `core/src/agent/role.rs`.
 - Spawn-agent result and direct-child inventory reporting expose `role`, `status`, `identity_source`, `effective_model`, `effective_reasoning_effort`, and `effective_model_provider_id` after role application, so the surviving setting is visible.
 - `list_agents` is a first-class inventory tool on `carry/main`: it defaults to direct-child visibility and can optionally surface persisted subtree rows via `include_descendants=true`, including `spawn_edge_status` for open/closed descendant edges even when the descendants are no longer live.
-- `wait_agent` adds `return_when=any|all` plus `requested_ids`, `pending_ids`, and `completion_reason` so downstream joins happen on explicit tool contracts rather than transcript polling.
+- `wait_agent` adds `return_when=any|all` plus `requested_ids`, `pending_ids`, `completion_reason`, and `timed_out` so downstream joins happen on explicit tool contracts rather than transcript polling.
+- The built-in downstream awaiter profile also raises its default background timeout and prefers longer blocking waits plus `list_agents` snapshots over repeated short polling from the model layer.
 - Primary files:
+  - `codex-rs/core/src/agent/builtins/awaiter.toml`
   - `codex-rs/core/src/agent/role.rs`
   - `codex-rs/core/src/tools/handlers/multi_agents/list_agents.rs`
   - `codex-rs/core/src/tools/handlers/multi_agents/spawn.rs`
