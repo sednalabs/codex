@@ -286,7 +286,7 @@ pub(crate) async fn apply_role_to_config(
             model_reasoning_effort: preserved_reasoning_effort,
             model_reasoning_summary: preserved_reasoning_summary,
             model_verbosity: preserved_verbosity,
-            cwd: Some(config.cwd.to_path_buf()),
+            cwd: Some(config.cwd.clone()),
             model_provider: preserve_current_provider.then(|| config.model_provider_id.clone()),
             config_profile: preserve_current_profile
                 .then(|| config.active_profile.clone())
