@@ -5625,7 +5625,7 @@ Examples of valid command strings:
 
         assert_eq!(
             description,
-            "Echo text\n\nCode mode declaration:\n```ts\ndeclare const tools: {\n  echo(args: {\n  message: string;\n}): Promise<{\n  _meta?: unknown;\n  content: Array<unknown>;\n  isError?: boolean;\n  structuredContent?: unknown;\n}>;\n};\n```"
+            "Echo text\n\nCode mode declaration:\n```ts\ndeclare const tools: {\n  mcp__sample__echo(args: {\n  message: string;\n}): Promise<{\n  _meta?: unknown;\n  content: Array<unknown>;\n  isError?: boolean;\n  structuredContent?: unknown;\n}>;\n};\n```"
         );
     }
 
