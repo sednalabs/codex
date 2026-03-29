@@ -1172,25 +1172,6 @@ pub(in crate::memories) mod agent {
         }
     }
 
-    #[cfg(windows)]
-    fn file_has_multiple_hard_links(file: &std::fs::File) -> std::io::Result<bool> {
-        use std::mem::MaybeUninit;
-        use std::os::windows::io::AsRawHandle;
-        use windows_sys::Win32::Storage::FileSystem::BY_HANDLE_FILE_INFORMATION;
-        use windows_sys::Win32::Storage::FileSystem::GetFileInformationByHandle;
-
-        let mut info = MaybeUninit::<BY_HANDLE_FILE_INFORMATION>::zeroed();
-        // SAFETY: `file` owns a live OS handle and `info` points at writable storage for the
-        // returned metadata structure.
-        let ok = unsafe { GetFileInformationByHandle(file.as_raw_handle(), info.as_mut_ptr()) };
-        if ok == 0 {
-            return Err(std::io::Error::last_os_error());
-        }
-        // SAFETY: `GetFileInformationByHandle` initialized `info` when it returned success.
-        let info = unsafe { info.assume_init() };
-        Ok(info.nNumberOfLinks > 1)
-    }
-
     fn open_read_only_regular_file(path: &Path) -> std::io::Result<std::fs::File> {
         #[cfg(unix)]
         {
@@ -1225,7 +1206,7 @@ pub(in crate::memories) mod agent {
             if metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
                 return Err(std::io::Error::other("path is a reparse point"));
             }
-            if file_has_multiple_hard_links(&file)? {
+            if metadata.number_of_links() > 1 {
                 return Err(std::io::Error::other("path has multiple hard links"));
             }
             if !metadata.is_file() {
@@ -1279,7 +1260,7 @@ pub(in crate::memories) mod agent {
             if metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
                 return Err(std::io::Error::other("path is a reparse point"));
             }
-            if file_has_multiple_hard_links(&file)? {
+            if metadata.number_of_links() > 1 {
                 return Err(std::io::Error::other("path has multiple hard links"));
             }
             if !metadata.is_file() {
