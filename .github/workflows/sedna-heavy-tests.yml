@@ -107,9 +107,6 @@ jobs:
 
           for f in "${files[@]}"; do
             case "$f" in
-              .github/workflows/*|justfile)
-                run_workflow_family=true
-                ;;
               codex-rs/Cargo.toml|codex-rs/Cargo.lock)
                 run_core_family=true
                 run_ui_protocol_family=true
