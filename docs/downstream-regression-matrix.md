@@ -121,9 +121,10 @@ for a removed crate path.
 sqlite3 "${CODEX_SQLITE_HOME:-$HOME/.codex}/usage.sqlite" '.tables'
 ```
 
-- `downstream-ledger-seam` requires the sibling `agent-usage-ledger` repository
-  and a reachable Postgres URL (`LLM_USAGE_DB_URL` or configured MCP Postgres
-  `DATABASE_URI`).
+- `downstream-ledger-seam` reads the first-party local ledger at
+  `${CODEX_SQLITE_HOME:-$HOME/.codex}/usage.sqlite`; external Postgres wiring
+  is optional downstream analysis infrastructure, not a prerequisite for the
+  seam itself.
 - Keep the broad ladders out of the inner loop on this host:
   use the focused `codex.core-*targeted` presets first, then promote to
   `just core-test-smoke`, then `just core-test-progressive` only when you
