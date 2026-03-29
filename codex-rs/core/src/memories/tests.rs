@@ -494,7 +494,8 @@ mod phase2 {
             let mut config = test_config();
             config.codex_home = codex_home.path().to_path_buf();
             config.cwd = AbsolutePathBuf::from_absolute_path(config.codex_home.clone())
-                .expect("codex_home should be absolute");
+                .expect("codex_home should be absolute")
+                .into();
             let config = Arc::new(config);
 
             let state_db = codex_state::StateRuntime::init(
@@ -1667,7 +1668,8 @@ mod phase2 {
         let mut config = test_config();
         config.codex_home = codex_home;
         config.cwd = AbsolutePathBuf::from_absolute_path(PathBuf::from("/tmp/workspace"))
-            .expect("workspace path should be absolute");
+            .expect("workspace path should be absolute")
+            .into();
         let config = Arc::new(config);
 
         let agent_config =
@@ -1731,7 +1733,8 @@ mod phase2 {
         let mut config = test_config();
         config.codex_home = linked_codex_home;
         config.cwd = AbsolutePathBuf::from_absolute_path(PathBuf::from("/tmp/workspace"))
-            .expect("workspace path should be absolute");
+            .expect("workspace path should be absolute")
+            .into();
 
         assert!(
             phase2::test_consolidation_agent_config(Arc::new(config)).is_none(),
@@ -1994,7 +1997,8 @@ mod phase2 {
         let mut config = test_config();
         config.codex_home = codex_home.path().to_path_buf();
         config.cwd = AbsolutePathBuf::from_absolute_path(config.codex_home.clone())
-            .expect("codex_home should be absolute");
+            .expect("codex_home should be absolute")
+            .into();
         let config = Arc::new(config);
 
         let state_db = codex_state::StateRuntime::init(
