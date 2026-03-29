@@ -117,21 +117,24 @@ Why:
 - Upstream already supports explicit `spawn_agent(model=..., reasoning_effort=...)` child overrides, so the live downstream divergence is narrower than the historical carry title suggests.
 - Preserve those explicit child overrides even when launching a role-backed sub-agent whose role file does not lock model/economy fields, so downstream economical deployments do not drift back to inherited parent-profile defaults during role reload.
 - Surface the effective resolved child settings directly in the tool layer so operators can see what actually launched.
-- Let downstream multi-agent orchestration block on clear tool contracts (`list_agents`, `wait_agent(return_when=...)`) instead of transcript polling.
+- Let downstream multi-agent orchestration block on clear tool contracts (`list_agents`, `inspect_agent_tree`, `wait_agent(return_when=...)`) instead of transcript polling.
 
 User-visible behavior:
 - Explicit child `model` and `model_reasoning_effort` requests survive role application unless the selected role explicitly sets those fields or locks the summary, and the `model_reasoning_summary` is preserved internally so downstream metadata can keep the intended reasoning context even though it is not part of the tool response.
 - `spawn_agent` returns `role`, `status`, `identity_source`, `effective_model`, `effective_reasoning_effort`, and `effective_model_provider_id`, letting operators see the resolved settings that actually launched after the role/profile overrides. That preserved `model_reasoning_summary` stays available through our internal metadata, not the raw tool response or inventory fields.
 - Active-profile updates (parent/session config/role) that set `model`, `model_reasoning_summary`, or `model_reasoning_effort` continue to override child requests; the precedence stack is role-defined fields > active profile overrides > child requests, and `core/src/agent/role.rs` contains the precise logic we rely on.
-- `list_agents` now follows the upstream `MultiAgentV2` live handler path when that feature is enabled: it returns path-scoped live inventory (`agent_name`, `agent_status`, `last_task_message`) rather than the old downstream provenance-heavy inventory rows.
+- `list_agents` keeps the upstream live handler shape as the cheap always-available view across both collaboration surfaces instead of hiding it behind `MultiAgentV2`, and adds `has_active_subagents` / `active_subagent_count` so callers can notice when a row still owns active nested work without paying for a full tree dump.
+- `inspect_agent_tree` is the richer downstream observability surface: it inspects the current subtree or a target path, can toggle `live` versus `stale` descendant visibility, can filter to selected branches with `agent_roots`, and returns compact tree rows with bounded depth and row limits.
 - `wait_agent` supports `return_when=any|all` and returns `requested_ids`, `pending_ids`, `completion_reason`, and `timed_out`.
 - Roles that explicitly set `model`, `model_provider`, `model_reasoning_effort`, or `model_verbosity` continue to be authoritative, even when a child requests a different setting.
-- Docs and tooling now spell out the precedence stack and the intended upstream-v2 `list_agents`-before-`wait_agent` orchestration pattern.
+- Docs and tooling now spell out the precedence stack and the intended `list_agents` / `inspect_agent_tree` / `wait_agent` orchestration pattern: cheap live view first, compact nested or stale inspection when needed, blocking wait only when a transition must complete.
 
 Primary files:
 - `codex-rs/core/src/agent/role.rs`
+- `codex-rs/core/src/agent/control.rs`
 - `codex-rs/core/src/tools/handlers/multi_agents/spawn.rs`
 - `codex-rs/core/src/tools/handlers/multi_agents_v2/list_agents.rs`
+- `codex-rs/core/src/tools/handlers/inspect_agent_tree.rs`
 - `codex-rs/core/src/tools/handlers/multi_agents/wait.rs`
 - `codex-rs/core/src/tools/handlers/multi_agents_tests.rs`
 - `codex-rs/core/src/tools/spec.rs`

@@ -424,10 +424,16 @@ fn test_build_specs_collab_tools_enabled() {
     .build();
     assert_contains_tool_names(
         &tools,
-        &["spawn_agent", "send_input", "wait_agent", "close_agent"],
+        &[
+            "spawn_agent",
+            "send_input",
+            "wait_agent",
+            "close_agent",
+            "list_agents",
+            "inspect_agent_tree",
+        ],
     );
     assert_lacks_tool_name(&tools, "spawn_agents_on_csv");
-    assert_lacks_tool_name(&tools, "list_agents");
 }
 
 #[test]
@@ -463,6 +469,7 @@ fn test_build_specs_multi_agent_v2_uses_task_names_and_hides_resume() {
             "wait_agent",
             "close_agent",
             "list_agents",
+            "inspect_agent_tree",
         ],
     );
 

@@ -53,6 +53,7 @@ use codex_tools::create_assign_task_tool;
 use codex_tools::create_close_agent_tool_v1;
 use codex_tools::create_close_agent_tool_v2;
 use codex_tools::create_exec_command_tool;
+use codex_tools::create_inspect_agent_tree_tool;
 use codex_tools::create_list_agents_tool;
 use codex_tools::create_report_agent_job_result_tool;
 use codex_tools::create_request_permissions_tool;
@@ -986,6 +987,7 @@ pub(crate) fn build_specs_with_discoverable_tools(
     use crate::tools::handlers::CodeModeExecuteHandler;
     use crate::tools::handlers::CodeModeWaitHandler;
     use crate::tools::handlers::DynamicToolHandler;
+    use crate::tools::handlers::InspectAgentTreeHandler;
     use crate::tools::handlers::JsReplHandler;
     use crate::tools::handlers::JsReplResetHandler;
     use crate::tools::handlers::ListDirHandler;
@@ -1393,12 +1395,19 @@ pub(crate) fn build_specs_with_discoverable_tools(
                 /*supports_parallel_tool_calls*/ false,
                 config.code_mode_enabled,
             );
+            push_tool_spec(
+                &mut builder,
+                create_inspect_agent_tree_tool(),
+                /*supports_parallel_tool_calls*/ false,
+                config.code_mode_enabled,
+            );
             builder.register_handler("spawn_agent", Arc::new(SpawnAgentHandlerV2));
             builder.register_handler("send_message", Arc::new(SendMessageHandlerV2));
             builder.register_handler("assign_task", Arc::new(AssignTaskHandlerV2));
             builder.register_handler("wait_agent", Arc::new(WaitAgentHandlerV2));
             builder.register_handler("close_agent", Arc::new(CloseAgentHandlerV2));
             builder.register_handler("list_agents", Arc::new(ListAgentsHandlerV2));
+            builder.register_handler("inspect_agent_tree", Arc::new(InspectAgentTreeHandler));
         } else {
             push_tool_spec(
                 &mut builder,
@@ -1436,6 +1445,18 @@ pub(crate) fn build_specs_with_discoverable_tools(
             );
             push_tool_spec(
                 &mut builder,
+                create_list_agents_tool(),
+                /*supports_parallel_tool_calls*/ false,
+                config.code_mode_enabled,
+            );
+            push_tool_spec(
+                &mut builder,
+                create_inspect_agent_tree_tool(),
+                /*supports_parallel_tool_calls*/ false,
+                config.code_mode_enabled,
+            );
+            push_tool_spec(
+                &mut builder,
                 create_close_agent_tool_v1(),
                 /*supports_parallel_tool_calls*/ false,
                 config.code_mode_enabled,
@@ -1444,6 +1465,8 @@ pub(crate) fn build_specs_with_discoverable_tools(
             builder.register_handler("send_input", Arc::new(SendInputHandler));
             builder.register_handler("wait_agent", Arc::new(WaitAgentHandler));
             builder.register_handler("close_agent", Arc::new(CloseAgentHandler));
+            builder.register_handler("list_agents", Arc::new(ListAgentsHandlerV2));
+            builder.register_handler("inspect_agent_tree", Arc::new(InspectAgentTreeHandler));
         }
     }
 

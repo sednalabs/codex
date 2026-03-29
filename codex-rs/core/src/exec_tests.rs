@@ -1,5 +1,10 @@
 use super::*;
 use codex_protocol::config_types::WindowsSandboxLevel;
+use codex_protocol::permissions::FileSystemAccessMode;
+use codex_protocol::permissions::FileSystemPath;
+use codex_protocol::permissions::FileSystemSandboxEntry;
+use codex_protocol::permissions::FileSystemSpecialPath;
+use codex_protocol::protocol::SandboxPolicy;
 use codex_sandboxing::SandboxType;
 use pretty_assertions::assert_eq;
 use std::collections::HashMap;
@@ -731,6 +736,7 @@ fn process_exec_tool_call_uses_platform_sandbox_for_network_only_restrictions() 
 
     assert_eq!(
         select_process_exec_tool_sandbox_type(
+            &SandboxPolicy::DangerFullAccess,
             &FileSystemSandboxPolicy::unrestricted(),
             NetworkSandboxPolicy::Restricted,
             codex_protocol::config_types::WindowsSandboxLevel::Disabled,

@@ -244,7 +244,7 @@ pub fn create_list_agents_tool() -> ToolSpec {
         "path_prefix".to_string(),
         JsonSchema::String {
             description: Some(
-                "Optional task-path prefix. Accepts the same relative or absolute task-path syntax as other MultiAgentV2 agent targets."
+                "Optional task-path prefix. Accepts the same relative or absolute task-path syntax as other agent targets."
                     .to_string(),
             ),
         },
@@ -253,7 +253,7 @@ pub fn create_list_agents_tool() -> ToolSpec {
     ToolSpec::Function(ResponsesApiTool {
         name: "list_agents".to_string(),
         description:
-            "List live agents in the current root thread tree. Optionally filter by task-path prefix."
+            "List live agents in the current root thread tree. Optionally filter by task-path prefix, and flag rows that still own active sub-agents."
                 .to_string(),
         strict: false,
         defer_loading: None,
@@ -263,6 +263,76 @@ pub fn create_list_agents_tool() -> ToolSpec {
             additional_properties: Some(false.into()),
         },
         output_schema: Some(list_agents_output_schema()),
+    })
+}
+
+pub fn create_inspect_agent_tree_tool() -> ToolSpec {
+    let properties = BTreeMap::from([
+        (
+            "target".to_string(),
+            JsonSchema::String {
+                description: Some(
+                    "Optional task-path root to inspect. Accepts the same relative or absolute task-path syntax as other agent targets. When omitted, inspects the current agent subtree."
+                        .to_string(),
+                ),
+            },
+        ),
+        (
+            "agent_roots".to_string(),
+            JsonSchema::Array {
+                items: Box::new(JsonSchema::String {
+                    description: Some(
+                        "Task-path roots to keep in the returned tree. Each value accepts the same relative or absolute task-path syntax as other agent targets; matching rows include the named agent and its descendants."
+                            .to_string(),
+                    ),
+                }),
+                description: Some(
+                    "Optional branch filters for the inspected tree. When omitted, all matching descendants under the target are eligible."
+                        .to_string(),
+                ),
+            },
+        ),
+        (
+            "scope".to_string(),
+            JsonSchema::String {
+                description: Some(
+                    "Optional inspection scope. Use `live` for active sessions only, `stale` for persisted closed descendants only, or `all` to combine both. Defaults to `live`."
+                        .to_string(),
+                ),
+            },
+        ),
+        (
+            "max_depth".to_string(),
+            JsonSchema::Number {
+                description: Some(
+                    "Optional maximum descendant depth to return, counted from the inspected subtree root. Defaults to 2."
+                        .to_string(),
+                ),
+            },
+        ),
+        (
+            "max_agents".to_string(),
+            JsonSchema::Number {
+                description: Some(
+                    "Optional maximum number of rows to return after tree ordering is applied. Defaults to 25."
+                        .to_string(),
+                ),
+            },
+        ),
+    ]);
+
+    ToolSpec::Function(ResponsesApiTool {
+        name: "inspect_agent_tree".to_string(),
+        description: "Inspect a compact nested agent tree for the current subtree or a target task path. Returns tree rows, live-or-stale session state, optional branch-filter context, and summary counts without dumping full transcripts."
+            .to_string(),
+        strict: false,
+        defer_loading: None,
+        parameters: JsonSchema::Object {
+            properties,
+            required: None,
+            additional_properties: Some(false.into()),
+        },
+        output_schema: Some(inspect_agent_tree_output_schema()),
     })
 }
 
@@ -417,15 +487,162 @@ fn list_agents_output_schema() -> Value {
                         "last_task_message": {
                             "type": ["string", "null"],
                             "description": "Most recent user or inter-agent instruction received by the agent, when available."
+                        },
+                        "has_active_subagents": {
+                            "type": "boolean",
+                            "description": "Whether the agent currently has any live descendants whose status is still non-final."
+                        },
+                        "active_subagent_count": {
+                            "type": "integer",
+                            "description": "Number of live descendants below this row whose status is still non-final."
                         }
                     },
-                    "required": ["agent_name", "agent_status", "last_task_message"],
+                    "required": [
+                        "agent_name",
+                        "agent_status",
+                        "last_task_message",
+                        "has_active_subagents",
+                        "active_subagent_count"
+                    ],
                     "additionalProperties": false
                 },
                 "description": "Live agents visible in the current root thread tree."
             }
         },
         "required": ["agents"],
+        "additionalProperties": false
+    })
+}
+
+fn inspect_agent_tree_output_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "root_agent_name": {
+                "type": "string",
+                "description": "Canonical task path for the inspected subtree root when available, otherwise the agent id."
+            },
+            "scope_applied": {
+                "type": "string",
+                "enum": ["live", "stale", "all"],
+                "description": "Inspection scope applied to the returned tree."
+            },
+            "agent_roots_applied": {
+                "type": "array",
+                "items": {
+                    "type": "string"
+                },
+                "description": "Resolved task-path branch filters applied to the returned tree. Empty when no branch filter is active."
+            },
+            "max_depth_applied": {
+                "type": "integer",
+                "description": "Maximum descendant depth included in the returned rows."
+            },
+            "max_agents_applied": {
+                "type": "integer",
+                "description": "Maximum number of rows included in the returned tree."
+            },
+            "truncated": {
+                "type": "boolean",
+                "description": "Whether additional matching descendants were omitted because of the applied depth or row limits."
+            },
+            "summary": {
+                "type": "object",
+                "properties": {
+                    "total_agents": { "type": "integer" },
+                    "live_agents": { "type": "integer" },
+                    "stale_agents": { "type": "integer" },
+                    "pending_init_agents": { "type": "integer" },
+                    "running_agents": { "type": "integer" },
+                    "interrupted_agents": { "type": "integer" },
+                    "completed_agents": { "type": "integer" },
+                    "errored_agents": { "type": "integer" },
+                    "shutdown_agents": { "type": "integer" },
+                    "not_found_agents": { "type": "integer" }
+                },
+                "required": [
+                    "total_agents",
+                    "live_agents",
+                    "stale_agents",
+                    "pending_init_agents",
+                    "running_agents",
+                    "interrupted_agents",
+                    "completed_agents",
+                    "errored_agents",
+                    "shutdown_agents",
+                    "not_found_agents"
+                ],
+                "additionalProperties": false
+            },
+            "agents": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "agent_name": {
+                            "type": "string",
+                            "description": "Canonical task path for the row when available, otherwise the agent id."
+                        },
+                        "depth": {
+                            "type": "integer",
+                            "description": "Descendant depth relative to the inspected subtree root."
+                        },
+                        "session_state": {
+                            "type": "string",
+                            "enum": ["live", "stale"],
+                            "description": "Whether the row comes from the live in-memory tree or a persisted closed descendant."
+                        },
+                        "agent_status": {
+                            "type": ["object", "string", "null"],
+                            "description": "Live agent status when the session is active; null for stale rows."
+                        },
+                        "nickname": {
+                            "type": ["string", "null"],
+                            "description": "User-facing nickname for the agent when available."
+                        },
+                        "role": {
+                            "type": ["string", "null"],
+                            "description": "Assigned role for the agent when available."
+                        },
+                        "direct_child_count": {
+                            "type": "integer",
+                            "description": "Number of direct descendants under this row within the selected scope."
+                        },
+                        "descendant_count": {
+                            "type": "integer",
+                            "description": "Total number of descendants below this row within the selected scope."
+                        },
+                        "last_task_message_preview": {
+                            "type": ["string", "null"],
+                            "description": "Compact preview of the latest known instruction for live rows, when available."
+                        }
+                    },
+                    "required": [
+                        "agent_name",
+                        "depth",
+                        "session_state",
+                        "agent_status",
+                        "nickname",
+                        "role",
+                        "direct_child_count",
+                        "descendant_count",
+                        "last_task_message_preview"
+                    ],
+                    "additionalProperties": false
+                },
+                "description": "Compact tree rows ordered depth-first from the inspected subtree root."
+            }
+        },
+        "required": [
+            "root_agent_name",
+            "scope_applied",
+            "agent_roots_applied",
+            "max_depth_applied",
+            "max_agents_applied",
+            "truncated",
+            "summary",
+            "agents"
+        ],
         "additionalProperties": false
     })
 }

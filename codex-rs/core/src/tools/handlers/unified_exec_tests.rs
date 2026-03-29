@@ -164,36 +164,37 @@ fn test_get_command_ignores_explicit_shell_in_zsh_fork_mode() -> anyhow::Result<
 }
 
 #[test]
-fn exec_command_args_parse_blocking_wait_fields() -> anyhow::Result<()> {
+fn exec_command_args_parse_execution_fields() -> anyhow::Result<()> {
     let json = r#"{
         "cmd": "echo hello",
-        "wait_until_terminal": true,
-        "max_wait_ms": 1234,
-        "heartbeat_interval_ms": 250
+        "tty": true,
+        "yield_time_ms": 1234,
+        "max_output_tokens": 250
     }"#;
 
     let args: ExecCommandArgs = parse_arguments(json)?;
 
-    assert!(args.wait_until_terminal);
-    assert_eq!(args.max_wait_ms, Some(1234));
-    assert_eq!(args.heartbeat_interval_ms, Some(250));
+    assert!(args.tty);
+    assert_eq!(args.yield_time_ms, 1234);
+    assert_eq!(args.max_output_tokens, Some(250));
     Ok(())
 }
 
 #[test]
-fn write_stdin_args_parse_blocking_wait_fields() -> anyhow::Result<()> {
+fn write_stdin_args_parse_execution_fields() -> anyhow::Result<()> {
     let json = r#"{
         "session_id": 42,
-        "wait_until_terminal": true,
-        "max_wait_ms": 1234,
-        "heartbeat_interval_ms": 250
+        "chars": "echo hi\n",
+        "yield_time_ms": 1234,
+        "max_output_tokens": 250
     }"#;
 
     let args: WriteStdinArgs = parse_arguments(json)?;
 
-    assert!(args.wait_until_terminal);
-    assert_eq!(args.max_wait_ms, Some(1234));
-    assert_eq!(args.heartbeat_interval_ms, Some(250));
+    assert_eq!(args.session_id, 42);
+    assert_eq!(args.chars, "echo hi\n");
+    assert_eq!(args.yield_time_ms, 1234);
+    assert_eq!(args.max_output_tokens, Some(250));
     Ok(())
 }
 

@@ -147,6 +147,75 @@ fn list_agents_tool_includes_path_prefix_and_agent_fields() {
     assert!(properties.contains_key("path_prefix"));
     assert_eq!(
         output_schema.expect("list_agents output schema")["properties"]["agents"]["items"]["required"],
-        json!(["agent_name", "agent_status", "last_task_message"])
+        json!([
+            "agent_name",
+            "agent_status",
+            "last_task_message",
+            "has_active_subagents",
+            "active_subagent_count"
+        ])
+    );
+}
+
+#[test]
+fn inspect_agent_tree_tool_exposes_scope_and_compact_tree_fields() {
+    let ToolSpec::Function(ResponsesApiTool {
+        parameters,
+        output_schema,
+        ..
+    }) = create_inspect_agent_tree_tool()
+    else {
+        panic!("inspect_agent_tree should be a function tool");
+    };
+    let JsonSchema::Object { properties, .. } = parameters else {
+        panic!("inspect_agent_tree should use object params");
+    };
+    assert!(properties.contains_key("target"));
+    assert!(properties.contains_key("agent_roots"));
+    assert!(properties.contains_key("scope"));
+    assert!(properties.contains_key("max_depth"));
+    assert!(properties.contains_key("max_agents"));
+    let output_schema = output_schema.expect("inspect_agent_tree output schema");
+    assert_eq!(
+        output_schema["required"],
+        json!([
+            "root_agent_name",
+            "scope_applied",
+            "agent_roots_applied",
+            "max_depth_applied",
+            "max_agents_applied",
+            "truncated",
+            "summary",
+            "agents"
+        ])
+    );
+    assert_eq!(
+        output_schema["properties"]["summary"]["required"],
+        json!([
+            "total_agents",
+            "live_agents",
+            "stale_agents",
+            "pending_init_agents",
+            "running_agents",
+            "interrupted_agents",
+            "completed_agents",
+            "errored_agents",
+            "shutdown_agents",
+            "not_found_agents"
+        ])
+    );
+    assert_eq!(
+        output_schema["properties"]["agents"]["items"]["required"],
+        json!([
+            "agent_name",
+            "depth",
+            "session_state",
+            "agent_status",
+            "nickname",
+            "role",
+            "direct_child_count",
+            "descendant_count",
+            "last_task_message_preview"
+        ])
     );
 }

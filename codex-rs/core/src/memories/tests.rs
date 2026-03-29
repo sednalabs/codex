@@ -508,6 +508,9 @@ mod phase2 {
                 CodexAuth::from_api_key("dummy"),
                 config.model_provider.clone(),
                 config.codex_home.clone(),
+                Arc::new(codex_exec_server::EnvironmentManager::new(
+                    /*exec_server_url*/ None,
+                )),
             );
             let (mut session, _turn_context) = make_session_and_context().await;
             session.services.state_db = Some(Arc::clone(&state_db));
@@ -1673,6 +1676,8 @@ mod phase2 {
         let agent_config =
             phase2::test_consolidation_agent_config(config).expect("consolidation config");
         let expected_memory_root = memory_root(&agent_config.codex_home);
+        let expected_memory_root_abs = AbsolutePathBuf::from_absolute_path(&expected_memory_root)
+            .expect("absolute expected memory root");
 
         pretty_assertions::assert_eq!(agent_config.cwd.as_path(), expected_memory_root.as_path());
         pretty_assertions::assert_eq!(
@@ -1696,7 +1701,7 @@ mod phase2 {
             } => {
                 pretty_assertions::assert_eq!(
                     writable_roots.as_slice(),
-                    &[expected_memory_root.clone()],
+                    &[expected_memory_root_abs],
                     "consolidation subagent should use only the memory root as a writable root"
                 );
                 assert!(
@@ -1782,7 +1787,9 @@ mod phase2 {
         pretty_assertions::assert_eq!(config_snapshot.cwd, memory_root(&harness.config.codex_home));
         match config_snapshot.sandbox_policy {
             SandboxPolicy::WorkspaceWrite { writable_roots, .. } => {
-                let expected_root = memory_root(&harness.config.codex_home);
+                let expected_root =
+                    AbsolutePathBuf::from_absolute_path(memory_root(&harness.config.codex_home))
+                        .expect("absolute expected memory root");
                 pretty_assertions::assert_eq!(
                     writable_roots,
                     vec![expected_root],
