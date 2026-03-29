@@ -143,7 +143,7 @@ jobs:
             SELECTED_JSON="${selected_json}" \
             CHECKOUT_EVENT='${{ github.event_name }}' \
             RUN_ALL_LANES="${run_all_lanes}" \
-            python3 -c $'import json, os\nselected = json.loads(os.environ["SELECTED_JSON"])["include"]\nevent_name = os.environ["CHECKOUT_EVENT"]\nrun_all = os.environ["RUN_ALL_LANES"] == "true"\nhas_smoke_family = any(spec["group"] in ("core", "ui_protocol", "workflow") for spec in selected)\nprint("true" if (event_name != "workflow_dispatch" or run_all) and has_smoke_family else "false")'
+            python3 -c $'import json, os\nselected = json.loads(os.environ["SELECTED_JSON"])["include"]\nevent_name = os.environ["CHECKOUT_EVENT"]\nrun_all = os.environ["RUN_ALL_LANES"] == "true"\nsmoke_groups = {"core", "ui_protocol", "workflow"}\nhas_smoke_family = any(spec["group"] in smoke_groups for spec in selected)\nprint("true" if (event_name != "workflow_dispatch" or run_all) and has_smoke_family else "false")'
           )"
 
           {
