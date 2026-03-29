@@ -45,11 +45,110 @@ MERGE_CONFLICT_OR_BLOCKING_STATES = {
     "DRAFT",
     "UNKNOWN",
 }
+COMMAND_ONLY_ISSUE_COMMENT_MAX_TOKENS = 4
 GREEN_STATE_MAX_POLL_SECONDS = 60 * 60
+WATCH_UNTIL_ACTION_MAX_POLL_SECONDS = 20 * 60
+STOP_ACTIONS = {
+    "stop_pr_closed",
+    "stop_exhausted_retries",
+    "stop_ready_to_merge",
+}
+SEEN_FEEDBACK_STATE_KEYS = (
+    "seen_issue_comment_ids",
+    "seen_review_comment_ids",
+    "seen_review_ids",
+)
 
 
 class GhCommandError(RuntimeError):
     pass
+
+
+_GH_ENV = None
+
+
+def _default_gh_dir(kind):
+    home = Path.home()
+    if kind == "config":
+        base = os.environ.get("XDG_CONFIG_HOME")
+        if base:
+            base_path = Path(base)
+        else:
+            base_path = home / ".config"
+    elif kind == "cache":
+        base = os.environ.get("XDG_CACHE_HOME")
+        if base:
+            base_path = Path(base)
+        else:
+            base_path = home / ".cache"
+    else:
+        return None
+    return base_path / "gh"
+
+
+def _ensure_writable_dir(path_like):
+    path = Path(path_like)
+    try:
+        path.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        return False
+    return os.access(path, os.W_OK)
+
+
+def _is_readable_dir(path_like):
+    path = Path(path_like)
+    return path.is_dir() and os.access(path, os.R_OK | os.X_OK)
+
+
+def _ensure_config_dir(env, var):
+    current_value = env.get(var)
+    if current_value:
+        candidate = Path(current_value)
+        if _is_readable_dir(candidate):
+            env[var] = str(candidate)
+            return
+        if _ensure_writable_dir(candidate):
+            env[var] = str(candidate)
+            return
+
+    default_path = _default_gh_dir("config")
+    if default_path and _is_readable_dir(default_path):
+        env[var] = str(default_path)
+        return
+    if default_path and _ensure_writable_dir(default_path):
+        env[var] = str(default_path)
+        return
+
+    temp_dir = Path(tempfile.mkdtemp(prefix=f"gh-{var.lower()}-"))
+    env[var] = str(temp_dir)
+
+
+def _ensure_env_dir(env, var, kind):
+    current_value = env.get(var)
+    if current_value:
+        candidate = Path(current_value)
+        if _ensure_writable_dir(candidate):
+            env[var] = str(candidate)
+            return
+
+    default_path = _default_gh_dir(kind)
+    if default_path and _ensure_writable_dir(default_path):
+        env[var] = str(default_path)
+        return
+
+    temp_dir = Path(tempfile.mkdtemp(prefix=f"gh-{var.lower()}-"))
+    env[var] = str(temp_dir)
+
+
+def _prepare_gh_env():
+    global _GH_ENV
+    if _GH_ENV is not None:
+        return _GH_ENV
+    env = os.environ.copy()
+    _ensure_config_dir(env, "GH_CONFIG_DIR")
+    _ensure_env_dir(env, "GH_CACHE_DIR", "cache")
+    _GH_ENV = env
+    return env
 
 
 def parse_args():
@@ -72,9 +171,25 @@ def parse_args():
     parser.add_argument("--once", action="store_true", help="Emit one snapshot and exit")
     parser.add_argument("--watch", action="store_true", help="Continuously emit JSONL snapshots")
     parser.add_argument(
+        "--watch-until-action",
+        action="store_true",
+        help="Poll until a non-idle action or strict stop appears, then emit one result and exit",
+    )
+    parser.add_argument(
         "--retry-failed-now",
         action="store_true",
         help="Rerun failed jobs for current failed workflow runs when policy allows",
+    )
+    parser.add_argument(
+        "--reset-seen-feedback",
+        action="store_true",
+        help="Treat currently visible trusted review feedback as unseen on the first snapshot",
+    )
+    parser.add_argument(
+        "--ignore-review-thread",
+        action="append",
+        default=[],
+        help="Review thread URL/id to ignore when computing actionable unresolved threads",
     )
     parser.add_argument(
         "--json",
@@ -87,9 +202,12 @@ def parse_args():
         parser.error("--poll-seconds must be > 0")
     if args.max_flaky_retries < 0:
         parser.error("--max-flaky-retries must be >= 0")
-    if args.watch and args.retry_failed_now:
-        parser.error("--watch cannot be combined with --retry-failed-now")
-    if not args.once and not args.watch and not args.retry_failed_now:
+    selected_modes = sum(
+        1 for enabled in (args.once, args.watch, args.watch_until_action, args.retry_failed_now) if enabled
+    )
+    if selected_modes > 1:
+        parser.error("choose only one of --once, --watch, --watch-until-action, or --retry-failed-now")
+    if not args.once and not args.watch and not args.watch_until_action and not args.retry_failed_now:
         args.once = True
     return args
 
@@ -114,7 +232,8 @@ def gh_text(args, repo=None):
         cmd.extend(["-R", repo])
     cmd.extend(args)
     try:
-        proc = subprocess.run(cmd, check=True, capture_output=True, text=True)
+        env = _prepare_gh_env()
+        proc = subprocess.run(cmd, check=True, capture_output=True, text=True, env=env)
     except FileNotFoundError as err:
         raise GhCommandError("`gh` command not found") from err
     except subprocess.CalledProcessError as err:
@@ -146,7 +265,8 @@ def parse_pr_spec(pr_spec):
 def pr_view_fields():
     return (
         "number,url,state,mergedAt,closedAt,headRefName,headRefOid,"
-        "headRepository,headRepositoryOwner,mergeable,mergeStateStatus,reviewDecision"
+        "headRepository,headRepositoryOwner,baseRefName,baseRefOid,"
+        "mergeable,mergeStateStatus,reviewDecision"
     )
 
 
@@ -160,15 +280,24 @@ def resolve_pr(pr_spec, repo_override=None):
     if parsed["value"] is not None:
         cmd.append(parsed["value"])
     cmd.extend(["--json", pr_view_fields()])
-    data = gh_json(cmd, repo=repo_override)
+    try:
+        data = gh_json(cmd, repo=repo_override)
+    except GhCommandError as err:
+        if parsed["mode"] in {"auto", "number"} and not repo_override:
+            raise GhCommandError(
+                f"{err}\nHint: use a full PR URL or --repo to disambiguate repo/worktree context."
+            ) from err
+        raise
     if not isinstance(data, dict):
         raise GhCommandError("Unexpected PR payload from `gh pr view`")
 
     pr_url = str(data.get("url") or "")
+    base_repo = extract_repo_from_pr_url(pr_url)
+    head_repo = extract_repo_from_pr_view(data)
     repo = (
         repo_override
-        or extract_repo_from_pr_url(pr_url)
-        or extract_repo_from_pr_view(data)
+        or base_repo
+        or head_repo
     )
     if not repo:
         raise GhCommandError("Unable to determine OWNER/REPO for the PR")
@@ -181,8 +310,12 @@ def resolve_pr(pr_spec, repo_override=None):
         "number": int(data["number"]),
         "url": pr_url,
         "repo": repo,
+        "base_repo": base_repo or repo,
         "head_sha": str(data.get("headRefOid") or ""),
         "head_branch": str(data.get("headRefName") or ""),
+        "head_repo": head_repo or repo,
+        "base_branch": str(data.get("baseRefName") or ""),
+        "base_sha": str(data.get("baseRefOid") or ""),
         "state": state,
         "merged": merged,
         "closed": closed,
@@ -192,31 +325,130 @@ def resolve_pr(pr_spec, repo_override=None):
     }
 
 
-def extract_repo_from_pr_view(data):
-    head_repo = data.get("headRepository")
-    head_owner = data.get("headRepositoryOwner")
+def extract_repo_slug(repo_data, owner_data=None):
+    if isinstance(repo_data, str) and "/" in repo_data:
+        return repo_data
+
     owner = None
-    name = None
-    if isinstance(head_owner, dict):
-        owner = head_owner.get("login") or head_owner.get("name")
-    elif isinstance(head_owner, str):
-        owner = head_owner
-    if isinstance(head_repo, dict):
-        name = head_repo.get("name")
-        repo_owner = head_repo.get("owner")
+    if isinstance(owner_data, dict):
+        owner = owner_data.get("login") or owner_data.get("name")
+    elif isinstance(owner_data, str):
+        owner = owner_data
+
+    repo_name = None
+    if isinstance(repo_data, dict):
+        slug = repo_data.get("nameWithOwner") or repo_data.get("fullName")
+        if isinstance(slug, str) and "/" in slug:
+            return slug
+        repo_name = repo_data.get("name")
+        repo_owner = repo_data.get("owner")
         if not owner and isinstance(repo_owner, dict):
             owner = repo_owner.get("login") or repo_owner.get("name")
-    elif isinstance(head_repo, str):
-        name = head_repo
-    if owner and name:
-        return f"{owner}/{name}"
+        elif not owner and isinstance(repo_owner, str):
+            owner = repo_owner
+    elif isinstance(repo_data, str):
+        repo_name = repo_data
+
+    if owner and repo_name:
+        return f"{owner}/{repo_name}"
     return None
+
+
+def extract_repo_from_pr_view(data):
+    return extract_repo_slug(data.get("headRepository"), data.get("headRepositoryOwner"))
+
+
 def extract_repo_from_pr_url(pr_url):
     parsed = urlparse(pr_url)
     parts = [p for p in parsed.path.split("/") if p]
     if len(parts) >= 4 and parts[2] == "pull":
         return f"{parts[0]}/{parts[1]}"
     return None
+
+
+def command_text(cmd):
+    try:
+        proc = subprocess.run(cmd, check=True, capture_output=True, text=True)
+    except (FileNotFoundError, subprocess.CalledProcessError):
+        return None
+    output = (proc.stdout or "").strip()
+    return output or None
+
+
+def parse_repo_from_remote_url(remote_url):
+    if not remote_url:
+        return None
+
+    if remote_url.startswith("git@"):
+        _, _, path = remote_url.partition(":")
+    else:
+        parsed = urlparse(remote_url)
+        path = parsed.path
+
+    parts = [part for part in path.split("/") if part]
+    if len(parts) < 2:
+        return None
+
+    owner = parts[-2]
+    repo = parts[-1]
+    if repo.endswith(".git"):
+        repo = repo[:-4]
+    if not owner or not repo:
+        return None
+    return f"{owner}/{repo}"
+
+
+def repos_match(left, right):
+    return bool(left and right and left.casefold() == right.casefold())
+
+
+def detect_local_git_context():
+    git_root = command_text(["git", "rev-parse", "--show-toplevel"])
+    origin_url = command_text(["git", "config", "--get", "remote.origin.url"])
+    upstream_url = command_text(["git", "config", "--get", "remote.upstream.url"])
+    return {
+        "cwd": str(Path.cwd()),
+        "git_root": git_root or "",
+        "origin_url": origin_url or "",
+        "origin_repo": parse_repo_from_remote_url(origin_url) or "",
+        "upstream_url": upstream_url or "",
+        "upstream_repo": parse_repo_from_remote_url(upstream_url) or "",
+    }
+
+
+def validate_pr_resolution(pr_spec, repo_override, pr, local_git_context):
+    parsed = parse_pr_spec(pr_spec)
+    local_origin_repo = str(local_git_context.get("origin_repo") or "")
+    if repo_override or parsed["mode"] == "url" or not local_origin_repo:
+        return
+    if repos_match(pr["repo"], local_origin_repo):
+        return
+    raise GhCommandError(
+        f"Resolved PR repo {pr['repo']} does not match local origin {local_origin_repo}. "
+        "Use a full PR URL or --repo to disambiguate repo/worktree context."
+    )
+
+
+def build_watch_context(args, pr, local_git_context):
+    parsed = parse_pr_spec(args.pr)
+    return {
+        "cwd": str(local_git_context.get("cwd") or str(Path.cwd())),
+        "git_root": str(local_git_context.get("git_root") or ""),
+        "origin_repo": str(local_git_context.get("origin_repo") or ""),
+        "origin_url": str(local_git_context.get("origin_url") or ""),
+        "upstream_repo": str(local_git_context.get("upstream_repo") or ""),
+        "upstream_url": str(local_git_context.get("upstream_url") or ""),
+        "pr_input": args.pr,
+        "pr_input_mode": parsed["mode"],
+        "repo_override": str(args.repo or ""),
+        "resolved_repo": pr["repo"],
+        "resolved_repo_matches_origin": repos_match(pr["repo"], local_git_context.get("origin_repo")),
+        "resolution_note": (
+            "Bare PR numbers depend on the current gh repo context; prefer a full PR URL or --repo for fork PRs."
+            if parsed["mode"] in {"auto", "number"} and not args.repo
+            else ""
+        ),
+    }
 
 
 def load_state(path):
@@ -260,6 +492,20 @@ def save_state(path, state):
 def default_state_file_for(pr):
     repo_slug = pr["repo"].replace("/", "-")
     return Path(f"/tmp/codex-babysit-pr-{repo_slug}-pr{pr['number']}.json")
+
+
+def reset_seen_feedback_state(state):
+    for key in SEEN_FEEDBACK_STATE_KEYS:
+        state[key] = []
+
+
+def maybe_reset_seen_feedback(args, state):
+    if not args.reset_seen_feedback:
+        return
+    if getattr(args, "_seen_feedback_reset_done", False):
+        return
+    reset_seen_feedback_state(state)
+    args._seen_feedback_reset_done = True
 
 
 def get_pr_checks(pr_spec, repo):
@@ -524,6 +770,275 @@ def fetch_new_review_items(pr, state, fresh_state, authenticated_login=None):
     return new_items
 
 
+REVIEW_THREADS_QUERY = """
+query($owner: String!, $name: String!, $number: Int!, $cursor: String) {
+  repository(owner: $owner, name: $name) {
+    pullRequest(number: $number) {
+      reviewThreads(first: 100, after: $cursor) {
+        pageInfo {
+          hasNextPage
+          endCursor
+        }
+        nodes {
+          id
+          isResolved
+          isOutdated
+          path
+          line
+          comments(first: 100) {
+            nodes {
+              databaseId
+              url
+              body
+              createdAt
+              author {
+                login
+              }
+              pullRequestReview {
+                databaseId
+                url
+                state
+                author {
+                  login
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
+""".strip()
+
+
+def body_excerpt(text, limit=200):
+    normalized = " ".join(str(text or "").split())
+    if len(normalized) <= limit:
+        return normalized
+    return normalized[: limit - 3].rstrip() + "..."
+
+
+def get_review_threads(pr):
+    owner, repo_name = pr["repo"].split("/", 1)
+    threads = []
+    cursor = None
+
+    while True:
+        cmd = [
+            "api",
+            "graphql",
+            "-f",
+            f"query={REVIEW_THREADS_QUERY}",
+            "-F",
+            f"owner={owner}",
+            "-F",
+            f"name={repo_name}",
+            "-F",
+            f"number={pr['number']}",
+        ]
+        if cursor:
+            cmd.extend(["-F", f"cursor={cursor}"])
+
+        payload = gh_json(cmd)
+        if not isinstance(payload, dict):
+            raise GhCommandError("Unexpected payload from reviewThreads GraphQL query")
+        if payload.get("errors"):
+            messages = []
+            for error in payload.get("errors") or []:
+                if isinstance(error, dict):
+                    message = str(error.get("message") or "").strip()
+                    if message:
+                        messages.append(message)
+            detail = "; ".join(messages) or "unknown GraphQL error"
+            raise GhCommandError(f"reviewThreads GraphQL query failed: {detail}")
+
+        review_threads = (
+            payload.get("data", {})
+            .get("repository", {})
+            .get("pullRequest", {})
+            .get("reviewThreads", {})
+        )
+        nodes = review_threads.get("nodes") or []
+        if not isinstance(nodes, list):
+            raise GhCommandError("Expected reviewThreads.nodes to be a list")
+        threads.extend(normalize_review_threads(nodes))
+
+        page_info = review_threads.get("pageInfo") or {}
+        if not page_info.get("hasNextPage"):
+            break
+        cursor = page_info.get("endCursor")
+        if not cursor:
+            break
+
+    return threads
+
+
+def normalize_review_threads(items):
+    out = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+
+        comments_payload = item.get("comments", {})
+        comment_nodes = comments_payload.get("nodes") or []
+        comments = []
+        for node in comment_nodes:
+            if not isinstance(node, dict):
+                continue
+            review = node.get("pullRequestReview") or {}
+            comments.append(
+                {
+                    "id": str(node.get("databaseId") or ""),
+                    "url": str(node.get("url") or ""),
+                    "body": str(node.get("body") or ""),
+                    "body_excerpt": body_excerpt(node.get("body") or ""),
+                    "created_at": str(node.get("createdAt") or ""),
+                    "author": extract_login(node.get("author")),
+                    "review_id": str(review.get("databaseId") or ""),
+                    "review_url": str(review.get("url") or ""),
+                    "review_state": str(review.get("state") or ""),
+                    "review_author": extract_login(review.get("author")),
+                }
+            )
+
+        comments.sort(key=lambda comment: (comment.get("created_at") or "", comment.get("id") or ""))
+        latest_comment = comments[-1] if comments else {}
+        out.append(
+            {
+                "kind": "review_thread",
+                "id": str(item.get("id") or ""),
+                "thread_id": str(item.get("id") or ""),
+                "is_resolved": bool(item.get("isResolved")),
+                "is_outdated": bool(item.get("isOutdated")),
+                "author": str(latest_comment.get("author") or ""),
+                "author_association": "",
+                "created_at": str(latest_comment.get("created_at") or ""),
+                "body": str(latest_comment.get("body_excerpt") or ""),
+                "path": item.get("path"),
+                "line": item.get("line"),
+                "url": str(latest_comment.get("url") or ""),
+                "latest_comment_id": str(latest_comment.get("id") or ""),
+                "comment_ids": [comment["id"] for comment in comments if comment.get("id")],
+                "comment_urls": [comment["url"] for comment in comments if comment.get("url")],
+                "review_ids": [comment["review_id"] for comment in comments if comment.get("review_id")],
+                "review_urls": [comment["review_url"] for comment in comments if comment.get("review_url")],
+            }
+        )
+    return out
+
+
+def normalize_ignore_review_thread(value):
+    return str(value or "").strip().rstrip("/")
+
+
+def thread_matches_ignore_value(thread, ignore_values):
+    normalized_values = {
+        normalize_ignore_review_thread(value) for value in ignore_values if normalize_ignore_review_thread(value)
+    }
+    if not normalized_values:
+        return False
+
+    candidates = {
+        normalize_ignore_review_thread(thread.get("id") or ""),
+        normalize_ignore_review_thread(thread.get("thread_id") or ""),
+        normalize_ignore_review_thread(thread.get("url") or ""),
+        normalize_ignore_review_thread(thread.get("latest_comment_id") or ""),
+    }
+    candidates.update(normalize_ignore_review_thread(value) for value in thread.get("comment_ids") or [])
+    candidates.update(normalize_ignore_review_thread(value) for value in thread.get("comment_urls") or [])
+    candidates.update(normalize_ignore_review_thread(value) for value in thread.get("review_ids") or [])
+    candidates.update(normalize_ignore_review_thread(value) for value in thread.get("review_urls") or [])
+    candidates.discard("")
+    return bool(candidates & normalized_values)
+
+
+def partition_unresolved_review_threads(review_threads, ignore_values):
+    active = []
+    ignored = []
+    for thread in review_threads:
+        if not isinstance(thread, dict):
+            continue
+        if thread.get("is_resolved"):
+            continue
+        if thread_matches_ignore_value(thread, ignore_values):
+            ignored.append(thread)
+        else:
+            active.append(thread)
+    return active, ignored
+
+
+def is_meaningful_issue_comment(item):
+    body = str(item.get("body") or "").strip()
+    if not body:
+        return False
+    if "\n" in body:
+        return True
+
+    tokens = body.split()
+    if len(tokens) > COMMAND_ONLY_ISSUE_COMMENT_MAX_TOKENS:
+        return True
+
+    first_token = tokens[0].casefold()
+    if first_token.startswith("/"):
+        return False
+    return first_token not in {
+        "@codex",
+        "@gemini",
+        "@chatgpt-codex-connector[bot]",
+    }
+
+
+def is_meaningful_review_submission(item):
+    body = str(item.get("body") or "").strip()
+    if not body:
+        return False
+    author = str(item.get("author") or "")
+    normalized = " ".join(body.split()).casefold()
+    if is_bot_login(author) and normalized.startswith("### codex review"):
+        return False
+    return True
+
+
+def build_actionable_review_items(pr, new_review_items, active_unresolved_threads):
+    actionable_items = []
+    for item in new_review_items:
+        kind = item.get("kind")
+        if kind == "issue_comment" and is_meaningful_issue_comment(item):
+            actionable_items.append(item)
+        elif kind == "review" and is_meaningful_review_submission(item):
+            actionable_items.append(item)
+
+    actionable_items.extend(active_unresolved_threads)
+
+    if (
+        pr.get("review_decision") == "CHANGES_REQUESTED"
+        and not any(item.get("kind") in {"review", "review_thread", "review_decision"} for item in actionable_items)
+    ):
+        actionable_items.append(
+            {
+                "kind": "review_decision",
+                "id": "changes_requested",
+                "author": "",
+                "author_association": "",
+                "created_at": "",
+                "body": "GitHub reviewDecision is CHANGES_REQUESTED.",
+                "path": None,
+                "line": None,
+                "url": pr["url"],
+            }
+        )
+
+    actionable_items.sort(
+        key=lambda item: (
+            item.get("created_at") or "",
+            item.get("kind") or "",
+            item.get("id") or "",
+        )
+    )
+    return actionable_items
+
+
 def current_retry_count(state, head_sha):
     retries = state.get("retries_by_sha") or {}
     value = retries.get(head_sha, 0)
@@ -551,14 +1066,16 @@ def unique_actions(actions):
     return out
 
 
-def is_pr_ready_to_merge(pr, checks_summary, new_review_items):
+def is_pr_ready_to_merge(pr, checks_summary, actionable_review_items, review_state):
     if pr["closed"] or pr["merged"]:
         return False
     if not checks_summary["all_terminal"]:
         return False
     if checks_summary["failed_count"] > 0 or checks_summary["pending_count"] > 0:
         return False
-    if new_review_items:
+    if actionable_review_items:
+        return False
+    if int(review_state.get("active_unresolved_thread_count") or 0) > 0:
         return False
     if str(pr.get("mergeable") or "") != "MERGEABLE":
         return False
@@ -569,19 +1086,19 @@ def is_pr_ready_to_merge(pr, checks_summary, new_review_items):
     return True
 
 
-def recommend_actions(pr, checks_summary, failed_runs, new_review_items, retries_used, max_retries):
+def recommend_actions(pr, checks_summary, failed_runs, actionable_review_items, review_state, retries_used, max_retries):
     actions = []
     if pr["closed"] or pr["merged"]:
-        if new_review_items:
+        if actionable_review_items:
             actions.append("process_review_comment")
         actions.append("stop_pr_closed")
         return unique_actions(actions)
 
-    if is_pr_ready_to_merge(pr, checks_summary, new_review_items):
+    if is_pr_ready_to_merge(pr, checks_summary, actionable_review_items, review_state):
         actions.append("stop_ready_to_merge")
         return unique_actions(actions)
 
-    if new_review_items:
+    if actionable_review_items:
         actions.append("process_review_comment")
 
     has_failed_pr_checks = checks_summary["failed_count"] > 0
@@ -599,9 +1116,12 @@ def recommend_actions(pr, checks_summary, failed_runs, new_review_items, retries
 
 
 def collect_snapshot(args):
+    local_git_context = detect_local_git_context()
     pr = resolve_pr(args.pr, repo_override=args.repo)
+    validate_pr_resolution(args.pr, args.repo, pr, local_git_context)
     state_path = Path(args.state_file) if args.state_file else default_state_file_for(pr)
     state, fresh_state = load_state(state_path)
+    maybe_reset_seen_feedback(args, state)
 
     if not state.get("started_at"):
         state["started_at"] = int(time.time())
@@ -619,13 +1139,34 @@ def collect_snapshot(args):
         fresh_state=fresh_state,
         authenticated_login=authenticated_login,
     )
+    review_threads = get_review_threads(pr)
+    active_unresolved_threads, ignored_unresolved_threads = partition_unresolved_review_threads(
+        review_threads,
+        args.ignore_review_thread,
+    )
+    actionable_review_items = build_actionable_review_items(
+        pr,
+        new_review_items,
+        active_unresolved_threads,
+    )
+    review_state = {
+        "total_thread_count": len(review_threads),
+        "unresolved_thread_count": sum(1 for thread in review_threads if not thread.get("is_resolved")),
+        "active_unresolved_thread_count": len(active_unresolved_threads),
+        "ignored_unresolved_thread_count": len(ignored_unresolved_threads),
+        "unresolved_threads": active_unresolved_threads,
+        "ignored_unresolved_threads": ignored_unresolved_threads,
+        "ignored_thread_selectors": [str(value) for value in args.ignore_review_thread or []],
+    }
+    watch_context = build_watch_context(args, pr, local_git_context)
 
     retries_used = current_retry_count(state, pr["head_sha"])
     actions = recommend_actions(
         pr,
         checks_summary,
         failed_runs,
-        new_review_items,
+        actionable_review_items,
+        review_state,
         retries_used,
         args.max_flaky_retries,
     )
@@ -637,9 +1178,13 @@ def collect_snapshot(args):
 
     snapshot = {
         "pr": pr,
+        "watch_context": watch_context,
         "checks": checks_summary,
+        "check_details": summarize_check_details(checks),
         "failed_runs": failed_runs,
         "new_review_items": new_review_items,
+        "actionable_review_items": actionable_review_items,
+        "review_state": review_state,
         "actions": actions,
         "retry_state": {
             "current_sha_retries_used": retries_used,
@@ -722,10 +1267,30 @@ def is_ci_green(snapshot):
     )
 
 
+def summarize_check_details(checks):
+    details = {"failing": [], "pending": []}
+    for check in checks:
+        if not isinstance(check, dict):
+            continue
+        detail = {
+            "name": str(check.get("name") or ""),
+            "state": str(check.get("state") or ""),
+            "bucket": str(check.get("bucket") or ""),
+            "workflow": str(check.get("workflow") or ""),
+            "link": str(check.get("link") or ""),
+        }
+        if is_pending_check(check):
+            details["pending"].append(detail)
+        if str(check.get("bucket") or "").lower() == "fail":
+            details["failing"].append(detail)
+    return details
+
+
 def snapshot_change_key(snapshot):
     pr = snapshot.get("pr") or {}
     checks = snapshot.get("checks") or {}
-    review_items = snapshot.get("new_review_items") or []
+    review_state = snapshot.get("review_state") or {}
+    review_items = snapshot.get("actionable_review_items") or []
     return (
         str(pr.get("head_sha") or ""),
         str(pr.get("state") or ""),
@@ -735,6 +1300,7 @@ def snapshot_change_key(snapshot):
         int(checks.get("passed_count") or 0),
         int(checks.get("failed_count") or 0),
         int(checks.get("pending_count") or 0),
+        int(review_state.get("active_unresolved_thread_count") or 0),
         tuple(
             (str(item.get("kind") or ""), str(item.get("id") or ""))
             for item in review_items
@@ -742,6 +1308,25 @@ def snapshot_change_key(snapshot):
         ),
         tuple(snapshot.get("actions") or []),
     )
+
+
+def has_non_idle_actions(snapshot):
+    return any(action != "idle" for action in (snapshot.get("actions") or []))
+
+
+def next_watch_poll_seconds(args, snapshot, last_change_key, poll_seconds, max_poll_seconds):
+    current_change_key = snapshot_change_key(snapshot)
+    changed = current_change_key != last_change_key
+    green = is_ci_green(snapshot)
+
+    if not green:
+        next_poll_seconds = args.poll_seconds
+    elif changed or last_change_key is None:
+        next_poll_seconds = args.poll_seconds
+    else:
+        next_poll_seconds = min(poll_seconds * 2, max_poll_seconds)
+
+    return next_poll_seconds, current_change_key
 
 
 def run_watch(args):
@@ -758,26 +1343,53 @@ def run_watch(args):
             },
         )
         actions = set(snapshot.get("actions") or [])
-        if (
-            "stop_pr_closed" in actions
-            or "stop_exhausted_retries" in actions
-            or "stop_ready_to_merge" in actions
-        ):
+        if actions & STOP_ACTIONS:
             print_event("stop", {"actions": snapshot.get("actions"), "pr": snapshot.get("pr")})
             return 0
 
-        current_change_key = snapshot_change_key(snapshot)
-        changed = current_change_key != last_change_key
-        green = is_ci_green(snapshot)
+        poll_seconds, last_change_key = next_watch_poll_seconds(
+            args,
+            snapshot,
+            last_change_key,
+            poll_seconds,
+            GREEN_STATE_MAX_POLL_SECONDS,
+        )
+        time.sleep(poll_seconds)
 
-        if not green:
-            poll_seconds = args.poll_seconds
-        elif changed or last_change_key is None:
-            poll_seconds = args.poll_seconds
-        else:
-            poll_seconds = min(poll_seconds * 2, GREEN_STATE_MAX_POLL_SECONDS)
 
-        last_change_key = current_change_key
+def run_watch_until_action(args):
+    poll_seconds = args.poll_seconds
+    last_change_key = None
+    started_at = time.time()
+    polls_completed = 0
+    while True:
+        snapshot, state_path = collect_snapshot(args)
+        polls_completed += 1
+        if has_non_idle_actions(snapshot):
+            actions = snapshot.get("actions") or []
+            exit_reason = "action_required"
+            for action in actions:
+                if action in STOP_ACTIONS:
+                    exit_reason = action
+                    break
+            print_json(
+                {
+                    "elapsed_seconds": int(max(time.time() - started_at, 0)),
+                    "exit_reason": exit_reason,
+                    "polls_completed": polls_completed,
+                    "snapshot": snapshot,
+                    "state_file": str(state_path),
+                }
+            )
+            return 0
+
+        poll_seconds, last_change_key = next_watch_poll_seconds(
+            args,
+            snapshot,
+            last_change_key,
+            poll_seconds,
+            WATCH_UNTIL_ACTION_MAX_POLL_SECONDS,
+        )
         time.sleep(poll_seconds)
 
 
@@ -789,6 +1401,8 @@ def main():
             return 0
         if args.watch:
             return run_watch(args)
+        if args.watch_until_action:
+            return run_watch_until_action(args)
         snapshot, state_path = collect_snapshot(args)
         snapshot["state_file"] = str(state_path)
         print_json(snapshot)

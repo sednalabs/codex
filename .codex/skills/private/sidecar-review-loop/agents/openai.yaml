@@ -1,0 +1,4 @@
+interface:
+  display_name: "Sidecar Review Loop"
+  short_description: "High-rigor sidecar review, fix, verify, and escalation loop"
+  default_prompt: "Use $sidecar-review-loop to coordinate a high-rigor sidecar review/fix loop on this repo: establish the smallest credible baseline, prefer $build-helper-general when presets exist, use disjoint reviewer scopes, inspect quiet lanes with $subagent-session-tail before interrupting them, and escalate to a final gpt-5.4 pass only after the mini sweep is clean."

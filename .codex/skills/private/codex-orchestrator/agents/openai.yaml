@@ -1,0 +1,7 @@
+interface:
+  display_name: "Codex Orchestrator"
+  short_description: "Coordinate codex work with explicit lane routing and specialist skills"
+  default_prompt: "Use $codex-orchestrator to coordinate this codex task after choosing the lane role explicitly. The lane already carries the hard-coded no-time-pressure / do-not-rush default. Pass the seam-specific contract, exact resources, needed skill injections, and any real overrides in the prompt; do not pad delegated prompts with redundant role, model, reasoning, or default-tempo boilerplate that lane selection already supplied."
+
+policy:
+  allow_implicit_invocation: true
