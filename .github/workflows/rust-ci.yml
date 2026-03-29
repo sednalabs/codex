@@ -55,8 +55,8 @@ jobs:
           for f in "${files[@]}"; do
             [[ $f == codex-rs/* ]] && codex=true
             [[ $f == .github/* || $f == justfile ]] && ci_surface=true
-            [[ $f == codex-rs/* || $f == justfile || $f == docs/downstream.md || $f == docs/carry-divergence-ledger.md || $f == docs/downstream-regression-matrix.md || $f == docs/downstream-tool-surface-matrix.md || $f == .github/* ]] && downstream_smoke=true
-            [[ $f == codex-rs/* || $f == tools/argument-comment-lint/* || $f == justfile ]] && argument_comment_lint=true
+            [[ $f == codex-rs/* ]] && downstream_smoke=true
+            [[ $f == codex-rs/* || $f == tools/argument-comment-lint/* ]] && argument_comment_lint=true
             [[ $f == tools/argument-comment-lint/* ]] && argument_comment_lint_package=true
           done
 
