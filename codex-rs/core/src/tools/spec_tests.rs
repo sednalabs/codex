@@ -323,7 +323,6 @@ fn strip_descriptions_schema(schema: &mut JsonSchema) {
     match schema {
         JsonSchema::Boolean { description }
         | JsonSchema::String { description }
-        | JsonSchema::StringEnum { description, .. }
         | JsonSchema::Number { description } => {
             *description = None;
         }

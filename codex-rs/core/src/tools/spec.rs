@@ -647,13 +647,6 @@ pub enum JsonSchema {
         #[serde(skip_serializing_if = "Option::is_none")]
         description: Option<String>,
     },
-    #[serde(rename = "string")]
-    StringEnum {
-        #[serde(skip_serializing_if = "Option::is_none")]
-        description: Option<String>,
-        #[serde(rename = "enum")]
-        enum_values: Vec<String>,
-    },
     /// MCP schema allows "number" | "integer" for Number
     #[serde(alias = "integer")]
     Number {
@@ -1621,12 +1614,11 @@ fn create_list_agents_tool() -> ToolSpec {
     );
     properties.insert(
         "descendant_edge_status".to_string(),
-        JsonSchema::StringEnum {
+        JsonSchema::String {
             description: Some(
                 "Optional subtree filter for `include_descendants=true`. Use `open` or `closed` to limit returned descendant rows by persisted spawn-edge status. Cannot be combined with `ids`."
                     .to_string(),
             ),
-            enum_values: vec!["open".to_string(), "closed".to_string()],
         },
     );
     ToolSpec::Function(ResponsesApiTool {
@@ -3596,7 +3588,6 @@ mod tests {
         match schema {
             JsonSchema::Boolean { description }
             | JsonSchema::String { description }
-            | JsonSchema::StringEnum { description, .. }
             | JsonSchema::Number { description } => {
                 *description = None;
             }
