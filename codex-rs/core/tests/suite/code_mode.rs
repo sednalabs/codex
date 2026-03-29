@@ -2316,12 +2316,7 @@ Code mode declaration:
 ```ts
 import { tools } from "tools.js";
 declare const tools: {
-  view_image(args: {
-    path: string;
-  }): Promise<{
-    detail: string | null;
-    image_url: string;
-  }>;
+  view_image(args: { path: string; }): Promise<{ detail: string | null; image_url: string; }>;
 };
 ```"#,
         })
