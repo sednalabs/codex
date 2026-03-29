@@ -61,7 +61,7 @@ fn create_codex_apps_tools_cache_context(
 }
 
 #[test]
-fn elicitation_granular_policy_defaults_to_prompting() {
+fn elicitation_reject_policy_defaults_to_prompting() {
     assert!(!elicitation_is_rejected_by_policy(
         AskForApproval::OnFailure
     ));
@@ -73,27 +73,27 @@ fn elicitation_granular_policy_defaults_to_prompting() {
     ));
     assert!(elicitation_is_rejected_by_policy(AskForApproval::Granular(
         GranularApprovalConfig {
-            sandbox_approval: true,
-            rules: true,
-            skill_approval: true,
-            request_permissions: true,
+            sandbox_approval: false,
+            rules: false,
+            skill_approval: false,
+            request_permissions: false,
             mcp_elicitations: false,
         }
     )));
 }
 
 #[test]
-fn elicitation_granular_policy_respects_never_and_config() {
+fn elicitation_reject_policy_respects_never_and_reject_config() {
     assert!(elicitation_is_rejected_by_policy(AskForApproval::Never));
-    assert!(elicitation_is_rejected_by_policy(AskForApproval::Granular(
-        GranularApprovalConfig {
-            sandbox_approval: true,
-            rules: true,
-            skill_approval: true,
-            request_permissions: true,
-            mcp_elicitations: false,
-        }
-    )));
+    assert!(!elicitation_is_rejected_by_policy(
+        AskForApproval::Granular(GranularApprovalConfig {
+            sandbox_approval: false,
+            rules: false,
+            skill_approval: false,
+            request_permissions: false,
+            mcp_elicitations: true,
+        })
+    ));
 }
 
 #[test]
