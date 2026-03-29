@@ -4077,9 +4077,6 @@ impl App {
                 self.app_event_tx
                     .send(AppEvent::PersistModelSelection { model, effort });
             }
-            AppEvent::SelectReview { .. } => {
-                // Legacy event variant kept for compatibility with older producers.
-            }
             AppEvent::UpdateCollaborationMode(mask) => {
                 self.chat_widget.set_collaboration_mask(mask);
             }
