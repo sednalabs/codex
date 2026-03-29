@@ -30,6 +30,7 @@ use codex_protocol::protocol::SubAgentSource;
 use codex_protocol::protocol::TokenUsage;
 use codex_protocol::user_input::UserInput;
 use codex_state::DirectionalThreadSpawnEdgeStatus;
+use serde::Deserialize;
 use serde::Serialize;
 use std::collections::HashMap;
 use std::collections::VecDeque;
@@ -76,6 +77,72 @@ pub(crate) struct ListedAgent {
     pub(crate) agent_name: String,
     pub(crate) agent_status: AgentStatus,
     pub(crate) last_task_message: Option<String>,
+    pub(crate) has_active_subagents: bool,
+    pub(crate) active_subagent_count: usize,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum AgentTreeScope {
+    Live,
+    Stale,
+    All,
+}
+
+#[derive(Clone, Copy, Debug, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum AgentSessionState {
+    Live,
+    Stale,
+}
+
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+pub(crate) struct AgentTreeSummary {
+    pub(crate) total_agents: usize,
+    pub(crate) live_agents: usize,
+    pub(crate) stale_agents: usize,
+    pub(crate) pending_init_agents: usize,
+    pub(crate) running_agents: usize,
+    pub(crate) interrupted_agents: usize,
+    pub(crate) completed_agents: usize,
+    pub(crate) errored_agents: usize,
+    pub(crate) shutdown_agents: usize,
+    pub(crate) not_found_agents: usize,
+}
+
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+pub(crate) struct AgentTreeNode {
+    pub(crate) agent_name: String,
+    pub(crate) depth: usize,
+    pub(crate) session_state: AgentSessionState,
+    pub(crate) agent_status: Option<AgentStatus>,
+    pub(crate) nickname: Option<String>,
+    pub(crate) role: Option<String>,
+    pub(crate) direct_child_count: usize,
+    pub(crate) descendant_count: usize,
+    pub(crate) last_task_message_preview: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+pub struct AgentTreeInspection {
+    pub(crate) root_agent_name: String,
+    pub(crate) scope_applied: AgentTreeScope,
+    pub(crate) agent_roots_applied: Vec<String>,
+    pub(crate) max_depth_applied: usize,
+    pub(crate) max_agents_applied: usize,
+    pub(crate) truncated: bool,
+    pub(crate) summary: AgentTreeSummary,
+    pub(crate) agents: Vec<AgentTreeNode>,
+}
+
+#[derive(Clone, Debug)]
+struct AgentTreeRecord {
+    agent_name: String,
+    session_state: AgentSessionState,
+    agent_status: Option<AgentStatus>,
+    nickname: Option<String>,
+    role: Option<String>,
+    last_task_message_preview: Option<String>,
 }
 
 fn default_agent_nickname_list() -> Vec<&'static str> {
@@ -748,6 +815,7 @@ impl AgentControl {
         path_prefix: Option<&str>,
     ) -> CodexResult<Vec<ListedAgent>> {
         let state = self.upgrade()?;
+        let live_children_by_parent = self.live_thread_spawn_children().await?;
         let resolved_prefix = path_prefix
             .map(|prefix| {
                 current_session_source
@@ -773,48 +841,374 @@ impl AgentControl {
         });
 
         let root_path = AgentPath::root();
-        let mut agents = Vec::with_capacity(live_agents.len().saturating_add(1));
-        if resolved_prefix
-            .as_ref()
-            .is_none_or(|prefix| agent_matches_prefix(Some(&root_path), prefix))
-            && let Some(root_thread_id) = self.state.agent_id_for_path(&root_path)
+        let mut listed_rows = Vec::with_capacity(live_agents.len().saturating_add(1));
+        let mut status_by_thread_id = HashMap::<ThreadId, AgentStatus>::new();
+        if let Some(root_thread_id) = self.state.agent_id_for_path(&root_path)
             && let Ok(root_thread) = state.get_thread(root_thread_id).await
         {
-            agents.push(ListedAgent {
-                agent_name: root_path.to_string(),
-                agent_status: root_thread.agent_status().await,
-                last_task_message: Some(ROOT_LAST_TASK_MESSAGE.to_string()),
-            });
+            let root_status = root_thread.agent_status().await;
+            status_by_thread_id.insert(root_thread_id, root_status.clone());
+            if resolved_prefix
+                .as_ref()
+                .is_none_or(|prefix| agent_matches_prefix(Some(&root_path), prefix))
+            {
+                listed_rows.push((
+                    root_thread_id,
+                    root_path.to_string(),
+                    root_status,
+                    Some(ROOT_LAST_TASK_MESSAGE.to_string()),
+                ));
+            }
         }
 
         for metadata in live_agents {
             let Some(thread_id) = metadata.agent_id else {
                 continue;
             };
+            let Ok(thread) = state.get_thread(thread_id).await else {
+                continue;
+            };
+            let agent_status = thread.agent_status().await;
+            status_by_thread_id.insert(thread_id, agent_status.clone());
             if resolved_prefix
                 .as_ref()
                 .is_some_and(|prefix| !agent_matches_prefix(metadata.agent_path.as_ref(), prefix))
             {
                 continue;
             }
-
-            let Ok(thread) = state.get_thread(thread_id).await else {
-                continue;
-            };
             let agent_name = metadata
                 .agent_path
                 .as_ref()
                 .map(ToString::to_string)
                 .unwrap_or_else(|| thread_id.to_string());
             let last_task_message = metadata.last_task_message.clone();
-            agents.push(ListedAgent {
+            listed_rows.push((
+                thread_id,
                 agent_name,
-                agent_status: thread.agent_status().await,
+                agent_status,
                 last_task_message,
+            ));
+        }
+
+        let mut active_descendant_counts = HashMap::<ThreadId, usize>::new();
+        let agents = listed_rows
+            .into_iter()
+            .map(|(thread_id, agent_name, agent_status, last_task_message)| {
+                let active_subagent_count = compute_active_live_descendant_count(
+                    thread_id,
+                    &live_children_by_parent,
+                    &status_by_thread_id,
+                    &mut active_descendant_counts,
+                );
+                ListedAgent {
+                    agent_name,
+                    agent_status,
+                    last_task_message,
+                    has_active_subagents: active_subagent_count > 0,
+                    active_subagent_count,
+                }
+            })
+            .collect::<Vec<_>>();
+
+        Ok(agents)
+    }
+
+    pub(crate) async fn inspect_agent_tree(
+        &self,
+        current_thread_id: ThreadId,
+        current_session_source: &SessionSource,
+        target: Option<&str>,
+        agent_roots: Option<&[String]>,
+        scope: AgentTreeScope,
+        max_depth: usize,
+        max_agents: usize,
+    ) -> CodexResult<AgentTreeInspection> {
+        let state = self.upgrade()?;
+        let current_thread = state.get_thread(current_thread_id).await?;
+        let state_db_ctx = current_thread.state_db();
+        let root_live_thread_id = self
+            .state
+            .agent_id_for_path(&AgentPath::root())
+            .unwrap_or(current_thread_id);
+        let target_path = target
+            .map(|reference| {
+                current_session_source
+                    .get_agent_path()
+                    .unwrap_or_else(AgentPath::root)
+                    .resolve(reference)
+                    .map_err(CodexErr::UnsupportedOperation)
+            })
+            .transpose()?;
+        let filter_base_path = target_path.clone().unwrap_or_else(|| {
+            current_session_source
+                .get_agent_path()
+                .unwrap_or_else(AgentPath::root)
+        });
+
+        if !matches!(scope, AgentTreeScope::Live) && state_db_ctx.is_none() {
+            return Err(CodexErr::UnsupportedOperation(
+                "agent tree inspection for stale descendants requires state_db".to_string(),
+            ));
+        }
+
+        let (tree_root_thread_id, tree_root_session_state) = match target_path.as_ref() {
+            Some(target_path) => {
+                if let Some(thread_id) = self.state.agent_id_for_path(target_path) {
+                    (thread_id, AgentSessionState::Live)
+                } else {
+                    let Some(state_db_ctx) = state_db_ctx.as_ref() else {
+                        return Err(CodexErr::UnsupportedOperation(format!(
+                            "agent path `{}` not found in the live tree",
+                            target_path.as_str()
+                        )));
+                    };
+                    let thread_id = if target_path.is_root() {
+                        Some(root_live_thread_id)
+                    } else {
+                        state_db_ctx
+                            .find_thread_spawn_descendant_by_path(
+                                root_live_thread_id,
+                                target_path.as_str(),
+                            )
+                            .await
+                            .map_err(|err| {
+                                CodexErr::Fatal(format!(
+                                    "failed to inspect persisted agent path `{}`: {err}",
+                                    target_path.as_str()
+                                ))
+                            })?
+                    }
+                    .ok_or_else(|| {
+                        CodexErr::UnsupportedOperation(format!(
+                            "agent path `{}` not found",
+                            target_path.as_str()
+                        ))
+                    })?;
+                    (thread_id, AgentSessionState::Stale)
+                }
+            }
+            None => (current_thread_id, AgentSessionState::Live),
+        };
+        let tree_root_name = match tree_root_session_state {
+            AgentSessionState::Live => self
+                .state
+                .agent_metadata_for_thread(tree_root_thread_id)
+                .and_then(|metadata| metadata.agent_path.map(|agent_path| agent_path.to_string()))
+                .unwrap_or_else(|| tree_root_thread_id.to_string()),
+            AgentSessionState::Stale => {
+                let Some(state_db_ctx) = state_db_ctx.as_ref() else {
+                    return Err(CodexErr::UnsupportedOperation(
+                        "agent tree inspection for stale descendants requires state_db".to_string(),
+                    ));
+                };
+                state_db_ctx
+                    .get_thread(tree_root_thread_id)
+                    .await
+                    .map_err(|err| {
+                        CodexErr::Fatal(format!(
+                            "failed to inspect stale agent metadata for {tree_root_thread_id}: {err}"
+                        ))
+                    })?
+                    .and_then(|metadata| metadata.agent_path)
+                    .unwrap_or_else(|| tree_root_thread_id.to_string())
+            }
+        };
+        let agent_roots_applied = agent_roots
+            .map(|references| {
+                references
+                    .iter()
+                    .map(|reference| {
+                        filter_base_path
+                            .resolve(reference)
+                            .map_err(CodexErr::UnsupportedOperation)
+                    })
+                    .collect::<CodexResult<Vec<_>>>()
+            })
+            .transpose()?
+            .unwrap_or_default();
+        for agent_root in &agent_roots_applied {
+            if !agent_name_is_same_or_descendant_of(agent_root.as_str(), tree_root_name.as_str()) {
+                return Err(CodexErr::UnsupportedOperation(format!(
+                    "agent_roots entry `{}` is outside inspected subtree `{}`",
+                    agent_root.as_str(),
+                    tree_root_name
+                )));
+            }
+        }
+
+        let live_children_by_parent = if matches!(scope, AgentTreeScope::Stale) {
+            None
+        } else {
+            Some(self.live_thread_spawn_children().await?)
+        };
+        let mut queue = VecDeque::from([(tree_root_thread_id, tree_root_session_state, 0usize)]);
+        let mut depth_by_thread_id = HashMap::<ThreadId, usize>::new();
+        let mut tree_children = HashMap::<ThreadId, Vec<ThreadId>>::new();
+        let mut tree_records = HashMap::<ThreadId, AgentTreeRecord>::new();
+
+        while let Some((thread_id, session_state, depth)) = queue.pop_front() {
+            if tree_records.contains_key(&thread_id) {
+                continue;
+            }
+
+            let record = self
+                .load_agent_tree_record(&state, state_db_ctx.as_ref(), thread_id, session_state)
+                .await?;
+            depth_by_thread_id.insert(thread_id, depth);
+
+            let child_states = self
+                .tree_child_session_states(
+                    live_children_by_parent.as_ref(),
+                    state_db_ctx.as_ref(),
+                    thread_id,
+                    scope,
+                )
+                .await?;
+            let mut child_ids = child_states.keys().copied().collect::<Vec<_>>();
+            child_ids.sort_by_key(std::string::ToString::to_string);
+            tree_children.insert(thread_id, child_ids.clone());
+            tree_records.insert(thread_id, record);
+
+            for child_id in child_ids {
+                if let Some(child_state) = child_states.get(&child_id).copied() {
+                    queue.push_back((child_id, child_state, depth.saturating_add(1)));
+                }
+            }
+        }
+
+        for child_ids in tree_children.values_mut() {
+            child_ids.sort_by(|left, right| {
+                let left_name = tree_records
+                    .get(left)
+                    .map(|record| record.agent_name.as_str())
+                    .unwrap_or_default();
+                let right_name = tree_records
+                    .get(right)
+                    .map(|record| record.agent_name.as_str())
+                    .unwrap_or_default();
+                left_name
+                    .cmp(right_name)
+                    .then_with(|| left.to_string().cmp(&right.to_string()))
             });
         }
 
-        Ok(agents)
+        let mut descendant_counts = HashMap::<ThreadId, usize>::new();
+        compute_descendant_counts(tree_root_thread_id, &tree_children, &mut descendant_counts);
+
+        let mut ordered_thread_ids = Vec::with_capacity(tree_records.len());
+        let mut stack = vec![tree_root_thread_id];
+        while let Some(thread_id) = stack.pop() {
+            ordered_thread_ids.push(thread_id);
+            if let Some(children) = tree_children.get(&thread_id) {
+                for child_id in children.iter().rev().copied() {
+                    stack.push(child_id);
+                }
+            }
+        }
+
+        let filtered_thread_ids = ordered_thread_ids
+            .into_iter()
+            .filter(|thread_id| {
+                agent_roots_applied.is_empty()
+                    || tree_records.get(thread_id).is_some_and(|record| {
+                        agent_roots_applied.iter().any(|agent_root| {
+                            agent_name_is_same_or_descendant_of(
+                                record.agent_name.as_str(),
+                                agent_root.as_str(),
+                            )
+                        })
+                    })
+            })
+            .collect::<Vec<_>>();
+
+        let mut summary = AgentTreeSummary {
+            total_agents: filtered_thread_ids.len(),
+            live_agents: 0,
+            stale_agents: 0,
+            pending_init_agents: 0,
+            running_agents: 0,
+            interrupted_agents: 0,
+            completed_agents: 0,
+            errored_agents: 0,
+            shutdown_agents: 0,
+            not_found_agents: 0,
+        };
+
+        for thread_id in &filtered_thread_ids {
+            let Some(record) = tree_records.get(thread_id) else {
+                continue;
+            };
+            match record.session_state {
+                AgentSessionState::Live => summary.live_agents += 1,
+                AgentSessionState::Stale => summary.stale_agents += 1,
+            }
+            match record.agent_status.as_ref() {
+                Some(AgentStatus::PendingInit) => summary.pending_init_agents += 1,
+                Some(AgentStatus::Running) => summary.running_agents += 1,
+                Some(AgentStatus::Interrupted) => summary.interrupted_agents += 1,
+                Some(AgentStatus::Completed { .. }) => summary.completed_agents += 1,
+                Some(AgentStatus::Errored { .. }) => summary.errored_agents += 1,
+                Some(AgentStatus::Shutdown) => summary.shutdown_agents += 1,
+                Some(AgentStatus::NotFound) => summary.not_found_agents += 1,
+                None => {}
+            }
+        }
+
+        let filtered_count = filtered_thread_ids.len();
+        let within_depth = filtered_thread_ids
+            .into_iter()
+            .filter(|thread_id| {
+                depth_by_thread_id
+                    .get(thread_id)
+                    .copied()
+                    .unwrap_or_default()
+                    <= max_depth
+            })
+            .collect::<Vec<_>>();
+        let within_depth_count = within_depth.len();
+        let truncated = filtered_count > within_depth_count || within_depth_count > max_agents;
+        let visible_thread_ids = within_depth
+            .into_iter()
+            .take(max_agents)
+            .collect::<Vec<_>>();
+        let agents = visible_thread_ids
+            .into_iter()
+            .filter_map(|thread_id| {
+                let record = tree_records.get(&thread_id)?;
+                Some(AgentTreeNode {
+                    agent_name: record.agent_name.clone(),
+                    depth: depth_by_thread_id
+                        .get(&thread_id)
+                        .copied()
+                        .unwrap_or_default(),
+                    session_state: record.session_state,
+                    agent_status: record.agent_status.clone(),
+                    nickname: record.nickname.clone(),
+                    role: record.role.clone(),
+                    direct_child_count: tree_children.get(&thread_id).map_or(0, Vec::len),
+                    descendant_count: descendant_counts.get(&thread_id).copied().unwrap_or(0),
+                    last_task_message_preview: record.last_task_message_preview.clone(),
+                })
+            })
+            .collect::<Vec<_>>();
+        let root_agent_name = tree_records
+            .get(&tree_root_thread_id)
+            .map(|record| record.agent_name.clone())
+            .unwrap_or_else(|| tree_root_thread_id.to_string());
+
+        Ok(AgentTreeInspection {
+            root_agent_name,
+            scope_applied: scope,
+            agent_roots_applied: agent_roots_applied
+                .into_iter()
+                .map(|agent_root| agent_root.to_string())
+                .collect(),
+            max_depth_applied: max_depth,
+            max_agents_applied: max_agents,
+            truncated,
+            summary,
+            agents,
+        })
     }
 
     /// Starts a detached watcher for sub-agents spawned from another thread.
@@ -1106,6 +1500,123 @@ impl AgentControl {
 
         Ok(descendants)
     }
+
+    async fn load_agent_tree_record(
+        &self,
+        state: &Arc<ThreadManagerState>,
+        state_db_ctx: Option<&state_db::StateDbHandle>,
+        thread_id: ThreadId,
+        session_state: AgentSessionState,
+    ) -> CodexResult<AgentTreeRecord> {
+        match session_state {
+            AgentSessionState::Live => {
+                let thread = state.get_thread(thread_id).await?;
+                let metadata =
+                    self.state
+                        .agent_metadata_for_thread(thread_id)
+                        .unwrap_or(AgentMetadata {
+                            agent_id: Some(thread_id),
+                            ..Default::default()
+                        });
+                let last_task_message_preview =
+                    if metadata.agent_path.as_ref().is_some_and(AgentPath::is_root) {
+                        Some(ROOT_LAST_TASK_MESSAGE.to_string())
+                    } else {
+                        metadata
+                            .last_task_message
+                            .as_deref()
+                            .map(preview_agent_message)
+                    };
+
+                Ok(AgentTreeRecord {
+                    agent_name: metadata
+                        .agent_path
+                        .as_ref()
+                        .map(ToString::to_string)
+                        .unwrap_or_else(|| thread_id.to_string()),
+                    session_state,
+                    agent_status: Some(thread.agent_status().await),
+                    nickname: metadata.agent_nickname,
+                    role: metadata.agent_role,
+                    last_task_message_preview,
+                })
+            }
+            AgentSessionState::Stale => {
+                let Some(state_db_ctx) = state_db_ctx else {
+                    return Err(CodexErr::UnsupportedOperation(
+                        "agent tree inspection for stale descendants requires state_db".to_string(),
+                    ));
+                };
+                let metadata = state_db_ctx
+                    .get_thread(thread_id)
+                    .await
+                    .map_err(|err| {
+                        CodexErr::Fatal(format!(
+                            "failed to inspect stale agent metadata for {thread_id}: {err}"
+                        ))
+                    })?
+                    .ok_or_else(|| {
+                        CodexErr::UnsupportedOperation(format!(
+                            "stale agent metadata for {thread_id} is unavailable"
+                        ))
+                    })?;
+
+                Ok(AgentTreeRecord {
+                    agent_name: metadata.agent_path.unwrap_or_else(|| thread_id.to_string()),
+                    session_state,
+                    agent_status: None,
+                    nickname: metadata.agent_nickname,
+                    role: metadata.agent_role,
+                    last_task_message_preview: None,
+                })
+            }
+        }
+    }
+
+    async fn tree_child_session_states(
+        &self,
+        live_children_by_parent: Option<&HashMap<ThreadId, Vec<(ThreadId, AgentMetadata)>>>,
+        state_db_ctx: Option<&state_db::StateDbHandle>,
+        parent_thread_id: ThreadId,
+        scope: AgentTreeScope,
+    ) -> CodexResult<HashMap<ThreadId, AgentSessionState>> {
+        let mut child_states = HashMap::<ThreadId, AgentSessionState>::new();
+
+        if !matches!(scope, AgentTreeScope::Stale)
+            && let Some(live_children_by_parent) = live_children_by_parent
+            && let Some(children) = live_children_by_parent.get(&parent_thread_id)
+        {
+            for (child_thread_id, _) in children {
+                child_states.insert(*child_thread_id, AgentSessionState::Live);
+            }
+        }
+
+        if !matches!(scope, AgentTreeScope::Live) {
+            let Some(state_db_ctx) = state_db_ctx else {
+                return Err(CodexErr::UnsupportedOperation(
+                    "agent tree inspection for stale descendants requires state_db".to_string(),
+                ));
+            };
+            let closed_children = state_db_ctx
+                .list_thread_spawn_children_with_status(
+                    parent_thread_id,
+                    DirectionalThreadSpawnEdgeStatus::Closed,
+                )
+                .await
+                .map_err(|err| {
+                    CodexErr::Fatal(format!(
+                        "failed to inspect stale child agents for {parent_thread_id}: {err}"
+                    ))
+                })?;
+            for child_thread_id in closed_children {
+                child_states
+                    .entry(child_thread_id)
+                    .or_insert(AgentSessionState::Stale);
+            }
+        }
+
+        Ok(child_states)
+    }
 }
 
 fn thread_spawn_parent_thread_id(session_source: &SessionSource) -> Option<ThreadId> {
@@ -1129,6 +1640,77 @@ fn agent_matches_prefix(agent_path: Option<&AgentPath>, prefix: &AgentPath) -> b
                 .strip_prefix(prefix.as_str())
                 .is_some_and(|suffix| suffix.starts_with('/'))
     })
+}
+
+fn preview_agent_message(message: &str) -> String {
+    let normalized = message.split_whitespace().collect::<Vec<_>>().join(" ");
+    let mut preview = normalized.chars().take(120).collect::<String>();
+    if normalized.chars().count() > 120 {
+        preview.push('…');
+    }
+    preview
+}
+
+fn compute_descendant_counts(
+    thread_id: ThreadId,
+    tree_children: &HashMap<ThreadId, Vec<ThreadId>>,
+    descendant_counts: &mut HashMap<ThreadId, usize>,
+) -> usize {
+    if let Some(count) = descendant_counts.get(&thread_id).copied() {
+        return count;
+    }
+
+    let count = tree_children.get(&thread_id).map_or(0, |children| {
+        children.len()
+            + children
+                .iter()
+                .map(|child_thread_id| {
+                    compute_descendant_counts(*child_thread_id, tree_children, descendant_counts)
+                })
+                .sum::<usize>()
+    });
+    descendant_counts.insert(thread_id, count);
+    count
+}
+
+fn compute_active_live_descendant_count(
+    thread_id: ThreadId,
+    live_children_by_parent: &HashMap<ThreadId, Vec<(ThreadId, AgentMetadata)>>,
+    status_by_thread_id: &HashMap<ThreadId, AgentStatus>,
+    active_descendant_counts: &mut HashMap<ThreadId, usize>,
+) -> usize {
+    if let Some(count) = active_descendant_counts.get(&thread_id).copied() {
+        return count;
+    }
+
+    let count = live_children_by_parent
+        .get(&thread_id)
+        .map_or(0, |children| {
+            children
+                .iter()
+                .map(|(child_thread_id, _)| {
+                    let child_is_active = status_by_thread_id
+                        .get(child_thread_id)
+                        .is_some_and(|status| !is_final(status));
+                    usize::from(child_is_active)
+                        + compute_active_live_descendant_count(
+                            *child_thread_id,
+                            live_children_by_parent,
+                            status_by_thread_id,
+                            active_descendant_counts,
+                        )
+                })
+                .sum()
+        });
+    active_descendant_counts.insert(thread_id, count);
+    count
+}
+
+fn agent_name_is_same_or_descendant_of(agent_name: &str, parent_name: &str) -> bool {
+    agent_name == parent_name
+        || agent_name
+            .strip_prefix(parent_name)
+            .is_some_and(|suffix| suffix.starts_with('/'))
 }
 
 pub(crate) fn render_input_preview(initial_operation: &Op) -> String {

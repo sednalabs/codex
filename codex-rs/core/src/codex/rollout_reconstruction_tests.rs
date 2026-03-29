@@ -497,6 +497,7 @@ async fn reconstruct_history_rollback_counts_inter_agent_assistant_turns() {
             codex_protocol::protocol::TurnCompleteEvent {
                 turn_id: first_turn_id,
                 last_agent_message: None,
+                compaction_events_in_turn: 0,
             },
         )),
         RolloutItem::EventMsg(EventMsg::TurnStarted(
@@ -513,6 +514,7 @@ async fn reconstruct_history_rollback_counts_inter_agent_assistant_turns() {
             codex_protocol::protocol::TurnCompleteEvent {
                 turn_id: assistant_turn_id,
                 last_agent_message: None,
+                compaction_events_in_turn: 0,
             },
         )),
         RolloutItem::EventMsg(EventMsg::ThreadRolledBack(

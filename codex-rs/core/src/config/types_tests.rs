@@ -307,6 +307,10 @@ fn deserialize_ignores_unknown_server_fields() {
             enabled_tools: None,
             disabled_tools: None,
             scopes: None,
+            enable_elicitation: false,
+            read_only: false,
+            strict_tool_classification: false,
+            require_approval_for_mutating: false,
             oauth_resource: None,
             tools: HashMap::new(),
         }

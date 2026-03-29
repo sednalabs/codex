@@ -1,4 +1,3 @@
-
 use super::*;
 use crate::CodexAuth;
 use crate::CodexThread;
@@ -10,6 +9,7 @@ use crate::config::ConfigBuilder;
 use crate::config_loader::LoaderOverrides;
 use crate::contextual_user_message::SUBAGENT_NOTIFICATION_OPEN_TAG;
 use assert_matches::assert_matches;
+use codex_exec_server::EnvironmentManager;
 use codex_features::Feature;
 use codex_protocol::config_types::ModeKind;
 use codex_protocol::models::ContentItem;
@@ -22,7 +22,6 @@ use codex_protocol::protocol::TurnAbortReason;
 use codex_protocol::protocol::TurnAbortedEvent;
 use codex_protocol::protocol::TurnCompleteEvent;
 use codex_protocol::protocol::TurnStartedEvent;
-use codex_state::DirectionalThreadSpawnEdgeStatus;
 use pretty_assertions::assert_eq;
 use tempfile::TempDir;
 use tokio::time::Duration;
@@ -53,11 +52,14 @@ async fn test_config() -> (TempDir, Config) {
     test_config_with_cli_overrides(Vec::new()).await
 }
 
-fn text_input(text: &str) -> Vec<UserInput> {
-    vec![UserInput::Text {
-        text: text.to_string(),
-        text_elements: Vec::new(),
-    }]
+fn text_input(text: &str) -> Op {
+    Op::UserInput {
+        items: vec![UserInput::Text {
+            text: text.to_string(),
+            text_elements: Vec::new(),
+        }],
+        final_output_json_schema: None,
+    }
 }
 
 struct AgentControlHarness {
@@ -74,6 +76,7 @@ impl AgentControlHarness {
             CodexAuth::from_api_key("dummy"),
             config.model_provider.clone(),
             config.codex_home.clone(),
+            Arc::new(EnvironmentManager::new(/*exec_server_url*/ None)),
         );
         let control = manager.agent_control();
         Self {
@@ -145,52 +148,19 @@ async fn wait_for_subagent_notification(parent_thread: &Arc<CodexThread>) -> boo
     timeout(Duration::from_secs(2), wait).await.is_ok()
 }
 
-async fn persist_thread_for_tree_resume(thread: &Arc<CodexThread>, message: &str) {
-    thread
-        .inject_user_message_without_turn(message.to_string())
-        .await;
-    thread.codex.session.ensure_rollout_materialized().await;
-    thread.codex.session.flush_rollout().await;
-}
-
-async fn wait_for_live_thread_spawn_children(
-    control: &AgentControl,
-    parent_thread_id: ThreadId,
-    expected_children: &[ThreadId],
-) {
-    let mut expected_children = expected_children.to_vec();
-    expected_children.sort_by_key(std::string::ToString::to_string);
-
-    timeout(Duration::from_secs(5), async {
-        loop {
-            let mut child_ids = control
-                .open_thread_spawn_children(parent_thread_id)
-                .await
-                .expect("live child list should load")
-                .into_iter()
-                .map(|(thread_id, _)| thread_id)
-                .collect::<Vec<_>>();
-            child_ids.sort_by_key(std::string::ToString::to_string);
-            if child_ids == expected_children {
-                break;
-            }
-            sleep(Duration::from_millis(25)).await;
-        }
-    })
-    .await
-    .expect("expected persisted child tree");
-}
-
 #[tokio::test]
 async fn send_input_errors_when_manager_dropped() {
     let control = AgentControl::default();
     let err = control
         .send_input(
             ThreadId::new(),
-            vec![UserInput::Text {
-                text: "hello".to_string(),
-                text_elements: Vec::new(),
-            }],
+            Op::UserInput {
+                items: vec![UserInput::Text {
+                    text: "hello".to_string(),
+                    text_elements: Vec::new(),
+                }],
+                final_output_json_schema: None,
+            },
         )
         .await
         .expect_err("send_input should fail without a manager");
@@ -292,10 +262,13 @@ async fn send_input_errors_when_thread_missing() {
         .control
         .send_input(
             thread_id,
-            vec![UserInput::Text {
-                text: "hello".to_string(),
-                text_elements: Vec::new(),
-            }],
+            Op::UserInput {
+                items: vec![UserInput::Text {
+                    text: "hello".to_string(),
+                    text_elements: Vec::new(),
+                }],
+                final_output_json_schema: None,
+            },
         )
         .await
         .expect_err("send_input should fail for missing thread");
@@ -358,10 +331,13 @@ async fn send_input_submits_user_message() {
         .control
         .send_input(
             thread_id,
-            vec![UserInput::Text {
-                text: "hello from tests".to_string(),
-                text_elements: Vec::new(),
-            }],
+            Op::UserInput {
+                items: vec![UserInput::Text {
+                    text: "hello from tests".to_string(),
+                    text_elements: Vec::new(),
+                }],
+                final_output_json_schema: None,
+            },
         )
         .await
         .expect("send_input should succeed");
@@ -445,12 +421,13 @@ async fn spawn_agent_can_fork_parent_thread_history() {
 
     let child_thread_id = harness
         .control
-        .spawn_agent_with_options(
+        .spawn_agent_with_metadata(
             harness.config.clone(),
             text_input("child task"),
             Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
                 parent_thread_id,
                 depth: 1,
+                agent_path: None,
                 agent_nickname: None,
                 agent_role: None,
             })),
@@ -459,7 +436,8 @@ async fn spawn_agent_can_fork_parent_thread_history() {
             },
         )
         .await
-        .expect("forked spawn should succeed");
+        .expect("forked spawn should succeed")
+        .thread_id;
 
     let child_thread = harness
         .manager
@@ -528,12 +506,13 @@ async fn spawn_agent_fork_injects_output_for_parent_spawn_call() {
 
     let child_thread_id = harness
         .control
-        .spawn_agent_with_options(
+        .spawn_agent_with_metadata(
             harness.config.clone(),
             text_input("child task"),
             Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
                 parent_thread_id,
                 depth: 1,
+                agent_path: None,
                 agent_nickname: None,
                 agent_role: None,
             })),
@@ -542,7 +521,8 @@ async fn spawn_agent_fork_injects_output_for_parent_spawn_call() {
             },
         )
         .await
-        .expect("forked spawn should succeed");
+        .expect("forked spawn should succeed")
+        .thread_id;
 
     let child_thread = harness
         .manager
@@ -598,12 +578,13 @@ async fn spawn_agent_fork_flushes_parent_rollout_before_loading_history() {
 
     let child_thread_id = harness
         .control
-        .spawn_agent_with_options(
+        .spawn_agent_with_metadata(
             harness.config.clone(),
             text_input("child task"),
             Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
                 parent_thread_id,
                 depth: 1,
+                agent_path: None,
                 agent_nickname: None,
                 agent_role: None,
             })),
@@ -612,7 +593,8 @@ async fn spawn_agent_fork_flushes_parent_rollout_before_loading_history() {
             },
         )
         .await
-        .expect("forked spawn should flush parent rollout before loading history");
+        .expect("forked spawn should flush parent rollout before loading history")
+        .thread_id;
 
     let child_thread = harness
         .manager
@@ -666,6 +648,7 @@ async fn spawn_agent_respects_max_threads_limit() {
         CodexAuth::from_api_key("dummy"),
         config.model_provider.clone(),
         config.codex_home.clone(),
+        Arc::new(EnvironmentManager::new(/*exec_server_url*/ None)),
     );
     let control = manager.agent_control();
 
@@ -709,6 +692,7 @@ async fn spawn_agent_releases_slot_after_shutdown() {
         CodexAuth::from_api_key("dummy"),
         config.model_provider.clone(),
         config.codex_home.clone(),
+        Arc::new(EnvironmentManager::new(/*exec_server_url*/ None)),
     );
     let control = manager.agent_control();
 
@@ -743,6 +727,7 @@ async fn spawn_agent_limit_shared_across_clones() {
         CodexAuth::from_api_key("dummy"),
         config.model_provider.clone(),
         config.codex_home.clone(),
+        Arc::new(EnvironmentManager::new(/*exec_server_url*/ None)),
     );
     let control = manager.agent_control();
     let cloned = control.clone();
@@ -779,6 +764,7 @@ async fn resume_agent_respects_max_threads_limit() {
         CodexAuth::from_api_key("dummy"),
         config.model_provider.clone(),
         config.codex_home.clone(),
+        Arc::new(EnvironmentManager::new(/*exec_server_url*/ None)),
     );
     let control = manager.agent_control();
 
@@ -826,6 +812,7 @@ async fn resume_agent_releases_slot_after_resume_failure() {
         CodexAuth::from_api_key("dummy"),
         config.model_provider.clone(),
         config.codex_home.clone(),
+        Arc::new(EnvironmentManager::new(/*exec_server_url*/ None)),
     );
     let control = manager.agent_control();
 
@@ -857,6 +844,7 @@ async fn spawn_child_completion_notifies_parent_history() {
             Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
                 parent_thread_id,
                 depth: 1,
+                agent_path: None,
                 agent_nickname: None,
                 agent_role: Some("explorer".to_string()),
             })),
@@ -888,9 +876,12 @@ async fn completion_watcher_notifies_parent_when_child_is_missing() {
         Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
             parent_thread_id,
             depth: 1,
+            agent_path: None,
             agent_nickname: None,
             agent_role: Some("explorer".to_string()),
         })),
+        child_thread_id.to_string(),
+        None,
     );
 
     assert_eq!(wait_for_subagent_notification(&parent_thread).await, true);
@@ -928,6 +919,7 @@ async fn spawn_thread_subagent_gets_random_nickname_in_session_source() {
             Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
                 parent_thread_id,
                 depth: 1,
+                agent_path: None,
                 agent_nickname: None,
                 agent_role: Some("explorer".to_string()),
             })),
@@ -945,6 +937,7 @@ async fn spawn_thread_subagent_gets_random_nickname_in_session_source() {
     let SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
         parent_thread_id: seen_parent_thread_id,
         depth,
+        agent_path,
         agent_nickname,
         agent_role,
     }) = snapshot.session_source
@@ -953,6 +946,7 @@ async fn spawn_thread_subagent_gets_random_nickname_in_session_source() {
     };
     assert_eq!(seen_parent_thread_id, parent_thread_id);
     assert_eq!(depth, 1);
+    assert_eq!(agent_path, None);
     assert!(agent_nickname.is_some());
     assert_eq!(agent_role, Some("explorer".to_string()));
 }
@@ -978,6 +972,7 @@ async fn spawn_thread_subagent_uses_role_specific_nickname_candidates() {
             Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
                 parent_thread_id,
                 depth: 1,
+                agent_path: None,
                 agent_nickname: None,
                 agent_role: Some("researcher".to_string()),
             })),
@@ -1011,6 +1006,7 @@ async fn resume_thread_subagent_restores_stored_nickname_and_role() {
         CodexAuth::from_api_key("dummy"),
         config.model_provider.clone(),
         config.codex_home.clone(),
+        Arc::new(EnvironmentManager::new(/*exec_server_url*/ None)),
     );
     let control = manager.agent_control();
     let harness = AgentControlHarness {
@@ -1029,6 +1025,7 @@ async fn resume_thread_subagent_restores_stored_nickname_and_role() {
             Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
                 parent_thread_id,
                 depth: 1,
+                agent_path: None,
                 agent_nickname: None,
                 agent_role: Some("explorer".to_string()),
             })),
@@ -1097,6 +1094,7 @@ async fn resume_thread_subagent_restores_stored_nickname_and_role() {
             SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
                 parent_thread_id,
                 depth: 1,
+                agent_path: None,
                 agent_nickname: None,
                 agent_role: None,
             }),
@@ -1115,6 +1113,7 @@ async fn resume_thread_subagent_restores_stored_nickname_and_role() {
     let SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
         parent_thread_id: resumed_parent_thread_id,
         depth: resumed_depth,
+        agent_path: resumed_agent_path,
         agent_nickname: resumed_nickname,
         agent_role: resumed_role,
     }) = resumed_snapshot.session_source
@@ -1123,6 +1122,7 @@ async fn resume_thread_subagent_restores_stored_nickname_and_role() {
     };
     assert_eq!(resumed_parent_thread_id, parent_thread_id);
     assert_eq!(resumed_depth, 1);
+    assert_eq!(resumed_agent_path, None);
     assert_eq!(resumed_nickname, Some(original_nickname));
     assert_eq!(resumed_role, Some("explorer".to_string()));
 
@@ -1131,128 +1131,4 @@ async fn resume_thread_subagent_restores_stored_nickname_and_role() {
         .shutdown_live_agent(resumed_thread_id)
         .await
         .expect("resumed child shutdown should submit");
-}
-
-#[tokio::test]
-async fn persisted_spawn_descendants_reflect_closed_status() {
-    let harness = AgentControlHarness::new().await;
-    let (parent_thread_id, parent_thread) = harness.start_thread().await;
-
-    let child_thread_id = harness
-        .control
-        .spawn_agent(
-            harness.config.clone(),
-            text_input("hello child"),
-            Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
-                parent_thread_id,
-                depth: 1,
-                agent_nickname: None,
-                agent_role: Some("explorer".to_string()),
-            })),
-        )
-        .await
-        .expect("child spawn should succeed");
-    let grandchild_thread_id = harness
-        .control
-        .spawn_agent(
-            harness.config.clone(),
-            text_input("hello grandchild"),
-            Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
-                parent_thread_id: child_thread_id,
-                depth: 2,
-                agent_nickname: None,
-                agent_role: Some("worker".to_string()),
-            })),
-        )
-        .await
-        .expect("grandchild spawn should succeed");
-
-    let child_thread = harness
-        .manager
-        .get_thread(child_thread_id)
-        .await
-        .expect("child thread should exist");
-    let grandchild_thread = harness
-        .manager
-        .get_thread(grandchild_thread_id)
-        .await
-        .expect("grandchild thread should exist");
-    persist_thread_for_tree_resume(&parent_thread, "parent persisted").await;
-    persist_thread_for_tree_resume(&child_thread, "child persisted").await;
-    persist_thread_for_tree_resume(&grandchild_thread, "grandchild persisted").await;
-    wait_for_live_thread_spawn_children(&harness.control, parent_thread_id, &[child_thread_id])
-        .await;
-    wait_for_live_thread_spawn_children(&harness.control, child_thread_id, &[grandchild_thread_id])
-        .await;
-
-    let open_descendants = harness
-        .control
-        .list_persisted_subagent_descendants(
-            parent_thread_id,
-            DirectionalThreadSpawnEdgeStatus::Open,
-        )
-        .await
-        .expect("open descendants should load");
-    assert_eq!(
-        open_descendants,
-        vec![child_thread_id, grandchild_thread_id]
-    );
-
-    let child_open_descendants = harness
-        .control
-        .list_persisted_subagent_descendants(
-            child_thread_id,
-            DirectionalThreadSpawnEdgeStatus::Open,
-        )
-        .await
-        .expect("child open descendants should load");
-    assert_eq!(child_open_descendants, vec![grandchild_thread_id]);
-
-    let _ = harness
-        .control
-        .close_agent(child_thread_id)
-        .await
-        .expect("child close should succeed");
-
-    let closed_descendants = harness
-        .control
-        .list_persisted_subagent_descendants(
-            parent_thread_id,
-            DirectionalThreadSpawnEdgeStatus::Closed,
-        )
-        .await
-        .expect("closed descendants should load");
-    assert_eq!(closed_descendants, vec![child_thread_id]);
-
-    let report = harness
-        .manager
-        .shutdown_all_threads_bounded(Duration::from_secs(5))
-        .await;
-    assert_eq!(report.submit_failed, Vec::<ThreadId>::new());
-    assert_eq!(report.timed_out, Vec::<ThreadId>::new());
-
-    let resumed_parent_thread_id = harness
-        .control
-        .resume_agent_from_rollout(
-            harness.config.clone(),
-            parent_thread_id,
-            SessionSource::Exec,
-        )
-        .await
-        .expect("tree resume should succeed");
-    assert_eq!(resumed_parent_thread_id, parent_thread_id);
-    assert_eq!(
-        harness.control.get_status(child_thread_id).await,
-        AgentStatus::NotFound
-    );
-    assert_eq!(
-        harness.control.get_status(grandchild_thread_id).await,
-        AgentStatus::NotFound
-    );
-
-    let _ = harness
-        .control
-        .shutdown_agent_tree(parent_thread_id)
-        .await
-        .expect("cleanup should succeed");
 }

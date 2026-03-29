@@ -21,6 +21,7 @@ pub use agent_tool::WaitAgentTimeoutOptions;
 pub use agent_tool::create_assign_task_tool;
 pub use agent_tool::create_close_agent_tool_v1;
 pub use agent_tool::create_close_agent_tool_v2;
+pub use agent_tool::create_inspect_agent_tree_tool;
 pub use agent_tool::create_list_agents_tool;
 pub use agent_tool::create_resume_agent_tool;
 pub use agent_tool::create_send_input_tool_v1;

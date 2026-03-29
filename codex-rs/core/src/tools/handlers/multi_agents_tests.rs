@@ -21,6 +21,7 @@ use crate::state::TaskKind;
 use crate::tasks::SessionTask;
 use crate::tasks::SessionTaskContext;
 use crate::tools::context::ToolOutput;
+use crate::tools::handlers::InspectAgentTreeHandler;
 use crate::tools::handlers::multi_agents_v2::AssignTaskHandler as AssignTaskHandlerV2;
 use crate::tools::handlers::multi_agents_v2::CloseAgentHandler as CloseAgentHandlerV2;
 use crate::tools::handlers::multi_agents_v2::ListAgentsHandler as ListAgentsHandlerV2;
@@ -44,7 +45,6 @@ use core_test_support::TempDirExt;
 use pretty_assertions::assert_eq;
 use serde::Deserialize;
 use serde_json::json;
-use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -170,6 +170,8 @@ struct ListedAgentResult {
     agent_name: String,
     agent_status: serde_json::Value,
     last_task_message: Option<String>,
+    has_active_subagents: bool,
+    active_subagent_count: usize,
 }
 
 #[tokio::test]
@@ -602,6 +604,7 @@ async fn multi_agent_v2_list_agents_returns_completed_status_and_last_task_messa
             EventMsg::TurnComplete(TurnCompleteEvent {
                 turn_id: child_turn.sub_id.clone(),
                 last_agent_message: Some("done".to_string()),
+                compaction_events_in_turn: 0,
             }),
         )
         .await;
@@ -631,6 +634,8 @@ async fn multi_agent_v2_list_agents_returns_completed_status_and_last_task_messa
         .find(|agent| agent.agent_name == "/root")
         .expect("root agent should be listed");
     assert_eq!(root_agent.last_task_message.as_deref(), Some("Main thread"));
+    assert!(!root_agent.has_active_subagents);
+    assert_eq!(root_agent.active_subagent_count, 0);
     let worker = result
         .agents
         .iter()
@@ -641,6 +646,8 @@ async fn multi_agent_v2_list_agents_returns_completed_status_and_last_task_messa
         worker.last_task_message.as_deref(),
         Some("inspect this repo")
     );
+    assert!(!worker.has_active_subagents);
+    assert_eq!(worker.active_subagent_count, 0);
     assert_eq!(success, Some(true));
 }
 
@@ -680,7 +687,8 @@ async fn multi_agent_v2_list_agents_filters_by_relative_path_prefix() {
             crate::agent::control::SpawnAgentOptions::default(),
         )
         .await
-        .expect("researcher agent should spawn");
+        .expect("researcher agent should spawn")
+        .thread_id;
     session
         .services
         .agent_control
@@ -729,6 +737,89 @@ async fn multi_agent_v2_list_agents_filters_by_relative_path_prefix() {
     assert_eq!(result.agents.len(), 1);
     assert_eq!(result.agents[0].agent_name, worker_path.as_str());
     assert_eq!(result.agents[0].last_task_message.as_deref(), Some("build"));
+    assert!(!result.agents[0].has_active_subagents);
+    assert_eq!(result.agents[0].active_subagent_count, 0);
+}
+
+#[tokio::test]
+async fn multi_agent_v2_list_agents_keeps_active_descendant_hint_under_path_filter() {
+    let (mut session, mut turn) = make_session_and_context().await;
+    let manager = thread_manager();
+    let root = manager
+        .start_thread((*turn.config).clone())
+        .await
+        .expect("root thread should start");
+    session.services.agent_control = manager.agent_control();
+    session.conversation_id = root.thread_id;
+    let mut config = (*turn.config).clone();
+    let _ = config.features.enable(Feature::MultiAgentV2);
+    turn.config = Arc::new(config.clone());
+
+    let researcher_path = AgentPath::from_string("/root/researcher".to_string()).expect("path");
+    let worker_path = AgentPath::from_string("/root/researcher/worker".to_string()).expect("path");
+    let researcher_id = session
+        .services
+        .agent_control
+        .spawn_agent_with_metadata(
+            config.clone(),
+            vec![UserInput::Text {
+                text: "research".to_string(),
+                text_elements: Vec::new(),
+            }]
+            .into(),
+            Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                parent_thread_id: root.thread_id,
+                depth: 1,
+                agent_path: Some(researcher_path.clone()),
+                agent_nickname: None,
+                agent_role: None,
+            })),
+            crate::agent::control::SpawnAgentOptions::default(),
+        )
+        .await
+        .expect("researcher agent should spawn")
+        .thread_id;
+    session
+        .services
+        .agent_control
+        .spawn_agent_with_metadata(
+            config,
+            vec![UserInput::Text {
+                text: "build".to_string(),
+                text_elements: Vec::new(),
+            }]
+            .into(),
+            Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                parent_thread_id: researcher_id,
+                depth: 2,
+                agent_path: Some(worker_path),
+                agent_nickname: None,
+                agent_role: None,
+            })),
+            crate::agent::control::SpawnAgentOptions::default(),
+        )
+        .await
+        .expect("worker agent should spawn");
+
+    let output = ListAgentsHandlerV2
+        .handle(invocation(
+            Arc::new(session),
+            Arc::new(turn),
+            "list_agents",
+            function_payload(json!({
+                "path_prefix": "researcher"
+            })),
+        ))
+        .await
+        .expect("list_agents should succeed");
+    let (content, _) = expect_text_output(output);
+    let result: ListAgentsResult =
+        serde_json::from_str(&content).expect("list_agents result should be json");
+
+    assert_eq!(result.agents.len(), 1);
+    assert_eq!(result.agents[0].agent_name, researcher_path.as_str());
+    assert!(result.agents[0].has_active_subagents);
+    assert_eq!(result.agents[0].active_subagent_count, 1);
 }
 
 #[tokio::test]
@@ -793,6 +884,444 @@ async fn multi_agent_v2_list_agents_omits_closed_agents() {
         result.agents[0].last_task_message.as_deref(),
         Some("Main thread")
     );
+    assert!(!result.agents[0].has_active_subagents);
+    assert_eq!(result.agents[0].active_subagent_count, 0);
+}
+
+#[tokio::test]
+async fn multi_agent_v2_list_agents_flags_active_descendants() {
+    let (mut session, mut turn) = make_session_and_context().await;
+    let manager = thread_manager();
+    let root = manager
+        .start_thread((*turn.config).clone())
+        .await
+        .expect("root thread should start");
+    session.services.agent_control = manager.agent_control();
+    session.conversation_id = root.thread_id;
+    let mut config = (*turn.config).clone();
+    let _ = config.features.enable(Feature::MultiAgentV2);
+    turn.config = Arc::new(config.clone());
+
+    let researcher_path = AgentPath::from_string("/root/researcher".to_string()).expect("path");
+    let worker_path = AgentPath::from_string("/root/researcher/worker".to_string()).expect("path");
+    let researcher_id = session
+        .services
+        .agent_control
+        .spawn_agent_with_metadata(
+            config.clone(),
+            vec![UserInput::Text {
+                text: "research".to_string(),
+                text_elements: Vec::new(),
+            }]
+            .into(),
+            Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                parent_thread_id: root.thread_id,
+                depth: 1,
+                agent_path: Some(researcher_path.clone()),
+                agent_nickname: None,
+                agent_role: None,
+            })),
+            crate::agent::control::SpawnAgentOptions::default(),
+        )
+        .await
+        .expect("researcher agent should spawn")
+        .thread_id;
+    session
+        .services
+        .agent_control
+        .spawn_agent_with_metadata(
+            config,
+            vec![UserInput::Text {
+                text: "build".to_string(),
+                text_elements: Vec::new(),
+            }]
+            .into(),
+            Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                parent_thread_id: root.thread_id,
+                depth: 2,
+                agent_path: Some(worker_path.clone()),
+                agent_nickname: None,
+                agent_role: None,
+            })),
+            crate::agent::control::SpawnAgentOptions::default(),
+        )
+        .await
+        .expect("worker agent should spawn");
+
+    let researcher_thread = manager
+        .get_thread(researcher_id)
+        .await
+        .expect("researcher thread should exist");
+    let researcher_turn = researcher_thread.codex.session.new_default_turn().await;
+    researcher_thread
+        .codex
+        .session
+        .send_event(
+            researcher_turn.as_ref(),
+            EventMsg::TurnComplete(TurnCompleteEvent {
+                turn_id: researcher_turn.sub_id.clone(),
+                last_agent_message: Some("done".to_string()),
+                compaction_events_in_turn: 0,
+            }),
+        )
+        .await;
+
+    let output = ListAgentsHandlerV2
+        .handle(invocation(
+            Arc::new(session),
+            Arc::new(turn),
+            "list_agents",
+            function_payload(json!({})),
+        ))
+        .await
+        .expect("list_agents should succeed");
+    let (content, _) = expect_text_output(output);
+    let result: ListAgentsResult =
+        serde_json::from_str(&content).expect("list_agents result should be json");
+
+    let researcher = result
+        .agents
+        .iter()
+        .find(|agent| agent.agent_name == researcher_path.as_str())
+        .expect("researcher should be listed");
+    assert_eq!(researcher.agent_status, json!({"completed": "done"}));
+    assert!(researcher.has_active_subagents);
+    assert_eq!(researcher.active_subagent_count, 1);
+    let root_agent = result
+        .agents
+        .iter()
+        .find(|agent| agent.agent_name == "/root")
+        .expect("root agent should be listed");
+    assert!(root_agent.has_active_subagents);
+    assert_eq!(root_agent.active_subagent_count, 1);
+}
+
+#[tokio::test]
+async fn inspect_agent_tree_defaults_to_current_subtree_for_live_nested_agents() {
+    let (mut session, mut turn) = make_session_and_context().await;
+    let manager = thread_manager();
+    let root = manager
+        .start_thread((*turn.config).clone())
+        .await
+        .expect("root thread should start");
+    session.services.agent_control = manager.agent_control();
+
+    let config = (*turn.config).clone();
+    let researcher_path = AgentPath::from_string("/root/researcher".to_string()).expect("path");
+    let worker_path = AgentPath::from_string("/root/researcher/worker".to_string()).expect("path");
+    let researcher_id = session
+        .services
+        .agent_control
+        .spawn_agent_with_metadata(
+            config.clone(),
+            vec![UserInput::Text {
+                text: "research".to_string(),
+                text_elements: Vec::new(),
+            }]
+            .into(),
+            Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                parent_thread_id: root.thread_id,
+                depth: 1,
+                agent_path: Some(researcher_path.clone()),
+                agent_nickname: None,
+                agent_role: Some("explorer".to_string()),
+            })),
+            crate::agent::control::SpawnAgentOptions::default(),
+        )
+        .await
+        .expect("researcher agent should spawn")
+        .thread_id;
+    session
+        .services
+        .agent_control
+        .spawn_agent_with_metadata(
+            config,
+            vec![UserInput::Text {
+                text: "build".to_string(),
+                text_elements: Vec::new(),
+            }]
+            .into(),
+            Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                parent_thread_id: researcher_id,
+                depth: 2,
+                agent_path: Some(worker_path.clone()),
+                agent_nickname: None,
+                agent_role: Some("worker".to_string()),
+            })),
+            crate::agent::control::SpawnAgentOptions::default(),
+        )
+        .await
+        .expect("worker agent should spawn");
+
+    session.conversation_id = researcher_id;
+    turn.session_source = SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+        parent_thread_id: root.thread_id,
+        depth: 1,
+        agent_path: Some(researcher_path.clone()),
+        agent_nickname: None,
+        agent_role: Some("explorer".to_string()),
+    });
+
+    let output = InspectAgentTreeHandler
+        .handle(invocation(
+            Arc::new(session),
+            Arc::new(turn),
+            "inspect_agent_tree",
+            function_payload(json!({})),
+        ))
+        .await
+        .expect("inspect_agent_tree should succeed");
+    let (content, success) = expect_text_output(output);
+    let result: serde_json::Value =
+        serde_json::from_str(&content).expect("inspect_agent_tree result should be json");
+
+    assert_eq!(result["root_agent_name"], json!(researcher_path.as_str()));
+    assert_eq!(result["scope_applied"], json!("live"));
+    assert_eq!(result["agent_roots_applied"], json!([]));
+    assert_eq!(result["summary"]["total_agents"], json!(2));
+    assert_eq!(result["summary"]["live_agents"], json!(2));
+    assert_eq!(result["summary"]["stale_agents"], json!(0));
+    assert_eq!(
+        result["agents"][0]["agent_name"],
+        json!(researcher_path.as_str())
+    );
+    assert_eq!(result["agents"][0]["depth"], json!(0));
+    assert_eq!(result["agents"][0]["session_state"], json!("live"));
+    assert_eq!(result["agents"][0]["role"], json!("explorer"));
+    assert_eq!(result["agents"][0]["direct_child_count"], json!(1));
+    assert_eq!(result["agents"][0]["descendant_count"], json!(1));
+    assert_eq!(
+        result["agents"][0]["last_task_message_preview"],
+        json!("research")
+    );
+    assert_eq!(
+        result["agents"][1]["agent_name"],
+        json!(worker_path.as_str())
+    );
+    assert_eq!(result["agents"][1]["depth"], json!(1));
+    assert_eq!(result["agents"][1]["session_state"], json!("live"));
+    assert_eq!(result["agents"][1]["role"], json!("worker"));
+    assert_eq!(success, Some(true));
+}
+
+#[tokio::test]
+async fn inspect_agent_tree_can_mix_live_and_stale_descendants() {
+    let (mut session, mut turn) = make_session_and_context().await;
+    let manager = thread_manager();
+    let root = manager
+        .start_thread((*turn.config).clone())
+        .await
+        .expect("root thread should start");
+    session.services.agent_control = manager.agent_control();
+    session.conversation_id = root.thread_id;
+
+    let config = (*turn.config).clone();
+    let researcher_path = AgentPath::from_string("/root/researcher".to_string()).expect("path");
+    let worker_path = AgentPath::from_string("/root/researcher/worker".to_string()).expect("path");
+    let researcher_id = session
+        .services
+        .agent_control
+        .spawn_agent_with_metadata(
+            config.clone(),
+            vec![UserInput::Text {
+                text: "research".to_string(),
+                text_elements: Vec::new(),
+            }]
+            .into(),
+            Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                parent_thread_id: root.thread_id,
+                depth: 1,
+                agent_path: Some(researcher_path.clone()),
+                agent_nickname: None,
+                agent_role: Some("explorer".to_string()),
+            })),
+            crate::agent::control::SpawnAgentOptions::default(),
+        )
+        .await
+        .expect("researcher agent should spawn")
+        .thread_id;
+    let worker_id = session
+        .services
+        .agent_control
+        .spawn_agent_with_metadata(
+            config,
+            vec![UserInput::Text {
+                text: "build".to_string(),
+                text_elements: Vec::new(),
+            }]
+            .into(),
+            Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                parent_thread_id: researcher_id,
+                depth: 2,
+                agent_path: Some(worker_path.clone()),
+                agent_nickname: None,
+                agent_role: Some("worker".to_string()),
+            })),
+            crate::agent::control::SpawnAgentOptions::default(),
+        )
+        .await
+        .expect("worker agent should spawn")
+        .thread_id;
+    session
+        .services
+        .agent_control
+        .close_agent(worker_id)
+        .await
+        .expect("worker close should succeed");
+
+    let output = InspectAgentTreeHandler
+        .handle(invocation(
+            Arc::new(session),
+            Arc::new(turn),
+            "inspect_agent_tree",
+            function_payload(json!({
+                "target": "researcher",
+                "scope": "all"
+            })),
+        ))
+        .await
+        .expect("inspect_agent_tree should succeed");
+    let (content, success) = expect_text_output(output);
+    let result: serde_json::Value =
+        serde_json::from_str(&content).expect("inspect_agent_tree result should be json");
+
+    assert_eq!(result["root_agent_name"], json!(researcher_path.as_str()));
+    assert_eq!(result["scope_applied"], json!("all"));
+    assert_eq!(result["agent_roots_applied"], json!([]));
+    assert_eq!(result["summary"]["total_agents"], json!(2));
+    assert_eq!(result["summary"]["live_agents"], json!(1));
+    assert_eq!(result["summary"]["stale_agents"], json!(1));
+    assert_eq!(
+        result["agents"][0]["agent_name"],
+        json!(researcher_path.as_str())
+    );
+    assert_eq!(result["agents"][0]["session_state"], json!("live"));
+    assert_eq!(result["agents"][0]["direct_child_count"], json!(1));
+    assert_eq!(
+        result["agents"][1]["agent_name"],
+        json!(worker_path.as_str())
+    );
+    assert_eq!(result["agents"][1]["session_state"], json!("stale"));
+    assert!(result["agents"][1]["agent_status"].is_null());
+    assert_eq!(success, Some(true));
+}
+
+#[tokio::test]
+async fn inspect_agent_tree_filters_to_requested_agent_branches() {
+    let (mut session, turn) = make_session_and_context().await;
+    let manager = thread_manager();
+    let root = manager
+        .start_thread((*turn.config).clone())
+        .await
+        .expect("root thread should start");
+    session.services.agent_control = manager.agent_control();
+    session.conversation_id = root.thread_id;
+
+    let config = (*turn.config).clone();
+    let researcher_path = AgentPath::from_string("/root/researcher".to_string()).expect("path");
+    let reviewer_path = AgentPath::from_string("/root/reviewer".to_string()).expect("path");
+    let worker_path = AgentPath::from_string("/root/researcher/worker".to_string()).expect("path");
+    session
+        .services
+        .agent_control
+        .spawn_agent_with_metadata(
+            config.clone(),
+            vec![UserInput::Text {
+                text: "research".to_string(),
+                text_elements: Vec::new(),
+            }]
+            .into(),
+            Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                parent_thread_id: root.thread_id,
+                depth: 1,
+                agent_path: Some(researcher_path.clone()),
+                agent_nickname: None,
+                agent_role: Some("explorer".to_string()),
+            })),
+            crate::agent::control::SpawnAgentOptions::default(),
+        )
+        .await
+        .expect("researcher agent should spawn");
+    session
+        .services
+        .agent_control
+        .spawn_agent_with_metadata(
+            config.clone(),
+            vec![UserInput::Text {
+                text: "review".to_string(),
+                text_elements: Vec::new(),
+            }]
+            .into(),
+            Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                parent_thread_id: root.thread_id,
+                depth: 1,
+                agent_path: Some(reviewer_path),
+                agent_nickname: None,
+                agent_role: Some("reviewer".to_string()),
+            })),
+            crate::agent::control::SpawnAgentOptions::default(),
+        )
+        .await
+        .expect("reviewer agent should spawn");
+    session
+        .services
+        .agent_control
+        .spawn_agent_with_metadata(
+            config,
+            vec![UserInput::Text {
+                text: "build".to_string(),
+                text_elements: Vec::new(),
+            }]
+            .into(),
+            Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                parent_thread_id: root.thread_id,
+                depth: 2,
+                agent_path: Some(worker_path.clone()),
+                agent_nickname: None,
+                agent_role: Some("worker".to_string()),
+            })),
+            crate::agent::control::SpawnAgentOptions::default(),
+        )
+        .await
+        .expect("worker agent should spawn");
+
+    let output = InspectAgentTreeHandler
+        .handle(invocation(
+            Arc::new(session),
+            Arc::new(turn),
+            "inspect_agent_tree",
+            function_payload(json!({
+                "agent_roots": ["researcher"]
+            })),
+        ))
+        .await
+        .expect("inspect_agent_tree should succeed");
+    let (content, success) = expect_text_output(output);
+    let result: serde_json::Value =
+        serde_json::from_str(&content).expect("inspect_agent_tree result should be json");
+
+    assert_eq!(
+        result["agent_roots_applied"],
+        json!([researcher_path.as_str()])
+    );
+    assert_eq!(result["summary"]["total_agents"], json!(2));
+    assert_eq!(result["truncated"], json!(false));
+    let agent_names = result["agents"]
+        .as_array()
+        .expect("agents should be an array")
+        .iter()
+        .map(|agent| {
+            agent["agent_name"]
+                .as_str()
+                .expect("agent_name should be a string")
+                .to_string()
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        agent_names,
+        vec![researcher_path.to_string(), worker_path.to_string()]
+    );
+    assert_eq!(success, Some(true));
 }
 
 #[tokio::test]
@@ -1848,10 +2377,10 @@ async fn wait_agent_returns_not_found_for_missing_agents() {
     assert_eq!(
         result,
         wait::WaitAgentResult {
-            status: HashMap::from([
-                (id_a.to_string(), AgentStatus::NotFound),
-                (id_b.to_string(), AgentStatus::NotFound),
-            ]),
+            message: "Wait completed.".to_string(),
+            requested_ids: vec![id_a, id_b],
+            pending_ids: Vec::new(),
+            completion_reason: crate::protocol::CollabWaitingCompletionReason::Terminal,
             timed_out: false
         }
     );
@@ -1885,7 +2414,10 @@ async fn wait_agent_times_out_when_status_is_not_final() {
     assert_eq!(
         result,
         wait::WaitAgentResult {
-            status: HashMap::new(),
+            message: "Wait timed out.".to_string(),
+            requested_ids: vec![agent_id],
+            pending_ids: vec![agent_id],
+            completion_reason: crate::protocol::CollabWaitingCompletionReason::Timeout,
             timed_out: true
         }
     );
@@ -1975,7 +2507,10 @@ async fn wait_agent_returns_final_status_without_timeout() {
     assert_eq!(
         result,
         wait::WaitAgentResult {
-            status: HashMap::from([(agent_id.to_string(), AgentStatus::Shutdown)]),
+            message: "Wait completed.".to_string(),
+            requested_ids: vec![agent_id],
+            pending_ids: Vec::new(),
+            completion_reason: crate::protocol::CollabWaitingCompletionReason::Terminal,
             timed_out: false
         }
     );
@@ -2092,6 +2627,7 @@ async fn multi_agent_v2_wait_agent_does_not_return_completed_content() {
             EventMsg::TurnComplete(TurnCompleteEvent {
                 turn_id: child_turn.sub_id.clone(),
                 last_agent_message: Some("sensitive child output".to_string()),
+                compaction_events_in_turn: 0,
             }),
         )
         .await;
