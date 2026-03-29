@@ -377,11 +377,27 @@ pub fn stdio_server_bin() -> Result<String, CargoBinError> {
     match codex_utils_cargo_bin::cargo_bin("test_stdio_server") {
         Ok(path) => Ok(path.to_string_lossy().to_string()),
         Err(_) => {
+            if let Some(path) = find_current_target_binary("test_stdio_server") {
+                return Ok(path.to_string_lossy().to_string());
+            }
             maybe_build_stdio_server_for_tests();
             codex_utils_cargo_bin::cargo_bin("test_stdio_server")
+                .or_else(|err| find_current_target_binary("test_stdio_server").ok_or(err))
                 .map(|path| path.to_string_lossy().to_string())
         }
     }
+}
+
+fn find_current_target_binary(name: &str) -> Option<PathBuf> {
+    let bin_name = format!("{name}{}", std::env::consts::EXE_SUFFIX);
+    let current_exe = std::env::current_exe().ok()?;
+    let deps_dir = current_exe.parent()?;
+    if deps_dir.file_name()?.to_str()? != "deps" {
+        return None;
+    }
+
+    let binary_path = deps_dir.parent()?.join(bin_name);
+    binary_path.exists().then_some(binary_path)
 }
 
 fn maybe_build_stdio_server_for_tests() {
