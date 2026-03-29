@@ -126,7 +126,7 @@ jobs:
               .github/workflows/*|justfile)
                 run_all_lanes=true
                 ;;
-              codex-rs/cli/*|codex-rs/common/*|codex-rs/core/*|codex-rs/hooks/*|codex-rs/linux-sandbox/*|codex-rs/state/*|codex-rs/windows-sandbox-rs/*)
+              codex-rs/cli/*|codex-rs/code-mode/*|codex-rs/common/*|codex-rs/core/*|codex-rs/hooks/*|codex-rs/linux-sandbox/*|codex-rs/state/*|codex-rs/windows-sandbox-rs/*)
                 run_core_family=true
                 ;;
               codex-rs/app-server/*|codex-rs/app-server-protocol/*|codex-rs/protocol/*|codex-rs/tui/*|codex-rs/tui_app_server/*)
