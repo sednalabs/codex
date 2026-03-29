@@ -17,6 +17,9 @@ use crate::config_loader::ConfigLayerStack;
 use crate::config_loader::ConfigLayerStackOrdering;
 use crate::config_loader::resolve_relative_paths_in_config_toml;
 use codex_app_server_protocol::ConfigLayerSource;
+use codex_protocol::config_types::ReasoningSummary;
+use codex_protocol::config_types::Verbosity;
+use codex_protocol::openai_models::ReasoningEffort;
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use std::path::Path;
@@ -38,6 +41,16 @@ struct RoleActiveProfileFieldUpdates {
 struct RoleLayerConfig {
     role_config: ConfigToml,
     role_layer_toml: TomlValue,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+struct RolePreservationPolicy {
+    preserve_current_profile: bool,
+    preserve_current_provider: bool,
+    model: Option<String>,
+    model_reasoning_effort: Option<ReasoningEffort>,
+    model_reasoning_summary: Option<ReasoningSummary>,
+    model_verbosity: Option<Verbosity>,
 }
 
 async fn load_role_layer_config(
@@ -144,31 +157,217 @@ fn role_preserves_current_profile(role_config: &ConfigToml) -> bool {
     role_config.model_provider.is_none() && role_config.profile.is_none()
 }
 
-fn role_layer_stack_with_session_flags(
-    config: &Config,
-    role_name: &str,
-    role_layer_toml: &TomlValue,
-) -> Result<ConfigLayerStack, String> {
-    let mut layers: Vec<ConfigLayerEntry> = config
-        .config_layer_stack
-        .get_layers(
-            ConfigLayerStackOrdering::LowestPrecedenceFirst,
-            /*include_disabled*/ true,
-        )
-        .into_iter()
-        .cloned()
-        .collect();
-    let layer = ConfigLayerEntry::new(ConfigLayerSource::SessionFlags, role_layer_toml.clone());
-    let insertion_index =
-        layers.partition_point(|existing_layer| existing_layer.name <= layer.name);
-    layers.insert(insertion_index, layer);
+fn sticky_runtime_setting<T: Clone>(
+    preserve_current_profile: bool,
+    active_profile_updates_field: bool,
+    role_value: Option<T>,
+    current_value: Option<T>,
+) -> Option<T> {
+    if preserve_current_profile && !active_profile_updates_field {
+        role_value.or(current_value)
+    } else {
+        None
+    }
+}
 
-    ConfigLayerStack::new(
-        layers,
-        config.config_layer_stack.requirements().clone(),
-        config.config_layer_stack.requirements_toml().clone(),
-    )
-    .map_err(|err| format!("failed to create layered config for agent type '{role_name}': {err}"))
+impl RolePreservationPolicy {
+    fn from_config(config: &Config, role_config: &ConfigToml, role_layer_toml: &TomlValue) -> Self {
+        let preserve_current_profile = role_preserves_current_profile(role_config);
+        let active_profile_updates =
+            role_profile_field_updates(config.active_profile.as_deref(), role_layer_toml);
+
+        Self {
+            preserve_current_profile,
+            preserve_current_provider: preserve_current_profile
+                && !active_profile_updates.model_provider,
+            model: sticky_runtime_setting(
+                preserve_current_profile,
+                active_profile_updates.model,
+                role_config.model.clone(),
+                config.model.clone(),
+            ),
+            model_reasoning_effort: sticky_runtime_setting(
+                preserve_current_profile,
+                active_profile_updates.model_reasoning_effort,
+                role_config.model_reasoning_effort,
+                config.model_reasoning_effort,
+            ),
+            model_reasoning_summary: sticky_runtime_setting(
+                preserve_current_profile,
+                active_profile_updates.model_reasoning_summary,
+                role_config.model_reasoning_summary,
+                config.model_reasoning_summary,
+            ),
+            model_verbosity: sticky_runtime_setting(
+                preserve_current_profile,
+                active_profile_updates.model_verbosity,
+                role_config.model_verbosity,
+                config.model_verbosity,
+            ),
+        }
+    }
+}
+
+mod reload {
+    use super::*;
+
+    pub(super) fn build_next_config(
+        config: &Config,
+        role_name: &str,
+        role_layer_toml: TomlValue,
+        preservation_policy: &RolePreservationPolicy,
+    ) -> Result<Config, String> {
+        let active_profile_name = preservation_policy
+            .preserve_current_profile
+            .then_some(config.active_profile.as_deref())
+            .flatten();
+        let config_layer_stack =
+            build_config_layer_stack(config, role_name, &role_layer_toml, active_profile_name)?;
+        let mut merged_config =
+            deserialize_effective_config(config, role_name, &config_layer_stack)?;
+        if preservation_policy.preserve_current_profile {
+            merged_config.profile = None;
+        }
+
+        let mut next_config = Config::load_config_with_layer_stack(
+            merged_config,
+            reload_overrides(config, preservation_policy),
+            config.codex_home.clone(),
+            config_layer_stack,
+        )
+        .map_err(|err| {
+            format!("failed to apply merged config for agent type '{role_name}': {err}")
+        })?;
+        if preservation_policy.preserve_current_profile {
+            next_config.active_profile = config.active_profile.clone();
+        }
+        Ok(next_config)
+    }
+
+    fn build_config_layer_stack(
+        config: &Config,
+        role_name: &str,
+        role_layer_toml: &TomlValue,
+        active_profile_name: Option<&str>,
+    ) -> Result<ConfigLayerStack, String> {
+        let mut layers = existing_layers(config);
+        if let Some(resolved_profile_layer) = resolved_profile_layer(
+            config,
+            role_name,
+            &layers,
+            role_layer_toml,
+            active_profile_name,
+        )? {
+            insert_layer(&mut layers, resolved_profile_layer);
+        }
+        insert_layer(&mut layers, role_layer(role_layer_toml.clone()));
+
+        ConfigLayerStack::new(
+            layers,
+            config.config_layer_stack.requirements().clone(),
+            config.config_layer_stack.requirements_toml().clone(),
+        )
+        .map_err(|err| {
+            format!("failed to create layered config for agent type '{role_name}': {err}")
+        })
+    }
+
+    fn resolved_profile_layer(
+        config: &Config,
+        role_name: &str,
+        existing_layers: &[ConfigLayerEntry],
+        role_layer_toml: &TomlValue,
+        active_profile_name: Option<&str>,
+    ) -> Result<Option<ConfigLayerEntry>, String> {
+        let Some(active_profile_name) = active_profile_name else {
+            return Ok(None);
+        };
+
+        let mut layers = existing_layers.to_vec();
+        insert_layer(&mut layers, role_layer(role_layer_toml.clone()));
+        let layered_stack = ConfigLayerStack::new(
+            layers,
+            config.config_layer_stack.requirements().clone(),
+            config.config_layer_stack.requirements_toml().clone(),
+        )
+        .map_err(|err| {
+            format!("failed to create layered config for agent type '{role_name}': {err}")
+        })?;
+        let merged_config = deserialize_effective_config(config, role_name, &layered_stack)?;
+        let resolved_profile = merged_config
+            .get_config_profile(Some(active_profile_name.to_string()))
+            .map_err(|err| {
+                format!(
+                    "failed to resolve active profile '{active_profile_name}' for agent type '{role_name}': {err}"
+                )
+            })?;
+        let resolved_profile_toml = TomlValue::try_from(resolved_profile).map_err(|err| {
+            format!(
+                "failed to materialize active profile '{active_profile_name}' for agent type '{role_name}': {err}"
+            )
+        })?;
+        Ok(Some(ConfigLayerEntry::new(
+            ConfigLayerSource::SessionFlags,
+            resolved_profile_toml,
+        )))
+    }
+
+    fn deserialize_effective_config(
+        config: &Config,
+        role_name: &str,
+        config_layer_stack: &ConfigLayerStack,
+    ) -> Result<ConfigToml, String> {
+        deserialize_config_toml_with_base(config_layer_stack.effective_config(), &config.codex_home)
+            .map_err(|err| {
+                format!("failed to deserialize merged config for agent type '{role_name}': {err}")
+            })
+    }
+
+    fn existing_layers(config: &Config) -> Vec<ConfigLayerEntry> {
+        config
+            .config_layer_stack
+            .get_layers(
+                ConfigLayerStackOrdering::LowestPrecedenceFirst,
+                /*include_disabled*/ true,
+            )
+            .into_iter()
+            .cloned()
+            .collect()
+    }
+
+    fn insert_layer(layers: &mut Vec<ConfigLayerEntry>, layer: ConfigLayerEntry) {
+        let insertion_index =
+            layers.partition_point(|existing_layer| existing_layer.name <= layer.name);
+        layers.insert(insertion_index, layer);
+    }
+
+    fn role_layer(role_layer_toml: TomlValue) -> ConfigLayerEntry {
+        ConfigLayerEntry::new(ConfigLayerSource::SessionFlags, role_layer_toml)
+    }
+
+    fn reload_overrides(
+        config: &Config,
+        preservation_policy: &RolePreservationPolicy,
+    ) -> ConfigOverrides {
+        ConfigOverrides {
+            model: preservation_policy.model.clone(),
+            model_reasoning_effort: preservation_policy.model_reasoning_effort,
+            model_reasoning_summary: preservation_policy.model_reasoning_summary,
+            model_verbosity: preservation_policy.model_verbosity,
+            cwd: Some(config.cwd.to_path_buf()),
+            model_provider: preservation_policy
+                .preserve_current_provider
+                .then(|| config.model_provider_id.clone()),
+            config_profile: preservation_policy
+                .preserve_current_profile
+                .then(|| config.active_profile.clone())
+                .flatten(),
+            codex_linux_sandbox_exe: config.codex_linux_sandbox_exe.clone(),
+            main_execve_wrapper_exe: config.main_execve_wrapper_exe.clone(),
+            js_repl_node_path: config.js_repl_node_path.clone(),
+            ..Default::default()
+        }
+    }
 }
 
 /// Applies a named role layer to `config` while preserving caller-owned model selection.
@@ -192,87 +391,9 @@ pub(crate) async fn apply_role_to_config(
     else {
         return Ok(());
     };
-    let role_selects_model = role_config.model.is_some();
-    let role_selects_reasoning_effort = role_config.model_reasoning_effort.is_some();
-    let role_selects_reasoning_summary = role_config.model_reasoning_summary.is_some();
-    let role_selects_verbosity = role_config.model_verbosity.is_some();
-    let active_profile_updates =
-        role_profile_field_updates(config.active_profile.as_deref(), &role_layer_toml);
-    // A role that does not explicitly take ownership of model selection should inherit the
-    // caller's current profile/provider choices across the config reload.
-    let preserve_current_profile = role_preserves_current_profile(&role_config);
-    let preserve_current_provider =
-        preserve_current_profile && !active_profile_updates.model_provider;
-    let preserved_model = if preserve_current_profile && !active_profile_updates.model {
-        if role_selects_model {
-            role_config.model.clone()
-        } else {
-            config.model.clone()
-        }
-    } else {
-        None
-    };
-    let preserved_reasoning_effort =
-        if preserve_current_profile && !active_profile_updates.model_reasoning_effort {
-            if role_selects_reasoning_effort {
-                role_config.model_reasoning_effort
-            } else {
-                config.model_reasoning_effort
-            }
-        } else {
-            None
-        };
-    let preserved_reasoning_summary =
-        if preserve_current_profile && !active_profile_updates.model_reasoning_summary {
-            if role_selects_reasoning_summary {
-                role_config.model_reasoning_summary
-            } else {
-                config.model_reasoning_summary
-            }
-        } else {
-            None
-        };
-    let preserved_verbosity = if preserve_current_profile && !active_profile_updates.model_verbosity
-    {
-        if role_selects_verbosity {
-            role_config.model_verbosity
-        } else {
-            config.model_verbosity
-        }
-    } else {
-        None
-    };
-
-    let config_layer_stack =
-        role_layer_stack_with_session_flags(config, role_name, &role_layer_toml)?;
-
-    let merged_toml = config_layer_stack.effective_config();
-    let merged_config = deserialize_config_toml_with_base(merged_toml, &config.codex_home)
-        .map_err(|err| {
-            format!("failed to deserialize merged config for agent type '{role_name}': {err}")
-        })?;
-    let next_config = Config::load_config_with_layer_stack(
-        merged_config,
-        ConfigOverrides {
-            model: preserved_model,
-            model_reasoning_effort: preserved_reasoning_effort,
-            model_reasoning_summary: preserved_reasoning_summary,
-            model_verbosity: preserved_verbosity,
-            cwd: Some(config.cwd.clone()),
-            model_provider: preserve_current_provider.then(|| config.model_provider_id.clone()),
-            config_profile: preserve_current_profile
-                .then(|| config.active_profile.clone())
-                .flatten(),
-            codex_linux_sandbox_exe: config.codex_linux_sandbox_exe.clone(),
-            main_execve_wrapper_exe: config.main_execve_wrapper_exe.clone(),
-            js_repl_node_path: config.js_repl_node_path.clone(),
-            ..Default::default()
-        },
-        config.codex_home.clone(),
-        config_layer_stack,
-    )
-    .map_err(|err| format!("failed to apply merged config for agent type '{role_name}': {err}"))?;
-    *config = next_config;
+    let preservation_policy =
+        RolePreservationPolicy::from_config(config, &role_config, &role_layer_toml);
+    *config = reload::build_next_config(config, role_name, role_layer_toml, &preservation_policy)?;
 
     Ok(())
 }
