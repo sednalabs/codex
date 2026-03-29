@@ -1996,6 +1996,7 @@ config_file = "./custom-role.toml"
         model,
         reasoning_effort,
         agents_states,
+        timed_out: _timed_out,
     } = spawn_completed
     else {
         unreachable!("loop ensures we break on collab agent tool call items");
