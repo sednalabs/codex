@@ -148,11 +148,11 @@ fn preferred_input_sample_rate(range: &cpal::SupportedStreamConfigRange) -> cpal
     let min = range.min_sample_rate();
     let max = range.max_sample_rate();
     if (min..=max).contains(&PREFERRED_INPUT_SAMPLE_RATE) {
-        cpal::SampleRate(PREFERRED_INPUT_SAMPLE_RATE)
+        PREFERRED_INPUT_SAMPLE_RATE
     } else if PREFERRED_INPUT_SAMPLE_RATE < min {
-        cpal::SampleRate(min)
+        min
     } else {
-        cpal::SampleRate(max)
+        max
     }
 }
 
