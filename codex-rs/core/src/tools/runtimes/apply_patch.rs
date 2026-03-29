@@ -53,6 +53,7 @@ enum ApplyPatchLaunchMode {
     ConfiguredCodexLinuxSandboxExe,
     ConfiguredCodexLinuxSandboxExeViaApplyPatchAlias,
     CurrentExeFallback,
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     CurrentExeFallbackRecoveredDeletedPath,
 }
 

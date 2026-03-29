@@ -104,6 +104,7 @@ pub(crate) struct SandboxTransformRequest<'a> {
     #[cfg(target_os = "macos")]
     pub macos_seatbelt_profile_extensions: Option<&'a MacOsSeatbeltProfileExtensions>,
     pub codex_linux_sandbox_exe: Option<&'a PathBuf>,
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     pub use_legacy_landlock: bool,
     pub windows_sandbox_level: WindowsSandboxLevel,
     pub windows_sandbox_private_desktop: bool,
@@ -117,6 +118,7 @@ pub enum SandboxPreference {
 
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum SandboxTransformError {
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     #[error("missing codex-linux-sandbox executable path")]
     MissingLinuxSandboxExecutable,
     #[error("sandbox was explicitly required but no platform sandbox is available")]
@@ -627,7 +629,10 @@ impl SandboxManager {
             sandbox_policy_cwd,
             #[cfg(target_os = "macos")]
             macos_seatbelt_profile_extensions,
+            #[cfg(target_os = "linux")]
             codex_linux_sandbox_exe,
+            #[cfg(not(target_os = "linux"))]
+                codex_linux_sandbox_exe: _,
             #[cfg(target_os = "linux")]
             use_legacy_landlock,
             #[cfg(not(target_os = "linux"))]
