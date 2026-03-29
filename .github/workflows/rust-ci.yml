@@ -94,24 +94,21 @@ jobs:
             BASE_SHA='${{ github.event.pull_request.base.sha }}'
             HEAD_SHA='${{ github.event.pull_request.head.sha }}'
             while IFS= read -r file; do
-              if [[ $file == .github/workflows/* ]]; then
+              if [[ $file == .github/workflows/* && -f $file ]]; then
                 files+=("$file")
               fi
-            done < <(git diff --name-only --no-renames "$BASE_SHA...$HEAD_SHA")
+            done < <(git diff --name-only --diff-filter=AM --no-renames "$BASE_SHA...$HEAD_SHA")
           fi
 
           if ((${#files[@]} == 0)); then
-            files=(
-              .github/workflows/blob-size-policy.yml
-              .github/workflows/cancel-pr-runs.yml
-              .github/workflows/cargo-deny.yml
-              .github/workflows/ci.yml
-              .github/workflows/codespell.yml
-              .github/workflows/rust-ci.yml
-              .github/workflows/sdk.yml
-              .github/workflows/sedna-heavy-tests.yml
-              .github/workflows/shell-tool-mcp-ci.yml
-            )
+            while IFS= read -r file; do
+              files+=("$file")
+            done < <(find .github/workflows -maxdepth 1 -type f \( -name '*.yml' -o -name '*.yaml' \) | sort)
+          fi
+
+          if ((${#files[@]} == 0)); then
+            echo "No workflow files to validate."
+            exit 0
           fi
 
           actionlint "${files[@]}"
