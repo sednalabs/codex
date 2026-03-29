@@ -493,7 +493,8 @@ mod phase2 {
             let codex_home = tempfile::tempdir().expect("create temp codex home");
             let mut config = test_config();
             config.codex_home = codex_home.path().to_path_buf();
-            config.cwd = config.codex_home.clone();
+            config.cwd = AbsolutePathBuf::from_absolute_path(config.codex_home.clone())
+                .expect("codex_home should be absolute");
             let config = Arc::new(config);
 
             let state_db = codex_state::StateRuntime::init(
@@ -1665,7 +1666,8 @@ mod phase2 {
         std::fs::create_dir_all(&codex_home).expect("create codex home");
         let mut config = test_config();
         config.codex_home = codex_home;
-        config.cwd = PathBuf::from("/tmp/workspace");
+        config.cwd = AbsolutePathBuf::from_absolute_path(PathBuf::from("/tmp/workspace"))
+            .expect("workspace path should be absolute");
         let config = Arc::new(config);
 
         let agent_config =
@@ -1728,7 +1730,8 @@ mod phase2 {
 
         let mut config = test_config();
         config.codex_home = linked_codex_home;
-        config.cwd = PathBuf::from("/tmp/workspace");
+        config.cwd = AbsolutePathBuf::from_absolute_path(PathBuf::from("/tmp/workspace"))
+            .expect("workspace path should be absolute");
 
         assert!(
             phase2::test_consolidation_agent_config(Arc::new(config)).is_none(),
@@ -1990,7 +1993,8 @@ mod phase2 {
         let codex_home = tempfile::tempdir().expect("create temp codex home");
         let mut config = test_config();
         config.codex_home = codex_home.path().to_path_buf();
-        config.cwd = config.codex_home.clone();
+        config.cwd = AbsolutePathBuf::from_absolute_path(config.codex_home.clone())
+            .expect("codex_home should be absolute");
         let config = Arc::new(config);
 
         let state_db = codex_state::StateRuntime::init(
