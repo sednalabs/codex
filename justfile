@@ -65,10 +65,8 @@ core-carry-smoke:
     CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo test -p codex-core --test all suite::unified_exec::exec_command_wait_until_terminal_returns_exit_metadata -- --exact --test-threads=1
     CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo test -p codex-tui queued_inline_slash_command_runs_with_args_after_task_complete -- --exact --test-threads=1
     CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo test -p codex-tui alt_up_restores_most_recent_queued_slash_command -- --exact --test-threads=1
-    cargo test -p codex-tui-app-server app::tests::replayed_turn_complete_submits_restored_queued_follow_up -- --exact --test-threads=1
-    cargo test -p codex-tui-app-server app::tests::replayed_turn_complete_opens_restored_queued_approvals_command -- --exact --test-threads=1
-    cargo test -p codex-tui-app-server app::tests::replayed_turn_complete_keeps_message_after_restored_queued_command_runs_first -- --exact --test-threads=1
-    cargo test -p codex-tui-app-server app::tests::sync_active_agent_label_updates_footer_for_selected_thread -- --exact --test-threads=1
+    cargo test -p codex-tui replayed_turn_complete_submits_restored_queued_follow_up -- --exact --test-threads=1
+    cargo test -p codex-tui active_agent_label_tracks_current_thread -- --exact --test-threads=1
 
 # Focused startup sync regression slice for bounded-wait and abort/re-arm behavior.
 core-startup-sync-targeted:
@@ -88,13 +86,11 @@ core-subagent-notification-contract-targeted:
     CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo test -p codex-core drop_last_n_user_turns_ignores_session_prefix_user_messages --lib -- --test-threads=1
     CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo test -p codex-core serializes_memory_rollout_with_agents_removed_but_environment_kept --lib -- --test-threads=1
 
-# Focused sub-agent completion-notification parser + TUI render slice.
-# Keep `tui_app_server` at compile coverage for now while its broader lib test
-# target still has unrelated drift on this branch.
+# Focused sub-agent completion-notification parser + TUI render slice after the
+# tui_app_server -> tui cutover.
 core-subagent-notification-visibility-targeted:
     cargo test -p codex-protocol parse_subagent_notification_response_item_ --lib -- --test-threads=1
     cargo test -p codex-tui raw_response_subagent_notification_renders_history -- --exact --test-threads=1
-    cargo build -p codex-tui-app-server
 
 # Focused multi-agent orchestration slice covering wait semantics and tool guidance.
 core-multi-agent-orchestration-targeted:

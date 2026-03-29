@@ -16,7 +16,7 @@ Fast lanes used by `core-test-smoke`:
 - `core-compile-smoke`
 - `core-carry-smoke`
 - `core-ledger-smoke`
-- `core-carry-smoke` now includes the `codex-tui-app-server`
+- `core-carry-smoke` now includes the `codex-tui`
   replayed-queue and selected-agent footer regressions, so
   downstream interactive behavior fails during the PR smoke pass.
 - `core-ledger-smoke` now includes the `usage.sqlite` cleanup, turn-reset, and
@@ -83,7 +83,7 @@ GitHub Actions lane naming (`.github/workflows/sedna-heavy-tests.yml`):
 | Sub-agent override preservation across role reload | `core-carry-smoke` | `spawn_agent_preserves_explicit_model_override_across_role_reload`; `spawn_agent_requested_model_and_reasoning_override_inherited_settings_without_role`; `spawn_agent_role_overrides_requested_model_and_reasoning_settings` |
 | Sub-agent surface contract (`spawn_agent`/`list_agents` omit raw `model_reasoning_summary`, while `list_agents(include_descendants=true)` surfaces persisted subtree edge status) | `codex.core-subagent-surface-targeted` | `spawn_agent_preserves_explicit_model_override_across_role_reload`; `list_agents_returns_direct_children_with_live_inventory`; `list_agents_include_descendants_reports_persisted_open_and_closed_descendants` |
 | Core-side sub-agent notification contract (`codex-core`) | `codex.core-subagent-notification-contract-targeted` | `format_subagent_notification_message_round_trips_completed_status`; `classifies_memory_excluded_fragments`; `drop_last_n_user_turns_ignores_session_prefix_user_messages`; `serializes_memory_rollout_with_agents_removed_but_environment_kept` |
-| Sub-agent completion-notification parser + TUI render surface (`protocol` + `tui` + `tui_app_server`) | `codex.core-subagent-notification-visibility-targeted` | `parse_subagent_notification_response_item_*`; `raw_response_subagent_notification_renders_history`; `cargo build -p codex-tui-app-server` |
+| Sub-agent completion-notification parser + TUI render surface (`protocol` + `tui`) | `codex.core-subagent-notification-visibility-targeted` | `parse_subagent_notification_response_item_*`; `raw_response_subagent_notification_renders_history` |
 | Sub-agent inventory + blocking join surface | `codex.core-multi-agent-orchestration-targeted` | `list_agents_returns_direct_children_with_live_inventory`; `wait_agent_allows_return_when_any_and_returns_on_first_final_status`; `wait_agent_allows_return_when_all_and_returns_only_when_all_are_final`; `spawn_wait_and_list_agents_tool_descriptions_have_guidance_updates` |
 | Persisted sub-agent descendant status across close + rollout resume | `codex.core-persisted-subagent-descendants-targeted` | `persisted_spawn_descendants_reflect_closed_status` |
 | Code-mode declaration formatting + namespaced tool metadata | `core-carry-smoke` | `code_mode_exports_all_tools_metadata_for_builtin_tools`; `code_mode_exports_all_tools_metadata_for_namespaced_mcp_tools` |
@@ -97,10 +97,10 @@ GitHub Actions lane naming (`.github/workflows/sedna-heavy-tests.yml`):
 | Linux sandbox/core compile seam | `core-compile-smoke` | `cargo check -p codex-linux-sandbox -p codex-core --tests` |
 | Postgres ledger ingest + copied-history/source-row regressions | `downstream-ledger-seam` | `ensure_schema.sh`; `ingest_codex_rollouts_to_postgres.sh`; `test_codex_copied_history_filter.sh`; `test_codex_source_row_identity.sh` |
 
-The dedicated `tui_app_server` replay assertions live in source alongside this carry patch, but
-the broader `codex-tui-app-server` lib test target still has unrelated compile drift on this
-branch. Keep the preset green with the parser test, the exact `codex-tui` notification render
-test, and `codex-tui-app-server` compile coverage until that test-target drift is repaired.
+The replay assertions that used to live under `tui_app_server` now ride on the
+cut-over `codex-tui` app tests. Keep the preset green with the parser test and
+the exact `codex-tui` render/app checks rather than carrying compile coverage
+for a removed crate path.
 
 ## Operator notes
 
