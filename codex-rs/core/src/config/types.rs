@@ -127,6 +127,10 @@ pub struct McpServerConfig {
     /// Optional OAuth resource parameter to include during MCP login (RFC 8707).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub oauth_resource: Option<String>,
+
+    /// Per-tool approval settings keyed by tool name.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub tools: HashMap<String, McpServerToolConfig>,
 }
 
 // Raw MCP config shape used for deserialization and JSON Schema generation.
@@ -180,6 +184,11 @@ pub(crate) struct RawMcpServerConfig {
     #[serde(default)]
     pub require_approval_for_mutating: Option<bool>,
     pub oauth_resource: Option<String>,
+    /// Legacy display-name field accepted for backward compatibility.
+    #[serde(default, rename = "name")]
+    pub _name: Option<String>,
+    #[serde(default)]
+    pub tools: Option<HashMap<String, McpServerToolConfig>>,
 }
 
 impl<'de> Deserialize<'de> for McpServerConfig {
@@ -214,6 +223,7 @@ impl<'de> Deserialize<'de> for McpServerConfig {
             ));
         }
         let oauth_resource = raw.oauth_resource.clone();
+        let tools = raw.tools.clone().unwrap_or_default();
 
         fn throw_if_set<E, T>(transport: &str, field: &str, value: Option<&T>) -> Result<(), E>
         where
@@ -276,6 +286,7 @@ impl<'de> Deserialize<'de> for McpServerConfig {
             strict_tool_classification,
             require_approval_for_mutating,
             oauth_resource,
+            tools,
         })
     }
 }
@@ -534,6 +545,15 @@ pub enum AppToolApproval {
     Auto,
     Prompt,
     Approve,
+}
+
+/// Per-tool approval settings for a single MCP server tool.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, Default, JsonSchema)]
+#[schemars(deny_unknown_fields)]
+pub struct McpServerToolConfig {
+    /// Approval mode for this tool.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub approval_mode: Option<AppToolApproval>,
 }
 
 /// Default settings that apply to all apps.
@@ -862,41 +882,15 @@ impl Notice {
     pub(crate) const TABLE_KEY: &'static str = "notice";
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema)]
-#[schemars(deny_unknown_fields)]
-pub struct SkillConfig {
-    pub path: AbsolutePathBuf,
-    pub enabled: bool,
-}
+pub use codex_config::BundledSkillsConfig;
+pub use codex_config::SkillConfig;
+pub use codex_config::SkillsConfig;
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema)]
 #[schemars(deny_unknown_fields)]
 pub struct PluginConfig {
     #[serde(default = "default_enabled")]
     pub enabled: bool,
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq, Eq, JsonSchema)]
-#[schemars(deny_unknown_fields)]
-pub struct SkillsConfig {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub bundled: Option<BundledSkillsConfig>,
-
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub config: Vec<SkillConfig>,
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema)]
-#[schemars(deny_unknown_fields)]
-pub struct BundledSkillsConfig {
-    #[serde(default = "default_enabled")]
-    pub enabled: bool,
-}
-
-impl Default for BundledSkillsConfig {
-    fn default() -> Self {
-        Self { enabled: true }
-    }
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default, JsonSchema)]

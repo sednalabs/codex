@@ -379,6 +379,7 @@ async fn mcp_call_marks_thread_memory_mode_polluted_when_configured() -> Result<
                 strict_tool_classification: false,
                 require_approval_for_mutating: false,
                 oauth_resource: None,
+                tools: HashMap::new(),
             },
         );
         config
@@ -399,6 +400,7 @@ async fn mcp_call_marks_thread_memory_mode_polluted_when_configured() -> Result<
             final_output_json_schema: None,
             cwd: test.cwd_path().to_path_buf(),
             approval_policy: AskForApproval::Never,
+            approvals_reviewer: None,
             sandbox_policy: SandboxPolicy::new_read_only_policy(),
             model: test.session_configured.model.clone(),
             effort: None,

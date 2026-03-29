@@ -1,8 +1,7 @@
 use super::*;
-use crate::session_prefix::format_subagent_notification_message;
 use codex_protocol::items::HookPromptFragment;
 use codex_protocol::items::build_hook_prompt_message;
-use codex_protocol::protocol::AgentStatus;
+use codex_protocol::models::ResponseItem;
 
 #[test]
 fn detects_environment_context_fragment() {
@@ -36,8 +35,6 @@ fn ignores_regular_user_text() {
 
 #[test]
 fn classifies_memory_excluded_fragments() {
-    let subagent_notification =
-        format_subagent_notification_message("a", &AgentStatus::Completed(None));
     let cases = [
         (
             "# AGENTS.md instructions for /tmp\n\n<INSTRUCTIONS>\nbody\n</INSTRUCTIONS>",
@@ -51,7 +48,10 @@ fn classifies_memory_excluded_fragments() {
             "<environment_context>\n<cwd>/tmp</cwd>\n</environment_context>",
             false,
         ),
-        (subagent_notification.as_str(), false),
+        (
+            "<subagent_notification>{\"agent_id\":\"a\",\"status\":\"completed\"}</subagent_notification>",
+            false,
+        ),
     ];
 
     for (text, expected) in cases {
@@ -86,8 +86,8 @@ fn detects_hook_prompt_fragment_and_roundtrips_escaping() {
     let ContentItem::InputText { text } = content_item else {
         panic!("expected input text content item");
     };
-    let parsed =
-        parse_visible_hook_prompt_message(None, content.as_slice()).expect("visible hook prompt");
+    let parsed = parse_visible_hook_prompt_message(/*id*/ None, content.as_slice())
+        .expect("visible hook prompt");
     assert_eq!(
         parsed.fragments,
         vec![HookPromptFragment {

@@ -2,6 +2,7 @@ use super::*;
 use crate::agent::control::SUBAGENT_IDENTITY_SOURCE_THREAD_CONFIG_SNAPSHOT;
 use crate::agent::control::SpawnAgentOptions;
 use crate::agent::control::SubAgentInventoryInfo;
+use crate::agent::control::render_input_preview;
 use crate::agent::role::DEFAULT_ROLE_NAME;
 use crate::agent::role::apply_role_to_config;
 use crate::agent::role::role_model_override_locks;
@@ -39,7 +40,7 @@ impl ToolHandler for Handler {
             .map(str::trim)
             .filter(|role| !role.is_empty());
         let input_items = parse_collab_input(args.message, args.items)?;
-        let prompt = input_preview(&input_items);
+        let prompt = render_input_preview(&input_items);
         let session_source = turn.session_source.clone();
         let child_depth = next_thread_spawn_depth(&session_source);
         let requested_task_name = args.task_name.clone();
@@ -87,16 +88,40 @@ impl ToolHandler for Handler {
             &mut config,
             requested_model,
             requested_reasoning_effort,
-            role_model_locks.model_reasoning_effort,
         )
         .await?;
-        normalize_spawn_agent_model_reasoning_after_role(
-            &session,
-            &mut config,
-            pre_role_reasoning_effort,
-            args.reasoning_effort.is_some(),
-        )
-        .await?;
+        if let Some(model) = config.model.clone() {
+            let model_info = session
+                .services
+                .models_manager
+                .get_model_info(&model, &config)
+                .await;
+
+            match config.model_reasoning_effort {
+                Some(reasoning_effort) => {
+                    if !model_info
+                        .supported_reasoning_levels
+                        .iter()
+                        .any(|preset| preset.effort == reasoning_effort)
+                    {
+                        let role_changed_reasoning_effort =
+                            config.model_reasoning_effort != pre_role_reasoning_effort;
+                        if args.reasoning_effort.is_some() || role_changed_reasoning_effort {
+                            validate_spawn_agent_reasoning_effort(
+                                &model,
+                                &model_info.supported_reasoning_levels,
+                                reasoning_effort,
+                            )?;
+                        }
+
+                        config.model_reasoning_effort = model_info.default_reasoning_level;
+                    }
+                }
+                None => {
+                    config.model_reasoning_effort = model_info.default_reasoning_level;
+                }
+            }
+        }
         apply_spawn_agent_runtime_overrides(&mut config, turn.as_ref())?;
         apply_spawn_agent_overrides(&mut config, child_depth);
 
@@ -206,8 +231,7 @@ impl ToolHandler for Handler {
         );
 
         Ok(SpawnAgentResult {
-            agent_id: task_name.is_none().then(|| new_thread_id.to_string()),
-            task_name,
+            agent_id: new_thread_id.to_string(),
             nickname,
             role,
             status,
@@ -233,8 +257,7 @@ struct SpawnAgentArgs {
 
 #[derive(Debug, Serialize)]
 pub(crate) struct SpawnAgentResult {
-    agent_id: Option<String>,
-    task_name: Option<String>,
+    agent_id: String,
     nickname: Option<String>,
     role: Option<String>,
     status: AgentStatus,
