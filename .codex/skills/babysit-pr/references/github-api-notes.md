@@ -41,6 +41,10 @@ Reruns only failed jobs (and dependencies) for a workflow run.
   - `gh api repos/{owner}/{repo}/pulls/<pr_number>/comments?per_page=100`
 - Review submissions:
   - `gh api repos/{owner}/{repo}/pulls/<pr_number>/reviews?per_page=100`
+- Live review-thread state:
+  - `gh api graphql -f query='query($owner:String!,$name:String!,$number:Int!,$cursor:String){ repository(owner:$owner,name:$name){ pullRequest(number:$number){ reviewThreads(first:100,after:$cursor){ pageInfo{hasNextPage endCursor} nodes{ id isResolved isOutdated path line comments(first:100){ nodes{ databaseId url body createdAt author{login} pullRequestReview{ databaseId url state author{login} } } } } } } } }' -F owner=<owner> -F name=<repo> -F number=<pr_number>`
+
+Use the GraphQL `reviewThreads` view to decide whether review-comment history still reflects a current unresolved blocker. Historical review comments/submissions may remain in REST history after their threads are resolved; the watcher should treat those as non-actionable unless the live thread is still unresolved or the operator explicitly wants to resurface them.
 
 ## JSON fields consumed by the watcher
 

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Subagent Session Tail"
+  short_description: "Cheap child-lane state check: wait, poke, or inspect deeper"
+  default_prompt: "Use $subagent-session-tail to inspect one child lane cheaply. Prefer exact child-thread-id when available, read the helper's explicit session_state and terminal marker first, treat empty or ambiguous lookup results as a reason to inspect more deeply, then use the recent tail and usage heartbeat to decide whether to keep waiting or send a bounded follow-up."
