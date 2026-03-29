@@ -127,11 +127,11 @@ downstream-ledger-seam:
     set -euo pipefail
     ledger_repo_root="${LEDGER_REPO_ROOT:-../agent-usage-ledger}"
     if [[ ! -d "${ledger_repo_root}" ]]; then
-        echo "Skipping downstream-ledger-seam: missing ledger repo at ${ledger_repo_root}"
+        echo "Skipping downstream-ledger-seam: missing ledger repo at ${ledger_repo_root}" >&2
         exit 0
     fi
     if ! command -v psql >/dev/null 2>&1; then
-        echo "Skipping downstream-ledger-seam: missing psql"
+        echo "Skipping downstream-ledger-seam: missing psql" >&2
         exit 0
     fi
     "${ledger_repo_root}/scripts/llm_usage/ensure_schema.sh" --schema "${LLM_USAGE_DB_SCHEMA:-llm_usage}"

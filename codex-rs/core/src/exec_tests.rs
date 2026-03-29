@@ -550,7 +550,7 @@ fn windows_restricted_token_allows_legacy_workspace_write_policies() {
 }
 
 #[test]
-fn windows_restricted_token_allows_split_only_filesystem_policies_with_full_read_access() {
+fn windows_restricted_token_allows_split_only_filesystem_policies_with_read_only_carveout_paths() {
     let temp_dir = tempfile::TempDir::new().expect("tempdir");
     let docs = temp_dir.path().join("docs");
     std::fs::create_dir_all(&docs).expect("create docs");
@@ -591,7 +591,7 @@ fn windows_restricted_token_allows_split_only_filesystem_policies_with_full_read
 }
 
 #[test]
-fn windows_restricted_token_allows_root_write_read_only_carveouts_with_full_read_access() {
+fn windows_restricted_token_allows_root_write_read_only_carveouts_with_read_only_carveout_paths() {
     let temp_dir = tempfile::TempDir::new().expect("tempdir");
     let docs = temp_dir.path().join("docs");
     std::fs::create_dir_all(&docs).expect("create docs");
