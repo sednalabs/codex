@@ -310,6 +310,7 @@ async fn run_add(config_overrides: &CliConfigOverrides, add_args: AddArgs) -> Re
         strict_tool_classification: false,
         require_approval_for_mutating: false,
         oauth_resource: None,
+        tools: HashMap::new(),
     };
 
     servers.insert(name.clone(), new_entry);

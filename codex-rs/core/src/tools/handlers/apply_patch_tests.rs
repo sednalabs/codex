@@ -1,9 +1,8 @@
 use super::*;
-use crate::sandboxing::SandboxPermissions;
 use codex_apply_patch::MaybeApplyPatchVerified;
+use codex_protocol::permissions::FileSystemSandboxPolicy;
+use codex_protocol::protocol::SandboxPolicy;
 use pretty_assertions::assert_eq;
-use std::collections::HashMap;
-use std::path::PathBuf;
 use tempfile::TempDir;
 
 #[test]
@@ -31,35 +30,51 @@ fn approval_keys_include_move_destination() {
 }
 
 #[test]
-fn build_apply_patch_request_preserves_launch_exe() {
+fn write_permissions_for_paths_skip_dirs_already_writable_under_workspace_root() {
     let tmp = TempDir::new().expect("tmp");
-    let path = tmp.path().join("file.txt");
-    let action = ApplyPatchAction::new_add_for_test(&path, "hello".to_string());
-    let file_path = AbsolutePathBuf::from_absolute_path(&path).expect("absolute path");
-    let codex_exe = Some(PathBuf::from("/tmp/codex-launch"));
+    let cwd = tmp.path();
+    let nested = cwd.join("nested");
+    std::fs::create_dir_all(&nested).expect("create nested dir");
+    let file_path = AbsolutePathBuf::try_from(nested.join("file.txt"))
+        .expect("nested file path should be absolute");
+    let sandbox_policy = FileSystemSandboxPolicy::from(&SandboxPolicy::WorkspaceWrite {
+        writable_roots: vec![],
+        read_only_access: Default::default(),
+        network_access: false,
+        exclude_tmpdir_env_var: true,
+        exclude_slash_tmp: false,
+    });
 
-    let request = build_apply_patch_request(
-        action,
-        vec![file_path],
-        HashMap::from([(
-            path,
-            FileChange::Add {
-                content: "hello".to_string(),
-            },
-        )]),
-        ExecApprovalRequirement::NeedsApproval {
-            reason: None,
-            proposed_execpolicy_amendment: None,
-        },
-        crate::tools::handlers::EffectiveAdditionalPermissions {
-            sandbox_permissions: SandboxPermissions::UseDefault,
-            additional_permissions: None,
-            permissions_preapproved: false,
-        },
-        Some(250),
-        codex_exe.clone(),
+    let permissions = write_permissions_for_paths(&[file_path], &sandbox_policy, cwd);
+
+    assert_eq!(permissions, None);
+}
+
+#[test]
+fn write_permissions_for_paths_keep_dirs_outside_workspace_root() {
+    let tmp = TempDir::new().expect("tmp");
+    let cwd = tmp.path().join("workspace");
+    let outside = tmp.path().join("outside");
+    std::fs::create_dir_all(&cwd).expect("create cwd");
+    std::fs::create_dir_all(&outside).expect("create outside dir");
+    let file_path = AbsolutePathBuf::try_from(outside.join("file.txt"))
+        .expect("outside file path should be absolute");
+    let sandbox_policy = FileSystemSandboxPolicy::from(&SandboxPolicy::WorkspaceWrite {
+        writable_roots: vec![],
+        read_only_access: Default::default(),
+        network_access: false,
+        exclude_tmpdir_env_var: true,
+        exclude_slash_tmp: true,
+    });
+
+    let permissions = write_permissions_for_paths(&[file_path], &sandbox_policy, &cwd);
+    let expected_outside = AbsolutePathBuf::from_absolute_path(dunce::simplified(
+        &outside.canonicalize().expect("canonicalize outside dir"),
+    ))
+    .expect("outside dir should be absolute");
+
+    assert_eq!(
+        permissions.and_then(|profile| profile.file_system.and_then(|fs| fs.write)),
+        Some(vec![expected_outside])
     );
-
-    assert_eq!(request.timeout_ms, Some(250));
-    assert_eq!(request.codex_exe, codex_exe);
 }

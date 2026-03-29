@@ -180,7 +180,9 @@ async fn run_code_mode_turn_with_rmcp(
     code: &str,
 ) -> Result<(TestCodex, ResponseMock)> {
     let rmcp_test_server_bin = stdio_server_bin()?;
-    let mut builder = test_codex().with_config(move |config| {
+    let mut builder = test_codex()
+        .with_model("test-gpt-5.1-codex")
+        .with_config(move |config| {
         let _ = config.features.enable(Feature::CodeMode);
         // Keep code_mode tests hermetic instead of inheriting a host-pinned Node path.
         config.js_repl_node_path = None;
@@ -212,6 +214,7 @@ async fn run_code_mode_turn_with_rmcp(
                 strict_tool_classification: false,
                 require_approval_for_mutating: false,
                 oauth_resource: None,
+                tools: HashMap::new(),
             },
         );
         config
@@ -259,7 +262,7 @@ async fn code_mode_can_return_exec_command_output() -> Result<()> {
         r#"
 text(JSON.stringify(await tools.exec_command({ cmd: "printf code_mode_exec_marker" })));
 "#,
-        false,
+        /*include_apply_patch*/ false,
     )
     .await?;
 
@@ -271,9 +274,9 @@ text(JSON.stringify(await tools.exec_command({ cmd: "printf code_mode_exec_marke
             r"(?s)\A",
             r"Script completed\nWall time \d+\.\d seconds\nOutput:\n\z"
         ),
-        text_item(&items, 0),
+        text_item(&items, /*index*/ 0),
     );
-    let parsed: Value = serde_json::from_str(text_item(&items, 1))?;
+    let parsed: Value = serde_json::from_str(text_item(&items, /*index*/ 1))?;
     assert!(
         parsed
             .get("chunk_id")
@@ -385,7 +388,7 @@ const result = await tools.update_plan({
 });
 text(JSON.stringify(result));
 "#,
-        false,
+        /*include_apply_patch*/ false,
     )
     .await?;
 
@@ -490,7 +493,7 @@ text(JSON.stringify(results));
         .expect("parallel code mode run should send a completion request");
     let items = custom_tool_output_items(&req, "call-1");
     assert_eq!(items.len(), 2);
-    assert_eq!(text_item(&items, 1), "[\"ok\",\"ok\"]");
+    assert_eq!(text_item(&items, /*index*/ 1), "[\"ok\",\"ok\"]");
 
     Ok(())
 }
@@ -513,7 +516,7 @@ text(JSON.stringify(await tools.exec_command({
   max_output_tokens: 100
 })));
 "#,
-        false,
+        /*include_apply_patch*/ false,
     )
     .await?;
 
@@ -525,7 +528,7 @@ text(JSON.stringify(await tools.exec_command({
             r"(?s)\A",
             r"Script completed\nWall time \d+\.\d seconds\nOutput:\n\z"
         ),
-        text_item(&items, 0),
+        text_item(&items, /*index*/ 0),
     );
     let expected_pattern = r#"(?sx)
 \A
@@ -534,7 +537,7 @@ Total\ output\ lines:\ 1\n
 .*…\d+\ tokens\ truncated….*
 \z
 "#;
-    assert_regex_match(expected_pattern, text_item(&items, 1));
+    assert_regex_match(expected_pattern, text_item(&items, /*index*/ 1));
 
     Ok(())
 }
@@ -555,7 +558,7 @@ text("before crash");
 text("still before crash");
 throw new Error("boom");
 "#,
-        false,
+        /*include_apply_patch*/ false,
     )
     .await?;
 
@@ -567,10 +570,10 @@ throw new Error("boom");
             r"(?s)\A",
             r"Script failed\nWall time \d+\.\d seconds\nOutput:\n\z"
         ),
-        text_item(&items, 0),
+        text_item(&items, /*index*/ 0),
     );
-    assert_eq!(text_item(&items, 1), "before crash");
-    assert_eq!(text_item(&items, 2), "still before crash");
+    assert_eq!(text_item(&items, /*index*/ 1), "before crash");
+    assert_eq!(text_item(&items, /*index*/ 2), "still before crash");
     assert_regex_match(
         r#"(?sx)
 \A
@@ -579,7 +582,7 @@ Error:\ boom\n
 (?:\s+at\ .+\n?)+
 \z
 "#,
-        text_item(&items, 3),
+        text_item(&items, /*index*/ 3),
     );
 
     Ok(())
@@ -602,7 +605,7 @@ try {
   text(`caught:${error?.message ?? String(error)}`);
 }
 "#,
-        false,
+        /*include_apply_patch*/ false,
     )
     .await?;
 
@@ -746,13 +749,13 @@ text("phase 3");
             r"(?s)\A",
             r"Script running with cell ID \d+\nWall time \d+\.\d seconds\nOutput:\n\z"
         ),
-        text_item(&second_items, 0),
+        text_item(&second_items, /*index*/ 0),
     );
     assert_eq!(
-        extract_running_cell_id(text_item(&second_items, 0)),
+        extract_running_cell_id(text_item(&second_items, /*index*/ 0)),
         cell_id
     );
-    assert_eq!(text_item(&second_items, 1), "phase 2");
+    assert_eq!(text_item(&second_items, /*index*/ 1), "phase 2");
 
     responses::mount_sse_once(
         &server,
@@ -790,9 +793,9 @@ text("phase 3");
             r"(?s)\A",
             r"Script completed\nWall time \d+\.\d seconds\nOutput:\n\z"
         ),
-        text_item(&third_items, 0),
+        text_item(&third_items, /*index*/ 0),
     );
-    assert_eq!(text_item(&third_items, 1), "phase 3");
+    assert_eq!(text_item(&third_items, /*index*/ 1), "phase 3");
 
     Ok(())
 }
@@ -997,8 +1000,8 @@ text("session b done");
     let first_request = first_completion.single_request();
     let first_items = custom_tool_output_items(&first_request, "call-1");
     assert_eq!(first_items.len(), 2);
-    let session_a_id = extract_running_cell_id(text_item(&first_items, 0));
-    assert_eq!(text_item(&first_items, 1), "session a start");
+    let session_a_id = extract_running_cell_id(text_item(&first_items, /*index*/ 0));
+    assert_eq!(text_item(&first_items, /*index*/ 1), "session a start");
 
     responses::mount_sse_once(
         &server,
@@ -1023,8 +1026,8 @@ text("session b done");
     let second_request = second_completion.single_request();
     let second_items = custom_tool_output_items(&second_request, "call-2");
     assert_eq!(second_items.len(), 2);
-    let session_b_id = extract_running_cell_id(text_item(&second_items, 0));
-    assert_eq!(text_item(&second_items, 1), "session b start");
+    let session_b_id = extract_running_cell_id(text_item(&second_items, /*index*/ 0));
+    assert_eq!(text_item(&second_items, /*index*/ 1), "session b start");
     assert_ne!(session_a_id, session_b_id);
 
     fs::write(&session_a_gate, "ready")?;
@@ -1063,9 +1066,9 @@ text("session b done");
             r"(?s)\A",
             r"Script completed\nWall time \d+\.\d seconds\nOutput:\n\z"
         ),
-        text_item(&third_items, 0),
+        text_item(&third_items, /*index*/ 0),
     );
-    assert_eq!(text_item(&third_items, 1), "session a done");
+    assert_eq!(text_item(&third_items, /*index*/ 1), "session a done");
 
     fs::write(&session_b_gate, "ready")?;
     responses::mount_sse_once(
@@ -1103,9 +1106,9 @@ text("session b done");
             r"(?s)\A",
             r"Script completed\nWall time \d+\.\d seconds\nOutput:\n\z"
         ),
-        text_item(&fourth_items, 0),
+        text_item(&fourth_items, /*index*/ 0),
     );
-    assert_eq!(text_item(&fourth_items, 1), "session b done");
+    assert_eq!(text_item(&fourth_items, /*index*/ 1), "session b done");
 
     Ok(())
 }
@@ -1155,8 +1158,8 @@ text("phase 2");
     let first_request = first_completion.single_request();
     let first_items = custom_tool_output_items(&first_request, "call-1");
     assert_eq!(first_items.len(), 2);
-    let cell_id = extract_running_cell_id(text_item(&first_items, 0));
-    assert_eq!(text_item(&first_items, 1), "phase 1");
+    let cell_id = extract_running_cell_id(text_item(&first_items, /*index*/ 0));
+    assert_eq!(text_item(&first_items, /*index*/ 1), "phase 1");
 
     responses::mount_sse_once(
         &server,
@@ -1193,7 +1196,7 @@ text("phase 2");
             r"(?s)\A",
             r"Script terminated\nWall time \d+\.\d seconds\nOutput:\n\z"
         ),
-        text_item(&second_items, 0),
+        text_item(&second_items, /*index*/ 0),
     );
 
     responses::mount_sse_once(
@@ -1230,9 +1233,9 @@ text("after terminate");
             r"(?s)\A",
             r"Script completed\nWall time \d+\.\d seconds\nOutput:\n\z"
         ),
-        text_item(&third_items, 0),
+        text_item(&third_items, /*index*/ 0),
     );
-    assert_eq!(text_item(&third_items, 1), "after terminate");
+    assert_eq!(text_item(&third_items, /*index*/ 1), "after terminate");
 
     Ok(())
 }
@@ -1287,10 +1290,10 @@ async fn code_mode_wait_returns_error_for_unknown_session() -> Result<()> {
             r"(?s)\A",
             r"Script failed\nWall time \d+\.\d seconds\nOutput:\n\z"
         ),
-        text_item(&items, 0),
+        text_item(&items, /*index*/ 0),
     );
     assert_eq!(
-        text_item(&items, 1),
+        text_item(&items, /*index*/ 1),
         "Script error:\nexec cell 999999 not found"
     );
 
@@ -1358,8 +1361,8 @@ text("session b done");
     let first_request = first_completion.single_request();
     let first_items = custom_tool_output_items(&first_request, "call-1");
     assert_eq!(first_items.len(), 2);
-    let session_a_id = extract_running_cell_id(text_item(&first_items, 0));
-    assert_eq!(text_item(&first_items, 1), "session a start");
+    let session_a_id = extract_running_cell_id(text_item(&first_items, /*index*/ 0));
+    assert_eq!(text_item(&first_items, /*index*/ 1), "session a start");
 
     responses::mount_sse_once(
         &server,
@@ -1384,8 +1387,8 @@ text("session b done");
     let second_request = second_completion.single_request();
     let second_items = custom_tool_output_items(&second_request, "call-2");
     assert_eq!(second_items.len(), 2);
-    let session_b_id = extract_running_cell_id(text_item(&second_items, 0));
-    assert_eq!(text_item(&second_items, 1), "session b start");
+    let session_b_id = extract_running_cell_id(text_item(&second_items, /*index*/ 0));
+    assert_eq!(text_item(&second_items, /*index*/ 1), "session b start");
 
     fs::write(&session_a_gate, "ready")?;
     responses::mount_sse_once(
@@ -1423,10 +1426,10 @@ text("session b done");
             r"(?s)\A",
             r"Script running with cell ID \d+\nWall time \d+\.\d seconds\nOutput:\n\z"
         ),
-        text_item(&third_items, 0),
+        text_item(&third_items, /*index*/ 0),
     );
     assert_eq!(
-        extract_running_cell_id(text_item(&third_items, 0)),
+        extract_running_cell_id(text_item(&third_items, /*index*/ 0)),
         session_b_id
     );
 
@@ -1474,7 +1477,7 @@ text("session b done");
                     r"(?s)\A",
                     r"Script terminated\nWall time \d+\.\d seconds\nOutput:\n\z"
                 ),
-                text_item(&fourth_items, 0),
+                text_item(&fourth_items, /*index*/ 0),
             );
         }
         2 => {
@@ -1483,9 +1486,9 @@ text("session b done");
                     r"(?s)\A",
                     r"Script (?:completed|terminated)\nWall time \d+\.\d seconds\nOutput:\n\z"
                 ),
-                text_item(&fourth_items, 0),
+                text_item(&fourth_items, /*index*/ 0),
             );
-            assert_eq!(text_item(&fourth_items, 1), "session a done");
+            assert_eq!(text_item(&fourth_items, /*index*/ 1), "session a done");
         }
         other => panic!("unexpected number of content items: {other}"),
     }
@@ -1545,9 +1548,9 @@ text("after yield");
             r"(?s)\A",
             r"Script running with cell ID \d+\nWall time \d+\.\d seconds\nOutput:\n\z"
         ),
-        text_item(&first_items, 0),
+        text_item(&first_items, /*index*/ 0),
     );
-    assert_eq!(text_item(&first_items, 1), "before yield");
+    assert_eq!(text_item(&first_items, /*index*/ 1), "before yield");
 
     responses::mount_sse_once(
         &server,
@@ -1631,8 +1634,8 @@ text("token one token two token three token four token five token six token seve
     let first_request = first_completion.single_request();
     let first_items = custom_tool_output_items(&first_request, "call-1");
     assert_eq!(first_items.len(), 2);
-    assert_eq!(text_item(&first_items, 1), "phase 1");
-    let cell_id = extract_running_cell_id(text_item(&first_items, 0));
+    assert_eq!(text_item(&first_items, /*index*/ 1), "phase 1");
+    let cell_id = extract_running_cell_id(text_item(&first_items, /*index*/ 0));
 
     fs::write(&completion_gate, "ready")?;
     responses::mount_sse_once(
@@ -1671,7 +1674,7 @@ text("token one token two token three token four token five token six token seve
             r"(?s)\A",
             r"Script completed\nWall time \d+\.\d seconds\nOutput:\n\z"
         ),
-        text_item(&second_items, 0),
+        text_item(&second_items, /*index*/ 0),
     );
     let expected_pattern = r#"(?sx)
 \A
@@ -1680,7 +1683,7 @@ Total\ output\ lines:\ 1\n
 .*…\d+\ tokens\ truncated….*
 \z
 "#;
-    assert_regex_match(expected_pattern, text_item(&second_items, 1));
+    assert_regex_match(expected_pattern, text_item(&second_items, /*index*/ 1));
 
     Ok(())
 }
@@ -1699,7 +1702,7 @@ async fn code_mode_can_output_serialized_text_via_global_helper() -> Result<()> 
         r#"
 text({ json: true });
 "#,
-        false,
+        /*include_apply_patch*/ false,
     )
     .await?;
 
@@ -1732,7 +1735,7 @@ notify("code_mode_notify_marker");
 await tools.test_sync_tool({});
 text("done");
 "#,
-        false,
+        /*include_apply_patch*/ false,
     )
     .await?;
 
@@ -1770,7 +1773,7 @@ text("before");
 exit();
 text("after");
 "#,
-        false,
+        /*include_apply_patch*/ false,
     )
     .await?;
 
@@ -1788,9 +1791,9 @@ text("after");
             r"(?s)\A",
             r"Script completed\nWall time \d+\.\d seconds\nOutput:\n\z"
         ),
-        text_item(&items, 0),
+        text_item(&items, /*index*/ 0),
     );
-    assert_eq!(text_item(&items, 1), "before");
+    assert_eq!(text_item(&items, /*index*/ 1), "before");
     assert_eq!(output, "before");
 
     Ok(())
@@ -1812,7 +1815,7 @@ const circular = {};
 circular.self = circular;
 text(circular);
 "#,
-        false,
+        /*include_apply_patch*/ false,
     )
     .await?;
 
@@ -1832,10 +1835,10 @@ text(circular);
             r"(?s)\A",
             r"Script failed\nWall time \d+\.\d seconds\nOutput:\n\z"
         ),
-        text_item(&items, 0),
+        text_item(&items, /*index*/ 0),
     );
-    assert!(text_item(&items, 1).contains("Script error:"));
-    assert!(text_item(&items, 1).contains("Converting circular structure to JSON"));
+    assert!(text_item(&items, /*index*/ 1).contains("Script error:"));
+    assert!(text_item(&items, /*index*/ 1).contains("Converting circular structure to JSON"));
 
     Ok(())
 }
@@ -1855,7 +1858,7 @@ async fn code_mode_can_output_images_via_global_helper() -> Result<()> {
 image("https://example.com/image.jpg");
 image("data:image/png;base64,AAA");
 "#,
-        false,
+        /*include_apply_patch*/ false,
     )
     .await?;
 
@@ -1873,7 +1876,7 @@ image("data:image/png;base64,AAA");
             r"(?s)\A",
             r"Script completed\nWall time \d+\.\d seconds\nOutput:\n\z"
         ),
-        text_item(&items, 0),
+        text_item(&items, /*index*/ 0),
     );
     assert_eq!(
         items[1],
@@ -1956,7 +1959,7 @@ image(out);
             r"(?s)\A",
             r"Script completed\nWall time \d+\.\d seconds\nOutput:\n\z"
         ),
-        text_item(&items, 0),
+        text_item(&items, /*index*/ 0),
     );
 
     assert_eq!(
@@ -1991,8 +1994,13 @@ async fn code_mode_can_apply_patch_via_nested_tool() -> Result<()> {
     );
     let code = format!("text(await tools.apply_patch({patch:?}));\n");
 
-    let (test, second_mock) =
-        run_code_mode_turn(&server, "use exec to run apply_patch", &code, true).await?;
+    let (test, second_mock) = run_code_mode_turn(
+        &server,
+        "use exec to run apply_patch",
+        &code,
+        /*include_apply_patch*/ true,
+    )
+    .await?;
 
     let req = second_mock.single_request();
     let items = custom_tool_output_items(&req, "call-1");
@@ -2010,9 +2018,9 @@ async fn code_mode_can_apply_patch_via_nested_tool() -> Result<()> {
             r"(?s)\A",
             r"Script completed\nWall time \d+\.\d seconds\nOutput:\n\z"
         ),
-        text_item(&items, 0),
+        text_item(&items, /*index*/ 0),
     );
-    assert_eq!(text_item(&items, 1), "{}");
+    assert_eq!(text_item(&items, /*index*/ 1), "{}");
 
     let file_path = test.cwd_path().join(file_name);
     assert_eq!(fs::read_to_string(&file_path)?, "hello from code_mode\n");
@@ -2291,8 +2299,13 @@ const tool = ALL_TOOLS.find(({ name }) => name === "view_image");
 text(JSON.stringify(tool));
 "#;
 
-    let (_test, second_mock) =
-        run_code_mode_turn(&server, "use exec to inspect ALL_TOOLS", code, false).await?;
+    let (_test, second_mock) = run_code_mode_turn(
+        &server,
+        "use exec to inspect ALL_TOOLS",
+        code,
+        /*include_apply_patch*/ false,
+    )
+    .await?;
 
     let req = second_mock.single_request();
     let (output, success) = custom_tool_output_body_and_success(&req, "call-1");
@@ -2417,7 +2430,7 @@ async fn code_mode_can_call_hidden_dynamic_tools() -> Result<()> {
                 }),
                 defer_loading: true,
             }],
-            false,
+            /*persist_extended_history*/ false,
         )
         .await?;
     let mut test = base_test;
@@ -2464,6 +2477,7 @@ text(
             final_output_json_schema: None,
             cwd: test.cwd.path().to_path_buf(),
             approval_policy: AskForApproval::Never,
+            approvals_reviewer: None,
             sandbox_policy: SandboxPolicy::DangerFullAccess,
             model: test.session_configured.model.clone(),
             effort: None,

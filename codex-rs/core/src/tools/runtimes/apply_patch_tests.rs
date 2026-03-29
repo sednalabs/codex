@@ -2,34 +2,8 @@ use super::*;
 use codex_protocol::protocol::GranularApprovalConfig;
 use pretty_assertions::assert_eq;
 use std::collections::HashMap;
-use std::path::Path;
+#[cfg(not(target_os = "windows"))]
 use std::path::PathBuf;
-
-fn sample_request(codex_exe: Option<PathBuf>) -> ApplyPatchRequest {
-    let path = std::env::temp_dir().join("guardian-apply-patch-test.txt");
-    let action = ApplyPatchAction::new_add_for_test(&path, "hello".to_string());
-    ApplyPatchRequest {
-        action,
-        file_paths: vec![
-            AbsolutePathBuf::from_absolute_path(&path).expect("temp path should be absolute"),
-        ],
-        changes: HashMap::from([(
-            path,
-            FileChange::Add {
-                content: "hello".to_string(),
-            },
-        )]),
-        exec_approval_requirement: ExecApprovalRequirement::NeedsApproval {
-            reason: None,
-            proposed_execpolicy_amendment: None,
-        },
-        sandbox_permissions: SandboxPermissions::UseDefault,
-        additional_permissions: None,
-        permissions_preapproved: false,
-        timeout_ms: None,
-        codex_exe,
-    }
-}
 
 #[test]
 fn wants_no_sandbox_approval_granular_respects_sandbox_flag() {
@@ -57,9 +31,29 @@ fn wants_no_sandbox_approval_granular_respects_sandbox_flag() {
 
 #[test]
 fn guardian_review_request_includes_patch_context() {
-    let request = sample_request(None);
-    let expected_cwd = request.action.cwd.clone();
-    let expected_patch = request.action.patch.clone();
+    let path = std::env::temp_dir().join("guardian-apply-patch-test.txt");
+    let action = ApplyPatchAction::new_add_for_test(&path, "hello".to_string());
+    let expected_cwd = action.cwd.clone();
+    let expected_patch = action.patch.clone();
+    let request = ApplyPatchRequest {
+        action,
+        file_paths: vec![
+            AbsolutePathBuf::from_absolute_path(&path).expect("temp path should be absolute"),
+        ],
+        changes: HashMap::from([(
+            path,
+            FileChange::Add {
+                content: "hello".to_string(),
+            },
+        )]),
+        exec_approval_requirement: ExecApprovalRequirement::NeedsApproval {
+            reason: None,
+            proposed_execpolicy_amendment: None,
+        },
+        additional_permissions: None,
+        permissions_preapproved: false,
+        timeout_ms: None,
+    };
 
     let guardian_request = ApplyPatchRuntime::build_guardian_review_request(&request, "call-1");
 
@@ -75,80 +69,70 @@ fn guardian_review_request_includes_patch_context() {
     );
 }
 
+#[cfg(not(target_os = "windows"))]
 #[test]
-fn build_command_spec_prefers_explicit_codex_exe() {
-    let explicit_exe = std::env::temp_dir().join("codex-apply-patch-explicit");
-    let request = sample_request(Some(explicit_exe.clone()));
+fn build_sandbox_command_prefers_configured_codex_self_exe_for_apply_patch() {
+    let path = std::env::temp_dir().join("apply-patch-current-exe-test.txt");
+    let action = ApplyPatchAction::new_add_for_test(&path, "hello".to_string());
+    let request = ApplyPatchRequest {
+        action,
+        file_paths: vec![
+            AbsolutePathBuf::from_absolute_path(&path).expect("temp path should be absolute"),
+        ],
+        changes: HashMap::from([(
+            path,
+            FileChange::Add {
+                content: "hello".to_string(),
+            },
+        )]),
+        exec_approval_requirement: ExecApprovalRequirement::NeedsApproval {
+            reason: None,
+            proposed_execpolicy_amendment: None,
+        },
+        additional_permissions: None,
+        permissions_preapproved: false,
+        timeout_ms: None,
+    };
+    let codex_self_exe = PathBuf::from("/tmp/codex");
 
-    let launch = ApplyPatchRuntime::build_command_spec(&request, Path::new("/unused"))
-        .expect("explicit exe should build a command spec");
+    let command = ApplyPatchRuntime::build_sandbox_command(&request, Some(&codex_self_exe))
+        .expect("build sandbox command");
 
-    assert_eq!(launch.executable, explicit_exe);
+    assert_eq!(command.program, codex_self_exe.into_os_string());
+}
+
+#[cfg(not(target_os = "windows"))]
+#[test]
+fn build_sandbox_command_falls_back_to_current_exe_for_apply_patch() {
+    let path = std::env::temp_dir().join("apply-patch-current-exe-test.txt");
+    let action = ApplyPatchAction::new_add_for_test(&path, "hello".to_string());
+    let request = ApplyPatchRequest {
+        action,
+        file_paths: vec![
+            AbsolutePathBuf::from_absolute_path(&path).expect("temp path should be absolute"),
+        ],
+        changes: HashMap::from([(
+            path,
+            FileChange::Add {
+                content: "hello".to_string(),
+            },
+        )]),
+        exec_approval_requirement: ExecApprovalRequirement::NeedsApproval {
+            reason: None,
+            proposed_execpolicy_amendment: None,
+        },
+        additional_permissions: None,
+        permissions_preapproved: false,
+        timeout_ms: None,
+    };
+
+    let command = ApplyPatchRuntime::build_sandbox_command(&request, /*codex_self_exe*/ None)
+        .expect("build sandbox command");
+
     assert_eq!(
-        launch.launch_mode,
-        ApplyPatchLaunchMode::ConfiguredCodexLinuxSandboxExe
+        command.program,
+        std::env::current_exe()
+            .expect("current exe")
+            .into_os_string()
     );
-    assert_eq!(launch.spec.program, launch.executable.to_string_lossy());
-    assert_eq!(launch.spec.cwd, request.action.cwd);
-}
-
-#[test]
-fn build_command_spec_uses_apply_patch_alias_for_linux_sandbox_helper_path() {
-    let sandbox_exe = PathBuf::from("/tmp/codex-linux-sandbox");
-    let request = sample_request(Some(sandbox_exe));
-
-    let launch = ApplyPatchRuntime::build_command_spec(&request, Path::new("/unused"))
-        .expect("linux sandbox helper path should build a command spec");
-
-    assert_eq!(
-        launch.launch_mode,
-        ApplyPatchLaunchMode::ConfiguredCodexLinuxSandboxExeViaApplyPatchAlias
-    );
-    assert!(
-        Path::new(&launch.spec.program)
-            .file_name()
-            .and_then(|name| name.to_str())
-            .is_some_and(|name| name == "apply_patch"),
-        "expected apply_patch executable path, got {}",
-        launch.spec.program
-    );
-    assert_eq!(launch.spec.args, vec![request.action.patch]);
-}
-
-#[test]
-fn launch_diagnostics_report_launch_mode_and_path_existence() {
-    let request = sample_request(None);
-    let missing_exe = request.action.cwd.join("missing-codex-apply-patch-helper");
-
-    let diagnostics = ApplyPatchRuntime::launch_diagnostics(
-        &request,
-        &missing_exe,
-        ApplyPatchLaunchMode::CurrentExeFallback,
-    );
-
-    assert!(diagnostics.contains("launch mode: current_exe fallback"));
-    assert!(diagnostics.contains(&format!("executable: {}", missing_exe.display())));
-    assert!(diagnostics.contains("executable_exists: false"));
-    assert!(diagnostics.contains(&format!("cwd: {}", request.action.cwd.display())));
-    assert!(diagnostics.contains("cwd_exists: true"));
-    assert!(diagnostics.contains("files: 1"));
-}
-
-#[cfg(target_os = "linux")]
-#[test]
-fn recover_deleted_current_exe_path_strips_linux_deleted_suffix() {
-    use std::ffi::OsString;
-    use std::os::unix::ffi::OsStringExt;
-
-    let temp = tempfile::tempdir().expect("tempdir");
-    let live_exe = temp.path().join("codex");
-    std::fs::write(&live_exe, "stub").expect("write stub exe");
-
-    let mut raw = live_exe.as_os_str().as_encoded_bytes().to_vec();
-    raw.extend_from_slice(b" (deleted)");
-    let deleted_path = PathBuf::from(OsString::from_vec(raw));
-
-    let recovered = ApplyPatchRuntime::recover_deleted_current_exe_path(&deleted_path);
-
-    assert_eq!(recovered, Some(live_exe));
 }

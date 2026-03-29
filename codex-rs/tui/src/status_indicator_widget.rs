@@ -7,7 +7,6 @@
 use std::time::Duration;
 use std::time::Instant;
 
-use codex_protocol::protocol::Op;
 use crossterm::event::KeyCode;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
@@ -19,7 +18,6 @@ use ratatui::widgets::Paragraph;
 use ratatui::widgets::WidgetRef;
 use unicode_width::UnicodeWidthStr;
 
-use crate::app_event::AppEvent;
 use crate::app_event_sender::AppEventSender;
 use crate::exec_cell::spinner;
 use crate::key_hint;
@@ -103,7 +101,7 @@ impl StatusIndicatorWidget {
     }
 
     pub(crate) fn interrupt(&self) {
-        self.app_event_tx.send(AppEvent::CodexOp(Op::Interrupt));
+        self.app_event_tx.interrupt();
     }
 
     /// Update the animated header label (left of the brackets).
@@ -330,14 +328,14 @@ mod tests {
 
     #[test]
     fn fmt_elapsed_compact_formats_seconds_minutes_hours() {
-        assert_eq!(fmt_elapsed_compact(0), "0s");
-        assert_eq!(fmt_elapsed_compact(1), "1s");
-        assert_eq!(fmt_elapsed_compact(59), "59s");
-        assert_eq!(fmt_elapsed_compact(60), "1m 00s");
-        assert_eq!(fmt_elapsed_compact(61), "1m 01s");
+        assert_eq!(fmt_elapsed_compact(/*elapsed_secs*/ 0), "0s");
+        assert_eq!(fmt_elapsed_compact(/*elapsed_secs*/ 1), "1s");
+        assert_eq!(fmt_elapsed_compact(/*elapsed_secs*/ 59), "59s");
+        assert_eq!(fmt_elapsed_compact(/*elapsed_secs*/ 60), "1m 00s");
+        assert_eq!(fmt_elapsed_compact(/*elapsed_secs*/ 61), "1m 01s");
         assert_eq!(fmt_elapsed_compact(3 * 60 + 5), "3m 05s");
         assert_eq!(fmt_elapsed_compact(59 * 60 + 59), "59m 59s");
-        assert_eq!(fmt_elapsed_compact(3600), "1h 00m 00s");
+        assert_eq!(fmt_elapsed_compact(/*elapsed_secs*/ 3600), "1h 00m 00s");
         assert_eq!(fmt_elapsed_compact(3600 + 60 + 1), "1h 01m 01s");
         assert_eq!(fmt_elapsed_compact(25 * 3600 + 2 * 60 + 3), "25h 02m 03s");
     }
@@ -346,8 +344,12 @@ mod tests {
     fn renders_with_working_header() {
         let (tx_raw, _rx) = unbounded_channel::<AppEvent>();
         let tx = AppEventSender::new(tx_raw);
-        let w =
-            StatusIndicatorWidget::new(tx, crate::tui::FrameRequester::test_dummy(), true, false);
+        let w = StatusIndicatorWidget::new(
+            tx,
+            crate::tui::FrameRequester::test_dummy(),
+            /*animations_enabled*/ true,
+            /*interrupt_requires_double_press*/ false,
+        );
 
         // Render into a fixed-size test terminal and snapshot the backend.
         let mut terminal = Terminal::new(TestBackend::new(80, 2)).expect("terminal");
@@ -361,8 +363,12 @@ mod tests {
     fn renders_truncated() {
         let (tx_raw, _rx) = unbounded_channel::<AppEvent>();
         let tx = AppEventSender::new(tx_raw);
-        let w =
-            StatusIndicatorWidget::new(tx, crate::tui::FrameRequester::test_dummy(), true, false);
+        let w = StatusIndicatorWidget::new(
+            tx,
+            crate::tui::FrameRequester::test_dummy(),
+            /*animations_enabled*/ true,
+            /*interrupt_requires_double_press*/ false,
+        );
 
         // Render into a fixed-size test terminal and snapshot the backend.
         let mut terminal = Terminal::new(TestBackend::new(20, 2)).expect("terminal");
@@ -376,8 +382,12 @@ mod tests {
     fn renders_wrapped_details_panama_two_lines() {
         let (tx_raw, _rx) = unbounded_channel::<AppEvent>();
         let tx = AppEventSender::new(tx_raw);
-        let mut w =
-            StatusIndicatorWidget::new(tx, crate::tui::FrameRequester::test_dummy(), false, false);
+        let mut w = StatusIndicatorWidget::new(
+            tx,
+            crate::tui::FrameRequester::test_dummy(),
+            /*animations_enabled*/ false,
+            /*interrupt_requires_double_press*/ false,
+        );
         w.update_details(
             Some("A man a plan a canal panama".to_string()),
             StatusDetailsCapitalization::CapitalizeFirst,
@@ -402,8 +412,12 @@ mod tests {
     fn timer_pauses_when_requested() {
         let (tx_raw, _rx) = unbounded_channel::<AppEvent>();
         let tx = AppEventSender::new(tx_raw);
-        let mut widget =
-            StatusIndicatorWidget::new(tx, crate::tui::FrameRequester::test_dummy(), true, false);
+        let mut widget = StatusIndicatorWidget::new(
+            tx,
+            crate::tui::FrameRequester::test_dummy(),
+            /*animations_enabled*/ true,
+            /*interrupt_requires_double_press*/ false,
+        );
 
         let baseline = Instant::now();
         widget.last_resume_at = baseline;
@@ -424,15 +438,19 @@ mod tests {
     fn details_overflow_adds_ellipsis() {
         let (tx_raw, _rx) = unbounded_channel::<AppEvent>();
         let tx = AppEventSender::new(tx_raw);
-        let mut w =
-            StatusIndicatorWidget::new(tx, crate::tui::FrameRequester::test_dummy(), true, false);
+        let mut w = StatusIndicatorWidget::new(
+            tx,
+            crate::tui::FrameRequester::test_dummy(),
+            /*animations_enabled*/ true,
+            /*interrupt_requires_double_press*/ false,
+        );
         w.update_details(
             Some("abcd abcd abcd abcd".to_string()),
             StatusDetailsCapitalization::CapitalizeFirst,
             STATUS_DETAILS_DEFAULT_MAX_LINES,
         );
 
-        let lines = w.wrapped_details_lines(6);
+        let lines = w.wrapped_details_lines(/*width*/ 6);
         assert_eq!(lines.len(), STATUS_DETAILS_DEFAULT_MAX_LINES);
         let last = lines.last().expect("expected last details line");
         assert!(
@@ -445,12 +463,16 @@ mod tests {
     fn details_args_can_disable_capitalization_and_limit_lines() {
         let (tx_raw, _rx) = unbounded_channel::<AppEvent>();
         let tx = AppEventSender::new(tx_raw);
-        let mut w =
-            StatusIndicatorWidget::new(tx, crate::tui::FrameRequester::test_dummy(), true, false);
+        let mut w = StatusIndicatorWidget::new(
+            tx,
+            crate::tui::FrameRequester::test_dummy(),
+            /*animations_enabled*/ true,
+            /*interrupt_requires_double_press*/ false,
+        );
         w.update_details(
             Some("cargo test -p codex-core and then cargo test -p codex-tui".to_string()),
             StatusDetailsCapitalization::Preserve,
-            1,
+            /*max_lines*/ 1,
         );
 
         assert_eq!(
@@ -458,7 +480,7 @@ mod tests {
             Some("cargo test -p codex-core and then cargo test -p codex-tui")
         );
 
-        let lines = w.wrapped_details_lines(24);
+        let lines = w.wrapped_details_lines(/*width*/ 24);
         assert_eq!(lines.len(), 1);
         let last = lines.last().expect("expected one details line");
         assert!(

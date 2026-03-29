@@ -42,7 +42,6 @@ use image::load_from_memory;
 use pretty_assertions::assert_eq;
 use serde_json::Value;
 use std::io::Cursor;
-use std::path::Path;
 use std::path::PathBuf;
 use tokio::time::Duration;
 use wiremock::BodyPrintLimit;
@@ -79,11 +78,6 @@ fn find_image_message(body: &Value) -> Option<&Value> {
     image_messages(body).into_iter().next()
 }
 
-fn absolute_path(path: &Path) -> anyhow::Result<codex_utils_absolute_path::AbsolutePathBuf> {
-    codex_utils_absolute_path::AbsolutePathBuf::try_from(path.to_path_buf())
-        .map_err(|err| anyhow::anyhow!("invalid absolute path {}: {err}", path.display()))
-}
-
 fn png_bytes(width: u32, height: u32, rgba: [u8; 4]) -> anyhow::Result<Vec<u8>> {
     let image = ImageBuffer::from_pixel(width, height, Rgba(rgba));
     let mut cursor = Cursor::new(Vec::new());
@@ -92,14 +86,11 @@ fn png_bytes(width: u32, height: u32, rgba: [u8; 4]) -> anyhow::Result<Vec<u8>> 
 }
 
 async fn create_workspace_directory(test: &TestCodex, rel_path: &str) -> anyhow::Result<PathBuf> {
-    let abs_path = test.config.cwd.join(rel_path);
+    let abs_path = test.config.cwd.join(rel_path)?;
     test.fs()
-        .create_directory(
-            &absolute_path(&abs_path)?,
-            CreateDirectoryOptions { recursive: true },
-        )
+        .create_directory(&abs_path, CreateDirectoryOptions { recursive: true })
         .await?;
-    Ok(abs_path)
+    Ok(abs_path.into_path_buf())
 }
 
 async fn write_workspace_file(
@@ -107,19 +98,14 @@ async fn write_workspace_file(
     rel_path: &str,
     contents: Vec<u8>,
 ) -> anyhow::Result<PathBuf> {
-    let abs_path = test.config.cwd.join(rel_path);
+    let abs_path = test.config.cwd.join(rel_path)?;
     if let Some(parent) = abs_path.parent() {
         test.fs()
-            .create_directory(
-                &absolute_path(parent)?,
-                CreateDirectoryOptions { recursive: true },
-            )
+            .create_directory(&parent, CreateDirectoryOptions { recursive: true })
             .await?;
     }
-    test.fs()
-        .write_file(&absolute_path(&abs_path)?, contents)
-        .await?;
-    Ok(abs_path)
+    test.fs().write_file(&abs_path, contents).await?;
+    Ok(abs_path.into_path_buf())
 }
 
 async fn write_workspace_png(
@@ -169,8 +155,9 @@ async fn user_turn_with_local_image_attaches_image() -> anyhow::Result<()> {
                 path: abs_path.clone(),
             }],
             final_output_json_schema: None,
-            cwd: config.cwd.clone(),
+            cwd: config.cwd.to_path_buf(),
             approval_policy: AskForApproval::Never,
+            approvals_reviewer: None,
             sandbox_policy: SandboxPolicy::DangerFullAccess,
             model: session_model,
             effort: None,
@@ -240,7 +227,7 @@ async fn view_image_tool_attaches_local_image() -> anyhow::Result<()> {
     let cwd = config.cwd.clone();
 
     let rel_path = "assets/example.png";
-    let abs_path = cwd.join(rel_path);
+    let abs_path = cwd.join(rel_path)?;
     let original_width = 2304;
     let original_height = 864;
     write_workspace_png(
@@ -277,8 +264,9 @@ async fn view_image_tool_attaches_local_image() -> anyhow::Result<()> {
                 text_elements: Vec::new(),
             }],
             final_output_json_schema: None,
-            cwd: cwd.clone(),
+            cwd: cwd.to_path_buf(),
             approval_policy: AskForApproval::Never,
+            approvals_reviewer: None,
             sandbox_policy: SandboxPolicy::DangerFullAccess,
             model: session_model,
             effort: None,
@@ -311,7 +299,7 @@ async fn view_image_tool_attaches_local_image() -> anyhow::Result<()> {
         _ => unreachable!("stored event must be ViewImageToolCall"),
     };
     assert_eq!(tool_event.call_id, call_id);
-    assert_eq!(tool_event.path, abs_path);
+    assert_eq!(tool_event.path, abs_path.to_path_buf());
 
     let req = mock.single_request();
     let body = req.body_json();
@@ -417,8 +405,9 @@ async fn view_image_tool_can_preserve_original_resolution_when_requested_on_gpt5
                 text_elements: Vec::new(),
             }],
             final_output_json_schema: None,
-            cwd: config.cwd.clone(),
+            cwd: config.cwd.to_path_buf(),
             approval_policy: AskForApproval::Never,
+            approvals_reviewer: None,
             sandbox_policy: SandboxPolicy::DangerFullAccess,
             model: session_model,
             effort: None,
@@ -488,7 +477,14 @@ async fn view_image_tool_errors_clearly_for_unsupported_detail_values() -> anyho
     } = &test;
 
     let rel_path = "assets/unsupported-detail.png";
-    write_workspace_png(&test, rel_path, 256, 128, [0u8, 80, 255, 255]).await?;
+    write_workspace_png(
+        &test,
+        rel_path,
+        /*width*/ 256,
+        /*height*/ 128,
+        [0u8, 80, 255, 255],
+    )
+    .await?;
 
     let call_id = "view-image-unsupported-detail";
     let arguments = serde_json::json!({ "path": rel_path, "detail": "low" }).to_string();
@@ -515,8 +511,9 @@ async fn view_image_tool_errors_clearly_for_unsupported_detail_values() -> anyho
                 text_elements: Vec::new(),
             }],
             final_output_json_schema: None,
-            cwd: config.cwd.clone(),
+            cwd: config.cwd.to_path_buf(),
             approval_policy: AskForApproval::Never,
+            approvals_reviewer: None,
             sandbox_policy: SandboxPolicy::DangerFullAccess,
             model: session_model,
             effort: None,
@@ -606,8 +603,9 @@ async fn view_image_tool_treats_null_detail_as_omitted() -> anyhow::Result<()> {
                 text_elements: Vec::new(),
             }],
             final_output_json_schema: None,
-            cwd: config.cwd.clone(),
+            cwd: config.cwd.to_path_buf(),
             approval_policy: AskForApproval::Never,
+            approvals_reviewer: None,
             sandbox_policy: SandboxPolicy::DangerFullAccess,
             model: session_model,
             effort: None,
@@ -705,8 +703,9 @@ async fn view_image_tool_resizes_when_model_lacks_original_detail_support() -> a
                 text_elements: Vec::new(),
             }],
             final_output_json_schema: None,
-            cwd: config.cwd.clone(),
+            cwd: config.cwd.to_path_buf(),
             approval_policy: AskForApproval::Never,
+            approvals_reviewer: None,
             sandbox_policy: SandboxPolicy::DangerFullAccess,
             model: session_model,
             effort: None,
@@ -815,8 +814,9 @@ async fn view_image_tool_does_not_force_original_resolution_with_capability_feat
                 text_elements: Vec::new(),
             }],
             final_output_json_schema: None,
-            cwd: config.cwd.clone(),
+            cwd: config.cwd.to_path_buf(),
             approval_policy: AskForApproval::Never,
+            approvals_reviewer: None,
             sandbox_policy: SandboxPolicy::DangerFullAccess,
             model: session_model,
             effort: None,
@@ -923,6 +923,7 @@ await codex.emitImage(out);
             final_output_json_schema: None,
             cwd: cwd.path().to_path_buf(),
             approval_policy: AskForApproval::Never,
+            approvals_reviewer: None,
             sandbox_policy: SandboxPolicy::DangerFullAccess,
             model: session_model,
             effort: None,
@@ -1047,6 +1048,7 @@ console.log(out.type);
             final_output_json_schema: None,
             cwd: cwd.path().to_path_buf(),
             approval_policy: AskForApproval::Never,
+            approvals_reviewer: None,
             sandbox_policy: SandboxPolicy::DangerFullAccess,
             model: session_model,
             effort: None,
@@ -1137,8 +1139,9 @@ async fn view_image_tool_errors_when_path_is_directory() -> anyhow::Result<()> {
                 text_elements: Vec::new(),
             }],
             final_output_json_schema: None,
-            cwd: config.cwd.clone(),
+            cwd: config.cwd.to_path_buf(),
             approval_policy: AskForApproval::Never,
+            approvals_reviewer: None,
             sandbox_policy: SandboxPolicy::DangerFullAccess,
             model: session_model,
             effort: None,
@@ -1212,8 +1215,9 @@ async fn view_image_tool_errors_for_non_image_files() -> anyhow::Result<()> {
                 text_elements: Vec::new(),
             }],
             final_output_json_schema: None,
-            cwd: config.cwd.clone(),
+            cwd: config.cwd.to_path_buf(),
             approval_policy: AskForApproval::Never,
+            approvals_reviewer: None,
             sandbox_policy: SandboxPolicy::DangerFullAccess,
             model: session_model,
             effort: None,
@@ -1265,7 +1269,7 @@ async fn view_image_tool_errors_when_file_missing() -> anyhow::Result<()> {
     } = &test;
 
     let rel_path = "missing/example.png";
-    let abs_path = config.cwd.join(rel_path);
+    let abs_path = config.cwd.join(rel_path)?;
 
     let call_id = "view-image-missing";
     let arguments = serde_json::json!({ "path": rel_path }).to_string();
@@ -1292,8 +1296,9 @@ async fn view_image_tool_errors_when_file_missing() -> anyhow::Result<()> {
                 text_elements: Vec::new(),
             }],
             final_output_json_schema: None,
-            cwd: config.cwd.clone(),
+            cwd: config.cwd.to_path_buf(),
             approval_policy: AskForApproval::Never,
+            approvals_reviewer: None,
             sandbox_policy: SandboxPolicy::DangerFullAccess,
             model: session_model,
             effort: None,
@@ -1365,7 +1370,7 @@ async fn view_image_tool_returns_unsupported_message_for_text_only_model() -> an
         availability_nux: None,
         apply_patch_tool_type: None,
         web_search_tool_type: Default::default(),
-        truncation_policy: TruncationPolicyConfig::bytes(10_000),
+        truncation_policy: TruncationPolicyConfig::bytes(/*limit*/ 10_000),
         supports_parallel_tool_calls: false,
         supports_image_detail_original: false,
         context_window: Some(272_000),
@@ -1390,7 +1395,14 @@ async fn view_image_tool_returns_unsupported_message_for_text_only_model() -> an
     let TestCodex { codex, config, .. } = &test;
 
     let rel_path = "assets/example.png";
-    write_workspace_png(&test, rel_path, 20, 20, [255u8, 0, 0, 255]).await?;
+    write_workspace_png(
+        &test,
+        rel_path,
+        /*width*/ 20,
+        /*height*/ 20,
+        [255u8, 0, 0, 255],
+    )
+    .await?;
 
     let call_id = "view-image-unsupported-model";
     let arguments = serde_json::json!({ "path": rel_path }).to_string();
@@ -1414,8 +1426,9 @@ async fn view_image_tool_returns_unsupported_message_for_text_only_model() -> an
                 text_elements: Vec::new(),
             }],
             final_output_json_schema: None,
-            cwd: config.cwd.clone(),
+            cwd: config.cwd.to_path_buf(),
             approval_policy: AskForApproval::Never,
+            approvals_reviewer: None,
             sandbox_policy: SandboxPolicy::DangerFullAccess,
             model: model_slug.to_string(),
             effort: None,
@@ -1488,8 +1501,9 @@ async fn replaces_invalid_local_image_after_bad_request() -> anyhow::Result<()> 
                 path: abs_path.clone(),
             }],
             final_output_json_schema: None,
-            cwd: config.cwd.clone(),
+            cwd: config.cwd.to_path_buf(),
             approval_policy: AskForApproval::Never,
+            approvals_reviewer: None,
             sandbox_policy: SandboxPolicy::DangerFullAccess,
             model: session_model,
             effort: None,

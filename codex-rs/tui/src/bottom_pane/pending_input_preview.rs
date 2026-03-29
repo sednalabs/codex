@@ -10,15 +10,19 @@ use crate::render::renderable::Renderable;
 use crate::wrapping::RtOptions;
 use crate::wrapping::adaptive_wrap_lines;
 
-/// Widget that displays pending steers plus follow-up inputs queued while a turn is in progress.
+/// Widget that displays pending steers plus follow-up messages held while a turn is in progress.
 ///
-/// The widget shows pending steers first, then queued follow-ups such as user
-/// messages and slash commands. It only shows the edit hint at the bottom
-/// when there are queued follow-ups to pop back into the composer. Because
-/// some terminals intercept certain modifier-key combinations, the displayed
-/// binding is configurable via [`set_edit_binding`](Self::set_edit_binding).
+/// The widget renders pending steers first, then rejected steers that will be
+/// resubmitted at end of turn, then ordinary queued user messages. Pending
+/// steers explain that they will be submitted after the next tool/result
+/// boundary unless the user presses Esc to interrupt and send them
+/// immediately. The edit hint at the bottom only appears when there are actual
+/// queued user messages to pop back into the composer. Because some terminals
+/// intercept certain modifier-key combinations, the displayed binding is
+/// configurable via [`set_edit_binding`](Self::set_edit_binding).
 pub(crate) struct PendingInputPreview {
     pub pending_steers: Vec<String>,
+    pub rejected_steers: Vec<String>,
     pub queued_messages: Vec<String>,
     /// Key combination rendered in the hint line.  Defaults to Alt+Up but may
     /// be overridden for terminals where that chord is unavailable.
@@ -31,6 +35,7 @@ impl PendingInputPreview {
     pub(crate) fn new() -> Self {
         Self {
             pending_steers: Vec::new(),
+            rejected_steers: Vec::new(),
             queued_messages: Vec::new(),
             edit_binding: key_hint::alt(KeyCode::Up),
         }
@@ -55,35 +60,89 @@ impl PendingInputPreview {
         }
     }
 
+    fn push_section_header(lines: &mut Vec<Line<'static>>, width: u16, header: Line<'static>) {
+        let mut spans = vec!["• ".dim()];
+        spans.extend(header.spans);
+        lines.extend(adaptive_wrap_lines(
+            std::iter::once(Line::from(spans)),
+            RtOptions::new(width as usize).subsequent_indent(Line::from("  ".dim())),
+        ));
+    }
+
     fn as_renderable(&self, width: u16) -> Box<dyn Renderable> {
-        if (self.pending_steers.is_empty() && self.queued_messages.is_empty()) || width < 4 {
+        if (self.pending_steers.is_empty()
+            && self.rejected_steers.is_empty()
+            && self.queued_messages.is_empty())
+            || width < 4
+        {
             return Box::new(());
         }
 
         let mut lines = vec![];
 
-        for steer in &self.pending_steers {
-            let wrapped = adaptive_wrap_lines(
-                steer.lines().map(|line| Line::from(line.dim())),
-                RtOptions::new(width as usize)
-                    .initial_indent(Line::from("  ! pending steer: ".dim()))
-                    .subsequent_indent(Line::from("    ")),
+        if !self.pending_steers.is_empty() {
+            Self::push_section_header(
+                &mut lines,
+                width,
+                Line::from(vec![
+                    "Messages to be submitted after next tool call".into(),
+                    " (press ".dim(),
+                    key_hint::plain(KeyCode::Esc).into(),
+                    " to interrupt and send immediately)".dim(),
+                ]),
             );
-            Self::push_truncated_preview_lines(&mut lines, wrapped, Line::from("    …".dim()));
+
+            for steer in &self.pending_steers {
+                let wrapped = adaptive_wrap_lines(
+                    steer.lines().map(|line| Line::from(line.dim())),
+                    RtOptions::new(width as usize)
+                        .initial_indent(Line::from("  ↳ ".dim()))
+                        .subsequent_indent(Line::from("    ")),
+                );
+                Self::push_truncated_preview_lines(&mut lines, wrapped, Line::from("    …".dim()));
+            }
         }
 
-        for message in &self.queued_messages {
-            let wrapped = adaptive_wrap_lines(
-                message.lines().map(|line| Line::from(line.dim().italic())),
-                RtOptions::new(width as usize)
-                    .initial_indent(Line::from("  ↳ ".dim()))
-                    .subsequent_indent(Line::from("    ")),
-            );
-            Self::push_truncated_preview_lines(
+        if !self.rejected_steers.is_empty() {
+            if !lines.is_empty() {
+                lines.push(Line::from(""));
+            }
+            Self::push_section_header(
                 &mut lines,
-                wrapped,
-                Line::from("    …".dim().italic()),
+                width,
+                "Messages to be submitted at end of turn".into(),
             );
+
+            for steer in &self.rejected_steers {
+                let wrapped = adaptive_wrap_lines(
+                    steer.lines().map(|line| Line::from(line.dim())),
+                    RtOptions::new(width as usize)
+                        .initial_indent(Line::from("  ↳ ".dim()))
+                        .subsequent_indent(Line::from("    ")),
+                );
+                Self::push_truncated_preview_lines(&mut lines, wrapped, Line::from("    …".dim()));
+            }
+        }
+
+        if !self.queued_messages.is_empty() {
+            if !lines.is_empty() {
+                lines.push(Line::from(""));
+            }
+            Self::push_section_header(&mut lines, width, "Queued follow-up messages".into());
+
+            for message in &self.queued_messages {
+                let wrapped = adaptive_wrap_lines(
+                    message.lines().map(|line| Line::from(line.dim().italic())),
+                    RtOptions::new(width as usize)
+                        .initial_indent(Line::from("  ↳ ".dim()))
+                        .subsequent_indent(Line::from("    ")),
+                );
+                Self::push_truncated_preview_lines(
+                    &mut lines,
+                    wrapped,
+                    Line::from("    …".dim().italic()),
+                );
+            }
         }
 
         if !self.queued_messages.is_empty() {
@@ -91,7 +150,7 @@ impl PendingInputPreview {
                 Line::from(vec![
                     "    ".into(),
                     self.edit_binding.into(),
-                    " edit queued".into(),
+                    " edit last queued message".into(),
                 ])
                 .dim(),
             );
@@ -124,14 +183,14 @@ mod tests {
     #[test]
     fn desired_height_empty() {
         let queue = PendingInputPreview::new();
-        assert_eq!(queue.desired_height(40), 0);
+        assert_eq!(queue.desired_height(/*width*/ 40), 0);
     }
 
     #[test]
     fn desired_height_one_message() {
         let mut queue = PendingInputPreview::new();
         queue.queued_messages.push("Hello, world!".to_string());
-        assert_eq!(queue.desired_height(40), 2);
+        assert_eq!(queue.desired_height(/*width*/ 40), 3);
     }
 
     #[test]
@@ -143,6 +202,21 @@ mod tests {
         let mut buf = Buffer::empty(Rect::new(0, 0, width, height));
         queue.render(Rect::new(0, 0, width, height), &mut buf);
         assert_snapshot!("render_one_message", format!("{buf:?}"));
+    }
+
+    #[test]
+    fn render_one_message_with_shift_left_binding() {
+        let mut queue = PendingInputPreview::new();
+        queue.queued_messages.push("Hello, world!".to_string());
+        queue.set_edit_binding(key_hint::shift(KeyCode::Left));
+        let width = 40;
+        let height = queue.desired_height(width);
+        let mut buf = Buffer::empty(Rect::new(0, 0, width, height));
+        queue.render(Rect::new(0, 0, width, height), &mut buf);
+        assert_snapshot!(
+            "render_one_message_with_shift_left_binding",
+            format!("{buf:?}")
+        );
     }
 
     #[test]
@@ -219,8 +293,8 @@ mod tests {
         let width = 36;
         let height = queue.desired_height(width);
         assert_eq!(
-            height, 2,
-            "expected one message row plus hint row for URL-like token"
+            height, 3,
+            "expected header, one message row, and hint row for URL-like token"
         );
 
         let mut buf = Buffer::empty(Rect::new(0, 0, width, height));
@@ -258,6 +332,9 @@ mod tests {
         queue
             .pending_steers
             .push("Check the last command output.".to_string());
+        queue
+            .rejected_steers
+            .push("Rejected steer that will be retried.".to_string());
         queue
             .queued_messages
             .push("Queued follow-up question".to_string());
