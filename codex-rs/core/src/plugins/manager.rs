@@ -26,7 +26,6 @@ use super::startup_sync::signal_startup_remote_plugin_sync_completion;
 use super::startup_sync::start_startup_remote_plugin_sync_once;
 use super::startup_sync::startup_remote_plugin_sync_current_generation;
 use super::startup_sync::startup_remote_plugin_sync_is_active_generation;
-use super::store::DEFAULT_PLUGIN_VERSION;
 use super::store::PluginInstallResult as StorePluginInstallResult;
 use super::store::PluginStore;
 use super::store::PluginStoreError;
