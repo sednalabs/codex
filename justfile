@@ -53,12 +53,10 @@ test:
 
 # Compile-focused guardrail for high-churn core + sandbox seams.
 core-compile-smoke:
-    set -euo pipefail
     cargo check -p codex-linux-sandbox -p codex-core --tests
 
 # Carry-only downstream behavior smoke checks.
 core-carry-smoke:
-    set -euo pipefail
     CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo test -p codex-core spawn_agent_preserves_explicit_model_override_across_role_reload --lib -- --exact
     CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo test -p codex-core --test all suite::subagent_notifications::spawn_agent_requested_model_and_reasoning_override_inherited_settings_without_role -- --exact --test-threads=1
     CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo test -p codex-core --test all suite::subagent_notifications::spawn_agent_role_overrides_requested_model_and_reasoning_settings -- --exact --test-threads=1
@@ -67,15 +65,17 @@ core-carry-smoke:
     CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo test -p codex-core --test all suite::unified_exec::exec_command_wait_until_terminal_returns_exit_metadata -- --exact --test-threads=1
     CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo test -p codex-tui queued_inline_slash_command_runs_with_args_after_task_complete -- --exact --test-threads=1
     CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo test -p codex-tui alt_up_restores_most_recent_queued_slash_command -- --exact --test-threads=1
+    cargo test -p codex-tui-app-server app::tests::replayed_turn_complete_submits_restored_queued_follow_up -- --exact --test-threads=1
+    cargo test -p codex-tui-app-server app::tests::replayed_turn_complete_opens_restored_queued_approvals_command -- --exact --test-threads=1
+    cargo test -p codex-tui-app-server app::tests::replayed_turn_complete_keeps_message_after_restored_queued_command_runs_first -- --exact --test-threads=1
+    cargo test -p codex-tui-app-server app::tests::sync_active_agent_label_updates_footer_for_selected_thread -- --exact --test-threads=1
 
 # Focused startup sync regression slice for bounded-wait and abort/re-arm behavior.
 core-startup-sync-targeted:
-    set -euo pipefail
     cargo test -p codex-core --lib startup_remote_plugin_sync_ -- --test-threads=1
 
 # Focused downstream sub-agent surface contract slice.
 core-subagent-surface-targeted:
-    set -euo pipefail
     CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo test -p codex-core spawn_agent_preserves_explicit_model_override_across_role_reload --lib -- --exact
     CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo test -p codex-core list_agents_returns_direct_children_with_live_inventory --lib -- --exact
     CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo test -p codex-core list_agents_include_descendants_hydrates_live_nested_descendant_inventory --lib -- --exact
@@ -83,7 +83,6 @@ core-subagent-surface-targeted:
 
 # Focused core-side sub-agent notification contract slice.
 core-subagent-notification-contract-targeted:
-    set -euo pipefail
     CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo test -p codex-core format_subagent_notification_message_round_trips_completed_status --lib -- --test-threads=1
     CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo test -p codex-core classifies_memory_excluded_fragments --lib -- --test-threads=1
     CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo test -p codex-core drop_last_n_user_turns_ignores_session_prefix_user_messages --lib -- --test-threads=1
@@ -93,36 +92,34 @@ core-subagent-notification-contract-targeted:
 # Keep `tui_app_server` at compile coverage for now while its broader lib test
 # target still has unrelated drift on this branch.
 core-subagent-notification-visibility-targeted:
-    set -euo pipefail
     cargo test -p codex-protocol parse_subagent_notification_response_item_ --lib -- --test-threads=1
     cargo test -p codex-tui raw_response_subagent_notification_renders_history -- --exact --test-threads=1
     cargo build -p codex-tui-app-server
 
 # Focused multi-agent orchestration slice covering wait semantics and tool guidance.
 core-multi-agent-orchestration-targeted:
-    set -euo pipefail
     CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo test -p codex-core wait_agent_allows_return_when_ --lib -- --test-threads=1
     CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo test -p codex-core --test all suite::spawn_agent_description::spawn_wait_and_list_agents_tool_descriptions_have_guidance_updates -- --exact --test-threads=1
 
 # Focused persisted-descendant inventory slice for subtree close/resume behavior.
 core-persisted-subagent-descendants-targeted:
-    set -euo pipefail
     cargo test -p codex-core persisted_spawn_descendants_reflect_closed_status --lib -- --test-threads=1
 
 # Focused tool-context serialization slice for custom/function/abort outputs.
 core-context-serialization-targeted:
-    set -euo pipefail
     cargo test -p codex-core tools::context::tests::custom_tool_calls_should_roundtrip_as_custom_outputs --lib -- --exact
     cargo test -p codex-core tools::context::tests::function_payloads_remain_function_outputs --lib -- --exact
     cargo test -p codex-core tools::context::tests::aborted_tool_output_serializes_ --lib -- --test-threads=1
 
 # Codex authoritative usage.sqlite logging contracts.
 core-ledger-smoke:
-    set -euo pipefail
-    cargo test -p codex-state usage_logger_records_requested_model_and_quota_snapshot -- --test-threads=1
-    cargo test -p codex-state usage_logger_tracks_tool_call_lifecycle -- --test-threads=1
-    cargo test -p codex-state usage_logger_captures_spawn_request_and_fork_snapshot -- --test-threads=1
-    cargo test -p codex-state usage_logger_resolves_root_thread_from_parent_or_fork -- --test-threads=1
+    cargo test -p codex-state runtime::tests::init_removes_legacy_logs_and_usage_db_files -- --exact --test-threads=1
+    cargo test -p codex-state runtime::usage::tests::usage_logger_records_requested_model_and_quota_snapshot -- --exact --test-threads=1
+    cargo test -p codex-state runtime::usage::tests::usage_logger_tracks_tool_call_lifecycle -- --exact --test-threads=1
+    cargo test -p codex-state runtime::usage::tests::usage_logger_captures_spawn_request_and_fork_snapshot -- --exact --test-threads=1
+    cargo test -p codex-state runtime::usage::tests::usage_logger_resolves_root_thread_from_parent_or_fork -- --exact --test-threads=1
+    cargo test -p codex-state runtime::usage::tests::usage_logger_clears_turn_snapshot_after_turn_complete -- --exact --test-threads=1
+    cargo test -p codex-state runtime::usage::tests::usage_logger_resolves_root_thread_from_persisted_lineage_after_restart -- --exact --test-threads=1
 
 # Focused persisted-state/usage lineage contract slice for subagent graph adoption.
 core-state-spawn-lineage-contract-targeted:
@@ -132,7 +129,6 @@ core-state-spawn-lineage-contract-targeted:
 # Cross-repo ledger seam validation (agent-usage-ledger + Postgres).
 [no-cd]
 downstream-ledger-seam:
-    set -euo pipefail
     [ -d "${LEDGER_REPO_ROOT:-../agent-usage-ledger}" ] || { echo "Skipping downstream-ledger-seam: missing ledger repo at ${LEDGER_REPO_ROOT:-../agent-usage-ledger}"; exit 0; }
     command -v psql >/dev/null 2>&1 || { echo "Skipping downstream-ledger-seam: missing psql"; exit 0; }
     "${LEDGER_REPO_ROOT:-../agent-usage-ledger}/scripts/llm_usage/ensure_schema.sh" --schema "${LLM_USAGE_DB_SCHEMA:-llm_usage}"
@@ -142,12 +138,10 @@ downstream-ledger-seam:
 
 [no-cd]
 downstream-docs-check:
-    set -euo pipefail
     git diff --check -- docs/downstream.md docs/carry-divergence-ledger.md docs/downstream-regression-matrix.md docs/downstream-tool-surface-matrix.md
 
 # Fast smoke checks for fragile codex-core integration buckets.
 core-test-smoke:
-    set -euo pipefail
     just core-compile-smoke
     just core-carry-smoke
     just core-ledger-smoke
@@ -161,7 +155,6 @@ core-test-smoke:
 # Progressive codex-core ladder:
 # 1) smoke gate, 2) high-churn buckets, 3) full suite.
 core-test-progressive:
-    set -euo pipefail
     just core-test-smoke
     CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo test -p codex-core --test all suite::rmcp_client:: -- --test-threads=1
     CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo test -p codex-core --test all suite::code_mode:: -- --test-threads=1
