@@ -127,11 +127,8 @@ live divergence.
   concentrated in role application, descendant inventory, spawn result
   metadata, wait summaries, and `agent/control.rs`.
 - Spawn-agent result and direct-child inventory reporting expose `role`, `status`, `identity_source`, `effective_model`, `effective_reasoning_effort`, and `effective_model_provider_id` after role application, so the surviving setting is visible.
-- `list_agents` is a first-class inventory tool on `carry/main`: it defaults to direct-child visibility and can optionally surface persisted subtree rows via `include_descendants=true`, including `spawn_edge_status` for open/closed descendant edges even when the descendants are no longer live.
-- The current `list_agents` implementation still lives on the downstream
-  handler path rather than upstream's `multi_agents_v2` location, but its
-  extra descendant/persisted inventory behavior is deliberate and should be
-  re-homed onto the upstream-native v2 shape rather than dropped.
+- `list_agents` is a first-class inventory tool on `carry/main`: the live handler is already on the upstream `multi_agents_v2` path, and the stale downstream `multi_agents/list_agents.rs` copy was dead carry rather than active behavior.
+- The remaining inventory divergence is therefore not a separate handler path; it is the extra descendant and persisted edge-status plumbing available from `agent/control.rs`, which still needs to be re-homed onto the upstream-native v2 inventory shape rather than dropped.
 - `wait_agent` adds `return_when=any|all` plus `requested_ids`, `pending_ids`, `completion_reason`, and `timed_out` so downstream joins happen on explicit tool contracts rather than transcript polling.
 - The built-in downstream awaiter profile also raises its default background timeout and prefers longer blocking waits plus `list_agents` snapshots over repeated short polling from the model layer.
 - Primary files:
