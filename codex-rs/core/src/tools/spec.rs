@@ -638,6 +638,7 @@ fn supports_image_generation(model_info: &ModelInfo) -> bool {
 /// Generic JSON‑Schema subset needed for our tool definitions
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "type", rename_all = "lowercase")]
+#[allow(unreachable_patterns)]
 pub enum JsonSchema {
     Boolean {
         #[serde(skip_serializing_if = "Option::is_none")]

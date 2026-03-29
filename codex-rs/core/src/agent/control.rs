@@ -50,6 +50,7 @@ pub(crate) struct SpawnAgentOptions {
 pub(crate) struct LiveAgent {
     pub(crate) thread_id: ThreadId,
     pub(crate) metadata: AgentMetadata,
+    #[allow(dead_code)]
     pub(crate) status: AgentStatus,
 }
 
@@ -544,6 +545,7 @@ impl AgentControl {
     }
 
     /// Submit a shutdown request to an existing agent thread.
+    #[allow(dead_code)]
     pub(crate) async fn shutdown_agent(&self, agent_id: ThreadId) -> CodexResult<String> {
         self.close_agent(agent_id).await
     }
@@ -891,6 +893,7 @@ impl AgentControl {
         ))
     }
 
+    #[cfg(test)]
     async fn open_thread_spawn_children(
         &self,
         parent_thread_id: ThreadId,
