@@ -2070,7 +2070,6 @@ async fn code_mode_can_access_namespaced_mcp_tool_from_flat_tools_namespace() ->
 
     let server = responses::start_mock_server().await;
     let code = r#"
-import { tools } from "tools.js";
 
 const { structuredContent, isError } = await tools["mcp__rmcp__echo"]({
   message: "ping",
@@ -2314,7 +2313,6 @@ text(JSON.stringify(tool));
 
 Code mode declaration:
 ```ts
-import { tools } from "tools.js";
 declare const tools: {
   view_image(args: { path: string; }): Promise<{ detail: string | null; image_url: string; }>;
 };
@@ -2371,7 +2369,6 @@ text(JSON.stringify(ALL_TOOLS));
 
 Code mode declaration:
 ```ts
-import { tools } from "tools/mcp/rmcp.js";
 declare const tools: {
   echo(args: {
     env_var?: string;
