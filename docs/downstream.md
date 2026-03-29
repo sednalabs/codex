@@ -71,17 +71,17 @@ User-visible behavior:
 - In downstream operator environments, this pairs cleanly with other blocking coordination primitives such as `wait_agent` and build-helper `*_and_wait` flows, so agents can wait on real state transitions instead of spinning on repeated status polls.
 - This downstream blocking MCP tool pattern predates fully operational task support and exists specifically so the tool layer, not the transcript, absorbs the wait.
 
-### Usage ledger: shared ledger owned by `agent-usage-ledger`
+### Usage ledger: first-party local `usage.sqlite`
 
 Why:
-- Downstream still participates in the shared usage ledger, but the schema, ingest, and reporting implementation now live in the dedicated `agent-usage-ledger` repo instead of this fork.
+- Downstream keeps usage-ledger ownership in this repo so the CLI and runtime can emit authoritative local facts without depending on transcript reconstruction or an external sibling repository.
 - Billing turns still need stable canonical identities and historical AUD cost reporting that upstream does not provide.
 
 User-visible behavior:
-- Shared usage-ledger scripts and docs live in [`agent-usage-ledger`](/home/grant/mmm/agent-usage-ledger).
-- [usage-ledger.md](/home/grant/mmm/agent-usage-ledger/docs/usage-ledger.md) documents the ledger workflow.
-- Billing turns are canonicalized before ingest, and historical AUD cost views remain available downstream through that shared repo.
-- Patched Codex clients now emit authoritative local usage facts into `usage.sqlite`; rollout JSONL remains a compatibility fallback for historical or unpatched installs.
+- Downstream builds maintain a local `usage.sqlite` alongside `state.sqlite` and `logs.sqlite` under `CODEX_SQLITE_HOME`.
+- `usage.sqlite` is the authoritative local store for thread lineage, spawn metadata, tool calls, provider-call usage, quota snapshots, and fork snapshots.
+- Billing turns are canonicalized before ingest, and downstream reporting can consume exact local facts directly from `usage.sqlite`.
+- Rollout JSONL remains a compatibility fallback for historical or unpatched installs, not the primary ledger source.
 
 ### MCP tool orchestration: blocking waits before task support matured
 

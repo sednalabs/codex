@@ -48,14 +48,17 @@ live divergence.
   - `docs/contributing.md`
   - `docs/downstream.md`
 
-### External Usage Ledger Ownership
+### First-Party Usage Ledger Ownership
 
-- Downstream usage-ledger workflow is intentionally externalized to
-  `agent-usage-ledger`.
+- Downstream keeps usage-ledger ownership in this repo.
 - Billing-turn canonicalization and historical AUD reporting remain downstream
-  requirements, but the shared ledger implementation no longer lives in this
-  repo.
+  requirements, and the canonical local ledger implementation lives in
+  `usage.sqlite` rather than an external sibling repository.
 - Primary files:
+  - `codex-rs/core/src/codex.rs`
+  - `codex-rs/state/src/runtime.rs`
+  - `codex-rs/state/src/runtime/usage.rs`
+  - `codex-rs/state/usage_migrations/0001_usage_tables.sql`
   - `docs/downstream.md`
 
 ### Usage Event Logging And Metadata Capture
