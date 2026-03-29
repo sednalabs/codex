@@ -10,6 +10,8 @@ Use this skill to answer one narrow orchestration question without broad log tra
 ## Operating Model
 
 - Prefer exact `child-thread-id` from `list_agents` when available.
+- In this fork, canonical `agent_path` values are absolute agent paths rooted at `/root`.
+- Use the exact surfaced `agent_path` instead of guessing the shape from a task name alone. Top-level lanes often look like `/root/<task_name>`, while nested lanes may look like `/root/<parent>/<child>`.
 - Read the helper's top-level status fields first: `session_state`, `terminal_event`, `terminal_reason`, `current_turn_id`, and `last_event_at`.
 - Use the tail for recent context, not as the only truth source.
 - Use the usage ledger as a heartbeat only when you need to know whether turns, provider calls, or token totals are still moving.
@@ -46,7 +48,8 @@ Use the helper script directly:
 
 ```bash
 scripts/inspect_subagent_tail.py --child-thread-id <thread-id>
-scripts/inspect_subagent_tail.py --parent-thread-id <parent-thread-id> --agent-path <agent-path>
+scripts/inspect_subagent_tail.py --parent-thread-id <parent-thread-id> --agent-path /root/<task_name>
+scripts/inspect_subagent_tail.py --parent-thread-id <parent-thread-id> --agent-path /root/<parent>/<child>
 scripts/inspect_subagent_tail.py --child-thread-id <thread-id> --tail 12 --days 2
 scripts/inspect_subagent_tail.py --child-thread-id <thread-id> --tail 8 --no-usage
 ```
