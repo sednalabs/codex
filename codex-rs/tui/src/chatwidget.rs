@@ -4867,9 +4867,6 @@ impl ChatWidget {
         &mut self,
         cmd: SlashCommand,
         prepared_args: String,
-        _prepared_elements: Vec<TextElement>,
-        _local_images: Vec<LocalImageAttachment>,
-        _remote_image_urls: Vec<String>,
         mention_bindings: Vec<MentionBinding>,
         drain_submission_state: bool,
     ) {
@@ -5051,9 +5048,6 @@ impl ChatWidget {
         self.dispatch_prepared_inline_command(
             cmd,
             prepared_args,
-            prepared_elements,
-            local_images,
-            remote_image_urls,
             mention_bindings,
             /*drain_submission_state*/ true,
         );
@@ -6038,9 +6032,6 @@ impl ChatWidget {
                     } => self.dispatch_prepared_inline_command(
                         cmd,
                         args,
-                        text_elements,
-                        local_images,
-                        remote_image_urls,
                         mention_bindings,
                         /*drain_submission_state*/ false,
                     ),
