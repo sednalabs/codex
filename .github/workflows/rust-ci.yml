@@ -22,9 +22,9 @@ jobs:
     outputs:
       argument_comment_lint: ${{ steps.detect.outputs.argument_comment_lint }}
       argument_comment_lint_package: ${{ steps.detect.outputs.argument_comment_lint_package }}
+      ci_surface: ${{ steps.detect.outputs.ci_surface }}
       codex: ${{ steps.detect.outputs.codex }}
       downstream_smoke: ${{ steps.detect.outputs.downstream_smoke }}
-      workflows: ${{ steps.detect.outputs.workflows }}
     steps:
       - uses: actions/checkout@v6
         with:
@@ -48,32 +48,80 @@ jobs:
           fi
 
           codex=false
+          ci_surface=false
           downstream_smoke=false
           argument_comment_lint=false
           argument_comment_lint_package=false
-          workflows=false
           for f in "${files[@]}"; do
             [[ $f == codex-rs/* ]] && codex=true
+            [[ $f == .github/* || $f == justfile ]] && ci_surface=true
             [[ $f == codex-rs/* || $f == justfile || $f == docs/downstream.md || $f == docs/carry-divergence-ledger.md || $f == docs/downstream-regression-matrix.md || $f == docs/downstream-tool-surface-matrix.md || $f == .github/* ]] && downstream_smoke=true
             [[ $f == codex-rs/* || $f == tools/argument-comment-lint/* || $f == justfile ]] && argument_comment_lint=true
-            [[ $f == tools/argument-comment-lint/* || $f == .github/workflows/rust-ci.yml ]] && argument_comment_lint_package=true
-            [[ $f == .github/* ]] && workflows=true
+            [[ $f == tools/argument-comment-lint/* ]] && argument_comment_lint_package=true
           done
 
           {
             echo "argument_comment_lint=$argument_comment_lint"
             echo "argument_comment_lint_package=$argument_comment_lint_package"
+            echo "ci_surface=$ci_surface"
             echo "codex=$codex"
             echo "downstream_smoke=$downstream_smoke"
-            echo "workflows=$workflows"
           } >> "$GITHUB_OUTPUT"
+
+  workflow_validation:
+    name: Workflow validation
+    runs-on: ubuntu-24.04
+    needs: changed
+    if: ${{ needs.changed.outputs.ci_surface == 'true' || github.event_name == 'push' }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - name: Install actionlint
+        shell: bash
+        run: |
+          set -euo pipefail
+          version=1.7.8
+          curl -fsSL "https://github.com/rhysd/actionlint/releases/download/v${version}/actionlint_${version}_linux_amd64.tar.gz" | tar -xz actionlint
+          sudo install actionlint /usr/local/bin/actionlint
+      - name: Validate touched workflow files
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          files=()
+          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
+            BASE_SHA='${{ github.event.pull_request.base.sha }}'
+            HEAD_SHA='${{ github.event.pull_request.head.sha }}'
+            while IFS= read -r file; do
+              if [[ $file == .github/workflows/* ]]; then
+                files+=("$file")
+              fi
+            done < <(git diff --name-only --no-renames "$BASE_SHA...$HEAD_SHA")
+          fi
+
+          if ((${#files[@]} == 0)); then
+            files=(
+              .github/workflows/blob-size-policy.yml
+              .github/workflows/cancel-pr-runs.yml
+              .github/workflows/cargo-deny.yml
+              .github/workflows/ci.yml
+              .github/workflows/codespell.yml
+              .github/workflows/rust-ci.yml
+              .github/workflows/sdk.yml
+              .github/workflows/sedna-heavy-tests.yml
+              .github/workflows/shell-tool-mcp-ci.yml
+            )
+          fi
+
+          actionlint "${files[@]}"
 
   # --- CI that doesn't need specific targets ---------------------------------
   general:
     name: Format / etc
     runs-on: ubuntu-24.04
     needs: changed
-    if: ${{ needs.changed.outputs.codex == 'true' || needs.changed.outputs.workflows == 'true' || github.event_name == 'push' }}
+    if: ${{ needs.changed.outputs.codex == 'true' || github.event_name == 'push' }}
     defaults:
       run:
         working-directory: codex-rs
@@ -89,7 +137,7 @@ jobs:
     name: cargo shear
     runs-on: ubuntu-24.04
     needs: changed
-    if: ${{ needs.changed.outputs.codex == 'true' || needs.changed.outputs.workflows == 'true' || github.event_name == 'push' }}
+    if: ${{ needs.changed.outputs.codex == 'true' || github.event_name == 'push' }}
     defaults:
       run:
         working-directory: codex-rs
@@ -138,7 +186,7 @@ jobs:
     name: Argument comment lint - ${{ matrix.name }}
     runs-on: ${{ (github.repository_owner == 'openai' && (matrix.runs_on || matrix.runner)) || matrix.runner_fallback || matrix.runner }}
     needs: changed
-    if: ${{ needs.changed.outputs.argument_comment_lint == 'true' || needs.changed.outputs.workflows == 'true' || github.event_name == 'push' }}
+    if: ${{ needs.changed.outputs.argument_comment_lint == 'true' || github.event_name == 'push' }}
     strategy:
       fail-fast: ${{ github.event_name != 'push' }}
       matrix:
@@ -178,7 +226,7 @@ jobs:
     timeout-minutes: 30
     needs: changed
     # Keep job-level if to avoid spinning up runners when not needed
-    if: ${{ needs.changed.outputs.codex == 'true' || needs.changed.outputs.workflows == 'true' || github.event_name == 'push' }}
+    if: ${{ needs.changed.outputs.codex == 'true' || github.event_name == 'push' }}
     defaults:
       run:
         working-directory: codex-rs
@@ -571,7 +619,7 @@ jobs:
     runs-on: ${{ (github.repository_owner == 'openai' && (matrix.runs_on || matrix.runner)) || matrix.runner_fallback || matrix.runner }}
     timeout-minutes: 30
     needs: changed
-    if: ${{ needs.changed.outputs.codex == 'true' || needs.changed.outputs.workflows == 'true' || github.event_name == 'push' }}
+    if: ${{ needs.changed.outputs.codex == 'true' || github.event_name == 'push' }}
     defaults:
       run:
         working-directory: codex-rs
@@ -832,6 +880,7 @@ jobs:
     needs:
       [
         changed,
+        workflow_validation,
         general,
         cargo_shear,
         argument_comment_lint_package,
@@ -848,6 +897,7 @@ jobs:
         run: |
           echo "argpkg : ${{ needs.argument_comment_lint_package.result }}"
           echo "arglint: ${{ needs.argument_comment_lint_prebuilt.result }}"
+          echo "workflow: ${{ needs.workflow_validation.result }}"
           echo "general: ${{ needs.general.result }}"
           echo "shear  : ${{ needs.cargo_shear.result }}"
           echo "lint   : ${{ needs.lint_build.result }}"
@@ -856,7 +906,7 @@ jobs:
 
           # If nothing relevant changed (PR touching only root README, etc.),
           # declare success regardless of other jobs.
-          if [[ '${{ needs.changed.outputs.argument_comment_lint }}' != 'true' && '${{ needs.changed.outputs.codex }}' != 'true' && '${{ needs.changed.outputs.downstream_smoke }}' != 'true' && '${{ needs.changed.outputs.workflows }}' != 'true' && '${{ github.event_name }}' != 'push' ]]; then
+          if [[ '${{ needs.changed.outputs.argument_comment_lint }}' != 'true' && '${{ needs.changed.outputs.ci_surface }}' != 'true' && '${{ needs.changed.outputs.codex }}' != 'true' && '${{ needs.changed.outputs.downstream_smoke }}' != 'true' && '${{ github.event_name }}' != 'push' ]]; then
             echo 'No relevant changes -> CI not required.'
             exit 0
           fi
@@ -865,11 +915,15 @@ jobs:
             [[ '${{ needs.argument_comment_lint_package.result }}' == 'success' ]] || { echo 'argument_comment_lint_package failed'; exit 1; }
           fi
 
-          if [[ '${{ needs.changed.outputs.argument_comment_lint }}' == 'true' || '${{ needs.changed.outputs.workflows }}' == 'true' || '${{ github.event_name }}' == 'push' ]]; then
+          if [[ '${{ needs.changed.outputs.ci_surface }}' == 'true' || '${{ github.event_name }}' == 'push' ]]; then
+            [[ '${{ needs.workflow_validation.result }}' == 'success' ]] || { echo 'workflow_validation failed'; exit 1; }
+          fi
+
+          if [[ '${{ needs.changed.outputs.argument_comment_lint }}' == 'true' || '${{ github.event_name }}' == 'push' ]]; then
             [[ '${{ needs.argument_comment_lint_prebuilt.result }}' == 'success' ]] || { echo 'argument_comment_lint_prebuilt failed'; exit 1; }
           fi
 
-          if [[ '${{ needs.changed.outputs.codex }}' == 'true' || '${{ needs.changed.outputs.workflows }}' == 'true' || '${{ github.event_name }}' == 'push' ]]; then
+          if [[ '${{ needs.changed.outputs.codex }}' == 'true' || '${{ github.event_name }}' == 'push' ]]; then
             [[ '${{ needs.general.result }}' == 'success' ]] || { echo 'general failed'; exit 1; }
             [[ '${{ needs.cargo_shear.result }}' == 'success' ]] || { echo 'cargo_shear failed'; exit 1; }
             [[ '${{ needs.lint_build.result }}' == 'success' ]] || { echo 'lint_build failed'; exit 1; }

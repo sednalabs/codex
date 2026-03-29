@@ -63,8 +63,9 @@ GitHub Actions lane naming (`.github/workflows/sedna-heavy-tests.yml`):
     changed path class.
   - Non-doc heavy runs must clear `core-test-smoke` before the broader lane
     matrix fans out, and the heavy matrix itself is capped and fail-fast on PRs.
-  - Changes to workflow wiring or the `justfile` promote the PR to the full
-    heavy matrix so CI definitions fail closed.
+  - Changes to workflow wiring or the `justfile` run the smoke gate plus a small
+    representative workflow-validation lane set instead of promoting the PR to
+    the full heavy matrix.
   - Applying the `ci:heavy` label promotes the PR to the full heavy matrix.
   - `merge_group`, nightly schedule, `push` to `main`, and
     `workflow_dispatch lane=all` all run the full heavy matrix.
