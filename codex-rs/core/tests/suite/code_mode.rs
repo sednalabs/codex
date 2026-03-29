@@ -2046,12 +2046,8 @@ text(
 );
 "#;
 
-    let Some((_test, second_mock)) = run_code_mode_turn_with_rmcp(
-        &server,
-        "use exec to run the rmcp echo tool",
-        code,
-    )
-    .await?
+    let Some((_test, second_mock)) =
+        run_code_mode_turn_with_rmcp(&server, "use exec to run the rmcp echo tool", code).await?
     else {
         return Ok(());
     };
@@ -2094,12 +2090,8 @@ text(
 );
 "#;
 
-    let Some((_test, second_mock)) = run_code_mode_turn_with_rmcp(
-        &server,
-        "use exec to run the rmcp echo tool",
-        code,
-    )
-    .await?
+    let Some((_test, second_mock)) =
+        run_code_mode_turn_with_rmcp(&server, "use exec to run the rmcp echo tool", code).await?
     else {
         return Ok(());
     };
@@ -2133,12 +2125,9 @@ text(JSON.stringify({
 }));
 "#;
 
-    let Some((_test, second_mock)) = run_code_mode_turn_with_rmcp(
-        &server,
-        "use exec to inspect the global tools object",
-        code,
-    )
-    .await?
+    let Some((_test, second_mock)) =
+        run_code_mode_turn_with_rmcp(&server, "use exec to inspect the global tools object", code)
+            .await?
     else {
         return Ok(());
     };
@@ -2204,12 +2193,8 @@ async fn code_mode_lists_global_scope_items() -> Result<()> {
 text(JSON.stringify(Object.getOwnPropertyNames(globalThis).sort()));
 "#;
 
-    let Some((_test, second_mock)) = run_code_mode_turn_with_rmcp(
-        &server,
-        "use exec to inspect global scope",
-        code,
-    )
-    .await?
+    let Some((_test, second_mock)) =
+        run_code_mode_turn_with_rmcp(&server, "use exec to inspect global scope", code).await?
     else {
         return Ok(());
     };
@@ -2642,12 +2627,8 @@ text(
 );
 "#;
 
-    let Some((_test, second_mock)) = run_code_mode_turn_with_rmcp(
-        &server,
-        "use exec to call rmcp echo badly",
-        code,
-    )
-    .await?
+    let Some((_test, second_mock)) =
+        run_code_mode_turn_with_rmcp(&server, "use exec to call rmcp echo badly", code).await?
     else {
         return Ok(());
     };
