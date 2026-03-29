@@ -27,12 +27,6 @@ use toml::Value as TomlValue;
 pub const DEFAULT_ROLE_NAME: &str = "default";
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub(crate) struct RoleModelOverrideLocks {
-    pub(crate) model: bool,
-    pub(crate) model_reasoning_effort: bool,
-}
-
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 struct RoleActiveProfileFieldUpdates {
     model: bool,
     model_provider: bool,
@@ -177,28 +171,6 @@ fn role_layer_stack_with_session_flags(
     .map_err(|err| format!("failed to create layered config for agent type '{role_name}': {err}"))
 }
 
-fn effective_role_profile_after_precedence(
-    config: &Config,
-    role_config: &ConfigToml,
-    role_name: &str,
-    role_layer_toml: &TomlValue,
-) -> Result<Option<String>, String> {
-    let config_layer_stack =
-        role_layer_stack_with_session_flags(config, role_name, role_layer_toml)?;
-    let merged_toml = config_layer_stack.effective_config();
-    let merged_config = deserialize_config_toml_with_base(merged_toml, &config.codex_home)
-        .map_err(|err| {
-            format!("failed to deserialize merged config for agent type '{role_name}': {err}")
-        })?;
-    let preserve_current_profile = role_preserves_current_profile(role_config);
-
-    if preserve_current_profile {
-        Ok(config.active_profile.clone().or(merged_config.profile))
-    } else {
-        Ok(merged_config.profile)
-    }
-}
-
 /// Applies a named role layer to `config` while preserving caller-owned model selection.
 ///
 /// The role layer is inserted at session-flag precedence so it can override persisted config, but
@@ -304,31 +276,6 @@ pub(crate) async fn apply_role_to_config(
 
     Ok(())
 }
-
-pub(crate) async fn role_model_override_locks(
-    config: &Config,
-    role_name: Option<&str>,
-) -> Result<RoleModelOverrideLocks, String> {
-    let role_name = role_name.unwrap_or(DEFAULT_ROLE_NAME);
-    let Some(RoleLayerConfig {
-        role_config,
-        role_layer_toml,
-    }) = load_role_layer_config(config, role_name).await?
-    else {
-        return Ok(RoleModelOverrideLocks::default());
-    };
-    let effective_profile =
-        effective_role_profile_after_precedence(config, &role_config, role_name, &role_layer_toml)?;
-    let active_profile_updates =
-        role_profile_field_updates(effective_profile.as_deref(), &role_layer_toml);
-
-    Ok(RoleModelOverrideLocks {
-        model: role_config.model.is_some() || active_profile_updates.model,
-        model_reasoning_effort: role_config.model_reasoning_effort.is_some()
-            || active_profile_updates.model_reasoning_effort,
-    })
-}
-
 pub(crate) fn resolve_role_config<'a>(
     config: &'a Config,
     role_name: &str,
