@@ -54,6 +54,10 @@ live divergence.
 - Billing-turn canonicalization and historical AUD reporting remain downstream
   requirements, and the canonical local ledger implementation lives in
   `usage.sqlite` rather than an external sibling repository.
+- `codex-rs/state/src/runtime/usage.rs` and
+  `codex-rs/state/usage_migrations/0001_usage_tables.sql` do not currently
+  have upstream counterparts, so future sync passes should treat them as
+  downstream-owned behavior to preserve rather than as stale carry to delete.
 - Primary files:
   - `codex-rs/core/src/codex.rs`
   - `codex-rs/state/src/runtime.rs`
@@ -116,8 +120,17 @@ live divergence.
 - Keep downstream itineraries that explicitly call `spawn_agent(model=..., reasoning_effort=...)` aligned with the requested model/economy, even when a role is applied.
 - Roles still control locked models when they explicitly set `model`, `model_provider`, `model_reasoning_effort`, or `model_verbosity`, so downstream policy remains defendable.
 - Carry also preserves the requested `model_reasoning_summary`, so the summary the child asked for survives role reload unless a role or active profile explicitly locks it, and active-profile overrides that set these fields retain precedence per `core/src/agent/role.rs`.
+- The live tool-contract schema in `codex-rs/core/src/tools/spec.rs` and the
+  regression suite in `codex-rs/core/src/tools/handlers/multi_agents_tests.rs`
+  are already back on upstream-native shape; the remaining carry is
+  concentrated in role application, descendant inventory, spawn result
+  metadata, wait summaries, and `agent/control.rs`.
 - Spawn-agent result and direct-child inventory reporting expose `role`, `status`, `identity_source`, `effective_model`, `effective_reasoning_effort`, and `effective_model_provider_id` after role application, so the surviving setting is visible.
 - `list_agents` is a first-class inventory tool on `carry/main`: it defaults to direct-child visibility and can optionally surface persisted subtree rows via `include_descendants=true`, including `spawn_edge_status` for open/closed descendant edges even when the descendants are no longer live.
+- The current `list_agents` implementation still lives on the downstream
+  handler path rather than upstream's `multi_agents_v2` location, but its
+  extra descendant/persisted inventory behavior is deliberate and should be
+  re-homed onto the upstream-native v2 shape rather than dropped.
 - `wait_agent` adds `return_when=any|all` plus `requested_ids`, `pending_ids`, `completion_reason`, and `timed_out` so downstream joins happen on explicit tool contracts rather than transcript polling.
 - The built-in downstream awaiter profile also raises its default background timeout and prefers longer blocking waits plus `list_agents` snapshots over repeated short polling from the model layer.
 - Primary files:
@@ -156,6 +169,9 @@ live divergence.
   fully operational.
 - `TurnCompleteEvent` carries `compaction_events_in_turn`.
 - Token-count events also carry provider and model context in downstream flow.
+- Sub-agent delegate forwarding should continue to surface `TokenCount` events
+  back to the parent session; preserve this behavior even when re-homing the
+  delegate code onto newer upstream structure.
 - Primary files:
   - `codex-rs/core/src/tools/handlers/unified_exec.rs`
   - `codex-rs/protocol/src/protocol.rs`
