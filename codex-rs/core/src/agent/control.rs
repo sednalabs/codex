@@ -32,7 +32,6 @@ use codex_protocol::user_input::UserInput;
 use codex_state::DirectionalThreadSpawnEdgeStatus;
 use serde::Serialize;
 use std::collections::HashMap;
-use std::collections::HashSet;
 use std::collections::VecDeque;
 use std::sync::Arc;
 use std::sync::Weak;
@@ -667,87 +666,6 @@ impl AgentControl {
         })
     }
 
-    pub(crate) async fn list_direct_child_subagent_inventory(
-        &self,
-        parent_thread_id: ThreadId,
-    ) -> Vec<SubAgentInventoryInfo> {
-        let Ok(state) = self.upgrade() else {
-            return Vec::new();
-        };
-        let mut agents = Vec::new();
-
-        for thread_id in state.list_thread_ids().await {
-            let Ok(thread) = state.get_thread(thread_id).await else {
-                continue;
-            };
-            let snapshot = thread.config_snapshot().await;
-            let SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
-                parent_thread_id: agent_parent_thread_id,
-                agent_nickname,
-                agent_role,
-                ..
-            }) = snapshot.session_source
-            else {
-                continue;
-            };
-            if agent_parent_thread_id != parent_thread_id {
-                continue;
-            }
-
-            agents.push(SubAgentInventoryInfo {
-                thread_id,
-                nickname: agent_nickname,
-                role: agent_role,
-                status: thread.agent_status().await,
-                effective_model: Some(snapshot.model),
-                effective_reasoning_effort: snapshot.reasoning_effort,
-                effective_model_provider_id: snapshot.model_provider_id,
-                identity_source: SUBAGENT_IDENTITY_SOURCE_THREAD_CONFIG_SNAPSHOT.to_string(),
-            });
-        }
-
-        agents.sort_by(|left, right| left.thread_id.to_string().cmp(&right.thread_id.to_string()));
-        agents
-    }
-
-    /// Return live sub-agent inventory for the entire in-memory spawn subtree rooted at
-    /// `root_thread_id`, including direct children and deeper descendants.
-    pub(crate) async fn list_live_subagent_descendant_inventory(
-        &self,
-        root_thread_id: ThreadId,
-    ) -> Vec<SubAgentInventoryInfo> {
-        let Ok(mut children_by_parent) = self.live_thread_spawn_children().await else {
-            return Vec::new();
-        };
-        let mut descendant_thread_ids = Vec::new();
-        let mut stack = children_by_parent
-            .remove(&root_thread_id)
-            .unwrap_or_default()
-            .into_iter()
-            .map(|(child_thread_id, _)| child_thread_id)
-            .rev()
-            .collect::<Vec<_>>();
-
-        while let Some(thread_id) = stack.pop() {
-            descendant_thread_ids.push(thread_id);
-            if let Some(children) = children_by_parent.remove(&thread_id) {
-                for (child_thread_id, _) in children.into_iter().rev() {
-                    stack.push(child_thread_id);
-                }
-            }
-        }
-
-        let mut agents = Vec::new();
-        for thread_id in descendant_thread_ids {
-            if let Some(agent) = self.get_subagent_inventory_info(thread_id).await {
-                agents.push(agent);
-            }
-        }
-
-        agents.sort_by(|left, right| left.thread_id.to_string().cmp(&right.thread_id.to_string()));
-        agents
-    }
-
     pub(crate) async fn get_agent_config_snapshot(
         &self,
         agent_id: ThreadId,
@@ -1161,44 +1079,6 @@ impl AgentControl {
                     "failed to list persisted thread-spawn descendants for {root_thread_id}: {err}"
                 ))
             })
-    }
-
-    /// Enumerate persisted descendants and include each child's directional edge status.
-    pub(crate) async fn list_persisted_subagent_descendants_with_edge_status(
-        &self,
-        root_thread_id: ThreadId,
-    ) -> CodexResult<Vec<(ThreadId, DirectionalThreadSpawnEdgeStatus)>> {
-        let state = self.upgrade()?;
-        let thread = state.get_thread(root_thread_id).await?;
-        let Some(state_db_ctx) = thread.state_db() else {
-            return Ok(Vec::new());
-        };
-        let mut descendants = Vec::new();
-        let mut visited = HashSet::from([root_thread_id]);
-        let mut queue = VecDeque::from([root_thread_id]);
-        while let Some(parent_thread_id) = queue.pop_front() {
-            for edge_status in [
-                DirectionalThreadSpawnEdgeStatus::Open,
-                DirectionalThreadSpawnEdgeStatus::Closed,
-            ] {
-                let child_ids = state_db_ctx
-                    .list_thread_spawn_children_with_status(parent_thread_id, edge_status)
-                    .await
-                    .map_err(|err| {
-                        CodexErr::Fatal(format!(
-                            "failed to list persisted thread-spawn children for {parent_thread_id} with {edge_status} status: {err}"
-                        ))
-                    })?;
-                for child_thread_id in child_ids {
-                    descendants.push((child_thread_id, edge_status));
-                    if visited.insert(child_thread_id) {
-                        queue.push_back(child_thread_id);
-                    }
-                }
-            }
-        }
-
-        Ok(descendants)
     }
 
     async fn live_thread_spawn_descendants(
