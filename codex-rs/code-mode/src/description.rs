@@ -247,11 +247,12 @@ pub fn append_code_mode_sample(
     input_type: String,
     output_type: String,
 ) -> String {
-    let (import_path, exported_name) = code_mode_import_and_exported_name(tool_name);
+    let (import_path, _) = code_mode_import_and_exported_name(tool_name);
+    let global_name = normalize_code_mode_identifier(tool_name);
     let declaration = format!(
-        "import {{ tools }} from \"{import_path}\";\ndeclare function {exported_name}({input_name}: {input_type}): Promise<{output_type}>;"
+        "import {{ tools }} from \"{import_path}\";\ndeclare const tools: {{\n  {global_name}({input_name}: {input_type}): Promise<{output_type}>;\n}};\n"
     );
-    format!("{description}\n\nCode mode declaration:\n```ts\n{declaration}\n```")
+    format!("{description}\n\nCode mode declaration:\n```ts\n{declaration}```")
 }
 
 fn append_code_mode_sample_for_definition(definition: &ToolDefinition) -> String {
@@ -546,11 +547,10 @@ mod tests {
         let description = augment_tool_definition(definition).description;
         assert!(description.contains("Code mode declaration:"));
         assert!(description.contains("import { tools } from \"tools.js\";"));
-        assert!(
-            description.contains(
-                "declare function hidden_dynamic_tool(args: { city: string; }): Promise<{ ok: boolean; }>;"
-            )
-        );
+        assert!(description.contains("declare const tools: {"));
+        assert!(description.contains(
+            "  hidden_dynamic_tool(args: { city: string; }): Promise<{ ok: boolean; }>;"
+        ));
     }
 
     #[test]
