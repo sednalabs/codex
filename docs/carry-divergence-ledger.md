@@ -120,6 +120,7 @@ live divergence.
 - Keep downstream itineraries that explicitly call `spawn_agent(model=..., reasoning_effort=...)` aligned with the requested model/economy, even when a role is applied.
 - Roles still control locked models when they explicitly set `model`, `model_provider`, `model_reasoning_effort`, or `model_verbosity`, so downstream policy remains defendable.
 - Carry also preserves the requested `model_reasoning_summary`, so the summary the child asked for survives role reload unless a role or active profile explicitly locks it, and active-profile overrides that set these fields retain precedence per `core/src/agent/role.rs`.
+- `core/src/agent/role.rs` is now back on the upstream-native layered reload shape with resolved active-profile materialization; the remaining downstream delta is the deliberate sticky override policy for model, provider, reasoning effort, reasoning summary, and verbosity when the role does not own those fields.
 - The live tool-contract schema in `codex-rs/core/src/tools/spec.rs` and the
   regression suite in `codex-rs/core/src/tools/handlers/multi_agents_tests.rs`
   are already back on upstream-native shape; the remaining carry is
