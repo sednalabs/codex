@@ -178,14 +178,8 @@ async fn run_code_mode_turn_with_rmcp(
     server: &MockServer,
     prompt: &str,
     code: &str,
-) -> Result<Option<(TestCodex, ResponseMock)>> {
-    let rmcp_test_server_bin = match stdio_server_bin() {
-        Ok(bin) => bin,
-        Err(err) => {
-            eprintln!("test_stdio_server binary not available, skipping test: {err}");
-            return Ok(None);
-        }
-    };
+) -> Result<(TestCodex, ResponseMock)> {
+    let rmcp_test_server_bin = stdio_server_bin()?;
     let mut builder = test_codex().with_config(move |config| {
         let _ = config.features.enable(Feature::CodeMode);
         // Keep code_mode tests hermetic instead of inheriting a host-pinned Node path.
@@ -247,7 +241,7 @@ async fn run_code_mode_turn_with_rmcp(
     .await;
 
     test.submit_turn(prompt).await?;
-    Ok(Some((test, second_mock)))
+    Ok((test, second_mock))
 }
 
 #[cfg_attr(windows, ignore = "no exec_command on Windows")]
@@ -2046,11 +2040,8 @@ text(
 );
 "#;
 
-    let Some((_test, second_mock)) =
-        run_code_mode_turn_with_rmcp(&server, "use exec to run the rmcp echo tool", code).await?
-    else {
-        return Ok(());
-    };
+    let (_test, second_mock) =
+        run_code_mode_turn_with_rmcp(&server, "use exec to run the rmcp echo tool", code).await?;
 
     let req = second_mock.single_request();
     let (output, success) = custom_tool_output_body_and_success(&req, "call-1");
@@ -2090,11 +2081,8 @@ text(
 );
 "#;
 
-    let Some((_test, second_mock)) =
-        run_code_mode_turn_with_rmcp(&server, "use exec to run the rmcp echo tool", code).await?
-    else {
-        return Ok(());
-    };
+    let (_test, second_mock) =
+        run_code_mode_turn_with_rmcp(&server, "use exec to run the rmcp echo tool", code).await?;
 
     let req = second_mock.single_request();
     let (output, success) = custom_tool_output_body_and_success(&req, "call-1");
@@ -2125,12 +2113,9 @@ text(JSON.stringify({
 }));
 "#;
 
-    let Some((_test, second_mock)) =
+    let (_test, second_mock) =
         run_code_mode_turn_with_rmcp(&server, "use exec to inspect the global tools object", code)
-            .await?
-    else {
-        return Ok(());
-    };
+            .await?;
 
     let req = second_mock.single_request();
     let (output, success) = custom_tool_output_body_and_success(&req, "call-1");
@@ -2162,15 +2147,12 @@ const result = await tools.mcp__rmcp__echo_tool({ message: "ping" });
 text(`echo=${result.structuredContent.echo}`);
 "#;
 
-    let Some((_test, second_mock)) = run_code_mode_turn_with_rmcp(
+    let (_test, second_mock) = run_code_mode_turn_with_rmcp(
         &server,
         "use exec to call a normalized rmcp tool name",
         code,
     )
-    .await?
-    else {
-        return Ok(());
-    };
+    .await?;
 
     let req = second_mock.single_request();
     let (output, success) = custom_tool_output_body_and_success(&req, "call-1");
@@ -2193,11 +2175,8 @@ async fn code_mode_lists_global_scope_items() -> Result<()> {
 text(JSON.stringify(Object.getOwnPropertyNames(globalThis).sort()));
 "#;
 
-    let Some((_test, second_mock)) =
-        run_code_mode_turn_with_rmcp(&server, "use exec to inspect global scope", code).await?
-    else {
-        return Ok(());
-    };
+    let (_test, second_mock) =
+        run_code_mode_turn_with_rmcp(&server, "use exec to inspect global scope", code).await?;
 
     let req = second_mock.single_request();
     let (output, success) = custom_tool_output_body_and_success(&req, "call-1");
@@ -2356,11 +2335,8 @@ async fn code_mode_exports_all_tools_metadata_for_namespaced_mcp_tools() -> Resu
 text(JSON.stringify(ALL_TOOLS));
 "#;
 
-    let Some((_test, second_mock)) =
-        run_code_mode_turn_with_rmcp(&server, "use exec to inspect ALL_TOOLS", code).await?
-    else {
-        return Ok(());
-    };
+    let (_test, second_mock) =
+        run_code_mode_turn_with_rmcp(&server, "use exec to inspect ALL_TOOLS", code).await?;
 
     let req = second_mock.single_request();
     let (output, success) = custom_tool_output_body_and_success(&req, "call-1");
@@ -2578,15 +2554,12 @@ text(
 );
 "#;
 
-    let Some((_test, second_mock)) = run_code_mode_turn_with_rmcp(
+    let (_test, second_mock) = run_code_mode_turn_with_rmcp(
         &server,
         "use exec to run the rmcp image scenario tool",
         code,
     )
-    .await?
-    else {
-        return Ok(());
-    };
+    .await?;
 
     let req = second_mock.single_request();
     let (output, success) = custom_tool_output_body_and_success(&req, "call-1");
@@ -2627,11 +2600,8 @@ text(
 );
 "#;
 
-    let Some((_test, second_mock)) =
-        run_code_mode_turn_with_rmcp(&server, "use exec to call rmcp echo badly", code).await?
-    else {
-        return Ok(());
-    };
+    let (_test, second_mock) =
+        run_code_mode_turn_with_rmcp(&server, "use exec to call rmcp echo badly", code).await?;
 
     let req = second_mock.single_request();
     let (output, success) = custom_tool_output_body_and_success(&req, "call-1");
