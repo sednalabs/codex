@@ -28,6 +28,7 @@ mod commit_attribution;
 pub mod config;
 pub mod config_loader;
 pub mod connectors;
+pub mod custom_prompts;
 mod context_manager;
 mod contextual_user_message;
 pub use codex_utils_path::env;
