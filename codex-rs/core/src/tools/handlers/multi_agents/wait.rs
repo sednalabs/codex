@@ -63,21 +63,12 @@ impl ToolHandler for Handler {
             }
         }
         let mut receiver_agents = Vec::with_capacity(receiver_thread_ids.len());
-        let mut target_by_thread_id = HashMap::with_capacity(receiver_thread_ids.len());
         for receiver_thread_id in &receiver_thread_ids {
             let agent_metadata = session
                 .services
                 .agent_control
                 .get_agent_metadata(*receiver_thread_id)
                 .unwrap_or_default();
-            target_by_thread_id.insert(
-                *receiver_thread_id,
-                agent_metadata
-                    .agent_path
-                    .as_ref()
-                    .map(ToString::to_string)
-                    .unwrap_or_else(|| receiver_thread_id.to_string()),
-            );
             receiver_agents.push(CollabAgentRef {
                 thread_id: *receiver_thread_id,
                 agent_nickname: agent_metadata.agent_nickname,
