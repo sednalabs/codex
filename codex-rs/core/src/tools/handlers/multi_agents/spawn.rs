@@ -5,7 +5,6 @@ use crate::agent::control::SubAgentInventoryInfo;
 use crate::agent::control::render_input_preview;
 use crate::agent::role::DEFAULT_ROLE_NAME;
 use crate::agent::role::apply_role_to_config;
-use crate::agent::role::role_model_override_locks;
 
 use crate::agent::exceeds_thread_spawn_depth_limit;
 use crate::agent::next_thread_spawn_depth;
@@ -65,31 +64,18 @@ impl ToolHandler for Handler {
             .await;
         let mut config =
             build_agent_spawn_config(&session.get_base_instructions().await, turn.as_ref())?;
-        let pre_role_reasoning_effort = config.model_reasoning_effort;
-        let role_model_locks = role_model_override_locks(turn.config.as_ref(), role_name)
-            .await
-            .map_err(FunctionCallError::RespondToModel)?;
-        apply_role_to_config(&mut config, role_name)
-            .await
-            .map_err(FunctionCallError::RespondToModel)?;
-        let requested_model = if role_model_locks.model {
-            None
-        } else {
-            args.model.as_deref()
-        };
-        let requested_reasoning_effort = if role_model_locks.model_reasoning_effort {
-            None
-        } else {
-            args.reasoning_effort
-        };
         apply_requested_spawn_agent_model_overrides(
             &session,
             turn.as_ref(),
             &mut config,
-            requested_model,
-            requested_reasoning_effort,
+            args.model.as_deref(),
+            args.reasoning_effort,
         )
         .await?;
+        let pre_role_reasoning_effort = config.model_reasoning_effort;
+        apply_role_to_config(&mut config, role_name)
+            .await
+            .map_err(FunctionCallError::RespondToModel)?;
         if let Some(model) = config.model.clone() {
             let model_info = session
                 .services
