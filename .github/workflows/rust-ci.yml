@@ -875,7 +875,7 @@ jobs:
       lane_id: core-test-smoke
       summary_title: core-test-smoke
       run_command: |
-        if [[ '${{ github.event_name }}' == 'push' || '${{ needs.changed.outputs.codex }}' == 'true' ]]; then
+        if [[ '${{ github.event_name }}' == 'push' || '${{ needs.changed.outputs.codex }}' == 'true' || '${{ needs.changed.outputs.ci_surface }}' == 'true' ]]; then
           just --justfile ../justfile core-test-smoke
         fi
         just --justfile ../justfile downstream-docs-check
