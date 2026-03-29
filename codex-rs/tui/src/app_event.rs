@@ -23,7 +23,6 @@ use codex_protocol::openai_models::ModelPreset;
 use codex_protocol::protocol::GetHistoryEntryResponseEvent;
 use codex_protocol::protocol::Op;
 use codex_protocol::protocol::RateLimitSnapshot;
-use codex_protocol::protocol::ReviewRequest;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use codex_utils_approval_presets::ApprovalPreset;
 
@@ -289,11 +288,6 @@ pub(crate) enum AppEvent {
     SelectModel {
         model: String,
         effort: Option<ReasoningEffort>,
-    },
-
-    /// Apply a review selection immediately, or queue it when a task is active.
-    SelectReview {
-        review_request: ReviewRequest,
     },
 
     /// Persist the selected model and reasoning effort to the appropriate config.
