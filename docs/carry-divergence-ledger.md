@@ -84,6 +84,24 @@ live divergence.
   - `codex-rs/state/usage_migrations/0001_usage_tables.sql`
   - `codex-rs/state/Cargo.toml`
 
+### Phase-2 Memory Attestation And Prepared-Input Fingerprinting
+
+- Downstream phase-2 memory consolidation remains fail-closed once attestation
+  support has been initialized for a memory root.
+- Consolidated memory artifacts are fingerprinted against the prepared immutable
+  input tree and the effective consolidator contract, then recorded in
+  attestation sidecars plus runtime state so unchanged selections can safely
+  reuse existing outputs while drifted or tampered artifacts are rejected.
+- This is an intentional downstream carry, not derivative test churn: losing
+  the attestation runtime while keeping the attestation tests is a regression.
+- Primary files:
+  - `codex-rs/core/src/memories/phase2.rs`
+  - `codex-rs/core/src/memories/phase2_attestation_tests.rs`
+  - `codex-rs/core/src/memories/tests.rs`
+  - `codex-rs/state/src/runtime/phase2_attestation.rs`
+  - `codex-rs/state/migrations/0023_phase2_attestation_roots.sql`
+  - `docs/memories.md`
+
 ### CLI Git Metadata And Rebuild Triggers
 
 - CLI builds embed `git describe` metadata.
