@@ -110,7 +110,14 @@ jobs:
               .github/workflows/*|justfile)
                 run_workflow_family=true
                 ;;
+              codex-rs/Cargo.toml|codex-rs/Cargo.lock)
+                run_core_family=true
+                run_ui_protocol_family=true
+                ;;
               codex-rs/cli/*|codex-rs/common/*|codex-rs/core/*|codex-rs/hooks/*|codex-rs/linux-sandbox/*|codex-rs/state/*|codex-rs/windows-sandbox-rs/*)
+                run_core_family=true
+                ;;
+              codex-rs/code-mode/*)
                 run_core_family=true
                 ;;
               codex-rs/app-server/*|codex-rs/app-server-protocol/*|codex-rs/protocol/*|codex-rs/tui/*|codex-rs/tui_app_server/*)
