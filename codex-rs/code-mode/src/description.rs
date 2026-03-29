@@ -283,11 +283,11 @@ fn append_code_mode_sample_for_definition(definition: &ToolDefinition) -> String
 
 fn code_mode_import_and_exported_name(tool_name: &str) -> (String, String) {
     if let Some(rest) = tool_name.strip_prefix("mcp__")
-        && let Some((server_name, nested_tool_name)) = rest.split_once("__")
+        && let Some((server_name, _)) = rest.split_once("__")
     {
         return (
             format!("tools/mcp/{server_name}.js"),
-            normalize_code_mode_identifier(nested_tool_name),
+            normalize_code_mode_identifier(tool_name),
         );
     }
 
