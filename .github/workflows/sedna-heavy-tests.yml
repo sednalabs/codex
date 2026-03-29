@@ -118,7 +118,7 @@ jobs:
               codex-rs/code-mode/*)
                 run_core_family=true
               ;;
-              codex-rs/app-server/*|codex-rs/app-server-protocol/*|codex-rs/protocol/*|codex-rs/tui/*|codex-rs/tui_app_server/*)
+              codex-rs/app-server/*|codex-rs/app-server-protocol/*|codex-rs/protocol/*|codex-rs/tui/*)
                 run_ui_protocol_family=true
                 ;;
               docs/carry-divergence-ledger.md|docs/downstream-regression-matrix.md|docs/downstream-tool-surface-matrix.md|docs/downstream.md)

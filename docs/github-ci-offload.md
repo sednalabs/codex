@@ -14,7 +14,7 @@ artifacts.
   - trigger: manual dispatch, `ci:heavy` PR label, nightly schedule, and selected `main` pushes
   - purpose: expensive Linux-heavy Rust validation without using the shared local machine as the
     build factory
-  - scopes: `protocol`, `tui_app_server`, `cli`, `core`, `workspace`
+  - scopes: `protocol`, `tui`, `cli`, `core`, `workspace`
 - `sedna-release`
   - trigger: Sedna release tags or manual dispatch
   - purpose: official public release artifacts
