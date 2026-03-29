@@ -247,9 +247,9 @@ pub fn append_code_mode_sample(
     input_type: String,
     output_type: String,
 ) -> String {
-    let (import_path, exported_name) = code_mode_import_and_exported_name(tool_name);
     let declaration = format!(
-        "import {{ tools }} from \"{import_path}\";\ndeclare const tools: {{\n  {exported_name}({input_name}: {input_type}): Promise<{output_type}>;\n}};\n"
+        "declare const tools: {{\n  {}({input_name}: {input_type}): Promise<{output_type}>;\n}};\n",
+        normalize_code_mode_identifier(tool_name),
     );
     format!("{description}\n\nCode mode declaration:\n```ts\n{declaration}```")
 }
@@ -278,22 +278,6 @@ fn append_code_mode_sample_for_definition(definition: &ToolDefinition) -> String
         input_name,
         input_type,
         output_type,
-    )
-}
-
-fn code_mode_import_and_exported_name(tool_name: &str) -> (String, String) {
-    if let Some(rest) = tool_name.strip_prefix("mcp__")
-        && let Some((server_name, _)) = rest.split_once("__")
-    {
-        return (
-            format!("tools/mcp/{server_name}.js"),
-            normalize_code_mode_identifier(tool_name),
-        );
-    }
-
-    (
-        "tools.js".to_string(),
-        normalize_code_mode_identifier(tool_name),
     )
 }
 
@@ -545,7 +529,7 @@ mod tests {
 
         let description = augment_tool_definition(definition).description;
         assert!(description.contains("Code mode declaration:"));
-        assert!(description.contains("import { tools } from \"tools.js\";"));
+        assert!(!description.contains("import { tools } from"));
         assert!(description.contains("declare const tools: {"));
         assert!(description.contains(
             "  hidden_dynamic_tool(args: { city: string; }): Promise<{ ok: boolean; }>;"

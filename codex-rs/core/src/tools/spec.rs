@@ -5572,7 +5572,7 @@ Examples of valid command strings:
 
         assert_eq!(
             description,
-            "View a local image from the filesystem (only use if given a full filepath by the user, and the image isn't already attached to the thread context within <image ...> tags).\n\nCode mode declaration:\n```ts\nimport { tools } from \"tools.js\";\ndeclare const tools: {\n  view_image(args: {\n  path: string;\n}): Promise<{\n  detail: string | null;\n  image_url: string;\n}>;\n};\n```"
+            "View a local image from the filesystem (only use if given a full filepath by the user, and the image isn't already attached to the thread context within <image ...> tags).\n\nCode mode declaration:\n```ts\ndeclare const tools: {\n  view_image(args: {\n  path: string;\n}): Promise<{\n  detail: string | null;\n  image_url: string;\n}>;\n};\n```"
         );
     }
 
@@ -5625,7 +5625,7 @@ Examples of valid command strings:
 
         assert_eq!(
             description,
-            "Echo text\n\nCode mode declaration:\n```ts\nimport { tools } from \"tools/mcp/sample.js\";\ndeclare const tools: {\n  echo(args: {\n  message: string;\n}): Promise<{\n  _meta?: unknown;\n  content: Array<unknown>;\n  isError?: boolean;\n  structuredContent?: unknown;\n}>;\n};\n```"
+            "Echo text\n\nCode mode declaration:\n```ts\ndeclare const tools: {\n  echo(args: {\n  message: string;\n}): Promise<{\n  _meta?: unknown;\n  content: Array<unknown>;\n  isError?: boolean;\n  structuredContent?: unknown;\n}>;\n};\n```"
         );
     }
 
