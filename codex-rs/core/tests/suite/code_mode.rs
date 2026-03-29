@@ -2370,7 +2370,7 @@ text(JSON.stringify(ALL_TOOLS));
 Code mode declaration:
 ```ts
 declare const tools: {
-  echo(args: {
+  mcp__rmcp__echo(args: {
     env_var?: string;
     message: string;
   }): Promise<{
