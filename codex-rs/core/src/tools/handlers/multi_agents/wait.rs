@@ -47,7 +47,7 @@ impl ToolHandler for Handler {
         } else if !args.ids.is_empty() {
             args.ids
                 .iter()
-                .map(|id| agent_id(id))
+                .map(|id| parse_agent_id_target(id))
                 .collect::<Result<Vec<_>, _>>()?
         } else {
             return Err(FunctionCallError::RespondToModel(

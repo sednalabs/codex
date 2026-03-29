@@ -42,7 +42,7 @@ impl ToolHandler for Handler {
             .ids
             .map(|ids| {
                 ids.into_iter()
-                    .map(|id| agent_id(&id))
+                    .map(|id| parse_agent_id_target(&id))
                     .collect::<Result<Vec<_>, FunctionCallError>>()
             })
             .transpose()?;
