@@ -2315,12 +2315,14 @@ text(JSON.stringify(tool));
 Code mode declaration:
 ```ts
 import { tools } from "tools.js";
-declare function view_image(args: {
-  path: string;
-}): Promise<{
-  detail: string | null;
-  image_url: string;
-}>;
+declare const tools: {
+  view_image(args: {
+    path: string;
+  }): Promise<{
+    detail: string | null;
+    image_url: string;
+  }>;
+};
 ```"#,
         })
     );
@@ -2375,15 +2377,17 @@ text(JSON.stringify(ALL_TOOLS));
 Code mode declaration:
 ```ts
 import { tools } from "tools/mcp/rmcp.js";
-declare function echo(args: {
-  env_var?: string;
-  message: string;
-}): Promise<{
-  _meta?: unknown;
-  content: Array<unknown>;
-  isError?: boolean;
-  structuredContent?: unknown;
-}>;
+declare const tools: {
+  echo(args: {
+    env_var?: string;
+    message: string;
+  }): Promise<{
+    _meta?: unknown;
+    content: Array<unknown>;
+    isError?: boolean;
+    structuredContent?: unknown;
+  }>;
+};
 ```"#,
         })
     );
@@ -2529,7 +2533,8 @@ text(
             .and_then(Value::as_str)
             .is_some_and(|description| {
                 description.contains("A hidden dynamic tool.")
-                    && description.contains("declare function hidden_dynamic_tool(args:")
+                    && description.contains("declare const tools: {")
+                    && description.contains("hidden_dynamic_tool(args:")
             })
     );
 

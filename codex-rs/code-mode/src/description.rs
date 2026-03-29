@@ -247,10 +247,9 @@ pub fn append_code_mode_sample(
     input_type: String,
     output_type: String,
 ) -> String {
-    let (import_path, _) = code_mode_import_and_exported_name(tool_name);
-    let global_name = normalize_code_mode_identifier(tool_name);
+    let (import_path, exported_name) = code_mode_import_and_exported_name(tool_name);
     let declaration = format!(
-        "import {{ tools }} from \"{import_path}\";\ndeclare const tools: {{\n  {global_name}({input_name}: {input_type}): Promise<{output_type}>;\n}};\n"
+        "import {{ tools }} from \"{import_path}\";\ndeclare const tools: {{\n  {exported_name}({input_name}: {input_type}): Promise<{output_type}>;\n}};\n"
     );
     format!("{description}\n\nCode mode declaration:\n```ts\n{declaration}```")
 }
