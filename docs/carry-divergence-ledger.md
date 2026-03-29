@@ -218,10 +218,29 @@ live divergence.
 - Primary files:
   - `codex-rs/tui/src/app.rs`
   - `codex-rs/tui/src/bottom_pane/chat_composer.rs`
-  - `codex-rs/tui/src/status/rate_limits.rs`
-  - `docs/config.md`
-  - `docs/tui-weekly-usage-pacing-status-line.md`
-  - `docs/downstream.md`
+- `codex-rs/tui/src/status/rate_limits.rs`
+- `docs/config.md`
+- `docs/tui-weekly-usage-pacing-status-line.md`
+- `docs/downstream.md`
+
+### Custom Prompt Discovery And Review Prompt Flow
+
+- Downstream restores first-party custom prompt discovery from
+  `$CODEX_HOME/prompts`, including optional frontmatter metadata for slash-popup
+  descriptions and argument hints.
+- The TUI review flow also keeps the downstream custom-prompt entry point, so
+  operators can open a dedicated custom prompt view from the review popup and
+  submit ad hoc review text without losing the standard review interaction.
+- Primary files:
+  - `codex-rs/core/src/custom_prompts.rs`
+  - `codex-rs/core/src/custom_prompts_tests.rs`
+  - `codex-rs/protocol/src/custom_prompts.rs`
+  - `codex-rs/core/src/lib.rs`
+  - `codex-rs/protocol/src/lib.rs`
+  - `codex-rs/tui/src/app.rs`
+  - `codex-rs/tui/src/app_event.rs`
+  - `codex-rs/tui/src/bottom_pane/custom_prompt_view.rs`
+  - `codex-rs/tui/src/chatwidget.rs`
 
 ### Code-Mode Declaration Formatting
 
