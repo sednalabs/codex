@@ -2,7 +2,6 @@ use super::*;
 use crate::AuthManager;
 use crate::CodexAuth;
 use crate::ThreadManager;
-use crate::agent::control::SpawnAgentOptions;
 use crate::built_in_model_providers;
 use crate::codex::make_session_and_context;
 use crate::config::AgentRoleConfig;
@@ -12,6 +11,7 @@ use crate::config::ConfigOverrides;
 use crate::config::DEFAULT_AGENT_MAX_DEPTH;
 use crate::config::types::ShellEnvironmentPolicy;
 use crate::function_tool::FunctionCallError;
+use crate::models_manager::manager::RefreshStrategy;
 use crate::protocol::AskForApproval;
 use crate::protocol::FileSystemSandboxPolicy;
 use crate::protocol::NetworkSandboxPolicy;
@@ -79,6 +79,481 @@ fn thread_manager() -> ThreadManager {
         CodexAuth::from_api_key("dummy"),
         built_in_model_providers(/* openai_base_url */ None)["openai"].clone(),
     )
+}
+
+async fn add_custom_role(turn: &mut TurnContext, role_name: &str, role_contents: &str) -> TempDir {
+    let role_dir = TempDir::new().expect("create temp dir");
+    let role_path = role_dir.path().join(format!("{role_name}.toml"));
+    tokio::fs::write(&role_path, role_contents)
+        .await
+        .expect("write role config");
+
+    let mut config = (*turn.config).clone();
+    config.agent_roles.insert(
+        role_name.to_string(),
+        AgentRoleConfig {
+            description: Some("test role".to_string()),
+            config_file: Some(role_path),
+            nickname_candidates: None,
+        },
+    );
+    turn.config = Arc::new(config);
+    role_dir
+}
+
+async fn prepare_spawn_session(
+    use_v2_handler: bool,
+) -> (crate::codex::Session, TurnContext, ThreadManager) {
+    let (mut session, mut turn) = make_session_and_context().await;
+    let manager = thread_manager();
+    session.services.agent_control = manager.agent_control();
+
+    if use_v2_handler {
+        let root = manager
+            .start_thread((*turn.config).clone())
+            .await
+            .expect("root thread should start");
+        session.conversation_id = root.thread_id;
+        let mut config = (*turn.config).clone();
+        config
+            .features
+            .enable(Feature::MultiAgentV2)
+            .expect("test config should allow feature update");
+        turn.config = Arc::new(config);
+    }
+
+    (session, turn, manager)
+}
+
+async fn spawn_agent_and_get_thread_id(
+    use_v2_handler: bool,
+    session: Arc<crate::codex::Session>,
+    turn: Arc<TurnContext>,
+    payload: serde_json::Value,
+) -> ThreadId {
+    let output = SpawnAgentHandler
+        .handle(invocation(
+            session.clone(),
+            turn.clone(),
+            "spawn_agent",
+            function_payload(payload),
+        ))
+        .await
+        .expect("spawn_agent should succeed");
+    let (content, _) = expect_text_output(output);
+    let result: serde_json::Value =
+        serde_json::from_str(&content).expect("spawn_agent result should be json");
+
+    if use_v2_handler {
+        let task_name = result
+            .get("task_name")
+            .and_then(serde_json::Value::as_str)
+            .expect("spawn_agent v2 should return task_name");
+        session
+            .services
+            .agent_control
+            .resolve_agent_reference(session.conversation_id, &turn.session_source, task_name)
+            .await
+            .expect("spawned task name should resolve")
+    } else {
+        let agent_id = result
+            .get("agent_id")
+            .and_then(serde_json::Value::as_str)
+            .expect("spawn_agent should return agent_id");
+        parse_agent_id(agent_id)
+    }
+}
+
+async fn assert_requested_model_override_wins_for_profile_role(use_v2_handler: bool) {
+    let (session, mut turn, manager) = prepare_spawn_session(use_v2_handler).await;
+    let available_models = session
+        .services
+        .models_manager
+        .list_models(RefreshStrategy::Offline)
+        .await;
+    assert!(
+        available_models.len() >= 2,
+        "test requires at least two models"
+    );
+    let requested_model = available_models[0].model.clone();
+    let role_profile_model = available_models[1].model.clone();
+    assert_ne!(requested_model, role_profile_model);
+    let requested_model_info = session
+        .services
+        .models_manager
+        .get_model_info(&requested_model, turn.config.as_ref())
+        .await;
+    let requested_reasoning_effort = requested_model_info
+        .supported_reasoning_levels
+        .first()
+        .map(|preset| preset.effort)
+        .unwrap_or_default();
+    let role_config = format!(
+        "developer_instructions = \"Role prompt\"\nprofile = \"role_profile\"\n\n[profiles.role_profile]\nmodel = \"{role_profile_model}\"\n"
+    );
+    let _role_dir = add_custom_role(&mut turn, "custom", &role_config).await;
+
+    let payload = if use_v2_handler {
+        json!({
+            "message": "inspect this repo",
+            "task_name": "worker",
+            "agent_type": "custom",
+            "model": requested_model,
+            "reasoning_effort": requested_reasoning_effort
+        })
+    } else {
+        json!({
+            "message": "inspect this repo",
+            "agent_type": "custom",
+            "model": requested_model,
+            "reasoning_effort": requested_reasoning_effort
+        })
+    };
+    let session = Arc::new(session);
+    let turn = Arc::new(turn);
+    let thread_id = spawn_agent_and_get_thread_id(use_v2_handler, session, turn, payload).await;
+    let snapshot = manager
+        .get_thread(thread_id)
+        .await
+        .expect("spawned agent thread should exist")
+        .config_snapshot()
+        .await;
+
+    assert_eq!(snapshot.model, requested_model);
+    assert_eq!(snapshot.reasoning_effort, Some(requested_reasoning_effort));
+}
+
+async fn assert_reasoning_lock_survives_requested_model(use_v2_handler: bool) {
+    let (session, mut turn, manager) = prepare_spawn_session(use_v2_handler).await;
+    let available_models = session
+        .services
+        .models_manager
+        .list_models(RefreshStrategy::Offline)
+        .await;
+    let mut requested_model = None;
+    for model in &available_models {
+        let model_info = session
+            .services
+            .models_manager
+            .get_model_info(&model.model, turn.config.as_ref())
+            .await;
+        let supports_high = model_info
+            .supported_reasoning_levels
+            .iter()
+            .any(|preset| preset.effort == ReasoningEffort::High);
+        if supports_high && model_info.default_reasoning_level != Some(ReasoningEffort::High) {
+            requested_model = Some(model.model.clone());
+            break;
+        }
+    }
+    let requested_model =
+        requested_model.expect("test requires a model whose default reasoning is not high");
+    let role_config =
+        "developer_instructions = \"Role prompt\"\nmodel_reasoning_effort = \"high\"\n";
+    let _role_dir = add_custom_role(&mut turn, "custom", role_config).await;
+
+    let payload = if use_v2_handler {
+        json!({
+            "message": "inspect this repo",
+            "task_name": "worker",
+            "agent_type": "custom",
+            "model": requested_model
+        })
+    } else {
+        json!({
+            "message": "inspect this repo",
+            "agent_type": "custom",
+            "model": requested_model
+        })
+    };
+    let session = Arc::new(session);
+    let turn = Arc::new(turn);
+    let thread_id = spawn_agent_and_get_thread_id(use_v2_handler, session, turn, payload).await;
+    let snapshot = manager
+        .get_thread(thread_id)
+        .await
+        .expect("spawned agent thread should exist")
+        .config_snapshot()
+        .await;
+
+    assert_eq!(snapshot.model, requested_model);
+    assert_eq!(snapshot.reasoning_effort, Some(ReasoningEffort::High));
+}
+
+async fn assert_locked_role_model_uses_role_model_for_reasoning_validation(use_v2_handler: bool) {
+    let (session, mut turn, manager) = prepare_spawn_session(use_v2_handler).await;
+    let available_models = session
+        .services
+        .models_manager
+        .list_models(RefreshStrategy::Offline)
+        .await;
+    let mut requested_reasoning_effort = None;
+    let mut parent_model = None;
+    let mut role_model = None;
+
+    for parent in &available_models {
+        let parent_model_info = session
+            .services
+            .models_manager
+            .get_model_info(&parent.model, turn.config.as_ref())
+            .await;
+        let parent_supported_reasoning = parent_model_info
+            .supported_reasoning_levels
+            .iter()
+            .map(|preset| preset.effort)
+            .collect::<Vec<_>>();
+
+        for role in &available_models {
+            if role.model == parent.model {
+                continue;
+            }
+
+            let role_model_info = session
+                .services
+                .models_manager
+                .get_model_info(&role.model, turn.config.as_ref())
+                .await;
+            if let Some(reasoning_effort) = role_model_info
+                .supported_reasoning_levels
+                .iter()
+                .map(|preset| preset.effort)
+                .find(|effort| !parent_supported_reasoning.contains(effort))
+            {
+                requested_reasoning_effort = Some(reasoning_effort);
+                parent_model = Some(parent.model.clone());
+                role_model = Some(role.model.clone());
+                break;
+            }
+        }
+
+        if requested_reasoning_effort.is_some() {
+            break;
+        }
+    }
+
+    let requested_reasoning_effort = requested_reasoning_effort
+        .expect("test requires models with different supported reasoning efforts");
+    let parent_model = parent_model.expect("test should select a parent model");
+    let role_model = role_model.expect("test should select a role model");
+    let parent_model_info = session
+        .services
+        .models_manager
+        .get_model_info(&parent_model, turn.config.as_ref())
+        .await;
+    let mut config = (*turn.config).clone();
+    config.model = Some(parent_model.clone());
+    config.model_reasoning_effort = parent_model_info.default_reasoning_level;
+    turn.config = Arc::new(config);
+    turn.model_info = parent_model_info.clone();
+    turn.reasoning_effort = parent_model_info.default_reasoning_level;
+
+    let role_config =
+        format!("developer_instructions = \"Role prompt\"\nmodel = \"{role_model}\"\n");
+    let _role_dir = add_custom_role(&mut turn, "custom", &role_config).await;
+
+    let payload = if use_v2_handler {
+        json!({
+            "message": "inspect this repo",
+            "task_name": "worker",
+            "agent_type": "custom",
+            "model": parent_model,
+            "reasoning_effort": requested_reasoning_effort
+        })
+    } else {
+        json!({
+            "message": "inspect this repo",
+            "agent_type": "custom",
+            "model": parent_model,
+            "reasoning_effort": requested_reasoning_effort
+        })
+    };
+    let session = Arc::new(session);
+    let turn = Arc::new(turn);
+    let thread_id = spawn_agent_and_get_thread_id(use_v2_handler, session, turn, payload).await;
+    let snapshot = manager
+        .get_thread(thread_id)
+        .await
+        .expect("spawned agent thread should exist")
+        .config_snapshot()
+        .await;
+
+    assert_eq!(snapshot.model, role_model);
+    assert_eq!(snapshot.reasoning_effort, Some(requested_reasoning_effort));
+}
+
+async fn assert_active_profile_role_model_locks_requested_overrides(use_v2_handler: bool) {
+    let (session, mut turn, manager) = prepare_spawn_session(use_v2_handler).await;
+    let available_models = session
+        .services
+        .models_manager
+        .list_models(RefreshStrategy::Offline)
+        .await;
+    assert!(
+        available_models.len() >= 2,
+        "test requires at least two models"
+    );
+    let requested_model = available_models[0].model.clone();
+    let role_model = available_models[1].model.clone();
+    assert_ne!(requested_model, role_model);
+
+    let role_model_info = session
+        .services
+        .models_manager
+        .get_model_info(&role_model, turn.config.as_ref())
+        .await;
+    let role_reasoning_effort = role_model_info
+        .default_reasoning_level
+        .or_else(|| {
+            role_model_info
+                .supported_reasoning_levels
+                .first()
+                .map(|preset| preset.effort)
+        })
+        .expect("role model should support at least one reasoning effort");
+    let requested_reasoning_effort = if role_reasoning_effort == ReasoningEffort::Low {
+        ReasoningEffort::High
+    } else {
+        ReasoningEffort::Low
+    };
+
+    let mut config = (*turn.config).clone();
+    config.active_profile = Some("base-profile".to_string());
+    turn.config = Arc::new(config);
+
+    let role_config = format!(
+        r#"developer_instructions = "Role prompt"
+
+[profiles.base-profile]
+model = "{role_model}"
+model_reasoning_effort = "{role_reasoning_effort}"
+"#,
+    );
+    let _role_dir = add_custom_role(&mut turn, "custom", &role_config).await;
+
+    let payload = if use_v2_handler {
+        json!({
+            "message": "inspect this repo",
+            "task_name": "worker",
+            "agent_type": "custom",
+            "model": requested_model,
+            "reasoning_effort": requested_reasoning_effort
+        })
+    } else {
+        json!({
+            "message": "inspect this repo",
+            "agent_type": "custom",
+            "model": requested_model,
+            "reasoning_effort": requested_reasoning_effort
+        })
+    };
+    let session = Arc::new(session);
+    let turn = Arc::new(turn);
+    let thread_id = spawn_agent_and_get_thread_id(use_v2_handler, session, turn, payload).await;
+    let snapshot = manager
+        .get_thread(thread_id)
+        .await
+        .expect("spawned agent thread should exist")
+        .config_snapshot()
+        .await;
+
+    assert_eq!(snapshot.model, role_model);
+    assert_eq!(snapshot.reasoning_effort, Some(role_reasoning_effort));
+}
+
+async fn assert_non_effective_active_profile_role_edits_do_not_lock_requested_overrides(
+    use_v2_handler: bool,
+) {
+    let (session, mut turn, manager) = prepare_spawn_session(use_v2_handler).await;
+    let available_models = session
+        .services
+        .models_manager
+        .list_models(RefreshStrategy::Offline)
+        .await;
+    assert!(
+        available_models.len() >= 3,
+        "test requires at least three models"
+    );
+    let parent_model = available_models[0].model.clone();
+    let requested_model = available_models[1].model.clone();
+    let role_model = available_models[2].model.clone();
+
+    let requested_model_info = session
+        .services
+        .models_manager
+        .get_model_info(&requested_model, turn.config.as_ref())
+        .await;
+    let requested_reasoning_effort = requested_model_info
+        .default_reasoning_level
+        .or_else(|| {
+            requested_model_info
+                .supported_reasoning_levels
+                .first()
+                .map(|preset| preset.effort)
+        })
+        .expect("requested model should support at least one reasoning effort");
+    let role_model_info = session
+        .services
+        .models_manager
+        .get_model_info(&role_model, turn.config.as_ref())
+        .await;
+    let role_reasoning_effort = role_model_info
+        .default_reasoning_level
+        .or_else(|| {
+            role_model_info
+                .supported_reasoning_levels
+                .first()
+                .map(|preset| preset.effort)
+        })
+        .expect("role model should support at least one reasoning effort");
+
+    let mut config = (*turn.config).clone();
+    config.active_profile = Some("base-profile".to_string());
+    config.model = Some(parent_model);
+    turn.config = Arc::new(config);
+
+    let role_config = format!(
+        r#"developer_instructions = "Role prompt"
+profile = "role-profile"
+
+[profiles.role-profile]
+model = "{role_model}"
+model_reasoning_effort = "{role_reasoning_effort}"
+
+[profiles.base-profile]
+model = "{role_model}"
+model_reasoning_effort = "{role_reasoning_effort}"
+"#,
+    );
+    let _role_dir = add_custom_role(&mut turn, "custom", &role_config).await;
+
+    let payload = if use_v2_handler {
+        json!({
+            "message": "inspect this repo",
+            "task_name": "worker",
+            "agent_type": "custom",
+            "model": requested_model,
+            "reasoning_effort": requested_reasoning_effort
+        })
+    } else {
+        json!({
+            "message": "inspect this repo",
+            "agent_type": "custom",
+            "model": requested_model,
+            "reasoning_effort": requested_reasoning_effort
+        })
+    };
+    let session = Arc::new(session);
+    let turn = Arc::new(turn);
+    let thread_id = spawn_agent_and_get_thread_id(use_v2_handler, session, turn, payload).await;
+    let snapshot = manager
+        .get_thread(thread_id)
+        .await
+        .expect("spawned agent thread should exist")
+        .config_snapshot()
+        .await;
+
+    assert_eq!(snapshot.model, requested_model);
+    assert_eq!(snapshot.reasoning_effort, Some(requested_reasoning_effort));
 }
 
 fn expect_text_output<T>(output: T) -> (String, Option<bool>)
@@ -430,6 +905,57 @@ model_reasoning_effort = "high"
         result.effective_reasoning_effort,
         Some(ReasoningEffort::High)
     );
+}
+
+#[tokio::test]
+async fn spawn_agent_preserves_explicit_model_override_for_profile_role() {
+    assert_requested_model_override_wins_for_profile_role(false).await;
+}
+
+#[tokio::test]
+async fn multi_agent_v2_spawn_preserves_explicit_model_override_for_profile_role() {
+    assert_requested_model_override_wins_for_profile_role(true).await;
+}
+
+#[tokio::test]
+async fn spawn_agent_keeps_role_locked_reasoning_effort_when_model_is_requested() {
+    assert_reasoning_lock_survives_requested_model(false).await;
+}
+
+#[tokio::test]
+async fn multi_agent_v2_spawn_keeps_role_locked_reasoning_effort_when_model_is_requested() {
+    assert_reasoning_lock_survives_requested_model(true).await;
+}
+
+#[tokio::test]
+async fn spawn_agent_validates_reasoning_override_against_locked_role_model() {
+    assert_locked_role_model_uses_role_model_for_reasoning_validation(false).await;
+}
+
+#[tokio::test]
+async fn multi_agent_v2_spawn_validates_reasoning_override_against_locked_role_model() {
+    assert_locked_role_model_uses_role_model_for_reasoning_validation(true).await;
+}
+
+#[tokio::test]
+async fn spawn_agent_cannot_bypass_active_profile_role_model_locks() {
+    assert_active_profile_role_model_locks_requested_overrides(false).await;
+}
+
+#[tokio::test]
+async fn multi_agent_v2_spawn_cannot_bypass_active_profile_role_model_locks() {
+    assert_active_profile_role_model_locks_requested_overrides(true).await;
+}
+
+#[tokio::test]
+async fn spawn_agent_non_effective_active_profile_role_edits_do_not_lock_requested_overrides() {
+    assert_non_effective_active_profile_role_edits_do_not_lock_requested_overrides(false).await;
+}
+
+#[tokio::test]
+async fn multi_agent_v2_spawn_non_effective_active_profile_role_edits_do_not_lock_requested_overrides()
+ {
+    assert_non_effective_active_profile_role_edits_do_not_lock_requested_overrides(true).await;
 }
 
 #[tokio::test]
@@ -833,7 +1359,7 @@ async fn list_agents_returns_direct_children_with_live_inventory() {
 
     let grandchild_id = manager
         .agent_control()
-        .spawn_agent_with_options(
+        .spawn_agent(
             (*turn.config).clone(),
             vec![UserInput::Text {
                 text: "nested child".to_string(),
@@ -842,10 +1368,10 @@ async fn list_agents_returns_direct_children_with_live_inventory() {
             Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
                 parent_thread_id: child_one_id,
                 depth: 2,
+                agent_path: None,
                 agent_nickname: None,
                 agent_role: Some("explorer".to_string()),
             })),
-            SpawnAgentOptions::default(),
         )
         .await
         .expect("spawn nested child");
@@ -995,7 +1521,7 @@ async fn list_agents_id_filter_returns_not_found_entries_for_missing_or_invisibl
     let child_id = agent_id(&child_result.agent_id).expect("valid child id");
     let grandchild_id = manager
         .agent_control()
-        .spawn_agent_with_options(
+        .spawn_agent(
             (*turn.config).clone(),
             vec![UserInput::Text {
                 text: "nested child".to_string(),
@@ -1004,10 +1530,10 @@ async fn list_agents_id_filter_returns_not_found_entries_for_missing_or_invisibl
             Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
                 parent_thread_id: child_id,
                 depth: 2,
+                agent_path: None,
                 agent_nickname: None,
                 agent_role: Some("explorer".to_string()),
             })),
-            SpawnAgentOptions::default(),
         )
         .await
         .expect("spawn nested child");
@@ -1343,7 +1869,7 @@ async fn list_agents_include_descendants_hydrates_live_nested_descendant_invento
 
     let grandchild_thread_id = manager
         .agent_control()
-        .spawn_agent_with_options(
+        .spawn_agent(
             (*turn.config).clone(),
             vec![UserInput::Text {
                 text: "live grandchild".to_string(),
@@ -1352,10 +1878,10 @@ async fn list_agents_include_descendants_hydrates_live_nested_descendant_invento
             Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
                 parent_thread_id: child_thread_id,
                 depth: 2,
+                agent_path: None,
                 agent_nickname: None,
                 agent_role: Some("explorer".to_string()),
             })),
-            SpawnAgentOptions::default(),
         )
         .await
         .expect("grandchild spawn should succeed");
@@ -1500,7 +2026,7 @@ async fn list_agents_rejects_descendant_edge_status_when_live_edges_lack_persist
 
     manager
         .agent_control()
-        .spawn_agent_with_options(
+        .spawn_agent(
             (*turn.config).clone(),
             vec![UserInput::Text {
                 text: "live grandchild without sqlite persisted edges".to_string(),
@@ -1509,10 +2035,10 @@ async fn list_agents_rejects_descendant_edge_status_when_live_edges_lack_persist
             Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
                 parent_thread_id: child_thread_id,
                 depth: 2,
+                agent_path: None,
                 agent_nickname: None,
                 agent_role: Some("explorer".to_string()),
             })),
-            SpawnAgentOptions::default(),
         )
         .await
         .expect("grandchild spawn should succeed");

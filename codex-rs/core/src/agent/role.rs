@@ -9,6 +9,7 @@
 use crate::config::AgentRoleConfig;
 use crate::config::Config;
 use crate::config::ConfigOverrides;
+use crate::config::ConfigToml;
 use crate::config::agent_roles::parse_agent_role_file_contents;
 use crate::config::deserialize_config_toml_with_base;
 use crate::config_loader::ConfigLayerEntry;
@@ -24,7 +25,179 @@ use toml::Value as TomlValue;
 
 /// The role name used when a caller omits `agent_type`.
 pub const DEFAULT_ROLE_NAME: &str = "default";
-const AGENT_TYPE_UNAVAILABLE_ERROR: &str = "agent type is currently not available";
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) struct RoleModelOverrideLocks {
+    pub(crate) model: bool,
+    pub(crate) model_reasoning_effort: bool,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct RoleActiveProfileFieldUpdates {
+    model: bool,
+    model_provider: bool,
+    model_reasoning_effort: bool,
+    model_reasoning_summary: bool,
+    model_verbosity: bool,
+}
+
+struct RoleLayerConfig {
+    role_config: ConfigToml,
+    role_layer_toml: TomlValue,
+}
+
+async fn load_role_layer_config(
+    config: &Config,
+    role_name: &str,
+) -> Result<Option<RoleLayerConfig>, String> {
+    let role = resolve_role_config(config, role_name)
+        .ok_or_else(|| format!("unknown agent_type '{role_name}'"))?;
+    let Some(config_file) = role.config_file.as_deref() else {
+        return Ok(None);
+    };
+    let is_built_in = !config.agent_roles.contains_key(role_name);
+
+    let (role_config_toml, role_config_base) = if is_built_in {
+        let role_config_contents =
+            built_in::config_file_contents(config_file).ok_or_else(|| {
+                format!(
+                    "agent type '{role_name}' built-in config '{}' is unavailable",
+                    config_file.display()
+                )
+            })?;
+        let role_config_toml: TomlValue = toml::from_str(role_config_contents).map_err(|err| {
+            format!(
+                "failed to parse built-in config for agent type '{role_name}' ({}): {err}",
+                config_file.display()
+            )
+        })?;
+        (role_config_toml, config.codex_home.as_path())
+    } else {
+        let role_config_contents = tokio::fs::read_to_string(config_file)
+            .await
+            .map_err(|err| {
+                format!(
+                    "failed to read config for agent type '{role_name}' ({}): {err}",
+                    config_file.display()
+                )
+            })?;
+        let role_dir = config_file.parent().ok_or_else(|| {
+            format!(
+                "config file for agent type '{role_name}' has no parent directory: {}",
+                config_file.display()
+            )
+        })?;
+        let role_config_toml = parse_agent_role_file_contents(
+            &role_config_contents,
+            config_file,
+            role_dir,
+            Some(role_name),
+        )
+        .map_err(|err| {
+            format!(
+                "failed to parse config for agent type '{role_name}' ({}): {err}",
+                config_file.display()
+            )
+        })?
+        .config;
+        (role_config_toml, role_dir)
+    };
+
+    let role_config = deserialize_config_toml_with_base(role_config_toml.clone(), role_config_base)
+        .map_err(|err| {
+            format!(
+                "failed to deserialize config for agent type '{role_name}' ({}): {err}",
+                config_file.display()
+            )
+        })?;
+    let role_layer_toml = resolve_relative_paths_in_config_toml(role_config_toml, role_config_base)
+        .map_err(|err| {
+            format!(
+                "failed to resolve relative paths for agent type '{role_name}' ({}): {err}",
+                config_file.display()
+            )
+        })?;
+
+    Ok(Some(RoleLayerConfig {
+        role_config,
+        role_layer_toml,
+    }))
+}
+
+fn role_profile_field_updates(
+    profile_name: Option<&str>,
+    role_layer_toml: &TomlValue,
+) -> RoleActiveProfileFieldUpdates {
+    profile_name
+        .and_then(|name| {
+            role_layer_toml
+                .get("profiles")
+                .and_then(TomlValue::as_table)
+                .and_then(|profiles| profiles.get(name))
+                .and_then(TomlValue::as_table)
+        })
+        .map(|profile_updates| RoleActiveProfileFieldUpdates {
+            model: profile_updates.contains_key("model"),
+            model_provider: profile_updates.contains_key("model_provider"),
+            model_reasoning_effort: profile_updates.contains_key("model_reasoning_effort"),
+            model_reasoning_summary: profile_updates.contains_key("model_reasoning_summary"),
+            model_verbosity: profile_updates.contains_key("model_verbosity"),
+        })
+        .unwrap_or_default()
+}
+
+fn role_preserves_current_profile(role_config: &ConfigToml) -> bool {
+    role_config.model_provider.is_none() && role_config.profile.is_none()
+}
+
+fn role_layer_stack_with_session_flags(
+    config: &Config,
+    role_name: &str,
+    role_layer_toml: &TomlValue,
+) -> Result<ConfigLayerStack, String> {
+    let mut layers: Vec<ConfigLayerEntry> = config
+        .config_layer_stack
+        .get_layers(
+            ConfigLayerStackOrdering::LowestPrecedenceFirst,
+            /*include_disabled*/ true,
+        )
+        .into_iter()
+        .cloned()
+        .collect();
+    let layer = ConfigLayerEntry::new(ConfigLayerSource::SessionFlags, role_layer_toml.clone());
+    let insertion_index =
+        layers.partition_point(|existing_layer| existing_layer.name <= layer.name);
+    layers.insert(insertion_index, layer);
+
+    ConfigLayerStack::new(
+        layers,
+        config.config_layer_stack.requirements().clone(),
+        config.config_layer_stack.requirements_toml().clone(),
+    )
+    .map_err(|err| format!("failed to create layered config for agent type '{role_name}': {err}"))
+}
+
+fn effective_role_profile_after_precedence(
+    config: &Config,
+    role_config: &ConfigToml,
+    role_name: &str,
+    role_layer_toml: &TomlValue,
+) -> Result<Option<String>, String> {
+    let config_layer_stack =
+        role_layer_stack_with_session_flags(config, role_name, role_layer_toml)?;
+    let merged_toml = config_layer_stack.effective_config();
+    let merged_config = deserialize_config_toml_with_base(merged_toml, &config.codex_home)
+        .map_err(|err| {
+            format!("failed to deserialize merged config for agent type '{role_name}': {err}")
+        })?;
+    let preserve_current_profile = role_preserves_current_profile(role_config);
+
+    Ok(merged_config.profile.or_else(|| {
+        preserve_current_profile
+            .then(|| config.active_profile.clone())
+            .flatten()
+    }))
+}
 
 /// Applies a named role layer to `config` while preserving caller-owned model selection.
 ///
@@ -40,84 +213,25 @@ pub(crate) async fn apply_role_to_config(
     role_name: Option<&str>,
 ) -> Result<(), String> {
     let role_name = role_name.unwrap_or(DEFAULT_ROLE_NAME);
-    let is_built_in = !config.agent_roles.contains_key(role_name);
-    let (config_file, is_built_in) = resolve_role_config(config, role_name)
-        .map(|role| (&role.config_file, is_built_in))
-        .ok_or_else(|| format!("unknown agent_type '{role_name}'"))?;
-    let Some(config_file) = config_file.as_ref() else {
+    let Some(RoleLayerConfig {
+        role_config,
+        role_layer_toml,
+    }) = load_role_layer_config(config, role_name).await?
+    else {
         return Ok(());
     };
-
-    let (role_config_toml, role_config_base) = if is_built_in {
-        let role_config_contents = built_in::config_file_contents(config_file)
-            .map(str::to_owned)
-            .ok_or_else(|| AGENT_TYPE_UNAVAILABLE_ERROR.to_string())?;
-        let role_config_toml: TomlValue = toml::from_str(&role_config_contents)
-            .map_err(|_| AGENT_TYPE_UNAVAILABLE_ERROR.to_string())?;
-        (role_config_toml, config.codex_home.as_path())
-    } else {
-        let role_config_contents = tokio::fs::read_to_string(config_file)
-            .await
-            .map_err(|_| AGENT_TYPE_UNAVAILABLE_ERROR.to_string())?;
-        let role_config_toml = parse_agent_role_file_contents(
-            &role_config_contents,
-            config_file,
-            config_file
-                .parent()
-                .ok_or_else(|| AGENT_TYPE_UNAVAILABLE_ERROR.to_string())?,
-            Some(role_name),
-        )
-        .map_err(|_| AGENT_TYPE_UNAVAILABLE_ERROR.to_string())?
-        .config;
-        (
-            role_config_toml,
-            config_file
-                .parent()
-                .ok_or_else(|| AGENT_TYPE_UNAVAILABLE_ERROR.to_string())?,
-        )
-    };
-    let role_config = deserialize_config_toml_with_base(role_config_toml.clone(), role_config_base)
-        .map_err(|_| AGENT_TYPE_UNAVAILABLE_ERROR.to_string())?;
-    let role_layer_toml = resolve_relative_paths_in_config_toml(role_config_toml, role_config_base)
-        .map_err(|_| AGENT_TYPE_UNAVAILABLE_ERROR.to_string())?;
     let role_selects_model = role_config.model.is_some();
-    let role_selects_provider = role_config.model_provider.is_some();
-    let role_selects_profile = role_config.profile.is_some();
     let role_selects_reasoning_effort = role_config.model_reasoning_effort.is_some();
     let role_selects_reasoning_summary = role_config.model_reasoning_summary.is_some();
     let role_selects_verbosity = role_config.model_verbosity.is_some();
-    let active_profile_updates = config
-        .active_profile
-        .as_ref()
-        .and_then(|active_profile| {
-            role_layer_toml
-                .get("profiles")
-                .and_then(TomlValue::as_table)
-                .and_then(|profiles| profiles.get(active_profile))
-                .and_then(TomlValue::as_table)
-        })
-        .cloned();
-    let role_updates_active_profile_model = active_profile_updates
-        .as_ref()
-        .is_some_and(|profile| profile.contains_key("model"));
-    let role_updates_active_profile_provider = active_profile_updates
-        .as_ref()
-        .is_some_and(|profile| profile.contains_key("model_provider"));
-    let role_updates_active_profile_reasoning_effort = active_profile_updates
-        .as_ref()
-        .is_some_and(|profile| profile.contains_key("model_reasoning_effort"));
-    let role_updates_active_profile_reasoning_summary = active_profile_updates
-        .as_ref()
-        .is_some_and(|profile| profile.contains_key("model_reasoning_summary"));
-    let role_updates_active_profile_verbosity = active_profile_updates
-        .as_ref()
-        .is_some_and(|profile| profile.contains_key("model_verbosity"));
+    let active_profile_updates =
+        role_profile_field_updates(config.active_profile.as_deref(), &role_layer_toml);
     // A role that does not explicitly take ownership of model selection should inherit the
     // caller's current profile/provider choices across the config reload.
-    let preserve_current_profile = !role_selects_provider && !role_selects_profile;
+    let preserve_current_profile = role_preserves_current_profile(&role_config);
     let preserve_current_provider =
-        preserve_current_profile && !role_updates_active_profile_provider;
-    let preserved_model = if preserve_current_profile && !role_updates_active_profile_model {
+        preserve_current_profile && !active_profile_updates.model_provider;
+    let preserved_model = if preserve_current_profile && !active_profile_updates.model {
         if role_selects_model {
             role_config.model.clone()
         } else {
@@ -127,7 +241,7 @@ pub(crate) async fn apply_role_to_config(
         None
     };
     let preserved_reasoning_effort =
-        if preserve_current_profile && !role_updates_active_profile_reasoning_effort {
+        if preserve_current_profile && !active_profile_updates.model_reasoning_effort {
             if role_selects_reasoning_effort {
                 role_config.model_reasoning_effort
             } else {
@@ -137,7 +251,7 @@ pub(crate) async fn apply_role_to_config(
             None
         };
     let preserved_reasoning_summary =
-        if preserve_current_profile && !role_updates_active_profile_reasoning_summary {
+        if preserve_current_profile && !active_profile_updates.model_reasoning_summary {
             if role_selects_reasoning_summary {
                 role_config.model_reasoning_summary
             } else {
@@ -146,7 +260,7 @@ pub(crate) async fn apply_role_to_config(
         } else {
             None
         };
-    let preserved_verbosity = if preserve_current_profile && !role_updates_active_profile_verbosity
+    let preserved_verbosity = if preserve_current_profile && !active_profile_updates.model_verbosity
     {
         if role_selects_verbosity {
             role_config.model_verbosity
@@ -157,30 +271,14 @@ pub(crate) async fn apply_role_to_config(
         None
     };
 
-    let mut layers: Vec<ConfigLayerEntry> = config
-        .config_layer_stack
-        .get_layers(
-            ConfigLayerStackOrdering::LowestPrecedenceFirst,
-            /*include_disabled*/ true,
-        )
-        .into_iter()
-        .cloned()
-        .collect();
-    let layer = ConfigLayerEntry::new(ConfigLayerSource::SessionFlags, role_layer_toml);
-    let insertion_index =
-        layers.partition_point(|existing_layer| existing_layer.name <= layer.name);
-    layers.insert(insertion_index, layer);
-
-    let config_layer_stack = ConfigLayerStack::new(
-        layers,
-        config.config_layer_stack.requirements().clone(),
-        config.config_layer_stack.requirements_toml().clone(),
-    )
-    .map_err(|_| AGENT_TYPE_UNAVAILABLE_ERROR.to_string())?;
+    let config_layer_stack =
+        role_layer_stack_with_session_flags(config, role_name, &role_layer_toml)?;
 
     let merged_toml = config_layer_stack.effective_config();
     let merged_config = deserialize_config_toml_with_base(merged_toml, &config.codex_home)
-        .map_err(|_| AGENT_TYPE_UNAVAILABLE_ERROR.to_string())?;
+        .map_err(|err| {
+            format!("failed to deserialize merged config for agent type '{role_name}': {err}")
+        })?;
     let next_config = Config::load_config_with_layer_stack(
         merged_config,
         ConfigOverrides {
@@ -201,10 +299,34 @@ pub(crate) async fn apply_role_to_config(
         config.codex_home.clone(),
         config_layer_stack,
     )
-    .map_err(|_| AGENT_TYPE_UNAVAILABLE_ERROR.to_string())?;
+    .map_err(|err| format!("failed to apply merged config for agent type '{role_name}': {err}"))?;
     *config = next_config;
 
     Ok(())
+}
+
+pub(crate) async fn role_model_override_locks(
+    config: &Config,
+    role_name: Option<&str>,
+) -> Result<RoleModelOverrideLocks, String> {
+    let role_name = role_name.unwrap_or(DEFAULT_ROLE_NAME);
+    let Some(RoleLayerConfig {
+        role_config,
+        role_layer_toml,
+    }) = load_role_layer_config(config, role_name).await?
+    else {
+        return Ok(RoleModelOverrideLocks::default());
+    };
+    let effective_profile =
+        effective_role_profile_after_precedence(config, &role_config, role_name, &role_layer_toml)?;
+    let active_profile_updates =
+        role_profile_field_updates(effective_profile.as_deref(), &role_layer_toml);
+
+    Ok(RoleModelOverrideLocks {
+        model: role_config.model.is_some() || active_profile_updates.model,
+        model_reasoning_effort: role_config.model_reasoning_effort.is_some()
+            || active_profile_updates.model_reasoning_effort,
+    })
 }
 
 pub(crate) fn resolve_role_config<'a>(
