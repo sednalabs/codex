@@ -244,6 +244,42 @@ fn deserialize_server_config_with_tool_filters() {
 }
 
 #[test]
+fn deserialize_server_config_with_elicitation_and_policy_flags() {
+    let cfg: McpServerConfig = toml::from_str(
+        r#"
+            command = "echo"
+            enable_elicitation = true
+            read_only = true
+            strict_tool_classification = true
+            require_approval_for_mutating = true
+        "#,
+    )
+    .expect("should deserialize policy flags");
+
+    assert!(cfg.enable_elicitation);
+    assert!(cfg.read_only);
+    assert!(cfg.strict_tool_classification);
+    assert!(cfg.require_approval_for_mutating);
+}
+
+#[test]
+fn deserialize_rejects_mutation_approval_without_elicitation() {
+    let err = toml::from_str::<McpServerConfig>(
+        r#"
+            command = "echo"
+            require_approval_for_mutating = true
+        "#,
+    )
+    .expect_err("should reject invalid policy combination");
+
+    assert!(
+        err.to_string()
+            .contains("require_approval_for_mutating requires enable_elicitation=true"),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
 fn deserialize_ignores_unknown_server_fields() {
     let cfg: McpServerConfig = toml::from_str(
         r#"
