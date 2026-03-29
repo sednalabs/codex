@@ -85,7 +85,7 @@ fn append_code_mode_sample_uses_global_tools_for_valid_identifiers() {
             "{ foo: string }".to_string(),
             "unknown".to_string(),
         ),
-        "desc\n\nCode mode declaration:\n```ts\nimport { tools } from \"tools/mcp/ologs.js\";\ndeclare const tools: {\n  get_profile(args: { foo: string }): Promise<unknown>;\n};\n```"
+        "desc\n\nCode mode declaration:\n```ts\nimport { tools } from \"tools/mcp/ologs.js\";\ndeclare const tools: {\n  mcp__ologs__get_profile(args: { foo: string }): Promise<unknown>;\n};\n```"
     );
 }
 
@@ -99,6 +99,6 @@ fn append_code_mode_sample_normalizes_invalid_identifiers() {
             "{ foo: string }".to_string(),
             "unknown".to_string(),
         ),
-        "desc\n\nCode mode declaration:\n```ts\nimport { tools } from \"tools/mcp/rmcp.js\";\ndeclare const tools: {\n  echo_tool(args: { foo: string }): Promise<unknown>;\n};\n```"
+        "desc\n\nCode mode declaration:\n```ts\nimport { tools } from \"tools/mcp/rmcp.js\";\ndeclare const tools: {\n  mcp__rmcp__echo_tool(args: { foo: string }): Promise<unknown>;\n};\n```"
     );
 }
