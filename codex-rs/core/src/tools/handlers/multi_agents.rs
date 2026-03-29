@@ -43,10 +43,6 @@ pub(crate) fn parse_agent_id_target(target: &str) -> Result<ThreadId, FunctionCa
     })
 }
 
-pub(crate) fn agent_id(id: &str) -> Result<ThreadId, FunctionCallError> {
-    parse_agent_id_target(id)
-}
-
 pub(crate) fn parse_agent_id_targets(
     targets: Vec<String>,
 ) -> Result<Vec<ThreadId>, FunctionCallError> {
