@@ -50,7 +50,6 @@ pub(crate) struct SpawnAgentOptions {
 pub(crate) struct LiveAgent {
     pub(crate) thread_id: ThreadId,
     pub(crate) metadata: AgentMetadata,
-    pub(crate) status: AgentStatus,
 }
 
 /// Internal inventory snapshot for a spawned sub-agent.
@@ -289,7 +288,6 @@ impl AgentControl {
         Ok(LiveAgent {
             thread_id: new_thread.thread_id,
             metadata: agent_metadata,
-            status: self.get_status(new_thread.thread_id).await,
         })
     }
 

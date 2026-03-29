@@ -4,8 +4,6 @@
 use anyhow::Result;
 use codex_core::CodexAuth;
 use codex_core::config::Config;
-use codex_core::config::types::McpServerConfig;
-use codex_core::config::types::McpServerTransportConfig;
 use codex_features::Feature;
 use codex_protocol::openai_models::ModelsResponse;
 use codex_protocol::protocol::AskForApproval;
@@ -32,7 +30,6 @@ use core_test_support::wait_for_event;
 use pretty_assertions::assert_eq;
 use serde_json::Value;
 use serde_json::json;
-use std::time::Duration;
 
 const SEARCH_TOOL_DESCRIPTION_SNIPPETS: [&str; 2] = [
     "You have access to all the tools of the following apps/connectors",
@@ -87,31 +84,6 @@ fn tool_search_output_tools(request: &ResponsesRequest, call_id: &str) -> Vec<Va
         .and_then(Value::as_array)
         .cloned()
         .unwrap_or_default()
-}
-
-fn rmcp_server_config(command: String) -> McpServerConfig {
-    McpServerConfig {
-        transport: McpServerTransportConfig::Stdio {
-            command,
-            args: Vec::new(),
-            env: None,
-            env_vars: Vec::new(),
-            cwd: None,
-        },
-        enabled: true,
-        required: false,
-        disabled_reason: None,
-        startup_timeout_sec: Some(Duration::from_secs(10)),
-        tool_timeout_sec: None,
-        enabled_tools: None,
-        disabled_tools: None,
-        scopes: None,
-        enable_elicitation: false,
-        read_only: false,
-        strict_tool_classification: false,
-        require_approval_for_mutating: false,
-        oauth_resource: None,
-    }
 }
 
 fn configure_apps(config: &mut Config, apps_base_url: &str) {
