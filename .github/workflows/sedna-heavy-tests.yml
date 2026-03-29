@@ -141,7 +141,9 @@ jobs:
           )"
           run_smoke_gate="$(
             SELECTED_JSON="${selected_json}" \
-            python3 -c $'import json, os\nselected = json.loads(os.environ["SELECTED_JSON"])["include"]\nprint("true" if any(spec["group"] != "docs" for spec in selected) else "false")'
+            CHECKOUT_EVENT='${{ github.event_name }}' \
+            RUN_ALL_LANES="${run_all_lanes}" \
+            python3 -c $'import json, os\nselected = json.loads(os.environ["SELECTED_JSON"])["include"]\nevent_name = os.environ["CHECKOUT_EVENT"]\nrun_all = os.environ["RUN_ALL_LANES"] == "true"\nhas_non_doc = any(spec["group"] != "docs" for spec in selected)\nprint("true" if (event_name != "workflow_dispatch" or run_all) and has_non_doc else "false")'
           )"
 
           {
