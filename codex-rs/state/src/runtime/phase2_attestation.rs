@@ -8,14 +8,14 @@ impl StateRuntime {
         &self,
         memory_root_key: &str,
     ) -> anyhow::Result<bool> {
-        let required = sqlx::query_scalar::<_, bool>(
-            r#"SELECT EXISTS(SELECT 1 FROM phase2_attestation_roots WHERE memory_root_key = ?)"#,
+        let row = sqlx::query_scalar::<_, i64>(
+            r#"SELECT 1 FROM phase2_attestation_roots WHERE memory_root_key = ? LIMIT 1"#,
         )
         .bind(memory_root_key)
-        .fetch_one(self.pool.as_ref())
+        .fetch_optional(self.pool.as_ref())
         .await?;
 
-        Ok(required)
+        Ok(row.is_some())
     }
 
     /// Marks this memory root as having consumed the one-time bootstrap path,
