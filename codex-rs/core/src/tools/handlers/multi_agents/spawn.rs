@@ -145,10 +145,6 @@ impl ToolHandler for Handler {
             .await
             .map_err(collab_spawn_error);
         let spawned_thread_id = result.as_ref().ok().map(|agent| agent.thread_id);
-        let task_name = result
-            .as_ref()
-            .ok()
-            .and_then(|agent| agent.metadata.agent_path.as_ref().map(ToString::to_string));
         let new_agent = match spawned_thread_id {
             Some(thread_id) => {
                 if let Some(agent) = session
