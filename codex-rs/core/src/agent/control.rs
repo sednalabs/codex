@@ -50,7 +50,6 @@ pub(crate) struct SpawnAgentOptions {
 pub(crate) struct LiveAgent {
     pub(crate) thread_id: ThreadId,
     pub(crate) metadata: AgentMetadata,
-    #[allow(dead_code)]
     pub(crate) status: AgentStatus,
 }
 
@@ -542,12 +541,6 @@ impl AgentControl {
             }
         }
         result
-    }
-
-    /// Submit a shutdown request to an existing agent thread.
-    #[allow(dead_code)]
-    pub(crate) async fn shutdown_agent(&self, agent_id: ThreadId) -> CodexResult<String> {
-        self.close_agent(agent_id).await
     }
 
     /// Fetch the last known status for `agent_id`, returning `NotFound` when unavailable.
