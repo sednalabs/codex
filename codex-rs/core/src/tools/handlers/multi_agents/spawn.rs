@@ -4,7 +4,7 @@ use crate::agent::control::SpawnAgentOptions;
 use crate::agent::control::SubAgentInventoryInfo;
 use crate::agent::control::render_input_preview;
 use crate::agent::role::DEFAULT_ROLE_NAME;
-use crate::agent::role::apply_role_to_config;
+use crate::agent::role::apply_role_to_spawn_config;
 
 use crate::agent::exceeds_thread_spawn_depth_limit;
 use crate::agent::next_thread_spawn_depth;
@@ -73,9 +73,10 @@ impl ToolHandler for Handler {
         )
         .await?;
         let pre_role_reasoning_effort = config.model_reasoning_effort;
-        apply_role_to_config(&mut config, role_name)
+        let spawn_model_selection_carry = apply_role_to_spawn_config(&mut config, role_name)
             .await
             .map_err(FunctionCallError::RespondToModel)?;
+        spawn_model_selection_carry.apply_to_config(&mut config);
         if let Some(model) = config.model.clone() {
             let model_info = session
                 .services

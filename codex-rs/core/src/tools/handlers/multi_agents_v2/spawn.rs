@@ -3,7 +3,7 @@ use crate::agent::control::SpawnAgentOptions;
 use crate::agent::control::render_input_preview;
 use crate::agent::next_thread_spawn_depth;
 use crate::agent::role::DEFAULT_ROLE_NAME;
-use crate::agent::role::apply_role_to_config;
+use crate::agent::role::apply_role_to_spawn_config;
 use codex_protocol::AgentPath;
 use codex_protocol::protocol::InterAgentCommunication;
 use codex_protocol::protocol::Op;
@@ -72,9 +72,43 @@ impl ToolHandler for Handler {
             args.reasoning_effort,
         )
         .await?;
-        apply_role_to_config(&mut config, role_name)
+        let pre_role_reasoning_effort = config.model_reasoning_effort;
+        let spawn_model_selection_carry = apply_role_to_spawn_config(&mut config, role_name)
             .await
             .map_err(FunctionCallError::RespondToModel)?;
+        spawn_model_selection_carry.apply_to_config(&mut config);
+        if let Some(model) = config.model.clone() {
+            let model_info = session
+                .services
+                .models_manager
+                .get_model_info(&model, &config)
+                .await;
+
+            match config.model_reasoning_effort {
+                Some(reasoning_effort) => {
+                    if !model_info
+                        .supported_reasoning_levels
+                        .iter()
+                        .any(|preset| preset.effort == reasoning_effort)
+                    {
+                        let role_changed_reasoning_effort =
+                            config.model_reasoning_effort != pre_role_reasoning_effort;
+                        if args.reasoning_effort.is_some() || role_changed_reasoning_effort {
+                            validate_spawn_agent_reasoning_effort(
+                                &model,
+                                &model_info.supported_reasoning_levels,
+                                reasoning_effort,
+                            )?;
+                        }
+
+                        config.model_reasoning_effort = model_info.default_reasoning_level;
+                    }
+                }
+                None => {
+                    config.model_reasoning_effort = model_info.default_reasoning_level;
+                }
+            }
+        }
         apply_spawn_agent_runtime_overrides(&mut config, turn.as_ref())?;
         apply_spawn_agent_overrides(&mut config, child_depth);
 

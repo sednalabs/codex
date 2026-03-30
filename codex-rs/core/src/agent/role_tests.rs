@@ -501,7 +501,7 @@ model_reasoning_effort = "high"
 }
 
 #[tokio::test]
-async fn apply_role_preserves_current_model_settings_when_role_does_not_own_them() {
+async fn apply_role_to_spawn_config_preserves_current_model_settings_when_role_does_not_own_them() {
     let home = TempDir::new().expect("create temp dir");
     tokio::fs::write(
         home.path().join(CONFIG_TOML_FILE),
@@ -544,9 +544,10 @@ model_verbosity = "high"
         },
     );
 
-    apply_role_to_config(&mut config, Some("custom"))
+    let spawn_model_selection_carry = apply_role_to_spawn_config(&mut config, Some("custom"))
         .await
         .expect("custom role should apply");
+    spawn_model_selection_carry.apply_to_config(&mut config);
 
     assert_eq!(config.active_profile.as_deref(), Some("base-profile"));
     assert_eq!(config.model.as_deref(), Some("gpt-5.1-codex-mini"));
@@ -556,7 +557,7 @@ model_verbosity = "high"
 }
 
 #[tokio::test]
-async fn apply_role_top_level_model_settings_override_inherited_active_profile() {
+async fn apply_role_to_spawn_config_keeps_role_owned_model_settings_authoritative() {
     let home = TempDir::new().expect("create temp dir");
     tokio::fs::write(
         home.path().join(CONFIG_TOML_FILE),
@@ -601,9 +602,10 @@ model_verbosity = "low"
         },
     );
 
-    apply_role_to_config(&mut config, Some("custom"))
+    let spawn_model_selection_carry = apply_role_to_spawn_config(&mut config, Some("custom"))
         .await
         .expect("custom role should apply");
+    spawn_model_selection_carry.apply_to_config(&mut config);
 
     assert_eq!(config.active_profile.as_deref(), Some("base-profile"));
     assert_eq!(config.model.as_deref(), Some("gpt-5.1-codex-mini"));
