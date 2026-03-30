@@ -2337,6 +2337,42 @@ async fn wait_agent_rejects_duplicate_targets() {
 }
 
 #[tokio::test]
+async fn wait_agent_accepts_legacy_ids_argument() {
+    let (mut session, turn) = make_session_and_context().await;
+    let manager = thread_manager();
+    session.services.agent_control = manager.agent_control();
+    let id_a = ThreadId::new();
+    let id_b = ThreadId::new();
+    let invocation = invocation(
+        Arc::new(session),
+        Arc::new(turn),
+        "wait_agent",
+        function_payload(json!({
+            "ids": [id_a.to_string(), id_b.to_string()],
+            "timeout_ms": 1000
+        })),
+    );
+    let output = WaitAgentHandler
+        .handle(invocation)
+        .await
+        .expect("legacy ids alias should be accepted");
+    let (content, success) = expect_text_output(output);
+    let result: wait::WaitAgentResult =
+        serde_json::from_str(&content).expect("wait_agent result should be json");
+    assert_eq!(
+        result,
+        wait::WaitAgentResult {
+            message: "Wait completed.".to_string(),
+            requested_ids: vec![id_a, id_b],
+            pending_ids: Vec::new(),
+            completion_reason: codex_protocol::protocol::CollabWaitingCompletionReason::Terminal,
+            timed_out: false,
+        }
+    );
+    assert_eq!(success, None);
+}
+
+#[tokio::test]
 async fn multi_agent_v2_wait_agent_accepts_targets_argument() {
     let (mut session, mut turn) = make_session_and_context().await;
     let target = ThreadId::new().to_string();
