@@ -37,28 +37,12 @@ impl ToolHandler for Handler {
         } = invocation;
         let arguments = function_arguments(payload)?;
         let args: WaitArgs = parse_arguments(&arguments)?;
-        if !args.ids.is_empty() && !args.targets.is_empty() {
-            return Err(FunctionCallError::RespondToModel(
-                "provide either ids or targets, but not both".to_string(),
-            ));
-        }
-        let receiver_thread_ids = if !args.targets.is_empty() {
-            resolve_agent_targets(&session, &turn, args.targets).await?
-        } else if !args.ids.is_empty() {
-            args.ids
-                .iter()
-                .map(|id| parse_agent_id_target(id))
-                .collect::<Result<Vec<_>, _>>()?
-        } else {
-            return Err(FunctionCallError::RespondToModel(
-                "one of ids or targets must be non-empty".to_string(),
-            ));
-        };
+        let receiver_thread_ids = resolve_agent_targets(&session, &turn, args.targets).await?;
         let mut seen = HashSet::with_capacity(receiver_thread_ids.len());
         for id in &receiver_thread_ids {
             if !seen.insert(*id) {
                 return Err(FunctionCallError::RespondToModel(
-                    "ids/targets must resolve to unique agents".to_string(),
+                    "targets must resolve to unique agents".to_string(),
                 ));
             }
         }
@@ -221,8 +205,6 @@ impl ToolHandler for Handler {
 
 #[derive(Debug, Deserialize)]
 struct WaitArgs {
-    #[serde(default)]
-    ids: Vec<String>,
     #[serde(default)]
     targets: Vec<String>,
     timeout_ms: Option<i64>,

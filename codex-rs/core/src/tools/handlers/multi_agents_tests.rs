@@ -2312,7 +2312,28 @@ async fn wait_agent_rejects_empty_targets() {
     };
     assert_eq!(
         err,
-        FunctionCallError::RespondToModel("agent ids must be non-empty".to_string())
+        FunctionCallError::RespondToModel("agent targets must be non-empty".to_string())
+    );
+}
+
+#[tokio::test]
+async fn wait_agent_rejects_duplicate_targets() {
+    let (mut session, turn) = make_session_and_context().await;
+    let manager = thread_manager();
+    session.services.agent_control = manager.agent_control();
+    let agent_id = ThreadId::new().to_string();
+    let invocation = invocation(
+        Arc::new(session),
+        Arc::new(turn),
+        "wait_agent",
+        function_payload(json!({"targets": [agent_id.clone(), agent_id]})),
+    );
+    let Err(err) = WaitAgentHandler.handle(invocation).await else {
+        panic!("duplicate targets should be rejected");
+    };
+    assert_eq!(
+        err,
+        FunctionCallError::RespondToModel("targets must resolve to unique agents".to_string())
     );
 }
 
