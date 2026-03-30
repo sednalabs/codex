@@ -1177,6 +1177,7 @@ pub(in crate::memories) mod agent {
         }
         #[cfg(windows)]
         {
+            use std::os::windows::fs::MetadataExt;
             use std::os::windows::fs::OpenOptionsExt;
             use windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT;
             use windows_sys::Win32::Storage::FileSystem::FILE_FLAG_OPEN_REPARSE_POINT;
@@ -1229,6 +1230,7 @@ pub(in crate::memories) mod agent {
         }
         #[cfg(windows)]
         {
+            use std::os::windows::fs::MetadataExt;
             use std::os::windows::fs::OpenOptionsExt;
             use windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT;
             use windows_sys::Win32::Storage::FileSystem::FILE_FLAG_OPEN_REPARSE_POINT;
