@@ -84,3 +84,18 @@ artifacts.
 - release workflow artifacts retain for 3 days in Actions storage
 - official GitHub Releases remain until manually removed
 - branch and lab artifacts are disposable; delete or ignore them if they are no longer useful
+
+## Bootstrap limitation
+
+- GitHub's `gh workflow run` path can only dispatch workflows that already exist on the default
+  branch.
+- That means a brand-new dispatch-only workflow such as `validation-lab.yml` cannot bootstrap its
+  own first remote run from a scratch or integration branch before the workflow is merged to
+  `main`.
+- During rollout, use an existing manual-dispatch workflow such as `sedna-heavy-tests.yml` as the
+  bootstrap validator for the branch that introduces the new workflow.
+- Be aware that `sedna-heavy-tests.yml` still uses a coarse concurrency group keyed only by
+  workflow plus ref, so same-ref manual lanes serialize or cancel rather than running truly in
+  parallel.
+- The finer-grained `validation-lab` concurrency key (`ref + profile + lane set + explicit lanes`)
+  is what unlocks parallel scratch/integration validation once that workflow exists on `main`.
