@@ -279,6 +279,7 @@ jobs:
         with:
           name: validation-summary
           path: ${{ env.SUMMARY_FILE }}
+          overwrite: true
           retention-days: 3
 
       - name: Append validation summary

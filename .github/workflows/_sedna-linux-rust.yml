@@ -246,6 +246,7 @@ jobs:
         with:
           name: validation-lane-summary-${{ steps.lane_summary.outputs.lane_slug }}
           path: ${{ steps.lane_summary.outputs.summary_file }}
+          overwrite: true
           retention-days: 3
 
       - name: Upload workflow artifacts
