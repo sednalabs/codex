@@ -134,9 +134,7 @@ def heavy_plan(args: argparse.Namespace) -> None:
         if args.event_name == "workflow_dispatch" and args.requested_lane and args.requested_lane != "all":
             if lane_id != args.requested_lane:
                 continue
-        elif parse_bool(args.run_all_lanes):
-            pass
-        else:
+        elif not parse_bool(args.run_all_lanes):
             if spec.get("explicit_only"):
                 continue
             if not active_groups.intersection(spec["groups"]):
