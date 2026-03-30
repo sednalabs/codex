@@ -94,3 +94,8 @@ artifacts.
   `main`.
 - During rollout, use an existing manual-dispatch workflow such as `sedna-heavy-tests.yml` as the
   bootstrap validator for the branch that introduces the new workflow.
+- Be aware that `sedna-heavy-tests.yml` still uses a coarse concurrency group keyed only by
+  workflow plus ref, so same-ref manual lanes serialize or cancel rather than running truly in
+  parallel.
+- The finer-grained `validation-lab` concurrency key (`ref + profile + lane set + explicit lanes`)
+  is what unlocks parallel scratch/integration validation once that workflow exists on `main`.
