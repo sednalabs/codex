@@ -24,7 +24,7 @@ const EXEC_DESCRIPTION_TEMPLATE: &str = r#"## exec
 - `store(key: string, value: any)`: stores a serializable value under a string key for later `exec` calls in the same session.
 - `load(key: string)`: returns the stored value for a string key, or `undefined` if it is missing.
 - `notify(value: string | number | boolean | undefined | null)`: immediately injects an extra `custom_tool_call_output` for the current `exec` call. Values are stringified like `text(...)`.
-- `ALL_TOOLS`: metadata for the enabled nested tools as `{ name, description }` entries.
+- `ALL_TOOLS`: metadata for the enabled nested tools as `{ name, description }` entries, with an additional `module` field for namespaced MCP tool modules.
 - `yield_control()`: yields the accumulated output to the model immediately while the script keeps running."#;
 const WAIT_DESCRIPTION_TEMPLATE: &str = r#"- Use `wait` only after `exec` returns `Script running with cell ID ...`.
 - `cell_id` identifies the running `exec` cell to resume.
@@ -47,6 +47,8 @@ pub enum CodeModeToolKind {
 #[derive(Clone, Debug, PartialEq)]
 pub struct ToolDefinition {
     pub name: String,
+    pub all_tools_name: Option<String>,
+    pub all_tools_module: Option<String>,
     pub description: String,
     pub kind: CodeModeToolKind,
     pub input_schema: Option<JsonValue>,
@@ -225,8 +227,12 @@ pub fn augment_tool_definition(mut definition: ToolDefinition) -> ToolDefinition
 
 pub fn enabled_tool_metadata(definition: &ToolDefinition) -> EnabledToolMetadata {
     EnabledToolMetadata {
-        tool_name: definition.name.clone(),
+        tool_name: definition
+            .all_tools_name
+            .clone()
+            .unwrap_or_else(|| definition.name.clone()),
         global_name: normalize_code_mode_identifier(&definition.name),
+        module: definition.all_tools_module.clone(),
         description: definition.description.clone(),
         kind: definition.kind,
     }
@@ -236,6 +242,7 @@ pub fn enabled_tool_metadata(definition: &ToolDefinition) -> EnabledToolMetadata
 pub struct EnabledToolMetadata {
     pub tool_name: String,
     pub global_name: String,
+    pub module: Option<String>,
     pub description: String,
     pub kind: CodeModeToolKind,
 }
@@ -272,6 +279,22 @@ fn append_code_mode_sample_for_definition(definition: &ToolDefinition) -> String
         .as_ref()
         .map(render_json_schema_to_typescript)
         .unwrap_or_else(|| "unknown".to_string());
+    if let Some(module) = &definition.all_tools_module {
+        let tool_name = normalize_code_mode_identifier(
+            definition
+                .all_tools_name
+                .as_deref()
+                .unwrap_or(definition.name.as_str()),
+        );
+        let declaration = format!(
+            "declare function {}",
+            render_code_mode_tool_declaration(&tool_name, input_name, input_type, output_type)
+        );
+        return format!(
+            "{}\n\nCode mode declaration:\n```ts\nimport {{ tools }} from \"{}\";\n{}\n```",
+            definition.description, module, declaration
+        );
+    }
     append_code_mode_sample(
         &definition.description,
         &definition.name,
@@ -522,6 +545,8 @@ mod tests {
     fn augment_tool_definition_appends_typed_declaration() {
         let definition = ToolDefinition {
             name: "hidden_dynamic_tool".to_string(),
+            all_tools_name: None,
+            all_tools_module: None,
             description: "Test tool".to_string(),
             kind: CodeModeToolKind::Function,
             input_schema: Some(json!({
@@ -544,6 +569,34 @@ mod tests {
                 "hidden_dynamic_tool(args: { city: string; }): Promise<{ ok: boolean; }>;"
             )
         );
+    }
+
+    #[test]
+    fn augment_tool_definition_uses_module_style_for_namespaced_tools() {
+        let definition = ToolDefinition {
+            name: "mcp__rmcp__echo".to_string(),
+            all_tools_name: Some("echo".to_string()),
+            all_tools_module: Some("tools/mcp/rmcp.js".to_string()),
+            description: "Echo tool".to_string(),
+            kind: CodeModeToolKind::Function,
+            input_schema: Some(json!({
+                "type": "object",
+                "properties": { "message": { "type": "string" } },
+                "required": ["message"],
+                "additionalProperties": false
+            })),
+            output_schema: Some(json!({
+                "type": "object",
+                "properties": { "ok": { "type": "boolean" } },
+                "required": ["ok"]
+            })),
+        };
+
+        let description = augment_tool_definition(definition).description;
+        assert!(description.contains(r#"import { tools } from "tools/mcp/rmcp.js";"#));
+        assert!(description.contains(
+            "declare function echo(args: { message: string; }): Promise<{ ok: boolean; }>;"
+        ));
     }
 
     #[test]

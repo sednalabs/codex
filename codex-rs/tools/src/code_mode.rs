@@ -34,25 +34,52 @@ pub fn tool_spec_to_code_mode_tool_definition(spec: &ToolSpec) -> Option<CodeMod
 
 fn code_mode_tool_definition_for_spec(spec: &ToolSpec) -> Option<CodeModeToolDefinition> {
     match spec {
-        ToolSpec::Function(tool) => Some(CodeModeToolDefinition {
-            name: tool.name.clone(),
-            description: tool.description.clone(),
-            kind: CodeModeToolKind::Function,
-            input_schema: serde_json::to_value(&tool.parameters).ok(),
-            output_schema: tool.output_schema.clone(),
-        }),
-        ToolSpec::Freeform(tool) => Some(CodeModeToolDefinition {
-            name: tool.name.clone(),
-            description: tool.description.clone(),
-            kind: CodeModeToolKind::Freeform,
-            input_schema: None,
-            output_schema: None,
-        }),
+        ToolSpec::Function(tool) => {
+            let (all_tools_name, all_tools_module) = all_tools_metadata_for_name(&tool.name);
+            Some(CodeModeToolDefinition {
+                name: tool.name.clone(),
+                all_tools_name,
+                all_tools_module,
+                description: tool.description.clone(),
+                kind: CodeModeToolKind::Function,
+                input_schema: serde_json::to_value(&tool.parameters).ok(),
+                output_schema: tool.output_schema.clone(),
+            })
+        }
+        ToolSpec::Freeform(tool) => {
+            let (all_tools_name, all_tools_module) = all_tools_metadata_for_name(&tool.name);
+            Some(CodeModeToolDefinition {
+                name: tool.name.clone(),
+                all_tools_name,
+                all_tools_module,
+                description: tool.description.clone(),
+                kind: CodeModeToolKind::Freeform,
+                input_schema: None,
+                output_schema: None,
+            })
+        }
         ToolSpec::LocalShell {}
         | ToolSpec::ImageGeneration { .. }
         | ToolSpec::ToolSearch { .. }
         | ToolSpec::WebSearch { .. } => None,
     }
+}
+
+fn all_tools_metadata_for_name(tool_name: &str) -> (Option<String>, Option<String>) {
+    let Some(rest) = tool_name.strip_prefix("mcp__") else {
+        return (None, None);
+    };
+    let Some((server, nested_name)) = rest.split_once("__") else {
+        return (None, None);
+    };
+    if server.is_empty() || nested_name.is_empty() {
+        return (None, None);
+    }
+
+    (
+        Some(nested_name.to_string()),
+        Some(format!("tools/mcp/{server}.js")),
+    )
 }
 
 #[cfg(test)]
