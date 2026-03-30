@@ -23,7 +23,6 @@ use codex_hooks::Hooks;
 use codex_otel::SessionTelemetry;
 use codex_protocol::protocol::Event;
 use codex_state::UsageLogger;
-use codex_utils_absolute_path::AbsolutePathBuf;
 use std::path::PathBuf;
 use tokio::sync::Mutex;
 use tokio::sync::RwLock;

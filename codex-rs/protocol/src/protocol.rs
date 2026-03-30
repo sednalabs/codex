@@ -4843,6 +4843,9 @@ mod tests {
 
     #[test]
     fn format_token_usage_summary_falls_back_when_usage_missing() {
-        assert_eq!(format_token_usage_summary(None), "Token usage: unavailable");
+        assert_eq!(
+            format_token_usage_summary(/*token_usage*/ None),
+            "Token usage: unavailable"
+        );
     }
 }
