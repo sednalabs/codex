@@ -275,6 +275,9 @@ pub(super) fn start_startup_remote_plugin_sync_once(
     };
 
     tokio::spawn(async move {
+        // Keep the generation guard alive for the full lifetime of the spawned task so
+        // cleanup only happens after the sync attempt truly completes.
+        let startup_remote_plugin_sync_started = startup_remote_plugin_sync_started;
         let generation = startup_remote_plugin_sync_started.generation;
         if marker_path.is_file() {
             remove_startup_remote_plugin_sync_state(codex_home.as_path(), generation);
