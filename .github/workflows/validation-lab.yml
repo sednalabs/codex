@@ -170,6 +170,7 @@ jobs:
       - smoke_gate
     if: >-
       ${{
+        always() &&
         needs.metadata.outputs.run_selected_lanes == 'true' &&
         (needs.smoke_gate.result == 'success' || needs.smoke_gate.result == 'skipped')
       }}
@@ -191,6 +192,7 @@ jobs:
       - downstream_lanes
     if: >-
       ${{
+        always() &&
         needs.metadata.outputs.run_artifact == 'true' &&
         (needs.smoke_gate.result == 'success' || needs.smoke_gate.result == 'skipped') &&
         (needs.downstream_lanes.result == 'success' || needs.downstream_lanes.result == 'skipped')
