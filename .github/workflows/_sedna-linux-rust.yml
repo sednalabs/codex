@@ -54,6 +54,13 @@ jobs:
           fetch-depth: 0
           ref: ${{ inputs.checkout_ref != '' && inputs.checkout_ref || github.sha }}
 
+      - name: Check out workflow helpers
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 1
+          ref: ${{ github.sha }}
+          path: .workflow-src
+
       - name: Set up Node.js for js_repl tests
         uses: actions/setup-node@v6
         with:
@@ -208,6 +215,46 @@ jobs:
         if: ${{ steps.run_lane.outcome == 'failure' }}
         shell: bash
         run: exit 1
+
+      - name: Prepare lane summary artifact
+        if: ${{ always() }}
+        id: lane_summary
+        shell: bash
+        env:
+          LANE_COMMAND: ${{ inputs.run_command }}
+          SUMMARY_TITLE: ${{ inputs.summary_title }}
+          LANE_ID: ${{ inputs.lane_id != '' && inputs.lane_id || inputs.summary_title }}
+          ARTIFACT_NAME: ${{ inputs.artifact_name }}
+          RUN_OUTCOME: ${{ steps.run_lane.outcome }}
+          EXIT_CODE: ${{ steps.run_lane.outputs.exit_code }}
+          LOG_FILE: ${{ steps.run_lane.outputs.log_file }}
+        run: |
+          set -euo pipefail
+          lane_slug="$(printf '%s' "${LANE_ID}" | tr '[:upper:]' '[:lower:]' | tr -cs '[:alnum:]' '-' | sed 's/^-//;s/-$//' | cut -c1-48)"
+          if [[ -z "${lane_slug}" ]]; then
+            lane_slug="validation-lane"
+          fi
+          summary_file="${RUNNER_TEMP}/validation-lane-summary-${lane_slug}.json"
+          python3 ../.workflow-src/.github/scripts/write_lane_summary.py \
+            --lane-id "${LANE_ID}" \
+            --summary-title "${SUMMARY_TITLE}" \
+            --run-command "${LANE_COMMAND}" \
+            --outcome "${RUN_OUTCOME}" \
+            --exit-code "${EXIT_CODE}" \
+            --log-file "${LOG_FILE}" \
+            --artifact-name "${ARTIFACT_NAME}" \
+            --output "${summary_file}"
+          echo "lane_slug=${lane_slug}" >> "$GITHUB_OUTPUT"
+          echo "summary_file=${summary_file}" >> "$GITHUB_OUTPUT"
+
+      - name: Upload lane summary artifact
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: validation-lane-summary-${{ steps.lane_summary.outputs.lane_slug }}
+          path: ${{ steps.lane_summary.outputs.summary_file }}
+          overwrite: true
+          retention-days: 3
 
       - name: Upload workflow artifacts
         if: ${{ inputs.artifact_name != '' && inputs.artifact_path != '' }}
