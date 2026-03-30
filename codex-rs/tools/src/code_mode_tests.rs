@@ -138,7 +138,7 @@ fn tool_spec_to_code_mode_tool_definition_preserves_mcp_module_metadata() {
             name: "mcp__rmcp__echo".to_string(),
             all_tools_name: Some("echo".to_string()),
             all_tools_module: Some("tools/mcp/rmcp.js".to_string()),
-            description: "Echo text\n\nCode mode declaration:\n```ts\nimport { tools } from \"tools/mcp/rmcp.js\";\ndeclare function echo(args: { message: string; }): Promise<{ ok: boolean; }>;\n```".to_string(),
+            description: "Echo text\n\nCode mode declaration:\n```ts\nimport { tools } from \"tools/mcp/rmcp.js\";\ndeclare function echo(args: {\n  message: string;\n}): Promise<{\n  ok: boolean;\n}>;\n```".to_string(),
             kind: codex_code_mode::CodeModeToolKind::Function,
             input_schema: Some(json!({
                 "type": "object",

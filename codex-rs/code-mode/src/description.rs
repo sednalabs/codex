@@ -288,7 +288,7 @@ fn append_code_mode_sample_for_definition(definition: &ToolDefinition) -> String
         );
         let declaration = format!(
             "declare function {}",
-            render_code_mode_tool_declaration(&tool_name, input_name, input_type, output_type)
+            render_module_tool_declaration(&tool_name, input_name, input_type, output_type)
         );
         return format!(
             "{}\n\nCode mode declaration:\n```ts\nimport {{ tools }} from \"{}\";\n{}\n```",
@@ -312,6 +312,38 @@ fn render_code_mode_tool_declaration(
 ) -> String {
     let tool_name = normalize_code_mode_identifier(tool_name);
     format!("{tool_name}({input_name}: {input_type}): Promise<{output_type}>;")
+}
+
+fn render_module_tool_declaration(
+    tool_name: &str,
+    input_name: &str,
+    input_type: String,
+    output_type: String,
+) -> String {
+    let tool_name = normalize_code_mode_identifier(tool_name);
+    let input_type = pretty_print_object_type(&input_type);
+    let output_type = pretty_print_object_type(&output_type);
+    format!("{tool_name}({input_name}: {input_type}): Promise<{output_type}>;")
+}
+
+fn pretty_print_object_type(rendered: &str) -> String {
+    let Some(inner) = rendered
+        .strip_prefix("{ ")
+        .and_then(|inner| inner.strip_suffix(" }"))
+    else {
+        return rendered.to_string();
+    };
+
+    if inner.trim().is_empty() {
+        return "{}".to_string();
+    }
+
+    let lines = inner
+        .split("; ")
+        .filter(|segment| !segment.trim().is_empty())
+        .map(|segment| format!("  {};", segment.trim_end_matches(';')))
+        .collect::<Vec<_>>();
+    format!("{{\n{}\n}}", lines.join("\n"))
 }
 
 pub fn render_json_schema_to_typescript(schema: &JsonValue) -> String {
@@ -595,7 +627,7 @@ mod tests {
         let description = augment_tool_definition(definition).description;
         assert!(description.contains(r#"import { tools } from "tools/mcp/rmcp.js";"#));
         assert!(description.contains(
-            "declare function echo(args: { message: string; }): Promise<{ ok: boolean; }>;"
+            "declare function echo(args: {\n  message: string;\n}): Promise<{\n  ok: boolean;\n}>;"
         ));
     }
 
