@@ -218,7 +218,7 @@ pub fn create_resume_agent_tool() -> ToolSpec {
 pub fn create_wait_agent_tool_v1(options: WaitAgentTimeoutOptions) -> ToolSpec {
     ToolSpec::Function(ResponsesApiTool {
         name: "wait_agent".to_string(),
-        description: "Wait for agents to reach a final status. Completed statuses may include the agent's final message. Returns empty status when timed out. Once the agent reaches a final status, a notification message will be received containing the same completed status."
+        description: "Use this for blocking coordination while awaiting sub-agent completion. Wait for agents to reach a final status. Completed statuses may include the agent's final message. Returns empty status when timed out. Prefer longer timeouts to avoid busy polling."
             .to_string(),
         strict: false,
         defer_loading: None,
@@ -230,7 +230,7 @@ pub fn create_wait_agent_tool_v1(options: WaitAgentTimeoutOptions) -> ToolSpec {
 pub fn create_wait_agent_tool_v2(options: WaitAgentTimeoutOptions) -> ToolSpec {
     ToolSpec::Function(ResponsesApiTool {
         name: "wait_agent".to_string(),
-        description: "Wait for agents to reach a final status. Returns a brief wait summary instead of the agent's final content. Returns a timeout summary when no agent reaches a final status before the deadline."
+        description: "Use this for blocking coordination while awaiting sub-agent completion. Returns a brief wait summary instead of the agent's final content. Returns a timeout summary when no agent reaches a final status before the deadline. Prefer longer timeouts to avoid busy polling. When `return_when` is `any`, the call returns once one requested agent reaches terminal status. When `return_when` is `all`, it waits until every requested agent reaches terminal status."
             .to_string(),
         strict: false,
         defer_loading: None,
