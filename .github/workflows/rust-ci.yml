@@ -113,7 +113,7 @@ jobs:
 
           known_false_positives='type of expression at "runs-on" must be string or array but found type|property "runs_on" is not defined in object type'
           actionlint \
-            -no-shellcheck \
+            -shellcheck= \
             -ignore "$known_false_positives" \
             "${files[@]}"
 
