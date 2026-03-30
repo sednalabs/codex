@@ -512,7 +512,7 @@ pub(in crate::memories) mod agent {
                 .flatten();
         validated_consolidation_artifact_state(
             root,
-            None,
+            /*state_db*/ None,
             not_before,
             expected_prepared_input_artifact_tree_sha256.as_deref(),
             allow_existing_artifacts_without_rewrite,
@@ -535,7 +535,7 @@ pub(in crate::memories) mod agent {
         consolidation_artifacts_ready_with_state_db_and_expected_prepared_input_tree(
             root,
             config,
-            None,
+            /*state_db*/ None,
             not_before,
             expected_prepared_input_artifact_tree_sha256,
             allow_existing_artifacts_without_rewrite,
@@ -788,7 +788,7 @@ pub(in crate::memories) mod agent {
         selection: &codex_state::Phase2InputSelection,
     ) -> std::io::Result<()> {
         write_current_consolidation_artifact_attestation_with_state_db(
-            config, root, selection, None,
+            config, root, selection, /*state_db*/ None,
         )
         .await
     }

@@ -115,11 +115,16 @@ pub enum ExecCapturePolicy {
 }
 
 fn select_process_exec_tool_sandbox_type(
+    sandbox_policy: &SandboxPolicy,
     file_system_sandbox_policy: &FileSystemSandboxPolicy,
     network_sandbox_policy: NetworkSandboxPolicy,
     windows_sandbox_level: codex_protocol::config_types::WindowsSandboxLevel,
     enforce_managed_network: bool,
 ) -> SandboxType {
+    if matches!(sandbox_policy, SandboxPolicy::ExternalSandbox { .. }) {
+        return SandboxType::None;
+    }
+
     SandboxManager::new().select_initial(
         file_system_sandbox_policy,
         network_sandbox_policy,
@@ -240,6 +245,7 @@ pub fn build_exec_request(
     let windows_sandbox_level = params.windows_sandbox_level;
     let enforce_managed_network = params.network.is_some();
     let sandbox_type = select_process_exec_tool_sandbox_type(
+        sandbox_policy,
         file_system_sandbox_policy,
         network_sandbox_policy,
         windows_sandbox_level,

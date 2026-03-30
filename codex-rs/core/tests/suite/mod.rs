@@ -21,6 +21,7 @@ const CODEX_HOME_ENV_VAR: &str = "CODEX_HOME";
 // It allows the test binary to behave like codex and dispatch to apply_patch and codex-linux-sandbox
 // based on the arg0.
 // NOTE: this doesn't work on ARM
+#[allow(deprecated)]
 #[ctor]
 pub static CODEX_ALIASES_TEMP_DIR: Option<TestCodexAliasesGuard> = {
     let mut args = std::env::args_os();

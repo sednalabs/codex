@@ -166,6 +166,7 @@ impl CodexThread {
     /// If the thread already has an active turn, the message is queued as pending input for that
     /// turn. Otherwise it is queued at session scope and a regular turn is started so the agent
     /// can consume that pending input through the normal turn pipeline.
+    #[allow(dead_code)]
     #[cfg(test)]
     pub(crate) async fn append_message(&self, message: ResponseItem) -> CodexResult<String> {
         let submission_id = uuid::Uuid::new_v4().to_string();

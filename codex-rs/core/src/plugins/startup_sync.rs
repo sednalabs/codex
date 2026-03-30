@@ -516,6 +516,7 @@ fn startup_remote_plugin_sync_snapshot(
 }
 
 #[cfg(test)]
+#[allow(dead_code)]
 fn startup_remote_plugin_sync_state_snapshot_for_test(
     codex_home: &Path,
 ) -> Option<(u64, StartupRemotePluginSyncPhase)> {
@@ -530,6 +531,7 @@ fn startup_remote_plugin_sync_state_snapshot_for_test(
 }
 
 #[cfg(test)]
+#[allow(dead_code)]
 fn startup_remote_plugin_sync_install_state_for_test(
     codex_home: &Path,
     generation: u64,

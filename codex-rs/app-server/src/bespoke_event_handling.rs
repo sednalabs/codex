@@ -3314,7 +3314,7 @@ mod tests {
         ];
         let completed_id = requested_receivers[0];
         let event = CollabWaitingEndEvent {
-            sender_thread_id: sender_thread_id.clone(),
+            sender_thread_id,
             call_id: "call-wait-1".to_string(),
             agent_statuses: vec![],
             statuses: HashMap::from([(

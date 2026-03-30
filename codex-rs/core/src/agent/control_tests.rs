@@ -231,7 +231,7 @@ async fn spawn_agent_errors_when_manager_dropped() {
     let control = AgentControl::default();
     let (_home, config) = test_config().await;
     let err = control
-        .spawn_agent(config, text_input("hello"), None)
+        .spawn_agent(config, text_input("hello"), /*session_source*/ None)
         .await
         .expect_err("spawn_agent should fail without a manager");
     assert_eq!(
@@ -365,7 +365,11 @@ async fn spawn_agent_creates_thread_and_sends_prompt() {
     let harness = AgentControlHarness::new().await;
     let thread_id = harness
         .control
-        .spawn_agent(harness.config.clone(), text_input("spawned"), None)
+        .spawn_agent(
+            harness.config.clone(),
+            text_input("spawned"),
+            /*session_source*/ None,
+        )
         .await
         .expect("spawn_agent should succeed");
     let _thread = harness
@@ -658,12 +662,20 @@ async fn spawn_agent_respects_max_threads_limit() {
         .expect("start thread");
 
     let first_agent_id = control
-        .spawn_agent(config.clone(), text_input("hello"), None)
+        .spawn_agent(
+            config.clone(),
+            text_input("hello"),
+            /*session_source*/ None,
+        )
         .await
         .expect("spawn_agent should succeed");
 
     let err = control
-        .spawn_agent(config, text_input("hello again"), None)
+        .spawn_agent(
+            config,
+            text_input("hello again"),
+            /*session_source*/ None,
+        )
         .await
         .expect_err("spawn_agent should respect max threads");
     let CodexErr::AgentLimitReached {
@@ -697,7 +709,11 @@ async fn spawn_agent_releases_slot_after_shutdown() {
     let control = manager.agent_control();
 
     let first_agent_id = control
-        .spawn_agent(config.clone(), text_input("hello"), None)
+        .spawn_agent(
+            config.clone(),
+            text_input("hello"),
+            /*session_source*/ None,
+        )
         .await
         .expect("spawn_agent should succeed");
     let _ = control
@@ -706,7 +722,11 @@ async fn spawn_agent_releases_slot_after_shutdown() {
         .expect("shutdown agent");
 
     let second_agent_id = control
-        .spawn_agent(config.clone(), text_input("hello again"), None)
+        .spawn_agent(
+            config.clone(),
+            text_input("hello again"),
+            /*session_source*/ None,
+        )
         .await
         .expect("spawn_agent should succeed after shutdown");
     let _ = control
@@ -733,12 +753,20 @@ async fn spawn_agent_limit_shared_across_clones() {
     let cloned = control.clone();
 
     let first_agent_id = cloned
-        .spawn_agent(config.clone(), text_input("hello"), None)
+        .spawn_agent(
+            config.clone(),
+            text_input("hello"),
+            /*session_source*/ None,
+        )
         .await
         .expect("spawn_agent should succeed");
 
     let err = control
-        .spawn_agent(config, text_input("hello again"), None)
+        .spawn_agent(
+            config,
+            text_input("hello again"),
+            /*session_source*/ None,
+        )
         .await
         .expect_err("spawn_agent should respect shared guard");
     let CodexErr::AgentLimitReached { max_threads } = err else {
@@ -769,7 +797,11 @@ async fn resume_agent_respects_max_threads_limit() {
     let control = manager.agent_control();
 
     let resumable_id = control
-        .spawn_agent(config.clone(), text_input("hello"), None)
+        .spawn_agent(
+            config.clone(),
+            text_input("hello"),
+            /*session_source*/ None,
+        )
         .await
         .expect("spawn_agent should succeed");
     let _ = control
@@ -778,7 +810,11 @@ async fn resume_agent_respects_max_threads_limit() {
         .expect("shutdown resumable thread");
 
     let active_id = control
-        .spawn_agent(config.clone(), text_input("occupy"), None)
+        .spawn_agent(
+            config.clone(),
+            text_input("occupy"),
+            /*session_source*/ None,
+        )
         .await
         .expect("spawn_agent should succeed for active slot");
 
@@ -822,7 +858,7 @@ async fn resume_agent_releases_slot_after_resume_failure() {
         .expect_err("resume should fail for missing rollout path");
 
     let resumed_id = control
-        .spawn_agent(config, text_input("hello"), None)
+        .spawn_agent(config, text_input("hello"), /*session_source*/ None)
         .await
         .expect("spawn should succeed after failed resume");
     let _ = control
@@ -881,7 +917,7 @@ async fn completion_watcher_notifies_parent_when_child_is_missing() {
             agent_role: Some("explorer".to_string()),
         })),
         child_thread_id.to_string(),
-        None,
+        /*child_agent_path*/ None,
     );
 
     assert_eq!(wait_for_subagent_notification(&parent_thread).await, true);

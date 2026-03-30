@@ -679,6 +679,7 @@ impl ThreadManagerState {
         thread.submit(op).await
     }
 
+    #[allow(dead_code)]
     #[cfg(test)]
     /// Append a prebuilt message to a thread by ID outside the normal user-input path.
     pub(crate) async fn append_message(

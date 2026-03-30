@@ -290,6 +290,7 @@ pub(crate) fn waiting_end(ev: CollabWaitingEndEvent) -> PlainHistoryCell {
     };
     let mut details = wait_complete_lines(&statuses, &agent_statuses);
     if is_timed_out && !pending_thread_ids.is_empty() {
+        #[allow(clippy::disallowed_methods)]
         details.push(Line::from(vec![
             Span::from("Pending: ").yellow(),
             Span::from(format_thread_id_list(&pending_thread_ids)),
@@ -369,6 +370,7 @@ pub(crate) fn resume_end(ev: CollabResumeEndEvent) -> PlainHistoryCell {
     )
 }
 
+#[cfg_attr(debug_assertions, allow(dead_code))]
 pub(crate) fn subagent_notification(agent_id: &str, status: &AgentStatus) -> PlainHistoryCell {
     let mut spans = vec![Span::from("Subagent update ").bold()];
     if let Ok(thread_id) = ThreadId::from_string(agent_id) {

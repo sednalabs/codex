@@ -789,9 +789,13 @@ mod tests {
     fn guardian_review_session_config_rebuilds_split_sandbox_policies() {
         let parent_config = crate::config::test_config();
 
-        let guardian_config =
-            build_guardian_review_session_config(&parent_config, None, "active-model", None)
-                .expect("guardian config");
+        let guardian_config = build_guardian_review_session_config(
+            &parent_config,
+            /*live_network_config*/ None,
+            "active-model",
+            /*reasoning_effort*/ None,
+        )
+        .expect("guardian config");
         let expected_sandbox_policy = SandboxPolicy::new_read_only_policy();
 
         assert_eq!(

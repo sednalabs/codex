@@ -503,7 +503,8 @@ async fn review_uses_runtime_effort_after_model_override() {
     let sse_raw = r#"[
         {"type":"response.completed", "response": {"id": "__ID__"}}
     ]"#;
-    let (server, request_log) = start_responses_server_with_sse(sse_raw, 1).await;
+    let (server, request_log) =
+        start_responses_server_with_sse(sse_raw, /*expected_requests*/ 1).await;
     let codex_home = Arc::new(TempDir::new().unwrap());
     let codex = new_conversation_for_server(&server, codex_home.clone(), |cfg| {
         cfg.model = Some("gpt-5.3-codex-spark".to_string());
@@ -573,7 +574,8 @@ async fn review_uses_runtime_effort_with_explicit_review_model() {
     let sse_raw = r#"[
         {"type":"response.completed", "response": {"id": "__ID__"}}
     ]"#;
-    let (server, request_log) = start_responses_server_with_sse(sse_raw, 1).await;
+    let (server, request_log) =
+        start_responses_server_with_sse(sse_raw, /*expected_requests*/ 1).await;
     let codex_home = Arc::new(TempDir::new().unwrap());
     let codex = new_conversation_for_server(&server, codex_home.clone(), |cfg| {
         cfg.model = Some("gpt-5.3-codex-spark".to_string());
@@ -644,7 +646,8 @@ async fn review_clamps_runtime_effort_with_explicit_review_model() {
     let sse_raw = r#"[
         {"type":"response.completed", "response": {"id": "__ID__"}}
     ]"#;
-    let (server, request_log) = start_responses_server_with_sse(sse_raw, 1).await;
+    let (server, request_log) =
+        start_responses_server_with_sse(sse_raw, /*expected_requests*/ 1).await;
     let codex_home = Arc::new(TempDir::new().unwrap());
     let codex = new_conversation_for_server(&server, codex_home.clone(), |cfg| {
         cfg.model = Some("gpt-5.3-codex-spark".to_string());

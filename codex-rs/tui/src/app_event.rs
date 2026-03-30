@@ -285,6 +285,7 @@ pub(crate) enum AppEvent {
     UpdatePersonality(Personality),
 
     /// Apply a model selection immediately, or queue it when a task is active.
+    #[allow(dead_code)]
     SelectModel {
         model: String,
         effort: Option<ReasoningEffort>,

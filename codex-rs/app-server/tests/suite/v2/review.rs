@@ -153,7 +153,7 @@ async fn review_start_emits_token_usage_summary_when_usage_available() -> Result
     let response = responses::sse(vec![
         responses::ev_response_created("resp-usage"),
         responses::ev_assistant_message("msg-usage", &review_payload),
-        responses::ev_completed_with_tokens("resp-usage", 123),
+        responses::ev_completed_with_tokens("resp-usage", /*total_tokens*/ 123),
     ]);
     let server = create_mock_responses_server_sequence(vec![response]).await;
 
