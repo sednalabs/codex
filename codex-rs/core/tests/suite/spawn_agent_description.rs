@@ -283,7 +283,7 @@ async fn spawn_wait_and_list_agents_tool_descriptions_have_guidance_updates() ->
         "expected wait_agent return_when all guidance: {wait_description:?}"
     );
     assert!(
-        list_description.contains("snapshot"),
+        list_description.contains("live agents"),
         "expected list_agents guidance content: {list_description:?}"
     );
 
