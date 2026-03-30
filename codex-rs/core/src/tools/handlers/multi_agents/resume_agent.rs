@@ -27,8 +27,7 @@ impl ToolHandler for Handler {
         let arguments = function_arguments(payload)?;
         let args: ResumeAgentArgs = parse_arguments(&arguments)?;
         let receiver_thread_id = ThreadId::from_string(&args.id).map_err(|err| {
-            tracing::debug!("invalid agent id `{}`: {err}", args.id);
-            FunctionCallError::RespondToModel(format!("invalid agent id `{}`", args.id))
+            FunctionCallError::RespondToModel(format!("invalid agent id {}: {err:?}", args.id))
         })?;
         let receiver_agent = session
             .services
