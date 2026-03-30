@@ -2624,6 +2624,81 @@ async fn multi_agent_v2_wait_agent_returns_summary_for_named_targets() {
 }
 
 #[tokio::test]
+async fn multi_agent_v2_wait_agent_honors_return_when_all() {
+    let (mut session, mut turn) = make_session_and_context().await;
+    let manager = thread_manager();
+    session.services.agent_control = manager.agent_control();
+    let mut config = (*turn.config).clone();
+    config
+        .features
+        .enable(Feature::MultiAgentV2)
+        .expect("test config should allow feature update");
+    turn.config = Arc::new(config.clone());
+
+    let first_thread = manager
+        .start_thread(config.clone())
+        .await
+        .expect("first thread should start");
+    let second_thread = manager
+        .start_thread(config)
+        .await
+        .expect("second thread should start");
+    let first_id = first_thread.thread_id;
+    let second_id = second_thread.thread_id;
+
+    let mut first_status_rx = manager
+        .agent_control()
+        .subscribe_status(first_id)
+        .await
+        .expect("subscribe should succeed");
+    let _ = first_thread
+        .thread
+        .submit(Op::Shutdown {})
+        .await
+        .expect("shutdown should submit");
+    let _ = timeout(Duration::from_secs(1), first_status_rx.changed())
+        .await
+        .expect("shutdown status should arrive");
+
+    let wait_future = WaitAgentHandlerV2.handle(invocation(
+        Arc::new(session),
+        Arc::new(turn),
+        "wait_agent",
+        function_payload(json!({
+            "targets": [first_id.to_string(), second_id.to_string()],
+            "timeout_ms": 1000,
+            "return_when": "all"
+        })),
+    ));
+    tokio::pin!(wait_future);
+
+    let early = timeout(Duration::from_millis(50), &mut wait_future).await;
+    assert!(
+        early.is_err(),
+        "v2 wait_agent should not return after the first terminal status when return_when=all"
+    );
+
+    let _ = second_thread
+        .thread
+        .submit(Op::Shutdown {})
+        .await
+        .expect("shutdown should submit");
+
+    let output = wait_future.await.expect("wait_agent should succeed");
+    let (content, success) = expect_text_output(output);
+    let result: crate::tools::handlers::multi_agents_v2::wait::WaitAgentResult =
+        serde_json::from_str(&content).expect("wait_agent result should be json");
+    assert_eq!(
+        result,
+        crate::tools::handlers::multi_agents_v2::wait::WaitAgentResult {
+            message: "Wait completed.".to_string(),
+            timed_out: false,
+        }
+    );
+    assert_eq!(success, None);
+}
+
+#[tokio::test]
 async fn multi_agent_v2_wait_agent_does_not_return_completed_content() {
     let (mut session, mut turn) = make_session_and_context().await;
     let manager = thread_manager();

@@ -1,10 +1,10 @@
 use super::*;
 use crate::agent::status::is_final;
 use codex_protocol::protocol::CollabWaitingCompletionReason;
-use futures::FutureExt;
 use futures::StreamExt;
 use futures::stream::FuturesUnordered;
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::time::Duration;
 use tokio::sync::watch::Receiver;
 use tokio::time::Instant;
@@ -35,6 +35,14 @@ impl ToolHandler for Handler {
         let arguments = function_arguments(payload)?;
         let args: WaitArgs = parse_arguments(&arguments)?;
         let receiver_thread_ids = resolve_agent_targets(&session, &turn, args.targets).await?;
+        let mut seen = HashSet::with_capacity(receiver_thread_ids.len());
+        for id in &receiver_thread_ids {
+            if !seen.insert(*id) {
+                return Err(FunctionCallError::RespondToModel(
+                    "targets must resolve to unique agents".to_string(),
+                ));
+            }
+        }
         let mut receiver_agents = Vec::with_capacity(receiver_thread_ids.len());
         for receiver_thread_id in &receiver_thread_ids {
             let agent_metadata = session
@@ -49,7 +57,9 @@ impl ToolHandler for Handler {
             });
         }
 
-        let timeout_ms = args.timeout_ms.unwrap_or(DEFAULT_WAIT_TIMEOUT_MS);
+        let timeout_ms = args
+            .timeout_ms
+            .unwrap_or(turn.config.background_terminal_max_timeout as i64);
         let timeout_ms = match timeout_ms {
             ms if ms <= 0 => {
                 return Err(FunctionCallError::RespondToModel(
@@ -113,46 +123,46 @@ impl ToolHandler for Handler {
             }
         }
 
-        let statuses = if !initial_final_statuses.is_empty() {
-            initial_final_statuses
-        } else {
+        let mut final_statuses = initial_final_statuses
+            .into_iter()
+            .collect::<HashMap<_, _>>();
+        let mut timed_out = false;
+        if !has_return_condition(&final_statuses, &receiver_thread_ids, args.return_when) {
             let mut futures = FuturesUnordered::new();
             for (id, rx) in status_rxs {
                 let session = session.clone();
                 futures.push(wait_for_final_status(session, id, rx));
             }
-            let mut results = Vec::new();
             let deadline = Instant::now() + Duration::from_millis(timeout_ms as u64);
             loop {
                 match timeout_at(deadline, futures.next()).await {
-                    Ok(Some(Some(result))) => {
-                        results.push(result);
-                        break;
+                    Ok(Some(Some((id, status)))) => {
+                        final_statuses.insert(id, status);
+                        if has_return_condition(
+                            &final_statuses,
+                            &receiver_thread_ids,
+                            args.return_when,
+                        ) {
+                            break;
+                        }
                     }
                     Ok(Some(None)) => continue,
-                    Ok(None) | Err(_) => break,
-                }
-            }
-            if !results.is_empty() {
-                loop {
-                    match futures.next().now_or_never() {
-                        Some(Some(Some(result))) => results.push(result),
-                        Some(Some(None)) => continue,
-                        Some(None) | None => break,
+                    Ok(None) | Err(_) => {
+                        timed_out = true;
+                        break;
                     }
                 }
             }
-            results
-        };
+        }
 
-        let timed_out = statuses.is_empty();
-        let statuses_by_id = statuses.clone().into_iter().collect::<HashMap<_, _>>();
+        let mut pending_thread_ids = Vec::new();
+        for receiver_thread_id in &receiver_thread_ids {
+            if !final_statuses.contains_key(receiver_thread_id) {
+                pending_thread_ids.push(*receiver_thread_id);
+            }
+        }
+        let statuses_by_id = final_statuses.clone();
         let agent_statuses = build_wait_agent_statuses(&statuses_by_id, &receiver_agents);
-        let pending_thread_ids = if timed_out {
-            receiver_thread_ids.clone()
-        } else {
-            Vec::new()
-        };
         let completion_reason = if timed_out {
             CollabWaitingCompletionReason::Timeout
         } else {
@@ -186,12 +196,36 @@ struct WaitArgs {
     #[serde(default)]
     targets: Vec<String>,
     timeout_ms: Option<i64>,
+    #[serde(default)]
+    return_when: ReturnWhen,
+}
+
+#[derive(Debug, Deserialize, Clone, Copy)]
+#[serde(rename_all = "lowercase")]
+#[derive(Default)]
+enum ReturnWhen {
+    #[default]
+    Any,
+    All,
 }
 
 #[derive(Debug, Deserialize, Serialize, PartialEq, Eq)]
 pub(crate) struct WaitAgentResult {
     pub(crate) message: String,
     pub(crate) timed_out: bool,
+}
+
+fn has_return_condition(
+    statuses: &HashMap<ThreadId, AgentStatus>,
+    receiver_thread_ids: &[ThreadId],
+    return_when: ReturnWhen,
+) -> bool {
+    match return_when {
+        ReturnWhen::Any => !statuses.is_empty(),
+        ReturnWhen::All => receiver_thread_ids
+            .iter()
+            .all(|id| statuses.get(id).is_some_and(is_final)),
+    }
 }
 
 impl WaitAgentResult {

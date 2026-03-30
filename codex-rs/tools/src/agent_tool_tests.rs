@@ -70,6 +70,31 @@ fn spawn_agent_tool_v2_requires_task_name_and_lists_visible_models() {
 }
 
 #[test]
+fn spawn_agent_tool_v1_exposes_runtime_metadata_fields() {
+    let ToolSpec::Function(ResponsesApiTool { output_schema, .. }) =
+        create_spawn_agent_tool_v1(SpawnAgentToolOptions {
+            available_models: &[model_preset("visible", /*show_in_picker*/ true)],
+            agent_type_description: "role help".to_string(),
+        })
+    else {
+        panic!("spawn_agent should be a function tool");
+    };
+    assert_eq!(
+        output_schema.expect("spawn_agent output schema")["required"],
+        json!([
+            "agent_id",
+            "nickname",
+            "role",
+            "status",
+            "effective_model",
+            "effective_reasoning_effort",
+            "effective_model_provider_id",
+            "identity_source"
+        ])
+    );
+}
+
+#[test]
 fn send_message_tool_requires_items_and_uses_submission_output() {
     let ToolSpec::Function(ResponsesApiTool {
         parameters,
@@ -101,6 +126,36 @@ fn send_message_tool_requires_items_and_uses_submission_output() {
 }
 
 #[test]
+fn wait_agent_tool_v1_exposes_return_when_and_summary_output() {
+    let ToolSpec::Function(ResponsesApiTool {
+        parameters,
+        output_schema,
+        ..
+    }) = create_wait_agent_tool_v1(WaitAgentTimeoutOptions {
+        default_timeout_ms: 30_000,
+        min_timeout_ms: 10_000,
+        max_timeout_ms: 3_600_000,
+    })
+    else {
+        panic!("wait_agent should be a function tool");
+    };
+    let JsonSchema::Object { properties, .. } = parameters else {
+        panic!("wait_agent should use object params");
+    };
+    assert!(properties.contains_key("return_when"));
+    assert_eq!(
+        output_schema.expect("wait output schema")["required"],
+        json!([
+            "message",
+            "requested_ids",
+            "pending_ids",
+            "completion_reason",
+            "timed_out"
+        ])
+    );
+}
+
+#[test]
 fn wait_agent_tool_v2_uses_task_targets_and_summary_output() {
     let ToolSpec::Function(ResponsesApiTool {
         parameters,
@@ -117,6 +172,7 @@ fn wait_agent_tool_v2_uses_task_targets_and_summary_output() {
     let JsonSchema::Object { properties, .. } = parameters else {
         panic!("wait_agent should use object params");
     };
+    assert!(properties.contains_key("return_when"));
     let Some(JsonSchema::Array {
         description: Some(description),
         ..

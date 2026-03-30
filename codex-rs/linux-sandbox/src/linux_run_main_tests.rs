@@ -248,7 +248,7 @@ fn managed_proxy_preflight_argv_is_wrapped_for_full_access_policy() {
         Path::new("/"),
         &FileSystemSandboxPolicy::from(&SandboxPolicy::DangerFullAccess),
         mode,
-        true,
+        /*mount_proc*/ true,
     )
     .args;
     assert!(argv.iter().any(|arg| arg == "--"));

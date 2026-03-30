@@ -218,7 +218,7 @@ pub fn create_resume_agent_tool() -> ToolSpec {
 pub fn create_wait_agent_tool_v1(options: WaitAgentTimeoutOptions) -> ToolSpec {
     ToolSpec::Function(ResponsesApiTool {
         name: "wait_agent".to_string(),
-        description: "Use this for blocking coordination while awaiting sub-agent completion. Wait for agents to reach a final status. Completed statuses may include the agent's final message. Returns empty status when timed out. Prefer longer timeouts to avoid busy polling."
+        description: "Use this for blocking coordination while awaiting sub-agent completion. Returns a wait summary instead of the agent's final content, including the requested ids, any pending ids, and the completion reason. Prefer longer timeouts to avoid busy polling. When `return_when` is `any`, the call returns once one requested agent reaches terminal status. When `return_when` is `all`, it waits until every requested agent reaches terminal status."
             .to_string(),
         strict: false,
         defer_loading: None,
@@ -424,9 +424,43 @@ fn spawn_agent_output_schema_v1() -> Value {
             "nickname": {
                 "type": ["string", "null"],
                 "description": "User-facing nickname for the spawned agent when available."
+            },
+            "role": {
+                "type": ["string", "null"],
+                "description": "Assigned role for the spawned agent when available."
+            },
+            "status": {
+                "description": "Last known status of the spawned agent.",
+                "allOf": [agent_status_output_schema()]
+            },
+            "effective_model": {
+                "type": ["string", "null"],
+                "description": "Effective model resolved for the spawned agent when available."
+            },
+            "effective_reasoning_effort": {
+                "type": ["string", "null"],
+                "enum": [null, "none", "minimal", "low", "medium", "high", "xhigh"],
+                "description": "Effective reasoning effort resolved for the spawned agent when available."
+            },
+            "effective_model_provider_id": {
+                "type": "string",
+                "description": "Model provider id resolved for the spawned agent."
+            },
+            "identity_source": {
+                "type": "string",
+                "description": "Source used to derive the agent identity metadata."
             }
         },
-        "required": ["agent_id", "nickname"],
+        "required": [
+            "agent_id",
+            "nickname",
+            "role",
+            "status",
+            "effective_model",
+            "effective_reasoning_effort",
+            "effective_model_provider_id",
+            "identity_source"
+        ],
         "additionalProperties": false
     })
 }
@@ -662,17 +696,41 @@ fn wait_output_schema_v1() -> Value {
     json!({
         "type": "object",
         "properties": {
-            "status": {
-                "type": "object",
-                "description": "Final statuses keyed by agent id.",
-                "additionalProperties": agent_status_output_schema()
+            "message": {
+                "type": "string",
+                "description": "Brief wait summary without the agent's final content."
+            },
+            "requested_ids": {
+                "type": "array",
+                "items": {
+                    "type": "string"
+                },
+                "description": "Resolved agent ids requested by the wait call."
+            },
+            "pending_ids": {
+                "type": "array",
+                "items": {
+                    "type": "string"
+                },
+                "description": "Resolved agent ids still not terminal when the wait call completed."
+            },
+            "completion_reason": {
+                "type": "string",
+                "enum": ["terminal", "timeout"],
+                "description": "Why the wait call completed."
             },
             "timed_out": {
                 "type": "boolean",
-                "description": "Whether the wait call returned due to timeout before any agent reached a final status."
+                "description": "Whether the wait call returned due to timeout before the requested return condition was satisfied."
             }
         },
-        "required": ["status", "timed_out"],
+        "required": [
+            "message",
+            "requested_ids",
+            "pending_ids",
+            "completion_reason",
+            "timed_out"
+        ],
         "additionalProperties": false
     })
 }
@@ -687,7 +745,7 @@ fn wait_output_schema_v2() -> Value {
             },
             "timed_out": {
                 "type": "boolean",
-                "description": "Whether the wait call returned due to timeout before any agent reached a final status."
+                "description": "Whether the wait call returned due to timeout before the requested return condition was satisfied."
             }
         },
         "required": ["message", "timed_out"],
@@ -889,7 +947,7 @@ fn wait_agent_tool_parameters_v1(options: WaitAgentTimeoutOptions) -> JsonSchema
             JsonSchema::Array {
                 items: Box::new(JsonSchema::String { description: None }),
                 description: Some(
-                    "Agent ids to wait on. Pass multiple ids to wait for whichever finishes first."
+                    "Agent ids to wait on. Pass multiple ids to coordinate several agents."
                         .to_string(),
                 ),
             },
@@ -901,6 +959,15 @@ fn wait_agent_tool_parameters_v1(options: WaitAgentTimeoutOptions) -> JsonSchema
                     "Optional timeout in milliseconds. Defaults to {}, min {}, max {}. Prefer longer waits (minutes) to avoid busy polling.",
                     options.default_timeout_ms, options.min_timeout_ms, options.max_timeout_ms,
                 )),
+            },
+        ),
+        (
+            "return_when".to_string(),
+            JsonSchema::String {
+                description: Some(
+                    "Wait mode. Use `any` to return when one requested agent reaches terminal status, or `all` to wait until every requested agent reaches terminal status."
+                        .to_string(),
+                ),
             },
         ),
     ]);
@@ -919,7 +986,7 @@ fn wait_agent_tool_parameters_v2(options: WaitAgentTimeoutOptions) -> JsonSchema
             JsonSchema::Array {
                 items: Box::new(JsonSchema::String { description: None }),
                 description: Some(
-                    "Agent ids or canonical task names to wait on. Pass multiple targets to wait for whichever finishes first."
+                    "Agent ids or canonical task names to wait on. Pass multiple targets to coordinate several agents."
                         .to_string(),
                 ),
             },
@@ -931,6 +998,15 @@ fn wait_agent_tool_parameters_v2(options: WaitAgentTimeoutOptions) -> JsonSchema
                     "Optional timeout in milliseconds. Defaults to {}, min {}, max {}. Prefer longer waits (minutes) to avoid busy polling.",
                     options.default_timeout_ms, options.min_timeout_ms, options.max_timeout_ms,
                 )),
+            },
+        ),
+        (
+            "return_when".to_string(),
+            JsonSchema::String {
+                description: Some(
+                    "Wait mode. Use `any` to return when one requested agent reaches terminal status, or `all` to wait until every requested agent reaches terminal status."
+                        .to_string(),
+                ),
             },
         ),
     ]);
