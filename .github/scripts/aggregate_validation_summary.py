@@ -54,32 +54,34 @@ def load_lane_summaries(directory: Path) -> list[dict]:
     return summaries
 
 
-def outcome_rank(outcome: str) -> tuple[int, str]:
-    if outcome in FAILED_OUTCOMES:
-        return (0, outcome)
-    if outcome in SUCCESS_OUTCOMES:
-        return (1, outcome)
-    return (2, outcome)
-
-
 def summarize_lanes(lanes: list[dict]) -> tuple[dict | None, dict]:
-    ordered = sorted(lanes, key=lambda lane: (outcome_rank(str(lane.get("outcome") or "")), str(lane.get("lane_id") or "")))
-    failed = [lane for lane in ordered if str(lane.get("outcome") or "") in FAILED_OUTCOMES]
+    lane_count = 0
+    successful_lane_count = 0
+    failed_lane_count = 0
+    other_lane_count = 0
     first_failure = None
-    if failed:
-        lane = failed[0]
-        first_failure = {
-            "lane_id": lane.get("lane_id"),
-            "outcome": lane.get("outcome"),
-            "signal": lane.get("primary_signal") or "",
-        }
+
+    for lane in lanes:
+        lane_count += 1
+        outcome = str(lane.get("outcome") or "")
+        if outcome in SUCCESS_OUTCOMES:
+            successful_lane_count += 1
+        elif outcome in FAILED_OUTCOMES:
+            failed_lane_count += 1
+            if first_failure is None:
+                first_failure = {
+                    "lane_id": lane.get("lane_id"),
+                    "outcome": lane.get("outcome"),
+                    "signal": lane.get("primary_signal") or "",
+                }
+        else:
+            other_lane_count += 1
+
     summary = {
-        "lane_count": len(ordered),
-        "successful_lane_count": sum(1 for lane in ordered if str(lane.get("outcome") or "") in SUCCESS_OUTCOMES),
-        "failed_lane_count": len(failed),
-        "other_lane_count": sum(
-            1 for lane in ordered if str(lane.get("outcome") or "") not in SUCCESS_OUTCOMES | FAILED_OUTCOMES
-        ),
+        "lane_count": lane_count,
+        "successful_lane_count": successful_lane_count,
+        "failed_lane_count": failed_lane_count,
+        "other_lane_count": other_lane_count,
         "first_failure": first_failure,
     }
     return first_failure, summary
