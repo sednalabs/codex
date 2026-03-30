@@ -409,6 +409,7 @@ mod reload {
 /// the caller's current `profile` and `model_provider` remain sticky runtime choices unless the
 /// role explicitly sets `profile`, explicitly sets `model_provider`, or rewrites the active
 /// profile's `model_provider` in place.
+#[cfg(test)]
 pub(crate) async fn apply_role_to_config(
     config: &mut Config,
     role_name: Option<&str>,

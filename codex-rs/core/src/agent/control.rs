@@ -62,7 +62,6 @@ pub(crate) struct LiveAgent {
 /// are resolved from the config snapshot used to reconstruct the agent record.
 #[derive(Debug, Clone)]
 pub(crate) struct SubAgentInventoryInfo {
-    pub(crate) thread_id: ThreadId,
     pub(crate) nickname: Option<String>,
     pub(crate) role: Option<String>,
     pub(crate) status: AgentStatus,
@@ -722,7 +721,6 @@ impl AgentControl {
         };
 
         Some(SubAgentInventoryInfo {
-            thread_id,
             nickname: agent_nickname,
             role: agent_role,
             status: thread.agent_status().await,
@@ -882,12 +880,7 @@ impl AgentControl {
                 .map(ToString::to_string)
                 .unwrap_or_else(|| thread_id.to_string());
             let last_task_message = metadata.last_task_message.clone();
-            listed_rows.push((
-                thread_id,
-                agent_name,
-                agent_status,
-                last_task_message,
-            ));
+            listed_rows.push((thread_id, agent_name, agent_status, last_task_message));
         }
 
         let mut active_descendant_counts = HashMap::<ThreadId, usize>::new();
@@ -913,6 +906,7 @@ impl AgentControl {
         Ok(agents)
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(crate) async fn inspect_agent_tree(
         &self,
         current_thread_id: ThreadId,
@@ -1643,7 +1637,15 @@ fn agent_matches_prefix(agent_path: Option<&AgentPath>, prefix: &AgentPath) -> b
 }
 
 fn preview_agent_message(message: &str) -> String {
-    let normalized = message.split_whitespace().collect::<Vec<_>>().join(" ");
+    let mut words = message.split_whitespace();
+    let Some(first) = words.next() else {
+        return String::new();
+    };
+    let mut normalized = first.to_string();
+    for word in words {
+        normalized.push(' ');
+        normalized.push_str(word);
+    }
     let mut preview = normalized.chars().take(120).collect::<String>();
     if normalized.chars().count() > 120 {
         preview.push('…');
