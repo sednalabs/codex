@@ -54,6 +54,13 @@ jobs:
           fetch-depth: 0
           ref: ${{ inputs.checkout_ref != '' && inputs.checkout_ref || github.sha }}
 
+      - name: Check out workflow helpers
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 1
+          ref: ${{ github.sha }}
+          path: .workflow-src
+
       - name: Set up Node.js for js_repl tests
         uses: actions/setup-node@v6
         with:
@@ -228,7 +235,7 @@ jobs:
             lane_slug="validation-lane"
           fi
           summary_file="${RUNNER_TEMP}/validation-lane-summary-${lane_slug}.json"
-          python3 ../.github/scripts/write_lane_summary.py \
+          python3 ../.workflow-src/.github/scripts/write_lane_summary.py \
             --lane-id "${LANE_ID}" \
             --summary-title "${SUMMARY_TITLE}" \
             --run-command "${LANE_COMMAND}" \
