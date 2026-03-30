@@ -98,10 +98,63 @@ fn tool_spec_to_code_mode_tool_definition_returns_augmented_nested_tools() {
         tool_spec_to_code_mode_tool_definition(&spec),
         Some(codex_code_mode::ToolDefinition {
             name: "apply_patch".to_string(),
+            all_tools_name: None,
+            all_tools_module: None,
             description: "Apply a patch\n\nexec tool declaration:\n```ts\ndeclare const tools: { apply_patch(input: string): Promise<unknown>; };\n```".to_string(),
             kind: codex_code_mode::CodeModeToolKind::Freeform,
             input_schema: None,
             output_schema: None,
+        })
+    );
+}
+
+#[test]
+fn tool_spec_to_code_mode_tool_definition_preserves_mcp_module_metadata() {
+    let spec = ToolSpec::Function(ResponsesApiTool {
+        name: "mcp__rmcp__echo".to_string(),
+        description: "Echo text".to_string(),
+        strict: false,
+        defer_loading: None,
+        parameters: JsonSchema::Object {
+            properties: BTreeMap::from([(
+                "message".to_string(),
+                JsonSchema::String { description: None },
+            )]),
+            required: Some(vec!["message".to_string()]),
+            additional_properties: Some(AdditionalProperties::Boolean(false)),
+        },
+        output_schema: Some(json!({
+            "type": "object",
+            "properties": {
+                "ok": {"type": "boolean"}
+            },
+            "required": ["ok"],
+        })),
+    });
+
+    assert_eq!(
+        tool_spec_to_code_mode_tool_definition(&spec),
+        Some(codex_code_mode::ToolDefinition {
+            name: "mcp__rmcp__echo".to_string(),
+            all_tools_name: Some("echo".to_string()),
+            all_tools_module: Some("tools/mcp/rmcp.js".to_string()),
+            description: "Echo text\n\nCode mode declaration:\n```ts\nimport { tools } from \"tools/mcp/rmcp.js\";\ndeclare function echo(args: { message: string; }): Promise<{ ok: boolean; }>;\n```".to_string(),
+            kind: codex_code_mode::CodeModeToolKind::Function,
+            input_schema: Some(json!({
+                "type": "object",
+                "properties": {
+                    "message": {"type": "string"}
+                },
+                "required": ["message"],
+                "additionalProperties": false
+            })),
+            output_schema: Some(json!({
+                "type": "object",
+                "properties": {
+                    "ok": {"type": "boolean"}
+                },
+                "required": ["ok"],
+            })),
         })
     );
 }
