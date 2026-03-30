@@ -667,7 +667,7 @@ async fn multi_agent_v2_list_agents_filters_by_relative_path_prefix() {
 
     let researcher_path = AgentPath::from_string("/root/researcher".to_string()).expect("path");
     let worker_path = AgentPath::from_string("/root/researcher/worker".to_string()).expect("path");
-    session
+    let _ = session
         .services
         .agent_control
         .spawn_agent_with_metadata(
@@ -687,8 +687,7 @@ async fn multi_agent_v2_list_agents_filters_by_relative_path_prefix() {
             crate::agent::control::SpawnAgentOptions::default(),
         )
         .await
-        .expect("researcher agent should spawn")
-        .thread_id;
+        .expect("researcher agent should spawn");
     session
         .services
         .agent_control
@@ -1106,7 +1105,7 @@ async fn inspect_agent_tree_defaults_to_current_subtree_for_live_nested_agents()
 
 #[tokio::test]
 async fn inspect_agent_tree_can_mix_live_and_stale_descendants() {
-    let (mut session, mut turn) = make_session_and_context().await;
+    let (mut session, turn) = make_session_and_context().await;
     let manager = thread_manager();
     let root = manager
         .start_thread((*turn.config).clone())

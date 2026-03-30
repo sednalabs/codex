@@ -434,7 +434,7 @@ fn build_exec_request_keeps_external_sandbox_unsandboxed() {
         NetworkSandboxPolicy::Restricted,
         cwd.as_path(),
         &None,
-        false,
+        /*use_legacy_landlock*/ false,
     )
     .expect("trusted external sandbox should not require a platform sandbox");
 

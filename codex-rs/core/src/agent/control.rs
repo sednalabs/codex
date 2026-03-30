@@ -573,6 +573,7 @@ impl AgentControl {
     }
 
     /// Append a prebuilt message to an existing agent thread outside the normal user-input path.
+    #[allow(dead_code)]
     #[cfg(test)]
     pub(crate) async fn append_message(
         &self,
@@ -1444,6 +1445,7 @@ impl AgentControl {
         }
     }
 
+    #[allow(dead_code)]
     #[cfg(test)]
     /// Enumerate persisted descendants and filter them by the desired spawn-edge status.
     pub(crate) async fn list_persisted_subagent_descendants(

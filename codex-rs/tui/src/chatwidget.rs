@@ -124,6 +124,7 @@ use codex_protocol::config_types::Settings;
 use codex_protocol::config_types::WindowsSandboxLevel;
 use codex_protocol::items::AgentMessageContent;
 use codex_protocol::items::AgentMessageItem;
+#[allow(unused_imports)]
 use codex_protocol::items::parse_subagent_notification_response_item;
 use codex_protocol::models::MessagePhase;
 use codex_protocol::models::local_image_label_text;
@@ -5369,13 +5370,14 @@ impl ChatWidget {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn dispatch_prepared_inline_command(
         &mut self,
         cmd: SlashCommand,
         prepared_args: String,
-        prepared_elements: Vec<TextElement>,
-        local_images: Vec<LocalImageAttachment>,
-        remote_image_urls: Vec<String>,
+        _prepared_elements: Vec<TextElement>,
+        _local_images: Vec<LocalImageAttachment>,
+        _remote_image_urls: Vec<String>,
         mention_bindings: Vec<MentionBinding>,
         drain_submission_state: bool,
     ) {

@@ -98,7 +98,7 @@ async fn consolidation_artifacts_ready_rejects_rollout_summary_drift_even_when_o
             &config,
             std::time::SystemTime::UNIX_EPOCH,
             Some(expected_prepared_input_tree.as_str()),
-            false,
+            /*allow_existing_artifacts_without_rewrite*/ false,
             &selection,
         )
         .await,
@@ -132,7 +132,9 @@ async fn consolidation_artifacts_ready_rejects_missing_attestation_after_db_requ
         .await
         .expect("write memory summary");
 
-    let selected_outputs = vec![stage1_output_with_source_updated_at(200)];
+    let selected_outputs = vec![stage1_output_with_source_updated_at(
+        /*source_updated_at*/ 200,
+    )];
     let selection = selection_for_attested_outputs(selected_outputs);
     let expected_prepared_input_tree =
         test_prepared_input_artifact_tree_sha256(&root).expect("prepared input tree hash");
@@ -164,7 +166,7 @@ async fn consolidation_artifacts_ready_rejects_missing_attestation_after_db_requ
             state_db.as_ref(),
             std::time::SystemTime::now() + Duration::from_secs(60),
             Some(expected_prepared_input_tree.as_str()),
-            true,
+            /*allow_existing_artifacts_without_rewrite*/ true,
             &selection,
         )
         .await,
@@ -197,7 +199,9 @@ async fn consolidation_artifacts_ready_rejects_missing_attestation_when_state_db
         .await
         .expect("write memory summary");
 
-    let selected_outputs = vec![stage1_output_with_source_updated_at(200)];
+    let selected_outputs = vec![stage1_output_with_source_updated_at(
+        /*source_updated_at*/ 200,
+    )];
     let selection = selection_for_attested_outputs(selected_outputs);
     let expected_prepared_input_tree =
         test_prepared_input_artifact_tree_sha256(&root).expect("prepared input tree hash");
@@ -209,7 +213,7 @@ async fn consolidation_artifacts_ready_rejects_missing_attestation_when_state_db
             state_db.as_ref(),
             std::time::SystemTime::now() + Duration::from_secs(60),
             Some(expected_prepared_input_tree.as_str()),
-            true,
+            /*allow_existing_artifacts_without_rewrite*/ true,
             &selection,
         )
         .await,

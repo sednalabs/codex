@@ -550,8 +550,8 @@ mod phase2 {
                     thread_id,
                     self.session.conversation_id,
                     source_updated_at,
-                    3_600,
-                    64,
+                    /*lease_seconds*/ 3_600,
+                    /*max_running_jobs*/ 64,
                 )
                 .await
                 .expect("claim stage-1 job");
@@ -567,7 +567,7 @@ mod phase2 {
                         source_updated_at,
                         "raw memory",
                         "rollout summary",
-                        None,
+                        /*rollout_slug*/ None,
                     )
                     .await
                     .expect("mark stage-1 success"),
@@ -595,24 +595,24 @@ mod phase2 {
 
     #[test]
     fn completion_watermark_never_regresses_below_claimed_input_watermark() {
-        let stage1_output = stage1_output_with_source_updated_at(123);
+        let stage1_output = stage1_output_with_source_updated_at(/*source_updated_at*/ 123);
 
-        let completion = phase2::get_watermark(1_000, &[stage1_output]);
+        let completion = phase2::get_watermark(/*claimed_watermark*/ 1_000, &[stage1_output]);
         pretty_assertions::assert_eq!(completion, 1_000);
     }
 
     #[test]
     fn completion_watermark_uses_claimed_watermark_when_there_are_no_memories() {
-        let completion = phase2::get_watermark(777, &[]);
+        let completion = phase2::get_watermark(/*claimed_watermark*/ 777, &[]);
         pretty_assertions::assert_eq!(completion, 777);
     }
 
     #[test]
     fn completion_watermark_uses_latest_memory_timestamp_when_it_is_newer() {
-        let older = stage1_output_with_source_updated_at(123);
-        let newer = stage1_output_with_source_updated_at(456);
+        let older = stage1_output_with_source_updated_at(/*source_updated_at*/ 123);
+        let newer = stage1_output_with_source_updated_at(/*source_updated_at*/ 456);
 
-        let completion = phase2::get_watermark(200, &[older, newer]);
+        let completion = phase2::get_watermark(/*claimed_watermark*/ 200, &[older, newer]);
         pretty_assertions::assert_eq!(completion, 456);
     }
 
@@ -638,7 +638,7 @@ mod phase2 {
                 root,
                 &config,
                 std::time::SystemTime::now() + Duration::from_secs(60),
-                false,
+                /*allow_existing_artifacts_without_rewrite*/ false,
                 &selection,
             )
             .await,
@@ -650,7 +650,7 @@ mod phase2 {
                 root,
                 &config,
                 std::time::SystemTime::UNIX_EPOCH,
-                false,
+                /*allow_existing_artifacts_without_rewrite*/ false,
                 &selection,
             )
             .await,
@@ -665,7 +665,7 @@ mod phase2 {
                 root,
                 &config,
                 std::time::SystemTime::UNIX_EPOCH,
-                false,
+                /*allow_existing_artifacts_without_rewrite*/ false,
                 &selection,
             )
             .await,
@@ -683,7 +683,7 @@ mod phase2 {
                 root,
                 &config,
                 std::time::SystemTime::UNIX_EPOCH,
-                false,
+                /*allow_existing_artifacts_without_rewrite*/ false,
                 &selection,
             )
             .await,
@@ -710,7 +710,9 @@ mod phase2 {
             .await
             .expect("write memory summary");
 
-        let selected_outputs = vec![stage1_output_with_source_updated_at(200)];
+        let selected_outputs = vec![stage1_output_with_source_updated_at(
+            /*source_updated_at*/ 200,
+        )];
         let selection = selection_for_attested_outputs(selected_outputs.clone());
         phase2::test_write_consolidation_artifact_attestation(
             Arc::clone(&config),
@@ -725,7 +727,7 @@ mod phase2 {
                 &root,
                 &config,
                 std::time::SystemTime::now() + Duration::from_secs(60),
-                true,
+                /*allow_existing_artifacts_without_rewrite*/ true,
                 &selection,
             )
             .await,
@@ -759,7 +761,7 @@ mod phase2 {
                 &root,
                 &config,
                 std::time::SystemTime::now() + Duration::from_secs(60),
-                true,
+                /*allow_existing_artifacts_without_rewrite*/ true,
                 &selection,
             )
             .await,
@@ -787,7 +789,9 @@ mod phase2 {
             .await
             .expect("write memory summary");
 
-        let selected_outputs = vec![stage1_output_with_source_updated_at(200)];
+        let selected_outputs = vec![stage1_output_with_source_updated_at(
+            /*source_updated_at*/ 200,
+        )];
         let selection = selection_for_attested_outputs(selected_outputs);
         let expected_supporting_tree = phase2::test_prepared_input_artifact_tree_sha256(&root)
             .expect("prepared input tree hash");
@@ -798,7 +802,7 @@ mod phase2 {
                 &config,
                 std::time::SystemTime::now() + Duration::from_secs(60),
                 Some(expected_supporting_tree.as_str()),
-                true,
+                /*allow_existing_artifacts_without_rewrite*/ true,
                 &selection,
             )
             .await,
@@ -825,7 +829,9 @@ mod phase2 {
             .await
             .expect("write memory summary");
 
-        let selected_outputs = vec![stage1_output_with_source_updated_at(200)];
+        let selected_outputs = vec![stage1_output_with_source_updated_at(
+            /*source_updated_at*/ 200,
+        )];
         let selection = selection_for_attested_outputs(selected_outputs);
         let expected_supporting_tree = phase2::test_prepared_input_artifact_tree_sha256(&root)
             .expect("prepared input tree hash");
@@ -841,7 +847,7 @@ mod phase2 {
                 &config,
                 std::time::SystemTime::now() + Duration::from_secs(60),
                 Some(expected_supporting_tree.as_str()),
-                true,
+                /*allow_existing_artifacts_without_rewrite*/ true,
                 &selection,
             )
             .await,
@@ -868,7 +874,9 @@ mod phase2 {
             .await
             .expect("write memory summary");
 
-        let selected_outputs = vec![stage1_output_with_source_updated_at(200)];
+        let selected_outputs = vec![stage1_output_with_source_updated_at(
+            /*source_updated_at*/ 200,
+        )];
         let selection = selection_for_attested_outputs(selected_outputs);
         let expected_supporting_tree = phase2::test_prepared_input_artifact_tree_sha256(&root)
             .expect("prepared input tree hash");
@@ -893,7 +901,7 @@ mod phase2 {
                 &config,
                 std::time::SystemTime::now() + Duration::from_secs(60),
                 Some(expected_supporting_tree.as_str()),
-                true,
+                /*allow_existing_artifacts_without_rewrite*/ true,
                 &selection,
             )
             .await,
@@ -908,7 +916,9 @@ mod phase2 {
         let root = memory_root(&codex_home);
         let memory_index_path = root.join("MEMORY.md");
         let memory_summary_path = root.join("memory_summary.md");
-        let selected_outputs = vec![stage1_output_with_source_updated_at(200)];
+        let selected_outputs = vec![stage1_output_with_source_updated_at(
+            /*source_updated_at*/ 200,
+        )];
         let selection = selection_for_attested_outputs(selected_outputs.clone());
         let config = config_for_memory_root(&root);
         tokio::fs::create_dir_all(&root)
@@ -938,7 +948,7 @@ mod phase2 {
                 &root,
                 &config,
                 std::time::SystemTime::now() + Duration::from_secs(60),
-                true,
+                /*allow_existing_artifacts_without_rewrite*/ true,
                 &selection,
             )
             .await,
@@ -952,8 +962,9 @@ mod phase2 {
         let codex_home = temp_dir.path().join("codex-home");
         let root = memory_root(&codex_home);
         let config = config_for_memory_root(&root);
-        let selection =
-            selection_for_attested_outputs(vec![stage1_output_with_source_updated_at(200)]);
+        let selection = selection_for_attested_outputs(vec![stage1_output_with_source_updated_at(
+            /*source_updated_at*/ 200,
+        )]);
 
         tokio::fs::create_dir_all(root.join("skills/demo"))
             .await
@@ -985,7 +996,7 @@ mod phase2 {
                 &root,
                 &config,
                 std::time::SystemTime::now() + Duration::from_secs(60),
-                true,
+                /*allow_existing_artifacts_without_rewrite*/ true,
                 &selection,
             )
             .await,
@@ -1039,7 +1050,7 @@ mod phase2 {
                 &config,
                 std::time::SystemTime::UNIX_EPOCH,
                 Some(expected_supporting_tree.as_str()),
-                false,
+                /*allow_existing_artifacts_without_rewrite*/ false,
                 &selection,
             )
             .await,
@@ -1101,7 +1112,7 @@ mod phase2 {
                 &config,
                 std::time::SystemTime::UNIX_EPOCH,
                 Some(expected_supporting_tree.as_str()),
-                false,
+                /*allow_existing_artifacts_without_rewrite*/ false,
                 &selection,
             )
             .await,
@@ -1118,7 +1129,9 @@ mod phase2 {
         let root_b = memory_root(&codex_home_b);
         let config_a = config_for_memory_root(&root_a);
         let config_b = config_for_memory_root(&root_b);
-        let selected_outputs = vec![stage1_output_with_source_updated_at(200)];
+        let selected_outputs = vec![stage1_output_with_source_updated_at(
+            /*source_updated_at*/ 200,
+        )];
         let selection = selection_for_attested_outputs(selected_outputs);
 
         for root in [&root_a, &root_b] {
@@ -1146,7 +1159,7 @@ mod phase2 {
                 &root_a,
                 &config_a,
                 std::time::SystemTime::now() + Duration::from_secs(60),
-                true,
+                /*allow_existing_artifacts_without_rewrite*/ true,
                 &selection,
             )
             .await,
@@ -1157,7 +1170,7 @@ mod phase2 {
                 &root_b,
                 &config_b,
                 std::time::SystemTime::now() + Duration::from_secs(60),
-                true,
+                /*allow_existing_artifacts_without_rewrite*/ true,
                 &selection,
             )
             .await,
@@ -1174,7 +1187,9 @@ mod phase2 {
         let mut drifted_config = (*config).clone();
         drifted_config.model_provider_id = "different-provider".to_string();
         let drifted_config = Arc::new(drifted_config);
-        let selected_outputs = vec![stage1_output_with_source_updated_at(200)];
+        let selected_outputs = vec![stage1_output_with_source_updated_at(
+            /*source_updated_at*/ 200,
+        )];
         let selection = selection_for_attested_outputs(selected_outputs);
 
         tokio::fs::create_dir_all(&root)
@@ -1200,7 +1215,7 @@ mod phase2 {
                 &root,
                 &drifted_config,
                 std::time::SystemTime::now() + Duration::from_secs(60),
-                true,
+                /*allow_existing_artifacts_without_rewrite*/ true,
                 &selection,
             )
             .await,
@@ -1217,8 +1232,9 @@ mod phase2 {
         let mut drifted_config = (*config).clone();
         drifted_config.memories.consolidation_model = Some("other-model".to_string());
         let drifted_config = Arc::new(drifted_config);
-        let selection =
-            selection_for_attested_outputs(vec![stage1_output_with_source_updated_at(200)]);
+        let selection = selection_for_attested_outputs(vec![stage1_output_with_source_updated_at(
+            /*source_updated_at*/ 200,
+        )]);
 
         tokio::fs::create_dir_all(&root)
             .await
@@ -1243,7 +1259,7 @@ mod phase2 {
                 &root,
                 &drifted_config,
                 std::time::SystemTime::now() + Duration::from_secs(60),
-                true,
+                /*allow_existing_artifacts_without_rewrite*/ true,
                 &selection,
             )
             .await,
@@ -1257,7 +1273,7 @@ mod phase2 {
         let codex_home = temp_dir.path().join("codex-home");
         let root = memory_root(&codex_home);
         let config = config_for_memory_root(&root);
-        let selected_output = stage1_output_with_source_updated_at(200);
+        let selected_output = stage1_output_with_source_updated_at(/*source_updated_at*/ 200);
         let selection = selection_for_attested_outputs(vec![selected_output.clone()]);
         let prompt_drift_selection = Phase2InputSelection {
             previous_selected: Vec::new(),
@@ -1293,7 +1309,7 @@ mod phase2 {
                 &root,
                 &config,
                 std::time::SystemTime::now() + Duration::from_secs(60),
-                true,
+                /*allow_existing_artifacts_without_rewrite*/ true,
                 &prompt_drift_selection,
             )
             .await,
@@ -1307,8 +1323,9 @@ mod phase2 {
         let codex_home = temp_dir.path().join("codex-home");
         let root = memory_root(&codex_home);
         let config = config_for_memory_root(&root);
-        let selection =
-            selection_for_attested_outputs(vec![stage1_output_with_source_updated_at(200)]);
+        let selection = selection_for_attested_outputs(vec![stage1_output_with_source_updated_at(
+            /*source_updated_at*/ 200,
+        )]);
         let model = config
             .memories
             .consolidation_model
@@ -1346,7 +1363,7 @@ mod phase2 {
                 &root,
                 &config,
                 std::time::SystemTime::now() + Duration::from_secs(60),
-                true,
+                /*allow_existing_artifacts_without_rewrite*/ true,
                 &selection,
             )
             .await,
@@ -1361,8 +1378,9 @@ mod phase2 {
         let codex_home = temp_dir.path().join("codex-home");
         let root = memory_root(&codex_home);
         let config = config_for_memory_root(&root);
-        let selection =
-            selection_for_attested_outputs(vec![stage1_output_with_source_updated_at(200)]);
+        let selection = selection_for_attested_outputs(vec![stage1_output_with_source_updated_at(
+            /*source_updated_at*/ 200,
+        )]);
         let external_dir = temp_dir.path().join("external");
         let external_memory = external_dir.join("MEMORY.md");
         let external_summary = external_dir.join("memory_summary.md");
@@ -1390,7 +1408,7 @@ mod phase2 {
                 &root,
                 &config,
                 std::time::SystemTime::UNIX_EPOCH,
-                false,
+                /*allow_existing_artifacts_without_rewrite*/ false,
                 &selection,
             )
             .await,
@@ -1405,8 +1423,9 @@ mod phase2 {
         let codex_home = temp_dir.path().join("codex-home");
         let root = memory_root(&codex_home);
         let config = config_for_memory_root(&root);
-        let selection =
-            selection_for_attested_outputs(vec![stage1_output_with_source_updated_at(200)]);
+        let selection = selection_for_attested_outputs(vec![stage1_output_with_source_updated_at(
+            /*source_updated_at*/ 200,
+        )]);
         let external_dir = temp_dir.path().join("external");
         let external_attestation = external_dir.join("attestation.json");
 
@@ -1452,8 +1471,9 @@ mod phase2 {
         let codex_home = temp_dir.path().join("codex-home");
         let root = memory_root(&codex_home);
         let config = config_for_memory_root(&root);
-        let selection =
-            selection_for_attested_outputs(vec![stage1_output_with_source_updated_at(200)]);
+        let selection = selection_for_attested_outputs(vec![stage1_output_with_source_updated_at(
+            /*source_updated_at*/ 200,
+        )]);
         let state_db =
             codex_state::StateRuntime::init(codex_home.clone(), config.model_provider_id.clone())
                 .await
@@ -1512,8 +1532,9 @@ mod phase2 {
         let codex_home = temp_dir.path().join("codex-home");
         let root = memory_root(&codex_home);
         let config = config_for_memory_root(&root);
-        let selection =
-            selection_for_attested_outputs(vec![stage1_output_with_source_updated_at(200)]);
+        let selection = selection_for_attested_outputs(vec![stage1_output_with_source_updated_at(
+            /*source_updated_at*/ 200,
+        )]);
         let external_dir = temp_dir.path().join("external");
         let protected_target = external_dir.join("protected.json");
         let original_contents = "{\n  \"protected\": true\n}\n";
@@ -1566,11 +1587,11 @@ mod phase2 {
         let unchanged = Phase2InputSelection {
             selected: vec![Stage1Output {
                 thread_id,
-                ..stage1_output_with_source_updated_at(200)
+                ..stage1_output_with_source_updated_at(/*source_updated_at*/ 200)
             }],
             previous_selected: vec![Stage1Output {
                 thread_id,
-                ..stage1_output_with_source_updated_at(200)
+                ..stage1_output_with_source_updated_at(/*source_updated_at*/ 200)
             }],
             retained_thread_ids: vec![thread_id],
             removed: Vec::new(),
@@ -1583,11 +1604,11 @@ mod phase2 {
         let changed_timestamp = Phase2InputSelection {
             selected: vec![Stage1Output {
                 thread_id,
-                ..stage1_output_with_source_updated_at(201)
+                ..stage1_output_with_source_updated_at(/*source_updated_at*/ 201)
             }],
             previous_selected: vec![Stage1Output {
                 thread_id,
-                ..stage1_output_with_source_updated_at(200)
+                ..stage1_output_with_source_updated_at(/*source_updated_at*/ 200)
             }],
             retained_thread_ids: Vec::new(),
             removed: Vec::new(),
@@ -1600,11 +1621,11 @@ mod phase2 {
         let removed = Phase2InputSelection {
             selected: vec![Stage1Output {
                 thread_id,
-                ..stage1_output_with_source_updated_at(200)
+                ..stage1_output_with_source_updated_at(/*source_updated_at*/ 200)
             }],
             previous_selected: vec![Stage1Output {
                 thread_id,
-                ..stage1_output_with_source_updated_at(200)
+                ..stage1_output_with_source_updated_at(/*source_updated_at*/ 200)
             }],
             retained_thread_ids: vec![thread_id],
             removed: vec![Stage1OutputRef {
@@ -1636,12 +1657,12 @@ mod phase2 {
         let harness = DispatchHarness::new().await;
         harness
             .state_db
-            .enqueue_global_consolidation(123)
+            .enqueue_global_consolidation(/*input_watermark*/ 123)
             .await
             .expect("enqueue global consolidation");
         let claimed = harness
             .state_db
-            .try_claim_global_phase2_job(ThreadId::new(), 3_600)
+            .try_claim_global_phase2_job(ThreadId::new(), /*lease_seconds*/ 3_600)
             .await
             .expect("claim running global lock");
         assert!(
@@ -1653,7 +1674,7 @@ mod phase2 {
 
         let running_claim = harness
             .state_db
-            .try_claim_global_phase2_job(ThreadId::new(), 3_600)
+            .try_claim_global_phase2_job(ThreadId::new(), /*lease_seconds*/ 3_600)
             .await
             .expect("claim while lock is still running");
         pretty_assertions::assert_eq!(running_claim, Phase2JobClaimOutcome::SkippedRunning);
@@ -1745,11 +1766,13 @@ mod phase2 {
     #[tokio::test]
     async fn dispatch_reclaims_stale_global_lock_and_starts_consolidation() {
         let harness = DispatchHarness::new().await;
-        harness.seed_stage1_output(Utc::now().timestamp()).await;
+        harness
+            .seed_stage1_output(/*source_updated_at*/ Utc::now().timestamp())
+            .await;
 
         let stale_claim = harness
             .state_db
-            .try_claim_global_phase2_job(ThreadId::new(), 0)
+            .try_claim_global_phase2_job(ThreadId::new(), /*lease_seconds*/ 0)
             .await
             .expect("claim stale global lock");
         assert!(
@@ -1761,7 +1784,7 @@ mod phase2 {
 
         let post_dispatch_claim = harness
             .state_db
-            .try_claim_global_phase2_job(ThreadId::new(), 3_600)
+            .try_claim_global_phase2_job(ThreadId::new(), /*lease_seconds*/ 3_600)
             .await
             .expect("claim after stale lock dispatch");
         assert!(
@@ -1869,7 +1892,7 @@ mod phase2 {
 
         harness
             .state_db
-            .enqueue_global_consolidation(999)
+            .enqueue_global_consolidation(/*input_watermark*/ 999)
             .await
             .expect("enqueue global consolidation");
 
@@ -1911,7 +1934,7 @@ mod phase2 {
         );
         let next_claim = harness
             .state_db
-            .try_claim_global_phase2_job(ThreadId::new(), 3_600)
+            .try_claim_global_phase2_job(ThreadId::new(), /*lease_seconds*/ 3_600)
             .await
             .expect("claim global job after empty consolidation success");
         pretty_assertions::assert_eq!(next_claim, Phase2JobClaimOutcome::SkippedNotDirty);
@@ -1927,7 +1950,7 @@ mod phase2 {
         let harness = DispatchHarness::new().await;
         harness
             .state_db
-            .enqueue_global_consolidation(99)
+            .enqueue_global_consolidation(/*input_watermark*/ 99)
             .await
             .expect("enqueue global consolidation");
         let mut constrained_config = harness.config.as_ref().clone();
@@ -1938,7 +1961,7 @@ mod phase2 {
 
         let retry_claim = harness
             .state_db
-            .try_claim_global_phase2_job(ThreadId::new(), 3_600)
+            .try_claim_global_phase2_job(ThreadId::new(), /*lease_seconds*/ 3_600)
             .await
             .expect("claim global job after sandbox policy failure");
         pretty_assertions::assert_eq!(retry_claim, Phase2JobClaimOutcome::SkippedNotDirty);
@@ -1950,7 +1973,7 @@ mod phase2 {
     #[tokio::test]
     async fn dispatch_marks_job_for_retry_when_syncing_artifacts_fails() {
         let harness = DispatchHarness::new().await;
-        harness.seed_stage1_output(100).await;
+        harness.seed_stage1_output(/*source_updated_at*/ 100).await;
         let root = memory_root(&harness.config.codex_home);
         tokio::fs::write(&root, "not a directory")
             .await
@@ -1960,7 +1983,7 @@ mod phase2 {
 
         let retry_claim = harness
             .state_db
-            .try_claim_global_phase2_job(ThreadId::new(), 3_600)
+            .try_claim_global_phase2_job(ThreadId::new(), /*lease_seconds*/ 3_600)
             .await
             .expect("claim global job after sync failure");
         pretty_assertions::assert_eq!(retry_claim, Phase2JobClaimOutcome::SkippedNotDirty);
@@ -1972,7 +1995,7 @@ mod phase2 {
     #[tokio::test]
     async fn dispatch_marks_job_for_retry_when_rebuilding_raw_memories_fails() {
         let harness = DispatchHarness::new().await;
-        harness.seed_stage1_output(100).await;
+        harness.seed_stage1_output(/*source_updated_at*/ 100).await;
         let root = memory_root(&harness.config.codex_home);
         tokio::fs::create_dir_all(raw_memories_file(&root))
             .await
@@ -1982,7 +2005,7 @@ mod phase2 {
 
         let retry_claim = harness
             .state_db
-            .try_claim_global_phase2_job(ThreadId::new(), 3_600)
+            .try_claim_global_phase2_job(ThreadId::new(), /*lease_seconds*/ 3_600)
             .await
             .expect("claim global job after rebuild failure");
         pretty_assertions::assert_eq!(retry_claim, Phase2JobClaimOutcome::SkippedNotDirty);
@@ -2027,7 +2050,13 @@ mod phase2 {
             .expect("upsert thread metadata");
 
         let claim = state_db
-            .try_claim_stage1_job(thread_id, session.conversation_id, 100, 3_600, 64)
+            .try_claim_stage1_job(
+                thread_id,
+                session.conversation_id,
+                /*source_updated_at*/ 100,
+                /*lease_seconds*/ 3_600,
+                /*max_running_jobs*/ 64,
+            )
             .await
             .expect("claim stage-1 job");
         let ownership_token = match claim {
@@ -2039,10 +2068,10 @@ mod phase2 {
                 .mark_stage1_job_succeeded(
                     thread_id,
                     &ownership_token,
-                    100,
+                    /*source_updated_at*/ 100,
                     "raw memory",
                     "rollout summary",
-                    None,
+                    /*rollout_slug*/ None,
                 )
                 .await
                 .expect("mark stage-1 success"),
@@ -2052,7 +2081,7 @@ mod phase2 {
         phase2::run(&session, Arc::clone(&config)).await;
 
         let retry_claim = state_db
-            .try_claim_global_phase2_job(ThreadId::new(), 3_600)
+            .try_claim_global_phase2_job(ThreadId::new(), /*lease_seconds*/ 3_600)
             .await
             .expect("claim global job after spawn failure");
         pretty_assertions::assert_eq!(

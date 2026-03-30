@@ -153,6 +153,7 @@ impl StatusIndicatorWidget {
         self.show_interrupt_hint = visible;
     }
 
+    #[allow(dead_code)]
     pub(crate) fn set_interrupt_requires_double_press(&mut self, requires_double_press: bool) {
         self.interrupt_requires_double_press = requires_double_press;
         if !requires_double_press {
@@ -160,6 +161,7 @@ impl StatusIndicatorWidget {
         }
     }
 
+    #[allow(dead_code)]
     pub(crate) fn set_interrupt_confirmation_deadline(&mut self, deadline: Option<Instant>) {
         self.interrupt_confirmation_deadline = deadline;
     }

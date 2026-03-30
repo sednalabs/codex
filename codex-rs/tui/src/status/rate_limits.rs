@@ -74,6 +74,7 @@ pub(crate) struct RateLimitWindowDisplay {
     /// Human-readable local reset time.
     pub resets_at: Option<String>,
     /// Raw reset timestamp (Unix seconds) used for pacing math.
+    #[cfg_attr(debug_assertions, allow(dead_code))]
     pub resets_at_unix_seconds: Option<i64>,
     /// Window length in minutes when provided by the server.
     pub window_minutes: Option<i64>,

@@ -334,12 +334,14 @@ impl From<RemotePluginFetchError> for PluginRemoteSyncError {
 }
 
 #[cfg(test)]
+#[allow(dead_code)]
 fn startup_remote_plugin_sync_test_pauses()
 -> &'static StdMutex<HashMap<PathBuf, RemoteSyncTestPause>> {
     STARTUP_REMOTE_PLUGIN_SYNC_TEST_PAUSES.get_or_init(|| StdMutex::new(HashMap::new()))
 }
 
 #[cfg(test)]
+#[allow(dead_code)]
 pub(crate) fn install_startup_remote_plugin_sync_test_pause(
     codex_home: &Path,
     entered: Arc<Notify>,
@@ -356,6 +358,7 @@ pub(crate) fn install_startup_remote_plugin_sync_test_pause(
 }
 
 #[cfg(test)]
+#[allow(dead_code)]
 fn take_startup_remote_plugin_sync_test_pause(codex_home: &Path) -> Option<RemoteSyncTestPause> {
     let mut pauses = match startup_remote_plugin_sync_test_pauses().lock() {
         Ok(guard) => guard,
