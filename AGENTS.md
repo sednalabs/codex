@@ -84,11 +84,13 @@ Also run `just argument-comment-lint` to ensure the codebase is clean of comment
 
 ## CI Offload Policy
 
-- Treat GitHub Actions as the default factory for branch binaries, heavy Rust tests, and official releases.
+- Treat GitHub Actions as the default factory for remote seam validation, preview binaries, heavy Rust tests, and official releases.
+- Use `validation-lab.yml` as the default remote-first validation surface for scratch refs, integration refs, and other non-PR exploratory work.
 - Local Build Helper remains the preferred narrow local lane for smoke checks, formatting, and targeted validation.
 - Do not run routine direct terminal `cargo build` or `cargo test` commands for expensive shared-host validation when the same work can be offloaded to GitHub CI.
 - Heavy remote CI only starts after the relevant work is committed and pushed.
-- Branch artifacts are disposable and non-release. Only the protected Sedna release workflow produces public release artifacts.
+- Preview/build workflows are buildability checkpoints, not every-commit branch defaults.
+- Preview artifacts are disposable and non-release. Only the protected Sedna release workflow produces public release artifacts.
 
 ## TUI style conventions
 

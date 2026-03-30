@@ -32,6 +32,7 @@ Focused micro-slices for iterative work on the current carry seams:
 - `codex.core-multi-agent-orchestration-targeted`
 - `codex.core-persisted-subagent-descendants-targeted`
 - `codex.core-context-serialization-targeted`
+- `codex.core-attestation-targeted`
 - `codex.state-spawn-lineage-contract-targeted`
 - `codex.downstream-docs-check`
 
@@ -71,8 +72,18 @@ GitHub Actions lane naming (`.github/workflows/sedna-heavy-tests.yml`):
     `workflow_dispatch lane=all` all run the full heavy matrix.
   - `workflow_dispatch` can still run one named lane when a single shard is the
     right debugging tool.
+- `validation-lab.yml` is the dispatch-only remote validation surface.
+  - Use it for scratch refs, integration refs, orphan-branch experiments, and
+    non-PR seam validation.
+  - `profile=smoke` and `profile=targeted` are the default inner-loop remote
+    validation tools.
+  - `profile=broad` and `profile=full` are for explicit broader questions, not
+    routine iteration.
+  - `profile=artifact` or `artifact_build=true` is the right way to request a
+    disposable preview build on a non-PR ref without promoting that ref into the
+    normal PR/main check surface.
 - `sedna-branch-build.yml` is the preview artifact path.
-  - It stays push-only for non-`main` branches plus manual dispatch.
+  - It is manual-dispatch only.
   - Treat it as artifact validation, not the primary downstream correctness
     gate.
 
@@ -92,6 +103,7 @@ GitHub Actions lane naming (`.github/workflows/sedna-heavy-tests.yml`):
 | TUI queued slash recall + replay ordering | `core-carry-smoke` | `queued_inline_slash_command_runs_with_args_after_task_complete`; `alt_up_restores_most_recent_queued_slash_command` |
 | Startup plugin sync bounded wait + completion-signal re-arm + abort checkpointing | `codex.core-startup-sync-targeted` | `startup_remote_plugin_sync_waits_for_late_prerequisites`; `startup_remote_plugin_sync_is_single_flight_before_prerequisites_exist`; `startup_remote_plugin_sync_uses_latest_config_and_auth_snapshot`; `startup_remote_plugin_sync_rearms_after_curated_repo_completion_signal_uses_latest_config_and_auth_snapshot`; `startup_remote_plugin_sync_signals_after_failed_curated_postprocessing`; `startup_remote_plugin_sync_aborts_in_flight_before_stamping_marker`; `startup_remote_plugin_sync_relaunches_immediately_after_abort_even_if_late_completion_signal_arrives` |
 | Tool-context serialization for custom/function/abort outputs | `codex.core-context-serialization-targeted` | `custom_tool_calls_should_roundtrip_as_custom_outputs`; `function_payloads_remain_function_outputs`; `aborted_tool_output_serializes_*` |
+| Phase-2 attestation contract | `codex.core-attestation-targeted` | `consolidation_artifacts_ready_rejects_*`; `global_phase2_attestation_requirement_is_root_scoped` |
 | Persisted state spawn-edge lineage matches local `usage.sqlite` | `codex.state-spawn-lineage-contract-targeted` | `usage_spawn_lineage_matches_persisted_state_edge_for_child_thread` |
 | Usage logging contracts in local `usage.sqlite` | `core-ledger-smoke` | `usage_logger_*` focused table-contract tests in `codex-rs/state/src/runtime/usage.rs` |
 | Linux sandbox/core compile seam | `core-compile-smoke` | `cargo check -p codex-linux-sandbox -p codex-core --tests` |
@@ -128,3 +140,15 @@ sqlite3 "${CODEX_SQLITE_HOME:-$HOME/.codex}/usage.sqlite" '.tables'
   use the focused `codex.core-*targeted` presets first, then promote to
   `just core-test-smoke`, then `just core-test-progressive` only when you
   intentionally want a broader gate.
+- Remote-first validation should follow this ladder:
+  - tiny local checks first
+  - `validation-lab` `profile=smoke` or `profile=targeted` on scratch or
+    integration refs
+  - `validation-lab` `profile=broad` or `profile=full` only when the question
+    genuinely spans multiple seams
+  - ordinary PR checks once the branch is ready for promotion semantics
+  - preview/buildability validation only when the question is "can we ship or
+    hand someone a binary?" rather than "did this seam regress?"
+- Full builds are not the default inner-loop validator here. Treat them as
+  promotion/buildability checkpoints on `main`, merge-group, alpha/release
+  candidates, or explicit artifact requests.
