@@ -107,6 +107,11 @@ core-context-serialization-targeted:
     cargo test -p codex-core tools::context::tests::function_payloads_remain_function_outputs --lib -- --exact
     cargo test -p codex-core tools::context::tests::aborted_tool_output_serializes_ --lib -- --test-threads=1
 
+# Focused attestation contract slice for phase-2 fail-closed reuse semantics.
+core-attestation-targeted:
+    cargo test -p codex-core consolidation_artifacts_ready_rejects_ --lib -- --test-threads=1
+    cargo test -p codex-state global_phase2_attestation_requirement_is_root_scoped -- --exact --test-threads=1
+
 # Codex authoritative usage.sqlite logging contracts.
 core-ledger-smoke:
     cargo test -p codex-state runtime::tests::init_removes_legacy_logs_and_usage_db_files -- --exact --test-threads=1
