@@ -4509,9 +4509,9 @@ async fn slash_approvals_enter_queues_while_task_running_and_replays_on_completi
         "expected /approvals to queue instead of opening immediately"
     );
 
-    chat.on_task_complete(None, false);
+    chat.on_task_complete(/*last_agent_message*/ None, /*from_replay*/ false);
 
-    let popup = render_bottom_popup(&chat, 80);
+    let popup = render_bottom_popup(&chat, /*width*/ 80);
     assert!(
         popup.contains("Update Model Permissions"),
         "expected approvals popup after queued replay, got {popup:?}"
@@ -7518,9 +7518,9 @@ async fn slash_approvals_queue_while_task_running_and_open_after_completion() {
         "expected queued approvals not to open immediately"
     );
 
-    chat.on_task_complete(None, false);
+    chat.on_task_complete(/*last_agent_message*/ None, /*from_replay*/ false);
 
-    let popup = render_bottom_popup(&chat, 80);
+    let popup = render_bottom_popup(&chat, /*width*/ 80);
     assert!(
         popup.contains("Update Model Permissions"),
         "expected approvals popup after queued replay, got {popup:?}"
@@ -10237,7 +10237,7 @@ async fn queued_inline_slash_command_runs_with_args_after_task_complete() {
     chat.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
     assert_matches!(op_rx.try_recv(), Err(TryRecvError::Empty));
 
-    chat.on_task_complete(None, false);
+    chat.on_task_complete(/*last_agent_message*/ None, /*from_replay*/ false);
 
     match op_rx.try_recv() {
         Ok(Op::Review { review_request }) => {

@@ -736,6 +736,7 @@ fn process_exec_tool_call_uses_platform_sandbox_for_network_only_restrictions() 
 
     assert_eq!(
         select_process_exec_tool_sandbox_type(
+            &SandboxPolicy::new_read_only_policy(),
             &FileSystemSandboxPolicy::unrestricted(),
             NetworkSandboxPolicy::Restricted,
             codex_protocol::config_types::WindowsSandboxLevel::Disabled,

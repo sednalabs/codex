@@ -1865,7 +1865,7 @@ mod tests {
             skills: Some(Vec::new()),
         });
 
-        pane.set_task_running(true);
+        pane.set_task_running(/*running*/ true);
 
         pane.handle_key_event(KeyEvent::new(KeyCode::Esc, KeyModifiers::ALT));
 
