@@ -1,0 +1,212 @@
+name: validation-lab
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Branch, tag, or commit to validate
+        required: false
+        type: string
+      profile:
+        description: Validation depth/profile
+        required: true
+        type: choice
+        options:
+          - smoke
+          - targeted
+          - broad
+          - full
+          - artifact
+        default: smoke
+      lane_set:
+        description: Named downstream lane family
+        required: true
+        type: choice
+        options:
+          - all
+          - core-carry
+          - subagents
+          - startup-sync
+          - ledger
+          - ui-protocol
+          - docs
+          - attestation
+        default: all
+      lanes:
+        description: Optional comma-separated explicit lane IDs
+        required: false
+        type: string
+      artifact_build:
+        description: Also build and upload a disposable preview artifact
+        required: false
+        type: boolean
+        default: false
+      notes:
+        description: Optional operator notes for this lab run
+        required: false
+        type: string
+
+concurrency:
+  group: validation-lab::${{ inputs.ref || github.ref_name }}::${{ inputs.profile }}::${{ inputs.lane_set }}::${{ inputs.lanes || 'default' }}::${{ inputs.artifact_build && 'artifact' || 'no-artifact' }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  metadata:
+    name: Resolve lab checkout ref and lane selection
+    runs-on: ubuntu-24.04
+    outputs:
+      checkout_ref: ${{ steps.meta.outputs.checkout_ref }}
+      display_ref: ${{ steps.meta.outputs.display_ref }}
+      selected_matrix: ${{ steps.meta.outputs.selected_matrix }}
+      run_selected_lanes: ${{ steps.meta.outputs.run_selected_lanes }}
+      run_smoke_gate: ${{ steps.meta.outputs.run_smoke_gate }}
+      smoke_gate_kind: ${{ steps.meta.outputs.smoke_gate_kind }}
+      run_artifact: ${{ steps.meta.outputs.run_artifact }}
+      preview_version: ${{ steps.meta.outputs.preview_version }}
+      artifact_name: ${{ steps.meta.outputs.artifact_name }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          ref: ${{ inputs.ref || github.sha }}
+
+      - name: Compute validation-lab plan
+        id: meta
+        shell: bash
+        env:
+          LAB_PROFILE: ${{ inputs.profile }}
+          LAB_LANE_SET: ${{ inputs.lane_set }}
+          LAB_LANES: ${{ inputs.lanes }}
+          LAB_ARTIFACT_BUILD: ${{ inputs.artifact_build }}
+        run: |
+          set -euo pipefail
+
+          checkout_ref='${{ inputs.ref || github.sha }}'
+          display_ref='${{ inputs.ref || github.ref_name }}'
+          short_sha="$(git rev-parse --short=8 HEAD)"
+          latest_tag="$(git tag --merged HEAD --list 'v*-sedna.*' --sort=-version:refname | head -n 1)"
+          if [[ -n "${latest_tag}" ]]; then
+            base_version="${latest_tag#v}"
+          else
+            base_version="0.0.0-sedna.0"
+          fi
+
+          display_slug="$(printf '%s' "${display_ref}" | tr '/:@ ' '-' | tr -cd '[:alnum:]._-' | cut -c1-48)"
+          preview_version="${base_version}-ci.${GITHUB_RUN_NUMBER}+g${short_sha}"
+
+          selection_meta="$(python3 .github/scripts/resolve_validation_plan.py lab --profile "${LAB_PROFILE}" --lane-set "${LAB_LANE_SET}" --lanes "${LAB_LANES}" --artifact-build "${LAB_ARTIFACT_BUILD}")"
+
+          run_selected_lanes="$(SELECTION_META="${selection_meta}" python3 -c 'import json, os; print(json.loads(os.environ["SELECTION_META"])["run_selected_lanes"])')"
+          run_smoke_gate="$(SELECTION_META="${selection_meta}" python3 -c 'import json, os; print(json.loads(os.environ["SELECTION_META"])["run_smoke_gate"])')"
+          smoke_gate_kind="$(SELECTION_META="${selection_meta}" python3 -c 'import json, os; print(json.loads(os.environ["SELECTION_META"])["smoke_gate_kind"])')"
+          selected_matrix="$(SELECTION_META="${selection_meta}" python3 -c 'import json, os; print(json.dumps(json.loads(os.environ["SELECTION_META"])["selected_matrix"], separators=(",", ":")))')"
+          run_artifact="$(SELECTION_META="${selection_meta}" python3 -c 'import json, os; print(json.loads(os.environ["SELECTION_META"])["run_artifact"])')"
+
+          {
+            echo "checkout_ref=${checkout_ref}"
+            echo "display_ref=${display_ref}"
+            echo "run_selected_lanes=${run_selected_lanes}"
+            echo "run_smoke_gate=${run_smoke_gate}"
+            echo "smoke_gate_kind=${smoke_gate_kind}"
+            echo "selected_matrix=${selected_matrix}"
+            echo "run_artifact=${run_artifact}"
+            echo "preview_version=${preview_version}"
+            echo "artifact_name=sedna-validation-${display_slug}-${short_sha}"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Summarize validation plan
+        shell: bash
+        env:
+          LAB_NOTES: ${{ inputs.notes }}
+        run: |
+          {
+            echo "### Validation lab"
+            echo
+            echo "- Ref: \`${{ steps.meta.outputs.display_ref }}\`"
+            echo "- Profile: \`${{ inputs.profile }}\`"
+            echo "- Lane set: \`${{ inputs.lane_set }}\`"
+            echo "- Explicit lanes: \`${{ inputs.lanes || 'none' }}\`"
+            echo "- Artifact build: \`${{ inputs.artifact_build && 'true' || 'false' }}\`"
+            if [[ -n "${LAB_NOTES}" ]]; then
+              printf -- '- Notes: %s\n' "${LAB_NOTES}"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  smoke_gate:
+    name: Validation-lab smoke gate
+    needs: metadata
+    if: ${{ needs.metadata.outputs.run_smoke_gate == 'true' }}
+    uses: ./.github/workflows/_sedna-linux-rust.yml
+    with:
+      checkout_ref: ${{ needs.metadata.outputs.checkout_ref }}
+      lane_id: ${{ needs.metadata.outputs.smoke_gate_kind == 'workflow_docs' && 'codex.downstream-docs-check' || 'core-test-smoke' }}
+      summary_title: ${{ needs.metadata.outputs.smoke_gate_kind == 'workflow_docs' && 'codex.downstream-docs-check' || 'core-test-smoke' }}
+      run_command: ${{ needs.metadata.outputs.smoke_gate_kind == 'workflow_docs' && 'just --justfile ../justfile downstream-docs-check' || 'just --justfile ../justfile core-test-smoke' }}
+
+  downstream_lanes:
+    needs:
+      - metadata
+      - smoke_gate
+    if: >-
+      ${{
+        needs.metadata.outputs.run_selected_lanes == 'true' &&
+        (needs.smoke_gate.result == 'success' || needs.smoke_gate.result == 'skipped')
+      }}
+    strategy:
+      fail-fast: true
+      max-parallel: 4
+      matrix: ${{ fromJson(needs.metadata.outputs.selected_matrix) }}
+    uses: ./.github/workflows/_sedna-linux-rust.yml
+    with:
+      checkout_ref: ${{ needs.metadata.outputs.checkout_ref }}
+      lane_id: ${{ matrix.lane_id }}
+      summary_title: ${{ matrix.lane_id }}
+      run_command: ${{ matrix.run_command }}
+
+  artifact:
+    needs:
+      - metadata
+      - smoke_gate
+      - downstream_lanes
+    if: >-
+      ${{
+        needs.metadata.outputs.run_artifact == 'true' &&
+        (needs.smoke_gate.result == 'success' || needs.smoke_gate.result == 'skipped') &&
+        (needs.downstream_lanes.result == 'success' || needs.downstream_lanes.result == 'skipped')
+      }}
+    uses: ./.github/workflows/_sedna-linux-rust.yml
+    with:
+      checkout_ref: ${{ needs.metadata.outputs.checkout_ref }}
+      summary_title: Validation lab artifact build
+      release_version: ${{ needs.metadata.outputs.preview_version }}
+      artifact_name: ${{ needs.metadata.outputs.artifact_name }}
+      artifact_path: dist/*
+      run_command: |
+        mkdir -p ../dist
+        cargo build --locked --target x86_64-unknown-linux-gnu --release --bin codex --bin codex-responses-api-proxy
+
+        stage_dir="${RUNNER_TEMP}/sedna-validation/x86_64-unknown-linux-gnu"
+        file_version="${CODEX_RELEASE_VERSION//+/__}"
+        archive_base="codex-sedna-validation-${file_version}-x86_64-unknown-linux-gnu"
+
+        rm -rf "${stage_dir}"
+        mkdir -p "${stage_dir}"
+
+        install -Dm 0755 "target/x86_64-unknown-linux-gnu/release/codex" "${stage_dir}/codex"
+        install -Dm 0755 "target/x86_64-unknown-linux-gnu/release/codex-responses-api-proxy" "${stage_dir}/codex-responses-api-proxy"
+
+        tar -C "${stage_dir}" -czf "../dist/${archive_base}.tar.gz" .
+
+        cat > "../dist/${archive_base}.json" <<EOF
+        {
+          "repository": "${GITHUB_REPOSITORY}",
+          "commit": "$(git rev-parse HEAD)",
+          "ref": "${{ needs.metadata.outputs.display_ref }}",
+          "previewVersion": "${CODEX_RELEASE_VERSION}",
+          "workflow": "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}",
+          "source": "validation-lab"
+        }
+        EOF
