@@ -70,11 +70,22 @@ def determine_smoke_gate(groups: set[str]) -> tuple[bool, str]:
     return bool(has_runtime or has_docs), smoke_gate_kind
 
 
+def determine_lab_matrix_policy(profile: str) -> tuple[str, str]:
+    policies = {
+        "targeted": ("true", "2"),
+        "broad": ("true", "4"),
+        "full": ("true", "3"),
+        "artifact": ("true", "2"),
+    }
+    return policies.get(profile, ("true", "1"))
+
+
 def lab_plan(args: argparse.Namespace) -> None:
     catalog = load_catalog()
     catalog_by_id = {spec["lane_id"]: spec for spec in catalog}
     requested_lanes = [lane.strip() for lane in args.lanes.split(",") if lane.strip()]
     run_artifact = args.profile == "artifact" or parse_bool(args.artifact_build)
+    matrix_fail_fast, matrix_max_parallel = determine_lab_matrix_policy(args.profile)
 
     if requested_lanes:
         selected = select_exact(catalog_by_id, requested_lanes)
@@ -109,6 +120,8 @@ def lab_plan(args: argparse.Namespace) -> None:
             "run_smoke_gate": "true" if run_smoke_gate else "false",
             "smoke_gate_kind": smoke_gate_kind,
             "run_artifact": "true" if run_artifact else "false",
+            "matrix_fail_fast": matrix_fail_fast,
+            "matrix_max_parallel": matrix_max_parallel,
         }
     )
 
