@@ -180,9 +180,7 @@ async fn run_code_mode_turn_with_rmcp(
     code: &str,
 ) -> Result<(TestCodex, ResponseMock)> {
     let rmcp_test_server_bin = stdio_server_bin()?;
-    let mut builder = test_codex()
-        .with_model("test-gpt-5.1-codex")
-        .with_config(move |config| {
+    let mut builder = test_codex().with_config(move |config| {
             let _ = config.features.enable(Feature::CodeMode);
             // Keep code_mode tests hermetic instead of inheriting a host-pinned Node path.
             config.js_repl_node_path = None;
