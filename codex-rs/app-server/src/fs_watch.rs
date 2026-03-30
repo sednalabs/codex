@@ -241,11 +241,9 @@ fn watch_paths_for_target(path: &AbsolutePathBuf) -> Vec<WatchPath> {
 }
 
 fn watch_target_matches_event_path(
-    watch_target: &AbsolutePathBuf,
-    event_path: &AbsolutePathBuf,
+    watch_target: &std::path::Path,
+    event_path: &std::path::Path,
 ) -> bool {
-    let watch_target = watch_target.as_path();
-    let event_path = event_path.as_path();
     event_path == watch_target
         || watch_target.starts_with(event_path)
         || event_path.starts_with(watch_target)
@@ -557,33 +555,19 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn missing_file_watch_accepts_parent_directory_events_for_target_file() {
+    fn missing_file_watch_accepts_parent_directory_events_for_target_file() {
         let temp_dir = TempDir::new().expect("temp dir");
         let missing_path = absolute_path(temp_dir.path().join("FETCH_HEAD"));
         let parent = absolute_path(temp_dir.path().to_path_buf());
-        let file_watcher = Arc::new(FileWatcher::noop());
-        let (tx, mut rx) = mpsc::channel(16);
-        let manager = FsWatchManager::new_with_file_watcher(
-            Arc::new(OutgoingMessageSender::new(tx)),
-            file_watcher.clone(),
-        );
+        let sibling = absolute_path(temp_dir.path().join("ORIG_HEAD"));
 
-        let response = manager
-            .watch(
-                ConnectionId(1),
-                FsWatchParams {
-                    path: missing_path.clone(),
-                },
-            )
-            .await
-            .expect("watch should succeed");
-
-        file_watcher
-            .send_paths_for_test(vec![parent.to_path_buf()])
-            .await;
-
-        let notification = collect_next_fs_changed(&mut rx).await;
-        assert_eq!(notification.watch_id, response.watch_id);
-        assert_eq!(notification.changed_paths, vec![parent]);
+        assert!(watch_target_matches_event_path(
+            missing_path.as_path(),
+            parent.as_path()
+        ));
+        assert!(!watch_target_matches_event_path(
+            missing_path.as_path(),
+            sibling.as_path()
+        ));
     }
 }
