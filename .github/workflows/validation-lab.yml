@@ -73,8 +73,15 @@ jobs:
     steps:
       - uses: actions/checkout@v6
         with:
+          fetch-depth: 1
+          ref: ${{ github.sha }}
+
+      - name: Check out validation target
+        uses: actions/checkout@v6
+        with:
           fetch-depth: 0
           ref: ${{ inputs.ref || github.sha }}
+          path: validation-target
 
       - name: Compute validation-lab plan
         id: meta
@@ -89,9 +96,10 @@ jobs:
 
           checkout_ref='${{ inputs.ref || github.sha }}'
           display_ref='${{ inputs.ref || github.ref_name }}'
-          head_sha="$(git rev-parse HEAD)"
-          short_sha="$(git rev-parse --short=8 HEAD)"
-          latest_tag="$(git tag --merged HEAD --list 'v*-sedna.*' --sort=-version:refname | head -n 1)"
+          target_checkout="${GITHUB_WORKSPACE}/validation-target"
+          head_sha="$(git -C "${target_checkout}" rev-parse HEAD)"
+          short_sha="$(git -C "${target_checkout}" rev-parse --short=8 HEAD)"
+          latest_tag="$(git -C "${target_checkout}" tag --merged HEAD --list 'v*-sedna.*' --sort=-version:refname | head -n 1)"
           if [[ -n "${latest_tag}" ]]; then
             base_version="${latest_tag#v}"
           else
@@ -236,7 +244,7 @@ jobs:
       - uses: actions/checkout@v6
         with:
           fetch-depth: 1
-          ref: ${{ needs.metadata.outputs.checkout_ref }}
+          ref: ${{ github.sha }}
 
       - name: Download lane summary artifacts
         continue-on-error: true
