@@ -124,7 +124,7 @@ impl FsWatchManager {
         let watch_id = Uuid::now_v7().to_string();
         let outgoing = self.outgoing.clone();
         let (subscriber, rx) = self.file_watcher.add_subscriber();
-        let watch_root = params.path.to_path_buf().clone();
+        let watch_root = params.path.clone();
         let registration = subscriber.register_paths(watch_paths_for_target(&params.path));
         let (terminate_tx, terminate_rx) = oneshot::channel();
 
@@ -158,10 +158,7 @@ impl FsWatchManager {
                     .into_iter()
                     .filter_map(|path| {
                         match AbsolutePathBuf::resolve_path_against_base(&path, &watch_root) {
-                            Ok(path) if watch_target_matches_event_path(&watch_root, &path) => {
-                                Some(path)
-                            }
-                            Ok(_) => None,
+                            Ok(path) => changed_path_for_watch_target(&watch_root, path),
                             Err(err) => {
                                 warn!(
                                     "failed to normalize watch event path ({}) for {}: {err}",
@@ -174,6 +171,7 @@ impl FsWatchManager {
                     })
                     .collect::<Vec<_>>();
                 changed_paths.sort_by(|left, right| left.as_path().cmp(right.as_path()));
+                changed_paths.dedup();
                 if !changed_paths.is_empty() {
                     outgoing
                         .send_server_notification_to_connection_and_wait(
@@ -223,6 +221,13 @@ impl FsWatchManager {
     }
 }
 
+fn nearest_existing_watch_ancestor(path: &std::path::Path) -> Option<PathBuf> {
+    path.ancestors()
+        .skip(1)
+        .find(|ancestor| ancestor.exists())
+        .map(std::path::Path::to_path_buf)
+}
+
 fn watch_paths_for_target(path: &AbsolutePathBuf) -> Vec<WatchPath> {
     let watch_path = path.to_path_buf();
     let mut watched_paths = vec![WatchPath {
@@ -230,23 +235,32 @@ fn watch_paths_for_target(path: &AbsolutePathBuf) -> Vec<WatchPath> {
         recursive: false,
     }];
     if !watch_path.exists()
-        && let Some(parent) = watch_path.parent()
+        && let Some(existing_ancestor) = nearest_existing_watch_ancestor(&watch_path)
     {
         watched_paths.push(WatchPath {
-            path: parent.to_path_buf(),
+            path: existing_ancestor,
             recursive: false,
         });
     }
     watched_paths
 }
 
-fn watch_target_matches_event_path(
-    watch_target: &std::path::Path,
-    event_path: &std::path::Path,
-) -> bool {
-    event_path == watch_target
-        || watch_target.starts_with(event_path)
-        || event_path.starts_with(watch_target)
+fn changed_path_for_watch_target(
+    watch_target: &AbsolutePathBuf,
+    event_path: AbsolutePathBuf,
+) -> Option<AbsolutePathBuf> {
+    let watch_target = watch_target.as_path();
+    let event_path_ref = event_path.as_path();
+    if event_path_ref == watch_target {
+        return Some(event_path);
+    }
+    if watch_target.starts_with(event_path_ref) {
+        return AbsolutePathBuf::try_from(watch_target.to_path_buf()).ok();
+    }
+    if event_path_ref.starts_with(watch_target) {
+        return Some(event_path);
+    }
+    None
 }
 
 #[cfg(test)]
@@ -496,7 +510,7 @@ mod tests {
     }
 
     #[test]
-    fn missing_file_watch_registers_the_parent_directory_too() {
+    fn missing_file_watch_registers_the_nearest_existing_ancestor() {
         let temp_dir = TempDir::new().expect("temp dir");
         let missing_path = absolute_path(temp_dir.path().join("FETCH_HEAD"));
         let parent = missing_path
@@ -511,6 +525,26 @@ mod tests {
                 },
                 WatchPath {
                     path: parent.to_path_buf(),
+                    recursive: false,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn deeply_missing_file_watch_registers_the_nearest_existing_ancestor() {
+        let temp_dir = TempDir::new().expect("temp dir");
+        let missing_path = absolute_path(temp_dir.path().join("refs/remotes/origin/HEAD"));
+
+        assert_eq!(
+            watch_paths_for_target(&missing_path),
+            vec![
+                WatchPath {
+                    path: missing_path.to_path_buf(),
+                    recursive: false,
+                },
+                WatchPath {
+                    path: temp_dir.path().to_path_buf(),
                     recursive: false,
                 },
             ]
@@ -555,19 +589,16 @@ mod tests {
     }
 
     #[test]
-    fn missing_file_watch_accepts_parent_directory_events_for_target_file() {
+    fn missing_file_watch_maps_parent_directory_events_back_to_the_target_file() {
         let temp_dir = TempDir::new().expect("temp dir");
         let missing_path = absolute_path(temp_dir.path().join("FETCH_HEAD"));
         let parent = absolute_path(temp_dir.path().to_path_buf());
         let sibling = absolute_path(temp_dir.path().join("ORIG_HEAD"));
 
-        assert!(watch_target_matches_event_path(
-            missing_path.as_path(),
-            parent.as_path()
-        ));
-        assert!(!watch_target_matches_event_path(
-            missing_path.as_path(),
-            sibling.as_path()
-        ));
+        assert_eq!(
+            changed_path_for_watch_target(&missing_path, parent),
+            Some(missing_path.clone())
+        );
+        assert_eq!(changed_path_for_watch_target(&missing_path, sibling), None);
     }
 }
