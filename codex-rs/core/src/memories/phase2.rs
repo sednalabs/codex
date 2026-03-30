@@ -56,7 +56,6 @@ const CONSOLIDATION_ARTIFACT_ATTESTATION_SCHEMA_VERSION: u32 = 4;
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 struct ConsolidationArtifactAttestation {
     schema_version: u32,
-    artifacts_freshly_rewritten: bool,
     selection_fingerprint: String,
     consolidator_fingerprint: String,
     memory_sha256: String,
@@ -586,7 +585,6 @@ pub(in crate::memories) mod agent {
         memory_summary_sha256: String,
         prepared_input_artifact_tree_sha256: String,
         artifact_tree_sha256: String,
-        artifacts_freshly_rewritten: bool,
     }
 
     async fn validated_consolidation_artifact_state(
@@ -605,7 +603,6 @@ pub(in crate::memories) mod agent {
             && current.memory_summary_modified >= not_before
             && prepared_input_tree_matches
         {
-            current.artifacts_freshly_rewritten = true;
             return Some(current);
         }
         if !allow_existing_artifacts_without_rewrite {
@@ -699,7 +696,6 @@ pub(in crate::memories) mod agent {
                     root.as_path(),
                 )?,
                 artifact_tree_sha256: artifact_tree_sha256(root.as_path())?,
-                artifacts_freshly_rewritten: false,
             })
         })
         .await
@@ -746,7 +742,6 @@ pub(in crate::memories) mod agent {
     ) -> std::io::Result<()> {
         let attestation = ConsolidationArtifactAttestation {
             schema_version: CONSOLIDATION_ARTIFACT_ATTESTATION_SCHEMA_VERSION,
-            artifacts_freshly_rewritten: artifacts.artifacts_freshly_rewritten,
             selection_fingerprint: selection_fingerprint(&selection.selected),
             consolidator_fingerprint: consolidator_fingerprint(config, root, selection),
             memory_sha256: artifacts.memory_sha256.clone(),
@@ -820,7 +815,6 @@ pub(in crate::memories) mod agent {
             .ok_or_else(|| std::io::Error::other("missing non-empty consolidation artifacts"))?;
         let attestation = ConsolidationArtifactAttestation {
             schema_version: CONSOLIDATION_ARTIFACT_ATTESTATION_SCHEMA_VERSION,
-            artifacts_freshly_rewritten: artifacts.artifacts_freshly_rewritten,
             selection_fingerprint: selection_fingerprint(&selection.selected),
             consolidator_fingerprint,
             memory_sha256: artifacts.memory_sha256,
