@@ -324,7 +324,7 @@ pub(in crate::memories) mod agent {
                 return None;
             }
         };
-        agent_config.cwd = absolute_root.into();
+        agent_config.cwd = absolute_root;
         // Consolidation threads must never feed back into phase-1 memory generation.
         agent_config.memories.generate_memories = false;
         // Approval policy

@@ -1161,12 +1161,9 @@ impl AgentControl {
             .collect::<Vec<_>>();
         let within_depth_count = within_depth.len();
         let truncated = filtered_count > within_depth_count || within_depth_count > max_agents;
-        let visible_thread_ids = within_depth
+        let agents = within_depth
             .into_iter()
             .take(max_agents)
-            .collect::<Vec<_>>();
-        let agents = visible_thread_ids
-            .into_iter()
             .filter_map(|thread_id| {
                 let record = tree_records.get(&thread_id)?;
                 Some(AgentTreeNode {
