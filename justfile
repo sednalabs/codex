@@ -124,7 +124,6 @@ core-ledger-smoke:
 
 # Focused persisted-state/usage lineage contract slice for subagent graph adoption.
 core-state-spawn-lineage-contract-targeted:
-    set -euo pipefail
     cargo test -p codex-state usage_spawn_lineage_matches_persisted_state_edge_for_child_thread -- --test-threads=1
 
 # Cross-repo ledger seam validation (agent-usage-ledger + Postgres).
