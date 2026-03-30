@@ -223,6 +223,10 @@ async fn spawn_wait_and_list_agents_tool_descriptions_have_guidance_updates() ->
                 .features
                 .enable(Feature::Collab)
                 .expect("test config should allow feature update");
+            config
+                .features
+                .enable(Feature::MultiAgentV2)
+                .expect("test config should allow feature update");
         });
     mount_models_once(
         &server,
