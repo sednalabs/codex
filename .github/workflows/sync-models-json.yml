@@ -1,0 +1,60 @@
+name: sync-models-json
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 */6 * * *"
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Fetch upstream models.json
+        run: |
+          curl -sL https://api.github.com/repos/openai/codex/contents/codex-rs/core/models.json -o upstream.json
+          cat upstream.json | jq -r '.content' | base64 -d > upstream-models.json
+          echo "upstream_sha=$(cat upstream.json | jq -r '.sha')" >> $GITHUB_ENV
+
+      - name: Compare with local
+        id: diff
+        run: |
+          if cmp -s upstream-models.json codex-rs/core/models.json; then
+            echo "changed=false" >> $GITHUB_OUTPUT
+          else
+            echo "changed=true" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Validate JSON
+        if: steps.diff.outputs.changed == 'true'
+        run: jq '.' upstream-models.json > /dev/null
+
+      - name: Update file
+        if: steps.diff.outputs.changed == 'true'
+        run: mv upstream-models.json codex-rs/core/models.json
+
+      - name: Generate diff
+        if: steps.diff.outputs.changed == 'true'
+        run: git diff codex-rs/core/models.json > models.diff || true
+
+      - name: Create PR
+        if: steps.diff.outputs.changed == 'true'
+        uses: peter-evans/create-pull-request@v8
+        with:
+          branch: bot/sync-models-json
+          delete-branch: true
+          commit-message: "Sync models.json from upstream"
+          title: "Sync models.json from openai/codex"
+          body: |
+            Automated sync from upstream.
+
+            Upstream SHA: ${{ env.upstream_sha }}
+
+            Source:
+            https://github.com/openai/codex/blob/main/codex-rs/core/models.json
