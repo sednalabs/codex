@@ -54,6 +54,7 @@ impl DebouncedReceiver {
         let next_allowance = *self
             .next_allowance
             .get_or_insert_with(|| Instant::now() + self.interval);
+        self.next_allowance = None;
 
         loop {
             tokio::select! {
@@ -228,6 +229,7 @@ mod tests {
     use codex_utils_absolute_path::AbsolutePathBuf;
     use pretty_assertions::assert_eq;
     use tempfile::TempDir;
+    use tokio::time::timeout;
     use uuid::Version;
 
     fn absolute_path(path: PathBuf) -> AbsolutePathBuf {
@@ -375,5 +377,92 @@ mod tests {
             }])
         );
         assert_ne!(response_1.watch_id, response_2.watch_id);
+    }
+
+    async fn collect_next_fs_changed(
+        outgoing_rx: &mut mpsc::Receiver<OutgoingEnvelope>,
+    ) -> FsChangedNotification {
+        loop {
+            let envelope = timeout(Duration::from_millis(600), outgoing_rx.recv())
+                .await
+                .expect("notification should arrive before test timeout")
+                .expect("outgoing channel should remain open while notifications are expected");
+            match envelope {
+                OutgoingEnvelope::ToConnection {
+                    message:
+                        OutgoingMessage::AppServerNotification(ServerNotification::FsChanged(
+                            notification,
+                        )),
+                    write_complete_tx,
+                    ..
+                } => {
+                    if let Some(write_complete_tx) = write_complete_tx {
+                        let _ = write_complete_tx.send(());
+                    }
+                    return notification;
+                }
+                OutgoingEnvelope::ToConnection {
+                    write_complete_tx, ..
+                } => {
+                    if let Some(write_complete_tx) = write_complete_tx {
+                        let _ = write_complete_tx.send(());
+                    }
+                }
+                OutgoingEnvelope::Broadcast { .. } => {}
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn debounce_window_is_reset_between_batches() {
+        let temp_dir = TempDir::new().expect("temp dir");
+        let watch_root = absolute_path(temp_dir.path().to_path_buf());
+        let file_b = temp_dir.path().join("file-b.txt");
+        let file_c = temp_dir.path().join("file-c.txt");
+
+        let (tx, mut rx) = mpsc::channel(16);
+        let manager = FsWatchManager::new_with_file_watcher(
+            Arc::new(OutgoingMessageSender::new(tx)),
+            Arc::new(FileWatcher::new().expect("watcher should initialize")),
+        );
+        let file_b = absolute_path(file_b);
+        let file_c = absolute_path(file_c);
+
+        let response = manager
+            .watch(ConnectionId(1), FsWatchParams { path: watch_root })
+            .await
+            .expect("watch should succeed");
+
+        std::fs::write(&file_b, "first\n").expect("write first path");
+        let first_notification = collect_next_fs_changed(&mut rx).await;
+        assert_eq!(first_notification.watch_id, response.watch_id);
+        assert!(first_notification.changed_paths.contains(&file_b));
+
+        tokio::time::sleep(FS_CHANGED_NOTIFICATION_DEBOUNCE * 2).await;
+        std::fs::write(&file_b, "second\n").expect("write second path");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        std::fs::write(&file_c, "third\n").expect("write third path");
+
+        let second_batch_start = Instant::now();
+        let second_notification = collect_next_fs_changed(&mut rx).await;
+        let second_batch_elapsed = second_batch_start.elapsed();
+        assert!(
+            second_batch_elapsed >= FS_CHANGED_NOTIFICATION_DEBOUNCE - Duration::from_millis(75),
+            "expected a fresh debounce delay before the second batch is emitted"
+        );
+        assert_eq!(second_notification.watch_id, response.watch_id);
+        let second_batch_paths = second_notification
+            .changed_paths
+            .into_iter()
+            .collect::<HashSet<_>>();
+        assert!(second_batch_paths.contains(&file_b));
+        assert!(second_batch_paths.contains(&file_c));
+
+        assert!(
+            timeout(Duration::from_millis(100), rx.recv())
+                .await
+                .is_err(),
+            "a subsequent batch should not arrive without another debounced change"
+        );
     }
 }
