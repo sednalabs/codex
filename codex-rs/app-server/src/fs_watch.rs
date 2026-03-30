@@ -554,7 +554,7 @@ mod tests {
         assert_eq!(notification.changed_paths, vec![missing_path]);
     }
 
-    #[tokio::test]
+    #[test]
     fn missing_file_watch_accepts_parent_directory_events_for_target_file() {
         let temp_dir = TempDir::new().expect("temp dir");
         let missing_path = absolute_path(temp_dir.path().join("FETCH_HEAD"));
