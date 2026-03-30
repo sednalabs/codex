@@ -10,7 +10,7 @@ pub(crate) fn format_subagent_notification_message(
     status: &AgentStatus,
 ) -> String {
     let payload_json = serde_json::json!({
-        "agent_path": agent_reference,
+        "agent_id": agent_reference,
         "status": status,
     })
     .to_string();
