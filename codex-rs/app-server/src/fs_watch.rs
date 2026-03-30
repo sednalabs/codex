@@ -158,7 +158,13 @@ impl FsWatchManager {
                     .into_iter()
                     .filter_map(|path| {
                         match AbsolutePathBuf::resolve_path_against_base(&path, &watch_root) {
-                            Ok(path) => Some(path),
+                            Ok(path)
+                                if path.as_path() == watch_root
+                                    || path.as_path().starts_with(&watch_root) =>
+                            {
+                                Some(path)
+                            }
+                            Ok(_) => None,
                             Err(err) => {
                                 warn!(
                                     "failed to normalize watch event path ({}) for {}: {err}",
@@ -502,5 +508,41 @@ mod tests {
                 },
             ]
         );
+    }
+
+    #[tokio::test]
+    async fn missing_file_watch_ignores_sibling_parent_events() {
+        let temp_dir = TempDir::new().expect("temp dir");
+        let missing_path = absolute_path(temp_dir.path().join("FETCH_HEAD"));
+        let sibling_path = absolute_path(temp_dir.path().join("ORIG_HEAD"));
+
+        let (tx, mut rx) = mpsc::channel(16);
+        let manager = FsWatchManager::new_with_file_watcher(
+            Arc::new(OutgoingMessageSender::new(tx)),
+            Arc::new(FileWatcher::new().expect("watcher should initialize")),
+        );
+
+        let response = manager
+            .watch(
+                ConnectionId(1),
+                FsWatchParams {
+                    path: missing_path.clone(),
+                },
+            )
+            .await
+            .expect("watch should succeed");
+
+        std::fs::write(&sibling_path, "sibling\n").expect("write sibling path");
+        assert!(
+            timeout(FS_CHANGED_NOTIFICATION_DEBOUNCE * 2, rx.recv())
+                .await
+                .is_err(),
+            "sibling changes should not be forwarded for a missing-file watch"
+        );
+
+        std::fs::write(&missing_path, "target\n").expect("write watched path");
+        let notification = collect_next_fs_changed(&mut rx).await;
+        assert_eq!(notification.watch_id, response.watch_id);
+        assert_eq!(notification.changed_paths, vec![missing_path]);
     }
 }
