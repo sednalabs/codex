@@ -63,6 +63,13 @@ def parse_bool(value: str) -> bool:
     return value.lower() == "true"
 
 
+def determine_smoke_gate(groups: set[str]) -> tuple[bool, str]:
+    has_runtime = bool(groups & {"core", "ui_protocol", "attestation"})
+    has_docs = bool(groups & {"workflow", "docs"})
+    smoke_gate_kind = "runtime" if has_runtime else "workflow_docs" if has_docs else ""
+    return bool(has_runtime or has_docs), smoke_gate_kind
+
+
 def lab_plan(args: argparse.Namespace) -> None:
     catalog = load_catalog()
     catalog_by_id = {spec["lane_id"]: spec for spec in catalog}
@@ -90,10 +97,8 @@ def lab_plan(args: argparse.Namespace) -> None:
     elif args.profile in {"broad", "full"}:
         selected = select_for_lane_set(catalog, "all" if args.lane_set == "all" else args.lane_set)
         groups = {group for spec in selected for group in spec["groups"]}
-        has_runtime = bool(groups & {"core", "ui_protocol", "attestation"})
-        has_docs = bool(groups & {"workflow", "docs"})
-        run_smoke_gate = bool(selected) and (has_runtime or has_docs)
-        smoke_gate_kind = "runtime" if has_runtime else "workflow_docs" if has_docs else ""
+        has_smoke_gate, smoke_gate_kind = determine_smoke_gate(groups)
+        run_smoke_gate = bool(selected) and has_smoke_gate
     else:
         raise SystemExit(f"unsupported profile: {args.profile}")
 
@@ -148,14 +153,8 @@ def heavy_plan(args: argparse.Namespace) -> None:
         )
 
     groups = {group for spec in selected for group in spec["groups"]}
-    has_runtime_smoke_family = bool(groups & {"core", "ui_protocol", "attestation"})
-    has_workflow_smoke_family = bool(groups & {"workflow", "docs"})
-    run_smoke_gate = (args.event_name != "workflow_dispatch" or parse_bool(args.run_all_lanes)) and (
-        has_runtime_smoke_family or has_workflow_smoke_family
-    )
-    smoke_gate_kind = (
-        "runtime" if has_runtime_smoke_family else "workflow_docs" if has_workflow_smoke_family else ""
-    )
+    has_smoke_gate, smoke_gate_kind = determine_smoke_gate(groups)
+    run_smoke_gate = (args.event_name != "workflow_dispatch" or parse_bool(args.run_all_lanes)) and has_smoke_gate
 
     emit(
         {
