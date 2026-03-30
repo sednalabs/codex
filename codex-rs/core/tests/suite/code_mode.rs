@@ -2323,18 +2323,7 @@ text(JSON.stringify(tool));
         parsed,
         serde_json::json!({
             "name": "view_image",
-            "description": r#"View a local image from the filesystem (only use if given a full filepath by the user, and the image isn't already attached to the thread context within <image ...> tags).
-
-Code mode declaration:
-```ts
-import { tools } from "tools.js";
-declare function view_image(args: {
-  path: string;
-}): Promise<{
-  detail: string | null;
-  image_url: string;
-}>;
-```"#,
+            "description": "View a local image from the filesystem (only use if given a full filepath by the user, and the image isn't already attached to the thread context within <image ...> tags).\n\nexec tool declaration:\n```ts\ndeclare const tools: { view_image(args: { path: string; }): Promise<{ detail: string | null; image_url: string; }>; };\n```",
         })
     );
 
@@ -2368,36 +2357,11 @@ text(JSON.stringify(ALL_TOOLS));
         &custom_tool_output_last_non_empty_text(&req, "call-1")
             .expect("exec ALL_TOOLS MCP lookup should emit JSON"),
     )?;
-    let parsed = parsed
-        .as_array()
-        .and_then(|tools| {
-            tools.iter().find(|tool| {
-                tool.get("module") == Some(&Value::String("tools/mcp/rmcp.js".to_string()))
-                    && tool.get("name") == Some(&Value::String("echo".to_string()))
-            })
-        })
-        .cloned()
-        .expect("namespaced MCP tool metadata should be present");
     assert_eq!(
         parsed,
         serde_json::json!({
-            "module": "tools/mcp/rmcp.js",
-            "name": "echo",
-            "description": r#"Echo back the provided message and include environment data.
-
-Code mode declaration:
-```ts
-import { tools } from "tools/mcp/rmcp.js";
-declare function echo(args: {
-  env_var?: string;
-  message: string;
-}): Promise<{
-  _meta?: unknown;
-  content: Array<unknown>;
-  isError?: boolean;
-  structuredContent?: unknown;
-}>;
-```"#,
+            "name": "mcp__rmcp__echo",
+            "description": "Echo back the provided message and include environment data.\n\nexec tool declaration:\n```ts\ndeclare const tools: { mcp__rmcp__echo(args: { env_var?: string; message: string; }): Promise<{ _meta?: unknown; content: Array<unknown>; isError?: boolean; structuredContent?: unknown; }>; };\n```",
         })
     );
 
@@ -2543,7 +2507,8 @@ text(
             .and_then(Value::as_str)
             .is_some_and(|description| {
                 description.contains("A hidden dynamic tool.")
-                    && description.contains("declare function hidden_dynamic_tool(args:")
+                    && description.contains("declare const tools:")
+                    && description.contains("hidden_dynamic_tool(args:")
             })
     );
 
