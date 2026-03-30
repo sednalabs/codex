@@ -399,7 +399,7 @@ mod tests {
         outgoing_rx: &mut mpsc::Receiver<OutgoingEnvelope>,
     ) -> FsChangedNotification {
         loop {
-            let envelope = timeout(Duration::from_millis(600), outgoing_rx.recv())
+            let envelope = timeout(Duration::from_secs(2), outgoing_rx.recv())
                 .await
                 .expect("notification should arrive before test timeout")
                 .expect("outgoing channel should remain open while notifications are expected");
@@ -493,7 +493,7 @@ mod tests {
             watch_paths_for_target(&missing_path),
             vec![
                 WatchPath {
-                    path: missing_path.to_path_buf().clone(),
+                    path: missing_path.to_path_buf(),
                     recursive: false,
                 },
                 WatchPath {

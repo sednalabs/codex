@@ -1177,7 +1177,6 @@ pub(in crate::memories) mod agent {
         }
         #[cfg(windows)]
         {
-            use std::os::windows::fs::MetadataExt;
             use std::os::windows::fs::OpenOptionsExt;
             use windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT;
             use windows_sys::Win32::Storage::FileSystem::FILE_FLAG_OPEN_REPARSE_POINT;
@@ -1190,7 +1189,7 @@ pub(in crate::memories) mod agent {
             if metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
                 return Err(std::io::Error::other("path is a reparse point"));
             }
-            if metadata.number_of_links() > 1 {
+            if file_has_multiple_hard_links(&file)? {
                 return Err(std::io::Error::other("path has multiple hard links"));
             }
             if !metadata.is_file() {
@@ -1230,7 +1229,6 @@ pub(in crate::memories) mod agent {
         }
         #[cfg(windows)]
         {
-            use std::os::windows::fs::MetadataExt;
             use std::os::windows::fs::OpenOptionsExt;
             use windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT;
             use windows_sys::Win32::Storage::FileSystem::FILE_FLAG_OPEN_REPARSE_POINT;
@@ -1244,7 +1242,7 @@ pub(in crate::memories) mod agent {
             if metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
                 return Err(std::io::Error::other("path is a reparse point"));
             }
-            if metadata.number_of_links() > 1 {
+            if file_has_multiple_hard_links(&file)? {
                 return Err(std::io::Error::other("path has multiple hard links"));
             }
             if !metadata.is_file() {
@@ -1260,6 +1258,23 @@ pub(in crate::memories) mod agent {
                 "secure file writing is not implemented for this platform; this is required for memory consolidation attestation"
             );
         }
+    }
+
+    #[cfg(windows)]
+    fn file_has_multiple_hard_links(file: &std::fs::File) -> std::io::Result<bool> {
+        use std::os::windows::io::AsRawHandle;
+        use windows_sys::Win32::Storage::FileSystem::BY_HANDLE_FILE_INFORMATION;
+        use windows_sys::Win32::Storage::FileSystem::GetFileInformationByHandle;
+
+        let mut file_information = std::mem::MaybeUninit::<BY_HANDLE_FILE_INFORMATION>::zeroed();
+        let ok = unsafe {
+            GetFileInformationByHandle(file.as_raw_handle().cast(), file_information.as_mut_ptr())
+        };
+        if ok == 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        let file_information = unsafe { file_information.assume_init() };
+        Ok(file_information.nNumberOfLinks > 1)
     }
 
     async fn loop_agent(
