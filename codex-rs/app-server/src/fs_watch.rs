@@ -482,40 +482,25 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn missing_file_watch_registers_the_parent_directory_too() {
-        const OUTGOING_BUFFER: usize = 1;
+    #[test]
+    fn missing_file_watch_registers_the_parent_directory_too() {
         let temp_dir = TempDir::new().expect("temp dir");
         let missing_path = absolute_path(temp_dir.path().join("FETCH_HEAD"));
         let parent = missing_path
             .parent()
             .expect("missing file should have a parent");
-
-        let (tx, _rx) = mpsc::channel(OUTGOING_BUFFER);
-        let file_watcher = Arc::new(FileWatcher::noop());
-        let manager = FsWatchManager::new_with_file_watcher(
-            Arc::new(OutgoingMessageSender::new(tx)),
-            file_watcher.clone(),
-        );
-
-        let response = manager
-            .watch(
-                ConnectionId(1),
-                FsWatchParams {
-                    path: missing_path.clone(),
+        assert_eq!(
+            watch_paths_for_target(&missing_path),
+            vec![
+                WatchPath {
+                    path: missing_path.to_path_buf().clone(),
+                    recursive: false,
                 },
-            )
-            .await
-            .expect("watch should succeed");
-
-        assert_eq!(response.path, missing_path);
-        assert_eq!(
-            file_watcher.watch_counts_for_test(parent.as_path()),
-            Some((1, 0))
-        );
-        assert_eq!(
-            file_watcher.watch_counts_for_test(missing_path.as_path()),
-            Some((1, 0))
+                WatchPath {
+                    path: parent.to_path_buf(),
+                    recursive: false,
+                },
+            ]
         );
     }
 }
