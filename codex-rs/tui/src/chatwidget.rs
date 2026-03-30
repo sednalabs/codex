@@ -538,8 +538,10 @@ fn is_standard_tool_call(parsed_cmd: &[ParsedCommand]) -> bool {
 const RATE_LIMIT_WARNING_THRESHOLDS: [f64; 3] = [75.0, 90.0, 95.0];
 const NUDGE_MODEL_SLUG: &str = "gpt-5.1-codex-mini";
 const RATE_LIMIT_SWITCH_PROMPT_THRESHOLD: f64 = 90.0;
+#[cfg_attr(debug_assertions, allow(dead_code))]
 const WEEKLY_PACE_ON_TRACK_EPSILON_PERCENT: f64 = 3.0;
 
+#[cfg_attr(debug_assertions, allow(dead_code))]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum WeeklyPacingSignal {
     OnPace,
@@ -547,6 +549,7 @@ enum WeeklyPacingSignal {
     Under { abs_delta_pct: i64 },
 }
 
+#[cfg_attr(debug_assertions, allow(dead_code))]
 impl WeeklyPacingSignal {
     fn label(self) -> String {
         match self {
@@ -557,6 +560,7 @@ impl WeeklyPacingSignal {
     }
 }
 
+#[cfg_attr(debug_assertions, allow(dead_code))]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct WeeklyPacingSnapshot {
     signal: WeeklyPacingSignal,
@@ -2577,6 +2581,7 @@ impl ChatWidget {
         !self.rejected_steers_queue.is_empty() || !self.queued_user_messages.is_empty()
     }
 
+    #[cfg_attr(debug_assertions, allow(dead_code))]
     fn pop_next_queued_user_message(&mut self) -> Option<UserMessage> {
         if self.rejected_steers_queue.is_empty() {
             self.queued_user_messages.pop_front()
@@ -2587,6 +2592,7 @@ impl ChatWidget {
         }
     }
 
+    #[cfg_attr(debug_assertions, allow(dead_code))]
     fn pop_latest_queued_user_message(&mut self) -> Option<UserMessage> {
         self.queued_user_messages
             .pop_back()
@@ -7629,6 +7635,7 @@ impl ChatWidget {
         Some(format!("{label} {remaining:.0}%"))
     }
 
+    #[cfg_attr(debug_assertions, allow(dead_code))]
     fn status_line_weekly_limit_display(
         &self,
         window: Option<&RateLimitWindowDisplay>,
@@ -7656,6 +7663,7 @@ impl ChatWidget {
         }
     }
 
+    #[cfg_attr(debug_assertions, allow(dead_code))]
     fn status_line_weekly_pacing_snapshot(
         window: &RateLimitWindowDisplay,
         captured_at: DateTime<Local>,

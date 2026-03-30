@@ -68,14 +68,28 @@ async fn run_cmd_output(
     writable_roots: &[PathBuf],
     timeout_ms: u64,
 ) -> codex_core::exec::ExecToolCallOutput {
-    match run_cmd_result_with_writable_roots(cmd, writable_roots, timeout_ms, false, false).await {
+    match run_cmd_result_with_writable_roots(
+        cmd,
+        writable_roots,
+        timeout_ms,
+        /*use_legacy_landlock*/ false,
+        /*network_access*/ false,
+    )
+    .await
+    {
         Ok(output) => output,
         Err(CodexErr::Sandbox(SandboxErr::Denied { output, .. }))
             if is_bwrap_unavailable_output(&output) =>
         {
-            run_cmd_result_with_writable_roots(cmd, writable_roots, timeout_ms, true, false)
-                .await
-                .expect("sandboxed command should execute with legacy Landlock fallback")
+            run_cmd_result_with_writable_roots(
+                cmd,
+                writable_roots,
+                timeout_ms,
+                /*use_legacy_landlock*/ true,
+                /*network_access*/ false,
+            )
+            .await
+            .expect("sandboxed command should execute with legacy Landlock fallback")
         }
         Err(err) => panic!("sandboxed command should execute: {err:?}"),
     }
