@@ -597,7 +597,7 @@ pub(in crate::memories) mod agent {
         config: &Config,
         selection: &codex_state::Phase2InputSelection,
     ) -> Option<ConsolidationArtifactState> {
-        let mut current = current_consolidation_artifact_state(root).await?;
+        let current = current_consolidation_artifact_state(root).await?;
         let prepared_input_tree_matches = expected_prepared_input_artifact_tree_sha256
             .is_some_and(|expected| current.prepared_input_artifact_tree_sha256 == expected);
         if current.memory_modified >= not_before

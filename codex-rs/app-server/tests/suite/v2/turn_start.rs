@@ -1995,6 +1995,7 @@ config_file = "./custom-role.toml"
         prompt,
         model,
         reasoning_effort,
+        timed_out: _,
         agents_states,
     } = spawn_completed
     else {

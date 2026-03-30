@@ -651,7 +651,7 @@ mod tests {
             Some("requested-provider".into()),
         );
 
-        let token_event = token_count_event(turn_id, true);
+        let token_event = token_count_event(turn_id, /*include_rate_limit*/ true);
         logger.record_event(&token_event).await;
 
         let pool_arc = runtime.usage_pool();
@@ -735,7 +735,9 @@ WHERE thread_id = ?
             Some("requested-provider".to_string()),
         );
         logger
-            .record_event(&token_count_event(turn_id, false))
+            .record_event(&token_count_event(
+                turn_id, /*include_rate_limit*/ false,
+            ))
             .await;
         logger
             .record_event(&Event {
@@ -748,7 +750,9 @@ WHERE thread_id = ?
             })
             .await;
         logger
-            .record_event(&token_count_event(turn_id, false))
+            .record_event(&token_count_event(
+                turn_id, /*include_rate_limit*/ false,
+            ))
             .await;
 
         let pool_arc = runtime.usage_pool();
@@ -893,7 +897,9 @@ WHERE tool_call_id = ?
 
         let turn_id = "turn-spawn";
         logger
-            .record_event(&token_count_event(turn_id, false))
+            .record_event(&token_count_event(
+                turn_id, /*include_rate_limit*/ false,
+            ))
             .await;
 
         let spawn_call = "spawn-call";
