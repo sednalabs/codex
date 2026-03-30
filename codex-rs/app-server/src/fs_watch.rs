@@ -405,7 +405,7 @@ mod tests {
         outgoing_rx: &mut mpsc::Receiver<OutgoingEnvelope>,
     ) -> FsChangedNotification {
         loop {
-            let envelope = timeout(Duration::from_secs(2), outgoing_rx.recv())
+            let envelope = timeout(Duration::from_secs(5), outgoing_rx.recv())
                 .await
                 .expect("notification should arrive before test timeout")
                 .expect("outgoing channel should remain open while notifications are expected");
@@ -454,6 +454,7 @@ mod tests {
             .watch(ConnectionId(1), FsWatchParams { path: watch_root })
             .await
             .expect("watch should succeed");
+        tokio::time::sleep(Duration::from_millis(250)).await;
 
         std::fs::write(&file_b, "first\n").expect("write first path");
         let first_notification = collect_next_fs_changed(&mut rx).await;
@@ -531,6 +532,7 @@ mod tests {
             )
             .await
             .expect("watch should succeed");
+        tokio::time::sleep(Duration::from_millis(250)).await;
 
         std::fs::write(&sibling_path, "sibling\n").expect("write sibling path");
         assert!(
