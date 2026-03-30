@@ -275,7 +275,6 @@ pub(super) fn start_startup_remote_plugin_sync_once(
     };
 
     tokio::spawn(async move {
-        let startup_remote_plugin_sync_started = startup_remote_plugin_sync_started;
         let generation = startup_remote_plugin_sync_started.generation;
         if marker_path.is_file() {
             remove_startup_remote_plugin_sync_state(codex_home.as_path(), generation);
@@ -607,9 +606,7 @@ async fn wait_for_startup_remote_plugin_sync_prerequisites_after_completion(
         if marker_path.is_file() {
             return;
         }
-        if startup_remote_plugin_sync_prerequisites_ready(codex_home)
-            && startup_remote_plugin_sync_snapshot(codex_home, generation).is_some()
-        {
+        if startup_remote_plugin_sync_prerequisites_ready(codex_home) {
             return;
         }
         if startup_remote_plugin_sync_snapshot(codex_home, generation).is_none() {
