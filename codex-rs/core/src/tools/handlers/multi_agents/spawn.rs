@@ -148,7 +148,6 @@ impl ToolHandler for Handler {
                     .await
                 {
                     SubAgentInventoryInfo {
-                        thread_id,
                         nickname: snapshot.session_source.get_nickname(),
                         role: snapshot.session_source.get_agent_role(),
                         status: session.services.agent_control.get_status(thread_id).await,
@@ -160,7 +159,6 @@ impl ToolHandler for Handler {
                     }
                 } else {
                     SubAgentInventoryInfo {
-                        thread_id,
                         nickname: None,
                         role: None,
                         status: session.services.agent_control.get_status(thread_id).await,
@@ -173,7 +171,6 @@ impl ToolHandler for Handler {
                 }
             }
             None => SubAgentInventoryInfo {
-                thread_id: session.conversation_id,
                 nickname: None,
                 role: None,
                 status: AgentStatus::NotFound,

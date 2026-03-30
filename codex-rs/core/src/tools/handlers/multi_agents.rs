@@ -43,21 +43,6 @@ pub(crate) fn parse_agent_id_target(target: &str) -> Result<ThreadId, FunctionCa
     })
 }
 
-pub(crate) fn parse_agent_id_targets(
-    targets: Vec<String>,
-) -> Result<Vec<ThreadId>, FunctionCallError> {
-    if targets.is_empty() {
-        return Err(FunctionCallError::RespondToModel(
-            "agent ids must be non-empty".to_string(),
-        ));
-    }
-
-    targets
-        .into_iter()
-        .map(|target| parse_agent_id_target(&target))
-        .collect()
-}
-
 pub(crate) use close_agent::Handler as CloseAgentHandler;
 pub(crate) use resume_agent::Handler as ResumeAgentHandler;
 pub(crate) use send_input::Handler as SendInputHandler;

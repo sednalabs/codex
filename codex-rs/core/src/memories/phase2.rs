@@ -113,7 +113,7 @@ pub(super) async fn run(session: &Arc<Session>, config: Arc<Config>) {
             return;
         }
     };
-    let raw_memories = selection.selected.to_vec();
+    let raw_memories = selection.selected.clone();
     let artifact_memories = artifact_memories_for_phase2(&selection);
     let new_watermark = get_watermark(claim.watermark, &raw_memories);
 
@@ -389,6 +389,7 @@ pub(in crate::memories) mod agent {
     }
 
     /// Handle the agent while it is running.
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn handle(
         session: &Arc<Session>,
         claim: Claim,
@@ -641,30 +642,32 @@ pub(in crate::memories) mod agent {
             Ok(None) => {
                 if attestation_required {
                     None
-                } else if state_db.is_some() {
-                    None
                 } else {
-                    let root = root.to_path_buf();
-                    match tokio::task::spawn_blocking(move || {
-                        attestation_support_initialized(&root)
-                    })
-                    .await
-                    {
-                        Ok(Ok(false)) => prepared_input_tree_matches.then_some(current),
-                        Ok(Ok(true)) => None,
-                        Ok(Err(err)) => {
-                            tracing::warn!(
-                                error = %err,
-                                "failed to read global memory consolidation artifact attestation support state"
-                            );
-                            None
-                        }
-                        Err(err) => {
-                            tracing::warn!(
-                                error = %err,
-                                "failed to join global memory consolidation attestation support task"
-                            );
-                            None
+                    if state_db.is_some() {
+                        None
+                    } else {
+                        let root = root.to_path_buf();
+                        match tokio::task::spawn_blocking(move || {
+                            attestation_support_initialized(&root)
+                        })
+                        .await
+                        {
+                            Ok(Ok(false)) => prepared_input_tree_matches.then_some(current),
+                            Ok(Ok(true)) => None,
+                            Ok(Err(err)) => {
+                                tracing::warn!(
+                                    error = %err,
+                                    "failed to read global memory consolidation artifact attestation support state"
+                                );
+                                None
+                            }
+                            Err(err) => {
+                                tracing::warn!(
+                                    error = %err,
+                                    "failed to join global memory consolidation attestation support task"
+                                );
+                                None
+                            }
                         }
                     }
                 }
@@ -873,7 +876,10 @@ pub(in crate::memories) mod agent {
                 rollout_slug: output.rollout_slug.as_deref(),
             })
             .collect::<Vec<_>>();
-        let bytes = serde_json::to_vec(&refs).expect("serialize phase-2 selection refs");
+        let bytes = match serde_json::to_vec(&refs) {
+            Ok(bytes) => bytes,
+            Err(err) => panic!("serialize phase-2 selection refs: {err}"),
+        };
         sha256_hex(&bytes)
     }
 
@@ -923,10 +929,10 @@ pub(in crate::memories) mod agent {
         }
 
         let sandbox_policy = SandboxPolicy::WorkspaceWrite {
-            writable_roots: vec![
-                AbsolutePathBuf::from_absolute_path(root.to_path_buf())
-                    .expect("memory root should be absolute"),
-            ],
+            writable_roots: vec![match AbsolutePathBuf::from_absolute_path(root) {
+                Ok(path) => path,
+                Err(err) => panic!("memory root should be absolute: {err}"),
+            }],
             read_only_access: Default::default(),
             network_access: false,
             exclude_tmpdir_env_var: true,
@@ -946,8 +952,10 @@ pub(in crate::memories) mod agent {
             file_system_sandbox_policy,
             network_sandbox_policy,
         };
-        let bytes =
-            serde_json::to_vec(&fingerprint).expect("serialize phase-2 consolidator fingerprint");
+        let bytes = match serde_json::to_vec(&fingerprint) {
+            Ok(bytes) => bytes,
+            Err(err) => panic!("serialize phase-2 consolidator fingerprint: {err}"),
+        };
         sha256_hex(&bytes)
     }
 
@@ -1144,7 +1152,7 @@ pub(in crate::memories) mod agent {
         }
         #[cfg(all(not(unix), not(windows)))]
         {
-            path.to_string_lossy().into_owned().into_bytes()
+            path.to_string_lossy().as_bytes().to_vec()
         }
     }
 

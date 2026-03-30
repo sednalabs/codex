@@ -94,7 +94,7 @@ jobs:
             BASE_SHA='${{ github.event.pull_request.base.sha }}'
             HEAD_SHA='${{ github.event.pull_request.head.sha }}'
             while IFS= read -r file; do
-              if [[ $file == .github/workflows/* && -f $file ]]; then
+              if [[ -f $file && ( $file == .github/workflows/*.yml || $file == .github/workflows/*.yaml ) ]]; then
                 files+=("$file")
               fi
             done < <(git diff --name-only --diff-filter=AM --no-renames "$BASE_SHA...$HEAD_SHA")
@@ -174,7 +174,7 @@ jobs:
         if: ${{ steps.cargo_dylint_cache.outputs.cache-hit != 'true' }}
         run: cargo install --locked cargo-dylint dylint-link
       - name: Check source wrapper syntax
-        run: bash -n tools/argument-comment-lint/run.sh
+        run: python3 -m py_compile tools/argument-comment-lint/run.py
       - name: Test argument comment lint package
         working-directory: tools/argument-comment-lint
         run: cargo test
@@ -214,7 +214,7 @@ jobs:
       - uses: facebook/install-dotslash@v2
       - name: Run argument comment lint on codex-rs
         shell: bash
-        run: ./tools/argument-comment-lint/run-prebuilt-linter.sh
+        run: python3 tools/argument-comment-lint/run-prebuilt-linter.py
 
   # --- CI to validate on different os/targets --------------------------------
   lint_build:
