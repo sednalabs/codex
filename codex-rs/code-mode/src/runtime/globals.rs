@@ -73,7 +73,7 @@ fn build_all_tools_value<'s>(
 
     for (index, tool) in enabled_tools.iter().enumerate() {
         let item = v8::Object::new(scope);
-        let name = v8::String::new(scope, &tool.global_name)
+        let name = v8::String::new(scope, &tool.tool_name)
             .ok_or_else(|| "failed to allocate ALL_TOOLS name".to_string())?;
         let description = v8::String::new(scope, &tool.description)
             .ok_or_else(|| "failed to allocate ALL_TOOLS description".to_string())?;
