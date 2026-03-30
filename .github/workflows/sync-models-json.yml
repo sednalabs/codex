@@ -18,9 +18,14 @@ jobs:
 
       - name: Fetch upstream models.json
         run: |
-          curl -sL https://api.github.com/repos/openai/codex/contents/codex-rs/core/models.json -o upstream.json
-          cat upstream.json | jq -r '.content' | base64 -d > upstream-models.json
-          echo "upstream_sha=$(cat upstream.json | jq -r '.sha')" >> $GITHUB_ENV
+          curl -sL \
+            https://api.github.com/repos/openai/codex/contents/codex-rs/core/models.json \
+            -o upstream.json
+
+          jq -r '.content' < upstream.json | base64 -d > upstream-models.json
+
+          upstream_sha="$(jq -r '.sha' < upstream.json)"
+          echo "upstream_sha=${upstream_sha}" >> "$GITHUB_ENV"
 
       - name: Compare with local
         id: diff
