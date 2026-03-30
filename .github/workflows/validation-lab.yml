@@ -108,6 +108,8 @@ jobs:
           smoke_gate_kind="$(SELECTION_META="${selection_meta}" python3 -c 'import json, os; print(json.loads(os.environ["SELECTION_META"])["smoke_gate_kind"])')"
           selected_matrix="$(SELECTION_META="${selection_meta}" python3 -c 'import json, os; print(json.dumps(json.loads(os.environ["SELECTION_META"])["selected_matrix"], separators=(",", ":")))')"
           run_artifact="$(SELECTION_META="${selection_meta}" python3 -c 'import json, os; print(json.loads(os.environ["SELECTION_META"])["run_artifact"])')"
+          matrix_fail_fast="$(SELECTION_META="${selection_meta}" python3 -c 'import json, os; print(json.loads(os.environ["SELECTION_META"])["matrix_fail_fast"])')"
+          matrix_max_parallel="$(SELECTION_META="${selection_meta}" python3 -c 'import json, os; print(json.loads(os.environ["SELECTION_META"])["matrix_max_parallel"])')"
 
           {
             echo "checkout_ref=${checkout_ref}"
