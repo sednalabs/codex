@@ -839,6 +839,7 @@ fn spawn_agent_tool_description(
 
 ### After you delegate
 - Call wait_agent very sparingly. Only call wait_agent when you need the result immediately for the next critical-path step and you are blocked until it returns.
+- Prefer list_agents for cheap live status snapshots before calling a blocking wait_agent, and use inspect_agent_tree when you need deeper live vs stale descendant state.
 - Do not redo delegated subagent tasks yourself; focus on integrating results or tackling non-overlapping work.
 - While the subagent is running in the background, do meaningful non-overlapping work immediately.
 - Do not repeatedly wait by reflex.
