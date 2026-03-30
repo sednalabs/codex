@@ -125,10 +125,7 @@ impl FsWatchManager {
         let outgoing = self.outgoing.clone();
         let (subscriber, rx) = self.file_watcher.add_subscriber();
         let watch_root = params.path.to_path_buf().clone();
-        let registration = subscriber.register_paths(vec![WatchPath {
-            path: params.path.to_path_buf(),
-            recursive: false,
-        }]);
+        let registration = subscriber.register_paths(watch_paths_for_target(&params.path));
         let (terminate_tx, terminate_rx) = oneshot::channel();
 
         self.state.lock().await.entries.insert(
@@ -221,6 +218,23 @@ impl FsWatchManager {
             .extract_if(|key, _| key.connection_id == connection_id)
             .count();
     }
+}
+
+fn watch_paths_for_target(path: &AbsolutePathBuf) -> Vec<WatchPath> {
+    let watch_path = path.to_path_buf();
+    let mut watched_paths = vec![WatchPath {
+        path: watch_path.clone(),
+        recursive: false,
+    }];
+    if !watch_path.exists()
+        && let Some(parent) = watch_path.parent()
+    {
+        watched_paths.push(WatchPath {
+            path: parent.to_path_buf(),
+            recursive: false,
+        });
+    }
+    watched_paths
 }
 
 #[cfg(test)]
@@ -465,6 +479,43 @@ mod tests {
                 .await
                 .is_err(),
             "a subsequent batch should not arrive without another debounced change"
+        );
+    }
+
+    #[tokio::test]
+    async fn missing_file_watch_registers_the_parent_directory_too() {
+        const OUTGOING_BUFFER: usize = 1;
+        let temp_dir = TempDir::new().expect("temp dir");
+        let missing_path = absolute_path(temp_dir.path().join("FETCH_HEAD"));
+        let parent = missing_path
+            .parent()
+            .expect("missing file should have a parent");
+
+        let (tx, _rx) = mpsc::channel(OUTGOING_BUFFER);
+        let file_watcher = Arc::new(FileWatcher::noop());
+        let manager = FsWatchManager::new_with_file_watcher(
+            Arc::new(OutgoingMessageSender::new(tx)),
+            file_watcher.clone(),
+        );
+
+        let response = manager
+            .watch(
+                ConnectionId(1),
+                FsWatchParams {
+                    path: missing_path.clone(),
+                },
+            )
+            .await
+            .expect("watch should succeed");
+
+        assert_eq!(response.path, missing_path);
+        assert_eq!(
+            file_watcher.watch_counts_for_test(parent.as_path()),
+            Some((1, 0))
+        );
+        assert_eq!(
+            file_watcher.watch_counts_for_test(missing_path.as_path()),
+            Some((1, 0))
         );
     }
 }
