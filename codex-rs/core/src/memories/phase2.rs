@@ -1147,7 +1147,7 @@ pub(in crate::memories) mod agent {
 
             path.as_os_str()
                 .encode_wide()
-                .flat_map(|unit| unit.to_le_bytes())
+                .flat_map(u16::to_le_bytes)
                 .collect()
         }
         #[cfg(all(not(unix), not(windows)))]

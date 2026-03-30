@@ -206,6 +206,7 @@ impl ToolHandler for Handler {
 #[derive(Debug, Deserialize)]
 struct WaitArgs {
     #[serde(default)]
+    #[serde(alias = "ids")]
     targets: Vec<String>,
     timeout_ms: Option<i64>,
     #[serde(default)]

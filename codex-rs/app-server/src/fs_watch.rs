@@ -158,10 +158,7 @@ impl FsWatchManager {
                     .into_iter()
                     .filter_map(|path| {
                         match AbsolutePathBuf::resolve_path_against_base(&path, &watch_root) {
-                            Ok(path)
-                                if path.as_path() == watch_root
-                                    || path.as_path().starts_with(&watch_root) =>
-                            {
+                            Ok(path) if watch_target_matches_event_path(&watch_root, &path) => {
                                 Some(path)
                             }
                             Ok(_) => None,
@@ -241,6 +238,17 @@ fn watch_paths_for_target(path: &AbsolutePathBuf) -> Vec<WatchPath> {
         });
     }
     watched_paths
+}
+
+fn watch_target_matches_event_path(
+    watch_target: &AbsolutePathBuf,
+    event_path: &AbsolutePathBuf,
+) -> bool {
+    let watch_target = watch_target.as_path();
+    let event_path = event_path.as_path();
+    event_path == watch_target
+        || watch_target.starts_with(event_path)
+        || event_path.starts_with(watch_target)
 }
 
 #[cfg(test)]
@@ -546,5 +554,36 @@ mod tests {
         let notification = collect_next_fs_changed(&mut rx).await;
         assert_eq!(notification.watch_id, response.watch_id);
         assert_eq!(notification.changed_paths, vec![missing_path]);
+    }
+
+    #[tokio::test]
+    async fn missing_file_watch_accepts_parent_directory_events_for_target_file() {
+        let temp_dir = TempDir::new().expect("temp dir");
+        let missing_path = absolute_path(temp_dir.path().join("FETCH_HEAD"));
+        let parent = absolute_path(temp_dir.path().to_path_buf());
+        let file_watcher = Arc::new(FileWatcher::noop());
+        let (tx, mut rx) = mpsc::channel(16);
+        let manager = FsWatchManager::new_with_file_watcher(
+            Arc::new(OutgoingMessageSender::new(tx)),
+            file_watcher.clone(),
+        );
+
+        let response = manager
+            .watch(
+                ConnectionId(1),
+                FsWatchParams {
+                    path: missing_path.clone(),
+                },
+            )
+            .await
+            .expect("watch should succeed");
+
+        file_watcher
+            .send_paths_for_test(vec![parent.to_path_buf()])
+            .await;
+
+        let notification = collect_next_fs_changed(&mut rx).await;
+        assert_eq!(notification.watch_id, response.watch_id);
+        assert_eq!(notification.changed_paths, vec![parent]);
     }
 }
