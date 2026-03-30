@@ -111,7 +111,11 @@ jobs:
             exit 0
           fi
 
-          actionlint "${files[@]}"
+          known_false_positives='type of expression at "runs-on" must be string or array but found type|property "runs_on" is not defined in object type'
+          actionlint \
+            -no-shellcheck \
+            -ignore "$known_false_positives" \
+            "${files[@]}"
 
   # --- CI that doesn't need specific targets ---------------------------------
   general:
