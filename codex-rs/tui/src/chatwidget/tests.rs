@@ -2379,7 +2379,7 @@ async fn collab_spawn_end_shows_requested_model_and_effort() {
 
 #[tokio::test]
 async fn raw_response_subagent_notification_renders_history() {
-    let (mut chat, mut rx, _ops) = make_chatwidget_manual(None).await;
+    let (mut chat, mut rx, _ops) = make_chatwidget_manual(/*model_override*/ None).await;
     let payload = serde_json::to_string(&codex_protocol::items::SubagentNotificationItem {
         agent_id: "agent-123".to_string(),
         status: codex_protocol::protocol::AgentStatus::Completed(None),
@@ -4491,8 +4491,8 @@ async fn steer_enter_queues_while_plan_stream_is_active() {
 
 #[tokio::test]
 async fn slash_approvals_enter_queues_while_task_running_and_replays_on_completion() {
-    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(None).await;
-    chat.bottom_pane.set_task_running(true);
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.bottom_pane.set_task_running(/*running*/ true);
 
     chat.bottom_pane
         .set_composer_text("/approvals".to_string(), Vec::new(), Vec::new());
@@ -7503,8 +7503,8 @@ async fn slash_clear_requests_ui_clear_when_idle() {
 
 #[tokio::test]
 async fn slash_approvals_queue_while_task_running_and_open_after_completion() {
-    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(None).await;
-    chat.bottom_pane.set_task_running(true);
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.bottom_pane.set_task_running(/*running*/ true);
 
     chat.dispatch_command(SlashCommand::Approvals);
     let cells = drain_insert_history(&mut rx);
@@ -10226,8 +10226,8 @@ async fn user_shell_command_renders_output_not_exploring() {
 
 #[tokio::test]
 async fn queued_inline_slash_command_runs_with_args_after_task_complete() {
-    let (mut chat, _rx, mut op_rx) = make_chatwidget_manual(None).await;
-    chat.bottom_pane.set_task_running(true);
+    let (mut chat, _rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.bottom_pane.set_task_running(/*running*/ true);
     chat.bottom_pane.set_composer_text(
         "/review focus on error handling".to_string(),
         Vec::new(),
@@ -10257,8 +10257,8 @@ async fn queued_inline_slash_command_runs_with_args_after_task_complete() {
 
 #[tokio::test]
 async fn alt_up_restores_most_recent_queued_slash_command() {
-    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(None).await;
-    chat.bottom_pane.set_task_running(true);
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.bottom_pane.set_task_running(/*running*/ true);
 
     chat.queue_user_message(UserMessage::from("queued draft".to_string()));
     chat.dispatch_command(SlashCommand::Approvals);
@@ -10316,8 +10316,8 @@ async fn bang_shell_command_submits_run_user_shell_command_in_app_server_tui() {
 #[tokio::test]
 async fn queued_slash_command_while_task_running_snapshot() {
     // Build a chat widget and simulate an active task.
-    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(None).await;
-    chat.bottom_pane.set_task_running(true);
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.bottom_pane.set_task_running(/*running*/ true);
 
     // Dispatch a command that should queue while a task runs.
     chat.dispatch_command(SlashCommand::Approvals);
@@ -12728,7 +12728,7 @@ async fn status_line_branch_refreshes_after_turn_complete() {
 
 #[tokio::test]
 async fn status_line_branch_refreshes_after_turn_complete_when_terminal_title_uses_git_branch() {
-    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(None).await;
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
     chat.config.tui_status_line = Some(Vec::new());
     chat.config.tui_terminal_title = Some(vec!["git-branch".to_string()]);
     chat.status_line_branch_lookup_complete = true;
@@ -12779,7 +12779,7 @@ async fn status_line_fast_mode_renders_on_and_off() {
 
 #[tokio::test]
 async fn status_line_weekly_limit_shows_qualitative_pacing_variants() {
-    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(None).await;
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
     chat.config.tui_status_line = Some(vec!["weekly-limit".to_string()]);
 
     let captured_at = chrono::Local::now();
@@ -12845,7 +12845,7 @@ async fn status_line_weekly_limit_shows_qualitative_pacing_variants() {
 
 #[tokio::test]
 async fn status_line_weekly_limit_shows_ratio_pacing_style() {
-    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(None).await;
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
     chat.config.tui_status_line = Some(vec!["weekly-limit".to_string()]);
     chat.config.tui_weekly_limit_pacing_style = WeeklyLimitPacingStyle::Ratio;
 
@@ -12876,7 +12876,7 @@ async fn status_line_weekly_limit_shows_ratio_pacing_style() {
 
 #[tokio::test]
 async fn status_line_weekly_limit_shows_stale_suffix_over_pace_details() {
-    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(None).await;
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
     chat.config.tui_status_line = Some(vec!["weekly-limit".to_string()]);
 
     let captured_at = chrono::Local::now() - chrono::Duration::minutes(16);
@@ -12907,7 +12907,7 @@ async fn status_line_weekly_limit_shows_stale_suffix_over_pace_details() {
 
 #[tokio::test]
 async fn status_line_weekly_limit_ratio_style_still_prioritizes_stale_state() {
-    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(None).await;
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
     chat.config.tui_status_line = Some(vec!["weekly-limit".to_string()]);
     chat.config.tui_weekly_limit_pacing_style = WeeklyLimitPacingStyle::Ratio;
 
@@ -12939,7 +12939,7 @@ async fn status_line_weekly_limit_ratio_style_still_prioritizes_stale_state() {
 
 #[tokio::test]
 async fn status_line_weekly_limit_omits_pacing_when_inputs_are_missing() {
-    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(None).await;
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
     chat.config.tui_status_line = Some(vec!["weekly-limit".to_string()]);
 
     chat.rate_limit_snapshots_by_limit_id.insert(
