@@ -3,8 +3,11 @@
 //! Roles are selected at spawn time and are loaded with the same config machinery as
 //! `config.toml`. This module resolves built-in and user-defined role files, inserts the role as a
 //! high-precedence layer, and preserves the caller's current profile/provider unless the role
-//! explicitly takes ownership of model selection. It does not decide when to spawn a sub-agent or
-//! which role to use; the multi-agent tool handler owns that orchestration.
+//! explicitly takes ownership of model selection. Spawn-time callers that need to preserve
+//! child-requested model settings across role reload use the dedicated
+//! `apply_role_to_spawn_config` helper; this module otherwise stays on the upstream-native reload
+//! shape. It does not decide when to spawn a sub-agent or which role to use; the multi-agent tool
+//! handler owns that orchestration.
 
 use crate::config::AgentRoleConfig;
 use crate::config::Config;
@@ -47,6 +50,10 @@ struct RoleLayerConfig {
 struct RolePreservationPolicy {
     preserve_current_profile: bool,
     preserve_current_provider: bool,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub(crate) struct SpawnModelSelectionCarry {
     model: Option<String>,
     model_reasoning_effort: Option<ReasoningEffort>,
     model_reasoning_summary: Option<ReasoningSummary>,
@@ -157,22 +164,9 @@ fn role_preserves_current_profile(role_config: &ConfigToml) -> bool {
     role_config.model_provider.is_none() && role_config.profile.is_none()
 }
 
-fn sticky_runtime_setting<T: Clone>(
-    preserve_current_profile: bool,
-    active_profile_updates_field: bool,
-    role_value: Option<T>,
-    current_value: Option<T>,
-) -> Option<T> {
-    if preserve_current_profile && !active_profile_updates_field {
-        role_value.or(current_value)
-    } else {
-        None
-    }
-}
-
 impl RolePreservationPolicy {
-    fn from_config(config: &Config, role_config: &ConfigToml, role_layer_toml: &TomlValue) -> Self {
-        let preserve_current_profile = role_preserves_current_profile(role_config);
+    fn from_config(config: &Config, role_layer_toml: &TomlValue) -> Self {
+        let preserve_current_profile = role_preserves_current_profile_from_layer(role_layer_toml);
         let active_profile_updates =
             role_profile_field_updates(config.active_profile.as_deref(), role_layer_toml);
 
@@ -180,30 +174,73 @@ impl RolePreservationPolicy {
             preserve_current_profile,
             preserve_current_provider: preserve_current_profile
                 && !active_profile_updates.model_provider,
-            model: sticky_runtime_setting(
+        }
+    }
+}
+
+fn role_preserves_current_profile_from_layer(role_layer_toml: &TomlValue) -> bool {
+    role_layer_toml.get("model_provider").is_none() && role_layer_toml.get("profile").is_none()
+}
+
+fn sticky_spawn_setting<T: Clone>(
+    preserve_current_profile: bool,
+    active_profile_updates_field: bool,
+    role_owns_field: bool,
+    current_value: Option<T>,
+) -> Option<T> {
+    if preserve_current_profile && !role_owns_field && !active_profile_updates_field {
+        current_value
+    } else {
+        None
+    }
+}
+
+impl SpawnModelSelectionCarry {
+    fn from_config(config: &Config, role_config: &ConfigToml, role_layer_toml: &TomlValue) -> Self {
+        let preserve_current_profile = role_preserves_current_profile(role_config);
+        let active_profile_updates =
+            role_profile_field_updates(config.active_profile.as_deref(), role_layer_toml);
+
+        Self {
+            model: sticky_spawn_setting(
                 preserve_current_profile,
                 active_profile_updates.model,
-                role_config.model.clone(),
+                role_config.model.is_some(),
                 config.model.clone(),
             ),
-            model_reasoning_effort: sticky_runtime_setting(
+            model_reasoning_effort: sticky_spawn_setting(
                 preserve_current_profile,
                 active_profile_updates.model_reasoning_effort,
-                role_config.model_reasoning_effort,
+                role_config.model_reasoning_effort.is_some(),
                 config.model_reasoning_effort,
             ),
-            model_reasoning_summary: sticky_runtime_setting(
+            model_reasoning_summary: sticky_spawn_setting(
                 preserve_current_profile,
                 active_profile_updates.model_reasoning_summary,
-                role_config.model_reasoning_summary,
+                role_config.model_reasoning_summary.is_some(),
                 config.model_reasoning_summary,
             ),
-            model_verbosity: sticky_runtime_setting(
+            model_verbosity: sticky_spawn_setting(
                 preserve_current_profile,
                 active_profile_updates.model_verbosity,
-                role_config.model_verbosity,
+                role_config.model_verbosity.is_some(),
                 config.model_verbosity,
             ),
+        }
+    }
+
+    pub(crate) fn apply_to_config(&self, config: &mut Config) {
+        if let Some(model) = &self.model {
+            config.model = Some(model.clone());
+        }
+        if let Some(reasoning_effort) = self.model_reasoning_effort {
+            config.model_reasoning_effort = Some(reasoning_effort);
+        }
+        if let Some(reasoning_summary) = self.model_reasoning_summary {
+            config.model_reasoning_summary = Some(reasoning_summary);
+        }
+        if let Some(verbosity) = self.model_verbosity {
+            config.model_verbosity = Some(verbosity);
         }
     }
 }
@@ -350,10 +387,6 @@ mod reload {
         preservation_policy: &RolePreservationPolicy,
     ) -> ConfigOverrides {
         ConfigOverrides {
-            model: preservation_policy.model.clone(),
-            model_reasoning_effort: preservation_policy.model_reasoning_effort,
-            model_reasoning_summary: preservation_policy.model_reasoning_summary,
-            model_verbosity: preservation_policy.model_verbosity,
             cwd: Some(config.cwd.to_path_buf()),
             model_provider: preservation_policy
                 .preserve_current_provider
@@ -375,27 +408,44 @@ mod reload {
 /// The role layer is inserted at session-flag precedence so it can override persisted config, but
 /// the caller's current `profile` and `model_provider` remain sticky runtime choices unless the
 /// role explicitly sets `profile`, explicitly sets `model_provider`, or rewrites the active
-/// profile's `model_provider` in place. Likewise, the caller's already-selected model and
-/// reasoning settings remain sticky unless the role explicitly owns those fields. Rebuilding the
-/// config without reapplying those runtime choices would make a spawned agent silently drift back
-/// to inherited parent-profile settings, which is the bug this preservation logic avoids.
+/// profile's `model_provider` in place.
 pub(crate) async fn apply_role_to_config(
     config: &mut Config,
     role_name: Option<&str>,
 ) -> Result<(), String> {
     let role_name = role_name.unwrap_or(DEFAULT_ROLE_NAME);
     let Some(RoleLayerConfig {
-        role_config,
-        role_layer_toml,
+        role_layer_toml, ..
     }) = load_role_layer_config(config, role_name).await?
     else {
         return Ok(());
     };
-    let preservation_policy =
-        RolePreservationPolicy::from_config(config, &role_config, &role_layer_toml);
+    let preservation_policy = RolePreservationPolicy::from_config(config, &role_layer_toml);
     *config = reload::build_next_config(config, role_name, role_layer_toml, &preservation_policy)?;
 
     Ok(())
+}
+
+/// Applies a named role layer for spawn-time use and returns the caller-owned model settings that
+/// should be reapplied afterward if the selected role does not explicitly own them.
+pub(crate) async fn apply_role_to_spawn_config(
+    config: &mut Config,
+    role_name: Option<&str>,
+) -> Result<SpawnModelSelectionCarry, String> {
+    let role_name = role_name.unwrap_or(DEFAULT_ROLE_NAME);
+    let Some(RoleLayerConfig {
+        role_config,
+        role_layer_toml,
+    }) = load_role_layer_config(config, role_name).await?
+    else {
+        return Ok(SpawnModelSelectionCarry::default());
+    };
+    let spawn_model_selection_carry =
+        SpawnModelSelectionCarry::from_config(config, &role_config, &role_layer_toml);
+    let preservation_policy = RolePreservationPolicy::from_config(config, &role_layer_toml);
+    *config = reload::build_next_config(config, role_name, role_layer_toml, &preservation_policy)?;
+
+    Ok(spawn_model_selection_carry)
 }
 pub(crate) fn resolve_role_config<'a>(
     config: &'a Config,
