@@ -37,7 +37,10 @@ Current workflow characteristics:
 
 ### Branch artifacts and heavy validation
 
-- `sedna-branch-build` produces disposable preview binaries from pushed same-repo branches
+- `validation-lab` is the default remote-first surface for scratch refs, integration refs,
+  orphan-branch experiments, and targeted heavy validation that should not pollute ordinary PR
+  status surfaces
+- `sedna-branch-build` produces disposable preview binaries only when manually dispatched
 - `sedna-heavy-tests` runs expensive remote validation without using the shared local machine as the
   build factory
 - branch artifacts retain for 3 days and are never updater candidates
@@ -49,8 +52,11 @@ Current workflow characteristics:
 ### Local versus CI builds
 
 - Local builds remain useful for development, targeted tests, and smoke checks
-- GitHub-hosted branch builds are the default offload path for preview binaries and heavy test
+- `validation-lab` is the default offload path for seam-level remote validation and experimental
   sweeps
+- Preview builds are intentionally opt-in rather than every-commit defaults
+- GitHub-hosted branch builds remain useful when the actual question is preview artifact
+  buildability
 - GitHub-hosted release builds are the authoritative public release artifacts
 - Local non-release builds may still show the workspace placeholder version when
   `CODEX_RELEASE_VERSION` is not set; published releases should come from CI so the embedded release
