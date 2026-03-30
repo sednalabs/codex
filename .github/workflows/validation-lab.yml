@@ -60,11 +60,14 @@ jobs:
     outputs:
       checkout_ref: ${{ steps.meta.outputs.checkout_ref }}
       display_ref: ${{ steps.meta.outputs.display_ref }}
+      head_sha: ${{ steps.meta.outputs.head_sha }}
       selected_matrix: ${{ steps.meta.outputs.selected_matrix }}
       run_selected_lanes: ${{ steps.meta.outputs.run_selected_lanes }}
       run_smoke_gate: ${{ steps.meta.outputs.run_smoke_gate }}
       smoke_gate_kind: ${{ steps.meta.outputs.smoke_gate_kind }}
       run_artifact: ${{ steps.meta.outputs.run_artifact }}
+      matrix_fail_fast: ${{ steps.meta.outputs.matrix_fail_fast }}
+      matrix_max_parallel: ${{ steps.meta.outputs.matrix_max_parallel }}
       preview_version: ${{ steps.meta.outputs.preview_version }}
       artifact_name: ${{ steps.meta.outputs.artifact_name }}
     steps:
@@ -86,6 +89,7 @@ jobs:
 
           checkout_ref='${{ inputs.ref || github.sha }}'
           display_ref='${{ inputs.ref || github.ref_name }}'
+          head_sha="$(git rev-parse HEAD)"
           short_sha="$(git rev-parse --short=8 HEAD)"
           latest_tag="$(git tag --merged HEAD --list 'v*-sedna.*' --sort=-version:refname | head -n 1)"
           if [[ -n "${latest_tag}" ]]; then
@@ -108,11 +112,14 @@ jobs:
           {
             echo "checkout_ref=${checkout_ref}"
             echo "display_ref=${display_ref}"
+            echo "head_sha=${head_sha}"
             echo "run_selected_lanes=${run_selected_lanes}"
             echo "run_smoke_gate=${run_smoke_gate}"
             echo "smoke_gate_kind=${smoke_gate_kind}"
             echo "selected_matrix=${selected_matrix}"
             echo "run_artifact=${run_artifact}"
+            echo "matrix_fail_fast=${matrix_fail_fast}"
+            echo "matrix_max_parallel=${matrix_max_parallel}"
             echo "preview_version=${preview_version}"
             echo "artifact_name=sedna-validation-${display_slug}-${short_sha}"
           } >> "$GITHUB_OUTPUT"
@@ -126,12 +133,13 @@ jobs:
             echo "### Validation lab"
             echo
             echo "- Ref: \`${{ steps.meta.outputs.display_ref }}\`"
+            echo "- Head SHA: \`${{ steps.meta.outputs.head_sha }}\`"
             echo "- Profile: \`${{ inputs.profile }}\`"
             echo "- Lane set: \`${{ inputs.lane_set }}\`"
             echo "- Explicit lanes: \`${{ inputs.lanes || 'none' }}\`"
             echo "- Artifact build: \`${{ inputs.artifact_build && 'true' || 'false' }}\`"
             if [[ -n "${LAB_NOTES}" ]]; then
-              printf -- '- Notes: %s\n' "${LAB_NOTES}"
+              echo "- Notes supplied: \`true\`"
             fi
           } >> "$GITHUB_STEP_SUMMARY"
 
@@ -156,8 +164,8 @@ jobs:
         (needs.smoke_gate.result == 'success' || needs.smoke_gate.result == 'skipped')
       }}
     strategy:
-      fail-fast: true
-      max-parallel: 4
+      fail-fast: ${{ fromJson(needs.metadata.outputs.matrix_fail_fast) }}
+      max-parallel: ${{ fromJson(needs.metadata.outputs.matrix_max_parallel) }}
       matrix: ${{ fromJson(needs.metadata.outputs.selected_matrix) }}
     uses: ./.github/workflows/_sedna-linux-rust.yml
     with:
@@ -210,3 +218,93 @@ jobs:
           "source": "validation-lab"
         }
         EOF
+
+  summary:
+    name: Validation-lab summary
+    needs:
+      - metadata
+      - smoke_gate
+      - downstream_lanes
+      - artifact
+    if: ${{ always() }}
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 1
+          ref: ${{ needs.metadata.outputs.checkout_ref }}
+
+      - name: Download lane summary artifacts
+        continue-on-error: true
+        uses: actions/download-artifact@v5
+        with:
+          pattern: validation-lane-summary-*
+          path: ${{ runner.temp }}/validation-lane-summaries
+          merge-multiple: true
+
+      - name: Build validation summary artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+          summary_file="${RUNNER_TEMP}/validation-summary.json"
+          python3 .github/scripts/aggregate_validation_summary.py \
+            --repo "${GITHUB_REPOSITORY}" \
+            --display-ref "${{ needs.metadata.outputs.display_ref }}" \
+            --checkout-ref "${{ needs.metadata.outputs.checkout_ref }}" \
+            --head-sha "${{ needs.metadata.outputs.head_sha }}" \
+            --profile "${{ inputs.profile }}" \
+            --lane-set "${{ inputs.lane_set }}" \
+            --explicit-lanes "${{ inputs.lanes }}" \
+            --notes-supplied "${{ inputs.notes != '' && 'true' || 'false' }}" \
+            --run-id "${GITHUB_RUN_ID}" \
+            --run-attempt "${GITHUB_RUN_ATTEMPT}" \
+            --run-url "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" \
+            --run-selected-lanes "${{ needs.metadata.outputs.run_selected_lanes }}" \
+            --run-smoke-gate "${{ needs.metadata.outputs.run_smoke_gate }}" \
+            --smoke-gate-kind "${{ needs.metadata.outputs.smoke_gate_kind }}" \
+            --smoke-gate-result "${{ needs.smoke_gate.result || 'skipped' }}" \
+            --downstream-result "${{ needs.downstream_lanes.result || 'skipped' }}" \
+            --run-artifact "${{ needs.metadata.outputs.run_artifact }}" \
+            --artifact-result "${{ needs.artifact.result || 'skipped' }}" \
+            --lane-summary-dir "${RUNNER_TEMP}/validation-lane-summaries" \
+            --output "${summary_file}"
+          echo "SUMMARY_FILE=${summary_file}" >> "$GITHUB_ENV"
+
+      - name: Upload validation summary artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: validation-summary
+          path: ${{ env.SUMMARY_FILE }}
+          retention-days: 3
+
+      - name: Append validation summary
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY' "${SUMMARY_FILE}" >> "$GITHUB_STEP_SUMMARY"
+          import json
+          import sys
+          from pathlib import Path
+
+          payload = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+          summary = payload["summary"]
+          first_failure = summary.get("first_failure")
+
+          print("### Validation summary")
+          print()
+          print(f"- Overall conclusion: `{summary['overall_conclusion']}`")
+          print(f"- Ref: `{payload['ref']['display_ref']}`")
+          print(f"- Head SHA: `{payload['ref']['head_sha']}`")
+          print(f"- Profile: `{payload['selection']['profile']}`")
+          print(f"- Lane set: `{payload['selection']['lane_set']}`")
+          print(f"- Lane count: `{summary['lane_count']}`")
+          print(f"- Failed lanes: `{summary['failed_lane_count']}`")
+          if first_failure:
+              print(f"- First failing lane: `{first_failure['lane_id']}`")
+              if first_failure.get('signal'):
+                  print(f"- First failure signal: `{first_failure['signal']}`")
+          else:
+              print("- First failing lane: `none`")
+          PY

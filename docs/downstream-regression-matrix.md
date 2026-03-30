@@ -36,6 +36,10 @@ Focused micro-slices for iterative work on the current carry seams:
 - `codex.state-spawn-lineage-contract-targeted`
 - `codex.downstream-docs-check`
 
+Industrial carry workflow reference:
+
+- `docs/industrial_carry_workflow.md`
+
 Focused lane used for protocol/event-history seams:
 
 - `codex.app-server-protocol-test`
@@ -82,6 +86,8 @@ GitHub Actions lane naming (`.github/workflows/sedna-heavy-tests.yml`):
   - `profile=artifact` or `artifact_build=true` is the right way to request a
     disposable preview build on a non-PR ref without promoting that ref into the
     normal PR/main check surface.
+  - It uploads a compact `validation-summary` artifact so watchers and follow-up
+    tooling can prefer structured first-failure signal over raw log scraping.
 - `sedna-branch-build.yml` is the preview artifact path.
   - It is manual-dispatch only.
   - Treat it as artifact validation, not the primary downstream correctness
@@ -149,6 +155,11 @@ sqlite3 "${CODEX_SQLITE_HOME:-$HOME/.codex}/usage.sqlite" '.tables'
   - ordinary PR checks once the branch is ready for promotion semantics
   - preview/buildability validation only when the question is "can we ship or
     hand someone a binary?" rather than "did this seam regress?"
+- For carry work, keep the operational tracker slice-shaped:
+  - one question
+  - one commit
+  - one exact validation run
+  - one recorded conclusion before widening the scope
 - Full builds are not the default inner-loop validator here. Treat them as
   promotion/buildability checkpoints on `main`, merge-group, alpha/release
   candidates, or explicit artifact requests.
