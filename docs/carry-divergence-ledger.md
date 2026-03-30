@@ -58,6 +58,10 @@ live divergence.
   `codex-rs/state/usage_migrations/0001_usage_tables.sql` do not currently
   have upstream counterparts, so future sync passes should treat them as
   downstream-owned behavior to preserve rather than as stale carry to delete.
+- Usage-ledger ownership stays here: any upstream-native reimplementation must
+  reproduce the downstream per-turn ledger, provider/token metadata, and
+  billing-turn reporting semantics before the canonical source of truth can
+  move out of this repository.
 - Primary files:
   - `codex-rs/core/src/codex.rs`
   - `codex-rs/state/src/runtime.rs`
@@ -129,8 +133,8 @@ live divergence.
 - Spawn-agent result and direct-child inventory reporting expose `role`, `status`, `identity_source`, `effective_model`, `effective_reasoning_effort`, and `effective_model_provider_id` after role application, so the surviving setting is visible.
 - `list_agents` is a first-class inventory tool on `carry/main`: the live handler is already on the upstream `multi_agents_v2` path, and the stale downstream `multi_agents/list_agents.rs` copy was dead carry rather than active behavior.
 - The remaining inventory divergence is therefore not a separate handler path; it is the extra descendant and persisted edge-status plumbing available from `agent/control.rs`, which still needs to be re-homed onto the upstream-native v2 inventory shape rather than dropped.
-- Downstream policy is to preserve the intent of the live carry while keeping the tree as close to upstream as possible; upstream-native reimplementation is welcome whenever it yields a simpler or more elegant behavior model for agents.
-- For agent observability, we explicitly carry the always-on, cheap live-visibility surface (including `list_agents` and its nested visibility/status metadata) and pair it with a richer, potentially stale tree-inspection surface rather than resurrecting the older heavy list behavior that replayed past inventory snapshots.
+- Downstream policy is to preserve the intent of the live carry while keeping the tree as close to upstream as possible; we explicitly carry the always-on, cheap live `list_agents` surface (including `has_active_subagents`/`active_subagent_count` and nested visibility/status metadata) to keep nested-agent live visibility intact, pair it with a richer, potentially stale `inspect_agent_tree` surface for deeper inventory sweeps, and welcome upstream-native reimplementation whenever it preserves these behaviors with less divergence.
+- `inspect_agent_tree` now surfaces the richer tree inspection contract: it can toggle `live` vs `stale` descendant visibility, focus on selected `agent_roots`, and returns compact depth/row-limited tree rows so downstream observability stays explicit without replaying bulky historical snapshots.
 - `wait_agent` adds `return_when=any|all` plus `requested_ids`, `pending_ids`, `completion_reason`, and `timed_out` so downstream joins happen on explicit tool contracts rather than transcript polling.
 - The built-in downstream awaiter profile also raises its default background timeout and prefers longer blocking waits plus `list_agents` snapshots over repeated short polling from the model layer.
 - Primary files:
