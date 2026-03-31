@@ -1547,6 +1547,8 @@ fn test_gpt_5_defaults() {
             "send_input",
             "resume_agent",
             "wait_agent",
+            "list_agents",
+            "inspect_agent_tree",
             "close_agent",
         ],
     );
