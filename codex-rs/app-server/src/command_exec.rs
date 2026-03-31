@@ -603,19 +603,17 @@ fn spawn_process_output(params: SpawnProcessOutputParams) -> tokio::task::JoinHa
             };
             let cap_reached = Some(observed_num_bytes) == output_bytes_cap;
             if let (true, Some(process_id)) = (stream_output, process_id.as_ref()) {
-                outgoing
-                    .send_server_notification_to_connection_and_wait(
-                        connection_id,
-                        ServerNotification::CommandExecOutputDelta(
-                            CommandExecOutputDeltaNotification {
-                                process_id: process_id.clone(),
-                                stream,
-                                delta_base64: STANDARD.encode(capped_chunk),
-                                cap_reached,
-                            },
-                        ),
-                    )
-                    .await;
+                outgoing.send_server_notification_to_connection_nonblocking(
+                    connection_id,
+                    ServerNotification::CommandExecOutputDelta(
+                        CommandExecOutputDeltaNotification {
+                            process_id: process_id.clone(),
+                            stream,
+                            delta_base64: STANDARD.encode(capped_chunk),
+                            cap_reached,
+                        },
+                    ),
+                );
             } else if !stream_output {
                 buffer.extend_from_slice(capped_chunk);
             }
@@ -1019,5 +1017,86 @@ mod tests {
 
         assert_eq!(err.code, INVALID_REQUEST_ERROR_CODE);
         assert_eq!(err.message, "command/exec \"proc-13\" is no longer running");
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    #[tokio::test]
+    async fn streamed_command_output_does_not_wait_for_transport_write_completion() {
+        let (tx, rx) = mpsc::channel(2);
+        let (response_tx, response_rx) = tokio::sync::oneshot::channel::<CommandExecResponse>();
+        let sandbox_policy = SandboxPolicy::ReadOnly {
+            access: ReadOnlyAccess::FullAccess,
+            network_access: false,
+        };
+        tokio::spawn({
+            let mut write_complete_sentinels = Vec::<tokio::sync::oneshot::Sender<()>>::new();
+            let mut rx = rx;
+            let response_tx = response_tx;
+            async move {
+                while let Some(OutgoingEnvelope::ToConnection {
+                    message: notification,
+                    write_complete_tx,
+                    ..
+                }) = rx.recv().await
+                {
+                    if let OutgoingMessage::Response(response) = notification {
+                        let response: CommandExecResponse = serde_json::from_value(response.result)
+                            .expect("deserialize command/exec response");
+                        let _ = response_tx.send(response);
+                        break;
+                    }
+                    if let Some(write_complete_tx) = write_complete_tx {
+                        write_complete_sentinels.push(write_complete_tx);
+                    }
+                }
+            }
+        });
+
+        let manager = CommandExecManager::default();
+        manager
+            .start(StartCommandExecParams {
+                outgoing: Arc::new(OutgoingMessageSender::new(tx)),
+                request_id: ConnectionRequestId {
+                    connection_id: ConnectionId(14),
+                    request_id: codex_app_server_protocol::RequestId::Integer(14),
+                },
+                process_id: Some("proc-14".to_string()),
+                exec_request: ExecRequest::new(
+                    vec![
+                        "sh".to_string(),
+                        "-c".to_string(),
+                        "printf 'streaming-output'".to_string(),
+                    ],
+                    PathBuf::from("."),
+                    HashMap::new(),
+                    None,
+                    ExecExpiration::DefaultTimeout,
+                    codex_core::exec::ExecCapturePolicy::ShellTool,
+                    SandboxType::None,
+                    WindowsSandboxLevel::Disabled,
+                    false,
+                    sandbox_policy.clone(),
+                    FileSystemSandboxPolicy::from(&sandbox_policy),
+                    NetworkSandboxPolicy::from(&sandbox_policy),
+                    None,
+                ),
+                started_network_proxy: None,
+                tty: false,
+                stream_stdin: false,
+                stream_stdout_stderr: true,
+                output_bytes_cap: None,
+                size: None,
+            })
+            .await
+            .expect("streaming command/exec should start");
+
+        let response = timeout(Duration::from_secs(2), response_rx)
+            .await
+            .expect("timed out waiting for command completion")
+            .expect("response channel should not be closed");
+
+        assert_eq!(response.exit_code, 0);
+        assert_eq!(response.stdout, "");
+        assert_eq!(response.stderr, "");
     }
 }
