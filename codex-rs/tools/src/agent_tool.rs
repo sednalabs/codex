@@ -953,6 +953,16 @@ fn wait_agent_tool_parameters_v1(options: WaitAgentTimeoutOptions) -> JsonSchema
             },
         ),
         (
+            "ids".to_string(),
+            JsonSchema::Array {
+                items: Box::new(JsonSchema::String { description: None }),
+                description: Some(
+                    "Legacy alias for targets. Agent ids to wait on. Pass multiple ids to coordinate several agents."
+                        .to_string(),
+                ),
+            },
+        ),
+        (
             "timeout_ms".to_string(),
             JsonSchema::Number {
                 description: Some(format!(
@@ -974,7 +984,7 @@ fn wait_agent_tool_parameters_v1(options: WaitAgentTimeoutOptions) -> JsonSchema
 
     JsonSchema::Object {
         properties,
-        required: Some(vec!["targets".to_string()]),
+        required: None,
         additional_properties: Some(false.into()),
     }
 }

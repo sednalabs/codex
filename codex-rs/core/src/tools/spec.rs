@@ -177,6 +177,7 @@ pub(crate) struct ToolsConfig {
     pub multi_agent_v2: bool,
     pub request_user_input: bool,
     pub default_mode_request_user_input: bool,
+    pub wait_agent_default_timeout_ms: i64,
     pub experimental_supported_tools: Vec<String>,
     pub agent_jobs_tools: bool,
     pub agent_jobs_worker_tools: bool,
@@ -311,6 +312,7 @@ impl ToolsConfig {
             multi_agent_v2: include_multi_agent_v2,
             request_user_input: include_request_user_input,
             default_mode_request_user_input: include_default_mode_request_user_input,
+            wait_agent_default_timeout_ms: DEFAULT_WAIT_TIMEOUT_MS,
             experimental_supported_tools: model_info.experimental_supported_tools.clone(),
             agent_jobs_tools: include_agent_jobs,
             agent_jobs_worker_tools,
@@ -352,6 +354,12 @@ impl ToolsConfig {
 
     pub fn with_web_search_config(mut self, web_search_config: Option<WebSearchConfig>) -> Self {
         self.web_search_config = web_search_config;
+        self
+    }
+
+    pub fn with_wait_agent_default_timeout_ms(mut self, timeout_ms: u64) -> Self {
+        self.wait_agent_default_timeout_ms = (timeout_ms.min(i64::MAX as u64) as i64)
+            .clamp(MIN_WAIT_TIMEOUT_MS, MAX_WAIT_TIMEOUT_MS);
         self
     }
 
@@ -1376,7 +1384,7 @@ pub(crate) fn build_specs_with_discoverable_tools(
             push_tool_spec(
                 &mut builder,
                 create_wait_agent_tool_v2(WaitAgentTimeoutOptions {
-                    default_timeout_ms: DEFAULT_WAIT_TIMEOUT_MS,
+                    default_timeout_ms: config.wait_agent_default_timeout_ms,
                     min_timeout_ms: MIN_WAIT_TIMEOUT_MS,
                     max_timeout_ms: MAX_WAIT_TIMEOUT_MS,
                 }),
@@ -1436,7 +1444,7 @@ pub(crate) fn build_specs_with_discoverable_tools(
             push_tool_spec(
                 &mut builder,
                 create_wait_agent_tool_v1(WaitAgentTimeoutOptions {
-                    default_timeout_ms: DEFAULT_WAIT_TIMEOUT_MS,
+                    default_timeout_ms: config.wait_agent_default_timeout_ms,
                     min_timeout_ms: MIN_WAIT_TIMEOUT_MS,
                     max_timeout_ms: MAX_WAIT_TIMEOUT_MS,
                 }),
