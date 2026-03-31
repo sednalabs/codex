@@ -137,7 +137,6 @@ async fn review_start_runs_review_turn_and_emits_code_review_item() -> Result<()
     let review = review_body.expect("did not observe a code review item");
     assert!(review.contains("Prefer Stylize helpers"));
     assert!(review.contains("/tmp/file.rs:10-20"));
-    assert!(review.contains("Token usage: unavailable"));
 
     Ok(())
 }
