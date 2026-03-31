@@ -513,7 +513,7 @@ impl ToolHandler for UnifiedExecHandler {
                         args.max_output_tokens,
                         effective_max_wait_ms,
                         effective_heartbeat_interval_ms,
-                        None,
+                        /*initial_response*/ None,
                     )
                     .await?
                 } else {
