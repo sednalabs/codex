@@ -267,8 +267,7 @@ fn write_stdin_tool_matches_expected_spec() {
             "wait_until_terminal".to_string(),
             JsonSchema::Boolean {
                 description: Some(
-                    "When true, block until the process exits or max_wait_ms elapses."
-                        .to_string(),
+                    "When true, block until the process exits or max_wait_ms elapses.".to_string(),
                 ),
             },
         ),

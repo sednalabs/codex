@@ -165,7 +165,11 @@ impl ToolHandler for Handler {
         for pending_thread_id in &pending_thread_ids {
             pending_statuses.push((
                 *pending_thread_id,
-                session.services.agent_control.get_status(*pending_thread_id).await,
+                session
+                    .services
+                    .agent_control
+                    .get_status(*pending_thread_id)
+                    .await,
             ));
         }
         let statuses_by_id = merge_wait_end_statuses(final_statuses.clone(), pending_statuses);
