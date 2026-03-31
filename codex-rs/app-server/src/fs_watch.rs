@@ -462,10 +462,11 @@ mod tests {
         let file_b = temp_dir.path().join("file-b.txt");
         let file_c = temp_dir.path().join("file-c.txt");
 
+        let file_watcher = Arc::new(FileWatcher::noop());
         let (tx, mut rx) = mpsc::channel(16);
         let manager = FsWatchManager::new_with_file_watcher(
             Arc::new(OutgoingMessageSender::new(tx)),
-            Arc::new(FileWatcher::new().expect("watcher should initialize")),
+            file_watcher.clone(),
         );
         let file_b = absolute_path(file_b);
         let file_c = absolute_path(file_c);
@@ -474,17 +475,26 @@ mod tests {
             .watch(ConnectionId(1), FsWatchParams { path: watch_root })
             .await
             .expect("watch should succeed");
-        tokio::time::sleep(Duration::from_millis(250)).await;
 
-        std::fs::write(&file_b, "first\n").expect("write first path");
+        file_watcher
+            .send_paths_for_test(vec![file_b.to_path_buf()])
+            .await;
         let first_notification = collect_next_fs_changed(&mut rx).await;
         assert_eq!(first_notification.watch_id, response.watch_id);
         assert!(first_notification.changed_paths.contains(&file_b));
 
         tokio::time::sleep(FS_CHANGED_NOTIFICATION_DEBOUNCE * 2).await;
-        std::fs::write(&file_b, "second\n").expect("write second path");
-        tokio::time::sleep(Duration::from_millis(20)).await;
-        std::fs::write(&file_c, "third\n").expect("write third path");
+        file_watcher
+            .send_paths_for_test(vec![file_b.to_path_buf()])
+            .await;
+        let second_file_watcher = file_watcher.clone();
+        let second_path = file_c.to_path_buf();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            second_file_watcher
+                .send_paths_for_test(vec![second_path])
+                .await;
+        });
 
         let second_batch_start = Instant::now();
         let second_notification = collect_next_fs_changed(&mut rx).await;
@@ -555,12 +565,14 @@ mod tests {
     async fn missing_file_watch_ignores_sibling_parent_events() {
         let temp_dir = TempDir::new().expect("temp dir");
         let missing_path = absolute_path(temp_dir.path().join("FETCH_HEAD"));
+        let parent_path = absolute_path(temp_dir.path().to_path_buf());
         let sibling_path = absolute_path(temp_dir.path().join("ORIG_HEAD"));
 
+        let file_watcher = Arc::new(FileWatcher::noop());
         let (tx, mut rx) = mpsc::channel(16);
         let manager = FsWatchManager::new_with_file_watcher(
             Arc::new(OutgoingMessageSender::new(tx)),
-            Arc::new(FileWatcher::new().expect("watcher should initialize")),
+            file_watcher.clone(),
         );
 
         let response = manager
@@ -572,9 +584,10 @@ mod tests {
             )
             .await
             .expect("watch should succeed");
-        tokio::time::sleep(Duration::from_millis(250)).await;
 
-        std::fs::write(&sibling_path, "sibling\n").expect("write sibling path");
+        file_watcher
+            .send_paths_for_test(vec![sibling_path.to_path_buf()])
+            .await;
         assert!(
             timeout(FS_CHANGED_NOTIFICATION_DEBOUNCE * 2, rx.recv())
                 .await
@@ -582,7 +595,9 @@ mod tests {
             "sibling changes should not be forwarded for a missing-file watch"
         );
 
-        std::fs::write(&missing_path, "target\n").expect("write watched path");
+        file_watcher
+            .send_paths_for_test(vec![parent_path.to_path_buf()])
+            .await;
         let notification = collect_next_fs_changed(&mut rx).await;
         assert_eq!(notification.watch_id, response.watch_id);
         assert_eq!(notification.changed_paths, vec![missing_path]);
