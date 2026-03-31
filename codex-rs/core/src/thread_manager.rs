@@ -960,11 +960,16 @@ fn snapshot_turn_state(history: &InitialHistory) -> SnapshotTurnState {
         builder.handle_rollout_item(item);
     }
     let active_turn_id = builder.active_turn_id_if_explicit();
-    if builder.has_active_turn() && active_turn_id.is_some() {
+    if builder.has_active_turn() {
         let active_turn_snapshot = builder.active_turn_snapshot();
+        let legacy_user_tail = active_turn_id.is_none()
+            && rollout_items.last().is_some_and(|item| {
+                matches!(item, RolloutItem::EventMsg(EventMsg::UserMessage(_)))
+            });
         if active_turn_snapshot
             .as_ref()
             .is_some_and(|turn| turn.status != TurnStatus::InProgress)
+            && !legacy_user_tail
         {
             return SnapshotTurnState {
                 ends_mid_turn: false,
@@ -994,13 +999,20 @@ fn snapshot_turn_state(history: &InitialHistory) -> SnapshotTurnState {
     // Synthetic fork/resume histories can contain user/assistant response items
     // without explicit turn lifecycle events. If the persisted snapshot has no
     // terminating boundary after its last user message, treat it as mid-turn.
-    SnapshotTurnState {
-        ends_mid_turn: !rollout_items[last_user_position + 1..].iter().any(|item| {
-            matches!(
-                item,
-                RolloutItem::EventMsg(EventMsg::TurnComplete(_) | EventMsg::TurnAborted(_))
+    // Rollbacks are terminal because they remove user turns from the history.
+    let ends_mid_turn = !rollout_items[last_user_position + 1..].iter().any(|item| {
+        matches!(
+            item,
+            RolloutItem::EventMsg(
+                EventMsg::TurnComplete(_)
+                    | EventMsg::TurnAborted(_)
+                    | EventMsg::ThreadRolledBack(_)
             )
-        }),
+        )
+    });
+
+    SnapshotTurnState {
+        ends_mid_turn,
         active_turn_id: None,
         active_turn_start_index: None,
     }

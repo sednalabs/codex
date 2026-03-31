@@ -10,6 +10,7 @@ use codex_protocol::models::ReasoningItemReasoningSummary;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::openai_models::ModelsResponse;
 use codex_protocol::protocol::AgentMessageEvent;
+use codex_protocol::protocol::ThreadRolledBackEvent;
 use codex_protocol::protocol::TurnStartedEvent;
 use codex_protocol::protocol::UserMessageEvent;
 use core_test_support::PathExt;
@@ -135,6 +136,63 @@ fn out_of_range_truncation_drops_only_unfinished_suffix_mid_turn() {
     assert_eq!(
         serde_json::to_value(truncated.get_rollout_items()).unwrap(),
         serde_json::to_value(items[..2].to_vec()).unwrap()
+    );
+}
+
+#[test]
+fn out_of_range_truncation_keeps_completed_tail_after_rollback() {
+    let items = vec![
+        RolloutItem::ResponseItem(user_msg("u1")),
+        RolloutItem::ResponseItem(assistant_msg("partial")),
+        RolloutItem::EventMsg(EventMsg::ThreadRolledBack(ThreadRolledBackEvent {
+            num_turns: 1,
+        })),
+    ];
+
+    let snapshot_state = snapshot_turn_state(&InitialHistory::Forked(items.clone()));
+    assert_eq!(
+        snapshot_state,
+        SnapshotTurnState {
+            ends_mid_turn: false,
+            active_turn_id: None,
+            active_turn_start_index: None,
+        },
+    );
+
+    let truncated = truncate_before_nth_user_message(
+        InitialHistory::Forked(items.clone()),
+        usize::MAX,
+        &snapshot_state,
+    );
+
+    assert_eq!(
+        serde_json::to_value(truncated.get_rollout_items()).unwrap(),
+        serde_json::to_value(items).unwrap()
+    );
+}
+
+#[test]
+fn legacy_user_event_only_tail_is_mid_turn() {
+    let snapshot_state = snapshot_turn_state(&InitialHistory::Forked(vec![
+        RolloutItem::EventMsg(EventMsg::AgentMessage(AgentMessageEvent {
+            message: "done".to_string(),
+            phase: None,
+            memory_citation: None,
+        })),
+        RolloutItem::EventMsg(EventMsg::UserMessage(UserMessageEvent {
+            message: "new input".to_string(),
+            images: None,
+            text_elements: Vec::new(),
+            local_images: Vec::new(),
+        })),
+    ]));
+    assert_eq!(
+        snapshot_state,
+        SnapshotTurnState {
+            ends_mid_turn: true,
+            active_turn_id: None,
+            active_turn_start_index: Some(1),
+        },
     );
 }
 
@@ -405,7 +463,7 @@ fn mixed_response_and_legacy_user_event_history_is_mid_turn() {
         SnapshotTurnState {
             ends_mid_turn: true,
             active_turn_id: None,
-            active_turn_start_index: None,
+            active_turn_start_index: Some(1),
         },
     );
 }
