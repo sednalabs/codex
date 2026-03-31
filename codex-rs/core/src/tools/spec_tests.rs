@@ -1570,6 +1570,8 @@ fn test_gpt_5_1_defaults() {
             "send_input",
             "resume_agent",
             "wait_agent",
+            "list_agents",
+            "inspect_agent_tree",
             "close_agent",
         ],
     );
@@ -1595,6 +1597,8 @@ fn test_gpt_5_1_codex_max_unified_exec_web_search() {
             "send_input",
             "resume_agent",
             "wait_agent",
+            "list_agents",
+            "inspect_agent_tree",
             "close_agent",
         ],
     );
