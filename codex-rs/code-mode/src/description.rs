@@ -298,26 +298,6 @@ fn render_code_mode_tool_declaration(
     format!("{tool_name}({input_name}: {input_type}): Promise<{output_type}>;")
 }
 
-fn pretty_print_object_type(rendered: &str) -> String {
-    let Some(inner) = rendered
-        .strip_prefix("{ ")
-        .and_then(|inner| inner.strip_suffix(" }"))
-    else {
-        return rendered.to_string();
-    };
-
-    if inner.trim().is_empty() {
-        return "{}".to_string();
-    }
-
-    let lines = inner
-        .split("; ")
-        .filter(|segment| !segment.trim().is_empty())
-        .map(|segment| format!("  {};", segment.trim_end_matches(';')))
-        .collect::<Vec<_>>();
-    format!("{{\n{}\n}}", lines.join("\n"))
-}
-
 pub fn render_json_schema_to_typescript(schema: &JsonValue) -> String {
     render_json_schema_to_typescript_inner(schema)
 }
@@ -576,7 +556,7 @@ mod tests {
     }
 
     #[test]
-    fn augment_tool_definition_uses_module_style_for_namespaced_tools() {
+    fn augment_tool_definition_uses_exec_style_for_namespaced_tools() {
         let definition = ToolDefinition {
             name: "mcp__rmcp__echo".to_string(),
             all_tools_name: Some("echo".to_string()),
@@ -597,9 +577,8 @@ mod tests {
         };
 
         let description = augment_tool_definition(definition).description;
-        assert!(description.contains(r#"import { tools } from "tools/mcp/rmcp.js";"#));
         assert!(description.contains(
-            "declare function echo(args: {\n  message: string;\n}): Promise<{\n  ok: boolean;\n}>;"
+            "declare const tools: { mcp__rmcp__echo(args: { message: string; }): Promise<{ ok: boolean; }>; };"
         ));
     }
 
