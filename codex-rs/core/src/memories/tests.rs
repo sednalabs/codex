@@ -1008,12 +1008,17 @@ mod phase2 {
     async fn consolidation_artifacts_ready_rejects_stale_prepared_inputs_even_when_outputs_are_fresh()
      {
         let temp_dir = tempfile::tempdir().expect("temp dir");
-        let root = temp_dir.path();
-        let config = config_for_memory_root(root);
+        let codex_home = temp_dir.path().join("codex-home");
+        let root = memory_root(&codex_home);
+        let config = config_for_memory_root(&root);
         let selection = selection_for_attested_outputs(Vec::new());
         let memory_index_path = root.join("MEMORY.md");
         let memory_summary_path = root.join("memory_summary.md");
         let raw_memories_path = root.join("raw_memories.md");
+
+        tokio::fs::create_dir_all(&root)
+            .await
+            .expect("create memory root");
 
         tokio::fs::write(&memory_index_path, "memory index\n")
             .await
@@ -1028,7 +1033,7 @@ mod phase2 {
         .await
         .expect("write raw memories");
 
-        let expected_supporting_tree = phase2::test_prepared_input_artifact_tree_sha256(root)
+        let expected_supporting_tree = phase2::test_prepared_input_artifact_tree_sha256(&root)
             .expect("fingerprint prepared immutable inputs");
 
         tokio::fs::write(
@@ -1046,7 +1051,7 @@ mod phase2 {
 
         assert!(
             !phase2::agent::consolidation_artifacts_ready_with_expected_supporting_tree(
-                root,
+                &root,
                 &config,
                 std::time::SystemTime::UNIX_EPOCH,
                 Some(expected_supporting_tree.as_str()),
@@ -1062,13 +1067,18 @@ mod phase2 {
     async fn consolidation_artifacts_ready_accepts_fresh_skill_updates_when_prepared_inputs_match()
     {
         let temp_dir = tempfile::tempdir().expect("temp dir");
-        let root = temp_dir.path();
-        let config = config_for_memory_root(root);
+        let codex_home = temp_dir.path().join("codex-home");
+        let root = memory_root(&codex_home);
+        let config = config_for_memory_root(&root);
         let selection = selection_for_attested_outputs(Vec::new());
         let memory_index_path = root.join("MEMORY.md");
         let memory_summary_path = root.join("memory_summary.md");
         let raw_memories_path = root.join("raw_memories.md");
         let skill_path = root.join("skills/demo/SKILL.md");
+
+        tokio::fs::create_dir_all(&root)
+            .await
+            .expect("create memory root");
 
         tokio::fs::create_dir_all(
             skill_path
@@ -1093,7 +1103,7 @@ mod phase2 {
             .await
             .expect("write original skill");
 
-        let expected_supporting_tree = phase2::test_prepared_input_artifact_tree_sha256(root)
+        let expected_supporting_tree = phase2::test_prepared_input_artifact_tree_sha256(&root)
             .expect("fingerprint prepared immutable inputs");
 
         tokio::fs::write(&skill_path, "updated skill\n")
@@ -1108,7 +1118,7 @@ mod phase2 {
 
         assert!(
             phase2::agent::consolidation_artifacts_ready_with_expected_supporting_tree(
-                root,
+                &root,
                 &config,
                 std::time::SystemTime::UNIX_EPOCH,
                 Some(expected_supporting_tree.as_str()),
