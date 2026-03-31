@@ -1401,6 +1401,8 @@ fn test_build_specs_gpt51_codex_default() {
             "send_input",
             "resume_agent",
             "wait_agent",
+            "list_agents",
+            "inspect_agent_tree",
             "close_agent",
         ],
     );
@@ -1451,6 +1453,8 @@ fn test_build_specs_gpt51_codex_unified_exec_web_search() {
             "send_input",
             "resume_agent",
             "wait_agent",
+            "list_agents",
+            "inspect_agent_tree",
             "close_agent",
         ],
     );
