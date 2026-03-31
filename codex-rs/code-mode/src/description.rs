@@ -227,6 +227,7 @@ pub fn augment_tool_definition(mut definition: ToolDefinition) -> ToolDefinition
 
 pub fn enabled_tool_metadata(definition: &ToolDefinition) -> EnabledToolMetadata {
     EnabledToolMetadata {
+        call_name: definition.name.clone(),
         tool_name: definition
             .all_tools_name
             .clone()
@@ -240,6 +241,7 @@ pub fn enabled_tool_metadata(definition: &ToolDefinition) -> EnabledToolMetadata
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct EnabledToolMetadata {
+    pub call_name: String,
     pub tool_name: String,
     pub global_name: String,
     pub module: Option<String>,

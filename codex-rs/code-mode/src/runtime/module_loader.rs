@@ -224,6 +224,14 @@ fn resolve_module<'s>(
     scope: &mut v8::PinScope<'s, '_>,
     specifier: &str,
 ) -> Option<v8::Local<'s, v8::Module>> {
+    if specifier == "tools.js" {
+        return compile_synthetic_module(
+            scope,
+            specifier,
+            "const tools = globalThis.tools;\nexport { tools };\nexport default tools;\n",
+        );
+    }
+
     if let Some(message) =
         v8::String::new(scope, &format!("Unsupported import in exec: {specifier}"))
     {
@@ -232,4 +240,15 @@ fn resolve_module<'s>(
         scope.throw_exception(v8::undefined(scope).into());
     }
     None
+}
+
+fn compile_synthetic_module<'s>(
+    scope: &mut v8::PinScope<'s, '_>,
+    specifier: &str,
+    source_text: &str,
+) -> Option<v8::Local<'s, v8::Module>> {
+    let source = v8::String::new(scope, source_text)?;
+    let origin = script_origin(scope, specifier).ok()?;
+    let mut source = v8::script_compiler::Source::new(source, Some(&origin));
+    v8::script_compiler::compile_module(scope, &mut source)
 }

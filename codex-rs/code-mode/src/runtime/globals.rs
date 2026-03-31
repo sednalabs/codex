@@ -50,7 +50,7 @@ fn build_tools_object<'s>(
     for tool in enabled_tools {
         let name = v8::String::new(scope, &tool.global_name)
             .ok_or_else(|| "failed to allocate tool name".to_string())?;
-        let function = tool_function(scope, &tool.tool_name)?;
+        let function = tool_function(scope, &tool.call_name)?;
         tools.set(scope, name.into(), function.into());
     }
     Ok(tools)
