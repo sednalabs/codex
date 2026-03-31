@@ -1689,11 +1689,12 @@ mod phase2 {
     fn consolidation_agent_config_keeps_split_sandbox_policies_in_sync() {
         let temp_dir = tempfile::tempdir().expect("temp dir");
         let codex_home = temp_dir.path().join("codex-home");
+        let workspace = temp_dir.path().join("workspace");
         std::fs::create_dir_all(&codex_home).expect("create codex home");
+        std::fs::create_dir_all(&workspace).expect("create workspace");
         let mut config = test_config();
         config.codex_home = codex_home;
-        config.cwd = AbsolutePathBuf::from_absolute_path(PathBuf::from("/tmp/workspace"))
-            .expect("workspace path");
+        config.cwd = AbsolutePathBuf::from_absolute_path(workspace).expect("workspace path");
         let config = Arc::new(config);
 
         let agent_config =
@@ -1749,15 +1750,16 @@ mod phase2 {
     fn consolidation_agent_config_rejects_symlinked_codex_home() {
         let temp_dir = tempfile::tempdir().expect("temp dir");
         let real_codex_home = temp_dir.path().join("real-codex-home");
+        let workspace = temp_dir.path().join("workspace");
         std::fs::create_dir_all(&real_codex_home).expect("create real codex home");
+        std::fs::create_dir_all(&workspace).expect("create workspace");
         let linked_codex_home = temp_dir.path().join("linked-codex-home");
         std::os::unix::fs::symlink(&real_codex_home, &linked_codex_home)
             .expect("symlink codex home");
 
         let mut config = test_config();
         config.codex_home = linked_codex_home;
-        config.cwd = AbsolutePathBuf::from_absolute_path(PathBuf::from("/tmp/workspace"))
-            .expect("workspace path");
+        config.cwd = AbsolutePathBuf::from_absolute_path(workspace).expect("workspace path");
 
         assert!(
             phase2::test_consolidation_agent_config(Arc::new(config)).is_none(),
