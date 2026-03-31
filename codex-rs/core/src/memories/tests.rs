@@ -1458,8 +1458,9 @@ mod phase2 {
         .await
         .expect_err("symlinked attestation path should be rejected");
 
+        let err_text = err.to_string().to_lowercase();
         assert!(
-            err.to_string().contains("symlink"),
+            err_text.contains("symlink") || err_text.contains("symbolic link"),
             "expected a symlink safety error, got: {err}"
         );
     }
@@ -1511,8 +1512,9 @@ mod phase2 {
         .await
         .expect_err("symlinked attestation path should be rejected");
 
+        let err_text = err.to_string().to_lowercase();
         assert!(
-            err.to_string().contains("symlink"),
+            err_text.contains("symlink") || err_text.contains("symbolic link"),
             "expected a symlink safety error, got: {err}"
         );
         let memory_root_key = phase2::test_memory_root_attestation_key(&root);
