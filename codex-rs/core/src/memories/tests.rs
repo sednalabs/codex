@@ -1010,15 +1010,17 @@ mod phase2 {
         let temp_dir = tempfile::tempdir().expect("temp dir");
         let codex_home = temp_dir.path().join("codex-home");
         let root = memory_root(&codex_home);
+
+        tokio::fs::create_dir_all(&root)
+            .await
+            .expect("create memory root");
+        let root = std::fs::canonicalize(&root).expect("canonical memory root");
+
         let config = config_for_memory_root(&root);
         let selection = selection_for_attested_outputs(Vec::new());
         let memory_index_path = root.join("MEMORY.md");
         let memory_summary_path = root.join("memory_summary.md");
         let raw_memories_path = root.join("raw_memories.md");
-
-        tokio::fs::create_dir_all(&root)
-            .await
-            .expect("create memory root");
 
         tokio::fs::write(&memory_index_path, "memory index\n")
             .await
@@ -1069,16 +1071,18 @@ mod phase2 {
         let temp_dir = tempfile::tempdir().expect("temp dir");
         let codex_home = temp_dir.path().join("codex-home");
         let root = memory_root(&codex_home);
+
+        tokio::fs::create_dir_all(&root)
+            .await
+            .expect("create memory root");
+        let root = std::fs::canonicalize(&root).expect("canonical memory root");
+
         let config = config_for_memory_root(&root);
         let selection = selection_for_attested_outputs(Vec::new());
         let memory_index_path = root.join("MEMORY.md");
         let memory_summary_path = root.join("memory_summary.md");
         let raw_memories_path = root.join("raw_memories.md");
         let skill_path = root.join("skills/demo/SKILL.md");
-
-        tokio::fs::create_dir_all(&root)
-            .await
-            .expect("create memory root");
 
         tokio::fs::create_dir_all(
             skill_path
