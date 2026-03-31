@@ -97,8 +97,22 @@ impl ToolHandler for Handler {
                     initial_final_statuses.push((*id, AgentStatus::NotFound));
                 }
                 Err(err) => {
-                    let mut statuses = HashMap::with_capacity(1);
-                    statuses.insert(*id, session.services.agent_control.get_status(*id).await);
+                    let mut statuses = HashMap::with_capacity(receiver_thread_ids.len());
+                    for receiver_thread_id in &receiver_thread_ids {
+                        statuses.insert(
+                            *receiver_thread_id,
+                            session
+                                .services
+                                .agent_control
+                                .get_status(*receiver_thread_id)
+                                .await,
+                        );
+                    }
+                    let pending_thread_ids = build_error_pending_thread_ids(
+                        &receiver_thread_ids,
+                        &initial_final_statuses,
+                        &statuses,
+                    );
                     session
                         .send_event(
                             &turn,
@@ -106,7 +120,7 @@ impl ToolHandler for Handler {
                                 sender_thread_id: session.conversation_id,
                                 call_id: call_id.clone(),
                                 receiver_thread_ids: receiver_thread_ids.clone(),
-                                pending_thread_ids: Vec::new(),
+                                pending_thread_ids,
                                 completion_reason: CollabWaitingCompletionReason::Terminal,
                                 timed_out: false,
                                 agent_statuses: build_wait_agent_statuses(
@@ -202,6 +216,23 @@ impl ToolHandler for Handler {
     }
 }
 
+fn build_error_pending_thread_ids(
+    receiver_thread_ids: &[ThreadId],
+    initial_final_statuses: &[(ThreadId, AgentStatus)],
+    statuses: &HashMap<ThreadId, AgentStatus>,
+) -> Vec<ThreadId> {
+    receiver_thread_ids
+        .iter()
+        .filter(|id| {
+            !is_final(statuses.get(id).unwrap_or(&AgentStatus::NotFound))
+                && !initial_final_statuses
+                    .iter()
+                    .any(|(thread_id, _)| thread_id == *id)
+        })
+        .copied()
+        .collect()
+}
+
 #[derive(Debug, Deserialize)]
 struct WaitArgs {
     #[serde(default)]
@@ -287,6 +318,40 @@ mod tests {
             Some(&AgentStatus::Completed(Some("done".to_string())))
         );
         assert_eq!(statuses_by_id.get(&pending_id), Some(&AgentStatus::Running));
+    }
+
+    #[test]
+    fn build_error_pending_thread_ids_includes_non_final_pending_targets() {
+        let finished_id = ThreadId::new();
+        let running_id = ThreadId::new();
+        let errored_id = ThreadId::new();
+        let receiver_thread_ids = vec![finished_id, running_id, errored_id];
+        let statuses = HashMap::from([
+            (
+                finished_id,
+                AgentStatus::Completed(Some("done".to_string())),
+            ),
+            (running_id, AgentStatus::Running),
+            (
+                errored_id,
+                AgentStatus::Errored("permission denied".to_string()),
+            ),
+        ]);
+        let pending_thread_ids = build_error_pending_thread_ids(
+            &receiver_thread_ids,
+            &[(
+                finished_id,
+                AgentStatus::Completed(Some("done".to_string())),
+            )],
+            &statuses,
+        );
+
+        assert_eq!(pending_thread_ids, vec![running_id]);
+        assert_eq!(statuses.get(&running_id), Some(&AgentStatus::Running));
+        assert_eq!(
+            statuses.get(&errored_id),
+            Some(&AgentStatus::Errored("permission denied".to_string()))
+        );
     }
 }
 
