@@ -793,6 +793,12 @@ async fn plugin_list_force_remote_sync_reconciles_curated_plugin_state() -> Resu
     write_installed_plugin(&codex_home, "openai-curated", "linear")?;
     write_installed_plugin(&codex_home, "openai-curated", "gmail")?;
     write_installed_plugin(&codex_home, "openai-curated", "calendar")?;
+    std::fs::write(
+        codex_home
+            .path()
+            .join(STARTUP_REMOTE_PLUGIN_SYNC_MARKER_FILE),
+        "done",
+    )?;
 
     Mock::given(method("GET"))
         .and(path("/backend-api/plugins/list"))
