@@ -2372,18 +2372,9 @@ text(JSON.stringify(ALL_TOOLS));
             "name": "echo",
             "description": r#"Echo back the provided message and include environment data.
 
-Code mode declaration:
+exec tool declaration:
 ```ts
-import { tools } from "tools/mcp/rmcp.js";
-declare function echo(args: {
-  env_var?: string;
-  message: string;
-}): Promise<{
-  _meta?: unknown;
-  content: Array<unknown>;
-  isError?: boolean;
-  structuredContent?: unknown;
-}>;
+declare const tools: { mcp__rmcp__echo(args: { env_var?: string; message: string; }): Promise<{ _meta?: unknown; content: Array<unknown>; isError?: boolean; structuredContent?: unknown; }>; };
 ```"#,
         })
     );

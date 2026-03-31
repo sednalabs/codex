@@ -279,22 +279,6 @@ fn append_code_mode_sample_for_definition(definition: &ToolDefinition) -> String
         .as_ref()
         .map(render_json_schema_to_typescript)
         .unwrap_or_else(|| "unknown".to_string());
-    if let Some(module) = &definition.all_tools_module {
-        let tool_name = normalize_code_mode_identifier(
-            definition
-                .all_tools_name
-                .as_deref()
-                .unwrap_or(definition.name.as_str()),
-        );
-        let declaration = format!(
-            "declare function {}",
-            render_module_tool_declaration(&tool_name, input_name, input_type, output_type)
-        );
-        return format!(
-            "{}\n\nCode mode declaration:\n```ts\nimport {{ tools }} from \"{}\";\n{}\n```",
-            definition.description, module, declaration
-        );
-    }
     append_code_mode_sample(
         &definition.description,
         &definition.name,
@@ -311,18 +295,6 @@ fn render_code_mode_tool_declaration(
     output_type: String,
 ) -> String {
     let tool_name = normalize_code_mode_identifier(tool_name);
-    format!("{tool_name}({input_name}: {input_type}): Promise<{output_type}>;")
-}
-
-fn render_module_tool_declaration(
-    tool_name: &str,
-    input_name: &str,
-    input_type: String,
-    output_type: String,
-) -> String {
-    let tool_name = normalize_code_mode_identifier(tool_name);
-    let input_type = pretty_print_object_type(&input_type);
-    let output_type = pretty_print_object_type(&output_type);
     format!("{tool_name}({input_name}: {input_type}): Promise<{output_type}>;")
 }
 
