@@ -144,11 +144,11 @@ impl ExternalAuthRefresher for ExternalAuthRefreshBridge {
         let response: ChatgptAuthTokensRefreshResponse =
             serde_json::from_value(result).map_err(std::io::Error::other)?;
 
-        Ok(ExternalAuthTokens {
-            access_token: response.access_token,
-            chatgpt_account_id: response.chatgpt_account_id,
-            chatgpt_plan_type: response.chatgpt_plan_type,
-        })
+        Ok(ExternalAuthTokens::chatgpt(
+            response.access_token,
+            response.chatgpt_account_id,
+            response.chatgpt_plan_type,
+        ))
     }
 }
 

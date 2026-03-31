@@ -252,6 +252,19 @@ fn refresh_failure_is_scoped_to_the_matching_auth_snapshot() {
     assert_eq!(manager.refresh_failure_for_auth(&updated_auth), None);
 }
 
+#[test]
+fn external_auth_tokens_without_chatgpt_metadata_cannot_seed_chatgpt_auth() {
+    let err = AuthDotJson::from_external_tokens(&ExternalAuthTokens::access_token_only(
+        "test-access-token",
+    ))
+    .expect_err("bearer-only external auth should not seed ChatGPT auth");
+
+    assert_eq!(
+        err.to_string(),
+        "external auth tokens are missing ChatGPT metadata"
+    );
+}
+
 struct AuthFileParams {
     openai_api_key: Option<String>,
     chatgpt_plan_type: Option<String>,

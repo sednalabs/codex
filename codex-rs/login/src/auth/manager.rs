@@ -93,8 +93,40 @@ pub enum RefreshTokenError {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ExternalAuthTokens {
     pub access_token: String,
-    pub chatgpt_account_id: String,
-    pub chatgpt_plan_type: Option<String>,
+    pub chatgpt_metadata: Option<ExternalAuthChatgptMetadata>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ExternalAuthChatgptMetadata {
+    pub account_id: String,
+    pub plan_type: Option<String>,
+}
+
+impl ExternalAuthTokens {
+    pub fn access_token_only(access_token: impl Into<String>) -> Self {
+        Self {
+            access_token: access_token.into(),
+            chatgpt_metadata: None,
+        }
+    }
+
+    pub fn chatgpt(
+        access_token: impl Into<String>,
+        chatgpt_account_id: impl Into<String>,
+        chatgpt_plan_type: Option<String>,
+    ) -> Self {
+        Self {
+            access_token: access_token.into(),
+            chatgpt_metadata: Some(ExternalAuthChatgptMetadata {
+                account_id: chatgpt_account_id.into(),
+                plan_type: chatgpt_plan_type,
+            }),
+        }
+    }
+
+    pub fn chatgpt_metadata(&self) -> Option<&ExternalAuthChatgptMetadata> {
+        self.chatgpt_metadata.as_ref()
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -110,6 +142,10 @@ pub struct ExternalAuthRefreshContext {
 
 #[async_trait]
 pub trait ExternalAuthRefresher: Send + Sync {
+    async fn resolve(&self) -> std::io::Result<Option<ExternalAuthTokens>> {
+        Ok(None)
+    }
+
     async fn refresh(
         &self,
         context: ExternalAuthRefreshContext,
@@ -736,11 +772,16 @@ fn refresh_token_endpoint() -> String {
 
 impl AuthDotJson {
     fn from_external_tokens(external: &ExternalAuthTokens) -> std::io::Result<Self> {
+        let Some(chatgpt_metadata) = external.chatgpt_metadata() else {
+            return Err(std::io::Error::other(
+                "external auth tokens are missing ChatGPT metadata",
+            ));
+        };
         let mut token_info =
             parse_chatgpt_jwt_claims(&external.access_token).map_err(std::io::Error::other)?;
-        token_info.chatgpt_account_id = Some(external.chatgpt_account_id.clone());
-        token_info.chatgpt_plan_type = external
-            .chatgpt_plan_type
+        token_info.chatgpt_account_id = Some(chatgpt_metadata.account_id.clone());
+        token_info.chatgpt_plan_type = chatgpt_metadata
+            .plan_type
             .as_deref()
             .map(InternalPlanType::from_raw_value)
             .or(token_info.chatgpt_plan_type)
@@ -749,7 +790,7 @@ impl AuthDotJson {
             id_token: token_info,
             access_token: external.access_token.clone(),
             refresh_token: String::new(),
-            account_id: Some(external.chatgpt_account_id.clone()),
+            account_id: Some(chatgpt_metadata.account_id.clone()),
         };
 
         Ok(Self {
@@ -765,11 +806,11 @@ impl AuthDotJson {
         chatgpt_account_id: &str,
         chatgpt_plan_type: Option<&str>,
     ) -> std::io::Result<Self> {
-        let external = ExternalAuthTokens {
-            access_token: access_token.to_string(),
-            chatgpt_account_id: chatgpt_account_id.to_string(),
-            chatgpt_plan_type: chatgpt_plan_type.map(str::to_string),
-        };
+        let external = ExternalAuthTokens::chatgpt(
+            access_token,
+            chatgpt_account_id,
+            chatgpt_plan_type.map(str::to_string),
+        );
         Self::from_external_tokens(&external)
     }
 
@@ -1457,13 +1498,18 @@ impl AuthManager {
         };
 
         let refreshed = refresher.refresh(context).await?;
+        let Some(chatgpt_metadata) = refreshed.chatgpt_metadata() else {
+            return Err(RefreshTokenError::Transient(std::io::Error::other(
+                "external auth refresh did not return ChatGPT metadata",
+            )));
+        };
         if let Some(expected_workspace_id) = forced_chatgpt_workspace_id.as_deref()
-            && refreshed.chatgpt_account_id != expected_workspace_id
+            && chatgpt_metadata.account_id != expected_workspace_id
         {
             return Err(RefreshTokenError::Transient(std::io::Error::other(
                 format!(
                     "external auth refresh returned workspace {:?}, expected {expected_workspace_id:?}",
-                    refreshed.chatgpt_account_id,
+                    chatgpt_metadata.account_id,
                 ),
             )));
         }
