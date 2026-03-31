@@ -239,9 +239,10 @@ fn watch_paths_for_target(path: &AbsolutePathBuf) -> Vec<WatchPath> {
     if !watch_path.exists()
         && let Some(existing_ancestor) = nearest_existing_watch_ancestor(&watch_path)
     {
+        let direct_parent = watch_path.parent().map(std::path::Path::to_path_buf);
         watched_paths.push(WatchPath {
+            recursive: direct_parent.as_ref() != Some(&existing_ancestor),
             path: existing_ancestor,
-            recursive: false,
         });
     }
     watched_paths
@@ -557,10 +558,50 @@ mod tests {
                 },
                 WatchPath {
                     path: temp_dir.path().to_path_buf(),
-                    recursive: false,
+                    recursive: true,
                 },
             ]
         );
+    }
+
+    #[tokio::test]
+    async fn deeply_missing_file_watch_notifies_when_nested_target_is_created() {
+        let temp_dir = TempDir::new().expect("temp dir");
+        let missing_path = absolute_path(temp_dir.path().join("refs/remotes/origin/HEAD"));
+
+        let file_watcher = Arc::new(FileWatcher::noop());
+        let (tx, mut rx) = mpsc::channel(16);
+        let manager = FsWatchManager::new_with_file_watcher(
+            Arc::new(OutgoingMessageSender::new(tx)),
+            file_watcher.clone(),
+        );
+
+        let response = manager
+            .watch(
+                ConnectionId(1),
+                FsWatchParams {
+                    path: missing_path.clone(),
+                },
+            )
+            .await
+            .expect("watch should succeed");
+
+        std::fs::create_dir_all(
+            missing_path
+                .parent()
+                .expect("deeply missing target should have a parent"),
+        )
+        .expect("create nested parent directories");
+        std::fs::write(&missing_path, "ref: refs/remotes/origin/main\n")
+            .expect("create deeply missing file");
+
+        file_watcher
+            .send_paths_for_test(vec![missing_path.to_path_buf()])
+            .await;
+
+        let notification = collect_next_fs_changed(&mut rx).await;
+        assert_eq!(notification.watch_id, response.watch_id);
+        assert_eq!(notification.changed_paths, vec![missing_path]);
     }
 
     #[tokio::test]
