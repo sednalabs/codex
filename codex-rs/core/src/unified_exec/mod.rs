@@ -135,6 +135,10 @@ impl UnifiedExecProcessManager {
                 .max(MIN_EMPTY_YIELD_TIME_MS),
         }
     }
+
+    pub(crate) fn max_write_stdin_yield_time_ms(&self) -> u64 {
+        self.max_write_stdin_yield_time_ms
+    }
 }
 
 impl Default for UnifiedExecProcessManager {
