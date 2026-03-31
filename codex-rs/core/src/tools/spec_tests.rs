@@ -204,8 +204,14 @@ fn wait_agent_tool_description_uses_configured_timeout_default() {
         sandbox_policy: &SandboxPolicy::DangerFullAccess,
         windows_sandbox_level: WindowsSandboxLevel::Disabled,
     })
-    .with_wait_agent_default_timeout_ms(120_000);
-    let (tools, _) = build_specs(&config, None, None, &[]).build();
+    .with_wait_agent_default_timeout_ms(/*timeout_ms*/ 120_000);
+    let (tools, _) = build_specs(
+        &config,
+        /*mcp_tools*/ None,
+        /*app_tools*/ None,
+        &[],
+    )
+    .build();
     let wait_agent = find_tool(&tools, "wait_agent");
     let ToolSpec::Function(ResponsesApiTool { parameters, .. }) = &wait_agent.spec else {
         panic!("wait_agent should be a function tool");
