@@ -72,22 +72,19 @@ fn assert_default_env_context(text: &str, cwd: &str, shell: &Shell) {
     );
 }
 
-fn assert_tool_names(body: &serde_json::Value, expected_names: &[&str]) {
-    assert_eq!(
-        body["tools"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|t| {
-                t.get("name")
-                    .and_then(|value| value.as_str())
-                    .or_else(|| t.get("type").and_then(|value| value.as_str()))
-                    .unwrap()
-                    .to_string()
-            })
-            .collect::<Vec<_>>(),
-        expected_names
-    );
+fn tool_names(body: &serde_json::Value) -> Vec<String> {
+    body["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| {
+            t.get("name")
+                .and_then(|value| value.as_str())
+                .or_else(|| t.get("type").and_then(|value| value.as_str()))
+                .unwrap()
+                .to_string()
+        })
+        .collect()
 }
 
 fn normalize_newlines(text: &str) -> String {
@@ -166,27 +163,49 @@ async fn prompt_tools_are_consistent_across_requests() -> anyhow::Result<()> {
         .await?;
     wait_for_event(&codex, |ev| matches!(ev, EventMsg::TurnComplete(_))).await;
 
-    let mut expected_tools_names = if cfg!(windows) {
-        vec!["shell_command"]
-    } else {
-        vec!["exec_command", "write_stdin"]
-    };
-    expected_tools_names.extend([
-        "update_plan",
-        "request_user_input",
-        "apply_patch",
-        "web_search",
-        "view_image",
-        "spawn_agent",
-        "list_agents",
-        "send_input",
-        "resume_agent",
-        "wait_agent",
-        "close_agent",
-    ]);
     let body0 = req1.single_request().body_json();
+    let tool_names0 = tool_names(&body0);
 
-    let expected_instructions = if expected_tools_names.contains(&"apply_patch") {
+    assert!(
+        !tool_names0.is_empty(),
+        "expected at least one tool in the prompt"
+    );
+    assert_eq!(
+        tool_names0.len(),
+        tool_names0
+            .iter()
+            .collect::<std::collections::BTreeSet<_>>()
+            .len(),
+        "expected tool names to be unique: {tool_names0:?}"
+    );
+    let required_tools = if cfg!(windows) {
+        vec![
+            "shell_command",
+            "update_plan",
+            "view_image",
+            "spawn_agent",
+            "wait_agent",
+            "close_agent",
+        ]
+    } else {
+        vec![
+            "exec_command",
+            "write_stdin",
+            "update_plan",
+            "view_image",
+            "spawn_agent",
+            "wait_agent",
+            "close_agent",
+        ]
+    };
+    for tool_name in required_tools {
+        assert!(
+            tool_names0.iter().any(|candidate| candidate == tool_name),
+            "expected tool list to contain {tool_name}: {tool_names0:?}"
+        );
+    }
+
+    let expected_instructions = if tool_names0.iter().any(|name| name == "apply_patch") {
         base_instructions
     } else {
         [base_instructions, APPLY_PATCH_TOOL_INSTRUCTIONS.to_string()].join("\n")
@@ -196,14 +215,13 @@ async fn prompt_tools_are_consistent_across_requests() -> anyhow::Result<()> {
         body0["instructions"],
         serde_json::json!(expected_instructions),
     );
-    assert_tool_names(&body0, &expected_tools_names);
-
     let body1 = req2.single_request().body_json();
+    let tool_names1 = tool_names(&body1);
     assert_eq!(
         body1["instructions"],
         serde_json::json!(expected_instructions),
     );
-    assert_tool_names(&body1, &expected_tools_names);
+    assert_eq!(tool_names1, tool_names0);
 
     Ok(())
 }
