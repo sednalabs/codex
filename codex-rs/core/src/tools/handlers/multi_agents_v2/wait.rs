@@ -297,6 +297,46 @@ where
     final_statuses
 }
 
+impl ToolOutput for WaitAgentResult {
+    fn log_preview(&self) -> String {
+        tool_output_json_text(self, "wait_agent")
+    }
+
+    fn success_for_logging(&self) -> bool {
+        true
+    }
+
+    fn to_response_item(&self, call_id: &str, payload: &ToolPayload) -> ResponseInputItem {
+        tool_output_response_item(call_id, payload, self, /*success*/ None, "wait_agent")
+    }
+
+    fn code_mode_result(&self, _payload: &ToolPayload) -> JsonValue {
+        tool_output_code_mode_result(self, "wait_agent")
+    }
+}
+
+async fn wait_for_final_status(
+    session: std::sync::Arc<Session>,
+    thread_id: ThreadId,
+    mut status_rx: Receiver<AgentStatus>,
+) -> Option<(ThreadId, AgentStatus)> {
+    let mut status = status_rx.borrow().clone();
+    if is_final(&status) {
+        return Some((thread_id, status));
+    }
+
+    loop {
+        if status_rx.changed().await.is_err() {
+            let latest = session.services.agent_control.get_status(thread_id).await;
+            return is_final(&latest).then_some((thread_id, latest));
+        }
+        status = status_rx.borrow().clone();
+        if is_final(&status) {
+            return Some((thread_id, status));
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -352,45 +392,5 @@ mod tests {
             statuses.get(&errored_id),
             Some(&AgentStatus::Errored("permission denied".to_string()))
         );
-    }
-}
-
-impl ToolOutput for WaitAgentResult {
-    fn log_preview(&self) -> String {
-        tool_output_json_text(self, "wait_agent")
-    }
-
-    fn success_for_logging(&self) -> bool {
-        true
-    }
-
-    fn to_response_item(&self, call_id: &str, payload: &ToolPayload) -> ResponseInputItem {
-        tool_output_response_item(call_id, payload, self, /*success*/ None, "wait_agent")
-    }
-
-    fn code_mode_result(&self, _payload: &ToolPayload) -> JsonValue {
-        tool_output_code_mode_result(self, "wait_agent")
-    }
-}
-
-async fn wait_for_final_status(
-    session: std::sync::Arc<Session>,
-    thread_id: ThreadId,
-    mut status_rx: Receiver<AgentStatus>,
-) -> Option<(ThreadId, AgentStatus)> {
-    let mut status = status_rx.borrow().clone();
-    if is_final(&status) {
-        return Some((thread_id, status));
-    }
-
-    loop {
-        if status_rx.changed().await.is_err() {
-            let latest = session.services.agent_control.get_status(thread_id).await;
-            return is_final(&latest).then_some((thread_id, latest));
-        }
-        status = status_rx.borrow().clone();
-        if is_final(&status) {
-            return Some((thread_id, status));
-        }
     }
 }
