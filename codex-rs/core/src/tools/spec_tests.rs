@@ -589,7 +589,13 @@ fn test_build_specs_multi_agent_v2_uses_task_names_and_hides_resume() {
         .expect("list_agents should define output schema");
     assert_eq!(
         output_schema["properties"]["agents"]["items"]["required"],
-        json!(["agent_name", "agent_status", "last_task_message"])
+        json!([
+            "agent_name",
+            "agent_status",
+            "last_task_message",
+            "has_active_subagents",
+            "active_subagent_count"
+        ])
     );
     assert_lacks_tool_name(&tools, "send_input");
     assert_lacks_tool_name(&tools, "resume_agent");
@@ -1505,6 +1511,8 @@ fn test_codex_5_1_mini_defaults() {
             "send_input",
             "resume_agent",
             "wait_agent",
+            "list_agents",
+            "inspect_agent_tree",
             "close_agent",
         ],
     );
