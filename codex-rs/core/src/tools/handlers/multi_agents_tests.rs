@@ -1387,7 +1387,7 @@ async fn multi_agent_v2_send_message_rejects_structured_items() {
 #[tokio::test]
 async fn multi_agent_v2_send_message_missing_agent_path_emits_matching_interaction_end_event() {
     let manager = thread_manager();
-    let (mut session, mut turn, mut rx) = crate::codex::make_session_and_context_with_rx().await;
+    let (mut session, mut turn, rx) = crate::codex::make_session_and_context_with_rx().await;
     let target_thread_id = {
         let session = Arc::get_mut(&mut session).expect("session should be uniquely owned");
         session.services.agent_control = manager.agent_control();
