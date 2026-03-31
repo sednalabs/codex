@@ -120,16 +120,27 @@ fn resolve_wait_bounds(
     (effective_max_wait_ms, effective_heartbeat_interval_ms)
 }
 
-async fn wait_for_terminal_completion(
-    manager: &UnifiedExecProcessManager,
-    session: &crate::codex::Session,
-    turn: &crate::codex::TurnContext,
+struct WaitForTerminalCompletionArgs {
     process_id: i32,
     max_output_tokens: Option<usize>,
     max_wait_ms: u64,
     heartbeat_interval_ms: u64,
     initial_response: Option<ExecCommandToolOutput>,
+}
+
+async fn wait_for_terminal_completion(
+    manager: &UnifiedExecProcessManager,
+    session: &crate::codex::Session,
+    turn: &crate::codex::TurnContext,
+    args: WaitForTerminalCompletionArgs,
 ) -> Result<ExecCommandToolOutput, FunctionCallError> {
+    let WaitForTerminalCompletionArgs {
+        process_id,
+        max_output_tokens,
+        max_wait_ms,
+        heartbeat_interval_ms,
+        initial_response,
+    } = args;
     let wait_started_at = Instant::now();
     let mut last_heartbeat_at = wait_started_at;
     let mut collected = initial_response
@@ -480,11 +491,13 @@ impl ToolHandler for UnifiedExecHandler {
                                 manager,
                                 session.as_ref(),
                                 turn.as_ref(),
-                                active_process_id,
-                                max_output_tokens,
-                                effective_max_wait_ms,
-                                effective_heartbeat_interval_ms,
-                                Some(response),
+                                WaitForTerminalCompletionArgs {
+                                    process_id: active_process_id,
+                                    max_output_tokens,
+                                    max_wait_ms: effective_max_wait_ms,
+                                    heartbeat_interval_ms: effective_heartbeat_interval_ms,
+                                    initial_response: Some(response),
+                                },
                             )
                             .await?
                         }
@@ -509,11 +522,13 @@ impl ToolHandler for UnifiedExecHandler {
                         manager,
                         session.as_ref(),
                         turn.as_ref(),
-                        args.session_id,
-                        args.max_output_tokens,
-                        effective_max_wait_ms,
-                        effective_heartbeat_interval_ms,
-                        /*initial_response*/ None,
+                        WaitForTerminalCompletionArgs {
+                            process_id: args.session_id,
+                            max_output_tokens: args.max_output_tokens,
+                            max_wait_ms: effective_max_wait_ms,
+                            heartbeat_interval_ms: effective_heartbeat_interval_ms,
+                            initial_response: None,
+                        },
                     )
                     .await?
                 } else {
