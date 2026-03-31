@@ -166,8 +166,7 @@ pub fn create_write_stdin_tool() -> ToolSpec {
             "wait_until_terminal".to_string(),
             JsonSchema::Boolean {
                 description: Some(
-                    "When true, block until the process exits or max_wait_ms elapses."
-                        .to_string(),
+                    "When true, block until the process exits or max_wait_ms elapses.".to_string(),
                 ),
             },
         ),
