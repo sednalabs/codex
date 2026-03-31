@@ -173,15 +173,17 @@ impl FsWatchManager {
                 changed_paths.sort_by(|left, right| left.as_path().cmp(right.as_path()));
                 changed_paths.dedup();
                 if !changed_paths.is_empty() {
-                    outgoing
-                        .send_server_notification_to_connection_and_wait(
+                    tokio::select! {
+                        biased;
+                        _ = &mut terminate_rx => break,
+                        _ = outgoing.send_server_notification_to_connection_and_wait(
                             connection_id,
                             ServerNotification::FsChanged(FsChangedNotification {
                                 watch_id: task_watch_id.clone(),
                                 changed_paths,
                             }),
-                        )
-                        .await;
+                        ) => {}
+                    }
                 }
             }
         });
@@ -615,5 +617,70 @@ mod tests {
             Some(missing_path.clone())
         );
         assert_eq!(changed_path_for_watch_target(&missing_path, sibling), None);
+    }
+
+    #[tokio::test]
+    async fn unwatch_completes_when_notification_write_completion_is_withheld() {
+        let temp_dir = TempDir::new().expect("temp dir");
+        let watched_path = absolute_path(temp_dir.path().join("watched"));
+        std::fs::write(&watched_path, "hello\n").expect("write watched file");
+
+        let file_watcher = Arc::new(FileWatcher::noop());
+        let (tx, mut rx) = mpsc::channel(16);
+        let manager = FsWatchManager::new_with_file_watcher(
+            Arc::new(OutgoingMessageSender::new(tx)),
+            file_watcher.clone(),
+        );
+
+        let response = manager
+            .watch(
+                ConnectionId(1),
+                FsWatchParams {
+                    path: watched_path.clone(),
+                },
+            )
+            .await
+            .expect("watch should succeed");
+
+        file_watcher
+            .send_paths_for_test(vec![watched_path.to_path_buf()])
+            .await;
+
+        let withheld_write_complete_tx = timeout(Duration::from_secs(1), rx.recv())
+            .await
+            .expect("notification should arrive before test timeout")
+            .expect("outgoing channel should remain open for expected notification");
+        let OutgoingEnvelope::ToConnection {
+            message:
+                OutgoingMessage::AppServerNotification(ServerNotification::FsChanged(notification)),
+            write_complete_tx,
+            ..
+        } = withheld_write_complete_tx
+        else {
+            panic!("expected fs-changed notification envelope");
+        };
+        assert_eq!(notification.watch_id, response.watch_id);
+        assert_eq!(notification.changed_paths, vec![watched_path]);
+        let _withheld_write_complete_tx = write_complete_tx
+            .expect("expected write completion sender to withhold notification completion");
+
+        let unwatch_result = timeout(
+            Duration::from_secs(1),
+            manager.unwatch(
+                ConnectionId(1),
+                FsUnwatchParams {
+                    watch_id: response.watch_id,
+                },
+            ),
+        )
+        .await;
+
+        assert!(
+            unwatch_result.is_ok(),
+            "unwatch should complete while write completion is withheld"
+        );
+        assert!(unwatch_result.unwrap().is_ok());
+
+        drop(_withheld_write_complete_tx);
     }
 }
