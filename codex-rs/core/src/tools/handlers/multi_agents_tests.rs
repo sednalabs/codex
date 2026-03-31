@@ -791,7 +791,7 @@ async fn multi_agent_v2_list_agents_keeps_active_descendant_hint_under_path_filt
             Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
                 parent_thread_id: researcher_id,
                 depth: 2,
-                agent_path: Some(worker_path),
+                agent_path: Some(worker_path.clone()),
                 agent_nickname: None,
                 agent_role: None,
             })),
