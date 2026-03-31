@@ -239,9 +239,10 @@ fn watch_paths_for_target(path: &AbsolutePathBuf) -> Vec<WatchPath> {
     if !watch_path.exists()
         && let Some(existing_ancestor) = nearest_existing_watch_ancestor(&watch_path)
     {
-        let direct_parent = watch_path.parent().map(std::path::Path::to_path_buf);
         watched_paths.push(WatchPath {
-            recursive: direct_parent.as_ref() != Some(&existing_ancestor),
+            // If the target path does not yet exist, we must still watch a recursive parent
+            // so that watch-before-create directory flows observe descendant creation.
+            recursive: true,
             path: existing_ancestor,
         });
     }
@@ -523,7 +524,7 @@ mod tests {
     }
 
     #[test]
-    fn missing_file_watch_registers_the_nearest_existing_ancestor() {
+    fn missing_file_watch_registers_the_direct_parent_recursively() {
         let temp_dir = TempDir::new().expect("temp dir");
         let missing_path = absolute_path(temp_dir.path().join("FETCH_HEAD"));
         let parent = missing_path
@@ -538,7 +539,7 @@ mod tests {
                 },
                 WatchPath {
                     path: parent.to_path_buf(),
-                    recursive: false,
+                    recursive: true,
                 },
             ]
         );
@@ -602,6 +603,41 @@ mod tests {
         let notification = collect_next_fs_changed(&mut rx).await;
         assert_eq!(notification.watch_id, response.watch_id);
         assert_eq!(notification.changed_paths, vec![missing_path]);
+    }
+
+    #[tokio::test]
+    async fn missing_directory_watch_notifies_for_nested_children_after_creation() {
+        let temp_dir = TempDir::new().expect("temp dir");
+        let missing_dir = absolute_path(temp_dir.path().join("target"));
+        let nested_file = absolute_path(temp_dir.path().join("target/subfile"));
+
+        let file_watcher = Arc::new(FileWatcher::noop());
+        let (tx, mut rx) = mpsc::channel(16);
+        let manager = FsWatchManager::new_with_file_watcher(
+            Arc::new(OutgoingMessageSender::new(tx)),
+            file_watcher.clone(),
+        );
+
+        let response = manager
+            .watch(
+                ConnectionId(1),
+                FsWatchParams {
+                    path: missing_dir.clone(),
+                },
+            )
+            .await
+            .expect("watch should succeed");
+
+        std::fs::create_dir_all(&missing_dir).expect("create watched directory");
+        std::fs::write(&nested_file, "hello\n").expect("create nested file");
+
+        file_watcher
+            .send_paths_for_test(vec![nested_file.to_path_buf()])
+            .await;
+
+        let notification = collect_next_fs_changed(&mut rx).await;
+        assert_eq!(notification.watch_id, response.watch_id);
+        assert_eq!(notification.changed_paths, vec![nested_file]);
     }
 
     #[tokio::test]
