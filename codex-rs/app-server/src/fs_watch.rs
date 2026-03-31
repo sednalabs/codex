@@ -242,7 +242,8 @@ fn watch_paths_for_target(path: &AbsolutePathBuf) -> Vec<WatchPath> {
         watched_paths.push(WatchPath {
             // If the target path does not yet exist, we must still watch a recursive parent
             // so that watch-before-create directory flows observe descendant creation.
-            recursive: true,
+            // Avoid recursively watching the filesystem root for typoed or invalid paths.
+            recursive: existing_ancestor.parent().is_some(),
             path: existing_ancestor,
         });
     }
@@ -560,6 +561,26 @@ mod tests {
                 WatchPath {
                     path: temp_dir.path().to_path_buf(),
                     recursive: true,
+                },
+            ]
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn deeply_missing_rooted_target_does_not_watch_root_recursively() {
+        let missing_path = absolute_path(PathBuf::from("/does/not/exist/file"));
+
+        assert_eq!(
+            watch_paths_for_target(&missing_path),
+            vec![
+                WatchPath {
+                    path: missing_path.to_path_buf(),
+                    recursive: false,
+                },
+                WatchPath {
+                    path: PathBuf::from("/"),
+                    recursive: false,
                 },
             ]
         );
