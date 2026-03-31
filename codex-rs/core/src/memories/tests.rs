@@ -1688,13 +1688,10 @@ mod phase2 {
     #[test]
     fn consolidation_agent_config_keeps_split_sandbox_policies_in_sync() {
         let temp_dir = tempfile::tempdir().expect("temp dir");
-        let codex_home = temp_dir.path().join("codex-home");
-        let workspace = temp_dir.path().join("workspace");
-        std::fs::create_dir_all(&codex_home).expect("create codex home");
-        std::fs::create_dir_all(&workspace).expect("create workspace");
+        let codex_home = temp_dir.path().to_path_buf();
         let mut config = test_config();
         config.codex_home = codex_home;
-        config.cwd = AbsolutePathBuf::from_absolute_path(workspace).expect("workspace path");
+        config.cwd = AbsolutePathBuf::from_absolute_path(temp_dir.path()).expect("workspace path");
         let config = Arc::new(config);
 
         let agent_config =
