@@ -22,6 +22,8 @@ use codex_tools::WaitAgentTimeoutOptions;
 use codex_tools::create_close_agent_tool_v1;
 use codex_tools::create_close_agent_tool_v2;
 use codex_tools::create_exec_command_tool;
+use codex_tools::create_inspect_agent_tree_tool;
+use codex_tools::create_list_agents_tool;
 use codex_tools::create_request_permissions_tool;
 use codex_tools::create_request_user_input_tool;
 use codex_tools::create_resume_agent_tool;
@@ -378,6 +380,14 @@ fn test_full_toolset_specs_for_gpt5_codex_unified_exec_web_search() {
         let spec = create_resume_agent_tool();
         expected.insert(spec.name().to_string(), spec);
     }
+    expected.insert(
+        create_list_agents_tool().name().to_string(),
+        create_list_agents_tool(),
+    );
+    expected.insert(
+        create_inspect_agent_tree_tool().name().to_string(),
+        create_inspect_agent_tree_tool(),
+    );
 
     if config.exec_permission_approvals_enabled {
         let spec = create_request_permissions_tool(request_permissions_tool_description());
@@ -1488,6 +1498,8 @@ fn test_gpt_5_1_codex_max_defaults() {
             "send_input",
             "resume_agent",
             "wait_agent",
+            "list_agents",
+            "inspect_agent_tree",
             "close_agent",
         ],
     );

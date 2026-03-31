@@ -80,6 +80,8 @@ core-subagent-surface-targeted:
     CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo test -p codex-core list_agents_include_descendants_reports_persisted_open_and_closed_descendants --lib -- --exact
     CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo test -p codex-core test_build_specs_multi_agent_v2_uses_task_names_and_hides_resume --lib -- --exact
     CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo test -p codex-core test_codex_5_1_mini_defaults --lib -- --exact
+    CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo test -p codex-core test_full_toolset_specs_for_gpt5_codex_unified_exec_web_search --lib -- --exact
+    CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo test -p codex-core test_gpt_5_1_codex_max_defaults --lib -- --exact
 
 # Focused core-side sub-agent notification contract slice.
 core-subagent-notification-contract-targeted:
