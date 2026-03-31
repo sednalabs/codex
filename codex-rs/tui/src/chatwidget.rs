@@ -9402,17 +9402,14 @@ impl ChatWidget {
 
     #[cfg(target_os = "windows")]
     pub(crate) fn open_windows_sandbox_fallback_prompt(&mut self, preset: ApprovalPreset) {
-        let mut lines = Vec::new();
-        lines.push(Line::from(
-            "Couldn't set up your sandbox with Administrator permissions".bold(),
-        ));
-        lines.push(Line::from(""));
-        lines.push(Line::from(
-            "You can still use Codex in a non-admin sandbox. It carries greater risk if prompt injected."
-        ));
-        lines.push(Line::from(
-            "Learn more <https://developers.openai.com/codex/windows>",
-        ));
+        let lines = vec![
+            Line::from("Couldn't set up your sandbox with Administrator permissions".bold()),
+            Line::from(""),
+            Line::from(
+                "You can still use Codex in a non-admin sandbox. It carries greater risk if prompt injected.",
+            ),
+            Line::from("Learn more <https://developers.openai.com/codex/windows>"),
+        ];
 
         let mut header = ColumnRenderable::new();
         header.push(*Box::new(Paragraph::new(lines).wrap(Wrap { trim: false })));

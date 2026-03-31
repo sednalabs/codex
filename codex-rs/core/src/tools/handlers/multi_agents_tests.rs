@@ -815,10 +815,13 @@ async fn multi_agent_v2_list_agents_keeps_active_descendant_hint_under_path_filt
     let result: ListAgentsResult =
         serde_json::from_str(&content).expect("list_agents result should be json");
 
-    assert_eq!(result.agents.len(), 1);
+    assert_eq!(result.agents.len(), 2);
     assert_eq!(result.agents[0].agent_name, researcher_path.as_str());
     assert!(result.agents[0].has_active_subagents);
     assert_eq!(result.agents[0].active_subagent_count, 1);
+    assert_eq!(result.agents[1].agent_name, worker_path.as_str());
+    assert!(!result.agents[1].has_active_subagents);
+    assert_eq!(result.agents[1].active_subagent_count, 0);
 }
 
 #[tokio::test]
@@ -936,7 +939,7 @@ async fn multi_agent_v2_list_agents_flags_active_descendants() {
             }]
             .into(),
             Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
-                parent_thread_id: root.thread_id,
+                parent_thread_id: researcher_id,
                 depth: 2,
                 agent_path: Some(worker_path.clone()),
                 agent_nickname: None,

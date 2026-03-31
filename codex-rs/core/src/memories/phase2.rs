@@ -1000,7 +1000,7 @@ pub(in crate::memories) mod agent {
         consolidation_artifact_attestation_support_path(root)
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     pub(super) fn test_memory_root_attestation_key(root: &Path) -> String {
         memory_root_attestation_key(root)
     }
@@ -1431,7 +1431,7 @@ pub(crate) fn test_consolidation_artifact_attestation_support_path(root: &Path) 
     agent::test_consolidation_artifact_attestation_support_path(root)
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 pub(crate) fn test_memory_root_attestation_key(root: &Path) -> String {
     agent::test_memory_root_attestation_key(root)
 }
