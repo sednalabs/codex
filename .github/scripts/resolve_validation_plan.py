@@ -73,6 +73,7 @@ def determine_smoke_gate(groups: set[str]) -> tuple[bool, str]:
 def determine_lab_matrix_policy(profile: str) -> tuple[str, str]:
     policies = {
         "targeted": ("true", "2"),
+        "frontier": ("false", "3"),
         "broad": ("true", "4"),
         "full": ("true", "3"),
         "artifact": ("true", "2"),
@@ -102,6 +103,12 @@ def lab_plan(args: argparse.Namespace) -> None:
     elif args.profile == "targeted":
         if args.lane_set == "all":
             raise SystemExit("profile=targeted requires a named lane_set or explicit lanes")
+        selected = select_for_lane_set(catalog, args.lane_set)
+        run_smoke_gate = False
+        smoke_gate_kind = ""
+    elif args.profile == "frontier":
+        if args.lane_set == "all":
+            raise SystemExit("profile=frontier requires a named lane_set or explicit lanes")
         selected = select_for_lane_set(catalog, args.lane_set)
         run_smoke_gate = False
         smoke_gate_kind = ""

@@ -14,6 +14,7 @@ on:
         options:
           - smoke
           - targeted
+          - frontier
           - broad
           - full
           - artifact
@@ -320,4 +321,14 @@ jobs:
                   print(f"- First failure signal: `{first_failure['signal']}`")
           else:
               print("- First failing lane: `none`")
+          candidates = summary.get("candidate_next_slices") or []
+          if candidates:
+              print(f"- Frontier blocker count: `{len(candidates)}`")
+              for candidate in candidates[:5]:
+                  lane_id = candidate.get("lane_id") or "unknown"
+                  signal = candidate.get("signal") or ""
+                  if signal:
+                      print(f"  - `{lane_id}`: `{signal}`")
+                  else:
+                      print(f"  - `{lane_id}`")
           PY

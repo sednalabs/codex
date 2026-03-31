@@ -36,7 +36,7 @@ Focused micro-slices for iterative work on the current carry seams:
 - `codex.state-spawn-lineage-contract-targeted`
 - `codex.downstream-docs-check`
 
-Industrial carry workflow reference:
+Industrial validation workflow reference:
 
 - `docs/industrial_carry_workflow.md`
 
@@ -81,6 +81,8 @@ GitHub Actions lane naming (`.github/workflows/sedna-heavy-tests.yml`):
     non-PR seam validation.
   - `profile=smoke` and `profile=targeted` are the default inner-loop remote
     validation tools.
+  - `profile=frontier` is the bounded next-blocker harvest mode to use only
+    after a recent trusted smoke or targeted baseline.
   - `profile=broad` and `profile=full` are for explicit broader questions, not
     routine iteration.
   - `profile=artifact` or `artifact_build=true` is the right way to request a
@@ -144,13 +146,16 @@ sqlite3 "${CODEX_SQLITE_HOME:-$HOME/.codex}/usage.sqlite" '.tables'
   is optional downstream analysis infrastructure, not a prerequisite for the
   seam itself.
 - Keep the broad ladders out of the inner loop on this host:
-  use the focused `codex.core-*targeted` presets first, then promote to
-  `just core-test-smoke`, then `just core-test-progressive` only when you
-  intentionally want a broader gate.
+  use the focused `codex.core-*targeted` presets first, then a bounded
+  `validation-lab` `profile=frontier` harvest when the baseline is trustworthy,
+  then promote to `just core-test-smoke`, then `just core-test-progressive`
+  only when you intentionally want a broader gate.
 - Remote-first validation should follow this ladder:
   - tiny local checks first
   - `validation-lab` `profile=smoke` or `profile=targeted` on scratch or
     integration refs
+  - `validation-lab` `profile=frontier` when you want a bounded queue of likely
+    next blockers without paying for a broad checkpoint
   - `validation-lab` `profile=broad` or `profile=full` only when the question
     genuinely spans multiple seams
   - ordinary PR checks once the branch is ready for promotion semantics
