@@ -113,6 +113,7 @@ core-context-serialization-targeted:
     cargo test -p codex-core tools::context::tests::custom_tool_calls_should_roundtrip_as_custom_outputs --lib -- --exact
     cargo test -p codex-core tools::context::tests::function_payloads_remain_function_outputs --lib -- --exact
     cargo test -p codex-core tools::context::tests::aborted_tool_output_serializes_ --lib -- --test-threads=1
+    cargo test -p codex-core --test all suite::abort_tasks::interrupt_tool_records_history_entries -- --exact --test-threads=1
 
 # Focused attestation contract slice for phase-2 fail-closed reuse semantics.
 core-attestation-targeted:
