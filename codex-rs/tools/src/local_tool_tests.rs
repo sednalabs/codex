@@ -173,6 +173,33 @@ fn exec_command_tool_matches_expected_spec() {
             },
         ),
         (
+            "wait_until_terminal".to_string(),
+            JsonSchema::Boolean {
+                description: Some(
+                    "When true, block until the process exits or max_wait_ms elapses."
+                        .to_string(),
+                ),
+            },
+        ),
+        (
+            "max_wait_ms".to_string(),
+            JsonSchema::Number {
+                description: Some(
+                    "Maximum total wait window for wait_until_terminal, in milliseconds."
+                        .to_string(),
+                ),
+            },
+        ),
+        (
+            "heartbeat_interval_ms".to_string(),
+            JsonSchema::Number {
+                description: Some(
+                    "Heartbeat cadence while wait_until_terminal is active, in milliseconds."
+                        .to_string(),
+                ),
+            },
+        ),
+        (
             "login".to_string(),
             JsonSchema::Boolean {
                 description: Some(
@@ -232,6 +259,33 @@ fn write_stdin_tool_matches_expected_spec() {
             JsonSchema::Number {
                 description: Some(
                     "Maximum number of tokens to return. Excess output will be truncated."
+                        .to_string(),
+                ),
+            },
+        ),
+        (
+            "wait_until_terminal".to_string(),
+            JsonSchema::Boolean {
+                description: Some(
+                    "When true, block until the process exits or max_wait_ms elapses."
+                        .to_string(),
+                ),
+            },
+        ),
+        (
+            "max_wait_ms".to_string(),
+            JsonSchema::Number {
+                description: Some(
+                    "Maximum total wait window for wait_until_terminal, in milliseconds."
+                        .to_string(),
+                ),
+            },
+        ),
+        (
+            "heartbeat_interval_ms".to_string(),
+            JsonSchema::Number {
+                description: Some(
+                    "Heartbeat cadence while wait_until_terminal is active, in milliseconds."
                         .to_string(),
                 ),
             },
