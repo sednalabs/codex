@@ -2283,7 +2283,7 @@ async fn wait_agent_rejects_non_positive_timeout() {
 }
 
 #[tokio::test]
-async fn wait_agent_rejects_invalid_target() {
+async fn wait_agent_reports_missing_named_target() {
     let (session, turn) = make_session_and_context().await;
     let invocation = invocation(
         Arc::new(session),
@@ -2292,12 +2292,12 @@ async fn wait_agent_rejects_invalid_target() {
         function_payload(json!({"targets": ["invalid"]})),
     );
     let Err(err) = WaitAgentHandler.handle(invocation).await else {
-        panic!("invalid id should be rejected");
+        panic!("missing named target should be reported");
     };
     let FunctionCallError::RespondToModel(msg) = err else {
         panic!("expected respond-to-model error");
     };
-    assert!(msg.starts_with("invalid agent id invalid:"));
+    assert_eq!(msg, "live agent path `/root/invalid` not found");
 }
 
 #[tokio::test]
