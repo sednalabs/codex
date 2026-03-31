@@ -132,9 +132,34 @@ pub(crate) async fn handle_message_tool(
             .into(),
         )
         .await;
-    let receiver_agent_path = receiver_agent.agent_path.clone().ok_or_else(|| {
-        FunctionCallError::RespondToModel("target agent is missing an agent_path".to_string())
-    })?;
+    let receiver_agent_path = match receiver_agent.agent_path.clone() {
+        Some(path) => path,
+        None => {
+            let status = session
+                .services
+                .agent_control
+                .get_status(receiver_thread_id)
+                .await;
+            session
+                .send_event(
+                    &turn,
+                    CollabAgentInteractionEndEvent {
+                        call_id: call_id.clone(),
+                        sender_thread_id: session.conversation_id,
+                        receiver_thread_id,
+                        receiver_agent_nickname: receiver_agent.agent_nickname,
+                        receiver_agent_role: receiver_agent.agent_role,
+                        prompt: prompt.clone(),
+                        status,
+                    }
+                    .into(),
+                )
+                .await;
+            return Err(FunctionCallError::RespondToModel(
+                "target agent is missing an agent_path".to_string(),
+            ));
+        }
+    };
     let communication = InterAgentCommunication::new(
         turn.session_source
             .get_agent_path()

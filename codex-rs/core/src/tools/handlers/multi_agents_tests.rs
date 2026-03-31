@@ -1385,6 +1385,104 @@ async fn multi_agent_v2_send_message_rejects_structured_items() {
 }
 
 #[tokio::test]
+async fn multi_agent_v2_send_message_missing_agent_path_emits_matching_interaction_end_event() {
+    let manager = thread_manager();
+    let (mut session, mut turn, mut rx) = crate::codex::make_session_and_context_with_rx().await;
+    let target_thread_id = {
+        let session = Arc::get_mut(&mut session).expect("session should be uniquely owned");
+        session.services.agent_control = manager.agent_control();
+        let turn_ref = Arc::get_mut(&mut turn).expect("turn context should be uniquely owned");
+        let root = manager
+            .start_thread((*turn_ref.config).clone())
+            .await
+            .expect("root thread should start");
+        session.conversation_id = root.thread_id;
+        let mut config = (*turn_ref.config).clone();
+        config
+            .features
+            .enable(Feature::MultiAgentV2)
+            .expect("test config should allow feature update");
+        turn_ref.config = Arc::new(config);
+        session
+            .services
+            .agent_control
+            .spawn_agent_with_metadata(
+                (*turn_ref.config).clone(),
+                vec![UserInput::Text {
+                    text: "bootstrap".to_string(),
+                    text_elements: Vec::new(),
+                }]
+                .into(),
+                Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                    parent_thread_id: root.thread_id,
+                    depth: 1,
+                    agent_path: None,
+                    agent_nickname: None,
+                    agent_role: None,
+                })),
+                crate::agent::control::SpawnAgentOptions::default(),
+            )
+            .await
+            .expect("missing-path agent should spawn")
+            .thread_id
+    };
+
+    let invocation = invocation(
+        session.clone(),
+        turn.clone(),
+        "send_message",
+        function_payload(json!({
+            "target": target_thread_id.to_string(),
+            "items": [{"type": "text", "text": "hello"}]
+        })),
+    );
+    let Err(err) = SendMessageHandlerV2.handle(invocation).await else {
+        panic!("send to missing path should fail");
+    };
+    assert_eq!(
+        err,
+        FunctionCallError::RespondToModel("target agent is missing an agent_path".to_string())
+    );
+
+    let mut begin = None;
+    let mut end = None;
+    for _ in 0..4 {
+        let event = timeout(Duration::from_secs(1), rx.recv())
+            .await
+            .expect("interaction event should arrive")
+            .expect("event channel should remain open");
+        match event.msg {
+            EventMsg::CollabAgentInteractionBegin(event) => {
+                if event.call_id == "call-1" {
+                    assert!(end.is_none(), "interaction end should come after begin");
+                    begin = Some(event);
+                }
+            }
+            EventMsg::CollabAgentInteractionEnd(event) => {
+                if event.call_id == "call-1" {
+                    end = Some(event);
+                }
+            }
+            _ => {}
+        }
+        if begin.is_some() && end.is_some() {
+            break;
+        }
+    }
+
+    let begin = begin.expect("begin event should be emitted for send_message");
+    let end = end.expect("matching end event should be emitted for send_message");
+
+    assert_eq!(begin.call_id, "call-1");
+    assert_eq!(begin.sender_thread_id, end.sender_thread_id);
+    assert_eq!(begin.sender_thread_id, session.conversation_id);
+    assert_eq!(begin.receiver_thread_id, end.receiver_thread_id);
+    assert_eq!(begin.receiver_thread_id, target_thread_id);
+    assert_eq!(begin.prompt, "hello");
+    assert_eq!(begin.prompt, end.prompt);
+}
+
+#[tokio::test]
 async fn multi_agent_v2_send_message_interrupts_busy_child_without_triggering_turn() {
     let (mut session, mut turn) = make_session_and_context().await;
     let manager = thread_manager();
