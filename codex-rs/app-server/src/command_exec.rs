@@ -603,17 +603,19 @@ fn spawn_process_output(params: SpawnProcessOutputParams) -> tokio::task::JoinHa
             };
             let cap_reached = Some(observed_num_bytes) == output_bytes_cap;
             if let (true, Some(process_id)) = (stream_output, process_id.as_ref()) {
-                outgoing.send_server_notification_to_connection_nonblocking(
-                    connection_id,
-                    ServerNotification::CommandExecOutputDelta(
-                        CommandExecOutputDeltaNotification {
-                            process_id: process_id.clone(),
-                            stream,
-                            delta_base64: STANDARD.encode(capped_chunk),
-                            cap_reached,
-                        },
-                    ),
-                );
+                outgoing
+                    .send_server_notification_to_connections(
+                        &[connection_id],
+                        ServerNotification::CommandExecOutputDelta(
+                            CommandExecOutputDeltaNotification {
+                                process_id: process_id.clone(),
+                                stream,
+                                delta_base64: STANDARD.encode(capped_chunk),
+                                cap_reached,
+                            },
+                        ),
+                    )
+                    .await;
             } else if !stream_output {
                 buffer.extend_from_slice(capped_chunk);
             }
@@ -1098,5 +1100,103 @@ mod tests {
         assert_eq!(response.exit_code, 0);
         assert_eq!(response.stdout, "");
         assert_eq!(response.stderr, "");
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    #[tokio::test]
+    async fn streamed_output_delta_delivery_waits_for_queue_capacity_instead_of_dropping_chunks() {
+        let (tx, mut rx) = mpsc::channel(1);
+        let outgoing = Arc::new(OutgoingMessageSender::new(tx));
+        let (output_tx, output_rx) = mpsc::channel(4);
+        let (_stdio_timeout_tx, stdio_timeout_rx) = watch::channel(false);
+
+        let handle = spawn_process_output(SpawnProcessOutputParams {
+            connection_id: ConnectionId(21),
+            process_id: Some("proc-21".to_string()),
+            output_rx,
+            stdio_timeout_rx,
+            outgoing,
+            stream: CommandExecOutputStream::Stdout,
+            stream_output: true,
+            output_bytes_cap: None,
+        });
+
+        let first_chunk = vec![b'a'; OUTPUT_CHUNK_SIZE_HINT];
+        let second_chunk = b"b".to_vec();
+        output_tx
+            .send(first_chunk.clone())
+            .await
+            .expect("first chunk should queue");
+        output_tx
+            .send(second_chunk.clone())
+            .await
+            .expect("second chunk should queue");
+        drop(output_tx);
+
+        let first_envelope = timeout(Duration::from_secs(1), rx.recv())
+            .await
+            .expect("should receive first output delta")
+            .expect("channel should remain open");
+        let OutgoingEnvelope::ToConnection {
+            connection_id,
+            message,
+            ..
+        } = first_envelope
+        else {
+            panic!("expected connection-scoped output delta");
+        };
+        assert_eq!(connection_id, ConnectionId(21));
+        let OutgoingMessage::AppServerNotification(ServerNotification::CommandExecOutputDelta(
+            notification,
+        )) = message
+        else {
+            panic!("expected command/exec output delta notification");
+        };
+        assert_eq!(notification.process_id, "proc-21");
+        assert_eq!(notification.stream, CommandExecOutputStream::Stdout);
+        assert_eq!(
+            STANDARD
+                .decode(notification.delta_base64)
+                .expect("delta should be valid base64"),
+            first_chunk
+        );
+        assert!(!notification.cap_reached);
+
+        let second_envelope = timeout(Duration::from_secs(1), rx.recv())
+            .await
+            .expect("should receive second output delta")
+            .expect("channel should remain open");
+        let OutgoingEnvelope::ToConnection {
+            connection_id,
+            message,
+            ..
+        } = second_envelope
+        else {
+            panic!("expected connection-scoped output delta");
+        };
+        assert_eq!(connection_id, ConnectionId(21));
+        let OutgoingMessage::AppServerNotification(ServerNotification::CommandExecOutputDelta(
+            notification,
+        )) = message
+        else {
+            panic!("expected command/exec output delta notification");
+        };
+        assert_eq!(notification.process_id, "proc-21");
+        assert_eq!(notification.stream, CommandExecOutputStream::Stdout);
+        assert_eq!(
+            STANDARD
+                .decode(notification.delta_base64)
+                .expect("delta should be valid base64"),
+            second_chunk
+        );
+        assert!(!notification.cap_reached);
+
+        assert_eq!(
+            timeout(Duration::from_secs(1), handle)
+                .await
+                .expect("output task should finish")
+                .expect("output task should not panic"),
+            ""
+        );
     }
 }

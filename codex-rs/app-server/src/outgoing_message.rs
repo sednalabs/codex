@@ -568,21 +568,6 @@ impl OutgoingMessageSender {
         let _ = write_complete_rx.await;
     }
 
-    pub(crate) fn send_server_notification_to_connection_nonblocking(
-        &self,
-        connection_id: ConnectionId,
-        notification: ServerNotification,
-    ) {
-        let outgoing_message = OutgoingMessage::AppServerNotification(notification);
-        if let Err(err) = self.sender.try_send(OutgoingEnvelope::ToConnection {
-            connection_id,
-            message: outgoing_message,
-            write_complete_tx: None,
-        }) {
-            warn!("failed to queue server notification to client: {err:?}");
-        }
-    }
-
     pub(crate) async fn send_error(
         &self,
         request_id: ConnectionRequestId,
