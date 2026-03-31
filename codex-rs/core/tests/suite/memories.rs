@@ -21,6 +21,7 @@ use core_test_support::test_codex::test_codex;
 use core_test_support::wait_for_event;
 use pretty_assertions::assert_eq;
 use std::path::Path;
+use std::path::PathBuf;
 use std::sync::Arc;
 use tempfile::TempDir;
 use tokio::time::Duration;
@@ -54,7 +55,9 @@ async fn memories_startup_phase2_tracks_added_and_removed_inputs_across_runs() -
     .await;
 
     let first = build_test_codex(&server, home.clone()).await?;
+    let _first_artifact_writer = spawn_mock_phase2_artifact_writer(home.path().to_path_buf());
     let first_request = wait_for_single_request(&first_phase2).await;
+    write_mock_phase2_artifacts(home.path()).await?;
     let first_prompt = phase2_prompt_text(&first_request);
     assert!(
         first_prompt.contains("- selected inputs this run: 1"),
@@ -110,7 +113,9 @@ async fn memories_startup_phase2_tracks_added_and_removed_inputs_across_runs() -
     .await;
 
     let second = build_test_codex(&server, home.clone()).await?;
+    let _second_artifact_writer = spawn_mock_phase2_artifact_writer(home.path().to_path_buf());
     let second_request = wait_for_single_request(&second_phase2).await;
+    write_mock_phase2_artifacts(home.path()).await?;
     let second_prompt = phase2_prompt_text(&second_request);
     assert!(
         second_prompt.contains("- selected inputs this run: 1"),
@@ -253,9 +258,11 @@ async fn web_search_pollution_moves_selected_thread_into_removed_phase2_inputs()
         .resume(&server, home.clone(), rollout_path.clone())
         .await?;
 
+    let _first_artifact_writer = spawn_mock_phase2_artifact_writer(home.path().to_path_buf());
     let first_phase2_request = wait_for_request(&responses, /*expected_count*/ 1)
         .await
         .remove(0);
+    write_mock_phase2_artifacts(home.path()).await?;
     let first_phase2_prompt = phase2_prompt_text(&first_phase2_request);
     assert!(
         first_phase2_prompt.contains("- selected inputs this run: 1"),
@@ -429,7 +436,7 @@ async fn wait_for_phase2_success(
 
         assert!(
             Instant::now() < deadline,
-            "timed out waiting for phase2 success for {expected_thread_id}"
+            "timed out waiting for phase2 success for {expected_thread_id}: {selection:?}"
         );
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
@@ -479,6 +486,24 @@ async fn read_rollout_summary_bodies(memory_root: &Path) -> Result<Vec<String>> 
     }
     summaries.sort();
     Ok(summaries)
+}
+
+async fn write_mock_phase2_artifacts(codex_home: &Path) -> Result<()> {
+    let memory_root = codex_home.join("memories");
+    tokio::fs::create_dir_all(&memory_root).await?;
+    tokio::fs::write(memory_root.join("MEMORY.md"), "memory index\n").await?;
+    tokio::fs::write(memory_root.join("memory_summary.md"), "memory summary\n").await?;
+    Ok(())
+}
+
+fn spawn_mock_phase2_artifact_writer(codex_home: PathBuf) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while Instant::now() < deadline {
+            let _ = write_mock_phase2_artifacts(&codex_home).await;
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+    })
 }
 
 async fn shutdown_test_codex(test: &TestCodex) -> Result<()> {
