@@ -54,12 +54,13 @@ def load_lane_summaries(directory: Path) -> list[dict]:
     return summaries
 
 
-def summarize_lanes(lanes: list[dict]) -> tuple[dict | None, dict]:
+def summarize_lanes(lanes: list[dict], *, profile: str) -> tuple[dict | None, dict]:
     lane_count = 0
     successful_lane_count = 0
     failed_lane_count = 0
     other_lane_count = 0
     first_failure = None
+    failed_lanes = []
 
     for lane in lanes:
         lane_count += 1
@@ -68,12 +69,14 @@ def summarize_lanes(lanes: list[dict]) -> tuple[dict | None, dict]:
             successful_lane_count += 1
         elif outcome in FAILED_OUTCOMES:
             failed_lane_count += 1
+            failed_lane = {
+                "lane_id": lane.get("lane_id"),
+                "outcome": lane.get("outcome"),
+                "signal": lane.get("primary_signal") or "",
+            }
+            failed_lanes.append(failed_lane)
             if first_failure is None:
-                first_failure = {
-                    "lane_id": lane.get("lane_id"),
-                    "outcome": lane.get("outcome"),
-                    "signal": lane.get("primary_signal") or "",
-                }
+                first_failure = failed_lane
         else:
             other_lane_count += 1
 
@@ -83,6 +86,8 @@ def summarize_lanes(lanes: list[dict]) -> tuple[dict | None, dict]:
         "failed_lane_count": failed_lane_count,
         "other_lane_count": other_lane_count,
         "first_failure": first_failure,
+        "failed_lanes": failed_lanes,
+        "candidate_next_slices": failed_lanes if profile == "frontier" else [],
     }
     return first_failure, summary
 
@@ -107,7 +112,7 @@ def overall_conclusion(first_failure: dict | None, args: argparse.Namespace) -> 
 def main() -> None:
     args = parse_args()
     lane_summaries = load_lane_summaries(Path(args.lane_summary_dir))
-    first_failure, lane_summary = summarize_lanes(lane_summaries)
+    first_failure, lane_summary = summarize_lanes(lane_summaries, profile=args.profile)
     explicit_lanes = [lane.strip() for lane in args.explicit_lanes.split(",") if lane.strip()]
 
     payload = {
@@ -122,6 +127,7 @@ def main() -> None:
             "lane_set": args.lane_set,
             "explicit_lanes": explicit_lanes,
             "notes_supplied": parse_bool(args.notes_supplied),
+            "baseline_required": args.profile == "frontier",
         },
         "run": {
             "run_id": args.run_id,
