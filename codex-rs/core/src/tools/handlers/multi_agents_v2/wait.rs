@@ -161,7 +161,14 @@ impl ToolHandler for Handler {
                 pending_thread_ids.push(*receiver_thread_id);
             }
         }
-        let statuses_by_id = final_statuses.clone();
+        let mut pending_statuses = Vec::with_capacity(pending_thread_ids.len());
+        for pending_thread_id in &pending_thread_ids {
+            pending_statuses.push((
+                *pending_thread_id,
+                session.services.agent_control.get_status(*pending_thread_id).await,
+            ));
+        }
+        let statuses_by_id = merge_wait_end_statuses(final_statuses.clone(), pending_statuses);
         let agent_statuses = build_wait_agent_statuses(&statuses_by_id, &receiver_agents);
         let completion_reason = if timed_out {
             CollabWaitingCompletionReason::Timeout
@@ -239,6 +246,43 @@ impl WaitAgentResult {
             message: message.to_string(),
             timed_out,
         }
+    }
+}
+
+fn merge_wait_end_statuses<I>(
+    mut final_statuses: HashMap<ThreadId, AgentStatus>,
+    pending_statuses: I,
+) -> HashMap<ThreadId, AgentStatus>
+where
+    I: IntoIterator<Item = (ThreadId, AgentStatus)>,
+{
+    for (thread_id, status) in pending_statuses {
+        final_statuses.insert(thread_id, status);
+    }
+    final_statuses
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn merge_wait_end_statuses_includes_pending_targets() {
+        let completed_id = ThreadId::new();
+        let pending_id = ThreadId::new();
+        let statuses_by_id = merge_wait_end_statuses(
+            HashMap::from([(
+                completed_id,
+                AgentStatus::Completed(Some("done".to_string())),
+            )]),
+            [(pending_id, AgentStatus::Running)],
+        );
+
+        assert_eq!(
+            statuses_by_id.get(&completed_id),
+            Some(&AgentStatus::Completed(Some("done".to_string())))
+        );
+        assert_eq!(statuses_by_id.get(&pending_id), Some(&AgentStatus::Running));
     }
 }
 
