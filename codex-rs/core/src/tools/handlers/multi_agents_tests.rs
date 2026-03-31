@@ -1960,7 +1960,10 @@ async fn send_input_rejects_invalid_id() {
     let FunctionCallError::RespondToModel(msg) = err else {
         panic!("expected respond-to-model error");
     };
-    assert!(msg.starts_with("invalid agent id not-a-uuid:"));
+    assert_eq!(
+        msg,
+        "agent_name must use only lowercase letters, digits, and underscores"
+    );
 }
 
 #[tokio::test]
@@ -1982,6 +1985,55 @@ async fn send_input_reports_missing_agent() {
         err,
         FunctionCallError::RespondToModel(format!("agent with id {agent_id} not found"))
     );
+}
+
+#[tokio::test]
+async fn send_input_accepts_task_name_target() {
+    let (mut session, mut turn) = make_session_and_context().await;
+    let manager = thread_manager();
+    let root = manager
+        .start_thread((*turn.config).clone())
+        .await
+        .expect("root thread should start");
+    session.services.agent_control = manager.agent_control();
+    session.conversation_id = root.thread_id;
+    let mut config = (*turn.config).clone();
+    config
+        .features
+        .enable(Feature::MultiAgentV2)
+        .expect("test config should allow feature update");
+    turn.config = Arc::new(config);
+
+    let session = Arc::new(session);
+    let turn = Arc::new(turn);
+    let _spawn_output = SpawnAgentHandlerV2
+        .handle(invocation(
+            session.clone(),
+            turn.clone(),
+            "spawn_agent",
+            function_payload(json!({
+                "message": "inspect this repo",
+                "task_name": "worker"
+            })),
+        ))
+        .await
+        .expect("spawn_agent should succeed");
+
+    let output = SendInputHandler
+        .handle(invocation(
+            session,
+            turn,
+            "send_input",
+            function_payload(json!({
+                "target": "worker",
+                "message": "hi"
+            })),
+        ))
+        .await
+        .expect("send_input should accept task-name targets");
+
+    let (_content, success) = expect_text_output(output);
+    assert_eq!(success, Some(true));
 }
 
 #[tokio::test]
