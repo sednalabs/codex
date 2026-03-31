@@ -137,9 +137,16 @@ pub(crate) enum AppEvent {
         matches: Vec<FileMatch>,
     },
 
-    /// Result of refreshing rate limits
-    #[allow(dead_code)]
-    RateLimitSnapshotFetched(RateLimitSnapshot),
+    /// Refresh account rate limits in the background.
+    RefreshRateLimits {
+        request_id: u64,
+    },
+
+    /// Result of refreshing rate limits.
+    RateLimitsLoaded {
+        request_id: u64,
+        result: Result<Vec<RateLimitSnapshot>, String>,
+    },
 
     /// Result of prefetching connectors.
     ConnectorsLoaded {

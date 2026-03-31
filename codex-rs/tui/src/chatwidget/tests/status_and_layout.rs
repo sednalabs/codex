@@ -84,7 +84,9 @@ async fn turn_started_uses_runtime_context_window_before_first_token_count() {
     );
     assert_eq!(chat.bottom_pane.context_window_percent(), Some(100));
 
-    chat.add_status_output();
+    chat.add_status_output(
+        /*refreshing_rate_limits*/ false, /*request_id*/ None,
+    );
 
     let cells = drain_insert_history(&mut rx);
     let context_line = cells
