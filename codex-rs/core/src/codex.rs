@@ -937,6 +937,7 @@ impl TurnContext {
         })
         .with_unified_exec_shell_mode(self.tools_config.unified_exec_shell_mode.clone())
         .with_web_search_config(self.tools_config.web_search_config.clone())
+        .with_wait_agent_default_timeout_ms(config.background_terminal_max_timeout)
         .with_allow_login_shell(self.tools_config.allow_login_shell)
         .with_agent_roles(config.agent_roles.clone());
 
@@ -1395,6 +1396,7 @@ impl Session {
             main_execve_wrapper_exe,
         )
         .with_web_search_config(per_turn_config.web_search_config.clone())
+        .with_wait_agent_default_timeout_ms(per_turn_config.background_terminal_max_timeout)
         .with_allow_login_shell(per_turn_config.permissions.allow_login_shell)
         .with_agent_roles(per_turn_config.agent_roles.clone());
 
@@ -5418,6 +5420,7 @@ async fn spawn_review_thread(
         sess.services.main_execve_wrapper_exe.as_ref(),
     )
     .with_web_search_config(/*web_search_config*/ None)
+    .with_wait_agent_default_timeout_ms(config.background_terminal_max_timeout)
     .with_allow_login_shell(config.permissions.allow_login_shell)
     .with_agent_roles(config.agent_roles.clone());
 

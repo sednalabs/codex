@@ -5,6 +5,7 @@ use crate::shell::Shell;
 use crate::shell::ShellType;
 use crate::tools::ToolRouter;
 use crate::tools::router::ToolRouterParams;
+use crate::tools::handlers::multi_agents_common::DEFAULT_WAIT_TIMEOUT_MS;
 use codex_app_server_protocol::AppInfo;
 use codex_protocol::models::VIEW_IMAGE_TOOL_NAME;
 use codex_protocol::openai_models::InputModality;
@@ -187,6 +188,38 @@ fn wait_agent_timeout_options() -> WaitAgentTimeoutOptions {
         min_timeout_ms: MIN_WAIT_TIMEOUT_MS,
         max_timeout_ms: MAX_WAIT_TIMEOUT_MS,
     }
+}
+
+#[test]
+fn wait_agent_tool_description_uses_configured_timeout_default() {
+    let model_info = model_info_from_models_json("gpt-5-codex");
+    let features = Features::with_defaults();
+    let available_models = Vec::new();
+    let config = ToolsConfig::new(&ToolsConfigParams {
+        model_info: &model_info,
+        available_models: &available_models,
+        features: &features,
+        web_search_mode: Some(WebSearchMode::Cached),
+        session_source: SessionSource::Cli,
+        sandbox_policy: &SandboxPolicy::DangerFullAccess,
+        windows_sandbox_level: WindowsSandboxLevel::Disabled,
+    })
+    .with_wait_agent_default_timeout_ms(120_000);
+    let (tools, _) = build_specs(&config, None, None, &[]).build();
+    let wait_agent = find_tool(&tools, "wait_agent");
+    let ToolSpec::Function(ResponsesApiTool { parameters, .. }) = &wait_agent.spec else {
+        panic!("wait_agent should be a function tool");
+    };
+    let JsonSchema::Object { properties, .. } = parameters else {
+        panic!("wait_agent should use object params");
+    };
+    let Some(JsonSchema::Number {
+        description: Some(description),
+    }) = properties.get("timeout_ms")
+    else {
+        panic!("wait_agent should describe timeout_ms");
+    };
+    assert!(description.contains("Defaults to 120000"));
 }
 
 fn find_tool<'a>(tools: &'a [ConfiguredToolSpec], expected_name: &str) -> &'a ConfiguredToolSpec {

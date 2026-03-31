@@ -139,10 +139,17 @@ fn wait_agent_tool_v1_exposes_return_when_and_summary_output() {
     else {
         panic!("wait_agent should be a function tool");
     };
-    let JsonSchema::Object { properties, .. } = parameters else {
+    let JsonSchema::Object {
+        properties,
+        required,
+        ..
+    } = parameters
+    else {
         panic!("wait_agent should use object params");
     };
+    assert!(properties.contains_key("ids"));
     assert!(properties.contains_key("return_when"));
+    assert_eq!(required, None);
     assert_eq!(
         output_schema.expect("wait output schema")["required"],
         json!([
