@@ -220,7 +220,7 @@ $lines | Select-Object -Skip 1 | Set-Content -Path tokens.txt
             command: self.command.clone(),
             args: self.args.clone(),
             timeout_ms: non_zero_u64(/*value*/ 1_000),
-            refresh_interval_ms: non_zero_u64(/*value*/ 60_000),
+            refresh_interval_ms: 60_000,
             cwd: match codex_utils_absolute_path::AbsolutePathBuf::try_from(self.tempdir.path()) {
                 Ok(cwd) => cwd,
                 Err(err) => panic!("tempdir should be absolute: {err}"),

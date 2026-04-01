@@ -151,8 +151,29 @@ args = ["--format=text"]
             command: "./scripts/print-token".to_string(),
             args: vec!["--format=text".to_string()],
             timeout_ms: NonZeroU64::new(5_000).unwrap(),
-            refresh_interval_ms: NonZeroU64::new(300_000).unwrap(),
+            refresh_interval_ms: 300_000,
             cwd: AbsolutePathBuf::resolve_path_against_base(".", base_dir.path()).unwrap(),
         })
     );
+}
+
+#[test]
+fn test_deserialize_provider_auth_config_allows_zero_refresh_interval() {
+    let base_dir = tempdir().unwrap();
+    let provider_toml = r#"
+name = "Corp"
+
+[auth]
+command = "./scripts/print-token"
+refresh_interval_ms = 0
+        "#;
+
+    let provider: ModelProviderInfo = {
+        let _guard = AbsolutePathBufGuard::new(base_dir.path());
+        toml::from_str(provider_toml).unwrap()
+    };
+
+    let auth = provider.auth.expect("auth config should deserialize");
+    assert_eq!(auth.refresh_interval_ms, 0);
+    assert_eq!(auth.refresh_interval(), None);
 }
