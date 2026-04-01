@@ -60,6 +60,13 @@ def select_smoke_matrix(catalog: list[dict], smoke_gate_kind: str) -> list[dict]
     ]
 
 
+def exclude_smoke_gate_lanes(selected: list[dict], smoke_matrix: list[dict]) -> list[dict]:
+    smoke_lane_ids = {lane["lane_id"] for lane in smoke_matrix}
+    if not smoke_lane_ids:
+        return selected
+    return [lane for lane in selected if lane["lane_id"] not in smoke_lane_ids]
+
+
 def emit(payload: dict) -> None:
     print(json.dumps(payload, separators=(",", ":")))
 
@@ -124,6 +131,8 @@ def lab_plan(args: argparse.Namespace) -> None:
         has_smoke_gate, smoke_gate_kind = determine_smoke_gate(groups)
         smoke_matrix = select_smoke_matrix(catalog, smoke_gate_kind) if has_smoke_gate else []
         run_smoke_gate = bool(selected) and bool(smoke_matrix)
+        if run_smoke_gate:
+            selected = exclude_smoke_gate_lanes(selected, smoke_matrix)
     else:
         raise SystemExit(f"unsupported profile: {args.profile}")
 
@@ -176,6 +185,8 @@ def heavy_plan(args: argparse.Namespace) -> None:
     has_smoke_gate, smoke_gate_kind = determine_smoke_gate(groups)
     smoke_matrix = select_smoke_matrix(catalog, smoke_gate_kind) if has_smoke_gate else []
     run_smoke_gate = (args.event_name != "workflow_dispatch" or parse_bool(args.run_all_lanes)) and bool(smoke_matrix)
+    if run_smoke_gate:
+        selected = exclude_smoke_gate_lanes(selected, smoke_matrix)
 
     emit(
         {
