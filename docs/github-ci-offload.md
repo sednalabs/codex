@@ -47,6 +47,8 @@ artifacts.
    - Reason: cheapest signal, zero extra GitHub runner pressure.
 2. `validation-lab` for normal iterative remote validation.
    - Default to `profile=smoke` or `profile=targeted`.
+   - `profile=smoke` fans out the smoke bundle as parallel shards instead of
+     running one serial smoke recipe on a single runner.
    - Reason: best signal per runner-minute without polluting PR surfaces.
 3. `validation-lab` broad/full only when the question is broader.
    - Use `profile=broad` or `profile=full` only when multiple seams are moving or you need a

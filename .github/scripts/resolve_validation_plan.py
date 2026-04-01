@@ -16,6 +16,15 @@ def load_catalog() -> list[dict]:
     return json.loads(catalog_path().read_text(encoding="utf-8"))["lanes"]
 
 
+def lane_payload(spec: dict) -> dict:
+    return {
+        "lane_id": spec["lane_id"],
+        "run_command": spec["run_command"],
+        "groups": spec["groups"],
+        "install_nextest": bool(spec.get("install_nextest", False)),
+    }
+
+
 def select_exact(catalog_by_id: dict[str, dict], lane_ids: list[str]) -> list[dict]:
     selected: list[dict] = []
     seen: set[str] = set()
@@ -26,13 +35,7 @@ def select_exact(catalog_by_id: dict[str, dict], lane_ids: list[str]) -> list[di
         if lane_id in seen:
             continue
         seen.add(lane_id)
-        selected.append(
-            {
-                "lane_id": lane_id,
-                "run_command": spec["run_command"],
-                "groups": spec["groups"],
-            }
-        )
+        selected.append(lane_payload(spec))
     return selected
 
 
@@ -45,14 +48,16 @@ def select_for_lane_set(
             continue
         if spec.get("explicit_only") and not include_explicit_only:
             continue
-        selected.append(
-            {
-                "lane_id": spec["lane_id"],
-                "run_command": spec["run_command"],
-                "groups": spec["groups"],
-            }
-        )
+        selected.append(lane_payload(spec))
     return selected
+
+
+def select_smoke_matrix(catalog: list[dict], smoke_gate_kind: str) -> list[dict]:
+    return [
+        lane_payload(spec)
+        for spec in catalog
+        if smoke_gate_kind in spec.get("smoke_gate_kinds", [])
+    ]
 
 
 def emit(payload: dict) -> None:
@@ -72,10 +77,10 @@ def determine_smoke_gate(groups: set[str]) -> tuple[bool, str]:
 
 def determine_lab_matrix_policy(profile: str) -> tuple[str, str]:
     policies = {
-        "targeted": ("true", "2"),
-        "frontier": ("false", "3"),
+        "targeted": ("true", "3"),
+        "frontier": ("false", "4"),
         "broad": ("true", "4"),
-        "full": ("true", "3"),
+        "full": ("true", "4"),
         "artifact": ("true", "2"),
     }
     return policies.get(profile, ("true", "1"))
@@ -88,14 +93,17 @@ def lab_plan(args: argparse.Namespace) -> None:
     run_artifact = args.profile == "artifact" or parse_bool(args.artifact_build)
     matrix_fail_fast, matrix_max_parallel = determine_lab_matrix_policy(args.profile)
 
+    smoke_matrix: list[dict] = []
+
     if requested_lanes:
         selected = select_exact(catalog_by_id, requested_lanes)
         run_smoke_gate = False
         smoke_gate_kind = ""
     elif args.profile == "smoke":
         selected = []
-        run_smoke_gate = True
         smoke_gate_kind = "workflow_docs" if args.lane_set == "docs" else "runtime"
+        smoke_matrix = select_smoke_matrix(catalog, smoke_gate_kind)
+        run_smoke_gate = bool(smoke_matrix)
     elif args.profile == "artifact":
         selected = [] if args.lane_set == "all" else select_for_lane_set(catalog, args.lane_set)
         run_smoke_gate = False
@@ -112,13 +120,15 @@ def lab_plan(args: argparse.Namespace) -> None:
         selected = select_for_lane_set(catalog, "all" if args.lane_set == "all" else args.lane_set)
         groups = {group for spec in selected for group in spec["groups"]}
         has_smoke_gate, smoke_gate_kind = determine_smoke_gate(groups)
-        run_smoke_gate = bool(selected) and has_smoke_gate
+        smoke_matrix = select_smoke_matrix(catalog, smoke_gate_kind) if has_smoke_gate else []
+        run_smoke_gate = bool(selected) and bool(smoke_matrix)
     else:
         raise SystemExit(f"unsupported profile: {args.profile}")
 
     emit(
         {
             "selected_matrix": {"include": selected},
+            "smoke_matrix": {"include": smoke_matrix},
             "run_selected_lanes": "true" if bool(selected) else "false",
             "run_smoke_gate": "true" if run_smoke_gate else "false",
             "smoke_gate_kind": smoke_gate_kind,
@@ -158,21 +168,17 @@ def heavy_plan(args: argparse.Namespace) -> None:
         if lane_id in seen:
             continue
         seen.add(lane_id)
-        selected.append(
-            {
-                "lane_id": lane_id,
-                "run_command": spec["run_command"],
-                "groups": spec["groups"],
-            }
-        )
+        selected.append(lane_payload(spec))
 
     groups = {group for spec in selected for group in spec["groups"]}
     has_smoke_gate, smoke_gate_kind = determine_smoke_gate(groups)
-    run_smoke_gate = (args.event_name != "workflow_dispatch" or parse_bool(args.run_all_lanes)) and has_smoke_gate
+    smoke_matrix = select_smoke_matrix(catalog, smoke_gate_kind) if has_smoke_gate else []
+    run_smoke_gate = (args.event_name != "workflow_dispatch" or parse_bool(args.run_all_lanes)) and bool(smoke_matrix)
 
     emit(
         {
             "selected_matrix": {"include": selected},
+            "smoke_matrix": {"include": smoke_matrix},
             "run_selected_lanes": "true" if bool(selected) else "false",
             "run_smoke_gate": "true" if run_smoke_gate else "false",
             "smoke_gate_kind": smoke_gate_kind,

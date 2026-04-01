@@ -11,17 +11,21 @@ Default local iterative validation path:
 
 - `just core-test-progressive`
 
-Fast lanes used by `core-test-smoke`:
+Fast lanes used by `core-test-smoke` locally and by the remote smoke matrix:
 
 - `core-compile-smoke`
 - `core-carry-smoke`
 - `core-ledger-smoke`
+- `core-runtime-surface-smoke`
 - `core-carry-smoke` now includes the `codex-tui`
   replayed-queue and selected-agent footer regressions, so
   downstream interactive behavior fails during the PR smoke pass.
 - `core-ledger-smoke` now includes the `usage.sqlite` cleanup, turn-reset, and
   restart-lineage regressions, so downstream accounting behavior
   fails during the same smoke pass.
+- `core-runtime-surface-smoke` isolates the fragile codex-core runtime seams in
+  their own shard, so remote smoke runs can fail the exact runtime bucket
+  without serializing the whole smoke pass behind one `just` recipe.
 
 Focused micro-slices for iterative work on the current carry seams:
 
@@ -66,8 +70,10 @@ GitHub Actions lane naming (`.github/workflows/sedna-heavy-tests.yml`):
 - `sedna-heavy-tests.yml` is the downstream-heavy lane workflow.
   - On ordinary PR updates, it auto-selects only the heavy lanes implied by the
     changed path class.
-  - Non-doc heavy runs must clear `core-test-smoke` before the broader lane
-    matrix fans out, and the heavy matrix itself is capped and fail-fast on PRs.
+  - Non-doc heavy runs must clear the runtime smoke bundle
+    (`core-compile-smoke`, `core-carry-smoke`, `core-ledger-smoke`,
+    `core-runtime-surface-smoke`) before the broader lane matrix fans out, and
+    the heavy matrix itself is capped and fail-fast on PRs.
   - Changes to workflow wiring or the `justfile` run the smoke gate plus a small
     representative workflow-validation lane set instead of promoting the PR to
     the full heavy matrix.
