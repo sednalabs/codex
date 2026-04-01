@@ -5381,9 +5381,9 @@ impl ChatWidget {
         &mut self,
         cmd: SlashCommand,
         prepared_args: String,
-        _prepared_elements: Vec<TextElement>,
-        _local_images: Vec<LocalImageAttachment>,
-        _remote_image_urls: Vec<String>,
+        prepared_elements: Vec<TextElement>,
+        local_images: Vec<LocalImageAttachment>,
+        remote_image_urls: Vec<String>,
         mention_bindings: Vec<MentionBinding>,
         drain_submission_state: bool,
     ) {
@@ -5420,12 +5420,6 @@ impl ChatWidget {
             SlashCommand::Rename if !trimmed.is_empty() => {
                 self.session_telemetry
                     .counter("codex.thread.rename", /*inc*/ 1, &[]);
-                let Some((prepared_args, _prepared_elements)) = self
-                    .bottom_pane
-                    .prepare_inline_args_submission(/*record_history*/ false)
-                else {
-                    return;
-                };
                 let Some(name) = codex_core::util::normalize_thread_name(&prepared_args) else {
                     self.add_error_message("Thread name cannot be empty.".to_string());
                     return;
@@ -5443,16 +5437,6 @@ impl ChatWidget {
                 if self.active_mode_kind() != ModeKind::Plan {
                     return;
                 }
-                let Some((prepared_args, prepared_elements)) = self
-                    .bottom_pane
-                    .prepare_inline_args_submission(/*record_history*/ true)
-                else {
-                    return;
-                };
-                let local_images = self
-                    .bottom_pane
-                    .take_recent_submission_images_with_placeholders();
-                let remote_image_urls = self.take_remote_image_urls();
                 let user_message = UserMessage {
                     text: prepared_args,
                     local_images,
@@ -5481,12 +5465,6 @@ impl ChatWidget {
                 }
             }
             SlashCommand::SandboxReadRoot if !trimmed.is_empty() => {
-                let Some((prepared_args, _prepared_elements)) = self
-                    .bottom_pane
-                    .prepare_inline_args_submission(/*record_history*/ false)
-                else {
-                    return;
-                };
                 self.app_event_tx
                     .send(AppEvent::BeginWindowsSandboxGrantReadRoot {
                         path: prepared_args,

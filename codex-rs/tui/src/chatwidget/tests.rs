@@ -6989,6 +6989,52 @@ async fn plan_slash_command_with_args_submits_prompt_in_plan_mode() {
 }
 
 #[tokio::test]
+async fn rename_slash_command_with_args_sets_thread_name() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+
+    chat.bottom_pane.set_composer_text(
+        format!("/{}   project phoenix   ", SlashCommand::Rename.command()),
+        Vec::new(),
+        Vec::new(),
+    );
+    chat.handle_key_event(KeyEvent::from(KeyCode::Enter));
+
+    while let Ok(event) = rx.try_recv() {
+        if let AppEvent::CodexOp(Op::SetThreadName { name }) = event {
+            assert_eq!(name, "project phoenix");
+            return;
+        }
+    }
+
+    panic!("expected Op::SetThreadName app event");
+}
+
+#[cfg(target_os = "windows")]
+#[tokio::test]
+async fn sandbox_read_root_slash_command_with_args_emits_grant_event() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+
+    chat.bottom_pane.set_composer_text(
+        format!(
+            "/{}   /tmp/project   ",
+            SlashCommand::SandboxReadRoot.command()
+        ),
+        Vec::new(),
+        Vec::new(),
+    );
+    chat.handle_key_event(KeyEvent::from(KeyCode::Enter));
+
+    while let Ok(event) = rx.try_recv() {
+        if let AppEvent::BeginWindowsSandboxGrantReadRoot { path } = event {
+            assert_eq!(path, "/tmp/project");
+            return;
+        }
+    }
+
+    panic!("expected BeginWindowsSandboxGrantReadRoot app event");
+}
+
+#[tokio::test]
 async fn collaboration_modes_defaults_to_code_on_startup() {
     let codex_home = tempdir().expect("tempdir");
     let cfg = ConfigBuilder::default()
