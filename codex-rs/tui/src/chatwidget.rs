@@ -5684,13 +5684,6 @@ impl ChatWidget {
             self.refresh_pending_input_preview();
             return;
         }
-        if self.is_review_mode {
-            self.queued_user_messages.push_back(user_message);
-            self.queued_follow_up_order
-                .push_back(QueuedFollowUpKind::UserMessage);
-            self.refresh_pending_input_preview();
-            return;
-        }
         let UserMessage {
             text,
             local_images,
