@@ -137,9 +137,16 @@ pub(crate) enum AppEvent {
         matches: Vec<FileMatch>,
     },
 
-    /// Result of refreshing rate limits
-    #[allow(dead_code)]
-    RateLimitSnapshotFetched(RateLimitSnapshot),
+    /// Refresh account rate limits in the background.
+    RefreshRateLimits {
+        request_id: u64,
+    },
+
+    /// Result of refreshing rate limits.
+    RateLimitsLoaded {
+        request_id: u64,
+        result: Result<Vec<RateLimitSnapshot>, String>,
+    },
 
     /// Result of prefetching connectors.
     ConnectorsLoaded {
@@ -523,6 +530,21 @@ pub(crate) enum AppEvent {
     /// Open the upload consent popup for feedback after selecting a category.
     OpenFeedbackConsent {
         category: FeedbackCategory,
+    },
+
+    /// Submit feedback for the current thread via the app-server feedback RPC.
+    SubmitFeedback {
+        category: FeedbackCategory,
+        reason: Option<String>,
+        include_logs: bool,
+    },
+
+    /// Result of a feedback upload request initiated by the TUI.
+    FeedbackSubmitted {
+        origin_thread_id: Option<ThreadId>,
+        category: FeedbackCategory,
+        include_logs: bool,
+        result: Result<String, String>,
     },
 
     /// Launch the external editor after a normal draw has completed.

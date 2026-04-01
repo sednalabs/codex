@@ -1337,10 +1337,12 @@ checksum = "e9b18233253483ce2f65329a24072ec414db782531bdbb7d0bbc4bd2ce6b7e21"
 name = "codex-analytics"
 version = "0.0.0"
 dependencies = [
+ "codex-app-server-protocol",
  "codex-git-utils",
  "codex-login",
  "codex-plugin",
  "codex-protocol",
+ "os_info",
  "pretty_assertions",
  "serde",
  "serde_json",
@@ -1719,6 +1721,7 @@ dependencies = [
  "clap",
  "codex-client",
  "codex-cloud-tasks-client",
+ "codex-cloud-tasks-mock-client",
  "codex-core",
  "codex-git-utils",
  "codex-login",
@@ -1748,10 +1751,19 @@ dependencies = [
  "chrono",
  "codex-backend-client",
  "codex-git-utils",
- "diffy",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
+]
+
+[[package]]
+name = "codex-cloud-tasks-mock-client"
+version = "0.0.0"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "codex-cloud-tasks-client",
+ "diffy",
 ]
 
 [[package]]
@@ -2615,6 +2627,7 @@ dependencies = [
 name = "codex-tools"
 version = "0.0.0"
 dependencies = [
+ "codex-app-server-protocol",
  "codex-code-mode",
  "codex-protocol",
  "pretty_assertions",
