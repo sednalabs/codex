@@ -14,6 +14,7 @@ use codex_protocol::protocol::GuardianAssessmentStatus;
 use codex_protocol::protocol::McpInvocation;
 use codex_protocol::protocol::RawResponseItemEvent;
 use codex_protocol::protocol::ReviewDecision;
+use codex_protocol::protocol::TokenCountEvent;
 use codex_protocol::protocol::TurnAbortReason;
 use codex_protocol::protocol::TurnAbortedEvent;
 use codex_protocol::request_permissions::RequestPermissionProfile;
@@ -104,6 +105,58 @@ async fn forward_events_cancelled_while_send_blocked_shuts_down_delegate() {
         ops.iter().any(|op| matches!(op, Op::Shutdown)),
         "expected Shutdown op after cancellation"
     );
+}
+
+#[tokio::test]
+async fn forward_events_forwards_token_count() {
+    let (tx_events, rx_events) = bounded(1);
+    let (tx_sub, _rx_sub) = bounded(SUBMISSION_CHANNEL_CAPACITY);
+    let (_agent_status_tx, agent_status) = watch::channel(AgentStatus::PendingInit);
+    let (session, ctx, _rx_evt) = crate::codex::make_session_and_context_with_rx().await;
+    let codex = Arc::new(Codex {
+        tx_sub,
+        rx_event: rx_events,
+        agent_status,
+        session: Arc::clone(&session),
+        session_loop_termination: completed_session_loop_termination(),
+    });
+
+    let (tx_out, rx_out) = bounded(1);
+    let cancel = CancellationToken::new();
+    let forward = tokio::spawn(forward_events(
+        Arc::clone(&codex),
+        tx_out,
+        session,
+        ctx,
+        Arc::new(Mutex::new(HashMap::new())),
+        cancel,
+    ));
+
+    tx_events
+        .send(Event {
+            id: "token".to_string(),
+            msg: EventMsg::TokenCount(TokenCountEvent {
+                info: None,
+                rate_limits: None,
+                provider: None,
+                model_used: None,
+            }),
+        })
+        .await
+        .unwrap();
+    drop(tx_events);
+
+    let received = rx_out
+        .recv()
+        .await
+        .expect("token count event not forwarded");
+    assert_eq!("token", received.id);
+    assert!(matches!(received.msg, EventMsg::TokenCount(_)));
+
+    timeout(Duration::from_millis(1000), forward)
+        .await
+        .expect("forward_events hung")
+        .expect("forward_events join error");
 }
 
 #[tokio::test]
@@ -286,7 +339,6 @@ async fn handle_exec_approval_uses_call_id_for_guardian_review_and_approval_id_f
                     proposed_execpolicy_amendment: None,
                     proposed_network_policy_amendments: None,
                     additional_permissions: None,
-                    skill_metadata: None,
                     available_decisions: Some(vec![
                         ReviewDecision::Approved,
                         ReviewDecision::Abort,

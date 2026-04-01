@@ -44,10 +44,16 @@ fn config_for_memory_root(root: &Path) -> Arc<Config> {
     Arc::new(config)
 }
 
+fn canonical_codex_home(temp_dir: &tempfile::TempDir) -> PathBuf {
+    dunce::canonicalize(temp_dir.path())
+        .expect("canonicalize temp dir")
+        .join("codex-home")
+}
+
 #[tokio::test]
 async fn consolidation_artifacts_ready_rejects_rollout_summary_drift_even_when_outputs_are_fresh() {
     let temp_dir = tempfile::tempdir().expect("temp dir");
-    let codex_home = temp_dir.path().join("codex-home");
+    let codex_home = canonical_codex_home(&temp_dir);
     let root = memory_root(&codex_home);
     let config = config_for_memory_root(&root);
     let selection = selection_for_attested_outputs(Vec::new());
@@ -98,7 +104,7 @@ async fn consolidation_artifacts_ready_rejects_rollout_summary_drift_even_when_o
             &config,
             std::time::SystemTime::UNIX_EPOCH,
             Some(expected_prepared_input_tree.as_str()),
-            false,
+            /*allow_existing_artifacts_without_rewrite*/ false,
             &selection,
         )
         .await,
@@ -110,7 +116,7 @@ async fn consolidation_artifacts_ready_rejects_rollout_summary_drift_even_when_o
 async fn consolidation_artifacts_ready_rejects_missing_attestation_after_db_requirement_initialized_even_when_support_marker_is_deleted()
  {
     let temp_dir = tempfile::tempdir().expect("temp dir");
-    let codex_home = temp_dir.path().join("codex-home");
+    let codex_home = canonical_codex_home(&temp_dir);
     let root = memory_root(&codex_home);
     let config = config_for_memory_root(&root);
     let state_db = codex_state::StateRuntime::init(
@@ -132,7 +138,9 @@ async fn consolidation_artifacts_ready_rejects_missing_attestation_after_db_requ
         .await
         .expect("write memory summary");
 
-    let selected_outputs = vec![stage1_output_with_source_updated_at(200)];
+    let selected_outputs = vec![stage1_output_with_source_updated_at(
+        /*source_updated_at*/ 200,
+    )];
     let selection = selection_for_attested_outputs(selected_outputs);
     let expected_prepared_input_tree =
         test_prepared_input_artifact_tree_sha256(&root).expect("prepared input tree hash");
@@ -164,7 +172,7 @@ async fn consolidation_artifacts_ready_rejects_missing_attestation_after_db_requ
             state_db.as_ref(),
             std::time::SystemTime::now() + Duration::from_secs(60),
             Some(expected_prepared_input_tree.as_str()),
-            true,
+            /*allow_existing_artifacts_without_rewrite*/ true,
             &selection,
         )
         .await,
@@ -175,7 +183,7 @@ async fn consolidation_artifacts_ready_rejects_missing_attestation_after_db_requ
 #[tokio::test]
 async fn consolidation_artifacts_ready_rejects_missing_attestation_when_state_db_row_is_absent() {
     let temp_dir = tempfile::tempdir().expect("temp dir");
-    let codex_home = temp_dir.path().join("codex-home");
+    let codex_home = canonical_codex_home(&temp_dir);
     let root = memory_root(&codex_home);
     let config = config_for_memory_root(&root);
     let state_db = codex_state::StateRuntime::init(
@@ -197,7 +205,9 @@ async fn consolidation_artifacts_ready_rejects_missing_attestation_when_state_db
         .await
         .expect("write memory summary");
 
-    let selected_outputs = vec![stage1_output_with_source_updated_at(200)];
+    let selected_outputs = vec![stage1_output_with_source_updated_at(
+        /*source_updated_at*/ 200,
+    )];
     let selection = selection_for_attested_outputs(selected_outputs);
     let expected_prepared_input_tree =
         test_prepared_input_artifact_tree_sha256(&root).expect("prepared input tree hash");
@@ -209,7 +219,7 @@ async fn consolidation_artifacts_ready_rejects_missing_attestation_when_state_db
             state_db.as_ref(),
             std::time::SystemTime::now() + Duration::from_secs(60),
             Some(expected_prepared_input_tree.as_str()),
-            true,
+            /*allow_existing_artifacts_without_rewrite*/ true,
             &selection,
         )
         .await,

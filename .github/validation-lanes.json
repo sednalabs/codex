@@ -4,19 +4,40 @@
       "lane_id": "core-compile-smoke",
       "run_command": "just --justfile ../justfile core-compile-smoke",
       "groups": ["core"],
-      "lane_sets": ["all", "core-carry"]
+      "lane_sets": ["all", "core-carry"],
+      "smoke_gate_kinds": ["runtime"]
     },
     {
-      "lane_id": "core-carry-smoke",
-      "run_command": "just --justfile ../justfile core-carry-smoke",
+      "lane_id": "core-carry-core-smoke",
+      "run_command": "just --justfile ../justfile core-carry-core-smoke",
       "groups": ["core"],
-      "lane_sets": ["all", "core-carry"]
+      "lane_sets": ["all", "core-carry"],
+      "install_nextest": true,
+      "smoke_gate_kinds": ["runtime"]
+    },
+    {
+      "lane_id": "core-carry-ui-smoke",
+      "run_command": "just --justfile ../justfile core-carry-ui-smoke",
+      "groups": ["ui_protocol"],
+      "lane_sets": ["all", "core-carry"],
+      "install_nextest": true,
+      "smoke_gate_kinds": ["runtime"]
     },
     {
       "lane_id": "core-ledger-smoke",
       "run_command": "just --justfile ../justfile core-ledger-smoke",
       "groups": ["core"],
-      "lane_sets": ["all", "ledger", "core-carry"]
+      "lane_sets": ["all", "ledger", "core-carry"],
+      "install_nextest": true,
+      "smoke_gate_kinds": ["runtime"]
+    },
+    {
+      "lane_id": "core-runtime-surface-smoke",
+      "run_command": "just --justfile ../justfile core-runtime-surface-smoke",
+      "groups": ["core"],
+      "lane_sets": ["all", "core-carry"],
+      "install_nextest": true,
+      "smoke_gate_kinds": ["runtime"]
     },
     {
       "lane_id": "codex.core-startup-sync-targeted",
@@ -28,13 +49,15 @@
       "lane_id": "codex.core-subagent-surface-targeted",
       "run_command": "just --justfile ../justfile core-subagent-surface-targeted",
       "groups": ["core"],
-      "lane_sets": ["all", "subagents", "core-carry"]
+      "lane_sets": ["all", "subagents", "core-carry"],
+      "install_nextest": true
     },
     {
       "lane_id": "codex.core-subagent-notification-contract-targeted",
       "run_command": "just --justfile ../justfile core-subagent-notification-contract-targeted",
       "groups": ["core"],
-      "lane_sets": ["all", "subagents", "core-carry"]
+      "lane_sets": ["all", "subagents", "core-carry"],
+      "install_nextest": true
     },
     {
       "lane_id": "codex.core-subagent-notification-visibility-targeted",
@@ -82,7 +105,8 @@
       "lane_id": "codex.downstream-docs-check",
       "run_command": "just --justfile ../justfile downstream-docs-check",
       "groups": ["workflow", "docs"],
-      "lane_sets": ["all", "docs"]
+      "lane_sets": ["all", "docs"],
+      "smoke_gate_kinds": ["workflow_docs"]
     },
     {
       "lane_id": "downstream-ledger-seam",

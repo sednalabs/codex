@@ -24,6 +24,12 @@ The pipeline runs in two phases:
 1. Phase 1 scans recent eligible rollouts and extracts a structured memory from each one.
 2. Phase 2 consolidates the retained memories into the on-disk memory workspace.
 
+Phase 2 also writes attestation sidecars and records a durable per-memory-root
+requirement in the local state DB. After a memory root has completed that
+bootstrap path once, Codex treats missing attestation as a fail-closed error on
+later reuse instead of silently reopening the bootstrap path. That protects the
+consolidated workspace from drift when retained artifacts or sidecars disappear.
+
 ## Resume and refresh behavior
 
 Resumed sessions are tracked at the thread level, not from a special resume checkpoint.

@@ -86,6 +86,7 @@ Also run `just argument-comment-lint` to ensure the codebase is clean of comment
 
 - Treat GitHub Actions as the default factory for remote seam validation, preview binaries, heavy Rust tests, and official releases.
 - Use `validation-lab.yml` as the default remote-first validation surface for scratch refs, integration refs, and other non-PR exploratory work.
+- Prefer `profile=targeted` for one active seam and `profile=frontier` for bounded next-blocker harvesting once there is a recent trusted baseline.
 - Local Build Helper remains the preferred narrow local lane for smoke checks, formatting, and targeted validation.
 - Do not run routine direct terminal `cargo build` or `cargo test` commands for expensive shared-host validation when the same work can be offloaded to GitHub CI.
 - Heavy remote CI only starts after the relevant work is committed and pushed.

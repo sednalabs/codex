@@ -68,20 +68,22 @@ User-visible behavior:
 - Wait-timeout notes are appended to emitted `raw_output`, and token accounting is derived from the final response text.
 - `TurnCompleteEvent` includes `compaction_events_in_turn`.
 - Guardrails for the carry-only turn-complete compaction count currently live in `codex.app-server-protocol-test` (`preserves_compaction_only_turn`) plus broader `TurnCompleteEvent` shape coverage in `codex-core`, `codex-exec`, and `codex-tui` tests.
+- Sub-agent delegate forwarding continues to emit `TokenCount` events back to the parent session, ensuring the downstream token accounting and provider/model metadata remain accurate even if upstream-native structures eventually rehost this carry.
 - In downstream operator environments, this pairs cleanly with other blocking coordination primitives such as `wait_agent` and build-helper `*_and_wait` flows, so agents can wait on real state transitions instead of spinning on repeated status polls.
 - This downstream blocking MCP tool pattern predates fully operational task support and exists specifically so the tool layer, not the transcript, absorbs the wait.
 
-### Usage ledger: shared ledger owned by `agent-usage-ledger`
+### Usage ledger: first-party local `usage.sqlite`
 
 Why:
-- Downstream still participates in the shared usage ledger, but the schema, ingest, and reporting implementation now live in the dedicated `agent-usage-ledger` repo instead of this fork.
+- Downstream keeps usage-ledger ownership in this repo so the CLI and runtime can emit authoritative local facts without depending on transcript reconstruction or an external sibling repository.
+- Usage-ledger ownership stays here: any upstream-native reimplementation must replicate the canonical per-turn ledger, rate/provider metadata, and billing-turn reporting semantics before the ledger can move out of this repo.
 - Billing turns still need stable canonical identities and historical AUD cost reporting that upstream does not provide.
 
 User-visible behavior:
-- Shared usage-ledger scripts and docs live in [`agent-usage-ledger`](/home/grant/mmm/agent-usage-ledger).
-- [usage-ledger.md](/home/grant/mmm/agent-usage-ledger/docs/usage-ledger.md) documents the ledger workflow.
-- Billing turns are canonicalized before ingest, and historical AUD cost views remain available downstream through that shared repo.
-- Patched Codex clients now emit authoritative local usage facts into `usage.sqlite`; rollout JSONL remains a compatibility fallback for historical or unpatched installs.
+- Downstream builds maintain a local `usage.sqlite` alongside `state.sqlite` and `logs.sqlite` under `CODEX_SQLITE_HOME`.
+- `usage.sqlite` is the authoritative local store for thread lineage, spawn metadata, tool calls, provider-call usage, quota snapshots, and fork snapshots.
+- Billing turns are canonicalized before ingest, and downstream reporting can consume exact local facts directly from `usage.sqlite`.
+- Rollout JSONL remains a compatibility fallback for historical or unpatched installs, not the primary ledger source.
 
 ### MCP tool orchestration: blocking waits before task support matured
 
@@ -115,23 +117,27 @@ User-visible behavior:
 
 Why:
 - Upstream already supports explicit `spawn_agent(model=..., reasoning_effort=...)` child overrides, so the live downstream divergence is narrower than the historical carry title suggests.
-- Preserve those explicit child overrides even when launching a role-backed sub-agent whose role file does not lock model/economy fields, so downstream economical deployments do not drift back to inherited parent-profile defaults during role reload.
+- Preserve those explicit child overrides at the spawn boundary, even when launching a role-backed sub-agent whose role file does not lock model/economy fields, so downstream economical deployments do not drift back to inherited parent-profile defaults during role reload.
 - Surface the effective resolved child settings directly in the tool layer so operators can see what actually launched.
-- Let downstream multi-agent orchestration block on clear tool contracts (`list_agents`, `wait_agent(return_when=...)`) instead of transcript polling.
+- Let downstream multi-agent orchestration block on clear tool contracts (`list_agents`, `inspect_agent_tree`, `wait_agent(return_when=...)`) instead of transcript polling.
+- Upstream-native reimplementation is welcome when it preserves the live nested-agent visibility, the cheap `list_agents` surface, the richer `inspect_agent_tree` inspection, and the explicit blocking `wait_agent` contract so we can shrink the divergence without losing the downstream operator experience.
 
 User-visible behavior:
-- Explicit child `model` and `model_reasoning_effort` requests survive role application unless the selected role explicitly sets those fields or locks the summary, and the `model_reasoning_summary` is preserved internally so downstream metadata can keep the intended reasoning context even though it is not part of the tool response.
+- Explicit child `model` and `model_reasoning_effort` requests survive role application unless the selected role explicitly sets those fields or locks the summary, and the `model_reasoning_summary` is preserved internally so downstream metadata can keep the intended reasoning context even though it is not part of the tool response. The role reload itself stays on the upstream-native profile/provider path; the sticky child override carry now lives in the spawn handlers.
 - `spawn_agent` returns `role`, `status`, `identity_source`, `effective_model`, `effective_reasoning_effort`, and `effective_model_provider_id`, letting operators see the resolved settings that actually launched after the role/profile overrides. That preserved `model_reasoning_summary` stays available through our internal metadata, not the raw tool response or inventory fields.
-- Active-profile updates (parent/session config/role) that set `model`, `model_reasoning_summary`, or `model_reasoning_effort` continue to override child requests; the precedence stack is role-defined fields > active profile overrides > child requests, and `core/src/agent/role.rs` contains the precise logic we rely on.
-- `list_agents` is available to inspect direct-child inventory with the same provenance and effective-setting metadata, including `identity_source`; with `include_descendants=true`, it also surfaces persisted subtree rows and their `spawn_edge_status` (`open` or `closed`) even when those descendants are not currently live.
+- Active-profile updates (parent/session config/role) that set `model`, `model_reasoning_summary`, or `model_reasoning_effort` continue to override child requests; the precedence stack is role-defined fields > active profile overrides > child requests, and the split between `core/src/agent/role.rs` and the spawn handlers encodes that boundary explicitly.
+- `list_agents` remains the always-on, cheap live inventory view across both collaboration surfaces rather than being hidden behind `MultiAgentV2`; it exposes `has_active_subagents` / `active_subagent_count` plus nested visibility/status metadata so operators retain nested-agent live visibility without dumping full trees.
+- `inspect_agent_tree` is the intentionally richer downstream observability surface, separate from `list_agents`: it inspects the current subtree or a target path, can toggle `live` versus `stale` descendant visibility, can filter to selected branches with `agent_roots`, and returns compact tree rows with bounded depth and row limits.
 - `wait_agent` supports `return_when=any|all` and returns `requested_ids`, `pending_ids`, `completion_reason`, and `timed_out`.
 - Roles that explicitly set `model`, `model_provider`, `model_reasoning_effort`, or `model_verbosity` continue to be authoritative, even when a child requests a different setting.
-- Docs and tooling now spell out the precedence stack and the intended `list_agents`-before-`wait_agent` orchestration pattern.
+- Docs and tooling now spell out the precedence stack and the intended `list_agents` / `inspect_agent_tree` / `wait_agent` orchestration pattern: cheap live view first to keep nested-agent visibility, compact nested or stale inspection when deeper context is needed, and blocking wait only when a transition must complete.
 
 Primary files:
 - `codex-rs/core/src/agent/role.rs`
-- `codex-rs/core/src/tools/handlers/multi_agents/list_agents.rs`
+- `codex-rs/core/src/agent/control.rs`
 - `codex-rs/core/src/tools/handlers/multi_agents/spawn.rs`
+- `codex-rs/core/src/tools/handlers/multi_agents_v2/list_agents.rs`
+- `codex-rs/core/src/tools/handlers/inspect_agent_tree.rs`
 - `codex-rs/core/src/tools/handlers/multi_agents/wait.rs`
 - `codex-rs/core/src/tools/handlers/multi_agents_tests.rs`
 - `codex-rs/core/src/tools/spec.rs`
@@ -167,7 +173,7 @@ User-visible behavior:
 - Queued slash commands and queued message drafts are shown in one queue preview.
 - `Alt+Up` recalls queued items in strict reverse-chronological order across both entry types.
 - `/status` remains immediate (not queued).
-- Unavailable slash commands replay after the current task completes instead of being blocked.
+- Unavailable non-inline slash commands replay after the current task completes instead of being blocked.
 
 ### TUI: Weekly usage pacing signal + stale handling
 
@@ -195,7 +201,6 @@ User-visible behavior:
 - Queued model selections are applied immediately during interrupt cleanup.
 - Queued `/clear` remains queued while a task is running and is not executed during interrupt cleanup.
 - `/quit` remains immediate while a task is running instead of being queued behind the active turn.
-- Inline queued slash command arguments preserve expanded pending-paste payload content.
 
 ### Review + history: downstream accounting and runtime-context alignment
 

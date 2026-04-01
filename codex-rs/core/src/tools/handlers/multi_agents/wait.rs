@@ -1,10 +1,13 @@
 use super::*;
+use crate::agent::agent_resolver::resolve_agent_targets;
 use crate::agent::status::is_final;
+use crate::error::CodexErr;
 use codex_protocol::protocol::CollabWaitingCompletionReason;
 use futures::StreamExt;
 use futures::stream::FuturesUnordered;
 use std::collections::HashMap;
 use std::collections::HashSet;
+use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::watch::Receiver;
 use tokio::time::Instant;
@@ -34,47 +37,22 @@ impl ToolHandler for Handler {
         } = invocation;
         let arguments = function_arguments(payload)?;
         let args: WaitArgs = parse_arguments(&arguments)?;
-        if !args.ids.is_empty() && !args.targets.is_empty() {
-            return Err(FunctionCallError::RespondToModel(
-                "provide either ids or targets, but not both".to_string(),
-            ));
-        }
-        let receiver_thread_ids = if !args.targets.is_empty() {
-            resolve_agent_targets(&session, &turn, args.targets).await?
-        } else if !args.ids.is_empty() {
-            args.ids
-                .iter()
-                .map(|id| agent_id(id))
-                .collect::<Result<Vec<_>, _>>()?
-        } else {
-            return Err(FunctionCallError::RespondToModel(
-                "one of ids or targets must be non-empty".to_string(),
-            ));
-        };
+        let receiver_thread_ids = resolve_agent_targets(&session, &turn, args.targets).await?;
         let mut seen = HashSet::with_capacity(receiver_thread_ids.len());
         for id in &receiver_thread_ids {
             if !seen.insert(*id) {
                 return Err(FunctionCallError::RespondToModel(
-                    "ids/targets must resolve to unique agents".to_string(),
+                    "targets must resolve to unique agents".to_string(),
                 ));
             }
         }
         let mut receiver_agents = Vec::with_capacity(receiver_thread_ids.len());
-        let mut target_by_thread_id = HashMap::with_capacity(receiver_thread_ids.len());
         for receiver_thread_id in &receiver_thread_ids {
             let agent_metadata = session
                 .services
                 .agent_control
                 .get_agent_metadata(*receiver_thread_id)
                 .unwrap_or_default();
-            target_by_thread_id.insert(
-                *receiver_thread_id,
-                agent_metadata
-                    .agent_path
-                    .as_ref()
-                    .map(ToString::to_string)
-                    .unwrap_or_else(|| receiver_thread_id.to_string()),
-            );
             receiver_agents.push(CollabAgentRef {
                 thread_id: *receiver_thread_id,
                 agent_nickname: agent_metadata.agent_nickname,
@@ -228,8 +206,7 @@ impl ToolHandler for Handler {
 #[derive(Debug, Deserialize)]
 struct WaitArgs {
     #[serde(default)]
-    ids: Vec<String>,
-    #[serde(default)]
+    #[serde(alias = "ids")]
     targets: Vec<String>,
     timeout_ms: Option<i64>,
     #[serde(default)]

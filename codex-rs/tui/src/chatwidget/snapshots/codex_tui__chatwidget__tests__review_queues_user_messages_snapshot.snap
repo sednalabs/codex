@@ -11,12 +11,11 @@ expression: term.backend().vt100().screen().contents()
 
 
 
-
 • Working (0s • esc esc to interrupt)
 
-  ↳ Queued while /review is running.
-    ⌥ + ↑ edit queued
+• Messages to be submitted at end of turn
+  ↳ Steer submitted while /review was running.
 
 › Ask Codex to do anything
 
-  ? for shortcuts                                            100% context left
+  gpt-5.3-codex default · 100% left · /tmp/project

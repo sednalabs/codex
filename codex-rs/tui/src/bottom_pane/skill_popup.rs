@@ -229,3 +229,63 @@ fn skill_popup_hint_line() -> Line<'static> {
         " to close".into(),
     ])
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use pretty_assertions::assert_eq;
+    use ratatui::buffer::Buffer;
+    use ratatui::layout::Rect;
+
+    fn mention_item(index: usize) -> MentionItem {
+        MentionItem {
+            display_name: format!("Mention {index:02}"),
+            description: Some(format!("Description {index:02}")),
+            insert_text: format!("$mention-{index:02}"),
+            search_terms: vec![format!("mention-{index:02}")],
+            path: Some(format!("skill://mention-{index:02}")),
+            category_tag: Some("[Skill]".to_string()),
+            sort_rank: 1,
+        }
+    }
+
+    #[test]
+    fn filtered_mentions_preserve_results_beyond_popup_height() {
+        let popup = SkillPopup::new((0..(MAX_POPUP_ROWS + 2)).map(mention_item).collect());
+
+        let filtered_names: Vec<String> = popup
+            .filtered_items()
+            .into_iter()
+            .map(|idx| popup.mentions[idx].display_name.clone())
+            .collect();
+
+        assert_eq!(
+            filtered_names,
+            (0..(MAX_POPUP_ROWS + 2))
+                .map(|idx| format!("Mention {idx:02}"))
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(
+            popup.calculate_required_height(72),
+            (MAX_POPUP_ROWS as u16) + 2
+        );
+    }
+
+    fn render_popup(popup: &SkillPopup, width: u16) -> String {
+        let area = Rect::new(0, 0, width, popup.calculate_required_height(width));
+        let mut buf = Buffer::empty(area);
+        popup.render_ref(area, &mut buf);
+        format!("{buf:?}")
+    }
+
+    #[test]
+    fn scrolling_mentions_shifts_rendered_window_snapshot() {
+        let mut popup = SkillPopup::new((0..(MAX_POPUP_ROWS + 2)).map(mention_item).collect());
+
+        for _ in 0..=MAX_POPUP_ROWS {
+            popup.move_down();
+        }
+
+        insta::assert_snapshot!("skill_popup_scrolled", render_popup(&popup, /*width*/ 72));
+    }
+}

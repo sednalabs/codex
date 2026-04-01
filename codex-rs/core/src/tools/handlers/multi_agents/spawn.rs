@@ -2,9 +2,9 @@ use super::*;
 use crate::agent::control::SUBAGENT_IDENTITY_SOURCE_THREAD_CONFIG_SNAPSHOT;
 use crate::agent::control::SpawnAgentOptions;
 use crate::agent::control::SubAgentInventoryInfo;
+use crate::agent::control::render_input_preview;
 use crate::agent::role::DEFAULT_ROLE_NAME;
-use crate::agent::role::apply_role_to_config;
-use crate::agent::role::role_model_override_locks;
+use crate::agent::role::apply_role_to_spawn_config;
 
 use crate::agent::exceeds_thread_spawn_depth_limit;
 use crate::agent::next_thread_spawn_depth;
@@ -39,7 +39,7 @@ impl ToolHandler for Handler {
             .map(str::trim)
             .filter(|role| !role.is_empty());
         let input_items = parse_collab_input(args.message, args.items)?;
-        let prompt = input_preview(&input_items);
+        let prompt = render_input_preview(&input_items);
         let session_source = turn.session_source.clone();
         let child_depth = next_thread_spawn_depth(&session_source);
         let requested_task_name = args.task_name.clone();
@@ -64,39 +64,51 @@ impl ToolHandler for Handler {
             .await;
         let mut config =
             build_agent_spawn_config(&session.get_base_instructions().await, turn.as_ref())?;
-        let pre_role_reasoning_effort = config.model_reasoning_effort;
-        let role_model_locks = role_model_override_locks(turn.config.as_ref(), role_name)
-            .await
-            .map_err(FunctionCallError::RespondToModel)?;
-        apply_role_to_config(&mut config, role_name)
-            .await
-            .map_err(FunctionCallError::RespondToModel)?;
-        let requested_model = if role_model_locks.model {
-            None
-        } else {
-            args.model.as_deref()
-        };
-        let requested_reasoning_effort = if role_model_locks.model_reasoning_effort {
-            None
-        } else {
-            args.reasoning_effort
-        };
         apply_requested_spawn_agent_model_overrides(
             &session,
             turn.as_ref(),
             &mut config,
-            requested_model,
-            requested_reasoning_effort,
-            role_model_locks.model_reasoning_effort,
+            args.model.as_deref(),
+            args.reasoning_effort,
         )
         .await?;
-        normalize_spawn_agent_model_reasoning_after_role(
-            &session,
-            &mut config,
-            pre_role_reasoning_effort,
-            args.reasoning_effort.is_some(),
-        )
-        .await?;
+        let pre_role_reasoning_effort = config.model_reasoning_effort;
+        let spawn_model_selection_carry = apply_role_to_spawn_config(&mut config, role_name)
+            .await
+            .map_err(FunctionCallError::RespondToModel)?;
+        spawn_model_selection_carry.apply_to_config(&mut config);
+        if let Some(model) = config.model.clone() {
+            let model_info = session
+                .services
+                .models_manager
+                .get_model_info(&model, &config)
+                .await;
+
+            match config.model_reasoning_effort {
+                Some(reasoning_effort) => {
+                    if !model_info
+                        .supported_reasoning_levels
+                        .iter()
+                        .any(|preset| preset.effort == reasoning_effort)
+                    {
+                        let role_changed_reasoning_effort =
+                            config.model_reasoning_effort != pre_role_reasoning_effort;
+                        if args.reasoning_effort.is_some() || role_changed_reasoning_effort {
+                            validate_spawn_agent_reasoning_effort(
+                                &model,
+                                &model_info.supported_reasoning_levels,
+                                reasoning_effort,
+                            )?;
+                        }
+
+                        config.model_reasoning_effort = model_info.default_reasoning_level;
+                    }
+                }
+                None => {
+                    config.model_reasoning_effort = model_info.default_reasoning_level;
+                }
+            }
+        }
         apply_spawn_agent_runtime_overrides(&mut config, turn.as_ref())?;
         apply_spawn_agent_overrides(&mut config, child_depth);
 
@@ -120,10 +132,6 @@ impl ToolHandler for Handler {
             .await
             .map_err(collab_spawn_error);
         let spawned_thread_id = result.as_ref().ok().map(|agent| agent.thread_id);
-        let task_name = result
-            .as_ref()
-            .ok()
-            .and_then(|agent| agent.metadata.agent_path.as_ref().map(ToString::to_string));
         let new_agent = match spawned_thread_id {
             Some(thread_id) => {
                 if let Some(agent) = session
@@ -140,7 +148,6 @@ impl ToolHandler for Handler {
                     .await
                 {
                     SubAgentInventoryInfo {
-                        thread_id,
                         nickname: snapshot.session_source.get_nickname(),
                         role: snapshot.session_source.get_agent_role(),
                         status: session.services.agent_control.get_status(thread_id).await,
@@ -152,7 +159,6 @@ impl ToolHandler for Handler {
                     }
                 } else {
                     SubAgentInventoryInfo {
-                        thread_id,
                         nickname: None,
                         role: None,
                         status: session.services.agent_control.get_status(thread_id).await,
@@ -165,7 +171,6 @@ impl ToolHandler for Handler {
                 }
             }
             None => SubAgentInventoryInfo {
-                thread_id: session.conversation_id,
                 nickname: None,
                 role: None,
                 status: AgentStatus::NotFound,
@@ -206,8 +211,7 @@ impl ToolHandler for Handler {
         );
 
         Ok(SpawnAgentResult {
-            agent_id: task_name.is_none().then(|| new_thread_id.to_string()),
-            task_name,
+            agent_id: new_thread_id.to_string(),
             nickname,
             role,
             status,
@@ -233,8 +237,7 @@ struct SpawnAgentArgs {
 
 #[derive(Debug, Serialize)]
 pub(crate) struct SpawnAgentResult {
-    agent_id: Option<String>,
-    task_name: Option<String>,
+    agent_id: String,
     nickname: Option<String>,
     role: Option<String>,
     status: AgentStatus,

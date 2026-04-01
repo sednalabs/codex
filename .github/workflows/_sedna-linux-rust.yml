@@ -14,6 +14,10 @@ on:
         required: false
         type: string
         default: ""
+      lane_phase:
+        required: false
+        type: string
+        default: downstream_lanes
       run_command:
         required: true
         type: string
@@ -162,8 +166,7 @@ jobs:
           set -euo pipefail
           command_file="${RUNNER_TEMP}/sedna-lane-command.sh"
           log_file="${RUNNER_TEMP}/sedna-lane.log"
-          echo "command_file=${command_file}" >> "$GITHUB_OUTPUT"
-          echo "log_file=${log_file}" >> "$GITHUB_OUTPUT"
+          started_at_ms="$(date +%s%3N)"
           export CODEX_RELEASE_REPOSITORY='${{ github.repository }}'
           export CODEX_RELEASE_TAG_PREFIX='v'
           if [[ -n '${{ inputs.release_version }}' ]]; then
@@ -175,7 +178,19 @@ jobs:
           bash "${command_file}" 2>&1 | tee "${log_file}"
           exit_code=${PIPESTATUS[0]}
           set -e
-          echo "exit_code=${exit_code}" >> "$GITHUB_OUTPUT"
+          finished_at_ms="$(date +%s%3N)"
+          duration_ms="$((finished_at_ms - started_at_ms))"
+          if [[ "${duration_ms}" -lt 0 ]]; then
+            duration_ms=0
+          fi
+          {
+            echo "command_file=${command_file}"
+            echo "log_file=${log_file}"
+            echo "started_at_ms=${started_at_ms}"
+            echo "finished_at_ms=${finished_at_ms}"
+            echo "duration_ms=${duration_ms}"
+            echo "exit_code=${exit_code}"
+          } >> "$GITHUB_OUTPUT"
           exit "${exit_code}"
 
       - name: Summarize lane failure output
@@ -225,9 +240,13 @@ jobs:
           SUMMARY_TITLE: ${{ inputs.summary_title }}
           LANE_ID: ${{ inputs.lane_id != '' && inputs.lane_id || inputs.summary_title }}
           ARTIFACT_NAME: ${{ inputs.artifact_name }}
+          LANE_PHASE: ${{ inputs.lane_phase }}
           RUN_OUTCOME: ${{ steps.run_lane.outcome }}
           EXIT_CODE: ${{ steps.run_lane.outputs.exit_code }}
           LOG_FILE: ${{ steps.run_lane.outputs.log_file }}
+          STARTED_AT_MS: ${{ steps.run_lane.outputs.started_at_ms }}
+          FINISHED_AT_MS: ${{ steps.run_lane.outputs.finished_at_ms }}
+          DURATION_MS: ${{ steps.run_lane.outputs.duration_ms }}
         run: |
           set -euo pipefail
           lane_slug="$(printf '%s' "${LANE_ID}" | tr '[:upper:]' '[:lower:]' | tr -cs '[:alnum:]' '-' | sed 's/^-//;s/-$//' | cut -c1-48)"
@@ -237,11 +256,15 @@ jobs:
           summary_file="${RUNNER_TEMP}/validation-lane-summary-${lane_slug}.json"
           python3 ../.workflow-src/.github/scripts/write_lane_summary.py \
             --lane-id "${LANE_ID}" \
+            --lane-phase "${LANE_PHASE}" \
             --summary-title "${SUMMARY_TITLE}" \
             --run-command "${LANE_COMMAND}" \
             --outcome "${RUN_OUTCOME}" \
             --exit-code "${EXIT_CODE}" \
             --log-file "${LOG_FILE}" \
+            --started-at-ms "${STARTED_AT_MS}" \
+            --finished-at-ms "${FINISHED_AT_MS}" \
+            --duration-ms "${DURATION_MS}" \
             --artifact-name "${ARTIFACT_NAME}" \
             --output "${summary_file}"
           echo "lane_slug=${lane_slug}" >> "$GITHUB_OUTPUT"

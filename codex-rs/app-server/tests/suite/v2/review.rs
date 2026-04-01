@@ -22,6 +22,7 @@ use codex_app_server_protocol::ThreadStartParams;
 use codex_app_server_protocol::ThreadStartResponse;
 use codex_app_server_protocol::ThreadStartedNotification;
 use codex_app_server_protocol::ThreadStatusChangedNotification;
+use codex_app_server_protocol::ThreadTokenUsageUpdatedNotification;
 use codex_app_server_protocol::TurnStartParams;
 use codex_app_server_protocol::TurnStatus;
 use codex_app_server_protocol::UserInput as V2UserInput;
@@ -136,7 +137,6 @@ async fn review_start_runs_review_turn_and_emits_code_review_item() -> Result<()
     let review = review_body.expect("did not observe a code review item");
     assert!(review.contains("Prefer Stylize helpers"));
     assert!(review.contains("/tmp/file.rs:10-20"));
-    assert!(review.contains("Token usage: unavailable"));
 
     Ok(())
 }
@@ -153,7 +153,7 @@ async fn review_start_emits_token_usage_summary_when_usage_available() -> Result
     let response = responses::sse(vec![
         responses::ev_response_created("resp-usage"),
         responses::ev_assistant_message("msg-usage", &review_payload),
-        responses::ev_completed_with_tokens("resp-usage", 123),
+        responses::ev_completed_with_tokens("resp-usage", /*total_tokens*/ 123),
     ]);
     let server = create_mock_responses_server_sequence(vec![response]).await;
 
@@ -183,6 +183,18 @@ async fn review_start_emits_token_usage_summary_when_usage_available() -> Result
     let ReviewStartResponse { turn, .. } = to_response::<ReviewStartResponse>(review_resp)?;
     let turn_id = turn.id.clone();
 
+    let token_usage_notif: JSONRPCNotification = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_notification_message("thread/tokenUsage/updated"),
+    )
+    .await??;
+    let token_usage: ThreadTokenUsageUpdatedNotification =
+        serde_json::from_value(token_usage_notif.params.expect("params must be present"))?;
+    assert_eq!(token_usage.turn_id, turn_id);
+    assert_eq!(token_usage.token_usage.total.total_tokens, 123);
+    assert_eq!(token_usage.token_usage.total.input_tokens, 123);
+    assert_eq!(token_usage.token_usage.total.output_tokens, 0);
+
     let mut review_body: Option<String> = None;
     for _ in 0..10 {
         let review_notif: JSONRPCNotification = timeout(
@@ -204,8 +216,8 @@ async fn review_start_emits_token_usage_summary_when_usage_available() -> Result
 
     let review = review_body.expect("did not observe a code review item");
     assert!(
-        review.contains("Token usage: total=123 input=123 output=0"),
-        "expected populated token usage summary, got {review:?}"
+        review.contains("Looks solid overall with minor polish suggested."),
+        "expected review text in completed review item, got {review:?}"
     );
 
     Ok(())
@@ -221,7 +233,7 @@ async fn review_start_exec_approval_item_id_matches_command_execution_item() -> 
                 "rev-parse".to_string(),
                 "HEAD".to_string(),
             ],
-            None,
+            /*workdir*/ None,
             Some(5000),
             "review-call-1",
         )?,

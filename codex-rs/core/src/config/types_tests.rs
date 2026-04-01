@@ -244,6 +244,121 @@ fn deserialize_server_config_with_tool_filters() {
 }
 
 #[test]
+fn deserialize_server_config_with_elicitation_and_policy_flags() {
+    let cfg: McpServerConfig = toml::from_str(
+        r#"
+            command = "echo"
+            enable_elicitation = true
+            read_only = true
+            strict_tool_classification = true
+            require_approval_for_mutating = true
+        "#,
+    )
+    .expect("should deserialize policy flags");
+
+    assert!(cfg.enable_elicitation);
+    assert!(cfg.read_only);
+    assert!(cfg.strict_tool_classification);
+    assert!(cfg.require_approval_for_mutating);
+}
+
+#[test]
+fn deserialize_rejects_mutation_approval_without_elicitation() {
+    let err = toml::from_str::<McpServerConfig>(
+        r#"
+            command = "echo"
+            require_approval_for_mutating = true
+        "#,
+    )
+    .expect_err("should reject invalid policy combination");
+
+    assert!(
+        err.to_string()
+            .contains("require_approval_for_mutating requires enable_elicitation=true"),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
+fn deserialize_ignores_unknown_server_fields() {
+    let cfg: McpServerConfig = toml::from_str(
+        r#"
+            command = "echo"
+            trust_level = "trusted"
+        "#,
+    )
+    .expect("should ignore unknown server fields");
+
+    assert_eq!(
+        cfg,
+        McpServerConfig {
+            transport: McpServerTransportConfig::Stdio {
+                command: "echo".to_string(),
+                args: vec![],
+                env: None,
+                env_vars: Vec::new(),
+                cwd: None,
+            },
+            enabled: true,
+            required: false,
+            disabled_reason: None,
+            startup_timeout_sec: None,
+            tool_timeout_sec: None,
+            enabled_tools: None,
+            disabled_tools: None,
+            scopes: None,
+            enable_elicitation: false,
+            read_only: false,
+            strict_tool_classification: false,
+            require_approval_for_mutating: false,
+            oauth_resource: None,
+            tools: HashMap::new(),
+        }
+    );
+}
+
+#[test]
+fn deserialize_skill_config_with_name_selector() {
+    let cfg: SkillConfig = toml::from_str(
+        r#"
+            name = "github:yeet"
+            enabled = false
+        "#,
+    )
+    .expect("should deserialize skill config with name selector");
+
+    assert_eq!(cfg.name.as_deref(), Some("github:yeet"));
+    assert_eq!(cfg.path, None);
+    assert!(!cfg.enabled);
+}
+
+#[test]
+fn deserialize_skill_config_with_path_selector() {
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    let skill_path = tempdir.path().join("skills").join("demo").join("SKILL.md");
+    let cfg: SkillConfig = toml::from_str(&format!(
+        r#"
+            path = {path:?}
+            enabled = false
+        "#,
+        path = skill_path.display().to_string(),
+    ))
+    .expect("should deserialize skill config with path selector");
+
+    assert_eq!(
+        cfg,
+        SkillConfig {
+            path: Some(
+                AbsolutePathBuf::from_absolute_path(&skill_path)
+                    .expect("skill path should be absolute"),
+            ),
+            name: None,
+            enabled: false,
+        }
+    );
+}
+
+#[test]
 fn deserialize_rejects_command_and_url() {
     toml::from_str::<McpServerConfig>(
         r#"

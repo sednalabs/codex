@@ -14,8 +14,10 @@ on:
         options:
           - all
           - core-compile-smoke
-          - core-carry-smoke
+          - core-carry-core-smoke
+          - core-carry-ui-smoke
           - core-ledger-smoke
+          - core-runtime-surface-smoke
           - codex.core-startup-sync-targeted
           - codex.core-subagent-surface-targeted
           - codex.core-subagent-notification-contract-targeted
@@ -63,6 +65,7 @@ jobs:
     outputs:
       checkout_ref: ${{ steps.meta.outputs.checkout_ref }}
       smoke_gate_kind: ${{ steps.meta.outputs.smoke_gate_kind }}
+      smoke_matrix: ${{ steps.meta.outputs.smoke_matrix }}
       run_smoke_gate: ${{ steps.meta.outputs.run_smoke_gate }}
       run_selected_lanes: ${{ steps.meta.outputs.run_selected_lanes }}
       selected_matrix: ${{ steps.meta.outputs.selected_matrix }}
@@ -126,7 +129,7 @@ jobs:
               codex-rs/code-mode/*)
                 run_core_family=true
               ;;
-              codex-rs/app-server/*|codex-rs/app-server-protocol/*|codex-rs/protocol/*|codex-rs/tui/*|codex-rs/tui_app_server/*)
+              codex-rs/app-server/*|codex-rs/app-server-protocol/*|codex-rs/protocol/*|codex-rs/tui/*)
                 run_ui_protocol_family=true
                 ;;
               docs/carry-divergence-ledger.md|docs/downstream-regression-matrix.md|docs/downstream-tool-surface-matrix.md|docs/downstream.md)
@@ -141,11 +144,13 @@ jobs:
           selection_meta="$(python3 .github/scripts/resolve_validation_plan.py heavy --event-name '${{ github.event_name }}' --requested-lane '${{ inputs.lane }}' --run-all-lanes "${run_all_lanes}" --run-core-family "${run_core_family}" --run-attestation-family "${run_attestation_family}" --run-workflow-family "${run_workflow_family}" --run-ui-protocol-family "${run_ui_protocol_family}" --run-docs-family "${run_docs_family}")"
           run_smoke_gate="$(SELECTION_META="${selection_meta}" python3 -c 'import json, os; print(json.loads(os.environ["SELECTION_META"])["run_smoke_gate"])')"
           smoke_gate_kind="$(SELECTION_META="${selection_meta}" python3 -c 'import json, os; print(json.loads(os.environ["SELECTION_META"])["smoke_gate_kind"])')"
+          smoke_json="$(SELECTION_META="${selection_meta}" python3 -c 'import json, os; print(json.dumps(json.loads(os.environ["SELECTION_META"])["smoke_matrix"], separators=(",", ":")))')"
           selected_json="$(SELECTION_META="${selection_meta}" python3 -c 'import json, os; print(json.dumps(json.loads(os.environ["SELECTION_META"])["selected_matrix"], separators=(",", ":")))')"
 
           {
             echo "checkout_ref=${checkout_ref}"
             echo "smoke_gate_kind=${smoke_gate_kind}"
+            echo "smoke_matrix=${smoke_json}"
             echo "run_smoke_gate=${run_smoke_gate}"
             echo "run_selected_lanes=$(SELECTION_META="${selection_meta}" python3 -c 'import json, os; print(json.loads(os.environ["SELECTION_META"])["run_selected_lanes"])')"
             echo "selected_matrix=${selected_json}"
@@ -159,12 +164,18 @@ jobs:
         needs.metadata.result == 'success' &&
         needs.metadata.outputs.run_smoke_gate == 'true'
       }}
+    strategy:
+      fail-fast: true
+      max-parallel: 4
+      matrix: ${{ fromJson(needs.metadata.outputs.smoke_matrix) }}
     uses: ./.github/workflows/_sedna-linux-rust.yml
     with:
       checkout_ref: ${{ needs.metadata.outputs.checkout_ref }}
-      lane_id: ${{ needs.metadata.outputs.smoke_gate_kind == 'workflow_docs' && 'codex.downstream-docs-check' || 'core-test-smoke' }}
-      summary_title: ${{ needs.metadata.outputs.smoke_gate_kind == 'workflow_docs' && 'codex.downstream-docs-check' || 'core-test-smoke' }}
-      run_command: ${{ needs.metadata.outputs.smoke_gate_kind == 'workflow_docs' && 'just --justfile ../justfile downstream-docs-check' || 'just --justfile ../justfile core-test-smoke' }}
+      lane_id: ${{ matrix.lane_id }}
+      lane_phase: smoke_gate
+      summary_title: ${{ matrix.lane_id }}
+      run_command: ${{ matrix.run_command }}
+      install_nextest: ${{ matrix.install_nextest }}
 
   downstream_lanes:
     needs:
@@ -184,5 +195,7 @@ jobs:
     with:
       checkout_ref: ${{ needs.metadata.outputs.checkout_ref }}
       lane_id: ${{ matrix.lane_id }}
+      lane_phase: downstream_lanes
       summary_title: ${{ matrix.lane_id }}
       run_command: ${{ matrix.run_command }}
+      install_nextest: ${{ matrix.install_nextest }}

@@ -4,8 +4,6 @@
 use anyhow::Result;
 use codex_core::CodexAuth;
 use codex_core::config::Config;
-use codex_core::config::types::McpServerConfig;
-use codex_core::config::types::McpServerTransportConfig;
 use codex_features::Feature;
 use codex_protocol::openai_models::ModelsResponse;
 use codex_protocol::protocol::AskForApproval;
@@ -32,7 +30,6 @@ use core_test_support::wait_for_event;
 use pretty_assertions::assert_eq;
 use serde_json::Value;
 use serde_json::json;
-use std::time::Duration;
 
 const SEARCH_TOOL_DESCRIPTION_SNIPPETS: [&str; 2] = [
     "You have access to all the tools of the following apps/connectors",
@@ -89,32 +86,7 @@ fn tool_search_output_tools(request: &ResponsesRequest, call_id: &str) -> Vec<Va
         .unwrap_or_default()
 }
 
-fn rmcp_server_config(command: String) -> McpServerConfig {
-    McpServerConfig {
-        transport: McpServerTransportConfig::Stdio {
-            command,
-            args: Vec::new(),
-            env: None,
-            env_vars: Vec::new(),
-            cwd: None,
-        },
-        enabled: true,
-        required: false,
-        disabled_reason: None,
-        startup_timeout_sec: Some(Duration::from_secs(10)),
-        tool_timeout_sec: None,
-        enabled_tools: None,
-        disabled_tools: None,
-        scopes: None,
-        enable_elicitation: false,
-        read_only: false,
-        strict_tool_classification: false,
-        require_approval_for_mutating: false,
-        oauth_resource: None,
-    }
-}
-
-fn configure_apps(config: &mut Config, apps_base_url: &str) {
+fn configure_apps_without_tool_search(config: &mut Config, apps_base_url: &str) {
     config
         .features
         .enable(Feature::Apps)
@@ -131,6 +103,14 @@ fn configure_apps(config: &mut Config, apps_base_url: &str) {
         .expect("gpt-5-codex exists in bundled models.json");
     model.supports_search_tool = true;
     config.model_catalog = Some(model_catalog);
+}
+
+fn configure_apps(config: &mut Config, apps_base_url: &str) {
+    configure_apps_without_tool_search(config, apps_base_url);
+    config
+        .features
+        .enable(Feature::ToolSearch)
+        .expect("test config should allow feature update");
 }
 
 fn configured_builder(apps_base_url: String) -> TestCodexBuilder {
@@ -193,6 +173,45 @@ async fn search_tool_flag_adds_tool_search() -> Result<()> {
             }
         })
     );
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn tool_search_disabled_by_default_exposes_apps_tools_directly() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let server = start_mock_server().await;
+    let apps_server = AppsTestServer::mount_searchable(&server).await?;
+    let mock = mount_sse_once(
+        &server,
+        sse(vec![
+            ev_response_created("resp-1"),
+            ev_assistant_message("msg-1", "done"),
+            ev_completed("resp-1"),
+        ]),
+    )
+    .await;
+
+    let mut builder = test_codex()
+        .with_auth(CodexAuth::create_dummy_chatgpt_auth_for_testing())
+        .with_config(move |config| {
+            configure_apps_without_tool_search(config, apps_server.chatgpt_base_url.as_str())
+        });
+    let test = builder.build(&server).await?;
+
+    test.submit_turn_with_policies(
+        "list tools",
+        AskForApproval::Never,
+        SandboxPolicy::DangerFullAccess,
+    )
+    .await?;
+
+    let body = mock.single_request().body_json();
+    let tools = tool_names(&body);
+    assert!(!tools.iter().any(|name| name == TOOL_SEARCH_TOOL_NAME));
+    assert!(tools.iter().any(|name| name == CALENDAR_CREATE_TOOL));
+    assert!(tools.iter().any(|name| name == CALENDAR_LIST_TOOL));
 
     Ok(())
 }
