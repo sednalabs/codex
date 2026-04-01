@@ -10,13 +10,9 @@ use crate::tools::handlers::TOOL_SEARCH_DEFAULT_LIMIT;
 use crate::tools::handlers::TOOL_SEARCH_TOOL_NAME;
 use crate::tools::handlers::TOOL_SUGGEST_TOOL_NAME;
 use crate::tools::handlers::agent_jobs::BatchJobHandler;
-use crate::tools::handlers::apply_patch::create_apply_patch_freeform_tool;
-use crate::tools::handlers::apply_patch::create_apply_patch_json_tool;
 use crate::tools::handlers::multi_agents_common::DEFAULT_WAIT_TIMEOUT_MS;
 use crate::tools::handlers::multi_agents_common::MAX_WAIT_TIMEOUT_MS;
 use crate::tools::handlers::multi_agents_common::MIN_WAIT_TIMEOUT_MS;
-use crate::tools::handlers::request_permissions_tool_description;
-use crate::tools::handlers::request_user_input_tool_description;
 use crate::tools::registry::ToolRegistryBuilder;
 use crate::tools::registry::tool_handler_key;
 use codex_protocol::config_types::WebSearchMode;
@@ -35,6 +31,8 @@ use codex_tools::ToolUserShellType;
 use codex_tools::ViewImageToolOptions;
 use codex_tools::WaitAgentTimeoutOptions;
 use codex_tools::augment_tool_spec_for_code_mode;
+use codex_tools::create_apply_patch_freeform_tool;
+use codex_tools::create_apply_patch_json_tool;
 use codex_tools::create_assign_task_tool;
 use codex_tools::create_close_agent_tool_v1;
 use codex_tools::create_close_agent_tool_v2;
@@ -68,9 +66,9 @@ use codex_tools::create_wait_tool;
 use codex_tools::create_write_stdin_tool;
 use codex_tools::dynamic_tool_to_responses_api_tool;
 use codex_tools::mcp_tool_to_responses_api_tool;
+use codex_tools::request_permissions_tool_description;
+use codex_tools::request_user_input_tool_description;
 use codex_tools::tool_spec_to_code_mode_tool_definition;
-use serde::Deserialize;
-use serde::Serialize;
 use std::collections::HashMap;
 
 pub type JsonSchema = codex_tools::JsonSchema;
@@ -101,12 +99,6 @@ fn agent_type_description(config: &ToolsConfig) -> String {
     } else {
         config.agent_type_description.clone()
     }
-}
-
-/// TODO(dylan): deprecate once we get rid of json tool
-#[derive(Serialize, Deserialize)]
-pub(crate) struct ApplyPatchToolArgs {
-    pub(crate) input: String,
 }
 
 fn push_tool_spec(

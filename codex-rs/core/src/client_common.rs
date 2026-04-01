@@ -157,8 +157,6 @@ fn strip_total_output_header(output: &str) -> Option<(&str, u32)> {
 }
 
 pub(crate) mod tools {
-    pub(crate) use codex_tools::FreeformTool;
-    pub(crate) use codex_tools::FreeformToolFormat;
     pub(crate) use codex_tools::ResponsesApiTool;
     pub(crate) use codex_tools::ToolSearchOutputTool;
     pub(crate) use codex_tools::ToolSpec;
