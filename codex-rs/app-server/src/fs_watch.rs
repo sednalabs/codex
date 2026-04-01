@@ -179,10 +179,13 @@ impl FsWatchManager {
                 changed_paths.sort_by(|left, right| left.as_path().cmp(right.as_path()));
                 changed_paths.dedup();
                 if !changed_paths.is_empty() {
+                    // FsChanged notifications are debounced, best-effort updates: don't wait for
+                    // transport write completion here or one slow client can stall later batches
+                    // and even block fs/unwatch from finishing.
                     tokio::select! {
                         biased;
                         _ = &mut terminate_rx => break,
-                        _ = outgoing.send_server_notification_to_connection_and_wait(
+                        _ = outgoing.send_server_notification_to_connection(
                             connection_id,
                             ServerNotification::FsChanged(FsChangedNotification {
                                 watch_id: task_watch_id.clone(),
@@ -780,7 +783,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn unwatch_completes_when_notification_write_completion_is_withheld() {
+    async fn fs_changed_notifications_do_not_wait_for_write_completion() {
         let temp_dir = TempDir::new().expect("temp dir");
         let watched_path = absolute_path(temp_dir.path().join("watched"));
         std::fs::write(&watched_path, "hello\n").expect("write watched file");
@@ -806,7 +809,7 @@ mod tests {
             .send_paths_for_test(vec![watched_path.to_path_buf()])
             .await;
 
-        let withheld_write_complete_tx = timeout(Duration::from_secs(1), rx.recv())
+        let notification_envelope = timeout(Duration::from_secs(1), rx.recv())
             .await
             .expect("notification should arrive before test timeout")
             .expect("outgoing channel should remain open for expected notification");
@@ -815,14 +818,16 @@ mod tests {
                 OutgoingMessage::AppServerNotification(ServerNotification::FsChanged(notification)),
             write_complete_tx,
             ..
-        } = withheld_write_complete_tx
+        } = notification_envelope
         else {
             panic!("expected fs-changed notification envelope");
         };
         assert_eq!(notification.watch_id, response.watch_id);
         assert_eq!(notification.changed_paths, vec![watched_path]);
-        let _withheld_write_complete_tx = write_complete_tx
-            .expect("expected write completion sender to withhold notification completion");
+        assert!(
+            write_complete_tx.is_none(),
+            "fs-changed notifications should not wait for transport write completion"
+        );
 
         let unwatch_result = timeout(
             Duration::from_secs(1),
@@ -837,10 +842,8 @@ mod tests {
 
         assert!(
             unwatch_result.is_ok(),
-            "unwatch should complete while write completion is withheld"
+            "unwatch should complete without waiting on notification write completion"
         );
         assert!(unwatch_result.unwrap().is_ok());
-
-        drop(_withheld_write_complete_tx);
     }
 }
