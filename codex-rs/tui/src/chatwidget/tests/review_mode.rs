@@ -222,14 +222,12 @@ async fn steer_rejection_queues_review_follow_up_before_existing_queued_messages
         id: "review-exit".into(),
         msg: EventMsg::ExitedReviewMode(ExitedReviewModeEvent {
             review_output: None,
+            review_token_usage: None,
         }),
     });
     chat.handle_codex_event(Event {
         id: "turn-complete".into(),
-        msg: EventMsg::TurnComplete(TurnCompleteEvent {
-            turn_id: "turn-1".to_string(),
-            last_agent_message: None,
-        }),
+        msg: EventMsg::TurnComplete(test_turn_complete_event("turn-1", None::<String>)),
     });
 
     match next_submit_op(&mut op_rx) {
@@ -245,10 +243,7 @@ async fn steer_rejection_queues_review_follow_up_before_existing_queued_messages
 
     chat.handle_codex_event(Event {
         id: "turn-complete-2".into(),
-        msg: EventMsg::TurnComplete(TurnCompleteEvent {
-            turn_id: "turn-2".to_string(),
-            last_agent_message: None,
-        }),
+        msg: EventMsg::TurnComplete(test_turn_complete_event("turn-2", None::<String>)),
     });
 
     match next_submit_op(&mut op_rx) {
@@ -301,10 +296,10 @@ async fn review_restores_context_window_indicator() {
 
     chat.handle_codex_event(Event {
         id: "token-before".into(),
-        msg: EventMsg::TokenCount(TokenCountEvent {
-            info: Some(make_token_info(pre_review_tokens, context_window)),
-            rate_limits: None,
-        }),
+        msg: EventMsg::TokenCount(test_token_count_event(
+            Some(make_token_info(pre_review_tokens, context_window)),
+            None,
+        )),
     });
     assert_eq!(chat.bottom_pane.context_window_percent(), Some(30));
 
@@ -320,10 +315,10 @@ async fn review_restores_context_window_indicator() {
 
     chat.handle_codex_event(Event {
         id: "token-review".into(),
-        msg: EventMsg::TokenCount(TokenCountEvent {
-            info: Some(make_token_info(review_tokens, context_window)),
-            rate_limits: None,
-        }),
+        msg: EventMsg::TokenCount(test_token_count_event(
+            Some(make_token_info(review_tokens, context_window)),
+            None,
+        )),
     });
     assert_eq!(chat.bottom_pane.context_window_percent(), Some(97));
 
@@ -331,6 +326,7 @@ async fn review_restores_context_window_indicator() {
         id: "review-end".into(),
         msg: EventMsg::ExitedReviewMode(ExitedReviewModeEvent {
             review_output: None,
+            review_token_usage: None,
         }),
     });
     let _ = drain_insert_history(&mut rx);
@@ -350,14 +346,10 @@ async fn restore_thread_input_state_restores_pending_steers_without_downgrading_
     queued_user_messages.push_back(UserMessage::from("queued draft"));
 
     chat.restore_thread_input_state(Some(ThreadInputState {
-        composer: None,
         pending_steers,
         rejected_steers_queue,
         queued_user_messages,
-        current_collaboration_mode: chat.current_collaboration_mode.clone(),
-        active_collaboration_mask: chat.active_collaboration_mask.clone(),
-        task_running: false,
-        agent_turn_running: false,
+        ..default_thread_input_state(&chat)
     }));
 
     assert_eq!(

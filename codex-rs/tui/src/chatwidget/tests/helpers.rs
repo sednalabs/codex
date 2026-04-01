@@ -248,6 +248,8 @@ pub(super) async fn make_chatwidget_manual(
         show_welcome_banner: true,
         startup_tooltip_override: None,
         queued_user_messages: VecDeque::new(),
+        queued_slash_commands: VecDeque::new(),
+        queued_follow_up_order: VecDeque::new(),
         rejected_steers_queue: VecDeque::new(),
         pending_steers: VecDeque::new(),
         submit_pending_steers_after_interrupt: false,
@@ -399,6 +401,44 @@ pub(super) fn make_token_info(total_tokens: i64, context_window: i64) -> TokenUs
         total_token_usage: usage(total_tokens),
         last_token_usage: usage(total_tokens),
         model_context_window: Some(context_window),
+    }
+}
+
+pub(super) fn test_token_count_event(
+    info: Option<TokenUsageInfo>,
+    rate_limits: Option<RateLimitSnapshot>,
+) -> TokenCountEvent {
+    TokenCountEvent {
+        info,
+        rate_limits,
+        provider: None,
+        model_used: None,
+    }
+}
+
+pub(super) fn test_turn_complete_event(
+    turn_id: impl Into<String>,
+    last_agent_message: Option<impl Into<String>>,
+) -> TurnCompleteEvent {
+    TurnCompleteEvent {
+        turn_id: turn_id.into(),
+        last_agent_message: last_agent_message.map(Into::into),
+        compaction_events_in_turn: 0,
+    }
+}
+
+pub(super) fn default_thread_input_state(chat: &ChatWidget) -> ThreadInputState {
+    ThreadInputState {
+        composer: None,
+        pending_steers: VecDeque::new(),
+        rejected_steers_queue: VecDeque::new(),
+        queued_user_messages: VecDeque::new(),
+        queued_slash_commands: VecDeque::new(),
+        queued_follow_up_order: VecDeque::new(),
+        current_collaboration_mode: chat.current_collaboration_mode.clone(),
+        active_collaboration_mask: chat.active_collaboration_mask.clone(),
+        task_running: false,
+        agent_turn_running: false,
     }
 }
 
