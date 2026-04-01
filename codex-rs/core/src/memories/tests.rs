@@ -1775,11 +1775,21 @@ mod phase2 {
             "stale-lock dispatch should either keep the reclaimed job running or finish it before re-claim"
         );
 
-        let user_input_ops = harness.user_input_ops_count();
-        pretty_assertions::assert_eq!(user_input_ops, 1);
-        let thread_ids = harness.manager.list_thread_ids().await;
-        pretty_assertions::assert_eq!(thread_ids.len(), 1);
-        let thread_id = thread_ids[0];
+        let thread_id = tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                if harness.user_input_ops_count() == 1 {
+                    let thread_ids = harness.manager.list_thread_ids().await;
+                    if thread_ids.len() == 1 {
+                        break thread_ids[0];
+                    }
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("timed out waiting for consolidation dispatch side effects");
+        pretty_assertions::assert_eq!(harness.user_input_ops_count(), 1);
+        pretty_assertions::assert_eq!(harness.manager.list_thread_ids().await, vec![thread_id]);
         let subagent = harness
             .manager
             .get_thread(thread_id)

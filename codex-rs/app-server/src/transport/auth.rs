@@ -282,6 +282,10 @@ fn verify_signed_bearer_token(
 fn decode_jwt_claims(token: &str, shared_secret: &[u8]) -> Result<JwtClaims, WebsocketAuthError> {
     let mut validation = Validation::new(Algorithm::HS256);
     validation.required_spec_claims.clear();
+    // We disable the library's standard claim checks here because we want the
+    // transport layer to own the exact exp/nbf/iss/aud semantics and error
+    // messages, including optional issuer/audience support and configurable
+    // clock skew handling in validate_jwt_claims below.
     validation.validate_exp = false;
     validation.validate_nbf = false;
     validation.validate_aud = false;

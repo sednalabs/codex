@@ -546,6 +546,26 @@ impl OutgoingMessageSender {
         }
     }
 
+    pub(crate) async fn send_server_notification_to_connection(
+        &self,
+        connection_id: ConnectionId,
+        notification: ServerNotification,
+    ) {
+        tracing::trace!("app-server event: {notification}");
+        let outgoing_message = OutgoingMessage::AppServerNotification(notification);
+        if let Err(err) = self
+            .sender
+            .send(OutgoingEnvelope::ToConnection {
+                connection_id,
+                message: outgoing_message,
+                write_complete_tx: None,
+            })
+            .await
+        {
+            warn!("failed to send server notification to client: {err:?}");
+        }
+    }
+
     pub(crate) async fn send_server_notification_to_connection_and_wait(
         &self,
         connection_id: ConnectionId,
