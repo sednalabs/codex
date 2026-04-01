@@ -1651,7 +1651,7 @@ async fn entered_review_mode_defaults_to_current_changes_banner() {
 }
 
 #[tokio::test]
-async fn steer_rejection_queues_review_follow_up_before_existing_queued_messages() {
+async fn review_mode_appends_follow_up_messages_after_existing_queue() {
     let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
     chat.thread_id = Some(ThreadId::new());
     chat.handle_codex_event(Event {
@@ -1678,54 +1678,13 @@ async fn steer_rejection_queues_review_follow_up_before_existing_queued_messages
     chat.submit_user_message(UserMessage::from("review follow-up one"));
     chat.submit_user_message(UserMessage::from("review follow-up two"));
 
-    assert_eq!(chat.pending_steers.len(), 2);
-    match next_submit_op(&mut op_rx) {
-        Op::UserTurn { items, .. } => assert_eq!(
-            items,
-            vec![UserInput::Text {
-                text: "review follow-up one".to_string(),
-                text_elements: Vec::new(),
-            }]
-        ),
-        other => panic!("expected running-turn steer submit, got {other:?}"),
-    }
-    match next_submit_op(&mut op_rx) {
-        Op::UserTurn { items, .. } => assert_eq!(
-            items,
-            vec![UserInput::Text {
-                text: "review follow-up two".to_string(),
-                text_elements: Vec::new(),
-            }]
-        ),
-        other => panic!("expected second running-turn steer submit, got {other:?}"),
-    }
-
-    chat.handle_codex_event(Event {
-        id: "steer-rejected-1".into(),
-        msg: EventMsg::Error(ErrorEvent {
-            message: "cannot steer a review turn".to_string(),
-            codex_error_info: Some(CodexErrorInfo::ActiveTurnNotSteerable {
-                turn_kind: NonSteerableTurnKind::Review,
-            }),
-        }),
-    });
-    chat.handle_codex_event(Event {
-        id: "steer-rejected-2".into(),
-        msg: EventMsg::Error(ErrorEvent {
-            message: "cannot steer a review turn".to_string(),
-            codex_error_info: Some(CodexErrorInfo::ActiveTurnNotSteerable {
-                turn_kind: NonSteerableTurnKind::Review,
-            }),
-        }),
-    });
-
     assert!(chat.pending_steers.is_empty());
     assert_eq!(
         chat.queued_user_message_texts(),
         vec![
+            "queued later",
             "review follow-up one",
-            "review follow-up two",
-            "queued later"
+            "review follow-up two"
         ]
     );
     assert!(drain_insert_history(&mut rx).is_empty());
@@ -1750,11 +1709,11 @@ async fn steer_rejection_queues_review_follow_up_before_existing_queued_messages
         Op::UserTurn { items, .. } => assert_eq!(
             items,
             vec![UserInput::Text {
-                text: "review follow-up one\nreview follow-up two".to_string(),
+                text: "queued later".to_string(),
                 text_elements: Vec::new(),
             }]
         ),
-        other => panic!("expected merged rejected-steer follow-up submit, got {other:?}"),
+        other => panic!("expected oldest queued review follow-up submit, got {other:?}"),
     }
 
     chat.handle_codex_event(Event {
@@ -1765,6 +1724,17 @@ async fn steer_rejection_queues_review_follow_up_before_existing_queued_messages
             compaction_events_in_turn: 0,
         }),
     });
+
+    match next_submit_op(&mut op_rx) {
+        Op::UserTurn { items, .. } => assert_eq!(
+            items,
+            vec![UserInput::Text {
+                text: "review follow-up one".to_string(),
+                text_elements: Vec::new(),
+            }]
+        ),
+        other => panic!("expected first review follow-up submit, got {other:?}"),
+    }
 
     match next_submit_op(&mut op_rx) {
         Op::UserTurn { items, .. } => assert_eq!(
