@@ -223,7 +223,7 @@ async fn run_code_mode_turn_with_rmcp(
                 enabled: true,
                 required: false,
                 disabled_reason: None,
-                startup_timeout_sec: Some(Duration::from_secs(10)),
+                startup_timeout_sec: Some(Duration::from_secs(/*secs*/ 10)),
                 tool_timeout_sec: None,
                 enabled_tools: None,
                 disabled_tools: None,
@@ -503,7 +503,7 @@ text(JSON.stringify(results));
     let duration = start.elapsed();
 
     assert!(
-        duration < Duration::from_millis(1_600),
+        duration < Duration::from_millis(/*millis*/ 1_600),
         "expected nested tools to finish in parallel, got {duration:?}",
     );
 
@@ -854,7 +854,7 @@ while (true) {}
     .await;
 
     tokio::time::timeout(
-        Duration::from_secs(5),
+        Duration::from_secs(/*secs*/ 5),
         test.submit_turn("start the busy loop"),
     )
     .await??;
@@ -1456,7 +1456,7 @@ text("session b done");
         if session_a_done_marker.exists() {
             break;
         }
-        tokio::time::sleep(Duration::from_millis(50)).await;
+        tokio::time::sleep(Duration::from_millis(/*millis*/ 50)).await;
     }
     assert!(session_a_done_marker.exists());
 
