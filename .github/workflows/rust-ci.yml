@@ -36,16 +36,15 @@ jobs:
         run: |
           set -euo pipefail
 
+          files=()
+          workflow_delete_only=false
+
           if [[ "${{ github.event_name }}" == "pull_request" ]]; then
             BASE_SHA='${{ github.event.pull_request.base.sha }}'
             HEAD_SHA='${{ github.event.pull_request.head.sha }}'
             echo "Base SHA: $BASE_SHA"
             echo "Head SHA: $HEAD_SHA"
             mapfile -t files < <(git diff --name-only --no-renames "$BASE_SHA...$HEAD_SHA")
-            workflow_delete_only=true
-            if git diff --name-only --diff-filter=AM --no-renames "$BASE_SHA...$HEAD_SHA" | grep -q .; then
-              workflow_delete_only=false
-            fi
           elif [[ "${{ github.event_name }}" == "push" ]]; then
             before='${{ github.event.before }}'
             after='${{ github.sha }}'
@@ -71,9 +70,7 @@ jobs:
               done
             fi
           else
-            # On push / manual runs, default to running everything
             files=("codex-rs/force" ".github/force")
-            workflow_delete_only=false
           fi
 
           codex=false
@@ -88,6 +85,13 @@ jobs:
             [[ $f == codex-rs/* || $f == tools/argument-comment-lint/* ]] && argument_comment_lint=true
             [[ $f == tools/argument-comment-lint/* ]] && argument_comment_lint_package=true
           done
+
+          if [[ "$workflow_delete_only" == true ]]; then
+            codex=false
+            downstream_smoke=false
+            argument_comment_lint=false
+            argument_comment_lint_package=false
+          fi
 
           {
             echo "argument_comment_lint=$argument_comment_lint"
@@ -257,7 +261,7 @@ jobs:
     timeout-minutes: 30
     needs: changed
     # Keep job-level if to avoid spinning up runners when not needed
-    if: ${{ needs.changed.outputs.codex == 'true' || github.event_name == 'push' }}
+    if: ${{ needs.changed.outputs.codex == 'true' || (github.event_name == 'push' && needs.changed.outputs.workflow_delete_only != 'true') }}
     defaults:
       run:
         working-directory: codex-rs
@@ -655,7 +659,7 @@ jobs:
     runs-on: ${{ (github.repository_owner == 'openai' && (matrix.runs_on || matrix.runner)) || matrix.runner_fallback || matrix.runner }}
     timeout-minutes: 30
     needs: changed
-    if: ${{ needs.changed.outputs.codex == 'true' || github.event_name == 'push' }}
+    if: ${{ needs.changed.outputs.codex == 'true' || (github.event_name == 'push' && needs.changed.outputs.workflow_delete_only != 'true') }}
     defaults:
       run:
         working-directory: codex-rs
@@ -901,7 +905,7 @@ jobs:
   downstream_smoke:
     name: Downstream smoke
     needs: changed
-    if: ${{ needs.changed.outputs.downstream_smoke == 'true' || github.event_name == 'push' }}
+    if: ${{ needs.changed.outputs.downstream_smoke == 'true' || (github.event_name == 'push' && needs.changed.outputs.workflow_delete_only != 'true') }}
     uses: ./.github/workflows/_sedna-linux-rust.yml
     with:
       lane_id: core-test-smoke
@@ -947,6 +951,12 @@ jobs:
           # declare success regardless of other jobs.
           if [[ '${{ needs.changed.outputs.argument_comment_lint }}' != 'true' && '${{ needs.changed.outputs.ci_surface }}' != 'true' && '${{ needs.changed.outputs.codex }}' != 'true' && '${{ needs.changed.outputs.downstream_smoke }}' != 'true' && '${{ github.event_name }}' != 'push' ]]; then
             echo 'No relevant changes -> CI not required.'
+            exit 0
+          fi
+
+          if [[ '${{ needs.changed.outputs.workflow_delete_only }}' == 'true' ]]; then
+            [[ '${{ needs.workflow_validation.result }}' == 'success' ]] || { echo 'workflow_validation failed'; exit 1; }
+            echo 'Workflow deletions only -> skipped heavy Rust CI by design.'
             exit 0
           fi
 
