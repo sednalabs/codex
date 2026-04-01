@@ -17,6 +17,9 @@ jobs:
       - name: Verify codex-rs Cargo manifests inherit workspace settings
         run: python3 .github/scripts/verify_cargo_workspace_manifests.py
 
+      - name: Verify Bazel clippy flags match Cargo workspace lints
+        run: python3 .github/scripts/verify_bazel_clippy_lints.py
+
       - name: Setup pnpm
         uses: pnpm/action-setup@a8198c4bff370c8506180b035930dea56dbd5288 # v5
         with:
