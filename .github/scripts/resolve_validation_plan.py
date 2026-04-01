@@ -109,11 +109,13 @@ def lab_plan(args: argparse.Namespace) -> None:
         run_smoke_gate = False
         smoke_gate_kind = ""
     elif args.profile in {"targeted", "frontier"}:
-        if args.lane_set == "all":
+        if args.profile == "targeted" and args.lane_set == "all":
             raise SystemExit(
                 f"profile={args.profile} requires a named lane_set or explicit lanes"
             )
-        selected = select_for_lane_set(catalog, args.lane_set)
+        selected = select_for_lane_set(
+            catalog, "all" if args.lane_set == "all" else args.lane_set
+        )
         run_smoke_gate = False
         smoke_gate_kind = ""
     elif args.profile in {"broad", "full"}:
