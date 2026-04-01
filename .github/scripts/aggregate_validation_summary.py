@@ -20,6 +20,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--profile", required=True)
     parser.add_argument("--lane-set", required=True)
     parser.add_argument("--explicit-lanes", default="")
+    parser.add_argument("--supersession-mode", default="auto")
+    parser.add_argument("--supersession-key", default="")
     parser.add_argument("--notes-supplied", default="false")
     parser.add_argument("--run-id", required=True)
     parser.add_argument("--run-attempt", required=True)
@@ -128,6 +130,11 @@ def main() -> None:
             "explicit_lanes": explicit_lanes,
             "notes_supplied": parse_bool(args.notes_supplied),
             "baseline_required": args.profile == "frontier",
+            "supersession": {
+                "mode": args.supersession_mode or "auto",
+                "key": args.supersession_key or "",
+                "auto_supersedes": (args.supersession_mode or "auto") == "auto",
+            },
         },
         "run": {
             "run_id": args.run_id,
