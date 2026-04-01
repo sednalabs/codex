@@ -5,7 +5,6 @@ use crate::shell::Shell;
 use crate::shell::ShellType;
 use crate::tools::code_mode::PUBLIC_TOOL_NAME;
 use crate::tools::code_mode::WAIT_TOOL_NAME;
-use crate::tools::handlers::PLAN_TOOL;
 use crate::tools::handlers::TOOL_SEARCH_DEFAULT_LIMIT;
 use crate::tools::handlers::TOOL_SEARCH_TOOL_NAME;
 use crate::tools::handlers::TOOL_SUGGEST_TOOL_NAME;
@@ -59,6 +58,7 @@ use codex_tools::create_spawn_agents_on_csv_tool;
 use codex_tools::create_test_sync_tool;
 use codex_tools::create_tool_search_tool;
 use codex_tools::create_tool_suggest_tool;
+use codex_tools::create_update_plan_tool;
 use codex_tools::create_view_image_tool;
 use codex_tools::create_wait_agent_tool_v1;
 use codex_tools::create_wait_agent_tool_v2;
@@ -71,7 +71,6 @@ use codex_tools::request_user_input_tool_description;
 use codex_tools::tool_spec_to_code_mode_tool_definition;
 use std::collections::HashMap;
 
-pub type JsonSchema = codex_tools::JsonSchema;
 pub use codex_tools::ShellCommandBackendConfig;
 pub use codex_tools::ToolsConfig;
 pub use codex_tools::ToolsConfigParams;
@@ -318,7 +317,7 @@ pub(crate) fn build_specs_with_discoverable_tools(
 
     push_tool_spec(
         &mut builder,
-        PLAN_TOOL.clone(),
+        create_update_plan_tool(),
         /*supports_parallel_tool_calls*/ false,
         config.code_mode_enabled,
     );

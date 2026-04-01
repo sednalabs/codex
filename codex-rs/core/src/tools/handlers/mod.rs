@@ -22,7 +22,6 @@ use codex_sandboxing::policy_transforms::intersect_permission_profiles;
 use codex_sandboxing::policy_transforms::merge_permission_profiles;
 use codex_sandboxing::policy_transforms::normalize_additional_permissions;
 use codex_utils_absolute_path::AbsolutePathBufGuard;
-pub use plan::PLAN_TOOL;
 use serde::Deserialize;
 use serde_json::Value;
 use std::path::Path;

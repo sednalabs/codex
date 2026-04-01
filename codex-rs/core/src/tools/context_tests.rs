@@ -147,7 +147,7 @@ fn tool_search_payloads_roundtrip_as_tool_search_outputs() {
                 description: String::new(),
                 strict: false,
                 defer_loading: Some(true),
-                parameters: crate::tools::spec::JsonSchema::Object {
+                parameters: codex_tools::JsonSchema::Object {
                     properties: Default::default(),
                     required: None,
                     additional_properties: None,

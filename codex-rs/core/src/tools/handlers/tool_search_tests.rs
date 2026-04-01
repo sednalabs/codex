@@ -105,7 +105,7 @@ fn serialize_tool_search_output_tools_groups_results_by_namespace() {
                         description: "Create a calendar event.".to_string(),
                         strict: false,
                         defer_loading: Some(true),
-                        parameters: crate::tools::spec::JsonSchema::Object {
+                        parameters: codex_tools::JsonSchema::Object {
                             properties: Default::default(),
                             required: None,
                             additional_properties: None,
@@ -117,7 +117,7 @@ fn serialize_tool_search_output_tools_groups_results_by_namespace() {
                         description: "List calendar events.".to_string(),
                         strict: false,
                         defer_loading: Some(true),
-                        parameters: crate::tools::spec::JsonSchema::Object {
+                        parameters: codex_tools::JsonSchema::Object {
                             properties: Default::default(),
                             required: None,
                             additional_properties: None,
@@ -134,7 +134,7 @@ fn serialize_tool_search_output_tools_groups_results_by_namespace() {
                     description: "Read an email.".to_string(),
                     strict: false,
                     defer_loading: Some(true),
-                    parameters: crate::tools::spec::JsonSchema::Object {
+                    parameters: codex_tools::JsonSchema::Object {
                         properties: Default::default(),
                         required: None,
                         additional_properties: None,
@@ -187,7 +187,7 @@ fn serialize_tool_search_output_tools_falls_back_to_connector_name_description()
                 description: "Read multiple emails.".to_string(),
                 strict: false,
                 defer_loading: Some(true),
-                parameters: crate::tools::spec::JsonSchema::Object {
+                parameters: codex_tools::JsonSchema::Object {
                     properties: Default::default(),
                     required: None,
                     additional_properties: None,

@@ -157,6 +157,7 @@ fn strip_total_output_header(output: &str) -> Option<(&str, u32)> {
 }
 
 pub(crate) mod tools {
+    #[cfg(test)]
     pub(crate) use codex_tools::ResponsesApiTool;
     pub(crate) use codex_tools::ToolSearchOutputTool;
     pub(crate) use codex_tools::ToolSpec;
