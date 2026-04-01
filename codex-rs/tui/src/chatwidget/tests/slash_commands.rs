@@ -94,10 +94,10 @@ async fn slash_copy_state_tracks_turn_complete_final_reply() {
 
     chat.handle_codex_event(Event {
         id: "turn-1".into(),
-        msg: EventMsg::TurnComplete(TurnCompleteEvent {
-            turn_id: "turn-1".to_string(),
-            last_agent_message: Some("Final reply **markdown**".to_string()),
-        }),
+        msg: EventMsg::TurnComplete(test_turn_complete_event(
+            "turn-1",
+            Some("Final reply **markdown**"),
+        )),
     });
 
     assert_eq!(
@@ -124,10 +124,7 @@ async fn slash_copy_state_tracks_plan_item_completion() {
     });
     chat.handle_codex_event(Event {
         id: "turn-1".into(),
-        msg: EventMsg::TurnComplete(TurnCompleteEvent {
-            turn_id: "turn-1".to_string(),
-            last_agent_message: None,
-        }),
+        msg: EventMsg::TurnComplete(test_turn_complete_event("turn-1", None::<String>)),
     });
 
     assert_eq!(chat.last_copyable_output, Some(plan_text));
@@ -157,10 +154,10 @@ async fn slash_copy_state_is_preserved_during_running_task() {
 
     chat.handle_codex_event(Event {
         id: "turn-1".into(),
-        msg: EventMsg::TurnComplete(TurnCompleteEvent {
-            turn_id: "turn-1".to_string(),
-            last_agent_message: Some("Previous completed reply".to_string()),
-        }),
+        msg: EventMsg::TurnComplete(test_turn_complete_event(
+            "turn-1",
+            Some("Previous completed reply"),
+        )),
     });
     chat.on_task_started();
 
@@ -176,10 +173,10 @@ async fn slash_copy_state_clears_on_thread_rollback() {
 
     chat.handle_codex_event(Event {
         id: "turn-1".into(),
-        msg: EventMsg::TurnComplete(TurnCompleteEvent {
-            turn_id: "turn-1".to_string(),
-            last_agent_message: Some("Reply that will be rolled back".to_string()),
-        }),
+        msg: EventMsg::TurnComplete(test_turn_complete_event(
+            "turn-1",
+            Some("Reply that will be rolled back"),
+        )),
     });
     chat.handle_codex_event(Event {
         id: "rollback-1".into(),
@@ -204,10 +201,7 @@ async fn slash_copy_is_unavailable_when_legacy_agent_message_is_not_repeated_on_
     let _ = drain_insert_history(&mut rx);
     chat.handle_codex_event(Event {
         id: "turn-1".into(),
-        msg: EventMsg::TurnComplete(TurnCompleteEvent {
-            turn_id: "turn-1".to_string(),
-            last_agent_message: None,
-        }),
+        msg: EventMsg::TurnComplete(test_turn_complete_event("turn-1", None::<String>)),
     });
     let _ = drain_insert_history(&mut rx);
 
@@ -245,10 +239,7 @@ async fn slash_copy_uses_agent_message_item_when_turn_complete_omits_final_text(
     let _ = drain_insert_history(&mut rx);
     chat.handle_codex_event(Event {
         id: "turn-1".into(),
-        msg: EventMsg::TurnComplete(TurnCompleteEvent {
-            turn_id: "turn-1".to_string(),
-            last_agent_message: None,
-        }),
+        msg: EventMsg::TurnComplete(test_turn_complete_event("turn-1", None::<String>)),
     });
     let _ = drain_insert_history(&mut rx);
 
@@ -290,10 +281,7 @@ async fn slash_copy_does_not_return_stale_output_after_thread_rollback() {
     let _ = drain_insert_history(&mut rx);
     chat.handle_codex_event(Event {
         id: "turn-1".into(),
-        msg: EventMsg::TurnComplete(TurnCompleteEvent {
-            turn_id: "turn-1".to_string(),
-            last_agent_message: None,
-        }),
+        msg: EventMsg::TurnComplete(test_turn_complete_event("turn-1", None::<String>)),
     });
     let _ = drain_insert_history(&mut rx);
 

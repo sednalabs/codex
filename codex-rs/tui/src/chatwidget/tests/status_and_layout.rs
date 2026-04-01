@@ -11,19 +11,16 @@ async fn token_count_none_resets_context_indicator() {
 
     chat.handle_codex_event(Event {
         id: "token-before".into(),
-        msg: EventMsg::TokenCount(TokenCountEvent {
-            info: Some(make_token_info(pre_compact_tokens, context_window)),
-            rate_limits: None,
-        }),
+        msg: EventMsg::TokenCount(test_token_count_event(
+            Some(make_token_info(pre_compact_tokens, context_window)),
+            None,
+        )),
     });
     assert_eq!(chat.bottom_pane.context_window_percent(), Some(30));
 
     chat.handle_codex_event(Event {
         id: "token-cleared".into(),
-        msg: EventMsg::TokenCount(TokenCountEvent {
-            info: None,
-            rate_limits: None,
-        }),
+        msg: EventMsg::TokenCount(test_token_count_event(None, None)),
     });
     assert_eq!(chat.bottom_pane.context_window_percent(), None);
 }
@@ -50,10 +47,7 @@ async fn context_indicator_shows_used_tokens_when_window_unknown() {
 
     chat.handle_codex_event(Event {
         id: "token-usage".into(),
-        msg: EventMsg::TokenCount(TokenCountEvent {
-            info: Some(token_info),
-            rate_limits: None,
-        }),
+        msg: EventMsg::TokenCount(test_token_count_event(Some(token_info), None)),
     });
 
     assert_eq!(chat.bottom_pane.context_window_percent(), None);
@@ -874,10 +868,7 @@ async fn status_line_branch_refreshes_after_turn_complete() {
 
     chat.handle_codex_event(Event {
         id: "turn-1".into(),
-        msg: EventMsg::TurnComplete(TurnCompleteEvent {
-            turn_id: "turn-1".to_string(),
-            last_agent_message: None,
-        }),
+        msg: EventMsg::TurnComplete(test_turn_complete_event("turn-1", None::<String>)),
     });
 
     assert!(chat.status_line_branch_pending);
@@ -1139,10 +1130,7 @@ async fn multiple_agent_messages_in_single_turn_emit_multiple_headers() {
     // End turn
     chat.handle_codex_event(Event {
         id: "s1".into(),
-        msg: EventMsg::TurnComplete(TurnCompleteEvent {
-            turn_id: "turn-1".to_string(),
-            last_agent_message: None,
-        }),
+        msg: EventMsg::TurnComplete(test_turn_complete_event("turn-1", None::<String>)),
     });
 
     let cells = drain_insert_history(&mut rx);
@@ -1548,10 +1536,7 @@ printf 'fenced within fenced\n'
     // Finalize the stream without sending a final AgentMessage, to flush any tail.
     chat.handle_codex_event(Event {
         id: "t1".into(),
-        msg: EventMsg::TurnComplete(TurnCompleteEvent {
-            turn_id: "turn-1".to_string(),
-            last_agent_message: None,
-        }),
+        msg: EventMsg::TurnComplete(test_turn_complete_event("turn-1", None::<String>)),
     });
     for lines in drain_insert_history(&mut rx) {
         crate::insert_history::insert_history_lines(&mut term, lines)
