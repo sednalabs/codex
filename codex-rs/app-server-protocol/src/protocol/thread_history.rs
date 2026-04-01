@@ -75,6 +75,8 @@ pub struct ThreadHistoryBuilder {
     turns: Vec<Turn>,
     current_turn: Option<PendingTurn>,
     next_item_index: i64,
+    current_rollout_index: usize,
+    next_rollout_index: usize,
 }
 
 impl Default for ThreadHistoryBuilder {
@@ -89,6 +91,8 @@ impl ThreadHistoryBuilder {
             turns: Vec::new(),
             current_turn: None,
             next_item_index: 1,
+            current_rollout_index: 0,
+            next_rollout_index: 0,
         }
     }
 
@@ -110,6 +114,19 @@ impl ThreadHistoryBuilder {
 
     pub fn has_active_turn(&self) -> bool {
         self.current_turn.is_some()
+    }
+
+    pub fn active_turn_id_if_explicit(&self) -> Option<String> {
+        self.current_turn
+            .as_ref()
+            .filter(|turn| turn.opened_explicitly)
+            .map(|turn| turn.id.clone())
+    }
+
+    pub fn active_turn_start_index(&self) -> Option<usize> {
+        self.current_turn
+            .as_ref()
+            .map(|turn| turn.rollout_start_index)
     }
 
     /// Shared reducer for persisted rollout replay and in-memory current-turn
@@ -181,6 +198,8 @@ impl ThreadHistoryBuilder {
     }
 
     pub fn handle_rollout_item(&mut self, item: &RolloutItem) {
+        self.current_rollout_index = self.next_rollout_index;
+        self.next_rollout_index += 1;
         match item {
             RolloutItem::EventMsg(event) => self.handle_event(event),
             RolloutItem::Compacted(payload) => self.handle_compacted(payload),
@@ -985,6 +1004,7 @@ impl ThreadHistoryBuilder {
             status: TurnStatus::Completed,
             opened_explicitly: false,
             saw_compaction: false,
+            rollout_start_index: self.current_rollout_index,
         }
     }
 
@@ -1148,6 +1168,8 @@ struct PendingTurn {
     /// True when this turn includes a persisted `RolloutItem::Compacted`, which
     /// should keep the turn from being dropped even without normal items.
     saw_compaction: bool,
+    /// Index of the rollout item that opened this turn during replay.
+    rollout_start_index: usize,
 }
 
 impl PendingTurn {

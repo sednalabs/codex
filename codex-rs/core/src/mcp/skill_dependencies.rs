@@ -15,6 +15,7 @@ use super::auth::McpOAuthLoginSupport;
 use super::auth::oauth_login_support;
 use super::auth::resolve_oauth_scopes;
 use super::auth::should_retry_without_scopes;
+use crate::SkillMetadata;
 use crate::codex::Session;
 use crate::codex::TurnContext;
 use crate::config::Config;
@@ -24,8 +25,7 @@ use crate::config::types::McpServerConfig;
 use crate::config::types::McpServerTransportConfig;
 use crate::default_client::is_first_party_originator;
 use crate::default_client::originator;
-use crate::skills::SkillMetadata;
-use crate::skills::model::SkillToolDependency;
+use crate::model::SkillToolDependency;
 use codex_features::Feature;
 
 const SKILL_MCP_DEPENDENCY_PROMPT_ID: &str = "skill_mcp_dependency_install";
@@ -432,6 +432,7 @@ fn mcp_dependency_to_server_config(
             strict_tool_classification: false,
             require_approval_for_mutating: false,
             oauth_resource: None,
+            tools: HashMap::new(),
         });
     }
 
@@ -461,6 +462,7 @@ fn mcp_dependency_to_server_config(
             strict_tool_classification: false,
             require_approval_for_mutating: false,
             oauth_resource: None,
+            tools: HashMap::new(),
         });
     }
 
@@ -468,120 +470,5 @@ fn mcp_dependency_to_server_config(
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::skills::model::SkillDependencies;
-    use codex_protocol::protocol::SkillScope;
-    use pretty_assertions::assert_eq;
-    use std::path::PathBuf;
-
-    fn skill_with_tools(tools: Vec<SkillToolDependency>) -> SkillMetadata {
-        SkillMetadata {
-            name: "skill".to_string(),
-            description: "skill".to_string(),
-            short_description: None,
-            interface: None,
-            dependencies: Some(SkillDependencies { tools }),
-            policy: None,
-            permission_profile: None,
-            managed_network_override: None,
-            path_to_skills_md: PathBuf::from("skill"),
-            scope: SkillScope::User,
-        }
-    }
-
-    #[test]
-    fn collect_missing_respects_canonical_installed_key() {
-        let url = "https://example.com/mcp".to_string();
-        let skills = vec![skill_with_tools(vec![SkillToolDependency {
-            r#type: "mcp".to_string(),
-            value: "github".to_string(),
-            description: None,
-            transport: Some("streamable_http".to_string()),
-            command: None,
-            url: Some(url.clone()),
-        }])];
-        let installed = HashMap::from([(
-            "alias".to_string(),
-            McpServerConfig {
-                transport: McpServerTransportConfig::StreamableHttp {
-                    url,
-                    bearer_token_env_var: None,
-                    http_headers: None,
-                    env_http_headers: None,
-                },
-                enabled: true,
-                required: false,
-                disabled_reason: None,
-                startup_timeout_sec: None,
-                tool_timeout_sec: None,
-                enabled_tools: None,
-                disabled_tools: None,
-                scopes: None,
-                enable_elicitation: false,
-                read_only: false,
-                strict_tool_classification: false,
-                require_approval_for_mutating: false,
-                oauth_resource: None,
-            },
-        )]);
-
-        assert_eq!(
-            collect_missing_mcp_dependencies(&skills, &installed),
-            HashMap::new()
-        );
-    }
-
-    #[test]
-    fn collect_missing_dedupes_by_canonical_key_but_preserves_original_name() {
-        let url = "https://example.com/one".to_string();
-        let skills = vec![skill_with_tools(vec![
-            SkillToolDependency {
-                r#type: "mcp".to_string(),
-                value: "alias-one".to_string(),
-                description: None,
-                transport: Some("streamable_http".to_string()),
-                command: None,
-                url: Some(url.clone()),
-            },
-            SkillToolDependency {
-                r#type: "mcp".to_string(),
-                value: "alias-two".to_string(),
-                description: None,
-                transport: Some("streamable_http".to_string()),
-                command: None,
-                url: Some(url.clone()),
-            },
-        ])];
-
-        let expected = HashMap::from([(
-            "alias-one".to_string(),
-            McpServerConfig {
-                transport: McpServerTransportConfig::StreamableHttp {
-                    url,
-                    bearer_token_env_var: None,
-                    http_headers: None,
-                    env_http_headers: None,
-                },
-                enabled: true,
-                required: false,
-                disabled_reason: None,
-                startup_timeout_sec: None,
-                tool_timeout_sec: None,
-                enabled_tools: None,
-                disabled_tools: None,
-                scopes: None,
-                enable_elicitation: false,
-                read_only: false,
-                strict_tool_classification: false,
-                require_approval_for_mutating: false,
-                oauth_resource: None,
-            },
-        )]);
-
-        assert_eq!(
-            collect_missing_mcp_dependencies(&skills, &HashMap::new()),
-            expected
-        );
-    }
-}
+#[path = "skill_dependencies_tests.rs"]
+mod tests;

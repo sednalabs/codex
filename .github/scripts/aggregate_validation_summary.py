@@ -20,6 +20,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--profile", required=True)
     parser.add_argument("--lane-set", required=True)
     parser.add_argument("--explicit-lanes", default="")
+    parser.add_argument("--supersession-mode", default="auto")
+    parser.add_argument("--supersession-key", default="")
     parser.add_argument("--notes-supplied", default="false")
     parser.add_argument("--run-id", required=True)
     parser.add_argument("--run-attempt", required=True)
@@ -54,26 +56,45 @@ def load_lane_summaries(directory: Path) -> list[dict]:
     return summaries
 
 
-def summarize_lanes(lanes: list[dict]) -> tuple[dict | None, dict]:
+def summarize_lanes(lanes: list[dict], *, profile: str) -> tuple[dict | None, dict]:
     lane_count = 0
     successful_lane_count = 0
     failed_lane_count = 0
     other_lane_count = 0
     first_failure = None
+    failed_lanes = []
+    total_duration_ms = 0
+    phase_runtime_ms: dict[str, int] = {}
+    lanes_with_runtime = []
 
     for lane in lanes:
         lane_count += 1
         outcome = str(lane.get("outcome") or "")
+        lane_phase = str(lane.get("lane_phase") or "downstream_lanes")
+        duration_ms = lane.get("duration_ms")
+        if isinstance(duration_ms, int) and duration_ms >= 0:
+            total_duration_ms += duration_ms
+            phase_runtime_ms[lane_phase] = phase_runtime_ms.get(lane_phase, 0) + duration_ms
+            lanes_with_runtime.append(
+                {
+                    "lane_id": lane.get("lane_id"),
+                    "lane_phase": lane_phase,
+                    "duration_ms": duration_ms,
+                    "outcome": lane.get("outcome"),
+                }
+            )
         if outcome in SUCCESS_OUTCOMES:
             successful_lane_count += 1
         elif outcome in FAILED_OUTCOMES:
             failed_lane_count += 1
+            failed_lane = {
+                "lane_id": lane.get("lane_id"),
+                "outcome": lane.get("outcome"),
+                "signal": lane.get("primary_signal") or "",
+            }
+            failed_lanes.append(failed_lane)
             if first_failure is None:
-                first_failure = {
-                    "lane_id": lane.get("lane_id"),
-                    "outcome": lane.get("outcome"),
-                    "signal": lane.get("primary_signal") or "",
-                }
+                first_failure = failed_lane
         else:
             other_lane_count += 1
 
@@ -82,7 +103,16 @@ def summarize_lanes(lanes: list[dict]) -> tuple[dict | None, dict]:
         "successful_lane_count": successful_lane_count,
         "failed_lane_count": failed_lane_count,
         "other_lane_count": other_lane_count,
+        "total_duration_ms": total_duration_ms,
+        "phase_runtime_ms": dict(
+            sorted(phase_runtime_ms.items(), key=lambda item: item[1], reverse=True)
+        ),
+        "top_slowest_lanes": sorted(
+            lanes_with_runtime, key=lambda lane: lane["duration_ms"], reverse=True
+        )[:5],
         "first_failure": first_failure,
+        "failed_lanes": failed_lanes,
+        "candidate_next_slices": failed_lanes if profile == "frontier" else [],
     }
     return first_failure, summary
 
@@ -107,7 +137,7 @@ def overall_conclusion(first_failure: dict | None, args: argparse.Namespace) -> 
 def main() -> None:
     args = parse_args()
     lane_summaries = load_lane_summaries(Path(args.lane_summary_dir))
-    first_failure, lane_summary = summarize_lanes(lane_summaries)
+    first_failure, lane_summary = summarize_lanes(lane_summaries, profile=args.profile)
     explicit_lanes = [lane.strip() for lane in args.explicit_lanes.split(",") if lane.strip()]
 
     payload = {
@@ -122,6 +152,12 @@ def main() -> None:
             "lane_set": args.lane_set,
             "explicit_lanes": explicit_lanes,
             "notes_supplied": parse_bool(args.notes_supplied),
+            "baseline_required": args.profile == "frontier",
+            "supersession": {
+                "mode": args.supersession_mode or "auto",
+                "key": args.supersession_key or "",
+                "auto_supersedes": (args.supersession_mode or "auto") == "auto",
+            },
         },
         "run": {
             "run_id": args.run_id,

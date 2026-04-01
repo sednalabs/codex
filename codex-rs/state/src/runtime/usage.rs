@@ -638,9 +638,9 @@ mod tests {
             runtime.clone(),
             thread_id,
             SessionSource::Cli,
-            None,
-            None,
-            None,
+            /*forked_from_id*/ None,
+            /*agent_nickname*/ None,
+            /*agent_role*/ None,
         )
         .await?;
 
@@ -651,7 +651,7 @@ mod tests {
             Some("requested-provider".into()),
         );
 
-        let token_event = token_count_event(turn_id, true);
+        let token_event = token_count_event(turn_id, /*include_rate_limit*/ true);
         logger.record_event(&token_event).await;
 
         let pool_arc = runtime.usage_pool();
@@ -722,9 +722,9 @@ WHERE thread_id = ?
             runtime.clone(),
             thread_id,
             SessionSource::Cli,
-            None,
-            None,
-            None,
+            /*forked_from_id*/ None,
+            /*agent_nickname*/ None,
+            /*agent_role*/ None,
         )
         .await?;
 
@@ -735,7 +735,9 @@ WHERE thread_id = ?
             Some("requested-provider".to_string()),
         );
         logger
-            .record_event(&token_count_event(turn_id, false))
+            .record_event(&token_count_event(
+                turn_id, /*include_rate_limit*/ false,
+            ))
             .await;
         logger
             .record_event(&Event {
@@ -748,7 +750,9 @@ WHERE thread_id = ?
             })
             .await;
         logger
-            .record_event(&token_count_event(turn_id, false))
+            .record_event(&token_count_event(
+                turn_id, /*include_rate_limit*/ false,
+            ))
             .await;
 
         let pool_arc = runtime.usage_pool();
@@ -809,9 +813,9 @@ ORDER BY rowid
             runtime.clone(),
             thread_id,
             SessionSource::Cli,
-            None,
-            None,
-            None,
+            /*forked_from_id*/ None,
+            /*agent_nickname*/ None,
+            /*agent_role*/ None,
         )
         .await?;
 
@@ -885,15 +889,17 @@ WHERE tool_call_id = ?
             runtime.clone(),
             thread_id,
             SessionSource::Cli,
-            None,
-            None,
-            None,
+            /*forked_from_id*/ None,
+            /*agent_nickname*/ None,
+            /*agent_role*/ None,
         )
         .await?;
 
         let turn_id = "turn-spawn";
         logger
-            .record_event(&token_count_event(turn_id, false))
+            .record_event(&token_count_event(
+                turn_id, /*include_rate_limit*/ false,
+            ))
             .await;
 
         let spawn_call = "spawn-call";
@@ -1008,7 +1014,7 @@ WHERE child_thread_id = ?
             runtime.clone(),
             parent_thread_id,
             SessionSource::Cli,
-            None,
+            /*forked_from_id*/ None,
             Some("Parent".to_string()),
             Some("default".to_string()),
         )
@@ -1026,7 +1032,7 @@ WHERE child_thread_id = ?
             runtime.clone(),
             child_thread_id,
             child_source.clone(),
-            None,
+            /*forked_from_id*/ None,
             Some("Copernicus".to_string()),
             Some("explorer".to_string()),
         )
@@ -1038,8 +1044,8 @@ WHERE child_thread_id = ?
             fork_thread_id,
             SessionSource::Cli,
             Some(parent_thread_id),
-            None,
-            None,
+            /*agent_nickname*/ None,
+            /*agent_role*/ None,
         )
         .await?;
 
@@ -1119,7 +1125,7 @@ WHERE thread_id = ?
                 runtime.clone(),
                 root_thread_id,
                 SessionSource::Cli,
-                None,
+                /*forked_from_id*/ None,
                 Some("Root".to_string()),
                 Some("default".to_string()),
             )
@@ -1134,7 +1140,7 @@ WHERE thread_id = ?
                     agent_role: Some("explorer".to_string()),
                     agent_path: None,
                 }),
-                None,
+                /*forked_from_id*/ None,
                 Some("Parent".to_string()),
                 Some("explorer".to_string()),
             )
@@ -1154,7 +1160,7 @@ WHERE thread_id = ?
                 agent_role: Some("worker".to_string()),
                 agent_path: None,
             }),
-            None,
+            /*forked_from_id*/ None,
             Some("Child".to_string()),
             Some("worker".to_string()),
         )
@@ -1250,9 +1256,9 @@ WHERE thread_id = ?
             runtime.clone(),
             parent_thread_id,
             SessionSource::Cli,
-            None,
-            None,
-            None,
+            /*forked_from_id*/ None,
+            /*agent_nickname*/ None,
+            /*agent_role*/ None,
         )
         .await?;
 
@@ -1305,7 +1311,7 @@ WHERE thread_id = ?
             runtime.clone(),
             child_thread_id,
             child_source.clone(),
-            None,
+            /*forked_from_id*/ None,
             Some("Copernicus".to_string()),
             Some("explorer".to_string()),
         )

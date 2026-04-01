@@ -61,7 +61,7 @@ fn create_codex_apps_tools_cache_context(
 }
 
 #[test]
-fn elicitation_granular_policy_defaults_to_prompting() {
+fn elicitation_reject_policy_defaults_to_prompting() {
     assert!(!elicitation_is_rejected_by_policy(
         AskForApproval::OnFailure
     ));
@@ -73,27 +73,27 @@ fn elicitation_granular_policy_defaults_to_prompting() {
     ));
     assert!(elicitation_is_rejected_by_policy(AskForApproval::Granular(
         GranularApprovalConfig {
-            sandbox_approval: true,
-            rules: true,
-            skill_approval: true,
-            request_permissions: true,
+            sandbox_approval: false,
+            rules: false,
+            skill_approval: false,
+            request_permissions: false,
             mcp_elicitations: false,
         }
     )));
 }
 
 #[test]
-fn elicitation_granular_policy_respects_never_and_config() {
+fn elicitation_reject_policy_respects_never_and_reject_config() {
     assert!(elicitation_is_rejected_by_policy(AskForApproval::Never));
-    assert!(elicitation_is_rejected_by_policy(AskForApproval::Granular(
-        GranularApprovalConfig {
-            sandbox_approval: true,
-            rules: true,
-            skill_approval: true,
-            request_permissions: true,
-            mcp_elicitations: false,
-        }
-    )));
+    assert!(!elicitation_is_rejected_by_policy(
+        AskForApproval::Granular(GranularApprovalConfig {
+            sandbox_approval: false,
+            rules: false,
+            skill_approval: false,
+            request_permissions: false,
+            mcp_elicitations: true,
+        })
+    ));
 }
 
 #[test]
@@ -541,7 +541,12 @@ fn mcp_init_error_display_prompts_for_github_pat() {
             enabled_tools: None,
             disabled_tools: None,
             scopes: None,
+            enable_elicitation: false,
+            read_only: false,
+            strict_tool_classification: false,
+            require_approval_for_mutating: false,
             oauth_resource: None,
+            tools: HashMap::new(),
         },
         auth_status: McpAuthStatus::Unsupported,
     };
@@ -561,7 +566,7 @@ fn mcp_init_error_display_prompts_for_login_when_auth_required() {
     let server_name = "example";
     let err: StartupOutcomeError = anyhow::anyhow!("Auth required for server").into();
 
-    let display = mcp_init_error_display(server_name, None, &err);
+    let display = mcp_init_error_display(server_name, /*entry*/ None, &err);
 
     let expected = format!(
         "The {server_name} MCP server is not logged in. Run `codex mcp login {server_name}`."
@@ -589,7 +594,12 @@ fn mcp_init_error_display_reports_generic_errors() {
             enabled_tools: None,
             disabled_tools: None,
             scopes: None,
+            enable_elicitation: false,
+            read_only: false,
+            strict_tool_classification: false,
+            require_approval_for_mutating: false,
             oauth_resource: None,
+            tools: HashMap::new(),
         },
         auth_status: McpAuthStatus::Unsupported,
     };
@@ -607,10 +617,10 @@ fn mcp_init_error_display_includes_startup_timeout_hint() {
     let server_name = "slow";
     let err: StartupOutcomeError = anyhow::anyhow!("request timed out").into();
 
-    let display = mcp_init_error_display(server_name, None, &err);
+    let display = mcp_init_error_display(server_name, /*entry*/ None, &err);
 
     assert_eq!(
-        "MCP client for `slow` timed out after 10 seconds. Add or adjust `startup_timeout_sec` in your config.toml:\n[mcp_servers.slow]\nstartup_timeout_sec = XX",
+        "MCP client for `slow` timed out after 30 seconds. Add or adjust `startup_timeout_sec` in your config.toml:\n[mcp_servers.slow]\nstartup_timeout_sec = XX",
         display
     );
 }

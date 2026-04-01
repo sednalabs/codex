@@ -74,6 +74,7 @@ pub(crate) struct RateLimitWindowDisplay {
     /// Human-readable local reset time.
     pub resets_at: Option<String>,
     /// Raw reset timestamp (Unix seconds) used for pacing math.
+    #[cfg_attr(debug_assertions, allow(dead_code))]
     pub resets_at_unix_seconds: Option<i64>,
     /// Window length in minutes when provided by the server.
     pub window_minutes: Option<i64>,
@@ -382,7 +383,7 @@ mod tests {
         let codex = RateLimitSnapshotDisplay {
             limit_name: "codex".to_string(),
             captured_at: now,
-            primary: Some(window(10.0)),
+            primary: Some(window(/*used_percent*/ 10.0)),
             secondary: None,
             credits: Some(CreditsSnapshotDisplay {
                 has_credits: true,
@@ -393,7 +394,7 @@ mod tests {
         let other = RateLimitSnapshotDisplay {
             limit_name: "codex-other".to_string(),
             captured_at: now,
-            primary: Some(window(20.0)),
+            primary: Some(window(/*used_percent*/ 20.0)),
             secondary: None,
             credits: Some(CreditsSnapshotDisplay {
                 has_credits: true,

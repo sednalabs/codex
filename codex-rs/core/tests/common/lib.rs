@@ -16,6 +16,7 @@ use codex_core::config::ConfigOverrides;
 use codex_features::Feature;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use regex_lite::Regex;
+use std::path::Path;
 use std::path::PathBuf;
 use std::process::Command;
 use std::sync::Once;
@@ -108,6 +109,36 @@ pub fn test_absolute_path(unix_path: &str) -> AbsolutePathBuf {
     test_absolute_path_with_windows(unix_path, /*windows_path*/ None)
 }
 
+pub trait PathExt {
+    fn abs(&self) -> AbsolutePathBuf;
+}
+
+impl PathExt for Path {
+    fn abs(&self) -> AbsolutePathBuf {
+        AbsolutePathBuf::try_from(self.to_path_buf()).expect("path should already be absolute")
+    }
+}
+
+pub trait PathBufExt {
+    fn abs(&self) -> AbsolutePathBuf;
+}
+
+impl PathBufExt for PathBuf {
+    fn abs(&self) -> AbsolutePathBuf {
+        self.as_path().abs()
+    }
+}
+
+pub trait TempDirExt {
+    fn abs(&self) -> AbsolutePathBuf;
+}
+
+impl TempDirExt for TempDir {
+    fn abs(&self) -> AbsolutePathBuf {
+        self.path().abs()
+    }
+}
+
 pub fn test_tmp_path() -> AbsolutePathBuf {
     test_absolute_path_with_windows("/tmp", Some(r"C:\Users\codex\AppData\Local\Temp"))
 }
@@ -187,7 +218,15 @@ pub fn fetch_dotslash_file(
 /// temporary directory. Using a per-test directory keeps tests hermetic and
 /// avoids clobbering a developer’s real `~/.codex`.
 pub async fn load_default_config_for_test(codex_home: &TempDir) -> Config {
+    #[cfg(target_os = "linux")]
     let mut config = ConfigBuilder::default()
+        .codex_home(codex_home.path().to_path_buf())
+        .harness_overrides(default_test_overrides())
+        .build()
+        .await
+        .expect("defaults for test should always succeed");
+    #[cfg(not(target_os = "linux"))]
+    let config = ConfigBuilder::default()
         .codex_home(codex_home.path().to_path_buf())
         .harness_overrides(default_test_overrides())
         .build()
@@ -218,15 +257,15 @@ fn default_test_overrides() -> ConfigOverrides {
 
 #[cfg(target_os = "linux")]
 pub fn find_codex_linux_sandbox_exe() -> Result<PathBuf, CargoBinError> {
-    if let Ok(path) = std::env::current_exe() {
-        return Ok(path);
-    }
-
     if let Some(path) = TEST_ARG0_PATH_ENTRY
         .get()
         .and_then(Option::as_ref)
         .and_then(|path_entry| path_entry.paths().codex_linux_sandbox_exe.clone())
     {
+        return Ok(path);
+    }
+
+    if let Ok(path) = std::env::current_exe() {
         return Ok(path);
     }
 

@@ -50,7 +50,7 @@ fn build_tools_object<'s>(
     for tool in enabled_tools {
         let name = v8::String::new(scope, &tool.global_name)
             .ok_or_else(|| "failed to allocate tool name".to_string())?;
-        let function = tool_function(scope, &tool.tool_name)?;
+        let function = tool_function(scope, &tool.call_name)?;
         tools.set(scope, name.into(), function.into());
     }
     Ok(tools)
@@ -66,18 +66,27 @@ fn build_all_tools_value<'s>(
     let array = v8::Array::new(scope, enabled_tools.len() as i32);
     let name_key = v8::String::new(scope, "name")
         .ok_or_else(|| "failed to allocate ALL_TOOLS name key".to_string())?;
+    let module_key = v8::String::new(scope, "module")
+        .ok_or_else(|| "failed to allocate ALL_TOOLS module key".to_string())?;
     let description_key = v8::String::new(scope, "description")
         .ok_or_else(|| "failed to allocate ALL_TOOLS description key".to_string())?;
 
     for (index, tool) in enabled_tools.iter().enumerate() {
         let item = v8::Object::new(scope);
-        let name = v8::String::new(scope, &tool.global_name)
+        let name = v8::String::new(scope, &tool.tool_name)
             .ok_or_else(|| "failed to allocate ALL_TOOLS name".to_string())?;
         let description = v8::String::new(scope, &tool.description)
             .ok_or_else(|| "failed to allocate ALL_TOOLS description".to_string())?;
 
         if item.set(scope, name_key.into(), name.into()) != Some(true) {
             return Err("failed to set ALL_TOOLS name".to_string());
+        }
+        if let Some(module) = &tool.module {
+            let module = v8::String::new(scope, module)
+                .ok_or_else(|| "failed to allocate ALL_TOOLS module".to_string())?;
+            if item.set(scope, module_key.into(), module.into()) != Some(true) {
+                return Err("failed to set ALL_TOOLS module".to_string());
+            }
         }
         if item.set(scope, description_key.into(), description.into()) != Some(true) {
             return Err("failed to set ALL_TOOLS description".to_string());

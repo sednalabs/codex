@@ -63,9 +63,9 @@ async fn interrupt_long_running_tool_emits_turn_aborted() {
 }
 
 /// After an interrupt we expect the next request to the model to include both
-/// the original tool call and an `"aborted"` `function_call_output`. This test
-/// exercises the follow-up flow: it sends another user turn, inspects the mock
-/// responses server, and ensures the model receives the synthesized abort.
+/// the original tool call and the synthesized shell-style abort output. This
+/// test exercises the follow-up flow: it sends another user turn, inspects the
+/// mock responses server, and ensures the model receives the serialized abort.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn interrupt_tool_records_history_entries() {
     let command = "sleep 60";
@@ -141,7 +141,14 @@ async fn interrupt_tool_records_history_entries() {
     let output = response_mock
         .function_call_output_text(call_id)
         .expect("missing function_call_output text");
-    assert_eq!(output, "aborted");
+    assert!(
+        output.starts_with("Wall time: "),
+        "expected shell-style abort output to include wall time, got {output:?}"
+    );
+    assert!(
+        output.contains("aborted by user"),
+        "expected shell-style abort output to mention user abort, got {output:?}"
+    );
 }
 
 /// After an interrupt we persist a model-visible `<turn_aborted>` marker in the conversation

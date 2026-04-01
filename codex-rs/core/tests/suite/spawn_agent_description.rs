@@ -81,7 +81,7 @@ fn test_model_info(
         availability_nux: None,
         apply_patch_tool_type: None,
         web_search_tool_type: Default::default(),
-        truncation_policy: TruncationPolicyConfig::bytes(10_000),
+        truncation_policy: TruncationPolicyConfig::bytes(/*limit*/ 10_000),
         supports_parallel_tool_calls: false,
         supports_image_detail_original: false,
         context_window: Some(272_000),
@@ -223,6 +223,10 @@ async fn spawn_wait_and_list_agents_tool_descriptions_have_guidance_updates() ->
                 .features
                 .enable(Feature::Collab)
                 .expect("test config should allow feature update");
+            config
+                .features
+                .enable(Feature::MultiAgentV2)
+                .expect("test config should allow feature update");
         });
     mount_models_once(
         &server,
@@ -279,7 +283,7 @@ async fn spawn_wait_and_list_agents_tool_descriptions_have_guidance_updates() ->
         "expected wait_agent return_when all guidance: {wait_description:?}"
     );
     assert!(
-        list_description.contains("snapshot"),
+        list_description.contains("live agents"),
         "expected list_agents guidance content: {list_description:?}"
     );
 

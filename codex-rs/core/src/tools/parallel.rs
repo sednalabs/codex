@@ -200,7 +200,7 @@ mod tests {
         let call = tool_call("shell_command");
 
         assert_eq!(
-            ToolCallRuntime::abort_message(&call, 1.25),
+            ToolCallRuntime::abort_message(&call, /*secs*/ 1.25),
             "Wall time: 1.2 seconds\naborted by user"
         );
     }
@@ -210,7 +210,7 @@ mod tests {
         let call = tool_call("spawn_agent");
 
         assert_eq!(
-            ToolCallRuntime::abort_message(&call, 1.25),
+            ToolCallRuntime::abort_message(&call, /*secs*/ 1.25),
             "aborted by user after 1.2s"
         );
     }

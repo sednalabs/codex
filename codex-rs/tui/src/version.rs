@@ -11,6 +11,7 @@ pub const CODEX_RELEASE_REPOSITORY: &str = match option_env!("CODEX_RELEASE_REPO
 };
 
 /// The tag prefix used to derive a version string from release tags.
+#[cfg_attr(debug_assertions, allow(dead_code))]
 pub const CODEX_RELEASE_TAG_PREFIX: &str = match option_env!("CODEX_RELEASE_TAG_PREFIX") {
     Some(prefix) => prefix,
     None => "v",
@@ -32,10 +33,12 @@ pub fn installation_options_url() -> String {
     format!("https://github.com/{CODEX_RELEASE_REPOSITORY}")
 }
 
+#[cfg_attr(debug_assertions, allow(dead_code))]
 pub fn latest_release_api_url() -> String {
     format!("https://api.github.com/repos/{CODEX_RELEASE_REPOSITORY}/releases/latest")
 }
 
+#[cfg_attr(debug_assertions, allow(dead_code))]
 pub fn latest_release_notes_url() -> String {
     format!("https://github.com/{CODEX_RELEASE_REPOSITORY}/releases/latest")
 }

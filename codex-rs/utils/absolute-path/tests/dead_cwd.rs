@@ -1,3 +1,5 @@
+#![cfg(unix)]
+
 use codex_utils_absolute_path::AbsolutePathBuf;
 use pretty_assertions::assert_eq;
 use std::io;
@@ -14,7 +16,6 @@ impl Drop for CurrentDirGuard {
     }
 }
 
-#[cfg(unix)]
 #[test]
 fn absolute_paths_still_resolve_when_current_dir_is_missing() -> io::Result<()> {
     let target_root = tempdir()?;

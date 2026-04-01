@@ -1,5 +1,5 @@
 use super::*;
-use crate::skills::model::SkillDependencies;
+use crate::model::SkillDependencies;
 use codex_protocol::protocol::SkillScope;
 use pretty_assertions::assert_eq;
 use std::path::PathBuf;
@@ -12,8 +12,6 @@ fn skill_with_tools(tools: Vec<SkillToolDependency>) -> SkillMetadata {
         interface: None,
         dependencies: Some(SkillDependencies { tools }),
         policy: None,
-        permission_profile: None,
-        managed_network_override: None,
         path_to_skills_md: PathBuf::from("skill"),
         scope: SkillScope::User,
     }
@@ -47,7 +45,12 @@ fn collect_missing_respects_canonical_installed_key() {
             enabled_tools: None,
             disabled_tools: None,
             scopes: None,
+            enable_elicitation: false,
+            read_only: false,
+            strict_tool_classification: false,
+            require_approval_for_mutating: false,
             oauth_resource: None,
+            tools: HashMap::new(),
         },
     )]);
 
@@ -96,7 +99,12 @@ fn collect_missing_dedupes_by_canonical_key_but_preserves_original_name() {
             enabled_tools: None,
             disabled_tools: None,
             scopes: None,
+            enable_elicitation: false,
+            read_only: false,
+            strict_tool_classification: false,
+            require_approval_for_mutating: false,
             oauth_resource: None,
+            tools: HashMap::new(),
         },
     )]);
 

@@ -4,21 +4,18 @@
 //! decision to avoid re-prompting, builds the self-invocation command for
 //! `codex --codex-run-as-apply-patch`, and runs under the current
 //! `SandboxAttempt` with a minimal environment.
-use crate::error::CodexErr;
 use crate::exec::ExecCapturePolicy;
 use crate::exec::ExecToolCallOutput;
 use crate::guardian::GuardianApprovalRequest;
 use crate::guardian::review_approval_request;
 use crate::guardian::routes_approval_to_guardian;
-use crate::sandboxing::CommandSpec;
-use crate::sandboxing::SandboxPermissions;
+use crate::sandboxing::ExecOptions;
 use crate::sandboxing::execute_env;
 use crate::tools::sandboxing::Approvable;
 use crate::tools::sandboxing::ApprovalCtx;
 use crate::tools::sandboxing::ExecApprovalRequirement;
 use crate::tools::sandboxing::SandboxAttempt;
 use crate::tools::sandboxing::Sandboxable;
-use crate::tools::sandboxing::SandboxablePreference;
 use crate::tools::sandboxing::ToolCtx;
 use crate::tools::sandboxing::ToolError;
 use crate::tools::sandboxing::ToolRuntime;
@@ -29,10 +26,11 @@ use codex_protocol::models::PermissionProfile;
 use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::FileChange;
 use codex_protocol::protocol::ReviewDecision;
+use codex_sandboxing::SandboxCommand;
+use codex_sandboxing::SandboxablePreference;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use futures::future::BoxFuture;
 use std::collections::HashMap;
-use std::path::Path;
 use std::path::PathBuf;
 
 #[derive(Debug)]
@@ -41,41 +39,9 @@ pub struct ApplyPatchRequest {
     pub file_paths: Vec<AbsolutePathBuf>,
     pub changes: std::collections::HashMap<PathBuf, FileChange>,
     pub exec_approval_requirement: ExecApprovalRequirement,
-    pub sandbox_permissions: SandboxPermissions,
     pub additional_permissions: Option<PermissionProfile>,
     pub permissions_preapproved: bool,
     pub timeout_ms: Option<u64>,
-    pub codex_exe: Option<PathBuf>,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum ApplyPatchLaunchMode {
-    ConfiguredCodexLinuxSandboxExe,
-    ConfiguredCodexLinuxSandboxExeViaApplyPatchAlias,
-    CurrentExeFallback,
-    CurrentExeFallbackRecoveredDeletedPath,
-}
-
-impl ApplyPatchLaunchMode {
-    fn label(self) -> &'static str {
-        match self {
-            Self::ConfiguredCodexLinuxSandboxExe => "configured codex_linux_sandbox_exe",
-            Self::ConfiguredCodexLinuxSandboxExeViaApplyPatchAlias => {
-                "configured codex_linux_sandbox_exe (via apply_patch alias)"
-            }
-            Self::CurrentExeFallback => "current_exe fallback",
-            Self::CurrentExeFallbackRecoveredDeletedPath => {
-                "current_exe fallback (recovered deleted-path target)"
-            }
-        }
-    }
-}
-
-#[derive(Debug)]
-struct ApplyPatchLaunchSpec {
-    spec: CommandSpec,
-    executable: PathBuf,
-    launch_mode: ApplyPatchLaunchMode,
 }
 
 #[derive(Default)]
@@ -99,139 +65,48 @@ impl ApplyPatchRuntime {
         }
     }
 
-    fn is_linux_sandbox_helper(path: &Path) -> bool {
-        path.file_name()
-            .and_then(|name| name.to_str())
-            .is_some_and(|name| {
-                name == "codex-linux-sandbox"
-                    || name == "codex-linux-sandbox.exe"
-                    || name.starts_with("codex-linux-sandbox.")
-            })
-    }
-
-    #[cfg(target_os = "linux")]
-    fn recover_deleted_current_exe_path(path: &Path) -> Option<PathBuf> {
-        use std::ffi::OsString;
-        use std::os::unix::ffi::OsStrExt;
-        use std::os::unix::ffi::OsStringExt;
-
-        const DELETED_SUFFIX: &[u8] = b" (deleted)";
-
-        if path.exists() {
-            return None;
-        }
-
-        let bytes = path.as_os_str().as_bytes();
-        let stripped = bytes.strip_suffix(DELETED_SUFFIX)?;
-        let recovered = PathBuf::from(OsString::from_vec(stripped.to_vec()));
-        recovered.exists().then_some(recovered)
-    }
-
-    fn resolve_codex_exe(
+    #[cfg(target_os = "windows")]
+    fn build_sandbox_command(
         req: &ApplyPatchRequest,
-        codex_home: &Path,
-    ) -> Result<(PathBuf, ApplyPatchLaunchMode), ToolError> {
-        if let Some(path) = &req.codex_exe {
-            return Ok((
-                path.clone(),
-                ApplyPatchLaunchMode::ConfiguredCodexLinuxSandboxExe,
-            ));
-        }
-
-        #[cfg(not(target_os = "windows"))]
-        let _ = codex_home;
-
-        #[cfg(target_os = "windows")]
-        {
-            Ok((
-                codex_windows_sandbox::resolve_current_exe_for_launch(codex_home, "codex.exe"),
-                ApplyPatchLaunchMode::CurrentExeFallback,
-            ))
-        }
-        #[cfg(not(target_os = "windows"))]
-        {
-            let exe = std::env::current_exe().map_err(|e| {
-                ToolError::Rejected(format!(
-                    "apply_patch failed to determine fallback current_exe for helper launch: {e}"
-                ))
-            })?;
-
-            #[cfg(target_os = "linux")]
-            if let Some(recovered) = Self::recover_deleted_current_exe_path(&exe) {
-                return Ok((
-                    recovered,
-                    ApplyPatchLaunchMode::CurrentExeFallbackRecoveredDeletedPath,
-                ));
-            }
-
-            Ok((exe, ApplyPatchLaunchMode::CurrentExeFallback))
-        }
+        codex_home: &std::path::Path,
+    ) -> Result<SandboxCommand, ToolError> {
+        Ok(Self::build_sandbox_command_with_program(
+            req,
+            codex_windows_sandbox::resolve_current_exe_for_launch(codex_home, "codex.exe"),
+        ))
     }
 
-    fn build_command_spec(
+    #[cfg(not(target_os = "windows"))]
+    fn build_sandbox_command(
         req: &ApplyPatchRequest,
-        codex_home: &Path,
-    ) -> Result<ApplyPatchLaunchSpec, ToolError> {
-        let (executable, launch_mode) = Self::resolve_codex_exe(req, codex_home)?;
-        let (executable, program, args, launch_mode) = if req
-            .codex_exe
-            .as_deref()
-            .is_some_and(Self::is_linux_sandbox_helper)
-        {
-            let apply_patch_exe = which::which("apply_patch").map_err(|err| {
-                ToolError::Rejected(format!(
-                    "apply_patch failed to locate apply_patch alias while codex_linux_sandbox_exe is configured: {err}"
-                ))
-            })?;
-            (
-                apply_patch_exe.clone(),
-                apply_patch_exe.to_string_lossy().to_string(),
-                vec![req.action.patch.clone()],
-                ApplyPatchLaunchMode::ConfiguredCodexLinuxSandboxExeViaApplyPatchAlias,
-            )
-        } else {
-            (
-                executable.clone(),
-                executable.to_string_lossy().to_string(),
-                vec![
-                    CODEX_CORE_APPLY_PATCH_ARG1.to_string(),
-                    req.action.patch.clone(),
-                ],
-                launch_mode,
-            )
-        };
-        Ok(ApplyPatchLaunchSpec {
-            spec: CommandSpec {
-                program,
-                args,
-                cwd: req.action.cwd.clone(),
-                expiration: req.timeout_ms.into(),
-                capture_policy: ExecCapturePolicy::ShellTool,
-                // Run apply_patch with a minimal environment for determinism and to avoid leaks.
-                env: HashMap::new(),
-                sandbox_permissions: req.sandbox_permissions,
-                additional_permissions: req.additional_permissions.clone(),
-                justification: None,
-            },
-            executable,
-            launch_mode,
-        })
+        codex_self_exe: Option<&PathBuf>,
+    ) -> Result<SandboxCommand, ToolError> {
+        let exe = Self::resolve_apply_patch_program(codex_self_exe)?;
+        Ok(Self::build_sandbox_command_with_program(req, exe))
     }
 
-    fn launch_diagnostics(
-        req: &ApplyPatchRequest,
-        executable: &Path,
-        launch_mode: ApplyPatchLaunchMode,
-    ) -> String {
-        format!(
-            "launch mode: {}, executable: {}, executable_exists: {}, cwd: {}, cwd_exists: {}, files: {}",
-            launch_mode.label(),
-            executable.display(),
-            executable.exists(),
-            req.action.cwd.display(),
-            req.action.cwd.exists(),
-            req.file_paths.len(),
-        )
+    #[cfg(not(target_os = "windows"))]
+    fn resolve_apply_patch_program(codex_self_exe: Option<&PathBuf>) -> Result<PathBuf, ToolError> {
+        if let Some(path) = codex_self_exe {
+            return Ok(path.clone());
+        }
+
+        std::env::current_exe()
+            .map_err(|e| ToolError::Rejected(format!("failed to determine codex exe: {e}")))
+    }
+
+    fn build_sandbox_command_with_program(req: &ApplyPatchRequest, exe: PathBuf) -> SandboxCommand {
+        SandboxCommand {
+            program: exe.into_os_string(),
+            args: vec![
+                CODEX_CORE_APPLY_PATCH_ARG1.to_string(),
+                req.action.patch.clone(),
+            ],
+            cwd: req.action.cwd.clone(),
+            // Run apply_patch with a minimal environment for determinism and to avoid leaks.
+            env: HashMap::new(),
+            additional_permissions: req.additional_permissions.clone(),
+        }
     }
 
     fn stdout_stream(ctx: &ToolCtx) -> Option<crate::exec::StdoutStream> {
@@ -271,12 +146,12 @@ impl Approvable<ApplyPatchRequest> for ApplyPatchRuntime {
         let approval_keys = self.approval_keys(req);
         let changes = req.changes.clone();
         Box::pin(async move {
+            if req.permissions_preapproved && retry_reason.is_none() {
+                return ReviewDecision::Approved;
+            }
             if routes_approval_to_guardian(turn) {
                 let action = ApplyPatchRuntime::build_guardian_review_request(req, ctx.call_id);
                 return review_approval_request(session, turn, action, retry_reason).await;
-            }
-            if req.permissions_preapproved && retry_reason.is_none() {
-                return ReviewDecision::Approved;
             }
             if let Some(reason) = retry_reason {
                 let rx_approve = session
@@ -337,24 +212,20 @@ impl ToolRuntime<ApplyPatchRequest, ExecToolCallOutput> for ApplyPatchRuntime {
         attempt: &SandboxAttempt<'_>,
         ctx: &ToolCtx,
     ) -> Result<ExecToolCallOutput, ToolError> {
-        let launch = Self::build_command_spec(req, &ctx.turn.config.codex_home)?;
-        let launch_diagnostics =
-            Self::launch_diagnostics(req, &launch.executable, launch.launch_mode);
+        #[cfg(target_os = "windows")]
+        let command = Self::build_sandbox_command(req, &ctx.turn.config.codex_home)?;
+        #[cfg(not(target_os = "windows"))]
+        let command = Self::build_sandbox_command(req, ctx.turn.codex_self_exe.as_ref())?;
+        let options = ExecOptions {
+            expiration: req.timeout_ms.into(),
+            capture_policy: ExecCapturePolicy::ShellTool,
+        };
         let env = attempt
-            .env_for(launch.spec, /*network*/ None)
-            .map_err(|err| {
-                ToolError::Rejected(format!(
-                    "apply_patch failed to prepare helper launch ({launch_diagnostics}): {err}"
-                ))
-            })?;
+            .env_for(command, options, /*network*/ None)
+            .map_err(|err| ToolError::Codex(err.into()))?;
         let out = execute_env(env, Self::stdout_stream(ctx))
             .await
-            .map_err(|err| match err {
-                CodexErr::Io(io_err) => ToolError::Rejected(format!(
-                    "apply_patch failed to spawn helper ({launch_diagnostics}): {io_err}"
-                )),
-                other => ToolError::Codex(other),
-            })?;
+            .map_err(ToolError::Codex)?;
         Ok(out)
     }
 }

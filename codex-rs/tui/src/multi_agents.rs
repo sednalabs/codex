@@ -290,6 +290,7 @@ pub(crate) fn waiting_end(ev: CollabWaitingEndEvent) -> PlainHistoryCell {
     };
     let mut details = wait_complete_lines(&statuses, &agent_statuses);
     if is_timed_out && !pending_thread_ids.is_empty() {
+        #[allow(clippy::disallowed_methods)]
         details.push(Line::from(vec![
             Span::from("Pending: ").yellow(),
             Span::from(format_thread_id_list(&pending_thread_ids)),
@@ -369,6 +370,7 @@ pub(crate) fn resume_end(ev: CollabResumeEndEvent) -> PlainHistoryCell {
     )
 }
 
+#[cfg_attr(debug_assertions, allow(dead_code))]
 pub(crate) fn subagent_notification(agent_id: &str, status: &AgentStatus) -> PlainHistoryCell {
     let mut spans = vec![Span::from("Subagent update ").bold()];
     if let Ok(thread_id) = ThreadId::from_string(agent_id) {
@@ -588,12 +590,12 @@ fn status_summary_line(status: &AgentStatus) -> Line<'static> {
     status_summary_spans(status).into()
 }
 
-// Allow `.yellow()`
-#[allow(clippy::disallowed_methods)]
 fn status_summary_spans(status: &AgentStatus) -> Vec<Span<'static>> {
     match status {
         AgentStatus::PendingInit => vec![Span::from("Pending init").cyan()],
         AgentStatus::Running => vec![Span::from("Running").cyan().bold()],
+        // Allow `.yellow()`
+        #[allow(clippy::disallowed_methods)]
         AgentStatus::Interrupted => vec![Span::from("Interrupted").yellow()],
         AgentStatus::Completed(message) => {
             let mut spans = vec![Span::from("Completed").green()];
@@ -841,27 +843,27 @@ mod tests {
     fn agent_shortcut_matches_option_arrow_word_motion_fallbacks_only_when_allowed() {
         assert!(previous_agent_shortcut_matches(
             KeyEvent::new(KeyCode::Left, KeyModifiers::ALT),
-            false,
+            /*allow_word_motion_fallback*/ false,
         ));
         assert!(next_agent_shortcut_matches(
             KeyEvent::new(KeyCode::Right, KeyModifiers::ALT),
-            false,
+            /*allow_word_motion_fallback*/ false,
         ));
         assert!(previous_agent_shortcut_matches(
             KeyEvent::new(KeyCode::Char('b'), KeyModifiers::ALT),
-            true,
+            /*allow_word_motion_fallback*/ true,
         ));
         assert!(next_agent_shortcut_matches(
             KeyEvent::new(KeyCode::Char('f'), KeyModifiers::ALT),
-            true,
+            /*allow_word_motion_fallback*/ true,
         ));
         assert!(!previous_agent_shortcut_matches(
             KeyEvent::new(KeyCode::Char('b'), KeyModifiers::ALT),
-            false,
+            /*allow_word_motion_fallback*/ false,
         ));
         assert!(!next_agent_shortcut_matches(
             KeyEvent::new(KeyCode::Char('f'), KeyModifiers::ALT),
-            false,
+            /*allow_word_motion_fallback*/ false,
         ));
     }
 
@@ -870,19 +872,19 @@ mod tests {
     fn agent_shortcut_matches_option_arrows_only() {
         assert!(previous_agent_shortcut_matches(
             KeyEvent::new(KeyCode::Left, crossterm::event::KeyModifiers::ALT,),
-            false
+            /*allow_word_motion_fallback*/ false
         ));
         assert!(next_agent_shortcut_matches(
             KeyEvent::new(KeyCode::Right, crossterm::event::KeyModifiers::ALT,),
-            false
+            /*allow_word_motion_fallback*/ false
         ));
         assert!(!previous_agent_shortcut_matches(
             KeyEvent::new(KeyCode::Char('b'), crossterm::event::KeyModifiers::ALT,),
-            false
+            /*allow_word_motion_fallback*/ false
         ));
         assert!(!next_agent_shortcut_matches(
             KeyEvent::new(KeyCode::Char('f'), crossterm::event::KeyModifiers::ALT,),
-            false
+            /*allow_word_motion_fallback*/ false
         ));
     }
 
@@ -910,7 +912,7 @@ mod tests {
             }),
         );
 
-        let lines = cell.display_lines(200);
+        let lines = cell.display_lines(/*width*/ 200);
         let title = &lines[0];
         assert_eq!(title.spans[2].content.as_ref(), "Robie");
         assert_eq!(title.spans[2].style.fg, Some(Color::Cyan));
@@ -942,7 +944,7 @@ mod tests {
     }
 
     fn cell_to_text(cell: &PlainHistoryCell) -> String {
-        cell.display_lines(200)
+        cell.display_lines(/*width*/ 200)
             .iter()
             .map(line_to_text)
             .collect::<Vec<_>>()
