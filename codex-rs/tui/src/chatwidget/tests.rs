@@ -1651,7 +1651,7 @@ async fn entered_review_mode_defaults_to_current_changes_banner() {
 }
 
 #[tokio::test]
-async fn review_mode_appends_follow_up_messages_after_existing_queue() {
+async fn review_mode_rejected_follow_up_messages_take_priority_over_existing_queue() {
     let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
     chat.thread_id = Some(ThreadId::new());
     chat.handle_codex_event(Event {
@@ -1678,16 +1678,51 @@ async fn review_mode_appends_follow_up_messages_after_existing_queue() {
     chat.submit_user_message(UserMessage::from("review follow-up one"));
     chat.submit_user_message(UserMessage::from("review follow-up two"));
 
+    assert_eq!(chat.pending_steers.len(), 2);
+    assert_eq!(chat.queued_user_message_texts(), vec!["queued later"]);
+    assert!(drain_insert_history(&mut rx).is_empty());
+    match next_submit_op(&mut op_rx) {
+        Op::UserTurn { items, .. } => assert_eq!(
+            items,
+            vec![UserInput::Text {
+                text: "review follow-up one".to_string(),
+                text_elements: Vec::new(),
+            }]
+        ),
+        other => panic!("expected first review follow-up steer submit, got {other:?}"),
+    }
+    match next_submit_op(&mut op_rx) {
+        Op::UserTurn { items, .. } => assert_eq!(
+            items,
+            vec![UserInput::Text {
+                text: "review follow-up two".to_string(),
+                text_elements: Vec::new(),
+            }]
+        ),
+        other => panic!("expected second review follow-up steer submit, got {other:?}"),
+    }
+
+    for event_id in ["steer-rejected-1", "steer-rejected-2"] {
+        chat.handle_codex_event(Event {
+            id: event_id.into(),
+            msg: EventMsg::Error(ErrorEvent {
+                message: "cannot steer a review turn".to_string(),
+                codex_error_info: Some(CodexErrorInfo::ActiveTurnNotSteerable {
+                    turn_kind: NonSteerableTurnKind::Review,
+                }),
+            }),
+        });
+    }
+
     assert!(chat.pending_steers.is_empty());
     assert_eq!(
         chat.queued_user_message_texts(),
         vec![
-            "queued later",
             "review follow-up one",
-            "review follow-up two"
+            "review follow-up two",
+            "queued later"
         ]
     );
-    assert!(drain_insert_history(&mut rx).is_empty());
 
     chat.handle_codex_event(Event {
         id: "review-exit".into(),
@@ -1709,12 +1744,13 @@ async fn review_mode_appends_follow_up_messages_after_existing_queue() {
         Op::UserTurn { items, .. } => assert_eq!(
             items,
             vec![UserInput::Text {
-                text: "queued later".to_string(),
+                text: "review follow-up one\nreview follow-up two".to_string(),
                 text_elements: Vec::new(),
             }]
         ),
-        other => panic!("expected oldest queued review follow-up submit, got {other:?}"),
+        other => panic!("expected merged rejected review follow-up submit, got {other:?}"),
     }
+    assert_eq!(chat.queued_user_message_texts(), vec!["queued later"]);
 
     chat.handle_codex_event(Event {
         id: "turn-complete-2".into(),
@@ -1729,22 +1765,11 @@ async fn review_mode_appends_follow_up_messages_after_existing_queue() {
         Op::UserTurn { items, .. } => assert_eq!(
             items,
             vec![UserInput::Text {
-                text: "review follow-up one".to_string(),
-                text_elements: Vec::new(),
-            }]
-        ),
-        other => panic!("expected first review follow-up submit, got {other:?}"),
-    }
-
-    match next_submit_op(&mut op_rx) {
-        Op::UserTurn { items, .. } => assert_eq!(
-            items,
-            vec![UserInput::Text {
                 text: "queued later".to_string(),
                 text_elements: Vec::new(),
             }]
         ),
-        other => panic!("expected queued draft submit after rejected steers, got {other:?}"),
+        other => panic!("expected queued draft submit after merged rejected steers, got {other:?}"),
     }
 }
 
