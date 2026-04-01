@@ -28,6 +28,26 @@ pub(crate) async fn resolve_agent_target(
         })
 }
 
+/// Resolves a non-empty list of tool-facing agent targets to thread ids.
+pub(crate) async fn resolve_agent_targets(
+    session: &Arc<Session>,
+    turn: &Arc<TurnContext>,
+    targets: Vec<String>,
+) -> Result<Vec<ThreadId>, FunctionCallError> {
+    if targets.is_empty() {
+        return Err(FunctionCallError::RespondToModel(
+            "agent targets must be non-empty".to_string(),
+        ));
+    }
+
+    let mut thread_ids = Vec::with_capacity(targets.len());
+    for target in targets {
+        thread_ids.push(resolve_agent_target(session, turn, &target).await?);
+    }
+
+    Ok(thread_ids)
+}
+
 fn register_session_root(session: &Arc<Session>, turn: &Arc<TurnContext>) {
     session
         .services
