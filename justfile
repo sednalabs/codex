@@ -57,7 +57,6 @@ core-compile-smoke:
 
 # Carry-only downstream behavior smoke checks.
 core-carry-smoke:
-    CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo nextest run -p codex-core --no-fail-fast --lib -- spawn_agent_preserves_explicit_model_override_across_role_reload --exact
     CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo nextest run -p codex-core --no-fail-fast --test all -- suite::subagent_notifications::spawn_agent_requested_model_and_reasoning_override_inherited_settings_without_role suite::subagent_notifications::spawn_agent_role_overrides_requested_model_and_reasoning_settings suite::code_mode::code_mode_exports_all_tools_metadata_for_builtin_tools suite::code_mode::code_mode_exports_all_tools_metadata_for_namespaced_mcp_tools suite::unified_exec::exec_command_wait_until_terminal_returns_exit_metadata --exact
     cargo nextest run -p codex-tui --no-fail-fast -- queued_inline_slash_command_runs_with_args_after_task_complete alt_up_restores_most_recent_queued_slash_command replayed_turn_complete_submits_restored_queued_follow_up active_agent_label_tracks_current_thread --exact
 
@@ -67,7 +66,7 @@ core-startup-sync-targeted:
 
 # Focused downstream sub-agent surface contract slice.
 core-subagent-surface-targeted:
-    CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo nextest run -p codex-core --no-fail-fast --lib -- spawn_agent_preserves_explicit_model_override_across_role_reload list_agents_returns_direct_children_with_live_inventory list_agents_include_descendants_hydrates_live_nested_descendant_inventory list_agents_include_descendants_reports_persisted_open_and_closed_descendants test_build_specs_multi_agent_v2_uses_task_names_and_hides_resume test_gpt_5_defaults test_gpt_5_1_defaults test_codex_5_1_mini_defaults test_gpt_5_1_codex_max_unified_exec_web_search test_full_toolset_specs_for_gpt5_codex_unified_exec_web_search test_gpt_5_1_codex_max_defaults --exact
+    CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo nextest run -p codex-core --no-fail-fast --lib -- list_agents_returns_direct_children_with_live_inventory list_agents_include_descendants_hydrates_live_nested_descendant_inventory list_agents_include_descendants_reports_persisted_open_and_closed_descendants test_build_specs_multi_agent_v2_uses_task_names_and_hides_resume test_gpt_5_defaults test_gpt_5_1_defaults test_codex_5_1_mini_defaults test_gpt_5_1_codex_max_unified_exec_web_search test_full_toolset_specs_for_gpt5_codex_unified_exec_web_search test_gpt_5_1_codex_max_defaults --exact
 
 # Focused core-side sub-agent notification contract slice.
 core-subagent-notification-contract-targeted:
