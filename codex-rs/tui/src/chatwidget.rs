@@ -5470,12 +5470,6 @@ impl ChatWidget {
                 }
             }
             SlashCommand::Review if !trimmed.is_empty() => {
-                let Some((prepared_args, _prepared_elements)) = self
-                    .bottom_pane
-                    .prepare_inline_args_submission(/*record_history*/ false)
-                else {
-                    return;
-                };
                 self.submit_op(AppCommand::review(ReviewRequest {
                     target: ReviewTarget::Custom {
                         instructions: prepared_args,
