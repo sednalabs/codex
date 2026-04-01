@@ -224,8 +224,7 @@ impl FsWatchManager {
         let mut state = self.state.lock().await;
         state
             .entries
-            .extract_if(|key, _| key.connection_id == connection_id)
-            .count();
+            .retain(|watch_key, _| watch_key.connection_id != connection_id);
     }
 }
 
@@ -240,7 +239,7 @@ fn watch_paths_for_target(path: &AbsolutePathBuf) -> Vec<WatchPath> {
     let watch_path = path.to_path_buf();
     let mut watched_paths = vec![WatchPath {
         path: watch_path.clone(),
-        recursive: false,
+        recursive: watch_path.is_dir(),
     }];
     if !watch_path.exists()
         && let Some(existing_ancestor) = nearest_existing_watch_ancestor(&watch_path)
@@ -555,6 +554,35 @@ mod tests {
         assert!(
             second_batch.is_none(),
             "receiver should report close after flushing buffered paths"
+        );
+    }
+
+    #[test]
+    fn existing_directory_watch_registers_the_directory_recursively() {
+        let temp_dir = TempDir::new().expect("temp dir");
+        let existing_directory = absolute_path(temp_dir.path().to_path_buf());
+
+        assert_eq!(
+            watch_paths_for_target(&existing_directory),
+            vec![WatchPath {
+                path: existing_directory.to_path_buf(),
+                recursive: true,
+            }]
+        );
+    }
+
+    #[test]
+    fn existing_file_watch_does_not_watch_directory_recursively() {
+        let temp_dir = TempDir::new().expect("temp dir");
+        let existing_file = absolute_path(temp_dir.path().join("file"));
+        std::fs::write(existing_file.as_path(), b"hello").expect("write existing file");
+
+        assert_eq!(
+            watch_paths_for_target(&existing_file),
+            vec![WatchPath {
+                path: existing_file.to_path_buf(),
+                recursive: false,
+            }]
         );
     }
 

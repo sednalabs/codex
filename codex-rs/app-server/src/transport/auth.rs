@@ -196,9 +196,9 @@ pub(crate) fn policy_from_settings(
 ) -> io::Result<WebsocketAuthPolicy> {
     let mode = match settings.config.as_ref() {
         Some(AppServerWebsocketAuthConfig::CapabilityToken { token_file }) => {
-            let token = read_trimmed_secret(token_file.as_ref())?;
+            let token_bytes = read_trimmed_secret_bytes(token_file.as_ref())?;
             Some(WebsocketAuthMode::CapabilityToken {
-                token_sha256: sha256_digest(token.as_bytes()),
+                token_sha256: sha256_digest(&token_bytes),
             })
         }
         Some(AppServerWebsocketAuthConfig::SignedBearerToken {
@@ -207,7 +207,7 @@ pub(crate) fn policy_from_settings(
             audience,
             max_clock_skew_seconds,
         }) => {
-            let shared_secret = read_trimmed_secret(shared_secret_file.as_ref())?.into_bytes();
+            let shared_secret = read_trimmed_secret_bytes(shared_secret_file.as_ref())?;
             validate_signed_bearer_secret(shared_secret_file.as_ref(), &shared_secret)?;
             let max_clock_skew_seconds = i64::try_from(*max_clock_skew_seconds).map_err(|_| {
                 io::Error::new(
@@ -363,8 +363,8 @@ fn validate_signed_bearer_secret(path: &Path, shared_secret: &[u8]) -> io::Resul
     Ok(())
 }
 
-fn read_trimmed_secret(path: &std::path::Path) -> io::Result<String> {
-    let raw = std::fs::read_to_string(path).map_err(|err| {
+fn read_trimmed_secret_bytes(path: &Path) -> io::Result<Vec<u8>> {
+    let raw = std::fs::read(path).map_err(|err| {
         io::Error::new(
             err.kind(),
             format!(
@@ -373,14 +373,14 @@ fn read_trimmed_secret(path: &std::path::Path) -> io::Result<String> {
             ),
         )
     })?;
-    let trimmed = raw.trim();
+    let trimmed = raw.trim_ascii();
     if trimmed.is_empty() {
         return Err(io::Error::new(
             ErrorKind::InvalidInput,
             format!("websocket auth secret {} must not be empty", path.display()),
         ));
     }
-    Ok(trimmed.to_string())
+    Ok(trimmed.to_vec())
 }
 
 fn absolute_path_arg(flag_name: &str, path: PathBuf) -> anyhow::Result<AbsolutePathBuf> {
@@ -408,6 +408,9 @@ mod tests {
     use hmac::Hmac;
     use hmac::Mac;
     use serde_json::json;
+    use std::io::ErrorKind;
+    use std::io::Write;
+    use tempfile::NamedTempFile;
 
     type HmacSha256 = Hmac<Sha256>;
 
@@ -606,6 +609,32 @@ mod tests {
         assert_eq!(err.kind(), ErrorKind::InvalidInput);
         assert!(
             err.to_string().contains("must be at least 32 bytes"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn read_trimmed_secret_bytes_accepts_binary_secret() {
+        let mut file = NamedTempFile::new().expect("create temp file");
+        let contents = [0xFF, 0x00, b'A', b'B', b'\n', b' '];
+        file.write_all(&contents).expect("write binary secret");
+        file.flush().expect("flush file");
+
+        let secret =
+            read_trimmed_secret_bytes(file.path()).expect("should read trimmed binary secret");
+        assert_eq!(secret, vec![0xFF, 0x00, b'A', b'B']);
+    }
+
+    #[test]
+    fn read_trimmed_secret_bytes_rejects_empty_secret() {
+        let mut file = NamedTempFile::new().expect("create temp file");
+        file.write_all(b"   \n").expect("write whitespace");
+        file.flush().expect("flush file");
+
+        let err = read_trimmed_secret_bytes(file.path()).expect_err("should reject empty secret");
+        assert_eq!(err.kind(), ErrorKind::InvalidInput);
+        assert!(
+            err.to_string().contains("must not be empty"),
             "unexpected error: {err}"
         );
     }
