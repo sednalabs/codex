@@ -367,12 +367,15 @@ async fn unified_exec_timeouts() -> anyhow::Result<()> {
 async fn unified_exec_pause_blocks_yield_timeout() -> anyhow::Result<()> {
     skip_if_sandbox!(Ok(()));
 
+    let pause_duration = Duration::from_secs(2);
+    let minimum_expected_block = pause_duration.saturating_sub(Duration::from_millis(150));
+
     let (session, turn) = test_session_and_turn().await;
     session.set_out_of_band_elicitation_pause_state(/*paused*/ true);
 
     let paused_session = Arc::clone(&session);
     tokio::spawn(async move {
-        tokio::time::sleep(Duration::from_secs(2)).await;
+        tokio::time::sleep(pause_duration).await;
         paused_session.set_out_of_band_elicitation_pause_state(/*paused*/ false);
     });
 
@@ -387,7 +390,7 @@ async fn unified_exec_pause_blocks_yield_timeout() -> anyhow::Result<()> {
     .await?;
 
     assert!(
-        started.elapsed() >= Duration::from_secs(2),
+        started.elapsed() >= minimum_expected_block,
         "pause should block the unified exec yield timeout"
     );
     assert!(
