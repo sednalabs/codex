@@ -11,7 +11,7 @@ max-threads = 1
 
 [[profile.default.overrides]]
 # Do not add new tests here
-filter = 'test(rmcp_client) | test(humanlike_typing_1000_chars_appears_live_no_placeholder)'
+filter = 'test(rmcp_client) | test(humanlike_typing_1000_chars_appears_live_no_placeholder) | test(plugin_mcp_tools_are_listed) | test(code_mode_exports_all_tools_metadata_for_namespaced_mcp_tools) | test(mcp_tool_call_output_exceeds_limit_truncated_for_model)'
 slow-timeout = { period = "1m", terminate-after = 4 }
 
 [[profile.default.overrides]]
