@@ -6,8 +6,7 @@ Checks:
 - Crates inherit `[workspace.package]` metadata.
 - Crates opt into `[lints] workspace = true`.
 - Crate names follow the codex-rs directory naming conventions.
-- Workspace manifests do not introduce new workspace crate feature toggles
-  while the remaining exceptions are being removed.
+- Workspace manifests do not introduce workspace crate feature toggles.
 """
 
 from __future__ import annotations

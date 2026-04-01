@@ -4057,7 +4057,7 @@ mod tests {
     #[test]
     fn multiline_command_wraps_with_extra_indent_on_subsequent_lines() {
         // Create a completed exec cell with a multiline command
-        let cmd = "set -o pipefail\ncargo test --all-features --quiet".to_string();
+        let cmd = "set -o pipefail\ncargo test -p codex-tui --quiet".to_string();
         let call_id = "c1".to_string();
         let mut cell = ExecCell::new(
             ExecCall {
@@ -4075,7 +4075,7 @@ mod tests {
         // Mark call complete so it renders as "Ran"
         cell.complete_call(&call_id, CommandOutput::default(), Duration::from_millis(1));
 
-        // Small width to force wrapping on both lines
+        // Small width to keep the wrapped continuation-indent path covered.
         let width: u16 = 28;
         let lines = cell.display_lines(width);
         let rendered = render_lines(&lines).join("\n");
