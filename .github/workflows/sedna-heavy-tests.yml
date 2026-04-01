@@ -119,7 +119,7 @@ jobs:
                 run_core_family=true
                 run_ui_protocol_family=true
                 ;;
-              codex-rs/core/src/memories/phase2.rs|codex-rs/core/src/memories/phase2_attestation_tests.rs|codex-rs/state/src/runtime/phase2_attestation.rs|codex-rs/state/migrations/0023_phase2_attestation_roots.sql)
+              codex-rs/core/src/memories/phase2.rs|codex-rs/core/src/memories/phase2_attestation_tests.rs|codex-rs/state/src/runtime/phase2_attestation.rs|codex-rs/state/migrations/0024_phase2_attestation_roots.sql)
                 run_core_family=true
                 run_attestation_family=true
                 ;;
