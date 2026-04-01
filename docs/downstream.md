@@ -173,7 +173,7 @@ User-visible behavior:
 - Queued slash commands and queued message drafts are shown in one queue preview.
 - `Alt+Up` recalls queued items in strict reverse-chronological order across both entry types.
 - `/status` remains immediate (not queued).
-- Unavailable slash commands replay after the current task completes instead of being blocked.
+- Unavailable non-inline slash commands replay after the current task completes instead of being blocked.
 
 ### TUI: Weekly usage pacing signal + stale handling
 
@@ -201,7 +201,6 @@ User-visible behavior:
 - Queued model selections are applied immediately during interrupt cleanup.
 - Queued `/clear` remains queued while a task is running and is not executed during interrupt cleanup.
 - `/quit` remains immediate while a task is running instead of being queued behind the active turn.
-- Inline queued slash command arguments preserve expanded pending-paste payload content.
 
 ### Review + history: downstream accounting and runtime-context alignment
 

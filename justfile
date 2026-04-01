@@ -58,7 +58,7 @@ core-compile-smoke:
 # Carry-only downstream behavior smoke checks.
 core-carry-smoke:
     CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo nextest run -p codex-core --no-fail-fast --test all -- suite::subagent_notifications::spawn_agent_requested_model_and_reasoning_override_inherited_settings_without_role suite::subagent_notifications::spawn_agent_role_overrides_requested_model_and_reasoning_settings suite::code_mode::code_mode_exports_all_tools_metadata_for_builtin_tools suite::code_mode::code_mode_exports_all_tools_metadata_for_namespaced_mcp_tools suite::unified_exec::exec_command_wait_until_terminal_returns_exit_metadata --exact
-    cargo nextest run -p codex-tui --no-fail-fast -- chatwidget::tests::queued_inline_slash_command_runs_with_args_after_task_complete chatwidget::tests::alt_up_restores_most_recent_queued_slash_command app::tests::replayed_turn_complete_submits_restored_queued_follow_up app::agent_navigation::tests::active_agent_label_tracks_current_thread --exact
+    cargo nextest run -p codex-tui --no-fail-fast -- chatwidget::tests::slash_approvals_enter_queues_while_task_running_and_replays_on_completion chatwidget::tests::alt_up_restores_most_recent_queued_slash_command app::tests::replayed_turn_complete_submits_restored_queued_follow_up app::agent_navigation::tests::active_agent_label_tracks_current_thread --exact
 
 # Focused startup sync regression slice for bounded-wait and abort/re-arm behavior.
 core-startup-sync-targeted:

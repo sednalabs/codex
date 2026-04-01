@@ -10225,37 +10225,6 @@ async fn user_shell_command_renders_output_not_exploring() {
 }
 
 #[tokio::test]
-async fn queued_inline_slash_command_runs_with_args_after_task_complete() {
-    let (mut chat, _rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
-    chat.bottom_pane.set_task_running(/*running*/ true);
-    chat.bottom_pane.set_composer_text(
-        "/review focus on error handling".to_string(),
-        Vec::new(),
-        Vec::new(),
-    );
-
-    chat.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
-    assert_matches!(op_rx.try_recv(), Err(TryRecvError::Empty));
-
-    chat.on_task_complete(/*last_agent_message*/ None, /*from_replay*/ false);
-
-    match op_rx.try_recv() {
-        Ok(Op::Review { review_request }) => {
-            assert_eq!(
-                review_request,
-                ReviewRequest {
-                    target: ReviewTarget::Custom {
-                        instructions: "focus on error handling".to_string(),
-                    },
-                    user_facing_hint: None,
-                }
-            );
-        }
-        other => panic!("expected Op::Review, got {other:?}"),
-    }
-}
-
-#[tokio::test]
 async fn alt_up_restores_most_recent_queued_slash_command() {
     let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
     chat.bottom_pane.set_task_running(/*running*/ true);
