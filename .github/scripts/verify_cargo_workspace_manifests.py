@@ -27,11 +27,6 @@ UTILITY_NAME_EXCEPTIONS = {
     "path-utils": "codex-utils-path",
 }
 MANIFEST_FEATURE_EXCEPTIONS = {
-    "codex-rs/cloud-tasks-client/Cargo.toml": {
-        "default": ("online",),
-        "online": ("dep:codex-backend-client",),
-        "mock": (),
-    },
     "codex-rs/otel/Cargo.toml": {
         "disable-default-metrics-exporter": (),
     },
@@ -44,22 +39,12 @@ MANIFEST_FEATURE_EXCEPTIONS = {
 }
 OPTIONAL_DEPENDENCY_EXCEPTIONS = {
     (
-        "codex-rs/cloud-tasks-client/Cargo.toml",
-        "dependencies",
-        "codex-backend-client",
-    ),
-    (
         "codex-rs/tui/Cargo.toml",
         'target.cfg(not(target_os = "linux")).dependencies',
         "cpal",
     ),
 }
 INTERNAL_DEPENDENCY_FEATURE_EXCEPTIONS = {
-    (
-        "codex-rs/cloud-tasks/Cargo.toml",
-        "dependencies",
-        "codex-cloud-tasks-client",
-    ): ("mock", "online"),
     (
         "codex-rs/core/Cargo.toml",
         "dev-dependencies",
