@@ -22,15 +22,15 @@ use codex_protocol::openai_models::ConfigShellToolType;
 use codex_protocol::openai_models::WebSearchToolType;
 use codex_tools::CommandToolOptions;
 use codex_tools::DiscoverableTool;
-use codex_tools::DiscoverableToolType;
 use codex_tools::ShellToolOptions;
 use codex_tools::SpawnAgentToolOptions;
-use codex_tools::ToolSearchAppInfo;
-use codex_tools::ToolSuggestEntry;
+use codex_tools::ToolSearchAppSource;
 use codex_tools::ToolUserShellType;
 use codex_tools::ViewImageToolOptions;
 use codex_tools::WaitAgentTimeoutOptions;
 use codex_tools::augment_tool_spec_for_code_mode;
+use codex_tools::collect_tool_search_app_infos;
+use codex_tools::collect_tool_suggest_entries;
 use codex_tools::create_apply_patch_freeform_tool;
 use codex_tools::create_apply_patch_json_tool;
 use codex_tools::create_assign_task_tool;
@@ -367,12 +367,17 @@ pub(crate) fn build_specs_with_discoverable_tools(
         && let Some(app_tools) = app_tools
     {
         let search_tool_handler = Arc::new(ToolSearchHandler::new(app_tools.clone()));
+        let search_app_infos = collect_tool_search_app_infos(
+            app_tools.values().map(|tool| ToolSearchAppSource {
+                server_name: &tool.server_name,
+                connector_name: tool.connector_name.as_deref(),
+                connector_description: tool.connector_description.as_deref(),
+            }),
+            CODEX_APPS_MCP_SERVER_NAME,
+        );
         push_tool_spec(
             &mut builder,
-            create_tool_search_tool(
-                &tool_search_app_infos(&app_tools),
-                TOOL_SEARCH_DEFAULT_LIMIT,
-            ),
+            create_tool_search_tool(&search_app_infos, TOOL_SEARCH_DEFAULT_LIMIT),
             /*supports_parallel_tool_calls*/ true,
             config.code_mode_enabled,
         );
@@ -392,7 +397,7 @@ pub(crate) fn build_specs_with_discoverable_tools(
             .filter(|tools| !tools.is_empty())
     {
         builder.push_spec_with_parallel_support(
-            create_tool_suggest_tool(&tool_suggest_entries(discoverable_tools)),
+            create_tool_suggest_tool(&collect_tool_suggest_entries(discoverable_tools)),
             /*supports_parallel_tool_calls*/ true,
         );
         builder.register_handler(TOOL_SUGGEST_TOOL_NAME, tool_suggest_handler);
@@ -675,55 +680,6 @@ pub(crate) fn build_specs_with_discoverable_tools(
 
     builder
 }
-
-fn tool_search_app_infos(app_tools: &HashMap<String, ToolInfo>) -> Vec<ToolSearchAppInfo> {
-    app_tools
-        .values()
-        .filter(|tool| tool.server_name == CODEX_APPS_MCP_SERVER_NAME)
-        .filter_map(|tool| {
-            let name = tool
-                .connector_name
-                .as_deref()
-                .map(str::trim)
-                .filter(|connector_name| !connector_name.is_empty())?
-                .to_string();
-            let description = tool
-                .connector_description
-                .as_deref()
-                .map(str::trim)
-                .filter(|connector_description| !connector_description.is_empty())
-                .map(str::to_string);
-            Some(ToolSearchAppInfo { name, description })
-        })
-        .collect()
-}
-
-fn tool_suggest_entries(discoverable_tools: &[DiscoverableTool]) -> Vec<ToolSuggestEntry> {
-    discoverable_tools
-        .iter()
-        .map(|tool| match tool {
-            DiscoverableTool::Connector(connector) => ToolSuggestEntry {
-                id: connector.id.clone(),
-                name: connector.name.clone(),
-                description: connector.description.clone(),
-                tool_type: DiscoverableToolType::Connector,
-                has_skills: false,
-                mcp_server_names: Vec::new(),
-                app_connector_ids: Vec::new(),
-            },
-            DiscoverableTool::Plugin(plugin) => ToolSuggestEntry {
-                id: plugin.id.clone(),
-                name: plugin.name.clone(),
-                description: plugin.description.clone(),
-                tool_type: DiscoverableToolType::Plugin,
-                has_skills: plugin.has_skills,
-                mcp_server_names: plugin.mcp_server_names.clone(),
-                app_connector_ids: plugin.app_connector_ids.clone(),
-            },
-        })
-        .collect()
-}
-
 #[cfg(test)]
 #[path = "spec_tests.rs"]
 mod tests;

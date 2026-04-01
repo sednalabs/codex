@@ -14,6 +14,13 @@ pub struct ToolSearchAppInfo {
     pub description: Option<String>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ToolSearchAppSource<'a> {
+    pub server_name: &'a str,
+    pub connector_name: Option<&'a str>,
+    pub connector_description: Option<&'a str>,
+}
+
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum DiscoverableToolType {
@@ -178,6 +185,29 @@ pub fn create_tool_search_tool(app_tools: &[ToolSearchAppInfo], default_limit: u
     }
 }
 
+pub fn collect_tool_search_app_infos<'a>(
+    app_tools: impl IntoIterator<Item = ToolSearchAppSource<'a>>,
+    codex_apps_server_name: &str,
+) -> Vec<ToolSearchAppInfo> {
+    app_tools
+        .into_iter()
+        .filter(|tool| tool.server_name == codex_apps_server_name)
+        .filter_map(|tool| {
+            let name = tool
+                .connector_name
+                .map(str::trim)
+                .filter(|connector_name| !connector_name.is_empty())?
+                .to_string();
+            let description = tool
+                .connector_description
+                .map(str::trim)
+                .filter(|connector_description| !connector_description.is_empty())
+                .map(str::to_string);
+            Some(ToolSearchAppInfo { name, description })
+        })
+        .collect()
+}
+
 pub fn create_tool_suggest_tool(discoverable_tools: &[ToolSuggestEntry]) -> ToolSpec {
     let discoverable_tool_ids = discoverable_tools
         .iter()
@@ -243,6 +273,34 @@ pub fn create_tool_suggest_tool(discoverable_tools: &[ToolSuggestEntry]) -> Tool
         },
         output_schema: None,
     })
+}
+
+pub fn collect_tool_suggest_entries(
+    discoverable_tools: &[DiscoverableTool],
+) -> Vec<ToolSuggestEntry> {
+    discoverable_tools
+        .iter()
+        .map(|tool| match tool {
+            DiscoverableTool::Connector(connector) => ToolSuggestEntry {
+                id: connector.id.clone(),
+                name: connector.name.clone(),
+                description: connector.description.clone(),
+                tool_type: DiscoverableToolType::Connector,
+                has_skills: false,
+                mcp_server_names: Vec::new(),
+                app_connector_ids: Vec::new(),
+            },
+            DiscoverableTool::Plugin(plugin) => ToolSuggestEntry {
+                id: plugin.id.clone(),
+                name: plugin.name.clone(),
+                description: plugin.description.clone(),
+                tool_type: DiscoverableToolType::Plugin,
+                has_skills: plugin.has_skills,
+                mcp_server_names: plugin.mcp_server_names.clone(),
+                app_connector_ids: plugin.app_connector_ids.clone(),
+            },
+        })
+        .collect()
 }
 
 fn format_discoverable_tools(discoverable_tools: &[ToolSuggestEntry]) -> String {
