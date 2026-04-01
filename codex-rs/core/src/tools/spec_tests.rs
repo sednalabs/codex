@@ -6,10 +6,18 @@ use crate::shell::ShellType;
 use crate::tools::ToolRouter;
 use crate::tools::router::ToolRouterParams;
 use codex_app_server_protocol::AppInfo;
+use codex_features::Feature;
+use codex_features::Features;
+use codex_protocol::config_types::WebSearchConfig;
+use codex_protocol::config_types::WebSearchMode;
+use codex_protocol::config_types::WindowsSandboxLevel;
 use codex_protocol::models::VIEW_IMAGE_TOOL_NAME;
 use codex_protocol::openai_models::InputModality;
 use codex_protocol::openai_models::ModelInfo;
 use codex_protocol::openai_models::ModelsResponse;
+use codex_protocol::protocol::SandboxPolicy;
+use codex_protocol::protocol::SessionSource;
+use codex_protocol::protocol::SubAgentSource;
 use codex_tools::AdditionalProperties;
 use codex_tools::CommandToolOptions;
 use codex_tools::ConfiguredToolSpec;
@@ -40,6 +48,7 @@ use codex_tools::mcp_tool_to_deferred_responses_api_tool;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use pretty_assertions::assert_eq;
 use serde_json::json;
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use super::*;
@@ -178,7 +187,7 @@ fn request_user_input_tool_spec(default_mode_request_user_input: bool) -> ToolSp
 fn spawn_agent_tool_options(config: &ToolsConfig) -> SpawnAgentToolOptions<'_> {
     SpawnAgentToolOptions {
         available_models: &config.available_models,
-        agent_type_description: crate::agent::role::spawn_tool_spec::build(&config.agent_roles),
+        agent_type_description: agent_type_description(config),
     }
 }
 
@@ -246,30 +255,6 @@ fn model_info_from_models_json(slug: &str) -> ModelInfo {
         .find(|candidate| candidate.slug == slug)
         .unwrap_or_else(|| panic!("model slug {slug} is missing from models.json"));
     with_config_overrides(model, &config)
-}
-
-#[test]
-fn unified_exec_is_blocked_for_windows_sandboxed_policies_only() {
-    assert!(!unified_exec_allowed_in_environment(
-        /*is_windows*/ true,
-        &SandboxPolicy::new_read_only_policy(),
-        WindowsSandboxLevel::RestrictedToken,
-    ));
-    assert!(!unified_exec_allowed_in_environment(
-        /*is_windows*/ true,
-        &SandboxPolicy::new_workspace_write_policy(),
-        WindowsSandboxLevel::RestrictedToken,
-    ));
-    assert!(unified_exec_allowed_in_environment(
-        /*is_windows*/ true,
-        &SandboxPolicy::DangerFullAccess,
-        WindowsSandboxLevel::RestrictedToken,
-    ));
-    assert!(unified_exec_allowed_in_environment(
-        /*is_windows*/ true,
-        &SandboxPolicy::DangerFullAccess,
-        WindowsSandboxLevel::Disabled,
-    ));
 }
 
 #[test]
@@ -1642,7 +1627,7 @@ fn shell_zsh_fork_prefers_shell_command_over_unified_exec() {
     assert_eq!(
         tools_config
             .with_unified_exec_shell_mode_for_session(
-                &user_shell,
+                tool_user_shell_type(&user_shell),
                 Some(&PathBuf::from(if cfg!(windows) {
                     r"C:\opt\codex\zsh"
                 } else {

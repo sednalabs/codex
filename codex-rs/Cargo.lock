@@ -2627,11 +2627,15 @@ version = "0.0.0"
 dependencies = [
  "codex-app-server-protocol",
  "codex-code-mode",
+ "codex-features",
  "codex-protocol",
+ "codex-utils-absolute-path",
+ "codex-utils-pty",
  "pretty_assertions",
  "rmcp",
  "serde",
  "serde_json",
+ "tracing",
 ]
 
 [[package]]
