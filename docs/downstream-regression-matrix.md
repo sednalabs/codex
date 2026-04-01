@@ -14,12 +14,15 @@ Default local iterative validation path:
 Fast lanes used by `core-test-smoke` locally and by the remote smoke matrix:
 
 - `core-compile-smoke`
-- `core-carry-smoke`
+- `core-carry-core-smoke`
+- `core-carry-ui-smoke`
 - `core-ledger-smoke`
 - `core-runtime-surface-smoke`
-- `core-carry-smoke` now includes the `codex-tui`
-  replayed-queue and selected-agent footer regressions, so
-  downstream interactive behavior fails during the PR smoke pass.
+- `core-carry-core-smoke` isolates downstream core/tool-surface carry checks so
+  core regressions fail without waiting on TUI smoke.
+- `core-carry-ui-smoke` isolates `codex-tui` replayed-queue and selected-agent
+  footer regressions, so downstream interactive behavior still fails during the
+  PR smoke pass without obscuring core-only timing.
 - `core-ledger-smoke` now includes the `usage.sqlite` cleanup, turn-reset, and
   restart-lineage regressions, so downstream accounting behavior
   fails during the same smoke pass.
@@ -71,9 +74,10 @@ GitHub Actions lane naming (`.github/workflows/sedna-heavy-tests.yml`):
   - On ordinary PR updates, it auto-selects only the heavy lanes implied by the
     changed path class.
   - Non-doc heavy runs must clear the runtime smoke bundle
-    (`core-compile-smoke`, `core-carry-smoke`, `core-ledger-smoke`,
-    `core-runtime-surface-smoke`) before the broader lane matrix fans out, and
-    the heavy matrix itself is capped and fail-fast on PRs.
+    (`core-compile-smoke`, `core-carry-core-smoke`, `core-carry-ui-smoke`,
+    `core-ledger-smoke`, `core-runtime-surface-smoke`) before the broader lane
+    matrix fans out, and the heavy matrix itself is capped and fail-fast on
+    PRs.
   - Changes to workflow wiring or the `justfile` run the smoke gate plus a small
     representative workflow-validation lane set instead of promoting the PR to
     the full heavy matrix.
@@ -105,16 +109,16 @@ GitHub Actions lane naming (`.github/workflows/sedna-heavy-tests.yml`):
 
 | Divergence | Guardrail lane | Primary checks |
 | --- | --- | --- |
-| Sub-agent override preservation across role reload | `core-carry-smoke` | `spawn_agent_requested_model_and_reasoning_override_inherited_settings_without_role`; `spawn_agent_role_overrides_requested_model_and_reasoning_settings` |
+| Sub-agent override preservation across role reload | `core-carry-core-smoke` | `spawn_agent_requested_model_and_reasoning_override_inherited_settings_without_role`; `spawn_agent_role_overrides_requested_model_and_reasoning_settings` |
 | Sub-agent surface contract (`spawn_agent`/`list_agents` omit raw `model_reasoning_summary`, live inventory rows expose active-descendant hints, and model-visible tool specs include the carried sub-agent inventory surfaces) | `codex.core-subagent-surface-targeted` | `multi_agent_v2_list_agents_returns_completed_status_and_last_task_message`; `multi_agent_v2_list_agents_flags_active_descendants`; `test_build_specs_multi_agent_v2_uses_task_names_and_hides_resume`; `test_gpt_5_defaults`; `test_gpt_5_1_defaults`; `test_codex_5_1_mini_defaults`; `test_gpt_5_1_codex_max_unified_exec_web_search`; `test_full_toolset_specs_for_gpt5_codex_unified_exec_web_search`; `test_gpt_5_1_codex_max_defaults` |
 | Core-side sub-agent notification contract (`codex-core`) | `codex.core-subagent-notification-contract-targeted` | `format_subagent_notification_message_round_trips_completed_status`; `classifies_memory_excluded_fragments`; `drop_last_n_user_turns_ignores_session_prefix_user_messages`; `serializes_memory_rollout_with_agents_removed_but_environment_kept` |
 | Sub-agent completion-notification parser + TUI render surface (`protocol` + `tui`) | `codex.core-subagent-notification-visibility-targeted` | `parse_subagent_notification_response_item_*`; `raw_response_subagent_notification_renders_history` |
 | Sub-agent inventory + blocking join surface | `codex.core-multi-agent-orchestration-targeted` | `multi_agent_v2_list_agents_returns_completed_status_and_last_task_message`; `wait_agent_allows_return_when_any_and_returns_on_first_final_status`; `wait_agent_allows_return_when_all_and_returns_only_when_all_are_final`; `spawn_wait_and_list_agents_tool_descriptions_have_guidance_updates` |
 | Persisted sub-agent descendant status across close + rollout resume | `codex.core-persisted-subagent-descendants-targeted` | `persisted_spawn_descendants_reflect_closed_status` |
-| Code-mode declaration formatting + namespaced tool metadata | `core-carry-smoke` | `code_mode_exports_all_tools_metadata_for_builtin_tools`; `code_mode_exports_all_tools_metadata_for_namespaced_mcp_tools` |
-| Unified-exec blocking wait semantics | `core-carry-smoke` | `exec_command_wait_until_terminal_returns_exit_metadata`; `exec_command_tool_exposes_blocking_wait_parameters`; `write_stdin_tool_exposes_blocking_wait_parameters` |
+| Code-mode declaration formatting + namespaced tool metadata | `core-carry-core-smoke` | `code_mode_exports_all_tools_metadata_for_builtin_tools`; `code_mode_exports_all_tools_metadata_for_namespaced_mcp_tools` |
+| Unified-exec blocking wait semantics | `core-carry-core-smoke` | `exec_command_wait_until_terminal_returns_exit_metadata`; `exec_command_tool_exposes_blocking_wait_parameters`; `write_stdin_tool_exposes_blocking_wait_parameters` |
 | Turn-complete compaction count metadata | `codex.app-server-protocol-test` | `preserves_compaction_only_turn`; broader `TurnCompleteEvent` shape coverage in `codex-core`, `codex-exec`, and `codex-tui` tests keeps `compaction_events_in_turn` wired through downstream consumers |
-| TUI queued slash recall + replay ordering | `core-carry-smoke` | `slash_approvals_enter_queues_while_task_running_and_replays_on_completion`; `alt_up_restores_most_recent_queued_slash_command` |
+| TUI queued slash recall + replay ordering | `core-carry-ui-smoke` | `slash_approvals_enter_queues_while_task_running_and_replays_on_completion`; `alt_up_restores_most_recent_queued_slash_command` |
 | Startup plugin sync bounded wait + completion-signal re-arm + abort checkpointing | `codex.core-startup-sync-targeted` | `startup_remote_plugin_sync_waits_for_late_prerequisites`; `startup_remote_plugin_sync_is_single_flight_before_prerequisites_exist`; `startup_remote_plugin_sync_uses_latest_config_and_auth_snapshot`; `startup_remote_plugin_sync_rearms_after_curated_repo_completion_signal_uses_latest_config_and_auth_snapshot`; `startup_remote_plugin_sync_signals_after_failed_curated_postprocessing`; `startup_remote_plugin_sync_aborts_in_flight_before_stamping_marker`; `startup_remote_plugin_sync_relaunches_immediately_after_abort_even_if_late_completion_signal_arrives` |
 | Tool-context serialization for custom/function/abort outputs | `codex.core-context-serialization-targeted` | `custom_tool_calls_should_roundtrip_as_custom_outputs`; `function_payloads_remain_function_outputs`; `aborted_tool_output_serializes_*`; `interrupt_tool_records_history_entries` |
 | Phase-2 attestation contract | `codex.core-attestation-targeted` | `consolidation_artifacts_ready_rejects_*`; `global_phase2_attestation_requirement_is_root_scoped` |

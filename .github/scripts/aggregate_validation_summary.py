@@ -63,10 +63,26 @@ def summarize_lanes(lanes: list[dict], *, profile: str) -> tuple[dict | None, di
     other_lane_count = 0
     first_failure = None
     failed_lanes = []
+    total_duration_ms = 0
+    phase_runtime_ms: dict[str, int] = {}
+    lanes_with_runtime = []
 
     for lane in lanes:
         lane_count += 1
         outcome = str(lane.get("outcome") or "")
+        lane_phase = str(lane.get("lane_phase") or "downstream_lanes")
+        duration_ms = lane.get("duration_ms")
+        if isinstance(duration_ms, int) and duration_ms >= 0:
+            total_duration_ms += duration_ms
+            phase_runtime_ms[lane_phase] = phase_runtime_ms.get(lane_phase, 0) + duration_ms
+            lanes_with_runtime.append(
+                {
+                    "lane_id": lane.get("lane_id"),
+                    "lane_phase": lane_phase,
+                    "duration_ms": duration_ms,
+                    "outcome": lane.get("outcome"),
+                }
+            )
         if outcome in SUCCESS_OUTCOMES:
             successful_lane_count += 1
         elif outcome in FAILED_OUTCOMES:
@@ -87,6 +103,13 @@ def summarize_lanes(lanes: list[dict], *, profile: str) -> tuple[dict | None, di
         "successful_lane_count": successful_lane_count,
         "failed_lane_count": failed_lane_count,
         "other_lane_count": other_lane_count,
+        "total_duration_ms": total_duration_ms,
+        "phase_runtime_ms": dict(
+            sorted(phase_runtime_ms.items(), key=lambda item: item[1], reverse=True)
+        ),
+        "top_slowest_lanes": sorted(
+            lanes_with_runtime, key=lambda lane: lane["duration_ms"], reverse=True
+        )[:5],
         "first_failure": first_failure,
         "failed_lanes": failed_lanes,
         "candidate_next_slices": failed_lanes if profile == "frontier" else [],

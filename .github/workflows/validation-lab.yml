@@ -202,6 +202,7 @@ jobs:
     with:
       checkout_ref: ${{ needs.metadata.outputs.checkout_ref }}
       lane_id: ${{ matrix.lane_id }}
+      lane_phase: smoke_gate
       summary_title: ${{ matrix.lane_id }}
       run_command: ${{ matrix.run_command }}
       install_nextest: ${{ matrix.install_nextest }}
@@ -224,6 +225,7 @@ jobs:
     with:
       checkout_ref: ${{ needs.metadata.outputs.checkout_ref }}
       lane_id: ${{ matrix.lane_id }}
+      lane_phase: downstream_lanes
       summary_title: ${{ matrix.lane_id }}
       run_command: ${{ matrix.run_command }}
       install_nextest: ${{ matrix.install_nextest }}
@@ -243,6 +245,7 @@ jobs:
     uses: ./.github/workflows/_sedna-linux-rust.yml
     with:
       checkout_ref: ${{ needs.metadata.outputs.checkout_ref }}
+      lane_phase: artifact_build
       summary_title: Validation lab artifact build
       release_version: ${{ needs.metadata.outputs.preview_version }}
       artifact_name: ${{ needs.metadata.outputs.artifact_name }}
@@ -361,6 +364,7 @@ jobs:
           if payload['selection']['supersession'].get('key'):
               print(f"- Supersession key: `{payload['selection']['supersession']['key']}`")
           print(f"- Lane count: `{summary['lane_count']}`")
+          print(f"- Total recorded lane runtime (ms): `{summary.get('total_duration_ms', 0)}`")
           print(f"- Failed lanes: `{summary['failed_lane_count']}`")
           if first_failure:
               print(f"- First failing lane: `{first_failure['lane_id']}`")
@@ -368,6 +372,19 @@ jobs:
                   print(f"- First failure signal: `{first_failure['signal']}`")
           else:
               print("- First failing lane: `none`")
+          phase_runtime = summary.get("phase_runtime_ms") or {}
+          if phase_runtime:
+              print("- Phase runtime totals (ms):")
+              for phase, duration_ms in phase_runtime.items():
+                  print(f"  - `{phase}`: `{duration_ms}`")
+          top_slowest = summary.get("top_slowest_lanes") or []
+          if top_slowest:
+              print(f"- Top slow lanes (up to {len(top_slowest)}):")
+              for lane in top_slowest:
+                  lane_id = lane.get("lane_id") or "unknown"
+                  lane_phase = lane.get("lane_phase") or "unknown"
+                  duration_ms = lane.get("duration_ms")
+                  print(f"  - `{lane_id}` (`{lane_phase}`): `{duration_ms}` ms")
           candidates = summary.get("candidate_next_slices") or []
           if candidates:
               print(f"- Frontier blocker count: `{len(candidates)}`")

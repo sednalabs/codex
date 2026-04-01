@@ -74,7 +74,7 @@ introduced_in:
 files:
   - codex-rs/core/src/tools/spec.rs
   - codex-rs/core/src/tools/handlers/unified_exec.rs
-guardrail_lane: core-carry-smoke
+guardrail_lane: core-carry-core-smoke
 tests:
   - exec_command_wait_until_terminal_returns_exit_metadata
   - write_stdin_tool_exposes_blocking_wait_parameters

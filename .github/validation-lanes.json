@@ -8,9 +8,17 @@
       "smoke_gate_kinds": ["runtime"]
     },
     {
-      "lane_id": "core-carry-smoke",
-      "run_command": "just --justfile ../justfile core-carry-smoke",
+      "lane_id": "core-carry-core-smoke",
+      "run_command": "just --justfile ../justfile core-carry-core-smoke",
       "groups": ["core"],
+      "lane_sets": ["all", "core-carry"],
+      "install_nextest": true,
+      "smoke_gate_kinds": ["runtime"]
+    },
+    {
+      "lane_id": "core-carry-ui-smoke",
+      "run_command": "just --justfile ../justfile core-carry-ui-smoke",
+      "groups": ["ui_protocol"],
       "lane_sets": ["all", "core-carry"],
       "install_nextest": true,
       "smoke_gate_kinds": ["runtime"]
