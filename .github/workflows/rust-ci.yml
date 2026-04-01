@@ -41,11 +41,34 @@ jobs:
             HEAD_SHA='${{ github.event.pull_request.head.sha }}'
             echo "Base SHA: $BASE_SHA"
             echo "Head SHA: $HEAD_SHA"
-            # List files changed between base and PR head
             mapfile -t files < <(git diff --name-only --no-renames "$BASE_SHA...$HEAD_SHA")
             workflow_delete_only=true
             if git diff --name-only --diff-filter=AM --no-renames "$BASE_SHA...$HEAD_SHA" | grep -q .; then
               workflow_delete_only=false
+            fi
+          elif [[ "${{ github.event_name }}" == "push" ]]; then
+            before='${{ github.event.before }}'
+            after='${{ github.sha }}'
+            echo "Before SHA: $before"
+            echo "After SHA: $after"
+            if [[ "$before" == '0000000000000000000000000000000000000000' ]]; then
+              mapfile -t files < <(git diff-tree --no-commit-id --name-only -r "$after")
+            else
+              mapfile -t files < <(git diff --name-only --no-renames "$before...$after")
+            fi
+
+            if ((${#files[@]} > 0)); then
+              workflow_delete_only=true
+              for f in "${files[@]}"; do
+                if [[ $f != .github/workflows/* ]]; then
+                  workflow_delete_only=false
+                  break
+                fi
+                if [[ -e "$f" ]]; then
+                  workflow_delete_only=false
+                  break
+                fi
+              done
             fi
           else
             # On push / manual runs, default to running everything
