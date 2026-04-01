@@ -32,6 +32,9 @@ pub fn create_linux_sandbox_command_args_for_policies(
     use_legacy_landlock: bool,
     allow_network_for_proxy: bool,
 ) -> Vec<String> {
+    let use_legacy_landlock = use_legacy_landlock
+        && !file_system_sandbox_policy
+            .needs_direct_runtime_enforcement(network_sandbox_policy, sandbox_policy_cwd);
     let sandbox_policy_json = serde_json::to_string(sandbox_policy)
         .unwrap_or_else(|err| panic!("failed to serialize sandbox policy: {err}"));
     let file_system_policy_json = serde_json::to_string(file_system_sandbox_policy)

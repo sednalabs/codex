@@ -1,5 +1,9 @@
 use super::*;
+use codex_protocol::protocol::ReadOnlyAccess;
+use codex_protocol::protocol::SandboxPolicy;
+use codex_utils_absolute_path::AbsolutePathBuf;
 use pretty_assertions::assert_eq;
+use tempfile::tempdir;
 
 #[test]
 fn legacy_landlock_flag_is_included_when_requested() {
@@ -86,6 +90,40 @@ fn split_policy_flags_are_included() {
             .any(|window| window[0] == "--command-cwd" && window[1] == "/tmp/link"),
         true
     );
+}
+
+#[test]
+fn incompatible_split_policies_skip_legacy_landlock_flag() {
+    let cwd = tempdir().expect("tempdir");
+    let command = vec!["/bin/true".to_string()];
+    let nested = AbsolutePathBuf::try_from(cwd.path().join("nested")).expect("absolute nested");
+    let command_cwd = nested.as_path();
+    let sandbox_policy = SandboxPolicy::WorkspaceWrite {
+        writable_roots: vec![nested.clone()],
+        read_only_access: ReadOnlyAccess::Restricted {
+            include_platform_defaults: false,
+            readable_roots: vec![],
+        },
+        network_access: false,
+        exclude_tmpdir_env_var: true,
+        exclude_slash_tmp: true,
+    };
+    let file_system_sandbox_policy =
+        FileSystemSandboxPolicy::from_legacy_sandbox_policy(&sandbox_policy, cwd.path());
+    let network_sandbox_policy = NetworkSandboxPolicy::Restricted;
+
+    let args = create_linux_sandbox_command_args_for_policies(
+        command,
+        command_cwd,
+        &sandbox_policy,
+        &file_system_sandbox_policy,
+        network_sandbox_policy,
+        cwd.path(),
+        /*use_legacy_landlock*/ true,
+        /*allow_network_for_proxy*/ false,
+    );
+
+    assert_eq!(args.contains(&"--use-legacy-landlock".to_string()), false);
 }
 
 #[test]
