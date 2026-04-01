@@ -32,8 +32,6 @@ MANIFEST_FEATURE_EXCEPTIONS = {
     },
     "codex-rs/tui/Cargo.toml": {
         "default": ("voice-input",),
-        "vt100-tests": (),
-        "debug-logs": (),
         "voice-input": ("dep:cpal",),
     },
 }
