@@ -66,11 +66,11 @@ core-startup-sync-targeted:
 
 # Focused downstream sub-agent surface contract slice.
 core-subagent-surface-targeted:
-    CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo nextest run -p codex-core --no-fail-fast --lib -- multi_agent_v2_list_agents_returns_completed_status_and_last_task_message multi_agent_v2_list_agents_keeps_active_descendant_hint_under_path_filter multi_agent_v2_list_agents_flags_active_descendants test_build_specs_multi_agent_v2_uses_task_names_and_hides_resume test_gpt_5_defaults test_gpt_5_1_defaults test_codex_5_1_mini_defaults test_gpt_5_1_codex_max_unified_exec_web_search test_full_toolset_specs_for_gpt5_codex_unified_exec_web_search test_gpt_5_1_codex_max_defaults --exact
+    CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo nextest run -p codex-core --no-fail-fast --lib -- multi_agent_v2_list_agents_returns_completed_status_and_last_task_message multi_agent_v2_list_agents_keeps_active_descendant_hint_under_path_filter multi_agent_v2_list_agents_flags_active_descendants test_build_specs_multi_agent_v2_uses_task_names_and_hides_resume test_gpt_5_defaults test_gpt_5_1_defaults test_codex_5_1_mini_defaults test_gpt_5_1_codex_max_unified_exec_web_search test_full_toolset_specs_for_gpt5_codex_unified_exec_web_search test_gpt_5_1_codex_max_defaults
 
 # Focused core-side sub-agent notification contract slice.
 core-subagent-notification-contract-targeted:
-    CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo nextest run -p codex-core --no-fail-fast --lib -- format_subagent_notification_message_round_trips_completed_status classifies_memory_excluded_fragments drop_last_n_user_turns_ignores_session_prefix_user_messages serializes_memory_rollout_with_agents_removed_but_environment_kept --exact
+    CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo nextest run -p codex-core --no-fail-fast --lib -- format_subagent_notification_message_round_trips_completed_status classifies_memory_excluded_fragments drop_last_n_user_turns_ignores_session_prefix_user_messages serializes_memory_rollout_with_agents_removed_but_environment_kept
 
 # Focused sub-agent completion-notification parser + TUI render slice after the
 # tui_app_server -> tui cutover.
