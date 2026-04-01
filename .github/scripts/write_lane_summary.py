@@ -14,11 +14,15 @@ ERROR_RE = re.compile(r"(^error:|^thread '.*' panicked|\bFAILED\b|failures:|erro
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--lane-id", required=True)
+    parser.add_argument("--lane-phase", default="downstream_lanes")
     parser.add_argument("--summary-title", required=True)
     parser.add_argument("--run-command", required=True)
     parser.add_argument("--outcome", default="unknown")
     parser.add_argument("--exit-code", default="")
     parser.add_argument("--log-file", default="")
+    parser.add_argument("--started-at-ms", default="")
+    parser.add_argument("--finished-at-ms", default="")
+    parser.add_argument("--duration-ms", default="")
     parser.add_argument("--artifact-name", default="")
     parser.add_argument("--output", required=True)
     return parser.parse_args()
@@ -50,6 +54,19 @@ def parse_exit_code(raw: str) -> int | None:
         return None
 
 
+def parse_u64(raw: str) -> int | None:
+    value = raw.strip()
+    if not value:
+        return None
+    try:
+        parsed = int(value)
+    except ValueError:
+        return None
+    if parsed < 0:
+        return None
+    return parsed
+
+
 def main() -> None:
     args = parse_args()
     log_path = Path(args.log_file) if args.log_file else None
@@ -59,10 +76,14 @@ def main() -> None:
 
     payload = {
         "lane_id": args.lane_id,
+        "lane_phase": args.lane_phase or "downstream_lanes",
         "summary_title": args.summary_title,
         "run_command": args.run_command,
         "outcome": args.outcome or "unknown",
         "exit_code": parse_exit_code(args.exit_code),
+        "started_at_ms": parse_u64(args.started_at_ms),
+        "finished_at_ms": parse_u64(args.finished_at_ms),
+        "duration_ms": parse_u64(args.duration_ms),
         "log_available": bool(lines),
         "primary_signal": primary_signal(error_lines, tail_lines),
         "error_lines": error_lines,
