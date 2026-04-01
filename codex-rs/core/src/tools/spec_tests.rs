@@ -14,6 +14,7 @@ use codex_protocol::openai_models::ModelsResponse;
 use codex_tools::AdditionalProperties;
 use codex_tools::CommandToolOptions;
 use codex_tools::ConfiguredToolSpec;
+use codex_tools::DiscoverablePluginInfo;
 use codex_tools::FreeformTool;
 use codex_tools::ResponsesApiWebSearchFilters;
 use codex_tools::ResponsesApiWebSearchUserLocation;
