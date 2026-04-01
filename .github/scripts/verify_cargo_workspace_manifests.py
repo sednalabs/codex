@@ -30,18 +30,8 @@ MANIFEST_FEATURE_EXCEPTIONS = {
     "codex-rs/otel/Cargo.toml": {
         "disable-default-metrics-exporter": (),
     },
-    "codex-rs/tui/Cargo.toml": {
-        "default": ("voice-input",),
-        "voice-input": ("dep:cpal",),
-    },
 }
-OPTIONAL_DEPENDENCY_EXCEPTIONS = {
-    (
-        "codex-rs/tui/Cargo.toml",
-        'target.cfg(not(target_os = "linux")).dependencies',
-        "cpal",
-    ),
-}
+OPTIONAL_DEPENDENCY_EXCEPTIONS = set()
 INTERNAL_DEPENDENCY_FEATURE_EXCEPTIONS = {
     (
         "codex-rs/core/Cargo.toml",
