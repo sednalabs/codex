@@ -566,6 +566,7 @@ impl OutgoingMessageSender {
         }
     }
 
+    #[cfg(test)]
     pub(crate) async fn send_server_notification_to_connection_and_wait(
         &self,
         connection_id: ConnectionId,
