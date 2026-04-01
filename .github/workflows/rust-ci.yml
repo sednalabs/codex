@@ -25,6 +25,7 @@ jobs:
       ci_surface: ${{ steps.detect.outputs.ci_surface }}
       codex: ${{ steps.detect.outputs.codex }}
       downstream_smoke: ${{ steps.detect.outputs.downstream_smoke }}
+      workflow_delete_only: ${{ steps.detect.outputs.workflow_delete_only }}
     steps:
       - uses: actions/checkout@v6
         with:
@@ -42,9 +43,14 @@ jobs:
             echo "Head SHA: $HEAD_SHA"
             # List files changed between base and PR head
             mapfile -t files < <(git diff --name-only --no-renames "$BASE_SHA...$HEAD_SHA")
+            workflow_delete_only=true
+            if git diff --name-only --diff-filter=AM --no-renames "$BASE_SHA...$HEAD_SHA" | grep -q .; then
+              workflow_delete_only=false
+            fi
           else
             # On push / manual runs, default to running everything
             files=("codex-rs/force" ".github/force")
+            workflow_delete_only=false
           fi
 
           codex=false
@@ -66,6 +72,7 @@ jobs:
             echo "ci_surface=$ci_surface"
             echo "codex=$codex"
             echo "downstream_smoke=$downstream_smoke"
+            echo "workflow_delete_only=$workflow_delete_only"
           } >> "$GITHUB_OUTPUT"
 
   workflow_validation:
@@ -122,7 +129,7 @@ jobs:
     name: Format / etc
     runs-on: ubuntu-24.04
     needs: changed
-    if: ${{ needs.changed.outputs.codex == 'true' || needs.changed.outputs.ci_surface == 'true' || github.event_name == 'push' }}
+    if: ${{ needs.changed.outputs.codex == 'true' || needs.changed.outputs.ci_surface == 'true' || (github.event_name == 'push' && needs.changed.outputs.workflow_delete_only != 'true') }}
     defaults:
       run:
         working-directory: codex-rs
@@ -138,7 +145,7 @@ jobs:
     name: cargo shear
     runs-on: ubuntu-24.04
     needs: changed
-    if: ${{ needs.changed.outputs.codex == 'true' || needs.changed.outputs.ci_surface == 'true' || github.event_name == 'push' }}
+    if: ${{ needs.changed.outputs.codex == 'true' || needs.changed.outputs.ci_surface == 'true' || (github.event_name == 'push' && needs.changed.outputs.workflow_delete_only != 'true') }}
     defaults:
       run:
         working-directory: codex-rs
@@ -156,7 +163,7 @@ jobs:
     name: Argument comment lint package
     runs-on: ubuntu-24.04
     needs: changed
-    if: ${{ needs.changed.outputs.argument_comment_lint_package == 'true' || github.event_name == 'push' }}
+    if: ${{ needs.changed.outputs.argument_comment_lint_package == 'true' || (github.event_name == 'push' && needs.changed.outputs.workflow_delete_only != 'true') }}
     steps:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@1.93.0
@@ -187,7 +194,7 @@ jobs:
     name: Argument comment lint - ${{ matrix.name }}
     runs-on: ${{ (github.repository_owner == 'openai' && (matrix.runs_on || matrix.runner)) || matrix.runner_fallback || matrix.runner }}
     needs: changed
-    if: ${{ needs.changed.outputs.argument_comment_lint == 'true' || github.event_name == 'push' }}
+    if: ${{ needs.changed.outputs.argument_comment_lint == 'true' || (github.event_name == 'push' && needs.changed.outputs.workflow_delete_only != 'true') }}
     strategy:
       fail-fast: ${{ github.event_name != 'push' }}
       matrix:
