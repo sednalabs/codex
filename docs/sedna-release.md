@@ -13,6 +13,8 @@ from upstream OpenAI releases.
 
 - Release tags use `v<upstream-base>-sedna.<n>`
 - Example: `v0.117.0-sedna.1`
+- Alpha or beta prereleases keep the upstream prerelease segment before the Sedna suffix, for
+  example `v0.119.0-alpha.2-sedna.1`
 - Artifact names include `sedna` so they are not confused with upstream binaries
 - Release builds embed `CODEX_RELEASE_VERSION` so UI and `codex --version` reflect the tagged fork
   release instead of the workspace placeholder version
@@ -27,6 +29,8 @@ Use the `sedna-release` workflow for fork-owned GitHub releases.
 - Push a tag like `v0.117.0-sedna.1` to publish immediately
 - Or run `sedna-release` manually with a `release_tag` input to build from the selected ref and let
   GitHub create the tag/release for that commit
+- Tags with an upstream prerelease segment, such as `v0.119.0-alpha.2-sedna.1`, are published as
+  GitHub prereleases
 
 Current workflow characteristics:
 
