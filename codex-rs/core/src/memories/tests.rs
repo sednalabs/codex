@@ -197,14 +197,16 @@ async fn sync_rollout_summaries_and_raw_memories_file_keeps_latest_memories_only
     files.sort_unstable();
     assert_eq!(files.len(), 1);
     let canonical_rollout_summary_file = &files[0];
+    let expected_cwd = format!("cwd: {}", memories[0].cwd.display());
+    let expected_rollout_path = format!("rollout_path: {}", memories[0].rollout_path.display());
 
     let raw_memories = tokio::fs::read_to_string(raw_memories_file(&root))
         .await
         .expect("read raw memories");
     assert!(raw_memories.contains("raw memory"));
     assert!(raw_memories.contains(&keep_id));
-    assert!(raw_memories.contains("cwd: /tmp/workspace"));
-    assert!(raw_memories.contains("rollout_path: /tmp/rollout-100.jsonl"));
+    assert!(raw_memories.contains(&expected_cwd));
+    assert!(raw_memories.contains(&expected_rollout_path));
     assert!(raw_memories.contains(&format!(
         "rollout_summary_file: {canonical_rollout_summary_file}"
     )));
@@ -217,11 +219,11 @@ async fn sync_rollout_summaries_and_raw_memories_file_keeps_latest_memories_only
         .map(|offset| thread_pos + offset)
         .expect("updated_at should exist after thread header");
     let cwd_pos = raw_memories[thread_pos..]
-        .find("cwd: /tmp/workspace")
+        .find(&expected_cwd)
         .map(|offset| thread_pos + offset)
         .expect("cwd should exist after thread header");
     let rollout_path_pos = raw_memories[thread_pos..]
-        .find("rollout_path: /tmp/rollout-100.jsonl")
+        .find(&expected_rollout_path)
         .map(|offset| thread_pos + offset)
         .expect("rollout_path should exist after thread header");
     let file_pos = raw_memories[thread_pos..]
@@ -316,7 +318,10 @@ async fn sync_rollout_summaries_uses_timestamp_hash_and_sanitized_slug_filename(
         .await
         .expect("read rollout summary");
     assert!(summary.contains(&format!("thread_id: {thread_id}")));
-    assert!(summary.contains("rollout_path: /tmp/rollout-200.jsonl"));
+    assert!(summary.contains(&format!(
+        "rollout_path: {}",
+        memories[0].rollout_path.display()
+    )));
     assert!(summary.contains("git_branch: feature/memory-branch"));
     assert!(
         !tokio::fs::try_exists(&stale_unslugged_path)
@@ -402,7 +407,10 @@ task_outcome: success
     )
     .await
     .expect("read rollout summary");
-    assert!(summary.contains("rollout_path: /tmp/rollout-200.jsonl"));
+    assert!(summary.contains(&format!(
+        "rollout_path: {}",
+        memories[0].rollout_path.display()
+    )));
     assert!(raw_memories.contains(&format!(
         "rollout_summary_file: {canonical_rollout_summary_file}"
     )));
