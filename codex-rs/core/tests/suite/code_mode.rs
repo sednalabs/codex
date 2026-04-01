@@ -143,7 +143,14 @@ async fn run_code_mode_turn(
     code: &str,
     include_apply_patch: bool,
 ) -> Result<(TestCodex, ResponseMock)> {
-    run_code_mode_turn_with_model(server, prompt, code, include_apply_patch, None).await
+    run_code_mode_turn_with_model(
+        server,
+        prompt,
+        code,
+        include_apply_patch,
+        /*model*/ None,
+    )
+    .await
 }
 
 async fn run_code_mode_turn_with_model(
