@@ -7,6 +7,7 @@ use crate::tools::context::FunctionToolOutput;
 use crate::tools::context::ToolInvocation;
 use crate::tools::context::ToolPayload;
 use crate::tools::handlers::parse_arguments_with_base_path;
+use crate::tools::handlers::resolve_workdir_base_path;
 use crate::tools::registry::ToolHandler;
 use crate::tools::registry::ToolKind;
 
@@ -43,8 +44,9 @@ impl ToolHandler for RequestPermissionsHandler {
             }
         };
 
+        let base_path = resolve_workdir_base_path(&arguments, turn.cwd.as_path())?;
         let mut args: RequestPermissionsArgs =
-            parse_arguments_with_base_path(&arguments, turn.cwd.as_path())?;
+            parse_arguments_with_base_path(&arguments, base_path.as_path())?;
         args.permissions = normalize_additional_permissions(args.permissions.into())
             .map(codex_protocol::request_permissions::RequestPermissionProfile::from)
             .map_err(FunctionCallError::RespondToModel)?;
@@ -70,5 +72,53 @@ impl ToolHandler for RequestPermissionsHandler {
         })?;
 
         Ok(FunctionToolOutput::from_text(content, Some(true)))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use codex_protocol::models::FileSystemPermissions;
+    use codex_protocol::models::PermissionProfile;
+    use codex_utils_absolute_path::AbsolutePathBuf;
+    use pretty_assertions::assert_eq;
+    use tempfile::tempdir;
+
+    #[test]
+    fn request_permissions_handler_resolves_relative_permissions_against_workdir()
+    -> anyhow::Result<()> {
+        let cwd = tempdir()?;
+        let workdir = cwd.path().join("nested");
+        std::fs::create_dir_all(&workdir)?;
+        let expected_write = workdir.join("relative-write.txt");
+        let json = r#"{
+            "workdir": "nested",
+            "permissions": {
+                "file_system": {
+                    "write": ["./relative-write.txt"]
+                }
+            }
+        }"#;
+
+        let base_path = resolve_workdir_base_path(json, cwd.path())?;
+        let mut args: RequestPermissionsArgs =
+            parse_arguments_with_base_path(json, base_path.as_path())?;
+        args.permissions = normalize_additional_permissions(args.permissions.into())
+            .map_err(anyhow::Error::msg)?
+            .into();
+
+        assert_eq!(
+            args.permissions,
+            codex_protocol::request_permissions::RequestPermissionProfile::from(
+                PermissionProfile {
+                    file_system: Some(FileSystemPermissions {
+                        read: None,
+                        write: Some(vec![AbsolutePathBuf::try_from(expected_write)?]),
+                    }),
+                    ..Default::default()
+                }
+            )
+        );
+        Ok(())
     }
 }
