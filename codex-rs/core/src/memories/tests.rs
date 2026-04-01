@@ -481,6 +481,14 @@ mod phase2 {
         Arc::new(config)
     }
 
+    async fn create_and_canonicalize_memory_root(codex_home: &std::path::Path) -> PathBuf {
+        let root = memory_root(codex_home);
+        tokio::fs::create_dir_all(&root)
+            .await
+            .expect("create memory root");
+        std::fs::canonicalize(&root).expect("canonical memory root")
+    }
+
     struct DispatchHarness {
         _codex_home: TempDir,
         config: Arc<Config>,
@@ -695,13 +703,10 @@ mod phase2 {
     async fn consolidation_artifacts_ready_allows_existing_outputs_when_selection_is_unchanged() {
         let temp_dir = tempfile::tempdir().expect("temp dir");
         let codex_home = temp_dir.path().join("codex-home");
-        let root = memory_root(&codex_home);
+        let root = create_and_canonicalize_memory_root(&codex_home).await;
         let config = config_for_memory_root(&root);
         let memory_index_path = root.join("MEMORY.md");
         let memory_summary_path = root.join("memory_summary.md");
-        tokio::fs::create_dir_all(&root)
-            .await
-            .expect("create memory root");
 
         tokio::fs::write(&memory_index_path, "memory index\n")
             .await
@@ -740,14 +745,11 @@ mod phase2 {
     {
         let temp_dir = tempfile::tempdir().expect("temp dir");
         let codex_home = temp_dir.path().join("codex-home");
-        let root = memory_root(&codex_home);
+        let root = create_and_canonicalize_memory_root(&codex_home).await;
         let config = config_for_memory_root(&root);
         let selection = selection_for_attested_outputs(Vec::new());
         let memory_index_path = root.join("MEMORY.md");
         let memory_summary_path = root.join("memory_summary.md");
-        tokio::fs::create_dir_all(&root)
-            .await
-            .expect("create memory root");
 
         tokio::fs::write(&memory_index_path, "")
             .await
@@ -774,13 +776,10 @@ mod phase2 {
      {
         let temp_dir = tempfile::tempdir().expect("temp dir");
         let codex_home = temp_dir.path().join("codex-home");
-        let root = memory_root(&codex_home);
+        let root = create_and_canonicalize_memory_root(&codex_home).await;
         let config = config_for_memory_root(&root);
         let memory_index_path = root.join("MEMORY.md");
         let memory_summary_path = root.join("memory_summary.md");
-        tokio::fs::create_dir_all(&root)
-            .await
-            .expect("create memory root");
 
         tokio::fs::write(&memory_index_path, "memory index\n")
             .await
@@ -814,13 +813,10 @@ mod phase2 {
     async fn consolidation_artifacts_ready_rejects_malformed_attestation_when_reuse_is_allowed() {
         let temp_dir = tempfile::tempdir().expect("temp dir");
         let codex_home = temp_dir.path().join("codex-home");
-        let root = memory_root(&codex_home);
+        let root = create_and_canonicalize_memory_root(&codex_home).await;
         let config = config_for_memory_root(&root);
         let memory_index_path = root.join("MEMORY.md");
         let memory_summary_path = root.join("memory_summary.md");
-        tokio::fs::create_dir_all(&root)
-            .await
-            .expect("create memory root");
 
         tokio::fs::write(&memory_index_path, "memory index\n")
             .await
@@ -859,13 +855,10 @@ mod phase2 {
     async fn consolidation_artifacts_ready_rejects_missing_attestation_after_support_initialized() {
         let temp_dir = tempfile::tempdir().expect("temp dir");
         let codex_home = temp_dir.path().join("codex-home");
-        let root = memory_root(&codex_home);
+        let root = create_and_canonicalize_memory_root(&codex_home).await;
         let config = config_for_memory_root(&root);
         let memory_index_path = root.join("MEMORY.md");
         let memory_summary_path = root.join("memory_summary.md");
-        tokio::fs::create_dir_all(&root)
-            .await
-            .expect("create memory root");
 
         tokio::fs::write(&memory_index_path, "memory index\n")
             .await
@@ -913,7 +906,7 @@ mod phase2 {
     async fn consolidation_artifacts_ready_rejects_tampered_outputs_when_reuse_is_allowed() {
         let temp_dir = tempfile::tempdir().expect("temp dir");
         let codex_home = temp_dir.path().join("codex-home");
-        let root = memory_root(&codex_home);
+        let root = create_and_canonicalize_memory_root(&codex_home).await;
         let memory_index_path = root.join("MEMORY.md");
         let memory_summary_path = root.join("memory_summary.md");
         let selected_outputs = vec![stage1_output_with_source_updated_at(
@@ -921,9 +914,6 @@ mod phase2 {
         )];
         let selection = selection_for_attested_outputs(selected_outputs.clone());
         let config = config_for_memory_root(&root);
-        tokio::fs::create_dir_all(&root)
-            .await
-            .expect("create memory root");
 
         tokio::fs::write(&memory_index_path, "memory index\n")
             .await
@@ -960,7 +950,7 @@ mod phase2 {
     async fn consolidation_artifacts_ready_rejects_stale_skill_artifacts_when_reuse_is_allowed() {
         let temp_dir = tempfile::tempdir().expect("temp dir");
         let codex_home = temp_dir.path().join("codex-home");
-        let root = memory_root(&codex_home);
+        let root = create_and_canonicalize_memory_root(&codex_home).await;
         let config = config_for_memory_root(&root);
         let selection = selection_for_attested_outputs(vec![stage1_output_with_source_updated_at(
             /*source_updated_at*/ 200,
@@ -1009,12 +999,7 @@ mod phase2 {
      {
         let temp_dir = tempfile::tempdir().expect("temp dir");
         let codex_home = temp_dir.path().join("codex-home");
-        let root = memory_root(&codex_home);
-
-        tokio::fs::create_dir_all(&root)
-            .await
-            .expect("create memory root");
-        let root = std::fs::canonicalize(&root).expect("canonical memory root");
+        let root = create_and_canonicalize_memory_root(&codex_home).await;
 
         let config = config_for_memory_root(&root);
         let selection = selection_for_attested_outputs(Vec::new());
@@ -1070,12 +1055,7 @@ mod phase2 {
     {
         let temp_dir = tempfile::tempdir().expect("temp dir");
         let codex_home = temp_dir.path().join("codex-home");
-        let root = memory_root(&codex_home);
-
-        tokio::fs::create_dir_all(&root)
-            .await
-            .expect("create memory root");
-        let root = std::fs::canonicalize(&root).expect("canonical memory root");
+        let root = create_and_canonicalize_memory_root(&codex_home).await;
 
         let config = config_for_memory_root(&root);
         let selection = selection_for_attested_outputs(Vec::new());
@@ -1139,8 +1119,8 @@ mod phase2 {
         let temp_dir = tempfile::tempdir().expect("temp dir");
         let codex_home_a = temp_dir.path().join("codex-home-a");
         let codex_home_b = temp_dir.path().join("codex-home-b");
-        let root_a = memory_root(&codex_home_a);
-        let root_b = memory_root(&codex_home_b);
+        let root_a = create_and_canonicalize_memory_root(&codex_home_a).await;
+        let root_b = create_and_canonicalize_memory_root(&codex_home_b).await;
         let config_a = config_for_memory_root(&root_a);
         let config_b = config_for_memory_root(&root_b);
         let selected_outputs = vec![stage1_output_with_source_updated_at(
@@ -1149,9 +1129,6 @@ mod phase2 {
         let selection = selection_for_attested_outputs(selected_outputs);
 
         for root in [&root_a, &root_b] {
-            tokio::fs::create_dir_all(root)
-                .await
-                .expect("create memory root");
             tokio::fs::write(root.join("MEMORY.md"), "memory index\n")
                 .await
                 .expect("write memory index");
@@ -1196,7 +1173,7 @@ mod phase2 {
     async fn consolidation_attestation_rejects_provider_drift() {
         let temp_dir = tempfile::tempdir().expect("temp dir");
         let codex_home = temp_dir.path().join("codex-home");
-        let root = memory_root(&codex_home);
+        let root = create_and_canonicalize_memory_root(&codex_home).await;
         let config = config_for_memory_root(&root);
         let mut drifted_config = (*config).clone();
         drifted_config.model_provider_id = "different-provider".to_string();
@@ -1206,9 +1183,6 @@ mod phase2 {
         )];
         let selection = selection_for_attested_outputs(selected_outputs);
 
-        tokio::fs::create_dir_all(&root)
-            .await
-            .expect("create memory root");
         tokio::fs::write(root.join("MEMORY.md"), "memory index\n")
             .await
             .expect("write memory index");
@@ -1241,7 +1215,7 @@ mod phase2 {
     async fn consolidation_attestation_rejects_model_drift() {
         let temp_dir = tempfile::tempdir().expect("temp dir");
         let codex_home = temp_dir.path().join("codex-home");
-        let root = memory_root(&codex_home);
+        let root = create_and_canonicalize_memory_root(&codex_home).await;
         let config = config_for_memory_root(&root);
         let mut drifted_config = (*config).clone();
         drifted_config.memories.consolidation_model = Some("other-model".to_string());
@@ -1250,9 +1224,6 @@ mod phase2 {
             /*source_updated_at*/ 200,
         )]);
 
-        tokio::fs::create_dir_all(&root)
-            .await
-            .expect("create memory root");
         tokio::fs::write(root.join("MEMORY.md"), "memory index\n")
             .await
             .expect("write memory index");
@@ -1285,7 +1256,7 @@ mod phase2 {
     async fn consolidation_attestation_rejects_prompt_contract_drift() {
         let temp_dir = tempfile::tempdir().expect("temp dir");
         let codex_home = temp_dir.path().join("codex-home");
-        let root = memory_root(&codex_home);
+        let root = create_and_canonicalize_memory_root(&codex_home).await;
         let config = config_for_memory_root(&root);
         let selected_output = stage1_output_with_source_updated_at(/*source_updated_at*/ 200);
         let selection = selection_for_attested_outputs(vec![selected_output.clone()]);
@@ -1300,9 +1271,6 @@ mod phase2 {
             }],
         };
 
-        tokio::fs::create_dir_all(&root)
-            .await
-            .expect("create memory root");
         tokio::fs::write(root.join("MEMORY.md"), "memory index\n")
             .await
             .expect("write memory index");
@@ -1335,7 +1303,7 @@ mod phase2 {
     async fn consolidation_attestation_rejects_reasoning_effort_drift() {
         let temp_dir = tempfile::tempdir().expect("temp dir");
         let codex_home = temp_dir.path().join("codex-home");
-        let root = memory_root(&codex_home);
+        let root = create_and_canonicalize_memory_root(&codex_home).await;
         let config = config_for_memory_root(&root);
         let selection = selection_for_attested_outputs(vec![stage1_output_with_source_updated_at(
             /*source_updated_at*/ 200,
@@ -1354,9 +1322,6 @@ mod phase2 {
             &root,
         );
 
-        tokio::fs::create_dir_all(&root)
-            .await
-            .expect("create memory root");
         tokio::fs::write(root.join("MEMORY.md"), "memory index\n")
             .await
             .expect("write memory index");
@@ -1390,7 +1355,7 @@ mod phase2 {
     async fn consolidation_artifacts_ready_rejects_symlinked_artifacts() {
         let temp_dir = tempfile::tempdir().expect("temp dir");
         let codex_home = temp_dir.path().join("codex-home");
-        let root = memory_root(&codex_home);
+        let root = create_and_canonicalize_memory_root(&codex_home).await;
         let config = config_for_memory_root(&root);
         let selection = selection_for_attested_outputs(vec![stage1_output_with_source_updated_at(
             /*source_updated_at*/ 200,
@@ -1399,9 +1364,6 @@ mod phase2 {
         let external_memory = external_dir.join("MEMORY.md");
         let external_summary = external_dir.join("memory_summary.md");
 
-        tokio::fs::create_dir_all(&root)
-            .await
-            .expect("create memory root");
         tokio::fs::create_dir_all(&external_dir)
             .await
             .expect("create external dir");
@@ -1435,7 +1397,7 @@ mod phase2 {
     async fn writing_attestation_rejects_symlinked_attestation_path() {
         let temp_dir = tempfile::tempdir().expect("temp dir");
         let codex_home = temp_dir.path().join("codex-home");
-        let root = memory_root(&codex_home);
+        let root = create_and_canonicalize_memory_root(&codex_home).await;
         let config = config_for_memory_root(&root);
         let selection = selection_for_attested_outputs(vec![stage1_output_with_source_updated_at(
             /*source_updated_at*/ 200,
@@ -1443,9 +1405,6 @@ mod phase2 {
         let external_dir = temp_dir.path().join("external");
         let external_attestation = external_dir.join("attestation.json");
 
-        tokio::fs::create_dir_all(&root)
-            .await
-            .expect("create memory root");
         tokio::fs::create_dir_all(&external_dir)
             .await
             .expect("create external dir");
@@ -1484,7 +1443,7 @@ mod phase2 {
     async fn writing_attestation_does_not_mark_requirement_when_file_write_fails() {
         let temp_dir = tempfile::tempdir().expect("temp dir");
         let codex_home = temp_dir.path().join("codex-home");
-        let root = memory_root(&codex_home);
+        let root = create_and_canonicalize_memory_root(&codex_home).await;
         let config = config_for_memory_root(&root);
         let selection = selection_for_attested_outputs(vec![stage1_output_with_source_updated_at(
             /*source_updated_at*/ 200,
@@ -1496,9 +1455,6 @@ mod phase2 {
         let external_dir = temp_dir.path().join("external");
         let external_attestation = external_dir.join("attestation.json");
 
-        tokio::fs::create_dir_all(&root)
-            .await
-            .expect("create memory root");
         tokio::fs::create_dir_all(&external_dir)
             .await
             .expect("create external dir");
@@ -1546,7 +1502,7 @@ mod phase2 {
     async fn writing_attestation_rejects_hard_linked_attestation_path_without_truncating_target() {
         let temp_dir = tempfile::tempdir().expect("temp dir");
         let codex_home = temp_dir.path().join("codex-home");
-        let root = memory_root(&codex_home);
+        let root = create_and_canonicalize_memory_root(&codex_home).await;
         let config = config_for_memory_root(&root);
         let selection = selection_for_attested_outputs(vec![stage1_output_with_source_updated_at(
             /*source_updated_at*/ 200,
@@ -1555,9 +1511,6 @@ mod phase2 {
         let protected_target = external_dir.join("protected.json");
         let original_contents = "{\n  \"protected\": true\n}\n";
 
-        tokio::fs::create_dir_all(&root)
-            .await
-            .expect("create memory root");
         tokio::fs::create_dir_all(&external_dir)
             .await
             .expect("create external dir");
