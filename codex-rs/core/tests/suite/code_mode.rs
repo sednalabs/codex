@@ -143,7 +143,21 @@ async fn run_code_mode_turn(
     code: &str,
     include_apply_patch: bool,
 ) -> Result<(TestCodex, ResponseMock)> {
-    let mut builder = test_codex().with_config(move |config| {
+    run_code_mode_turn_with_model(server, prompt, code, include_apply_patch, None).await
+}
+
+async fn run_code_mode_turn_with_model(
+    server: &MockServer,
+    prompt: &str,
+    code: &str,
+    include_apply_patch: bool,
+    model: Option<&str>,
+) -> Result<(TestCodex, ResponseMock)> {
+    let mut builder = test_codex();
+    if let Some(model) = model {
+        builder = builder.with_model(model);
+    }
+    builder = builder.with_config(move |config| {
         let _ = config.features.enable(Feature::CodeMode);
         config.include_apply_patch_tool = include_apply_patch;
         // Keep code_mode tests hermetic instead of inheriting a host-pinned Node path.
@@ -1725,7 +1739,7 @@ async fn code_mode_notify_injects_additional_exec_tool_output_into_active_contex
     skip_if_no_network!(Ok(()));
 
     let server = responses::start_mock_server().await;
-    let (_test, second_mock) = run_code_mode_turn(
+    let (_test, second_mock) = run_code_mode_turn_with_model(
         &server,
         "use exec notify helper",
         r#"
@@ -1734,6 +1748,7 @@ await tools.test_sync_tool({});
 text("done");
 "#,
         /*include_apply_patch*/ false,
+        Some("test-gpt-5.1-codex"),
     )
     .await?;
 
@@ -1743,11 +1758,17 @@ text("done");
         .iter()
         .any(|item| {
             item.get("call_id").and_then(serde_json::Value::as_str) == Some("call-1")
-                && item
-                    .get("output")
-                    .and_then(serde_json::Value::as_str)
-                    .is_some_and(|text| text.contains("code_mode_notify_marker"))
                 && item.get("name").and_then(serde_json::Value::as_str) == Some("exec")
+                && match item.get("output") {
+                    Some(Value::String(text)) => text.contains("code_mode_notify_marker"),
+                    Some(Value::Array(items)) => items.iter().any(|output_item| {
+                        output_item
+                            .get("text")
+                            .and_then(Value::as_str)
+                            .is_some_and(|text| text.contains("code_mode_notify_marker"))
+                    }),
+                    _ => false,
+                }
         });
     assert!(
         has_notify_output,
