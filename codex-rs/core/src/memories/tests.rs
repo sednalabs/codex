@@ -628,8 +628,9 @@ mod phase2 {
     async fn consolidation_artifacts_ready_requires_recent_non_empty_outputs_when_selection_changed()
      {
         let temp_dir = tempfile::tempdir().expect("temp dir");
-        let root = temp_dir.path();
-        let config = config_for_memory_root(root);
+        let codex_home = temp_dir.path().join("codex-home");
+        let root = create_and_canonicalize_memory_root(&codex_home).await;
+        let config = config_for_memory_root(&root);
         let selection = selection_for_attested_outputs(Vec::new());
         let memory_index_path = root.join("MEMORY.md");
         let memory_summary_path = root.join("memory_summary.md");
@@ -643,7 +644,7 @@ mod phase2 {
 
         assert!(
             !phase2::agent::consolidation_artifacts_ready(
-                root,
+                &root,
                 &config,
                 std::time::SystemTime::now() + Duration::from_secs(60),
                 /*allow_existing_artifacts_without_rewrite*/ false,
@@ -655,7 +656,7 @@ mod phase2 {
 
         assert!(
             phase2::agent::consolidation_artifacts_ready(
-                root,
+                &root,
                 &config,
                 std::time::SystemTime::UNIX_EPOCH,
                 /*allow_existing_artifacts_without_rewrite*/ false,
@@ -670,7 +671,7 @@ mod phase2 {
             .expect("clear memory index");
         assert!(
             !phase2::agent::consolidation_artifacts_ready(
-                root,
+                &root,
                 &config,
                 std::time::SystemTime::UNIX_EPOCH,
                 /*allow_existing_artifacts_without_rewrite*/ false,
@@ -688,7 +689,7 @@ mod phase2 {
             .expect("clear memory summary");
         assert!(
             !phase2::agent::consolidation_artifacts_ready(
-                root,
+                &root,
                 &config,
                 std::time::SystemTime::UNIX_EPOCH,
                 /*allow_existing_artifacts_without_rewrite*/ false,
