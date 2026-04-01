@@ -58,11 +58,17 @@ impl DebouncedReceiver {
 
         loop {
             tokio::select! {
-                event = self.rx.recv() => self.changed_paths.extend(event?.paths),
+                event = self.rx.recv() => match event {
+                    Some(event) => self.changed_paths.extend(event.paths),
+                    None => break,
+                },
                 _ = tokio::time::sleep_until(next_allowance) => break,
             }
         }
 
+        if self.changed_paths.is_empty() {
+            return None;
+        }
         Some(FileWatcherEvent {
             paths: self.changed_paths.drain().collect(),
         })
@@ -521,6 +527,34 @@ mod tests {
                 .await
                 .is_err(),
             "a subsequent batch should not arrive without another debounced change"
+        );
+    }
+
+    #[tokio::test]
+    async fn debounce_flushes_pending_events_before_close() {
+        let temp_dir = TempDir::new().expect("temp dir");
+        let watched_file = absolute_path(temp_dir.path().join("file.txt"));
+        let file_watcher = Arc::new(FileWatcher::noop());
+        let (subscriber, raw_rx) = file_watcher.add_subscriber();
+        let _subscription = subscriber.register_paths(watch_paths_for_target(&watched_file));
+        let mut rx = DebouncedReceiver::new(raw_rx, Duration::from_millis(20));
+
+        file_watcher
+            .send_paths_for_test(vec![watched_file.to_path_buf()])
+            .await;
+        drop(subscriber);
+
+        let first_batch = timeout(Duration::from_secs(1), rx.recv())
+            .await
+            .expect("debounced batch should flush before timeout")
+            .expect("receiver should emit buffered paths before close");
+        assert_eq!(first_batch.paths, vec![watched_file.to_path_buf()]);
+        let second_batch = timeout(Duration::from_millis(100), rx.recv())
+            .await
+            .expect("debounced receiver should finish after close");
+        assert!(
+            second_batch.is_none(),
+            "receiver should report close after flushing buffered paths"
         );
     }
 
