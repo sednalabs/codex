@@ -35,9 +35,11 @@ artifacts.
 3. Commit and push.
 4. Use `validation-lab` for ordinary remote-first validation on `validation/*`, `integration/*`,
    or other non-PR refs.
-5. Use `sedna-heavy-tests` when the change needs PR/main heavy validation or a named heavy lane.
-6. Use `sedna-branch-build` only when you intentionally want a preview binary.
-7. Use `sedna-release` only for official releases.
+5. Use `validation-lab` `profile=targeted` with `lane_set=release` when the question is Linux
+   release-build dependency or lockfile readiness under `--locked`.
+6. Use `sedna-heavy-tests` when the change needs PR/main heavy validation or a named heavy lane.
+7. Use `sedna-branch-build` only when you intentionally want a preview binary.
+8. Use `sedna-release` only for official releases.
 
 ## Validation ladder
 
@@ -59,6 +61,8 @@ artifacts.
 5. Preview/buildability validation only at deliberate checkpoints.
    - Use `sedna-branch-build`, `validation-lab` artifact mode, merge-group, or `main` promotion
      when the question is shipping/buildability rather than seam correctness.
+   - Use `validation-lab` `lane_set=release` when the question is specifically the Linux
+     `cargo build --locked --release` path without needing packaging or publishing.
 
 ## Workflow replacement matrix
 

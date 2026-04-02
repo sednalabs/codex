@@ -26,6 +26,7 @@ on:
         options:
           - all
           - core-carry
+          - release
           - subagents
           - startup-sync
           - ledger

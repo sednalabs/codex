@@ -64,6 +64,10 @@ Use the smallest validator that can answer the current question.
 7. `profile=artifact` or `artifact_build=true`
    - use only when the question is buildability or preview delivery
 
+For Linux release readiness, prefer `validation-lab` `profile=targeted` with
+`lane_set=release` when the question is narrow `--locked` release-build drift.
+Use artifact mode only when you also need a disposable preview package.
+
 ## Fan-out and concurrency
 
 Use matrix fan-out when several lanes answer the same seam question.
