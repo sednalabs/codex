@@ -632,24 +632,43 @@ Rules:
                         nickname_candidates: None,
                     }
                 ),
-                // Awaiter is temp removed
-//                 (
-//                     "awaiter".to_string(),
-//                     AgentRoleConfig {
-//                         description: Some(r#"Use an `awaiter` agent EVERY TIME you must run a command that will take some very long time.
-// This includes, but not only:
-// * testing
-// * monitoring of a long running process
-// * explicit ask to wait for something
-//
-// Rules:
-// - When an awaiter is running, you can work on something else. If you need to wait for its completion, use the largest possible timeout.
-// - Be patient with the `awaiter`.
-// - Do not use an awaiter for every compilation/test if it won't take time. Only use if for long running commands.
-// - Close the awaiter when you're done with it."#.to_string()),
-//                         config_file: Some("awaiter.toml".to_string().parse().unwrap_or_default()),
-//                     }
-//                 )
+                (
+                    "awaiter".to_string(),
+                    AgentRoleConfig {
+                        description: Some(r#"Use `awaiter` for a pure delegated wait on one known task, command, agent, or workflow target.
+Typical tasks:
+- wait on a child agent to reach terminal status
+- wait on a long-running command that already has a bounded helper-backed wait surface
+- wait on one GitHub workflow target when no extra monitoring judgment is needed
+Rules:
+- `awaiter` is passive and deterministic. It should not broaden into diagnosis, retries, or code changes.
+- If the seam only needs one delegated wait, prefer `awaiter` over a more interpretive babysitter lane.
+- If the seam needs meaningful status judgment, multi-target monitoring, or repair ownership, choose another lane instead."#.to_string()),
+                        config_file: Some("awaiter.toml".to_string().parse().unwrap_or_default()),
+                        nickname_candidates: None,
+                    }
+                ),
+                (
+                    "terminal-babysitter".to_string(),
+                    AgentRoleConfig {
+                        description: Some(r#"Use `terminal-babysitter` for monitored waits on known tasks, build-helper jobs, agents, or workflow runs when the lane should decide whether an observed change is meaningful enough to surface.
+Typical tasks:
+- supervise one or more workflow runs and surface only meaningful deltas
+- watch a long-running task where polling/log noise should be compacted into actionable status
+- own a monitored wait seam while the parent keeps doing other work
+Rules:
+- `terminal-babysitter` may exercise bounded monitoring judgment, but it must not broaden into repair work or repo edits.
+- If the seam is a pure delegated wait, prefer `awaiter`.
+- If the seam may need fixes, reruns, or PR-local ownership, choose a shepherd-style workflow instead."#.to_string()),
+                        config_file: Some(
+                            "terminal-babysitter.toml"
+                                .to_string()
+                                .parse()
+                                .unwrap_or_default(),
+                        ),
+                        nickname_candidates: None,
+                    }
+                )
             ])
         });
         &CONFIG
@@ -659,9 +678,11 @@ Rules:
     pub(super) fn config_file_contents(path: &Path) -> Option<&'static str> {
         const EXPLORER: &str = include_str!("builtins/explorer.toml");
         const AWAITER: &str = include_str!("builtins/awaiter.toml");
+        const TERMINAL_BABYSITTER: &str = include_str!("builtins/terminal-babysitter.toml");
         match path.to_str()? {
             "explorer.toml" => Some(EXPLORER),
             "awaiter.toml" => Some(AWAITER),
+            "terminal-babysitter.toml" => Some(TERMINAL_BABYSITTER),
             _ => None,
         }
     }

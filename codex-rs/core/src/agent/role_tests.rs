@@ -866,7 +866,20 @@ fn spawn_tool_spec_marks_role_locked_reasoning_effort_only() {
 }
 
 #[test]
-fn built_in_config_file_contents_resolves_explorer_only() {
+fn built_in_wait_roles_are_exposed_and_have_embedded_configs() {
+    let built_in_roles = built_in::configs();
+    assert!(built_in_roles.contains_key("awaiter"));
+    assert!(built_in_roles.contains_key("terminal-babysitter"));
+
+    let spec = spawn_tool_spec::build(&BTreeMap::new());
+    assert!(spec.contains("awaiter: {"));
+    assert!(spec.contains("terminal-babysitter: {"));
+    assert!(spec.contains("Use `awaiter` for a pure delegated wait"));
+    assert!(spec.contains("Use `terminal-babysitter` for monitored waits"));
+
+    assert!(built_in::config_file_contents(Path::new("explorer.toml")).is_some());
+    assert!(built_in::config_file_contents(Path::new("awaiter.toml")).is_some());
+    assert!(built_in::config_file_contents(Path::new("terminal-babysitter.toml")).is_some());
     assert_eq!(
         built_in::config_file_contents(Path::new("missing.toml")),
         None
