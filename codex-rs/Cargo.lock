@@ -6019,7 +6019,6 @@ name = "mcp_test_support"
 version = "0.0.0"
 dependencies = [
  "anyhow",
- "codex-core",
  "codex-login",
  "codex-mcp-server",
  "codex-terminal-detection",
