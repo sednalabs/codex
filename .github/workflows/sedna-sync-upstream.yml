@@ -7,13 +7,16 @@ on:
 
 permissions:
   contents: write
-  workflows: write
+
+concurrency:
+  group: sedna-sync-upstream
+  cancel-in-progress: false
 
 jobs:
   sync:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v6.0.2
         with:
           fetch-depth: 0
 
@@ -27,7 +30,13 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          git remote add upstream https://github.com/openai/codex.git 2>/dev/null || true
+
+          if git remote get-url upstream >/dev/null 2>&1; then
+            git remote set-url upstream https://github.com/openai/codex.git
+          else
+            git remote add upstream https://github.com/openai/codex.git
+          fi
+
           git fetch upstream main
           git fetch origin upstream-main || true
 
@@ -35,6 +44,11 @@ jobs:
             if ! git merge-base --is-ancestor refs/remotes/origin/upstream-main refs/remotes/upstream/main; then
               echo "origin/upstream-main is not an ancestor of upstream/main; refusing non-fast-forward sync" >&2
               exit 1
+            fi
+
+            if [ "$(git rev-parse refs/remotes/origin/upstream-main)" = "$(git rev-parse refs/remotes/upstream/main)" ]; then
+              echo "Already up to date"
+              exit 0
             fi
           fi
 
