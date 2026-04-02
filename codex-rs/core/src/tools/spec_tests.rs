@@ -29,6 +29,7 @@ use codex_tools::ToolsConfig;
 use codex_tools::ToolsConfigParams;
 use codex_tools::UnifiedExecShellMode;
 use codex_tools::ZshForkConfig;
+use codex_tools::mcp_call_tool_result_output_schema;
 use codex_tools::mcp_tool_to_deferred_responses_api_tool;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use pretty_assertions::assert_eq;
@@ -168,6 +169,22 @@ fn model_info_from_models_json(slug: &str) -> ModelInfo {
         .find(|candidate| candidate.slug == slug)
         .unwrap_or_else(|| panic!("model slug {slug} is missing from models.json"));
     with_config_overrides(model, &config)
+}
+
+/// Builds the tool registry builder while collecting tool specs for later serialization.
+fn build_specs(
+    config: &ToolsConfig,
+    mcp_tools: Option<HashMap<String, rmcp::model::Tool>>,
+    app_tools: Option<HashMap<String, ToolInfo>>,
+    dynamic_tools: &[DynamicToolSpec],
+) -> ToolRegistryBuilder {
+    build_specs_with_discoverable_tools(
+        config,
+        mcp_tools,
+        app_tools,
+        /*discoverable_tools*/ None,
+        dynamic_tools,
+    )
 }
 
 #[test]
