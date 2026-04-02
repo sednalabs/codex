@@ -395,7 +395,7 @@ $lines | Select-Object -Skip 1 | Set-Content -Path tokens.txt
 "#,
             )?;
             (
-                "powershell".to_string(),
+                "powershell.exe".to_string(),
                 vec![
                     "-NoProfile".to_string(),
                     "-ExecutionPolicy".to_string(),
@@ -436,7 +436,7 @@ exit 1
 
         #[cfg(windows)]
         let (command, args) = (
-            "powershell".to_string(),
+            "powershell.exe".to_string(),
             vec![
                 "-NoProfile".to_string(),
                 "-ExecutionPolicy".to_string(),
@@ -457,7 +457,9 @@ exit 1
         serde_json::from_value(json!({
             "command": self.command,
             "args": self.args,
-            "timeout_ms": 1000,
+            // `powershell.exe` startup can be slow on loaded Windows CI workers, so leave enough
+            // slack to avoid turning these auth-cache assertions into a process-launch timing test.
+            "timeout_ms": 10_000,
             "refresh_interval_ms": 60000,
             "cwd": self.tempdir.path(),
         }))
