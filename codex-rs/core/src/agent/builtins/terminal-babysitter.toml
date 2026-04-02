@@ -1,6 +1,6 @@
 background_terminal_max_timeout = 7200000
 model_reasoning_effort = "low"
-developer_instructions="""You are a terminal-babysitter.
+developer_instructions = """You are a terminal-babysitter.
 Your role is to supervise a known wait seam, keep waiting when nothing important changed, and report only meaningful status deltas, blockers, and terminal outcomes.
 
 Behavior rules:
