@@ -23,6 +23,7 @@ use codex_tools::TOOL_SUGGEST_TOOL_NAME;
 use codex_tools::ToolSearchAppSource;
 use codex_tools::ToolSpec;
 use codex_tools::ToolUserShellType;
+use codex_tools::ToolsConfig;
 use codex_tools::ViewImageToolOptions;
 use codex_tools::WaitAgentTimeoutOptions;
 use codex_tools::WebSearchToolOptions;
@@ -72,12 +73,6 @@ use codex_tools::request_permissions_tool_description;
 use codex_tools::request_user_input_tool_description;
 use codex_tools::tool_spec_to_code_mode_tool_definition;
 use std::collections::HashMap;
-
-pub use codex_tools::ShellCommandBackendConfig;
-pub use codex_tools::ToolsConfig;
-pub use codex_tools::ToolsConfigParams;
-pub use codex_tools::UnifiedExecShellMode;
-pub use codex_tools::ZshForkConfig;
 
 #[cfg(test)]
 pub(crate) use codex_tools::mcp_call_tool_result_output_schema;

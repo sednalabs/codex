@@ -37,9 +37,9 @@ use crate::tools::runtimes::shell::ShellRequest;
 use crate::tools::runtimes::shell::ShellRuntime;
 use crate::tools::runtimes::shell::ShellRuntimeBackend;
 use crate::tools::sandboxing::ToolCtx;
-use crate::tools::spec::ShellCommandBackendConfig;
 use codex_features::Feature;
 use codex_protocol::models::PermissionProfile;
+use codex_tools::ShellCommandBackendConfig;
 
 pub struct ShellHandler;
 
