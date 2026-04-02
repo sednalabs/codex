@@ -115,7 +115,6 @@ fn history_contains_inter_agent_communication(
 #[derive(Clone, Copy)]
 struct NeverEndingTask;
 
-#[async_trait::async_trait]
 impl SessionTask for NeverEndingTask {
     fn kind(&self) -> TaskKind {
         TaskKind::Regular

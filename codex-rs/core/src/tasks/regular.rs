@@ -1,6 +1,5 @@
 use std::sync::Arc;
 
-use async_trait::async_trait;
 use tokio_util::sync::CancellationToken;
 
 use crate::codex::TurnContext;
@@ -25,7 +24,6 @@ impl RegularTask {
     }
 }
 
-#[async_trait]
 impl SessionTask for RegularTask {
     fn kind(&self) -> TaskKind {
         TaskKind::Regular
