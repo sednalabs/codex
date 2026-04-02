@@ -3,8 +3,8 @@ use std::sync::Arc;
 
 use codex_app_server_protocol::McpServerOauthLoginCompletedNotification;
 use codex_app_server_protocol::ServerNotification;
+use codex_config::types::McpServerConfig;
 use codex_core::config::Config;
-use codex_core::config::types::McpServerConfig;
 use codex_mcp::mcp::auth::McpOAuthLoginSupport;
 use codex_mcp::mcp::auth::oauth_login_support;
 use codex_mcp::mcp::auth::resolve_oauth_scopes;

@@ -1,5 +1,5 @@
 use anyhow::Result;
-use codex_core::config::types::Personality;
+use codex_config::types::Personality;
 use codex_core::models_manager::manager::RefreshStrategy;
 use codex_features::Feature;
 use codex_login::CodexAuth;

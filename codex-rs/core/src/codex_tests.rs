@@ -604,7 +604,7 @@ async fn reload_user_config_layer_updates_effective_apps_config() {
         .and_then(|table| table.get("apps"))
         .cloned()
         .expect("apps table");
-    let apps = crate::config::types::AppsConfigToml::deserialize(apps_toml)
+    let apps = codex_config::types::AppsConfigToml::deserialize(apps_toml)
         .expect("deserialize apps config");
     let app = apps
         .apps
@@ -3091,7 +3091,7 @@ async fn user_turn_updates_approvals_reviewer() {
             }],
             cwd: config.cwd.to_path_buf(),
             approval_policy: config.permissions.approval_policy.value(),
-            approvals_reviewer: Some(crate::config::types::ApprovalsReviewer::GuardianSubagent),
+            approvals_reviewer: Some(codex_config::types::ApprovalsReviewer::GuardianSubagent),
             sandbox_policy: config.permissions.sandbox_policy.get().clone(),
             model: turn_context.model_info.slug.clone(),
             effort: config.model_reasoning_effort,
@@ -3107,7 +3107,7 @@ async fn user_turn_updates_approvals_reviewer() {
     let state = session.state.lock().await;
     assert_eq!(
         state.session_configuration.approvals_reviewer,
-        crate::config::types::ApprovalsReviewer::GuardianSubagent
+        codex_config::types::ApprovalsReviewer::GuardianSubagent
     );
 }
 

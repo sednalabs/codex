@@ -181,8 +181,6 @@ use crate::config::ConstraintResult;
 use crate::config::GhostSnapshotConfig;
 use crate::config::StartedNetworkProxy;
 use crate::config::resolve_web_search_mode_for_turn;
-use crate::config::types::McpServerConfig;
-use crate::config::types::ShellEnvironmentPolicy;
 use crate::context_manager::ContextManager;
 use crate::context_manager::TotalTokenUsageBreakdown;
 use crate::environment_context::EnvironmentContext;
@@ -191,6 +189,8 @@ use crate::error::Result as CodexResult;
 #[cfg(test)]
 use crate::exec::StreamOutput;
 use codex_config::CONFIG_TOML_FILE;
+use codex_config::types::McpServerConfig;
+use codex_config::types::ShellEnvironmentPolicy;
 
 mod rollout_reconstruction;
 #[cfg(test)]

@@ -3,7 +3,6 @@ use crate::ThreadManager;
 use crate::built_in_model_providers;
 use crate::codex::make_session_and_context;
 use crate::config::DEFAULT_AGENT_MAX_DEPTH;
-use crate::config::types::ShellEnvironmentPolicy;
 use crate::function_tool::FunctionCallError;
 use crate::session_prefix::format_subagent_notification_message;
 use crate::state::TaskKind;
@@ -17,6 +16,7 @@ use crate::tools::handlers::multi_agents_v2::SendMessageHandler as SendMessageHa
 use crate::tools::handlers::multi_agents_v2::SpawnAgentHandler as SpawnAgentHandlerV2;
 use crate::tools::handlers::multi_agents_v2::WaitAgentHandler as WaitAgentHandlerV2;
 use crate::turn_diff_tracker::TurnDiffTracker;
+use codex_config::types::ShellEnvironmentPolicy;
 use codex_features::Feature;
 use codex_login::AuthManager;
 use codex_login::CodexAuth;

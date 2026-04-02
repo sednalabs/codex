@@ -1,31 +1,5 @@
 use crate::config::edit::ConfigEdit;
 use crate::config::edit::ConfigEditsBuilder;
-use crate::config::types::AppsConfigToml;
-use crate::config::types::DEFAULT_OTEL_ENVIRONMENT;
-use crate::config::types::History;
-use crate::config::types::McpServerConfig;
-use crate::config::types::McpServerDisabledReason;
-use crate::config::types::McpServerTransportConfig;
-use crate::config::types::MemoriesConfig;
-use crate::config::types::MemoriesToml;
-use crate::config::types::ModelAvailabilityNuxConfig;
-use crate::config::types::Notice;
-use crate::config::types::NotificationMethod;
-use crate::config::types::Notifications;
-use crate::config::types::OtelConfig;
-use crate::config::types::OtelConfigToml;
-use crate::config::types::OtelExporterKind;
-use crate::config::types::PluginConfig;
-use crate::config::types::SandboxWorkspaceWrite;
-use crate::config::types::ShellEnvironmentPolicy;
-use crate::config::types::ShellEnvironmentPolicyToml;
-use crate::config::types::SkillsConfig;
-use crate::config::types::ToolSuggestConfig;
-use crate::config::types::ToolSuggestDiscoverable;
-use crate::config::types::Tui;
-use crate::config::types::UriBasedFileOpener;
-use crate::config::types::WindowsSandboxModeToml;
-use crate::config::types::WindowsToml;
 use crate::config_loader::CloudRequirementsLoader;
 use crate::config_loader::ConfigLayerStack;
 use crate::config_loader::ConfigLayerStackOrdering;
@@ -56,6 +30,33 @@ use crate::windows_sandbox::resolve_windows_sandbox_mode;
 use crate::windows_sandbox::resolve_windows_sandbox_private_desktop;
 use codex_app_server_protocol::Tools;
 use codex_app_server_protocol::UserSavedConfig;
+use codex_config::types::ApprovalsReviewer;
+use codex_config::types::AppsConfigToml;
+use codex_config::types::DEFAULT_OTEL_ENVIRONMENT;
+use codex_config::types::History;
+use codex_config::types::McpServerConfig;
+use codex_config::types::McpServerDisabledReason;
+use codex_config::types::McpServerTransportConfig;
+use codex_config::types::MemoriesConfig;
+use codex_config::types::MemoriesToml;
+use codex_config::types::ModelAvailabilityNuxConfig;
+use codex_config::types::Notice;
+use codex_config::types::NotificationMethod;
+use codex_config::types::Notifications;
+use codex_config::types::OtelConfig;
+use codex_config::types::OtelConfigToml;
+use codex_config::types::OtelExporterKind;
+use codex_config::types::PluginConfig;
+use codex_config::types::SandboxWorkspaceWrite;
+use codex_config::types::ShellEnvironmentPolicy;
+use codex_config::types::ShellEnvironmentPolicyToml;
+use codex_config::types::SkillsConfig;
+use codex_config::types::ToolSuggestConfig;
+use codex_config::types::ToolSuggestDiscoverable;
+use codex_config::types::Tui;
+use codex_config::types::UriBasedFileOpener;
+use codex_config::types::WindowsSandboxModeToml;
+use codex_config::types::WindowsToml;
 use codex_features::Feature;
 use codex_features::FeatureConfigSource;
 use codex_features::FeatureOverrides;
@@ -113,7 +114,6 @@ mod permissions;
 pub mod profile;
 pub mod schema;
 pub mod service;
-pub mod types;
 pub use codex_config::Constrained;
 pub use codex_config::ConstraintError;
 pub use codex_config::ConstraintResult;
@@ -135,7 +135,6 @@ pub(crate) use permissions::overlay_network_domain_permissions;
 pub(crate) use permissions::resolve_permission_profile;
 pub use service::ConfigService;
 pub use service::ConfigServiceError;
-pub use types::ApprovalsReviewer;
 
 pub use codex_git_utils::GhostSnapshotConfig;
 
@@ -582,7 +581,7 @@ pub struct Config {
     pub tool_suggest: ToolSuggestConfig,
 
     /// OTEL configuration (exporter type, endpoint, headers, etc.).
-    pub otel: crate::config::types::OtelConfig,
+    pub otel: codex_config::types::OtelConfig,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -1393,18 +1392,18 @@ pub struct ConfigToml {
 
     /// When `false`, disables analytics across Codex product surfaces in this machine.
     /// Defaults to `true`.
-    pub analytics: Option<crate::config::types::AnalyticsConfigToml>,
+    pub analytics: Option<codex_config::types::AnalyticsConfigToml>,
 
     /// When `false`, disables feedback collection across Codex product surfaces.
     /// Defaults to `true`.
-    pub feedback: Option<crate::config::types::FeedbackConfigToml>,
+    pub feedback: Option<codex_config::types::FeedbackConfigToml>,
 
     /// Settings for app-specific controls.
     #[serde(default)]
     pub apps: Option<AppsConfigToml>,
 
     /// OTEL configuration.
-    pub otel: Option<crate::config::types::OtelConfigToml>,
+    pub otel: Option<codex_config::types::OtelConfigToml>,
 
     /// Windows-specific configuration.
     #[serde(default)]
@@ -1414,7 +1413,7 @@ pub struct ConfigToml {
     pub windows_wsl_setup_acknowledged: Option<bool>,
 
     /// Collection of in-product notices (different from notifications)
-    /// See [`crate::config::types::Notices`] for more details
+    /// See [`codex_config::types::Notice`] for more details
     pub notice: Option<Notice>,
 
     /// Legacy, now use features

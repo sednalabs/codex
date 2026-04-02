@@ -1,8 +1,8 @@
-use crate::config::types::McpServerConfig;
 use crate::path_utils::resolve_symlink_write_paths;
 use crate::path_utils::write_atomically;
 use anyhow::Context;
 use codex_config::CONFIG_TOML_FILE;
+use codex_config::types::McpServerConfig;
 use codex_features::FEATURES;
 use codex_protocol::config_types::Personality;
 use codex_protocol::config_types::ServiceTier;
@@ -126,10 +126,10 @@ pub fn model_availability_nux_count_edits(shown_count: &HashMap<String, u32>) ->
 
 // TODO(jif) move to a dedicated file
 mod document_helpers {
-    use crate::config::types::AppToolApproval;
-    use crate::config::types::McpServerConfig;
-    use crate::config::types::McpServerToolConfig;
-    use crate::config::types::McpServerTransportConfig;
+    use codex_config::types::AppToolApproval;
+    use codex_config::types::McpServerConfig;
+    use codex_config::types::McpServerToolConfig;
+    use codex_config::types::McpServerTransportConfig;
     use toml_edit::Array as TomlArray;
     use toml_edit::InlineTable;
     use toml_edit::Item as TomlItem;

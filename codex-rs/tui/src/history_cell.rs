@@ -40,8 +40,8 @@ use crate::wrapping::adaptive_wrap_line;
 use crate::wrapping::adaptive_wrap_lines;
 use base64::Engine;
 use codex_app_server_protocol::McpServerStatus;
+use codex_config::types::McpServerTransportConfig;
 use codex_core::config::Config;
-use codex_core::config::types::McpServerTransportConfig;
 #[cfg(test)]
 use codex_core::mcp::McpManager;
 #[cfg(test)]
@@ -2768,10 +2768,10 @@ mod tests {
     use crate::exec_cell::CommandOutput;
     use crate::exec_cell::ExecCall;
     use crate::exec_cell::ExecCell;
+    use codex_config::types::McpServerConfig;
+    use codex_config::types::McpServerDisabledReason;
     use codex_core::config::Config;
     use codex_core::config::ConfigBuilder;
-    use codex_core::config::types::McpServerConfig;
-    use codex_core::config::types::McpServerDisabledReason;
     use codex_otel::RuntimeMetricTotals;
     use codex_otel::RuntimeMetricsSummary;
     use codex_protocol::ThreadId;

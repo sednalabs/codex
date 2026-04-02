@@ -79,14 +79,14 @@ pub(super) use codex_app_server_protocol::TurnError as AppServerTurnError;
 pub(super) use codex_app_server_protocol::TurnStartedNotification;
 pub(super) use codex_app_server_protocol::TurnStatus as AppServerTurnStatus;
 pub(super) use codex_app_server_protocol::UserInput as AppServerUserInput;
-pub(super) use codex_core::config::ApprovalsReviewer;
+pub(super) use codex_config::types::ApprovalsReviewer;
+pub(super) use codex_config::types::Notifications;
+#[cfg(target_os = "windows")]
+pub(super) use codex_config::types::WindowsSandboxModeToml;
 pub(super) use codex_core::config::Config;
 pub(super) use codex_core::config::ConfigBuilder;
 pub(super) use codex_core::config::Constrained;
 pub(super) use codex_core::config::ConstraintError;
-pub(super) use codex_core::config::types::Notifications;
-#[cfg(target_os = "windows")]
-pub(super) use codex_core::config::types::WindowsSandboxModeToml;
 pub(super) use codex_core::config_loader::AppRequirementToml;
 pub(super) use codex_core::config_loader::AppsRequirementsToml;
 pub(super) use codex_core::config_loader::ConfigLayerStack;

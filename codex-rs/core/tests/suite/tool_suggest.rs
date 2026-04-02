@@ -2,9 +2,9 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use anyhow::Result;
+use codex_config::types::ToolSuggestDiscoverable;
+use codex_config::types::ToolSuggestDiscoverableType;
 use codex_core::config::Config;
-use codex_core::config::types::ToolSuggestDiscoverable;
-use codex_core::config::types::ToolSuggestDiscoverableType;
 use codex_features::Feature;
 use codex_login::CodexAuth;
 use codex_protocol::openai_models::ModelsResponse;

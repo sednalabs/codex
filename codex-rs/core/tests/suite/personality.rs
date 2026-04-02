@@ -1,4 +1,4 @@
-use codex_core::config::types::Personality;
+use codex_config::types::Personality;
 use codex_core::models_manager::manager::ModelsManager;
 use codex_core::models_manager::manager::RefreshStrategy;
 use codex_features::Feature;
