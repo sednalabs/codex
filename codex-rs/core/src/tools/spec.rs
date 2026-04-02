@@ -15,6 +15,7 @@ use codex_protocol::openai_models::ApplyPatchToolType;
 use codex_protocol::openai_models::ConfigShellToolType;
 use codex_tools::CommandToolOptions;
 use codex_tools::DiscoverableTool;
+use codex_tools::REQUEST_USER_INPUT_TOOL_NAME;
 use codex_tools::ShellToolOptions;
 use codex_tools::SpawnAgentToolOptions;
 use codex_tools::TOOL_SEARCH_DEFAULT_LIMIT;
@@ -344,7 +345,7 @@ pub(crate) fn build_specs_with_discoverable_tools(
             /*supports_parallel_tool_calls*/ false,
             config.code_mode_enabled,
         );
-        builder.register_handler("request_user_input", request_user_input_handler);
+        builder.register_handler(REQUEST_USER_INPUT_TOOL_NAME, request_user_input_handler);
     }
 
     if config.request_permissions_tool_enabled {

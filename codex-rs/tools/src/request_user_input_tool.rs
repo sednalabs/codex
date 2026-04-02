@@ -3,7 +3,10 @@ use crate::ResponsesApiTool;
 use crate::ToolSpec;
 use codex_protocol::config_types::ModeKind;
 use codex_protocol::config_types::TUI_VISIBLE_COLLABORATION_MODES;
+use codex_protocol::request_user_input::RequestUserInputArgs;
 use std::collections::BTreeMap;
+
+pub const REQUEST_USER_INPUT_TOOL_NAME: &str = "request_user_input";
 
 pub fn create_request_user_input_tool(description: String) -> ToolSpec {
     let option_props = BTreeMap::from([
@@ -78,7 +81,7 @@ pub fn create_request_user_input_tool(description: String) -> ToolSpec {
     let properties = BTreeMap::from([("questions".to_string(), questions_schema)]);
 
     ToolSpec::Function(ResponsesApiTool {
-        name: "request_user_input".to_string(),
+        name: REQUEST_USER_INPUT_TOOL_NAME.to_string(),
         description,
         strict: false,
         defer_loading: None,
@@ -103,6 +106,24 @@ pub fn request_user_input_unavailable_message(
             "request_user_input is unavailable in {mode_name} mode"
         ))
     }
+}
+
+pub fn normalize_request_user_input_args(
+    mut args: RequestUserInputArgs,
+) -> Result<RequestUserInputArgs, String> {
+    let missing_options = args
+        .questions
+        .iter()
+        .any(|question| question.options.as_ref().is_none_or(Vec::is_empty));
+    if missing_options {
+        return Err("request_user_input requires non-empty options for every question".to_string());
+    }
+
+    for question in &mut args.questions {
+        question.is_other = true;
+    }
+
+    Ok(args)
 }
 
 pub fn request_user_input_tool_description(default_mode_request_user_input: bool) -> String {
