@@ -22,7 +22,6 @@ use crate::unified_exec::ExecCommandRequest;
 use crate::unified_exec::UnifiedExecContext;
 use crate::unified_exec::UnifiedExecProcessManager;
 use crate::unified_exec::WriteStdinRequest;
-use async_trait::async_trait;
 use codex_features::Feature;
 use codex_otel::SessionTelemetry;
 use codex_otel::metrics::names::TOOL_CALL_UNIFIED_EXEC_METRIC;
@@ -86,7 +85,6 @@ fn default_tty() -> bool {
     false
 }
 
-#[async_trait]
 impl ToolHandler for UnifiedExecHandler {
     type Output = ExecCommandToolOutput;
 

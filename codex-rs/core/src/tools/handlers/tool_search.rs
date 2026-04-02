@@ -4,7 +4,6 @@ use crate::tools::context::ToolPayload;
 use crate::tools::context::ToolSearchOutput;
 use crate::tools::registry::ToolHandler;
 use crate::tools::registry::ToolKind;
-use async_trait::async_trait;
 use bm25::Document;
 use bm25::Language;
 use bm25::SearchEngineBuilder;
@@ -25,7 +24,6 @@ impl ToolSearchHandler {
     }
 }
 
-#[async_trait]
 impl ToolHandler for ToolSearchHandler {
     type Output = ToolSearchOutput;
 

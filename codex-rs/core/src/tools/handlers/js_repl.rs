@@ -1,4 +1,3 @@
-use async_trait::async_trait;
 use serde_json::Value as JsonValue;
 use std::sync::Arc;
 use std::time::Duration;
@@ -92,7 +91,6 @@ async fn emit_js_repl_exec_end(
     };
     emitter.emit(ctx, stage).await;
 }
-#[async_trait]
 impl ToolHandler for JsReplHandler {
     type Output = FunctionToolOutput;
 
@@ -182,7 +180,6 @@ impl ToolHandler for JsReplHandler {
     }
 }
 
-#[async_trait]
 impl ToolHandler for JsReplResetHandler {
     type Output = FunctionToolOutput;
 

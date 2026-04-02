@@ -14,7 +14,6 @@ use tokio::time::timeout_at;
 
 pub(crate) struct Handler;
 
-#[async_trait]
 impl ToolHandler for Handler {
     type Output = WaitAgentResult;
 

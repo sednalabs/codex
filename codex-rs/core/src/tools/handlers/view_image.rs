@@ -1,4 +1,3 @@
-use async_trait::async_trait;
 use codex_protocol::models::FunctionCallOutputBody;
 use codex_protocol::models::FunctionCallOutputContentItem;
 use codex_protocol::models::FunctionCallOutputPayload;
@@ -37,7 +36,6 @@ enum ViewImageDetail {
     Original,
 }
 
-#[async_trait]
 impl ToolHandler for ViewImageHandler {
     type Output = ViewImageOutput;
 
