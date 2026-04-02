@@ -1,10 +1,10 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use crate::CodexAuth;
 use crate::config::Config;
 use crate::plugins::PluginsManager;
 use codex_config::McpServerConfig;
+use codex_login::CodexAuth;
 use codex_mcp::mcp::ToolPluginProvenance;
 use codex_mcp::mcp::configured_mcp_servers;
 use codex_mcp::mcp::effective_mcp_servers;

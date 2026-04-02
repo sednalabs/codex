@@ -160,7 +160,7 @@ async fn verify_tool_suggestion_completed(
     session: &crate::codex::Session,
     turn: &crate::codex::TurnContext,
     tool: &DiscoverableTool,
-    auth: Option<&crate::CodexAuth>,
+    auth: Option<&codex_login::CodexAuth>,
 ) -> bool {
     match tool {
         DiscoverableTool::Connector(connector) => refresh_missing_suggested_connectors(
@@ -198,7 +198,7 @@ async fn verify_tool_suggestion_completed(
 async fn refresh_missing_suggested_connectors(
     session: &crate::codex::Session,
     turn: &crate::codex::TurnContext,
-    auth: Option<&crate::CodexAuth>,
+    auth: Option<&codex_login::CodexAuth>,
     expected_connector_ids: &[String],
     tool_id: &str,
 ) -> Option<Vec<AppInfo>> {
