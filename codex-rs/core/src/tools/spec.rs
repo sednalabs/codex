@@ -29,6 +29,7 @@ use codex_tools::ViewImageToolOptions;
 use codex_tools::WaitAgentTimeoutOptions;
 use codex_tools::WebSearchToolOptions;
 use codex_tools::augment_tool_spec_for_code_mode;
+use codex_tools::collect_code_mode_tool_definitions;
 use codex_tools::collect_tool_search_app_infos;
 use codex_tools::collect_tool_suggest_entries;
 use codex_tools::create_apply_patch_freeform_tool;
@@ -72,7 +73,6 @@ use codex_tools::dynamic_tool_to_responses_api_tool;
 use codex_tools::mcp_tool_to_responses_api_tool;
 use codex_tools::request_permissions_tool_description;
 use codex_tools::request_user_input_tool_description;
-use codex_tools::tool_spec_to_code_mode_tool_definition;
 use std::collections::HashMap;
 
 #[cfg(test)]
@@ -202,13 +202,14 @@ pub(crate) fn build_specs_with_discoverable_tools(
             dynamic_tools,
         )
         .build();
-        let mut enabled_tools = nested_specs
-            .into_iter()
-            .filter_map(|spec| tool_spec_to_code_mode_tool_definition(&spec.spec))
-            .map(|tool| (tool.name, tool.description))
-            .collect::<Vec<_>>();
-        enabled_tools.sort_by(|left, right| left.0.cmp(&right.0));
-        enabled_tools.dedup_by(|left, right| left.0 == right.0);
+        let enabled_tools = collect_code_mode_tool_definitions(
+            nested_specs
+                .iter()
+                .map(|configured_tool| &configured_tool.spec),
+        )
+        .into_iter()
+        .map(|tool| (tool.name, tool.description))
+        .collect::<Vec<_>>();
         push_tool_spec(
             &mut builder,
             create_code_mode_tool(&enabled_tools, config.code_mode_only_enabled),
