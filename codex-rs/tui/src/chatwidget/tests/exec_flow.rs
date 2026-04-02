@@ -1013,22 +1013,22 @@ async fn bang_shell_command_submits_run_user_shell_command_in_app_server_tui() {
 }
 
 #[tokio::test]
-async fn disabled_slash_command_while_task_running_snapshot() {
+async fn queued_slash_command_while_task_running() {
     // Build a chat widget and simulate an active task
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
     chat.bottom_pane.set_task_running(/*running*/ true);
 
-    // Dispatch a command that is unavailable while a task runs (e.g., /model)
+    // Dispatch a command while a task runs; it should be queued.
     chat.dispatch_command(SlashCommand::Model);
 
-    // Drain history and snapshot the rendered error line(s)
+    // Drain history and assert queued command contract.
     let cells = drain_insert_history(&mut rx);
-    assert!(
-        !cells.is_empty(),
-        "expected an error message history cell to be emitted",
-    );
+    assert_eq!(cells.len(), 1, "expected one queued command message");
     let blob = lines_to_single_string(cells.last().unwrap());
-    assert_chatwidget_snapshot!("disabled_slash_command_while_task_running_snapshot", blob);
+    assert!(
+        blob.contains("Queued '/model'. It will run after the current task completes."),
+        "expected queued slash command message, got {blob:?}"
+    );
 }
 
 //

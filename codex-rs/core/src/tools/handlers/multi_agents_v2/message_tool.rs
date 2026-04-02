@@ -33,7 +33,9 @@ impl MessageDeliveryMode {
 /// Input for the MultiAgentV2 `send_message` tool.
 pub(crate) struct SendMessageArgs {
     pub(crate) target: String,
-    pub(crate) message: String,
+    pub(crate) items: Vec<UserInput>,
+    #[serde(default)]
+    pub(crate) interrupt: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -41,7 +43,7 @@ pub(crate) struct SendMessageArgs {
 /// Input for the MultiAgentV2 `assign_task` tool.
 pub(crate) struct AssignTaskArgs {
     pub(crate) target: String,
-    pub(crate) message: String,
+    pub(crate) items: Vec<UserInput>,
     #[serde(default)]
     pub(crate) interrupt: bool,
 }
@@ -79,22 +81,33 @@ fn message_content(message: String) -> Result<String, FunctionCallError> {
     Ok(message)
 }
 
-/// Handles the shared MultiAgentV2 plain-text message flow for both `send_message` and `assign_task`.
-pub(crate) async fn handle_message_string_tool(
-    invocation: ToolInvocation,
-    mode: MessageDeliveryMode,
-    target: String,
-    message: String,
-    interrupt: bool,
-) -> Result<MessageToolResult, FunctionCallError> {
-    handle_message_submission(
-        invocation,
-        mode,
-        target,
-        message_content(message)?,
-        interrupt,
-    )
-    .await
+fn message_content_from_items(
+    tool_name: &str,
+    items: Vec<UserInput>,
+) -> Result<String, FunctionCallError> {
+    if items.is_empty() {
+        return Err(FunctionCallError::RespondToModel(
+            "Items can't be empty".to_string(),
+        ));
+    }
+    let mut text_segments = Vec::new();
+    for item in items {
+        match item {
+            UserInput::Text { text, .. } if !text.trim().is_empty() => text_segments.push(text),
+            UserInput::Text { .. } => {}
+            UserInput::Image { .. }
+            | UserInput::LocalImage { .. }
+            | UserInput::Skill { .. }
+            | UserInput::Mention { .. }
+            | _ => {
+                return Err(FunctionCallError::RespondToModel(format!(
+                    "{tool_name} only supports text content in MultiAgentV2 for now"
+                )));
+            }
+        }
+    }
+
+    message_content(text_segments.join("\n"))
 }
 
 async fn handle_message_submission(
@@ -214,4 +227,16 @@ async fn handle_message_submission(
     let submission_id = result?;
 
     Ok(MessageToolResult { submission_id })
+}
+
+pub(crate) async fn handle_message_items_tool(
+    invocation: ToolInvocation,
+    mode: MessageDeliveryMode,
+    target: String,
+    items: Vec<UserInput>,
+    interrupt: bool,
+) -> Result<MessageToolResult, FunctionCallError> {
+    let tool_name = invocation.tool_name.clone();
+    let prompt = message_content_from_items(&tool_name, items)?;
+    handle_message_submission(invocation, mode, target, prompt, interrupt).await
 }
