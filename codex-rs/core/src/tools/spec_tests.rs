@@ -4,6 +4,7 @@ use crate::models_manager::model_info::with_config_overrides;
 use crate::shell::Shell;
 use crate::shell::ShellType;
 use crate::tools::ToolRouter;
+use crate::tools::registry::tool_handler_key;
 use crate::tools::router::ToolRouterParams;
 use codex_app_server_protocol::AppInfo;
 use codex_features::Feature;
@@ -13,6 +14,7 @@ use codex_protocol::config_types::WebSearchConfig;
 use codex_protocol::config_types::WebSearchMode;
 use codex_protocol::config_types::WindowsSandboxLevel;
 use codex_protocol::models::VIEW_IMAGE_TOOL_NAME;
+use codex_protocol::openai_models::ConfigShellToolType;
 use codex_protocol::openai_models::InputModality;
 use codex_protocol::openai_models::ModelInfo;
 use codex_protocol::openai_models::ModelsResponse;
@@ -32,6 +34,9 @@ use codex_tools::ResponsesApiWebSearchFilters;
 use codex_tools::ResponsesApiWebSearchUserLocation;
 use codex_tools::ShellCommandBackendConfig;
 use codex_tools::SpawnAgentToolOptions;
+use codex_tools::TOOL_SEARCH_TOOL_NAME;
+use codex_tools::TOOL_SUGGEST_TOOL_NAME;
+use codex_tools::ToolSpec;
 use codex_tools::ToolsConfig;
 use codex_tools::ToolsConfigParams;
 use codex_tools::UnifiedExecShellMode;
@@ -200,6 +205,14 @@ fn spawn_agent_tool_options(config: &ToolsConfig) -> SpawnAgentToolOptions<'_> {
     SpawnAgentToolOptions {
         available_models: &config.available_models,
         agent_type_description: agent_type_description(config),
+    }
+}
+
+fn agent_type_description(config: &ToolsConfig) -> String {
+    if config.agent_type_description.is_empty() {
+        crate::agent::role::spawn_tool_spec::build(&BTreeMap::new())
+    } else {
+        config.agent_type_description.clone()
     }
 }
 
