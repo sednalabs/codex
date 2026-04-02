@@ -4091,6 +4091,7 @@ impl Session {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn subscribe_mailbox_seq(&self) -> watch::Receiver<u64> {
         self.mailbox.subscribe()
     }
