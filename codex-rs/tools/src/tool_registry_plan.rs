@@ -486,3 +486,7 @@ pub fn build_tool_registry_plan(
 
     plan
 }
+
+#[cfg(test)]
+#[path = "tool_registry_plan_tests.rs"]
+mod tests;
