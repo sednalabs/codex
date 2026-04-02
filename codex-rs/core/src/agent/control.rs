@@ -270,8 +270,10 @@ impl AgentControl {
         let notification_source = session_source.clone();
 
         // The same `AgentControl` is sent to spawn the thread.
-        let new_thread = match (session_source, options.fork_mode.as_ref()) {
-            (Some(session_source), Some(_)) => {
+        let should_fork_from_parent =
+            options.fork_parent_spawn_call_id.is_some() || options.fork_mode.is_some();
+        let new_thread = match (session_source, should_fork_from_parent) {
+            (Some(session_source), true) => {
                 self.spawn_forked_thread(
                     &state,
                     config,
@@ -282,7 +284,7 @@ impl AgentControl {
                 )
                 .await?
             }
-            (Some(session_source), None) => {
+            (Some(session_source), false) => {
                 state
                     .spawn_new_thread_with_source(
                         config,
@@ -349,11 +351,8 @@ impl AgentControl {
                 "spawn_agent fork requires a parent spawn call id".to_string(),
             ));
         };
-        let Some(fork_mode) = options.fork_mode.as_ref() else {
-            return Err(CodexErr::Fatal(
-                "spawn_agent fork requires a fork mode".to_string(),
-            ));
-        };
+        let default_fork_mode = SpawnAgentForkMode::FullHistory;
+        let fork_mode = options.fork_mode.as_ref().unwrap_or(&default_fork_mode);
         let SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
             parent_thread_id, ..
         }) = &session_source
