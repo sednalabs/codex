@@ -46,7 +46,7 @@ Focused targeted lanes for iterative work on the current carry seams:
 
 Validation workflow reference:
 
-- `docs/industrial_carry_workflow.md`
+- `docs/validation_workflow.md`
 
 Focused lane used for protocol/event-history seams:
 
@@ -138,7 +138,7 @@ for a removed crate path.
 - Prefer the focused `codex.core-*targeted` lanes for seam-local work before
   widening to `core-test-smoke` or `core-test-progressive`.
 - Remote-first validation should follow the ladder in
-  [`docs/industrial_carry_workflow.md`](docs/industrial_carry_workflow.md):
+  [`docs/validation_workflow.md`](validation_workflow.md):
   small local checks first, then `validation-lab` `profile=smoke`,
   `targeted`, or `frontier`, and only then broader checkpoint runs when the
   question genuinely spans multiple seams.
