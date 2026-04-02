@@ -8639,6 +8639,7 @@ guardian_approval = true
             ServerNotification::ThreadStarted(ThreadStartedNotification {
                 thread: Thread {
                     id: agent_thread_id.to_string(),
+                    forked_from_id: None,
                     preview: "agent thread".to_string(),
                     ephemeral: false,
                     model_provider: "agent-provider".to_string(),
@@ -8719,6 +8720,7 @@ guardian_approval = true
             ServerNotification::ThreadStarted(ThreadStartedNotification {
                 thread: Thread {
                     id: agent_thread_id.to_string(),
+                    forked_from_id: None,
                     preview: "agent thread".to_string(),
                     ephemeral: false,
                     model_provider: "agent-provider".to_string(),
@@ -10680,6 +10682,7 @@ guardian_approval = true
             &ThreadRollbackResponse {
                 thread: Thread {
                     id: thread_id.to_string(),
+                    forked_from_id: None,
                     preview: String::new(),
                     ephemeral: false,
                     model_provider: "openai".to_string(),

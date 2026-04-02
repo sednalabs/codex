@@ -3523,6 +3523,11 @@ impl CodexMessageProcessor {
             }
             build_thread_from_snapshot(thread_uuid, &config_snapshot, loaded_rollout_path)
         };
+        if thread.forked_from_id.is_none()
+            && let Some(rollout_path) = rollout_path.as_ref()
+        {
+            thread.forked_from_id = forked_from_id_from_rollout(rollout_path).await;
+        }
         self.attach_thread_name(thread_uuid, &mut thread).await;
 
         if include_turns && let Some(rollout_path) = rollout_path.as_ref() {
@@ -4352,7 +4357,12 @@ impl CodexMessageProcessor {
             )
             .await
             {
-                Ok(summary) => summary_to_thread(summary),
+                Ok(summary) => {
+                    let mut thread = summary_to_thread(summary);
+                    thread.forked_from_id =
+                        forked_from_id_from_rollout(fork_rollout_path.as_path()).await;
+                    thread
+                }
                 Err(err) => {
                     self.send_internal_error(
                         request_id,
@@ -4386,6 +4396,14 @@ impl CodexMessageProcessor {
                 }
             };
             thread.preview = preview_from_rollout_items(&history_items);
+            thread.forked_from_id = source_thread_id
+                .or_else(|| {
+                    history_items.iter().find_map(|item| match item {
+                        RolloutItem::SessionMeta(meta_line) => Some(meta_line.meta.id),
+                        _ => None,
+                    })
+                })
+                .map(|id| id.to_string());
             if let Err(message) = populate_thread_turns(
                 &mut thread,
                 ThreadTurnSource::HistoryItems(&history_items),
@@ -8566,6 +8584,7 @@ async fn load_thread_summary_for_rollout(
                 rollout_path.display()
             )
         })?;
+    thread.forked_from_id = forked_from_id_from_rollout(rollout_path).await;
     if let Some(persisted_metadata) = persisted_metadata {
         merge_mutable_thread_metadata(
             &mut thread,
@@ -8575,6 +8594,14 @@ async fn load_thread_summary_for_rollout(
         merge_mutable_thread_metadata(&mut thread, summary_to_thread(summary));
     }
     Ok(thread)
+}
+
+async fn forked_from_id_from_rollout(path: &Path) -> Option<String> {
+    read_session_meta_line(path)
+        .await
+        .ok()
+        .and_then(|meta_line| meta_line.meta.forked_from_id)
+        .map(|thread_id| thread_id.to_string())
 }
 
 fn merge_mutable_thread_metadata(thread: &mut Thread, persisted_thread: Thread) {
@@ -8657,6 +8684,7 @@ fn build_thread_from_snapshot(
     let now = time::OffsetDateTime::now_utc().unix_timestamp();
     Thread {
         id: thread_id.to_string(),
+        forked_from_id: None,
         preview: String::new(),
         ephemeral: config_snapshot.ephemeral,
         model_provider: config_snapshot.model_provider_id.clone(),
@@ -8699,6 +8727,7 @@ pub(crate) fn summary_to_thread(summary: ConversationSummary) -> Thread {
 
     Thread {
         id: conversation_id.to_string(),
+        forked_from_id: None,
         preview,
         ephemeral: false,
         model_provider,
@@ -9192,6 +9221,44 @@ mod tests {
 
         assert_eq!(thread.agent_nickname, Some("atlas".to_string()));
         assert_eq!(thread.agent_role, Some("explorer".to_string()));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn read_summary_from_rollout_preserves_forked_from_id() -> Result<()> {
+        use codex_protocol::protocol::RolloutItem;
+        use codex_protocol::protocol::RolloutLine;
+        use codex_protocol::protocol::SessionMetaLine;
+        use std::fs;
+
+        let temp_dir = TempDir::new()?;
+        let path = temp_dir.path().join("rollout.jsonl");
+
+        let conversation_id = ThreadId::from_string("bfd12a78-5900-467b-9bc5-d3d35df08191")?;
+        let forked_from_id = ThreadId::from_string("ad7f0408-99b8-4f6e-a46f-bd0eec433370")?;
+        let timestamp = "2025-09-05T16:53:11.850Z".to_string();
+
+        let session_meta = SessionMeta {
+            id: conversation_id,
+            forked_from_id: Some(forked_from_id),
+            timestamp: timestamp.clone(),
+            model_provider: Some("test-provider".to_string()),
+            ..SessionMeta::default()
+        };
+
+        let line = RolloutLine {
+            timestamp,
+            item: RolloutItem::SessionMeta(SessionMetaLine {
+                meta: session_meta,
+                git: None,
+            }),
+        };
+        fs::write(&path, format!("{}\n", serde_json::to_string(&line)?))?;
+
+        assert_eq!(
+            forked_from_id_from_rollout(path.as_path()).await,
+            Some(forked_from_id.to_string())
+        );
         Ok(())
     }
 
