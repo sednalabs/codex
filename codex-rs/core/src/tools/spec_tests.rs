@@ -15,6 +15,7 @@ use codex_protocol::models::VIEW_IMAGE_TOOL_NAME;
 use codex_protocol::openai_models::InputModality;
 use codex_protocol::openai_models::ModelInfo;
 use codex_protocol::openai_models::ModelsResponse;
+use codex_protocol::openai_models::WebSearchToolType;
 use codex_protocol::protocol::SandboxPolicy;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::SubAgentSource;
@@ -1277,12 +1278,7 @@ fn web_search_tool_type_text_and_image_sets_search_content_types() {
             filters: None,
             user_location: None,
             search_context_size: None,
-            search_content_types: Some(
-                WEB_SEARCH_CONTENT_TYPES
-                    .into_iter()
-                    .map(str::to_string)
-                    .collect()
-            ),
+            search_content_types: Some(vec!["text".to_string(), "image".to_string()]),
         }
     );
 }

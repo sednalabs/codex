@@ -13,11 +13,9 @@ use crate::tools::handlers::multi_agents_common::MAX_WAIT_TIMEOUT_MS;
 use crate::tools::handlers::multi_agents_common::MIN_WAIT_TIMEOUT_MS;
 use crate::tools::registry::ToolRegistryBuilder;
 use crate::tools::registry::tool_handler_key;
-use codex_protocol::config_types::WebSearchMode;
 use codex_protocol::dynamic_tools::DynamicToolSpec;
 use codex_protocol::openai_models::ApplyPatchToolType;
 use codex_protocol::openai_models::ConfigShellToolType;
-use codex_protocol::openai_models::WebSearchToolType;
 use codex_tools::CommandToolOptions;
 use codex_tools::DiscoverableTool;
 use codex_tools::ShellToolOptions;
@@ -27,6 +25,7 @@ use codex_tools::ToolSpec;
 use codex_tools::ToolUserShellType;
 use codex_tools::ViewImageToolOptions;
 use codex_tools::WaitAgentTimeoutOptions;
+use codex_tools::WebSearchToolOptions;
 use codex_tools::augment_tool_spec_for_code_mode;
 use codex_tools::collect_tool_search_app_infos;
 use codex_tools::collect_tool_suggest_entries;
@@ -37,12 +36,14 @@ use codex_tools::create_close_agent_tool_v1;
 use codex_tools::create_close_agent_tool_v2;
 use codex_tools::create_code_mode_tool;
 use codex_tools::create_exec_command_tool;
+use codex_tools::create_image_generation_tool;
 use codex_tools::create_js_repl_reset_tool;
 use codex_tools::create_js_repl_tool;
 use codex_tools::create_list_agents_tool;
 use codex_tools::create_list_dir_tool;
 use codex_tools::create_list_mcp_resource_templates_tool;
 use codex_tools::create_list_mcp_resources_tool;
+use codex_tools::create_local_shell_tool;
 use codex_tools::create_read_mcp_resource_tool;
 use codex_tools::create_report_agent_job_result_tool;
 use codex_tools::create_request_permissions_tool;
@@ -63,6 +64,7 @@ use codex_tools::create_view_image_tool;
 use codex_tools::create_wait_agent_tool_v1;
 use codex_tools::create_wait_agent_tool_v2;
 use codex_tools::create_wait_tool;
+use codex_tools::create_web_search_tool;
 use codex_tools::create_write_stdin_tool;
 use codex_tools::dynamic_tool_to_responses_api_tool;
 use codex_tools::mcp_tool_to_responses_api_tool;
@@ -79,8 +81,6 @@ pub use codex_tools::ZshForkConfig;
 
 #[cfg(test)]
 pub(crate) use codex_tools::mcp_call_tool_result_output_schema;
-
-const WEB_SEARCH_CONTENT_TYPES: [&str; 2] = ["text", "image"];
 
 pub(crate) fn tool_user_shell_type(user_shell: &Shell) -> ToolUserShellType {
     match user_shell.shell_type {
@@ -243,7 +243,7 @@ pub(crate) fn build_specs_with_discoverable_tools(
         ConfigShellToolType::Local => {
             push_tool_spec(
                 &mut builder,
-                ToolSpec::LocalShell {},
+                create_local_shell_tool(),
                 /*supports_parallel_tool_calls*/ true,
                 config.code_mode_enabled,
             );
@@ -453,41 +453,14 @@ pub(crate) fn build_specs_with_discoverable_tools(
         builder.register_handler("test_sync_tool", test_sync_handler);
     }
 
-    let external_web_access = match config.web_search_mode {
-        Some(WebSearchMode::Cached) => Some(false),
-        Some(WebSearchMode::Live) => Some(true),
-        Some(WebSearchMode::Disabled) | None => None,
-    };
-
-    if let Some(external_web_access) = external_web_access {
-        let search_content_types = match config.web_search_tool_type {
-            WebSearchToolType::Text => None,
-            WebSearchToolType::TextAndImage => Some(
-                WEB_SEARCH_CONTENT_TYPES
-                    .into_iter()
-                    .map(str::to_string)
-                    .collect(),
-            ),
-        };
-
+    if let Some(web_search_tool) = create_web_search_tool(WebSearchToolOptions {
+        web_search_mode: config.web_search_mode,
+        web_search_config: config.web_search_config.as_ref(),
+        web_search_tool_type: config.web_search_tool_type,
+    }) {
         push_tool_spec(
             &mut builder,
-            ToolSpec::WebSearch {
-                external_web_access: Some(external_web_access),
-                filters: config
-                    .web_search_config
-                    .as_ref()
-                    .and_then(|cfg| cfg.filters.clone().map(Into::into)),
-                user_location: config
-                    .web_search_config
-                    .as_ref()
-                    .and_then(|cfg| cfg.user_location.clone().map(Into::into)),
-                search_context_size: config
-                    .web_search_config
-                    .as_ref()
-                    .and_then(|cfg| cfg.search_context_size),
-                search_content_types,
-            },
+            web_search_tool,
             /*supports_parallel_tool_calls*/ false,
             config.code_mode_enabled,
         );
@@ -496,9 +469,7 @@ pub(crate) fn build_specs_with_discoverable_tools(
     if config.image_gen_tool {
         push_tool_spec(
             &mut builder,
-            ToolSpec::ImageGeneration {
-                output_format: "png".to_string(),
-            },
+            create_image_generation_tool("png"),
             /*supports_parallel_tool_calls*/ false,
             config.code_mode_enabled,
         );
