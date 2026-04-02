@@ -1029,7 +1029,8 @@ pub(in crate::memories) mod agent {
             .parent()
             .ok_or_else(|| std::io::Error::other("memory root is missing codex_home parent"))?;
         // Reject redirecting path components we directly control, but tolerate
-        // system-level ancestor aliases such as macOS tempdirs under `/var`.
+        // system-level ancestor aliases such as macOS tempdirs where `/var`
+        // commonly resolves through the system-managed `/private` symlink.
         validate_non_redirecting_path_component(codex_home)?;
         match std::fs::symlink_metadata(root) {
             Ok(metadata) => validate_non_redirecting_metadata(root, &metadata),
