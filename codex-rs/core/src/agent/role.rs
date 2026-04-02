@@ -644,7 +644,7 @@ Rules:
 - `awaiter` is passive and deterministic. It should not broaden into diagnosis, retries, or code changes.
 - If the seam only needs one delegated wait, prefer `awaiter` over a more interpretive babysitter lane.
 - If the seam needs meaningful status judgment, multi-target monitoring, or repair ownership, choose another lane instead."#.to_string()),
-                        config_file: Some("awaiter.toml".to_string().parse().unwrap_or_default()),
+                        config_file: Some(Path::new("awaiter.toml").to_path_buf()),
                         nickname_candidates: None,
                     }
                 ),
