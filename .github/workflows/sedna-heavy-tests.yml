@@ -39,8 +39,8 @@ on:
       - ready_for_review
       - labeled
   merge_group: {}
-  schedule:
-    - cron: "15 16 * * *"
+#  schedule:
+#    - cron: "15 16 * * *"
   push:
     branches:
       - main
