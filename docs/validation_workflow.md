@@ -1,4 +1,4 @@
-# Industrial Validation Workflow
+# Validation Workflow for Multi-Step Changes
 
 This document describes the contributor-safe validation ladder for hard,
 multi-step work in this repository. It keeps the tracked guidance focused on
@@ -22,12 +22,13 @@ A slice is expected to produce:
 - one narrow diff
 - one atomic commit
 - one exact validation run
-- one recorded conclusion in the team's operational tracker
+- one recorded conclusion in the issue, PR, or work item record chosen for the
+  change
 
 If a slice cannot be described as "one question, one change, one measurement,"
 it is probably too large.
 
-Suggested tracking fields:
+Suggested record fields:
 
 - slice id
 - question or invariant
@@ -37,6 +38,9 @@ Suggested tracking fields:
 - outcome
 - key signal
 - next action
+
+Tracked docs should not prescribe a particular operational tracker, role
+layout, or orchestration style for that record.
 
 ## Validation ladder
 
@@ -59,6 +63,10 @@ Use the smallest validator that can answer the current question.
    - use only for explicit broader confidence or pre-promotion soak
 7. `profile=artifact` or `artifact_build=true`
    - use only when the question is buildability or preview delivery
+
+For Linux release readiness, prefer `validation-lab` `profile=targeted` with
+`lane_set=release` when the question is narrow `--locked` release-build drift.
+Use artifact mode only when you also need a disposable preview package.
 
 ## Fan-out and concurrency
 
@@ -103,9 +111,9 @@ Tracked docs are the right place for:
 - seam-to-guardrail mappings
 - generalized workflow rules
 
-Do not put local machine details, operator-specific routing habits, or private
-workflow notes into tracked docs.
-Those belong in local-only guidance or in the team's operational tracker.
+Do not put local machine details, operator-specific routing habits, local cost
+or quota policy, or private workflow notes into tracked docs.
+Those belong in local-only guidance or in the change record chosen by the team.
 
 ## Promotion and buildability
 

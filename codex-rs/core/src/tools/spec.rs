@@ -7,10 +7,6 @@ use crate::shell::Shell;
 use crate::shell::ShellType;
 use crate::tools::code_mode::PUBLIC_TOOL_NAME;
 use crate::tools::code_mode::WAIT_TOOL_NAME;
-use crate::tools::discoverable::DiscoverablePluginInfo;
-use crate::tools::discoverable::DiscoverableTool;
-use crate::tools::discoverable::DiscoverableToolAction;
-use crate::tools::discoverable::DiscoverableToolType;
 use crate::tools::handlers::PLAN_TOOL;
 use crate::tools::handlers::TOOL_SEARCH_DEFAULT_LIMIT;
 use crate::tools::handlers::TOOL_SEARCH_TOOL_NAME;
@@ -41,11 +37,14 @@ use codex_protocol::protocol::SandboxPolicy;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::SubAgentSource;
 use codex_tools::CommandToolOptions;
+use codex_tools::DiscoverableTool;
+use codex_tools::DiscoverableToolType;
 use codex_tools::FreeformTool;
 use codex_tools::FreeformToolFormat;
 use codex_tools::ResponsesApiTool;
 use codex_tools::ShellToolOptions;
 use codex_tools::SpawnAgentToolOptions;
+use codex_tools::ToolSuggestEntry;
 use codex_tools::ViewImageToolOptions;
 use codex_tools::WaitAgentTimeoutOptions;
 use codex_tools::augment_tool_spec_for_code_mode;
@@ -66,6 +65,7 @@ use codex_tools::create_shell_tool;
 use codex_tools::create_spawn_agent_tool_v1;
 use codex_tools::create_spawn_agent_tool_v2;
 use codex_tools::create_spawn_agents_on_csv_tool;
+use codex_tools::create_tool_suggest_tool as create_shared_tool_suggest_tool;
 use codex_tools::create_view_image_tool;
 use codex_tools::create_wait_agent_tool_v1;
 use codex_tools::create_wait_agent_tool_v2;
@@ -93,13 +93,6 @@ const TOOL_SEARCH_DESCRIPTION_TEMPLATE_KEY: &str = "app_descriptions";
 static TOOL_SEARCH_DESCRIPTION_TEMPLATE: LazyLock<Template> = LazyLock::new(|| {
     Template::parse(TOOL_SEARCH_DESCRIPTION_TEMPLATE_SOURCE)
         .unwrap_or_else(|err| panic!("tool_search description template must parse: {err}"))
-});
-const TOOL_SUGGEST_DESCRIPTION_TEMPLATE_SOURCE: &str =
-    include_str!("../../templates/search_tool/tool_suggest_description.md");
-const TOOL_SUGGEST_DESCRIPTION_TEMPLATE_KEY: &str = "discoverable_tools";
-static TOOL_SUGGEST_DESCRIPTION_TEMPLATE: LazyLock<Template> = LazyLock::new(|| {
-    Template::parse(TOOL_SUGGEST_DESCRIPTION_TEMPLATE_SOURCE)
-        .unwrap_or_else(|err| panic!("tool_suggest description template must parse: {err}"))
 });
 const WEB_SEARCH_CONTENT_TYPES: [&str; 2] = ["text", "image"];
 
@@ -579,133 +572,31 @@ fn create_tool_search_tool(app_tools: &HashMap<String, ToolInfo>) -> ToolSpec {
 }
 
 fn create_tool_suggest_tool(discoverable_tools: &[DiscoverableTool]) -> ToolSpec {
-    let discoverable_tool_ids = discoverable_tools
+    let entries = discoverable_tools
         .iter()
-        .map(DiscoverableTool::id)
-        .collect::<Vec<_>>()
-        .join(", ");
-    let properties = BTreeMap::from([
-        (
-            "tool_type".to_string(),
-            JsonSchema::String {
-                description: Some(
-                    "Type of discoverable tool to suggest. Use \"connector\" or \"plugin\"."
-                        .to_string(),
-                ),
+        .map(|tool| match tool {
+            DiscoverableTool::Connector(connector) => ToolSuggestEntry {
+                id: connector.id.clone(),
+                name: connector.name.clone(),
+                description: connector.description.clone(),
+                tool_type: DiscoverableToolType::Connector,
+                has_skills: false,
+                mcp_server_names: Vec::new(),
+                app_connector_ids: Vec::new(),
             },
-        ),
-        (
-            "action_type".to_string(),
-            JsonSchema::String {
-                description: Some(
-                    "Suggested action for the tool. Use \"install\" or \"enable\".".to_string(),
-                ),
+            DiscoverableTool::Plugin(plugin) => ToolSuggestEntry {
+                id: plugin.id.clone(),
+                name: plugin.name.clone(),
+                description: plugin.description.clone(),
+                tool_type: DiscoverableToolType::Plugin,
+                has_skills: plugin.has_skills,
+                mcp_server_names: plugin.mcp_server_names.clone(),
+                app_connector_ids: plugin.app_connector_ids.clone(),
             },
-        ),
-        (
-            "tool_id".to_string(),
-            JsonSchema::String {
-                description: Some(format!(
-                    "Connector or plugin id to suggest. Must be one of: {discoverable_tool_ids}."
-                )),
-            },
-        ),
-        (
-            "suggest_reason".to_string(),
-            JsonSchema::String {
-                description: Some(
-                    "Concise one-line user-facing reason why this tool can help with the current request."
-                        .to_string(),
-                ),
-            },
-        ),
-    ]);
-    let discoverable_tools = format_discoverable_tools(discoverable_tools);
-    let description = TOOL_SUGGEST_DESCRIPTION_TEMPLATE
-        .render([(
-            TOOL_SUGGEST_DESCRIPTION_TEMPLATE_KEY,
-            discoverable_tools.as_str(),
-        )])
-        .unwrap_or_else(|err| panic!("tool_suggest description template must render: {err}"));
-
-    ToolSpec::Function(ResponsesApiTool {
-        name: TOOL_SUGGEST_TOOL_NAME.to_string(),
-        description,
-        strict: false,
-        defer_loading: None,
-        parameters: JsonSchema::Object {
-            properties,
-            required: Some(vec![
-                "tool_type".to_string(),
-                "action_type".to_string(),
-                "tool_id".to_string(),
-                "suggest_reason".to_string(),
-            ]),
-            additional_properties: Some(false.into()),
-        },
-        output_schema: None,
-    })
-}
-
-fn format_discoverable_tools(discoverable_tools: &[DiscoverableTool]) -> String {
-    let mut discoverable_tools = discoverable_tools.to_vec();
-    discoverable_tools.sort_by(|left, right| {
-        left.name()
-            .cmp(right.name())
-            .then_with(|| left.id().cmp(right.id()))
-    });
-
-    discoverable_tools
-        .into_iter()
-        .map(|tool| {
-            let description = tool
-                .description()
-                .filter(|description| !description.trim().is_empty())
-                .map(ToString::to_string)
-                .unwrap_or_else(|| match &tool {
-                    DiscoverableTool::Connector(_) => "No description provided.".to_string(),
-                    DiscoverableTool::Plugin(plugin) => format_plugin_summary(plugin.as_ref()),
-                });
-            let default_action = match tool.tool_type() {
-                DiscoverableToolType::Connector => DiscoverableToolAction::Install,
-                DiscoverableToolType::Plugin => DiscoverableToolAction::Install,
-            };
-            format!(
-                "- {} (id: `{}`, type: {}, action: {}): {}",
-                tool.name(),
-                tool.id(),
-                tool.tool_type().as_str(),
-                default_action.as_str(),
-                description
-            )
         })
-        .collect::<Vec<_>>()
-        .join("\n")
-}
+        .collect::<Vec<_>>();
 
-fn format_plugin_summary(plugin: &DiscoverablePluginInfo) -> String {
-    let mut details = Vec::new();
-    if plugin.has_skills {
-        details.push("skills".to_string());
-    }
-    if !plugin.mcp_server_names.is_empty() {
-        details.push(format!(
-            "MCP servers: {}",
-            plugin.mcp_server_names.join(", ")
-        ));
-    }
-    if !plugin.app_connector_ids.is_empty() {
-        details.push(format!(
-            "app connectors: {}",
-            plugin.app_connector_ids.join(", ")
-        ));
-    }
-
-    if details.is_empty() {
-        "No description provided.".to_string()
-    } else {
-        details.join("; ")
-    }
+    create_shared_tool_suggest_tool(&entries)
 }
 
 fn create_list_dir_tool() -> ToolSpec {

@@ -107,7 +107,7 @@ live divergence.
   - `codex-rs/core/src/memories/phase2_attestation_tests.rs`
   - `codex-rs/core/src/memories/tests.rs`
   - `codex-rs/state/src/runtime/phase2_attestation.rs`
-  - `codex-rs/state/migrations/0023_phase2_attestation_roots.sql`
+  - `codex-rs/state/migrations/0024_phase2_attestation_roots.sql`
   - `docs/memories.md`
 
 ### CLI Git Metadata And Rebuild Triggers

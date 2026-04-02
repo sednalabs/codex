@@ -1,5 +1,9 @@
 use super::*;
+use crate::agent::agent_resolver::resolve_agent_targets;
 use crate::agent::status::is_final;
+use crate::codex::Session;
+use codex_protocol::ThreadId;
+use codex_protocol::protocol::CollabAgentRef;
 use codex_protocol::protocol::CollabWaitingCompletionReason;
 use futures::StreamExt;
 use futures::stream::FuturesUnordered;

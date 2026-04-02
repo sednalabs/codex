@@ -13,6 +13,8 @@ from upstream OpenAI releases.
 
 - Release tags use `v<upstream-base>-sedna.<n>`
 - Example: `v0.117.0-sedna.1`
+- Alpha or beta prereleases keep the upstream prerelease segment before the Sedna suffix, for
+  example `v0.119.0-alpha.2-sedna.1`
 - Artifact names include `sedna` so they are not confused with upstream binaries
 - Release builds embed `CODEX_RELEASE_VERSION` so UI and `codex --version` reflect the tagged fork
   release instead of the workspace placeholder version
@@ -27,6 +29,8 @@ Use the `sedna-release` workflow for fork-owned GitHub releases.
 - Push a tag like `v0.117.0-sedna.1` to publish immediately
 - Or run `sedna-release` manually with a `release_tag` input to build from the selected ref and let
   GitHub create the tag/release for that commit
+- Tags with an upstream prerelease segment, such as `v0.119.0-alpha.2-sedna.1`, are published as
+  GitHub prereleases
 
 Current workflow characteristics:
 
@@ -40,6 +44,9 @@ Current workflow characteristics:
 - `validation-lab` is the default remote-first surface for scratch refs, integration refs,
   orphan-branch experiments, and targeted heavy validation that should not pollute ordinary PR
   status surfaces
+- `validation-lab` `profile=targeted` with `lane_set=release` is the preferred early Linux
+  release-build smoke path when the question is dependency or lockfile drift under
+  `cargo build --locked`
 - `sedna-branch-build` produces disposable preview binaries only when manually dispatched
 - `sedna-heavy-tests` runs expensive remote validation without using the shared local machine as the
   build factory
@@ -54,6 +61,9 @@ Current workflow characteristics:
 - Local builds remain useful for development, targeted tests, and smoke checks
 - `validation-lab` is the default offload path for seam-level remote validation and experimental
   sweeps
+- When the question is "will the Linux release binary set still build with `--locked`?", prefer
+  `validation-lab` `profile=targeted` with `lane_set=release` before escalating to artifact mode
+  or `sedna-release`
 - Preview builds are intentionally opt-in rather than every-commit defaults
 - GitHub-hosted branch builds remain useful when the actual question is preview artifact
   buildability

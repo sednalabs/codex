@@ -94,10 +94,10 @@ async fn slash_copy_state_tracks_turn_complete_final_reply() {
 
     chat.handle_codex_event(Event {
         id: "turn-1".into(),
-        msg: EventMsg::TurnComplete(TurnCompleteEvent {
-            turn_id: "turn-1".to_string(),
-            last_agent_message: Some("Final reply **markdown**".to_string()),
-        }),
+        msg: EventMsg::TurnComplete(test_turn_complete_event(
+            "turn-1",
+            Some("Final reply **markdown**"),
+        )),
     });
 
     assert_eq!(
@@ -124,10 +124,10 @@ async fn slash_copy_state_tracks_plan_item_completion() {
     });
     chat.handle_codex_event(Event {
         id: "turn-1".into(),
-        msg: EventMsg::TurnComplete(TurnCompleteEvent {
-            turn_id: "turn-1".to_string(),
-            last_agent_message: None,
-        }),
+        msg: EventMsg::TurnComplete(test_turn_complete_event(
+            "turn-1",
+            /*last_agent_message*/ None::<String>,
+        )),
     });
 
     assert_eq!(chat.last_copyable_output, Some(plan_text));
@@ -157,10 +157,10 @@ async fn slash_copy_state_is_preserved_during_running_task() {
 
     chat.handle_codex_event(Event {
         id: "turn-1".into(),
-        msg: EventMsg::TurnComplete(TurnCompleteEvent {
-            turn_id: "turn-1".to_string(),
-            last_agent_message: Some("Previous completed reply".to_string()),
-        }),
+        msg: EventMsg::TurnComplete(test_turn_complete_event(
+            "turn-1",
+            Some("Previous completed reply"),
+        )),
     });
     chat.on_task_started();
 
@@ -176,10 +176,10 @@ async fn slash_copy_state_clears_on_thread_rollback() {
 
     chat.handle_codex_event(Event {
         id: "turn-1".into(),
-        msg: EventMsg::TurnComplete(TurnCompleteEvent {
-            turn_id: "turn-1".to_string(),
-            last_agent_message: Some("Reply that will be rolled back".to_string()),
-        }),
+        msg: EventMsg::TurnComplete(test_turn_complete_event(
+            "turn-1",
+            Some("Reply that will be rolled back"),
+        )),
     });
     chat.handle_codex_event(Event {
         id: "rollback-1".into(),
@@ -204,10 +204,10 @@ async fn slash_copy_is_unavailable_when_legacy_agent_message_is_not_repeated_on_
     let _ = drain_insert_history(&mut rx);
     chat.handle_codex_event(Event {
         id: "turn-1".into(),
-        msg: EventMsg::TurnComplete(TurnCompleteEvent {
-            turn_id: "turn-1".to_string(),
-            last_agent_message: None,
-        }),
+        msg: EventMsg::TurnComplete(test_turn_complete_event(
+            "turn-1",
+            /*last_agent_message*/ None::<String>,
+        )),
     });
     let _ = drain_insert_history(&mut rx);
 
@@ -245,10 +245,10 @@ async fn slash_copy_uses_agent_message_item_when_turn_complete_omits_final_text(
     let _ = drain_insert_history(&mut rx);
     chat.handle_codex_event(Event {
         id: "turn-1".into(),
-        msg: EventMsg::TurnComplete(TurnCompleteEvent {
-            turn_id: "turn-1".to_string(),
-            last_agent_message: None,
-        }),
+        msg: EventMsg::TurnComplete(test_turn_complete_event(
+            "turn-1",
+            /*last_agent_message*/ None::<String>,
+        )),
     });
     let _ = drain_insert_history(&mut rx);
 
@@ -290,10 +290,10 @@ async fn slash_copy_does_not_return_stale_output_after_thread_rollback() {
     let _ = drain_insert_history(&mut rx);
     chat.handle_codex_event(Event {
         id: "turn-1".into(),
-        msg: EventMsg::TurnComplete(TurnCompleteEvent {
-            turn_id: "turn-1".to_string(),
-            last_agent_message: None,
-        }),
+        msg: EventMsg::TurnComplete(test_turn_complete_event(
+            "turn-1",
+            /*last_agent_message*/ None::<String>,
+        )),
     });
     let _ = drain_insert_history(&mut rx);
 
@@ -351,19 +351,19 @@ async fn slash_clear_requests_ui_clear_when_idle() {
 }
 
 #[tokio::test]
-async fn slash_clear_is_disabled_while_task_running() {
+async fn slash_clear_queues_while_task_running() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
     chat.bottom_pane.set_task_running(/*running*/ true);
 
     chat.dispatch_command(SlashCommand::Clear);
 
-    let event = rx.try_recv().expect("expected disabled command error");
+    let event = rx.try_recv().expect("expected queued command message");
     match event {
         AppEvent::InsertHistoryCell(cell) => {
             let rendered = lines_to_single_string(&cell.display_lines(/*width*/ 80));
             assert!(
-                rendered.contains("'/clear' is disabled while a task is in progress."),
-                "expected /clear task-running error, got {rendered:?}"
+                rendered.contains("Queued '/clear'. It will run after the current task completes."),
+                "expected queued slash command message, got {rendered:?}"
             );
         }
         other => panic!("expected InsertHistoryCell error, got {other:?}"),

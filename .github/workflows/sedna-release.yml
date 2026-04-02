@@ -62,10 +62,17 @@ jobs:
           fi
 
           release_version="${release_tag#v}"
+          prerelease="false"
+          if [[ "${release_tag}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-[0-9A-Za-z.]+-sedna\.[0-9]+$ ]]; then
+            prerelease="true"
+          fi
 
-          echo "release_tag=${release_tag}" >> "$GITHUB_OUTPUT"
-          echo "release_version=${release_version}" >> "$GITHUB_OUTPUT"
-          echo "draft=${draft}" >> "$GITHUB_OUTPUT"
+          {
+            echo "release_tag=${release_tag}"
+            echo "release_version=${release_version}"
+            echo "draft=${draft}"
+            echo "prerelease=${prerelease}"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Install Linux build dependencies
         shell: bash
@@ -143,6 +150,7 @@ jobs:
           RELEASE_TAG: ${{ steps.meta.outputs.release_tag }}
           RELEASE_VERSION: ${{ steps.meta.outputs.release_version }}
           RELEASE_DRAFT: ${{ steps.meta.outputs.draft }}
+          RELEASE_PRERELEASE: ${{ steps.meta.outputs.prerelease }}
         run: |
           set -euo pipefail
           shopt -s nullglob
@@ -158,6 +166,11 @@ jobs:
             draft_flag+=(--draft)
           fi
 
+          prerelease_flag=()
+          if [[ "${RELEASE_PRERELEASE}" == "true" ]]; then
+            prerelease_flag+=(--prerelease)
+          fi
+
           if gh release view "${RELEASE_TAG}" >/dev/null 2>&1; then
             gh release upload "${RELEASE_TAG}" "${assets[@]}" --clobber
           else
@@ -165,5 +178,6 @@ jobs:
               --title "Codex Sedna ${RELEASE_VERSION}" \
               --generate-notes \
               --target "${GITHUB_SHA}" \
+              "${prerelease_flag[@]}" \
               "${draft_flag[@]}"
           fi

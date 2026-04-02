@@ -7,7 +7,8 @@ branch.
 
 ## Core default path
 
-Default local iterative validation path:
+Default broader local validation path when you intentionally want a repo-side
+gate:
 
 - `just core-test-progressive`
 
@@ -30,7 +31,7 @@ Fast lanes used by `core-test-smoke` locally and by the remote smoke matrix:
   their own shard, so remote smoke runs can fail the exact runtime bucket
   without serializing the whole smoke pass behind one `just` recipe.
 
-Focused micro-slices for iterative work on the current carry seams:
+Focused targeted lanes for iterative work on the current carry seams:
 
 - `codex.core-startup-sync-targeted`
 - `codex.core-subagent-surface-targeted`
@@ -43,9 +44,9 @@ Focused micro-slices for iterative work on the current carry seams:
 - `codex.state-spawn-lineage-contract-targeted`
 - `codex.downstream-docs-check`
 
-Industrial validation workflow reference:
+Validation workflow reference:
 
-- `docs/industrial_carry_workflow.md`
+- `docs/validation_workflow.md`
 
 Focused lane used for protocol/event-history seams:
 
@@ -125,6 +126,7 @@ GitHub Actions lane naming (`.github/workflows/sedna-heavy-tests.yml`):
 | Persisted state spawn-edge lineage matches local `usage.sqlite` | `codex.state-spawn-lineage-contract-targeted` | `usage_spawn_lineage_matches_persisted_state_edge_for_child_thread` |
 | Usage logging contracts in local `usage.sqlite` | `core-ledger-smoke` | `usage_logger_*` focused table-contract tests in `codex-rs/state/src/runtime/usage.rs` |
 | Linux sandbox/core compile seam | `core-compile-smoke` | `cargo check -p codex-linux-sandbox -p codex-core --tests` |
+| Linux release-build dependency / `Cargo.lock` drift | `codex.release-linux-build-smoke` | `cargo build --locked --target x86_64-unknown-linux-gnu --release --bin codex --bin codex-responses-api-proxy` |
 | Postgres ledger ingest + copied-history/source-row regressions | `downstream-ledger-seam` | `ensure_schema.sh`; `ingest_codex_rollouts_to_postgres.sh`; `test_codex_copied_history_filter.sh`; `test_codex_source_row_identity.sh` |
 
 The replay assertions that used to live under `tui_app_server` now ride on the
@@ -132,50 +134,14 @@ cut-over `codex-tui` app tests. Keep the preset green with the parser test and
 the exact `codex-tui` render/app checks rather than carrying compile coverage
 for a removed crate path.
 
-## Operator notes
+## Validation notes
 
-- Prefer blocking joins over transcript polling when the tool surface supports
-  them:
-  - unified exec: `wait_until_terminal=true` on `exec_command` or
-    `write_stdin`
-  - sub-agents: inspect `list_agents(...)` first, then use `wait_agent(...)`
-    with a real timeout only when you are actually blocked on the result; use
-    `return_when=all` only when every child must be terminal
-  - build-helper: `*_and_wait` variants or `build_status(...,
-    wait_until_terminal=true)`
-- Local authoritative usage facts are stored in
-  `${CODEX_SQLITE_HOME:-$HOME/.codex}/usage.sqlite`.
-- Inspect local usage tables quickly with:
-
-```bash
-sqlite3 "${CODEX_SQLITE_HOME:-$HOME/.codex}/usage.sqlite" '.tables'
-```
-
-- `downstream-ledger-seam` reads the first-party local ledger at
-  `${CODEX_SQLITE_HOME:-$HOME/.codex}/usage.sqlite`; external Postgres wiring
-  is optional downstream analysis infrastructure, not a prerequisite for the
-  seam itself.
-- Keep the broad ladders out of the inner loop on this host:
-  use the focused `codex.core-*targeted` presets first, then a bounded
-  `validation-lab` `profile=frontier` harvest when the baseline is trustworthy,
-  then promote to `just core-test-smoke`, then `just core-test-progressive`
-  only when you intentionally want a broader gate.
-- Remote-first validation should follow this ladder:
-  - tiny local checks first
-  - `validation-lab` `profile=smoke` or `profile=targeted` on scratch or
-    integration refs
-  - `validation-lab` `profile=frontier` when you want a bounded queue of likely
-    next blockers without paying for a broad checkpoint
-  - `validation-lab` `profile=broad` or `profile=full` only when the question
-    genuinely spans multiple seams
-  - ordinary PR checks once the branch is ready for promotion semantics
-  - preview/buildability validation only when the question is "can we ship or
-    hand someone a binary?" rather than "did this seam regress?"
-- For carry work, keep the operational tracker slice-shaped:
-  - one question
-  - one commit
-  - one exact validation run
-  - one recorded conclusion before widening the scope
-- Full builds are not the default inner-loop validator here. Treat them as
-  promotion/buildability checkpoints on `main`, merge-group, alpha/release
-  candidates, or explicit artifact requests.
+- Prefer the focused `codex.core-*targeted` lanes for seam-local work before
+  widening to `core-test-smoke` or `core-test-progressive`.
+- Remote-first validation should follow the ladder in
+  [`docs/validation_workflow.md`](validation_workflow.md):
+  small local checks first, then `validation-lab` `profile=smoke`,
+  `targeted`, or `frontier`, and only then broader checkpoint runs when the
+  question genuinely spans multiple seams.
+- Full builds are buildability or promotion checkpoints, not the default
+  inner-loop validator for ordinary carry iteration.

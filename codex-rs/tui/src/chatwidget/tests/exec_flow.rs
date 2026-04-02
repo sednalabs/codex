@@ -646,10 +646,7 @@ async fn unified_exec_wait_after_final_agent_message_snapshot() {
     complete_assistant_message(&mut chat, "msg-1", "Final response.", /*phase*/ None);
     chat.handle_codex_event(Event {
         id: "turn-1".into(),
-        msg: EventMsg::TurnComplete(TurnCompleteEvent {
-            turn_id: "turn-1".to_string(),
-            last_agent_message: Some("Final response.".into()),
-        }),
+        msg: EventMsg::TurnComplete(test_turn_complete_event("turn-1", Some("Final response."))),
     });
 
     let cells = drain_insert_history(&mut rx);
@@ -688,10 +685,10 @@ async fn unified_exec_wait_before_streamed_agent_message_snapshot() {
     });
     chat.handle_codex_event(Event {
         id: "turn-1".into(),
-        msg: EventMsg::TurnComplete(TurnCompleteEvent {
-            turn_id: "turn-1".to_string(),
-            last_agent_message: None,
-        }),
+        msg: EventMsg::TurnComplete(test_turn_complete_event(
+            "turn-1",
+            /*last_agent_message*/ None::<String>,
+        )),
     });
 
     let cells = drain_insert_history(&mut rx);
@@ -753,10 +750,10 @@ async fn unified_exec_waiting_multiple_empty_snapshots() {
 
     chat.handle_codex_event(Event {
         id: "turn-wait-1".into(),
-        msg: EventMsg::TurnComplete(TurnCompleteEvent {
-            turn_id: "turn-1".to_string(),
-            last_agent_message: None,
-        }),
+        msg: EventMsg::TurnComplete(test_turn_complete_event(
+            "turn-1",
+            /*last_agent_message*/ None::<String>,
+        )),
     });
 
     let cells = drain_insert_history(&mut rx);
@@ -831,10 +828,10 @@ async fn unified_exec_non_empty_then_empty_snapshots() {
 
     chat.handle_codex_event(Event {
         id: "turn-wait-3".into(),
-        msg: EventMsg::TurnComplete(TurnCompleteEvent {
-            turn_id: "turn-1".to_string(),
-            last_agent_message: None,
-        }),
+        msg: EventMsg::TurnComplete(test_turn_complete_event(
+            "turn-1",
+            /*last_agent_message*/ None::<String>,
+        )),
     });
 
     let post_cells = drain_insert_history(&mut rx);
@@ -1016,22 +1013,22 @@ async fn bang_shell_command_submits_run_user_shell_command_in_app_server_tui() {
 }
 
 #[tokio::test]
-async fn disabled_slash_command_while_task_running_snapshot() {
+async fn queued_slash_command_while_task_running() {
     // Build a chat widget and simulate an active task
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
     chat.bottom_pane.set_task_running(/*running*/ true);
 
-    // Dispatch a command that is unavailable while a task runs (e.g., /model)
+    // Dispatch a command while a task runs; it should be queued.
     chat.dispatch_command(SlashCommand::Model);
 
-    // Drain history and snapshot the rendered error line(s)
+    // Drain history and assert queued command contract.
     let cells = drain_insert_history(&mut rx);
-    assert!(
-        !cells.is_empty(),
-        "expected an error message history cell to be emitted",
-    );
+    assert_eq!(cells.len(), 1, "expected one queued command message");
     let blob = lines_to_single_string(cells.last().unwrap());
-    assert_chatwidget_snapshot!("disabled_slash_command_while_task_running_snapshot", blob);
+    assert!(
+        blob.contains("Queued '/model'. It will run after the current task completes."),
+        "expected queued slash command message, got {blob:?}"
+    );
 }
 
 //
@@ -1328,10 +1325,10 @@ async fn turn_complete_keeps_unified_exec_processes() {
 
     chat.handle_codex_event(Event {
         id: "turn-1".into(),
-        msg: EventMsg::TurnComplete(TurnCompleteEvent {
-            turn_id: "turn-1".to_string(),
-            last_agent_message: None,
-        }),
+        msg: EventMsg::TurnComplete(test_turn_complete_event(
+            "turn-1",
+            /*last_agent_message*/ None::<String>,
+        )),
     });
 
     assert_eq!(chat.unified_exec_processes.len(), 2);

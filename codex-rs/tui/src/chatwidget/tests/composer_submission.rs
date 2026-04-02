@@ -791,14 +791,9 @@ async fn restore_thread_input_state_syncs_sleep_inhibitor_state() {
     chat.set_feature_enabled(Feature::PreventIdleSleep, /*enabled*/ true);
 
     chat.restore_thread_input_state(Some(ThreadInputState {
-        composer: None,
-        pending_steers: VecDeque::new(),
-        rejected_steers_queue: VecDeque::new(),
-        queued_user_messages: VecDeque::new(),
-        current_collaboration_mode: chat.current_collaboration_mode.clone(),
-        active_collaboration_mask: chat.active_collaboration_mask.clone(),
         task_running: true,
         agent_turn_running: true,
+        ..default_thread_input_state(&chat)
     }));
 
     assert!(chat.agent_turn_running);

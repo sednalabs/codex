@@ -124,16 +124,38 @@ core-state-spawn-lineage-contract-targeted:
 # Cross-repo ledger seam validation (agent-usage-ledger + Postgres).
 [no-cd]
 downstream-ledger-seam:
-    [ -d "${LEDGER_REPO_ROOT:-../agent-usage-ledger}" ] || { echo "Skipping downstream-ledger-seam: missing ledger repo at ${LEDGER_REPO_ROOT:-../agent-usage-ledger}"; exit 0; }
-    command -v psql >/dev/null 2>&1 || { echo "Skipping downstream-ledger-seam: missing psql"; exit 0; }
-    "${LEDGER_REPO_ROOT:-../agent-usage-ledger}/scripts/llm_usage/ensure_schema.sh" --schema "${LLM_USAGE_DB_SCHEMA:-llm_usage}"
-    "${LEDGER_REPO_ROOT:-../agent-usage-ledger}/scripts/llm_usage/ingest_codex_rollouts_to_postgres.sh" --schema "${LLM_USAGE_DB_SCHEMA:-llm_usage}" --skip-schema
-    "${LEDGER_REPO_ROOT:-../agent-usage-ledger}/scripts/llm_usage/test_codex_copied_history_filter.sh"
-    "${LEDGER_REPO_ROOT:-../agent-usage-ledger}/scripts/llm_usage/test_codex_source_row_identity.sh"
+    ledger_repo_root="${LEDGER_REPO_ROOT:-../agent-usage-ledger}"; \
+    ledger_scripts_dir="$ledger_repo_root/scripts/llm_usage"; \
+    if [ ! -d "$ledger_repo_root" ]; then \
+      echo "Skipping downstream-ledger-seam: missing ledger repo at $ledger_repo_root"; \
+      exit 0; \
+    fi; \
+    if ! command -v psql >/dev/null 2>&1; then \
+      echo "Skipping downstream-ledger-seam: missing psql"; \
+      exit 0; \
+    fi; \
+    for required_script in \
+      "$ledger_scripts_dir/ensure_schema.sh" \
+      "$ledger_scripts_dir/ingest_codex_rollouts_to_postgres.sh" \
+      "$ledger_scripts_dir/test_codex_copied_history_filter.sh" \
+      "$ledger_scripts_dir/test_codex_source_row_identity.sh"; do \
+      if [ ! -x "$required_script" ]; then \
+        echo "Skipping downstream-ledger-seam: missing ledger helper $required_script"; \
+        exit 0; \
+      fi; \
+    done; \
+    "$ledger_scripts_dir/ensure_schema.sh" --schema "${LLM_USAGE_DB_SCHEMA:-llm_usage}"; \
+    "$ledger_scripts_dir/ingest_codex_rollouts_to_postgres.sh" --schema "${LLM_USAGE_DB_SCHEMA:-llm_usage}" --skip-schema; \
+    "$ledger_scripts_dir/test_codex_copied_history_filter.sh"; \
+    "$ledger_scripts_dir/test_codex_source_row_identity.sh"
 
 [no-cd]
 downstream-docs-check:
     git diff --check -- docs/downstream.md docs/carry-divergence-ledger.md docs/downstream-regression-matrix.md docs/downstream-tool-surface-matrix.md
+
+# Early non-publishing Linux release-build smoke coverage.
+release-linux-build-smoke:
+    CODEX_RELEASE_VERSION="${CODEX_RELEASE_VERSION:-0.0.0-sedna.smoke}" cargo build --locked --target x86_64-unknown-linux-gnu --release --bin codex --bin codex-responses-api-proxy
 
 # Fast smoke checks for fragile codex-core integration buckets.
 core-test-smoke:

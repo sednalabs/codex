@@ -248,6 +248,7 @@ ON CONFLICT(thread_id) DO UPDATE SET
             .and_then(|snapshot| snapshot.requested_model.clone())
             .or_else(|| token_count.model_used.clone());
         let provider = token_count.provider.clone();
+        let spawn_request_id = self.lookup_spawn_request_id().await?;
         let provider_call_id = Uuid::new_v4().to_string();
         let started_at = Utc::now();
         let status = if token_count.info.is_some() {
@@ -261,6 +262,7 @@ ON CONFLICT(thread_id) DO UPDATE SET
             provider_call_id,
             thread_id,
             turn_id,
+            spawn_request_id,
             provider,
             requested_model,
             actual_model_used,
@@ -271,11 +273,12 @@ ON CONFLICT(thread_id) DO UPDATE SET
             output_tokens,
             total_tokens,
             status
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"#,
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"#,
         )
         .bind(provider_call_id.clone())
         .bind(self.thread_id.to_string())
         .bind(turn_id.map(str::to_string))
+        .bind(spawn_request_id)
         .bind(provider.clone())
         .bind(requested_model.clone())
         .bind(token_count.model_used.clone())
@@ -299,6 +302,20 @@ ON CONFLICT(thread_id) DO UPDATE SET
             self.insert_quota_snapshot(turn_id, rate_limits).await?;
         }
         Ok(())
+    }
+
+    async fn lookup_spawn_request_id(&self) -> anyhow::Result<Option<String>> {
+        sqlx::query_scalar::<_, String>(
+            r#"SELECT spawn_request_id
+            FROM usage_spawn_requests
+            WHERE child_thread_id = ?
+            ORDER BY rowid DESC
+            LIMIT 1"#,
+        )
+        .bind(self.thread_id.to_string())
+        .fetch_optional(self.pool.as_ref())
+        .await
+        .map_err(Into::into)
     }
 
     async fn insert_quota_snapshot(
@@ -539,6 +556,12 @@ mod tests {
         output_tokens: i64,
         total_tokens: i64,
         status: Option<String>,
+    }
+
+    #[derive(Debug, PartialEq, Eq, sqlx::FromRow)]
+    struct ProviderCallRowWithSpawn {
+        spawn_request_id: Option<String>,
+        provider: Option<String>,
     }
 
     #[derive(Debug, PartialEq, sqlx::FromRow)]
@@ -1000,6 +1023,137 @@ WHERE child_thread_id = ?
                 parent_cumulative_cached_tokens: Some(2),
                 parent_cumulative_output_tokens: Some(3),
                 parent_cumulative_total_tokens: Some(16),
+            }
+        );
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn usage_logger_records_spawn_request_id_on_child_provider_calls() -> Result<()> {
+        let (runtime, _tmp_dir) = init_runtime().await?;
+        let parent_thread_id = ThreadId::new();
+        let mut parent_logger = UsageLogger::try_new(
+            runtime.clone(),
+            parent_thread_id,
+            SessionSource::Cli,
+            /*forked_from_id*/ None,
+            /*agent_nickname*/ None,
+            /*agent_role*/ None,
+        )
+        .await?;
+
+        let spawn_call_id = "spawn-provider-link";
+        let child_thread_id = ThreadId::new();
+        parent_logger
+            .record_event(&Event {
+                id: "turn-spawn-provider".to_string(),
+                msg: EventMsg::CollabAgentSpawnBegin(CollabAgentSpawnBeginEvent {
+                    call_id: spawn_call_id.to_string(),
+                    sender_thread_id: parent_thread_id,
+                    prompt: String::new(),
+                    model: "spawn-model".to_string(),
+                    reasoning_effort: ReasoningEffortConfig::default(),
+                }),
+            })
+            .await;
+        parent_logger
+            .record_event(&Event {
+                id: "turn-spawn-provider".to_string(),
+                msg: EventMsg::CollabAgentSpawnEnd(CollabAgentSpawnEndEvent {
+                    call_id: spawn_call_id.to_string(),
+                    sender_thread_id: parent_thread_id,
+                    new_thread_id: Some(child_thread_id),
+                    new_agent_nickname: Some("child".to_string()),
+                    new_agent_role: Some("explorer".to_string()),
+                    prompt: String::new(),
+                    model: "spawn-model".to_string(),
+                    reasoning_effort: ReasoningEffortConfig::default(),
+                    status: AgentStatus::Completed(None),
+                }),
+            })
+            .await;
+
+        let child_source = SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+            parent_thread_id,
+            depth: 1,
+            agent_nickname: Some("child".to_string()),
+            agent_role: Some("explorer".to_string()),
+            agent_path: None,
+        });
+        let mut child_logger = UsageLogger::try_new(
+            runtime.clone(),
+            child_thread_id,
+            child_source,
+            /*forked_from_id*/ None,
+            Some("child".to_string()),
+            Some("explorer".to_string()),
+        )
+        .await?;
+        let child_turn_id = "turn-child-token";
+        child_logger
+            .record_event(&token_count_event(
+                child_turn_id,
+                /*include_rate_limit*/ false,
+            ))
+            .await;
+
+        let pool_arc = runtime.usage_pool();
+        let pool: &SqlitePool = pool_arc.as_ref();
+        let child_provider_row: ProviderCallRowWithSpawn = sqlx::query_as(
+            r#"
+SELECT
+  spawn_request_id,
+  provider
+FROM usage_provider_calls
+WHERE thread_id = ?
+"#,
+        )
+        .bind(child_thread_id.to_string())
+        .fetch_one(pool)
+        .await?;
+        assert_eq!(
+            child_provider_row,
+            ProviderCallRowWithSpawn {
+                spawn_request_id: Some(spawn_call_id.to_string()),
+                provider: Some("test-provider".to_string()),
+            }
+        );
+
+        let top_level_thread_id = ThreadId::new();
+        let mut top_level_logger = UsageLogger::try_new(
+            runtime.clone(),
+            top_level_thread_id,
+            SessionSource::Cli,
+            /*forked_from_id*/ None,
+            /*agent_nickname*/ None,
+            /*agent_role*/ None,
+        )
+        .await?;
+        let top_level_turn_id = "turn-top";
+        top_level_logger
+            .record_event(&token_count_event(
+                top_level_turn_id,
+                /*include_rate_limit*/ false,
+            ))
+            .await;
+        let top_level_provider_row: ProviderCallRowWithSpawn = sqlx::query_as(
+            r#"
+SELECT
+  spawn_request_id,
+  provider
+FROM usage_provider_calls
+WHERE thread_id = ?
+"#,
+        )
+        .bind(top_level_thread_id.to_string())
+        .fetch_one(pool)
+        .await?;
+        assert_eq!(
+            top_level_provider_row,
+            ProviderCallRowWithSpawn {
+                spawn_request_id: None,
+                provider: Some("test-provider".to_string()),
             }
         );
 
