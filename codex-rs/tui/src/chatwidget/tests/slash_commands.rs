@@ -124,7 +124,10 @@ async fn slash_copy_state_tracks_plan_item_completion() {
     });
     chat.handle_codex_event(Event {
         id: "turn-1".into(),
-        msg: EventMsg::TurnComplete(test_turn_complete_event("turn-1", None::<String>)),
+        msg: EventMsg::TurnComplete(test_turn_complete_event(
+            "turn-1",
+            /*last_agent_message*/ None::<String>,
+        )),
     });
 
     assert_eq!(chat.last_copyable_output, Some(plan_text));
@@ -201,7 +204,10 @@ async fn slash_copy_is_unavailable_when_legacy_agent_message_is_not_repeated_on_
     let _ = drain_insert_history(&mut rx);
     chat.handle_codex_event(Event {
         id: "turn-1".into(),
-        msg: EventMsg::TurnComplete(test_turn_complete_event("turn-1", None::<String>)),
+        msg: EventMsg::TurnComplete(test_turn_complete_event(
+            "turn-1",
+            /*last_agent_message*/ None::<String>,
+        )),
     });
     let _ = drain_insert_history(&mut rx);
 
@@ -239,7 +245,10 @@ async fn slash_copy_uses_agent_message_item_when_turn_complete_omits_final_text(
     let _ = drain_insert_history(&mut rx);
     chat.handle_codex_event(Event {
         id: "turn-1".into(),
-        msg: EventMsg::TurnComplete(test_turn_complete_event("turn-1", None::<String>)),
+        msg: EventMsg::TurnComplete(test_turn_complete_event(
+            "turn-1",
+            /*last_agent_message*/ None::<String>,
+        )),
     });
     let _ = drain_insert_history(&mut rx);
 
@@ -281,7 +290,10 @@ async fn slash_copy_does_not_return_stale_output_after_thread_rollback() {
     let _ = drain_insert_history(&mut rx);
     chat.handle_codex_event(Event {
         id: "turn-1".into(),
-        msg: EventMsg::TurnComplete(test_turn_complete_event("turn-1", None::<String>)),
+        msg: EventMsg::TurnComplete(test_turn_complete_event(
+            "turn-1",
+            /*last_agent_message*/ None::<String>,
+        )),
     });
     let _ = drain_insert_history(&mut rx);
 

@@ -685,7 +685,10 @@ async fn unified_exec_wait_before_streamed_agent_message_snapshot() {
     });
     chat.handle_codex_event(Event {
         id: "turn-1".into(),
-        msg: EventMsg::TurnComplete(test_turn_complete_event("turn-1", None::<String>)),
+        msg: EventMsg::TurnComplete(test_turn_complete_event(
+            "turn-1",
+            /*last_agent_message*/ None::<String>,
+        )),
     });
 
     let cells = drain_insert_history(&mut rx);
@@ -747,7 +750,10 @@ async fn unified_exec_waiting_multiple_empty_snapshots() {
 
     chat.handle_codex_event(Event {
         id: "turn-wait-1".into(),
-        msg: EventMsg::TurnComplete(test_turn_complete_event("turn-1", None::<String>)),
+        msg: EventMsg::TurnComplete(test_turn_complete_event(
+            "turn-1",
+            /*last_agent_message*/ None::<String>,
+        )),
     });
 
     let cells = drain_insert_history(&mut rx);
@@ -822,7 +828,10 @@ async fn unified_exec_non_empty_then_empty_snapshots() {
 
     chat.handle_codex_event(Event {
         id: "turn-wait-3".into(),
-        msg: EventMsg::TurnComplete(test_turn_complete_event("turn-1", None::<String>)),
+        msg: EventMsg::TurnComplete(test_turn_complete_event(
+            "turn-1",
+            /*last_agent_message*/ None::<String>,
+        )),
     });
 
     let post_cells = drain_insert_history(&mut rx);
@@ -1316,7 +1325,10 @@ async fn turn_complete_keeps_unified_exec_processes() {
 
     chat.handle_codex_event(Event {
         id: "turn-1".into(),
-        msg: EventMsg::TurnComplete(test_turn_complete_event("turn-1", None::<String>)),
+        msg: EventMsg::TurnComplete(test_turn_complete_event(
+            "turn-1",
+            /*last_agent_message*/ None::<String>,
+        )),
     });
 
     assert_eq!(chat.unified_exec_processes.len(), 2);

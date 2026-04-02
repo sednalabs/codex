@@ -227,7 +227,10 @@ async fn steer_rejection_queues_review_follow_up_before_existing_queued_messages
     });
     chat.handle_codex_event(Event {
         id: "turn-complete".into(),
-        msg: EventMsg::TurnComplete(test_turn_complete_event("turn-1", None::<String>)),
+        msg: EventMsg::TurnComplete(test_turn_complete_event(
+            "turn-1",
+            /*last_agent_message*/ None::<String>,
+        )),
     });
 
     match next_submit_op(&mut op_rx) {
@@ -243,7 +246,10 @@ async fn steer_rejection_queues_review_follow_up_before_existing_queued_messages
 
     chat.handle_codex_event(Event {
         id: "turn-complete-2".into(),
-        msg: EventMsg::TurnComplete(test_turn_complete_event("turn-2", None::<String>)),
+        msg: EventMsg::TurnComplete(test_turn_complete_event(
+            "turn-2",
+            /*last_agent_message*/ None::<String>,
+        )),
     });
 
     match next_submit_op(&mut op_rx) {
@@ -298,7 +304,7 @@ async fn review_restores_context_window_indicator() {
         id: "token-before".into(),
         msg: EventMsg::TokenCount(test_token_count_event(
             Some(make_token_info(pre_review_tokens, context_window)),
-            None,
+            /*rate_limits*/ None,
         )),
     });
     assert_eq!(chat.bottom_pane.context_window_percent(), Some(30));
@@ -317,7 +323,7 @@ async fn review_restores_context_window_indicator() {
         id: "token-review".into(),
         msg: EventMsg::TokenCount(test_token_count_event(
             Some(make_token_info(review_tokens, context_window)),
-            None,
+            /*rate_limits*/ None,
         )),
     });
     assert_eq!(chat.bottom_pane.context_window_percent(), Some(97));
