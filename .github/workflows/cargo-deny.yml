@@ -2,6 +2,9 @@ name: cargo-deny
 
 on:
   pull_request:
+    paths-ignore:
+      - 'docs/**'
+      - '**/*.md'
   merge_group:
   push:
     branches:
