@@ -1125,14 +1125,17 @@ WHERE thread_id = ?
             runtime.clone(),
             top_level_thread_id,
             SessionSource::Cli,
-            None,
-            None,
-            None,
+            /*forked_from_id*/ None,
+            /*agent_nickname*/ None,
+            /*agent_role*/ None,
         )
         .await?;
         let top_level_turn_id = "turn-top";
         top_level_logger
-            .record_event(&token_count_event(top_level_turn_id, false))
+            .record_event(&token_count_event(
+                top_level_turn_id,
+                /*include_rate_limit*/ false,
+            ))
             .await;
         let top_level_provider_row: ProviderCallRowWithSpawn = sqlx::query_as(
             r#"

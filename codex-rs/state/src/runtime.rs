@@ -123,6 +123,7 @@ impl StateRuntime {
                 return Err(err);
             }
         };
+        ensure_incremental_auto_vacuum(logs_pool.as_ref()).await?;
         let usage_pool = match open_sqlite(&usage_path, &USAGE_MIGRATOR).await {
             Ok(db) => Arc::new(db),
             Err(err) => {
@@ -137,6 +138,7 @@ impl StateRuntime {
             codex_home,
             default_provider,
         });
+        runtime.run_logs_startup_maintenance().await?;
         Ok(runtime)
     }
 
@@ -164,6 +166,22 @@ async fn open_sqlite(path: &Path, migrator: &'static Migrator) -> anyhow::Result
         .await?;
     migrator.run(&pool).await?;
     Ok(pool)
+}
+
+async fn ensure_incremental_auto_vacuum(pool: &SqlitePool) -> anyhow::Result<()> {
+    let mut conn = pool.acquire().await?;
+    let auto_vacuum = sqlx::query_scalar::<_, i64>("PRAGMA auto_vacuum")
+        .fetch_one(&mut *conn)
+        .await?;
+    if auto_vacuum == 2 {
+        return Ok(());
+    }
+
+    sqlx::query("PRAGMA auto_vacuum = INCREMENTAL")
+        .execute(&mut *conn)
+        .await?;
+    sqlx::query("VACUUM").execute(&mut *conn).await?;
+    Ok(())
 }
 
 fn db_filename(base_name: &str, version: u32) -> String {
