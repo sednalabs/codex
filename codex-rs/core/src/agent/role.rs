@@ -660,12 +660,7 @@ Rules:
 - `terminal-babysitter` may exercise bounded monitoring judgment, but it must not broaden into repair work or repo edits.
 - If the seam is a pure delegated wait, prefer `awaiter`.
 - If the seam may need fixes, reruns, or PR-local ownership, choose a shepherd-style workflow instead."#.to_string()),
-                        config_file: Some(
-                            "terminal-babysitter.toml"
-                                .to_string()
-                                .parse()
-                                .unwrap_or_default(),
-                        ),
+                        config_file: Some(Path::new("terminal-babysitter.toml").to_path_buf()),
                         nickname_candidates: None,
                     }
                 )
