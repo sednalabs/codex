@@ -153,6 +153,10 @@ downstream-ledger-seam:
 downstream-docs-check:
     git diff --check -- docs/downstream.md docs/carry-divergence-ledger.md docs/downstream-regression-matrix.md docs/downstream-tool-surface-matrix.md
 
+# Early non-publishing Linux release-build smoke coverage.
+release-linux-build-smoke:
+    CODEX_RELEASE_VERSION="${CODEX_RELEASE_VERSION:-0.0.0-sedna.smoke}" cargo build --locked --target x86_64-unknown-linux-gnu --release --bin codex --bin codex-responses-api-proxy
+
 # Fast smoke checks for fragile codex-core integration buckets.
 core-test-smoke:
     just core-compile-smoke
