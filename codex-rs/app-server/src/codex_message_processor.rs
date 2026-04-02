@@ -5039,9 +5039,12 @@ impl CodexMessageProcessor {
                 return;
             }
         };
+        let mcp_config = config.to_mcp_config(self.thread_manager.plugins_manager().as_ref());
+        let auth = self.auth_manager.auth().await;
 
         tokio::spawn(async move {
-            Self::list_mcp_server_status_task(outgoing, request, params, config).await;
+            Self::list_mcp_server_status_task(outgoing, request, params, config, mcp_config, auth)
+                .await;
         });
     }
 
@@ -5050,8 +5053,15 @@ impl CodexMessageProcessor {
         request_id: ConnectionRequestId,
         params: ListMcpServerStatusParams,
         config: Config,
+        mcp_config: codex_core::mcp::McpConfig,
+        auth: Option<CodexAuth>,
     ) {
-        let snapshot = collect_mcp_snapshot(&config).await;
+        let snapshot = collect_mcp_snapshot(
+            &mcp_config,
+            auth.as_ref(),
+            request_id.request_id.to_string(),
+        )
+        .await;
 
         let tools_by_server = group_tools_by_server(&snapshot.tools);
 
