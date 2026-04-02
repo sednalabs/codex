@@ -14,7 +14,6 @@ use codex_protocol::models::ResponseInputItem;
 use serde_json::Value as JsonValue;
 use tokio_util::sync::CancellationToken;
 
-use crate::client_common::tools::ToolSpec;
 use crate::codex::Session;
 use crate::codex::TurnContext;
 use crate::function_tool::FunctionCallError;
@@ -28,6 +27,7 @@ use crate::tools::router::ToolCallSource;
 use crate::tools::router::ToolRouterParams;
 use crate::unified_exec::resolve_max_tokens;
 use codex_features::Feature;
+use codex_tools::ToolSpec;
 use codex_tools::tool_spec_to_code_mode_tool_definition;
 use codex_utils_output_truncation::TruncationPolicy;
 use codex_utils_output_truncation::formatted_truncate_text_content_items_with_policy;

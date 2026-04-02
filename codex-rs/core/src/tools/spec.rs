@@ -1,4 +1,3 @@
-use crate::client_common::tools::ToolSpec;
 use crate::mcp::CODEX_APPS_MCP_SERVER_NAME;
 use crate::mcp_connection_manager::ToolInfo;
 use crate::shell::Shell;
@@ -24,6 +23,7 @@ use codex_tools::DiscoverableTool;
 use codex_tools::ShellToolOptions;
 use codex_tools::SpawnAgentToolOptions;
 use codex_tools::ToolSearchAppSource;
+use codex_tools::ToolSpec;
 use codex_tools::ToolUserShellType;
 use codex_tools::ViewImageToolOptions;
 use codex_tools::WaitAgentTimeoutOptions;

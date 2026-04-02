@@ -1,4 +1,3 @@
-use crate::client_common::tools::ToolSpec;
 use crate::codex::Session;
 use crate::codex::TurnContext;
 use crate::function_tool::FunctionCallError;
@@ -18,6 +17,7 @@ use codex_protocol::models::SearchToolCallParams;
 use codex_protocol::models::ShellToolCallParams;
 use codex_tools::ConfiguredToolSpec;
 use codex_tools::DiscoverableTool;
+use codex_tools::ToolSpec;
 use rmcp::model::Tool;
 use std::collections::HashMap;
 use std::sync::Arc;

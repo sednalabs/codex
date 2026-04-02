@@ -3,7 +3,6 @@ use std::sync::Arc;
 use std::time::Duration;
 use std::time::Instant;
 
-use crate::client_common::tools::ToolSpec;
 use crate::function_tool::FunctionCallError;
 use crate::hook_runtime::record_additional_contexts;
 use crate::hook_runtime::run_post_tool_use_hooks;
@@ -25,6 +24,7 @@ use codex_hooks::HookToolInputLocalShell;
 use codex_hooks::HookToolKind;
 use codex_protocol::models::ResponseInputItem;
 use codex_tools::ConfiguredToolSpec;
+use codex_tools::ToolSpec;
 use codex_utils_readiness::Readiness;
 use serde_json::Value;
 use tracing::warn;

@@ -142,7 +142,7 @@ fn tool_search_payloads_roundtrip_as_tool_search_outputs() {
     };
     let response = ToolSearchOutput {
         tools: vec![ToolSearchOutputTool::Function(
-            crate::client_common::tools::ResponsesApiTool {
+            codex_tools::ResponsesApiTool {
                 name: "create_event".to_string(),
                 description: String::new(),
                 strict: false,
