@@ -1562,22 +1562,13 @@ async fn multi_agent_v2_send_message_interrupts_busy_child_without_triggering_tu
                 if communication.author == AgentPath::root()
                     && communication.recipient.as_str() == "/root/worker"
                     && communication.other_recipients.is_empty()
-                    && communication.content == "continue"
-                    && !communication.trigger_turn
+                && communication.content == "continue"
+                && !communication.trigger_turn
         )
     }));
 
     timeout(Duration::from_secs(5), async {
         loop {
-            if !thread
-                .codex
-                .session
-                .has_queued_response_items_for_next_turn()
-                .await
-            {
-                tokio::time::sleep(Duration::from_millis(10)).await;
-                continue;
-            }
             let history_items = thread
                 .codex
                 .session
