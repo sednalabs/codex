@@ -109,6 +109,12 @@
       "smoke_gate_kinds": ["workflow_docs"]
     },
     {
+      "lane_id": "codex.release-linux-build-smoke",
+      "run_command": "just --justfile ../justfile release-linux-build-smoke",
+      "groups": ["core"],
+      "lane_sets": ["release"]
+    },
+    {
       "lane_id": "downstream-ledger-seam",
       "run_command": "just --justfile ../justfile downstream-ledger-seam",
       "groups": ["core", "ledger"],
