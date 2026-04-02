@@ -1743,6 +1743,30 @@ mod phase2 {
         );
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn consolidation_agent_config_allows_symlinked_ancestor_above_real_codex_home() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let real_parent = temp_dir.path().join("real-parent");
+        let real_codex_home = real_parent.join("codex-home");
+        let workspace = temp_dir.path().join("workspace");
+        std::fs::create_dir_all(&real_codex_home).expect("create real codex home");
+        std::fs::create_dir_all(&workspace).expect("create workspace");
+        let linked_parent = temp_dir.path().join("linked-parent");
+        std::os::unix::fs::symlink(&real_parent, &linked_parent).expect("symlink parent ancestor");
+
+        let mut config = test_config();
+        config.codex_home = linked_parent.join("codex-home");
+        config.cwd = AbsolutePathBuf::from_absolute_path(workspace).expect("workspace path");
+
+        let agent_config = phase2::test_consolidation_agent_config(Arc::new(config))
+            .expect("symlinked ancestor above real codex_home should be allowed");
+        pretty_assertions::assert_eq!(
+            agent_config.cwd.as_path(),
+            memory_root(&agent_config.codex_home).as_path()
+        );
+    }
+
     #[tokio::test]
     async fn dispatch_reclaims_stale_global_lock_and_starts_consolidation() {
         let harness = DispatchHarness::new().await;

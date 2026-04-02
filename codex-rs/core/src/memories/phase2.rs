@@ -1028,9 +1028,9 @@ pub(in crate::memories) mod agent {
         let codex_home = root
             .parent()
             .ok_or_else(|| std::io::Error::other("memory root is missing codex_home parent"))?;
-        for ancestor in codex_home.ancestors() {
-            validate_non_redirecting_path_component(ancestor)?;
-        }
+        // Reject redirecting path components we directly control, but tolerate
+        // system-level ancestor aliases such as macOS tempdirs under `/var`.
+        validate_non_redirecting_path_component(codex_home)?;
         match std::fs::symlink_metadata(root) {
             Ok(metadata) => validate_non_redirecting_metadata(root, &metadata),
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
