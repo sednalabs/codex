@@ -171,10 +171,16 @@ $lines | Select-Object -Skip 1 | Set-Content -Path tokens.txt
     }
 
     fn auth_config(&self) -> ModelProviderAuthInfo {
+        let timeout_ms = if cfg!(windows) {
+            // `powershell.exe` startup can be slow on loaded Windows CI workers
+            10_000
+        } else {
+            2_000
+        };
         ModelProviderAuthInfo {
             command: self.command.clone(),
             args: self.args.clone(),
-            timeout_ms: NonZeroU64::new(/*value*/ 1_000).unwrap(),
+            timeout_ms: NonZeroU64::new(timeout_ms).unwrap(),
             refresh_interval_ms: 60_000,
             cwd: match codex_utils_absolute_path::AbsolutePathBuf::try_from(self.tempdir.path()) {
                 Ok(cwd) => cwd,
