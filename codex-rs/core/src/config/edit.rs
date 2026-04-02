@@ -1,5 +1,4 @@
 use crate::config::types::McpServerConfig;
-use crate::config::types::Notice;
 use crate::path_utils::resolve_symlink_write_paths;
 use crate::path_utils::write_atomically;
 use anyhow::Context;
@@ -19,6 +18,8 @@ use toml_edit::DocumentMut;
 use toml_edit::Item as TomlItem;
 use toml_edit::Table as TomlTable;
 use toml_edit::value;
+
+const NOTICE_TABLE_KEY: &str = "notice";
 
 /// Discrete config mutations supported by the persistence engine.
 #[derive(Clone, Debug)]
@@ -387,29 +388,29 @@ impl ConfigDocument {
             )),
             ConfigEdit::SetNoticeHideFullAccessWarning(acknowledged) => Ok(self.write_value(
                 Scope::Global,
-                &[Notice::TABLE_KEY, "hide_full_access_warning"],
+                &[NOTICE_TABLE_KEY, "hide_full_access_warning"],
                 value(*acknowledged),
             )),
             ConfigEdit::SetNoticeHideWorldWritableWarning(acknowledged) => Ok(self.write_value(
                 Scope::Global,
-                &[Notice::TABLE_KEY, "hide_world_writable_warning"],
+                &[NOTICE_TABLE_KEY, "hide_world_writable_warning"],
                 value(*acknowledged),
             )),
             ConfigEdit::SetNoticeHideRateLimitModelNudge(acknowledged) => Ok(self.write_value(
                 Scope::Global,
-                &[Notice::TABLE_KEY, "hide_rate_limit_model_nudge"],
+                &[NOTICE_TABLE_KEY, "hide_rate_limit_model_nudge"],
                 value(*acknowledged),
             )),
             ConfigEdit::SetNoticeHideModelMigrationPrompt(migration_config, acknowledged) => {
                 Ok(self.write_value(
                     Scope::Global,
-                    &[Notice::TABLE_KEY, migration_config.as_str()],
+                    &[NOTICE_TABLE_KEY, migration_config.as_str()],
                     value(*acknowledged),
                 ))
             }
             ConfigEdit::RecordModelMigrationSeen { from, to } => Ok(self.write_value(
                 Scope::Global,
-                &[Notice::TABLE_KEY, "model_migrations", from.as_str()],
+                &[NOTICE_TABLE_KEY, "model_migrations", from.as_str()],
                 value(to.clone()),
             )),
             ConfigEdit::SetWindowsWslSetupAcknowledged(acknowledged) => Ok(self.write_value(
