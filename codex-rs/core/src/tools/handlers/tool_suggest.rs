@@ -2,6 +2,7 @@ use std::collections::HashSet;
 
 use async_trait::async_trait;
 use codex_app_server_protocol::AppInfo;
+use codex_mcp::mcp::CODEX_APPS_MCP_SERVER_NAME;
 use codex_rmcp_client::ElicitationAction;
 use codex_tools::DiscoverableTool;
 use codex_tools::DiscoverableToolAction;
@@ -18,7 +19,6 @@ use tracing::warn;
 
 use crate::connectors;
 use crate::function_tool::FunctionCallError;
-use crate::mcp::CODEX_APPS_MCP_SERVER_NAME;
 use crate::tools::context::FunctionToolOutput;
 use crate::tools::context::ToolInvocation;
 use crate::tools::context::ToolPayload;
