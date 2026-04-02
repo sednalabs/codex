@@ -160,6 +160,7 @@ fn command_assessment_action(
     }
 }
 
+#[cfg(unix)]
 fn guardian_command_source_tool_name(source: GuardianCommandSource) -> &'static str {
     match source {
         GuardianCommandSource::Shell => "shell",
