@@ -7594,29 +7594,54 @@ impl ChatWidget {
                     self.submit_user_message(user_message);
                     break;
                 }
-                QueuedFollowUpInput::SlashCommand(queued_command) => match queued_command {
-                    QueuedSlashCommand::Command(cmd) => self.dispatch_command(cmd),
-                    QueuedSlashCommand::CommandWithArgs {
-                        cmd,
-                        args,
-                        text_elements,
-                        local_images,
-                        remote_image_urls,
-                        mention_bindings,
-                    } => self.dispatch_prepared_inline_command(
-                        cmd,
-                        args,
-                        text_elements,
-                        local_images,
-                        remote_image_urls,
-                        mention_bindings,
-                        /*drain_submission_state*/ false,
-                    ),
-                },
+                QueuedFollowUpInput::SlashCommand(queued_command) => {
+                    // Some slash commands submit a follow-up turn asynchronously
+                    // (for example `/init` and `/plan <args>`), so stop draining
+                    // once one of those has been replayed.
+                    if self.replay_queued_slash_command(queued_command) {
+                        break;
+                    }
+                }
             }
         }
         // Update the list to reflect the remaining queued follow-up actions (if any).
         self.refresh_pending_input_preview();
+    }
+
+    /// Replay a queued slash command and return whether replay should stop for
+    /// this pass because the command submitted (or may have submitted) a turn.
+    fn replay_queued_slash_command(&mut self, queued_command: QueuedSlashCommand) -> bool {
+        match queued_command {
+            QueuedSlashCommand::Command(cmd) => {
+                self.dispatch_command(cmd);
+                matches!(cmd, SlashCommand::Init | SlashCommand::Compact)
+            }
+            QueuedSlashCommand::CommandWithArgs {
+                cmd,
+                args,
+                text_elements,
+                local_images,
+                remote_image_urls,
+                mention_bindings,
+            } => {
+                let has_inline_args = !args.trim().is_empty();
+                self.dispatch_prepared_inline_command(
+                    cmd,
+                    args,
+                    text_elements,
+                    local_images,
+                    remote_image_urls,
+                    mention_bindings,
+                    /*drain_submission_state*/ false,
+                );
+                if self.bottom_pane.is_task_running() {
+                    return true;
+                }
+                matches!(cmd, SlashCommand::Plan)
+                    && has_inline_args
+                    && self.active_mode_kind() == ModeKind::Plan
+            }
+        }
     }
 
     /// Rebuild and update the bottom-pane pending-input preview.

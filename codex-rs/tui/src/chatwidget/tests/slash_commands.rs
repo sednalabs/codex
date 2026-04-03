@@ -90,6 +90,59 @@ async fn queued_plan_and_message_replay_after_compact_finishes() {
 }
 
 #[tokio::test]
+async fn queued_init_replay_waits_before_submitting_next_message() {
+    let (mut chat, _rx, mut op_rx) = make_chatwidget_manual(Some("gpt-5")).await;
+    chat.thread_id = Some(ThreadId::new());
+    let tempdir = tempdir().unwrap();
+    chat.config.cwd = tempdir.path().to_path_buf().abs();
+
+    // Simulate an active turn and queue follow-ups in order: /init, then a
+    // plain message.
+    chat.bottom_pane.set_task_running(/*running*/ true);
+    chat.dispatch_command(SlashCommand::Init);
+    chat.bottom_pane
+        .set_composer_text("queued after init".to_string(), Vec::new(), Vec::new());
+    chat.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+    // Completing the active turn should replay only /init for this pass.
+    chat.handle_codex_event(Event {
+        id: "turn-1".into(),
+        msg: EventMsg::TurnComplete(test_turn_complete_event(
+            "turn-1",
+            /*last_agent_message*/ None::<String>,
+        )),
+    });
+
+    assert_matches!(next_submit_op(&mut op_rx), Op::UserTurn { .. });
+    assert_eq!(chat.queued_user_messages.len(), 1);
+    assert_eq!(
+        chat.queued_user_messages.front().unwrap().text,
+        "queued after init"
+    );
+
+    // Completing the init-triggered turn should then submit the queued
+    // follow-up message.
+    chat.handle_codex_event(Event {
+        id: "turn-init".into(),
+        msg: EventMsg::TurnComplete(test_turn_complete_event(
+            "turn-init",
+            /*last_agent_message*/ None::<String>,
+        )),
+    });
+
+    match next_submit_op(&mut op_rx) {
+        Op::UserTurn { items, .. } => assert_eq!(
+            items,
+            vec![UserInput::Text {
+                text: "queued after init".to_string(),
+                text_elements: Vec::new(),
+            }]
+        ),
+        other => panic!("expected queued follow-up Op::UserTurn, got {other:?}"),
+    }
+}
+
+#[tokio::test]
 async fn ctrl_d_quits_without_prompt() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
 
