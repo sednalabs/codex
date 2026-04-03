@@ -89,3 +89,16 @@ the realtime start message in prompt history and does not change websocket
 backend prompt settings or the realtime end/inactive message.
 
 Ctrl+C/Ctrl+D quitting uses a ~1 second double-press hint (`ctrl + c again to quit`).
+
+## Realtime startup context
+
+`experimental_realtime_ws_startup_context` overrides the synthesized realtime
+startup context sent on session start. Provide a string to replace the
+generated context entirely, or set it to the empty string to disable sending a
+startup context. When unset, Codex synthesizes a context from recent thread
+history, work, and workspace map; it explicitly notes that AGENTS files,
+project-doc blends, and memory summaries are **not** included in that payload.
+
+This setting is independent of
+[`AGENTS.md` / `AGENTS.override.md` precedence](agents_md.md#local-override-precedence),
+which controls project instructions rather than realtime startup context.
