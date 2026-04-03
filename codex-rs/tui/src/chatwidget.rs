@@ -7012,6 +7012,9 @@ impl ChatWidget {
                     timed_out,
                 });
             }
+            ThreadItem::DynamicToolCall { .. } => {
+                self.reset_compaction_turn_status_if_needed();
+            }
             ThreadItem::EnteredReviewMode { review, .. } => {
                 if !from_replay {
                     self.enter_review_mode_with_hint(review, /*from_replay*/ false);
