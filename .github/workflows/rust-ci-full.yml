@@ -4,10 +4,188 @@ on:
     branches:
       - main
   workflow_dispatch:
+    inputs:
+      platform_scope:
+        description: Platform coverage to run
+        required: false
+        type: choice
+        options:
+          - linux-x86-only
+          - full-cross-platform
+        default: linux-x86-only
+  schedule:
+    - cron: "15 18 * * *"
 
 # CI builds in debug (dev) for faster signal.
 
 jobs:
+  matrix_plan:
+    name: Resolve platform scope
+    runs-on: ubuntu-24.04
+    outputs:
+      argument_comment_lint_matrix: ${{ steps.plan.outputs.argument_comment_lint_matrix }}
+      lint_build_matrix: ${{ steps.plan.outputs.lint_build_matrix }}
+      tests_matrix: ${{ steps.plan.outputs.tests_matrix }}
+    steps:
+      - name: Compute platform matrices
+        id: plan
+        env:
+          FULL_PLATFORM_RUN: ${{ github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.platform_scope == 'full-cross-platform') }}
+        shell: bash
+        run: |
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          import os
+
+          full_platform_run = os.environ["FULL_PLATFORM_RUN"] == "true"
+
+          linux_arg_comment_lint = [
+              {"name": "Linux", "runner": "ubuntu-24.04"},
+          ]
+          full_arg_comment_lint = [
+              {"name": "Linux", "runner": "ubuntu-24.04"},
+              {"name": "macOS", "runner": "macos-15"},
+              {"name": "Windows", "runner": "windows-2025"},
+          ]
+
+          linux_lint_build = [
+              {
+                  "runner": "ubuntu-24.04",
+                  "target": "x86_64-unknown-linux-musl",
+                  "profile": "dev",
+              },
+              {
+                  "runner": "ubuntu-24.04",
+                  "target": "x86_64-unknown-linux-gnu",
+                  "profile": "dev",
+              },
+              {
+                  "runner": "ubuntu-24.04",
+                  "target": "x86_64-unknown-linux-musl",
+                  "profile": "release",
+              },
+          ]
+          full_lint_build = [
+              {
+                  "runner": "macos-15",
+                  "target": "aarch64-apple-darwin",
+                  "profile": "dev",
+              },
+              {
+                  "runner": "macos-15",
+                  "target": "x86_64-apple-darwin",
+                  "profile": "dev",
+              },
+              {
+                  "runner": "ubuntu-24.04",
+                  "target": "x86_64-unknown-linux-musl",
+                  "profile": "dev",
+              },
+              {
+                  "runner": "ubuntu-24.04",
+                  "target": "x86_64-unknown-linux-gnu",
+                  "profile": "dev",
+              },
+              {
+                  "runner": "ubuntu-24.04-arm",
+                  "target": "aarch64-unknown-linux-musl",
+                  "profile": "dev",
+              },
+              {
+                  "runner": "ubuntu-24.04-arm",
+                  "target": "aarch64-unknown-linux-gnu",
+                  "profile": "dev",
+              },
+              {
+                  "runner": "windows-2025",
+                  "target": "x86_64-pc-windows-msvc",
+                  "profile": "dev",
+              },
+              {
+                  "runner": "windows-11-arm",
+                  "target": "aarch64-pc-windows-msvc",
+                  "profile": "dev",
+              },
+              {
+                  "runner": "macos-15",
+                  "target": "aarch64-apple-darwin",
+                  "profile": "release",
+              },
+              {
+                  "runner": "ubuntu-24.04",
+                  "target": "x86_64-unknown-linux-musl",
+                  "profile": "release",
+              },
+              {
+                  "runner": "ubuntu-24.04-arm",
+                  "target": "aarch64-unknown-linux-musl",
+                  "profile": "release",
+              },
+              {
+                  "runner": "windows-2025",
+                  "target": "x86_64-pc-windows-msvc",
+                  "profile": "release",
+              },
+              {
+                  "runner": "windows-11-arm",
+                  "target": "aarch64-pc-windows-msvc",
+                  "profile": "release",
+              },
+          ]
+
+          linux_tests = [
+              {
+                  "runner": "ubuntu-24.04",
+                  "target": "x86_64-unknown-linux-gnu",
+                  "profile": "dev",
+                  "remote_env": "true",
+              }
+          ]
+          full_tests = [
+              {
+                  "runner": "macos-15",
+                  "target": "aarch64-apple-darwin",
+                  "profile": "dev",
+              },
+              {
+                  "runner": "ubuntu-24.04",
+                  "target": "x86_64-unknown-linux-gnu",
+                  "profile": "dev",
+                  "remote_env": "true",
+              },
+              {
+                  "runner": "ubuntu-24.04-arm",
+                  "target": "aarch64-unknown-linux-gnu",
+                  "profile": "dev",
+              },
+              {
+                  "runner": "windows-2025",
+                  "target": "x86_64-pc-windows-msvc",
+                  "profile": "dev",
+              },
+              {
+                  "runner": "windows-11-arm",
+                  "target": "aarch64-pc-windows-msvc",
+                  "profile": "dev",
+              },
+          ]
+
+          def emit(name: str, value: list[dict]) -> None:
+              print(
+                  f"{name}={json.dumps({'include': value}, separators=(',', ':'))}"
+              )
+
+          emit(
+              "argument_comment_lint_matrix",
+              full_arg_comment_lint if full_platform_run else linux_arg_comment_lint,
+          )
+          emit(
+              "lint_build_matrix",
+              full_lint_build if full_platform_run else linux_lint_build,
+          )
+          emit("tests_matrix", full_tests if full_platform_run else linux_tests)
+          PY
+
   # --- CI that doesn't need specific targets ---------------------------------
   general:
     name: Format / etc
@@ -74,16 +252,10 @@ jobs:
     name: Argument comment lint - ${{ matrix.name }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 30
+    needs: matrix_plan
     strategy:
       fail-fast: false
-      matrix:
-        include:
-          - name: Linux
-            runner: ubuntu-24.04
-          - name: macOS
-            runner: macos-15
-          - name: Windows
-            runner: windows-2025
+      matrix: ${{ fromJson(needs.matrix_plan.outputs.argument_comment_lint_matrix) }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
       - uses: ./.github/actions/setup-bazel-ci
@@ -128,6 +300,7 @@ jobs:
     name: Lint/Build — ${{ matrix.runner }} - ${{ matrix.target }}${{ matrix.profile == 'release' && ' (release)' || '' }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 30
+    needs: matrix_plan
     defaults:
       run:
         working-directory: codex-rs
@@ -143,52 +316,7 @@ jobs:
 
     strategy:
       fail-fast: false
-      matrix:
-        include:
-          - runner: macos-15
-            target: aarch64-apple-darwin
-            profile: dev
-          - runner: macos-15
-            target: x86_64-apple-darwin
-            profile: dev
-          - runner: ubuntu-24.04
-            target: x86_64-unknown-linux-musl
-            profile: dev
-          - runner: ubuntu-24.04
-            target: x86_64-unknown-linux-gnu
-            profile: dev
-          - runner: ubuntu-24.04-arm
-            target: aarch64-unknown-linux-musl
-            profile: dev
-          - runner: ubuntu-24.04-arm
-            target: aarch64-unknown-linux-gnu
-            profile: dev
-          - runner: windows-2025
-            target: x86_64-pc-windows-msvc
-            profile: dev
-          - runner: windows-11-arm
-            target: aarch64-pc-windows-msvc
-            profile: dev
-
-          # Also run representative release builds on Mac and Linux because
-          # there could be release-only build errors we want to catch.
-          # Hopefully this also pre-populates the build cache to speed up
-          # releases.
-          - runner: macos-15
-            target: aarch64-apple-darwin
-            profile: release
-          - runner: ubuntu-24.04
-            target: x86_64-unknown-linux-musl
-            profile: release
-          - runner: ubuntu-24.04-arm
-            target: aarch64-unknown-linux-musl
-            profile: release
-          - runner: windows-2025
-            target: x86_64-pc-windows-msvc
-            profile: release
-          - runner: windows-11-arm
-            target: aarch64-pc-windows-msvc
-            profile: release
+      matrix: ${{ fromJson(needs.matrix_plan.outputs.lint_build_matrix) }}
 
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
@@ -484,6 +612,7 @@ jobs:
   tests:
     name: Tests — ${{ matrix.runner }} - ${{ matrix.target }}${{ matrix.remote_env == 'true' && ' (remote)' || '' }}
     runs-on: ${{ matrix.runner }}
+    needs: matrix_plan
     # Perhaps we can bring this back down to 30m once we finish the cutover
     # from tui_app_server/ to tui/. Incidentally, windows-arm64 was the main
     # offender for exceeding the timeout.
@@ -501,24 +630,7 @@ jobs:
 
     strategy:
       fail-fast: false
-      matrix:
-        include:
-          - runner: macos-15
-            target: aarch64-apple-darwin
-            profile: dev
-          - runner: ubuntu-24.04
-            target: x86_64-unknown-linux-gnu
-            profile: dev
-            remote_env: "true"
-          - runner: ubuntu-24.04-arm
-            target: aarch64-unknown-linux-gnu
-            profile: dev
-          - runner: windows-2025
-            target: x86_64-pc-windows-msvc
-            profile: dev
-          - runner: windows-11-arm
-            target: aarch64-pc-windows-msvc
-            profile: dev
+      matrix: ${{ fromJson(needs.matrix_plan.outputs.tests_matrix) }}
 
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
@@ -708,6 +820,7 @@ jobs:
       [
         general,
         cargo_shear,
+        matrix_plan,
         argument_comment_lint_package,
         argument_comment_lint_prebuilt,
         lint_build,

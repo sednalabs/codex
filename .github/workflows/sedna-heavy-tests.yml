@@ -166,7 +166,8 @@ jobs:
       }}
     strategy:
       fail-fast: true
-      max-parallel: 4
+      # Keep Linux-only heavy validation from monopolizing the org runner pool.
+      max-parallel: 2
       matrix: ${{ fromJson(needs.metadata.outputs.smoke_matrix) }}
     uses: ./.github/workflows/_sedna-linux-rust.yml
     with:
@@ -189,7 +190,8 @@ jobs:
       }}
     strategy:
       fail-fast: ${{ github.event_name != 'push' || github.ref_name != 'main' }}
-      max-parallel: 4
+      # Keep Linux-only heavy validation from monopolizing the org runner pool.
+      max-parallel: 2
       matrix: ${{ fromJson(needs.metadata.outputs.selected_matrix) }}
     uses: ./.github/workflows/_sedna-linux-rust.yml
     with:
