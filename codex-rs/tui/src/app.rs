@@ -36,6 +36,7 @@ use crate::model_catalog::ModelCatalog;
 use crate::model_migration::ModelMigrationOutcome;
 use crate::model_migration::migration_copy_for_models;
 use crate::model_migration::run_model_migration_prompt;
+use crate::multi_agents::SUBAGENT_LABEL;
 use crate::multi_agents::agent_picker_status_dot_spans;
 use crate::multi_agents::format_agent_picker_item_name;
 use crate::multi_agents::next_agent_shortcut_matches;
@@ -1642,7 +1643,7 @@ impl App {
         } else {
             let thread_id = thread_id.to_string();
             let short_id: String = thread_id.chars().take(8).collect();
-            format!("Subagent ({short_id})")
+            format!("{SUBAGENT_LABEL} ({short_id})")
         };
         if let Some(entry) = self.agent_navigation.get(&thread_id) {
             let label = format_agent_picker_item_name(
@@ -1650,7 +1651,7 @@ impl App {
                 entry.agent_role.as_deref(),
                 is_primary,
             );
-            if label == "Subagent" {
+            if label == SUBAGENT_LABEL {
                 let thread_id = thread_id.to_string();
                 let short_id: String = thread_id.chars().take(8).collect();
                 format!("{label} ({short_id})")

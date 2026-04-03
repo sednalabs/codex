@@ -35,7 +35,7 @@ use std::collections::HashSet;
 const COLLAB_PROMPT_PREVIEW_GRAPHEMES: usize = 160;
 const COLLAB_AGENT_ERROR_PREVIEW_GRAPHEMES: usize = 160;
 const COLLAB_AGENT_RESPONSE_PREVIEW_GRAPHEMES: usize = 240;
-const SUBAGENT_LABEL: &str = "Subagent";
+pub(crate) const SUBAGENT_LABEL: &str = "Subagent";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct AgentPickerThreadEntry {
