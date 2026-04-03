@@ -577,6 +577,10 @@ pub(crate) enum AppEvent {
     SyntaxThemeSelected {
         name: String,
     },
+    /// Confirm that a subagent-returning quit from an active non-primary thread should proceed.
+    ConfirmSubagentExit,
+    /// Cancel a pending subagent-returning quit confirmation.
+    CancelSubagentExit,
 }
 
 /// The exit strategy requested by the UI layer.

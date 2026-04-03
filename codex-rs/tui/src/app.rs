@@ -996,6 +996,10 @@ pub(crate) struct App {
     /// This is thread-scoped state (`Option<ThreadId>`) instead of a global bool
     /// so shutdown events from other threads still take the normal failover path.
     pending_shutdown_exit_thread_id: Option<ThreadId>,
+    /// While the user confirms quitting from a non-primary thread, this stores the
+    /// requested exit mode so we can continue along the same exit path once they
+    /// confirm.
+    pending_subagent_exit_mode: Option<ExitMode>,
 
     windows_sandbox: WindowsSandboxState,
 
@@ -1057,12 +1061,12 @@ fn active_turn_missing_steer_error(error: &TypedRequestError) -> bool {
 impl App {
     pub fn chatwidget_init_for_forked_or_resumed_thread(
         &self,
-        tui: &mut tui::Tui,
+        frame_requester: tui::FrameRequester,
         cfg: codex_core::config::Config,
     ) -> crate::chatwidget::ChatWidgetInit {
         crate::chatwidget::ChatWidgetInit {
             config: cfg,
-            frame_requester: tui.frame_requester(),
+            frame_requester,
             app_event_tx: self.app_event_tx.clone(),
             // Fork/resume bootstraps here don't carry any prefilled message content.
             initial_user_message: None,
@@ -3084,12 +3088,54 @@ impl App {
         self.sync_active_agent_label();
     }
 
-    async fn select_agent_thread(
+    async fn confirm_subagent_exit<F>(
         &mut self,
-        tui: &mut tui::Tui,
+        frame_requester: tui::FrameRequester,
+        app_server: &mut AppServerSession,
+        reset_for_thread_switch: F,
+    ) -> Result<AppRunControl>
+    where
+        F: FnOnce(&mut Self) -> Result<()>,
+    {
+        let Some(mode) = self.pending_subagent_exit_mode else {
+            return Ok(AppRunControl::Continue);
+        };
+
+        let target_thread_id = self.active_thread_id.or(self.chat_widget.thread_id());
+        let primary_thread_id = self.primary_thread_id;
+        let is_non_primary_thread = target_thread_id.is_some()
+            && primary_thread_id.is_some()
+            && primary_thread_id != target_thread_id;
+
+        if matches!(mode, ExitMode::ShutdownFirst) && is_non_primary_thread {
+            self.pending_subagent_exit_mode = None;
+            self.shutdown_current_thread(app_server).await;
+
+            if let Some(primary_thread_id) = primary_thread_id {
+                self.select_agent_thread_with_reset(
+                    frame_requester,
+                    app_server,
+                    primary_thread_id,
+                    reset_for_thread_switch,
+                )
+                .await?;
+            }
+            return Ok(AppRunControl::Continue);
+        }
+
+        Ok(self.handle_exit_mode(app_server, mode).await)
+    }
+
+    async fn select_agent_thread_with_reset<F>(
+        &mut self,
+        frame_requester: tui::FrameRequester,
         app_server: &mut AppServerSession,
         thread_id: ThreadId,
-    ) -> Result<()> {
+        reset_for_thread_switch: F,
+    ) -> Result<()>
+    where
+        F: FnOnce(&mut Self) -> Result<()>,
+    {
         if self.active_thread_id == Some(thread_id) {
             return Ok(());
         }
@@ -3156,10 +3202,13 @@ impl App {
         self.active_thread_id = Some(thread_id);
         self.active_thread_rx = Some(receiver);
 
-        let init = self.chatwidget_init_for_forked_or_resumed_thread(tui, self.config.clone());
+        let init = self.chatwidget_init_for_forked_or_resumed_thread(
+            frame_requester.clone(),
+            self.config.clone(),
+        );
         self.replace_chat_widget(ChatWidget::new_with_app_event(init));
 
-        self.reset_for_thread_switch(tui)?;
+        reset_for_thread_switch(self)?;
         self.replay_thread_snapshot(snapshot, !is_replay_only);
         if is_replay_only {
             let message = if attached_replay_only {
@@ -3171,10 +3220,22 @@ impl App {
             };
             self.chat_widget.add_info_message(message, /*hint*/ None);
         }
-        self.drain_active_thread_events(tui).await?;
+        self.drain_active_thread_events(frame_requester).await?;
         self.refresh_pending_thread_approvals().await;
 
         Ok(())
+    }
+
+    async fn select_agent_thread(
+        &mut self,
+        tui: &mut tui::Tui,
+        app_server: &mut AppServerSession,
+        thread_id: ThreadId,
+    ) -> Result<()> {
+        self.select_agent_thread_with_reset(tui.frame_requester(), app_server, thread_id, |app| {
+            app.reset_for_thread_switch(tui)
+        })
+        .await
     }
 
     fn should_attach_live_thread_for_selection(&self, thread_id: ThreadId) -> bool {
@@ -3272,7 +3333,10 @@ impl App {
         started: AppServerStartedThread,
     ) -> Result<()> {
         self.reset_thread_event_state();
-        let init = self.chatwidget_init_for_forked_or_resumed_thread(tui, self.config.clone());
+        let init = self.chatwidget_init_for_forked_or_resumed_thread(
+            tui.frame_requester(),
+            self.config.clone(),
+        );
         self.replace_chat_widget(ChatWidget::new_with_app_event(init));
         self.enqueue_primary_thread_session(started.session, started.turns)
             .await?;
@@ -3388,7 +3452,10 @@ impl App {
         config
     }
 
-    async fn drain_active_thread_events(&mut self, tui: &mut tui::Tui) -> Result<()> {
+    async fn drain_active_thread_events(
+        &mut self,
+        frame_requester: tui::FrameRequester,
+    ) -> Result<()> {
         let Some(mut rx) = self.active_thread_rx.take() else {
             return Ok(());
         };
@@ -3412,7 +3479,7 @@ impl App {
         }
 
         if self.backtrack_render_pending {
-            tui.frame_requester().schedule_frame();
+            frame_requester.schedule_frame();
         }
         Ok(())
     }
@@ -3736,6 +3803,7 @@ impl App {
             remote_app_server_auth_token,
             pending_update_action: None,
             pending_shutdown_exit_thread_id: None,
+            pending_subagent_exit_mode: None,
             windows_sandbox: WindowsSandboxState::default(),
             thread_event_channels: HashMap::new(),
             thread_event_listener_tasks: HashMap::new(),
@@ -4216,6 +4284,17 @@ impl App {
             }
             AppEvent::Exit(mode) => {
                 return Ok(self.handle_exit_mode(app_server, mode).await);
+            }
+            AppEvent::ConfirmSubagentExit => {
+                return self
+                    .confirm_subagent_exit(tui.frame_requester(), app_server, |app| {
+                        app.reset_for_thread_switch(tui)
+                    })
+                    .await;
+            }
+            AppEvent::CancelSubagentExit => {
+                self.pending_subagent_exit_mode = None;
+                return Ok(AppRunControl::Continue);
             }
             AppEvent::FatalExitRequest(message) => {
                 return Ok(AppRunControl::Exit(ExitReason::Fatal(message)));
@@ -5517,10 +5596,22 @@ impl App {
     ) -> AppRunControl {
         match mode {
             ExitMode::ShutdownFirst => {
+                let target_thread_id = self.active_thread_id.or(self.chat_widget.thread_id());
+                let is_non_primary_thread = target_thread_id.is_some()
+                    && self.primary_thread_id.is_some()
+                    && self.primary_thread_id != target_thread_id;
+
+                if is_non_primary_thread && self.pending_subagent_exit_mode.is_none() {
+                    self.pending_subagent_exit_mode = Some(mode);
+                    self.chat_widget.open_subagent_quit_confirmation();
+                    return AppRunControl::Continue;
+                }
+
                 // Mark the thread we are explicitly shutting down for exit so
                 // its shutdown completion does not trigger agent failover.
                 self.pending_shutdown_exit_thread_id =
                     self.active_thread_id.or(self.chat_widget.thread_id());
+                self.pending_subagent_exit_mode = None;
                 if self.pending_shutdown_exit_thread_id.is_some() {
                     self.shutdown_current_thread(app_server).await;
                 }
@@ -5529,6 +5620,7 @@ impl App {
             }
             ExitMode::Immediate => {
                 self.pending_shutdown_exit_thread_id = None;
+                self.pending_subagent_exit_mode = None;
                 AppRunControl::Exit(ExitReason::UserRequested)
             }
         }
@@ -9099,6 +9191,7 @@ guardian_approval = true
             remote_app_server_auth_token: None,
             pending_update_action: None,
             pending_shutdown_exit_thread_id: None,
+            pending_subagent_exit_mode: None,
             windows_sandbox: WindowsSandboxState::default(),
             thread_event_channels: HashMap::new(),
             thread_event_listener_tasks: HashMap::new(),
@@ -9153,6 +9246,7 @@ guardian_approval = true
                 remote_app_server_auth_token: None,
                 pending_update_action: None,
                 pending_shutdown_exit_thread_id: None,
+                pending_subagent_exit_mode: None,
                 windows_sandbox: WindowsSandboxState::default(),
                 thread_event_channels: HashMap::new(),
                 thread_event_listener_tasks: HashMap::new(),
@@ -10787,6 +10881,84 @@ guardian_approval = true
             op_rx.try_recv().is_err(),
             "shutdown should not submit Op::Shutdown"
         );
+    }
+
+    #[tokio::test]
+    async fn shutdown_first_exit_prompts_when_exiting_non_primary_thread() {
+        let (mut app, _app_event_rx, mut op_rx) = make_test_app_with_channels().await;
+        let primary_thread_id = ThreadId::new();
+        let subagent_thread_id = ThreadId::new();
+        app.active_thread_id = Some(subagent_thread_id);
+        app.primary_thread_id = Some(primary_thread_id);
+        assert_ne!(subagent_thread_id, primary_thread_id);
+
+        let mut app_server =
+            crate::start_embedded_app_server_for_picker(app.chat_widget.config_ref())
+                .await
+                .expect("embedded app server");
+        let control = app
+            .handle_exit_mode(&mut app_server, ExitMode::ShutdownFirst)
+            .await;
+
+        assert!(matches!(control, AppRunControl::Continue));
+        assert_eq!(
+            app.pending_subagent_exit_mode,
+            Some(ExitMode::ShutdownFirst)
+        );
+        assert_eq!(app.pending_shutdown_exit_thread_id, None);
+        assert!(op_rx.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn confirm_subagent_exit_returns_to_primary_thread() -> Result<()> {
+        let (mut app, _app_event_rx, mut op_rx) = make_test_app_with_channels().await;
+        let subagent_thread_id = ThreadId::new();
+        let primary_thread_id = ThreadId::new();
+        let primary_session = test_thread_session(primary_thread_id, PathBuf::from("/tmp/main"));
+        let subagent_session = test_thread_session(subagent_thread_id, PathBuf::from("/tmp/agent"));
+        app.active_thread_id = Some(subagent_thread_id);
+        app.primary_thread_id = Some(primary_thread_id);
+        app.pending_subagent_exit_mode = Some(ExitMode::ShutdownFirst);
+        app.chat_widget
+            .handle_thread_session(subagent_session.clone());
+        app.thread_event_channels.insert(
+            primary_thread_id,
+            ThreadEventChannel::new_with_session(
+                /*capacity*/ 1,
+                primary_session.clone(),
+                Vec::new(),
+            ),
+        );
+        app.thread_event_channels.insert(
+            subagent_thread_id,
+            ThreadEventChannel::new_with_session(/*capacity*/ 1, subagent_session, Vec::new()),
+        );
+        assert_ne!(subagent_thread_id, primary_thread_id);
+
+        let mut app_server =
+            crate::start_embedded_app_server_for_picker(app.chat_widget.config_ref())
+                .await
+                .expect("embedded app server");
+        let control = app
+            .confirm_subagent_exit(
+                crate::tui::FrameRequester::test_dummy(),
+                &mut app_server,
+                |_| Ok(()),
+            )
+            .await?;
+
+        assert_eq!(app.pending_subagent_exit_mode, None);
+        assert_eq!(app.pending_shutdown_exit_thread_id, None);
+        assert_eq!(app.active_thread_id, Some(primary_thread_id));
+        assert_eq!(app.chat_widget.thread_id(), Some(primary_thread_id));
+        assert_eq!(
+            app.chat_widget.config_ref().cwd.to_path_buf(),
+            primary_session.cwd
+        );
+        assert!(app.active_thread_rx.is_some());
+        assert!(matches!(control, AppRunControl::Continue));
+        assert!(op_rx.try_recv().is_err());
+        Ok(())
     }
 
     #[tokio::test]
