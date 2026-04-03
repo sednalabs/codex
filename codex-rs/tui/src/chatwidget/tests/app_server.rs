@@ -343,6 +343,42 @@ async fn live_app_server_collab_wait_items_render_history() {
 }
 
 #[tokio::test]
+async fn live_app_server_collab_item_start_clears_compaction_status_header() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    let sender_thread_id =
+        ThreadId::from_string("019cff70-2599-75e2-af72-b90000000011").expect("valid thread id");
+
+    chat.on_task_started();
+    chat.compaction_turn_active = true;
+    chat.update_working_status_header();
+
+    assert_eq!(chat.current_status.header, "Compacting context");
+
+    chat.handle_server_notification(
+        ServerNotification::ItemStarted(ItemStartedNotification {
+            thread_id: "thread-1".to_string(),
+            turn_id: "turn-1".to_string(),
+            item: AppServerThreadItem::CollabAgentToolCall {
+                id: "spawn-1".to_string(),
+                tool: AppServerCollabAgentTool::SpawnAgent,
+                status: AppServerCollabAgentToolCallStatus::InProgress,
+                sender_thread_id: sender_thread_id.to_string(),
+                receiver_thread_ids: Vec::new(),
+                prompt: Some("Explore the repo".to_string()),
+                model: Some("gpt-5".to_string()),
+                reasoning_effort: Some(ReasoningEffortConfig::High),
+                timed_out: false,
+                agents_states: HashMap::new(),
+            },
+        }),
+        /*replay_kind*/ None,
+    );
+
+    assert_eq!(chat.compaction_turn_active, false);
+    assert_ne!(chat.current_status.header, "Compacting context");
+}
+
+#[tokio::test]
 async fn live_app_server_collab_spawn_completed_renders_requested_model_and_effort() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
     let sender_thread_id =

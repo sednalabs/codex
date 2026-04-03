@@ -6997,18 +6997,21 @@ impl ChatWidget {
                 reasoning_effort,
                 agents_states,
                 timed_out,
-            } => self.on_collab_agent_tool_call(ThreadItem::CollabAgentToolCall {
-                id,
-                tool,
-                status,
-                sender_thread_id,
-                receiver_thread_ids,
-                prompt,
-                model,
-                reasoning_effort,
-                agents_states,
-                timed_out,
-            }),
+            } => {
+                self.reset_compaction_turn_status_if_needed();
+                self.on_collab_agent_tool_call(ThreadItem::CollabAgentToolCall {
+                    id,
+                    tool,
+                    status,
+                    sender_thread_id,
+                    receiver_thread_ids,
+                    prompt,
+                    model,
+                    reasoning_effort,
+                    agents_states,
+                    timed_out,
+                });
+            }
             ThreadItem::EnteredReviewMode { review, .. } => {
                 if !from_replay {
                     self.enter_review_mode_with_hint(review, /*from_replay*/ false);
