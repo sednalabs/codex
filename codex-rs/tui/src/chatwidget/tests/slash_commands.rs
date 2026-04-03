@@ -193,6 +193,37 @@ async fn queued_popup_command_replay_waits_before_submitting_next_message() {
 }
 
 #[tokio::test]
+async fn queued_async_session_switch_command_waits_before_next_message() {
+    let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(Some("gpt-5")).await;
+    chat.thread_id = Some(ThreadId::new());
+
+    // Simulate an active turn and queue follow-ups in order: /new, then a
+    // plain message.
+    chat.bottom_pane.set_task_running(/*running*/ true);
+    chat.dispatch_command(SlashCommand::New);
+    chat.bottom_pane
+        .set_composer_text("queued after new".to_string(), Vec::new(), Vec::new());
+    chat.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+    // Completing the active turn should replay /new and stop draining so the
+    // queued message does not submit in the old session context.
+    chat.handle_codex_event(Event {
+        id: "turn-1".into(),
+        msg: EventMsg::TurnComplete(test_turn_complete_event(
+            "turn-1",
+            /*last_agent_message*/ None::<String>,
+        )),
+    });
+    assert_matches!(rx.try_recv(), Ok(AppEvent::NewSession));
+    assert_eq!(chat.queued_user_messages.len(), 1);
+    assert_eq!(
+        chat.queued_user_messages.front().unwrap().text,
+        "queued after new"
+    );
+    assert_matches!(op_rx.try_recv(), Err(TryRecvError::Empty));
+}
+
+#[tokio::test]
 async fn ctrl_d_quits_without_prompt() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
 

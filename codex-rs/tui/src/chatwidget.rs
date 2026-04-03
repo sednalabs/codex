@@ -7617,7 +7617,16 @@ impl ChatWidget {
                 if !self.no_modal_or_popup_active() {
                     return true;
                 }
-                matches!(cmd, SlashCommand::Init | SlashCommand::Compact)
+                matches!(
+                    cmd,
+                    SlashCommand::Init
+                        | SlashCommand::Compact
+                        | SlashCommand::New
+                        | SlashCommand::Clear
+                        | SlashCommand::Resume
+                        | SlashCommand::Fork
+                        | SlashCommand::Logout
+                )
             }
             QueuedSlashCommand::CommandWithArgs {
                 cmd,
