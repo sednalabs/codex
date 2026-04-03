@@ -5,8 +5,67 @@ on:
       - 'docs/**'
       - '**/*.md'
   workflow_dispatch:
+    inputs:
+      platform_scope:
+        description: Platform coverage to run
+        required: false
+        type: choice
+        options:
+          - linux-x86-only
+          - full-cross-platform
+        default: linux-x86-only
+  schedule:
+    - cron: "15 18 * * *"
 
 jobs:
+  matrix_plan:
+    name: Resolve platform scope
+    runs-on: ubuntu-24.04
+    outputs:
+      argument_comment_lint_matrix: ${{ steps.plan.outputs.argument_comment_lint_matrix }}
+    steps:
+      - name: Compute platform matrices
+        id: plan
+        env:
+          FULL_PLATFORM_RUN: ${{ github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.platform_scope == 'full-cross-platform') }}
+        shell: bash
+        run: |
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          import os
+
+          full_platform_run = os.environ["FULL_PLATFORM_RUN"] == "true"
+
+          linux_only = [
+              {
+                  "name": "Linux",
+                  "runner": "ubuntu-24.04",
+                  "timeout_minutes": 30,
+              }
+          ]
+          full_cross_platform = [
+              {
+                  "name": "Linux",
+                  "runner": "ubuntu-24.04",
+                  "timeout_minutes": 30,
+              },
+              {
+                  "name": "macOS",
+                  "runner": "macos-15",
+                  "timeout_minutes": 30,
+              },
+              {
+                  "name": "Windows",
+                  "runner": "windows-2025",
+                  "timeout_minutes": 30,
+              },
+          ]
+
+          selected = full_cross_platform if full_platform_run else linux_only
+          payload = json.dumps({"include": selected}, separators=(",", ":"))
+          print(f"argument_comment_lint_matrix={payload}")
+          PY
+
   # --- Detect what changed so the fast PR workflow only runs relevant jobs ----
   changed:
     name: Detect changed areas
@@ -132,21 +191,13 @@ jobs:
     name: Argument comment lint - ${{ matrix.name }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: ${{ matrix.timeout_minutes }}
-    needs: changed
+    needs:
+      - matrix_plan
+      - changed
     if: ${{ needs.changed.outputs.argument_comment_lint == 'true' || needs.changed.outputs.workflows == 'true' }}
     strategy:
       fail-fast: false
-      matrix:
-        include:
-          - name: Linux
-            runner: ubuntu-24.04
-            timeout_minutes: 30
-          - name: macOS
-            runner: macos-15
-            timeout_minutes: 30
-          - name: Windows
-            runner: windows-2025
-            timeout_minutes: 30
+      matrix: ${{ fromJson(needs.matrix_plan.outputs.argument_comment_lint_matrix) }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
       - uses: ./.github/actions/setup-bazel-ci
@@ -192,6 +243,7 @@ jobs:
     needs:
       [
         changed,
+        matrix_plan,
         general,
         cargo_shear,
         argument_comment_lint_package,

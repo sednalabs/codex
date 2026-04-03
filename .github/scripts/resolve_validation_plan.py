@@ -84,10 +84,10 @@ def determine_smoke_gate(groups: set[str]) -> tuple[bool, str]:
 
 def determine_lab_matrix_policy(profile: str) -> tuple[str, str]:
     policies = {
-        "targeted": ("true", "3"),
-        "frontier": ("false", "4"),
-        "broad": ("true", "4"),
-        "full": ("true", "4"),
+        "targeted": ("true", "2"),
+        "frontier": ("false", "2"),
+        "broad": ("true", "2"),
+        "full": ("true", "2"),
         "artifact": ("true", "2"),
     }
     return policies.get(profile, ("true", "1"))
