@@ -98,7 +98,9 @@ Sub-agents are their to make you go fast and time is a big constraint so leverag
 - When you have plan with multiple step, process them in parallel by spawning one agent per step when this is possible.
 - Choose the correct agent type.
 - For same-workspace analysis or implementation, default to spawning a native Codex sub-agent first; reserve Gemini MCP only for tasks that truly need very large cross-file context, resumed investigation history, or web/search capability.
-- Follow a cheap-first sidecar waterfall: use `gpt-5.1-codex-mini` for bookkeeping, waiting, and routine sidecar work; prefer `gpt-5.3-codex-spark` for read-heavy, output-light scouting or tiny file-local edits; step up to `gpt-5.4-mini` only when the subtask is still straightforward but needs richer context or tighter review.
+- Follow a cheap-first sidecar waterfall: start with the smallest capable lane. Use `gpt-5.1-codex-mini` first for bookkeeping, waiting, compact scouting, and other routine sidecar work.
+- Prefer `gpt-5.3-codex-spark` for read-heavy, output-light, file-local scouting or tiny edits when the subtask is unlikely to need a second substantial reasoning pass.
+- Escalate to `gpt-5.4-mini` when the subtask is still straightforward but needs richer context, tighter review, or a few related files.
 - Escalate above those defaults only when you can state the concrete reason the cheaper lane is insufficient.
 
 ## Flow
