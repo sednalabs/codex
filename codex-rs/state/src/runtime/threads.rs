@@ -947,13 +947,19 @@ pub(super) fn push_thread_order_and_limit(
 mod tests {
     use super::*;
     use crate::DirectionalThreadSpawnEdgeStatus;
+    use crate::extract::enum_to_string;
     use crate::runtime::test_support::test_thread_metadata;
     use crate::runtime::test_support::unique_temp_dir;
+    use codex_protocol::config_types::ReasoningSummary;
+    use codex_protocol::openai_models::ReasoningEffort;
+    use codex_protocol::protocol::AskForApproval;
     use codex_protocol::protocol::EventMsg;
     use codex_protocol::protocol::GitInfo;
+    use codex_protocol::protocol::SandboxPolicy;
     use codex_protocol::protocol::SessionMeta;
     use codex_protocol::protocol::SessionMetaLine;
     use codex_protocol::protocol::SessionSource;
+    use codex_protocol::protocol::TurnContextItem;
     use pretty_assertions::assert_eq;
     use std::path::PathBuf;
 
@@ -1116,6 +1122,88 @@ mod tests {
         assert_eq!(
             persisted.git_origin_url.as_deref(),
             Some("git@example.com:openai/codex.git")
+        );
+    }
+
+    #[tokio::test]
+    async fn apply_rollout_items_persists_approval_mode_from_turn_context() {
+        let codex_home = unique_temp_dir();
+        let runtime = StateRuntime::init(codex_home.clone(), "test-provider".to_string())
+            .await
+            .expect("state db should initialize");
+        let thread_id =
+            ThreadId::from_string("00000000-0000-0000-0000-000000000458").expect("valid thread id");
+        let metadata = test_thread_metadata(&codex_home, thread_id, codex_home.clone());
+        let builder = ThreadMetadataBuilder::new(
+            thread_id,
+            metadata.rollout_path.clone(),
+            metadata.created_at,
+            SessionSource::Cli,
+        );
+
+        let turn_context = TurnContextItem {
+            turn_id: Some("turn-1".to_string()),
+            trace_id: None,
+            cwd: codex_home.clone(),
+            current_date: None,
+            timezone: None,
+            approval_policy: AskForApproval::Never,
+            sandbox_policy: SandboxPolicy::new_read_only_policy(),
+            network: None,
+            model: "gpt-5".to_string(),
+            personality: None,
+            collaboration_mode: None,
+            realtime_active: None,
+            effort: Some(ReasoningEffort::Medium),
+            summary: ReasoningSummary::Auto,
+            user_instructions: None,
+            developer_instructions: None,
+            final_output_json_schema: None,
+            truncation_policy: None,
+        };
+
+        runtime
+            .apply_rollout_items(
+                &builder,
+                &[RolloutItem::TurnContext(turn_context.clone())],
+                /*new_thread_memory_mode*/ None,
+                /*updated_at_override*/ None,
+            )
+            .await
+            .expect("apply_rollout_items should succeed");
+
+        let persisted = runtime
+            .get_thread(thread_id)
+            .await
+            .expect("thread should load")
+            .expect("thread should exist");
+        assert_eq!(
+            persisted.approval_mode,
+            enum_to_string(&AskForApproval::Never)
+        );
+
+        let turn_context = TurnContextItem {
+            approval_policy: AskForApproval::OnRequest,
+            ..turn_context
+        };
+        runtime
+            .apply_rollout_items(
+                &builder,
+                &[RolloutItem::TurnContext(turn_context)],
+                /*new_thread_memory_mode*/ None,
+                /*updated_at_override*/ None,
+            )
+            .await
+            .expect("second apply_rollout_items should succeed");
+
+        let updated = runtime
+            .get_thread(thread_id)
+            .await
+            .expect("thread should load")
+            .expect("thread should exist");
+        assert_eq!(
+            updated.approval_mode,
+            enum_to_string(&AskForApproval::OnRequest)
         );
     }
 

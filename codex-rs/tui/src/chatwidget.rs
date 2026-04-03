@@ -947,6 +947,8 @@ pub(crate) struct ChatWidget {
     pending_guardian_review_status: PendingGuardianReviewStatus,
     // Semantic status used for terminal-title status rendering.
     terminal_title_status_kind: TerminalTitleStatusKind,
+    // True while a context compaction turn is in flight.
+    compaction_turn_active: bool,
     // Previous status header to restore after a transient stream retry.
     retry_status_header: Option<String>,
     // Set when commentary output completes; once stream queues go idle we restore the status row.
@@ -1807,8 +1809,29 @@ impl ChatWidget {
             self.terminal_title_status_kind = TerminalTitleStatusKind::Thinking;
             self.set_status_header(header);
         } else if self.bottom_pane.is_task_running() {
-            self.terminal_title_status_kind = TerminalTitleStatusKind::Working;
+            self.update_working_status_header();
+        }
+    }
+
+    fn update_working_status_header(&mut self) {
+        self.terminal_title_status_kind = TerminalTitleStatusKind::Working;
+        if self.compaction_turn_active {
+            self.set_status_header(String::from("Compacting context"));
+        } else {
             self.set_status_header(String::from("Working"));
+        }
+    }
+
+    fn reset_compaction_turn_status_if_needed(&mut self) {
+        if !self.compaction_turn_active {
+            return;
+        }
+        self.compaction_turn_active = false;
+        if matches!(
+            self.terminal_title_status_kind,
+            TerminalTitleStatusKind::Working
+        ) {
+            self.update_working_status_header();
         }
     }
 
@@ -2424,8 +2447,7 @@ impl ChatWidget {
         self.pending_status_indicator_restore = false;
         self.bottom_pane
             .set_interrupt_hint_visible(/*visible*/ true);
-        self.terminal_title_status_kind = TerminalTitleStatusKind::Working;
-        self.set_status_header(String::from("Working"));
+        self.update_working_status_header();
         self.full_reasoning_buffer.clear();
         self.reasoning_buffer.clear();
         self.request_redraw();
@@ -2474,6 +2496,7 @@ impl ChatWidget {
         // Mark task stopped and request redraw now that all content is in history.
         self.pending_status_indicator_restore = false;
         self.agent_turn_running = false;
+        self.compaction_turn_active = false;
         self.turn_sleep_inhibitor
             .set_turn_running(/*turn_running*/ false);
         self.update_task_running_state();
@@ -2836,6 +2859,7 @@ impl ChatWidget {
         self.finalize_active_cell_as_failed();
         // Reset running state and clear streaming buffers.
         self.agent_turn_running = false;
+        self.compaction_turn_active = false;
         self.turn_sleep_inhibitor
             .set_turn_running(/*turn_running*/ false);
         self.update_task_running_state();
@@ -3633,6 +3657,7 @@ impl ChatWidget {
     }
 
     fn on_exec_command_begin(&mut self, ev: ExecCommandBeginEvent) {
+        self.reset_compaction_turn_status_if_needed();
         self.flush_answer_stream_with_separator();
         if is_unified_exec_source(ev.source) {
             self.track_unified_exec_process_begin(&ev);
@@ -3724,6 +3749,7 @@ impl ChatWidget {
     }
 
     fn on_patch_apply_begin(&mut self, event: PatchApplyBeginEvent) {
+        self.reset_compaction_turn_status_if_needed();
         self.add_to_history(history_cell::new_patch_event(
             event.changes,
             &self.config.cwd,
@@ -3740,6 +3766,7 @@ impl ChatWidget {
     }
 
     fn on_image_generation_begin(&mut self, _event: ImageGenerationBeginEvent) {
+        self.reset_compaction_turn_status_if_needed();
         self.flush_answer_stream_with_separator();
     }
 
@@ -3856,6 +3883,7 @@ impl ChatWidget {
     }
 
     fn on_mcp_tool_call_begin(&mut self, ev: McpToolCallBeginEvent) {
+        self.reset_compaction_turn_status_if_needed();
         let ev2 = ev.clone();
         self.defer_or_handle(|q| q.push_mcp_begin(ev), |s| s.handle_mcp_begin_now(ev2));
     }
@@ -3866,6 +3894,7 @@ impl ChatWidget {
     }
 
     fn on_web_search_begin(&mut self, ev: WebSearchBeginEvent) {
+        self.reset_compaction_turn_status_if_needed();
         self.flush_answer_stream_with_separator();
         self.flush_active_cell();
         self.active_cell = Some(Box::new(history_cell::new_active_web_search_call(
@@ -4893,6 +4922,7 @@ impl ChatWidget {
             current_status: StatusIndicatorState::working(),
             pending_guardian_review_status: PendingGuardianReviewStatus::default(),
             terminal_title_status_kind: TerminalTitleStatusKind::Working,
+            compaction_turn_active: false,
             retry_status_header: None,
             pending_status_indicator_restore: false,
             suppress_queue_autosend: false,
@@ -5281,6 +5311,8 @@ impl ChatWidget {
             }
             SlashCommand::Compact => {
                 self.clear_token_usage();
+                self.compaction_turn_active = true;
+                self.update_working_status_header();
                 if !self.bottom_pane.is_task_running() {
                     self.bottom_pane.set_task_running(/*running*/ true);
                 }
@@ -6225,6 +6257,7 @@ impl ChatWidget {
     ) {
         let from_replay = render_source.is_replay();
         let replay_kind = render_source.replay_kind();
+        self.reset_compaction_turn_status_if_needed();
         match item {
             ThreadItem::UserMessage { id, content } => {
                 let user_message = codex_protocol::items::UserMessageItem {
@@ -6903,6 +6936,9 @@ impl ChatWidget {
         notification: ItemStartedNotification,
         from_replay: bool,
     ) {
+        if !matches!(&notification.item, ThreadItem::ContextCompaction { .. }) {
+            self.reset_compaction_turn_status_if_needed();
+        }
         match notification.item {
             ThreadItem::CommandExecution {
                 id,
@@ -6957,6 +6993,10 @@ impl ChatWidget {
             ThreadItem::ImageGeneration { id, .. } => {
                 self.on_image_generation_begin(ImageGenerationBeginEvent { call_id: id });
             }
+            ThreadItem::ContextCompaction { .. } => {
+                self.compaction_turn_active = true;
+                self.update_working_status_header();
+            }
             ThreadItem::CollabAgentToolCall {
                 id,
                 tool,
@@ -6968,18 +7008,21 @@ impl ChatWidget {
                 reasoning_effort,
                 agents_states,
                 timed_out,
-            } => self.on_collab_agent_tool_call(ThreadItem::CollabAgentToolCall {
-                id,
-                tool,
-                status,
-                sender_thread_id,
-                receiver_thread_ids,
-                prompt,
-                model,
-                reasoning_effort,
-                agents_states,
-                timed_out,
-            }),
+            } => {
+                self.on_collab_agent_tool_call(ThreadItem::CollabAgentToolCall {
+                    id,
+                    tool,
+                    status,
+                    sender_thread_id,
+                    receiver_thread_ids,
+                    prompt,
+                    model,
+                    reasoning_effort,
+                    agents_states,
+                    timed_out,
+                });
+            }
+            ThreadItem::DynamicToolCall { .. } => {}
             ThreadItem::EnteredReviewMode { review, .. } => {
                 if !from_replay {
                     self.enter_review_mode_with_hint(review, /*from_replay*/ false);
