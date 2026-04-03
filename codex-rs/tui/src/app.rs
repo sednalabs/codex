@@ -996,6 +996,10 @@ pub(crate) struct App {
     /// This is thread-scoped state (`Option<ThreadId>`) instead of a global bool
     /// so shutdown events from other threads still take the normal failover path.
     pending_shutdown_exit_thread_id: Option<ThreadId>,
+    /// While the user confirms quitting from a non-primary thread, this stores the
+    /// requested exit mode so we can continue along the same exit path once they
+    /// confirm.
+    pending_subagent_exit_mode: Option<ExitMode>,
 
     windows_sandbox: WindowsSandboxState,
 
@@ -3729,6 +3733,7 @@ impl App {
             remote_app_server_auth_token,
             pending_update_action: None,
             pending_shutdown_exit_thread_id: None,
+            pending_subagent_exit_mode: None,
             windows_sandbox: WindowsSandboxState::default(),
             thread_event_channels: HashMap::new(),
             thread_event_listener_tasks: HashMap::new(),
@@ -4209,6 +4214,16 @@ impl App {
             }
             AppEvent::Exit(mode) => {
                 return Ok(self.handle_exit_mode(app_server, mode).await);
+            }
+            AppEvent::ConfirmSubagentExit => {
+                if let Some(mode) = self.pending_subagent_exit_mode {
+                    return Ok(self.handle_exit_mode(app_server, mode).await);
+                }
+                return Ok(AppRunControl::Continue);
+            }
+            AppEvent::CancelSubagentExit => {
+                self.pending_subagent_exit_mode = None;
+                return Ok(AppRunControl::Continue);
             }
             AppEvent::FatalExitRequest(message) => {
                 return Ok(AppRunControl::Exit(ExitReason::Fatal(message)));
@@ -5488,10 +5503,22 @@ impl App {
     ) -> AppRunControl {
         match mode {
             ExitMode::ShutdownFirst => {
+                let target_thread_id = self.active_thread_id.or(self.chat_widget.thread_id());
+                let is_non_primary_thread = target_thread_id.is_some()
+                    && self.primary_thread_id.is_some()
+                    && self.primary_thread_id != target_thread_id;
+
+                if is_non_primary_thread && self.pending_subagent_exit_mode.is_none() {
+                    self.pending_subagent_exit_mode = Some(mode);
+                    self.chat_widget.open_subagent_quit_confirmation();
+                    return AppRunControl::Continue;
+                }
+
                 // Mark the thread we are explicitly shutting down for exit so
                 // its shutdown completion does not trigger agent failover.
                 self.pending_shutdown_exit_thread_id =
                     self.active_thread_id.or(self.chat_widget.thread_id());
+                self.pending_subagent_exit_mode = None;
                 if self.pending_shutdown_exit_thread_id.is_some() {
                     self.shutdown_current_thread(app_server).await;
                 }
@@ -5500,6 +5527,7 @@ impl App {
             }
             ExitMode::Immediate => {
                 self.pending_shutdown_exit_thread_id = None;
+                self.pending_subagent_exit_mode = None;
                 AppRunControl::Exit(ExitReason::UserRequested)
             }
         }
@@ -8985,6 +9013,7 @@ guardian_approval = true
             remote_app_server_auth_token: None,
             pending_update_action: None,
             pending_shutdown_exit_thread_id: None,
+            pending_subagent_exit_mode: None,
             windows_sandbox: WindowsSandboxState::default(),
             thread_event_channels: HashMap::new(),
             thread_event_listener_tasks: HashMap::new(),
@@ -9039,6 +9068,7 @@ guardian_approval = true
                 remote_app_server_auth_token: None,
                 pending_update_action: None,
                 pending_shutdown_exit_thread_id: None,
+                pending_subagent_exit_mode: None,
                 windows_sandbox: WindowsSandboxState::default(),
                 thread_event_channels: HashMap::new(),
                 thread_event_listener_tasks: HashMap::new(),
@@ -10673,6 +10703,59 @@ guardian_approval = true
             op_rx.try_recv().is_err(),
             "shutdown should not submit Op::Shutdown"
         );
+    }
+
+    #[tokio::test]
+    async fn shutdown_first_exit_prompts_when_exiting_non_primary_thread() {
+        let (mut app, _app_event_rx, mut op_rx) = make_test_app_with_channels().await;
+        let primary_thread_id = ThreadId::new();
+        let subagent_thread_id = ThreadId::new();
+        app.active_thread_id = Some(subagent_thread_id);
+        app.primary_thread_id = Some(primary_thread_id);
+        assert_ne!(subagent_thread_id, primary_thread_id);
+
+        let mut app_server =
+            crate::start_embedded_app_server_for_picker(app.chat_widget.config_ref())
+                .await
+                .expect("embedded app server");
+        let control = app
+            .handle_exit_mode(&mut app_server, ExitMode::ShutdownFirst)
+            .await;
+
+        assert!(matches!(control, AppRunControl::Continue));
+        assert_eq!(
+            app.pending_subagent_exit_mode,
+            Some(ExitMode::ShutdownFirst)
+        );
+        assert_eq!(app.pending_shutdown_exit_thread_id, None);
+        assert!(op_rx.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn confirm_subagent_exit_continues_shutdown_for_non_primary_thread() {
+        let (mut app, _app_event_rx, mut op_rx) = make_test_app_with_channels().await;
+        let subagent_thread_id = ThreadId::new();
+        let primary_thread_id = ThreadId::new();
+        app.active_thread_id = Some(subagent_thread_id);
+        app.primary_thread_id = Some(primary_thread_id);
+        app.pending_subagent_exit_mode = Some(ExitMode::ShutdownFirst);
+        assert_ne!(subagent_thread_id, primary_thread_id);
+
+        let mut app_server =
+            crate::start_embedded_app_server_for_picker(app.chat_widget.config_ref())
+                .await
+                .expect("embedded app server");
+        let control = app
+            .handle_exit_mode(&mut app_server, ExitMode::ShutdownFirst)
+            .await;
+
+        assert_eq!(app.pending_subagent_exit_mode, None);
+        assert_eq!(app.pending_shutdown_exit_thread_id, None);
+        assert!(matches!(
+            control,
+            AppRunControl::Exit(ExitReason::UserRequested)
+        ));
+        assert!(op_rx.try_recv().is_err());
     }
 
     #[tokio::test]
