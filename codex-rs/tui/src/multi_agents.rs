@@ -486,7 +486,7 @@ fn prompt_line(prompt: &str) -> Option<Line<'static>> {
     }
 }
 
-fn resume_target_line(label: &str, thread_id: ThreadId) -> Line<'static> {
+fn resume_target_line(label: &'static str, thread_id: ThreadId) -> Line<'static> {
     Line::from(vec![
         Span::from(label).dim(),
         Span::from(thread_id.to_string()).cyan(),
