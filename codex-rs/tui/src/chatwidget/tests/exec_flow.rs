@@ -1039,6 +1039,47 @@ async fn model_slash_command_opens_picker_while_task_running() {
     );
 }
 
+#[tokio::test]
+async fn queued_follow_up_waits_for_model_picker_to_close() {
+    let (mut chat, _rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.bottom_pane.set_task_running(/*running*/ true);
+    chat.bottom_pane.set_composer_text(
+        "queued after model picker".to_string(),
+        Vec::new(),
+        Vec::new(),
+    );
+    chat.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+    chat.dispatch_command(SlashCommand::Model);
+    assert!(
+        chat.has_active_view(),
+        "expected model picker popup to be active"
+    );
+
+    chat.bottom_pane.set_task_running(/*running*/ false);
+    chat.maybe_send_next_queued_input();
+
+    assert_matches!(op_rx.try_recv(), Err(TryRecvError::Empty));
+    assert_eq!(chat.queued_user_messages.len(), 1);
+    assert_eq!(
+        chat.queued_user_messages[0].text,
+        "queued after model picker"
+    );
+
+    chat.handle_key_event(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+
+    match op_rx.try_recv() {
+        Ok(Op::UserTurn { items, .. }) => assert_eq!(
+            items,
+            vec![UserInput::Text {
+                text: "queued after model picker".to_string(),
+                text_elements: Vec::new(),
+            }]
+        ),
+        other => panic!("expected queued user turn after closing model picker, got {other:?}"),
+    }
+}
+
 //
 // Snapshot test: command approval modal
 //

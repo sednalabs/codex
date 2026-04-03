@@ -4982,6 +4982,8 @@ impl ChatWidget {
     }
 
     pub(crate) fn handle_key_event(&mut self, key_event: KeyEvent) {
+        let had_modal_or_popup_active = !self.no_modal_or_popup_active();
+
         match key_event {
             KeyEvent {
                 code: KeyCode::Char(c),
@@ -5150,6 +5152,13 @@ impl ChatWidget {
                 }
                 InputResult::None => {}
             },
+        }
+
+        if had_modal_or_popup_active
+            && !self.bottom_pane.is_task_running()
+            && self.no_modal_or_popup_active()
+        {
+            self.maybe_send_next_queued_input();
         }
     }
 
@@ -7583,7 +7592,7 @@ impl ChatWidget {
     // opening a popup, kicking off async setup, or starting a task), then
     // submit at most one queued message.
     pub(crate) fn maybe_send_next_queued_input(&mut self) {
-        if self.suppress_queue_autosend {
+        if self.suppress_queue_autosend || !self.no_modal_or_popup_active() {
             return;
         }
         while !self.bottom_pane.is_task_running() {
