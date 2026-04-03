@@ -6983,10 +6983,8 @@ impl ChatWidget {
                 self.on_image_generation_begin(ImageGenerationBeginEvent { call_id: id });
             }
             ThreadItem::ContextCompaction { .. } => {
-                if !from_replay {
-                    self.compaction_turn_active = true;
-                    self.update_working_status_header();
-                }
+                self.compaction_turn_active = true;
+                self.update_working_status_header();
             }
             ThreadItem::CollabAgentToolCall {
                 id,
