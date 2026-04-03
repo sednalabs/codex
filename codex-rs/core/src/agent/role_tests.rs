@@ -73,18 +73,55 @@ async fn apply_role_returns_error_for_unknown_role() {
 }
 
 #[tokio::test]
-#[ignore = "No role requiring it for now"]
-async fn apply_explorer_role_sets_model_and_adds_session_flags_layer() {
+async fn apply_explorer_role_preserves_model_settings_and_adds_session_flags_layer() {
     let (_home, mut config) = test_config_with_cli_overrides(Vec::new()).await;
     let before_layers = session_flags_layer_count(&config);
+    config.model = Some("gpt-5.4".to_string());
+    config.model_reasoning_effort = Some(ReasoningEffort::High);
 
     apply_role_to_config(&mut config, Some("explorer"))
         .await
         .expect("explorer role should apply");
 
-    assert_eq!(config.model.as_deref(), Some("gpt-5.1-codex-mini"));
-    assert_eq!(config.model_reasoning_effort, Some(ReasoningEffort::Medium));
+    assert_eq!(config.model.as_deref(), Some("gpt-5.4"));
+    assert_eq!(config.model_reasoning_effort, Some(ReasoningEffort::High));
     assert_eq!(session_flags_layer_count(&config), before_layers + 1);
+}
+
+#[tokio::test]
+async fn apply_explorer_role_preserves_current_provider() {
+    let home = TempDir::new().expect("create temp dir");
+    tokio::fs::write(
+        home.path().join(CONFIG_TOML_FILE),
+        r#"
+[model_providers.base-provider]
+name = "Base Provider"
+base_url = "https://base.example.com/v1"
+env_key = "BASE_PROVIDER_API_KEY"
+wire_api = "responses"
+
+[profiles.base-profile]
+model_provider = "base-provider"
+"#,
+    )
+    .await
+    .expect("write config.toml");
+    let mut config = ConfigBuilder::default()
+        .codex_home(home.path().to_path_buf())
+        .harness_overrides(ConfigOverrides {
+            config_profile: Some("base-profile".to_string()),
+            ..Default::default()
+        })
+        .fallback_cwd(Some(home.path().to_path_buf()))
+        .build()
+        .await
+        .expect("load config");
+
+    apply_role_to_config(&mut config, Some("explorer"))
+        .await
+        .expect("explorer role should apply");
+
+    assert_eq!(config.model_provider_id, "base-provider");
 }
 
 #[tokio::test]
@@ -880,6 +917,18 @@ fn built_in_wait_roles_are_exposed_and_have_embedded_configs() {
     assert!(built_in::config_file_contents(Path::new("explorer.toml")).is_some());
     assert!(built_in::config_file_contents(Path::new("awaiter.toml")).is_some());
     assert!(built_in::config_file_contents(Path::new("terminal-babysitter.toml")).is_some());
+}
+
+#[test]
+fn spawn_tool_spec_does_not_mark_built_in_explorer_with_locked_settings() {
+    let spec = spawn_tool_spec::build(&BTreeMap::new());
+
+    assert!(spec.contains("Explorers are fast and authoritative."));
+    assert!(!spec.contains("This role's reasoning effort is set to `medium`"));
+}
+
+#[test]
+fn built_in_config_file_contents_resolves_explorer_only() {
     assert_eq!(
         built_in::config_file_contents(Path::new("missing.toml")),
         None
