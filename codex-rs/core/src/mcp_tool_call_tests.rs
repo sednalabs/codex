@@ -961,6 +961,22 @@ fn accepted_elicitation_response_uses_always_persist_meta() {
 }
 
 #[test]
+fn accepted_elicitation_response_uses_array_persist_meta() {
+    let response = parse_mcp_tool_approval_elicitation_response(
+        Some(ElicitationResponse {
+            action: ElicitationAction::Accept,
+            content: None,
+            meta: Some(serde_json::json!({
+                MCP_TOOL_APPROVAL_PERSIST_KEY: [MCP_TOOL_APPROVAL_PERSIST_ALWAYS],
+            })),
+        }),
+        "approval",
+    );
+
+    assert_eq!(response, McpToolApprovalDecision::AcceptAndRemember);
+}
+
+#[test]
 fn accepted_elicitation_response_uses_session_persist_meta() {
     let response = parse_mcp_tool_approval_elicitation_response(
         Some(ElicitationResponse {

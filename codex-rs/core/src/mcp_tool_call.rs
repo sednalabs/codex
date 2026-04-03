@@ -1297,7 +1297,7 @@ fn parse_mcp_tool_approval_elicitation_response(
                 .as_ref()
                 .and_then(serde_json::Value::as_object)
                 .and_then(|meta| meta.get(MCP_TOOL_APPROVAL_PERSIST_KEY))
-                .and_then(serde_json::Value::as_str)
+                .and_then(parse_mcp_tool_approval_persist_mode)
             {
                 Some(MCP_TOOL_APPROVAL_PERSIST_SESSION) => {
                     return McpToolApprovalDecision::AcceptForSession;
@@ -1318,6 +1318,14 @@ fn parse_mcp_tool_approval_elicitation_response(
         }
         ElicitationAction::Decline => McpToolApprovalDecision::Decline,
         ElicitationAction::Cancel => McpToolApprovalDecision::Cancel,
+    }
+}
+
+fn parse_mcp_tool_approval_persist_mode<'a>(persist: &'a serde_json::Value) -> Option<&'a str> {
+    match persist {
+        serde_json::Value::String(value) => Some(value.as_str()),
+        serde_json::Value::Array(values) => values.first().and_then(serde_json::Value::as_str),
+        _ => None,
     }
 }
 
