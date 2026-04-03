@@ -267,6 +267,29 @@ async fn spawn_wait_and_list_agents_tool_descriptions_have_guidance_updates() ->
         "expected spawn guidance to mention list_agents: {spawn_description:?}"
     );
     assert!(
+        spawn_description.contains("smallest capable lane visible in the loaded model catalog"),
+        "expected spawn guidance to mention loaded-catalog-aware model selection: {spawn_description:?}"
+    );
+    assert!(
+        spawn_description
+            .contains("When the loaded catalog includes it, use `gpt-5.1-codex-mini` first"),
+        "expected spawn guidance to gate the mini default on catalog availability: {spawn_description:?}"
+    );
+    assert!(
+        spawn_description
+            .contains("When the loaded catalog includes it, prefer `gpt-5.3-codex-spark`"),
+        "expected spawn guidance to mention the Spark scouting tier: {spawn_description:?}"
+    );
+    assert!(
+        spawn_description
+            .contains("When the loaded catalog includes it, escalate to `gpt-5.4-mini`"),
+        "expected spawn guidance to mention the 5.4-mini escalation tier: {spawn_description:?}"
+    );
+    assert!(
+        spawn_description.contains("pick the closest visible native Codex model"),
+        "expected spawn guidance to mention the unavailable-model fallback: {spawn_description:?}"
+    );
+    assert!(
         wait_description.contains("blocking coordination while awaiting sub-agent completion"),
         "expected wait_agent guidance for blocking waits: {wait_description:?}"
     );
