@@ -15,3 +15,5 @@ expression: snapshot
     Bob [worker]: Error - tool timeout
 
 • Closed Robie [explorer]
+  └ Resume subagent: 00000000-0000-0000-0000-000000000002
+    Return to parent: 00000000-0000-0000-0000-000000000001
