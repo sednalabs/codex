@@ -197,7 +197,8 @@ jobs:
     if: ${{ needs.metadata.outputs.run_smoke_gate == 'true' }}
     strategy:
       fail-fast: true
-      max-parallel: 4
+      # Keep validation-lab from monopolizing the org runner pool.
+      max-parallel: 2
       matrix: ${{ fromJson(needs.metadata.outputs.smoke_matrix) }}
     uses: ./.github/workflows/_sedna-linux-rust.yml
     with:
