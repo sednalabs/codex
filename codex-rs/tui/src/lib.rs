@@ -1450,6 +1450,14 @@ pub(crate) enum ResolveCwdOutcome {
     Exit,
 }
 
+fn resolve_cwd_without_prompt(current_cwd: &Path, history_cwd: &Path) -> PathBuf {
+    if cwds_differ(current_cwd, history_cwd) {
+        current_cwd.to_path_buf()
+    } else {
+        history_cwd.to_path_buf()
+    }
+}
+
 pub(crate) async fn resolve_cwd_for_resume_or_fork(
     tui: &mut Tui,
     config: &Config,
@@ -1462,18 +1470,24 @@ pub(crate) async fn resolve_cwd_for_resume_or_fork(
     let Some(history_cwd) = read_session_cwd(config, thread_id, path).await else {
         return Ok(ResolveCwdOutcome::Continue(None));
     };
-    if allow_prompt && cwds_differ(current_cwd, &history_cwd) {
-        let selection_outcome =
-            cwd_prompt::run_cwd_selection_prompt(tui, action, current_cwd, &history_cwd).await?;
-        return Ok(match selection_outcome {
-            CwdPromptOutcome::Selection(CwdSelection::Current) => {
-                ResolveCwdOutcome::Continue(Some(current_cwd.to_path_buf()))
-            }
-            CwdPromptOutcome::Selection(CwdSelection::Session) => {
-                ResolveCwdOutcome::Continue(Some(history_cwd))
-            }
-            CwdPromptOutcome::Exit => ResolveCwdOutcome::Exit,
-        });
+    if cwds_differ(current_cwd, &history_cwd) {
+        if allow_prompt {
+            let selection_outcome =
+                cwd_prompt::run_cwd_selection_prompt(tui, action, current_cwd, &history_cwd)
+                    .await?;
+            return Ok(match selection_outcome {
+                CwdPromptOutcome::Selection(CwdSelection::Current) => {
+                    ResolveCwdOutcome::Continue(Some(current_cwd.to_path_buf()))
+                }
+                CwdPromptOutcome::Selection(CwdSelection::Session) => {
+                    ResolveCwdOutcome::Continue(Some(history_cwd))
+                }
+                CwdPromptOutcome::Exit => ResolveCwdOutcome::Exit,
+            });
+        }
+        return Ok(ResolveCwdOutcome::Continue(Some(
+            resolve_cwd_without_prompt(current_cwd, &history_cwd),
+        )));
     }
     Ok(ResolveCwdOutcome::Continue(Some(history_cwd)))
 }
@@ -2272,5 +2286,24 @@ trust_level = "untrusted"
             .expect("expected cwd");
         assert_eq!(cwd, sqlite_cwd);
         Ok(())
+    }
+
+    #[test]
+    fn resolve_cwd_without_prompt_uses_current_when_cwds_differ() {
+        let current = PathBuf::from("/tmp/current");
+        let history = PathBuf::from("/tmp/history");
+
+        let resolved = resolve_cwd_without_prompt(&current, &history);
+
+        assert_eq!(resolved, current);
+    }
+
+    #[test]
+    fn resolve_cwd_without_prompt_keeps_session_when_cwds_match() {
+        let history = PathBuf::from("/tmp/project");
+
+        let resolved = resolve_cwd_without_prompt(&history, &history);
+
+        assert_eq!(resolved, history);
     }
 }
