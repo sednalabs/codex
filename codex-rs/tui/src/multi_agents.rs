@@ -305,7 +305,7 @@ pub(crate) fn waiting_end(ev: CollabWaitingEndEvent) -> PlainHistoryCell {
 pub(crate) fn close_end(ev: CollabCloseEndEvent) -> PlainHistoryCell {
     let CollabCloseEndEvent {
         call_id: _,
-        sender_thread_id: _,
+        sender_thread_id,
         receiver_thread_id,
         receiver_agent_nickname,
         receiver_agent_role,
@@ -322,7 +322,10 @@ pub(crate) fn close_end(ev: CollabCloseEndEvent) -> PlainHistoryCell {
             },
             /*spawn_request*/ None,
         ),
-        Vec::new(),
+        vec![
+            resume_target_line("Resume subagent: ", receiver_thread_id),
+            resume_target_line("Return to parent: ", sender_thread_id),
+        ],
     )
 }
 
@@ -484,6 +487,13 @@ fn prompt_line(prompt: &str) -> Option<Line<'static>> {
             COLLAB_PROMPT_PREVIEW_GRAPHEMES,
         ))))
     }
+}
+
+fn resume_target_line(label: &'static str, thread_id: ThreadId) -> Line<'static> {
+    Line::from(vec![
+        Span::from(label).dim(),
+        Span::from(thread_id.to_string()).cyan(),
+    ])
 }
 
 fn format_thread_id_list(ids: &[ThreadId]) -> String {
@@ -783,6 +793,33 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n\n");
         assert_snapshot!("collab_wait_timeout", snapshot);
+    }
+
+    #[test]
+    fn collab_close_end_includes_resume_targets() {
+        let sender_thread_id = ThreadId::from_string("00000000-0000-0000-0000-000000000001")
+            .expect("valid sender thread id");
+        let receiver_thread_id = ThreadId::from_string("00000000-0000-0000-0000-000000000002")
+            .expect("valid receiver thread id");
+
+        let close = close_end(CollabCloseEndEvent {
+            call_id: "call-close".to_string(),
+            sender_thread_id,
+            receiver_thread_id,
+            receiver_agent_nickname: Some("Robie".to_string()),
+            receiver_agent_role: Some("explorer".to_string()),
+            status: AgentStatus::Completed(Some("39916800".to_string())),
+        });
+        let rendered = cell_to_text(&close);
+
+        assert!(
+            rendered.contains("Resume subagent: 00000000-0000-0000-0000-000000000002"),
+            "expected rendered close message to include subagent resume target, got: {rendered}"
+        );
+        assert!(
+            rendered.contains("Return to parent: 00000000-0000-0000-0000-000000000001"),
+            "expected rendered close message to include parent resume target, got: {rendered}"
+        );
     }
 
     #[test]
