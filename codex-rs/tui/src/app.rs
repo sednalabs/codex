@@ -4781,6 +4781,19 @@ impl App {
                                     .send(AppEvent::UpdateAskForApprovalPolicy(preset.approval));
                                 self.app_event_tx
                                     .send(AppEvent::UpdateSandboxPolicy(preset.sandbox.clone()));
+                                self.chat_widget.set_approval_policy(preset.approval);
+                                if let Err(err) =
+                                    self.chat_widget.set_sandbox_policy(preset.sandbox.clone())
+                                {
+                                    tracing::warn!(
+                                        %err,
+                                        "failed to set sandbox policy on chat config before queued replay"
+                                    );
+                                    self.chat_widget.add_error_message(format!(
+                                        "Failed to set sandbox policy before queued replay: {err}"
+                                    ));
+                                    return Ok(AppRunControl::Continue);
+                                }
                                 let _ = mode;
                                 self.chat_widget.add_plain_history_lines(vec![
                                     Line::from(vec!["• ".dim(), "Sandbox ready".into()]),
@@ -7648,6 +7661,8 @@ mod tests {
     #[tokio::test]
     async fn windows_sandbox_transition_resume_submits_queued_follow_up_when_idle() {
         let (mut app, _app_event_rx, mut op_rx) = make_test_app_with_channels().await;
+        let expected_approval = AskForApproval::OnFailure;
+        let expected_sandbox = SandboxPolicy::DangerFullAccess;
 
         app.chat_widget.set_task_running_for_test(/*running*/ true);
         app.chat_widget.set_composer_text(
@@ -7657,18 +7672,31 @@ mod tests {
         );
         app.chat_widget
             .handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        app.chat_widget.set_approval_policy(expected_approval);
+        app.chat_widget
+            .set_sandbox_policy(expected_sandbox.clone())
+            .expect("set sandbox policy");
         app.chat_widget.set_task_running_for_test(/*running*/ false);
 
         app.maybe_resume_queued_follow_up_after_windows_sandbox_transition();
 
         match next_user_turn_op(&mut op_rx) {
-            Op::UserTurn { items, .. } => assert_eq!(
+            Op::UserTurn {
                 items,
-                vec![UserInput::Text {
-                    text: "queued after sandbox transition".to_string(),
-                    text_elements: Vec::new(),
-                }]
-            ),
+                approval_policy,
+                sandbox_policy,
+                ..
+            } => {
+                assert_eq!(
+                    items,
+                    vec![UserInput::Text {
+                        text: "queued after sandbox transition".to_string(),
+                        text_elements: Vec::new(),
+                    }]
+                );
+                assert_eq!(approval_policy, expected_approval);
+                assert_eq!(sandbox_policy, expected_sandbox);
+            }
             other => panic!("expected queued follow-up submission, got {other:?}"),
         }
     }
