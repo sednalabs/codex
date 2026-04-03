@@ -5819,10 +5819,6 @@ impl App {
         (!model.starts_with("codex-auto-")).then(|| Self::reasoning_label(reasoning_effort))
     }
 
-    pub(crate) fn token_usage(&self) -> codex_protocol::protocol::TokenUsage {
-        self.chat_widget.token_usage()
-    }
-
     fn on_update_reasoning_effort(&mut self, effort: Option<ReasoningEffortConfig>) {
         // TODO(aibrahim): Remove this and don't use config as a state object.
         // Instead, explicitly pass the stored collaboration mode's effort into new sessions.
@@ -11103,14 +11099,18 @@ guardian_approval = true
         app.handle_thread_event_now(ThreadBufferedEvent::Notification(token_usage_notification(
             main_thread_id,
             "turn-main",
-            None,
+            /*model_context_window*/ None,
         )));
 
         let main_channel =
             ThreadEventChannel::new_with_session(/*capacity*/ 8, main_session, Vec::new());
         {
             let mut store = main_channel.store.lock().await;
-            store.push_notification(token_usage_notification(main_thread_id, "turn-main", None));
+            store.push_notification(token_usage_notification(
+                main_thread_id,
+                "turn-main",
+                /*model_context_window*/ None,
+            ));
         }
         app.thread_event_channels
             .insert(main_thread_id, main_channel);
@@ -11122,7 +11122,7 @@ guardian_approval = true
             store.push_notification(token_usage_notification(
                 subagent_thread_id,
                 "turn-subagent",
-                None,
+                /*model_context_window*/ None,
             ));
         }
         app.thread_event_channels
