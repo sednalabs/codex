@@ -1,6 +1,6 @@
 # AGENTS.md
 
-For information about AGENTS.md, see [this documentation](https://developers.openai.com/codex/guides/agents-md).
+For information about AGENTS.md, see the [AGENTS.md guide](https://developers.openai.com/codex/guides/agents-md).
 
 ## Hierarchical agents message
 
@@ -8,10 +8,19 @@ When the `child_agents_md` feature flag is enabled (via `[features]` in `config.
 
 ## Local override precedence
 
-If an `AGENTS.override.md` file exists, it is loaded instead of `AGENTS.md` at that path level. The search order is:
+Codex discovers project docs from the project root down to the current working
+directory and concatenates one file per directory in that order.
+
+At each directory level, Codex prefers:
 
 1. `AGENTS.override.md`
 2. `AGENTS.md`
-3. Continue walking upward until the project root marker.
 
-The override only affects project-doc instructions. It does not control realtime startup context, which is configured separately (see `experimental_realtime_ws_startup_context` in `docs/config.md`).
+If `AGENTS.override.md` exists, it replaces `AGENTS.md` for that directory
+level only. Codex then continues the hierarchical search and concatenation for
+parent/child directories until it reaches the project root marker. If no project
+root marker is found, only the current working directory is considered.
+
+This override only affects project-doc instructions. It does not control
+realtime startup context, which is configured separately in
+[`experimental_realtime_ws_startup_context`](config.md#realtime-startup-context).

@@ -99,5 +99,6 @@ startup context. When unset, Codex synthesizes a context from recent thread
 history, work, and workspace map; it explicitly notes that AGENTS files,
 project-doc blends, and memory summaries are **not** included in that payload.
 
-This setting is independent of `AGENTS.md` / `AGENTS.override.md` precedence,
+This setting is independent of
+[`AGENTS.md` / `AGENTS.override.md` precedence](agents_md.md#local-override-precedence),
 which controls project instructions rather than realtime startup context.
