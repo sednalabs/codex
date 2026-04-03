@@ -175,6 +175,9 @@ User-visible behavior:
 - `Alt+Up` recalls queued items in strict reverse-chronological order across both entry types.
 - `/status` remains immediate (not queued).
 - Unavailable non-inline slash commands replay after the current task completes instead of being blocked.
+- Replay drains queued slash commands in order until one changes state that should settle first,
+  so non-task commands (such as `/plan` replayed after `/compact`) do not stall queued message
+  follow-ups or run ahead of async sandbox/setup transitions.
 
 ### TUI: Weekly usage pacing signal + stale handling
 

@@ -4982,6 +4982,8 @@ impl ChatWidget {
     }
 
     pub(crate) fn handle_key_event(&mut self, key_event: KeyEvent) {
+        let had_modal_or_popup_active = !self.no_modal_or_popup_active();
+
         match key_event {
             KeyEvent {
                 code: KeyCode::Char(c),
@@ -5150,6 +5152,14 @@ impl ChatWidget {
                 }
                 InputResult::None => {}
             },
+        }
+
+        if had_modal_or_popup_active
+            && matches!(key_event.code, KeyCode::Esc)
+            && !self.bottom_pane.is_task_running()
+            && self.no_modal_or_popup_active()
+        {
+            self.maybe_send_next_queued_input();
         }
     }
 
@@ -7578,44 +7588,93 @@ impl ChatWidget {
             .map(QueuedSlashCommand::into_user_message_for_edit)
     }
 
-    // If idle and there are queued inputs, submit exactly one to start the next turn.
+    // If idle and there are queued inputs, drain queued slash commands until one
+    // changes state that should settle before later follow-ups (for example, by
+    // opening a popup, kicking off async setup, or starting a task), then
+    // submit at most one queued message.
     pub(crate) fn maybe_send_next_queued_input(&mut self) {
-        if self.suppress_queue_autosend {
+        if self.suppress_queue_autosend || !self.no_modal_or_popup_active() {
             return;
         }
-        if self.bottom_pane.is_task_running() {
-            return;
-        }
-        if let Some(queued_input) = self.pop_next_queued_follow_up() {
+        while !self.bottom_pane.is_task_running() {
+            let Some(queued_input) = self.pop_next_queued_follow_up() else {
+                break;
+            };
             match queued_input {
                 QueuedFollowUpInput::UserMessage(user_message) => {
+                    // Submit at most one queued user message per pass.
                     self.submit_user_message(user_message);
-                    self.refresh_pending_input_preview();
-                    return;
+                    break;
                 }
-                QueuedFollowUpInput::SlashCommand(queued_command) => match queued_command {
-                    QueuedSlashCommand::Command(cmd) => self.dispatch_command(cmd),
-                    QueuedSlashCommand::CommandWithArgs {
-                        cmd,
-                        args,
-                        text_elements,
-                        local_images,
-                        remote_image_urls,
-                        mention_bindings,
-                    } => self.dispatch_prepared_inline_command(
-                        cmd,
-                        args,
-                        text_elements,
-                        local_images,
-                        remote_image_urls,
-                        mention_bindings,
-                        /*drain_submission_state*/ false,
-                    ),
-                },
+                QueuedFollowUpInput::SlashCommand(queued_command) => {
+                    // Some slash commands submit a follow-up turn asynchronously
+                    // (for example `/init` and `/plan <args>`), so stop draining
+                    // once one of those has been replayed.
+                    if self.replay_queued_slash_command(queued_command) {
+                        break;
+                    }
+                }
             }
         }
         // Update the list to reflect the remaining queued follow-up actions (if any).
         self.refresh_pending_input_preview();
+    }
+
+    /// Replay a queued slash command and return whether replay should stop for
+    /// this pass because the command changed state that should settle before
+    /// later follow-ups.
+    fn replay_queued_slash_command(&mut self, queued_command: QueuedSlashCommand) -> bool {
+        match queued_command {
+            QueuedSlashCommand::Command(cmd) => {
+                self.dispatch_command(cmd);
+                if !self.no_modal_or_popup_active() {
+                    return true;
+                }
+                if self.bottom_pane.is_task_running() {
+                    return true;
+                }
+                matches!(
+                    cmd,
+                    SlashCommand::Init
+                        | SlashCommand::Compact
+                        | SlashCommand::New
+                        | SlashCommand::Clear
+                        | SlashCommand::Resume
+                        | SlashCommand::Fork
+                        | SlashCommand::ElevateSandbox
+                        | SlashCommand::Logout
+                )
+            }
+            QueuedSlashCommand::CommandWithArgs {
+                cmd,
+                args,
+                text_elements,
+                local_images,
+                remote_image_urls,
+                mention_bindings,
+            } => {
+                let has_inline_args = !args.trim().is_empty();
+                self.dispatch_prepared_inline_command(
+                    cmd,
+                    args,
+                    text_elements,
+                    local_images,
+                    remote_image_urls,
+                    mention_bindings,
+                    /*drain_submission_state*/ false,
+                );
+                if !self.no_modal_or_popup_active() {
+                    return true;
+                }
+                if self.bottom_pane.is_task_running() {
+                    return true;
+                }
+                (matches!(cmd, SlashCommand::Plan)
+                    && has_inline_args
+                    && self.active_mode_kind() == ModeKind::Plan)
+                    || (matches!(cmd, SlashCommand::SandboxReadRoot) && has_inline_args)
+            }
+        }
     }
 
     /// Rebuild and update the bottom-pane pending-input preview.
@@ -10760,6 +10819,11 @@ impl ChatWidget {
     #[cfg(test)]
     pub(crate) fn is_task_running_for_test(&self) -> bool {
         self.bottom_pane.is_task_running()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_task_running_for_test(&mut self, running: bool) {
+        self.bottom_pane.set_task_running(/*running*/ running);
     }
 
     pub(crate) fn submit_user_message_with_mode(

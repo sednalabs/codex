@@ -6173,6 +6173,41 @@ mod tests {
     }
 
     #[test]
+    fn model_slash_command_dispatches_while_task_running() {
+        use crossterm::event::KeyCode;
+        use crossterm::event::KeyEvent;
+        use crossterm::event::KeyModifiers;
+
+        let (tx, mut rx) = unbounded_channel::<AppEvent>();
+        let sender = AppEventSender::new(tx);
+        let mut composer = ChatComposer::new(
+            /*has_input_focus*/ true,
+            sender,
+            /*enhanced_keys_supported*/ false,
+            "Ask Codex to do anything".to_string(),
+            /*disable_paste_burst*/ false,
+        );
+        composer.set_task_running(/*running*/ true);
+        composer.textarea.set_text_clearing_elements("/model");
+
+        let (result, _needs_redraw) =
+            composer.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+        match result {
+            InputResult::Command(cmd) => assert_eq!(cmd.command(), "model"),
+            other => panic!("expected /model dispatch while task running, got {other:?}"),
+        }
+        assert!(composer.textarea.is_empty(), "composer should be cleared");
+        assert!(
+            matches!(
+                rx.try_recv(),
+                Err(tokio::sync::mpsc::error::TryRecvError::Empty)
+            ),
+            "expected no disabled-command history event for /model"
+        );
+    }
+
+    #[test]
     fn slash_tab_completion_moves_cursor_to_end() {
         use crossterm::event::KeyCode;
         use crossterm::event::KeyEvent;
