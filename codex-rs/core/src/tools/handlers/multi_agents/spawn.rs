@@ -73,7 +73,6 @@ impl ToolHandler for Handler {
             args.reasoning_effort,
         )
         .await?;
-        let pre_role_reasoning_effort = config.model_reasoning_effort;
         let spawn_model_selection_carry = apply_role_to_spawn_config(&mut config, role_name)
             .await
             .map_err(FunctionCallError::RespondToModel)?;
@@ -85,30 +84,13 @@ impl ToolHandler for Handler {
                 .get_model_info(&model, &config)
                 .await;
 
-            match config.model_reasoning_effort {
-                Some(reasoning_effort) => {
-                    if !model_info
-                        .supported_reasoning_levels
-                        .iter()
-                        .any(|preset| preset.effort == reasoning_effort)
-                    {
-                        let role_changed_reasoning_effort =
-                            config.model_reasoning_effort != pre_role_reasoning_effort;
-                        if args.reasoning_effort.is_some() || role_changed_reasoning_effort {
-                            validate_spawn_agent_reasoning_effort(
-                                &model,
-                                &model_info.supported_reasoning_levels,
-                                reasoning_effort,
-                            )?;
-                        }
-
-                        config.model_reasoning_effort = model_info.default_reasoning_level;
-                    }
-                }
-                None => {
-                    config.model_reasoning_effort = model_info.default_reasoning_level;
-                }
-            }
+            normalize_spawn_agent_reasoning_effort(
+                &mut config,
+                &model,
+                &model_info.supported_reasoning_levels,
+                model_info.default_reasoning_level,
+                args.reasoning_effort,
+            )?;
         }
         apply_spawn_agent_runtime_overrides(&mut config, turn.as_ref())?;
         apply_spawn_agent_overrides(&mut config, child_depth);
