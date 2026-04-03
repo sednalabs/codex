@@ -87,6 +87,42 @@ async fn apply_explorer_role_sets_model_and_adds_session_flags_layer() {
 }
 
 #[tokio::test]
+async fn apply_explorer_role_switches_to_openai_provider() {
+    let home = TempDir::new().expect("create temp dir");
+    tokio::fs::write(
+        home.path().join(CONFIG_TOML_FILE),
+        r#"
+[model_providers.base-provider]
+name = "Base Provider"
+base_url = "https://base.example.com/v1"
+env_key = "BASE_PROVIDER_API_KEY"
+wire_api = "responses"
+
+[profiles.base-profile]
+model_provider = "base-provider"
+"#,
+    )
+    .await
+    .expect("write config.toml");
+    let mut config = ConfigBuilder::default()
+        .codex_home(home.path().to_path_buf())
+        .harness_overrides(ConfigOverrides {
+            config_profile: Some("base-profile".to_string()),
+            ..Default::default()
+        })
+        .fallback_cwd(Some(home.path().to_path_buf()))
+        .build()
+        .await
+        .expect("load config");
+
+    apply_role_to_config(&mut config, Some("explorer"))
+        .await
+        .expect("explorer role should apply");
+
+    assert_eq!(config.model_provider_id, "openai");
+}
+
+#[tokio::test]
 async fn apply_role_returns_unavailable_for_missing_user_role_file() {
     let (_home, mut config) = test_config_with_cli_overrides(Vec::new()).await;
     config.agent_roles.insert(
