@@ -3481,7 +3481,7 @@ impl App {
     }
 
     fn maybe_resume_queued_follow_up_after_windows_sandbox_transition(&mut self) {
-        if self.chat_widget.has_active_view() {
+        if !self.chat_widget.no_modal_or_popup_active() {
             return;
         }
         self.chat_widget.maybe_send_next_queued_input();
