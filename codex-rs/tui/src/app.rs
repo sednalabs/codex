@@ -7649,9 +7649,7 @@ mod tests {
     async fn windows_sandbox_transition_resume_submits_queued_follow_up_when_idle() {
         let (mut app, _app_event_rx, mut op_rx) = make_test_app_with_channels().await;
 
-        app.chat_widget
-            .bottom_pane
-            .set_task_running(/*running*/ true);
+        app.chat_widget.set_task_running_for_test(/*running*/ true);
         app.chat_widget.set_composer_text(
             "queued after sandbox transition".to_string(),
             Vec::new(),
@@ -7659,9 +7657,7 @@ mod tests {
         );
         app.chat_widget
             .handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
-        app.chat_widget
-            .bottom_pane
-            .set_task_running(/*running*/ false);
+        app.chat_widget.set_task_running_for_test(/*running*/ false);
 
         app.maybe_resume_queued_follow_up_after_windows_sandbox_transition();
 
@@ -7681,9 +7677,7 @@ mod tests {
     async fn windows_sandbox_transition_resume_waits_for_active_popup() {
         let (mut app, _app_event_rx, mut op_rx) = make_test_app_with_channels().await;
 
-        app.chat_widget
-            .bottom_pane
-            .set_task_running(/*running*/ true);
+        app.chat_widget.set_task_running_for_test(/*running*/ true);
         app.chat_widget.set_composer_text(
             "queued after sandbox transition".to_string(),
             Vec::new(),
@@ -7691,9 +7685,7 @@ mod tests {
         );
         app.chat_widget
             .handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
-        app.chat_widget
-            .bottom_pane
-            .set_task_running(/*running*/ false);
+        app.chat_widget.set_task_running_for_test(/*running*/ false);
         app.chat_widget.open_permissions_popup();
 
         app.maybe_resume_queued_follow_up_after_windows_sandbox_transition();

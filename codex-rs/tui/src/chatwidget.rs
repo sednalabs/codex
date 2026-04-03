@@ -10811,6 +10811,11 @@ impl ChatWidget {
         self.bottom_pane.is_task_running()
     }
 
+    #[cfg(test)]
+    pub(crate) fn set_task_running_for_test(&mut self, running: bool) {
+        self.bottom_pane.set_task_running(/*running*/ running);
+    }
+
     pub(crate) fn submit_user_message_with_mode(
         &mut self,
         text: String,
