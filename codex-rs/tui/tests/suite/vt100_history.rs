@@ -215,7 +215,7 @@ fn android_style_narrow_viewport_keeps_url_content_from_being_clipped() {
     );
     let mut scenario = TestScenario::new(/*width*/ 14, /*height*/ 24, area);
 
-    let prompt = "android-style viewport baseline";
+    let prompt = "baseline row";
     scenario.run_insert(vec![Line::from(prompt)]);
 
     let long_url = format!(
@@ -238,7 +238,7 @@ fn android_style_narrow_viewport_keeps_url_content_from_being_clipped() {
         .unwrap_or_else(|| panic!("expected prompt row in screen rows: {rows:?}"));
     let url_row = rows
         .iter()
-        .position(|row| row.contains("• https://example.test/api"))
+        .position(|row| row.contains("https://ex"))
         .unwrap_or_else(|| panic!("expected URL first row in screen rows: {rows:?}"));
 
     assert!(
