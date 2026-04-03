@@ -1,1 +1,2 @@
-model_reasoning_effort = "medium"
+# Explorer intentionally leaves model selection to the caller/runtime so role
+# selection stays compatible with the loaded model catalog.
