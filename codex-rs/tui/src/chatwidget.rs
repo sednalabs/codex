@@ -7579,7 +7579,9 @@ impl ChatWidget {
     }
 
     // If idle and there are queued inputs, drain queued slash commands until one
-    // starts a task (or queue empties), then submit at most one queued message.
+    // changes state that should settle before later follow-ups (for example, by
+    // opening a popup, kicking off async setup, or starting a task), then
+    // submit at most one queued message.
     pub(crate) fn maybe_send_next_queued_input(&mut self) {
         if self.suppress_queue_autosend {
             return;
@@ -7609,7 +7611,8 @@ impl ChatWidget {
     }
 
     /// Replay a queued slash command and return whether replay should stop for
-    /// this pass because the command submitted (or may have submitted) a turn.
+    /// this pass because the command changed state that should settle before
+    /// later follow-ups.
     fn replay_queued_slash_command(&mut self, queued_command: QueuedSlashCommand) -> bool {
         match queued_command {
             QueuedSlashCommand::Command(cmd) => {
@@ -7628,6 +7631,7 @@ impl ChatWidget {
                         | SlashCommand::Clear
                         | SlashCommand::Resume
                         | SlashCommand::Fork
+                        | SlashCommand::ElevateSandbox
                         | SlashCommand::Logout
                 )
             }

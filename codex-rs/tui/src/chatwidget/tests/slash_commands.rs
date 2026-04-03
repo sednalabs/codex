@@ -269,6 +269,40 @@ async fn queued_sandbox_read_root_command_waits_before_next_message() {
 }
 
 #[tokio::test]
+async fn queued_elevate_sandbox_command_waits_before_next_message() {
+    let (mut chat, _rx, mut op_rx) = make_chatwidget_manual(Some("gpt-5")).await;
+    chat.thread_id = Some(ThreadId::new());
+
+    // Simulate an active turn and queue follow-ups in order: sandbox setup,
+    // then a plain message.
+    chat.bottom_pane.set_task_running(/*running*/ true);
+    chat.queue_slash_command(QueuedSlashCommand::Command(SlashCommand::ElevateSandbox));
+    chat.bottom_pane.set_composer_text(
+        "queued after sandbox setup".to_string(),
+        Vec::new(),
+        Vec::new(),
+    );
+    chat.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+    // Completing the active turn should replay the sandbox setup command and
+    // stop draining so we do not submit the queued message ahead of any async
+    // sandbox-state transition it triggers.
+    chat.handle_codex_event(Event {
+        id: "turn-1".into(),
+        msg: EventMsg::TurnComplete(test_turn_complete_event(
+            "turn-1",
+            /*last_agent_message*/ None::<String>,
+        )),
+    });
+    assert_eq!(chat.queued_user_messages.len(), 1);
+    assert_eq!(
+        chat.queued_user_messages.front().unwrap().text,
+        "queued after sandbox setup"
+    );
+    assert_matches!(op_rx.try_recv(), Err(TryRecvError::Empty));
+}
+
+#[tokio::test]
 async fn ctrl_d_quits_without_prompt() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
 

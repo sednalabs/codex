@@ -117,10 +117,12 @@ While a task is running, queued follow-up entries are shown above the composer i
 preview includes both queued message drafts and queued slash commands. `Alt+Up` recalls queued
 entries for editing from that list in strict reverse-chronological order across both entry types.
 When replaying follow-ups after a task completes, `ChatWidget` drains queued slash commands in
-order until one starts a new task (or the slash-command queue is empty). This keeps non-task
-commands (for example, `/plan` replayed after `/compact`) from blocking later queued follow-ups.
-After slash replay settles in an idle state, the widget auto-submits at most one queued user
-message and leaves any remaining entries visible in the queue preview.
+order until one changes state that should settle first (for example, by opening a popup, kicking
+off sandbox setup, or starting a task), or the slash-command queue is empty. This keeps non-task
+commands (for example, `/plan` replayed after `/compact`) from blocking later queued follow-ups
+without letting queued messages run ahead of async state changes. After slash replay settles in an
+idle state, the widget auto-submits at most one queued user message and leaves any remaining
+entries visible in the queue preview.
 
 The composer also treats the textarea kill buffer as separate editing state from the visible draft.
 After submit or slash-command dispatch clears the textarea, the most recent `Ctrl+K` payload is
