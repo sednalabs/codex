@@ -1013,21 +1013,29 @@ async fn bang_shell_command_submits_run_user_shell_command_in_app_server_tui() {
 }
 
 #[tokio::test]
-async fn queued_slash_command_while_task_running() {
+async fn model_slash_command_opens_picker_while_task_running() {
     // Build a chat widget and simulate an active task
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
     chat.bottom_pane.set_task_running(/*running*/ true);
 
-    // Dispatch a command while a task runs; it should be queued.
+    // Dispatching /model while a task runs should open the picker immediately
+    // so the user can choose the exact model for queued follow-ups.
     chat.dispatch_command(SlashCommand::Model);
 
-    // Drain history and assert queued command contract.
+    // No queued-command history entry should be emitted for /model.
     let cells = drain_insert_history(&mut rx);
-    assert_eq!(cells.len(), 1, "expected one queued command message");
-    let blob = lines_to_single_string(cells.last().unwrap());
     assert!(
-        blob.contains("Queued '/model'. It will run after the current task completes."),
-        "expected queued slash command message, got {blob:?}"
+        cells.is_empty(),
+        "expected /model to open picker instead of queueing a command message"
+    );
+
+    let area = Rect::new(0, 0, 80, chat.desired_height(/*width*/ 80));
+    let mut buf = ratatui::buffer::Buffer::empty(area);
+    chat.render(area, &mut buf);
+    let blob = format!("{buf:?}");
+    assert!(
+        blob.contains("Select Model"),
+        "expected model picker popup while task running, got {blob:?}"
     );
 }
 
