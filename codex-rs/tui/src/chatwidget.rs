@@ -947,7 +947,7 @@ pub(crate) struct ChatWidget {
     pending_guardian_review_status: PendingGuardianReviewStatus,
     // Semantic status used for terminal-title status rendering.
     terminal_title_status_kind: TerminalTitleStatusKind,
-    // True while a user-triggered context compaction turn is in flight.
+    // True while a context compaction turn is in flight.
     compaction_turn_active: bool,
     // Previous status header to restore after a transient stream retry.
     retry_status_header: Option<String>,
@@ -6247,9 +6247,7 @@ impl ChatWidget {
     ) {
         let from_replay = render_source.is_replay();
         let replay_kind = render_source.replay_kind();
-        if !matches!(&item, ThreadItem::ContextCompaction { .. }) {
-            self.reset_compaction_turn_status_if_needed();
-        }
+        self.reset_compaction_turn_status_if_needed();
         match item {
             ThreadItem::UserMessage { id, content } => {
                 let user_message = codex_protocol::items::UserMessageItem {
@@ -6928,6 +6926,9 @@ impl ChatWidget {
         notification: ItemStartedNotification,
         from_replay: bool,
     ) {
+        if !matches!(&notification.item, ThreadItem::ContextCompaction { .. }) {
+            self.reset_compaction_turn_status_if_needed();
+        }
         match notification.item {
             ThreadItem::CommandExecution {
                 id,
@@ -6998,7 +6999,6 @@ impl ChatWidget {
                 agents_states,
                 timed_out,
             } => {
-                self.reset_compaction_turn_status_if_needed();
                 self.on_collab_agent_tool_call(ThreadItem::CollabAgentToolCall {
                     id,
                     tool,
@@ -7012,9 +7012,7 @@ impl ChatWidget {
                     timed_out,
                 });
             }
-            ThreadItem::DynamicToolCall { .. } => {
-                self.reset_compaction_turn_status_if_needed();
-            }
+            ThreadItem::DynamicToolCall { .. } => {}
             ThreadItem::EnteredReviewMode { review, .. } => {
                 if !from_replay {
                     self.enter_review_mode_with_hint(review, /*from_replay*/ false);

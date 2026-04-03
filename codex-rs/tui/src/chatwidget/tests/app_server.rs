@@ -411,6 +411,34 @@ async fn live_app_server_dynamic_tool_item_start_clears_compaction_status_header
 }
 
 #[tokio::test]
+async fn live_app_server_agent_message_item_start_clears_compaction_status_header() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+
+    chat.on_task_started();
+    chat.compaction_turn_active = true;
+    chat.update_working_status_header();
+
+    assert_eq!(chat.current_status.header, "Compacting context");
+
+    chat.handle_server_notification(
+        ServerNotification::ItemStarted(ItemStartedNotification {
+            thread_id: "thread-1".to_string(),
+            turn_id: "turn-1".to_string(),
+            item: AppServerThreadItem::AgentMessage {
+                id: "msg-1".to_string(),
+                text: String::new(),
+                phase: Some(MessagePhase::FinalAnswer),
+                memory_citation: None,
+            },
+        }),
+        /*replay_kind*/ None,
+    );
+
+    assert_eq!(chat.compaction_turn_active, false);
+    assert_ne!(chat.current_status.header, "Compacting context");
+}
+
+#[tokio::test]
 async fn live_app_server_collab_spawn_completed_renders_requested_model_and_effort() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
     let sender_thread_id =
