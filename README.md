@@ -10,6 +10,12 @@ If you want Codex in your code editor (VS Code, Cursor, Windsurf), <a href="http
 
 ---
 
+## Codex Sedna identity
+
+This repository publishes the Codex Sedna fork maintained by SednaLabs, not the upstream mirror. We keep the openai/codex sources in sync, but Sedna controls the release cadence, naming (e.g., `v0.119.0-alpha.2-sedna.1`), and CI described in `docs/sedna-release.md` and `docs/github-ci-offload.md`. The sections under `docs/downstream.md` explain how we track `upstream/main`, protect the downstream branch, and manage fork-only additions. Expect official Sedna binaries and release notes to live on the `SednaLabs/codex` GitHub Releases page rather than the upstream repo, and use those artifacts or the published `npm`/Homebrew packages when you want the Sedna experience.
+
+---
+
 ## Quickstart
 
 ### Installing and running Codex CLI
