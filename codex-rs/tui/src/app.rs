@@ -211,6 +211,18 @@ fn command_execution_decision_to_review_decision(
     }
 }
 
+fn token_usage_from_breakdown(
+    usage: &codex_app_server_protocol::TokenUsageBreakdown,
+) -> TokenUsage {
+    TokenUsage {
+        input_tokens: usage.input_tokens,
+        cached_input_tokens: usage.cached_input_tokens,
+        output_tokens: usage.output_tokens,
+        reasoning_output_tokens: usage.reasoning_output_tokens,
+        total_tokens: usage.total_tokens,
+    }
+}
+
 /// Extracts `receiver_thread_ids` from collab agent tool-call notifications.
 ///
 /// Only `ItemStarted` and `ItemCompleted` notifications with a `CollabAgentToolCall` item carry
@@ -599,13 +611,7 @@ impl ThreadEventStore {
                 self.active_turn_id = None;
             }
             ServerNotification::ThreadTokenUsageUpdated(notification) => {
-                self.token_usage = TokenUsage {
-                    input_tokens: notification.token_usage.total.input_tokens,
-                    cached_input_tokens: notification.token_usage.total.cached_input_tokens,
-                    output_tokens: notification.token_usage.total.output_tokens,
-                    reasoning_output_tokens: notification.token_usage.total.reasoning_output_tokens,
-                    total_tokens: notification.token_usage.total.total_tokens,
-                };
+                self.token_usage = token_usage_from_breakdown(&notification.token_usage.total);
             }
             _ => {}
         }
@@ -1657,6 +1663,9 @@ impl App {
             if Some(*thread_id) == active_thread_id {
                 continue;
             }
+            // Session summaries run on exit/resume/fork paths, so a short sequential read of each
+            // tracked thread's cached token snapshot is acceptable and avoids introducing another
+            // aggregate cache that must stay in sync with thread lifecycle.
             let store = channel.store.lock().await;
             token_usage.add_assign(&store.token_usage);
         }
