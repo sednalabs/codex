@@ -3480,6 +3480,13 @@ impl App {
         )
     }
 
+    fn maybe_resume_queued_follow_up_after_windows_sandbox_transition(&mut self) {
+        if self.chat_widget.has_active_view() {
+            return;
+        }
+        self.chat_widget.maybe_send_next_queued_input();
+    }
+
     fn should_handle_active_thread_events(
         waiting_for_initial_session_configured: bool,
         has_active_thread_receiver: bool,
@@ -4671,19 +4678,22 @@ impl App {
                     let _ = path;
                 }
             }
-            AppEvent::WindowsSandboxGrantReadRootCompleted { path, error } => match error {
-                Some(err) => {
-                    self.chat_widget
-                        .add_to_history(history_cell::new_error_event(format!("Error: {err}")));
+            AppEvent::WindowsSandboxGrantReadRootCompleted { path, error } => {
+                match error {
+                    Some(err) => {
+                        self.chat_widget
+                            .add_to_history(history_cell::new_error_event(format!("Error: {err}")));
+                    }
+                    None => {
+                        self.chat_widget
+                            .add_to_history(history_cell::new_info_event(
+                                format!("Sandbox read access granted for {}", path.display()),
+                                /*hint*/ None,
+                            ));
+                    }
                 }
-                None => {
-                    self.chat_widget
-                        .add_to_history(history_cell::new_info_event(
-                            format!("Sandbox read access granted for {}", path.display()),
-                            /*hint*/ None,
-                        ));
-                }
-            },
+                self.maybe_resume_queued_follow_up_after_windows_sandbox_transition();
+            }
             AppEvent::EnableWindowsSandboxForAgentMode { preset, mode } => {
                 #[cfg(target_os = "windows")]
                 {
@@ -4780,6 +4790,7 @@ impl App {
                                             .dark_gray(),
                                     ]),
                                 ]);
+                                self.maybe_resume_queued_follow_up_after_windows_sandbox_transition();
                             }
                         }
                         Err(err) => {
@@ -4790,6 +4801,7 @@ impl App {
                             self.chat_widget.add_error_message(format!(
                                 "Failed to enable the Windows sandbox feature: {err}"
                             ));
+                            self.maybe_resume_queued_follow_up_after_windows_sandbox_transition();
                         }
                     }
                 }
@@ -5035,6 +5047,7 @@ impl App {
                     // One-shot suppression if the user just confirmed continue.
                     if self.windows_sandbox.skip_world_writable_scan_once {
                         self.windows_sandbox.skip_world_writable_scan_once = false;
+                        self.maybe_resume_queued_follow_up_after_windows_sandbox_transition();
                         return Ok(AppRunControl::Continue);
                     }
 
@@ -7630,6 +7643,84 @@ mod tests {
         assert_eq!(app.agent_navigation.get(&thread_id), None);
         assert!(!app.thread_event_channels.contains_key(&thread_id));
         Ok(())
+    }
+
+    #[tokio::test]
+    async fn windows_sandbox_transition_resume_submits_queued_follow_up_when_idle() {
+        let (mut app, _app_event_rx, mut op_rx) = make_test_app_with_channels().await;
+
+        app.chat_widget
+            .bottom_pane
+            .set_task_running(/*running*/ true);
+        app.chat_widget.set_composer_text(
+            "queued after sandbox transition".to_string(),
+            Vec::new(),
+            Vec::new(),
+        );
+        app.chat_widget
+            .handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        app.chat_widget
+            .bottom_pane
+            .set_task_running(/*running*/ false);
+
+        app.maybe_resume_queued_follow_up_after_windows_sandbox_transition();
+
+        match next_user_turn_op(&mut op_rx) {
+            Op::UserTurn { items, .. } => assert_eq!(
+                items,
+                vec![UserInput::Text {
+                    text: "queued after sandbox transition".to_string(),
+                    text_elements: Vec::new(),
+                }]
+            ),
+            other => panic!("expected queued follow-up submission, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn windows_sandbox_transition_resume_waits_for_active_popup() {
+        let (mut app, _app_event_rx, mut op_rx) = make_test_app_with_channels().await;
+
+        app.chat_widget
+            .bottom_pane
+            .set_task_running(/*running*/ true);
+        app.chat_widget.set_composer_text(
+            "queued after sandbox transition".to_string(),
+            Vec::new(),
+            Vec::new(),
+        );
+        app.chat_widget
+            .handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        app.chat_widget
+            .bottom_pane
+            .set_task_running(/*running*/ false);
+        app.chat_widget.open_permissions_popup();
+
+        app.maybe_resume_queued_follow_up_after_windows_sandbox_transition();
+
+        assert_matches!(
+            op_rx.try_recv(),
+            Err(tokio::sync::mpsc::error::TryRecvError::Empty)
+        );
+        assert_eq!(
+            app.chat_widget.queued_user_message_texts(),
+            vec!["queued after sandbox transition".to_string()]
+        );
+
+        app.chat_widget
+            .handle_key_event(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        app.maybe_resume_queued_follow_up_after_windows_sandbox_transition();
+
+        match next_user_turn_op(&mut op_rx) {
+            Op::UserTurn { items, .. } => assert_eq!(
+                items,
+                vec![UserInput::Text {
+                    text: "queued after sandbox transition".to_string(),
+                    text_elements: Vec::new(),
+                }]
+            ),
+            other => panic!("expected queued follow-up submission, got {other:?}"),
+        }
     }
 
     #[tokio::test]
