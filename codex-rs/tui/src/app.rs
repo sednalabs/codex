@@ -1642,7 +1642,7 @@ impl App {
         } else {
             let thread_id = thread_id.to_string();
             let short_id: String = thread_id.chars().take(8).collect();
-            format!("Agent ({short_id})")
+            format!("Subagent ({short_id})")
         };
         if let Some(entry) = self.agent_navigation.get(&thread_id) {
             let label = format_agent_picker_item_name(
@@ -1650,7 +1650,7 @@ impl App {
                 entry.agent_role.as_deref(),
                 is_primary,
             );
-            if label == "Agent" {
+            if label == "Subagent" {
                 let thread_id = thread_id.to_string();
                 let short_id: String = thread_id.chars().take(8).collect();
                 format!("{label} ({short_id})")

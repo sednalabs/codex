@@ -35,6 +35,7 @@ use std::collections::HashSet;
 const COLLAB_PROMPT_PREVIEW_GRAPHEMES: usize = 160;
 const COLLAB_AGENT_ERROR_PREVIEW_GRAPHEMES: usize = 160;
 const COLLAB_AGENT_RESPONSE_PREVIEW_GRAPHEMES: usize = 240;
+const SUBAGENT_LABEL: &str = "Subagent";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct AgentPickerThreadEntry {
@@ -82,10 +83,12 @@ pub(crate) fn format_agent_picker_item_name(
         .filter(|nickname| !nickname.is_empty());
     let agent_role = agent_role.map(str::trim).filter(|role| !role.is_empty());
     match (agent_nickname, agent_role) {
-        (Some(agent_nickname), Some(agent_role)) => format!("{agent_nickname} [{agent_role}]"),
-        (Some(agent_nickname), None) => agent_nickname.to_string(),
-        (None, Some(agent_role)) => format!("[{agent_role}]"),
-        (None, None) => "Agent".to_string(),
+        (Some(agent_nickname), Some(agent_role)) => {
+            format!("{SUBAGENT_LABEL}: {agent_nickname} [{agent_role}]")
+        }
+        (Some(agent_nickname), None) => format!("{SUBAGENT_LABEL}: {agent_nickname}"),
+        (None, Some(agent_role)) => format!("{SUBAGENT_LABEL} [{agent_role}]"),
+        (None, None) => SUBAGENT_LABEL.to_string(),
     }
 }
 
