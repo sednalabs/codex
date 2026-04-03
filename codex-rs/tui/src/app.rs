@@ -524,6 +524,7 @@ struct ThreadEventStore {
     session: Option<ThreadSessionState>,
     turns: Vec<Turn>,
     buffer: VecDeque<ThreadBufferedEvent>,
+    token_usage: TokenUsage,
     pending_interactive_replay: PendingInteractiveReplayState,
     active_turn_id: Option<String>,
     input_state: Option<ThreadInputState>,
@@ -547,6 +548,7 @@ impl ThreadEventStore {
             session: None,
             turns: Vec::new(),
             buffer: VecDeque::new(),
+            token_usage: TokenUsage::default(),
             pending_interactive_replay: PendingInteractiveReplayState::default(),
             active_turn_id: None,
             input_state: None,
@@ -595,6 +597,15 @@ impl ThreadEventStore {
             }
             ServerNotification::ThreadClosed(_) => {
                 self.active_turn_id = None;
+            }
+            ServerNotification::ThreadTokenUsageUpdated(notification) => {
+                self.token_usage = TokenUsage {
+                    input_tokens: notification.token_usage.total.input_tokens,
+                    cached_input_tokens: notification.token_usage.total.cached_input_tokens,
+                    output_tokens: notification.token_usage.total.output_tokens,
+                    reasoning_output_tokens: notification.token_usage.total.reasoning_output_tokens,
+                    total_tokens: notification.token_usage.total.total_tokens,
+                };
             }
             _ => {}
         }
@@ -1637,6 +1648,27 @@ impl App {
         let channel = self.thread_event_channels.get(&thread_id)?;
         let store = channel.store.lock().await;
         store.active_turn_id().map(ToOwned::to_owned)
+    }
+
+    async fn session_tree_token_usage(&self) -> TokenUsage {
+        let active_thread_id = self.chat_widget.thread_id();
+        let mut token_usage = self.chat_widget.token_usage();
+        for (thread_id, channel) in &self.thread_event_channels {
+            if Some(*thread_id) == active_thread_id {
+                continue;
+            }
+            let store = channel.store.lock().await;
+            token_usage.add_assign(&store.token_usage);
+        }
+        token_usage
+    }
+
+    async fn current_session_summary(&self) -> Option<SessionSummary> {
+        session_summary(
+            self.session_tree_token_usage().await,
+            self.chat_widget.thread_id(),
+            self.chat_widget.thread_name(),
+        )
     }
 
     fn thread_label(&self, thread_id: ThreadId) -> String {
@@ -3284,11 +3316,7 @@ impl App {
             .await;
         let model = self.chat_widget.current_model().to_string();
         let config = self.fresh_session_config();
-        let summary = session_summary(
-            self.chat_widget.token_usage(),
-            self.chat_widget.thread_id(),
-            self.chat_widget.thread_name(),
-        );
+        let summary = self.current_session_summary().await;
         self.shutdown_current_thread(app_server).await;
         let tracked_thread_ids: Vec<ThreadId> =
             self.thread_event_channels.keys().copied().collect();
@@ -3957,8 +3985,9 @@ impl App {
                 return Err(err);
             }
         };
+        let token_usage = app.session_tree_token_usage().await;
         Ok(AppExitInfo {
-            token_usage: app.token_usage(),
+            token_usage,
             thread_id: app.chat_widget.thread_id(),
             thread_name: app.chat_widget.thread_name(),
             update_action: app.pending_update_action,
@@ -4112,11 +4141,7 @@ impl App {
                             }
                         };
                         self.apply_runtime_policy_overrides(&mut resume_config);
-                        let summary = session_summary(
-                            self.chat_widget.token_usage(),
-                            self.chat_widget.thread_id(),
-                            self.chat_widget.thread_name(),
-                        );
+                        let summary = self.current_session_summary().await;
                         match app_server
                             .resume_thread(resume_config.clone(), target_session.thread_id)
                             .await
@@ -4176,11 +4201,7 @@ impl App {
                     /*inc*/ 1,
                     &[("source", "slash_command")],
                 );
-                let summary = session_summary(
-                    self.chat_widget.token_usage(),
-                    self.chat_widget.thread_id(),
-                    self.chat_widget.thread_name(),
-                );
+                let summary = self.current_session_summary().await;
                 self.chat_widget
                     .add_plain_history_lines(vec!["/fork".magenta().into()]);
                 if let Some(thread_id) = self.chat_widget.thread_id() {
@@ -11065,6 +11086,58 @@ guardian_approval = true
         assert_eq!(
             summary.resume_command,
             Some("codex resume my-session".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn session_tree_token_usage_includes_tracked_subagents_without_double_counting_active() {
+        let mut app = make_test_app().await;
+        let main_thread_id = ThreadId::new();
+        let subagent_thread_id = ThreadId::new();
+        let cwd = PathBuf::from("/tmp/main");
+        let main_session = test_thread_session(main_thread_id, cwd.clone());
+        let subagent_session = test_thread_session(subagent_thread_id, cwd);
+
+        app.primary_thread_id = Some(main_thread_id);
+        app.chat_widget.handle_thread_session(main_session.clone());
+        app.handle_thread_event_now(ThreadBufferedEvent::Notification(token_usage_notification(
+            main_thread_id,
+            "turn-main",
+            None,
+        )));
+
+        let main_channel =
+            ThreadEventChannel::new_with_session(/*capacity*/ 8, main_session, Vec::new());
+        {
+            let mut store = main_channel.store.lock().await;
+            store.push_notification(token_usage_notification(main_thread_id, "turn-main", None));
+        }
+        app.thread_event_channels
+            .insert(main_thread_id, main_channel);
+
+        let subagent_channel =
+            ThreadEventChannel::new_with_session(/*capacity*/ 8, subagent_session, Vec::new());
+        {
+            let mut store = subagent_channel.store.lock().await;
+            store.push_notification(token_usage_notification(
+                subagent_thread_id,
+                "turn-subagent",
+                None,
+            ));
+        }
+        app.thread_event_channels
+            .insert(subagent_thread_id, subagent_channel);
+
+        let usage = app.session_tree_token_usage().await;
+        assert_eq!(
+            usage,
+            TokenUsage {
+                input_tokens: 8,
+                cached_input_tokens: 2,
+                output_tokens: 10,
+                reasoning_output_tokens: 0,
+                total_tokens: 20,
+            }
         );
     }
 }
