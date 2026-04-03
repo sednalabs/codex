@@ -1321,12 +1321,10 @@ fn parse_mcp_tool_approval_elicitation_response(
     }
 }
 
-fn parse_mcp_tool_approval_persist_mode<'a>(persist: &'a serde_json::Value) -> Option<&'a str> {
-    match persist {
-        serde_json::Value::String(value) => Some(value.as_str()),
-        serde_json::Value::Array(values) => values.first().and_then(serde_json::Value::as_str),
-        _ => None,
-    }
+fn parse_mcp_tool_approval_persist_mode(persist: &serde_json::Value) -> Option<&str> {
+    persist
+        .as_str()
+        .or_else(|| persist.as_array()?.first()?.as_str())
 }
 
 fn request_user_input_response_from_elicitation_content(
