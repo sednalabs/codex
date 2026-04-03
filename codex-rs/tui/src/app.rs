@@ -4407,6 +4407,7 @@ impl App {
             }
             AppEvent::UpdateReasoningEffort(effort) => {
                 self.on_update_reasoning_effort(effort);
+                self.chat_widget.maybe_send_next_queued_input();
             }
             AppEvent::UpdateModel(model) => {
                 self.chat_widget.set_model(&model);
@@ -4415,6 +4416,7 @@ impl App {
                 self.chat_widget.set_model(&model);
                 self.on_update_reasoning_effort(effort);
                 self.refresh_status_surfaces();
+                self.chat_widget.maybe_send_next_queued_input();
                 self.app_event_tx
                     .send(AppEvent::PersistModelSelection { model, effort });
             }
@@ -5134,6 +5136,7 @@ impl App {
             AppEvent::UpdatePlanModeReasoningEffort(effort) => {
                 self.config.plan_mode_reasoning_effort = effort;
                 self.chat_widget.set_plan_mode_reasoning_effort(effort);
+                self.chat_widget.maybe_send_next_queued_input();
             }
             AppEvent::PersistFullAccessWarningAcknowledged => {
                 if let Err(err) = ConfigEditsBuilder::new(&self.config.codex_home)

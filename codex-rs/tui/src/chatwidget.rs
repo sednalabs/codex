@@ -5155,6 +5155,7 @@ impl ChatWidget {
         }
 
         if had_modal_or_popup_active
+            && matches!(key_event.code, KeyCode::Esc)
             && !self.bottom_pane.is_task_running()
             && self.no_modal_or_popup_active()
         {
