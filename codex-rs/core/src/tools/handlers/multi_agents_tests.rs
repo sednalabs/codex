@@ -4,6 +4,7 @@ use crate::CodexAuth;
 use crate::ThreadManager;
 use crate::built_in_model_providers;
 use crate::codex::make_session_and_context;
+use crate::config::AgentRoleConfig;
 use crate::config::DEFAULT_AGENT_MAX_DEPTH;
 use crate::config::types::ShellEnvironmentPolicy;
 use crate::function_tool::FunctionCallError;
@@ -325,6 +326,67 @@ async fn spawn_agent_returns_agent_id_without_task_name() {
 }
 
 #[tokio::test]
+async fn spawn_agent_preserves_model_override_through_role_layering() {
+    let (mut session, mut turn) = make_session_and_context().await;
+    let manager = thread_manager();
+    session.services.agent_control = manager.agent_control();
+
+    tokio::fs::create_dir_all(&turn.config.codex_home)
+        .await
+        .expect("ensure codex_home exists");
+    let role_path = turn.config.codex_home.join("custom-orchestrator.toml");
+    tokio::fs::write(&role_path, r#"model = "gpt-5.4""#)
+        .await
+        .expect("write role config");
+
+    let mut config = (*turn.config).clone();
+    config.agent_roles.insert(
+        "custom-orchestrator".to_string(),
+        AgentRoleConfig {
+            description: None,
+            config_file: Some(role_path),
+            nickname_candidates: None,
+        },
+    );
+    turn.config = Arc::new(config);
+
+    let output = SpawnAgentHandler
+        .handle(invocation(
+            Arc::new(session),
+            Arc::new(turn),
+            "spawn_agent",
+            function_payload(json!({
+                "message": "check model",
+                "agent_type": "custom-orchestrator",
+                "model": "gpt-5.1-codex-max"
+            })),
+        ))
+        .await
+        .expect("spawn_agent should succeed");
+
+    let (content, _) = expect_text_output(output);
+    let result: serde_json::Value =
+        serde_json::from_str(&content).expect("spawn_agent result should be json");
+    assert_eq!(
+        result["effective_model"].as_str(),
+        Some("gpt-5.1-codex-max")
+    );
+
+    let agent_id = parse_agent_id(
+        result["agent_id"]
+            .as_str()
+            .expect("agent_id should be present"),
+    );
+    let snapshot = manager
+        .get_thread(agent_id)
+        .await
+        .expect("spawned agent thread should exist")
+        .config_snapshot()
+        .await;
+    assert_eq!(snapshot.model.as_str(), "gpt-5.1-codex-max");
+}
+
+#[tokio::test]
 async fn multi_agent_v2_spawn_requires_task_name() {
     let (mut session, mut turn) = make_session_and_context().await;
     let manager = thread_manager();
@@ -356,6 +418,75 @@ async fn multi_agent_v2_spawn_requires_task_name() {
         panic!("missing task_name should surface as a model-facing error");
     };
     assert!(message.contains("missing field `task_name`"));
+}
+
+#[tokio::test]
+async fn multi_agent_v2_spawn_preserves_model_override_through_role_layering() {
+    let (mut session, mut turn) = make_session_and_context().await;
+    let manager = thread_manager();
+    let root = manager
+        .start_thread((*turn.config).clone())
+        .await
+        .expect("root thread should start");
+    session.services.agent_control = manager.agent_control();
+    session.conversation_id = root.thread_id;
+
+    tokio::fs::create_dir_all(&turn.config.codex_home)
+        .await
+        .expect("ensure codex_home exists");
+    let role_path = turn.config.codex_home.join("custom-orchestrator-v2.toml");
+    tokio::fs::write(&role_path, r#"model = "gpt-5.4""#)
+        .await
+        .expect("write role config");
+
+    let mut config = (*turn.config).clone();
+    config
+        .features
+        .enable(Feature::MultiAgentV2)
+        .expect("test config should allow feature update");
+    config.agent_roles.insert(
+        "custom-orchestrator-v2".to_string(),
+        AgentRoleConfig {
+            description: None,
+            config_file: Some(role_path),
+            nickname_candidates: None,
+        },
+    );
+    turn.config = Arc::new(config);
+
+    let session = Arc::new(session);
+    let turn = Arc::new(turn);
+    let spawn_output = SpawnAgentHandlerV2
+        .handle(invocation(
+            session.clone(),
+            turn.clone(),
+            "spawn_agent",
+            function_payload(json!({
+                "message": "check model",
+                "task_name": "worker",
+                "agent_type": "custom-orchestrator-v2",
+                "model": "gpt-5.1-codex-max"
+            })),
+        ))
+        .await
+        .expect("spawn_agent should succeed");
+    let (content, _) = expect_text_output(spawn_output);
+    let _result: serde_json::Value =
+        serde_json::from_str(&content).expect("spawn_agent result should be json");
+
+    let agent_id = session
+        .services
+        .agent_control
+        .resolve_agent_reference(session.conversation_id, &turn.session_source, "worker")
+        .await
+        .expect("relative path should resolve");
+    let snapshot = manager
+        .get_thread(agent_id)
+        .await
+        .expect("spawned agent thread should exist")
+        .config_snapshot()
+        .await;
+    assert_eq!(snapshot.model.as_str(), "gpt-5.1-codex-max");
 }
 
 #[tokio::test]
