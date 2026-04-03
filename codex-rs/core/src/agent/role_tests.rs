@@ -73,7 +73,6 @@ async fn apply_role_returns_error_for_unknown_role() {
 }
 
 #[tokio::test]
-#[ignore = "No role requiring it for now"]
 async fn apply_explorer_role_sets_model_and_adds_session_flags_layer() {
     let (_home, mut config) = test_config_with_cli_overrides(Vec::new()).await;
     let before_layers = session_flags_layer_count(&config);
@@ -863,6 +862,16 @@ fn spawn_tool_spec_marks_role_locked_reasoning_effort_only() {
     assert!(spec.contains(
             "Review carefully.\n- This role's reasoning effort is set to `medium` and cannot be changed."
         ));
+}
+
+#[test]
+fn spawn_tool_spec_marks_built_in_explorer_locked_model_and_reasoning_effort() {
+    let spec = spawn_tool_spec::build(&BTreeMap::new());
+
+    assert!(spec.contains("Explorers are fast and authoritative."));
+    assert!(spec.contains(
+        "This role's model is set to `gpt-5.1-codex-mini` and its reasoning effort is set to `medium`. These settings cannot be changed."
+    ));
 }
 
 #[test]

@@ -267,6 +267,18 @@ async fn spawn_wait_and_list_agents_tool_descriptions_have_guidance_updates() ->
         "expected spawn guidance to mention list_agents: {spawn_description:?}"
     );
     assert!(
+        spawn_description.contains("Use `gpt-5.1-codex-mini` first"),
+        "expected spawn guidance to mention the cheap-first mini default: {spawn_description:?}"
+    );
+    assert!(
+        spawn_description.contains("Prefer `gpt-5.3-codex-spark`"),
+        "expected spawn guidance to mention the Spark scouting tier: {spawn_description:?}"
+    );
+    assert!(
+        spawn_description.contains("Escalate to `gpt-5.4-mini`"),
+        "expected spawn guidance to mention the 5.4-mini escalation tier: {spawn_description:?}"
+    );
+    assert!(
         wait_description.contains("blocking coordination while awaiting sub-agent completion"),
         "expected wait_agent guidance for blocking waits: {wait_description:?}"
     );

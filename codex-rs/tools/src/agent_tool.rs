@@ -895,6 +895,13 @@ fn spawn_agent_tool_description(
 - When delegating coding work, instruct the submodel to edit files directly in its forked workspace and list the file paths it changed in the final answer.
 - For code-edit subtasks, decompose work so each delegated task has a disjoint write set.
 
+### Model selection waterfall
+- For same-workspace analysis or implementation, prefer a native Codex sub-agent before any external fallback.
+- Start with the smallest capable lane. Use `gpt-5.1-codex-mini` first for bookkeeping, waiting, compact scouting, and other routine sidecar work.
+- Prefer `gpt-5.3-codex-spark` for read-heavy, output-light, file-local scouting or tiny edits when the subtask is unlikely to need a second substantial reasoning pass.
+- Escalate to `gpt-5.4-mini` when the subtask is still straightforward but needs richer context, tighter review, or a few related files.
+- Escalate beyond those defaults only when you can name the concrete reason the cheaper lane is insufficient.
+
 ### After you delegate
 - Call wait_agent very sparingly. Only call wait_agent when you need the result immediately for the next critical-path step and you are blocked until it returns.
 - Prefer list_agents for cheap live status snapshots before calling a blocking wait_agent, and use inspect_agent_tree when you need deeper live vs stale descendant state.
