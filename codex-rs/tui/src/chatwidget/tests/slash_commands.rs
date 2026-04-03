@@ -143,6 +143,56 @@ async fn queued_init_replay_waits_before_submitting_next_message() {
 }
 
 #[tokio::test]
+async fn queued_popup_command_replay_waits_before_submitting_next_message() {
+    let (mut chat, _rx, mut op_rx) = make_chatwidget_manual(Some("gpt-5")).await;
+    chat.thread_id = Some(ThreadId::new());
+
+    // Simulate an active turn and queue follow-ups in order: /approvals, then
+    // a plain message.
+    chat.bottom_pane.set_task_running(/*running*/ true);
+    chat.dispatch_command(SlashCommand::Approvals);
+    chat.bottom_pane.set_composer_text(
+        "queued after approvals".to_string(),
+        Vec::new(),
+        Vec::new(),
+    );
+    chat.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+    // Completing the active turn should replay /approvals and stop draining so
+    // we do not submit the queued message behind the still-open popup.
+    chat.handle_codex_event(Event {
+        id: "turn-1".into(),
+        msg: EventMsg::TurnComplete(test_turn_complete_event(
+            "turn-1",
+            /*last_agent_message*/ None::<String>,
+        )),
+    });
+    assert!(chat.has_active_view());
+    assert_eq!(chat.queued_user_messages.len(), 1);
+    assert_eq!(
+        chat.queued_user_messages.front().unwrap().text,
+        "queued after approvals"
+    );
+    assert_matches!(op_rx.try_recv(), Err(TryRecvError::Empty));
+
+    // Once the popup is dismissed, the queued message can be submitted.
+    chat.handle_key_event(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    assert!(!chat.has_active_view());
+    chat.maybe_send_next_queued_input();
+
+    match next_submit_op(&mut op_rx) {
+        Op::UserTurn { items, .. } => assert_eq!(
+            items,
+            vec![UserInput::Text {
+                text: "queued after approvals".to_string(),
+                text_elements: Vec::new(),
+            }]
+        ),
+        other => panic!("expected queued follow-up Op::UserTurn, got {other:?}"),
+    }
+}
+
+#[tokio::test]
 async fn ctrl_d_quits_without_prompt() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
 

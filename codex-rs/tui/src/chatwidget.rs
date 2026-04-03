@@ -7614,6 +7614,9 @@ impl ChatWidget {
         match queued_command {
             QueuedSlashCommand::Command(cmd) => {
                 self.dispatch_command(cmd);
+                if !self.no_modal_or_popup_active() {
+                    return true;
+                }
                 matches!(cmd, SlashCommand::Init | SlashCommand::Compact)
             }
             QueuedSlashCommand::CommandWithArgs {
@@ -7634,6 +7637,9 @@ impl ChatWidget {
                     mention_bindings,
                     /*drain_submission_state*/ false,
                 );
+                if !self.no_modal_or_popup_active() {
+                    return true;
+                }
                 if self.bottom_pane.is_task_running() {
                     return true;
                 }
