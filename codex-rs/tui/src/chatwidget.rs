@@ -2691,6 +2691,38 @@ impl ChatWidget {
         });
     }
 
+    pub(crate) fn open_subagent_quit_confirmation(&mut self) {
+        let items = vec![
+            SelectionItem {
+                name: "Yes, return to parent thread".to_string(),
+                description: Some(
+                    "Exit this subagent and switch back to the main thread".to_string(),
+                ),
+                actions: vec![Box::new(|tx| {
+                    tx.send(AppEvent::ConfirmSubagentExit);
+                })],
+                dismiss_on_select: true,
+                ..Default::default()
+            },
+            SelectionItem {
+                name: "Cancel".to_string(),
+                description: Some("Keep chatting in this subagent".to_string()),
+                actions: vec![Box::new(|tx| {
+                    tx.send(AppEvent::CancelSubagentExit);
+                })],
+                dismiss_on_select: true,
+                ..Default::default()
+            },
+        ];
+
+        self.bottom_pane.show_selection_view(SelectionViewParams {
+            title: Some("Return to parent thread?".to_string()),
+            footer_hint: Some(standard_popup_hint_line()),
+            items,
+            ..Default::default()
+        });
+    }
+
     pub(crate) fn set_token_info(&mut self, info: Option<TokenUsageInfo>) {
         match info {
             Some(info) => self.apply_token_info(info),
