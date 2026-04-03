@@ -1465,6 +1465,35 @@ async fn chatwidget_exec_and_status_layout_vt100_snapshot() {
     );
 }
 
+#[tokio::test]
+async fn exec_command_begin_clears_compaction_status_header() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.on_task_started();
+    chat.compaction_turn_active = true;
+    chat.update_working_status_header();
+
+    assert_eq!(chat.current_status.header, "Compacting context");
+
+    chat.handle_codex_event(Event {
+        id: "exec-after-compact".into(),
+        msg: EventMsg::ExecCommandBegin(ExecCommandBeginEvent {
+            call_id: "exec-after-compact".into(),
+            process_id: None,
+            turn_id: "turn-1".into(),
+            command: vec!["bash".into(), "-lc".into(), "echo done".into()],
+            cwd: std::path::PathBuf::from("."),
+            parsed_cmd: vec![ParsedCommand::Unknown {
+                cmd: "bash -lc 'echo done'".into(),
+            }],
+            source: ExecCommandSource::Agent,
+            interaction_input: None,
+        }),
+    });
+
+    assert_eq!(chat.compaction_turn_active, false);
+    assert_ne!(chat.current_status.header, "Compacting context");
+}
+
 // E2E vt100 snapshot for complex markdown with indented and nested fenced code blocks
 #[tokio::test]
 async fn chatwidget_markdown_code_blocks_vt100_snapshot() {

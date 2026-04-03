@@ -567,6 +567,44 @@ async fn replayed_retryable_app_server_error_keeps_turn_running() {
 }
 
 #[tokio::test]
+async fn replayed_compaction_item_start_restores_compaction_status() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+
+    chat.handle_server_notification(
+        ServerNotification::TurnStarted(TurnStartedNotification {
+            thread_id: "thread-1".to_string(),
+            turn: AppServerTurn {
+                id: "turn-1".to_string(),
+                items: Vec::new(),
+                status: AppServerTurnStatus::InProgress,
+                error: None,
+            },
+        }),
+        Some(ReplayKind::ThreadSnapshot),
+    );
+    drain_insert_history(&mut rx);
+
+    chat.handle_server_notification(
+        ServerNotification::ItemStarted(ItemStartedNotification {
+            thread_id: "thread-1".to_string(),
+            turn_id: "turn-1".to_string(),
+            item: AppServerThreadItem::ContextCompaction {
+                id: "compact-1".to_string(),
+            },
+        }),
+        Some(ReplayKind::ThreadSnapshot),
+    );
+
+    assert!(chat.bottom_pane.is_task_running());
+    let status = chat
+        .bottom_pane
+        .status_widget()
+        .expect("status indicator should be visible");
+    assert_eq!(status.header(), "Compacting context");
+    assert_eq!(status.details(), None);
+}
+
+#[tokio::test]
 async fn replayed_thread_closed_notification_does_not_exit_tui() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
 
