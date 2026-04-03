@@ -7578,20 +7578,21 @@ impl ChatWidget {
             .map(QueuedSlashCommand::into_user_message_for_edit)
     }
 
-    // If idle and there are queued inputs, submit exactly one to start the next turn.
+    // If idle and there are queued inputs, drain queued slash commands until one
+    // starts a task (or queue empties), then submit at most one queued message.
     pub(crate) fn maybe_send_next_queued_input(&mut self) {
         if self.suppress_queue_autosend {
             return;
         }
-        if self.bottom_pane.is_task_running() {
-            return;
-        }
-        if let Some(queued_input) = self.pop_next_queued_follow_up() {
+        while !self.bottom_pane.is_task_running() {
+            let Some(queued_input) = self.pop_next_queued_follow_up() else {
+                break;
+            };
             match queued_input {
                 QueuedFollowUpInput::UserMessage(user_message) => {
+                    // Submit at most one queued user message per pass.
                     self.submit_user_message(user_message);
-                    self.refresh_pending_input_preview();
-                    return;
+                    break;
                 }
                 QueuedFollowUpInput::SlashCommand(queued_command) => match queued_command {
                     QueuedSlashCommand::Command(cmd) => self.dispatch_command(cmd),
