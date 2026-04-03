@@ -1809,12 +1809,29 @@ impl ChatWidget {
             self.terminal_title_status_kind = TerminalTitleStatusKind::Thinking;
             self.set_status_header(header);
         } else if self.bottom_pane.is_task_running() {
-            self.terminal_title_status_kind = TerminalTitleStatusKind::Working;
-            if self.compaction_turn_active {
-                self.set_status_header(String::from("Compacting context"));
-            } else {
-                self.set_status_header(String::from("Working"));
-            }
+            self.update_working_status_header();
+        }
+    }
+
+    fn update_working_status_header(&mut self) {
+        self.terminal_title_status_kind = TerminalTitleStatusKind::Working;
+        if self.compaction_turn_active {
+            self.set_status_header(String::from("Compacting context"));
+        } else {
+            self.set_status_header(String::from("Working"));
+        }
+    }
+
+    fn reset_compaction_turn_status_if_needed(&mut self) {
+        if !self.compaction_turn_active {
+            return;
+        }
+        self.compaction_turn_active = false;
+        if matches!(
+            self.terminal_title_status_kind,
+            TerminalTitleStatusKind::Working
+        ) {
+            self.update_working_status_header();
         }
     }
 
@@ -2430,12 +2447,7 @@ impl ChatWidget {
         self.pending_status_indicator_restore = false;
         self.bottom_pane
             .set_interrupt_hint_visible(/*visible*/ true);
-        self.terminal_title_status_kind = TerminalTitleStatusKind::Working;
-        if self.compaction_turn_active {
-            self.set_status_header(String::from("Compacting context"));
-        } else {
-            self.set_status_header(String::from("Working"));
-        }
+        self.update_working_status_header();
         self.full_reasoning_buffer.clear();
         self.reasoning_buffer.clear();
         self.request_redraw();
@@ -5285,7 +5297,7 @@ impl ChatWidget {
             SlashCommand::Compact => {
                 self.clear_token_usage();
                 self.compaction_turn_active = true;
-                self.set_status_header(String::from("Compacting context"));
+                self.update_working_status_header();
                 if !self.bottom_pane.is_task_running() {
                     self.bottom_pane.set_task_running(/*running*/ true);
                 }
@@ -6230,6 +6242,9 @@ impl ChatWidget {
     ) {
         let from_replay = render_source.is_replay();
         let replay_kind = render_source.replay_kind();
+        if !matches!(&item, ThreadItem::ContextCompaction { .. }) {
+            self.reset_compaction_turn_status_if_needed();
+        }
         match item {
             ThreadItem::UserMessage { id, content } => {
                 let user_message = codex_protocol::items::UserMessageItem {
@@ -6965,7 +6980,7 @@ impl ChatWidget {
             ThreadItem::ContextCompaction { .. } => {
                 if !from_replay {
                     self.compaction_turn_active = true;
-                    self.set_status_header(String::from("Compacting context"));
+                    self.update_working_status_header();
                 }
             }
             ThreadItem::CollabAgentToolCall {
