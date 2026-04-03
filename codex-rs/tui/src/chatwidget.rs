@@ -3657,6 +3657,7 @@ impl ChatWidget {
     }
 
     fn on_exec_command_begin(&mut self, ev: ExecCommandBeginEvent) {
+        self.reset_compaction_turn_status_if_needed();
         self.flush_answer_stream_with_separator();
         if is_unified_exec_source(ev.source) {
             self.track_unified_exec_process_begin(&ev);
@@ -3748,6 +3749,7 @@ impl ChatWidget {
     }
 
     fn on_patch_apply_begin(&mut self, event: PatchApplyBeginEvent) {
+        self.reset_compaction_turn_status_if_needed();
         self.add_to_history(history_cell::new_patch_event(
             event.changes,
             &self.config.cwd,
@@ -3764,6 +3766,7 @@ impl ChatWidget {
     }
 
     fn on_image_generation_begin(&mut self, _event: ImageGenerationBeginEvent) {
+        self.reset_compaction_turn_status_if_needed();
         self.flush_answer_stream_with_separator();
     }
 
@@ -3880,6 +3883,7 @@ impl ChatWidget {
     }
 
     fn on_mcp_tool_call_begin(&mut self, ev: McpToolCallBeginEvent) {
+        self.reset_compaction_turn_status_if_needed();
         let ev2 = ev.clone();
         self.defer_or_handle(|q| q.push_mcp_begin(ev), |s| s.handle_mcp_begin_now(ev2));
     }
@@ -3890,6 +3894,7 @@ impl ChatWidget {
     }
 
     fn on_web_search_begin(&mut self, ev: WebSearchBeginEvent) {
+        self.reset_compaction_turn_status_if_needed();
         self.flush_answer_stream_with_separator();
         self.flush_active_cell();
         self.active_cell = Some(Box::new(history_cell::new_active_web_search_call(
