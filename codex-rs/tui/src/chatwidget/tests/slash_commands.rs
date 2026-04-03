@@ -224,6 +224,51 @@ async fn queued_async_session_switch_command_waits_before_next_message() {
 }
 
 #[tokio::test]
+async fn queued_sandbox_read_root_command_waits_before_next_message() {
+    let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(Some("gpt-5")).await;
+    chat.thread_id = Some(ThreadId::new());
+
+    // Simulate an active turn and queue follow-ups in order: a sandbox grant
+    // command with args, then a plain message.
+    chat.bottom_pane.set_task_running(/*running*/ true);
+    chat.queue_slash_command(QueuedSlashCommand::CommandWithArgs {
+        cmd: SlashCommand::SandboxReadRoot,
+        args: "/tmp".to_string(),
+        text_elements: Vec::new(),
+        local_images: Vec::new(),
+        remote_image_urls: Vec::new(),
+        mention_bindings: Vec::new(),
+    });
+    chat.bottom_pane.set_composer_text(
+        "queued after sandbox grant".to_string(),
+        Vec::new(),
+        Vec::new(),
+    );
+    chat.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+    // Completing the active turn should replay the sandbox grant command and
+    // stop draining so we do not submit the queued message before grant flow
+    // completion.
+    chat.handle_codex_event(Event {
+        id: "turn-1".into(),
+        msg: EventMsg::TurnComplete(test_turn_complete_event(
+            "turn-1",
+            /*last_agent_message*/ None::<String>,
+        )),
+    });
+    assert_matches!(
+        rx.try_recv(),
+        Ok(AppEvent::BeginWindowsSandboxGrantReadRoot { path }) if path == "/tmp"
+    );
+    assert_eq!(chat.queued_user_messages.len(), 1);
+    assert_eq!(
+        chat.queued_user_messages.front().unwrap().text,
+        "queued after sandbox grant"
+    );
+    assert_matches!(op_rx.try_recv(), Err(TryRecvError::Empty));
+}
+
+#[tokio::test]
 async fn ctrl_d_quits_without_prompt() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
 

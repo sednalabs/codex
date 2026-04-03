@@ -7652,9 +7652,10 @@ impl ChatWidget {
                 if self.bottom_pane.is_task_running() {
                     return true;
                 }
-                matches!(cmd, SlashCommand::Plan)
+                (matches!(cmd, SlashCommand::Plan)
                     && has_inline_args
-                    && self.active_mode_kind() == ModeKind::Plan
+                    && self.active_mode_kind() == ModeKind::Plan)
+                    || (matches!(cmd, SlashCommand::SandboxReadRoot) && has_inline_args)
             }
         }
     }
