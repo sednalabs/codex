@@ -164,3 +164,85 @@ fn em_dash_and_space_word_wrap() {
         "word 'inside' should not be split across lines:\n{joined}"
     );
 }
+
+#[test]
+fn tmux_like_viewport_preserves_preexisting_history_content() {
+    let area = Rect::new(
+        /*x*/ 0, /*y*/ 4, /*width*/ 36, /*height*/ 2,
+    );
+    let mut scenario = TestScenario::new(/*width*/ 36, /*height*/ 16, area);
+
+    let base_lines: Vec<Line<'static>> = vec![
+        "tmux preseed row: hello".into(),
+        "tmux preseed row: world".into(),
+    ];
+    scenario.run_insert(base_lines);
+
+    // Simulate tmux-like viewport bookkeeping by reapplying the same area after insert.
+    scenario.term.set_viewport_area(area);
+
+    let long = "tmux regression: this content is intentionally long to exercise wrapping and avoid clipping";
+    scenario.run_insert(vec![Line::from(long)]);
+
+    let rows = scenario
+        .term
+        .backend()
+        .vt100()
+        .screen()
+        .rows(0, 36)
+        .collect::<Vec<String>>();
+
+    assert!(
+        rows.iter()
+            .any(|row| row.contains("tmux preseed row: hello")),
+        "expected first preseed row to remain visible after wrapped insert, rows: {rows:?}"
+    );
+    assert!(
+        rows.iter()
+            .any(|row| row.contains("tmux preseed row: world")),
+        "expected second preseed row to remain visible after wrapped insert, rows: {rows:?}"
+    );
+    assert!(
+        rows.iter().any(|row| row.contains("tmux regression:")),
+        "expected wrapped regression text to remain visible, rows: {rows:?}"
+    );
+}
+
+#[test]
+fn android_style_narrow_viewport_keeps_url_content_from_being_clipped() {
+    let area = Rect::new(
+        /*x*/ 0, /*y*/ 11, /*width*/ 14, /*height*/ 1,
+    );
+    let mut scenario = TestScenario::new(/*width*/ 14, /*height*/ 24, area);
+
+    let prompt = "base row";
+    scenario.run_insert(vec![Line::from(prompt)]);
+
+    let long_url = format!(
+        "https://example.test/api/v1/projects/alpha-team/releases/2026-02-17/builds/{}",
+        "very-long-segment-".repeat(12),
+    );
+    let url_line = Line::from(vec!["• ".into(), long_url.into()]);
+    scenario.run_insert(vec![url_line]);
+
+    let rows = scenario
+        .term
+        .backend()
+        .vt100()
+        .screen()
+        .rows(0, 14)
+        .collect::<Vec<String>>();
+    let prompt_row = rows
+        .iter()
+        .position(|row| row.contains(prompt))
+        .unwrap_or_else(|| panic!("expected prompt row in screen rows: {rows:?}"));
+    let url_row = rows
+        .iter()
+        .position(|row| row.contains("https://ex"))
+        .unwrap_or_else(|| panic!("expected URL first row in screen rows: {rows:?}"));
+
+    assert!(
+        url_row <= prompt_row + 2,
+        "expected URL content to appear immediately after prompt (allowing at most one spacer row), got prompt_row={prompt_row}, url_row={url_row}, rows={rows:?}"
+    );
+}
