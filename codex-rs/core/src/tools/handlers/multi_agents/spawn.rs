@@ -63,24 +63,21 @@ impl ToolHandler for Handler {
                 .into(),
             )
             .await;
-        let requested_model = args.model.clone();
-        let requested_reasoning_effort = args.reasoning_effort;
-
         let mut config =
             build_agent_spawn_config(&session.get_base_instructions().await, turn.as_ref())?;
         let pre_role_reasoning_effort = config.model_reasoning_effort;
-        apply_requested_spawn_agent_model_overrides(
-            &session,
-            turn.as_ref(),
-            &mut config,
-            requested_model.as_deref(),
-            requested_reasoning_effort,
-        )
-        .await?;
         let spawn_model_selection_carry = apply_role_to_spawn_config(&mut config, role_name)
             .await
             .map_err(FunctionCallError::RespondToModel)?;
         spawn_model_selection_carry.apply_to_config(&mut config);
+        apply_requested_spawn_agent_model_overrides(
+            &session,
+            turn.as_ref(),
+            &mut config,
+            args.model.as_deref(),
+            args.reasoning_effort,
+        )
+        .await?;
         if let Some(model) = config.model.clone() {
             let model_info = session
                 .services
