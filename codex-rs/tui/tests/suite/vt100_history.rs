@@ -215,7 +215,7 @@ fn android_style_narrow_viewport_keeps_url_content_from_being_clipped() {
     );
     let mut scenario = TestScenario::new(/*width*/ 14, /*height*/ 24, area);
 
-    let prompt = "baseline row";
+    let prompt = "base row";
     scenario.run_insert(vec![Line::from(prompt)]);
 
     let long_url = format!(
