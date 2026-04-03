@@ -145,7 +145,6 @@ impl SlashCommand {
             | SlashCommand::Init
             | SlashCommand::Compact
             // | SlashCommand::Undo
-            | SlashCommand::Model
             | SlashCommand::Fast
             | SlashCommand::Personality
             | SlashCommand::Approvals
@@ -166,6 +165,7 @@ impl SlashCommand {
             | SlashCommand::Skills
             | SlashCommand::Status
             | SlashCommand::DebugConfig
+            | SlashCommand::Model
             | SlashCommand::Ps
             | SlashCommand::Stop
             | SlashCommand::Mcp

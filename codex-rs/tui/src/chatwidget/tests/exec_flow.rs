@@ -1013,22 +1013,71 @@ async fn bang_shell_command_submits_run_user_shell_command_in_app_server_tui() {
 }
 
 #[tokio::test]
-async fn queued_slash_command_while_task_running() {
+async fn model_slash_command_opens_picker_while_task_running() {
     // Build a chat widget and simulate an active task
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
     chat.bottom_pane.set_task_running(/*running*/ true);
 
-    // Dispatch a command while a task runs; it should be queued.
+    // Dispatching /model while a task runs should open the picker immediately
+    // so the user can choose the exact model for queued follow-ups.
     chat.dispatch_command(SlashCommand::Model);
 
-    // Drain history and assert queued command contract.
+    // No queued-command history entry should be emitted for /model.
     let cells = drain_insert_history(&mut rx);
-    assert_eq!(cells.len(), 1, "expected one queued command message");
-    let blob = lines_to_single_string(cells.last().unwrap());
     assert!(
-        blob.contains("Queued '/model'. It will run after the current task completes."),
-        "expected queued slash command message, got {blob:?}"
+        cells.is_empty(),
+        "expected /model to open picker instead of queueing a command message"
     );
+
+    let area = Rect::new(0, 0, 80, chat.desired_height(/*width*/ 80));
+    let mut buf = ratatui::buffer::Buffer::empty(area);
+    chat.render(area, &mut buf);
+    let blob = format!("{buf:?}");
+    assert!(
+        blob.contains("Select Model"),
+        "expected model picker popup while task running, got {blob:?}"
+    );
+}
+
+#[tokio::test]
+async fn queued_follow_up_waits_for_model_picker_to_close() {
+    let (mut chat, _rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.bottom_pane.set_task_running(/*running*/ true);
+    chat.bottom_pane.set_composer_text(
+        "queued after model picker".to_string(),
+        Vec::new(),
+        Vec::new(),
+    );
+    chat.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+    chat.dispatch_command(SlashCommand::Model);
+    assert!(
+        chat.has_active_view(),
+        "expected model picker popup to be active"
+    );
+
+    chat.bottom_pane.set_task_running(/*running*/ false);
+    chat.maybe_send_next_queued_input();
+
+    assert_matches!(op_rx.try_recv(), Err(TryRecvError::Empty));
+    assert_eq!(chat.queued_user_messages.len(), 1);
+    assert_eq!(
+        chat.queued_user_messages[0].text,
+        "queued after model picker"
+    );
+
+    chat.handle_key_event(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+
+    match op_rx.try_recv() {
+        Ok(Op::UserTurn { items, .. }) => assert_eq!(
+            items,
+            vec![UserInput::Text {
+                text: "queued after model picker".to_string(),
+                text_elements: Vec::new(),
+            }]
+        ),
+        other => panic!("expected queued user turn after closing model picker, got {other:?}"),
+    }
 }
 
 //

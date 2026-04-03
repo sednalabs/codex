@@ -3480,6 +3480,13 @@ impl App {
         )
     }
 
+    fn maybe_resume_queued_follow_up_after_windows_sandbox_transition(&mut self) {
+        if !self.chat_widget.no_modal_or_popup_active() {
+            return;
+        }
+        self.chat_widget.maybe_send_next_queued_input();
+    }
+
     fn should_handle_active_thread_events(
         waiting_for_initial_session_configured: bool,
         has_active_thread_receiver: bool,
@@ -4400,6 +4407,7 @@ impl App {
             }
             AppEvent::UpdateReasoningEffort(effort) => {
                 self.on_update_reasoning_effort(effort);
+                self.chat_widget.maybe_send_next_queued_input();
             }
             AppEvent::UpdateModel(model) => {
                 self.chat_widget.set_model(&model);
@@ -4408,6 +4416,7 @@ impl App {
                 self.chat_widget.set_model(&model);
                 self.on_update_reasoning_effort(effort);
                 self.refresh_status_surfaces();
+                self.chat_widget.maybe_send_next_queued_input();
                 self.app_event_tx
                     .send(AppEvent::PersistModelSelection { model, effort });
             }
@@ -4671,19 +4680,22 @@ impl App {
                     let _ = path;
                 }
             }
-            AppEvent::WindowsSandboxGrantReadRootCompleted { path, error } => match error {
-                Some(err) => {
-                    self.chat_widget
-                        .add_to_history(history_cell::new_error_event(format!("Error: {err}")));
+            AppEvent::WindowsSandboxGrantReadRootCompleted { path, error } => {
+                match error {
+                    Some(err) => {
+                        self.chat_widget
+                            .add_to_history(history_cell::new_error_event(format!("Error: {err}")));
+                    }
+                    None => {
+                        self.chat_widget
+                            .add_to_history(history_cell::new_info_event(
+                                format!("Sandbox read access granted for {}", path.display()),
+                                /*hint*/ None,
+                            ));
+                    }
                 }
-                None => {
-                    self.chat_widget
-                        .add_to_history(history_cell::new_info_event(
-                            format!("Sandbox read access granted for {}", path.display()),
-                            /*hint*/ None,
-                        ));
-                }
-            },
+                self.maybe_resume_queued_follow_up_after_windows_sandbox_transition();
+            }
             AppEvent::EnableWindowsSandboxForAgentMode { preset, mode } => {
                 #[cfg(target_os = "windows")]
                 {
@@ -4771,6 +4783,19 @@ impl App {
                                     .send(AppEvent::UpdateAskForApprovalPolicy(preset.approval));
                                 self.app_event_tx
                                     .send(AppEvent::UpdateSandboxPolicy(preset.sandbox.clone()));
+                                self.chat_widget.set_approval_policy(preset.approval);
+                                if let Err(err) =
+                                    self.chat_widget.set_sandbox_policy(preset.sandbox.clone())
+                                {
+                                    tracing::warn!(
+                                        %err,
+                                        "failed to set sandbox policy on chat config before queued replay"
+                                    );
+                                    self.chat_widget.add_error_message(format!(
+                                        "Failed to set sandbox policy before queued replay: {err}"
+                                    ));
+                                    return Ok(AppRunControl::Continue);
+                                }
                                 let _ = mode;
                                 self.chat_widget.add_plain_history_lines(vec![
                                     Line::from(vec!["• ".dim(), "Sandbox ready".into()]),
@@ -4780,6 +4805,7 @@ impl App {
                                             .dark_gray(),
                                     ]),
                                 ]);
+                                self.maybe_resume_queued_follow_up_after_windows_sandbox_transition();
                             }
                         }
                         Err(err) => {
@@ -4790,6 +4816,7 @@ impl App {
                             self.chat_widget.add_error_message(format!(
                                 "Failed to enable the Windows sandbox feature: {err}"
                             ));
+                            self.maybe_resume_queued_follow_up_after_windows_sandbox_transition();
                         }
                     }
                 }
@@ -5035,6 +5062,7 @@ impl App {
                     // One-shot suppression if the user just confirmed continue.
                     if self.windows_sandbox.skip_world_writable_scan_once {
                         self.windows_sandbox.skip_world_writable_scan_once = false;
+                        self.maybe_resume_queued_follow_up_after_windows_sandbox_transition();
                         return Ok(AppRunControl::Continue);
                     }
 
@@ -5108,6 +5136,7 @@ impl App {
             AppEvent::UpdatePlanModeReasoningEffort(effort) => {
                 self.config.plan_mode_reasoning_effort = effort;
                 self.chat_widget.set_plan_mode_reasoning_effort(effort);
+                self.chat_widget.maybe_send_next_queued_input();
             }
             AppEvent::PersistFullAccessWarningAcknowledged => {
                 if let Err(err) = ConfigEditsBuilder::new(&self.config.codex_home)
@@ -7630,6 +7659,91 @@ mod tests {
         assert_eq!(app.agent_navigation.get(&thread_id), None);
         assert!(!app.thread_event_channels.contains_key(&thread_id));
         Ok(())
+    }
+
+    #[tokio::test]
+    async fn windows_sandbox_transition_resume_submits_queued_follow_up_when_idle() {
+        let (mut app, _app_event_rx, mut op_rx) = make_test_app_with_channels().await;
+        let expected_approval = AskForApproval::OnFailure;
+        let expected_sandbox = SandboxPolicy::DangerFullAccess;
+
+        app.chat_widget.set_task_running_for_test(/*running*/ true);
+        app.chat_widget.set_composer_text(
+            "queued after sandbox transition".to_string(),
+            Vec::new(),
+            Vec::new(),
+        );
+        app.chat_widget
+            .handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        app.chat_widget.set_approval_policy(expected_approval);
+        app.chat_widget
+            .set_sandbox_policy(expected_sandbox.clone())
+            .expect("set sandbox policy");
+        app.chat_widget.set_task_running_for_test(/*running*/ false);
+
+        app.maybe_resume_queued_follow_up_after_windows_sandbox_transition();
+
+        match next_user_turn_op(&mut op_rx) {
+            Op::UserTurn {
+                items,
+                approval_policy,
+                sandbox_policy,
+                ..
+            } => {
+                assert_eq!(
+                    items,
+                    vec![UserInput::Text {
+                        text: "queued after sandbox transition".to_string(),
+                        text_elements: Vec::new(),
+                    }]
+                );
+                assert_eq!(approval_policy, expected_approval);
+                assert_eq!(sandbox_policy, expected_sandbox);
+            }
+            other => panic!("expected queued follow-up submission, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn windows_sandbox_transition_resume_waits_for_active_popup() {
+        let (mut app, _app_event_rx, mut op_rx) = make_test_app_with_channels().await;
+
+        app.chat_widget.set_task_running_for_test(/*running*/ true);
+        app.chat_widget.set_composer_text(
+            "queued after sandbox transition".to_string(),
+            Vec::new(),
+            Vec::new(),
+        );
+        app.chat_widget
+            .handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        app.chat_widget.set_task_running_for_test(/*running*/ false);
+        app.chat_widget.open_permissions_popup();
+
+        app.maybe_resume_queued_follow_up_after_windows_sandbox_transition();
+
+        assert_matches!(
+            op_rx.try_recv(),
+            Err(tokio::sync::mpsc::error::TryRecvError::Empty)
+        );
+        assert_eq!(
+            app.chat_widget.queued_user_message_texts(),
+            vec!["queued after sandbox transition".to_string()]
+        );
+
+        app.chat_widget
+            .handle_key_event(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        app.maybe_resume_queued_follow_up_after_windows_sandbox_transition();
+
+        match next_user_turn_op(&mut op_rx) {
+            Op::UserTurn { items, .. } => assert_eq!(
+                items,
+                vec![UserInput::Text {
+                    text: "queued after sandbox transition".to_string(),
+                    text_elements: Vec::new(),
+                }]
+            ),
+            other => panic!("expected queued follow-up submission, got {other:?}"),
+        }
     }
 
     #[tokio::test]

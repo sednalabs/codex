@@ -30,6 +30,279 @@ async fn slash_compact_eagerly_queues_follow_up_before_turn_start() {
 }
 
 #[tokio::test]
+async fn queued_plan_and_message_replay_after_compact_finishes() {
+    let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(Some("gpt-5")).await;
+    chat.thread_id = Some(ThreadId::new());
+
+    // Simulate an active turn and queue follow-ups in order: /compact, /plan,
+    // then a plain message.
+    chat.bottom_pane.set_task_running(/*running*/ true);
+    chat.dispatch_command(SlashCommand::Compact);
+    chat.dispatch_command(SlashCommand::Plan);
+    chat.bottom_pane
+        .set_composer_text("queued after compact".to_string(), Vec::new(), Vec::new());
+    chat.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+    // Completing the original turn should replay /compact first.
+    chat.handle_codex_event(Event {
+        id: "turn-1".into(),
+        msg: EventMsg::TurnComplete(test_turn_complete_event(
+            "turn-1",
+            /*last_agent_message*/ None::<String>,
+        )),
+    });
+    let events = std::iter::from_fn(|| rx.try_recv().ok()).collect::<Vec<_>>();
+    assert!(
+        events
+            .iter()
+            .any(|event| matches!(event, AppEvent::CodexOp(Op::Compact))),
+        "expected queued /compact replay, got events: {events:?}"
+    );
+
+    // Completing the compact turn should then replay /plan and immediately
+    // submit the queued message.
+    chat.handle_codex_event(Event {
+        id: "turn-compact".into(),
+        msg: EventMsg::TurnComplete(test_turn_complete_event(
+            "turn-compact",
+            /*last_agent_message*/ None::<String>,
+        )),
+    });
+
+    match next_submit_op(&mut op_rx) {
+        Op::UserTurn { items, .. } => assert_eq!(
+            items,
+            vec![UserInput::Text {
+                text: "queued after compact".to_string(),
+                text_elements: Vec::new(),
+            }]
+        ),
+        other => panic!("expected queued follow-up Op::UserTurn, got {other:?}"),
+    }
+    assert!(
+        chat.queued_user_messages.is_empty(),
+        "expected queued message to be consumed after compact completion"
+    );
+    assert!(
+        chat.queued_slash_commands.is_empty(),
+        "expected queued slash commands to be consumed after compact completion"
+    );
+}
+
+#[tokio::test]
+async fn queued_init_replay_waits_before_submitting_next_message() {
+    let (mut chat, _rx, mut op_rx) = make_chatwidget_manual(Some("gpt-5")).await;
+    chat.thread_id = Some(ThreadId::new());
+    let tempdir = tempdir().unwrap();
+    chat.config.cwd = tempdir.path().to_path_buf().abs();
+
+    // Simulate an active turn and queue follow-ups in order: /init, then a
+    // plain message.
+    chat.bottom_pane.set_task_running(/*running*/ true);
+    chat.dispatch_command(SlashCommand::Init);
+    chat.bottom_pane
+        .set_composer_text("queued after init".to_string(), Vec::new(), Vec::new());
+    chat.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+    // Completing the active turn should replay only /init for this pass.
+    chat.handle_codex_event(Event {
+        id: "turn-1".into(),
+        msg: EventMsg::TurnComplete(test_turn_complete_event(
+            "turn-1",
+            /*last_agent_message*/ None::<String>,
+        )),
+    });
+
+    assert_matches!(next_submit_op(&mut op_rx), Op::UserTurn { .. });
+    assert_eq!(chat.queued_user_messages.len(), 1);
+    assert_eq!(
+        chat.queued_user_messages.front().unwrap().text,
+        "queued after init"
+    );
+
+    // Completing the init-triggered turn should then submit the queued
+    // follow-up message.
+    chat.handle_codex_event(Event {
+        id: "turn-init".into(),
+        msg: EventMsg::TurnComplete(test_turn_complete_event(
+            "turn-init",
+            /*last_agent_message*/ None::<String>,
+        )),
+    });
+
+    match next_submit_op(&mut op_rx) {
+        Op::UserTurn { items, .. } => assert_eq!(
+            items,
+            vec![UserInput::Text {
+                text: "queued after init".to_string(),
+                text_elements: Vec::new(),
+            }]
+        ),
+        other => panic!("expected queued follow-up Op::UserTurn, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn queued_popup_command_replay_waits_before_submitting_next_message() {
+    let (mut chat, _rx, mut op_rx) = make_chatwidget_manual(Some("gpt-5")).await;
+    chat.thread_id = Some(ThreadId::new());
+
+    // Simulate an active turn and queue follow-ups in order: /approvals, then
+    // a plain message.
+    chat.bottom_pane.set_task_running(/*running*/ true);
+    chat.dispatch_command(SlashCommand::Approvals);
+    chat.bottom_pane.set_composer_text(
+        "queued after approvals".to_string(),
+        Vec::new(),
+        Vec::new(),
+    );
+    chat.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+    // Completing the active turn should replay /approvals and stop draining so
+    // we do not submit the queued message behind the still-open popup.
+    chat.handle_codex_event(Event {
+        id: "turn-1".into(),
+        msg: EventMsg::TurnComplete(test_turn_complete_event(
+            "turn-1",
+            /*last_agent_message*/ None::<String>,
+        )),
+    });
+    assert!(chat.has_active_view());
+    assert_eq!(chat.queued_user_messages.len(), 1);
+    assert_eq!(
+        chat.queued_user_messages.front().unwrap().text,
+        "queued after approvals"
+    );
+    assert_matches!(op_rx.try_recv(), Err(TryRecvError::Empty));
+
+    // Once the popup is dismissed, the queued message can be submitted.
+    chat.handle_key_event(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    assert!(!chat.has_active_view());
+    chat.maybe_send_next_queued_input();
+
+    match next_submit_op(&mut op_rx) {
+        Op::UserTurn { items, .. } => assert_eq!(
+            items,
+            vec![UserInput::Text {
+                text: "queued after approvals".to_string(),
+                text_elements: Vec::new(),
+            }]
+        ),
+        other => panic!("expected queued follow-up Op::UserTurn, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn queued_async_session_switch_command_waits_before_next_message() {
+    let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(Some("gpt-5")).await;
+    chat.thread_id = Some(ThreadId::new());
+
+    // Simulate an active turn and queue follow-ups in order: /new, then a
+    // plain message.
+    chat.bottom_pane.set_task_running(/*running*/ true);
+    chat.dispatch_command(SlashCommand::New);
+    chat.bottom_pane
+        .set_composer_text("queued after new".to_string(), Vec::new(), Vec::new());
+    chat.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+    // Completing the active turn should replay /new and stop draining so the
+    // queued message does not submit in the old session context.
+    chat.handle_codex_event(Event {
+        id: "turn-1".into(),
+        msg: EventMsg::TurnComplete(test_turn_complete_event(
+            "turn-1",
+            /*last_agent_message*/ None::<String>,
+        )),
+    });
+    assert_matches!(rx.try_recv(), Ok(AppEvent::NewSession));
+    assert_eq!(chat.queued_user_messages.len(), 1);
+    assert_eq!(
+        chat.queued_user_messages.front().unwrap().text,
+        "queued after new"
+    );
+    assert_matches!(op_rx.try_recv(), Err(TryRecvError::Empty));
+}
+
+#[tokio::test]
+async fn queued_sandbox_read_root_command_waits_before_next_message() {
+    let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(Some("gpt-5")).await;
+    chat.thread_id = Some(ThreadId::new());
+
+    // Simulate an active turn and queue follow-ups in order: a sandbox grant
+    // command with args, then a plain message.
+    chat.bottom_pane.set_task_running(/*running*/ true);
+    chat.queue_slash_command(QueuedSlashCommand::CommandWithArgs {
+        cmd: SlashCommand::SandboxReadRoot,
+        args: "/tmp".to_string(),
+        text_elements: Vec::new(),
+        local_images: Vec::new(),
+        remote_image_urls: Vec::new(),
+        mention_bindings: Vec::new(),
+    });
+    chat.bottom_pane.set_composer_text(
+        "queued after sandbox grant".to_string(),
+        Vec::new(),
+        Vec::new(),
+    );
+    chat.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+    // Completing the active turn should replay the sandbox grant command and
+    // stop draining so we do not submit the queued message before grant flow
+    // completion.
+    chat.handle_codex_event(Event {
+        id: "turn-1".into(),
+        msg: EventMsg::TurnComplete(test_turn_complete_event(
+            "turn-1",
+            /*last_agent_message*/ None::<String>,
+        )),
+    });
+    assert_matches!(
+        rx.try_recv(),
+        Ok(AppEvent::BeginWindowsSandboxGrantReadRoot { path }) if path == "/tmp"
+    );
+    assert_eq!(chat.queued_user_messages.len(), 1);
+    assert_eq!(
+        chat.queued_user_messages.front().unwrap().text,
+        "queued after sandbox grant"
+    );
+    assert_matches!(op_rx.try_recv(), Err(TryRecvError::Empty));
+}
+
+#[tokio::test]
+async fn queued_elevate_sandbox_command_waits_before_next_message() {
+    let (mut chat, _rx, mut op_rx) = make_chatwidget_manual(Some("gpt-5")).await;
+    chat.thread_id = Some(ThreadId::new());
+
+    // Simulate an active turn and queue follow-ups in order: sandbox setup,
+    // then a plain message.
+    chat.bottom_pane.set_task_running(/*running*/ true);
+    chat.queue_slash_command(QueuedSlashCommand::Command(SlashCommand::ElevateSandbox));
+    chat.bottom_pane.set_composer_text(
+        "queued after sandbox setup".to_string(),
+        Vec::new(),
+        Vec::new(),
+    );
+    chat.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+    // Completing the active turn should replay the sandbox setup command and
+    // stop draining so we do not submit the queued message ahead of any async
+    // sandbox-state transition it triggers.
+    chat.handle_codex_event(Event {
+        id: "turn-1".into(),
+        msg: EventMsg::TurnComplete(test_turn_complete_event(
+            "turn-1",
+            /*last_agent_message*/ None::<String>,
+        )),
+    });
+    assert_eq!(chat.queued_user_messages.len(), 1);
+    assert_eq!(
+        chat.queued_user_messages.front().unwrap().text,
+        "queued after sandbox setup"
+    );
+    assert_matches!(op_rx.try_recv(), Err(TryRecvError::Empty));
+}
+
+#[tokio::test]
 async fn ctrl_d_quits_without_prompt() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
 
