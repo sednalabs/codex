@@ -7617,6 +7617,9 @@ impl ChatWidget {
                 if !self.no_modal_or_popup_active() {
                     return true;
                 }
+                if self.bottom_pane.is_task_running() {
+                    return true;
+                }
                 matches!(
                     cmd,
                     SlashCommand::Init
