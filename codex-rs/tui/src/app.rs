@@ -1235,6 +1235,7 @@ impl App {
 
     fn apply_active_thread_session_state_to_config(&mut self, config: &mut Config) {
         let chat_config = self.chat_widget.config_ref();
+        config.model = Some(self.chat_widget.current_model().to_string());
         config.cwd = chat_config.cwd.clone();
         config.model_provider_id = chat_config.model_provider_id.clone();
         config.service_tier = self.chat_widget.current_service_tier();
@@ -3569,6 +3570,7 @@ impl App {
     fn fresh_session_config(&self) -> Config {
         let mut config = self.config.clone();
         let chat_config = self.chat_widget.config_ref();
+        config.model = Some(self.chat_widget.current_model().to_string());
         config.cwd = chat_config.cwd.clone();
         config.model_provider_id = chat_config.model_provider_id.clone();
         config.service_tier = self.chat_widget.current_service_tier();
@@ -10486,6 +10488,7 @@ guardian_approval = true
         assert_eq!(
             (
                 app.config.cwd.to_path_buf(),
+                app.config.model.clone(),
                 app.config.model_provider_id.clone(),
                 app.config.service_tier,
                 app.config.permissions.approval_policy.value(),
@@ -10495,6 +10498,7 @@ guardian_approval = true
             ),
             (
                 session_cwd,
+                Some("gpt-session".to_string()),
                 "test-provider".to_string(),
                 Some(codex_protocol::config_types::ServiceTier::Fast),
                 AskForApproval::Never,
@@ -10587,6 +10591,7 @@ guardian_approval = true
         assert_eq!(
             (
                 config.cwd.to_path_buf(),
+                config.model,
                 config.model_provider_id,
                 config.service_tier,
                 config.permissions.approval_policy.value(),
@@ -10596,6 +10601,7 @@ guardian_approval = true
             ),
             (
                 session_cwd,
+                Some("gpt-session".to_string()),
                 "test-provider".to_string(),
                 Some(codex_protocol::config_types::ServiceTier::Fast),
                 AskForApproval::Never,
