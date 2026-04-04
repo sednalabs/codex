@@ -1,41 +1,28 @@
-<p align="center"><code>npm i -g @openai/codex</code><br />or <code>brew install --cask codex</code></p>
-<p align="center"><strong>Codex CLI</strong> is a coding agent from OpenAI that runs locally on your computer.
+<p align="center"><strong>Codex Sedna</strong> is the SednaLabs downstream fork of Codex CLI.
 <p align="center">
   <img src="https://github.com/openai/codex/blob/main/.github/codex-cli-splash.png" alt="Codex CLI splash" width="80%" />
 </p>
 </br>
-If you want Codex in your code editor (VS Code, Cursor, Windsurf), <a href="https://developers.openai.com/codex/ide">install in your IDE.</a>
-</br>If you want the desktop app experience, run <code>codex app</code> or visit <a href="https://chatgpt.com/codex?app-landing-page=true">the Codex App page</a>.
-</br>If you are looking for the <em>cloud-based agent</em> from OpenAI, <strong>Codex Web</strong>, go to <a href="https://chatgpt.com/codex">chatgpt.com/codex</a>.</p>
+Codex Sedna keeps close to the upstream Codex experience while shipping Sedna-owned releases, downstream CI policy, and fork-specific operational behavior.
+</br>Use <a href="https://github.com/SednaLabs/codex/releases/latest">SednaLabs/codex releases</a> for supported binaries, and see <a href="./docs/downstream.md">downstream notes</a> plus <a href="./docs/sedna-release.md">Sedna release policy</a> for fork-specific workflow details.
+</br>If you are looking for the upstream OpenAI distribution, IDE integrations, or Codex Web, use the official <a href="https://developers.openai.com/codex">Codex docs</a> and <a href="https://chatgpt.com/codex">chatgpt.com/codex</a>.</p>
 
 ---
 
 ## Codex Sedna identity
 
-This repository publishes the Codex Sedna fork maintained by SednaLabs, not the upstream mirror. We keep the openai/codex sources in sync, but Sedna controls the release cadence, naming (e.g., `v0.119.0-alpha.2-sedna.1`), and CI described in `docs/sedna-release.md` and `docs/github-ci-offload.md`. The sections under `docs/downstream.md` explain how we track `upstream/main`, protect the downstream branch, and manage fork-only additions. Expect official Sedna binaries and release notes to live on the `SednaLabs/codex` GitHub Releases page rather than the upstream repo, and use those artifacts or the published `npm`/Homebrew packages when you want the Sedna experience.
+This repository publishes the Codex Sedna fork maintained by SednaLabs, not a lightly edited upstream mirror. We keep the openai/codex sources in sync, but Sedna controls the public release cadence, version naming (for example, `v0.119.0-alpha.2-sedna.1`), and downstream CI policy described in `docs/sedna-release.md` and `docs/github-ci-offload.md`. The sections under `docs/downstream.md` explain how we track `upstream/main`, protect the downstream branch, and manage fork-only additions.
 
 ---
 
 ## Quickstart
 
-### Installing and running Codex CLI
+### Installing and running Codex Sedna
 
-Install globally with your preferred package manager:
+The supported Sedna distribution path is the latest GitHub Release from `SednaLabs/codex`.
 
-```shell
-# Install using npm
-npm install -g @openai/codex
-```
-
-```shell
-# Install using Homebrew
-brew install --cask codex
-```
-
-Then simply run `codex` to get started.
-
-<details>
-<summary>You can also go to the <a href="https://github.com/SednaLabs/codex/releases/latest">latest GitHub Release</a> and download the appropriate binary for your platform.</summary>
+<details open>
+<summary>Download a binary from the <a href="https://github.com/SednaLabs/codex/releases/latest">latest GitHub Release</a>.</summary>
 
 Each GitHub Release contains many executables, but in practice, you likely want one of these:
 
@@ -50,6 +37,10 @@ Each archive contains a single entry with the platform baked into the name (e.g.
 
 </details>
 
+If you prefer to build from source, follow [`docs/install.md`](./docs/install.md).
+
+The upstream `npm install -g @openai/codex` and `brew install --cask codex` paths continue to point at the OpenAI distribution rather than Sedna-owned release artifacts.
+
 ### Using Codex with your ChatGPT plan
 
 Run `codex` and select **Sign in with ChatGPT**. We recommend signing into your ChatGPT account to use Codex as part of your Plus, Pro, Team, Edu, or Enterprise plan. [Learn more about what's included in your ChatGPT plan](https://help.openai.com/en/articles/11369540-codex-in-chatgpt).
@@ -58,10 +49,11 @@ You can also use Codex with an API key, but this requires [additional setup](htt
 
 ## Docs
 
+- [**Sedna release policy**](./docs/sedna-release.md)
+- [**Downstream / fork notes**](./docs/downstream.md)
 - [**Codex Documentation**](https://developers.openai.com/codex)
 - [**Contributing**](./docs/contributing.md)
 - [**Installing & building**](./docs/install.md)
 - [**Open source fund**](./docs/open-source-fund.md)
-- [**Downstream / fork notes**](./docs/downstream.md)
 
 This repository is licensed under the [Apache-2.0 License](LICENSE).
