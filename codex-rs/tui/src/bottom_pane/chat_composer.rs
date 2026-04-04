@@ -1240,6 +1240,8 @@ impl ChatComposer {
 
     /// Handle key event when the slash-command popup is visible.
     fn handle_key_event_with_slash_popup(&mut self, key_event: KeyEvent) -> (InputResult, bool) {
+        let is_bang_shell_command = self.is_bang_shell_command();
+
         if self.handle_shortcut_overlay_key(&key_event) {
             return (InputResult::None, true);
         }
@@ -1346,7 +1348,8 @@ impl ChatComposer {
                 ..
             } if (c == 'q' || c == 'Q')
                 && modifiers.contains(KeyModifiers::CONTROL)
-                && modifiers.contains(KeyModifiers::SHIFT) =>
+                && modifiers.contains(KeyModifiers::SHIFT)
+                && !is_bang_shell_command =>
             {
                 if let Some(sel) = popup.selected_item() {
                     let CommandItem::Builtin(cmd) = sel;
