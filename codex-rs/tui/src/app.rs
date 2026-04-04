@@ -1757,6 +1757,11 @@ impl App {
         token_usage
     }
 
+    async fn sync_session_tree_token_usage_into_chat_widget(&mut self) {
+        let usage = self.session_tree_token_usage().await;
+        self.chat_widget.set_session_total_token_usage(usage);
+    }
+
     async fn current_session_summary(&self) -> Option<SessionSummary> {
         session_summary(
             self.session_tree_token_usage().await,
@@ -2548,6 +2553,10 @@ impl App {
         thread_id: ThreadId,
         notification: ServerNotification,
     ) -> Result<()> {
+        let is_token_usage_update = matches!(
+            &notification,
+            ServerNotification::ThreadTokenUsageUpdated(_)
+        );
         let inferred_session = self
             .infer_session_for_thread_notification(thread_id, &notification)
             .await;
@@ -2583,6 +2592,9 @@ impl App {
             }
         }
         self.refresh_pending_thread_approvals().await;
+        if is_token_usage_update {
+            self.sync_session_tree_token_usage_into_chat_widget().await;
+        }
         Ok(())
     }
 
@@ -3621,9 +3633,20 @@ impl App {
         };
 
         let mut disconnected = false;
+        let mut saw_token_usage_update = false;
         loop {
             match rx.try_recv() {
-                Ok(event) => self.handle_thread_event_now(event),
+                Ok(event) => {
+                    if matches!(
+                        event,
+                        ThreadBufferedEvent::Notification(
+                            ServerNotification::ThreadTokenUsageUpdated(_)
+                        )
+                    ) {
+                        saw_token_usage_update = true;
+                    }
+                    self.handle_thread_event_now(event);
+                }
                 Err(TryRecvError::Empty) => break,
                 Err(TryRecvError::Disconnected) => {
                     disconnected = true;
@@ -3636,6 +3659,10 @@ impl App {
             self.active_thread_rx = Some(rx);
         } else {
             self.clear_active_thread().await;
+        }
+
+        if saw_token_usage_update {
+            self.sync_session_tree_token_usage_into_chat_widget().await;
         }
 
         if self.backtrack_render_pending {
@@ -5929,7 +5956,14 @@ impl App {
                 .await;
         }
 
+        let sync_session_tree_usage = matches!(
+            &event,
+            ThreadBufferedEvent::Notification(ServerNotification::ThreadTokenUsageUpdated(_))
+        );
         self.handle_thread_event_now(event);
+        if sync_session_tree_usage {
+            self.sync_session_tree_token_usage_into_chat_widget().await;
+        }
         if self.backtrack_render_pending {
             tui.frame_requester().schedule_frame();
         }
@@ -6509,6 +6543,7 @@ mod tests {
     use codex_protocol::protocol::SandboxPolicy;
     use codex_protocol::protocol::SessionConfiguredEvent;
     use codex_protocol::protocol::SessionSource;
+    use codex_protocol::protocol::TokenUsageInfo;
     use codex_protocol::protocol::TurnContextItem;
     use codex_protocol::user_input::TextElement;
     use codex_protocol::user_input::UserInput;
@@ -7848,6 +7883,77 @@ mod tests {
         assert_eq!(
             app.chat_widget.status_line_text(),
             Some("950K window".into())
+        );
+    }
+
+    #[tokio::test]
+    async fn sync_session_tree_token_usage_updates_combined_status_line_items() {
+        let mut app = make_test_app().await;
+        let main_thread_id = ThreadId::new();
+        let subagent_thread_id = ThreadId::new();
+        let cwd = PathBuf::from("/tmp/project");
+        let main_session = test_thread_session(main_thread_id, cwd.clone());
+        let subagent_session = test_thread_session(subagent_thread_id, cwd);
+
+        app.primary_thread_id = Some(main_thread_id);
+        app.chat_widget.handle_thread_session(main_session.clone());
+        app.chat_widget.set_token_info(Some(TokenUsageInfo {
+            total_token_usage: TokenUsage {
+                input_tokens: 900,
+                cached_input_tokens: 100,
+                output_tokens: 300,
+                total_tokens: 1_300,
+                ..TokenUsage::default()
+            },
+            last_token_usage: TokenUsage::default(),
+            model_context_window: Some(950_000),
+        }));
+        app.chat_widget.setup_status_line(vec![
+            crate::bottom_pane::StatusLineItem::CombinedUsedTokens,
+            crate::bottom_pane::StatusLineItem::CombinedInputTokens,
+            crate::bottom_pane::StatusLineItem::CombinedOutputTokens,
+        ]);
+
+        let subagent_channel =
+            ThreadEventChannel::new_with_session(/*capacity*/ 8, subagent_session, Vec::new());
+        {
+            let mut store = subagent_channel.store.lock().await;
+            store.push_notification(ServerNotification::ThreadTokenUsageUpdated(
+                ThreadTokenUsageUpdatedNotification {
+                    thread_id: subagent_thread_id.to_string(),
+                    turn_id: "turn-2".to_string(),
+                    token_usage: ThreadTokenUsage {
+                        total: TokenUsageBreakdown {
+                            total_tokens: 2_600,
+                            input_tokens: 1_600,
+                            cached_input_tokens: 400,
+                            output_tokens: 600,
+                            reasoning_output_tokens: 0,
+                        },
+                        last: TokenUsageBreakdown {
+                            total_tokens: 0,
+                            input_tokens: 0,
+                            cached_input_tokens: 0,
+                            output_tokens: 0,
+                            reasoning_output_tokens: 0,
+                        },
+                        model_context_window: None,
+                    },
+                },
+            ));
+        }
+        app.thread_event_channels.insert(
+            main_thread_id,
+            ThreadEventChannel::new_with_session(/*capacity*/ 8, main_session, Vec::new()),
+        );
+        app.thread_event_channels
+            .insert(subagent_thread_id, subagent_channel);
+
+        app.sync_session_tree_token_usage_into_chat_widget().await;
+
+        assert_eq!(
+            app.chat_widget.status_line_text(),
+            Some("3.9K session used · 2.5K session in · 900 session out".into())
         );
     }
 
