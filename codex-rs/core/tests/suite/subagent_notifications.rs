@@ -19,11 +19,9 @@ use core_test_support::test_codex::TestCodex;
 use core_test_support::test_codex::test_codex;
 use pretty_assertions::assert_eq;
 use serde_json::json;
-use std::collections::HashSet;
 use std::time::Duration;
 use tokio::sync::broadcast::Receiver;
 use tokio::sync::broadcast::error::RecvError;
-use tokio::sync::broadcast::error::TryRecvError;
 use tokio::time::Instant;
 use tokio::time::sleep;
 use wiremock::MockServer;
@@ -280,136 +278,6 @@ async fn spawn_child_and_capture_snapshot(
         .await)
 }
 
-async fn spawn_child_and_capture_snapshot_with_spawn_timeout(
-    server: &MockServer,
-    spawn_args: serde_json::Value,
-    spawn_timeout: Duration,
-    configure_test: impl FnOnce(
-        core_test_support::test_codex::TestCodexBuilder,
-    ) -> core_test_support::test_codex::TestCodexBuilder,
-) -> Result<ThreadConfigSnapshot> {
-    let spawn_args = serde_json::to_string(&spawn_args)?;
-
-    mount_sse_once_match(
-        server,
-        |req: &wiremock::Request| body_contains(req, TURN_1_PROMPT),
-        sse(vec![
-            ev_response_created("resp-turn1-1"),
-            ev_function_call(SPAWN_CALL_ID, "spawn_agent", &spawn_args),
-            ev_completed("resp-turn1-1"),
-        ]),
-    )
-    .await;
-
-    let child_request_log = mount_sse_once_match(
-        server,
-        |req: &wiremock::Request| {
-            body_contains(req, CHILD_PROMPT) && !body_contains(req, SPAWN_CALL_ID)
-        },
-        sse(vec![
-            ev_response_created("resp-child-1"),
-            ev_assistant_message("msg-child-1", "child done"),
-            ev_completed("resp-child-1"),
-        ]),
-    )
-    .await;
-
-    let _turn1_followup = mount_sse_once_match(
-        server,
-        |req: &wiremock::Request| body_contains(req, SPAWN_CALL_ID),
-        sse(vec![
-            ev_response_created("resp-turn1-2"),
-            ev_assistant_message("msg-turn1-2", "parent done"),
-            ev_completed("resp-turn1-2"),
-        ]),
-    )
-    .await;
-
-    #[allow(clippy::expect_used)]
-    let mut builder = configure_test(test_codex().with_config(|config| {
-        config
-            .features
-            .enable(Feature::Collab)
-            .expect("test config should allow feature update");
-        config.model = Some(INHERITED_MODEL.to_string());
-        config.model_reasoning_effort = Some(INHERITED_REASONING_EFFORT);
-    }));
-    let test = builder.build(server).await?;
-    let initial_thread_ids: HashSet<ThreadId> = test
-        .thread_manager
-        .list_thread_ids()
-        .await
-        .into_iter()
-        .collect();
-    let mut thread_created_rx = test.thread_manager.subscribe_thread_created();
-    test.submit_turn(TURN_1_PROMPT).await?;
-    let _ = wait_for_requests(&child_request_log).await?;
-
-    let poll_for_spawned_thread_id = || async {
-        let deadline = Instant::now() + spawn_timeout;
-        loop {
-            let new_thread_ids: Vec<ThreadId> = test
-                .thread_manager
-                .list_thread_ids()
-                .await
-                .into_iter()
-                .filter(|thread_id| !initial_thread_ids.contains(thread_id))
-                .collect();
-            if let [spawned_thread_id] = new_thread_ids.as_slice() {
-                return Some(spawned_thread_id.to_string());
-            }
-            if Instant::now() >= deadline {
-                return None;
-            }
-            sleep(Duration::from_millis(10)).await;
-        }
-    };
-
-    let spawned_id = match wait_for_spawned_thread_id_from_receiver(
-        &mut thread_created_rx,
-        spawn_timeout,
-    )
-    .await
-    {
-        Ok(spawned_id) => spawned_id,
-        Err(err) => {
-            if let Some(spawned_id) = poll_for_spawned_thread_id().await {
-                spawned_id
-            } else {
-                let new_thread_ids: Vec<ThreadId> = test
-                    .thread_manager
-                    .list_thread_ids()
-                    .await
-                    .into_iter()
-                    .filter(|thread_id| !initial_thread_ids.contains(thread_id))
-                    .collect();
-                let receiver_state = match thread_created_rx.try_recv() {
-                    Ok(thread_id) => {
-                        format!("unexpected buffered thread id after timeout: {thread_id}")
-                    }
-                    Err(TryRecvError::Empty) => "empty".to_string(),
-                    Err(TryRecvError::Lagged(skipped)) => {
-                        format!("lagged ({skipped} messages dropped)")
-                    }
-                    Err(TryRecvError::Closed) => "closed".to_string(),
-                };
-                let captured_ops =
-                    codex_core::test_support::captured_ops(test.thread_manager.as_ref());
-                anyhow::bail!(
-                    "{err}; thread_created_rx_state={receiver_state}; new_thread_ids={new_thread_ids:?}; captured_ops={captured_ops:?}"
-                );
-            }
-        }
-    };
-    let thread_id = ThreadId::from_string(&spawned_id)?;
-    Ok(test
-        .thread_manager
-        .get_thread(thread_id)
-        .await?
-        .config_snapshot()
-        .await)
-}
-
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn subagent_notification_is_included_without_wait() -> Result<()> {
     skip_if_no_network!(Ok(()));
@@ -629,42 +497,121 @@ async fn spawn_agent_preserves_exact_requested_model_slug_through_role_layering(
     skip_if_no_network!(Ok(()));
 
     let server = start_mock_server().await;
-    let child_snapshot = spawn_child_and_capture_snapshot_with_spawn_timeout(
-        &server,
-        json!({
-            "message": CHILD_PROMPT,
-            "agent_type": "custom",
-            "model": REQUESTED_EXACT_MODEL,
-            "reasoning_effort": REQUESTED_REASONING_EFFORT,
-        }),
-        Duration::from_secs(10),
-        |builder| {
-            builder.with_config(|config| {
-                let role_path = config.codex_home.join("custom-role.toml");
-                std::fs::write(
-                    &role_path,
-                    format!(
-                        "model = \"{ROLE_MODEL}\"\nmodel_reasoning_effort = \"{ROLE_REASONING_EFFORT}\"\n",
-                    ),
-                )
-                .expect("write role config");
-                config.agent_roles.insert(
-                    "custom".to_string(),
-                    AgentRoleConfig {
-                        description: Some("Custom role".to_string()),
-                        config_file: Some(role_path),
-                        nickname_candidates: None,
-                    },
-                );
-            })
-        },
-    )
-    .await?;
+    let spawn_args = serde_json::to_string(&json!({
+        "message": CHILD_PROMPT,
+        "agent_type": "custom",
+        "model": REQUESTED_EXACT_MODEL,
+        "reasoning_effort": REQUESTED_REASONING_EFFORT,
+    }))?;
 
-    assert_eq!(child_snapshot.model, REQUESTED_EXACT_MODEL);
+    mount_sse_once_match(
+        &server,
+        |req: &wiremock::Request| body_contains(req, TURN_1_PROMPT),
+        sse(vec![
+            ev_response_created("resp-turn1-1"),
+            ev_function_call(SPAWN_CALL_ID, "spawn_agent", &spawn_args),
+            ev_completed("resp-turn1-1"),
+        ]),
+    )
+    .await;
+
+    let child_request_log = mount_sse_once_match(
+        &server,
+        |req: &wiremock::Request| {
+            body_contains(req, CHILD_PROMPT) && !body_contains(req, SPAWN_CALL_ID)
+        },
+        sse(vec![
+            ev_response_created("resp-child-1"),
+            ev_assistant_message("msg-child-1", "child done"),
+            ev_completed("resp-child-1"),
+        ]),
+    )
+    .await;
+
+    let _turn1_followup = mount_sse_once_match(
+        &server,
+        |req: &wiremock::Request| body_contains(req, SPAWN_CALL_ID),
+        sse(vec![
+            ev_response_created("resp-turn1-2"),
+            ev_assistant_message("msg-turn1-2", "parent done"),
+            ev_completed("resp-turn1-2"),
+        ]),
+    )
+    .await;
+
+    let mut builder = test_codex().with_config(|config| {
+        config
+            .features
+            .enable(Feature::Collab)
+            .expect("test config should allow feature update");
+        config.model = Some(INHERITED_MODEL.to_string());
+        config.model_reasoning_effort = Some(INHERITED_REASONING_EFFORT);
+    });
+    builder = builder.with_config(|config| {
+        let role_path = config.codex_home.join("custom-role.toml");
+        std::fs::write(
+            &role_path,
+            format!(
+                "model = \"{ROLE_MODEL}\"\nmodel_reasoning_effort = \"{ROLE_REASONING_EFFORT}\"\n",
+            ),
+        )
+        .expect("write role config");
+        config.agent_roles.insert(
+            "custom".to_string(),
+            AgentRoleConfig {
+                description: Some("Custom role".to_string()),
+                config_file: Some(role_path),
+                nickname_candidates: None,
+            },
+        );
+    });
+    let test = builder.build(&server).await?;
+    test.submit_turn(TURN_1_PROMPT).await?;
+
+    let child_requests = wait_for_requests(&child_request_log).await?;
+    let child_body = child_requests
+        .last()
+        .expect("expected spawned child request")
+        .body_json();
+    assert_eq!(child_body["model"].as_str(), Some(REQUESTED_EXACT_MODEL));
+    assert_eq!(child_body["reasoning"]["effort"].as_str(), Some("low"));
+
+    let function_call_output = child_body["input"]
+        .as_array()
+        .and_then(|items| {
+            items.iter().find(|item| {
+                item["type"].as_str() == Some("function_call_output")
+                    && item["call_id"].as_str() == Some(SPAWN_CALL_ID)
+            })
+        })
+        .unwrap_or_else(|| panic!("expected child request to include spawn_agent output"));
+    let output_json = match &function_call_output["output"] {
+        serde_json::Value::String(text) => serde_json::from_str::<serde_json::Value>(text)
+            .expect("spawn_agent output string should be valid json"),
+        serde_json::Value::Object(output) => output["content"]
+            .as_str()
+            .map(|text| {
+                serde_json::from_str::<serde_json::Value>(text)
+                    .expect("spawn_agent output content should be valid json")
+            })
+            .unwrap_or_else(|| panic!("spawn_agent output should include json content")),
+        other => panic!("unexpected spawn_agent output shape: {other:?}"),
+    };
     assert_eq!(
-        child_snapshot.reasoning_effort,
-        Some(REQUESTED_REASONING_EFFORT)
+        output_json["requested_model"].as_str(),
+        Some(REQUESTED_EXACT_MODEL)
+    );
+    assert_eq!(
+        output_json["effective_model"].as_str(),
+        Some(REQUESTED_EXACT_MODEL)
+    );
+    assert_eq!(
+        output_json["requested_reasoning_effort"].as_str(),
+        Some("low")
+    );
+    assert_eq!(
+        output_json["effective_reasoning_effort"].as_str(),
+        Some("low")
     );
 
     Ok(())
