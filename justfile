@@ -129,10 +129,6 @@ core-subagent-model-pinning-targeted:
     CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo test -p codex-tools spawn_agent_tool_ --lib -- --test-threads=1
     CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo test -p codex-core --test all suite::subagent_notifications::spawn_agent_preserves_exact_requested_model_slug_through_role_layering -- --exact --test-threads=1
 
-# Focused code-mode declaration slice for tool metadata augmentation contracts.
-code-mode-declaration-targeted:
-    cargo test -p codex-tools code_mode:: --lib -- --test-threads=1
-
 # Focused persisted-descendant inventory slice for subtree close/resume behavior.
 core-persisted-subagent-descendants-targeted:
     cargo test -p codex-state thread_spawn_edges_track_directional_status --lib -- --exact --test-threads=1
