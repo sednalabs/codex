@@ -38,7 +38,6 @@ use std::fs;
 use std::fs::FileTimes;
 use std::fs::OpenOptions;
 use std::path::Path;
-use std::path::PathBuf;
 use tempfile::TempDir;
 use tokio::time::timeout;
 use uuid::Uuid;

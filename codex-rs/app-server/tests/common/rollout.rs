@@ -24,7 +24,7 @@ pub fn rollout_path(codex_home: &Path, filename_ts: &str, thread_id: &str) -> Pa
 }
 
 pub fn default_rollout_cwd() -> Result<PathBuf> {
-    Ok(std::env::current_dir()?)
+    Ok(fs::canonicalize(std::env::current_dir()?)?)
 }
 
 /// Create a minimal rollout file under `CODEX_HOME/sessions/YYYY/MM/DD/`.
