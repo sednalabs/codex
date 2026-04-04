@@ -116,6 +116,13 @@
       "lane_sets": ["all", "ledger", "subagents", "core-carry"]
     },
     {
+      "lane_id": "codex.code-mode-declaration-targeted",
+      "run_command": "just --justfile ../justfile code-mode-declaration-targeted",
+      "groups": ["core"],
+      "lane_sets": ["all", "core-carry"],
+      "install_nextest": true
+    },
+    {
       "lane_id": "codex.app-server-protocol-test",
       "run_command": "cargo test --locked -p codex-app-server-protocol",
       "groups": ["ui_protocol"],

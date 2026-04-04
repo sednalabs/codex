@@ -39,6 +39,7 @@ Focused targeted lanes for iterative work on the current carry seams:
 - `codex.core-subagent-notification-visibility-targeted`
 - `codex.core-multi-agent-orchestration-targeted`
 - `codex.core-persisted-subagent-descendants-targeted`
+- `codex.code-mode-declaration-targeted`
 - `codex.core-context-serialization-targeted`
 - `codex.core-attestation-targeted`
 - `codex.state-spawn-lineage-contract-targeted`
@@ -118,7 +119,7 @@ GitHub Actions lane naming (`.github/workflows/sedna-heavy-tests.yml`):
 | Sub-agent completion-notification parser + TUI render surface (`protocol` + `tui`) | `codex.core-subagent-notification-visibility-targeted` | `parse_subagent_notification_response_item_*`; `raw_response_subagent_notification_renders_history` |
 | Sub-agent inventory + blocking join surface | `codex.core-multi-agent-orchestration-targeted` | `multi_agent_v2_list_agents_returns_completed_status_and_last_task_message`; `multi_agent_v2_wait_agent_honors_return_when_all`; `spawn_wait_and_list_agents_tool_descriptions_have_guidance_updates` |
 | Persisted sub-agent descendant status across close + rollout resume | `codex.core-persisted-subagent-descendants-targeted` | `thread_spawn_edges_track_directional_status` |
-| Code-mode declaration formatting + namespaced tool metadata | `core-carry-core-smoke` | `code_mode_exports_all_tools_metadata_for_builtin_tools`; `code_mode_exports_all_tools_metadata_for_namespaced_mcp_tools` |
+| Code-mode declaration formatting + namespaced tool metadata | `codex.code-mode-declaration-targeted` | `augment_tool_spec_for_code_mode_*`; `tool_spec_to_code_mode_tool_definition_*`; `code_mode_declaration_normalization_is_layout_tolerant_and_semantically_strict`; `code_mode_exports_all_tools_metadata_for_builtin_tools`; `code_mode_exports_all_tools_metadata_for_namespaced_mcp_tools` |
 | Unified-exec blocking wait semantics | `core-carry-core-smoke` | `exec_command_wait_until_terminal_returns_exit_metadata`; `exec_command_tool_exposes_blocking_wait_parameters`; `write_stdin_tool_exposes_blocking_wait_parameters` |
 | Turn-complete compaction count metadata | `codex.app-server-protocol-test` | `preserves_compaction_only_turn`; broader `TurnCompleteEvent` shape coverage in `codex-core`, `codex-exec`, and `codex-tui` tests keeps `compaction_events_in_turn` wired through downstream consumers |
 | App-server rollout cwd portability across thread list/read/resume summary surfaces | `codex.app-server-thread-cwd-targeted` | `get_conversation_summary_by_*`; `thread_list_*`; `thread_read_returns_summary_without_turns`; `thread_resume_returns_rollout_history` |
