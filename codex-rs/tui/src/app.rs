@@ -7204,6 +7204,121 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn front_queued_follow_up_runs_before_back_queued_follow_up() {
+        let (mut app, _app_event_rx, mut op_rx) = make_test_app_with_channels().await;
+        let thread_id = ThreadId::new();
+        let session = test_thread_session(thread_id, PathBuf::from("/tmp/project"));
+        app.chat_widget.handle_thread_session(session.clone());
+        app.chat_widget.handle_server_notification(
+            turn_started_notification(thread_id, "turn-1"),
+            /*replay_kind*/ None,
+        );
+        app.chat_widget.handle_server_notification(
+            agent_message_delta_notification(thread_id, "turn-1", "agent-1", "streaming"),
+            /*replay_kind*/ None,
+        );
+        while op_rx.try_recv().is_ok() {}
+
+        app.chat_widget
+            .apply_external_edit("queued follow-up".to_string());
+        app.chat_widget
+            .handle_key_event(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+        app.chat_widget.apply_external_edit("run next".to_string());
+        app.chat_widget.handle_key_event(KeyEvent::new(
+            KeyCode::Char('q'),
+            KeyModifiers::CONTROL.union(KeyModifiers::SHIFT),
+        ));
+
+        assert_eq!(
+            app.chat_widget.queued_user_message_texts(),
+            vec!["run next".to_string(), "queued follow-up".to_string()]
+        );
+
+        app.chat_widget.handle_server_notification(
+            turn_completed_notification(thread_id, "turn-1", TurnStatus::Completed),
+            /*replay_kind*/ None,
+        );
+
+        match next_user_turn_op(&mut op_rx) {
+            Op::UserTurn { items, .. } => assert_eq!(
+                items,
+                vec![UserInput::Text {
+                    text: "run next".to_string(),
+                    text_elements: Vec::new(),
+                }]
+            ),
+            other => panic!("expected front-queued follow-up submission, got {other:?}"),
+        }
+
+        assert_eq!(
+            app.chat_widget.queued_user_message_texts(),
+            vec!["queued follow-up".to_string()]
+        );
+    }
+
+    #[tokio::test]
+    async fn replayed_turn_complete_submits_restored_front_queued_follow_up_first() {
+        let (mut app, _app_event_rx, _op_rx) = make_test_app_with_channels().await;
+        let thread_id = ThreadId::new();
+        let session = test_thread_session(thread_id, PathBuf::from("/tmp/project"));
+        app.chat_widget.handle_thread_session(session.clone());
+        app.chat_widget.handle_server_notification(
+            turn_started_notification(thread_id, "turn-1"),
+            /*replay_kind*/ None,
+        );
+        app.chat_widget.handle_server_notification(
+            agent_message_delta_notification(thread_id, "turn-1", "agent-1", "streaming"),
+            /*replay_kind*/ None,
+        );
+        app.chat_widget
+            .apply_external_edit("queued follow-up".to_string());
+        app.chat_widget
+            .handle_key_event(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+        app.chat_widget.apply_external_edit("run next".to_string());
+        app.chat_widget.handle_key_event(KeyEvent::new(
+            KeyCode::Char('q'),
+            KeyModifiers::CONTROL.union(KeyModifiers::SHIFT),
+        ));
+        let input_state = app
+            .chat_widget
+            .capture_thread_input_state()
+            .expect("expected queued follow-up state");
+
+        let (chat_widget, _app_event_tx, _rx, mut new_op_rx) =
+            make_chatwidget_manual_with_sender().await;
+        app.chat_widget = chat_widget;
+        app.chat_widget.handle_thread_session(session.clone());
+        while new_op_rx.try_recv().is_ok() {}
+        app.replay_thread_snapshot(
+            ThreadEventSnapshot {
+                session: None,
+                turns: Vec::new(),
+                events: vec![ThreadBufferedEvent::Notification(
+                    turn_completed_notification(thread_id, "turn-1", TurnStatus::Completed),
+                )],
+                input_state: Some(input_state),
+            },
+            /*resume_restored_queue*/ true,
+        );
+
+        match next_user_turn_op(&mut new_op_rx) {
+            Op::UserTurn { items, .. } => assert_eq!(
+                items,
+                vec![UserInput::Text {
+                    text: "run next".to_string(),
+                    text_elements: Vec::new(),
+                }]
+            ),
+            other => panic!("expected front-queued follow-up submission, got {other:?}"),
+        }
+
+        assert_eq!(
+            app.chat_widget.queued_user_message_texts(),
+            vec!["queued follow-up".to_string()]
+        );
+    }
+
+    #[tokio::test]
     async fn replay_only_thread_keeps_restored_queue_visible() {
         let (mut app, _app_event_rx, _op_rx) = make_test_app_with_channels().await;
         let thread_id = ThreadId::new();

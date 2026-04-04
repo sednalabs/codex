@@ -1251,6 +1251,10 @@ impl McpServerElicitationOverlay {
             | InputResult::Queued {
                 text,
                 text_elements,
+            }
+            | InputResult::QueuedFront {
+                text,
+                text_elements,
             } => {
                 self.apply_submission_to_draft(text, text_elements);
                 self.validation_error = None;
