@@ -104,6 +104,12 @@
       "lane_sets": ["all", "subagents", "core-carry"]
     },
     {
+      "lane_id": "codex.core-subagent-model-pinning-targeted",
+      "run_command": "just --justfile ../justfile core-subagent-model-pinning-targeted",
+      "groups": ["core"],
+      "lane_sets": ["all", "subagents", "core-carry"]
+    },
+    {
       "lane_id": "codex.core-persisted-subagent-descendants-targeted",
       "run_command": "just --justfile ../justfile core-persisted-subagent-descendants-targeted",
       "groups": ["core"],
