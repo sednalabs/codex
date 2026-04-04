@@ -19,6 +19,7 @@ use core_test_support::test_codex::TestCodex;
 use core_test_support::test_codex::test_codex;
 use pretty_assertions::assert_eq;
 use serde_json::json;
+use std::collections::HashSet;
 use std::time::Duration;
 use tokio::sync::broadcast::Receiver;
 use tokio::sync::broadcast::error::RecvError;
@@ -334,14 +335,33 @@ async fn spawn_child_and_capture_snapshot_with_spawn_timeout(
         config.model_reasoning_effort = Some(INHERITED_REASONING_EFFORT);
     }));
     let test = builder.build(server).await?;
+    let initial_thread_ids: HashSet<ThreadId> = test
+        .thread_manager
+        .list_thread_ids()
+        .await
+        .into_iter()
+        .collect();
     let mut thread_created_rx = test.thread_manager.subscribe_thread_created();
     test.submit_turn(TURN_1_PROMPT).await?;
     let _ = wait_for_requests(&child_request_log).await?;
-    let spawned_id =
-        match wait_for_spawned_thread_id_from_receiver(&mut thread_created_rx, spawn_timeout).await
-        {
-            Ok(spawned_id) => spawned_id,
-            Err(err) => {
+    let spawned_id = match wait_for_spawned_thread_id_from_receiver(
+        &mut thread_created_rx,
+        spawn_timeout,
+    )
+    .await
+    {
+        Ok(spawned_id) => spawned_id,
+        Err(err) => {
+            let new_thread_ids: Vec<ThreadId> = test
+                .thread_manager
+                .list_thread_ids()
+                .await
+                .into_iter()
+                .filter(|thread_id| !initial_thread_ids.contains(thread_id))
+                .collect();
+            if let [spawned_thread_id] = new_thread_ids.as_slice() {
+                spawned_thread_id.to_string()
+            } else {
                 let receiver_state = match thread_created_rx.try_recv() {
                     Ok(thread_id) => {
                         format!("unexpected buffered thread id after timeout: {thread_id}")
@@ -355,10 +375,11 @@ async fn spawn_child_and_capture_snapshot_with_spawn_timeout(
                 let captured_ops =
                     codex_core::test_support::captured_ops(test.thread_manager.as_ref());
                 anyhow::bail!(
-                    "{err}; thread_created_rx_state={receiver_state}; captured_ops={captured_ops:?}"
+                    "{err}; thread_created_rx_state={receiver_state}; new_thread_ids={new_thread_ids:?}; captured_ops={captured_ops:?}"
                 );
             }
-        };
+        }
+    };
     let thread_id = ThreadId::from_string(&spawned_id)?;
     Ok(test
         .thread_manager
