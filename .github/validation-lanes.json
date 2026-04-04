@@ -69,7 +69,15 @@
       "lane_id": "codex.tui-thread-session-policy-targeted",
       "run_command": "just --justfile ../justfile tui-thread-session-policy-targeted",
       "groups": ["ui_protocol"],
-      "lane_sets": ["all", "ui-protocol"]
+      "lane_sets": ["all", "ui-protocol"],
+      "install_nextest": true
+    },
+    {
+      "lane_id": "codex.tui-esc-interrupt-targeted",
+      "run_command": "just --justfile ../justfile tui-esc-interrupt-targeted",
+      "groups": ["ui_protocol"],
+      "lane_sets": ["all", "ui-protocol"],
+      "install_nextest": true
     },
     {
       "lane_id": "codex.tui-config-refresh-session-targeted",
