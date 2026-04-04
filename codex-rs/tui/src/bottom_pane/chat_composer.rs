@@ -31,8 +31,10 @@
 //!
 //! # Submission and Prompt Expansion
 //!
-//! `Enter` submits immediately. `Tab` requests queuing while a task is running; if no task is
-//! running, `Tab` submits just like Enter so input is never dropped.
+//! `Enter` submits immediately. `Tab` requests queuing at the back while a task is running; if no
+//! task is running, `Tab` submits just like Enter so input is never dropped.
+//! `Ctrl+Shift+Q` requests queuing at the front so the draft runs next after the active task; if
+//! no task is running, it also falls back to immediate submit.
 //! `Tab` does not submit when entering a `!` shell command.
 //!
 //! On submit/queue paths, the composer:
@@ -228,9 +230,20 @@ pub enum InputResult {
         text: String,
         text_elements: Vec<TextElement>,
     },
+    QueuedFront {
+        text: String,
+        text_elements: Vec<TextElement>,
+    },
     Command(SlashCommand),
     CommandWithArgs(SlashCommand, String, Vec<TextElement>),
     None,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SubmissionMode {
+    Immediate,
+    QueueBackWhenBusy,
+    QueueFrontWhenBusy,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -2153,15 +2166,13 @@ impl ChatComposer {
         Some((text, text_elements))
     }
 
-    /// Common logic for handling message submission/queuing.
-    /// Returns the appropriate InputResult based on `should_queue`.
-    fn handle_submission(&mut self, should_queue: bool) -> (InputResult, bool) {
-        self.handle_submission_with_time(should_queue, Instant::now())
+    fn handle_submission(&mut self, mode: SubmissionMode) -> (InputResult, bool) {
+        self.handle_submission_with_time(mode, Instant::now())
     }
 
     fn handle_submission_with_time(
         &mut self,
-        should_queue: bool,
+        mode: SubmissionMode,
         now: Instant,
     ) -> (InputResult, bool) {
         // If the first line is a bare built-in slash command (no args),
@@ -2223,24 +2234,30 @@ impl ChatComposer {
         if let Some((text, text_elements)) =
             self.prepare_submission_text(/*record_history*/ true)
         {
-            if should_queue {
-                (
-                    InputResult::Queued {
+            let result = match mode {
+                SubmissionMode::Immediate => InputResult::Submitted {
+                    text,
+                    text_elements,
+                },
+                SubmissionMode::QueueBackWhenBusy if self.is_task_running => InputResult::Queued {
+                    text,
+                    text_elements,
+                },
+                SubmissionMode::QueueFrontWhenBusy if self.is_task_running => {
+                    InputResult::QueuedFront {
                         text,
                         text_elements,
-                    },
-                    true,
-                )
-            } else {
-                // Do not clear attached_images here; ChatWidget drains them via take_recent_submission_images().
-                (
+                    }
+                }
+                SubmissionMode::QueueBackWhenBusy | SubmissionMode::QueueFrontWhenBusy => {
                     InputResult::Submitted {
                         text,
                         text_elements,
-                    },
-                    true,
-                )
-            }
+                    }
+                }
+            };
+            // Do not clear attached_images here; ChatWidget drains them via take_recent_submission_images().
+            (result, true)
         } else {
             // Restore text if submission was suppressed.
             self.set_text_content_with_mention_bindings(
@@ -2524,12 +2541,22 @@ impl ChatComposer {
                 modifiers: KeyModifiers::NONE,
                 kind: KeyEventKind::Press,
                 ..
-            } if !self.is_bang_shell_command() => self.handle_submission(self.is_task_running),
+            } if !self.is_bang_shell_command() => {
+                self.handle_submission(SubmissionMode::QueueBackWhenBusy)
+            }
+            KeyEvent {
+                code: KeyCode::Char('q'),
+                modifiers,
+                kind: KeyEventKind::Press,
+                ..
+            } if modifiers == KeyModifiers::CONTROL.union(KeyModifiers::SHIFT) => {
+                self.handle_submission(SubmissionMode::QueueFrontWhenBusy)
+            }
             KeyEvent {
                 code: KeyCode::Enter,
                 modifiers: KeyModifiers::NONE,
                 ..
-            } => self.handle_submission(/*should_queue*/ false),
+            } => self.handle_submission(SubmissionMode::Immediate),
             input => self.handle_input_basic(input),
         }
     }
@@ -5398,7 +5425,7 @@ mod tests {
         );
         now += step;
 
-        let (result, _) = composer.handle_submission_with_time(/*should_queue*/ false, now);
+        let (result, _) = composer.handle_submission_with_time(SubmissionMode::Immediate, now);
         assert!(
             matches!(result, InputResult::None),
             "Enter during a burst should insert newline, not submit"
@@ -6049,7 +6076,7 @@ mod tests {
             InputResult::Submitted { text, .. } => {
                 panic!("expected command dispatch, but composer submitted literal text: {text}")
             }
-            InputResult::Queued { .. } => {
+            InputResult::Queued { .. } | InputResult::QueuedFront { .. } => {
                 panic!("expected command dispatch, but composer queued literal text")
             }
             InputResult::None => panic!("expected Command result for '/init'"),
@@ -6262,7 +6289,7 @@ mod tests {
             InputResult::Submitted { text, .. } => {
                 panic!("expected command dispatch after Tab completion, got literal submit: {text}")
             }
-            InputResult::Queued { .. } => {
+            InputResult::Queued { .. } | InputResult::QueuedFront { .. } => {
                 panic!("expected command dispatch after Tab completion, got literal queue")
             }
             InputResult::None => panic!("expected Command result for '/diff'"),
@@ -6370,6 +6397,37 @@ mod tests {
     }
 
     #[test]
+    fn ctrl_shift_q_queues_front_when_task_running() {
+        use crossterm::event::KeyCode;
+        use crossterm::event::KeyEvent;
+        use crossterm::event::KeyModifiers;
+
+        let (tx, _rx) = unbounded_channel::<AppEvent>();
+        let sender = AppEventSender::new(tx);
+        let mut composer = ChatComposer::new(
+            /*has_input_focus*/ true,
+            sender,
+            /*enhanced_keys_supported*/ false,
+            "Ask Codex to do anything".to_string(),
+            /*disable_paste_burst*/ false,
+        );
+        composer.set_task_running(/*running*/ true);
+
+        type_chars_humanlike(&mut composer, &['n', 'e', 'x', 't']);
+
+        let (result, _needs_redraw) = composer.handle_key_event(KeyEvent::new(
+            KeyCode::Char('q'),
+            KeyModifiers::CONTROL.union(KeyModifiers::SHIFT),
+        ));
+
+        assert!(matches!(
+            result,
+            InputResult::QueuedFront { ref text, .. } if text == "next"
+        ));
+        assert!(composer.textarea.is_empty());
+    }
+
+    #[test]
     fn tab_does_not_submit_for_bang_shell_command() {
         use crossterm::event::KeyCode;
         use crossterm::event::KeyEvent;
@@ -6429,7 +6487,7 @@ mod tests {
             InputResult::Submitted { text, .. } => {
                 panic!("expected command dispatch, but composer submitted literal text: {text}")
             }
-            InputResult::Queued { .. } => {
+            InputResult::Queued { .. } | InputResult::QueuedFront { .. } => {
                 panic!("expected command dispatch, but composer queued literal text")
             }
             InputResult::None => panic!("expected Command result for '/mention'"),

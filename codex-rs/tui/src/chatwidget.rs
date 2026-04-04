@@ -5211,6 +5211,30 @@ impl ChatWidget {
                     };
                     self.queue_user_message(user_message);
                 }
+                InputResult::QueuedFront {
+                    text,
+                    text_elements,
+                } => {
+                    let local_images = self
+                        .bottom_pane
+                        .take_recent_submission_images_with_placeholders();
+                    let remote_image_urls = self.take_remote_image_urls();
+                    let user_message = UserMessage {
+                        text,
+                        local_images,
+                        remote_image_urls,
+                        text_elements,
+                        mention_bindings: self
+                            .bottom_pane
+                            .take_recent_submission_mention_bindings(),
+                    };
+                    let Some(user_message) =
+                        self.maybe_defer_user_message_for_realtime(user_message)
+                    else {
+                        return;
+                    };
+                    self.queue_user_message_next(user_message);
+                }
                 InputResult::Command(cmd) => {
                     self.dispatch_command(cmd);
                 }
@@ -5900,6 +5924,17 @@ impl ChatWidget {
             self.queued_user_messages.push_back(user_message);
             self.queued_follow_up_order
                 .push_back(QueuedFollowUpKind::UserMessage);
+            self.refresh_pending_input_preview();
+        } else {
+            self.submit_user_message(user_message);
+        }
+    }
+
+    fn queue_user_message_next(&mut self, user_message: UserMessage) {
+        if !self.is_session_configured() || self.bottom_pane.is_task_running() {
+            self.queued_user_messages.push_front(user_message);
+            self.queued_follow_up_order
+                .push_front(QueuedFollowUpKind::UserMessage);
             self.refresh_pending_input_preview();
         } else {
             self.submit_user_message(user_message);

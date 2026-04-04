@@ -47,6 +47,7 @@ use crate::render::line_utils::prefix_lines;
 use crate::status::format_tokens_compact;
 use crate::ui_consts::FOOTER_INDENT_COLS;
 use crossterm::event::KeyCode;
+use crossterm::event::KeyModifiers;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::Stylize;
@@ -258,6 +259,7 @@ pub(crate) fn left_fits(area: Rect, left_width: u16) -> bool {
 enum SummaryHintKind {
     None,
     Shortcuts,
+    QueueNext,
     QueueMessage,
     QueueShort,
 }
@@ -279,6 +281,13 @@ fn left_side_line(
             line.push_span(key_hint::plain(KeyCode::Char('?')));
             line.push_span(" for shortcuts".dim());
         }
+        SummaryHintKind::QueueNext => {
+            line.push_span(key_hint::plain(KeyCode::Tab));
+            line.push_span(" to queue".dim());
+            line.push_span(", ".dim());
+            line.push_span(queue_next_binding());
+            line.push_span(" to run next".dim());
+        }
         SummaryHintKind::QueueMessage => {
             line.push_span(key_hint::plain(KeyCode::Tab));
             line.push_span(" to queue message".dim());
@@ -299,6 +308,13 @@ fn left_side_line(
     line
 }
 
+const fn queue_next_binding() -> KeyBinding {
+    KeyBinding::new(
+        KeyCode::Char('q'),
+        KeyModifiers::CONTROL.union(KeyModifiers::SHIFT),
+    )
+}
+
 pub(crate) enum SummaryLeft {
     Default,
     Custom(Line<'static>),
@@ -316,7 +332,7 @@ pub(crate) fn single_line_footer_layout(
     show_queue_hint: bool,
 ) -> (SummaryLeft, bool) {
     let hint_kind = if show_queue_hint {
-        SummaryHintKind::QueueMessage
+        SummaryHintKind::QueueNext
     } else if show_shortcuts_hint {
         SummaryHintKind::Shortcuts
     } else {
@@ -349,6 +365,10 @@ pub(crate) fn single_line_footer_layout(
         // In queue mode, prefer dropping context before dropping the queue hint.
         let queue_states = [
             default_state,
+            LeftSideState {
+                hint: SummaryHintKind::QueueNext,
+                show_cycle_hint: false,
+            },
             LeftSideState {
                 hint: SummaryHintKind::QueueMessage,
                 show_cycle_hint: false,
@@ -617,7 +637,7 @@ fn footer_from_props_lines(
         FooterMode::ComposerHasDraft => {
             let state = LeftSideState {
                 hint: if show_queue_hint {
-                    SummaryHintKind::QueueMessage
+                    SummaryHintKind::QueueNext
                 } else if show_shortcuts_hint {
                     SummaryHintKind::Shortcuts
                 } else {
@@ -752,6 +772,7 @@ fn shortcut_overlay_lines(state: ShortcutsState) -> Vec<Line<'static>> {
     let mut shell_commands = Line::from("");
     let mut newline = Line::from("");
     let mut queue_message_tab = Line::from("");
+    let mut queue_message_next = Line::from("");
     let mut file_paths = Line::from("");
     let mut paste_image = Line::from("");
     let mut external_editor = Line::from("");
@@ -767,6 +788,7 @@ fn shortcut_overlay_lines(state: ShortcutsState) -> Vec<Line<'static>> {
                 ShortcutId::ShellCommands => shell_commands = text,
                 ShortcutId::InsertNewline => newline = text,
                 ShortcutId::QueueMessageTab => queue_message_tab = text,
+                ShortcutId::QueueMessageNext => queue_message_next = text,
                 ShortcutId::FilePaths => file_paths = text,
                 ShortcutId::PasteImage => paste_image = text,
                 ShortcutId::ExternalEditor => external_editor = text,
@@ -783,6 +805,7 @@ fn shortcut_overlay_lines(state: ShortcutsState) -> Vec<Line<'static>> {
         shell_commands,
         newline,
         queue_message_tab,
+        queue_message_next,
         file_paths,
         paste_image,
         external_editor,
@@ -865,6 +888,7 @@ enum ShortcutId {
     ShellCommands,
     InsertNewline,
     QueueMessageTab,
+    QueueMessageNext,
     FilePaths,
     PasteImage,
     ExternalEditor,
@@ -982,6 +1006,15 @@ const SHORTCUTS: &[ShortcutDescriptor] = &[
         }],
         prefix: "",
         label: " to queue message",
+    },
+    ShortcutDescriptor {
+        id: ShortcutId::QueueMessageNext,
+        bindings: &[ShortcutBinding {
+            key: queue_next_binding(),
+            condition: DisplayCondition::Always,
+        }],
+        prefix: "",
+        label: " to run next",
     },
     ShortcutDescriptor {
         id: ShortcutId::FilePaths,
