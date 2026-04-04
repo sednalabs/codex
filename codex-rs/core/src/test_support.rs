@@ -8,10 +8,12 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use codex_exec_server::EnvironmentManager;
+use codex_protocol::ThreadId;
 use codex_protocol::config_types::CollaborationModeMask;
 use codex_protocol::openai_models::ModelInfo;
 use codex_protocol::openai_models::ModelPreset;
 use codex_protocol::openai_models::ModelsResponse;
+use codex_protocol::protocol::Op;
 use once_cell::sync::Lazy;
 
 use crate::AuthManager;
@@ -69,6 +71,10 @@ pub fn thread_manager_with_models_provider_and_home(
         codex_home,
         environment_manager,
     )
+}
+
+pub fn captured_ops(thread_manager: &ThreadManager) -> Vec<(ThreadId, Op)> {
+    thread_manager.captured_ops()
 }
 
 pub async fn start_thread_with_user_shell_override(

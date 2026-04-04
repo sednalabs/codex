@@ -352,7 +352,8 @@ async fn spawn_child_and_capture_snapshot_with_spawn_timeout(
                     }
                     Err(TryRecvError::Closed) => "closed".to_string(),
                 };
-                let captured_ops = test.thread_manager.captured_ops();
+                let captured_ops =
+                    codex_core::test_support::captured_ops(test.thread_manager.as_ref());
                 anyhow::bail!(
                     "{err}; thread_created_rx_state={receiver_state}; captured_ops={captured_ops:?}"
                 );
