@@ -212,7 +212,7 @@ bazel-clippy:
 
 [no-cd]
 bazel-argument-comment-lint:
-    bazel build --config=argument-comment-lint -- $(./tools/argument-comment-lint/list-bazel-targets.sh)
+    cd "{{justfile_directory()}}" && bazel build --config=argument-comment-lint -- $("{{justfile_directory()}}"/tools/argument-comment-lint/list-bazel-targets.sh)
 
 bazel-remote-test:
     bazel test --test_tag_filters=-argument-comment-lint //... --config=remote --platforms=//:rbe --keep_going
@@ -240,14 +240,14 @@ write-hooks-schema:
 [no-cd]
 argument-comment-lint *args:
     if [ "$#" -eq 0 ]; then \
-      bazel build --config=argument-comment-lint -- $(./tools/argument-comment-lint/list-bazel-targets.sh); \
+      cd "{{justfile_directory()}}" && bazel build --config=argument-comment-lint -- $("{{justfile_directory()}}"/tools/argument-comment-lint/list-bazel-targets.sh); \
     else \
-      ./tools/argument-comment-lint/run-prebuilt-linter.py "$@"; \
+      "{{justfile_directory()}}"/tools/argument-comment-lint/run-prebuilt-linter.py "$@"; \
     fi
 
 [no-cd]
 argument-comment-lint-from-source *args:
-    ./tools/argument-comment-lint/run.py "$@"
+    "{{justfile_directory()}}"/tools/argument-comment-lint/run.py "$@"
 
 # Tail logs from the state SQLite database
 log *args:
