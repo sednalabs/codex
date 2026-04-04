@@ -6,6 +6,7 @@
 
 use crate::history_cell::PlainHistoryCell;
 use crate::render::line_utils::prefix_lines;
+use crate::status::format_tokens_compact;
 use crate::text_formatting::truncate_text;
 use codex_protocol::ThreadId;
 use codex_protocol::openai_models::ReasoningEffort as ReasoningEffortConfig;
@@ -20,6 +21,7 @@ use codex_protocol::protocol::CollabResumeEndEvent;
 use codex_protocol::protocol::CollabWaitingBeginEvent;
 use codex_protocol::protocol::CollabWaitingCompletionReason;
 use codex_protocol::protocol::CollabWaitingEndEvent;
+use codex_protocol::protocol::TokenUsage;
 use crossterm::event::KeyCode;
 use crossterm::event::KeyEvent;
 #[cfg(target_os = "macos")]
@@ -89,6 +91,21 @@ pub(crate) fn format_agent_picker_item_name(
         (Some(agent_nickname), None) => format!("{SUBAGENT_LABEL}: {agent_nickname}"),
         (None, Some(agent_role)) => format!("{SUBAGENT_LABEL} [{agent_role}]"),
         (None, None) => SUBAGENT_LABEL.to_string(),
+    }
+}
+
+pub(crate) fn format_agent_picker_item_description(
+    thread_id: ThreadId,
+    token_usage: &TokenUsage,
+) -> String {
+    let uuid = thread_id.to_string();
+    if token_usage.total_tokens <= 0 {
+        uuid
+    } else {
+        format!(
+            "{uuid} • {} used",
+            format_tokens_compact(token_usage.total_tokens)
+        )
     }
 }
 
@@ -653,6 +670,32 @@ mod tests {
     use pretty_assertions::assert_eq;
     use ratatui::style::Color;
     use ratatui::style::Modifier;
+
+    #[test]
+    fn picker_description_falls_back_to_thread_id_without_usage() {
+        let thread_id =
+            ThreadId::from_string("00000000-0000-0000-0000-000000000111").expect("valid thread");
+
+        assert_eq!(
+            format_agent_picker_item_description(thread_id, &TokenUsage::default()),
+            "00000000-0000-0000-0000-000000000111"
+        );
+    }
+
+    #[test]
+    fn picker_description_includes_compact_token_usage_when_present() {
+        let thread_id =
+            ThreadId::from_string("00000000-0000-0000-0000-000000000112").expect("valid thread");
+        let usage = TokenUsage {
+            total_tokens: 12_300,
+            ..Default::default()
+        };
+
+        assert_eq!(
+            format_agent_picker_item_description(thread_id, &usage),
+            "00000000-0000-0000-0000-000000000112 • 12.3K used"
+        );
+    }
 
     #[test]
     fn collab_events_snapshot() {

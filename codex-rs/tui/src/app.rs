@@ -38,6 +38,7 @@ use crate::model_migration::migration_copy_for_models;
 use crate::model_migration::run_model_migration_prompt;
 use crate::multi_agents::SUBAGENT_LABEL;
 use crate::multi_agents::agent_picker_status_dot_spans;
+use crate::multi_agents::format_agent_picker_item_description;
 use crate::multi_agents::format_agent_picker_item_name;
 use crate::multi_agents::next_agent_shortcut_matches;
 use crate::multi_agents::previous_agent_shortcut_matches;
@@ -2933,37 +2934,41 @@ impl App {
         }
 
         let mut initial_selected_idx = None;
-        let items: Vec<SelectionItem> = self
+        let ordered_threads = self
             .agent_navigation
             .ordered_threads()
-            .iter()
-            .enumerate()
-            .map(|(idx, (thread_id, entry))| {
-                if self.active_thread_id == Some(*thread_id) {
-                    initial_selected_idx = Some(idx);
-                }
-                let id = *thread_id;
-                let is_primary = self.primary_thread_id == Some(*thread_id);
-                let name = format_agent_picker_item_name(
-                    entry.agent_nickname.as_deref(),
-                    entry.agent_role.as_deref(),
-                    is_primary,
-                );
-                let uuid = thread_id.to_string();
-                SelectionItem {
-                    name: name.clone(),
-                    name_prefix_spans: agent_picker_status_dot_spans(entry.is_closed),
-                    description: Some(uuid.clone()),
-                    is_current: self.active_thread_id == Some(*thread_id),
-                    actions: vec![Box::new(move |tx| {
-                        tx.send(AppEvent::SelectAgentThread(id));
-                    })],
-                    dismiss_on_select: true,
-                    search_value: Some(format!("{name} {uuid}")),
-                    ..Default::default()
-                }
-            })
-            .collect();
+            .into_iter()
+            .map(|(thread_id, entry)| (thread_id, entry.clone()))
+            .collect::<Vec<_>>();
+        let mut items = Vec::with_capacity(ordered_threads.len());
+        for (idx, (thread_id, entry)) in ordered_threads.into_iter().enumerate() {
+            if self.active_thread_id == Some(thread_id) {
+                initial_selected_idx = Some(idx);
+            }
+            let id = thread_id;
+            let is_primary = self.primary_thread_id == Some(thread_id);
+            let name = format_agent_picker_item_name(
+                entry.agent_nickname.as_deref(),
+                entry.agent_role.as_deref(),
+                is_primary,
+            );
+            let description = format_agent_picker_item_description(
+                thread_id,
+                &self.agent_picker_thread_token_usage(thread_id).await,
+            );
+            items.push(SelectionItem {
+                name: name.clone(),
+                name_prefix_spans: agent_picker_status_dot_spans(entry.is_closed),
+                description: Some(description.clone()),
+                is_current: self.active_thread_id == Some(thread_id),
+                actions: vec![Box::new(move |tx| {
+                    tx.send(AppEvent::SelectAgentThread(id));
+                })],
+                dismiss_on_select: true,
+                search_value: Some(format!("{name} {description}")),
+                ..Default::default()
+            });
+        }
 
         self.chat_widget.show_selection_view(SelectionViewParams {
             title: Some("Subagents".to_string()),
@@ -2973,6 +2978,22 @@ impl App {
             initial_selected_idx,
             ..Default::default()
         });
+    }
+
+    async fn agent_picker_thread_token_usage(&self, thread_id: ThreadId) -> TokenUsage {
+        let live_usage =
+            (self.active_thread_id == Some(thread_id)).then(|| self.chat_widget.token_usage());
+        if let Some(usage) = live_usage.as_ref()
+            && usage.total_tokens > 0
+        {
+            return usage.clone();
+        }
+
+        if let Some(channel) = self.thread_event_channels.get(&thread_id) {
+            return channel.store.lock().await.token_usage.clone();
+        }
+
+        live_usage.unwrap_or_default()
     }
 
     fn is_terminal_thread_read_error(err: &color_eyre::Report) -> bool {
@@ -11598,6 +11619,67 @@ guardian_approval = true
         assert_eq!(
             summary.resume_command,
             Some("codex resume my-session".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn agent_picker_thread_token_usage_reads_inactive_thread_store() {
+        let mut app = make_test_app().await;
+        let thread_id = ThreadId::new();
+        let session = test_thread_session(thread_id, PathBuf::from("/tmp/agent"));
+        let channel =
+            ThreadEventChannel::new_with_session(/*capacity*/ 8, session, Vec::new());
+        {
+            let mut store = channel.store.lock().await;
+            store.push_notification(token_usage_notification(
+                thread_id,
+                "turn-store",
+                /*model_context_window*/ None,
+            ));
+        }
+        app.thread_event_channels.insert(thread_id, channel);
+
+        assert_eq!(
+            app.agent_picker_thread_token_usage(thread_id).await,
+            TokenUsage {
+                input_tokens: 4,
+                cached_input_tokens: 1,
+                output_tokens: 5,
+                reasoning_output_tokens: 0,
+                total_tokens: 10,
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn agent_picker_thread_token_usage_prefers_live_active_thread_usage() {
+        let mut app = make_test_app().await;
+        let thread_id = ThreadId::new();
+        app.active_thread_id = Some(thread_id);
+        app.chat_widget
+            .handle_thread_session(test_thread_session(thread_id, PathBuf::from("/tmp/main")));
+        app.handle_thread_event_now(ThreadBufferedEvent::Notification(token_usage_notification(
+            thread_id,
+            "turn-live",
+            /*model_context_window*/ None,
+        )));
+
+        let channel = ThreadEventChannel::new_with_session(
+            /*capacity*/ 8,
+            test_thread_session(thread_id, PathBuf::from("/tmp/main")),
+            Vec::new(),
+        );
+        app.thread_event_channels.insert(thread_id, channel);
+
+        assert_eq!(
+            app.agent_picker_thread_token_usage(thread_id).await,
+            TokenUsage {
+                input_tokens: 4,
+                cached_input_tokens: 1,
+                output_tokens: 5,
+                reasoning_output_tokens: 0,
+                total_tokens: 10,
+            }
         );
     }
 

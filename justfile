@@ -96,6 +96,13 @@ tui-config-refresh-session-targeted:
     cargo test -p codex-tui app::tests::fresh_session_config_uses_current_session_state --lib -- --exact --test-threads=1
     cargo test -p codex-tui app::tests::fresh_session_config_preserves_policy_mutability --lib -- --exact --test-threads=1
 
+# Focused /agent picker token-usage visibility slice.
+tui-agent-picker-usage-targeted:
+    cargo test -p codex-tui app::tests::agent_picker_thread_token_usage_reads_inactive_thread_store --lib -- --exact --test-threads=1
+    cargo test -p codex-tui app::tests::agent_picker_thread_token_usage_prefers_live_active_thread_usage --lib -- --exact --test-threads=1
+    cargo test -p codex-tui multi_agents::tests::picker_description_falls_back_to_thread_id_without_usage --lib -- --exact --test-threads=1
+    cargo test -p codex-tui multi_agents::tests::picker_description_includes_compact_token_usage_when_present --lib -- --exact --test-threads=1
+
 # Focused TUI interrupt confirmation slice for Alt/meta-safe Esc handling.
 tui-esc-interrupt-targeted:
     cargo nextest run -p codex-tui --no-fail-fast -- bottom_pane::tests::esc_requires_double_press_for_interrupt_when_running_task_by_default bottom_pane::tests::first_esc_renders_again_to_interrupt_hint bottom_pane::tests::esc_release_does_not_confirm_interrupt bottom_pane::tests::esc_with_alt_does_not_interrupt_running_task bottom_pane::tests::esc_single_press_interrupts_when_double_press_disabled --exact
