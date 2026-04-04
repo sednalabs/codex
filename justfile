@@ -117,6 +117,11 @@ app-server-thread-cwd-targeted:
     cargo test --locked -p codex-app-server --test all suite::v2::thread_read::thread_read_returns_summary_without_turns -- --exact --test-threads=1
     cargo test --locked -p codex-app-server --test all suite::v2::thread_resume::thread_resume_returns_rollout_history -- --exact --test-threads=1
 
+# Focused code-mode declaration rendering and metadata slice.
+code-mode-declaration-targeted:
+    cargo test --locked -p codex-tools code_mode_ --lib -- --test-threads=1
+    CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo nextest run -p codex-core --no-fail-fast --test all -- suite::code_mode::code_mode_exports_all_tools_metadata_for_builtin_tools suite::code_mode::code_mode_exports_all_tools_metadata_for_namespaced_mcp_tools suite::code_mode::code_mode_declaration_normalization_is_layout_tolerant_and_semantically_strict --exact
+
 # Focused tool-context serialization slice for custom/function/abort outputs.
 core-context-serialization-targeted:
     cargo test -p codex-core tools::context::tests::custom_tool_calls_should_roundtrip_as_custom_outputs --lib -- --exact

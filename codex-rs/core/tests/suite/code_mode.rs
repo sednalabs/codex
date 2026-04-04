@@ -35,6 +35,7 @@ use serde_json::Value;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::fs;
+use std::panic::AssertUnwindSafe;
 use std::path::Path;
 use std::time::Duration;
 use std::time::Instant;
@@ -135,6 +136,239 @@ fn custom_tool_output_last_non_empty_text(req: &ResponsesRequest, call_id: &str)
         | Some(Value::Null)
         | None => None,
     }
+}
+
+#[derive(Debug)]
+struct ParsedCodeModeDeclaration {
+    name: String,
+    input_name: String,
+    args: Vec<String>,
+    output: Vec<String>,
+}
+
+#[derive(Clone, Copy, Default)]
+struct CodeModeQuoteState {
+    in_single_quoted: bool,
+    in_double_quoted: bool,
+    in_template_literal: bool,
+    escaped: bool,
+}
+
+impl CodeModeQuoteState {
+    fn in_quote(self) -> bool {
+        self.in_single_quoted || self.in_double_quoted || self.in_template_literal
+    }
+}
+
+fn advance_code_mode_quote_state(ch: char, state: &mut CodeModeQuoteState) {
+    if state.escaped {
+        state.escaped = false;
+        return;
+    }
+
+    match ch {
+        '\\' if state.in_quote() => {
+            state.escaped = true;
+        }
+        '\'' if !state.in_double_quoted && !state.in_template_literal => {
+            state.in_single_quoted = !state.in_single_quoted;
+        }
+        '"' if !state.in_single_quoted && !state.in_template_literal => {
+            state.in_double_quoted = !state.in_double_quoted;
+        }
+        '`' if !state.in_single_quoted && !state.in_double_quoted => {
+            state.in_template_literal = !state.in_template_literal;
+        }
+        _ => {}
+    }
+}
+
+fn assert_code_mode_description(
+    description: &str,
+    prose: &str,
+    name: &str,
+    input_name: &str,
+    arg_fields: &[&str],
+    output_fields: &[&str],
+) {
+    let (actual_prose, _, trailing) = split_code_mode_description(description)
+        .expect("description should match code-mode description shape");
+    assert_eq!(actual_prose, prose);
+    assert_eq!(trailing, "");
+    assert_code_mode_declaration_fields(description, name, input_name, arg_fields, output_fields);
+}
+
+fn assert_code_mode_declaration_fields(
+    description: &str,
+    name: &str,
+    input_name: &str,
+    arg_fields: &[&str],
+    output_fields: &[&str],
+) {
+    let declaration = parse_code_mode_declaration(description)
+        .expect("description should include code-mode declaration");
+    assert_eq!(declaration.name, name);
+    assert_eq!(declaration.input_name, input_name);
+    assert_eq!(declaration.args, normalize_code_mode_field_set(arg_fields));
+    assert_eq!(
+        declaration.output,
+        normalize_code_mode_field_set(output_fields)
+    );
+}
+
+fn compact_type(typ: &str) -> String {
+    let mut compacted = String::with_capacity(typ.len());
+    let mut quote_state = CodeModeQuoteState::default();
+
+    for ch in typ.chars() {
+        let was_escaped = quote_state.escaped;
+        let was_in_quote = quote_state.in_quote();
+        advance_code_mode_quote_state(ch, &mut quote_state);
+
+        if was_escaped || was_in_quote || quote_state.in_quote() {
+            compacted.push(ch);
+            continue;
+        }
+
+        if !ch.is_whitespace() {
+            compacted.push(ch);
+        }
+    }
+
+    compacted
+}
+
+fn normalize_code_mode_field_set(fields: &[&str]) -> Vec<String> {
+    let mut fields = fields
+        .iter()
+        .map(|field| compact_type(field))
+        .collect::<Vec<_>>();
+    fields.sort_unstable();
+    fields
+}
+
+fn normalize_code_mode_type(ty: &str) -> Vec<String> {
+    let ty = ty.trim();
+    if ty.starts_with('{') && ty.ends_with('}') {
+        normalize_code_mode_fields(split_code_mode_fields(&ty[1..ty.len() - 1]))
+    } else {
+        vec![compact_type(ty)]
+    }
+}
+
+fn normalize_code_mode_fields(fields: &[String]) -> Vec<String> {
+    let mut fields = fields
+        .iter()
+        .map(|field| compact_type(field))
+        .collect::<Vec<_>>();
+    fields.sort_unstable();
+    fields
+}
+
+fn split_code_mode_description(description: &str) -> Option<(&str, &str, &str)> {
+    let (prose, after_wrapper) = description.split_once("\n\nexec tool declaration:\n```ts\n")?;
+    let (declaration, trailing) = after_wrapper.split_once("\n```")?;
+    Some((prose, declaration, trailing))
+}
+
+fn parse_code_mode_declaration(description: &str) -> Option<ParsedCodeModeDeclaration> {
+    let declaration = split_code_mode_description(description)?.1.trim();
+    let body = declaration.split_once("declare const tools:")?.1.trim();
+    let body = body.strip_prefix("{")?.trim();
+    let body = body.strip_suffix("};")?.trim();
+
+    let open_paren = body.find('(')?;
+    let (name, args_and_return) = body.split_at(open_paren);
+    let args_and_return = &args_and_return[1..];
+    let close_call = args_and_return.find(')')?;
+    let (decl_input_name, args) = args_and_return[..close_call].split_once(':')?;
+    let mut output_tail = args_and_return[close_call + 1..].trim_start();
+    output_tail = output_tail.strip_prefix(":")?;
+    let output_tail = output_tail.trim_start();
+    let output_tail = output_tail.strip_prefix("Promise<")?;
+    let output_end = matching_generic_end(output_tail)?;
+
+    Some(ParsedCodeModeDeclaration {
+        name: compact_type(name),
+        input_name: compact_type(decl_input_name),
+        args: normalize_code_mode_type(args),
+        output: normalize_code_mode_type(&output_tail[..output_end]),
+    })
+}
+
+fn matching_generic_end(typ: &str) -> Option<usize> {
+    let mut depth = 1usize;
+    let mut quote_state = CodeModeQuoteState::default();
+
+    for (idx, ch) in typ.char_indices() {
+        let was_escaped = quote_state.escaped;
+        let was_in_quote = quote_state.in_quote();
+        advance_code_mode_quote_state(ch, &mut quote_state);
+        if was_escaped || was_in_quote {
+            continue;
+        }
+
+        match ch {
+            '<' => depth += 1,
+            '>' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(idx);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    None
+}
+
+fn split_code_mode_fields(fields: &str) -> Vec<String> {
+    let mut parts = Vec::new();
+    let mut start = 0usize;
+    let mut brace_depth = 0usize;
+    let mut angle_depth = 0usize;
+    let mut square_depth = 0usize;
+    let mut paren_depth = 0usize;
+    let mut quote_state = CodeModeQuoteState::default();
+
+    for (idx, ch) in fields.char_indices() {
+        let was_escaped = quote_state.escaped;
+        let was_in_quote = quote_state.in_quote();
+        advance_code_mode_quote_state(ch, &mut quote_state);
+        if was_escaped || was_in_quote {
+            continue;
+        }
+
+        match ch {
+            '{' => brace_depth += 1,
+            '}' if brace_depth > 0 => brace_depth -= 1,
+            '<' => angle_depth += 1,
+            '>' if angle_depth > 0 => angle_depth -= 1,
+            '[' => square_depth += 1,
+            ']' if square_depth > 0 => square_depth -= 1,
+            '(' => paren_depth += 1,
+            ')' if paren_depth > 0 => paren_depth -= 1,
+            ';' if brace_depth == 0
+                && angle_depth == 0
+                && square_depth == 0
+                && paren_depth == 0 =>
+            {
+                parts.push(fields[start..idx].trim().to_string());
+                start = idx + 1;
+            }
+            _ => {}
+        }
+    }
+
+    if start < fields.len() {
+        let tail = fields[start..].trim();
+        if !tail.is_empty() {
+            parts.push(tail.to_string());
+        }
+    }
+
+    parts
 }
 
 async fn run_code_mode_turn(
@@ -2346,11 +2580,20 @@ text(JSON.stringify(tool));
             .expect("exec ALL_TOOLS lookup should emit JSON"),
     )?;
     assert_eq!(
-        parsed,
-        serde_json::json!({
-            "name": "view_image",
-            "description": "View a local image from the filesystem (only use if given a full filepath by the user, and the image isn't already attached to the thread context within <image ...> tags).\n\nexec tool declaration:\n```ts\ndeclare const tools: { view_image(args: { path: string; }): Promise<{ detail: string | null; image_url: string; }>; };\n```",
-        })
+        parsed.get("name"),
+        Some(&Value::String("view_image".to_string()))
+    );
+    let description = parsed
+        .get("description")
+        .and_then(Value::as_str)
+        .expect("ALL_TOOLS entry should include description");
+    assert_code_mode_description(
+        description,
+        "View a local image from the filesystem (only use if given a full filepath by the user, and the image isn't already attached to the thread context within <image ...> tags).",
+        "view_image",
+        "args",
+        &["path: string"],
+        &["detail: string | null", "image_url: string"],
     );
 
     Ok(())
@@ -2394,17 +2637,25 @@ text(JSON.stringify(ALL_TOOLS));
         .cloned()
         .expect("namespaced MCP tool metadata should be present");
     assert_eq!(
-        parsed,
-        serde_json::json!({
-            "module": "tools/mcp/rmcp.js",
-            "name": "echo",
-            "description": r#"Echo back the provided message and include environment data.
-
-exec tool declaration:
-```ts
-declare const tools: { mcp__rmcp__echo(args: { env_var?: string; message: string; }): Promise<{ _meta?: unknown; content: Array<unknown>; isError?: boolean; structuredContent?: unknown; }>; };
-```"#,
-        })
+        parsed.get("module"),
+        Some(&Value::String("tools/mcp/rmcp.js".to_string()))
+    );
+    assert_eq!(parsed.get("name"), Some(&Value::String("echo".to_string())));
+    assert_code_mode_description(
+        parsed
+            .get("description")
+            .and_then(Value::as_str)
+            .expect("ALL_TOOLS entry should include description"),
+        "Echo back the provided message and include environment data.",
+        "mcp__rmcp__echo",
+        "args",
+        &["env_var?: string", "message: string"],
+        &[
+            "_meta?: unknown",
+            "content: Array<unknown>",
+            "isError?: boolean",
+            "structuredContent?: unknown",
+        ],
     );
 
     Ok(())
@@ -2543,18 +2794,105 @@ text(
         parsed.get("out"),
         Some(&Value::String("hidden-ok".to_string()))
     );
-    assert!(
+    assert_code_mode_description(
         parsed
             .get("description")
             .and_then(Value::as_str)
-            .is_some_and(|description| {
-                description.contains("A hidden dynamic tool.")
-                    && description.contains("declare const tools:")
-                    && description.contains("hidden_dynamic_tool(args:")
-            })
+            .expect("ALL_TOOLS entry should include description"),
+        "A hidden dynamic tool.",
+        "hidden_dynamic_tool",
+        "args",
+        &["city: string"],
+        &["unknown"],
     );
 
     Ok(())
+}
+
+#[test]
+fn code_mode_declaration_normalization_is_layout_tolerant_and_semantically_strict() {
+    let description = r"Echo back the provided message and include environment data.
+
+exec tool declaration:
+```ts
+declare const tools: {
+  mcp__rmcp__echo (args: { message: string; env_var?: string; label: 'a;b'; }) : Promise<{ content : Array<unknown>; _meta?: unknown; isError?: boolean ; status: 'a>b' ; structuredContent?: unknown ; }>;
+};
+```";
+
+    assert_code_mode_description(
+        description,
+        "Echo back the provided message and include environment data.",
+        "mcp__rmcp__echo",
+        "args",
+        &["env_var?: string", "label: 'a;b'", "message: string"],
+        &[
+            "_meta?: unknown",
+            "content: Array<unknown>",
+            "status: 'a>b'",
+            "isError?: boolean",
+            "structuredContent?: unknown",
+        ],
+    );
+    assert!(
+        std::panic::catch_unwind(AssertUnwindSafe(|| {
+            assert_code_mode_declaration_fields(
+                description,
+                "mcp__rmcp__echo",
+                "args",
+                &["env_var?: string", "label: 'a;b'", "message: string"],
+                &[
+                    "_meta?: unknown",
+                    "content: Array<number>",
+                    "status: 'a>b'",
+                    "isError?: boolean",
+                    "structuredContent?: unknown",
+                ],
+            );
+        }))
+        .is_err(),
+        "semantic output drift should still fail"
+    );
+    assert!(
+        std::panic::catch_unwind(AssertUnwindSafe(|| {
+            assert_code_mode_declaration_fields(
+                description,
+                "mcp__rmcp__echo",
+                "args",
+                &["env_var?: string", "label: 'a;b'", "message: string"],
+                &[
+                    "_meta?: unknown",
+                    "content: Array<unknown>",
+                    "status: 'a>bx'",
+                    "isError?: boolean",
+                    "structuredContent?: unknown",
+                ],
+            );
+        }))
+        .is_err(),
+        "string-literal content drift should remain observable"
+    );
+    assert!(
+        std::panic::catch_unwind(AssertUnwindSafe(|| {
+            let with_trailing_prose = format!("{description}\nAdditional prose");
+            assert_code_mode_description(
+                &with_trailing_prose,
+                "Echo back the provided message and include environment data.",
+                "mcp__rmcp__echo",
+                "args",
+                &["env_var?: string", "label: 'a;b'", "message: string"],
+                &[
+                    "_meta?: unknown",
+                    "content: Array<unknown>",
+                    "status: 'a>b'",
+                    "isError?: boolean",
+                    "structuredContent?: unknown",
+                ],
+            );
+        }))
+        .is_err(),
+        "trailing prose drift should remain observable"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
