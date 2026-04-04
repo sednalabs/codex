@@ -2257,26 +2257,22 @@ impl ChatComposer {
         if let Some((text, text_elements)) =
             self.prepare_submission_text(/*record_history*/ true)
         {
-            let result = if self.is_task_running {
-                match mode {
-                    SubmissionMode::QueueBackWhenBusy => InputResult::Queued {
-                        text,
-                        text_elements,
-                    },
-                    SubmissionMode::QueueFrontWhenBusy => InputResult::QueuedFront {
-                        text,
-                        text_elements,
-                    },
-                    SubmissionMode::Immediate => InputResult::Submitted {
-                        text,
-                        text_elements,
-                    },
-                }
-            } else {
-                InputResult::Submitted {
+            let result = match (self.is_task_running, mode) {
+                (true, SubmissionMode::QueueBackWhenBusy) => InputResult::Queued {
                     text,
                     text_elements,
-                }
+                },
+                (true, SubmissionMode::QueueFrontWhenBusy) => InputResult::QueuedFront {
+                    text,
+                    text_elements,
+                },
+                (true, SubmissionMode::Immediate)
+                | (false, SubmissionMode::Immediate)
+                | (false, SubmissionMode::QueueBackWhenBusy)
+                | (false, SubmissionMode::QueueFrontWhenBusy) => InputResult::Submitted {
+                    text,
+                    text_elements,
+                },
             };
             // Do not clear attached_images here; ChatWidget drains them via take_recent_submission_images().
             (result, true)
