@@ -393,6 +393,11 @@ impl BottomPane {
         }
         // If a modal/view is active, handle it here; otherwise forward to composer.
         if !self.view_stack.is_empty() {
+            if key_event.kind == KeyEventKind::Press {
+                // Modal/view interactions should cancel any armed composer interrupt
+                // confirmation so Esc after dismiss does not interrupt unexpectedly.
+                self.set_pending_esc_interrupt_deadline(/*deadline*/ None);
+            }
             if key_event.kind == KeyEventKind::Release {
                 return InputResult::None;
             }
@@ -1901,6 +1906,59 @@ mod tests {
         assert!(
             pane.no_modal_or_popup_active(),
             "expected Esc press to dismiss the agent picker"
+        );
+    }
+
+    #[test]
+    fn esc_confirmation_resets_when_modal_handles_input() {
+        let (tx_raw, mut rx) = unbounded_channel::<AppEvent>();
+        let tx = AppEventSender::new(tx_raw);
+        let mut pane = BottomPane::new(BottomPaneParams {
+            app_event_tx: tx,
+            frame_requester: FrameRequester::test_dummy(),
+            has_input_focus: true,
+            enhanced_keys_supported: false,
+            placeholder_text: "Ask Codex to do anything".to_string(),
+            disable_paste_burst: false,
+            animations_enabled: true,
+            skills: Some(Vec::new()),
+        });
+
+        pane.set_task_running(/*running*/ true);
+
+        // Arm Esc interrupt confirmation in composer.
+        pane.handle_key_event(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert!(
+            rx.try_recv().is_err(),
+            "first Esc should arm interrupt confirmation only"
+        );
+
+        // Route Esc through a modal view; this should clear the prior armed state.
+        pane.show_selection_view(SelectionViewParams {
+            title: Some("Pick".to_string()),
+            items: vec![SelectionItem {
+                name: "Item".to_string(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        });
+        pane.handle_key_event(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert!(
+            pane.no_modal_or_popup_active(),
+            "Esc should dismiss selection view"
+        );
+
+        // First Esc after dismiss should arm again, not interrupt immediately.
+        pane.handle_key_event(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert!(
+            rx.try_recv().is_err(),
+            "first Esc after modal dismiss should arm confirmation again"
+        );
+
+        pane.handle_key_event(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert!(
+            matches!(rx.try_recv(), Ok(AppEvent::CodexOp(Op::Interrupt))),
+            "second Esc after modal dismiss should send Op::Interrupt"
         );
     }
 
