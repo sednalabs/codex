@@ -344,14 +344,10 @@ async fn spawn_child_and_capture_snapshot_with_spawn_timeout(
     let mut thread_created_rx = test.thread_manager.subscribe_thread_created();
     test.submit_turn(TURN_1_PROMPT).await?;
     let _ = wait_for_requests(&child_request_log).await?;
-    let spawned_id = match wait_for_spawned_thread_id_from_receiver(
-        &mut thread_created_rx,
-        spawn_timeout,
-    )
-    .await
-    {
-        Ok(spawned_id) => spawned_id,
-        Err(err) => {
+
+    let poll_for_spawned_thread_id = || async {
+        let deadline = Instant::now() + spawn_timeout;
+        loop {
             let new_thread_ids: Vec<ThreadId> = test
                 .thread_manager
                 .list_thread_ids()
@@ -360,8 +356,33 @@ async fn spawn_child_and_capture_snapshot_with_spawn_timeout(
                 .filter(|thread_id| !initial_thread_ids.contains(thread_id))
                 .collect();
             if let [spawned_thread_id] = new_thread_ids.as_slice() {
-                spawned_thread_id.to_string()
+                return Some(spawned_thread_id.to_string());
+            }
+            if Instant::now() >= deadline {
+                return None;
+            }
+            sleep(Duration::from_millis(10)).await;
+        }
+    };
+
+    let spawned_id = match wait_for_spawned_thread_id_from_receiver(
+        &mut thread_created_rx,
+        spawn_timeout,
+    )
+    .await
+    {
+        Ok(spawned_id) => spawned_id,
+        Err(err) => {
+            if let Some(spawned_id) = poll_for_spawned_thread_id().await {
+                spawned_id
             } else {
+                let new_thread_ids: Vec<ThreadId> = test
+                    .thread_manager
+                    .list_thread_ids()
+                    .await
+                    .into_iter()
+                    .filter(|thread_id| !initial_thread_ids.contains(thread_id))
+                    .collect();
                 let receiver_state = match thread_created_rx.try_recv() {
                     Ok(thread_id) => {
                         format!("unexpected buffered thread id after timeout: {thread_id}")
