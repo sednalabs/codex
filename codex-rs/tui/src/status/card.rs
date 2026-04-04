@@ -105,7 +105,8 @@ struct StatusHistoryCell {
     thread_name: Option<String>,
     session_id: Option<String>,
     forked_from: Option<String>,
-    token_usage: StatusTokenUsageData,
+    thread_token_usage: StatusTokenUsageData,
+    session_token_usage: StatusTokenUsageData,
     rate_limit_state: Arc<RwLock<StatusRateLimitState>>,
 }
 
@@ -318,7 +319,16 @@ impl StatusHistoryCell {
             window,
         });
 
-        let token_usage = StatusTokenUsageData {
+        let thread_usage = token_info
+            .map(|info| &info.total_token_usage)
+            .unwrap_or(total_usage);
+        let thread_token_usage = StatusTokenUsageData {
+            total: thread_usage.blended_total(),
+            input: thread_usage.non_cached_input(),
+            output: thread_usage.output_tokens,
+            context_window: context_window.clone(),
+        };
+        let session_token_usage = StatusTokenUsageData {
             total: total_usage.blended_total(),
             input: total_usage.non_cached_input(),
             output: total_usage.output_tokens,
@@ -347,17 +357,18 @@ impl StatusHistoryCell {
                 thread_name,
                 session_id,
                 forked_from,
-                token_usage,
+                thread_token_usage,
+                session_token_usage,
                 rate_limit_state: rate_limit_state.clone(),
             },
             StatusHistoryHandle { rate_limit_state },
         )
     }
 
-    fn token_usage_spans(&self) -> Vec<Span<'static>> {
-        let total_fmt = format_tokens_compact(self.token_usage.total);
-        let input_fmt = format_tokens_compact(self.token_usage.input);
-        let output_fmt = format_tokens_compact(self.token_usage.output);
+    fn token_usage_spans(token_usage: &StatusTokenUsageData) -> Vec<Span<'static>> {
+        let total_fmt = format_tokens_compact(token_usage.total);
+        let input_fmt = format_tokens_compact(token_usage.input);
+        let output_fmt = format_tokens_compact(token_usage.output);
 
         vec![
             Span::from(total_fmt),
@@ -373,7 +384,7 @@ impl StatusHistoryCell {
     }
 
     fn context_window_spans(&self) -> Option<Vec<Span<'static>>> {
-        let context = self.token_usage.context_window.as_ref()?;
+        let context = self.thread_token_usage.context_window.as_ref()?;
         let percent = context.percent_remaining;
         let used_fmt = format_tokens_compact(context.tokens_in_context);
         let window_fmt = format_tokens_compact(context.window);
@@ -386,6 +397,12 @@ impl StatusHistoryCell {
             Span::from(window_fmt).dim(),
             Span::from(")").dim(),
         ])
+    }
+
+    fn has_distinct_session_usage(&self) -> bool {
+        self.thread_token_usage.total != self.session_token_usage.total
+            || self.thread_token_usage.input != self.session_token_usage.input
+            || self.thread_token_usage.output != self.session_token_usage.output
     }
 
     fn rate_limit_lines(
@@ -583,8 +600,13 @@ impl HistoryCell for StatusHistoryCell {
         if self.collaboration_mode.is_some() {
             push_label(&mut labels, &mut seen, "Collaboration mode");
         }
-        push_label(&mut labels, &mut seen, "Token usage");
-        if self.token_usage.context_window.is_some() {
+        if self.has_distinct_session_usage() {
+            push_label(&mut labels, &mut seen, "Session token usage");
+            push_label(&mut labels, &mut seen, "Thread token usage");
+        } else {
+            push_label(&mut labels, &mut seen, "Token usage");
+        }
+        if self.thread_token_usage.context_window.is_some() {
             push_label(&mut labels, &mut seen, "Context window");
         }
 
@@ -649,7 +671,21 @@ impl HistoryCell for StatusHistoryCell {
         lines.push(Line::from(Vec::<Span<'static>>::new()));
         // Hide token usage only for ChatGPT subscribers
         if !matches!(self.account, Some(StatusAccountDisplay::ChatGpt { .. })) {
-            lines.push(formatter.line("Token usage", self.token_usage_spans()));
+            if self.has_distinct_session_usage() {
+                lines.push(formatter.line(
+                    "Session token usage",
+                    Self::token_usage_spans(&self.session_token_usage),
+                ));
+                lines.push(formatter.line(
+                    "Thread token usage",
+                    Self::token_usage_spans(&self.thread_token_usage),
+                ));
+            } else {
+                lines.push(formatter.line(
+                    "Token usage",
+                    Self::token_usage_spans(&self.thread_token_usage),
+                ));
+            }
         }
 
         if let Some(spans) = self.context_window_spans() {
