@@ -2981,19 +2981,15 @@ impl App {
     }
 
     async fn agent_picker_thread_token_usage(&self, thread_id: ThreadId) -> TokenUsage {
-        let live_usage =
-            (self.active_thread_id == Some(thread_id)).then(|| self.chat_widget.token_usage());
-        if let Some(usage) = live_usage.as_ref()
-            && usage.total_tokens > 0
-        {
-            return usage.clone();
+        if self.active_thread_id == Some(thread_id) {
+            return self.chat_widget.token_usage();
         }
 
         if let Some(channel) = self.thread_event_channels.get(&thread_id) {
             return channel.store.lock().await.token_usage.clone();
         }
 
-        live_usage.unwrap_or_default()
+        TokenUsage::default()
     }
 
     fn is_terminal_thread_read_error(err: &color_eyre::Report) -> bool {
@@ -11680,6 +11676,35 @@ guardian_approval = true
                 reasoning_output_tokens: 0,
                 total_tokens: 10,
             }
+        );
+    }
+
+    #[tokio::test]
+    async fn agent_picker_thread_token_usage_does_not_fallback_when_active_live_usage_is_zero() {
+        let mut app = make_test_app().await;
+        let thread_id = ThreadId::new();
+        app.active_thread_id = Some(thread_id);
+        app.chat_widget
+            .handle_thread_session(test_thread_session(thread_id, PathBuf::from("/tmp/main")));
+
+        let channel = ThreadEventChannel::new_with_session(
+            /*capacity*/ 8,
+            test_thread_session(thread_id, PathBuf::from("/tmp/main")),
+            Vec::new(),
+        );
+        {
+            let mut store = channel.store.lock().await;
+            store.push_notification(token_usage_notification(
+                thread_id,
+                "turn-store",
+                /*model_context_window*/ None,
+            ));
+        }
+        app.thread_event_channels.insert(thread_id, channel);
+
+        assert_eq!(
+            app.agent_picker_thread_token_usage(thread_id).await,
+            TokenUsage::default()
         );
     }
 
