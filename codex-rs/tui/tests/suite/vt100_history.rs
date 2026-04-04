@@ -38,6 +38,12 @@ impl TestScenario {
         codex_tui::insert_history::insert_history_lines(&mut self.term, lines)
             .expect("Failed to insert history lines in test");
     }
+
+    fn redraw_viewport(&mut self, content: Line<'static>) {
+        self.term
+            .draw(|frame| frame.render_widget_ref(content, frame.area()))
+            .expect("failed to draw viewport content in test");
+    }
 }
 
 #[test]
@@ -244,5 +250,66 @@ fn android_style_narrow_viewport_keeps_url_content_from_being_clipped() {
     assert!(
         url_row <= prompt_row + 2,
         "expected URL content to appear immediately after prompt (allowing at most one spacer row), got prompt_row={prompt_row}, url_row={url_row}, rows={rows:?}"
+    );
+}
+
+#[test]
+fn committed_rows_survive_redraw_and_viewport_pressure() {
+    // Keep the viewport above the screen bottom so the first history insert has
+    // to move the viewport down, then verify redraws do not wipe prior rows.
+    let area = Rect::new(
+        /*x*/ 0, /*y*/ 6, /*width*/ 30, /*height*/ 2,
+    );
+    let mut scenario = TestScenario::new(/*width*/ 30, /*height*/ 10, area);
+
+    scenario.run_insert(vec![
+        "A0-visible-before-redraw".into(),
+        "A1-visible-before-redraw".into(),
+    ]);
+
+    scenario.redraw_viewport("live redraw #1".into());
+    scenario.redraw_viewport("live redraw #2".into());
+
+    scenario.run_insert(vec![
+        "B0-pressure-wrap-wrap-wrap-wrap".into(),
+        "B1-pressure-wrap-wrap-wrap-wrap".into(),
+    ]);
+
+    scenario.redraw_viewport("live redraw #3".into());
+    scenario.run_insert(vec!["C0-tail-after-pressure".into()]);
+
+    let rows = scenario.term.backend().vt100().screen().contents();
+
+    for marker in [
+        "A0-visible-before-redraw",
+        "A1-visible-before-redraw",
+        "B0-pressure-wrap-wrap-wrap-wrap",
+        "B1-pressure-wrap-wrap-wrap-wrap",
+        "C0-tail-after-pressure",
+    ] {
+        assert!(
+            rows.contains(marker),
+            "expected marker {marker:?} to remain visible after redraw pressure:\n{rows}"
+        );
+    }
+
+    let a0 = rows
+        .find("A0-visible-before-redraw")
+        .expect("missing A0 marker");
+    let a1 = rows
+        .find("A1-visible-before-redraw")
+        .expect("missing A1 marker");
+    let b0 = rows
+        .find("B0-pressure-wrap-wrap-wrap-wrap")
+        .expect("missing B0 marker");
+    let b1 = rows
+        .find("B1-pressure-wrap-wrap-wrap-wrap")
+        .expect("missing B1 marker");
+    let c0 = rows
+        .find("C0-tail-after-pressure")
+        .expect("missing C0 marker");
+    assert!(
+        a0 < a1 && a1 < b0 && b0 < b1 && b1 < c0,
+        "expected markers to keep transcript order without overwrite:\n{rows}"
     );
 }
