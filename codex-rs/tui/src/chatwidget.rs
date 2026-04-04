@@ -7715,11 +7715,13 @@ impl ChatWidget {
             match kind {
                 QueuedFollowUpKind::UserMessageBack | QueuedFollowUpKind::UserMessageFront => {
                     if let Some(message) = self.queued_user_messages.pop_front() {
+                        self.consume_follow_up_insert_order(kind);
                         return Some(QueuedFollowUpInput::UserMessage(message));
                     }
                 }
                 QueuedFollowUpKind::SlashCommandBack | QueuedFollowUpKind::SlashCommandFront => {
                     if let Some(command) = self.queued_slash_commands.pop_front() {
+                        self.consume_follow_up_insert_order(kind);
                         return Some(QueuedFollowUpInput::SlashCommand(command));
                     }
                 }
@@ -7732,6 +7734,31 @@ impl ChatWidget {
         self.queued_slash_commands
             .pop_front()
             .map(QueuedFollowUpInput::SlashCommand)
+    }
+
+    fn consume_follow_up_insert_order(&mut self, kind: QueuedFollowUpKind) {
+        // Keep insert-order metadata aligned with dequeues so Alt+Up restores
+        // the latest remaining queued draft in reverse chronological order.
+        match kind {
+            QueuedFollowUpKind::UserMessageBack | QueuedFollowUpKind::SlashCommandBack => {
+                if let Some(index) = self
+                    .queued_follow_up_insert_order
+                    .iter()
+                    .position(|queued| *queued == kind)
+                {
+                    self.queued_follow_up_insert_order.remove(index);
+                }
+            }
+            QueuedFollowUpKind::UserMessageFront | QueuedFollowUpKind::SlashCommandFront => {
+                if let Some(index) = self
+                    .queued_follow_up_insert_order
+                    .iter()
+                    .rposition(|queued| *queued == kind)
+                {
+                    self.queued_follow_up_insert_order.remove(index);
+                }
+            }
+        }
     }
 
     fn pop_latest_queued_follow_up_for_edit(&mut self) -> Option<UserMessage> {
