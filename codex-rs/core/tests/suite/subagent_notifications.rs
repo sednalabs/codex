@@ -107,6 +107,10 @@ fn has_single_user_input_text(req: &wiremock::Request, text: &str) -> bool {
     user_texts == vec![text.to_string()]
 }
 
+fn response_has_single_user_input_text(req: &ResponsesRequest, text: &str) -> bool {
+    req.message_input_texts("user") == vec![text.to_string()]
+}
+
 fn has_subagent_notification(req: &ResponsesRequest) -> bool {
     req.message_input_texts("user")
         .iter()
@@ -615,7 +619,8 @@ async fn spawn_agent_preserves_exact_requested_model_slug_through_role_layering(
 
     let child_requests = wait_for_requests(&child_request_log).await?;
     let child_body = child_requests
-        .last()
+        .into_iter()
+        .find(|request| response_has_single_user_input_text(request, CHILD_PROMPT))
         .expect("expected spawned child request")
         .body_json();
     assert_eq!(child_body["model"].as_str(), Some(REQUESTED_EXACT_MODEL));
