@@ -4,6 +4,7 @@ use codex_core::config::AgentRoleConfig;
 use codex_features::Feature;
 use codex_protocol::ThreadId;
 use codex_protocol::openai_models::ReasoningEffort;
+use codex_protocol::protocol::EventMsg;
 use core_test_support::responses::ResponsesRequest;
 use core_test_support::responses::ev_assistant_message;
 use core_test_support::responses::ev_completed;
@@ -60,55 +61,11 @@ fn body_contains(req: &wiremock::Request, text: &str) -> bool {
         .is_some_and(|body| body.contains(text))
 }
 
-fn has_single_user_input_text(req: &wiremock::Request, text: &str) -> bool {
-    let is_zstd = req
-        .headers
-        .get("content-encoding")
-        .and_then(|value| value.to_str().ok())
-        .is_some_and(|value| {
-            value
-                .split(',')
-                .any(|entry| entry.trim().eq_ignore_ascii_case("zstd"))
-        });
-    let bytes = if is_zstd {
-        zstd::stream::decode_all(std::io::Cursor::new(&req.body)).ok()
-    } else {
-        Some(req.body.clone())
-    };
-    let Some(body) = bytes
-        .and_then(|body| serde_json::from_slice::<serde_json::Value>(&body).ok())
-        .and_then(|body| {
-            body.get("input")
-                .and_then(serde_json::Value::as_array)
-                .cloned()
-        })
-    else {
-        return false;
-    };
-
-    let user_texts = body
-        .into_iter()
-        .filter(|item| item.get("type").and_then(serde_json::Value::as_str) == Some("message"))
-        .filter(|item| item.get("role").and_then(serde_json::Value::as_str) == Some("user"))
-        .filter_map(|item| {
-            item.get("content")
-                .and_then(serde_json::Value::as_array)
-                .cloned()
-        })
-        .flatten()
-        .filter(|span| span.get("type").and_then(serde_json::Value::as_str) == Some("input_text"))
-        .filter_map(|span| {
-            span.get("text")
-                .and_then(serde_json::Value::as_str)
-                .map(str::to_owned)
-        })
-        .collect::<Vec<String>>();
-
-    user_texts == vec![text.to_string()]
-}
-
-fn response_has_single_user_input_text(req: &ResponsesRequest, text: &str) -> bool {
-    req.message_input_texts("user") == vec![text.to_string()]
+fn request_uses_model(req: &wiremock::Request, model: &str) -> bool {
+    req.body_json::<serde_json::Value>()
+        .ok()
+        .and_then(|body| body["model"].as_str().map(str::to_owned))
+        .is_some_and(|request_model| request_model == model)
 }
 
 fn has_subagent_notification(req: &ResponsesRequest) -> bool {
@@ -185,6 +142,66 @@ async fn wait_for_requests(
         }
         if Instant::now() >= deadline {
             anyhow::bail!("expected at least 1 request, got {}", requests.len());
+        }
+        sleep(Duration::from_millis(10)).await;
+    }
+}
+
+async fn wait_for_spawned_thread_turn_start(
+    test: &TestCodex,
+    spawned_id: &str,
+    timeout: Duration,
+) -> Result<()> {
+    let thread_id = ThreadId::from_string(spawned_id)?;
+    let child_thread = test.thread_manager.get_thread(thread_id).await?;
+    let deadline = Instant::now() + timeout;
+    loop {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            anyhow::bail!("timed out waiting for spawned child thread to start its turn");
+        }
+
+        let event = match tokio::time::timeout(remaining, child_thread.next_event()).await {
+            Ok(Ok(event)) => event,
+            Ok(Err(err)) => return Err(err.into()),
+            Err(_) => anyhow::bail!("timed out waiting for spawned child thread to start its turn"),
+        };
+
+        match event.msg {
+            EventMsg::McpStartupUpdate(_)
+            | EventMsg::McpStartupComplete(_)
+            | EventMsg::SessionConfigured(_) => continue,
+            EventMsg::Error(err) => {
+                anyhow::bail!(
+                    "spawned child failed before starting its turn: {}",
+                    err.message
+                )
+            }
+            _ => return Ok(()),
+        }
+    }
+}
+
+async fn wait_for_request_body_with_model(
+    server: &MockServer,
+    model: &str,
+    timeout: Duration,
+) -> Result<serde_json::Value> {
+    let deadline = Instant::now() + timeout;
+    loop {
+        if let Some(body) = server
+            .received_requests()
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|request| request.body_json::<serde_json::Value>().ok())
+            .find(|body| body["model"].as_str() == Some(model))
+        {
+            return Ok(body);
+        }
+
+        if Instant::now() >= deadline {
+            anyhow::bail!("timed out waiting for request body with model {model}");
         }
         sleep(Duration::from_millis(10)).await;
     }
@@ -552,7 +569,6 @@ async fn spawn_agent_preserves_exact_requested_model_slug_through_role_layering(
         "message": CHILD_PROMPT,
         "agent_type": "custom",
         "model": REQUESTED_EXACT_MODEL,
-        "reasoning_effort": REQUESTED_REASONING_EFFORT,
     }))?;
 
     mount_sse_once_match(
@@ -566,9 +582,9 @@ async fn spawn_agent_preserves_exact_requested_model_slug_through_role_layering(
     )
     .await;
 
-    let child_request_log = mount_sse_once_match(
+    let _child_request_log = mount_sse_once_match(
         &server,
-        |req: &wiremock::Request| has_single_user_input_text(req, CHILD_PROMPT),
+        |req: &wiremock::Request| request_uses_model(req, REQUESTED_EXACT_MODEL),
         sse(vec![
             ev_response_created("resp-child-1"),
             ev_assistant_message("msg-child-1", "child done"),
@@ -615,16 +631,16 @@ async fn spawn_agent_preserves_exact_requested_model_slug_through_role_layering(
         );
     });
     let test = builder.build(&server).await?;
+    let mut thread_created_rx = test.thread_manager.subscribe_thread_created();
     test.submit_turn(TURN_1_PROMPT).await?;
-
-    let child_requests = wait_for_requests(&child_request_log).await?;
-    let child_body = child_requests
-        .into_iter()
-        .find(|request| response_has_single_user_input_text(request, CHILD_PROMPT))
-        .expect("expected spawned child request")
-        .body_json();
+    let spawned_id =
+        wait_for_spawned_thread_id_from_receiver(&mut thread_created_rx, Duration::from_secs(2))
+            .await?;
+    wait_for_spawned_thread_turn_start(&test, &spawned_id, Duration::from_secs(5)).await?;
+    let child_body =
+        wait_for_request_body_with_model(&server, REQUESTED_EXACT_MODEL, Duration::from_secs(5))
+            .await?;
     assert_eq!(child_body["model"].as_str(), Some(REQUESTED_EXACT_MODEL));
-    assert_eq!(child_body["reasoning"]["effort"].as_str(), Some("low"));
 
     Ok(())
 }

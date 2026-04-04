@@ -19,6 +19,7 @@ use crate::config_loader::ConfigLayerEntry;
 use crate::config_loader::ConfigLayerStack;
 use crate::config_loader::ConfigLayerStackOrdering;
 use crate::config_loader::resolve_relative_paths_in_config_toml;
+use crate::model_provider_info::ModelProviderInfo;
 use codex_app_server_protocol::ConfigLayerSource;
 use codex_protocol::config_types::ReasoningSummary;
 use codex_protocol::config_types::Verbosity;
@@ -52,8 +53,10 @@ struct RolePreservationPolicy {
     preserve_current_provider: bool,
 }
 
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct SpawnModelSelectionCarry {
+    model_provider_id: Option<String>,
+    model_provider: Option<ModelProviderInfo>,
     model: Option<String>,
     model_reasoning_effort: Option<ReasoningEffort>,
     model_reasoning_summary: Option<ReasoningSummary>,
@@ -206,6 +209,17 @@ impl SpawnModelSelectionCarry {
             role_profile_field_updates(config.active_profile.as_deref(), role_layer_toml);
 
         Self {
+            model_provider_id: if preserve_current_profile && !active_profile_updates.model_provider
+            {
+                Some(config.model_provider_id.clone())
+            } else {
+                None
+            },
+            model_provider: if preserve_current_profile && !active_profile_updates.model_provider {
+                Some(config.model_provider.clone())
+            } else {
+                None
+            },
             model: if preserve_current_profile && !active_profile_updates.model {
                 role_config.model.clone().or_else(|| config.model.clone())
             } else {
@@ -248,6 +262,17 @@ impl SpawnModelSelectionCarry {
             role_profile_field_updates(config.active_profile.as_deref(), role_layer_toml);
 
         Self {
+            model_provider_id: if preserve_current_profile && !active_profile_updates.model_provider
+            {
+                Some(config.model_provider_id.clone())
+            } else {
+                None
+            },
+            model_provider: if preserve_current_profile && !active_profile_updates.model_provider {
+                Some(config.model_provider.clone())
+            } else {
+                None
+            },
             model: sticky_spawn_setting(
                 preserve_current_profile,
                 active_profile_updates.model,
@@ -276,6 +301,12 @@ impl SpawnModelSelectionCarry {
     }
 
     pub(crate) fn apply_to_config(&self, config: &mut Config) {
+        if let Some(model_provider_id) = &self.model_provider_id {
+            config.model_provider_id = model_provider_id.clone();
+        }
+        if let Some(model_provider) = &self.model_provider {
+            config.model_provider = model_provider.clone();
+        }
         if let Some(model) = &self.model {
             config.model = Some(model.clone());
         }
