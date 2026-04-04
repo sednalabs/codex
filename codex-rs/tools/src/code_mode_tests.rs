@@ -356,7 +356,7 @@ fn tool_spec_to_code_mode_tool_definition_returns_augmented_nested_tools() {
         "Apply a patch",
         "apply_patch",
         "input",
-        &["input: string"],
+        &["string"],
         &["unknown"],
     );
 }
