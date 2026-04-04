@@ -211,8 +211,7 @@ impl SpawnModelSelectionCarry {
         Self {
             model_provider_id: (preserve_current_profile && !active_profile_updates.model_provider)
                 .then(|| config.model_provider_id.clone()),
-            model_provider: (preserve_current_profile
-                && !active_profile_updates.model_provider)
+            model_provider: (preserve_current_profile && !active_profile_updates.model_provider)
                 .then(|| config.model_provider.clone()),
             model: if preserve_current_profile && !active_profile_updates.model {
                 role_config.model.clone().or_else(|| config.model.clone())
@@ -258,8 +257,7 @@ impl SpawnModelSelectionCarry {
         Self {
             model_provider_id: (preserve_current_profile && !active_profile_updates.model_provider)
                 .then(|| config.model_provider_id.clone()),
-            model_provider: (preserve_current_profile
-                && !active_profile_updates.model_provider)
+            model_provider: (preserve_current_profile && !active_profile_updates.model_provider)
                 .then(|| config.model_provider.clone()),
             model: sticky_spawn_setting(
                 preserve_current_profile,
