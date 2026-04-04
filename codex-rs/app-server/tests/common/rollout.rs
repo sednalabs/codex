@@ -23,6 +23,10 @@ pub fn rollout_path(codex_home: &Path, filename_ts: &str, thread_id: &str) -> Pa
         .join(format!("rollout-{filename_ts}-{thread_id}.jsonl"))
 }
 
+pub fn default_rollout_cwd() -> Result<PathBuf> {
+    Ok(std::env::current_dir()?)
+}
+
 /// Create a minimal rollout file under `CODEX_HOME/sessions/YYYY/MM/DD/`.
 ///
 /// - `filename_ts` is the filename timestamp component in `YYYY-MM-DDThh-mm-ss` format.
@@ -75,7 +79,7 @@ pub fn create_fake_rollout_with_source(
         id: conversation_id,
         forked_from_id: None,
         timestamp: meta_rfc3339.to_string(),
-        cwd: PathBuf::from("/"),
+        cwd: default_rollout_cwd()?,
         originator: "codex".to_string(),
         cli_version: "0.0.0".to_string(),
         source,
@@ -158,7 +162,7 @@ pub fn create_fake_rollout_with_text_elements(
         id: conversation_id,
         forked_from_id: None,
         timestamp: meta_rfc3339.to_string(),
-        cwd: PathBuf::from("/"),
+        cwd: default_rollout_cwd()?,
         originator: "codex".to_string(),
         cli_version: "0.0.0".to_string(),
         source: SessionSource::Cli,

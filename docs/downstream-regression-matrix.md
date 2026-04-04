@@ -52,6 +52,7 @@ Validation workflow reference:
 Focused lane used for protocol/event-history seams:
 
 - `codex.app-server-protocol-test`
+- `codex.app-server-thread-cwd-targeted`
 
 GitHub Actions lane naming (`.github/workflows/sedna-heavy-tests.yml`):
 
@@ -120,6 +121,7 @@ GitHub Actions lane naming (`.github/workflows/sedna-heavy-tests.yml`):
 | Code-mode declaration formatting + namespaced tool metadata | `core-carry-core-smoke` | `code_mode_exports_all_tools_metadata_for_builtin_tools`; `code_mode_exports_all_tools_metadata_for_namespaced_mcp_tools` |
 | Unified-exec blocking wait semantics | `core-carry-core-smoke` | `exec_command_wait_until_terminal_returns_exit_metadata`; `exec_command_tool_exposes_blocking_wait_parameters`; `write_stdin_tool_exposes_blocking_wait_parameters` |
 | Turn-complete compaction count metadata | `codex.app-server-protocol-test` | `preserves_compaction_only_turn`; broader `TurnCompleteEvent` shape coverage in `codex-core`, `codex-exec`, and `codex-tui` tests keeps `compaction_events_in_turn` wired through downstream consumers |
+| App-server rollout cwd portability across thread list/read/resume summary surfaces | `codex.app-server-thread-cwd-targeted` | `get_conversation_summary_by_*`; `thread_list_*`; `thread_read_returns_summary_without_turns`; `thread_resume_returns_rollout_history` |
 | TUI queued slash recall + replay ordering | `core-carry-ui-smoke` | `slash_approvals_enter_queues_while_task_running_and_replays_on_completion`; `alt_up_restores_most_recent_queued_slash_command` |
 | Per-thread approval/sandbox/reviewer overrides survive thread switches (`codex-tui`) | `codex.tui-thread-session-policy-targeted` | `store_active_thread_receiver_persists_per_thread_policy_overrides` |
 | Double-`Esc` interrupt confirmation protects Alt/meta terminals while preserving explicit single-press override (`codex-tui`) | `codex.tui-esc-interrupt-targeted` | `esc_requires_double_press_for_interrupt_when_running_task_by_default`; `first_esc_renders_again_to_interrupt_hint`; `esc_release_does_not_confirm_interrupt`; `esc_with_alt_does_not_interrupt_running_task`; `esc_single_press_interrupts_when_double_press_disabled` |
