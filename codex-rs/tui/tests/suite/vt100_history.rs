@@ -278,38 +278,60 @@ fn committed_rows_survive_redraw_and_viewport_pressure() {
     scenario.redraw_viewport("live redraw #3".into());
     scenario.run_insert(vec!["C0-tail-after-pressure".into()]);
 
-    let rows = scenario.term.backend().vt100().screen().contents();
+    let rows = scenario
+        .term
+        .backend()
+        .vt100()
+        .screen()
+        .rows(0, 30)
+        .collect::<Vec<String>>();
 
     for marker in [
         "A0-visible-before-redraw",
         "A1-visible-before-redraw",
-        "B0-pressure-wrap-wrap-wrap-wrap",
-        "B1-pressure-wrap-wrap-wrap-wrap",
         "C0-tail-after-pressure",
+        "live redraw #3",
     ] {
         assert!(
-            rows.contains(marker),
-            "expected marker {marker:?} to remain visible after redraw pressure:\n{rows}"
+            rows.iter().any(|row| row.contains(marker)),
+            "expected marker {marker:?} to remain visible after redraw pressure, rows: {rows:?}"
         );
     }
 
     let a0 = rows
-        .find("A0-visible-before-redraw")
+        .iter()
+        .position(|row| row.contains("A0-visible-before-redraw"))
         .expect("missing A0 marker");
     let a1 = rows
-        .find("A1-visible-before-redraw")
+        .iter()
+        .position(|row| row.contains("A1-visible-before-redraw"))
         .expect("missing A1 marker");
     let b0 = rows
-        .find("B0-pressure-wrap-wrap-wrap-wrap")
-        .expect("missing B0 marker");
+        .iter()
+        .position(|row| row.contains("B0-pressure-wrap-wrap-wrap-"))
+        .expect("missing B0 marker prefix");
+    let b0_tail = rows
+        .iter()
+        .enumerate()
+        .skip(b0 + 1)
+        .find_map(|(idx, row)| row.contains("wrap").then_some(idx))
+        .expect("missing B0 wrap continuation");
     let b1 = rows
-        .find("B1-pressure-wrap-wrap-wrap-wrap")
-        .expect("missing B1 marker");
+        .iter()
+        .position(|row| row.contains("B1-pressure-wrap-wrap-wrap-"))
+        .expect("missing B1 marker prefix");
+    let b1_tail = rows
+        .iter()
+        .enumerate()
+        .skip(b1 + 1)
+        .find_map(|(idx, row)| row.contains("wrap").then_some(idx))
+        .expect("missing B1 wrap continuation");
     let c0 = rows
-        .find("C0-tail-after-pressure")
+        .iter()
+        .position(|row| row.contains("C0-tail-after-pressure"))
         .expect("missing C0 marker");
     assert!(
-        a0 < a1 && a1 < b0 && b0 < b1 && b1 < c0,
-        "expected markers to keep transcript order without overwrite:\n{rows}"
+        a0 < a1 && a1 < b0 && b0 < b0_tail && b0_tail < b1 && b1 < b1_tail && b1_tail < c0,
+        "expected markers to keep transcript order without overwrite, rows: {rows:?}"
     );
 }
