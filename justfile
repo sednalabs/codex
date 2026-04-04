@@ -251,7 +251,7 @@ bazel-clippy:
 
 [no-cd]
 bazel-argument-comment-lint:
-    cd "{{justfile_directory()}}" && bazel build --config=argument-comment-lint -- $("{{justfile_directory()}}"/tools/argument-comment-lint/list-bazel-targets.sh)
+    just _run-bazel-argument-comment-lint
 
 bazel-remote-test:
     bazel test --test_tag_filters=-argument-comment-lint //... --config=remote --platforms=//:rbe --keep_going
@@ -277,9 +277,13 @@ write-hooks-schema:
 
 # Run the argument-comment Dylint checks across codex-rs.
 [no-cd]
+_run-bazel-argument-comment-lint:
+    cd "{{justfile_directory()}}" && bazel build --config=argument-comment-lint -- $("{{justfile_directory()}}"/tools/argument-comment-lint/list-bazel-targets.sh)
+
+[no-cd]
 argument-comment-lint *args:
     if [ "$#" -eq 0 ]; then \
-      cd "{{justfile_directory()}}" && bazel build --config=argument-comment-lint -- $("{{justfile_directory()}}"/tools/argument-comment-lint/list-bazel-targets.sh); \
+      just _run-bazel-argument-comment-lint; \
     else \
       "{{justfile_directory()}}"/tools/argument-comment-lint/run-prebuilt-linter.py "$@"; \
     fi
