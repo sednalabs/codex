@@ -890,7 +890,10 @@ async fn alt_up_edits_newest_remaining_draft_after_run_next_auto_submit() {
 
     chat.handle_key_event(KeyEvent::new(KeyCode::Up, KeyModifiers::ALT));
 
-    assert_eq!(chat.bottom_pane.composer_text(), "newest queued".to_string());
+    assert_eq!(
+        chat.bottom_pane.composer_text(),
+        "newest queued".to_string()
+    );
     assert_eq!(chat.queued_user_messages.len(), 1);
     assert_eq!(
         chat.queued_user_messages.front().unwrap().text,
@@ -911,7 +914,10 @@ async fn alt_up_keeps_follow_up_run_order_in_sync() {
 
     // Edit the newest queued draft.
     chat.handle_key_event(KeyEvent::new(KeyCode::Up, KeyModifiers::ALT));
-    assert_eq!(chat.bottom_pane.composer_text(), "newest queued".to_string());
+    assert_eq!(
+        chat.bottom_pane.composer_text(),
+        "newest queued".to_string()
+    );
 
     // Run-order metadata should still match queued drafts after edit dequeue.
     assert_eq!(chat.queued_user_messages.len(), 1);
