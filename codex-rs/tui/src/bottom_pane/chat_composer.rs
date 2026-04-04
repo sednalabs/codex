@@ -1339,6 +1339,28 @@ impl ChatComposer {
                 // Fallback to default newline handling if no command selected.
                 self.handle_key_event_without_popup(key_event)
             }
+            KeyEvent {
+                code: KeyCode::Char(c),
+                modifiers,
+                kind: KeyEventKind::Press,
+                ..
+            } if (c == 'q' || c == 'Q')
+                && modifiers.contains(KeyModifiers::CONTROL)
+                && modifiers.contains(KeyModifiers::SHIFT) =>
+            {
+                if let Some(sel) = popup.selected_item() {
+                    let CommandItem::Builtin(cmd) = sel;
+                    self.textarea.set_text_clearing_elements("");
+                    return (
+                        InputResult::Command {
+                            cmd,
+                            queue_front_when_busy: true,
+                        },
+                        true,
+                    );
+                }
+                self.handle_submission(SubmissionMode::QueueFrontWhenBusy)
+            }
             input => self.handle_input_basic(input),
         }
     }
@@ -6529,6 +6551,43 @@ mod tests {
             /*disable_paste_burst*/ false,
         );
         composer.textarea.set_text_clearing_elements("/model");
+
+        let (result, _needs_redraw) = composer.handle_key_event(KeyEvent::new(
+            KeyCode::Char('q'),
+            KeyModifiers::CONTROL.union(KeyModifiers::SHIFT),
+        ));
+
+        assert!(matches!(
+            result,
+            InputResult::Command {
+                cmd: SlashCommand::Model,
+                queue_front_when_busy: true
+            }
+        ));
+    }
+
+    #[test]
+    fn ctrl_shift_q_dispatches_popup_selection_with_front_queue_preference() {
+        use crossterm::event::KeyCode;
+        use crossterm::event::KeyEvent;
+        use crossterm::event::KeyModifiers;
+
+        let (tx, _rx) = unbounded_channel::<AppEvent>();
+        let sender = AppEventSender::new(tx);
+        let mut composer = ChatComposer::new(
+            /*has_input_focus*/ true,
+            sender,
+            /*enhanced_keys_supported*/ false,
+            "Ask Codex to do anything".to_string(),
+            /*disable_paste_burst*/ false,
+        );
+        composer.set_task_running(/*running*/ true);
+
+        type_chars_humanlike(&mut composer, &['/', 'm', 'o']);
+        assert!(
+            matches!(composer.active_popup, ActivePopup::Command(_)),
+            "expected slash popup to be active"
+        );
 
         let (result, _needs_redraw) = composer.handle_key_event(KeyEvent::new(
             KeyCode::Char('q'),

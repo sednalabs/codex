@@ -415,8 +415,10 @@ enum QueuedSlashCommand {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum QueuedFollowUpKind {
-    UserMessage,
-    SlashCommand,
+    UserMessageBack,
+    UserMessageFront,
+    SlashCommandBack,
+    SlashCommandFront,
 }
 
 enum QueuedFollowUpInput {
@@ -990,6 +992,8 @@ pub(crate) struct ChatWidget {
     queued_slash_commands: VecDeque<QueuedSlashCommand>,
     // Unified FIFO ordering across queued messages and queued slash commands.
     queued_follow_up_order: VecDeque<QueuedFollowUpKind>,
+    // Insertion-order index used for "pop latest queued follow-up for edit" behavior.
+    queued_follow_up_insert_order: VecDeque<QueuedFollowUpKind>,
     // Pending notification to show when unfocused on next Draw
     pending_notification: Option<Notification>,
     /// When `Some`, the user has pressed a quit shortcut and the second press
@@ -1160,6 +1164,7 @@ pub(crate) struct ThreadInputState {
     queued_user_messages: VecDeque<UserMessage>,
     queued_slash_commands: VecDeque<QueuedSlashCommand>,
     queued_follow_up_order: VecDeque<QueuedFollowUpKind>,
+    queued_follow_up_insert_order: VecDeque<QueuedFollowUpKind>,
     current_collaboration_mode: CollaborationMode,
     active_collaboration_mask: Option<CollaborationModeMask>,
     task_running: bool,
@@ -3276,8 +3281,18 @@ impl ChatWidget {
                 .map(|steer| steer.user_message),
         );
         to_merge.extend(self.queued_user_messages.drain(..));
-        self.queued_follow_up_order
-            .retain(|kind| matches!(kind, QueuedFollowUpKind::SlashCommand));
+        self.queued_follow_up_order.retain(|kind| {
+            matches!(
+                kind,
+                QueuedFollowUpKind::SlashCommandBack | QueuedFollowUpKind::SlashCommandFront
+            )
+        });
+        self.queued_follow_up_insert_order.retain(|kind| {
+            matches!(
+                kind,
+                QueuedFollowUpKind::SlashCommandBack | QueuedFollowUpKind::SlashCommandFront
+            )
+        });
         if !existing_message.text.is_empty()
             || !existing_message.local_images.is_empty()
             || !existing_message.remote_image_urls.is_empty()
@@ -3326,6 +3341,7 @@ impl ChatWidget {
             queued_user_messages: self.queued_user_messages.clone(),
             queued_slash_commands: self.queued_slash_commands.clone(),
             queued_follow_up_order: self.queued_follow_up_order.clone(),
+            queued_follow_up_insert_order: self.queued_follow_up_insert_order.clone(),
             current_collaboration_mode: self.current_collaboration_mode.clone(),
             active_collaboration_mask: self.active_collaboration_mask.clone(),
             task_running: self.bottom_pane.is_task_running(),
@@ -3382,6 +3398,7 @@ impl ChatWidget {
             self.queued_user_messages = input_state.queued_user_messages;
             self.queued_slash_commands = input_state.queued_slash_commands;
             self.queued_follow_up_order = input_state.queued_follow_up_order;
+            self.queued_follow_up_insert_order = input_state.queued_follow_up_insert_order;
         } else {
             self.agent_turn_running = false;
             self.pending_steers.clear();
@@ -3397,6 +3414,7 @@ impl ChatWidget {
             self.queued_user_messages.clear();
             self.queued_slash_commands.clear();
             self.queued_follow_up_order.clear();
+            self.queued_follow_up_insert_order.clear();
         }
         self.turn_sleep_inhibitor
             .set_turn_running(self.agent_turn_running);
@@ -4970,6 +4988,7 @@ impl ChatWidget {
             queued_message_edit_binding,
             queued_slash_commands: VecDeque::new(),
             queued_follow_up_order: VecDeque::new(),
+            queued_follow_up_insert_order: VecDeque::new(),
             show_welcome_banner: is_first_run,
             startup_tooltip_override,
             suppress_session_configured_redraw: false,
@@ -5944,7 +5963,9 @@ impl ChatWidget {
         if !self.is_session_configured() || self.bottom_pane.is_task_running() {
             self.queued_user_messages.push_back(user_message);
             self.queued_follow_up_order
-                .push_back(QueuedFollowUpKind::UserMessage);
+                .push_back(QueuedFollowUpKind::UserMessageBack);
+            self.queued_follow_up_insert_order
+                .push_back(QueuedFollowUpKind::UserMessageBack);
             self.refresh_pending_input_preview();
         } else {
             self.submit_user_message(user_message);
@@ -5955,7 +5976,9 @@ impl ChatWidget {
         if !self.is_session_configured() || self.bottom_pane.is_task_running() {
             self.queued_user_messages.push_front(user_message);
             self.queued_follow_up_order
-                .push_front(QueuedFollowUpKind::UserMessage);
+                .push_front(QueuedFollowUpKind::UserMessageFront);
+            self.queued_follow_up_insert_order
+                .push_back(QueuedFollowUpKind::UserMessageFront);
             self.refresh_pending_input_preview();
         } else {
             self.submit_user_message(user_message);
@@ -5972,11 +5995,15 @@ impl ChatWidget {
         if queue_front {
             self.queued_slash_commands.push_front(queued_command);
             self.queued_follow_up_order
-                .push_front(QueuedFollowUpKind::SlashCommand);
+                .push_front(QueuedFollowUpKind::SlashCommandFront);
+            self.queued_follow_up_insert_order
+                .push_back(QueuedFollowUpKind::SlashCommandFront);
         } else {
             self.queued_slash_commands.push_back(queued_command);
             self.queued_follow_up_order
-                .push_back(QueuedFollowUpKind::SlashCommand);
+                .push_back(QueuedFollowUpKind::SlashCommandBack);
+            self.queued_follow_up_insert_order
+                .push_back(QueuedFollowUpKind::SlashCommandBack);
         }
         self.refresh_pending_input_preview();
         self.add_info_message(message, /*hint*/ None);
@@ -5993,7 +6020,9 @@ impl ChatWidget {
             tracing::warn!("cannot submit user message before session is configured; queueing");
             self.queued_user_messages.push_front(user_message);
             self.queued_follow_up_order
-                .push_front(QueuedFollowUpKind::UserMessage);
+                .push_front(QueuedFollowUpKind::UserMessageFront);
+            self.queued_follow_up_insert_order
+                .push_back(QueuedFollowUpKind::UserMessageFront);
             self.refresh_pending_input_preview();
             return;
         }
@@ -7684,12 +7713,12 @@ impl ChatWidget {
 
         while let Some(kind) = self.queued_follow_up_order.pop_front() {
             match kind {
-                QueuedFollowUpKind::UserMessage => {
+                QueuedFollowUpKind::UserMessageBack | QueuedFollowUpKind::UserMessageFront => {
                     if let Some(message) = self.queued_user_messages.pop_front() {
                         return Some(QueuedFollowUpInput::UserMessage(message));
                     }
                 }
-                QueuedFollowUpKind::SlashCommand => {
+                QueuedFollowUpKind::SlashCommandBack | QueuedFollowUpKind::SlashCommandFront => {
                     if let Some(command) = self.queued_slash_commands.pop_front() {
                         return Some(QueuedFollowUpInput::SlashCommand(command));
                     }
@@ -7706,15 +7735,25 @@ impl ChatWidget {
     }
 
     fn pop_latest_queued_follow_up_for_edit(&mut self) -> Option<UserMessage> {
-        while let Some(kind) = self.queued_follow_up_order.pop_back() {
+        while let Some(kind) = self.queued_follow_up_insert_order.pop_back() {
             match kind {
-                QueuedFollowUpKind::UserMessage => {
+                QueuedFollowUpKind::UserMessageBack => {
                     if let Some(message) = self.queued_user_messages.pop_back() {
                         return Some(message);
                     }
                 }
-                QueuedFollowUpKind::SlashCommand => {
+                QueuedFollowUpKind::UserMessageFront => {
+                    if let Some(message) = self.queued_user_messages.pop_front() {
+                        return Some(message);
+                    }
+                }
+                QueuedFollowUpKind::SlashCommandBack => {
                     if let Some(command) = self.queued_slash_commands.pop_back() {
+                        return Some(command.into_user_message_for_edit());
+                    }
+                }
+                QueuedFollowUpKind::SlashCommandFront => {
+                    if let Some(command) = self.queued_slash_commands.pop_front() {
                         return Some(command.into_user_message_for_edit());
                     }
                 }
@@ -7784,12 +7823,13 @@ impl ChatWidget {
         } else {
             for kind in &self.queued_follow_up_order {
                 match kind {
-                    QueuedFollowUpKind::UserMessage => {
+                    QueuedFollowUpKind::UserMessageBack | QueuedFollowUpKind::UserMessageFront => {
                         if let Some(message) = user_iter.next() {
                             queued_messages.push(message.text.clone());
                         }
                     }
-                    QueuedFollowUpKind::SlashCommand => {
+                    QueuedFollowUpKind::SlashCommandBack
+                    | QueuedFollowUpKind::SlashCommandFront => {
                         if let Some(command) = slash_iter.next() {
                             queued_messages.push(command.display_text());
                         }

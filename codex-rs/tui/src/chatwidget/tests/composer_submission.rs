@@ -841,6 +841,35 @@ async fn alt_up_edits_most_recent_queued_message() {
 }
 
 #[tokio::test]
+async fn alt_up_edits_run_next_draft_before_older_queued_items() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.queued_message_edit_binding = crate::key_hint::alt(KeyCode::Up);
+    chat.bottom_pane
+        .set_queued_message_edit_binding(crate::key_hint::alt(KeyCode::Up));
+
+    // Simulate a running task so drafts are queued instead of sent immediately.
+    chat.bottom_pane.set_task_running(/*running*/ true);
+
+    chat.queue_user_message(UserMessage::from("older queued".to_string()));
+    chat.queue_user_message_next(UserMessage::from("run next newest".to_string()));
+    chat.refresh_pending_input_preview();
+
+    // Alt+Up should restore the newest queued draft, even when it was inserted
+    // at the front for run-next priority.
+    chat.handle_key_event(KeyEvent::new(KeyCode::Up, KeyModifiers::ALT));
+
+    assert_eq!(
+        chat.bottom_pane.composer_text(),
+        "run next newest".to_string()
+    );
+    assert_eq!(chat.queued_user_messages.len(), 1);
+    assert_eq!(
+        chat.queued_user_messages.front().unwrap().text,
+        "older queued"
+    );
+}
+
+#[tokio::test]
 async fn shift_left_edits_most_recent_queued_message_in_apple_terminal() {
     assert_shift_left_edits_most_recent_queued_message_for_terminal(TerminalInfo {
         name: TerminalName::AppleTerminal,
