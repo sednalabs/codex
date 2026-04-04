@@ -5235,11 +5235,24 @@ impl ChatWidget {
                     };
                     self.queue_user_message_next(user_message);
                 }
-                InputResult::Command(cmd) => {
-                    self.dispatch_command(cmd);
+                InputResult::Command {
+                    cmd,
+                    queue_front_when_busy,
+                } => {
+                    self.dispatch_command_with_queue_mode(cmd, queue_front_when_busy);
                 }
-                InputResult::CommandWithArgs(cmd, args, text_elements) => {
-                    self.dispatch_command_with_args(cmd, args, text_elements);
+                InputResult::CommandWithArgs {
+                    cmd,
+                    args,
+                    text_elements,
+                    queue_front_when_busy,
+                } => {
+                    self.dispatch_command_with_args(
+                        cmd,
+                        args,
+                        text_elements,
+                        queue_front_when_busy,
+                    );
                 }
                 InputResult::None => {}
             },
@@ -5319,8 +5332,12 @@ impl ChatWidget {
     }
 
     fn dispatch_command(&mut self, cmd: SlashCommand) {
+        self.dispatch_command_with_queue_mode(cmd, /*queue_front_when_busy*/ false);
+    }
+
+    fn dispatch_command_with_queue_mode(&mut self, cmd: SlashCommand, queue_front_when_busy: bool) {
         if !cmd.available_during_task() && self.bottom_pane.is_task_running() {
-            self.queue_slash_command(QueuedSlashCommand::Command(cmd));
+            self.queue_slash_command(QueuedSlashCommand::Command(cmd), queue_front_when_busy);
             self.bottom_pane.drain_pending_submission_state();
             return;
         }
@@ -5777,19 +5794,20 @@ impl ChatWidget {
         cmd: SlashCommand,
         args: String,
         _text_elements: Vec<TextElement>,
+        queue_front_when_busy: bool,
     ) {
         if !cmd.supports_inline_args() {
-            self.dispatch_command(cmd);
+            self.dispatch_command_with_queue_mode(cmd, queue_front_when_busy);
             return;
         }
 
         let trimmed = args.trim();
         if trimmed.is_empty() {
             if !cmd.available_during_task() && self.bottom_pane.is_task_running() {
-                self.queue_slash_command(QueuedSlashCommand::Command(cmd));
+                self.queue_slash_command(QueuedSlashCommand::Command(cmd), queue_front_when_busy);
                 self.bottom_pane.drain_pending_submission_state();
             } else {
-                self.dispatch_command(cmd);
+                self.dispatch_command_with_queue_mode(cmd, queue_front_when_busy);
             }
             return;
         }
@@ -5814,14 +5832,17 @@ impl ChatWidget {
             };
 
         if !cmd.available_during_task() && self.bottom_pane.is_task_running() {
-            self.queue_slash_command(QueuedSlashCommand::CommandWithArgs {
-                cmd,
-                args: prepared_args,
-                text_elements: prepared_elements,
-                local_images,
-                remote_image_urls,
-                mention_bindings,
-            });
+            self.queue_slash_command(
+                QueuedSlashCommand::CommandWithArgs {
+                    cmd,
+                    args: prepared_args,
+                    text_elements: prepared_elements,
+                    local_images,
+                    remote_image_urls,
+                    mention_bindings,
+                },
+                queue_front_when_busy,
+            );
             self.bottom_pane.drain_pending_submission_state();
             return;
         }
@@ -5941,11 +5962,17 @@ impl ChatWidget {
         }
     }
 
-    fn queue_slash_command(&mut self, queued_command: QueuedSlashCommand) {
+    fn queue_slash_command(&mut self, queued_command: QueuedSlashCommand, queue_front: bool) {
         let command_text = queued_command.display_text();
-        self.queued_slash_commands.push_back(queued_command);
-        self.queued_follow_up_order
-            .push_back(QueuedFollowUpKind::SlashCommand);
+        if queue_front {
+            self.queued_slash_commands.push_front(queued_command);
+            self.queued_follow_up_order
+                .push_front(QueuedFollowUpKind::SlashCommand);
+        } else {
+            self.queued_slash_commands.push_back(queued_command);
+            self.queued_follow_up_order
+                .push_back(QueuedFollowUpKind::SlashCommand);
+        }
         self.refresh_pending_input_preview();
         self.add_info_message(
             format!("Queued '{command_text}'. It will run after the current task completes."),

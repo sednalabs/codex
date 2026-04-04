@@ -234,8 +234,16 @@ pub enum InputResult {
         text: String,
         text_elements: Vec<TextElement>,
     },
-    Command(SlashCommand),
-    CommandWithArgs(SlashCommand, String, Vec<TextElement>),
+    Command {
+        cmd: SlashCommand,
+        queue_front_when_busy: bool,
+    },
+    CommandWithArgs {
+        cmd: SlashCommand,
+        args: String,
+        text_elements: Vec<TextElement>,
+        queue_front_when_busy: bool,
+    },
     None,
 }
 
@@ -1290,7 +1298,13 @@ impl ChatComposer {
                     let CommandItem::Builtin(cmd) = sel;
                     if cmd == SlashCommand::Skills {
                         self.textarea.set_text_clearing_elements("");
-                        return (InputResult::Command(cmd), true);
+                        return (
+                            InputResult::Command {
+                                cmd,
+                                queue_front_when_busy: false,
+                            },
+                            true,
+                        );
                     }
 
                     let starts_with_cmd = first_line
@@ -1314,7 +1328,13 @@ impl ChatComposer {
                 if let Some(sel) = popup.selected_item() {
                     let CommandItem::Builtin(cmd) = sel;
                     self.textarea.set_text_clearing_elements("");
-                    return (InputResult::Command(cmd), true);
+                    return (
+                        InputResult::Command {
+                            cmd,
+                            queue_front_when_busy: false,
+                        },
+                        true,
+                    );
                 }
                 // Fallback to default newline handling if no command selected.
                 self.handle_key_event_without_popup(key_event)
@@ -2182,7 +2202,7 @@ impl ChatComposer {
         // the '/name' token and our caret-based heuristic hides the popup,
         // but Enter/Ctrl+Shift+Q should still dispatch the command rather than submit
         // literal text.
-        if let Some(result) = self.try_dispatch_bare_slash_command() {
+        if let Some(result) = self.try_dispatch_bare_slash_command(mode) {
             return (result, true);
         }
 
@@ -2227,7 +2247,7 @@ impl ChatComposer {
             .map(|img| img.path.clone())
             .collect::<Vec<_>>();
         let original_pending_pastes = self.pending_pastes.clone();
-        if let Some(result) = self.try_dispatch_slash_command_with_args() {
+        if let Some(result) = self.try_dispatch_slash_command_with_args(mode) {
             return (result, true);
         }
 
@@ -2273,7 +2293,7 @@ impl ChatComposer {
 
     /// Check if the first line is a bare slash command (no args) and dispatch it.
     /// Returns Some(InputResult) if a command was dispatched, None otherwise.
-    fn try_dispatch_bare_slash_command(&mut self) -> Option<InputResult> {
+    fn try_dispatch_bare_slash_command(&mut self, mode: SubmissionMode) -> Option<InputResult> {
         if !self.slash_commands_enabled() {
             return None;
         }
@@ -2287,7 +2307,10 @@ impl ChatComposer {
                 return Some(InputResult::None);
             }
             self.textarea.set_text_clearing_elements("");
-            Some(InputResult::Command(cmd))
+            Some(InputResult::Command {
+                cmd,
+                queue_front_when_busy: matches!(mode, SubmissionMode::QueueFrontWhenBusy),
+            })
         } else {
             None
         }
@@ -2295,7 +2318,10 @@ impl ChatComposer {
 
     /// Check if the input is a slash command with args (e.g., /review args) and dispatch it.
     /// Returns Some(InputResult) if a command was dispatched, None otherwise.
-    fn try_dispatch_slash_command_with_args(&mut self) -> Option<InputResult> {
+    fn try_dispatch_slash_command_with_args(
+        &mut self,
+        mode: SubmissionMode,
+    ) -> Option<InputResult> {
         if !self.slash_commands_enabled() {
             return None;
         }
@@ -2322,11 +2348,12 @@ impl ChatComposer {
             Self::slash_command_args_elements(rest, rest_offset, &self.textarea.text_elements());
         let trimmed_rest = rest.trim();
         args_elements = Self::trim_text_elements(rest, trimmed_rest, args_elements);
-        Some(InputResult::CommandWithArgs(
+        Some(InputResult::CommandWithArgs {
             cmd,
-            trimmed_rest.to_string(),
-            args_elements,
-        ))
+            args: trimmed_rest.to_string(),
+            text_elements: args_elements,
+            queue_front_when_busy: matches!(mode, SubmissionMode::QueueFrontWhenBusy),
+        })
     }
 
     /// Expand pending placeholders and extract normalized inline-command args.
@@ -5473,7 +5500,13 @@ mod tests {
 
         let (result, _) =
             composer.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
-        assert!(matches!(result, InputResult::Command(SlashCommand::Diff)));
+        assert!(matches!(
+            result,
+            InputResult::Command {
+                cmd: SlashCommand::Diff,
+                queue_front_when_busy: false
+            }
+        ));
     }
 
     /// Behavior: if a burst is buffering text and the user presses a non-char key, flush the
@@ -6067,10 +6100,14 @@ mod tests {
         // When a slash command is dispatched, the composer should return a
         // Command result (not submit literal text) and clear its textarea.
         match result {
-            InputResult::Command(cmd) => {
+            InputResult::Command {
+                cmd,
+                queue_front_when_busy,
+            } => {
                 assert_eq!(cmd.command(), "init");
+                assert!(!queue_front_when_busy);
             }
-            InputResult::CommandWithArgs(_, _, _) => {
+            InputResult::CommandWithArgs { .. } => {
                 panic!("expected command dispatch without args for '/init'")
             }
             InputResult::Submitted { text, .. } => {
@@ -6144,8 +6181,12 @@ mod tests {
         let (result, _needs_redraw) =
             composer.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
         match result {
-            InputResult::Command(cmd) => {
+            InputResult::Command {
+                cmd,
+                queue_front_when_busy,
+            } => {
                 assert_eq!(cmd.command(), "diff");
+                assert!(!queue_front_when_busy);
             }
             _ => panic!("expected Command result for '/diff'"),
         }
@@ -6221,7 +6262,13 @@ mod tests {
             composer.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
 
         match result {
-            InputResult::Command(cmd) => assert_eq!(cmd.command(), "model"),
+            InputResult::Command {
+                cmd,
+                queue_front_when_busy,
+            } => {
+                assert_eq!(cmd.command(), "model");
+                assert!(!queue_front_when_busy);
+            }
             other => panic!("expected /model dispatch while task running, got {other:?}"),
         }
         assert!(composer.textarea.is_empty(), "composer should be cleared");
@@ -6282,8 +6329,14 @@ mod tests {
         let (result, _needs_redraw) =
             composer.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
         match result {
-            InputResult::Command(cmd) => assert_eq!(cmd.command(), "diff"),
-            InputResult::CommandWithArgs(_, _, _) => {
+            InputResult::Command {
+                cmd,
+                queue_front_when_busy,
+            } => {
+                assert_eq!(cmd.command(), "diff");
+                assert!(!queue_front_when_busy);
+            }
+            InputResult::CommandWithArgs { .. } => {
                 panic!("expected command dispatch without args for '/diff'")
             }
             InputResult::Submitted { text, .. } => {
@@ -6428,6 +6481,74 @@ mod tests {
     }
 
     #[test]
+    fn ctrl_shift_q_marks_slash_command_with_front_queue_preference() {
+        use crossterm::event::KeyCode;
+        use crossterm::event::KeyEvent;
+        use crossterm::event::KeyModifiers;
+
+        let (tx, _rx) = unbounded_channel::<AppEvent>();
+        let sender = AppEventSender::new(tx);
+        let mut composer = ChatComposer::new(
+            /*has_input_focus*/ true,
+            sender,
+            /*enhanced_keys_supported*/ false,
+            "Ask Codex to do anything".to_string(),
+            /*disable_paste_burst*/ false,
+        );
+        composer.textarea.set_text_clearing_elements("/model");
+
+        let (result, _needs_redraw) = composer.handle_key_event(KeyEvent::new(
+            KeyCode::Char('q'),
+            KeyModifiers::CONTROL.union(KeyModifiers::SHIFT),
+        ));
+
+        assert!(matches!(
+            result,
+            InputResult::Command {
+                cmd: SlashCommand::Model,
+                queue_front_when_busy: true
+            }
+        ));
+    }
+
+    #[test]
+    fn ctrl_shift_q_marks_inline_slash_command_with_front_queue_preference() {
+        use crossterm::event::KeyCode;
+        use crossterm::event::KeyEvent;
+        use crossterm::event::KeyModifiers;
+
+        let (tx, _rx) = unbounded_channel::<AppEvent>();
+        let sender = AppEventSender::new(tx);
+        let mut composer = ChatComposer::new(
+            /*has_input_focus*/ true,
+            sender,
+            /*enhanced_keys_supported*/ false,
+            "Ask Codex to do anything".to_string(),
+            /*disable_paste_burst*/ false,
+        );
+        composer
+            .textarea
+            .set_text_clearing_elements("/rename project-thread");
+
+        let (result, _needs_redraw) = composer.handle_key_event(KeyEvent::new(
+            KeyCode::Char('q'),
+            KeyModifiers::CONTROL.union(KeyModifiers::SHIFT),
+        ));
+
+        match result {
+            InputResult::CommandWithArgs {
+                cmd,
+                queue_front_when_busy,
+                ..
+            } => {
+                assert_eq!(cmd, SlashCommand::Rename);
+                assert!(queue_front_when_busy);
+            }
+            other => panic!("expected CommandWithArgs for queued-front /rename, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn tab_does_not_submit_for_bang_shell_command() {
         use crossterm::event::KeyCode;
         use crossterm::event::KeyEvent;
@@ -6478,10 +6599,14 @@ mod tests {
             composer.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
 
         match result {
-            InputResult::Command(cmd) => {
+            InputResult::Command {
+                cmd,
+                queue_front_when_busy,
+            } => {
                 assert_eq!(cmd.command(), "mention");
+                assert!(!queue_front_when_busy);
             }
-            InputResult::CommandWithArgs(_, _, _) => {
+            InputResult::CommandWithArgs { .. } => {
                 panic!("expected command dispatch without args for '/mention'")
             }
             InputResult::Submitted { text, .. } => {
@@ -6522,9 +6647,15 @@ mod tests {
             composer.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
 
         match result {
-            InputResult::CommandWithArgs(cmd, args, text_elements) => {
+            InputResult::CommandWithArgs {
+                cmd,
+                args,
+                text_elements,
+                queue_front_when_busy,
+            } => {
                 assert_eq!(cmd.command(), "plan");
                 assert_eq!(args, placeholder);
+                assert!(!queue_front_when_busy);
                 assert_eq!(text_elements.len(), 1);
                 assert_eq!(
                     text_elements[0].placeholder(&args),
