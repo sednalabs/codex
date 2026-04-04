@@ -85,6 +85,7 @@ use codex_app_server_protocol::TurnStatus;
 use codex_core::config::Config;
 use codex_core::config::ConfigBuilder;
 use codex_core::config::ConfigOverrides;
+use codex_core::config::Constrained;
 use codex_core::config::edit::ConfigEdit;
 use codex_core::config::edit::ConfigEditsBuilder;
 use codex_core::config::types::ApprovalsReviewer;
@@ -1120,6 +1121,7 @@ impl App {
         let mut config = self
             .rebuild_config_for_cwd(self.chat_widget.config_ref().cwd.to_path_buf())
             .await?;
+        self.apply_active_thread_session_state_to_config(&mut config);
         self.apply_runtime_policy_overrides(&mut config);
         self.config = config;
         self.chat_widget.sync_plugin_mentions_config(&self.config);
@@ -1228,6 +1230,31 @@ impl App {
                 service_tier,
                 reasoning_effort,
             );
+        }
+    }
+
+    fn apply_active_thread_session_state_to_config(&mut self, config: &mut Config) {
+        let chat_config = self.chat_widget.config_ref();
+        config.cwd = chat_config.cwd.clone();
+        config.model_provider_id = chat_config.model_provider_id.clone();
+        config.service_tier = self.chat_widget.current_service_tier();
+        config.approvals_reviewer = chat_config.approvals_reviewer;
+        config.model_reasoning_effort = self.chat_widget.current_reasoning_effort();
+
+        let approval_policy = chat_config.permissions.approval_policy.value();
+        if let Err(err) = config.permissions.approval_policy.set(approval_policy) {
+            tracing::warn!(%err, "failed to sync approval_policy from active thread session");
+            config.permissions.approval_policy = Constrained::allow_only(approval_policy);
+        }
+
+        let sandbox_policy = chat_config.permissions.sandbox_policy.get().clone();
+        if let Err(err) = config
+            .permissions
+            .sandbox_policy
+            .set(sandbox_policy.clone())
+        {
+            tracing::warn!(%err, "failed to sync sandbox_policy from active thread session");
+            config.permissions.sandbox_policy = Constrained::allow_only(sandbox_policy);
         }
     }
 
@@ -3541,7 +3568,16 @@ impl App {
 
     fn fresh_session_config(&self) -> Config {
         let mut config = self.config.clone();
+        let chat_config = self.chat_widget.config_ref();
+        config.cwd = chat_config.cwd.clone();
+        config.model_provider_id = chat_config.model_provider_id.clone();
         config.service_tier = self.chat_widget.current_service_tier();
+        config.approvals_reviewer = chat_config.approvals_reviewer;
+        config.model_reasoning_effort = self.chat_widget.current_reasoning_effort();
+        config.permissions.approval_policy =
+            Constrained::allow_only(chat_config.permissions.approval_policy.value());
+        config.permissions.sandbox_policy =
+            Constrained::allow_only(chat_config.permissions.sandbox_policy.get().clone());
         config
     }
 
@@ -10403,6 +10439,62 @@ guardian_approval = true
     }
 
     #[tokio::test]
+    async fn refresh_in_memory_config_from_disk_preserves_active_thread_session_state() -> Result<()>
+    {
+        let mut app = make_test_app().await;
+        let codex_home = tempdir()?;
+        let session_cwd_tmp = tempdir()?;
+        let session_cwd = session_cwd_tmp.path().to_path_buf();
+        app.config.codex_home = codex_home.path().to_path_buf();
+
+        app.chat_widget.handle_codex_event(Event {
+            id: String::new(),
+            msg: EventMsg::SessionConfigured(SessionConfiguredEvent {
+                session_id: ThreadId::new(),
+                forked_from_id: None,
+                thread_name: Some("active".to_string()),
+                model: "gpt-session".to_string(),
+                model_provider_id: "test-provider".to_string(),
+                service_tier: Some(codex_protocol::config_types::ServiceTier::Fast),
+                approval_policy: AskForApproval::Never,
+                approvals_reviewer: ApprovalsReviewer::GuardianSubagent,
+                sandbox_policy: SandboxPolicy::new_read_only_policy(),
+                cwd: session_cwd.clone(),
+                reasoning_effort: Some(ReasoningEffortConfig::High),
+                history_log_id: 0,
+                history_entry_count: 0,
+                initial_messages: None,
+                network_proxy: None,
+                rollout_path: Some(PathBuf::new()),
+            }),
+        });
+
+        app.refresh_in_memory_config_from_disk().await?;
+
+        assert_eq!(
+            (
+                app.config.cwd.to_path_buf(),
+                app.config.model_provider_id.clone(),
+                app.config.service_tier,
+                app.config.permissions.approval_policy.value(),
+                app.config.approvals_reviewer,
+                app.config.permissions.sandbox_policy.get().clone(),
+                app.config.model_reasoning_effort,
+            ),
+            (
+                session_cwd,
+                "test-provider".to_string(),
+                Some(codex_protocol::config_types::ServiceTier::Fast),
+                AskForApproval::Never,
+                ApprovalsReviewer::GuardianSubagent,
+                SandboxPolicy::new_read_only_policy(),
+                Some(ReasoningEffortConfig::High),
+            )
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn rebuild_config_for_resume_or_fallback_uses_current_config_on_same_cwd_error()
     -> Result<()> {
         let mut app = make_test_app().await;
@@ -10452,16 +10544,53 @@ guardian_approval = true
     }
 
     #[tokio::test]
-    async fn fresh_session_config_uses_current_service_tier() {
+    async fn fresh_session_config_uses_current_session_state() {
         let mut app = make_test_app().await;
-        app.chat_widget
-            .set_service_tier(Some(codex_protocol::config_types::ServiceTier::Fast));
+        let session_cwd_tmp = tempdir().expect("tempdir");
+        let session_cwd = session_cwd_tmp.path().to_path_buf();
+        app.chat_widget.handle_codex_event(Event {
+            id: String::new(),
+            msg: EventMsg::SessionConfigured(SessionConfiguredEvent {
+                session_id: ThreadId::new(),
+                forked_from_id: None,
+                thread_name: Some("active".to_string()),
+                model: "gpt-session".to_string(),
+                model_provider_id: "test-provider".to_string(),
+                service_tier: Some(codex_protocol::config_types::ServiceTier::Fast),
+                approval_policy: AskForApproval::Never,
+                approvals_reviewer: ApprovalsReviewer::GuardianSubagent,
+                sandbox_policy: SandboxPolicy::new_read_only_policy(),
+                cwd: session_cwd.clone(),
+                reasoning_effort: Some(ReasoningEffortConfig::High),
+                history_log_id: 0,
+                history_entry_count: 0,
+                initial_messages: None,
+                network_proxy: None,
+                rollout_path: Some(PathBuf::new()),
+            }),
+        });
 
         let config = app.fresh_session_config();
 
         assert_eq!(
-            config.service_tier,
-            Some(codex_protocol::config_types::ServiceTier::Fast)
+            (
+                config.cwd.to_path_buf(),
+                config.model_provider_id,
+                config.service_tier,
+                config.permissions.approval_policy.value(),
+                config.approvals_reviewer,
+                config.permissions.sandbox_policy.get().clone(),
+                config.model_reasoning_effort,
+            ),
+            (
+                session_cwd,
+                "test-provider".to_string(),
+                Some(codex_protocol::config_types::ServiceTier::Fast),
+                AskForApproval::Never,
+                ApprovalsReviewer::GuardianSubagent,
+                SandboxPolicy::new_read_only_policy(),
+                Some(ReasoningEffortConfig::High),
+            )
         );
     }
 
