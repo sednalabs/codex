@@ -2101,6 +2101,8 @@ impl ChatWidget {
                 tracing::warn!(path = %event.cwd.display(), %err, "session cwd should be absolute");
             }
         }
+        self.config.model_provider_id = event.model_provider_id.clone();
+        self.config.service_tier = event.service_tier;
         if let Err(err) = self
             .config
             .permissions
