@@ -102,7 +102,7 @@ tui-esc-interrupt-targeted:
 
 # Focused TUI queued-follow-up front-insert slice.
 tui-front-queue-submit-targeted:
-    cargo test -p codex-tui bottom_pane::tests::ctrl_shift_q_queues_front_when_task_running --lib -- --exact --test-threads=1
+    cargo test -p codex-tui bottom_pane::chat_composer::tests::ctrl_shift_q_queues_front_when_task_running --lib -- --exact --test-threads=1
     cargo test -p codex-tui app::tests::front_queued_follow_up_runs_before_back_queued_follow_up --lib -- --exact --test-threads=1
     cargo test -p codex-tui app::tests::replayed_turn_complete_submits_restored_front_queued_follow_up_first --lib -- --exact --test-threads=1
     cargo test -p codex-tui footer_snapshots -- --exact --test-threads=1
