@@ -150,7 +150,10 @@ fn turn_started_emits_turn_started_event() {
     assert_eq!(
         collected,
         CollectedThreadEvents {
-            events: vec![ThreadEvent::TurnStarted(TurnStartedEvent {})],
+            events: vec![ThreadEvent::TurnStarted(TurnStartedEvent {
+                thread_id: "thread-1".to_string(),
+                turn_id: "turn-1".to_string(),
+            })],
             status: CodexStatus::Running,
         }
     );
@@ -182,6 +185,8 @@ fn command_execution_started_and_completed_translate_to_thread_events() {
         started,
         CollectedThreadEvents {
             events: vec![ThreadEvent::ItemStarted(ItemStartedEvent {
+                thread_id: Some("thread-1".to_string()),
+                turn_id: Some("turn-1".to_string()),
                 item: ExecThreadItem {
                     id: "item_0".to_string(),
                     details: ThreadItemDetails::CommandExecution(CommandExecutionItem {
@@ -218,6 +223,8 @@ fn command_execution_started_and_completed_translate_to_thread_events() {
         completed,
         CollectedThreadEvents {
             events: vec![ThreadEvent::ItemCompleted(ItemCompletedEvent {
+                thread_id: Some("thread-1".to_string()),
+                turn_id: Some("turn-1".to_string()),
                 item: ExecThreadItem {
                     id: "item_0".to_string(),
                     details: ThreadItemDetails::CommandExecution(CommandExecutionItem {
@@ -298,6 +305,8 @@ fn unsupported_items_do_not_consume_synthetic_ids() {
         collected,
         CollectedThreadEvents {
             events: vec![ThreadEvent::ItemCompleted(ItemCompletedEvent {
+                thread_id: Some("thread-1".to_string()),
+                turn_id: Some("turn-1".to_string()),
                 item: ExecThreadItem {
                     id: "item_0".to_string(),
                     details: ThreadItemDetails::AgentMessage(AgentMessageItem {
@@ -330,6 +339,8 @@ fn reasoning_items_emit_summary_not_raw_content() {
         collected,
         CollectedThreadEvents {
             events: vec![ThreadEvent::ItemCompleted(ItemCompletedEvent {
+                thread_id: Some("thread-1".to_string()),
+                turn_id: Some("turn-1".to_string()),
                 item: ExecThreadItem {
                     id: "item_0".to_string(),
                     details: ThreadItemDetails::Reasoning(ReasoningItem {
@@ -365,6 +376,8 @@ fn web_search_completion_preserves_query_and_action() {
         collected,
         CollectedThreadEvents {
             events: vec![ThreadEvent::ItemCompleted(ItemCompletedEvent {
+                thread_id: Some("thread-1".to_string()),
+                turn_id: Some("turn-1".to_string()),
                 item: ExecThreadItem {
                     id: "item_0".to_string(),
                     details: ThreadItemDetails::WebSearch(WebSearchItem {
@@ -416,6 +429,8 @@ fn web_search_start_and_completion_reuse_item_id() {
         started,
         CollectedThreadEvents {
             events: vec![ThreadEvent::ItemStarted(ItemStartedEvent {
+                thread_id: Some("thread-1".to_string()),
+                turn_id: Some("turn-1".to_string()),
                 item: ExecThreadItem {
                     id: "item_0".to_string(),
                     details: ThreadItemDetails::WebSearch(WebSearchItem {
@@ -432,6 +447,8 @@ fn web_search_start_and_completion_reuse_item_id() {
         completed,
         CollectedThreadEvents {
             events: vec![ThreadEvent::ItemCompleted(ItemCompletedEvent {
+                thread_id: Some("thread-1".to_string()),
+                turn_id: Some("turn-1".to_string()),
                 item: ExecThreadItem {
                     id: "item_0".to_string(),
                     details: ThreadItemDetails::WebSearch(WebSearchItem {
@@ -492,6 +509,8 @@ fn mcp_tool_call_begin_and_end_emit_item_events() {
         started,
         CollectedThreadEvents {
             events: vec![ThreadEvent::ItemStarted(ItemStartedEvent {
+                thread_id: Some("thread-1".to_string()),
+                turn_id: Some("turn-1".to_string()),
                 item: ExecThreadItem {
                     id: "item_0".to_string(),
                     details: ThreadItemDetails::McpToolCall(McpToolCallItem {
@@ -511,6 +530,8 @@ fn mcp_tool_call_begin_and_end_emit_item_events() {
         completed,
         CollectedThreadEvents {
             events: vec![ThreadEvent::ItemCompleted(ItemCompletedEvent {
+                thread_id: Some("thread-1".to_string()),
+                turn_id: Some("turn-1".to_string()),
                 item: ExecThreadItem {
                     id: "item_0".to_string(),
                     details: ThreadItemDetails::McpToolCall(McpToolCallItem {
@@ -558,6 +579,8 @@ fn mcp_tool_call_failure_sets_failed_status() {
         collected,
         CollectedThreadEvents {
             events: vec![ThreadEvent::ItemCompleted(ItemCompletedEvent {
+                thread_id: Some("thread-1".to_string()),
+                turn_id: Some("turn-1".to_string()),
                 item: ExecThreadItem {
                     id: "item_0".to_string(),
                     details: ThreadItemDetails::McpToolCall(McpToolCallItem {
@@ -623,6 +646,8 @@ fn mcp_tool_call_defaults_arguments_and_preserves_structured_content() {
         started,
         CollectedThreadEvents {
             events: vec![ThreadEvent::ItemStarted(ItemStartedEvent {
+                thread_id: Some("thread-1".to_string()),
+                turn_id: Some("turn-1".to_string()),
                 item: ExecThreadItem {
                     id: "item_0".to_string(),
                     details: ThreadItemDetails::McpToolCall(McpToolCallItem {
@@ -642,6 +667,8 @@ fn mcp_tool_call_defaults_arguments_and_preserves_structured_content() {
         completed,
         CollectedThreadEvents {
             events: vec![ThreadEvent::ItemCompleted(ItemCompletedEvent {
+                thread_id: Some("thread-1".to_string()),
+                turn_id: Some("turn-1".to_string()),
                 item: ExecThreadItem {
                     id: "item_0".to_string(),
                     details: ThreadItemDetails::McpToolCall(McpToolCallItem {
@@ -715,6 +742,8 @@ fn collab_spawn_begin_and_end_emit_item_events() {
         started,
         CollectedThreadEvents {
             events: vec![ThreadEvent::ItemStarted(ItemStartedEvent {
+                thread_id: Some("thread-parent".to_string()),
+                turn_id: Some("turn-1".to_string()),
                 item: ExecThreadItem {
                     id: "item_0".to_string(),
                     details: ThreadItemDetails::CollabToolCall(CollabToolCallItem {
@@ -735,6 +764,8 @@ fn collab_spawn_begin_and_end_emit_item_events() {
         completed,
         CollectedThreadEvents {
             events: vec![ThreadEvent::ItemCompleted(ItemCompletedEvent {
+                thread_id: Some("thread-parent".to_string()),
+                turn_id: Some("turn-1".to_string()),
                 item: ExecThreadItem {
                     id: "item_0".to_string(),
                     details: ThreadItemDetails::CollabToolCall(CollabToolCallItem {
@@ -795,6 +826,8 @@ fn file_change_completion_maps_change_kinds() {
         collected,
         CollectedThreadEvents {
             events: vec![ThreadEvent::ItemCompleted(ItemCompletedEvent {
+                thread_id: Some("thread-1".to_string()),
+                turn_id: Some("turn-1".to_string()),
                 item: ExecThreadItem {
                     id: "item_0".to_string(),
                     details: ThreadItemDetails::FileChange(FileChangeItem {
@@ -845,6 +878,8 @@ fn file_change_declined_maps_to_failed_status() {
         collected,
         CollectedThreadEvents {
             events: vec![ThreadEvent::ItemCompleted(ItemCompletedEvent {
+                thread_id: Some("thread-1".to_string()),
+                turn_id: Some("turn-1".to_string()),
                 item: ExecThreadItem {
                     id: "item_0".to_string(),
                     details: ThreadItemDetails::FileChange(FileChangeItem {
@@ -882,6 +917,8 @@ fn agent_message_item_updates_final_message() {
         collected,
         CollectedThreadEvents {
             events: vec![ThreadEvent::ItemCompleted(ItemCompletedEvent {
+                thread_id: Some("thread-1".to_string()),
+                turn_id: Some("turn-1".to_string()),
                 item: ExecThreadItem {
                     id: "item_0".to_string(),
                     details: ThreadItemDetails::AgentMessage(AgentMessageItem {
@@ -940,6 +977,8 @@ fn reasoning_item_completed_uses_synthetic_id() {
         collected,
         CollectedThreadEvents {
             events: vec![ThreadEvent::ItemCompleted(ItemCompletedEvent {
+                thread_id: Some("thread-1".to_string()),
+                turn_id: Some("turn-1".to_string()),
                 item: ExecThreadItem {
                     id: "item_0".to_string(),
                     details: ThreadItemDetails::Reasoning(ReasoningItem {
@@ -964,6 +1003,8 @@ fn warning_event_produces_error_item() {
         collected,
         CollectedThreadEvents {
             events: vec![ThreadEvent::ItemCompleted(ItemCompletedEvent {
+                thread_id: None,
+                turn_id: None,
                 item: ExecThreadItem {
                     id: "item_0".to_string(),
                     details: ThreadItemDetails::Error(ErrorItem {
@@ -1001,6 +1042,8 @@ fn plan_update_emits_started_then_updated_then_completed() {
         started,
         CollectedThreadEvents {
             events: vec![ThreadEvent::ItemStarted(ItemStartedEvent {
+                thread_id: Some("thread-1".to_string()),
+                turn_id: Some("turn-1".to_string()),
                 item: ExecThreadItem {
                     id: "item_0".to_string(),
                     details: ThreadItemDetails::TodoList(TodoListItem {
@@ -1042,6 +1085,8 @@ fn plan_update_emits_started_then_updated_then_completed() {
         updated,
         CollectedThreadEvents {
             events: vec![ThreadEvent::ItemUpdated(ItemUpdatedEvent {
+                thread_id: Some("thread-1".to_string()),
+                turn_id: Some("turn-1".to_string()),
                 item: ExecThreadItem {
                     id: "item_0".to_string(),
                     details: ThreadItemDetails::TodoList(TodoListItem {
@@ -1078,6 +1123,8 @@ fn plan_update_emits_started_then_updated_then_completed() {
         CollectedThreadEvents {
             events: vec![
                 ThreadEvent::ItemCompleted(ItemCompletedEvent {
+                    thread_id: Some("thread-1".to_string()),
+                    turn_id: Some("turn-1".to_string()),
                     item: ExecThreadItem {
                         id: "item_0".to_string(),
                         details: ThreadItemDetails::TodoList(TodoListItem {
@@ -1095,6 +1142,8 @@ fn plan_update_emits_started_then_updated_then_completed() {
                     },
                 }),
                 ThreadEvent::TurnCompleted(TurnCompletedEvent {
+                    thread_id: "thread-1".to_string(),
+                    turn_id: "turn-1".to_string(),
                     usage: Usage::default(),
                 }),
             ],
@@ -1146,6 +1195,8 @@ fn plan_update_after_completion_starts_new_todo_list_with_new_id() {
         restarted,
         CollectedThreadEvents {
             events: vec![ThreadEvent::ItemStarted(ItemStartedEvent {
+                thread_id: Some("thread-1".to_string()),
+                turn_id: Some("turn-2".to_string()),
                 item: ExecThreadItem {
                     id: "item_1".to_string(),
                     details: ThreadItemDetails::TodoList(TodoListItem {
@@ -1212,6 +1263,8 @@ fn token_usage_update_is_emitted_on_turn_completion() {
         completed,
         CollectedThreadEvents {
             events: vec![ThreadEvent::TurnCompleted(TurnCompletedEvent {
+                thread_id: "thread-1".to_string(),
+                turn_id: "turn-1".to_string(),
                 usage: Usage {
                     input_tokens: 10,
                     cached_input_tokens: 3,
@@ -1248,6 +1301,8 @@ fn turn_completion_recovers_final_message_from_turn_items() {
         completed,
         CollectedThreadEvents {
             events: vec![ThreadEvent::TurnCompleted(TurnCompletedEvent {
+                thread_id: "thread-1".to_string(),
+                turn_id: "turn-1".to_string(),
                 usage: Usage::default(),
             })],
             status: CodexStatus::InitiateShutdown,
@@ -1281,6 +1336,8 @@ fn turn_completion_reconciles_started_items_from_turn_items() {
         started,
         CollectedThreadEvents {
             events: vec![ThreadEvent::ItemStarted(ItemStartedEvent {
+                thread_id: Some("thread-1".to_string()),
+                turn_id: Some("turn-1".to_string()),
                 item: ExecThreadItem {
                     id: "item_0".to_string(),
                     details: ThreadItemDetails::CommandExecution(CommandExecutionItem {
@@ -1323,6 +1380,8 @@ fn turn_completion_reconciles_started_items_from_turn_items() {
         CollectedThreadEvents {
             events: vec![
                 ThreadEvent::ItemCompleted(ItemCompletedEvent {
+                    thread_id: Some("thread-1".to_string()),
+                    turn_id: Some("turn-1".to_string()),
                     item: ExecThreadItem {
                         id: "item_0".to_string(),
                         details: ThreadItemDetails::CommandExecution(CommandExecutionItem {
@@ -1334,6 +1393,8 @@ fn turn_completion_reconciles_started_items_from_turn_items() {
                     },
                 }),
                 ThreadEvent::TurnCompleted(TurnCompletedEvent {
+                    thread_id: "thread-1".to_string(),
+                    turn_id: "turn-1".to_string(),
                     usage: Usage::default(),
                 }),
             ],
@@ -1379,6 +1440,8 @@ fn turn_completion_overwrites_stale_final_message_from_turn_items() {
         completed,
         CollectedThreadEvents {
             events: vec![ThreadEvent::TurnCompleted(TurnCompletedEvent {
+                thread_id: "thread-1".to_string(),
+                turn_id: "turn-1".to_string(),
                 usage: Usage::default(),
             })],
             status: CodexStatus::InitiateShutdown,
@@ -1419,6 +1482,8 @@ fn turn_completion_preserves_streamed_final_message_when_turn_items_are_empty() 
         completed,
         CollectedThreadEvents {
             events: vec![ThreadEvent::TurnCompleted(TurnCompletedEvent {
+                thread_id: "thread-1".to_string(),
+                turn_id: "turn-1".to_string(),
                 usage: Usage::default(),
             })],
             status: CodexStatus::InitiateShutdown,
@@ -1490,6 +1555,8 @@ fn turn_completion_falls_back_to_final_plan_text() {
         completed,
         CollectedThreadEvents {
             events: vec![ThreadEvent::TurnCompleted(TurnCompletedEvent {
+                thread_id: "thread-1".to_string(),
+                turn_id: "turn-1".to_string(),
                 usage: Usage::default(),
             })],
             status: CodexStatus::InitiateShutdown,
@@ -1517,6 +1584,8 @@ fn turn_failure_prefers_structured_error_message() {
         CollectedThreadEvents {
             events: vec![ThreadEvent::Error(ThreadErrorEvent {
                 message: "backend failed (request id abc)".to_string(),
+                thread_id: Some("thread-1".to_string()),
+                turn_id: Some("turn-1".to_string()),
             })],
             status: CodexStatus::Running,
         }
@@ -1537,8 +1606,12 @@ fn turn_failure_prefers_structured_error_message() {
         failed,
         CollectedThreadEvents {
             events: vec![ThreadEvent::TurnFailed(TurnFailedEvent {
+                thread_id: "thread-1".to_string(),
+                turn_id: "turn-1".to_string(),
                 error: ThreadErrorEvent {
                     message: "backend failed (request id abc)".to_string(),
+                    thread_id: Some("thread-1".to_string()),
+                    turn_id: Some("turn-1".to_string()),
                 },
             })],
             status: CodexStatus::InitiateShutdown,
@@ -1562,7 +1635,7 @@ fn model_reroute_surfaces_as_error_item() {
 
     assert_eq!(collected.status, CodexStatus::Running);
     assert_eq!(collected.events.len(), 1);
-    let ThreadEvent::ItemCompleted(ItemCompletedEvent { item }) = &collected.events[0] else {
+    let ThreadEvent::ItemCompleted(ItemCompletedEvent { item, .. }) = &collected.events[0] else {
         panic!("expected ItemCompleted");
     };
     assert_eq!(item.id, "item_0");
