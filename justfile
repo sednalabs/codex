@@ -96,6 +96,13 @@ tui-config-refresh-session-targeted:
     cargo test -p codex-tui app::tests::fresh_session_config_uses_current_session_state --lib -- --exact --test-threads=1
     cargo test -p codex-tui app::tests::fresh_session_config_preserves_policy_mutability --lib -- --exact --test-threads=1
 
+# Focused TUI combined session-vs-thread token usage slice.
+tui-agent-usage-totals-targeted:
+    cargo test -p codex-tui app::tests::sync_session_tree_token_usage_updates_combined_status_line_items --lib -- --exact --test-threads=1
+    cargo test -p codex-tui chatwidget::tests::status_and_layout::status_line_combined_token_items_use_session_totals --lib -- --exact --test-threads=1
+    cargo test -p codex-tui chatwidget::tests::status_and_layout::status_line_combined_used_tokens_footer_snapshot --lib -- --exact --test-threads=1
+    cargo test -p codex-tui status::tests::status_snapshot_distinguishes_session_and_thread_token_usage --lib -- --exact --test-threads=1
+
 # Focused TUI interrupt confirmation slice for Alt/meta-safe Esc handling.
 tui-esc-interrupt-targeted:
     cargo nextest run -p codex-tui --no-fail-fast -- bottom_pane::tests::esc_requires_double_press_for_interrupt_when_running_task_by_default bottom_pane::tests::first_esc_renders_again_to_interrupt_hint bottom_pane::tests::esc_release_does_not_confirm_interrupt bottom_pane::tests::esc_with_alt_does_not_interrupt_running_task bottom_pane::tests::esc_single_press_interrupts_when_double_press_disabled --exact

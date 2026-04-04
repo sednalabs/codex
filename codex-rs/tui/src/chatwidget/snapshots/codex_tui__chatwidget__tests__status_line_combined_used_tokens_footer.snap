@@ -1,0 +1,10 @@
+---
+source: tui/src/chatwidget/tests/status_and_layout.rs
+assertion_line: 1125
+expression: normalized_backend_snapshot(terminal.backend())
+---
+"                                                                                "
+"                                                                                "
+"› Ask Codex to do anything                                                      "
+"                                                                                "
+"  3.9K session used                                                             "

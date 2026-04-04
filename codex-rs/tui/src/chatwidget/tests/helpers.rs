@@ -195,6 +195,7 @@ pub(super) async fn make_chatwidget_manual(
         initial_user_message: None,
         status_account_display: None,
         token_info: None,
+        session_total_token_usage: TokenUsage::default(),
         rate_limit_snapshots_by_limit_id: BTreeMap::new(),
         refreshing_status_outputs: Vec::new(),
         next_status_refresh_request_id: 0,

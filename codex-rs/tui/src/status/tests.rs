@@ -170,6 +170,60 @@ async fn status_snapshot_includes_reasoning_details() {
 }
 
 #[tokio::test]
+async fn status_snapshot_distinguishes_session_and_thread_token_usage() {
+    let temp_home = TempDir::new().expect("temp home");
+    let mut config = test_config(&temp_home).await;
+    config.model = Some("gpt-5.1-codex-max".to_string());
+    config.model_provider_id = "openai".to_string();
+    config.cwd = PathBuf::from("/workspace/tests").abs();
+
+    let thread_usage = TokenUsage {
+        input_tokens: 1_200,
+        cached_input_tokens: 200,
+        output_tokens: 900,
+        reasoning_output_tokens: 150,
+        total_tokens: 2_250,
+    };
+    let session_usage = TokenUsage {
+        input_tokens: 3_000,
+        cached_input_tokens: 400,
+        output_tokens: 1_600,
+        reasoning_output_tokens: 150,
+        total_tokens: 4_750,
+    };
+    let captured_at = chrono::Local
+        .with_ymd_and_hms(2024, 1, 2, 3, 4, 5)
+        .single()
+        .expect("timestamp");
+    let model_slug = codex_core::test_support::get_model_offline(config.model.as_deref());
+    let token_info = token_info_for(&model_slug, &config, &thread_usage);
+
+    let composite = new_status_output(
+        &config,
+        test_status_account_display().as_ref(),
+        Some(&token_info),
+        &session_usage,
+        &None,
+        /*thread_name*/ Some("Main".to_string()),
+        /*forked_from*/ None,
+        /*rate_limits*/ None,
+        None,
+        captured_at,
+        &model_slug,
+        /*collaboration_mode*/ Some("Default"),
+        /*reasoning_effort_override*/ None,
+    );
+    let mut rendered_lines = render_lines(&composite.display_lines(/*width*/ 80));
+    if cfg!(windows) {
+        for line in &mut rendered_lines {
+            *line = line.replace('\\', "/");
+        }
+    }
+    let sanitized = sanitize_directory(rendered_lines).join("\n");
+    assert_snapshot!(sanitized);
+}
+
+#[tokio::test]
 async fn status_permissions_non_default_workspace_write_is_custom() {
     let temp_home = TempDir::new().expect("temp home");
     let mut config = test_config(&temp_home).await;

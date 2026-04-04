@@ -1,0 +1,25 @@
+---
+source: tui/src/status/tests.rs
+assertion_line: 223
+expression: sanitized
+---
+/status
+
+╭────────────────────────────────────────────────────────────────────────────╮
+│  >_ OpenAI Codex (v0.0.0)                                                  │
+│                                                                            │
+│ Visit https://chatgpt.com/codex/settings/usage for up-to-date              │
+│ information on rate limits and credits                                     │
+│                                                                            │
+│  Model:                 gpt-5.1-codex-max (reasoning none, summaries auto) │
+│  Directory: [[workspace]]                                                  │
+│  Permissions:           Custom (read-only, on-request)                     │
+│  Agents.md:             <none>                                             │
+│  Thread name:           Main                                               │
+│  Collaboration mode:    Default                                            │
+│                                                                            │
+│  Session token usage:   4.2K total  (2.6K input + 1.6K output)             │
+│  Thread token usage:    1.9K total  (1K input + 900 output)                │
+│  Context window:        100% left (2.25K used / 272K)                      │
+│  Limits:                data not available yet                             │
+╰────────────────────────────────────────────────────────────────────────────╯

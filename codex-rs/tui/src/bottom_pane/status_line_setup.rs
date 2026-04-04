@@ -90,6 +90,15 @@ pub(crate) enum StatusLineItem {
     /// Total output tokens generated.
     TotalOutputTokens,
 
+    /// Combined total tokens used across the current session tree.
+    CombinedUsedTokens,
+
+    /// Combined input tokens consumed across the current session tree.
+    CombinedInputTokens,
+
+    /// Combined output tokens generated across the current session tree.
+    CombinedOutputTokens,
+
     /// Full session UUID.
     SessionId,
 
@@ -125,6 +134,15 @@ impl StatusLineItem {
             StatusLineItem::UsedTokens => "Total tokens used in session (omitted when zero)",
             StatusLineItem::TotalInputTokens => "Total input tokens used in session",
             StatusLineItem::TotalOutputTokens => "Total output tokens used in session",
+            StatusLineItem::CombinedUsedTokens => {
+                "Combined total tokens used across the current session tree"
+            }
+            StatusLineItem::CombinedInputTokens => {
+                "Combined input tokens used across the current session tree"
+            }
+            StatusLineItem::CombinedOutputTokens => {
+                "Combined output tokens used across the current session tree"
+            }
             StatusLineItem::SessionId => {
                 "Current session identifier (omitted until session starts)"
             }
