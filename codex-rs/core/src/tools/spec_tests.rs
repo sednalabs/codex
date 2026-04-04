@@ -547,7 +547,15 @@ fn test_build_specs_multi_agent_v2_uses_task_names_and_hides_resume() {
         .expect("spawn_agent should define output schema");
     assert_eq!(
         output_schema["required"],
-        json!(["agent_id", "task_name", "nickname"])
+        json!([
+            "agent_id",
+            "task_name",
+            "nickname",
+            "requested_model",
+            "requested_reasoning_effort",
+            "effective_model",
+            "effective_reasoning_effort"
+        ])
     );
 
     let send_message = find_tool(&tools, "send_message");

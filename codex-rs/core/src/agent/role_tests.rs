@@ -116,12 +116,17 @@ model_provider = "base-provider"
         .build()
         .await
         .expect("load config");
+    config.model_provider.base_url = Some("https://runtime.example.com/v1".to_string());
 
     apply_role_to_config(&mut config, Some("explorer"))
         .await
         .expect("explorer role should apply");
 
     assert_eq!(config.model_provider_id, "base-provider");
+    assert_eq!(
+        config.model_provider.base_url.as_deref(),
+        Some("https://runtime.example.com/v1")
+    );
 }
 
 #[tokio::test]
@@ -564,6 +569,7 @@ model_verbosity = "high"
     config.model_reasoning_effort = Some(ReasoningEffort::Low);
     config.model_reasoning_summary = Some(ReasoningSummary::None);
     config.model_verbosity = Some(Verbosity::Low);
+    config.model_provider.base_url = Some("https://runtime.example.com/v1".to_string());
     let role_path = write_role_config(
         &home,
         "preserve-current-model.toml",
@@ -589,6 +595,10 @@ model_verbosity = "high"
     assert_eq!(config.model_reasoning_effort, Some(ReasoningEffort::Low));
     assert_eq!(config.model_reasoning_summary, Some(ReasoningSummary::None));
     assert_eq!(config.model_verbosity, Some(Verbosity::Low));
+    assert_eq!(
+        config.model_provider.base_url.as_deref(),
+        Some("https://runtime.example.com/v1")
+    );
 }
 
 #[tokio::test]
