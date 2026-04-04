@@ -65,7 +65,15 @@ fn spawn_agent_tool_v2_requires_task_name_and_lists_visible_models() {
     assert_eq!(required, Some(vec!["task_name".to_string()]));
     assert_eq!(
         output_schema.expect("spawn_agent output schema")["required"],
-        json!(["agent_id", "task_name", "nickname"])
+        json!([
+            "agent_id",
+            "task_name",
+            "nickname",
+            "requested_model",
+            "requested_reasoning_effort",
+            "effective_model",
+            "effective_reasoning_effort"
+        ])
     );
 }
 
@@ -86,6 +94,8 @@ fn spawn_agent_tool_v1_exposes_runtime_metadata_fields() {
             "nickname",
             "role",
             "status",
+            "requested_model",
+            "requested_reasoning_effort",
             "effective_model",
             "effective_reasoning_effort",
             "effective_model_provider_id",

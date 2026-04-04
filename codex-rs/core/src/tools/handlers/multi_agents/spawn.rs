@@ -34,6 +34,8 @@ impl ToolHandler for Handler {
         } = invocation;
         let arguments = function_arguments(payload)?;
         let args: SpawnAgentArgs = parse_arguments(&arguments)?;
+        let requested_model = args.model.clone();
+        let requested_reasoning_effort = args.reasoning_effort;
         let role_name = args
             .agent_type
             .as_deref()
@@ -74,8 +76,8 @@ impl ToolHandler for Handler {
             &session,
             turn.as_ref(),
             &mut config,
-            args.model.as_deref(),
-            args.reasoning_effort,
+            requested_model.as_deref(),
+            requested_reasoning_effort,
         )
         .await?;
         if let Some(model) = config.model.clone() {
@@ -217,6 +219,8 @@ impl ToolHandler for Handler {
             nickname,
             role,
             status,
+            requested_model,
+            requested_reasoning_effort,
             effective_model: new_agent.effective_model,
             effective_reasoning_effort: new_agent.effective_reasoning_effort,
             effective_model_provider_id: new_agent.effective_model_provider_id,
@@ -243,6 +247,8 @@ pub(crate) struct SpawnAgentResult {
     nickname: Option<String>,
     role: Option<String>,
     status: AgentStatus,
+    requested_model: Option<String>,
+    requested_reasoning_effort: Option<ReasoningEffort>,
     effective_model: Option<String>,
     effective_reasoning_effort: Option<ReasoningEffort>,
     effective_model_provider_id: String,
