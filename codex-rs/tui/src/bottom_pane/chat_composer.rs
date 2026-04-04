@@ -2570,11 +2570,14 @@ impl ChatComposer {
                 self.handle_submission(SubmissionMode::QueueBackWhenBusy)
             }
             KeyEvent {
-                code: KeyCode::Char('q'),
+                code: KeyCode::Char(c),
                 modifiers,
                 kind: KeyEventKind::Press,
                 ..
-            } if modifiers == KeyModifiers::CONTROL.union(KeyModifiers::SHIFT) => {
+            } if (c == 'q' || c == 'Q')
+                && modifiers.contains(KeyModifiers::CONTROL)
+                && modifiers.contains(KeyModifiers::SHIFT) =>
+            {
                 self.handle_submission(SubmissionMode::QueueFrontWhenBusy)
             }
             KeyEvent {
@@ -6468,6 +6471,37 @@ mod tests {
 
         let (result, _needs_redraw) = composer.handle_key_event(KeyEvent::new(
             KeyCode::Char('q'),
+            KeyModifiers::CONTROL.union(KeyModifiers::SHIFT),
+        ));
+
+        assert!(matches!(
+            result,
+            InputResult::QueuedFront { ref text, .. } if text == "next"
+        ));
+        assert!(composer.textarea.is_empty());
+    }
+
+    #[test]
+    fn ctrl_shift_uppercase_q_queues_front_when_task_running() {
+        use crossterm::event::KeyCode;
+        use crossterm::event::KeyEvent;
+        use crossterm::event::KeyModifiers;
+
+        let (tx, _rx) = unbounded_channel::<AppEvent>();
+        let sender = AppEventSender::new(tx);
+        let mut composer = ChatComposer::new(
+            /*has_input_focus*/ true,
+            sender,
+            /*enhanced_keys_supported*/ false,
+            "Ask Codex to do anything".to_string(),
+            /*disable_paste_burst*/ false,
+        );
+        composer.set_task_running(/*running*/ true);
+
+        type_chars_humanlike(&mut composer, &['n', 'e', 'x', 't']);
+
+        let (result, _needs_redraw) = composer.handle_key_event(KeyEvent::new(
+            KeyCode::Char('Q'),
             KeyModifiers::CONTROL.union(KeyModifiers::SHIFT),
         ));
 
