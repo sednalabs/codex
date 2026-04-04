@@ -20,6 +20,8 @@ use core_test_support::test_codex::test_codex;
 use pretty_assertions::assert_eq;
 use serde_json::json;
 use std::time::Duration;
+use tokio::sync::broadcast::Receiver;
+use tokio::sync::broadcast::error::RecvError;
 use tokio::time::Instant;
 use tokio::time::sleep;
 use wiremock::MockServer;
@@ -102,28 +104,23 @@ fn role_block(description: &str, role_name: &str) -> Option<String> {
     Some(block.join("\n"))
 }
 
-async fn wait_for_spawned_thread_id_with_timeout(
-    test: &TestCodex,
+async fn wait_for_spawned_thread_id_from_receiver(
+    receiver: &mut Receiver<ThreadId>,
     timeout: Duration,
 ) -> Result<String> {
-    let deadline = Instant::now() + timeout;
-    loop {
-        let ids = test.thread_manager.list_thread_ids().await;
-        if let Some(spawned_id) = ids
-            .iter()
-            .find(|id| **id != test.session_configured.session_id)
-        {
-            return Ok(spawned_id.to_string());
+    match tokio::time::timeout(timeout, receiver.recv()).await {
+        Ok(Ok(thread_id)) => Ok(thread_id.to_string()),
+        Ok(Err(RecvError::Lagged(skipped))) => {
+            anyhow::bail!(
+                "missed spawned thread notification ({} messages dropped)",
+                skipped
+            )
         }
-        if Instant::now() >= deadline {
-            anyhow::bail!("timed out waiting for spawned thread id");
+        Ok(Err(RecvError::Closed)) => {
+            anyhow::bail!("thread creation notification channel closed")
         }
-        sleep(Duration::from_millis(10)).await;
+        Err(_) => anyhow::bail!("timed out waiting for spawned thread id"),
     }
-}
-
-async fn wait_for_spawned_thread_id(test: &TestCodex) -> Result<String> {
-    wait_for_spawned_thread_id_with_timeout(test, Duration::from_secs(2)).await
 }
 
 async fn wait_for_requests(
@@ -226,6 +223,7 @@ async fn setup_turn_one_with_custom_spawned_child(
         config.model_reasoning_effort = Some(INHERITED_REASONING_EFFORT);
     }));
     let test = builder.build(server).await?;
+    let mut thread_created_rx = test.thread_manager.subscribe_thread_created();
     test.submit_turn(TURN_1_PROMPT).await?;
     if child_response_delay.is_none() && wait_for_parent_notification {
         let _ = wait_for_requests(&child_request_log).await?;
@@ -249,7 +247,9 @@ async fn setup_turn_one_with_custom_spawned_child(
             sleep(Duration::from_millis(10)).await;
         }
     }
-    let spawned_id = wait_for_spawned_thread_id(&test).await?;
+    let spawned_id =
+        wait_for_spawned_thread_id_from_receiver(&mut thread_created_rx, Duration::from_secs(2))
+            .await?;
 
     Ok((test, spawned_id))
 }
@@ -333,8 +333,10 @@ async fn spawn_child_and_capture_snapshot_with_spawn_timeout(
         config.model_reasoning_effort = Some(INHERITED_REASONING_EFFORT);
     }));
     let test = builder.build(server).await?;
+    let mut thread_created_rx = test.thread_manager.subscribe_thread_created();
     test.submit_turn(TURN_1_PROMPT).await?;
-    let spawned_id = wait_for_spawned_thread_id_with_timeout(&test, spawn_timeout).await?;
+    let spawned_id =
+        wait_for_spawned_thread_id_from_receiver(&mut thread_created_rx, spawn_timeout).await?;
     let thread_id = ThreadId::from_string(&spawned_id)?;
     Ok(test
         .thread_manager
