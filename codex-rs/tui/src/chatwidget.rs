@@ -7747,6 +7747,11 @@ impl ChatWidget {
                     .position(|queued| *queued == kind)
                 {
                     self.queued_follow_up_insert_order.remove(index);
+                } else {
+                    tracing::warn!(
+                        ?kind,
+                        "queued_follow_up_insert_order missing expected back marker while syncing dequeue metadata"
+                    );
                 }
             }
             QueuedFollowUpKind::UserMessageFront | QueuedFollowUpKind::SlashCommandFront => {
@@ -7756,6 +7761,11 @@ impl ChatWidget {
                     .rposition(|queued| *queued == kind)
                 {
                     self.queued_follow_up_insert_order.remove(index);
+                } else {
+                    tracing::warn!(
+                        ?kind,
+                        "queued_follow_up_insert_order missing expected front marker while syncing dequeue metadata"
+                    );
                 }
             }
         }
@@ -7811,6 +7821,11 @@ impl ChatWidget {
                     .rposition(|queued| *queued == kind)
                 {
                     self.queued_follow_up_order.remove(index);
+                } else {
+                    tracing::warn!(
+                        ?kind,
+                        "queued_follow_up_order missing expected back marker while syncing edit dequeue metadata"
+                    );
                 }
             }
             QueuedFollowUpKind::UserMessageFront | QueuedFollowUpKind::SlashCommandFront => {
@@ -7820,6 +7835,11 @@ impl ChatWidget {
                     .position(|queued| *queued == kind)
                 {
                     self.queued_follow_up_order.remove(index);
+                } else {
+                    tracing::warn!(
+                        ?kind,
+                        "queued_follow_up_order missing expected front marker while syncing edit dequeue metadata"
+                    );
                 }
             }
         }
