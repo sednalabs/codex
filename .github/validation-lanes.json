@@ -119,7 +119,8 @@
       "lane_id": "codex.code-mode-declaration-targeted",
       "run_command": "just --justfile ../justfile code-mode-declaration-targeted",
       "groups": ["core"],
-      "lane_sets": ["all", "core-carry"]
+      "lane_sets": ["all", "core-carry"],
+      "install_nextest": true
     },
     {
       "lane_id": "codex.app-server-protocol-test",
