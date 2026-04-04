@@ -22,6 +22,7 @@ use serde_json::json;
 use std::time::Duration;
 use tokio::sync::broadcast::Receiver;
 use tokio::sync::broadcast::error::RecvError;
+use tokio::sync::broadcast::error::TryRecvError;
 use tokio::time::Instant;
 use tokio::time::sleep;
 use wiremock::MockServer;
@@ -337,7 +338,26 @@ async fn spawn_child_and_capture_snapshot_with_spawn_timeout(
     test.submit_turn(TURN_1_PROMPT).await?;
     let _ = wait_for_requests(&child_request_log).await?;
     let spawned_id =
-        wait_for_spawned_thread_id_from_receiver(&mut thread_created_rx, spawn_timeout).await?;
+        match wait_for_spawned_thread_id_from_receiver(&mut thread_created_rx, spawn_timeout).await
+        {
+            Ok(spawned_id) => spawned_id,
+            Err(err) => {
+                let receiver_state = match thread_created_rx.try_recv() {
+                    Ok(thread_id) => {
+                        format!("unexpected buffered thread id after timeout: {thread_id}")
+                    }
+                    Err(TryRecvError::Empty) => "empty".to_string(),
+                    Err(TryRecvError::Lagged(skipped)) => {
+                        format!("lagged ({skipped} messages dropped)")
+                    }
+                    Err(TryRecvError::Closed) => "closed".to_string(),
+                };
+                let captured_ops = test.thread_manager.captured_ops();
+                anyhow::bail!(
+                    "{err}; thread_created_rx_state={receiver_state}; captured_ops={captured_ops:?}"
+                );
+            }
+        };
     let thread_id = ThreadId::from_string(&spawned_id)?;
     Ok(test
         .thread_manager
