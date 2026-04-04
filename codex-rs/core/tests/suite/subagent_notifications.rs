@@ -299,7 +299,7 @@ async fn spawn_child_and_capture_snapshot_with_spawn_timeout(
     )
     .await;
 
-    mount_sse_once_match(
+    let _child_request_log = mount_sse_once_match(
         server,
         |req: &wiremock::Request| {
             body_contains(req, CHILD_PROMPT) && !body_contains(req, SPAWN_CALL_ID)
