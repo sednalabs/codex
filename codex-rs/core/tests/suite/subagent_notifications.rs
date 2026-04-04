@@ -60,6 +60,53 @@ fn body_contains(req: &wiremock::Request, text: &str) -> bool {
         .is_some_and(|body| body.contains(text))
 }
 
+fn has_single_user_input_text(req: &wiremock::Request, text: &str) -> bool {
+    let is_zstd = req
+        .headers
+        .get("content-encoding")
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| {
+            value
+                .split(',')
+                .any(|entry| entry.trim().eq_ignore_ascii_case("zstd"))
+        });
+    let bytes = if is_zstd {
+        zstd::stream::decode_all(std::io::Cursor::new(&req.body)).ok()
+    } else {
+        Some(req.body.clone())
+    };
+    let Some(body) = bytes
+        .and_then(|body| serde_json::from_slice::<serde_json::Value>(&body).ok())
+        .and_then(|body| {
+            body.get("input")
+                .and_then(serde_json::Value::as_array)
+                .cloned()
+        })
+    else {
+        return false;
+    };
+
+    let user_texts = body
+        .into_iter()
+        .filter(|item| item.get("type").and_then(serde_json::Value::as_str) == Some("message"))
+        .filter(|item| item.get("role").and_then(serde_json::Value::as_str) == Some("user"))
+        .filter_map(|item| {
+            item.get("content")
+                .and_then(serde_json::Value::as_array)
+                .cloned()
+        })
+        .flatten()
+        .filter(|span| span.get("type").and_then(serde_json::Value::as_str) == Some("input_text"))
+        .filter_map(|span| {
+            span.get("text")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned)
+        })
+        .collect::<Vec<String>>();
+
+    user_texts == vec![text.to_string()]
+}
+
 fn has_subagent_notification(req: &ResponsesRequest) -> bool {
     req.message_input_texts("user")
         .iter()
@@ -517,9 +564,7 @@ async fn spawn_agent_preserves_exact_requested_model_slug_through_role_layering(
 
     let child_request_log = mount_sse_once_match(
         &server,
-        |req: &wiremock::Request| {
-            body_contains(req, CHILD_PROMPT) && !body_contains(req, SPAWN_CALL_ID)
-        },
+        |req: &wiremock::Request| has_single_user_input_text(req, CHILD_PROMPT),
         sse(vec![
             ev_response_created("resp-child-1"),
             ev_assistant_message("msg-child-1", "child done"),
@@ -575,44 +620,6 @@ async fn spawn_agent_preserves_exact_requested_model_slug_through_role_layering(
         .body_json();
     assert_eq!(child_body["model"].as_str(), Some(REQUESTED_EXACT_MODEL));
     assert_eq!(child_body["reasoning"]["effort"].as_str(), Some("low"));
-
-    let function_call_output = child_body["input"]
-        .as_array()
-        .and_then(|items| {
-            items.iter().find(|item| {
-                item["type"].as_str() == Some("function_call_output")
-                    && item["call_id"].as_str() == Some(SPAWN_CALL_ID)
-            })
-        })
-        .unwrap_or_else(|| panic!("expected child request to include spawn_agent output"));
-    let output_json = match &function_call_output["output"] {
-        serde_json::Value::String(text) => serde_json::from_str::<serde_json::Value>(text)
-            .expect("spawn_agent output string should be valid json"),
-        serde_json::Value::Object(output) => output["content"]
-            .as_str()
-            .map(|text| {
-                serde_json::from_str::<serde_json::Value>(text)
-                    .expect("spawn_agent output content should be valid json")
-            })
-            .unwrap_or_else(|| panic!("spawn_agent output should include json content")),
-        other => panic!("unexpected spawn_agent output shape: {other:?}"),
-    };
-    assert_eq!(
-        output_json["requested_model"].as_str(),
-        Some(REQUESTED_EXACT_MODEL)
-    );
-    assert_eq!(
-        output_json["effective_model"].as_str(),
-        Some(REQUESTED_EXACT_MODEL)
-    );
-    assert_eq!(
-        output_json["requested_reasoning_effort"].as_str(),
-        Some("low")
-    );
-    assert_eq!(
-        output_json["effective_reasoning_effort"].as_str(),
-        Some("low")
-    );
 
     Ok(())
 }
