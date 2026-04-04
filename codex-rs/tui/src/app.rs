@@ -1212,8 +1212,8 @@ impl App {
                     session,
                     &chat_config,
                     &model,
-                    service_tier.clone(),
-                    reasoning_effort.clone(),
+                    service_tier,
+                    reasoning_effort,
                 );
             }
         }
