@@ -299,7 +299,7 @@ async fn spawn_child_and_capture_snapshot_with_spawn_timeout(
     )
     .await;
 
-    let _child_request_log = mount_sse_once_match(
+    let child_request_log = mount_sse_once_match(
         server,
         |req: &wiremock::Request| {
             body_contains(req, CHILD_PROMPT) && !body_contains(req, SPAWN_CALL_ID)
@@ -335,6 +335,7 @@ async fn spawn_child_and_capture_snapshot_with_spawn_timeout(
     let test = builder.build(server).await?;
     let mut thread_created_rx = test.thread_manager.subscribe_thread_created();
     test.submit_turn(TURN_1_PROMPT).await?;
+    let _ = wait_for_requests(&child_request_log).await?;
     let spawned_id =
         wait_for_spawned_thread_id_from_receiver(&mut thread_created_rx, spawn_timeout).await?;
     let thread_id = ThreadId::from_string(&spawned_id)?;
