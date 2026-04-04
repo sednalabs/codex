@@ -389,7 +389,7 @@ impl BottomPane {
             .pending_esc_interrupt_deadline
             .is_some_and(|deadline| Instant::now() > deadline)
         {
-            self.set_pending_esc_interrupt_deadline(None);
+            self.set_pending_esc_interrupt_deadline(/*deadline*/ None);
         }
         // If a modal/view is active, handle it here; otherwise forward to composer.
         if !self.view_stack.is_empty() {
@@ -449,7 +449,7 @@ impl BottomPane {
                     && !self.composer.popup_active()
                     && self.status.is_some();
                 if !esc_can_interrupt {
-                    self.set_pending_esc_interrupt_deadline(None);
+                    self.set_pending_esc_interrupt_deadline(/*deadline*/ None);
                 }
             }
 
@@ -466,7 +466,7 @@ impl BottomPane {
             {
                 let should_interrupt = if self.esc_interrupt_requires_double_press {
                     if self.pending_esc_interrupt_deadline.is_some() {
-                        self.set_pending_esc_interrupt_deadline(None);
+                        self.set_pending_esc_interrupt_deadline(/*deadline*/ None);
                         true
                     } else {
                         self.set_pending_esc_interrupt_deadline(Some(
@@ -758,7 +758,7 @@ impl BottomPane {
         self.is_task_running = running;
         self.composer.set_task_running(running);
         if !running {
-            self.set_pending_esc_interrupt_deadline(None);
+            self.set_pending_esc_interrupt_deadline(/*deadline*/ None);
         }
 
         if running {
@@ -815,7 +815,7 @@ impl BottomPane {
             status.set_interrupt_requires_double_press(effective_requires_double_press);
         }
         if !effective_requires_double_press {
-            self.set_pending_esc_interrupt_deadline(None);
+            self.set_pending_esc_interrupt_deadline(/*deadline*/ None);
         } else {
             self.request_redraw();
         }
@@ -1952,7 +1952,7 @@ mod tests {
         pane.set_task_running(/*running*/ true);
         pane.handle_key_event(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
 
-        let area = Rect::new(0, 0, 64, pane.desired_height(64));
+        let area = Rect::new(0, 0, 64, pane.desired_height(/*width*/ 64));
         let rendered = render_snapshot(&pane, area);
         assert!(
             rendered.contains("again to interrupt"),
