@@ -110,6 +110,13 @@ core-multi-agent-orchestration-targeted:
 core-persisted-subagent-descendants-targeted:
     cargo test -p codex-state thread_spawn_edges_track_directional_status --lib -- --exact --test-threads=1
 
+# Focused app-server rollout cwd portability slice.
+app-server-thread-cwd-targeted:
+    cargo test --locked -p codex-app-server --test all suite::conversation_summary:: -- --test-threads=1
+    cargo test --locked -p codex-app-server --test all suite::v2::thread_list:: -- --test-threads=1
+    cargo test --locked -p codex-app-server --test all suite::v2::thread_read::thread_read_returns_summary_without_turns -- --exact --test-threads=1
+    cargo test --locked -p codex-app-server --test all suite::v2::thread_resume::thread_resume_returns_rollout_history -- --exact --test-threads=1
+
 # Focused tool-context serialization slice for custom/function/abort outputs.
 core-context-serialization-targeted:
     cargo test -p codex-core tools::context::tests::custom_tool_calls_should_roundtrip_as_custom_outputs --lib -- --exact

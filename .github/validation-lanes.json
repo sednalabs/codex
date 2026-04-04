@@ -122,6 +122,12 @@
       "lane_sets": ["all", "ui-protocol"]
     },
     {
+      "lane_id": "codex.app-server-thread-cwd-targeted",
+      "run_command": "just --justfile ../justfile app-server-thread-cwd-targeted",
+      "groups": ["ui_protocol"],
+      "lane_sets": ["all", "ui-protocol"]
+    },
+    {
       "lane_id": "codex.downstream-docs-check",
       "run_command": "just --justfile ../justfile downstream-docs-check",
       "groups": ["workflow", "docs"],
