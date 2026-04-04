@@ -5964,6 +5964,11 @@ impl ChatWidget {
 
     fn queue_slash_command(&mut self, queued_command: QueuedSlashCommand, queue_front: bool) {
         let command_text = queued_command.display_text();
+        let message = if queue_front {
+            format!("Queued '{command_text}' to run next, ahead of other queued follow-ups.")
+        } else {
+            format!("Queued '{command_text}'. It will run after the current task completes.")
+        };
         if queue_front {
             self.queued_slash_commands.push_front(queued_command);
             self.queued_follow_up_order
@@ -5974,10 +5979,7 @@ impl ChatWidget {
                 .push_back(QueuedFollowUpKind::SlashCommand);
         }
         self.refresh_pending_input_preview();
-        self.add_info_message(
-            format!("Queued '{command_text}'. It will run after the current task completes."),
-            /*hint*/ None,
-        );
+        self.add_info_message(message, /*hint*/ None);
     }
 
     fn has_queued_follow_up_actions(&self) -> bool {
