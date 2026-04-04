@@ -96,6 +96,11 @@ core-multi-agent-orchestration-targeted:
     CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo test -p codex-core multi_agent_v2_wait_agent_honors_return_when_all --lib -- --exact --test-threads=1
     CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo test -p codex-core --test all suite::spawn_agent_description::spawn_wait_and_list_agents_tool_descriptions_have_guidance_updates -- --exact --test-threads=1
 
+# Focused model-pinning slice for exact spawn-agent model slug preservation.
+core-subagent-model-pinning-targeted:
+    CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo test -p codex-core spawn_agent_preserves_exact_model_slug_override_through_role_layering --lib -- --exact --test-threads=1
+    CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo test -p codex-core --test all suite::subagent_notifications::spawn_agent_preserves_exact_requested_model_slug_through_role_layering -- --exact --test-threads=1
+
 # Focused persisted-descendant inventory slice for subtree close/resume behavior.
 core-persisted-subagent-descendants-targeted:
     cargo test -p codex-state thread_spawn_edges_track_directional_status --lib -- --exact --test-threads=1

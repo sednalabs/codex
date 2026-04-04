@@ -33,6 +33,7 @@ const CHILD_PROMPT: &str = "child: do work";
 const INHERITED_MODEL: &str = "gpt-5.2-codex";
 const INHERITED_REASONING_EFFORT: ReasoningEffort = ReasoningEffort::XHigh;
 const REQUESTED_MODEL: &str = "gpt-5.1";
+const REQUESTED_EXACT_MODEL: &str = "gpt-5.1-codex-mini";
 const REQUESTED_REASONING_EFFORT: ReasoningEffort = ReasoningEffort::Low;
 const ROLE_MODEL: &str = "gpt-5.1-codex-max";
 const ROLE_REASONING_EFFORT: ReasoningEffort = ReasoningEffort::High;
@@ -101,8 +102,11 @@ fn role_block(description: &str, role_name: &str) -> Option<String> {
     Some(block.join("\n"))
 }
 
-async fn wait_for_spawned_thread_id(test: &TestCodex) -> Result<String> {
-    let deadline = Instant::now() + Duration::from_secs(2);
+async fn wait_for_spawned_thread_id_with_timeout(
+    test: &TestCodex,
+    timeout: Duration,
+) -> Result<String> {
+    let deadline = Instant::now() + timeout;
     loop {
         let ids = test.thread_manager.list_thread_ids().await;
         if let Some(spawned_id) = ids
@@ -116,6 +120,10 @@ async fn wait_for_spawned_thread_id(test: &TestCodex) -> Result<String> {
         }
         sleep(Duration::from_millis(10)).await;
     }
+}
+
+async fn wait_for_spawned_thread_id(test: &TestCodex) -> Result<String> {
+    wait_for_spawned_thread_id_with_timeout(test, Duration::from_secs(2)).await
 }
 
 async fn wait_for_requests(
@@ -261,6 +269,72 @@ async fn spawn_child_and_capture_snapshot(
         configure_test,
     )
     .await?;
+    let thread_id = ThreadId::from_string(&spawned_id)?;
+    Ok(test
+        .thread_manager
+        .get_thread(thread_id)
+        .await?
+        .config_snapshot()
+        .await)
+}
+
+async fn spawn_child_and_capture_snapshot_with_spawn_timeout(
+    server: &MockServer,
+    spawn_args: serde_json::Value,
+    spawn_timeout: Duration,
+    configure_test: impl FnOnce(
+        core_test_support::test_codex::TestCodexBuilder,
+    ) -> core_test_support::test_codex::TestCodexBuilder,
+) -> Result<ThreadConfigSnapshot> {
+    let spawn_args = serde_json::to_string(&spawn_args)?;
+
+    mount_sse_once_match(
+        server,
+        |req: &wiremock::Request| body_contains(req, TURN_1_PROMPT),
+        sse(vec![
+            ev_response_created("resp-turn1-1"),
+            ev_function_call(SPAWN_CALL_ID, "spawn_agent", &spawn_args),
+            ev_completed("resp-turn1-1"),
+        ]),
+    )
+    .await;
+
+    mount_sse_once_match(
+        server,
+        |req: &wiremock::Request| {
+            body_contains(req, CHILD_PROMPT) && !body_contains(req, SPAWN_CALL_ID)
+        },
+        sse(vec![
+            ev_response_created("resp-child-1"),
+            ev_assistant_message("msg-child-1", "child done"),
+            ev_completed("resp-child-1"),
+        ]),
+    )
+    .await;
+
+    let _turn1_followup = mount_sse_once_match(
+        server,
+        |req: &wiremock::Request| body_contains(req, SPAWN_CALL_ID),
+        sse(vec![
+            ev_response_created("resp-turn1-2"),
+            ev_assistant_message("msg-turn1-2", "parent done"),
+            ev_completed("resp-turn1-2"),
+        ]),
+    )
+    .await;
+
+    #[allow(clippy::expect_used)]
+    let mut builder = configure_test(test_codex().with_config(|config| {
+        config
+            .features
+            .enable(Feature::Collab)
+            .expect("test config should allow feature update");
+        config.model = Some(INHERITED_MODEL.to_string());
+        config.model_reasoning_effort = Some(INHERITED_REASONING_EFFORT);
+    }));
+    let test = builder.build(server).await?;
+    test.submit_turn(TURN_1_PROMPT).await?;
+    let spawned_id = wait_for_spawned_thread_id_with_timeout(&test, spawn_timeout).await?;
     let thread_id = ThreadId::from_string(&spawned_id)?;
     Ok(test
         .thread_manager
@@ -476,6 +550,52 @@ async fn spawn_agent_preserves_requested_model_and_reasoning_settings_through_ro
     .await?;
 
     assert_eq!(child_snapshot.model, REQUESTED_MODEL);
+    assert_eq!(
+        child_snapshot.reasoning_effort,
+        Some(REQUESTED_REASONING_EFFORT)
+    );
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn spawn_agent_preserves_exact_requested_model_slug_through_role_layering() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let server = start_mock_server().await;
+    let child_snapshot = spawn_child_and_capture_snapshot_with_spawn_timeout(
+        &server,
+        json!({
+            "message": CHILD_PROMPT,
+            "agent_type": "custom",
+            "model": REQUESTED_EXACT_MODEL,
+            "reasoning_effort": REQUESTED_REASONING_EFFORT,
+        }),
+        Duration::from_secs(10),
+        |builder| {
+            builder.with_config(|config| {
+                let role_path = config.codex_home.join("custom-role.toml");
+                std::fs::write(
+                    &role_path,
+                    format!(
+                        "model = \"{ROLE_MODEL}\"\nmodel_reasoning_effort = \"{ROLE_REASONING_EFFORT}\"\n",
+                    ),
+                )
+                .expect("write role config");
+                config.agent_roles.insert(
+                    "custom".to_string(),
+                    AgentRoleConfig {
+                        description: Some("Custom role".to_string()),
+                        config_file: Some(role_path),
+                        nickname_candidates: None,
+                    },
+                );
+            })
+        },
+    )
+    .await?;
+
+    assert_eq!(child_snapshot.model, REQUESTED_EXACT_MODEL);
     assert_eq!(
         child_snapshot.reasoning_effort,
         Some(REQUESTED_REASONING_EFFORT)
