@@ -280,7 +280,7 @@ fn parse_code_mode_declaration(description: &str) -> Option<ParsedCodeModeDeclar
     let open_paren = body.find('(')?;
     let (name, args_and_return) = body.split_at(open_paren);
     let args_and_return = &args_and_return[1..];
-    let close_call = args_and_return.find(')')?;
+    let close_call = matching_paren_end(args_and_return)?;
     let (decl_input_name, args) = args_and_return[..close_call].split_once(':')?;
     let mut output_tail = args_and_return[close_call + 1..].trim_start();
     output_tail = output_tail.strip_prefix(":")?;
@@ -294,6 +294,33 @@ fn parse_code_mode_declaration(description: &str) -> Option<ParsedCodeModeDeclar
         args: normalize_code_mode_type(args),
         output: normalize_code_mode_type(&output_tail[..output_end]),
     })
+}
+
+fn matching_paren_end(typ: &str) -> Option<usize> {
+    let mut depth = 1usize;
+    let mut quote_state = CodeModeQuoteState::default();
+
+    for (idx, ch) in typ.char_indices() {
+        let was_escaped = quote_state.escaped;
+        let was_in_quote = quote_state.in_quote();
+        advance_code_mode_quote_state(ch, &mut quote_state);
+        if was_escaped || was_in_quote {
+            continue;
+        }
+
+        match ch {
+            '(' => depth += 1,
+            ')' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(idx);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    None
 }
 
 fn matching_generic_end(typ: &str) -> Option<usize> {
@@ -2816,7 +2843,7 @@ fn code_mode_declaration_normalization_is_layout_tolerant_and_semantically_stric
 exec tool declaration:
 ```ts
 declare const tools: {
-  mcp__rmcp__echo (args: { message: string; env_var?: string; label: 'a;b'; }) : Promise<{ content : Array<unknown>; _meta?: unknown; isError?: boolean ; status: 'a>b' ; structuredContent?: unknown ; }>;
+  mcp__rmcp__echo (args: { message: string; env_var?: string; formatter: (message: string) => string; label: 'a;b'; }) : Promise<{ content : Array<unknown>; _meta?: unknown; isError?: boolean ; status: 'a>b' ; structuredContent?: unknown ; }>;
 };
 ```";
 
@@ -2825,7 +2852,12 @@ declare const tools: {
         "Echo back the provided message and include environment data.",
         "mcp__rmcp__echo",
         "args",
-        &["env_var?: string", "label: 'a;b'", "message: string"],
+        &[
+            "env_var?: string",
+            "formatter: (message: string) => string",
+            "label: 'a;b'",
+            "message: string",
+        ],
         &[
             "_meta?: unknown",
             "content: Array<unknown>",
@@ -2840,7 +2872,12 @@ declare const tools: {
                 description,
                 "mcp__rmcp__echo",
                 "args",
-                &["env_var?: string", "label: 'a;b'", "message: string"],
+                &[
+                    "env_var?: string",
+                    "formatter: (message: string) => string",
+                    "label: 'a;b'",
+                    "message: string",
+                ],
                 &[
                     "_meta?: unknown",
                     "content: Array<number>",
@@ -2859,7 +2896,12 @@ declare const tools: {
                 description,
                 "mcp__rmcp__echo",
                 "args",
-                &["env_var?: string", "label: 'a;b'", "message: string"],
+                &[
+                    "env_var?: string",
+                    "formatter: (message: string) => string",
+                    "label: 'a;b'",
+                    "message: string",
+                ],
                 &[
                     "_meta?: unknown",
                     "content: Array<unknown>",
@@ -2880,7 +2922,12 @@ declare const tools: {
                 "Echo back the provided message and include environment data.",
                 "mcp__rmcp__echo",
                 "args",
-                &["env_var?: string", "label: 'a;b'", "message: string"],
+                &[
+                    "env_var?: string",
+                    "formatter: (message: string) => string",
+                    "label: 'a;b'",
+                    "message: string",
+                ],
                 &[
                     "_meta?: unknown",
                     "content: Array<unknown>",

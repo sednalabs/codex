@@ -155,7 +155,7 @@ fn parse_code_mode_declaration(description: &str) -> Option<ParsedCodeModeDeclar
     let open_paren = body.find('(')?;
     let (name, args_and_return) = body.split_at(open_paren);
     let args_and_return = &args_and_return[1..];
-    let close_call = args_and_return.find(')')?;
+    let close_call = matching_paren_end(args_and_return)?;
     let (decl_input_name, args) = args_and_return[..close_call].split_once(':')?;
     let mut output_tail = args_and_return[close_call + 1..].trim_start();
     output_tail = output_tail.strip_prefix(":")?;
@@ -169,6 +169,33 @@ fn parse_code_mode_declaration(description: &str) -> Option<ParsedCodeModeDeclar
         args: normalize_code_mode_type(args),
         output: normalize_code_mode_type(&output_tail[..output_end]),
     })
+}
+
+fn matching_paren_end(typ: &str) -> Option<usize> {
+    let mut depth = 1usize;
+    let mut quote_state = CodeModeQuoteState::default();
+
+    for (idx, ch) in typ.char_indices() {
+        let was_escaped = quote_state.escaped;
+        let was_in_quote = quote_state.in_quote();
+        advance_code_mode_quote_state(ch, &mut quote_state);
+        if was_escaped || was_in_quote {
+            continue;
+        }
+
+        match ch {
+            '(' => depth += 1,
+            ')' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(idx);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    None
 }
 
 fn matching_generic_end(typ: &str) -> Option<usize> {
@@ -535,7 +562,7 @@ exec tool declaration:
 ```ts
 declare const tools: {
   lookup_order ( args :
-    {   order_id : string ; status : 'a;b' ;}
+    {   order_id : string ; formatter : (message: string) => string ; status : 'a;b' ;}
   ) : Promise<{ ok : boolean ; note : 'a>b' ; }>
 };
 ```";
@@ -545,7 +572,11 @@ declare const tools: {
         "Look up an order",
         "lookup_order",
         "args",
-        &["order_id: string", "status: 'a;b'"],
+        &[
+            "formatter: (message: string) => string",
+            "order_id: string",
+            "status: 'a;b'",
+        ],
         &["note: 'a>b'", "ok: boolean"],
     );
     assert!(
@@ -554,7 +585,7 @@ declare const tools: {
                 declaration,
                 "lookup_order",
                 "args",
-                &["order_id: number"],
+                &["formatter: (message: string) => string", "order_id: number"],
                 &["note: 'a>b'", "ok: boolean"],
             );
         }))
@@ -567,7 +598,11 @@ declare const tools: {
                 declaration,
                 "lookup_order",
                 "args",
-                &["order_id: string", "status: 'a;bx'"],
+                &[
+                    "formatter: (message: string) => string",
+                    "order_id: string",
+                    "status: 'a;bx'",
+                ],
                 &["note: 'a>b'", "ok: boolean"],
             );
         }))
@@ -582,7 +617,11 @@ declare const tools: {
                 "Look up an order",
                 "lookup_order",
                 "args",
-                &["order_id: string", "status: 'a;b'"],
+                &[
+                    "formatter: (message: string) => string",
+                    "order_id: string",
+                    "status: 'a;b'",
+                ],
                 &["note: 'a>b'", "ok: boolean"],
             );
         }))
