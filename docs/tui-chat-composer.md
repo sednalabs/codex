@@ -92,13 +92,19 @@ Built-in slash command metadata is centralized in
 for command discovery and parsing. Task-running availability is enforced by `ChatWidget`, which
 can queue unavailable commands and run them after the active task completes.
 
-## Submission flow (Enter/Tab)
+## Submission flow (Enter/Tab/Ctrl+Shift+Q)
 
 There are multiple submission paths, but they share the same core rules:
 
-When steer mode is enabled, `Tab` requests queuing if a task is already running; otherwise it
-submits immediately. `Enter` always submits immediately in this mode. `Tab` does not submit when
-the input starts with `!` (shell command).
+When steer mode is enabled:
+
+- `Enter` always submits immediately.
+- `Tab` requests queuing at the back if a task is already running; otherwise it submits
+  immediately.
+- `Ctrl+Shift+Q` requests queuing at the front if a task is already running; otherwise it also
+  submits immediately.
+
+`Tab` does not submit when the input starts with `!` (shell command).
 
 ### Normal submit/queue path
 
@@ -114,8 +120,11 @@ The same preparation path is reused for slash commands with arguments (for examp
 `/review`) so pasted content and text elements are preserved when extracting args.
 
 While a task is running, queued follow-up entries are shown above the composer in one list. That
-preview includes both queued message drafts and queued slash commands. `Alt+Up` recalls queued
-entries for editing from that list in strict reverse-chronological order across both entry types.
+preview includes both queued message drafts and queued slash commands. Front-queued message drafts
+are inserted ahead of the existing queued message backlog so they run next after the active task,
+while `Tab`-queued drafts preserve the existing append-to-back FIFO behavior. `Alt+Up` recalls
+queued entries for editing from that list in strict reverse-chronological order across both entry
+types.
 
 The composer also treats the textarea kill buffer as separate editing state from the visible draft.
 After submit or slash-command dispatch clears the textarea, the most recent `Ctrl+K` payload is
