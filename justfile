@@ -246,8 +246,7 @@ bazel-clippy:
     bazel build --config=clippy -- //codex-rs/... -//codex-rs/v8-poc:all
 
 [no-cd]
-bazel-argument-comment-lint:
-    just _run-bazel-argument-comment-lint
+bazel-argument-comment-lint: _run-bazel-argument-comment-lint
 
 bazel-remote-test:
     bazel test --test_tag_filters=-argument-comment-lint //... --config=remote --platforms=//:rbe --keep_going
@@ -279,7 +278,7 @@ _run-bazel-argument-comment-lint:
 [no-cd]
 argument-comment-lint *args:
     if [ "$#" -eq 0 ]; then \
-      just _run-bazel-argument-comment-lint; \
+      "{{just_executable()}}" _run-bazel-argument-comment-lint; \
     else \
       "{{justfile_directory()}}"/tools/argument-comment-lint/run-prebuilt-linter.py "$@"; \
     fi
