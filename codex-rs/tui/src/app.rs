@@ -3574,10 +3574,22 @@ impl App {
         config.service_tier = self.chat_widget.current_service_tier();
         config.approvals_reviewer = chat_config.approvals_reviewer;
         config.model_reasoning_effort = self.chat_widget.current_reasoning_effort();
-        config.permissions.approval_policy =
-            Constrained::allow_only(chat_config.permissions.approval_policy.value());
-        config.permissions.sandbox_policy =
-            Constrained::allow_only(chat_config.permissions.sandbox_policy.get().clone());
+
+        let approval_policy = chat_config.permissions.approval_policy.value();
+        if let Err(err) = config.permissions.approval_policy.set(approval_policy) {
+            tracing::warn!(%err, "failed to sync approval_policy into fresh session config");
+            config.permissions.approval_policy = Constrained::allow_only(approval_policy);
+        }
+
+        let sandbox_policy = chat_config.permissions.sandbox_policy.get().clone();
+        if let Err(err) = config
+            .permissions
+            .sandbox_policy
+            .set(sandbox_policy.clone())
+        {
+            tracing::warn!(%err, "failed to sync sandbox_policy into fresh session config");
+            config.permissions.sandbox_policy = Constrained::allow_only(sandbox_policy);
+        }
         config
     }
 
@@ -10591,6 +10603,56 @@ guardian_approval = true
                 SandboxPolicy::new_read_only_policy(),
                 Some(ReasoningEffortConfig::High),
             )
+        );
+    }
+
+    #[tokio::test]
+    async fn fresh_session_config_preserves_policy_mutability() {
+        let mut app = make_test_app().await;
+        let session_cwd_tmp = tempdir().expect("tempdir");
+        let session_cwd = session_cwd_tmp.path().to_path_buf();
+        app.chat_widget.handle_codex_event(Event {
+            id: String::new(),
+            msg: EventMsg::SessionConfigured(SessionConfiguredEvent {
+                session_id: ThreadId::new(),
+                forked_from_id: None,
+                thread_name: Some("active".to_string()),
+                model: "gpt-session".to_string(),
+                model_provider_id: "test-provider".to_string(),
+                service_tier: Some(codex_protocol::config_types::ServiceTier::Fast),
+                approval_policy: AskForApproval::Never,
+                approvals_reviewer: ApprovalsReviewer::GuardianSubagent,
+                sandbox_policy: SandboxPolicy::new_read_only_policy(),
+                cwd: session_cwd,
+                reasoning_effort: Some(ReasoningEffortConfig::High),
+                history_log_id: 0,
+                history_entry_count: 0,
+                initial_messages: None,
+                network_proxy: None,
+                rollout_path: Some(PathBuf::new()),
+            }),
+        });
+
+        let mut config = app.fresh_session_config();
+
+        config
+            .permissions
+            .approval_policy
+            .set(AskForApproval::OnRequest)
+            .expect("approval policy should remain mutable");
+        config
+            .permissions
+            .sandbox_policy
+            .set(SandboxPolicy::new_workspace_write_policy())
+            .expect("sandbox policy should remain mutable");
+
+        assert_eq!(
+            config.permissions.approval_policy.value(),
+            AskForApproval::OnRequest
+        );
+        assert_eq!(
+            config.permissions.sandbox_policy.get().clone(),
+            SandboxPolicy::new_workspace_write_policy()
         );
     }
 
