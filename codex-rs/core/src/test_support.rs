@@ -74,12 +74,7 @@ pub fn thread_manager_with_models_provider_and_home(
 }
 
 pub fn captured_ops(thread_manager: &ThreadManager) -> Vec<(ThreadId, Op)> {
-    thread_manager
-        .state
-        .ops_log
-        .as_ref()
-        .and_then(|ops_log| ops_log.lock().ok().map(|log| log.clone()))
-        .unwrap_or_default()
+    thread_manager.captured_ops()
 }
 
 pub async fn start_thread_with_user_shell_override(
