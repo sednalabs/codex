@@ -96,6 +96,13 @@ tui-config-refresh-session-targeted:
     cargo test -p codex-tui app::tests::fresh_session_config_uses_current_session_state --lib -- --exact --test-threads=1
     cargo test -p codex-tui app::tests::fresh_session_config_preserves_policy_mutability --lib -- --exact --test-threads=1
 
+# Focused /agent picker token-usage visibility slice.
+tui-agent-picker-usage-targeted:
+    cargo test -p codex-tui app::tests::agent_picker_thread_token_usage_reads_inactive_thread_store --lib -- --exact --test-threads=1
+    cargo test -p codex-tui app::tests::agent_picker_thread_token_usage_prefers_live_active_thread_usage --lib -- --exact --test-threads=1
+    cargo test -p codex-tui multi_agents::tests::picker_description_falls_back_to_thread_id_without_usage --lib -- --exact --test-threads=1
+    cargo test -p codex-tui multi_agents::tests::picker_description_includes_compact_token_usage_when_present --lib -- --exact --test-threads=1
+
 # Focused TUI combined session-vs-thread token usage slice.
 tui-agent-usage-totals-targeted:
     cargo test -p codex-tui app::tests::sync_session_tree_token_usage_updates_combined_status_line_items --lib -- --exact --test-threads=1

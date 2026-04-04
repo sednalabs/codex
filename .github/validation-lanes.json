@@ -92,6 +92,12 @@
       "lane_sets": ["all", "core-carry"]
     },
     {
+      "lane_id": "codex.tui-agent-picker-usage-targeted",
+      "run_command": "just --justfile ../justfile tui-agent-picker-usage-targeted",
+      "groups": ["ui_protocol"],
+      "lane_sets": ["all", "ui-protocol", "subagents"]
+    },
+    {
       "lane_id": "codex.tui-agent-usage-totals-targeted",
       "run_command": "just --justfile ../justfile tui-agent-usage-totals-targeted",
       "groups": ["ui_protocol"],
