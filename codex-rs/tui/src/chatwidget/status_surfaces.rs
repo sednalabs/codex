@@ -489,6 +489,23 @@ impl ChatWidget {
                 "{} out",
                 format_tokens_compact(self.status_line_total_usage().output_tokens)
             )),
+            StatusLineItem::CombinedUsedTokens => {
+                let usage = self.status_line_session_total_usage();
+                let total = usage.tokens_in_context_window();
+                if total <= 0 {
+                    None
+                } else {
+                    Some(format!("{} session used", format_tokens_compact(total)))
+                }
+            }
+            StatusLineItem::CombinedInputTokens => Some(format!(
+                "{} session in",
+                format_tokens_compact(self.status_line_session_total_usage().input_tokens)
+            )),
+            StatusLineItem::CombinedOutputTokens => Some(format!(
+                "{} session out",
+                format_tokens_compact(self.status_line_session_total_usage().output_tokens)
+            )),
             StatusLineItem::SessionId => self.thread_id.map(|id| id.to_string()),
             StatusLineItem::FastMode => Some(
                 if matches!(self.config.service_tier, Some(ServiceTier::Fast)) {

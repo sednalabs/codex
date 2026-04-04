@@ -878,6 +878,7 @@ pub(crate) struct ChatWidget {
     initial_user_message: Option<UserMessage>,
     status_account_display: Option<StatusAccountDisplay>,
     token_info: Option<TokenUsageInfo>,
+    session_total_token_usage: TokenUsage,
     rate_limit_snapshots_by_limit_id: BTreeMap<String, RateLimitSnapshotDisplay>,
     refreshing_status_outputs: Vec<(u64, StatusHistoryHandle)>,
     next_status_refresh_request_id: u64,
@@ -2739,6 +2740,14 @@ impl ChatWidget {
                 self.token_info = None;
             }
         }
+    }
+
+    pub(crate) fn set_session_total_token_usage(&mut self, usage: TokenUsage) {
+        if self.session_total_token_usage == usage {
+            return;
+        }
+        self.session_total_token_usage = usage;
+        self.refresh_status_line();
     }
 
     #[cfg(test)]
@@ -4933,6 +4942,7 @@ impl ChatWidget {
             initial_user_message,
             status_account_display,
             token_info: None,
+            session_total_token_usage: TokenUsage::default(),
             rate_limit_snapshots_by_limit_id: BTreeMap::new(),
             refreshing_status_outputs: Vec::new(),
             next_status_refresh_request_id: 0,
@@ -7949,9 +7959,13 @@ impl ChatWidget {
     ) {
         let default_usage = TokenUsage::default();
         let token_info = self.token_info.as_ref();
-        let total_usage = token_info
-            .map(|ti| &ti.total_token_usage)
-            .unwrap_or(&default_usage);
+        let total_usage = if self.session_total_token_usage.is_zero() {
+            token_info
+                .map(|ti| &ti.total_token_usage)
+                .unwrap_or(&default_usage)
+        } else {
+            &self.session_total_token_usage
+        };
         let collaboration_mode = self.collaboration_mode_label();
         let reasoning_effort_override = Some(self.effective_reasoning_effort());
         let rate_limit_snapshots: Vec<RateLimitSnapshotDisplay> = self
@@ -8086,6 +8100,13 @@ impl ChatWidget {
             .as_ref()
             .map(|info| info.total_token_usage.clone())
             .unwrap_or_default()
+    }
+
+    fn status_line_session_total_usage(&self) -> TokenUsage {
+        if self.session_total_token_usage.is_zero() {
+            return self.status_line_total_usage();
+        }
+        self.session_total_token_usage.clone()
     }
 
     fn status_line_limit_display(
