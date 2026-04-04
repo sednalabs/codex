@@ -88,7 +88,13 @@ core-subagent-notification-visibility-targeted:
 
 # Focused TUI thread-session approval persistence slice.
 tui-thread-session-policy-targeted:
-    cargo nextest run -p codex-tui --no-fail-fast -- app::tests::store_active_thread_receiver_persists_per_thread_policy_overrides --exact
+    cargo test -p codex-tui app::tests::store_active_thread_receiver_persists_per_thread_policy_overrides --lib -- --exact --test-threads=1
+
+# Focused TUI config-refresh session-state persistence slice.
+tui-config-refresh-session-targeted:
+    cargo test -p codex-tui app::tests::refresh_in_memory_config_from_disk_preserves_active_thread_session_state --lib -- --exact --test-threads=1
+    cargo test -p codex-tui app::tests::fresh_session_config_uses_current_session_state --lib -- --exact --test-threads=1
+    cargo test -p codex-tui app::tests::fresh_session_config_preserves_policy_mutability --lib -- --exact --test-threads=1
 
 # Focused TUI interrupt confirmation slice for Alt/meta-safe Esc handling.
 tui-esc-interrupt-targeted:

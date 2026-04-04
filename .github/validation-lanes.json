@@ -80,6 +80,12 @@
       "install_nextest": true
     },
     {
+      "lane_id": "codex.tui-config-refresh-session-targeted",
+      "run_command": "just --justfile ../justfile tui-config-refresh-session-targeted",
+      "groups": ["ui_protocol"],
+      "lane_sets": ["all", "core-carry"]
+    },
+    {
       "lane_id": "codex.core-multi-agent-orchestration-targeted",
       "run_command": "just --justfile ../justfile core-multi-agent-orchestration-targeted",
       "groups": ["core"],
