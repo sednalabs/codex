@@ -88,11 +88,11 @@ core-subagent-notification-visibility-targeted:
 
 # Focused TUI thread-session approval persistence slice.
 tui-thread-session-policy-targeted:
-    cargo nextest run -p codex-tui --no-fail-fast -- app::tests::store_active_thread_receiver_persists_per_thread_policy_overrides --exact
+    cargo test -p codex-tui app::tests::store_active_thread_receiver_persists_per_thread_policy_overrides --lib -- --exact --test-threads=1
 
 # Focused TUI config-refresh session-state persistence slice.
 tui-config-refresh-session-targeted:
-    cargo nextest run -p codex-tui --no-fail-fast -- app::tests::refresh_in_memory_config_from_disk_preserves_active_thread_session_state --exact
+    cargo test -p codex-tui app::tests::refresh_in_memory_config_from_disk_preserves_active_thread_session_state --lib -- --exact --test-threads=1
 
 # Focused multi-agent orchestration slice covering wait semantics and tool guidance.
 core-multi-agent-orchestration-targeted:
