@@ -90,6 +90,10 @@ core-subagent-notification-visibility-targeted:
 tui-thread-session-policy-targeted:
     cargo nextest run -p codex-tui --no-fail-fast -- app::tests::store_active_thread_receiver_persists_per_thread_policy_overrides --exact
 
+# Focused TUI interrupt confirmation slice for Alt/meta-safe Esc handling.
+tui-esc-interrupt-targeted:
+    cargo nextest run -p codex-tui --no-fail-fast -- bottom_pane::tests::esc_requires_double_press_for_interrupt_when_running_task_by_default bottom_pane::tests::first_esc_renders_again_to_interrupt_hint bottom_pane::tests::esc_release_does_not_confirm_interrupt bottom_pane::tests::esc_with_alt_does_not_interrupt_running_task bottom_pane::tests::esc_single_press_interrupts_when_double_press_disabled --exact
+
 # Focused multi-agent orchestration slice covering wait semantics and tool guidance.
 core-multi-agent-orchestration-targeted:
     CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo test -p codex-core multi_agent_v2_list_agents_returns_completed_status_and_last_task_message --lib -- --exact --test-threads=1

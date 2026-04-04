@@ -5025,6 +5025,9 @@ impl ChatWidget {
         widget
             .bottom_pane
             .set_queued_message_edit_binding(widget.queued_message_edit_binding);
+        widget
+            .bottom_pane
+            .set_esc_interrupt_requires_double_press(widget.config.tui_double_esc_interrupt);
         #[cfg(target_os = "windows")]
         widget.bottom_pane.set_windows_degraded_sandbox_active(
             codex_core::windows_sandbox::ELEVATED_SANDBOX_NUX_ENABLED
@@ -11098,9 +11101,12 @@ impl ChatWidget {
         self.bottom_pane.set_plugin_mentions(Some(plugins));
     }
 
-    pub(crate) fn sync_plugin_mentions_config(&mut self, config: &Config) {
+    pub(crate) fn sync_runtime_config(&mut self, config: &Config) {
         self.config.features = config.features.clone();
         self.config.config_layer_stack = config.config_layer_stack.clone();
+        self.config.tui_double_esc_interrupt = config.tui_double_esc_interrupt;
+        self.bottom_pane
+            .set_esc_interrupt_requires_double_press(config.tui_double_esc_interrupt);
     }
 
     pub(crate) fn open_review_popup(&mut self) {

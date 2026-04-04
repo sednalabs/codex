@@ -1122,7 +1122,7 @@ impl App {
             .await?;
         self.apply_runtime_policy_overrides(&mut config);
         self.config = config;
-        self.chat_widget.sync_plugin_mentions_config(&self.config);
+        self.chat_widget.sync_runtime_config(&self.config);
         Ok(())
     }
 
