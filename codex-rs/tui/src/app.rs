@@ -1178,6 +1178,59 @@ impl App {
         }
     }
 
+    fn sync_thread_session_from_chat_config(
+        session: &mut ThreadSessionState,
+        config: &Config,
+        model: &str,
+        service_tier: Option<codex_protocol::config_types::ServiceTier>,
+        reasoning_effort: Option<codex_protocol::openai_models::ReasoningEffort>,
+    ) {
+        session.model = model.to_string();
+        session.model_provider_id = config.model_provider_id.clone();
+        session.service_tier = service_tier;
+        session.approval_policy = config.permissions.approval_policy.value();
+        session.approvals_reviewer = config.approvals_reviewer;
+        session.sandbox_policy = config.permissions.sandbox_policy.get().clone();
+        session.cwd = config.cwd.to_path_buf();
+        session.reasoning_effort = reasoning_effort;
+    }
+
+    async fn sync_active_thread_session_from_chat_widget(&mut self) {
+        let Some(thread_id) = self.active_thread_id else {
+            return;
+        };
+
+        let chat_config = self.chat_widget.config_ref().clone();
+        let model = self.chat_widget.current_model().to_string();
+        let service_tier = self.chat_widget.current_service_tier();
+        let reasoning_effort = self.chat_widget.current_reasoning_effort();
+
+        if let Some(channel) = self.thread_event_channels.get(&thread_id) {
+            let mut store = channel.store.lock().await;
+            if let Some(session) = store.session.as_mut() {
+                Self::sync_thread_session_from_chat_config(
+                    session,
+                    &chat_config,
+                    &model,
+                    service_tier,
+                    reasoning_effort,
+                );
+            }
+        }
+
+        if self.primary_thread_id == Some(thread_id)
+            && let Some(session) = self.primary_session_configured.as_mut()
+        {
+            Self::sync_thread_session_from_chat_config(
+                session,
+                &chat_config,
+                &model,
+                service_tier,
+                reasoning_effort,
+            );
+        }
+    }
+
     fn set_approvals_reviewer_in_app_and_widget(&mut self, reviewer: ApprovalsReviewer) {
         self.config.approvals_reviewer = reviewer;
         self.chat_widget.set_approvals_reviewer(reviewer);
@@ -1403,6 +1456,7 @@ impl App {
             || approvals_reviewer_override.is_some()
             || sandbox_policy_override.is_some()
         {
+            self.sync_active_thread_session_from_chat_widget().await;
             // This uses `OverrideTurnContext` intentionally: toggling the
             // experiment should update the active thread's effective approval
             // settings immediately, just like a `/approvals` selection. Without
@@ -1601,6 +1655,7 @@ impl App {
         let Some(active_id) = self.active_thread_id else {
             return;
         };
+        self.sync_active_thread_session_from_chat_widget().await;
         let input_state = self.chat_widget.capture_thread_input_state();
         if let Some(channel) = self.thread_event_channels.get_mut(&active_id) {
             let receiver = self.active_thread_rx.take();
@@ -5137,6 +5192,7 @@ impl App {
                     Some(self.config.permissions.approval_policy.value());
                 self.chat_widget
                     .set_approval_policy(self.config.permissions.approval_policy.value());
+                self.sync_active_thread_session_from_chat_widget().await;
             }
             AppEvent::UpdateSandboxPolicy(policy) => {
                 #[cfg(target_os = "windows")]
@@ -5165,6 +5221,7 @@ impl App {
                 }
                 self.runtime_sandbox_policy_override =
                     Some(self.config.permissions.sandbox_policy.get().clone());
+                self.sync_active_thread_session_from_chat_widget().await;
 
                 // If sandbox policy becomes workspace-write or read-only, run the Windows world-writable scan.
                 #[cfg(target_os = "windows")]
@@ -5200,6 +5257,7 @@ impl App {
             AppEvent::UpdateApprovalsReviewer(policy) => {
                 self.config.approvals_reviewer = policy;
                 self.chat_widget.set_approvals_reviewer(policy);
+                self.sync_active_thread_session_from_chat_widget().await;
                 let profile = self.active_profile.as_deref();
                 let segments = if let Some(profile) = profile {
                     vec![
@@ -6885,6 +6943,142 @@ mod tests {
                 "draft-only replay should not auto-submit queued input"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn store_active_thread_receiver_persists_per_thread_policy_overrides() -> Result<()> {
+        let mut app = make_test_app().await;
+        let main_thread_id = ThreadId::new();
+        let subagent_thread_id = ThreadId::new();
+
+        let main_session = test_thread_session(main_thread_id, PathBuf::from("/tmp/main"));
+        let subagent_session = ThreadSessionState {
+            approval_policy: AskForApproval::OnRequest,
+            sandbox_policy: SandboxPolicy::new_workspace_write_policy(),
+            ..test_thread_session(subagent_thread_id, PathBuf::from("/tmp/agent"))
+        };
+
+        app.primary_thread_id = Some(main_thread_id);
+        app.primary_session_configured = Some(main_session.clone());
+        app.thread_event_channels.insert(
+            main_thread_id,
+            ThreadEventChannel::new_with_session(
+                THREAD_EVENT_CHANNEL_CAPACITY,
+                main_session.clone(),
+                Vec::new(),
+            ),
+        );
+        app.thread_event_channels.insert(
+            subagent_thread_id,
+            ThreadEventChannel::new_with_session(
+                THREAD_EVENT_CHANNEL_CAPACITY,
+                subagent_session.clone(),
+                Vec::new(),
+            ),
+        );
+
+        app.active_thread_id = Some(main_thread_id);
+        app.chat_widget.handle_thread_session(main_session);
+        app.chat_widget
+            .set_approval_policy(AskForApproval::OnFailure);
+        app.chat_widget
+            .set_sandbox_policy(SandboxPolicy::DangerFullAccess)?;
+        app.chat_widget
+            .set_approvals_reviewer(ApprovalsReviewer::GuardianSubagent);
+
+        app.sync_active_thread_session_from_chat_widget().await;
+
+        assert_eq!(
+            app.primary_session_configured
+                .as_ref()
+                .expect("primary session configured")
+                .approval_policy,
+            AskForApproval::OnFailure
+        );
+        assert_eq!(
+            app.primary_session_configured
+                .as_ref()
+                .expect("primary session configured")
+                .approvals_reviewer,
+            ApprovalsReviewer::GuardianSubagent
+        );
+        assert_eq!(
+            app.primary_session_configured
+                .as_ref()
+                .expect("primary session configured")
+                .sandbox_policy,
+            SandboxPolicy::DangerFullAccess
+        );
+
+        app.store_active_thread_receiver().await;
+
+        {
+            let store = app
+                .thread_event_channels
+                .get(&main_thread_id)
+                .expect("main thread channel")
+                .store
+                .lock()
+                .await;
+            let session = store.session.as_ref().expect("stored main session");
+            assert_eq!(session.approval_policy, AskForApproval::OnFailure);
+            assert_eq!(
+                session.approvals_reviewer,
+                ApprovalsReviewer::GuardianSubagent
+            );
+            assert_eq!(session.sandbox_policy, SandboxPolicy::DangerFullAccess);
+        }
+
+        app.active_thread_id = Some(subagent_thread_id);
+        app.chat_widget.handle_thread_session(subagent_session);
+        app.chat_widget.set_approval_policy(AskForApproval::Never);
+        app.chat_widget
+            .set_sandbox_policy(SandboxPolicy::new_read_only_policy())?;
+        app.chat_widget
+            .set_approvals_reviewer(ApprovalsReviewer::User);
+
+        app.store_active_thread_receiver().await;
+
+        {
+            let store = app
+                .thread_event_channels
+                .get(&subagent_thread_id)
+                .expect("subagent thread channel")
+                .store
+                .lock()
+                .await;
+            let session = store.session.as_ref().expect("stored subagent session");
+            assert_eq!(session.approval_policy, AskForApproval::Never);
+            assert_eq!(session.approvals_reviewer, ApprovalsReviewer::User);
+            assert_eq!(
+                session.sandbox_policy,
+                SandboxPolicy::new_read_only_policy()
+            );
+        }
+
+        assert_eq!(
+            app.primary_session_configured
+                .as_ref()
+                .expect("primary session configured")
+                .approval_policy,
+            AskForApproval::OnFailure
+        );
+        assert_eq!(
+            app.primary_session_configured
+                .as_ref()
+                .expect("primary session configured")
+                .approvals_reviewer,
+            ApprovalsReviewer::GuardianSubagent
+        );
+        assert_eq!(
+            app.primary_session_configured
+                .as_ref()
+                .expect("primary session configured")
+                .sandbox_policy,
+            SandboxPolicy::DangerFullAccess
+        );
+
+        Ok(())
     }
 
     #[tokio::test]

@@ -86,6 +86,10 @@ core-subagent-notification-visibility-targeted:
     cargo test -p codex-protocol parse_subagent_notification_response_item_ --lib -- --test-threads=1
     cargo test -p codex-tui raw_response_subagent_notification_renders_history -- --exact --test-threads=1
 
+# Focused TUI thread-session approval persistence slice.
+tui-thread-session-policy-targeted:
+    cargo nextest run -p codex-tui --no-fail-fast -- app::tests::store_active_thread_receiver_persists_per_thread_policy_overrides --exact
+
 # Focused multi-agent orchestration slice covering wait semantics and tool guidance.
 core-multi-agent-orchestration-targeted:
     CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo test -p codex-core multi_agent_v2_list_agents_returns_completed_status_and_last_task_message --lib -- --exact --test-threads=1
