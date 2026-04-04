@@ -2186,6 +2186,9 @@ impl ChatComposer {
         Some((text, text_elements))
     }
 
+    /// Handle a submission key path (`Enter`, `Tab`, or `Ctrl+Shift+Q`).
+    ///
+    /// `mode` controls both text queue behavior and slash-command queue preference while busy.
     fn handle_submission(&mut self, mode: SubmissionMode) -> (InputResult, bool) {
         self.handle_submission_with_time(mode, Instant::now())
     }
