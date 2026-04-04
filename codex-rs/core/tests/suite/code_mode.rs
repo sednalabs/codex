@@ -250,7 +250,7 @@ fn normalize_code_mode_field_set(fields: &[&str]) -> Vec<String> {
 fn normalize_code_mode_type(ty: &str) -> Vec<String> {
     let ty = ty.trim();
     if ty.starts_with('{') && ty.ends_with('}') {
-        normalize_code_mode_fields(split_code_mode_fields(&ty[1..ty.len() - 1]))
+        normalize_code_mode_fields(&split_code_mode_fields(&ty[1..ty.len() - 1]))
     } else {
         vec![compact_type(ty)]
     }
