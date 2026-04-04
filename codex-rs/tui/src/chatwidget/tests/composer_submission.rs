@@ -899,6 +899,30 @@ async fn alt_up_edits_newest_remaining_draft_after_run_next_auto_submit() {
 }
 
 #[tokio::test]
+async fn alt_up_keeps_follow_up_run_order_in_sync() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.queued_message_edit_binding = crate::key_hint::alt(KeyCode::Up);
+    chat.bottom_pane
+        .set_queued_message_edit_binding(crate::key_hint::alt(KeyCode::Up));
+
+    chat.bottom_pane.set_task_running(/*running*/ true);
+    chat.queue_user_message(UserMessage::from("older queued".to_string()));
+    chat.queue_user_message(UserMessage::from("newest queued".to_string()));
+
+    // Edit the newest queued draft.
+    chat.handle_key_event(KeyEvent::new(KeyCode::Up, KeyModifiers::ALT));
+    assert_eq!(chat.bottom_pane.composer_text(), "newest queued".to_string());
+
+    // Run-order metadata should still match queued drafts after edit dequeue.
+    assert_eq!(chat.queued_user_messages.len(), 1);
+    assert_eq!(chat.queued_follow_up_order.len(), 1);
+    assert_eq!(
+        chat.queued_follow_up_order.front(),
+        Some(&QueuedFollowUpKind::UserMessageBack)
+    );
+}
+
+#[tokio::test]
 async fn shift_left_edits_most_recent_queued_message_in_apple_terminal() {
     assert_shift_left_edits_most_recent_queued_message_for_terminal(TerminalInfo {
         name: TerminalName::AppleTerminal,

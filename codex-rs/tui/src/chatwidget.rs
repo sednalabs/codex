@@ -7766,21 +7766,25 @@ impl ChatWidget {
             match kind {
                 QueuedFollowUpKind::UserMessageBack => {
                     if let Some(message) = self.queued_user_messages.pop_back() {
+                        self.consume_follow_up_run_order(kind);
                         return Some(message);
                     }
                 }
                 QueuedFollowUpKind::UserMessageFront => {
                     if let Some(message) = self.queued_user_messages.pop_front() {
+                        self.consume_follow_up_run_order(kind);
                         return Some(message);
                     }
                 }
                 QueuedFollowUpKind::SlashCommandBack => {
                     if let Some(command) = self.queued_slash_commands.pop_back() {
+                        self.consume_follow_up_run_order(kind);
                         return Some(command.into_user_message_for_edit());
                     }
                 }
                 QueuedFollowUpKind::SlashCommandFront => {
                     if let Some(command) = self.queued_slash_commands.pop_front() {
+                        self.consume_follow_up_run_order(kind);
                         return Some(command.into_user_message_for_edit());
                     }
                 }
@@ -7796,6 +7800,29 @@ impl ChatWidget {
         self.queued_slash_commands
             .pop_back()
             .map(QueuedSlashCommand::into_user_message_for_edit)
+    }
+
+    fn consume_follow_up_run_order(&mut self, kind: QueuedFollowUpKind) {
+        match kind {
+            QueuedFollowUpKind::UserMessageBack | QueuedFollowUpKind::SlashCommandBack => {
+                if let Some(index) = self
+                    .queued_follow_up_order
+                    .iter()
+                    .rposition(|queued| *queued == kind)
+                {
+                    self.queued_follow_up_order.remove(index);
+                }
+            }
+            QueuedFollowUpKind::UserMessageFront | QueuedFollowUpKind::SlashCommandFront => {
+                if let Some(index) = self
+                    .queued_follow_up_order
+                    .iter()
+                    .position(|queued| *queued == kind)
+                {
+                    self.queued_follow_up_order.remove(index);
+                }
+            }
+        }
     }
 
     // If idle and there are queued inputs, submit exactly one to start the next turn.
