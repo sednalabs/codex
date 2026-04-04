@@ -43,17 +43,23 @@ pub struct ThreadStartedEvent {
     pub thread_id: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, TS, Default)]
-
-pub struct TurnStartedEvent {}
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, TS)]
+pub struct TurnStartedEvent {
+    pub thread_id: String,
+    pub turn_id: String,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, TS)]
 pub struct TurnCompletedEvent {
+    pub thread_id: String,
+    pub turn_id: String,
     pub usage: Usage,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, TS)]
 pub struct TurnFailedEvent {
+    pub thread_id: String,
+    pub turn_id: String,
     pub error: ThreadErrorEvent,
 }
 
@@ -70,16 +76,28 @@ pub struct Usage {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, TS)]
 pub struct ItemStartedEvent {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thread_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub turn_id: Option<String>,
     pub item: ThreadItem,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, TS)]
 pub struct ItemCompletedEvent {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thread_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub turn_id: Option<String>,
     pub item: ThreadItem,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, TS)]
 pub struct ItemUpdatedEvent {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thread_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub turn_id: Option<String>,
     pub item: ThreadItem,
 }
 
@@ -87,6 +105,10 @@ pub struct ItemUpdatedEvent {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, TS)]
 pub struct ThreadErrorEvent {
     pub message: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thread_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub turn_id: Option<String>,
 }
 
 /// Canonical representation of a thread item and its domain-specific payload.

@@ -360,6 +360,8 @@ impl EventProcessorWithJsonOutput {
     fn reconcile_unfinished_started_items(
         &mut self,
         turn_items: &[ThreadItem],
+        thread_id: &str,
+        turn_id: &str,
     ) -> Vec<ThreadEvent> {
         turn_items
             .iter()
@@ -368,8 +370,13 @@ impl EventProcessorWithJsonOutput {
                 if !self.raw_to_exec_item_id.contains_key(&raw_id) {
                     return None;
                 }
-                self.map_completed_item_mut(item.clone())
-                    .map(|item| ThreadEvent::ItemCompleted(ItemCompletedEvent { item }))
+                self.map_completed_item_mut(item.clone()).map(|item| {
+                    ThreadEvent::ItemCompleted(ItemCompletedEvent {
+                        thread_id: Some(thread_id.to_string()),
+                        turn_id: Some(turn_id.to_string()),
+                        item,
+                    })
+                })
             })
             .collect()
     }
@@ -399,6 +406,8 @@ impl EventProcessorWithJsonOutput {
     pub fn collect_warning(&mut self, message: String) -> CollectedThreadEvents {
         CollectedThreadEvents {
             events: vec![ThreadEvent::ItemCompleted(ItemCompletedEvent {
+                thread_id: None,
+                turn_id: None,
                 item: ExecThreadItem {
                     id: self.next_item_id(),
                     details: ThreadItemDetails::Error(ErrorItem { message }),
@@ -422,6 +431,8 @@ impl EventProcessorWithJsonOutput {
                     _ => notification.summary,
                 };
                 events.push(ThreadEvent::ItemCompleted(ItemCompletedEvent {
+                    thread_id: None,
+                    turn_id: None,
                     item: ExecThreadItem {
                         id: self.next_item_id(),
                         details: ThreadItemDetails::Error(ErrorItem { message }),
@@ -436,7 +447,11 @@ impl EventProcessorWithJsonOutput {
                     }
                     _ => notification.error.message,
                 };
-                let error = ThreadErrorEvent { message };
+                let error = ThreadErrorEvent {
+                    message,
+                    thread_id: Some(notification.thread_id.clone()),
+                    turn_id: Some(notification.turn_id.clone()),
+                };
                 self.last_critical_error = Some(error.clone());
                 events.push(ThreadEvent::Error(error));
                 CodexStatus::Running
@@ -449,6 +464,8 @@ impl EventProcessorWithJsonOutput {
                     _ => notification.summary,
                 };
                 events.push(ThreadEvent::ItemCompleted(ItemCompletedEvent {
+                    thread_id: None,
+                    turn_id: None,
                     item: ExecThreadItem {
                         id: self.next_item_id(),
                         details: ThreadItemDetails::Error(ErrorItem { message }),
@@ -461,7 +478,11 @@ impl EventProcessorWithJsonOutput {
             }
             ServerNotification::ItemStarted(notification) => {
                 if let Some(item) = self.map_started_item(notification.item) {
-                    events.push(ThreadEvent::ItemStarted(ItemStartedEvent { item }));
+                    events.push(ThreadEvent::ItemStarted(ItemStartedEvent {
+                        thread_id: Some(notification.thread_id.clone()),
+                        turn_id: Some(notification.turn_id.clone()),
+                        item,
+                    }));
                 }
                 CodexStatus::Running
             }
@@ -472,12 +493,18 @@ impl EventProcessorWithJsonOutput {
                     {
                         self.final_message = Some(text.clone());
                     }
-                    events.push(ThreadEvent::ItemCompleted(ItemCompletedEvent { item }));
+                    events.push(ThreadEvent::ItemCompleted(ItemCompletedEvent {
+                        thread_id: Some(notification.thread_id.clone()),
+                        turn_id: Some(notification.turn_id.clone()),
+                        item,
+                    }));
                 }
                 CodexStatus::Running
             }
             ServerNotification::ModelRerouted(notification) => {
                 events.push(ThreadEvent::ItemCompleted(ItemCompletedEvent {
+                    thread_id: Some(notification.thread_id.clone()),
+                    turn_id: Some(notification.turn_id.clone()),
                     item: ExecThreadItem {
                         id: self.next_item_id(),
                         details: ThreadItemDetails::Error(ErrorItem {
@@ -497,6 +524,8 @@ impl EventProcessorWithJsonOutput {
             ServerNotification::TurnCompleted(notification) => {
                 if let Some(running) = self.running_todo_list.take() {
                     events.push(ThreadEvent::ItemCompleted(ItemCompletedEvent {
+                        thread_id: Some(notification.thread_id.clone()),
+                        turn_id: Some(notification.turn.id.clone()),
                         item: ExecThreadItem {
                             id: running.item_id,
                             details: ThreadItemDetails::TodoList(TodoListItem {
@@ -505,7 +534,11 @@ impl EventProcessorWithJsonOutput {
                         },
                     }));
                 }
-                events.extend(self.reconcile_unfinished_started_items(&notification.turn.items));
+                events.extend(self.reconcile_unfinished_started_items(
+                    &notification.turn.items,
+                    &notification.thread_id,
+                    &notification.turn.id,
+                ));
                 match notification.turn.status {
                     TurnStatus::Completed => {
                         if let Some(final_message) =
@@ -515,6 +548,8 @@ impl EventProcessorWithJsonOutput {
                         }
                         self.emit_final_message_on_shutdown = true;
                         events.push(ThreadEvent::TurnCompleted(TurnCompletedEvent {
+                            thread_id: notification.thread_id.clone(),
+                            turn_id: notification.turn.id.clone(),
                             usage: self.usage_from_last_total(),
                         }));
                         CodexStatus::InitiateShutdown
@@ -532,12 +567,20 @@ impl EventProcessorWithJsonOutput {
                                     }
                                     _ => error.message,
                                 },
+                                thread_id: Some(notification.thread_id.clone()),
+                                turn_id: Some(notification.turn.id.clone()),
                             })
                             .or_else(|| self.last_critical_error.clone())
                             .unwrap_or_else(|| ThreadErrorEvent {
                                 message: "turn failed".to_string(),
+                                thread_id: Some(notification.thread_id.clone()),
+                                turn_id: Some(notification.turn.id.clone()),
                             });
-                        events.push(ThreadEvent::TurnFailed(TurnFailedEvent { error }));
+                        events.push(ThreadEvent::TurnFailed(TurnFailedEvent {
+                            thread_id: notification.thread_id.clone(),
+                            turn_id: notification.turn.id.clone(),
+                            error,
+                        }));
                         CodexStatus::InitiateShutdown
                     }
                     TurnStatus::Interrupted => {
@@ -555,6 +598,8 @@ impl EventProcessorWithJsonOutput {
                     running.items = items.clone();
                     let item_id = running.item_id.clone();
                     events.push(ThreadEvent::ItemUpdated(ItemUpdatedEvent {
+                        thread_id: Some(notification.thread_id.clone()),
+                        turn_id: Some(notification.turn_id.clone()),
                         item: ExecThreadItem {
                             id: item_id,
                             details: ThreadItemDetails::TodoList(TodoListItem { items }),
@@ -567,6 +612,8 @@ impl EventProcessorWithJsonOutput {
                         items: items.clone(),
                     });
                     events.push(ThreadEvent::ItemStarted(ItemStartedEvent {
+                        thread_id: Some(notification.thread_id.clone()),
+                        turn_id: Some(notification.turn_id.clone()),
                         item: ExecThreadItem {
                             id: item_id,
                             details: ThreadItemDetails::TodoList(TodoListItem { items }),
@@ -575,8 +622,11 @@ impl EventProcessorWithJsonOutput {
                 }
                 CodexStatus::Running
             }
-            ServerNotification::TurnStarted(_) => {
-                events.push(ThreadEvent::TurnStarted(TurnStartedEvent {}));
+            ServerNotification::TurnStarted(notification) => {
+                events.push(ThreadEvent::TurnStarted(TurnStartedEvent {
+                    thread_id: notification.thread_id.clone(),
+                    turn_id: notification.turn.id.clone(),
+                }));
                 CodexStatus::Running
             }
             _ => CodexStatus::Running,

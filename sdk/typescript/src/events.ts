@@ -15,6 +15,8 @@ export type ThreadStartedEvent = {
  */
 export type TurnStartedEvent = {
   type: "turn.started";
+  thread_id: string;
+  turn_id: string;
 };
 
 /** Describes the usage of tokens during a turn. */
@@ -30,42 +32,56 @@ export type Usage = {
 /** Emitted when a turn is completed. Typically right after the assistant's response. */
 export type TurnCompletedEvent = {
   type: "turn.completed";
+  thread_id: string;
+  turn_id: string;
   usage: Usage;
 };
 
 /** Indicates that a turn failed with an error. */
 export type TurnFailedEvent = {
   type: "turn.failed";
+  thread_id: string;
+  turn_id: string;
   error: ThreadError;
 };
 
 /** Emitted when a new item is added to the thread. Typically the item is initially "in progress". */
 export type ItemStartedEvent = {
   type: "item.started";
+  thread_id?: string;
+  turn_id?: string;
   item: ThreadItem;
 };
 
 /** Emitted when an item is updated. */
 export type ItemUpdatedEvent = {
   type: "item.updated";
+  thread_id?: string;
+  turn_id?: string;
   item: ThreadItem;
 };
 
 /** Signals that an item has reached a terminal state—either success or failure. */
 export type ItemCompletedEvent = {
   type: "item.completed";
+  thread_id?: string;
+  turn_id?: string;
   item: ThreadItem;
 };
 
 /** Fatal error emitted by the stream. */
 export type ThreadError = {
   message: string;
+  thread_id?: string;
+  turn_id?: string;
 };
 
 /** Represents an unrecoverable error emitted directly by the event stream. */
 export type ThreadErrorEvent = {
   type: "error";
   message: string;
+  thread_id?: string;
+  turn_id?: string;
 };
 
 /** Top-level JSONL events emitted by codex exec. */
