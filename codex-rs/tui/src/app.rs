@@ -1124,7 +1124,7 @@ impl App {
         self.apply_active_thread_session_state_to_config(&mut config);
         self.apply_runtime_policy_overrides(&mut config);
         self.config = config;
-        self.chat_widget.sync_plugin_mentions_config(&self.config);
+        self.chat_widget.sync_runtime_config(&self.config);
         Ok(())
     }
 

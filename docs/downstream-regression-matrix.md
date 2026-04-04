@@ -42,6 +42,7 @@ Focused targeted lanes for iterative work on the current carry seams:
 - `codex.core-context-serialization-targeted`
 - `codex.core-attestation-targeted`
 - `codex.state-spawn-lineage-contract-targeted`
+- `codex.tui-esc-interrupt-targeted`
 - `codex.downstream-docs-check`
 
 Validation workflow reference:
@@ -121,6 +122,7 @@ GitHub Actions lane naming (`.github/workflows/sedna-heavy-tests.yml`):
 | Turn-complete compaction count metadata | `codex.app-server-protocol-test` | `preserves_compaction_only_turn`; broader `TurnCompleteEvent` shape coverage in `codex-core`, `codex-exec`, and `codex-tui` tests keeps `compaction_events_in_turn` wired through downstream consumers |
 | TUI queued slash recall + replay ordering | `core-carry-ui-smoke` | `slash_approvals_enter_queues_while_task_running_and_replays_on_completion`; `alt_up_restores_most_recent_queued_slash_command` |
 | Per-thread approval/sandbox/reviewer overrides survive thread switches (`codex-tui`) | `codex.tui-thread-session-policy-targeted` | `store_active_thread_receiver_persists_per_thread_policy_overrides` |
+| Double-`Esc` interrupt confirmation protects Alt/meta terminals while preserving explicit single-press override (`codex-tui`) | `codex.tui-esc-interrupt-targeted` | `esc_requires_double_press_for_interrupt_when_running_task_by_default`; `first_esc_renders_again_to_interrupt_hint`; `esc_release_does_not_confirm_interrupt`; `esc_with_alt_does_not_interrupt_running_task`; `esc_single_press_interrupts_when_double_press_disabled` |
 | Active-thread session state survives config refresh and fresh-session clones keep policy mutability before new-thread/fork flows (`codex-tui`) | `codex.tui-config-refresh-session-targeted` | `refresh_in_memory_config_from_disk_preserves_active_thread_session_state`; `fresh_session_config_uses_current_session_state`; `fresh_session_config_preserves_policy_mutability` |
 | Startup plugin sync bounded wait + completion-signal re-arm + abort checkpointing | `codex.core-startup-sync-targeted` | `startup_remote_plugin_sync_waits_for_late_prerequisites`; `startup_remote_plugin_sync_is_single_flight_before_prerequisites_exist`; `startup_remote_plugin_sync_uses_latest_config_and_auth_snapshot`; `startup_remote_plugin_sync_rearms_after_curated_repo_completion_signal_uses_latest_config_and_auth_snapshot`; `startup_remote_plugin_sync_signals_after_failed_curated_postprocessing`; `startup_remote_plugin_sync_aborts_in_flight_before_stamping_marker`; `startup_remote_plugin_sync_relaunches_immediately_after_abort_even_if_late_completion_signal_arrives` |
 | Tool-context serialization for custom/function/abort outputs | `codex.core-context-serialization-targeted` | `custom_tool_calls_should_roundtrip_as_custom_outputs`; `function_payloads_remain_function_outputs`; `aborted_tool_output_serializes_*`; `interrupt_tool_records_history_entries` |
