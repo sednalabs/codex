@@ -2992,6 +2992,9 @@ impl App {
                 usage.model_context_window,
                 entry.updated_at,
                 entry.created_at,
+                usage.model.as_deref(),
+                usage.reasoning_effort,
+                usage.task_name.as_deref(),
             );
             let status_terms = if entry.is_closed {
                 "closed stale inactive finished"
@@ -3029,14 +3032,31 @@ impl App {
             return AgentPickerThreadUsage {
                 token_usage: self.chat_widget.token_usage(),
                 model_context_window: self.chat_widget.token_usage_context_window(),
+                model: Some(self.chat_widget.current_model().to_string()),
+                reasoning_effort: self.chat_widget.current_reasoning_effort(),
+                task_name: self.chat_widget.thread_name(),
             };
         }
 
         if let Some(channel) = self.thread_event_channels.get(&thread_id) {
             let store = channel.store.lock().await;
+            let (model, reasoning_effort, task_name) = store
+                .session
+                .as_ref()
+                .map(|session| {
+                    (
+                        Some(session.model.clone()),
+                        session.reasoning_effort,
+                        session.thread_name.clone(),
+                    )
+                })
+                .unwrap_or((None, None, None));
             return AgentPickerThreadUsage {
                 token_usage: store.token_usage.clone(),
                 model_context_window: store.model_context_window,
+                model,
+                reasoning_effort,
+                task_name,
             };
         }
 
@@ -11897,6 +11917,9 @@ guardian_approval = true
                     total_tokens: 10,
                 },
                 model_context_window: None,
+                model: Some("gpt-test".to_string()),
+                reasoning_effort: None,
+                task_name: None,
             }
         );
     }
@@ -11932,6 +11955,9 @@ guardian_approval = true
                     total_tokens: 10,
                 },
                 model_context_window: Some(950_000),
+                model: Some("gpt-test".to_string()),
+                reasoning_effort: None,
+                task_name: None,
             }
         );
     }
@@ -11961,7 +11987,13 @@ guardian_approval = true
 
         assert_eq!(
             app.agent_picker_thread_usage(thread_id).await,
-            AgentPickerThreadUsage::default()
+            AgentPickerThreadUsage {
+                token_usage: TokenUsage::default(),
+                model_context_window: None,
+                model: Some("gpt-test".to_string()),
+                reasoning_effort: None,
+                task_name: None,
+            }
         );
     }
 
