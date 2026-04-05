@@ -374,9 +374,18 @@ impl AgentNavigationState {
 }
 
 fn parent_agent_path(path: &str) -> Option<&str> {
+    if path.is_empty() || !path.starts_with('/') {
+        return None;
+    }
     let slash_index = path.rfind('/')?;
     if slash_index == 0 {
-        return None;
+        if path.len() == 1 {
+            return None;
+        }
+        return Some("/");
+    }
+    if slash_index == path.len() - 1 {
+        return Some(&path[..slash_index]);
     }
     Some(&path[..slash_index])
 }
@@ -562,5 +571,13 @@ mod tests {
         );
         assert_eq!(prefixes.get(&worker_thread_id), Some(&"│  └─ ".to_string()));
         assert_eq!(prefixes.get(&reviewer_thread_id), Some(&"└─ ".to_string()));
+    }
+
+    #[test]
+    fn parent_agent_path_honors_root_and_invalid_inputs() {
+        assert_eq!(parent_agent_path("/"), None);
+        assert_eq!(parent_agent_path("/root"), Some("/"));
+        assert_eq!(parent_agent_path("root/child"), None);
+        assert_eq!(parent_agent_path(""), None);
     }
 }
