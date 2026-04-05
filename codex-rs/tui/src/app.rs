@@ -121,6 +121,7 @@ use codex_protocol::protocol::RateLimitSnapshot;
 use codex_protocol::protocol::SandboxPolicy;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::SkillErrorInfo;
+use codex_protocol::protocol::SubAgentSource;
 use codex_protocol::protocol::TokenUsage;
 use codex_terminal_detection::user_agent;
 use codex_utils_absolute_path::AbsolutePathBuf;
@@ -3097,7 +3098,13 @@ impl App {
     fn session_source_agent_path(
         source: &codex_app_server_protocol::SessionSource,
     ) -> Option<String> {
-        source.get_agent_path().map(|path| path.to_string())
+        match source {
+            codex_app_server_protocol::SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                agent_path,
+                ..
+            }) => agent_path.as_ref().map(ToString::to_string),
+            _ => None,
+        }
     }
 
     /// Updates cached picker metadata and then mirrors any visible-label change into the footer.

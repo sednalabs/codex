@@ -92,7 +92,12 @@ pub(crate) fn find_loaded_subagent_threads_for_primary(
                     thread_id,
                     agent_nickname: thread.agent_nickname,
                     agent_role: thread.agent_role,
-                    agent_path: thread.source.get_agent_path().map(|path| path.to_string()),
+                    agent_path: match thread.source {
+                        SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                            agent_path, ..
+                        }) => agent_path.map(|path| path.to_string()),
+                        _ => None,
+                    },
                     created_at: thread.created_at,
                     updated_at: thread.updated_at,
                 })
