@@ -402,15 +402,13 @@ fn parent_agent_path(path: &str) -> Option<&str> {
     if path.is_empty() || !path.starts_with('/') {
         return None;
     }
+    let path = path.trim_end_matches('/');
+    if path.is_empty() {
+        return None;
+    }
     let slash_index = path.rfind('/')?;
     if slash_index == 0 {
-        if path.len() == 1 {
-            return None;
-        }
         return Some("/");
-    }
-    if slash_index == path.len() - 1 {
-        return Some(&path[..slash_index]);
     }
     Some(&path[..slash_index])
 }
@@ -684,6 +682,8 @@ mod tests {
     fn parent_agent_path_honors_root_and_invalid_inputs() {
         assert_eq!(parent_agent_path("/"), None);
         assert_eq!(parent_agent_path("/root"), Some("/"));
+        assert_eq!(parent_agent_path("/root/"), Some("/"));
+        assert_eq!(parent_agent_path("/root/researcher/"), Some("/root"));
         assert_eq!(parent_agent_path("root/child"), None);
         assert_eq!(parent_agent_path(""), None);
     }
