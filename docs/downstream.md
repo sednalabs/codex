@@ -34,7 +34,11 @@ git remote set-url origin git@github.com:SednaLabs/codex.git
 
 ## Validation policy
 
-- local Build Helper runs are the default narrow lane for formatting, smoke tests, and targeted checks
+- use tiny local sanity checks first (`git diff --check`, formatting, focused unit tests)
+- use remote validation as the default measurement surface for substantive work
+- `validation-lab` `profile=smoke`, `targeted`, and `frontier` are the default non-PR remote validation ladder
+- PR and merge-group workflows are promotion surfaces rather than the default inner-loop validator
+- local Build Helper runs are optional operator infrastructure when they are configured on a shared host, not the tracked repository default
 - heavy Rust tests, release-mode builds, and preview binaries should be offloaded to GitHub Actions after commit and push
 - branch artifacts are disposable and retain for 3 days
 - official releases are published only from the protected Sedna release workflow
@@ -175,6 +179,20 @@ User-visible behavior:
 - `Alt+Up` recalls queued items in strict reverse-chronological order across both entry types.
 - `/status` remains immediate (not queued).
 - Unavailable non-inline slash commands replay after the current task completes instead of being blocked.
+
+### TUI: thread-session continuity and `/agent` / status accounting
+
+Why:
+- Preserve the operator's per-thread approval/sandbox/reviewer choices while moving between the main thread and subagents.
+- Keep config refresh and fresh-session cloning from silently resetting the active thread's mutable session policy.
+- Surface enough `/agent` and status-line accounting to explain per-thread versus combined-session usage without requiring a broader context/history pass.
+
+User-visible behavior:
+- Per-thread approval/sandbox/reviewer overrides survive thread switches.
+- Active-thread session state survives config refresh and fresh-session clones keep policy mutability before new-thread/fork flows.
+- `/agent` picker rows show per-thread used-token totals from cached thread usage.
+- Combined session token totals remain visible across `/status` and footer/status-line surfaces without overwriting the active thread's own usage totals.
+
 ### TUI: Weekly usage pacing signal + stale handling
 
 Why:
