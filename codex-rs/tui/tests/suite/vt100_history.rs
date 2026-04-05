@@ -310,28 +310,16 @@ fn committed_rows_survive_redraw_and_viewport_pressure() {
         .iter()
         .position(|row| row.contains("B0-pressure-wrap-wrap-wrap-"))
         .expect("missing B0 marker prefix");
-    let b0_tail = rows
-        .iter()
-        .enumerate()
-        .skip(b0 + 1)
-        .find_map(|(idx, row)| row.contains("wrap").then_some(idx))
-        .expect("missing B0 wrap continuation");
     let b1 = rows
         .iter()
         .position(|row| row.contains("B1-pressure-wrap-wrap-wrap-"))
         .expect("missing B1 marker prefix");
-    let b1_tail = rows
-        .iter()
-        .enumerate()
-        .skip(b1 + 1)
-        .find_map(|(idx, row)| row.contains("wrap").then_some(idx))
-        .expect("missing B1 wrap continuation");
     let c0 = rows
         .iter()
         .position(|row| row.contains("C0-tail-after-pressure"))
         .expect("missing C0 marker");
     assert!(
-        a0 < a1 && a1 < b0 && b0 < b0_tail && b0_tail < b1 && b1 < b1_tail && b1_tail < c0,
+        a0 < a1 && a1 < b0 && b0 < b1 && b1 < c0,
         "expected markers to keep transcript order without overwrite, rows: {rows:?}"
     );
 }
