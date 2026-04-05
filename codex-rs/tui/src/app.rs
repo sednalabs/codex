@@ -36,6 +36,7 @@ use crate::model_catalog::ModelCatalog;
 use crate::model_migration::ModelMigrationOutcome;
 use crate::model_migration::migration_copy_for_models;
 use crate::model_migration::run_model_migration_prompt;
+use crate::multi_agents::AgentPickerThreadUsage;
 use crate::multi_agents::SUBAGENT_LABEL;
 use crate::multi_agents::agent_picker_status_dot_spans;
 use crate::multi_agents::format_agent_picker_item_description;
@@ -540,6 +541,7 @@ struct ThreadEventStore {
     turns: Vec<Turn>,
     buffer: VecDeque<ThreadBufferedEvent>,
     token_usage: TokenUsage,
+    model_context_window: Option<i64>,
     pending_interactive_replay: PendingInteractiveReplayState,
     active_turn_id: Option<String>,
     input_state: Option<ThreadInputState>,
@@ -564,6 +566,7 @@ impl ThreadEventStore {
             turns: Vec::new(),
             buffer: VecDeque::new(),
             token_usage: TokenUsage::default(),
+            model_context_window: None,
             pending_interactive_replay: PendingInteractiveReplayState::default(),
             active_turn_id: None,
             input_state: None,
@@ -615,6 +618,7 @@ impl ThreadEventStore {
             }
             ServerNotification::ThreadTokenUsageUpdated(notification) => {
                 self.token_usage = token_usage_from_breakdown(&notification.token_usage.total);
+                self.model_context_window = notification.token_usage.model_context_window;
             }
             _ => {}
         }
@@ -2964,9 +2968,11 @@ impl App {
                 entry.agent_role.as_deref(),
                 is_primary,
             );
+            let usage = self.agent_picker_thread_usage(thread_id).await;
             let description = format_agent_picker_item_description(
                 thread_id,
-                &self.agent_picker_thread_token_usage(thread_id).await,
+                &usage.token_usage,
+                usage.model_context_window,
             );
             items.push(SelectionItem {
                 name: name.clone(),
@@ -2992,16 +2998,23 @@ impl App {
         });
     }
 
-    async fn agent_picker_thread_token_usage(&self, thread_id: ThreadId) -> TokenUsage {
+    async fn agent_picker_thread_usage(&self, thread_id: ThreadId) -> AgentPickerThreadUsage {
         if self.active_thread_id == Some(thread_id) {
-            return self.chat_widget.token_usage();
+            return AgentPickerThreadUsage {
+                token_usage: self.chat_widget.token_usage(),
+                model_context_window: self.chat_widget.token_usage_context_window(),
+            };
         }
 
         if let Some(channel) = self.thread_event_channels.get(&thread_id) {
-            return channel.store.lock().await.token_usage.clone();
+            let store = channel.store.lock().await;
+            return AgentPickerThreadUsage {
+                token_usage: store.token_usage.clone(),
+                model_context_window: store.model_context_window,
+            };
         }
 
-        TokenUsage::default()
+        AgentPickerThreadUsage::default()
     }
 
     fn is_terminal_thread_read_error(err: &color_eyre::Report) -> bool {
@@ -11742,13 +11755,16 @@ guardian_approval = true
         app.thread_event_channels.insert(thread_id, channel);
 
         assert_eq!(
-            app.agent_picker_thread_token_usage(thread_id).await,
-            TokenUsage {
-                input_tokens: 4,
-                cached_input_tokens: 1,
-                output_tokens: 5,
-                reasoning_output_tokens: 0,
-                total_tokens: 10,
+            app.agent_picker_thread_usage(thread_id).await,
+            AgentPickerThreadUsage {
+                token_usage: TokenUsage {
+                    input_tokens: 4,
+                    cached_input_tokens: 1,
+                    output_tokens: 5,
+                    reasoning_output_tokens: 0,
+                    total_tokens: 10,
+                },
+                model_context_window: None,
             }
         );
     }
@@ -11763,7 +11779,7 @@ guardian_approval = true
         app.handle_thread_event_now(ThreadBufferedEvent::Notification(token_usage_notification(
             thread_id,
             "turn-live",
-            /*model_context_window*/ None,
+            /*model_context_window*/ Some(950_000),
         )));
 
         let channel = ThreadEventChannel::new_with_session(
@@ -11774,13 +11790,16 @@ guardian_approval = true
         app.thread_event_channels.insert(thread_id, channel);
 
         assert_eq!(
-            app.agent_picker_thread_token_usage(thread_id).await,
-            TokenUsage {
-                input_tokens: 4,
-                cached_input_tokens: 1,
-                output_tokens: 5,
-                reasoning_output_tokens: 0,
-                total_tokens: 10,
+            app.agent_picker_thread_usage(thread_id).await,
+            AgentPickerThreadUsage {
+                token_usage: TokenUsage {
+                    input_tokens: 4,
+                    cached_input_tokens: 1,
+                    output_tokens: 5,
+                    reasoning_output_tokens: 0,
+                    total_tokens: 10,
+                },
+                model_context_window: Some(950_000),
             }
         );
     }
@@ -11809,8 +11828,8 @@ guardian_approval = true
         app.thread_event_channels.insert(thread_id, channel);
 
         assert_eq!(
-            app.agent_picker_thread_token_usage(thread_id).await,
-            TokenUsage::default()
+            app.agent_picker_thread_usage(thread_id).await,
+            AgentPickerThreadUsage::default()
         );
     }
 

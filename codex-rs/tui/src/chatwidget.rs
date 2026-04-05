@@ -11468,6 +11468,10 @@ impl ChatWidget {
             .unwrap_or_default()
     }
 
+    pub(crate) fn token_usage_context_window(&self) -> Option<i64> {
+        self.status_line_context_window_size()
+    }
+
     pub(crate) fn thread_id(&self) -> Option<ThreadId> {
         self.thread_id
     }
