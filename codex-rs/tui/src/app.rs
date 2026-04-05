@@ -2661,6 +2661,7 @@ impl App {
                         thread_id,
                         thread.agent_nickname,
                         thread.agent_role,
+                        Self::session_source_agent_path(&thread.source),
                         /*is_closed*/ false,
                         Some(thread.created_at),
                         Some(thread.updated_at),
@@ -2705,6 +2706,7 @@ impl App {
             thread_id,
             notification.thread.agent_nickname.clone(),
             notification.thread.agent_role.clone(),
+            Self::session_source_agent_path(&notification.thread.source),
             /*is_closed*/ false,
             Some(notification.thread.created_at),
             Some(notification.thread.updated_at),
@@ -2817,7 +2819,8 @@ impl App {
         self.primary_session_configured = Some(session.clone());
         self.upsert_agent_picker_thread(
             thread_id, /*agent_nickname*/ None, /*agent_role*/ None,
-            /*is_closed*/ false, /*created_at*/ None, /*updated_at*/ None,
+            /*agent_path*/ None, /*is_closed*/ false, /*created_at*/ None,
+            /*updated_at*/ None,
         );
         let channel = self.ensure_thread_channel(thread_id);
         {
@@ -2967,6 +2970,9 @@ impl App {
         }
 
         let mut initial_selected_idx = None;
+        let tree_prefixes = self
+            .agent_navigation
+            .picker_tree_prefixes(self.primary_thread_id);
         let ordered_threads = self
             .agent_navigation
             .ordered_threads()
@@ -2980,11 +2986,16 @@ impl App {
             }
             let id = thread_id;
             let is_primary = self.primary_thread_id == Some(thread_id);
-            let name = format_agent_picker_item_name(
+            let mut name = format_agent_picker_item_name(
                 entry.agent_nickname.as_deref(),
                 entry.agent_role.as_deref(),
                 is_primary,
             );
+            if let Some(tree_prefix) = tree_prefixes.get(&thread_id)
+                && !tree_prefix.is_empty()
+            {
+                name = format!("{tree_prefix}{name}");
+            }
             let usage = self.agent_picker_thread_usage(thread_id).await;
             let description = format_agent_picker_item_description(
                 thread_id,
@@ -3083,6 +3094,12 @@ impl App {
         })
     }
 
+    fn session_source_agent_path(
+        source: &codex_app_server_protocol::SessionSource,
+    ) -> Option<String> {
+        source.get_agent_path().map(|path| path.to_string())
+    }
+
     /// Updates cached picker metadata and then mirrors any visible-label change into the footer.
     ///
     /// These two writes stay paired so the picker rows and contextual footer continue to describe
@@ -3092,6 +3109,7 @@ impl App {
         thread_id: ThreadId,
         agent_nickname: Option<String>,
         agent_role: Option<String>,
+        agent_path: Option<String>,
         is_closed: bool,
         created_at: Option<i64>,
         updated_at: Option<i64>,
@@ -3101,10 +3119,11 @@ impl App {
             agent_nickname.clone(),
             agent_role.clone(),
         );
-        self.agent_navigation.upsert(
+        self.agent_navigation.upsert_with_path(
             thread_id,
             agent_nickname,
             agent_role,
+            agent_path,
             is_closed,
             created_at,
             updated_at,
@@ -3145,6 +3164,11 @@ impl App {
                             .as_ref()
                             .and_then(|entry| entry.agent_role.clone())
                     }),
+                    Self::session_source_agent_path(&thread.source).or_else(|| {
+                        existing_entry
+                            .as_ref()
+                            .and_then(|entry| entry.agent_path.clone())
+                    }),
                     matches!(
                         thread.status,
                         codex_app_server_protocol::ThreadStatus::NotLoaded
@@ -3168,6 +3192,7 @@ impl App {
                         thread_id,
                         entry.agent_nickname,
                         entry.agent_role,
+                        entry.agent_path,
                         is_closed,
                         entry.created_at,
                         entry.updated_at,
@@ -3175,7 +3200,8 @@ impl App {
                 } else {
                     self.upsert_agent_picker_thread(
                         thread_id, /*agent_nickname*/ None, /*agent_role*/ None,
-                        is_closed, /*created_at*/ None, /*updated_at*/ None,
+                        /*agent_path*/ None, is_closed, /*created_at*/ None,
+                        /*updated_at*/ None,
                     );
                 }
                 true
@@ -3627,6 +3653,7 @@ impl App {
                 thread.thread_id,
                 thread.agent_nickname,
                 thread.agent_role,
+                thread.agent_path,
                 /*is_closed*/ false,
                 Some(thread.created_at),
                 Some(thread.updated_at),
@@ -8104,6 +8131,7 @@ mod tests {
             Some(&AgentPickerThreadEntry {
                 agent_nickname: None,
                 agent_role: None,
+                agent_path: None,
                 is_closed: true,
                 created_at: None,
                 updated_at: None,
@@ -8140,6 +8168,7 @@ mod tests {
             Some(&AgentPickerThreadEntry {
                 agent_nickname: Some("Robie".to_string()),
                 agent_role: Some("explorer".to_string()),
+                agent_path: None,
                 is_closed: true,
                 created_at: None,
                 updated_at: None,
@@ -8198,6 +8227,7 @@ mod tests {
             Some(&AgentPickerThreadEntry {
                 agent_nickname: Some("Robie".to_string()),
                 agent_role: Some("explorer".to_string()),
+                agent_path: None,
                 is_closed: true,
                 created_at: None,
                 updated_at: None,
@@ -8283,6 +8313,7 @@ mod tests {
             Some(&AgentPickerThreadEntry {
                 agent_nickname: None,
                 agent_role: None,
+                agent_path: None,
                 is_closed: false,
                 created_at: Some(expected_thread.created_at),
                 updated_at: Some(expected_thread.updated_at),
@@ -9457,6 +9488,7 @@ guardian_approval = true
             Some(&AgentPickerThreadEntry {
                 agent_nickname: Some("Robie".to_string()),
                 agent_role: Some("explorer".to_string()),
+                agent_path: None,
                 is_closed: false,
                 created_at: Some(1),
                 updated_at: Some(2),
