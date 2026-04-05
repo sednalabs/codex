@@ -801,13 +801,8 @@ mod tests {
         };
         assert_eq!(
             format_agent_picker_item_description(
-                thread_id,
-                &usage,
-                /*model_context_window*/ None,
-                /*updated_at*/ None,
-                /*created_at*/ None,
-                /*model*/ None,
-                /*reasoning_effort*/ None,
+                thread_id, &usage, /*model_context_window*/ None, /*updated_at*/ None,
+                /*created_at*/ None, /*model*/ None, /*reasoning_effort*/ None,
                 /*task_name*/ None,
             ),
             "00000000-0000-0000-0000-000000000112 • 12.3K used"
@@ -901,9 +896,9 @@ mod tests {
             format_agent_picker_item_description(
                 thread_id,
                 &usage,
-                None,
-                None,
-                None,
+                /*model_context_window*/ None,
+                /*updated_at*/ None,
+                /*created_at*/ None,
                 Some("gpt-5.4-mini"),
                 Some(ReasoningEffortConfig::Medium),
                 Some("Investigate /agent picker metadata display"),
@@ -921,11 +916,11 @@ mod tests {
             format_agent_picker_item_description(
                 thread_id,
                 &TokenUsage::default(),
-                None,
-                None,
-                None,
+                /*model_context_window*/ None,
+                /*updated_at*/ None,
+                /*created_at*/ None,
                 Some("   "),
-                None,
+                /*reasoning_effort*/ None,
                 Some("   "),
             ),
             "00000000-0000-0000-0000-000000000115"
