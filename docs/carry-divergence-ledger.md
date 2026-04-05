@@ -227,8 +227,16 @@ live divergence.
   - `docs/downstream.md`
   - `docs/downstream-regression-matrix.md`
 
-### TUI Queue, Interrupt, And Weekly-Pacing Behavior
+### TUI Session-State, Queue, Interrupt, And Usage Surfaces
 
+- Per-thread approval/sandbox/reviewer overrides survive thread switches.
+- Active-thread session state survives config refresh and fresh-session clones
+  keep policy mutability before new-thread and fork flows.
+- `/agent` picker rows expose per-thread used-token totals from cached thread
+  usage without requiring a broader context-window plumbing pass.
+- Combined session token totals remain visible across `/status` and
+  footer/status-line surfaces without overwriting the active thread's own usage
+  totals.
 - Unavailable slash commands queue and replay after the current task instead of
   being rejected immediately.
 - Interrupt handling defaults to double-`Esc` confirmation and preserves queued
@@ -237,11 +245,17 @@ live divergence.
   render styles.
 - Primary files:
   - `codex-rs/tui/src/app.rs`
+  - `codex-rs/tui/src/multi_agents.rs`
   - `codex-rs/tui/src/bottom_pane/chat_composer.rs`
-- `codex-rs/tui/src/status/rate_limits.rs`
-- `docs/config.md`
-- `docs/tui-weekly-usage-pacing-status-line.md`
-- `docs/downstream.md`
+  - `codex-rs/tui/src/bottom_pane/status_line_setup.rs`
+  - `codex-rs/tui/src/chatwidget.rs`
+  - `codex-rs/tui/src/chatwidget/status_surfaces.rs`
+  - `codex-rs/tui/src/status/card.rs`
+  - `codex-rs/tui/src/status/rate_limits.rs`
+  - `docs/config.md`
+  - `docs/tui-weekly-usage-pacing-status-line.md`
+  - `docs/downstream.md`
+  - `docs/downstream-regression-matrix.md`
 
 ### Custom Prompt Discovery And Review Prompt Flow
 
