@@ -15,8 +15,13 @@ artifacts.
   - purpose: disposable preview binaries when buildability is the actual question
   - retention: 3 days
   - release visibility: never published as a GitHub Release
+- `rust-ci-full`
+  - trigger: scheduled hygiene sweeps and manual dispatch
+  - purpose: heavyweight Cargo-native checkpoint coverage when broad proof is
+    actually needed
+  - retention: ordinary workflow logs only
 - `sedna-heavy-tests`
-  - trigger: manual dispatch, `ci:heavy` PR label, nightly schedule, and selected `main` pushes
+  - trigger: manual dispatch, `ci:heavy` PR label, and merge-group checkpoints
   - purpose: expensive Linux-heavy Rust validation without using the shared local machine as the
     build factory
   - scopes: `protocol`, `tui`, `cli`, `core`, `workspace`
@@ -35,11 +40,17 @@ artifacts.
 3. Commit and push.
 4. Use `validation-lab` for ordinary remote-first validation on `validation/*`, `integration/*`,
    or other non-PR refs.
-5. Use `validation-lab` `profile=targeted` with `lane_set=release` when the question is Linux
+5. Let `rust-ci` handle routine PR gating; tiny already-green PR follow-up
+   pushes may route to incremental targeted validation automatically when the
+   latest delta is small and maps cleanly to one guarded seam.
+6. Use `validation-lab` `profile=targeted` with `lane_set=release` when the question is Linux
    release-build dependency or lockfile readiness under `--locked`.
-6. Use `sedna-heavy-tests` when the change needs PR/main heavy validation or a named heavy lane.
-7. Use `sedna-branch-build` only when you intentionally want a preview binary.
-8. Use `sedna-release` only for official releases.
+7. Use `sedna-heavy-tests` only when the change needs labeled PR heavy validation, merge-group
+   heavy validation, or a named heavy lane.
+8. Use `rust-ci-full` only for scheduled/manual broad Cargo-native checkpoints,
+   not as a routine post-merge rerun.
+9. Use `sedna-branch-build` only when you intentionally want a preview binary.
+10. Use `sedna-release` only for official releases.
 
 ## Validation ladder
 
@@ -68,7 +79,8 @@ artifacts.
 
 | Workflow | Status | Sedna role |
 | --- | --- | --- |
-| `rust-ci.yml` | rewrite in place | Stable required Rust CI for PRs and mainline |
+| `rust-ci.yml` | rewrite in place | Stable required Rust CI for PRs with guarded incremental follow-ups |
+| `rust-ci-full.yml` | keep but narrow | Scheduled/manual Cargo-native checkpoint workflow |
 | `ci.yml` | rewrite in place | JS/docs/root checks on the Sedna branch model |
 | `cargo-deny.yml` | keep with new branch topology | Dependency policy on `main` and `upstream-main` |
 | `codespell.yml` | keep with new branch topology | Fast text hygiene on `main` and `upstream-main` |

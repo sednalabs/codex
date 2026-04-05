@@ -104,6 +104,12 @@
       "lane_sets": ["all", "ui-protocol", "subagents"]
     },
     {
+      "lane_id": "codex.tui-agent-picker-targeted",
+      "run_command": "just --justfile ../justfile tui-agent-picker-targeted",
+      "groups": ["ui_protocol"],
+      "lane_sets": ["all", "ui-protocol", "subagents"]
+    },
+    {
       "lane_id": "codex.tui-agent-usage-totals-targeted",
       "run_command": "just --justfile ../justfile tui-agent-usage-totals-targeted",
       "groups": ["ui_protocol"],
@@ -183,6 +189,55 @@
       "groups": ["core", "ledger"],
       "lane_sets": ["ledger"],
       "explicit_only": true
+    }
+  ],
+  "followup_routes": [
+    {
+      "route_id": "tui-agent-picker",
+      "lane_ids": ["codex.tui-agent-picker-targeted"],
+      "allowed_paths": [
+        "codex-rs/tui/src/app.rs",
+        "codex-rs/tui/src/multi_agents.rs",
+        "codex-rs/tui/src/snapshots/codex_tui__multi_agents__tests__agent_picker*.snap",
+        "docs/downstream-regression-matrix.md",
+        "justfile"
+      ]
+    },
+    {
+      "route_id": "core-subagent-model-pinning",
+      "lane_ids": ["codex.core-subagent-model-pinning-targeted"],
+      "allowed_paths": [
+        "codex-rs/core/src/tools/handlers/multi_agents_common.rs",
+        "codex-rs/core/src/tools/handlers/spawn.rs",
+        "codex-rs/core/src/agent/role.rs",
+        "codex-rs/core/src/tools/handlers/multi_agents_tests.rs",
+        "codex-rs/core/src/agent/role_tests.rs",
+        "codex-rs/tools/src/spawn_agent.rs",
+        "docs/downstream-regression-matrix.md",
+        "justfile"
+      ]
+    },
+    {
+      "route_id": "app-server-thread-cwd",
+      "lane_ids": ["codex.app-server-thread-cwd-targeted"],
+      "allowed_paths": [
+        "codex-rs/app-server/**",
+        "codex-rs/app-server-protocol/**",
+        "codex-rs/protocol/**",
+        "codex-rs/tui/src/app_server_session.rs",
+        "docs/downstream-regression-matrix.md",
+        "justfile"
+      ]
+    },
+    {
+      "route_id": "downstream-docs",
+      "lane_ids": ["codex.downstream-docs-check"],
+      "allowed_paths": [
+        "docs/downstream.md",
+        "docs/carry-divergence-ledger.md",
+        "docs/downstream-regression-matrix.md",
+        "docs/downstream-tool-surface-matrix.md"
+      ]
     }
   ]
 }
