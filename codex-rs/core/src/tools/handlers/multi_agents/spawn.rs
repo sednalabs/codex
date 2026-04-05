@@ -213,6 +213,10 @@ impl ToolHandler for Handler {
             /*inc*/ 1,
             &[("role", role_tag)],
         );
+        let requested_model_honored_flag = requested_model_honored(
+            requested_model.as_deref(),
+            new_agent.effective_model.as_deref(),
+        );
 
         Ok(SpawnAgentResult {
             agent_id: new_thread_id.to_string(),
@@ -222,6 +226,7 @@ impl ToolHandler for Handler {
             requested_model,
             requested_reasoning_effort,
             effective_model: new_agent.effective_model,
+            requested_model_honored: requested_model_honored_flag,
             effective_reasoning_effort: new_agent.effective_reasoning_effort,
             effective_model_provider_id: new_agent.effective_model_provider_id,
             identity_source: new_agent.identity_source,
@@ -250,6 +255,7 @@ pub(crate) struct SpawnAgentResult {
     requested_model: Option<String>,
     requested_reasoning_effort: Option<ReasoningEffort>,
     effective_model: Option<String>,
+    requested_model_honored: Option<bool>,
     effective_reasoning_effort: Option<ReasoningEffort>,
     effective_model_provider_id: String,
     identity_source: String,
