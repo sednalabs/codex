@@ -263,6 +263,10 @@ async fn spawn_wait_and_list_agents_tool_descriptions_have_guidance_updates() ->
         "expected updated spawn guidance about blocking waits: {spawn_description:?}"
     );
     assert!(
+        spawn_description.contains("wait_until_terminal=true"),
+        "expected spawn guidance to surface helper-backed wait_until_terminal blocking path: {spawn_description:?}"
+    );
+    assert!(
         spawn_description.contains("list_agents"),
         "expected spawn guidance to mention list_agents: {spawn_description:?}"
     );
