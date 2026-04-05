@@ -17,6 +17,10 @@ on:
   schedule:
     - cron: "15 18 * * *"
 
+permissions:
+  contents: read
+  checks: read
+
 jobs:
   matrix_plan:
     name: Resolve platform scope
@@ -75,49 +79,121 @@ jobs:
       argument_comment_lint_package: ${{ steps.detect.outputs.argument_comment_lint_package }}
       codex: ${{ steps.detect.outputs.codex }}
       workflows: ${{ steps.detect.outputs.workflows }}
+      has_relevant_changes: ${{ steps.detect.outputs.has_relevant_changes }}
+      validation_mode: ${{ steps.detect.outputs.validation_mode }}
+      run_general: ${{ steps.detect.outputs.run_general }}
+      run_cargo_shear: ${{ steps.detect.outputs.run_cargo_shear }}
+      run_argument_comment_lint_package: ${{ steps.detect.outputs.run_argument_comment_lint_package }}
+      run_argument_comment_lint_prebuilt: ${{ steps.detect.outputs.run_argument_comment_lint_prebuilt }}
+      run_incremental_validation: ${{ steps.detect.outputs.run_incremental_validation }}
+      incremental_profile: ${{ steps.detect.outputs.incremental_profile }}
+      incremental_lane_set: ${{ steps.detect.outputs.incremental_lane_set }}
+      incremental_lanes: ${{ steps.detect.outputs.incremental_lanes }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
           fetch-depth: 0
-      - name: Detect changed paths (no external action)
-        id: detect
+      - name: Resolve comparison SHAs
+        id: shas
         shell: bash
         run: |
           set -euo pipefail
 
-          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
-            BASE_SHA='${{ github.event.pull_request.base.sha }}'
-            HEAD_SHA='${{ github.event.pull_request.head.sha }}'
-            echo "Base SHA: $BASE_SHA"
-            echo "Head SHA: $HEAD_SHA"
-            mapfile -t files < <(git diff --name-only --no-renames "$BASE_SHA" "$HEAD_SHA")
-          else
-            # On manual runs, default to the full fast-PR bundle.
-            files=("codex-rs/force" "tools/argument-comment-lint/force" ".github/force")
+          base_sha=""
+          head_sha='${{ github.sha }}'
+          before_sha=""
+
+          if [[ '${{ github.event_name }}' == 'pull_request' ]]; then
+            base_sha='${{ github.event.pull_request.base.sha }}'
+            head_sha='${{ github.event.pull_request.head.sha }}'
+            before_sha="$(jq -r '.before // ""' "${GITHUB_EVENT_PATH}")"
           fi
 
-          codex=false
-          argument_comment_lint=false
-          argument_comment_lint_package=false
-          workflows=false
-          for f in "${files[@]}"; do
-            [[ $f == codex-rs/* ]] && codex=true
-            [[ $f == codex-rs/* || $f == tools/argument-comment-lint/* || $f == justfile ]] && argument_comment_lint=true
-            [[ $f == tools/argument-comment-lint/* || $f == .github/workflows/rust-ci.yml || $f == .github/workflows/rust-ci-full.yml ]] && argument_comment_lint_package=true
-            [[ $f == .github/* ]] && workflows=true
-          done
+          {
+            echo "base_sha=${base_sha}"
+            echo "head_sha=${head_sha}"
+            echo "before_sha=${before_sha}"
+          } >> "$GITHUB_OUTPUT"
 
-          echo "argument_comment_lint=$argument_comment_lint" >> "$GITHUB_OUTPUT"
-          echo "argument_comment_lint_package=$argument_comment_lint_package" >> "$GITHUB_OUTPUT"
-          echo "codex=$codex" >> "$GITHUB_OUTPUT"
-          echo "workflows=$workflows" >> "$GITHUB_OUTPUT"
+      - name: Check previous required result on follow-up head
+        id: previous_required
+        if: ${{ github.event_name == 'pull_request' && github.event.action == 'synchronize' }}
+        uses: actions/github-script@v8
+        env:
+          BEFORE_SHA: ${{ steps.shas.outputs.before_sha }}
+        with:
+          script: |
+            const ref = process.env.BEFORE_SHA;
+            if (!ref) {
+              core.setOutput("previous_green_required", "false");
+              return;
+            }
+
+            try {
+              const { data } = await github.rest.checks.listForRef({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                ref,
+                per_page: 100,
+              });
+              const ok = data.check_runs.some(
+                (run) =>
+                  run.name === "CI results (required)" &&
+                  run.conclusion === "success",
+              );
+              core.setOutput("previous_green_required", ok ? "true" : "false");
+            } catch (error) {
+              core.warning(`failed to inspect prior required result: ${error.message}`);
+              core.setOutput("previous_green_required", "false");
+            }
+
+      - name: Detect changed paths and rust-ci mode
+        id: detect
+        shell: bash
+        env:
+          EVENT_ACTION: ${{ github.event.action || '' }}
+          PREVIOUS_GREEN_REQUIRED: ${{ steps.previous_required.outputs.previous_green_required || 'false' }}
+        run: |
+          set -euo pipefail
+
+          plan="$(python3 .github/scripts/resolve_rust_ci_mode.py \
+            --repo-root "${GITHUB_WORKSPACE}" \
+            --event-name '${{ github.event_name }}' \
+            --event-action "${EVENT_ACTION}" \
+            --base-sha '${{ steps.shas.outputs.base_sha }}' \
+            --head-sha '${{ steps.shas.outputs.head_sha }}' \
+            --before-sha '${{ steps.shas.outputs.before_sha }}' \
+            --previous-green-required "${PREVIOUS_GREEN_REQUIRED}")"
+
+          PLAN_JSON="${plan}" python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          import os
+
+          plan = json.loads(os.environ["PLAN_JSON"])
+          for key, value in plan.items():
+              print(f"{key}={value}")
+          PY
+
+  incremental_validation:
+    name: Incremental targeted validation
+    needs: changed
+    if: ${{ needs.changed.outputs.run_incremental_validation == 'true' }}
+    uses: ./.github/workflows/validation-lab.yml
+    with:
+      ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+      profile: ${{ needs.changed.outputs.incremental_profile }}
+      lane_set: ${{ needs.changed.outputs.incremental_lane_set }}
+      lanes: ${{ needs.changed.outputs.incremental_lanes }}
+      artifact_build: false
+      supersession_mode: auto
+      notes: rust-ci incremental follow-up validation
 
   # --- Fast Cargo-native PR checks -------------------------------------------
   general:
     name: Format / etc
     runs-on: ubuntu-24.04
     needs: changed
-    if: ${{ needs.changed.outputs.codex == 'true' || needs.changed.outputs.workflows == 'true' }}
+    if: ${{ needs.changed.outputs.run_general == 'true' }}
     defaults:
       run:
         working-directory: codex-rs
@@ -133,7 +209,7 @@ jobs:
     name: cargo shear
     runs-on: ubuntu-24.04
     needs: changed
-    if: ${{ needs.changed.outputs.codex == 'true' || needs.changed.outputs.workflows == 'true' }}
+    if: ${{ needs.changed.outputs.run_cargo_shear == 'true' }}
     defaults:
       run:
         working-directory: codex-rs
@@ -151,7 +227,7 @@ jobs:
     name: Argument comment lint package
     runs-on: ubuntu-24.04
     needs: changed
-    if: ${{ needs.changed.outputs.argument_comment_lint_package == 'true' }}
+    if: ${{ needs.changed.outputs.run_argument_comment_lint_package == 'true' }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
       - uses: dtolnay/rust-toolchain@a0b273b48ed29de4470960879e8381ff45632f26 # 1.93.0
@@ -194,7 +270,7 @@ jobs:
     needs:
       - matrix_plan
       - changed
-    if: ${{ needs.changed.outputs.argument_comment_lint == 'true' || needs.changed.outputs.workflows == 'true' }}
+    if: ${{ needs.changed.outputs.run_argument_comment_lint_prebuilt == 'true' }}
     strategy:
       fail-fast: false
       matrix: ${{ fromJson(needs.matrix_plan.outputs.argument_comment_lint_matrix) }}
@@ -216,15 +292,15 @@ jobs:
           BUILDBUDDY_API_KEY: ${{ secrets.BUILDBUDDY_API_KEY }}
         shell: bash
         run: |
-          bazel_targets="$(./tools/argument-comment-lint/list-bazel-targets.sh)"
+          mapfile -t bazel_targets < <(./tools/argument-comment-lint/list-bazel-targets.sh)
           ./.github/scripts/run-bazel-ci.sh \
             -- \
             build \
             --config=argument-comment-lint \
             --keep_going \
-            --build_metadata=COMMIT_SHA=${GITHUB_SHA} \
+            "--build_metadata=COMMIT_SHA=${GITHUB_SHA}" \
             -- \
-            ${bazel_targets}
+            "${bazel_targets[@]}"
       - name: Run argument comment lint on codex-rs via Bazel
         if: ${{ runner.os == 'Windows' }}
         env:
@@ -235,7 +311,7 @@ jobs:
             --config=argument-comment-lint \
             --platforms=//:local_windows \
             --keep_going \
-            --build_metadata=COMMIT_SHA=${GITHUB_SHA}
+            "--build_metadata=COMMIT_SHA=${GITHUB_SHA}"
 
   # --- Gatherer job that you mark as the ONLY required status -----------------
   results:
@@ -244,6 +320,7 @@ jobs:
       [
         changed,
         matrix_plan,
+        incremental_validation,
         general,
         cargo_shear,
         argument_comment_lint_package,
@@ -255,27 +332,36 @@ jobs:
       - name: Summarize
         shell: bash
         run: |
+          echo "mode   : ${{ needs.changed.outputs.validation_mode }}"
           echo "argpkg : ${{ needs.argument_comment_lint_package.result }}"
           echo "arglint: ${{ needs.argument_comment_lint_prebuilt.result }}"
           echo "general: ${{ needs.general.result }}"
           echo "shear  : ${{ needs.cargo_shear.result }}"
+          echo "incr   : ${{ needs.incremental_validation.result }}"
 
           # If nothing relevant changed (PR touching only root README, etc.),
           # declare success regardless of other jobs.
-          if [[ '${{ needs.changed.outputs.argument_comment_lint }}' != 'true' && '${{ needs.changed.outputs.codex }}' != 'true' && '${{ needs.changed.outputs.workflows }}' != 'true' ]]; then
+          if [[ '${{ needs.changed.outputs.has_relevant_changes }}' != 'true' ]]; then
             echo 'No relevant changes -> CI not required.'
             exit 0
           fi
 
-          if [[ '${{ needs.changed.outputs.argument_comment_lint_package }}' == 'true' ]]; then
+          if [[ '${{ needs.changed.outputs.run_argument_comment_lint_package }}' == 'true' ]]; then
             [[ '${{ needs.argument_comment_lint_package.result }}' == 'success' ]] || { echo 'argument_comment_lint_package failed'; exit 1; }
           fi
 
-          if [[ '${{ needs.changed.outputs.argument_comment_lint }}' == 'true' || '${{ needs.changed.outputs.workflows }}' == 'true' ]]; then
+          if [[ '${{ needs.changed.outputs.run_argument_comment_lint_prebuilt }}' == 'true' ]]; then
             [[ '${{ needs.argument_comment_lint_prebuilt.result }}' == 'success' ]] || { echo 'argument_comment_lint_prebuilt failed'; exit 1; }
           fi
 
-          if [[ '${{ needs.changed.outputs.codex }}' == 'true' || '${{ needs.changed.outputs.workflows }}' == 'true' ]]; then
+          if [[ '${{ needs.changed.outputs.run_general }}' == 'true' ]]; then
             [[ '${{ needs.general.result }}' == 'success' ]] || { echo 'general failed'; exit 1; }
+          fi
+
+          if [[ '${{ needs.changed.outputs.run_cargo_shear }}' == 'true' ]]; then
             [[ '${{ needs.cargo_shear.result }}' == 'success' ]] || { echo 'cargo_shear failed'; exit 1; }
+          fi
+
+          if [[ '${{ needs.changed.outputs.run_incremental_validation }}' == 'true' ]]; then
+            [[ '${{ needs.incremental_validation.result }}' == 'success' ]] || { echo 'incremental_validation failed'; exit 1; }
           fi
