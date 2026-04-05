@@ -8,6 +8,7 @@ use crate::history_cell::PlainHistoryCell;
 use crate::render::line_utils::prefix_lines;
 use crate::status::format_tokens_compact;
 use crate::text_formatting::truncate_text;
+use chrono::Utc;
 use codex_protocol::ThreadId;
 use codex_protocol::openai_models::ReasoningEffort as ReasoningEffortConfig;
 use codex_protocol::protocol::AgentStatus;
@@ -47,6 +48,10 @@ pub(crate) struct AgentPickerThreadEntry {
     pub(crate) agent_role: Option<String>,
     /// Whether the thread has emitted a close event and should render dimmed.
     pub(crate) is_closed: bool,
+    /// Unix timestamp (seconds) when the thread was created, if known.
+    pub(crate) created_at: Option<i64>,
+    /// Unix timestamp (seconds) when the thread was last updated, if known.
+    pub(crate) updated_at: Option<i64>,
 }
 
 #[derive(Clone, Copy)]
@@ -104,23 +109,64 @@ pub(crate) fn format_agent_picker_item_description(
     thread_id: ThreadId,
     token_usage: &TokenUsage,
     model_context_window: Option<i64>,
+    updated_at: Option<i64>,
+    created_at: Option<i64>,
+) -> String {
+    format_agent_picker_item_description_at(
+        thread_id,
+        token_usage,
+        model_context_window,
+        updated_at,
+        created_at,
+        Utc::now().timestamp(),
+    )
+}
+
+fn format_agent_picker_item_description_at(
+    thread_id: ThreadId,
+    token_usage: &TokenUsage,
+    model_context_window: Option<i64>,
+    updated_at: Option<i64>,
+    created_at: Option<i64>,
+    now_ts: i64,
 ) -> String {
     let uuid = thread_id.to_string();
-    if token_usage.total_tokens <= 0 {
-        uuid
-    } else {
-        let mut parts = vec![format!(
+    let mut parts = vec![uuid];
+    if token_usage.total_tokens > 0 {
+        parts.push(format!(
             "{} used",
             format_tokens_compact(token_usage.total_tokens)
-        )];
+        ));
         if let Some(context_window) = model_context_window {
             parts.push(format!(
                 "{}% left",
                 token_usage.percent_of_context_window_remaining(context_window)
             ));
         }
-        format!("{uuid} • {}", parts.join(" • "))
     }
+    if let Some(age) = format_agent_picker_age(updated_at, created_at, now_ts) {
+        parts.push(age);
+    }
+    parts.join(" • ")
+}
+
+fn format_agent_picker_age(
+    updated_at: Option<i64>,
+    created_at: Option<i64>,
+    now_ts: i64,
+) -> Option<String> {
+    let timestamp = updated_at.or(created_at)?;
+    let age_secs = now_ts.saturating_sub(timestamp).max(0);
+    let label = if age_secs < 60 {
+        format!("{age_secs}s ago")
+    } else if age_secs < 60 * 60 {
+        format!("{}m ago", age_secs / 60)
+    } else if age_secs < 60 * 60 * 24 {
+        format!("{}h ago", age_secs / (60 * 60))
+    } else {
+        format!("{}d ago", age_secs / (60 * 60 * 24))
+    };
+    Some(label)
 }
 
 pub(crate) fn previous_agent_shortcut() -> crate::key_hint::KeyBinding {
@@ -695,6 +741,8 @@ mod tests {
                 thread_id,
                 &TokenUsage::default(),
                 /*model_context_window*/ None,
+                /*updated_at*/ None,
+                /*created_at*/ None,
             ),
             "00000000-0000-0000-0000-000000000111"
         );
@@ -713,7 +761,8 @@ mod tests {
         };
         assert_eq!(
             format_agent_picker_item_description(
-                thread_id, &usage, /*model_context_window*/ None,
+                thread_id, &usage, /*model_context_window*/ None, /*updated_at*/ None,
+                /*created_at*/ None,
             ),
             "00000000-0000-0000-0000-000000000112 • 12.3K used"
         );
@@ -729,9 +778,56 @@ mod tests {
         };
 
         assert_eq!(
-            format_agent_picker_item_description(thread_id, &usage, Some(24_000)),
+            format_agent_picker_item_description_at(
+                thread_id,
+                &usage,
+                /*model_context_window*/ Some(24_000),
+                /*updated_at*/ None,
+                /*created_at*/ None,
+                /*now_ts*/ 1_000,
+            ),
             "00000000-0000-0000-0000-000000000113 • 12.3K used • 98% left"
         );
+    }
+
+    #[test]
+    fn picker_description_includes_compact_age_when_known() {
+        let thread_id =
+            ThreadId::from_string("00000000-0000-0000-0000-000000000113").expect("valid thread");
+        let usage = TokenUsage {
+            total_tokens: 12_300,
+            ..Default::default()
+        };
+
+        let snapshot = [
+            format_agent_picker_item_description_at(
+                thread_id,
+                &usage,
+                /*model_context_window*/ None,
+                /*updated_at*/ Some(958),
+                /*created_at*/ Some(900),
+                /*now_ts*/ 1_000,
+            ),
+            format_agent_picker_item_description_at(
+                thread_id,
+                &usage,
+                /*model_context_window*/ None,
+                /*updated_at*/ Some(400),
+                /*created_at*/ Some(300),
+                /*now_ts*/ 1_000,
+            ),
+            format_agent_picker_item_description_at(
+                thread_id,
+                &TokenUsage::default(),
+                /*model_context_window*/ None,
+                /*updated_at*/ None,
+                /*created_at*/ Some(1_000 - 3 * 60 * 60),
+                /*now_ts*/ 1_000,
+            ),
+        ]
+        .join("\n");
+
+        assert_snapshot!("agent_picker_item_description_age", snapshot);
     }
 
     #[test]
