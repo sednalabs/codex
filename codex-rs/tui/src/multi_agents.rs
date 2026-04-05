@@ -62,6 +62,12 @@ pub(crate) struct SpawnRequestSummary {
     pub(crate) reasoning_effort: ReasoningEffortConfig,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct AgentPickerThreadUsage {
+    pub(crate) token_usage: TokenUsage,
+    pub(crate) model_context_window: Option<i64>,
+}
+
 pub(crate) fn agent_picker_status_dot_spans(is_closed: bool) -> Vec<Span<'static>> {
     let dot = if is_closed {
         "•".into()
@@ -97,34 +103,23 @@ pub(crate) fn format_agent_picker_item_name(
 pub(crate) fn format_agent_picker_item_description(
     thread_id: ThreadId,
     token_usage: &TokenUsage,
+    model_context_window: Option<i64>,
 ) -> String {
     let uuid = thread_id.to_string();
     if token_usage.total_tokens <= 0 {
         uuid
     } else {
-        let mut segments = vec![format!(
-            "{} total",
+        let mut parts = vec![format!(
+            "{} used",
             format_tokens_compact(token_usage.total_tokens)
         )];
-        if token_usage.input_tokens > 0 {
-            segments.push(format!(
-                "{} in",
-                format_tokens_compact(token_usage.input_tokens)
+        if let Some(context_window) = model_context_window {
+            parts.push(format!(
+                "{}% left",
+                token_usage.percent_of_context_window_remaining(context_window)
             ));
         }
-        if token_usage.cached_input_tokens > 0 {
-            segments.push(format!(
-                "{} cached",
-                format_tokens_compact(token_usage.cached_input_tokens)
-            ));
-        }
-        if token_usage.output_tokens > 0 {
-            segments.push(format!(
-                "{} out",
-                format_tokens_compact(token_usage.output_tokens)
-            ));
-        }
-        format!("{uuid} • {}", segments.join(" • "))
+        format!("{uuid} • {}", parts.join(" • "))
     }
 }
 
@@ -696,7 +691,11 @@ mod tests {
             ThreadId::from_string("00000000-0000-0000-0000-000000000111").expect("valid thread");
 
         assert_eq!(
-            format_agent_picker_item_description(thread_id, &TokenUsage::default()),
+            format_agent_picker_item_description(
+                thread_id,
+                &TokenUsage::default(),
+                /*model_context_window*/ None,
+            ),
             "00000000-0000-0000-0000-000000000111"
         );
     }
@@ -712,9 +711,27 @@ mod tests {
             total_tokens: 12_300,
             ..Default::default()
         };
-        let snapshot = format_agent_picker_item_description(thread_id, &usage);
+        assert_eq!(
+            format_agent_picker_item_description(
+                thread_id, &usage, /*model_context_window*/ None,
+            ),
+            "00000000-0000-0000-0000-000000000112 • 12.3K used"
+        );
+    }
 
-        assert_snapshot!(snapshot);
+    #[test]
+    fn picker_description_includes_remaining_context_when_known() {
+        let thread_id =
+            ThreadId::from_string("00000000-0000-0000-0000-000000000113").expect("valid thread");
+        let usage = TokenUsage {
+            total_tokens: 12_300,
+            ..Default::default()
+        };
+
+        assert_eq!(
+            format_agent_picker_item_description(thread_id, &usage, Some(24_000)),
+            "00000000-0000-0000-0000-000000000113 • 12.3K used • 98% left"
+        );
     }
 
     #[test]
