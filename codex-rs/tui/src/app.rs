@@ -3025,9 +3025,7 @@ impl App {
                     tx.send(AppEvent::SelectAgentThread(id));
                 })],
                 dismiss_on_select: true,
-                search_value: Some(format!(
-                    "{name} {description} {selected_description} {status_terms}"
-                )),
+                search_value: Some(format!("{name} {selected_description} {status_terms}")),
                 ..Default::default()
             });
         }
