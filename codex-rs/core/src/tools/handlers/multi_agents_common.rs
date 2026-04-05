@@ -401,9 +401,12 @@ mod tests {
 
     #[test]
     fn requested_model_honored_reports_unknown_when_missing_values() {
-        assert_eq!(requested_model_honored(None, Some("gpt-5.3-codex")), None);
         assert_eq!(
-            requested_model_honored(Some("gpt-5.1-codex-mini"), None),
+            requested_model_honored(/*requested_model*/ None, Some("gpt-5.3-codex"),),
+            None
+        );
+        assert_eq!(
+            requested_model_honored(Some("gpt-5.1-codex-mini"), /*effective_model*/ None,),
             None
         );
     }
