@@ -4,9 +4,10 @@
 from __future__ import annotations
 
 import argparse
+import fnmatch
 import json
 import subprocess
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 
 
 HIGH_RISK_PATTERNS = [
@@ -73,7 +74,7 @@ def diff_line_count(repo_root: Path, base: str, head: str) -> int:
 
 
 def path_matches(path: str, pattern: str) -> bool:
-    return PurePosixPath(path).match(pattern)
+    return fnmatch.fnmatch(path, pattern)
 
 
 def any_path_matches(paths: list[str], patterns: list[str]) -> bool:
@@ -102,7 +103,7 @@ def classify_files(files: list[str]) -> dict[str, bool]:
         "argument_comment_lint_package": argument_comment_lint_package,
         "workflows": workflows,
         "high_risk": high_risk,
-        "has_relevant_changes": codex or argument_comment_lint or argument_comment_lint_package or workflows,
+        "has_relevant_changes": codex or argument_comment_lint or argument_comment_lint_package or workflows or high_risk,
     }
 
 
@@ -221,8 +222,8 @@ def main() -> None:
             "argument_comment_lint_package": as_output(primary["argument_comment_lint_package"]),
             "workflows": as_output(primary["workflows"]),
             "has_relevant_changes": as_output(primary["has_relevant_changes"]),
-            "run_general": as_output(primary["codex"] or primary["workflows"]),
-            "run_cargo_shear": as_output(primary["codex"] or primary["workflows"]),
+            "run_general": as_output(primary["codex"] or primary["workflows"] or primary["high_risk"]),
+            "run_cargo_shear": as_output(primary["codex"] or primary["workflows"] or primary["high_risk"]),
             "run_argument_comment_lint_package": as_output(primary["argument_comment_lint_package"]),
             "run_argument_comment_lint_prebuilt": as_output(
                 primary["argument_comment_lint"] or primary["workflows"]
