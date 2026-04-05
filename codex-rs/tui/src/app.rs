@@ -2992,9 +2992,7 @@ impl App {
                 entry.agent_role.as_deref(),
                 is_primary,
             );
-            if let Some(tree_prefix) = tree_prefixes.get(&thread_id)
-                && !tree_prefix.is_empty()
-            {
+            if let Some(tree_prefix) = tree_prefixes.get(&thread_id) {
                 name = format!("{tree_prefix}{name}");
             }
             let usage = self.agent_picker_thread_usage(thread_id).await;
