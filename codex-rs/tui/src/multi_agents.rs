@@ -102,10 +102,29 @@ pub(crate) fn format_agent_picker_item_description(
     if token_usage.total_tokens <= 0 {
         uuid
     } else {
-        format!(
-            "{uuid} • {} used",
+        let mut segments = vec![format!(
+            "{} total",
             format_tokens_compact(token_usage.total_tokens)
-        )
+        )];
+        if token_usage.input_tokens > 0 {
+            segments.push(format!(
+                "{} in",
+                format_tokens_compact(token_usage.input_tokens)
+            ));
+        }
+        if token_usage.cached_input_tokens > 0 {
+            segments.push(format!(
+                "{} cached",
+                format_tokens_compact(token_usage.cached_input_tokens)
+            ));
+        }
+        if token_usage.output_tokens > 0 {
+            segments.push(format!(
+                "{} out",
+                format_tokens_compact(token_usage.output_tokens)
+            ));
+        }
+        format!("{uuid} • {}", segments.join(" • "))
     }
 }
 
@@ -687,14 +706,15 @@ mod tests {
         let thread_id =
             ThreadId::from_string("00000000-0000-0000-0000-000000000112").expect("valid thread");
         let usage = TokenUsage {
+            input_tokens: 9_800,
+            cached_input_tokens: 300,
+            output_tokens: 2_200,
             total_tokens: 12_300,
             ..Default::default()
         };
+        let snapshot = format_agent_picker_item_description(thread_id, &usage);
 
-        assert_eq!(
-            format_agent_picker_item_description(thread_id, &usage),
-            "00000000-0000-0000-0000-000000000112 • 12.3K used"
-        );
+        assert_snapshot!(snapshot);
     }
 
     #[test]
