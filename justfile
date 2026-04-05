@@ -100,12 +100,14 @@ tui-config-refresh-session-targeted:
 tui-agent-picker-usage-targeted:
     cargo test -p codex-tui app::tests::agent_picker_thread_token_usage_reads_inactive_thread_store --lib -- --exact --test-threads=1
     cargo test -p codex-tui app::tests::agent_picker_thread_token_usage_prefers_live_active_thread_usage --lib -- --exact --test-threads=1
+    cargo test -p codex-tui app::tests::agent_picker_thread_token_usage_does_not_fallback_when_active_live_usage_is_zero --lib -- --exact --test-threads=1
     cargo test -p codex-tui app::tests::open_agent_picker_marks_loaded_threads_open --lib -- --exact --test-threads=1
     cargo test -p codex-tui app::tests::inactive_thread_started_notification_initializes_replay_session --lib -- --exact --test-threads=1
     cargo test -p codex-tui multi_agents::tests::picker_description_falls_back_to_thread_id_without_usage --lib -- --exact --test-threads=1
     cargo test -p codex-tui multi_agents::tests::picker_description_includes_compact_token_usage_when_present --lib -- --exact --test-threads=1
     cargo test -p codex-tui multi_agents::tests::picker_description_includes_remaining_context_when_known --lib -- --exact --test-threads=1
     cargo test -p codex-tui multi_agents::tests::picker_description_includes_compact_age_when_known --lib -- --exact --test-threads=1
+    INSTA_UPDATE=always cargo test -p codex-tui multi_agents::tests::picker_selected_description_includes_permission_details_when_available --lib -- --exact --test-threads=1
 
 # Focused TUI combined session-vs-thread token usage slice.
 tui-agent-usage-totals-targeted:

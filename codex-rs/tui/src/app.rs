@@ -17,7 +17,6 @@ use crate::bottom_pane::FeedbackAudience;
 use crate::bottom_pane::McpServerElicitationFormRequest;
 use crate::bottom_pane::SelectionItem;
 use crate::bottom_pane::SelectionViewParams;
-use crate::bottom_pane::popup_consts::standard_popup_hint_line;
 use crate::chatwidget::ChatWidget;
 use crate::chatwidget::ExternalEditorState;
 use crate::chatwidget::ReplayKind;
@@ -32,6 +31,7 @@ use crate::history_cell;
 use crate::history_cell::HistoryCell;
 #[cfg(not(debug_assertions))]
 use crate::history_cell::UpdateAvailableHistoryCell;
+use crate::key_hint;
 use crate::model_catalog::ModelCatalog;
 use crate::model_migration::ModelMigrationOutcome;
 use crate::model_migration::migration_copy_for_models;
@@ -41,6 +41,7 @@ use crate::multi_agents::SUBAGENT_LABEL;
 use crate::multi_agents::agent_picker_status_dot_spans;
 use crate::multi_agents::format_agent_picker_item_description;
 use crate::multi_agents::format_agent_picker_item_name;
+use crate::multi_agents::format_agent_picker_item_selected_description;
 use crate::multi_agents::next_agent_shortcut_matches;
 use crate::multi_agents::previous_agent_shortcut_matches;
 use crate::pager_overlay::Overlay;
@@ -2996,6 +2997,19 @@ impl App {
                 usage.reasoning_effort,
                 usage.task_name.as_deref(),
             );
+            let selected_description = format_agent_picker_item_selected_description(
+                thread_id,
+                &usage.token_usage,
+                usage.model_context_window,
+                entry.updated_at,
+                entry.created_at,
+                usage.model.as_deref(),
+                usage.reasoning_effort,
+                usage.task_name.as_deref(),
+                usage.approval_policy,
+                usage.approvals_reviewer,
+                usage.sandbox_policy.as_ref(),
+            );
             let status_terms = if entry.is_closed {
                 "closed stale inactive finished"
             } else {
@@ -3005,12 +3019,15 @@ impl App {
                 name: name.clone(),
                 name_prefix_spans: agent_picker_status_dot_spans(entry.is_closed),
                 description: Some(description.clone()),
+                selected_description: Some(selected_description.clone()),
                 is_current: self.active_thread_id == Some(thread_id),
                 actions: vec![Box::new(move |tx| {
                     tx.send(AppEvent::SelectAgentThread(id));
                 })],
                 dismiss_on_select: true,
-                search_value: Some(format!("{name} {description} {status_terms}")),
+                search_value: Some(format!(
+                    "{name} {description} {selected_description} {status_terms}"
+                )),
                 ..Default::default()
             });
         }
@@ -3020,11 +3037,25 @@ impl App {
             subtitle: Some(AgentNavigationState::picker_subtitle()),
             is_searchable: true,
             search_placeholder: Some("Search agents or type 'closed'".to_string()),
-            footer_hint: Some(standard_popup_hint_line()),
+            footer_hint: Some(Self::agent_picker_popup_hint_line()),
             items,
             initial_selected_idx,
             ..Default::default()
         });
+    }
+
+    fn agent_picker_popup_hint_line() -> Line<'static> {
+        Line::from(vec![
+            "Press ".into(),
+            key_hint::plain(KeyCode::Enter).into(),
+            " to confirm, use ".into(),
+            key_hint::plain(KeyCode::Up).into(),
+            "/".into(),
+            key_hint::plain(KeyCode::Down).into(),
+            " to preview details, or ".into(),
+            key_hint::plain(KeyCode::Esc).into(),
+            " to go back".into(),
+        ])
     }
 
     async fn agent_picker_thread_usage(&self, thread_id: ThreadId) -> AgentPickerThreadUsage {
@@ -3035,6 +3066,9 @@ impl App {
                 model: Some(self.chat_widget.current_model().to_string()),
                 reasoning_effort: self.chat_widget.current_reasoning_effort(),
                 task_name: self.chat_widget.thread_name(),
+                approval_policy: Some(self.chat_widget.current_approval_policy()),
+                approvals_reviewer: Some(self.chat_widget.current_approvals_reviewer()),
+                sandbox_policy: Some(self.chat_widget.current_sandbox_policy()),
             };
         }
 
@@ -3057,6 +3091,18 @@ impl App {
                 model,
                 reasoning_effort,
                 task_name,
+                approval_policy: store
+                    .session
+                    .as_ref()
+                    .map(|session| session.approval_policy),
+                approvals_reviewer: store
+                    .session
+                    .as_ref()
+                    .map(|session| session.approvals_reviewer),
+                sandbox_policy: store
+                    .session
+                    .as_ref()
+                    .map(|session| session.sandbox_policy.clone()),
             };
         }
 
@@ -11920,6 +11966,9 @@ guardian_approval = true
                 model: Some("gpt-test".to_string()),
                 reasoning_effort: None,
                 task_name: None,
+                approval_policy: Some(AskForApproval::Never),
+                approvals_reviewer: Some(ApprovalsReviewer::User),
+                sandbox_policy: Some(SandboxPolicy::new_read_only_policy()),
             }
         );
     }
@@ -11958,6 +12007,9 @@ guardian_approval = true
                 model: Some("gpt-test".to_string()),
                 reasoning_effort: None,
                 task_name: None,
+                approval_policy: Some(AskForApproval::Never),
+                approvals_reviewer: Some(ApprovalsReviewer::User),
+                sandbox_policy: Some(SandboxPolicy::new_read_only_policy()),
             }
         );
     }
@@ -11993,6 +12045,9 @@ guardian_approval = true
                 model: Some("gpt-test".to_string()),
                 reasoning_effort: None,
                 task_name: None,
+                approval_policy: Some(AskForApproval::Never),
+                approvals_reviewer: Some(ApprovalsReviewer::User),
+                sandbox_policy: Some(SandboxPolicy::new_read_only_policy()),
             }
         );
     }
