@@ -53,6 +53,16 @@ impl ToolHandler for Handler {
                 "Agent depth limit reached. Solve the task yourself.".to_string(),
             ));
         }
+        require_spawn_agent_approval_if_requested(
+            &session,
+            turn.as_ref(),
+            args.spawn_approval,
+            &call_id,
+            role_name,
+            args.model.as_deref(),
+            &prompt,
+        )
+        .await?;
         session
             .send_event(
                 &turn,
@@ -251,6 +261,8 @@ struct SpawnAgentArgs {
     agent_type: Option<String>,
     model: Option<String>,
     reasoning_effort: Option<ReasoningEffort>,
+    #[serde(default)]
+    spawn_approval: SpawnAgentApproval,
     fork_turns: Option<String>,
     fork_context: Option<bool>,
 }

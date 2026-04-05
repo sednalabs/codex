@@ -901,6 +901,15 @@ fn spawn_agent_common_properties(agent_type_description: &str) -> BTreeMap<Strin
                 ),
             },
         ),
+        (
+            "spawn_approval".to_string(),
+            JsonSchema::String {
+                description: Some(
+                    "Optional user-approval mode before spawning: `auto` (default) or `ask_user`."
+                        .to_string(),
+                ),
+            },
+        ),
     ])
 }
 
