@@ -375,6 +375,7 @@ async fn spawn_agent_preserves_model_override_through_role_layering() {
         result["effective_model"].as_str(),
         Some("gpt-5.1-codex-max")
     );
+    assert_eq!(result["requested_model_honored"].as_bool(), Some(true));
 
     let agent_id = parse_agent_id(
         result["agent_id"]
@@ -440,6 +441,7 @@ async fn spawn_agent_preserves_exact_model_slug_override_through_role_layering()
         result["effective_model"].as_str(),
         Some("gpt-5.1-codex-mini")
     );
+    assert_eq!(result["requested_model_honored"].as_bool(), Some(true));
 
     let agent_id = parse_agent_id(
         result["agent_id"]
@@ -739,6 +741,7 @@ async fn multi_agent_v2_spawn_reports_requested_and_effective_model_metadata() {
         result["effective_model"].as_str(),
         Some("gpt-5.1-codex-mini")
     );
+    assert_eq!(result["requested_model_honored"].as_bool(), Some(true));
 }
 
 #[tokio::test]

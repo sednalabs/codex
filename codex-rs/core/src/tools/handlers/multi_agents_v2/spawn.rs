@@ -190,12 +190,13 @@ impl ToolHandler for Handler {
             };
         let effective_model = agent_snapshot
             .as_ref()
-            .map(|snapshot| snapshot.model.clone())
-            .or_else(|| requested_model.clone());
+            .map(|snapshot| snapshot.model.clone());
         let effective_reasoning_effort = agent_snapshot
             .as_ref()
             .and_then(|snapshot| snapshot.reasoning_effort)
             .or(requested_reasoning_effort);
+        let requested_model_honored_flag =
+            requested_model_honored(requested_model.as_deref(), effective_model.as_deref());
         let effective_model_for_event = effective_model.clone().unwrap_or_default();
         let effective_reasoning_effort_for_event = effective_reasoning_effort.unwrap_or_default();
         let nickname = new_agent_nickname.clone();
@@ -236,6 +237,7 @@ impl ToolHandler for Handler {
             requested_model,
             requested_reasoning_effort,
             effective_model,
+            requested_model_honored: requested_model_honored_flag,
             effective_reasoning_effort,
         })
     }
@@ -300,6 +302,7 @@ pub(crate) struct SpawnAgentResult {
     requested_model: Option<String>,
     requested_reasoning_effort: Option<ReasoningEffort>,
     effective_model: Option<String>,
+    requested_model_honored: Option<bool>,
     effective_reasoning_effort: Option<ReasoningEffort>,
 }
 

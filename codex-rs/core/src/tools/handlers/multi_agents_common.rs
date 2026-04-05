@@ -363,3 +363,51 @@ pub(crate) fn validate_spawn_agent_reasoning_effort(
         "Reasoning effort `{requested_reasoning_effort}` is not supported for model `{model}`. Supported reasoning efforts: {supported}"
     )))
 }
+
+/// Returns whether the requested model was honored by the spawned agent.
+///
+/// `Some(true)` means both values are present and equal, `Some(false)` means
+/// both are present but differ, and `None` means one or both values are
+/// unavailable.
+pub(crate) fn requested_model_honored(
+    requested_model: Option<&str>,
+    effective_model: Option<&str>,
+) -> Option<bool> {
+    match (requested_model, effective_model) {
+        (Some(requested), Some(effective)) => Some(requested == effective),
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::requested_model_honored;
+
+    #[test]
+    fn requested_model_honored_reports_match() {
+        assert_eq!(
+            requested_model_honored(Some("gpt-5.1-codex-mini"), Some("gpt-5.1-codex-mini")),
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn requested_model_honored_reports_mismatch() {
+        assert_eq!(
+            requested_model_honored(Some("gpt-5.1-codex-mini"), Some("gpt-5.3-codex")),
+            Some(false)
+        );
+    }
+
+    #[test]
+    fn requested_model_honored_reports_unknown_when_missing_values() {
+        assert_eq!(
+            requested_model_honored(/*requested_model*/ None, Some("gpt-5.3-codex"),),
+            None
+        );
+        assert_eq!(
+            requested_model_honored(Some("gpt-5.1-codex-mini"), /*effective_model*/ None,),
+            None
+        );
+    }
+}
