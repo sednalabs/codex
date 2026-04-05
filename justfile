@@ -117,7 +117,7 @@ tui-agent-picker-usage-targeted:
     cargo test -p codex-tui multi_agents::tests::picker_description_includes_compact_token_usage_when_present --lib -- --exact --test-threads=1
     cargo test -p codex-tui multi_agents::tests::picker_description_includes_remaining_context_when_known --lib -- --exact --test-threads=1
     cargo test -p codex-tui multi_agents::tests::picker_description_includes_compact_age_when_known --lib -- --exact --test-threads=1
-    INSTA_UPDATE=always cargo test -p codex-tui multi_agents::tests::picker_selected_description_includes_permission_details_when_available --lib -- --exact --test-threads=1
+    cargo test -p codex-tui multi_agents::tests::picker_selected_description_includes_permission_details_when_available --lib -- --exact --test-threads=1
 
 # Focused TUI combined session-vs-thread token usage slice.
 tui-agent-usage-totals-targeted:
