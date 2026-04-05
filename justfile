@@ -110,6 +110,7 @@ tui-agent-picker-usage-targeted:
 # Focused TUI combined session-vs-thread token usage slice.
 tui-agent-usage-totals-targeted:
     cargo test -p codex-tui app::tests::sync_session_tree_token_usage_updates_combined_status_line_items --lib -- --exact --test-threads=1
+    cargo test -p codex-tui app::tests::sync_session_tree_token_usage_prefers_selected_subagent_usage_for_status_line --lib -- --exact --test-threads=1
     cargo test -p codex-tui chatwidget::tests::status_and_layout::status_line_combined_token_items_use_session_totals --lib -- --exact --test-threads=1
     cargo test -p codex-tui chatwidget::tests::status_and_layout::status_line_combined_used_tokens_footer_snapshot --lib -- --exact --test-threads=1
     cargo test -p codex-tui status::tests::status_snapshot_distinguishes_session_and_thread_token_usage --lib -- --exact --test-threads=1
