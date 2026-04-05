@@ -186,14 +186,31 @@ impl AgentNavigationState {
     /// Returns tree connector prefixes keyed by thread id for visible picker rows.
     ///
     /// Prefixes are derived from thread-spawn agent paths when available. The primary thread is
-    /// treated as `/root` so its descendants can render under it.
+    /// treated as `/root` only when no explicit agent path is available; otherwise we preserve the
+    /// primary thread's actual path so descendants are attached to the real parent.
     pub(crate) fn picker_tree_prefixes(
         &self,
         primary_thread_id: Option<ThreadId>,
     ) -> HashMap<ThreadId, String> {
+        self.picker_tree_layout(primary_thread_id).0
+    }
+
+    /// Returns visible picker thread ids in parent-first tree order, preserving existing spawn-order
+    /// within sibling sets.
+    pub(crate) fn picker_tree_thread_ids(
+        &self,
+        primary_thread_id: Option<ThreadId>,
+    ) -> Vec<ThreadId> {
+        self.picker_tree_layout(primary_thread_id).1
+    }
+
+    fn picker_tree_layout(
+        &self,
+        primary_thread_id: Option<ThreadId>,
+    ) -> (HashMap<ThreadId, String>, Vec<ThreadId>) {
         let ordered_threads = self.ordered_threads();
         if ordered_threads.is_empty() {
-            return HashMap::new();
+            return (HashMap::new(), Vec::new());
         }
 
         let ordered_ids = ordered_threads
@@ -203,11 +220,9 @@ impl AgentNavigationState {
         let path_by_thread_id = ordered_threads
             .into_iter()
             .map(|(thread_id, entry)| {
-                let path = if Some(thread_id) == primary_thread_id {
-                    Some("/root".to_string())
-                } else {
-                    entry.agent_path.clone()
-                };
+                let path = entry.agent_path.clone().or_else(|| {
+                    (Some(thread_id) == primary_thread_id).then_some("/root".to_string())
+                });
                 (thread_id, path)
             })
             .collect::<HashMap<_, _>>();
@@ -247,8 +262,10 @@ impl AgentNavigationState {
             continuation_columns: &[bool],
             children_by_parent: &HashMap<ThreadId, Vec<ThreadId>>,
             prefixes: &mut HashMap<ThreadId, String>,
+            ordered_thread_ids: &mut Vec<ThreadId>,
         ) {
             prefixes.insert(thread_id, format_tree_prefix(continuation_columns));
+            ordered_thread_ids.push(thread_id);
             let Some(children) = children_by_parent.get(&thread_id) else {
                 return;
             };
@@ -260,15 +277,23 @@ impl AgentNavigationState {
                     child_columns.as_slice(),
                     children_by_parent,
                     prefixes,
+                    ordered_thread_ids,
                 );
             }
         }
 
         let mut prefixes = HashMap::new();
+        let mut ordered_thread_ids = Vec::new();
         for root_thread_id in roots {
-            visit(root_thread_id, &[], &children_by_parent, &mut prefixes);
+            visit(
+                root_thread_id,
+                &[],
+                &children_by_parent,
+                &mut prefixes,
+                &mut ordered_thread_ids,
+            );
         }
-        prefixes
+        (prefixes, ordered_thread_ids)
     }
 
     /// Returns tracked thread ids in the same stable order used by the picker.
@@ -571,6 +596,88 @@ mod tests {
         );
         assert_eq!(prefixes.get(&worker_thread_id), Some(&"│  └─ ".to_string()));
         assert_eq!(prefixes.get(&reviewer_thread_id), Some(&"└─ ".to_string()));
+    }
+
+    #[test]
+    fn picker_tree_respects_parent_first_for_hierarchy_rows() {
+        let mut state = AgentNavigationState::default();
+        let main_thread_id =
+            ThreadId::from_string("00000000-0000-0000-0000-000000000301").expect("valid thread");
+        let worker_thread_id =
+            ThreadId::from_string("00000000-0000-0000-0000-000000000302").expect("valid thread");
+        let critic_thread_id =
+            ThreadId::from_string("00000000-0000-0000-0000-000000000303").expect("valid thread");
+
+        state.upsert_with_path(
+            worker_thread_id,
+            Some("Worker".to_string()),
+            Some("worker".to_string()),
+            Some("/root/primary/worker".to_string()),
+            /*is_closed*/ false,
+            /*created_at*/ None,
+            /*updated_at*/ None,
+        );
+        state.upsert_with_path(
+            main_thread_id,
+            None,
+            None,
+            Some("/root/primary".to_string()),
+            /*is_closed*/ false,
+            /*created_at*/ None,
+            /*updated_at*/ None,
+        );
+        state.upsert_with_path(
+            critic_thread_id,
+            Some("Critic".to_string()),
+            Some("reviewer".to_string()),
+            Some("/root/primary/reviewer".to_string()),
+            /*is_closed*/ false,
+            /*created_at*/ None,
+            /*updated_at*/ None,
+        );
+
+        let tree_order = state.picker_tree_thread_ids(Some(main_thread_id));
+        assert_eq!(
+            tree_order,
+            vec![main_thread_id, worker_thread_id, critic_thread_id]
+        );
+
+        let prefixes = state.picker_tree_prefixes(Some(main_thread_id));
+        assert_eq!(prefixes.get(&main_thread_id), Some(&String::new()));
+        assert_eq!(prefixes.get(&worker_thread_id), Some(&"├─ ".to_string()));
+        assert_eq!(prefixes.get(&critic_thread_id), Some(&"└─ ".to_string()));
+    }
+
+    #[test]
+    fn picker_tree_preserves_primary_path_when_available() {
+        let mut state = AgentNavigationState::default();
+        let main_thread_id =
+            ThreadId::from_string("00000000-0000-0000-0000-000000000401").expect("valid thread");
+        let child_thread_id =
+            ThreadId::from_string("00000000-0000-0000-0000-000000000402").expect("valid thread");
+
+        state.upsert_with_path(
+            main_thread_id,
+            None,
+            None,
+            Some("/root/main".to_string()),
+            /*is_closed*/ false,
+            /*created_at*/ None,
+            /*updated_at*/ None,
+        );
+        state.upsert_with_path(
+            child_thread_id,
+            Some("Child".to_string()),
+            Some("child".to_string()),
+            Some("/root/main/child".to_string()),
+            /*is_closed*/ false,
+            /*created_at*/ None,
+            /*updated_at*/ None,
+        );
+
+        let prefixes = state.picker_tree_prefixes(Some(main_thread_id));
+        assert_eq!(prefixes.get(&main_thread_id), Some(&String::new()));
+        assert_eq!(prefixes.get(&child_thread_id), Some(&"└─ ".to_string()));
     }
 
     #[test]

@@ -2976,9 +2976,14 @@ impl App {
             .picker_tree_prefixes(self.primary_thread_id);
         let ordered_threads = self
             .agent_navigation
-            .ordered_threads()
+            .picker_tree_thread_ids(self.primary_thread_id)
             .into_iter()
-            .map(|(thread_id, entry)| (thread_id, entry.clone()))
+            .filter_map(|thread_id| {
+                self.agent_navigation
+                    .get(&thread_id)
+                    .cloned()
+                    .map(|entry| (thread_id, entry))
+            })
             .collect::<Vec<_>>();
         let mut items = Vec::with_capacity(ordered_threads.len());
         for (idx, (thread_id, entry)) in ordered_threads.into_iter().enumerate() {
