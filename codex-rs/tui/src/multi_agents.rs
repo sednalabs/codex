@@ -761,10 +761,7 @@ mod tests {
         };
         assert_eq!(
             format_agent_picker_item_description(
-                thread_id,
-                &usage,
-                /*model_context_window*/ None,
-                /*updated_at*/ None,
+                thread_id, &usage, /*model_context_window*/ None, /*updated_at*/ None,
                 /*created_at*/ None,
             ),
             "00000000-0000-0000-0000-000000000112 • 12.3K used"
