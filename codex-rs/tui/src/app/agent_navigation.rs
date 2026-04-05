@@ -619,8 +619,8 @@ mod tests {
         );
         state.upsert_with_path(
             main_thread_id,
-            None,
-            None,
+            /*agent_nickname*/ None,
+            /*agent_role*/ None,
             Some("/root/primary".to_string()),
             /*is_closed*/ false,
             /*created_at*/ None,
@@ -658,8 +658,8 @@ mod tests {
 
         state.upsert_with_path(
             main_thread_id,
-            None,
-            None,
+            /*agent_nickname*/ None,
+            /*agent_role*/ None,
             Some("/root/main".to_string()),
             /*is_closed*/ false,
             /*created_at*/ None,
