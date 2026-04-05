@@ -8,6 +8,7 @@ use crate::models_manager::manager::RefreshStrategy;
 use crate::tools::context::FunctionToolOutput;
 use crate::tools::context::ToolOutput;
 use crate::tools::context::ToolPayload;
+use crate::tools::handlers::request_user_input::request_user_input_unavailable_message;
 use codex_features::Feature;
 use codex_protocol::AgentPath;
 use codex_protocol::ThreadId;
@@ -20,7 +21,11 @@ use codex_protocol::protocol::CollabAgentStatusEntry;
 use codex_protocol::protocol::Op;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::SubAgentSource;
+use codex_protocol::request_user_input::RequestUserInputArgs;
+use codex_protocol::request_user_input::RequestUserInputQuestion;
+use codex_protocol::request_user_input::RequestUserInputQuestionOption;
 use codex_protocol::user_input::UserInput;
+use serde::Deserialize;
 use serde::Serialize;
 use serde_json::Value as JsonValue;
 use std::collections::HashMap;
@@ -29,6 +34,17 @@ use std::collections::HashMap;
 pub(crate) const MIN_WAIT_TIMEOUT_MS: i64 = 10_000;
 pub(crate) const DEFAULT_WAIT_TIMEOUT_MS: i64 = 30_000;
 pub(crate) const MAX_WAIT_TIMEOUT_MS: i64 = 3600 * 1000;
+const SPAWN_AGENT_APPROVAL_QUESTION_ID: &str = "spawn_agent_approval";
+const SPAWN_AGENT_APPROVAL_ACCEPT_OPTION: &str = "Approve";
+const SPAWN_AGENT_APPROVAL_DECLINE_OPTION: &str = "Decline";
+
+#[derive(Debug, Clone, Copy, Default, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum SpawnAgentApproval {
+    #[default]
+    Auto,
+    AskUser,
+}
 
 pub(crate) fn function_arguments(payload: ToolPayload) -> Result<String, FunctionCallError> {
     match payload {
@@ -191,6 +207,106 @@ pub(crate) fn parse_collab_input(
             Ok(items.into())
         }
     }
+}
+
+pub(crate) async fn require_spawn_agent_approval_if_requested(
+    session: &Session,
+    turn: &TurnContext,
+    spawn_approval: SpawnAgentApproval,
+    call_id: &str,
+    role_name: Option<&str>,
+    requested_model: Option<&str>,
+    prompt_preview: &str,
+) -> Result<(), FunctionCallError> {
+    if !matches!(spawn_approval, SpawnAgentApproval::AskUser) {
+        return Ok(());
+    }
+
+    let mode = session.collaboration_mode().await.mode;
+    if let Some(message) = request_user_input_unavailable_message(
+        mode,
+        turn.tools_config.default_mode_request_user_input,
+    ) {
+        return Err(FunctionCallError::RespondToModel(message));
+    }
+
+    let question = RequestUserInputQuestion {
+        id: SPAWN_AGENT_APPROVAL_QUESTION_ID.to_string(),
+        header: "Confirm subagent spawn".to_string(),
+        question: build_spawn_agent_approval_question_text(
+            role_name,
+            requested_model,
+            prompt_preview,
+        ),
+        is_other: false,
+        is_secret: false,
+        options: Some(vec![
+            RequestUserInputQuestionOption {
+                label: SPAWN_AGENT_APPROVAL_ACCEPT_OPTION.to_string(),
+                description: "Spawn the subagent and continue.".to_string(),
+            },
+            RequestUserInputQuestionOption {
+                label: SPAWN_AGENT_APPROVAL_DECLINE_OPTION.to_string(),
+                description: "Block this spawn and keep work in the current thread.".to_string(),
+            },
+        ]),
+    };
+    let args = RequestUserInputArgs {
+        questions: vec![question],
+    };
+    let approval_call_id = format!("spawn-agent-approval-{call_id}");
+    let response = session
+        .request_user_input(turn, approval_call_id, args)
+        .await
+        .ok_or_else(|| {
+            FunctionCallError::RespondToModel(
+                "spawn_agent cancelled because no user approval response was received".to_string(),
+            )
+        })?;
+
+    let approved = response
+        .answers
+        .get(SPAWN_AGENT_APPROVAL_QUESTION_ID)
+        .is_some_and(|answer| {
+            answer
+                .answers
+                .iter()
+                .any(|selection| selection == SPAWN_AGENT_APPROVAL_ACCEPT_OPTION)
+        });
+    if approved {
+        Ok(())
+    } else {
+        Err(FunctionCallError::RespondToModel(
+            "spawn_agent blocked because the user declined this spawn".to_string(),
+        ))
+    }
+}
+
+pub(crate) fn build_spawn_agent_approval_question_text(
+    role_name: Option<&str>,
+    requested_model: Option<&str>,
+    prompt_preview: &str,
+) -> String {
+    let prompt_preview = prompt_preview.trim();
+    let prompt_suffix = if prompt_preview.is_empty() {
+        String::new()
+    } else {
+        format!(" Task preview: `{prompt_preview}`.")
+    };
+    let role_suffix = role_name
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| format!(" Requested role: `{value}`."))
+        .unwrap_or_default();
+    let model_suffix = requested_model
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| format!(" Requested model: `{value}`."))
+        .unwrap_or_default();
+
+    format!(
+        "The agent requested spawning a subagent. Approve this spawn now?{prompt_suffix}{role_suffix}{model_suffix}"
+    )
 }
 
 /// Builds the base config snapshot for a newly spawned sub-agent.
