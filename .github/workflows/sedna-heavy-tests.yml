@@ -41,10 +41,6 @@ on:
   merge_group: {}
 #  schedule:
 #    - cron: "15 16 * * *"
-  push:
-    branches:
-      - main
-
 concurrency:
   group: ${{ github.workflow }}-${{ github.event_name == 'workflow_dispatch' && inputs.ref || github.ref_name }}
   cancel-in-progress: ${{ github.event_name != 'workflow_dispatch' && github.ref_name != 'main' && github.ref_name != 'upstream-main' }}
@@ -106,9 +102,6 @@ jobs:
             BASE_SHA='${{ github.event.pull_request.base.sha }}'
             HEAD_SHA='${{ github.event.pull_request.head.sha }}'
             mapfile -t files < <(git diff --name-only --no-renames "$BASE_SHA...$HEAD_SHA")
-          elif [[ '${{ github.event_name }}' == 'push' ]]; then
-            # Pushes to protected main should always run the full heavy matrix.
-            run_all_lanes=true
           else
             run_all_lanes=true
           fi
@@ -189,7 +182,7 @@ jobs:
         needs.metadata.outputs.run_selected_lanes == 'true'
       }}
     strategy:
-      fail-fast: ${{ github.event_name != 'push' || github.ref_name != 'main' }}
+      fail-fast: true
       # Keep Linux-only heavy validation from monopolizing the org runner pool.
       max-parallel: 2
       matrix: ${{ fromJson(needs.metadata.outputs.selected_matrix) }}
