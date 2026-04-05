@@ -135,13 +135,13 @@ impl StatusLineItem {
             StatusLineItem::TotalInputTokens => "Total input tokens used in session",
             StatusLineItem::TotalOutputTokens => "Total output tokens used in session",
             StatusLineItem::CombinedUsedTokens => {
-                "Combined total tokens used across the current session tree"
+                "Combined total tokens used in the main-thread view; active thread usage in sub-agent views"
             }
             StatusLineItem::CombinedInputTokens => {
-                "Combined input tokens used across the current session tree"
+                "Combined input tokens used in the main-thread view; active thread usage in sub-agent views"
             }
             StatusLineItem::CombinedOutputTokens => {
-                "Combined output tokens used across the current session tree"
+                "Combined output tokens used in the main-thread view; active thread usage in sub-agent views"
             }
             StatusLineItem::SessionId => {
                 "Current session identifier (omitted until session starts)"
