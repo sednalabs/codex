@@ -38,6 +38,7 @@ use std::collections::HashSet;
 const COLLAB_PROMPT_PREVIEW_GRAPHEMES: usize = 160;
 const COLLAB_AGENT_ERROR_PREVIEW_GRAPHEMES: usize = 160;
 const COLLAB_AGENT_RESPONSE_PREVIEW_GRAPHEMES: usize = 240;
+const AGENT_PICKER_TASK_PREVIEW_GRAPHEMES: usize = 48;
 pub(crate) const SUBAGENT_LABEL: &str = "Subagent";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -71,6 +72,9 @@ pub(crate) struct SpawnRequestSummary {
 pub(crate) struct AgentPickerThreadUsage {
     pub(crate) token_usage: TokenUsage,
     pub(crate) model_context_window: Option<i64>,
+    pub(crate) model: Option<String>,
+    pub(crate) reasoning_effort: Option<ReasoningEffortConfig>,
+    pub(crate) task_name: Option<String>,
 }
 
 pub(crate) fn agent_picker_status_dot_spans(is_closed: bool) -> Vec<Span<'static>> {
@@ -111,6 +115,9 @@ pub(crate) fn format_agent_picker_item_description(
     model_context_window: Option<i64>,
     updated_at: Option<i64>,
     created_at: Option<i64>,
+    model: Option<&str>,
+    reasoning_effort: Option<ReasoningEffortConfig>,
+    task_name: Option<&str>,
 ) -> String {
     format_agent_picker_item_description_at(
         thread_id,
@@ -118,6 +125,9 @@ pub(crate) fn format_agent_picker_item_description(
         model_context_window,
         updated_at,
         created_at,
+        model,
+        reasoning_effort,
+        task_name,
         Utc::now().timestamp(),
     )
 }
@@ -128,10 +138,37 @@ fn format_agent_picker_item_description_at(
     model_context_window: Option<i64>,
     updated_at: Option<i64>,
     created_at: Option<i64>,
+    model: Option<&str>,
+    reasoning_effort: Option<ReasoningEffortConfig>,
+    task_name: Option<&str>,
     now_ts: i64,
 ) -> String {
     let uuid = thread_id.to_string();
-    let mut parts = vec![uuid];
+    let mut parts: Vec<String> = Vec::new();
+
+    let model = model.map(str::trim).filter(|model| !model.is_empty());
+    if model.is_some() || reasoning_effort.is_some() {
+        let mut model_parts = Vec::new();
+        if let Some(model) = model {
+            model_parts.push(model.to_string());
+        }
+        if let Some(reasoning_effort) = reasoning_effort {
+            model_parts.push(reasoning_effort.to_string());
+        }
+        parts.push(model_parts.join(" "));
+    }
+
+    if let Some(task_name) = task_name
+        .map(str::trim)
+        .filter(|task_name| !task_name.is_empty())
+    {
+        let task_preview = truncate_text(task_name, AGENT_PICKER_TASK_PREVIEW_GRAPHEMES);
+        if !task_preview.is_empty() {
+            parts.push(format!("task: {task_preview}"));
+        }
+    }
+
+    parts.push(uuid);
     if token_usage.total_tokens > 0 {
         parts.push(format!(
             "{} used",
@@ -743,6 +780,9 @@ mod tests {
                 /*model_context_window*/ None,
                 /*updated_at*/ None,
                 /*created_at*/ None,
+                /*model*/ None,
+                /*reasoning_effort*/ None,
+                /*task_name*/ None,
             ),
             "00000000-0000-0000-0000-000000000111"
         );
@@ -761,8 +801,14 @@ mod tests {
         };
         assert_eq!(
             format_agent_picker_item_description(
-                thread_id, &usage, /*model_context_window*/ None, /*updated_at*/ None,
+                thread_id,
+                &usage,
+                /*model_context_window*/ None,
+                /*updated_at*/ None,
                 /*created_at*/ None,
+                /*model*/ None,
+                /*reasoning_effort*/ None,
+                /*task_name*/ None,
             ),
             "00000000-0000-0000-0000-000000000112 • 12.3K used"
         );
@@ -784,6 +830,9 @@ mod tests {
                 /*model_context_window*/ Some(24_000),
                 /*updated_at*/ None,
                 /*created_at*/ None,
+                /*model*/ None,
+                /*reasoning_effort*/ None,
+                /*task_name*/ None,
                 /*now_ts*/ 1_000,
             ),
             "00000000-0000-0000-0000-000000000113 • 12.3K used • 98% left"
@@ -806,6 +855,9 @@ mod tests {
                 /*model_context_window*/ None,
                 /*updated_at*/ Some(958),
                 /*created_at*/ Some(900),
+                /*model*/ None,
+                /*reasoning_effort*/ None,
+                /*task_name*/ None,
                 /*now_ts*/ 1_000,
             ),
             format_agent_picker_item_description_at(
@@ -814,6 +866,9 @@ mod tests {
                 /*model_context_window*/ None,
                 /*updated_at*/ Some(400),
                 /*created_at*/ Some(300),
+                /*model*/ None,
+                /*reasoning_effort*/ None,
+                /*task_name*/ None,
                 /*now_ts*/ 1_000,
             ),
             format_agent_picker_item_description_at(
@@ -822,12 +877,59 @@ mod tests {
                 /*model_context_window*/ None,
                 /*updated_at*/ None,
                 /*created_at*/ Some(1_000 - 3 * 60 * 60),
+                /*model*/ None,
+                /*reasoning_effort*/ None,
+                /*task_name*/ None,
                 /*now_ts*/ 1_000,
             ),
         ]
         .join("\n");
 
         assert_snapshot!("agent_picker_item_description_age", snapshot);
+    }
+
+    #[test]
+    fn picker_description_includes_model_effort_and_task_when_available() {
+        let thread_id =
+            ThreadId::from_string("00000000-0000-0000-0000-000000000114").expect("valid thread");
+        let usage = TokenUsage {
+            total_tokens: 120,
+            ..Default::default()
+        };
+
+        assert_eq!(
+            format_agent_picker_item_description(
+                thread_id,
+                &usage,
+                None,
+                None,
+                None,
+                Some("gpt-5.4-mini"),
+                Some(ReasoningEffortConfig::Medium),
+                Some("Investigate /agent picker metadata display"),
+            ),
+            "gpt-5.4-mini medium • task: Investigate /agent picker metadata display • 00000000-0000-0000-0000-000000000114 • 120 used"
+        );
+    }
+
+    #[test]
+    fn picker_description_omits_blank_metadata_fields() {
+        let thread_id =
+            ThreadId::from_string("00000000-0000-0000-0000-000000000115").expect("valid thread");
+
+        assert_eq!(
+            format_agent_picker_item_description(
+                thread_id,
+                &TokenUsage::default(),
+                None,
+                None,
+                None,
+                Some("   "),
+                None,
+                Some("   "),
+            ),
+            "00000000-0000-0000-0000-000000000115"
+        );
     }
 
     #[test]
