@@ -45,6 +45,7 @@ Focused targeted lanes for iterative work on the current carry seams:
 - `codex.state-spawn-lineage-contract-targeted`
 - `codex.tui-esc-interrupt-targeted`
 - `codex.tui-transcript-viewport-targeted`
+- `codex.tui-agent-picker-targeted`
 - `codex.tui-agent-usage-totals-targeted`
 - `codex.downstream-docs-check`
 
@@ -69,13 +70,12 @@ GitHub Actions lane naming (`.github/workflows/sedna-heavy-tests.yml`):
 ## GitHub trigger policy
 
 - `rust-ci.yml` is the default PR fail-fast workflow.
-  - It runs on every `pull_request` update and `merge_group`.
-  - `CI results (required)` is the single required gate, and it enforces
-    `Downstream smoke` when downstream-facing paths change.
-  - PR and merge-group matrix jobs fail fast and cap their runner fan-out so a
-    known-bad head stops tying up the shared GitHub Actions pool.
-  - Protected-branch pushes still keep fuller in-lane failure signal where that
-    is more valuable than early cancellation.
+  - It runs on `pull_request`, scheduled hygiene sweeps, and manual dispatch.
+  - `CI results (required)` is the single required gate.
+  - On already-green PRs, tiny mapped follow-up pushes may reuse incremental
+    targeted validation instead of rerunning the full `rust-ci` bundle.
+  - Any ambiguous or high-risk follow-up falls back to the normal `rust-ci`
+    path.
 - `sedna-heavy-tests.yml` is the downstream-heavy lane workflow.
   - On ordinary PR updates, it auto-selects only the heavy lanes implied by the
     changed path class.
@@ -88,8 +88,7 @@ GitHub Actions lane naming (`.github/workflows/sedna-heavy-tests.yml`):
     representative workflow-validation lane set instead of promoting the PR to
     the full heavy matrix.
   - Applying the `ci:heavy` label promotes the PR to the full heavy matrix.
-  - `merge_group`, nightly schedule, `push` to `main`, and
-    `workflow_dispatch lane=all` all run the full heavy matrix.
+  - `merge_group` and `workflow_dispatch lane=all` run the full heavy matrix.
   - `workflow_dispatch` can still run one named lane when a single shard is the
     right debugging tool.
 - `validation-lab.yml` is the dispatch-only remote validation surface.
@@ -131,6 +130,7 @@ GitHub Actions lane naming (`.github/workflows/sedna-heavy-tests.yml`):
 | Double-`Esc` interrupt confirmation protects Alt/meta terminals while preserving explicit single-press override (`codex-tui`) | `codex.tui-esc-interrupt-targeted` | `esc_requires_double_press_for_interrupt_when_running_task_by_default`; `first_esc_renders_again_to_interrupt_hint`; `esc_release_does_not_confirm_interrupt`; `esc_with_alt_does_not_interrupt_running_task`; `esc_single_press_interrupts_when_double_press_disabled` |
 | TUI transcript viewport redraw and clipping regressions | `codex.tui-transcript-viewport-targeted` | `suite::vt100_history::tmux_like_viewport_preserves_preexisting_history_content`; `suite::vt100_history::android_style_narrow_viewport_keeps_url_content_from_being_clipped`; `suite::vt100_history::committed_rows_survive_redraw_and_viewport_pressure` |
 | Active-thread session state survives config refresh and fresh-session clones keep policy mutability before new-thread/fork flows (`codex-tui`) | `codex.tui-config-refresh-session-targeted` | `refresh_in_memory_config_from_disk_preserves_active_thread_session_state`; `fresh_session_config_uses_current_session_state`; `fresh_session_config_preserves_policy_mutability` |
+| `/agent` picker rows expose searchable cached thread metadata, compact age labels, and model/task previews without waiting on broader TUI validation | `codex.tui-agent-picker-targeted` | `open_agent_picker_marks_loaded_threads_open`; `inactive_thread_started_notification_initializes_replay_session`; `picker_description_falls_back_to_thread_id_without_usage`; `picker_description_includes_compact_token_usage_when_present`; `picker_description_includes_remaining_context_when_known`; `picker_description_includes_compact_age_when_known`; `picker_description_includes_model_effort_and_task_when_available` |
 | `/agent` picker rows expose per-thread used-token totals, compact remaining-context visibility, compact age labels, searchable stale-session filtering, and selected-row permission/sandbox detail from existing cached thread metadata without a broader backend contract change (`codex-tui`) | `codex.tui-agent-picker-usage-targeted` | `agent_picker_thread_token_usage_reads_inactive_thread_store`; `agent_picker_thread_token_usage_prefers_live_active_thread_usage`; `agent_picker_thread_token_usage_does_not_fallback_when_active_live_usage_is_zero`; `open_agent_picker_marks_loaded_threads_open`; `inactive_thread_started_notification_initializes_replay_session`; `picker_description_falls_back_to_thread_id_without_usage`; `picker_description_includes_compact_token_usage_when_present`; `picker_description_includes_remaining_context_when_known`; `picker_description_includes_compact_age_when_known`; `picker_selected_description_includes_permission_details_when_available` |
 | Combined session token totals remain visible without overwriting current-thread token usage across `/status` and footer/status-line surfaces (`codex-tui`) | `codex.tui-agent-usage-totals-targeted` | `sync_session_tree_token_usage_updates_combined_status_line_items`; `sync_session_tree_token_usage_prefers_selected_subagent_usage_for_status_line`; `status_line_combined_token_items_use_session_totals`; `status_line_combined_used_tokens_footer_snapshot`; `status_snapshot_distinguishes_session_and_thread_token_usage` |
 | Startup plugin sync bounded wait + completion-signal re-arm + abort checkpointing | `codex.core-startup-sync-targeted` | `startup_remote_plugin_sync_waits_for_late_prerequisites`; `startup_remote_plugin_sync_is_single_flight_before_prerequisites_exist`; `startup_remote_plugin_sync_uses_latest_config_and_auth_snapshot`; `startup_remote_plugin_sync_rearms_after_curated_repo_completion_signal_uses_latest_config_and_auth_snapshot`; `startup_remote_plugin_sync_signals_after_failed_curated_postprocessing`; `startup_remote_plugin_sync_aborts_in_flight_before_stamping_marker`; `startup_remote_plugin_sync_relaunches_immediately_after_abort_even_if_late_completion_signal_arrives` |
