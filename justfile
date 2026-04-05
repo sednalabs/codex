@@ -122,6 +122,12 @@ tui-front-queue-submit-targeted:
     cargo test -p codex-tui footer_snapshots -- --exact --test-threads=1
     cargo test -p codex-tui footer_collapse_snapshots -- --exact --test-threads=1
 
+# Focused TUI transcript viewport redraw and clipping slice.
+tui-transcript-viewport-targeted:
+    cargo test -p codex-tui --test all suite::vt100_history::tmux_like_viewport_preserves_preexisting_history_content -- --exact --test-threads=1
+    cargo test -p codex-tui --test all suite::vt100_history::android_style_narrow_viewport_keeps_url_content_from_being_clipped -- --exact --test-threads=1
+    cargo test -p codex-tui --test all suite::vt100_history::committed_rows_survive_redraw_and_viewport_pressure -- --exact --test-threads=1
+
 # Focused multi-agent orchestration slice covering wait semantics and tool guidance.
 core-multi-agent-orchestration-targeted:
     CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo test -p codex-core multi_agent_v2_list_agents_returns_completed_status_and_last_task_message --lib -- --exact --test-threads=1
