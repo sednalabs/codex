@@ -2649,6 +2649,8 @@ impl App {
                         thread.agent_nickname,
                         thread.agent_role,
                         /*is_closed*/ false,
+                        Some(thread.created_at),
+                        Some(thread.updated_at),
                     );
                 }
                 Err(err) => {
@@ -2691,6 +2693,8 @@ impl App {
             notification.thread.agent_nickname.clone(),
             notification.thread.agent_role.clone(),
             /*is_closed*/ false,
+            Some(notification.thread.created_at),
+            Some(notification.thread.updated_at),
         );
         Some(session)
     }
@@ -2800,7 +2804,7 @@ impl App {
         self.primary_session_configured = Some(session.clone());
         self.upsert_agent_picker_thread(
             thread_id, /*agent_nickname*/ None, /*agent_role*/ None,
-            /*is_closed*/ false,
+            /*is_closed*/ false, /*created_at*/ None, /*updated_at*/ None,
         );
         let channel = self.ensure_thread_channel(thread_id);
         {
@@ -2973,7 +2977,14 @@ impl App {
                 thread_id,
                 &usage.token_usage,
                 usage.model_context_window,
+                entry.updated_at,
+                entry.created_at,
             );
+            let status_terms = if entry.is_closed {
+                "closed stale inactive finished"
+            } else {
+                "live active open"
+            };
             items.push(SelectionItem {
                 name: name.clone(),
                 name_prefix_spans: agent_picker_status_dot_spans(entry.is_closed),
@@ -2983,7 +2994,7 @@ impl App {
                     tx.send(AppEvent::SelectAgentThread(id));
                 })],
                 dismiss_on_select: true,
-                search_value: Some(format!("{name} {description}")),
+                search_value: Some(format!("{name} {description} {status_terms}")),
                 ..Default::default()
             });
         }
@@ -2991,6 +3002,8 @@ impl App {
         self.chat_widget.show_selection_view(SelectionViewParams {
             title: Some("Subagents".to_string()),
             subtitle: Some(AgentNavigationState::picker_subtitle()),
+            is_searchable: true,
+            search_placeholder: Some("Search agents or type 'closed'".to_string()),
             footer_hint: Some(standard_popup_hint_line()),
             items,
             initial_selected_idx,
@@ -3047,14 +3060,22 @@ impl App {
         agent_nickname: Option<String>,
         agent_role: Option<String>,
         is_closed: bool,
+        created_at: Option<i64>,
+        updated_at: Option<i64>,
     ) {
         self.chat_widget.set_collab_agent_metadata(
             thread_id,
             agent_nickname.clone(),
             agent_role.clone(),
         );
-        self.agent_navigation
-            .upsert(thread_id, agent_nickname, agent_role, is_closed);
+        self.agent_navigation.upsert(
+            thread_id,
+            agent_nickname,
+            agent_role,
+            is_closed,
+            created_at,
+            updated_at,
+        );
         self.sync_active_agent_label();
     }
 
@@ -3095,6 +3116,8 @@ impl App {
                         thread.status,
                         codex_app_server_protocol::ThreadStatus::NotLoaded
                     ),
+                    Some(thread.created_at),
+                    Some(thread.updated_at),
                 );
                 true
             }
@@ -3113,11 +3136,13 @@ impl App {
                         entry.agent_nickname,
                         entry.agent_role,
                         is_closed,
+                        entry.created_at,
+                        entry.updated_at,
                     );
                 } else {
                     self.upsert_agent_picker_thread(
                         thread_id, /*agent_nickname*/ None, /*agent_role*/ None,
-                        is_closed,
+                        is_closed, /*created_at*/ None, /*updated_at*/ None,
                     );
                 }
                 true
@@ -3570,6 +3595,8 @@ impl App {
                 thread.agent_nickname,
                 thread.agent_role,
                 /*is_closed*/ false,
+                Some(thread.created_at),
+                Some(thread.updated_at),
             );
         }
 
@@ -7990,6 +8017,8 @@ mod tests {
                 agent_nickname: None,
                 agent_role: None,
                 is_closed: true,
+                created_at: None,
+                updated_at: None,
             })
         );
         assert_eq!(app.agent_navigation.ordered_thread_ids(), vec![thread_id]);
@@ -8011,6 +8040,8 @@ mod tests {
             Some("Robie".to_string()),
             Some("explorer".to_string()),
             /*is_closed*/ true,
+            /*created_at*/ None,
+            /*updated_at*/ None,
         );
 
         app.open_agent_picker(&mut app_server).await;
@@ -8022,6 +8053,8 @@ mod tests {
                 agent_nickname: Some("Robie".to_string()),
                 agent_role: Some("explorer".to_string()),
                 is_closed: true,
+                created_at: None,
+                updated_at: None,
             })
         );
         Ok(())
@@ -8040,6 +8073,8 @@ mod tests {
             Some("Ghost".to_string()),
             Some("worker".to_string()),
             /*is_closed*/ false,
+            /*created_at*/ None,
+            /*updated_at*/ None,
         );
 
         app.open_agent_picker(&mut app_server).await;
@@ -8064,6 +8099,8 @@ mod tests {
             Some("Robie".to_string()),
             Some("explorer".to_string()),
             /*is_closed*/ false,
+            /*created_at*/ None,
+            /*updated_at*/ None,
         );
 
         app.open_agent_picker(&mut app_server).await;
@@ -8074,6 +8111,8 @@ mod tests {
                 agent_nickname: Some("Robie".to_string()),
                 agent_role: Some("explorer".to_string()),
                 is_closed: true,
+                created_at: None,
+                updated_at: None,
             })
         );
         Ok(())
@@ -8143,6 +8182,9 @@ mod tests {
             .start_thread(app.chat_widget.config_ref())
             .await?;
         let thread_id = started.session.thread_id;
+        let expected_thread = app_server
+            .thread_read(thread_id, /*include_turns*/ false)
+            .await?;
         app.thread_event_channels
             .insert(thread_id, ThreadEventChannel::new(/*capacity*/ 1));
 
@@ -8154,6 +8196,8 @@ mod tests {
                 agent_nickname: None,
                 agent_role: None,
                 is_closed: false,
+                created_at: Some(expected_thread.created_at),
+                updated_at: Some(expected_thread.updated_at),
             })
         );
         Ok(())
@@ -8176,6 +8220,8 @@ mod tests {
             Some("Scout".to_string()),
             Some("worker".to_string()),
             /*is_closed*/ false,
+            /*created_at*/ None,
+            /*updated_at*/ None,
         );
 
         let err = app
@@ -8208,6 +8254,8 @@ mod tests {
             Some("Scout".to_string()),
             Some("worker".to_string()),
             /*is_closed*/ false,
+            /*created_at*/ None,
+            /*updated_at*/ None,
         );
 
         let err = app
@@ -8232,6 +8280,8 @@ mod tests {
             Some("Ghost".to_string()),
             Some("worker".to_string()),
             /*is_closed*/ true,
+            /*created_at*/ None,
+            /*updated_at*/ None,
         );
 
         assert!(!app.should_attach_live_thread_for_selection(thread_id));
@@ -8241,6 +8291,8 @@ mod tests {
             Some("Ghost".to_string()),
             Some("worker".to_string()),
             /*is_closed*/ false,
+            /*created_at*/ None,
+            /*updated_at*/ None,
         );
         assert!(app.should_attach_live_thread_for_selection(thread_id));
 
@@ -8263,6 +8315,8 @@ mod tests {
             Some("Ghost".to_string()),
             Some("worker".to_string()),
             /*is_closed*/ false,
+            /*created_at*/ None,
+            /*updated_at*/ None,
         );
 
         let is_available = app
@@ -8973,6 +9027,8 @@ guardian_approval = true
             Some("Robie".to_string()),
             Some("explorer".to_string()),
             /*is_closed*/ false,
+            /*created_at*/ None,
+            /*updated_at*/ None,
         );
 
         app.refresh_pending_thread_approvals().await;
@@ -9016,6 +9072,8 @@ guardian_approval = true
             Some("Robie".to_string()),
             Some("explorer".to_string()),
             /*is_closed*/ false,
+            /*created_at*/ None,
+            /*updated_at*/ None,
         );
 
         app.enqueue_thread_request(
@@ -9176,6 +9234,8 @@ guardian_approval = true
             Some("Robie".to_string()),
             Some("explorer".to_string()),
             /*is_closed*/ false,
+            /*created_at*/ None,
+            /*updated_at*/ None,
         );
 
         app.enqueue_thread_request(
@@ -9310,6 +9370,8 @@ guardian_approval = true
                 agent_nickname: Some("Robie".to_string()),
                 agent_role: Some("explorer".to_string()),
                 is_closed: false,
+                created_at: Some(1),
+                updated_at: Some(2),
             })
         );
 
@@ -11234,6 +11296,8 @@ guardian_approval = true
             Some("Robie".to_string()),
             Some("explorer".to_string()),
             /*is_closed*/ false,
+            /*created_at*/ None,
+            /*updated_at*/ None,
         );
 
         let replacement = ChatWidget::new_with_app_event(ChatWidgetInit {

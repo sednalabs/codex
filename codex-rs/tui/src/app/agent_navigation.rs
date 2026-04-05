@@ -82,7 +82,10 @@ impl AgentNavigationState {
         agent_nickname: Option<String>,
         agent_role: Option<String>,
         is_closed: bool,
+        created_at: Option<i64>,
+        updated_at: Option<i64>,
     ) {
+        let existing = self.threads.get(&thread_id).cloned();
         if !self.threads.contains_key(&thread_id) {
             self.order.push(thread_id);
         }
@@ -92,6 +95,8 @@ impl AgentNavigationState {
                 agent_nickname,
                 agent_role,
                 is_closed,
+                created_at: created_at.or(existing.as_ref().and_then(|entry| entry.created_at)),
+                updated_at: updated_at.or(existing.as_ref().and_then(|entry| entry.updated_at)),
             },
         );
     }
@@ -108,7 +113,7 @@ impl AgentNavigationState {
         } else {
             self.upsert(
                 thread_id, /*agent_nickname*/ None, /*agent_role*/ None,
-                /*is_closed*/ true,
+                /*is_closed*/ true, /*created_at*/ None, /*updated_at*/ None,
             );
         }
     }
@@ -239,7 +244,7 @@ impl AgentNavigationState {
         let previous: Span<'static> = previous_agent_shortcut().into();
         let next: Span<'static> = next_agent_shortcut().into();
         format!(
-            "Select an agent to watch. {} previous, {} next.",
+            "Select an agent to watch. Type to filter; search 'closed' for stale sessions. {} previous, {} next.",
             previous.content, next.content
         )
     }
@@ -276,18 +281,24 @@ mod tests {
             /*agent_nickname*/ None,
             /*agent_role*/ None,
             /*is_closed*/ false,
+            /*created_at*/ None,
+            /*updated_at*/ None,
         );
         state.upsert(
             first_agent_id,
             Some("Robie".to_string()),
             Some("explorer".to_string()),
             /*is_closed*/ false,
+            /*created_at*/ None,
+            /*updated_at*/ None,
         );
         state.upsert(
             second_agent_id,
             Some("Bob".to_string()),
             Some("worker".to_string()),
             /*is_closed*/ false,
+            /*created_at*/ None,
+            /*updated_at*/ None,
         );
 
         (state, main_thread_id, first_agent_id, second_agent_id)
@@ -302,6 +313,8 @@ mod tests {
             Some("Robie".to_string()),
             Some("worker".to_string()),
             /*is_closed*/ true,
+            /*created_at*/ None,
+            /*updated_at*/ None,
         );
 
         assert_eq!(
@@ -336,6 +349,7 @@ mod tests {
 
         assert!(subtitle.contains(previous.content.as_ref()));
         assert!(subtitle.contains(next.content.as_ref()));
+        assert!(subtitle.contains("closed"));
     }
 
     #[test]
