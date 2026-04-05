@@ -86,6 +86,12 @@
       "lane_sets": ["all", "ui-protocol"]
     },
     {
+      "lane_id": "codex.tui-transcript-viewport-targeted",
+      "run_command": "just --justfile ../justfile tui-transcript-viewport-targeted",
+      "groups": ["ui_protocol"],
+      "lane_sets": ["all", "ui-protocol"]
+    },
+    {
       "lane_id": "codex.tui-config-refresh-session-targeted",
       "run_command": "just --justfile ../justfile tui-config-refresh-session-targeted",
       "groups": ["ui_protocol"],
