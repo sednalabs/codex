@@ -110,6 +110,12 @@
       "lane_sets": ["all", "ui-protocol", "subagents"]
     },
     {
+      "lane_id": "codex.tui-agent-picker-tree-targeted",
+      "run_command": "just --justfile ../justfile tui-agent-picker-tree-targeted",
+      "groups": ["ui_protocol"],
+      "lane_sets": ["all", "ui-protocol", "subagents"]
+    },
+    {
       "lane_id": "codex.tui-agent-usage-totals-targeted",
       "run_command": "just --justfile ../justfile tui-agent-usage-totals-targeted",
       "groups": ["ui_protocol"],
@@ -205,6 +211,18 @@
         "codex-rs/tui/src/app.rs",
         "codex-rs/tui/src/multi_agents.rs",
         "codex-rs/tui/src/snapshots/codex_tui__multi_agents__tests__agent_picker*.snap",
+        "docs/downstream-regression-matrix.md",
+        "justfile"
+      ]
+    },
+    {
+      "route_id": "tui-agent-picker-tree",
+      "lane_ids": ["codex.tui-agent-picker-tree-targeted"],
+      "allowed_paths": [
+        "codex-rs/tui/src/app.rs",
+        "codex-rs/tui/src/app/agent_navigation.rs",
+        "codex-rs/tui/src/app/loaded_threads.rs",
+        "codex-rs/tui/src/multi_agents.rs",
         "docs/downstream-regression-matrix.md",
         "justfile"
       ]
