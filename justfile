@@ -106,6 +106,13 @@ tui-agent-picker-targeted:
     cargo test -p codex-tui multi_agents::tests::picker_description_includes_compact_age_when_known --lib -- --exact --test-threads=1
     cargo test -p codex-tui multi_agents::tests::picker_description_includes_model_effort_and_task_when_available --lib -- --exact --test-threads=1
 
+# Focused /agent picker hierarchy visibility slice.
+tui-agent-picker-tree-targeted:
+    cargo test -p codex-tui app::tests::open_agent_picker_marks_loaded_threads_open --lib -- --exact --test-threads=1
+    cargo test -p codex-tui app::tests::inactive_thread_started_notification_initializes_replay_session --lib -- --exact --test-threads=1
+    cargo test -p codex-tui app::agent_navigation::tests::picker_tree_prefixes_reflect_nested_agent_paths --lib -- --exact --test-threads=1
+    cargo test -p codex-tui app::loaded_threads::tests::finds_loaded_subagent_tree_for_primary_thread --lib -- --exact --test-threads=1
+
 # Focused /agent picker usage and remaining-context visibility slice.
 tui-agent-picker-usage-targeted:
     cargo test -p codex-tui app::tests::agent_picker_thread_token_usage_reads_inactive_thread_store --lib -- --exact --test-threads=1

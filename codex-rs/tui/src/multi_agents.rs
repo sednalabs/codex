@@ -50,6 +50,8 @@ pub(crate) struct AgentPickerThreadEntry {
     pub(crate) agent_nickname: Option<String>,
     /// Agent type shown in brackets when present, for example `worker`.
     pub(crate) agent_role: Option<String>,
+    /// Canonical agent path for thread-spawned subagents, when available.
+    pub(crate) agent_path: Option<String>,
     /// Whether the thread has emitted a close event and should render dimmed.
     pub(crate) is_closed: bool,
     /// Unix timestamp (seconds) when the thread was created, if known.
