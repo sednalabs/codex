@@ -10,6 +10,7 @@ use crate::error::EnvVarError;
 use codex_api::Provider as ApiProvider;
 use codex_api::provider::RetryConfig as ApiRetryConfig;
 use codex_protocol::config_types::ModelProviderAuthInfo;
+use codex_utils_version::RELEASE_VERSION;
 use http::HeaderMap;
 use http::header::HeaderName;
 use http::header::HeaderValue;
@@ -284,7 +285,7 @@ impl ModelProviderInfo {
             wire_api: WireApi::Responses,
             query_params: None,
             http_headers: Some(
-                [("version".to_string(), env!("CARGO_PKG_VERSION").to_string())]
+                [("version".to_string(), RELEASE_VERSION.to_string())]
                     .into_iter()
                     .collect(),
             ),

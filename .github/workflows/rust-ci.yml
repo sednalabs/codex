@@ -7,13 +7,12 @@ on:
   workflow_dispatch:
     inputs:
       platform_scope:
-        description: Platform coverage to run
+        description: Downstream platform coverage to run
         required: false
         type: choice
         options:
-          - linux-x86-only
-          - full-cross-platform
-        default: linux-x86-only
+          - linux-x86_64-only
+        default: linux-x86_64-only
   schedule:
     - cron: "15 18 * * *"
 
@@ -30,43 +29,21 @@ jobs:
     steps:
       - name: Compute platform matrices
         id: plan
-        env:
-          FULL_PLATFORM_RUN: ${{ github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.platform_scope == 'full-cross-platform') }}
         shell: bash
         run: |
           python3 - <<'PY' >> "$GITHUB_OUTPUT"
           import json
-          import os
 
-          full_platform_run = os.environ["FULL_PLATFORM_RUN"] == "true"
-
-          linux_only = [
+          # Downstream heavy validation is intentionally Linux x86_64 only for now.
+          linux_x86_64_only = [
               {
-                  "name": "Linux",
+                  "name": "Linux x86_64",
                   "runner": "ubuntu-24.04",
                   "timeout_minutes": 30,
               }
           ]
-          full_cross_platform = [
-              {
-                  "name": "Linux",
-                  "runner": "ubuntu-24.04",
-                  "timeout_minutes": 30,
-              },
-              {
-                  "name": "macOS",
-                  "runner": "macos-15",
-                  "timeout_minutes": 30,
-              },
-              {
-                  "name": "Windows",
-                  "runner": "windows-2025",
-                  "timeout_minutes": 30,
-              },
-          ]
 
-          selected = full_cross_platform if full_platform_run else linux_only
-          payload = json.dumps({"include": selected}, separators=(",", ":"))
+          payload = json.dumps({"include": linux_x86_64_only}, separators=(",", ":"))
           print(f"argument_comment_lint_matrix={payload}")
           PY
 

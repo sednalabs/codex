@@ -13,6 +13,7 @@ use codex_core::config::Config;
 use codex_protocol::num_format::format_with_separators;
 use codex_protocol::protocol::SandboxPolicy;
 use codex_protocol::protocol::SessionConfiguredEvent;
+use codex_utils_version::DISPLAY_VERSION;
 use owo_colors::OwoColorize;
 use owo_colors::Style;
 
@@ -215,8 +216,7 @@ impl EventProcessor for EventProcessorWithHumanOutput {
         prompt: &str,
         session_configured_event: &SessionConfiguredEvent,
     ) {
-        const VERSION: &str = env!("CARGO_PKG_VERSION");
-        eprintln!("OpenAI Codex v{VERSION} (research preview)\n--------");
+        eprintln!("OpenAI Codex v{DISPLAY_VERSION} (research preview)\n--------");
         for (key, value) in config_summary_entries(config, session_configured_event) {
             eprintln!("{} {}", format!("{key}:").style(self.bold), value);
         }
