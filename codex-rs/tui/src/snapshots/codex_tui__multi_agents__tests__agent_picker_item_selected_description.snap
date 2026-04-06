@@ -1,0 +1,5 @@
+---
+source: tui/src/multi_agents.rs
+expression: description
+---
+gpt-5.4-mini medium • task: Investigate /agent picker metadata display • 00000000-0000-0000-0000-000000000114 • 120 used • approval: on-request • sandbox: workspace-write • reviewer: guardian_subagent

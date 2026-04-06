@@ -10375,6 +10375,18 @@ impl ChatWidget {
         self.effective_reasoning_effort()
     }
 
+    pub(crate) fn current_approval_policy(&self) -> AskForApproval {
+        self.config.permissions.approval_policy.value()
+    }
+
+    pub(crate) fn current_approvals_reviewer(&self) -> ApprovalsReviewer {
+        self.config.approvals_reviewer
+    }
+
+    pub(crate) fn current_sandbox_policy(&self) -> SandboxPolicy {
+        self.config.permissions.sandbox_policy.get().clone()
+    }
+
     #[cfg(test)]
     pub(crate) fn active_collaboration_mode_kind(&self) -> ModeKind {
         self.active_mode_kind()
