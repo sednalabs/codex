@@ -9,6 +9,7 @@ use codex_arg0::Arg0DispatchPaths;
 use codex_core::config::Config;
 use codex_exec_server::EnvironmentManager;
 use codex_utils_cli::CliConfigOverrides;
+use codex_utils_version::RELEASE_VERSION;
 
 use rmcp::model::ClientNotification;
 use rmcp::model::ClientRequest;
@@ -74,7 +75,7 @@ pub async fn run_main(
 
     let otel = codex_core::otel_init::build_provider(
         &config,
-        env!("CARGO_PKG_VERSION"),
+        RELEASE_VERSION,
         Some(OTEL_SERVICE_NAME),
         DEFAULT_ANALYTICS_ENABLED,
     )

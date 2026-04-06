@@ -4,9 +4,11 @@
 
 | Requirement                 | Details                                                         |
 | --------------------------- | --------------------------------------------------------------- |
-| Operating systems           | macOS 12+, Ubuntu 20.04+/Debian 10+, or Windows 11 **via WSL2** |
+| Operating systems           | Linux `x86_64` (Ubuntu 20.04+/Debian 10+ recommended)           |
 | Git (optional, recommended) | 2.23+ for built-in PR helpers                                   |
 | RAM                         | 4-GB minimum (8-GB recommended)                                 |
+
+The supported downstream install and release target is Linux `x86_64` only at the moment. Other upstream platform paths remain in the repository for future re-enablement, but Sedna does not currently publish or validate them as supported targets.
 
 ### DotSlash
 

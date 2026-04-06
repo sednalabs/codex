@@ -11,10 +11,12 @@ deliberate schedule/manual checkpoints instead of re-running after every merge.
 - `rust-ci.yml` keeps the Cargo-native PR checks intentionally small:
   - `cargo fmt --check`
   - `cargo shear`
-  - `argument-comment-lint` on Linux, macOS, and Windows
+  - `argument-comment-lint` on Linux `x86_64`
   - `tools/argument-comment-lint` package tests when the lint or its workflow wiring changes
 
-The PR workflow still keeps the Linux lint lane on the default-targets-only invocation for now, but the released linter runs on Linux, macOS, and Windows before merge.
+The downstream PR workflow intentionally stays on Linux `x86_64` only. Historical non-Linux paths
+remain in the repository for future re-enablement, but they are not part of the active Sedna CI
+contract today.
 
 ## `main` And Checkpoints
 
@@ -27,11 +29,11 @@ The PR workflow still keeps the Linux lint lane on the default-targets-only invo
   - manual dispatch when a broad Cargo-native proof is actually needed
   - not every ordinary push to `main`
   It still covers:
-  - the full Cargo `clippy` matrix
-  - the full Cargo `nextest` matrix
-  - release-profile Cargo builds
-  - cross-platform `argument-comment-lint`
-  - Linux remote-env tests
+  - Linux `x86_64` Cargo `clippy`
+  - Linux `x86_64` Cargo `nextest`
+  - Linux `x86_64` release-profile Cargo builds
+  - Linux `x86_64` `argument-comment-lint`
+  - Linux `x86_64` remote-env tests
 
 ## Rule Of Thumb
 

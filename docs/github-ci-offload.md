@@ -26,19 +26,19 @@ artifacts.
   - release visibility: never published as a GitHub Release
 - `rust-ci-full`
   - trigger: scheduled hygiene sweeps and manual dispatch
-  - purpose: heavyweight Cargo-native checkpoint coverage when broad proof is
+  - purpose: heavyweight Linux `x86_64` Cargo-native checkpoint coverage when broad proof is
     actually needed
   - retention: ordinary workflow logs only
 - `sedna-heavy-tests`
   - trigger: manual dispatch, `ci:heavy` PR label, and merge-group checkpoints
-  - purpose: expensive Linux-heavy Rust validation without using the shared local machine as the
+  - purpose: expensive Linux-heavy Rust validation without using the local development machine as the
     build factory
   - fanout: smoke and selected lanes now split by `setup_class` so light workflow/docs shards do
     not queue behind heavier Rust runners
   - scopes: `protocol`, `tui`, `cli`, `core`, `workspace`
 - `sedna-release`
   - trigger: Sedna release tags or manual dispatch
-  - purpose: official public release artifacts
+  - purpose: official public Linux `x86_64` release artifacts
   - release visibility: the only lane that may publish a GitHub Release
 - `sedna-sync-upstream`
   - trigger: manual dispatch and scheduled sync
@@ -47,7 +47,7 @@ artifacts.
 ## Operating model
 
 1. Edit locally.
-2. Run the smallest relevant local Build Helper smoke check.
+2. Run the smallest relevant local smoke check.
 3. Commit and push.
 4. Use `validation-lab` for ordinary remote-first validation on `validation/*`, `integration/*`,
    or other non-PR refs.
@@ -68,11 +68,18 @@ artifacts.
 10. Use `sedna-branch-build` only when you intentionally want a preview binary.
 11. Use `sedna-release` only for official releases.
 
+## Current downstream platform policy
+
+- Supported downstream platform: Linux `x86_64`
+- Parked but unsupported for now: macOS, Windows, Linux arm64, and other historical upstream targets
+- Scheduled and routine heavyweight CI should stay Linux `x86_64` only until Sedna deliberately
+  re-enables another platform with matching docs, workflow, and release-policy updates
+
 ## Validation ladder
 
 1. Tiny local checks only.
-   - `git diff --check`, workflow syntax validation, and the smallest relevant Build Helper smoke
-     lane.
+   - `git diff --check`, workflow syntax validation, and the smallest relevant helper-backed smoke
+     lane when one is available.
    - Reason: cheapest signal, zero extra GitHub runner pressure.
 2. `validation-lab` for normal iterative remote validation.
    - Default to `profile=smoke` or `profile=targeted`.

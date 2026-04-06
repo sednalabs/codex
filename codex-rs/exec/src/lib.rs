@@ -82,6 +82,7 @@ use codex_protocol::user_input::UserInput;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use codex_utils_oss::ensure_oss_provider_ready;
 use codex_utils_oss::get_default_model_for_oss_provider;
+use codex_utils_version::RELEASE_VERSION;
 use event_processor_with_human_output::EventProcessorWithHumanOutput;
 use event_processor_with_jsonl_output::EventProcessorWithJsonOutput;
 use serde_json::Value;
@@ -393,7 +394,7 @@ pub async fn run_main(cli: Cli, arg0_paths: Arg0DispatchPaths) -> anyhow::Result
     let otel = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         codex_core::otel_init::build_provider(
             &config,
-            env!("CARGO_PKG_VERSION"),
+            RELEASE_VERSION,
             /*service_name_override*/ None,
             DEFAULT_ANALYTICS_ENABLED,
         )
@@ -444,7 +445,7 @@ pub async fn run_main(cli: Cli, arg0_paths: Arg0DispatchPaths) -> anyhow::Result
         session_source: SessionSource::Exec,
         enable_codex_api_key_env: true,
         client_name: "codex_exec".to_string(),
-        client_version: env!("CARGO_PKG_VERSION").to_string(),
+        client_version: RELEASE_VERSION.to_string(),
         experimental_api: true,
         opt_out_notification_methods: Vec::new(),
         channel_capacity: DEFAULT_IN_PROCESS_CHANNEL_CAPACITY,

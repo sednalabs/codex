@@ -66,7 +66,7 @@ use crate::terminal_title::SetTerminalTitleResult;
 use crate::terminal_title::clear_terminal_title;
 use crate::terminal_title::set_terminal_title;
 use crate::text_formatting::proper_join;
-use crate::version::CODEX_CLI_VERSION;
+use crate::version::CODEX_DISPLAY_VERSION;
 use codex_app_server_protocol::AppSummary;
 use codex_app_server_protocol::CodexErrorInfo as AppServerCodexErrorInfo;
 use codex_app_server_protocol::CollabAgentState as AppServerCollabAgentState;
@@ -10681,7 +10681,7 @@ impl ChatWidget {
             /*reasoning_effort*/ None,
             /*show_fast_status*/ false,
             config.cwd.to_path_buf(),
-            CODEX_CLI_VERSION,
+            CODEX_DISPLAY_VERSION,
         ))
     }
 

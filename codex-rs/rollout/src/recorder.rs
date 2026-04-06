@@ -12,6 +12,7 @@ use codex_protocol::ThreadId;
 use codex_protocol::dynamic_tools::DynamicToolSpec;
 use codex_protocol::models::BaseInstructions;
 use codex_utils_string::truncate_middle_chars;
+use codex_utils_version::RELEASE_VERSION;
 use serde_json::Value;
 use time::OffsetDateTime;
 use time::format_description::FormatItem;
@@ -402,7 +403,7 @@ impl RolloutRecorder {
                         timestamp,
                         cwd: config.cwd().to_path_buf(),
                         originator: originator().value,
-                        cli_version: env!("CARGO_PKG_VERSION").to_string(),
+                        cli_version: RELEASE_VERSION.to_string(),
                         agent_nickname: source.get_nickname(),
                         agent_role: source.get_agent_role(),
                         agent_path: source.get_agent_path().map(Into::into),
