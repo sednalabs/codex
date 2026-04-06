@@ -134,6 +134,12 @@
       "lane_sets": ["all", "subagents", "core-carry"]
     },
     {
+      "lane_id": "codex.core-subagent-spawn-approval-targeted",
+      "run_command": "just --justfile ../justfile core-subagent-spawn-approval-targeted",
+      "groups": ["core"],
+      "lane_sets": ["all", "subagents", "core-carry"]
+    },
+    {
       "lane_id": "codex.core-persisted-subagent-descendants-targeted",
       "run_command": "just --justfile ../justfile core-persisted-subagent-descendants-targeted",
       "groups": ["core"],
@@ -231,6 +237,20 @@
         "codex-rs/core/src/tools/handlers/multi_agents_tests.rs",
         "codex-rs/core/src/agent/role_tests.rs",
         "codex-rs/tools/src/spawn_agent.rs",
+        "docs/downstream-regression-matrix.md",
+        "justfile"
+      ]
+    },
+    {
+      "route_id": "core-subagent-spawn-approval",
+      "lane_ids": ["codex.core-subagent-spawn-approval-targeted"],
+      "allowed_paths": [
+        "codex-rs/core/src/tools/handlers/multi_agents_common.rs",
+        "codex-rs/core/src/tools/handlers/multi_agents/spawn.rs",
+        "codex-rs/core/src/tools/handlers/multi_agents_v2/spawn.rs",
+        "codex-rs/core/src/tools/handlers/multi_agents_tests.rs",
+        "codex-rs/tools/src/agent_tool.rs",
+        "codex-rs/tools/src/agent_tool_tests.rs",
         "docs/downstream-regression-matrix.md",
         "justfile"
       ]

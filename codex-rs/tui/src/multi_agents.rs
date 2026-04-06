@@ -10,8 +10,10 @@ use crate::status::format_tokens_compact;
 use crate::text_formatting::truncate_text;
 use chrono::Utc;
 use codex_protocol::ThreadId;
+use codex_protocol::config_types::ApprovalsReviewer;
 use codex_protocol::openai_models::ReasoningEffort as ReasoningEffortConfig;
 use codex_protocol::protocol::AgentStatus;
+use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::CollabAgentInteractionEndEvent;
 use codex_protocol::protocol::CollabAgentRef;
 use codex_protocol::protocol::CollabAgentSpawnEndEvent;
@@ -22,6 +24,7 @@ use codex_protocol::protocol::CollabResumeEndEvent;
 use codex_protocol::protocol::CollabWaitingBeginEvent;
 use codex_protocol::protocol::CollabWaitingCompletionReason;
 use codex_protocol::protocol::CollabWaitingEndEvent;
+use codex_protocol::protocol::SandboxPolicy;
 use codex_protocol::protocol::TokenUsage;
 use crossterm::event::KeyCode;
 use crossterm::event::KeyEvent;
@@ -77,6 +80,9 @@ pub(crate) struct AgentPickerThreadUsage {
     pub(crate) model: Option<String>,
     pub(crate) reasoning_effort: Option<ReasoningEffortConfig>,
     pub(crate) task_name: Option<String>,
+    pub(crate) approval_policy: Option<AskForApproval>,
+    pub(crate) approvals_reviewer: Option<ApprovalsReviewer>,
+    pub(crate) sandbox_policy: Option<SandboxPolicy>,
 }
 
 pub(crate) fn agent_picker_status_dot_spans(is_closed: bool) -> Vec<Span<'static>> {
@@ -187,6 +193,56 @@ fn format_agent_picker_item_description_at(
         parts.push(age);
     }
     parts.join(" • ")
+}
+
+pub(crate) fn format_agent_picker_item_selected_description(
+    thread_id: ThreadId,
+    token_usage: &TokenUsage,
+    model_context_window: Option<i64>,
+    updated_at: Option<i64>,
+    created_at: Option<i64>,
+    model: Option<&str>,
+    reasoning_effort: Option<ReasoningEffortConfig>,
+    task_name: Option<&str>,
+    approval_policy: Option<AskForApproval>,
+    approvals_reviewer: Option<ApprovalsReviewer>,
+    sandbox_policy: Option<&SandboxPolicy>,
+) -> String {
+    let mut description = format_agent_picker_item_description(
+        thread_id,
+        token_usage,
+        model_context_window,
+        updated_at,
+        created_at,
+        model,
+        reasoning_effort,
+        task_name,
+    );
+    if let Some(policy_details) =
+        format_agent_picker_policy_details(approval_policy, approvals_reviewer, sandbox_policy)
+    {
+        description.push_str(" • ");
+        description.push_str(&policy_details);
+    }
+    description
+}
+
+fn format_agent_picker_policy_details(
+    approval_policy: Option<AskForApproval>,
+    approvals_reviewer: Option<ApprovalsReviewer>,
+    sandbox_policy: Option<&SandboxPolicy>,
+) -> Option<String> {
+    let mut parts = Vec::new();
+    if let Some(approval_policy) = approval_policy {
+        parts.push(format!("approval: {approval_policy}"));
+    }
+    if let Some(sandbox_policy) = sandbox_policy {
+        parts.push(format!("sandbox: {sandbox_policy}"));
+    }
+    if let Some(approvals_reviewer) = approvals_reviewer {
+        parts.push(format!("reviewer: {approvals_reviewer}"));
+    }
+    (!parts.is_empty()).then(|| parts.join(" • "))
 }
 
 fn format_agent_picker_age(
@@ -927,6 +983,30 @@ mod tests {
             ),
             "00000000-0000-0000-0000-000000000115"
         );
+    }
+
+    #[test]
+    fn picker_selected_description_includes_permission_details_when_available() {
+        let thread_id = ThreadId::from_string("00000000-0000-0000-0000-000000000114").unwrap();
+        let description = format_agent_picker_item_selected_description(
+            thread_id,
+            &TokenUsage {
+                input_tokens: 100,
+                output_tokens: 20,
+                total_tokens: 120,
+                ..Default::default()
+            },
+            /*model_context_window*/ None,
+            /*updated_at*/ None,
+            /*created_at*/ None,
+            Some("gpt-5.4-mini"),
+            Some(ReasoningEffortConfig::Medium),
+            Some("Investigate /agent picker metadata display"),
+            Some(AskForApproval::OnRequest),
+            Some(ApprovalsReviewer::GuardianSubagent),
+            Some(&SandboxPolicy::new_workspace_write_policy()),
+        );
+        assert_snapshot!("agent_picker_item_selected_description", description);
     }
 
     #[test]

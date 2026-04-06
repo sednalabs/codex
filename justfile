@@ -117,12 +117,14 @@ tui-agent-picker-tree-targeted:
 tui-agent-picker-usage-targeted:
     cargo test -p codex-tui app::tests::agent_picker_thread_token_usage_reads_inactive_thread_store --lib -- --exact --test-threads=1
     cargo test -p codex-tui app::tests::agent_picker_thread_token_usage_prefers_live_active_thread_usage --lib -- --exact --test-threads=1
+    cargo test -p codex-tui app::tests::agent_picker_thread_token_usage_does_not_fallback_when_active_live_usage_is_zero --lib -- --exact --test-threads=1
     cargo test -p codex-tui app::tests::open_agent_picker_marks_loaded_threads_open --lib -- --exact --test-threads=1
     cargo test -p codex-tui app::tests::inactive_thread_started_notification_initializes_replay_session --lib -- --exact --test-threads=1
     cargo test -p codex-tui multi_agents::tests::picker_description_falls_back_to_thread_id_without_usage --lib -- --exact --test-threads=1
     cargo test -p codex-tui multi_agents::tests::picker_description_includes_compact_token_usage_when_present --lib -- --exact --test-threads=1
     cargo test -p codex-tui multi_agents::tests::picker_description_includes_remaining_context_when_known --lib -- --exact --test-threads=1
     cargo test -p codex-tui multi_agents::tests::picker_description_includes_compact_age_when_known --lib -- --exact --test-threads=1
+    cargo test -p codex-tui multi_agents::tests::picker_selected_description_includes_permission_details_when_available --lib -- --exact --test-threads=1
 
 # Focused TUI combined session-vs-thread token usage slice.
 tui-agent-usage-totals-targeted:
@@ -163,6 +165,15 @@ core-subagent-model-pinning-targeted:
     CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo test -p codex-core spec_tests::test_build_specs_multi_agent_v2_uses_task_names_and_hides_resume --lib -- --exact --test-threads=1
     CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo test -p codex-tools spawn_agent_tool_ --lib -- --test-threads=1
     CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo test -p codex-core --test all suite::subagent_notifications::spawn_agent_preserves_exact_requested_model_slug_through_role_layering -- --exact --test-threads=1
+
+# Focused spawn-approval gate and schema slice.
+core-subagent-spawn-approval-targeted:
+    CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo test -p codex-core spawn_agent_requires_user_approval_when_requested --lib -- --exact --test-threads=1
+    CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo test -p codex-core multi_agent_v2_spawn_requires_user_approval_when_requested --lib -- --exact --test-threads=1
+    CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo test -p codex-core spawn_agent_approval_respects_request_user_input_mode_availability --lib -- --exact --test-threads=1
+    CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo test -p codex-core spawn_agent_approval_question_includes_preview_role_and_model_context --lib -- --exact --test-threads=1
+    CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo test -p codex-tools spawn_agent_tool_v2_requires_task_name_and_lists_visible_models --lib -- --exact --test-threads=1
+    CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo test -p codex-tools spawn_agent_tool_v1_exposes_runtime_metadata_fields --lib -- --exact --test-threads=1
 
 # Focused persisted-descendant inventory slice for subtree close/resume behavior.
 core-persisted-subagent-descendants-targeted:

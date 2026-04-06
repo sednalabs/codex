@@ -56,6 +56,7 @@ fn spawn_agent_tool_v2_requires_task_name_and_lists_visible_models() {
     assert!(description.contains("visible display (`visible-model`)"));
     assert!(!description.contains("hidden display (`hidden-model`)"));
     assert!(properties.contains_key("task_name"));
+    assert!(properties.contains_key("spawn_approval"));
     assert_eq!(
         properties.get("agent_type"),
         Some(&JsonSchema::String {

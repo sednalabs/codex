@@ -33,6 +33,7 @@ use crate::turn_diff_tracker::TurnDiffTracker;
 use codex_features::Feature;
 use codex_protocol::AgentPath;
 use codex_protocol::ThreadId;
+use codex_protocol::config_types::ModeKind;
 use codex_protocol::models::BaseInstructions;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::FunctionCallOutputBody;
@@ -236,6 +237,92 @@ async fn spawn_agent_rejects_when_message_and_items_are_both_set() {
             "Provide either message or items, but not both".to_string()
         )
     );
+}
+
+#[tokio::test]
+async fn spawn_agent_requires_user_approval_when_requested() {
+    let (session, mut turn) = make_session_and_context().await;
+    turn.collaboration_mode.mode = ModeKind::Plan;
+    let invocation = invocation(
+        Arc::new(session),
+        Arc::new(turn),
+        "spawn_agent",
+        function_payload(json!({
+            "message": "inspect this repo",
+            "spawn_approval": "ask_user"
+        })),
+    );
+    let Err(err) = SpawnAgentHandler.handle(invocation).await else {
+        panic!("spawn approval should be required");
+    };
+    assert_eq!(
+        err,
+        FunctionCallError::RespondToModel(
+            "spawn_agent cancelled because no user approval response was received".to_string()
+        )
+    );
+}
+
+#[tokio::test]
+async fn multi_agent_v2_spawn_requires_user_approval_when_requested() {
+    let (session, mut turn) = make_session_and_context().await;
+    turn.collaboration_mode.mode = ModeKind::Plan;
+    let invocation = invocation(
+        Arc::new(session),
+        Arc::new(turn),
+        "spawn_agent",
+        function_payload(json!({
+            "message": "inspect this repo",
+            "task_name": "worker",
+            "spawn_approval": "ask_user"
+        })),
+    );
+    let Err(err) = SpawnAgentHandlerV2.handle(invocation).await else {
+        panic!("spawn approval should be required");
+    };
+    assert_eq!(
+        err,
+        FunctionCallError::RespondToModel(
+            "spawn_agent cancelled because no user approval response was received".to_string()
+        )
+    );
+}
+
+#[tokio::test]
+async fn spawn_agent_approval_respects_request_user_input_mode_availability() {
+    let (session, mut turn) = make_session_and_context().await;
+    turn.collaboration_mode.mode = ModeKind::Default;
+    turn.tools_config.default_mode_request_user_input = false;
+    let invocation = invocation(
+        Arc::new(session),
+        Arc::new(turn),
+        "spawn_agent",
+        function_payload(json!({
+            "message": "inspect this repo",
+            "spawn_approval": "ask_user"
+        })),
+    );
+    let Err(err) = SpawnAgentHandler.handle(invocation).await else {
+        panic!("spawn approval should honor request_user_input mode availability");
+    };
+    assert_eq!(
+        err,
+        FunctionCallError::RespondToModel(
+            "request_user_input is unavailable in Default mode".to_string()
+        )
+    );
+}
+
+#[test]
+fn spawn_agent_approval_question_includes_preview_role_and_model_context() {
+    let question = build_spawn_agent_approval_question_text(
+        Some("explorer"),
+        Some("gpt-5.4-mini"),
+        "inspect this repo and summarize",
+    );
+    assert!(question.contains("Task preview: `inspect this repo and summarize`."));
+    assert!(question.contains("Requested role: `explorer`."));
+    assert!(question.contains("Requested model: `gpt-5.4-mini`."));
 }
 
 #[tokio::test]
