@@ -497,7 +497,7 @@
         "protocol schema validation"
       ],
       "owner": "downstream",
-      "notes": "Keeps the runtime, transports, and tracing code specific to this fork. Remote-control transport, enrollment, and runtime hooks were removed upstream, so this entry also tracks the downstream decision to no longer export that surface."
+      "notes": "Keeps the runtime, transports, and tracing code specific to this fork. The previous note here was stale: upstream still ships remote-control, and downstream never merged that transport, enrollment, and runtime surface until the upstream-faithful restore work."
     },
     {
       "id": "codex-tui-session-surfaces",
