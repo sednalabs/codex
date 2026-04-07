@@ -404,6 +404,289 @@
       ],
       "owner": "downstream",
       "notes": "Keeps code-mode declarations namespaced and legible."
+    },
+    {
+      "id": "agent-orchestration-skills",
+      "title": "Agent orchestration skills and sidecar templates",
+      "status": "live",
+      "category": "mcp",
+      "surface_type": "agent-facing",
+      "surface": [
+        "babysit-pr babysitter skill",
+        "codex-orchestrator skill template",
+        "sidecar-review-loop and subagent-session-tail helpers"
+      ],
+      "files": [
+        ".codex/skills/babysit-pr/agents/openai.yaml",
+        ".codex/skills/babysit-pr/scripts/gh_pr_watch.py",
+        ".codex/skills/private/codex-orchestrator/agents/openai.yaml",
+        ".codex/skills/private/sidecar-review-loop/agents/openai.yaml",
+        ".codex/skills/private/subagent-session-tail/agents/openai.yaml",
+        ".codex/skills/private/subagent-session-tail/scripts/inspect_subagent_tail.py",
+        ".codex/skills/"
+      ],
+      "behavior": "Downstream publishes tailored skill templates and helpers that orchestrate babysitting, sidecar review loops, and subagent session tails.",
+      "upstream_equivalent": false,
+      "introduced_in": {
+        "carry_commit": null,
+        "upstream_commit": null
+      },
+      "guardrail_lane": "ops-agent-workflow",
+      "tests": [
+        "babysit-pr skill telemetry review",
+        "subagent session tail integration smoke"
+      ],
+      "owner": "downstream",
+      "notes": "Keeps the downstream agent orchestration surface explicit and discoverable."
+    },
+    {
+      "id": "ci-workflow-automation",
+      "title": "CI/workflow automation and validation lanes",
+      "status": "live",
+      "category": "build-validation",
+      "surface_type": "operator-facing",
+      "surface": [
+        "validation lanes",
+        "Sedna sync and heavy test workflows",
+        "GitHub scripts and lane metadata"
+      ],
+      "files": [
+        ".github/actions/",
+        ".github/scripts/",
+        ".github/validation-lanes.json",
+        ".github/workflows/"
+      ],
+      "behavior": "Downstream runs bespoke validation lanes, Sedna sync/heavy workflows, and tooling scripts so the CI surface can keep pace with the fork.",
+      "upstream_equivalent": false,
+      "introduced_in": {
+        "carry_commit": null,
+        "upstream_commit": null
+      },
+      "guardrail_lane": "github-ci-offload",
+      "tests": [
+        "validation-lab and Sedna job orchestration smoke",
+        "workflow sync job exports expected metadata"
+      ],
+      "owner": "downstream",
+      "notes": "Documents the downstream CI expansion that exercises extra lanes and housekeeping scripts. The sedna-sync-upstream job uses SEDNA_SYNC_UPSTREAM_PUSH_TOKEN (a PAT or machine-account token granted both contents:write and workflow:write) because the mirror updates workflow files."
+    },
+    {
+      "id": "codex-app-server-suite",
+      "title": "App-server/protocol runtime maintenance",
+      "status": "live",
+      "category": "core-protocol",
+      "surface_type": "agent-facing",
+      "surface": [
+        "app-server protocol surfaces",
+        "message processor and transport changes"
+      ],
+      "files": [
+        "codex-rs/app-server/",
+        "codex-rs/app-server-protocol/",
+        "codex-rs/app-server-client/"
+      ],
+      "behavior": "Downstream keeps its own app-server implementation, protocol schema, and client-side helpers aligned with the fork’s runtime requirements.",
+      "upstream_equivalent": false,
+      "introduced_in": {
+        "carry_commit": null,
+        "upstream_commit": null
+      },
+      "guardrail_lane": "core-carry-runtime-smoke",
+      "tests": [
+        "app-server integration suite",
+        "protocol schema validation"
+      ],
+      "owner": "downstream",
+      "notes": "Keeps the runtime, transports, and tracing code specific to this fork. Remote-control transport, enrollment, and runtime hooks were removed upstream, so this entry also tracks the downstream decision to no longer export that surface."
+    },
+    {
+      "id": "codex-tui-session-surfaces",
+      "title": "TUI session-state, queue, and usage surfaces",
+      "status": "live",
+      "category": "tui",
+      "surface_type": "agent-facing",
+      "surface": [
+        "multi-agent TUI state",
+        "usage & status line surfaces"
+      ],
+      "files": [
+        "codex-rs/tui/src/",
+        "codex-rs/tui/tests/",
+        "codex-rs/tui/src/snapshots/"
+      ],
+      "behavior": "Downstream’s TUI layers enforce the queue, usage, and session-state surfaces that are unique to this fork.",
+      "upstream_equivalent": false,
+      "introduced_in": {
+        "carry_commit": null,
+        "upstream_commit": null
+      },
+      "guardrail_lane": "codex.tui-agent-usage-totals-targeted",
+      "tests": [
+        "TUI snapshot suites",
+        "multi-agent interaction integration tests"
+      ],
+      "owner": "downstream",
+      "notes": "Keeps the fork’s interactive surfaces deterministic."
+    },
+    {
+      "id": "codex-core-and-ops-extensions",
+      "title": "Core/CLI/analytics and MCP tooling extensions",
+      "status": "live",
+      "category": "mcp",
+      "surface_type": "both",
+      "surface": [
+        "analytics, CLI, cloud, code-mode, config, and MCP extensions"
+      ],
+      "files": [
+        "codex-rs/analytics/",
+        "codex-rs/backend-client/",
+        "codex-rs/chatgpt/",
+        "codex-rs/cli/",
+        "codex-rs/cloud-requirements/",
+        "codex-rs/cloud-tasks/",
+        "codex-rs/code-mode/",
+        "codex-rs/config/",
+        "codex-rs/core/",
+        "codex-rs/codex-api/",
+        "codex-rs/codex-mcp/",
+        "codex-rs/utils/",
+        "codex-cli/",
+        "codex-rs/exec/",
+        "codex-rs/exec-server/",
+        "codex-rs/features/",
+        "codex-rs/feedback/",
+        "codex-rs/linux-sandbox/",
+        "codex-rs/lmstudio/",
+        "codex-rs/login/",
+        "codex-rs/mcp-server/",
+        "codex-rs/model-provider-info/",
+        "codex-rs/models-manager/",
+        "codex-rs/ollama/",
+        "codex-rs/otel/",
+        "codex-rs/process-hardening/",
+        "codex-rs/protocol/",
+        "codex-rs/response-debug-context/",
+        "codex-rs/responses-api-proxy/",
+        "codex-rs/rmcp-client/",
+        "codex-rs/rollout/",
+        "codex-rs/rust-toolchain.toml",
+        "codex-rs/sandboxing/",
+        "codex-rs/state/",
+        "codex-rs/terminal-detection/",
+        "codex-rs/tools/",
+        "codex-rs/windows-sandbox-rs/"
+      ],
+      "behavior": "Telemetry, CLI, config, and MCP extensions keep downstream tooling aligned with fork-specific policies and usage telemetry.",
+      "upstream_equivalent": false,
+      "introduced_in": {
+        "carry_commit": null,
+        "upstream_commit": null
+      },
+      "guardrail_lane": "ops-mcp-safety",
+      "tests": [
+        "analytics instrumentation smoke",
+        "config edit round trip",
+        "mcp policy validation suite"
+      ],
+      "owner": "downstream",
+      "notes": "Covers the wide cross-section of runtime tooling that stays downstream-only."
+    },
+    {
+      "id": "shell-tool-mcp-project",
+      "title": "Shell tool MCP helper project",
+      "status": "live",
+      "category": "mcp",
+      "surface_type": "operator-facing",
+      "surface": [
+        "shell selection helpers",
+        "platform detection shims"
+      ],
+      "files": [
+        "shell-tool-mcp/package.json",
+        "shell-tool-mcp/src/",
+        "shell-tool-mcp/tests/",
+        "shell-tool-mcp/patches/",
+        "shell-tool-mcp/tsconfig.json",
+        "shell-tool-mcp/tsup.config.ts"
+      ],
+      "behavior": "Downstream publishes a shell helper package that standardizes shell selection, platform detection, and exec wrappers for MCP tooling.",
+      "upstream_equivalent": false,
+      "introduced_in": {
+        "carry_commit": null,
+        "upstream_commit": null
+      },
+      "guardrail_lane": "shell-tool-mcp-ci",
+      "tests": [
+        "shell-tool selection integration smoke"
+      ],
+      "owner": "downstream",
+      "notes": "Documents the additional npm project that feeds MCP workflows. Upstream has removed shell-tool-mcp, so treat this divergence as under audit until we decide whether the helper is still needed."
+    },
+    {
+      "id": "downstream-documents-and-guides",
+      "title": "Downstream documents and guides",
+      "status": "live",
+      "category": "docs-only",
+      "surface_type": "operator-facing",
+      "surface": [
+        "downstream policy narrative",
+        "operator guidance documents",
+        "divergence tracking guides"
+      ],
+      "files": [
+        "docs/"
+      ],
+      "behavior": "Downstream maintains documentation, policies, and divergence guides that sit beside the upstream code.",
+      "upstream_equivalent": false,
+      "introduced_in": {
+        "carry_commit": null,
+        "upstream_commit": null
+      },
+      "guardrail_lane": "branch-policy-ci-hardening",
+      "tests": [
+        "documentation audit smoke"
+      ],
+      "owner": "downstream",
+      "notes": "Covers all downstream docs (carry policies, how-tos, matrices) so they are treated as intentional content."
+    },
+    {
+      "id": "downstream-build-config-and-patches",
+      "title": "Build/config artifacts and approved patches",
+      "status": "live",
+      "category": "branch-policy",
+      "surface_type": "operator-facing",
+      "surface": [
+        "Bazel/npm configs",
+        "downstream install scripts and patches"
+      ],
+      "files": [
+        ".bazelrc",
+        "MODULE.bazel",
+        "MODULE.bazel.lock",
+        ".gitignore",
+        "pnpm-lock.yaml",
+        "pnpm-workspace.yaml",
+        "scripts/install/install.sh",
+        "scripts/install/install.ps1",
+        "scripts/stage_npm_packages.py",
+        "scripts/list-bazel-clippy-targets.sh",
+        "patches/",
+        "sdk/typescript/src/events.ts",
+        "sdk/typescript/tests/exec.test.ts"
+      ],
+      "behavior": "Downstream keeps patched build, packaging, and install scripts along with configuration files tailored to the fork’s CI and release policy.",
+      "upstream_equivalent": false,
+      "introduced_in": {
+        "carry_commit": null,
+        "upstream_commit": null
+      },
+      "guardrail_lane": "branch-policy-ci-hardening",
+      "tests": [
+        "install script smoke",
+        "Bazel clippy target discovery"
+      ],
+      "owner": "downstream",
+      "notes": "Captures downstream platform/patch artifacts that the audit should treat as deliberate."
     }
   ]
 }

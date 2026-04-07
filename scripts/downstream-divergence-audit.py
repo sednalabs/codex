@@ -104,7 +104,11 @@ def main() -> int:
     merge_base = merge_base_sha(repo, snapshot_1["upstream"].sha, snapshot_1["downstream"].sha)
 
     registry_state = reconcile_registry(registry, code_items)
-    annotated_all_items = annotate_diff_items(diff_items, registry_state["path_registry_ids"])
+    annotated_all_items = annotate_diff_items(
+        diff_items,
+        registry_state["path_registry_ids"],
+        registry_state["path_registry_surface_types"],
+    )
     annotated_code_items = [item for item in annotated_all_items if item["is_code"]]
     annotated_non_code_items = [item for item in annotated_all_items if not item["is_code"]]
 
@@ -451,6 +455,7 @@ def reconcile_registry(registry: dict[str, Any], live_code_items: list[DiffItem]
     live_entries: list[dict[str, Any]] = []
     stale_entry_ids: list[str] = []
     path_registry_ids: dict[str, list[str]] = {}
+    path_registry_surface_types: dict[str, list[str]] = {}
     live_code_paths = sorted({path for item in live_code_items for path in item.paths})
     uncovered_code_paths = sorted(live_code_paths)
 
@@ -461,6 +466,7 @@ def reconcile_registry(registry: dict[str, Any], live_code_items: list[DiffItem]
             {path for path in live_code_paths for spec in files if matches_spec(spec, path)}
         )
         status = str(entry.get("status", "live"))
+        surface_type = entry.get("surface_type")
         if matched_paths:
             live_entries.append(
                 {
@@ -469,12 +475,15 @@ def reconcile_registry(registry: dict[str, Any], live_code_items: list[DiffItem]
                     "status": "live",
                     "matched_paths": matched_paths,
                     "surface": entry.get("surface", []),
+                    "surface_type": surface_type,
                     "category": entry.get("category", ""),
                 }
             )
             uncovered_code_paths = [path for path in uncovered_code_paths if path not in matched_paths]
             for path in matched_paths:
                 path_registry_ids.setdefault(path, []).append(entry_id)
+                if surface_type:
+                    path_registry_surface_types.setdefault(path, []).append(surface_type)
         else:
             derived_status = "upstream-equivalent" if status == "upstream-equivalent" else "stale"
             live_entries.append(
@@ -484,6 +493,7 @@ def reconcile_registry(registry: dict[str, Any], live_code_items: list[DiffItem]
                     "status": derived_status,
                     "matched_paths": [],
                     "surface": entry.get("surface", []),
+                    "surface_type": surface_type,
                     "category": entry.get("category", ""),
                 }
             )
@@ -497,6 +507,9 @@ def reconcile_registry(registry: dict[str, Any], live_code_items: list[DiffItem]
         "stale_entry_ids": stale_entry_ids,
         "uncovered_code_paths": uncovered_code_paths,
         "path_registry_ids": {path: sorted(set(ids)) for path, ids in path_registry_ids.items()},
+        "path_registry_surface_types": {
+            path: sorted(set(surface_types)) for path, surface_types in path_registry_surface_types.items()
+        },
     }
 
 
@@ -524,7 +537,11 @@ def snapshot_changed(snapshot_1: dict[str, RemoteTip], snapshot_2: dict[str, Rem
     return False
 
 
-def diff_item_to_json(item: DiffItem, registry_ids: list[str] | tuple[str, ...] | None = None) -> dict[str, Any]:
+def diff_item_to_json(
+    item: DiffItem,
+    registry_ids: list[str] | tuple[str, ...] | None = None,
+    surface_types: list[str] | tuple[str, ...] | None = None,
+) -> dict[str, Any]:
     return {
         "status": item.status,
         "paths": list(item.paths),
@@ -535,18 +552,32 @@ def diff_item_to_json(item: DiffItem, registry_ids: list[str] | tuple[str, ...] 
         "rename_score": item.rename_score,
         "is_code": item.is_code,
         "registry_ids": list(registry_ids or item.registry_ids),
+        "surface_types": list(surface_types or []),
     }
 
 
-def annotate_diff_items(items: list[DiffItem], coverage: dict[str, list[str]]) -> list[dict[str, Any]]:
-    return [diff_item_to_json(item, coverage_for_item(item, coverage)) for item in items]
+def annotate_diff_items(
+    items: list[DiffItem],
+    id_coverage: dict[str, list[str]],
+    surface_coverage: dict[str, list[str]],
+) -> list[dict[str, Any]]:
+    return [
+        diff_item_to_json(item, *coverage_for_item(item, id_coverage, surface_coverage))
+        for item in items
+    ]
 
 
-def coverage_for_item(item: DiffItem, coverage: dict[str, list[str]]) -> list[str]:
+def coverage_for_item(
+    item: DiffItem,
+    id_coverage: dict[str, list[str]],
+    surface_coverage: dict[str, list[str]],
+) -> tuple[list[str], list[str]]:
     ids: list[str] = []
+    surface_types: list[str] = []
     for path in item.paths:
-        ids.extend(coverage.get(path, []))
-    return sorted(set(ids))
+        ids.extend(id_coverage.get(path, []))
+        surface_types.extend(surface_coverage.get(path, []))
+    return sorted(set(ids)), sorted(set(surface_types))
 
 
 def write_outputs(output_dir: Path, format_name: str, audit: dict[str, Any]) -> None:
@@ -605,12 +636,16 @@ def render_markdown(audit: dict[str, Any]) -> str:
 def render_diff_table(items: list[dict[str, Any]]) -> list[str]:
     if not items:
         return ["- None"]
-    rows = ["| Status | Mode | Rename | Paths | Registry |", "| --- | --- | --- | --- | --- |"]
+    rows = [
+        "| Status | Mode | Rename | Paths | Registry | Surface |",
+        "| --- | --- | --- | --- | --- | --- |",
+    ]
     for item in items:
         registry_ids = ", ".join(item.get("registry_ids", [])) or "-"
         rename_score = f"`{item['rename_score']}`" if item.get("rename_score") else "-"
+        surface_types = ", ".join(item.get("surface_types", [])) or "-"
         rows.append(
-            f"| `{item['status']}` | `{item['mode_change']}` | {rename_score} | `{item['display_path']}` | `{registry_ids}` |"
+            f"| `{item['status']}` | `{item['mode_change']}` | {rename_score} | `{item['display_path']}` | `{registry_ids}` | `{surface_types}` |"
         )
     return rows
 
@@ -618,10 +653,11 @@ def render_diff_table(items: list[dict[str, Any]]) -> list[str]:
 def render_registry_table(entries: list[dict[str, Any]]) -> list[str]:
     if not entries:
         return ["- None"]
-    rows = ["| ID | Status | Matched paths |", "| --- | --- | --- |"]
+    rows = ["| ID | Status | Surface type | Matched paths |", "| --- | --- | --- | --- |"]
     for entry in entries:
         matched = ", ".join(entry.get("matched_paths", [])) or "-"
-        rows.append(f"| `{entry['id']}` | `{entry['status']}` | `{matched}` |")
+        surface_type = entry.get("surface_type") or "-"
+        rows.append(f"| `{entry['id']}` | `{entry['status']}` | `{surface_type}` | `{matched}` |")
     return rows
 
 
