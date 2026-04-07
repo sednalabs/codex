@@ -1,0 +1,409 @@
+{
+  "version": 1,
+  "divergences": [
+    {
+      "id": "branch-policy-sync-plumbing",
+      "title": "Branch policy sync plumbing and audit runner",
+      "status": "live",
+      "category": "branch-policy",
+      "surface": [
+        "sedna-sync-upstream workflow",
+        "downstream divergence audit script",
+        "just wrapper"
+      ],
+      "files": [
+        ".github/workflows/sedna-sync-upstream.yml",
+        "scripts/downstream-divergence-audit.py",
+        "justfile"
+      ],
+      "behavior": "CI fast-forwards the upstream mirror, exports the synced SHA, and runs the authoritative downstream audit.",
+      "upstream_equivalent": false,
+      "introduced_in": {
+        "carry_commit": null,
+        "upstream_commit": null
+      },
+      "guardrail_lane": "sedna-sync-upstream",
+      "tests": [
+        "workflow sync job exports synced_upstream_main_sha",
+        "workflow audit job runs after mirror sync"
+      ],
+      "owner": "downstream",
+      "notes": "Tracks the audit plumbing itself so the new enforcement path remains intentional."
+    },
+    {
+      "id": "first-party-usage-ledger-ownership",
+      "title": "First-party usage ledger ownership",
+      "status": "live",
+      "category": "usage-ledger",
+      "surface": [
+        "usage.sqlite ownership",
+        "ledger runtime"
+      ],
+      "files": [
+        "codex-rs/core/src/codex.rs",
+        "codex-rs/state/src/runtime.rs",
+        "codex-rs/state/src/runtime/usage.rs",
+        "codex-rs/state/usage_migrations/0001_usage_tables.sql"
+      ],
+      "behavior": "Downstream keeps local billing-turn and provider/token ledger ownership in this repo.",
+      "upstream_equivalent": false,
+      "introduced_in": {
+        "carry_commit": null,
+        "upstream_commit": null
+      },
+      "guardrail_lane": "core-ledger-smoke",
+      "tests": [
+        "usage_logger_* focused table-contract tests"
+      ],
+      "owner": "downstream",
+      "notes": "Keeps the canonical local usage ledger with the downstream fork."
+    },
+    {
+      "id": "usage-event-logging-and-metadata-capture",
+      "title": "Usage event logging and metadata capture",
+      "status": "live",
+      "category": "usage-ledger",
+      "surface": [
+        "usage event log",
+        "spawn and quota metadata"
+      ],
+      "files": [
+        "codex-rs/core/src/codex.rs",
+        "codex-rs/core/src/state/service.rs",
+        "codex-rs/protocol/src/protocol.rs",
+        "codex-rs/state/src/lib.rs",
+        "codex-rs/state/src/migrations.rs",
+        "codex-rs/state/src/runtime.rs",
+        "codex-rs/state/src/runtime/usage.rs",
+        "codex-rs/state/usage_migrations/0001_usage_tables.sql"
+      ],
+      "behavior": "Sessions record per-thread usage, provider, tool, and spawn metadata for downstream audit workflows.",
+      "upstream_equivalent": false,
+      "introduced_in": {
+        "carry_commit": null,
+        "upstream_commit": null
+      },
+      "guardrail_lane": "core-ledger-smoke",
+      "tests": [
+        "usage_logger_* focused table-contract tests"
+      ],
+      "owner": "downstream",
+      "notes": "Extends the ledger with event-level auditing data."
+    },
+    {
+      "id": "phase2-memory-attestation-and-fingerprinting",
+      "title": "Phase-2 memory attestation and prepared-input fingerprinting",
+      "status": "live",
+      "category": "core-protocol",
+      "surface": [
+        "phase-2 attestation",
+        "prepared-input fingerprinting"
+      ],
+      "files": [
+        "codex-rs/core/src/memories/phase2.rs",
+        "codex-rs/core/src/memories/phase2_attestation_tests.rs",
+        "codex-rs/core/src/memories/tests.rs",
+        "codex-rs/state/src/runtime/phase2_attestation.rs",
+        "codex-rs/state/migrations/0024_phase2_attestation_roots.sql"
+      ],
+      "behavior": "Downstream requires phase-2 attestation roots and fingerprints before consolidation can complete.",
+      "upstream_equivalent": false,
+      "introduced_in": {
+        "carry_commit": null,
+        "upstream_commit": null
+      },
+      "guardrail_lane": "codex.core-attestation-targeted",
+      "tests": [
+        "consolidation_artifacts_ready_rejects_*",
+        "global_phase2_attestation_requirement_is_root_scoped"
+      ],
+      "owner": "downstream",
+      "notes": "Keeps the attestation gate coupled to the downstream state runtime."
+    },
+    {
+      "id": "cli-git-metadata-and-rebuild-triggers",
+      "title": "CLI git metadata and rebuild triggers",
+      "status": "live",
+      "category": "build-validation",
+      "surface": [
+        "git metadata",
+        "build script rebuild triggers"
+      ],
+      "files": [
+        "codex-rs/cli/build.rs",
+        "codex-rs/cli/src/main.rs"
+      ],
+      "behavior": "CLI rebuilds when git metadata changes so downstream versions stay accurate.",
+      "upstream_equivalent": false,
+      "introduced_in": {
+        "carry_commit": null,
+        "upstream_commit": null
+      },
+      "guardrail_lane": "core-compile-smoke",
+      "tests": [
+        "build script rebuild smoke"
+      ],
+      "owner": "downstream",
+      "notes": "Keeps version stamping tied to live git state."
+    },
+    {
+      "id": "subagent-orchestration-override-preservation",
+      "title": "Sub-agent orchestration override preservation",
+      "status": "live",
+      "category": "subagents",
+      "surface": [
+        "spawn overrides",
+        "agent inventory",
+        "blocking waits"
+      ],
+      "files": [
+        "codex-rs/core/src/agent/builtins/awaiter.toml",
+        "codex-rs/core/src/agent/role.rs",
+        "codex-rs/core/src/tools/handlers/multi_agents/list_agents.rs",
+        "codex-rs/core/src/tools/handlers/multi_agents/spawn.rs",
+        "codex-rs/core/src/tools/handlers/multi_agents/wait.rs",
+        "codex-rs/core/src/tools/handlers/multi_agents_tests.rs",
+        "codex-rs/core/src/tools/spec.rs"
+      ],
+      "behavior": "Downstream preserves explicit spawn overrides and richer agent inventory plus wait semantics.",
+      "upstream_equivalent": false,
+      "introduced_in": {
+        "carry_commit": null,
+        "upstream_commit": null
+      },
+      "guardrail_lane": "codex.core-subagent-surface-targeted",
+      "tests": [
+        "spawn_agent_preserves_exact_requested_model_slug_through_role_layering",
+        "multi_agent_v2_list_agents_returns_completed_status_and_last_task_message",
+        "multi_agent_v2_wait_agent_honors_return_when_all"
+      ],
+      "owner": "downstream",
+      "notes": "Keeps the spawned agent contract explicit and reviewable."
+    },
+    {
+      "id": "dead-cwd-absolute-path-handling",
+      "title": "Dead-cwd absolute path handling",
+      "status": "live",
+      "category": "core-protocol",
+      "surface": [
+        "absolute paths after cwd disappears"
+      ],
+      "files": [
+        "codex-rs/utils/absolute-path/src/lib.rs",
+        "codex-rs/utils/absolute-path/tests/dead_cwd.rs"
+      ],
+      "behavior": "Absolute path resolution no longer depends on the process cwd when it is already absolute.",
+      "upstream_equivalent": false,
+      "introduced_in": {
+        "carry_commit": null,
+        "upstream_commit": null
+      },
+      "guardrail_lane": "core-runtime-surface-smoke",
+      "tests": [
+        "dead_cwd absolute-path regression"
+      ],
+      "owner": "downstream",
+      "notes": "Preserves path resolution after the cwd goes away."
+    },
+    {
+      "id": "blocking-unified-exec-waits",
+      "title": "Blocking unified-exec waits and compaction-aware turn completion",
+      "status": "live",
+      "category": "core-protocol",
+      "surface": [
+        "exec_command blocking waits",
+        "write_stdin blocking waits",
+        "turn completion metadata"
+      ],
+      "files": [
+        "codex-rs/core/src/tools/handlers/unified_exec.rs",
+        "codex-rs/protocol/src/protocol.rs",
+        "codex-rs/core/src/codex.rs"
+      ],
+      "behavior": "Unified exec tools support blocking wait semantics and downstream turn-completion metadata.",
+      "upstream_equivalent": false,
+      "introduced_in": {
+        "carry_commit": null,
+        "upstream_commit": null
+      },
+      "guardrail_lane": "core-runtime-surface-smoke",
+      "tests": [
+        "exec_command_wait_until_terminal_returns_exit_metadata",
+        "write_stdin_tool_exposes_blocking_wait_parameters"
+      ],
+      "owner": "downstream",
+      "notes": "Lets long-running shell work block at the tool layer instead of in transcript polling."
+    },
+    {
+      "id": "review-and-history-accounting-alignment",
+      "title": "Review and history accounting alignment",
+      "status": "live",
+      "category": "core-protocol",
+      "surface": [
+        "review accounting",
+        "history token summaries"
+      ],
+      "files": [
+        "codex-rs/protocol/src/protocol.rs",
+        "codex-rs/core/src/codex.rs"
+      ],
+      "behavior": "Review and history token summaries stay aligned with live runtime state instead of stale defaults.",
+      "upstream_equivalent": false,
+      "introduced_in": {
+        "carry_commit": null,
+        "upstream_commit": null
+      },
+      "guardrail_lane": "core-ledger-smoke",
+      "tests": [
+        "review history accounting snapshot"
+      ],
+      "owner": "downstream",
+      "notes": "Keeps review-mode accounting deterministic."
+    },
+    {
+      "id": "mcp-server-safety-policy-extensions",
+      "title": "MCP server safety policy extensions",
+      "status": "live",
+      "category": "config",
+      "surface": [
+        "server safety controls",
+        "oauth resource support"
+      ],
+      "files": [
+        "codex-rs/core/src/config/types.rs",
+        "codex-rs/core/src/config/edit.rs"
+      ],
+      "behavior": "Downstream retains explicit safety controls while supporting upstream OAuth resource configuration.",
+      "upstream_equivalent": false,
+      "introduced_in": {
+        "carry_commit": null,
+        "upstream_commit": null
+      },
+      "guardrail_lane": "core-runtime-surface-smoke",
+      "tests": [
+        "config safety controls round-trip"
+      ],
+      "owner": "downstream",
+      "notes": "Preserves the downstream mutability guardrails."
+    },
+    {
+      "id": "startup-plugin-sync-bounded-wait",
+      "title": "Startup plugin sync bounded wait and completion re-arm",
+      "status": "live",
+      "category": "build-validation",
+      "surface": [
+        "startup sync wait",
+        "completion re-arm"
+      ],
+      "files": [
+        "codex-rs/core/src/plugins/startup_sync.rs",
+        "codex-rs/core/src/plugins/startup_sync_tests.rs"
+      ],
+      "behavior": "Startup plugin sync waits only as long as the race window requires and re-arms after curated-repo completion.",
+      "upstream_equivalent": false,
+      "introduced_in": {
+        "carry_commit": null,
+        "upstream_commit": null
+      },
+      "guardrail_lane": "codex.core-startup-sync-targeted",
+      "tests": [
+        "startup_remote_plugin_sync_waits_for_late_prerequisites",
+        "startup_remote_plugin_sync_rearms_after_curated_repo_completion_signal_uses_latest_config_and_auth_snapshot"
+      ],
+      "owner": "downstream",
+      "notes": "Keeps startup sync single-flight and bounded."
+    },
+    {
+      "id": "tui-session-state-and-usage-surfaces",
+      "title": "TUI session-state, queue, interrupt, and usage surfaces",
+      "status": "live",
+      "category": "tui",
+      "surface": [
+        "thread session continuity",
+        "queued turn handling",
+        "usage summaries"
+      ],
+      "files": [
+        "codex-rs/tui/src/app.rs",
+        "codex-rs/tui/src/multi_agents.rs",
+        "codex-rs/tui/src/bottom_pane/chat_composer.rs",
+        "codex-rs/tui/src/bottom_pane/status_line_setup.rs",
+        "codex-rs/tui/src/chatwidget.rs",
+        "codex-rs/tui/src/chatwidget/status_surfaces.rs",
+        "codex-rs/tui/src/status/card.rs",
+        "codex-rs/tui/src/status/rate_limits.rs"
+      ],
+      "behavior": "Per-thread session state and queued interaction semantics stay stable across the TUI surfaces.",
+      "upstream_equivalent": false,
+      "introduced_in": {
+        "carry_commit": null,
+        "upstream_commit": null
+      },
+      "guardrail_lane": "codex.tui-agent-usage-totals-targeted",
+      "tests": [
+        "sync_session_tree_token_usage_updates_combined_status_line_items",
+        "status_snapshot_distinguishes_session_and_thread_token_usage"
+      ],
+      "owner": "downstream",
+      "notes": "Keeps queued interaction, usage totals, and thread policy aligned."
+    },
+    {
+      "id": "custom-prompt-discovery-and-review-flow",
+      "title": "Custom prompt discovery and review prompt flow",
+      "status": "live",
+      "category": "tui",
+      "surface": [
+        "custom prompts",
+        "review prompt flow"
+      ],
+      "files": [
+        "codex-rs/core/src/custom_prompts.rs",
+        "codex-rs/core/src/custom_prompts_tests.rs",
+        "codex-rs/protocol/src/custom_prompts.rs",
+        "codex-rs/core/src/lib.rs",
+        "codex-rs/protocol/src/lib.rs",
+        "codex-rs/tui/src/app.rs",
+        "codex-rs/tui/src/app_event.rs",
+        "codex-rs/tui/src/bottom_pane/custom_prompt_view.rs"
+      ],
+      "behavior": "Custom prompt discovery and review prompt routing stay consistent across core, protocol, and TUI surfaces.",
+      "upstream_equivalent": false,
+      "introduced_in": {
+        "carry_commit": null,
+        "upstream_commit": null
+      },
+      "guardrail_lane": "codex.tui-agent-picker-targeted",
+      "tests": [
+        "custom_prompt_discovery round trips",
+        "review prompt flow render snapshot"
+      ],
+      "owner": "downstream",
+      "notes": "Keeps the custom prompt pipeline discoverable from the UI."
+    },
+    {
+      "id": "code-mode-declaration-formatting",
+      "title": "Code-mode declaration formatting",
+      "status": "live",
+      "category": "core-protocol",
+      "surface": [
+        "code-mode declaration",
+        "tool metadata formatting"
+      ],
+      "files": [
+        "codex-rs/core/src/tools/code_mode_description.rs"
+      ],
+      "behavior": "Code-mode declarations keep their downstream formatting and metadata shape.",
+      "upstream_equivalent": false,
+      "introduced_in": {
+        "carry_commit": null,
+        "upstream_commit": null
+      },
+      "guardrail_lane": "core-compile-smoke",
+      "tests": [
+        "code mode declaration formatting"
+      ],
+      "owner": "downstream",
+      "notes": "Keeps code-mode declarations namespaced and legible."
+    }
+  ]
+}

@@ -3,7 +3,10 @@
 This note records the next-step maintenance model for downstream divergence
 tracking.
 
-It is a design note, not an implemented generator contract yet.
+Phase 1 is now implemented as the CI-backed `scripts/downstream-divergence-audit.py`
+runner plus the checked-in `docs/divergences/index.yaml` registry. The later
+generation phases below remain the forward path for ledger and regression
+projection.
 
 ## Why This Exists
 
@@ -144,6 +147,8 @@ Phase 1:
 - keep the current manual docs current
 - use `docs/downstream-tool-surface-matrix.md` for high-signal field-level
   comparison
+- use `scripts/downstream-divergence-audit.py` and `docs/divergences/index.yaml`
+  for the authoritative audit path
 
 Phase 2:
 

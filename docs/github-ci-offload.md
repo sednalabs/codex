@@ -31,7 +31,7 @@ artifacts.
   - release visibility: the only lane that may publish a GitHub Release
 - `sedna-sync-upstream`
   - trigger: manual dispatch and scheduled sync
-  - purpose: fast-forward `upstream-main` from `upstream/main`
+  - purpose: fast-forward `upstream-main` from `upstream/main` and run the authoritative downstream divergence audit from the exact synced SHA
 
 ## Operating model
 

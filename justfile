@@ -246,7 +246,11 @@ downstream-ledger-seam:
 
 [no-cd]
 downstream-docs-check:
-    git diff --check -- docs/downstream.md docs/carry-divergence-ledger.md docs/downstream-regression-matrix.md docs/downstream-tool-surface-matrix.md
+    git diff --check -- docs/downstream.md docs/carry-divergence-ledger.md docs/downstream-regression-matrix.md docs/downstream-tool-surface-matrix.md docs/divergences/index.yaml
+
+[no-cd]
+downstream-divergence-audit:
+    cd "{{justfile_directory()}}" && python3 scripts/downstream-divergence-audit.py --repo . --downstream-remote origin --downstream-branch main --mirror-remote origin --mirror-branch upstream-main --upstream-remote upstream --upstream-branch main --registry-path docs/divergences/index.yaml --output-dir target/downstream-divergence-audit --format both --code-only --enforce-registry
 
 # Early non-publishing Linux release-build smoke coverage.
 release-linux-build-smoke:
