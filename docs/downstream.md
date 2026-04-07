@@ -9,6 +9,7 @@ This fork publishes downstream behavior on `main` and keeps an exact upstream mi
 - `upstream-main`: fast-forward mirror of `upstream/main` (no local feature commits)
 - do not push feature commits to `origin/upstream-main`
 - downstream sync is merge-based (`upstream-main` -> `main`), not rebase-based
+- `sedna-sync-upstream` fast-forwards the mirror and then runs the downstream divergence audit against the exact synced SHA.
 - avoid force-push on `main` during normal sync; reserve `--force-with-lease` for exceptional repair only
 - new feature branches: create from `main` by default
 - upstream-only compatibility/test probes: create from `upstream-main`, then cherry-pick to `main` if retained downstream
@@ -42,6 +43,8 @@ git remote set-url origin git@github.com:SednaLabs/codex.git
 - heavy Rust tests, release-mode builds, and preview binaries should be offloaded to GitHub Actions after commit and push
 - branch artifacts are disposable and retain for 3 days
 - official releases are published only from the protected Sedna release workflow
+- the authoritative divergence audit lives in `scripts/downstream-divergence-audit.py` and writes artifacts under `target/downstream-divergence-audit/`
+- the intended-divergence registry lives at `docs/divergences/index.yaml`
 
 ## Divergence Summary
 
