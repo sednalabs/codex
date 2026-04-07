@@ -36,6 +36,7 @@ codex-exec-server = { workspace = true }
 codex-features = { workspace = true }
 codex-git-utils = { workspace = true }
 codex-otel = { workspace = true }
+codex-utils-rustls-provider = { workspace = true }
 codex-shell-command = { workspace = true }
 codex-utils-cli = { workspace = true }
 codex-utils-pty = { workspace = true }
