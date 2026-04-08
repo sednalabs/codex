@@ -32,6 +32,7 @@ use codex_tools::ZshForkConfig;
 use codex_tools::mcp_call_tool_result_output_schema;
 use codex_tools::mcp_tool_to_deferred_responses_api_tool;
 use codex_utils_absolute_path::AbsolutePathBuf;
+use core_test_support::assert_regex_match;
 use pretty_assertions::assert_eq;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -156,6 +157,39 @@ fn find_tool<'a>(tools: &'a [ConfiguredToolSpec], expected_name: &str) -> &'a Co
         .iter()
         .find(|tool| tool.name() == expected_name)
         .unwrap_or_else(|| panic!("expected tool {expected_name}"))
+}
+
+fn multi_agent_v2_tools_config() -> ToolsConfig {
+    let config = test_config();
+    let model_info = construct_model_info_offline("gpt-5-codex", &config);
+    let mut features = Features::with_defaults();
+    features.enable(Feature::Collab);
+    features.enable(Feature::MultiAgentV2);
+    let available_models = Vec::new();
+    ToolsConfig::new(&ToolsConfigParams {
+        model_info: &model_info,
+        available_models: &available_models,
+        features: &features,
+        web_search_mode: Some(WebSearchMode::Cached),
+        session_source: SessionSource::Cli,
+        sandbox_policy: &SandboxPolicy::DangerFullAccess,
+        windows_sandbox_level: WindowsSandboxLevel::Disabled,
+    })
+}
+
+fn multi_agent_v2_spawn_agent_description(tools_config: &ToolsConfig) -> String {
+    let (tools, _) = build_specs(
+        tools_config,
+        /*mcp_tools*/ None,
+        /*app_tools*/ None,
+        &[],
+    )
+    .build();
+    let spawn_agent = find_tool(&tools, "spawn_agent");
+    let ToolSpec::Function(ResponsesApiTool { description, .. }) = &spawn_agent.spec else {
+        panic!("spawn_agent should be a function tool");
+    };
+    description.clone()
 }
 
 fn model_info_from_models_json(slug: &str) -> ModelInfo {
@@ -596,6 +630,44 @@ fn shell_zsh_fork_prefers_shell_command_over_unified_exec() {
         } else {
             UnifiedExecShellMode::Direct
         }
+    );
+}
+
+#[test]
+fn spawn_agent_description_omits_usage_hint_when_disabled() {
+    let tools_config = multi_agent_v2_tools_config()
+        .with_spawn_agent_usage_hint(/*spawn_agent_usage_hint*/ false);
+    let description = multi_agent_v2_spawn_agent_description(&tools_config);
+
+    assert_regex_match(
+        r#"(?sx)
+            ^\s*
+            No\ picker-visible\ models\ are\ currently\ loaded\.
+            \s+Spawn\ a\ sub-agent\ for\ a\ well-scoped\ task\.
+            \s+Returns\ the\ canonical\ task\ name\ for\ the\ spawned\ agent,\ plus\ the\ user-facing\ nickname\ when\ available\.
+            \s*$
+        "#,
+        &description,
+    );
+}
+
+#[test]
+fn spawn_agent_description_uses_configured_usage_hint_text() {
+    let tools_config = multi_agent_v2_tools_config().with_spawn_agent_usage_hint_text(Some(
+        /*spawn_agent_usage_hint_text*/ "Custom delegation guidance only.".to_string(),
+    ));
+    let description = multi_agent_v2_spawn_agent_description(&tools_config);
+
+    assert_regex_match(
+        r#"(?sx)
+            ^\s*
+            No\ picker-visible\ models\ are\ currently\ loaded\.
+            \s+Spawn\ a\ sub-agent\ for\ a\ well-scoped\ task\.
+            \s+Returns\ the\ canonical\ task\ name\ for\ the\ spawned\ agent,\ plus\ the\ user-facing\ nickname\ when\ available\.
+            \s+Custom\ delegation\ guidance\ only\.
+            \s*$
+        "#,
+        &description,
     );
 }
 
