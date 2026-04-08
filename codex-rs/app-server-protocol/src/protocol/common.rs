@@ -450,7 +450,7 @@ client_request_definitions! {
     },
 
     McpServerRefresh => "config/mcpServer/reload" {
-        params: #[ts(type = "undefined")] #[serde(skip_serializing_if = "Option::is_none")] Option<()>,
+        params: #[ts(type = "null")] #[serde(skip_serializing_if = "Option::is_none")] Option<()>,
         response: v2::McpServerRefreshResponse,
     },
 
@@ -476,12 +476,12 @@ client_request_definitions! {
     },
 
     LogoutAccount => "account/logout" {
-        params: #[ts(type = "undefined")] #[serde(skip_serializing_if = "Option::is_none")] Option<()>,
+        params: #[ts(type = "null")] #[serde(skip_serializing_if = "Option::is_none")] Option<()>,
         response: v2::LogoutAccountResponse,
     },
 
     GetAccountRateLimits => "account/rateLimits/read" {
-        params: #[ts(type = "undefined")] #[serde(skip_serializing_if = "Option::is_none")] Option<()>,
+        params: #[ts(type = "null")] #[serde(skip_serializing_if = "Option::is_none")] Option<()>,
         response: v2::GetAccountRateLimitsResponse,
     },
 
@@ -533,7 +533,7 @@ client_request_definitions! {
     },
 
     ConfigRequirementsRead => "configRequirements/read" {
-        params: #[ts(type = "undefined")] #[serde(skip_serializing_if = "Option::is_none")] Option<()>,
+        params: #[ts(type = "null")] #[serde(skip_serializing_if = "Option::is_none")] Option<()>,
         response: v2::ConfigRequirementsReadResponse,
     },
 
