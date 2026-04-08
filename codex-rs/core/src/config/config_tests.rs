@@ -12,6 +12,7 @@ use codex_config::config_toml::ProjectConfig;
 use codex_config::config_toml::RealtimeAudioConfig;
 use codex_config::config_toml::RealtimeConfig;
 use codex_config::config_toml::RealtimeToml;
+use codex_config::config_toml::RealtimeTransport;
 use codex_config::config_toml::RealtimeWsMode;
 use codex_config::config_toml::RealtimeWsVersion;
 use codex_config::config_toml::ToolsToml;
@@ -6487,6 +6488,7 @@ fn realtime_loads_from_config_toml() -> std::io::Result<()> {
 [realtime]
 version = "v2"
 type = "transcription"
+transport = "webrtc"
 "#,
     )
     .expect("TOML deserialization should succeed");
@@ -6496,6 +6498,7 @@ type = "transcription"
         Some(RealtimeToml {
             version: Some(RealtimeWsVersion::V2),
             session_type: Some(RealtimeWsMode::Transcription),
+            transport: Some(RealtimeTransport::WebRtc),
         })
     );
 
@@ -6511,6 +6514,7 @@ type = "transcription"
         RealtimeConfig {
             version: RealtimeWsVersion::V2,
             session_type: RealtimeWsMode::Transcription,
+            transport: RealtimeTransport::WebRtc,
         }
     );
     Ok(())
