@@ -4,7 +4,10 @@ use std::fmt::Debug;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::OnceLock;
 use std::sync::atomic::AtomicU64;
+use std::time::Duration;
+use std::time::Instant;
 
 use crate::AuthManager;
 use crate::CodexAuth;
@@ -161,6 +164,37 @@ use tracing::trace;
 use tracing::trace_span;
 use tracing::warn;
 use uuid::Uuid;
+
+const MCP_TIMING_DIAGNOSTICS_ENV_VAR: &str = "CODEX_MCP_TIMING_DIAGNOSTICS";
+const MCP_TIMING_SLOW_EVENT_THRESHOLD: Duration = Duration::from_millis(250);
+
+fn mcp_timing_diagnostics_enabled() -> bool {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        std::env::var(MCP_TIMING_DIAGNOSTICS_ENV_VAR).is_ok_and(|value| {
+            let value = value.trim();
+            !value.is_empty() && value != "0" && !value.eq_ignore_ascii_case("false")
+        })
+    })
+}
+
+fn mcp_timing_call_metadata(msg: &EventMsg) -> Option<(String, String, String, &'static str)> {
+    match msg {
+        EventMsg::McpToolCallBegin(begin) => Some((
+            begin.call_id.clone(),
+            begin.invocation.server.clone(),
+            begin.invocation.tool.clone(),
+            "McpToolCallBegin",
+        )),
+        EventMsg::McpToolCallEnd(end) => Some((
+            end.call_id.clone(),
+            end.invocation.server.clone(),
+            end.invocation.tool.clone(),
+            "McpToolCallEnd",
+        )),
+        _ => None,
+    }
+}
 
 use codex_state::UsageLogger;
 
@@ -2790,11 +2824,51 @@ impl Session {
     }
 
     pub(crate) async fn send_event_raw(&self, event: Event) {
-        // Persist the event into rollout (recorder filters as needed)
+        let diagnostics_enabled = mcp_timing_diagnostics_enabled();
+        let call_metadata = diagnostics_enabled
+            .then(|| mcp_timing_call_metadata(&event.msg))
+            .flatten();
+        let event_start = call_metadata.as_ref().map(|_| Instant::now());
+
         self.services.log_usage_event(&event).await;
+        let after_usage = event_start.map(|_| Instant::now());
         let rollout_items = vec![RolloutItem::EventMsg(event.msg.clone())];
         self.persist_rollout_items(&rollout_items).await;
+        let after_persist = event_start.map(|_| Instant::now());
         self.deliver_event_raw(event).await;
+        let after_deliver = event_start.map(|_| Instant::now());
+
+        if let (
+            Some((call_id, server, tool, event_kind)),
+            Some(start),
+            Some(after_usage),
+            Some(after_persist),
+            Some(after_deliver),
+        ) = (
+            call_metadata,
+            event_start,
+            after_usage,
+            after_persist,
+            after_deliver,
+        ) {
+            let usage_ms = after_usage.duration_since(start).as_millis() as u64;
+            let persist_ms = after_persist.duration_since(after_usage).as_millis() as u64;
+            let deliver_ms = after_deliver.duration_since(after_persist).as_millis() as u64;
+            let total_duration = after_deliver.duration_since(start);
+            if diagnostics_enabled || total_duration > MCP_TIMING_SLOW_EVENT_THRESHOLD {
+                info!(
+                    call_id,
+                    server,
+                    tool,
+                    event_kind,
+                    usage_ms,
+                    persist_ms,
+                    deliver_ms,
+                    total_ms = total_duration.as_millis() as u64,
+                    "mcp timing: send_event_raw completed"
+                );
+            }
+        }
     }
 
     async fn deliver_event_raw(&self, event: Event) {
