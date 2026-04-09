@@ -366,6 +366,7 @@ use crate::shell_snapshot::ShellSnapshot;
 use crate::skills_watcher::SkillsWatcher;
 use crate::skills_watcher::SkillsWatcherEvent;
 use crate::state::ActiveTurn;
+use crate::state::AsyncUsageLogger;
 use crate::state::SessionServices;
 use crate::state::SessionState;
 use crate::state_db;
@@ -1666,7 +1667,7 @@ impl Session {
             )
             .await
             {
-                Ok(logger) => Some(Mutex::new(logger)),
+                Ok(logger) => Some(AsyncUsageLogger::new(logger)),
                 Err(err) => {
                     warn!("failed to initialize usage logger: {err}");
                     None
@@ -2830,7 +2831,7 @@ impl Session {
             .flatten();
         let event_start = call_metadata.as_ref().map(|_| Instant::now());
 
-        self.services.log_usage_event(&event).await;
+        self.services.log_usage_event(&event);
         let after_usage = event_start.map(|_| Instant::now());
         let rollout_items = vec![RolloutItem::EventMsg(event.msg.clone())];
         self.persist_rollout_items(&rollout_items).await;
@@ -3882,13 +3883,11 @@ impl Session {
             self.record_conversation_items(turn_context, &context_items)
                 .await;
         }
-        self.services
-            .update_usage_turn_snapshot(
-                turn_context.sub_id.as_str(),
-                Some(turn_context.model_info.slug.clone()),
-                Some(turn_context.provider.name.clone()),
-            )
-            .await;
+        self.services.update_usage_turn_snapshot(
+            turn_context.sub_id.as_str(),
+            Some(turn_context.model_info.slug.clone()),
+            Some(turn_context.provider.name.clone()),
+        );
         // Persist one `TurnContextItem` per real user turn so resume/lazy replay can recover the
         // latest durable baseline even when this turn emitted no model-visible context diffs.
         self.persist_rollout_items(&[RolloutItem::TurnContext(turn_context_item.clone())])
@@ -5512,6 +5511,8 @@ mod handlers {
             };
             sess.send_event_raw(event).await;
         }
+
+        sess.services.shutdown_usage_logger().await;
 
         let event = Event {
             id: sub_id,
