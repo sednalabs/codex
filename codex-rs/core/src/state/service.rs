@@ -26,8 +26,89 @@ use codex_state::UsageLogger;
 use std::path::PathBuf;
 use tokio::sync::Mutex;
 use tokio::sync::RwLock;
+use tokio::sync::mpsc;
+use tokio::sync::oneshot;
 use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
+use tracing::warn;
+
+pub(crate) struct AsyncUsageLogger {
+    tx: mpsc::UnboundedSender<UsageLoggerCmd>,
+}
+
+enum UsageLoggerCmd {
+    RecordEvent(Event),
+    UpdateTurnSnapshot {
+        turn_id: String,
+        requested_model: Option<String>,
+        requested_provider: Option<String>,
+    },
+    Shutdown {
+        ack: oneshot::Sender<()>,
+    },
+}
+
+impl AsyncUsageLogger {
+    pub(crate) fn new(mut logger: UsageLogger) -> Self {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        tokio::spawn(async move {
+            while let Some(cmd) = rx.recv().await {
+                match cmd {
+                    UsageLoggerCmd::RecordEvent(event) => {
+                        logger.record_event(&event).await;
+                    }
+                    UsageLoggerCmd::UpdateTurnSnapshot {
+                        turn_id,
+                        requested_model,
+                        requested_provider,
+                    } => {
+                        logger.update_turn_snapshot(&turn_id, requested_model, requested_provider);
+                    }
+                    UsageLoggerCmd::Shutdown { ack } => {
+                        let _ = ack.send(());
+                        break;
+                    }
+                }
+            }
+        });
+        Self { tx }
+    }
+
+    pub(crate) fn log_usage_event(&self, event: &Event) {
+        if let Err(err) = self.tx.send(UsageLoggerCmd::RecordEvent(event.clone())) {
+            warn!("failed to enqueue usage event: {err}");
+        }
+    }
+
+    pub(crate) fn update_usage_turn_snapshot(
+        &self,
+        turn_id: &str,
+        requested_model: Option<String>,
+        requested_provider: Option<String>,
+    ) {
+        if let Err(err) = self.tx.send(UsageLoggerCmd::UpdateTurnSnapshot {
+            turn_id: turn_id.to_string(),
+            requested_model,
+            requested_provider,
+        }) {
+            warn!("failed to enqueue usage turn snapshot update: {err}");
+        }
+    }
+
+    pub(crate) async fn shutdown(&self) {
+        let (ack_tx, ack_rx) = oneshot::channel();
+        if self
+            .tx
+            .send(UsageLoggerCmd::Shutdown { ack: ack_tx })
+            .is_err()
+        {
+            return;
+        }
+        if ack_rx.await.is_err() {
+            warn!("usage logger shutdown ack channel dropped before completion");
+        }
+    }
+}
 
 pub(crate) struct SessionServices {
     pub(crate) mcp_connection_manager: Arc<RwLock<McpConnectionManager>>,
@@ -59,27 +140,123 @@ pub(crate) struct SessionServices {
     /// Session-scoped model client shared across turns.
     pub(crate) model_client: ModelClient,
     pub(crate) code_mode_service: CodeModeService,
-    pub(crate) usage_logger: Option<Mutex<UsageLogger>>,
+    pub(crate) usage_logger: Option<AsyncUsageLogger>,
     pub(crate) environment: Arc<Environment>,
 }
 
 impl SessionServices {
-    pub(crate) async fn log_usage_event(&self, event: &Event) {
+    pub(crate) fn log_usage_event(&self, event: &Event) {
         if let Some(logger) = &self.usage_logger {
-            let mut guard = logger.lock().await;
-            guard.record_event(event).await;
+            logger.log_usage_event(event);
         }
     }
 
-    pub(crate) async fn update_usage_turn_snapshot(
+    pub(crate) fn update_usage_turn_snapshot(
         &self,
         turn_id: &str,
         requested_model: Option<String>,
         requested_provider: Option<String>,
     ) {
         if let Some(logger) = &self.usage_logger {
-            let mut guard = logger.lock().await;
-            guard.update_turn_snapshot(turn_id, requested_model, requested_provider);
+            logger.update_usage_turn_snapshot(turn_id, requested_model, requested_provider);
         }
+    }
+
+    pub(crate) async fn shutdown_usage_logger(&self) {
+        if let Some(logger) = &self.usage_logger {
+            logger.shutdown().await;
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use anyhow::Result;
+    use codex_protocol::ThreadId;
+    use codex_protocol::protocol::EventMsg;
+    use codex_protocol::protocol::McpInvocation;
+    use codex_protocol::protocol::McpToolCallBeginEvent;
+    use codex_protocol::protocol::McpToolCallEndEvent;
+    use codex_protocol::protocol::SessionSource;
+    use codex_state::StateRuntime;
+    use pretty_assertions::assert_eq;
+    use sqlx::SqlitePool;
+    use std::time::Duration;
+    use tempfile::tempdir;
+
+    #[derive(Debug, PartialEq, Eq, sqlx::FromRow)]
+    struct ToolCallRow {
+        status: Option<String>,
+        duration_ms: Option<i64>,
+    }
+
+    #[tokio::test]
+    async fn async_usage_logger_shutdown_drains_queued_tool_events() -> Result<()> {
+        let tmp_dir = tempdir()?;
+        let runtime =
+            StateRuntime::init(tmp_dir.path().to_path_buf(), "test-provider".to_string()).await?;
+        let thread_id = ThreadId::new();
+        let logger = UsageLogger::try_new(
+            runtime.clone(),
+            thread_id,
+            SessionSource::Cli,
+            /*forked_from_id*/ None,
+            /*agent_nickname*/ None,
+            /*agent_role*/ None,
+        )
+        .await?;
+        let async_logger = AsyncUsageLogger::new(logger);
+        let invocation = McpInvocation {
+            server: "ops".to_string(),
+            tool: "work_item_create".to_string(),
+            arguments: None,
+        };
+
+        async_logger.log_usage_event(&Event {
+            id: "turn-1".to_string(),
+            msg: EventMsg::McpToolCallBegin(McpToolCallBeginEvent {
+                call_id: "call-1".to_string(),
+                invocation: invocation.clone(),
+            }),
+        });
+        async_logger.log_usage_event(&Event {
+            id: "turn-1".to_string(),
+            msg: EventMsg::McpToolCallEnd(McpToolCallEndEvent {
+                call_id: "call-1".to_string(),
+                invocation,
+                duration: Duration::from_millis(123),
+                result: Err("boom".to_string()),
+            }),
+        });
+
+        async_logger.shutdown().await;
+
+        let pool_arc = runtime.usage_pool();
+        let pool: &SqlitePool = pool_arc.as_ref();
+        let row: ToolCallRow = sqlx::query_as(
+            r#"
+SELECT
+  status,
+  duration_ms
+FROM usage_tool_calls
+WHERE thread_id = ?
+  AND tool_call_id = ?
+"#,
+        )
+        .bind(thread_id.to_string())
+        .bind("call-1")
+        .fetch_one(pool)
+        .await?;
+
+        assert_eq!(
+            row,
+            ToolCallRow {
+                status: Some("failed".to_string()),
+                duration_ms: Some(123),
+            }
+        );
+
+        Ok(())
     }
 }
