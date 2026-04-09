@@ -227,6 +227,79 @@ async fn metadata_irrelevant_events_touch_state_db_updated_at() -> std::io::Resu
 }
 
 #[tokio::test]
+async fn multiple_record_item_batches_preserve_order_after_flush() -> std::io::Result<()> {
+    let home = TempDir::new().expect("temp dir");
+    let config = test_config(home.path());
+    let thread_id = ThreadId::new();
+    let recorder = RolloutRecorder::new(
+        &config,
+        RolloutRecorderParams::new(
+            thread_id,
+            /*forked_from_id*/ None,
+            SessionSource::Cli,
+            BaseInstructions::default(),
+            Vec::new(),
+            EventPersistenceMode::Limited,
+        ),
+        /*state_db_ctx*/ None,
+        /*state_builder*/ None,
+    )
+    .await?;
+
+    recorder
+        .record_items(&[RolloutItem::EventMsg(EventMsg::UserMessage(
+            UserMessageEvent {
+                message: "first-user-message".to_string(),
+                images: None,
+                local_images: Vec::new(),
+                text_elements: Vec::new(),
+            },
+        ))])
+        .await?;
+    recorder.persist().await?;
+
+    recorder
+        .record_items(&[RolloutItem::EventMsg(EventMsg::AgentMessage(
+            AgentMessageEvent {
+                message: "agent-one".to_string(),
+                phase: None,
+                memory_citation: None,
+            },
+        ))])
+        .await?;
+    recorder
+        .record_items(&[RolloutItem::EventMsg(EventMsg::AgentMessage(
+            AgentMessageEvent {
+                message: "agent-two".to_string(),
+                phase: None,
+                memory_citation: None,
+            },
+        ))])
+        .await?;
+    recorder
+        .record_items(&[RolloutItem::EventMsg(EventMsg::AgentMessage(
+            AgentMessageEvent {
+                message: "agent-three".to_string(),
+                phase: None,
+                memory_citation: None,
+            },
+        ))])
+        .await?;
+    recorder.flush().await?;
+
+    let text = std::fs::read_to_string(recorder.rollout_path())?;
+    let first_idx = text.find("agent-one").expect("first agent message");
+    let second_idx = text.find("agent-two").expect("second agent message");
+    let third_idx = text.find("agent-three").expect("third agent message");
+
+    assert!(first_idx < second_idx);
+    assert!(second_idx < third_idx);
+
+    recorder.shutdown().await?;
+    Ok(())
+}
+
+#[tokio::test]
 async fn metadata_irrelevant_events_fall_back_to_upsert_when_thread_missing() -> std::io::Result<()>
 {
     let home = TempDir::new().expect("temp dir");

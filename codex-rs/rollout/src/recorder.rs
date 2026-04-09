@@ -748,6 +748,7 @@ async fn rollout_writer(
     let diagnostics_enabled = mcp_timing_diagnostics_enabled();
     let mut writer = file.map(|file| JsonlWriter { file });
     let mut buffered_items = Vec::<RolloutItem>::new();
+    let mut pending_cmd = None;
     if let Some(builder) = state_builder.as_mut() {
         builder.rollout_path = rollout_path.clone();
     }
@@ -771,11 +772,25 @@ async fn rollout_writer(
     }
 
     // Process rollout commands
-    while let Some(cmd) = rx.recv().await {
+    while let Some(cmd) = if let Some(cmd) = pending_cmd.take() {
+        Some(cmd)
+    } else {
+        rx.recv().await
+    } {
         match cmd {
-            RolloutCmd::AddItems(items) => {
+            RolloutCmd::AddItems(mut items) => {
                 if items.is_empty() {
                     continue;
+                }
+
+                while let Ok(next_cmd) = rx.try_recv() {
+                    match next_cmd {
+                        RolloutCmd::AddItems(more_items) => items.extend(more_items),
+                        other_cmd => {
+                            pending_cmd = Some(other_cmd);
+                            break;
+                        }
+                    }
                 }
 
                 if writer.is_none() {
@@ -907,6 +922,7 @@ async fn write_session_meta(
     let rollout_item = RolloutItem::SessionMeta(session_meta_line);
     if let Some(writer) = writer.as_mut() {
         writer.write_rollout_item(&rollout_item).await?;
+        writer.flush().await?;
     }
     sync_thread_state_after_write(
         state_db_ctx,
@@ -934,6 +950,7 @@ async fn write_and_reconcile_items(
         for item in items {
             writer.write_rollout_item(item).await?;
         }
+        writer.flush().await?;
     }
     let after_write = start.map(|_| Instant::now());
     sync_thread_state_after_write(
@@ -1039,8 +1056,11 @@ impl JsonlWriter {
         let mut json = serde_json::to_string(item)?;
         json.push('\n');
         self.file.write_all(json.as_bytes()).await?;
-        self.file.flush().await?;
         Ok(())
+    }
+
+    async fn flush(&mut self) -> std::io::Result<()> {
+        self.file.flush().await
     }
 }
 
