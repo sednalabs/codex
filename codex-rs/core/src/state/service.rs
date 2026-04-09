@@ -17,6 +17,7 @@ use crate::tools::code_mode::CodeModeService;
 use crate::tools::network_approval::NetworkApprovalService;
 use crate::tools::sandboxing::ApprovalStore;
 use crate::unified_exec::UnifiedExecProcessManager;
+use async_trait::async_trait;
 use codex_analytics::AnalyticsEventsClient;
 use codex_exec_server::Environment;
 use codex_hooks::Hooks;
@@ -48,21 +49,56 @@ enum UsageLoggerCmd {
     },
 }
 
+#[async_trait]
+trait UsageEventSink: Send {
+    async fn record_event(&mut self, event: Event);
+
+    fn update_turn_snapshot(
+        &mut self,
+        turn_id: &str,
+        requested_model: Option<String>,
+        requested_provider: Option<String>,
+    );
+}
+
+#[async_trait]
+impl UsageEventSink for UsageLogger {
+    async fn record_event(&mut self, event: Event) {
+        UsageLogger::record_event(self, &event).await;
+    }
+
+    fn update_turn_snapshot(
+        &mut self,
+        turn_id: &str,
+        requested_model: Option<String>,
+        requested_provider: Option<String>,
+    ) {
+        UsageLogger::update_turn_snapshot(self, turn_id, requested_model, requested_provider);
+    }
+}
+
 impl AsyncUsageLogger {
-    pub(crate) fn new(mut logger: UsageLogger) -> Self {
+    pub(crate) fn new(logger: UsageLogger) -> Self {
+        Self::new_with_sink(logger)
+    }
+
+    fn new_with_sink<S>(mut sink: S) -> Self
+    where
+        S: UsageEventSink + 'static,
+    {
         let (tx, mut rx) = mpsc::unbounded_channel();
         tokio::spawn(async move {
             while let Some(cmd) = rx.recv().await {
                 match cmd {
                     UsageLoggerCmd::RecordEvent(event) => {
-                        logger.record_event(&event).await;
+                        sink.record_event(event).await;
                     }
                     UsageLoggerCmd::UpdateTurnSnapshot {
                         turn_id,
                         requested_model,
                         requested_provider,
                     } => {
-                        logger.update_turn_snapshot(&turn_id, requested_model, requested_provider);
+                        sink.update_turn_snapshot(&turn_id, requested_model, requested_provider);
                     }
                     UsageLoggerCmd::Shutdown { ack } => {
                         let _ = ack.send(());
@@ -173,40 +209,64 @@ impl SessionServices {
 mod tests {
     use super::*;
     use anyhow::Result;
-    use codex_protocol::ThreadId;
     use codex_protocol::protocol::EventMsg;
     use codex_protocol::protocol::McpInvocation;
     use codex_protocol::protocol::McpToolCallBeginEvent;
     use codex_protocol::protocol::McpToolCallEndEvent;
-    use codex_protocol::protocol::SessionSource;
-    use codex_state::StateRuntime;
     use pretty_assertions::assert_eq;
-    use sqlx::SqlitePool;
+    use std::sync::Arc;
+    use std::sync::Mutex;
     use std::time::Duration;
-    use tempfile::tempdir;
+    use tokio::sync::Notify;
 
-    #[derive(Debug, PartialEq, Eq, sqlx::FromRow)]
-    struct ToolCallRow {
-        status: Option<String>,
-        duration_ms: Option<i64>,
+    struct TestUsageSink {
+        recorded_events: Arc<Mutex<Vec<String>>>,
+        turn_snapshots: Arc<Mutex<Vec<String>>>,
+        first_event_started: Arc<Notify>,
+        release_first_event: Arc<Notify>,
+        first_event_blocked: bool,
+    }
+
+    #[async_trait]
+    impl UsageEventSink for TestUsageSink {
+        async fn record_event(&mut self, event: Event) {
+            if !self.first_event_blocked {
+                self.first_event_blocked = true;
+                self.first_event_started.notify_one();
+                self.release_first_event.notified().await;
+            }
+            self.recorded_events
+                .lock()
+                .expect("poisoned")
+                .push(event.id);
+        }
+
+        fn update_turn_snapshot(
+            &mut self,
+            turn_id: &str,
+            _requested_model: Option<String>,
+            _requested_provider: Option<String>,
+        ) {
+            self.turn_snapshots
+                .lock()
+                .expect("poisoned")
+                .push(turn_id.to_string());
+        }
     }
 
     #[tokio::test]
     async fn async_usage_logger_shutdown_drains_queued_tool_events() -> Result<()> {
-        let tmp_dir = tempdir()?;
-        let runtime =
-            StateRuntime::init(tmp_dir.path().to_path_buf(), "test-provider".to_string()).await?;
-        let thread_id = ThreadId::new();
-        let logger = UsageLogger::try_new(
-            runtime.clone(),
-            thread_id,
-            SessionSource::Cli,
-            /*forked_from_id*/ None,
-            /*agent_nickname*/ None,
-            /*agent_role*/ None,
-        )
-        .await?;
-        let async_logger = AsyncUsageLogger::new(logger);
+        let recorded_events = Arc::new(Mutex::new(Vec::new()));
+        let turn_snapshots = Arc::new(Mutex::new(Vec::new()));
+        let first_event_started = Arc::new(Notify::new());
+        let release_first_event = Arc::new(Notify::new());
+        let async_logger = AsyncUsageLogger::new_with_sink(TestUsageSink {
+            recorded_events: Arc::clone(&recorded_events),
+            turn_snapshots: Arc::clone(&turn_snapshots),
+            first_event_started: Arc::clone(&first_event_started),
+            release_first_event: Arc::clone(&release_first_event),
+            first_event_blocked: false,
+        });
         let invocation = McpInvocation {
             server: "ops".to_string(),
             tool: "work_item_create".to_string(),
@@ -229,32 +289,28 @@ mod tests {
                 result: Err("boom".to_string()),
             }),
         });
+        first_event_started.notified().await;
+        async_logger.update_usage_turn_snapshot(
+            "turn-1",
+            Some("model-a".to_string()),
+            Some("provider-a".to_string()),
+        );
 
-        async_logger.shutdown().await;
-
-        let pool_arc = runtime.usage_pool();
-        let pool: &SqlitePool = pool_arc.as_ref();
-        let row: ToolCallRow = sqlx::query_as(
-            r#"
-SELECT
-  status,
-  duration_ms
-FROM usage_tool_calls
-WHERE thread_id = ?
-  AND tool_call_id = ?
-"#,
-        )
-        .bind(thread_id.to_string())
-        .bind("call-1")
-        .fetch_one(pool)
-        .await?;
+        let shutdown_logger = async_logger;
+        let shutdown_task = tokio::spawn(async move {
+            shutdown_logger.shutdown().await;
+        });
+        tokio::task::yield_now().await;
+        release_first_event.notify_one();
+        shutdown_task.await?;
 
         assert_eq!(
-            row,
-            ToolCallRow {
-                status: Some("failed".to_string()),
-                duration_ms: Some(123),
-            }
+            *recorded_events.lock().expect("poisoned"),
+            vec!["turn-1".to_string(), "turn-1".to_string()]
+        );
+        assert_eq!(
+            *turn_snapshots.lock().expect("poisoned"),
+            vec!["turn-1".to_string()]
         );
 
         Ok(())
