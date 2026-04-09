@@ -5,7 +5,9 @@ use std::io;
 use std::path::PathBuf;
 use std::process::Stdio;
 use std::sync::Arc;
+use std::sync::OnceLock;
 use std::time::Duration;
+use std::time::Instant;
 
 use anyhow::Result;
 use anyhow::anyhow;
@@ -82,6 +84,17 @@ const JSON_MIME_TYPE: &str = "application/json";
 const HEADER_LAST_EVENT_ID: &str = "Last-Event-Id";
 const HEADER_SESSION_ID: &str = "Mcp-Session-Id";
 const NON_JSON_RESPONSE_BODY_PREVIEW_BYTES: usize = 8_192;
+const MCP_TIMING_DIAGNOSTICS_ENV_VAR: &str = "CODEX_MCP_TIMING_DIAGNOSTICS";
+
+fn mcp_timing_diagnostics_enabled() -> bool {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        std::env::var(MCP_TIMING_DIAGNOSTICS_ENV_VAR).is_ok_and(|value| {
+            let value = value.trim();
+            !value.is_empty() && value != "0" && !value.eq_ignore_ascii_case("false")
+        })
+    })
+}
 
 #[derive(Clone)]
 struct StreamableHttpResponseClient {
@@ -123,6 +136,9 @@ impl StreamableHttpClient for StreamableHttpResponseClient {
         session_id: Option<Arc<str>>,
         auth_token: Option<String>,
     ) -> std::result::Result<StreamableHttpPostResponse, StreamableHttpError<Self::Error>> {
+        let diagnostics_enabled = mcp_timing_diagnostics_enabled();
+        let start = diagnostics_enabled.then(Instant::now);
+        let request_session_id = session_id.clone();
         let mut request = self
             .inner
             .post(uri.as_ref())
@@ -139,6 +155,16 @@ impl StreamableHttpClient for StreamableHttpResponseClient {
             .send()
             .await
             .map_err(StreamableHttpResponseClient::reqwest_error)?;
+        if let Some(start) = start {
+            info!(
+                method = "POST",
+                uri = uri.as_ref(),
+                session_id = request_session_id.as_deref(),
+                status = %response.status(),
+                elapsed_ms = start.elapsed().as_millis() as u64,
+                "mcp timing: streamable HTTP request completed"
+            );
+        }
         if response.status() == reqwest::StatusCode::NOT_FOUND && session_id.is_some() {
             return Err(StreamableHttpError::Client(
                 StreamableHttpResponseClientError::SessionExpired404,
@@ -224,6 +250,8 @@ impl StreamableHttpClient for StreamableHttpResponseClient {
         session: Arc<str>,
         auth_token: Option<String>,
     ) -> std::result::Result<(), StreamableHttpError<Self::Error>> {
+        let diagnostics_enabled = mcp_timing_diagnostics_enabled();
+        let start = diagnostics_enabled.then(Instant::now);
         let mut request_builder = self.inner.delete(uri.as_ref());
         if let Some(auth_header) = auth_token {
             request_builder = request_builder.bearer_auth(auth_header);
@@ -233,6 +261,16 @@ impl StreamableHttpClient for StreamableHttpResponseClient {
             .send()
             .await
             .map_err(StreamableHttpResponseClient::reqwest_error)?;
+        if let Some(start) = start {
+            info!(
+                method = "DELETE",
+                uri = uri.as_ref(),
+                session_id = session.as_ref(),
+                status = %response.status(),
+                elapsed_ms = start.elapsed().as_millis() as u64,
+                "mcp timing: streamable HTTP request completed"
+            );
+        }
 
         if response.status() == reqwest::StatusCode::METHOD_NOT_ALLOWED {
             return Ok(());
@@ -254,6 +292,8 @@ impl StreamableHttpClient for StreamableHttpResponseClient {
         BoxStream<'static, std::result::Result<Sse, sse_stream::Error>>,
         StreamableHttpError<Self::Error>,
     > {
+        let diagnostics_enabled = mcp_timing_diagnostics_enabled();
+        let start = diagnostics_enabled.then(Instant::now);
         let mut request_builder = self
             .inner
             .get(uri.as_ref())
@@ -270,6 +310,16 @@ impl StreamableHttpClient for StreamableHttpResponseClient {
             .send()
             .await
             .map_err(StreamableHttpResponseClient::reqwest_error)?;
+        if let Some(start) = start {
+            info!(
+                method = "GET",
+                uri = uri.as_ref(),
+                session_id = session_id.as_ref(),
+                status = %response.status(),
+                elapsed_ms = start.elapsed().as_millis() as u64,
+                "mcp timing: streamable HTTP request completed"
+            );
+        }
         if response.status() == reqwest::StatusCode::METHOD_NOT_ALLOWED {
             return Err(StreamableHttpError::ServerDoesNotSupportSse);
         }
@@ -836,18 +886,34 @@ impl RmcpClient {
     /// This should be called after every tool call so that if a given tool call triggered
     /// a refresh of the OAuth tokens, they are persisted.
     async fn persist_oauth_tokens(&self) {
-        if let Some(runtime) = self.oauth_persistor().await
-            && let Err(error) = runtime.persist_if_needed().await
-        {
-            warn!("failed to persist OAuth tokens: {error}");
+        let diagnostics_enabled = mcp_timing_diagnostics_enabled();
+        let start = diagnostics_enabled.then(Instant::now);
+        if let Some(runtime) = self.oauth_persistor().await {
+            if let Err(error) = runtime.persist_if_needed().await {
+                warn!("failed to persist OAuth tokens: {error}");
+            }
+        }
+        if let Some(start) = start {
+            info!(
+                elapsed_ms = start.elapsed().as_millis() as u64,
+                "mcp timing: persist_oauth_tokens completed"
+            );
         }
     }
 
     async fn refresh_oauth_if_needed(&self) {
-        if let Some(runtime) = self.oauth_persistor().await
-            && let Err(error) = runtime.refresh_if_needed().await
-        {
-            warn!("failed to refresh OAuth tokens: {error}");
+        let diagnostics_enabled = mcp_timing_diagnostics_enabled();
+        let start = diagnostics_enabled.then(Instant::now);
+        if let Some(runtime) = self.oauth_persistor().await {
+            if let Err(error) = runtime.refresh_if_needed().await {
+                warn!("failed to refresh OAuth tokens: {error}");
+            }
+        }
+        if let Some(start) = start {
+            info!(
+                elapsed_ms = start.elapsed().as_millis() as u64,
+                "mcp timing: refresh_oauth_if_needed completed"
+            );
         }
     }
 
@@ -1051,9 +1117,16 @@ impl RmcpClient {
         F: Fn(Arc<RunningService<RoleClient, LoggingClientHandler>>) -> Fut,
         Fut: std::future::Future<Output = std::result::Result<T, rmcp::service::ServiceError>>,
     {
+        let diagnostics_enabled = mcp_timing_diagnostics_enabled();
+        let start = diagnostics_enabled.then(Instant::now);
         let service = self.service().await?;
-        match Self::run_service_operation_once(Arc::clone(&service), label, timeout, &operation)
-            .await
+        let result = match Self::run_service_operation_once(
+            Arc::clone(&service),
+            label,
+            timeout,
+            &operation,
+        )
+        .await
         {
             Ok(result) => Ok(result),
             Err(error) if Self::is_session_expired_404(&error) => {
@@ -1064,7 +1137,16 @@ impl RmcpClient {
                     .map_err(Into::into)
             }
             Err(error) => Err(error.into()),
+        };
+        if let Some(start) = start {
+            info!(
+                label,
+                elapsed_ms = start.elapsed().as_millis() as u64,
+                success = result.is_ok(),
+                "mcp timing: run_service_operation completed"
+            );
         }
+        result
     }
 
     async fn run_service_operation_once<T, F, Fut>(
@@ -1113,6 +1195,8 @@ impl RmcpClient {
         &self,
         failed_service: &Arc<RunningService<RoleClient, LoggingClientHandler>>,
     ) -> Result<()> {
+        let diagnostics_enabled = mcp_timing_diagnostics_enabled();
+        let start = diagnostics_enabled.then(Instant::now);
         let _recovery_guard = self.session_recovery_lock.lock().await;
 
         {
@@ -1155,6 +1239,13 @@ impl RmcpClient {
             && let Err(error) = runtime.persist_if_needed().await
         {
             warn!("failed to persist OAuth tokens after session recovery: {error}");
+        }
+
+        if let Some(start) = start {
+            info!(
+                elapsed_ms = start.elapsed().as_millis() as u64,
+                "mcp timing: reinitialize_after_session_expiry completed"
+            );
         }
 
         Ok(())

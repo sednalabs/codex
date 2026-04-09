@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::OnceLock;
 use std::time::Duration;
 use std::time::Instant;
 
@@ -10,6 +11,7 @@ use codex_app_server_protocol::McpElicitationSchema;
 use codex_app_server_protocol::McpServerElicitationRequest;
 use codex_app_server_protocol::McpServerElicitationRequestParams;
 use tracing::error;
+use tracing::info;
 
 use crate::arc_monitor::ArcMonitorOutcome;
 use crate::arc_monitor::monitor_action;
@@ -64,6 +66,17 @@ use url::Url;
 
 const MCP_CALL_COUNT_METRIC: &str = "codex.mcp.call";
 const MCP_CALL_DURATION_METRIC: &str = "codex.mcp.call.duration_ms";
+const MCP_TIMING_DIAGNOSTICS_ENV_VAR: &str = "CODEX_MCP_TIMING_DIAGNOSTICS";
+
+fn mcp_timing_diagnostics_enabled() -> bool {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        std::env::var(MCP_TIMING_DIAGNOSTICS_ENV_VAR).is_ok_and(|value| {
+            let value = value.trim();
+            !value.is_empty() && value != "0" && !value.eq_ignore_ascii_case("false")
+        })
+    })
+}
 
 /// Handles the specified tool call dispatches the appropriate
 /// `McpToolCallBegin` and `McpToolCallEnd` events to the `Session`.
@@ -75,6 +88,7 @@ pub(crate) async fn handle_mcp_tool_call(
     tool_name: String,
     arguments: String,
 ) -> CallToolResult {
+    let diagnostics_enabled = mcp_timing_diagnostics_enabled();
     // Parse the `arguments` as JSON. An empty string is OK, but invalid JSON
     // is not.
     let arguments_value = if arguments.trim().is_empty() {
@@ -158,7 +172,17 @@ pub(crate) async fn handle_mcp_tool_call(
         call_id: call_id.clone(),
         invocation: invocation.clone(),
     });
+    let begin_event_start = diagnostics_enabled.then(Instant::now);
     notify_mcp_tool_call_event(sess.as_ref(), turn_context.as_ref(), tool_call_begin_event).await;
+    if let Some(start) = begin_event_start {
+        info!(
+            call_id = %call_id,
+            server = %server,
+            tool = %tool_name,
+            elapsed_ms = start.elapsed().as_millis() as u64,
+            "mcp timing: begin event delivered"
+        );
+    }
 
     if let Some(decision) = maybe_request_mcp_tool_approval(
         &sess,
@@ -200,6 +224,15 @@ pub(crate) async fn handle_mcp_tool_call(
                     },
                 ))
                 .await;
+                if diagnostics_enabled {
+                    info!(
+                        call_id = %call_id,
+                        server = %server,
+                        tool = %tool_name,
+                        elapsed_ms = start.elapsed().as_millis() as u64,
+                        "mcp timing: sess.call_tool completed"
+                    );
+                }
                 let result = sanitize_mcp_tool_result_for_model(
                     turn_context
                         .model_info
@@ -217,12 +250,22 @@ pub(crate) async fn handle_mcp_tool_call(
                     duration,
                     result: result.clone(),
                 });
+                let end_event_start = diagnostics_enabled.then(Instant::now);
                 notify_mcp_tool_call_event(
                     sess.as_ref(),
                     turn_context.as_ref(),
                     tool_call_end_event.clone(),
                 )
                 .await;
+                if let Some(start) = end_event_start {
+                    info!(
+                        call_id = %call_id,
+                        server = %server,
+                        tool = %tool_name,
+                        elapsed_ms = start.elapsed().as_millis() as u64,
+                        "mcp timing: end event delivered"
+                    );
+                }
                 maybe_track_codex_app_used(
                     sess.as_ref(),
                     turn_context.as_ref(),
@@ -313,6 +356,15 @@ pub(crate) async fn handle_mcp_tool_call(
         },
     ))
     .await;
+    if diagnostics_enabled {
+        info!(
+            call_id = %call_id,
+            server = %server,
+            tool = %tool_name,
+            elapsed_ms = start.elapsed().as_millis() as u64,
+            "mcp timing: sess.call_tool completed"
+        );
+    }
     let result = sanitize_mcp_tool_result_for_model(
         turn_context
             .model_info
@@ -331,12 +383,22 @@ pub(crate) async fn handle_mcp_tool_call(
         result: result.clone(),
     });
 
+    let end_event_start = diagnostics_enabled.then(Instant::now);
     notify_mcp_tool_call_event(
         sess.as_ref(),
         turn_context.as_ref(),
         tool_call_end_event.clone(),
     )
     .await;
+    if let Some(start) = end_event_start {
+        info!(
+            call_id = %call_id,
+            server = %server,
+            tool = %tool_name,
+            elapsed_ms = start.elapsed().as_millis() as u64,
+            "mcp timing: end event delivered"
+        );
+    }
     maybe_track_codex_app_used(sess.as_ref(), turn_context.as_ref(), &server, &tool_name).await;
 
     let status = if result.is_ok() { "ok" } else { "error" };

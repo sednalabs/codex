@@ -5,6 +5,9 @@ use std::fs::File;
 use std::io::Error as IoError;
 use std::path::Path;
 use std::path::PathBuf;
+use std::sync::OnceLock;
+use std::time::Duration;
+use std::time::Instant;
 
 use chrono::SecondsFormat;
 use chrono::Utc;
@@ -57,6 +60,19 @@ use codex_protocol::protocol::SessionSource;
 use codex_state::StateRuntime;
 use codex_state::ThreadMetadataBuilder;
 use codex_utils_path as path_utils;
+
+const MCP_TIMING_DIAGNOSTICS_ENV_VAR: &str = "CODEX_MCP_TIMING_DIAGNOSTICS";
+const ROLLOUT_TIMING_SLOW_THRESHOLD: Duration = Duration::from_millis(250);
+
+fn mcp_timing_diagnostics_enabled() -> bool {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        std::env::var(MCP_TIMING_DIAGNOSTICS_ENV_VAR).is_ok_and(|value| {
+            let value = value.trim();
+            !value.is_empty() && value != "0" && !value.eq_ignore_ascii_case("false")
+        })
+    })
+}
 
 /// Records all [`ResponseItem`]s for a session and flushes them to disk after
 /// every update.
@@ -483,6 +499,7 @@ impl RolloutRecorder {
     }
 
     pub async fn record_items(&self, items: &[RolloutItem]) -> std::io::Result<()> {
+        let diagnostics_enabled = mcp_timing_diagnostics_enabled();
         let mut filtered = Vec::new();
         for item in items {
             // Note that function calls may look a bit strange if they are
@@ -498,10 +515,20 @@ impl RolloutRecorder {
         if filtered.is_empty() {
             return Ok(());
         }
+        let queued_items = filtered.len();
+        let queue_start = diagnostics_enabled.then(Instant::now);
         self.tx
             .send(RolloutCmd::AddItems(filtered))
             .await
-            .map_err(|e| IoError::other(format!("failed to queue rollout items: {e}")))
+            .map_err(|e| IoError::other(format!("failed to queue rollout items: {e}")))?;
+        if let Some(start) = queue_start {
+            info!(
+                queued_items,
+                elapsed_ms = start.elapsed().as_millis() as u64,
+                "mcp timing: rollout record_items queued"
+            );
+        }
+        Ok(())
     }
 
     /// Materialize the rollout file and persist all buffered items.
@@ -718,6 +745,7 @@ async fn rollout_writer(
     default_provider: String,
     generate_memories: bool,
 ) -> std::io::Result<()> {
+    let diagnostics_enabled = mcp_timing_diagnostics_enabled();
     let mut writer = file.map(|file| JsonlWriter { file });
     let mut buffered_items = Vec::<RolloutItem>::new();
     if let Some(builder) = state_builder.as_mut() {
@@ -752,9 +780,16 @@ async fn rollout_writer(
 
                 if writer.is_none() {
                     buffered_items.extend(items);
+                    if diagnostics_enabled {
+                        info!(
+                            buffered_items = buffered_items.len(),
+                            "mcp timing: rollout writer buffered items before persist"
+                        );
+                    }
                     continue;
                 }
 
+                let batch_start = diagnostics_enabled.then(Instant::now);
                 write_and_reconcile_items(
                     writer.as_mut(),
                     items.as_slice(),
@@ -764,6 +799,16 @@ async fn rollout_writer(
                     default_provider.as_str(),
                 )
                 .await?;
+                if let Some(start) = batch_start {
+                    let total_duration = start.elapsed();
+                    if diagnostics_enabled || total_duration > ROLLOUT_TIMING_SLOW_THRESHOLD {
+                        info!(
+                            item_count = items.len(),
+                            elapsed_ms = total_duration.as_millis() as u64,
+                            "mcp timing: rollout writer processed AddItems"
+                        );
+                    }
+                }
             }
             RolloutCmd::Persist { ack } => {
                 if writer.is_none() {
@@ -883,11 +928,14 @@ async fn write_and_reconcile_items(
     state_builder: Option<&ThreadMetadataBuilder>,
     default_provider: &str,
 ) -> std::io::Result<()> {
+    let diagnostics_enabled = mcp_timing_diagnostics_enabled();
+    let start = diagnostics_enabled.then(Instant::now);
     if let Some(writer) = writer.as_mut() {
         for item in items {
             writer.write_rollout_item(item).await?;
         }
     }
+    let after_write = start.map(|_| Instant::now());
     sync_thread_state_after_write(
         state_db_ctx,
         rollout_path,
@@ -897,6 +945,18 @@ async fn write_and_reconcile_items(
         /*new_thread_memory_mode*/ None,
     )
     .await;
+    if let (Some(start), Some(after_write)) = (start, after_write) {
+        let total_duration = after_write.elapsed();
+        if diagnostics_enabled || total_duration > ROLLOUT_TIMING_SLOW_THRESHOLD {
+            info!(
+                item_count = items.len(),
+                write_ms = after_write.duration_since(start).as_millis() as u64,
+                sync_ms = total_duration.as_millis() as u64,
+                total_ms = start.elapsed().as_millis() as u64,
+                "mcp timing: rollout write_and_reconcile_items completed"
+            );
+        }
+    }
     Ok(())
 }
 

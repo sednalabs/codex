@@ -16,7 +16,21 @@ use sqlx::Row;
 use sqlx::SqlitePool;
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::OnceLock;
+use tracing::info;
 use uuid::Uuid;
+
+const MCP_TIMING_DIAGNOSTICS_ENV_VAR: &str = "CODEX_MCP_TIMING_DIAGNOSTICS";
+
+fn mcp_timing_diagnostics_enabled() -> bool {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        std::env::var(MCP_TIMING_DIAGNOSTICS_ENV_VAR).is_ok_and(|value| {
+            let value = value.trim();
+            !value.is_empty() && value != "0" && !value.eq_ignore_ascii_case("false")
+        })
+    })
+}
 
 #[derive(Clone, Debug)]
 struct TurnSnapshot {
@@ -363,6 +377,15 @@ ON CONFLICT(thread_id) DO UPDATE SET
         begin: &McpToolCallBeginEvent,
         turn_id: Option<&str>,
     ) -> anyhow::Result<()> {
+        if mcp_timing_diagnostics_enabled() {
+            info!(
+                call_id = %begin.call_id,
+                server = %begin.invocation.server,
+                tool = %begin.invocation.tool,
+                turn_id,
+                "mcp timing: usage logger received begin event"
+            );
+        }
         let now = Utc::now();
         self.tool_calls.insert(
             begin.call_id.clone(),
@@ -397,6 +420,16 @@ ON CONFLICT(thread_id) DO UPDATE SET
     }
 
     async fn handle_tool_call_end(&mut self, end: &McpToolCallEndEvent) -> anyhow::Result<()> {
+        if mcp_timing_diagnostics_enabled() {
+            info!(
+                call_id = %end.call_id,
+                server = %end.invocation.server,
+                tool = %end.invocation.tool,
+                duration_ms = end.duration.as_millis() as u64,
+                success = end.is_success(),
+                "mcp timing: usage logger received end event"
+            );
+        }
         if let Some(_state) = self.tool_calls.remove(&end.call_id) {
             let completed_at = Utc::now();
             let status = if end.is_success() {
