@@ -497,7 +497,7 @@
         "protocol schema validation"
       ],
       "owner": "downstream",
-      "notes": "Keeps the runtime, transports, and tracing code specific to this fork. The previous note here was stale: upstream still ships remote-control, and downstream never merged that transport, enrollment, and runtime surface until the upstream-faithful restore work."
+      "notes": "Keeps the runtime, transports, protocol schema, and helper/client code specific to this fork. The stale remote-control-removal narrative was corrected: this downstream snapshot already ships transport/remote_control/*, and the remaining carry is primarily protocol/schema/helper behavior rather than transport absence."
     },
     {
       "id": "codex-tui-session-surfaces",
