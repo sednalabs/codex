@@ -1222,6 +1222,7 @@ async fn webrtc_v2_background_agent_tool_call_delegates_and_returns_function_out
                 v2_background_agent_tool_call("call_v2", "delegate from v2"),
             ],
             vec![],
+            vec![],
         ])]),
     )
     .await?;
@@ -1249,8 +1250,53 @@ async fn webrtc_v2_background_agent_tool_call_delegates_and_returns_function_out
         requests[0]
     );
 
-    let tool_output = harness.sideband_outbound_request(/*request_index*/ 1).await;
+    let progress = harness.sideband_outbound_request(/*request_index*/ 1).await;
+    assert_v2_progress_update(&progress, "delegated from v2");
+
+    let tool_output = harness.sideband_outbound_request(/*request_index*/ 2).await;
     assert_v2_function_call_output(&tool_output, "call_v2", "delegated from v2");
+    assert_eq!(
+        function_call_output_sideband_requests(&harness.realtime_server).len(),
+        1
+    );
+
+    harness.shutdown().await;
+    Ok(())
+}
+
+#[tokio::test]
+async fn webrtc_v2_background_agent_progress_is_sent_before_function_output() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let mut harness = RealtimeE2eHarness::new(
+        RealtimeTestVersion::V2,
+        main_loop_responses(vec![create_final_assistant_message_sse_response(
+            "progress before final",
+        )?]),
+        realtime_sideband(vec![realtime_sideband_connection(vec![
+            vec![
+                session_updated("sess_v2_progress_before_final"),
+                v2_background_agent_tool_call("call_progress_order", "stream progress"),
+            ],
+            vec![],
+            vec![],
+        ])]),
+    )
+    .await?;
+
+    let started = harness.start_webrtc_realtime("v=offer\r\n").await?;
+    assert_eq!(started.started.version, RealtimeConversationVersion::V2);
+
+    let turn_completed = harness
+        .read_notification::<TurnCompletedNotification>("turn/completed")
+        .await?;
+    assert_eq!(turn_completed.thread_id, harness.thread_id);
+
+    let progress = harness.sideband_outbound_request(/*request_index*/ 1).await;
+    assert_v2_progress_update(&progress, "progress before final");
+
+    let tool_output = harness.sideband_outbound_request(/*request_index*/ 2).await;
+    assert_v2_function_call_output(&tool_output, "call_progress_order", "progress before final");
 
     harness.shutdown().await;
     Ok(())
@@ -1277,6 +1323,7 @@ async fn webrtc_v2_tool_call_delegated_turn_can_execute_shell_tool() -> Result<(
             session_updated("sess_v2_shell"),
             v2_background_agent_tool_call("call_shell", "run shell through delegated turn"),
         ],
+        vec![],
         vec![],
     ])]);
 
@@ -1329,7 +1376,10 @@ async fn webrtc_v2_tool_call_delegated_turn_can_execute_shell_tool() -> Result<(
         requests[1]
     );
 
-    let tool_output = harness.sideband_outbound_request(/*request_index*/ 1).await;
+    let progress = harness.sideband_outbound_request(/*request_index*/ 1).await;
+    assert_v2_progress_update(&progress, "shell tool finished");
+
+    let tool_output = harness.sideband_outbound_request(/*request_index*/ 2).await;
     assert_v2_function_call_output(&tool_output, "call_shell", "shell tool finished");
     assert_eq!(
         function_call_output_sideband_requests(&harness.realtime_server).len(),
@@ -1379,6 +1429,7 @@ async fn webrtc_v2_tool_call_does_not_block_sideband_audio() -> Result<()> {
                 }),
             ],
             vec![],
+            vec![],
         ])]),
     )
     .await?;
@@ -1405,7 +1456,10 @@ async fn webrtc_v2_tool_call_does_not_block_sideband_audio() -> Result<()> {
         .await?;
     assert_eq!(turn_completed.thread_id, harness.thread_id);
 
-    let tool_output = harness.sideband_outbound_request(/*request_index*/ 1).await;
+    let progress = harness.sideband_outbound_request(/*request_index*/ 1).await;
+    assert_v2_progress_update(&progress, "late delegated result");
+
+    let tool_output = harness.sideband_outbound_request(/*request_index*/ 2).await;
     assert_v2_function_call_output(&tool_output, "call_audio", "late delegated result");
 
     harness.shutdown().await;
@@ -1638,6 +1692,23 @@ fn assert_v2_function_call_output(request: &Value, call_id: &str, expected_outpu
                 "type": "function_call_output",
                 "call_id": call_id,
                 "output": format!("\"Agent Final Message\":\n\n{expected_output}"),
+            }
+        })
+    );
+}
+
+fn assert_v2_progress_update(request: &Value, expected_text: &str) {
+    assert_eq!(
+        request,
+        &json!({
+            "type": "conversation.item.create",
+            "item": {
+                "type": "message",
+                "role": "user",
+                "content": [{
+                    "type": "input_text",
+                    "text": format!("{expected_text}\n\nUpdate from background agent (task hasn't finished yet):")
+                }]
             }
         })
     );
