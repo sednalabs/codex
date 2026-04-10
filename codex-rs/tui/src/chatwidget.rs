@@ -174,6 +174,7 @@ use codex_protocol::protocol::ExecCommandSource;
 #[cfg(test)]
 use codex_protocol::protocol::ExitedReviewModeEvent;
 use codex_protocol::protocol::GuardianAssessmentAction;
+use codex_protocol::protocol::GuardianAssessmentDecisionSource;
 use codex_protocol::protocol::GuardianAssessmentEvent;
 use codex_protocol::protocol::GuardianAssessmentStatus;
 use codex_protocol::protocol::ImageGenerationBeginEvent;
@@ -6682,17 +6683,19 @@ impl ChatWidget {
             }
             ServerNotification::ItemGuardianApprovalReviewStarted(notification) => {
                 self.on_guardian_review_notification(
-                    notification.target_item_id,
+                    notification.review_id,
                     notification.turn_id,
                     notification.review,
+                    /*decision_source*/ None,
                     notification.action,
                 );
             }
             ServerNotification::ItemGuardianApprovalReviewCompleted(notification) => {
                 self.on_guardian_review_notification(
-                    notification.target_item_id,
+                    notification.review_id,
                     notification.turn_id,
                     notification.review,
+                    Some(notification.decision_source),
                     notification.action,
                 );
             }
@@ -6975,10 +6978,12 @@ impl ChatWidget {
         id: String,
         turn_id: String,
         review: codex_app_server_protocol::GuardianApprovalReview,
+        decision_source: Option<codex_app_server_protocol::AutoReviewDecisionSource>,
         action: GuardianApprovalReviewAction,
     ) {
         self.on_guardian_assessment(GuardianAssessmentEvent {
             id,
+            target_item_id: None,
             turn_id,
             status: match review.status {
                 codex_app_server_protocol::GuardianApprovalReviewStatus::InProgress => {
@@ -7025,6 +7030,11 @@ impl ChatWidget {
                 }
             }),
             rationale: review.rationale,
+            decision_source: decision_source.map(|source| match source {
+                codex_app_server_protocol::AutoReviewDecisionSource::Agent => {
+                    GuardianAssessmentDecisionSource::Agent
+                }
+            }),
             action: action.into(),
         });
     }
