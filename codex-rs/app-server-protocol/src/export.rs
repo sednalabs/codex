@@ -966,11 +966,8 @@ fn build_schema_bundle(schemas: Vec<GeneratedSchema>) -> Result<Value> {
         }
 
         let mut forced_namespace_refs: Vec<(String, String)> = Vec::new();
-        if let Value::Object(ref mut obj) = value
-            && let Some(defs) = obj.remove("definitions")
-            && let Value::Object(defs_obj) = defs
-        {
-            for (def_name, mut def_schema) in defs_obj {
+        if let Value::Object(ref mut obj) = value {
+            for (def_name, mut def_schema) in drain_schema_definitions(obj) {
                 if IGNORED_DEFINITIONS.contains(&def_name.as_str()) {
                     continue;
                 }
@@ -1024,6 +1021,20 @@ fn build_schema_bundle(schemas: Vec<GeneratedSchema>) -> Result<Value> {
     root.insert("definitions".to_string(), Value::Object(definitions));
 
     Ok(Value::Object(root))
+}
+
+fn drain_schema_definitions(schema: &mut Map<String, Value>) -> Vec<(String, Value)> {
+    let mut drained = Vec::new();
+    for defs_key in ["definitions", "$defs"] {
+        let Some(defs) = schema.remove(defs_key) else {
+            continue;
+        };
+        let Value::Object(defs_obj) = defs else {
+            continue;
+        };
+        drained.extend(defs_obj);
+    }
+    drained
 }
 
 /// Build a datamodel-code-generator-friendly v2 bundle from the mixed export.
@@ -1497,6 +1508,12 @@ fn write_pretty_json(path: PathBuf, value: &impl Serialize) -> Result<()> {
     Ok(())
 }
 
+fn local_definition_ref_suffix(reference: &str) -> Option<&str> {
+    reference
+        .strip_prefix("#/definitions/")
+        .or_else(|| reference.strip_prefix("#/$defs/"))
+}
+
 /// Split a fully-qualified type name like "v2::Type" into its namespace and logical name.
 fn split_namespace(name: &str) -> (Option<&str>, &str) {
     name.split_once("::")
@@ -1509,7 +1526,7 @@ fn rewrite_refs_to_namespace(value: &mut Value, ns: &str) {
     match value {
         Value::Object(obj) => {
             if let Some(Value::String(r)) = obj.get_mut("$ref")
-                && let Some(suffix) = r.strip_prefix("#/definitions/")
+                && let Some(suffix) = local_definition_ref_suffix(r)
             {
                 let prefix = format!("{ns}/");
                 if !suffix.starts_with(&prefix) {
@@ -1543,7 +1560,7 @@ fn rewrite_refs_to_known_namespaces(value: &mut Value, types: &HashMap<String, S
     match value {
         Value::Object(obj) => {
             if let Some(Value::String(reference)) = obj.get_mut("$ref")
-                && let Some(suffix) = reference.strip_prefix("#/definitions/")
+                && let Some(suffix) = local_definition_ref_suffix(reference)
             {
                 let (name, tail) = suffix
                     .split_once('/')
@@ -1859,17 +1876,22 @@ fn ensure_dir(dir: &Path) -> Result<()> {
 }
 
 fn rewrite_named_ref_to_namespace(value: &mut Value, ns: &str, name: &str) {
-    let direct = format!("#/definitions/{name}");
-    let prefixed = format!("{direct}/");
+    let direct_refs = [format!("#/definitions/{name}"), format!("#/$defs/{name}")];
     let replacement = format!("#/definitions/{ns}/{name}");
     let replacement_prefixed = format!("{replacement}/");
     match value {
         Value::Object(obj) => {
             if let Some(Value::String(reference)) = obj.get_mut("$ref") {
-                if reference == &direct {
-                    *reference = replacement;
-                } else if let Some(rest) = reference.strip_prefix(&prefixed) {
-                    *reference = format!("{replacement_prefixed}{rest}");
+                for direct in &direct_refs {
+                    if reference == direct {
+                        reference.clone_from(&replacement);
+                        break;
+                    }
+                    let prefixed = format!("{direct}/");
+                    if let Some(rest) = reference.strip_prefix(&prefixed) {
+                        *reference = format!("{replacement_prefixed}{rest}");
+                        break;
+                    }
                 }
             }
             for child in obj.values_mut() {
@@ -2038,6 +2060,38 @@ mod tests {
     use std::path::Path;
     use std::path::PathBuf;
     use uuid::Uuid;
+
+    fn one_of_method_literals(
+        schema: &Value,
+        definitions: &Map<String, Value>,
+    ) -> BTreeSet<String> {
+        schema["oneOf"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|variant| method_literal_from_variant(variant, definitions))
+            .collect()
+    }
+
+    fn method_literal_from_variant(
+        variant: &Value,
+        definitions: &Map<String, Value>,
+    ) -> Option<String> {
+        if let Some(method) = variant
+            .get("properties")
+            .and_then(Value::as_object)
+            .and_then(|props| props.get("method"))
+            .and_then(string_literal)
+        {
+            return Some(method.to_string());
+        }
+
+        let reference = variant.get("$ref").and_then(Value::as_str)?;
+        let name = reference.strip_prefix("#/definitions/")?;
+        let name = name.split('/').next().unwrap_or(name);
+        let target = definitions.get(name)?;
+        method_literal_from_variant(target, definitions)
+    }
 
     #[test]
     fn generated_ts_optional_nullable_fields_only_in_params() -> Result<()> {
@@ -2687,6 +2741,23 @@ export type Config = { stableField: Keep, unstableField: string | null } & ({ [k
     }
 
     #[test]
+    fn stable_schema_filter_removes_nested_experimental_fields_from_client_request_bundle()
+    -> Result<()> {
+        let output_dir = std::env::temp_dir().join(format!("codex_schema_{}", Uuid::now_v7()));
+        fs::create_dir(&output_dir)?;
+        let schema =
+            write_json_schema_with_return::<crate::ClientRequest>(&output_dir, "ClientRequest")?;
+        let mut bundle = build_schema_bundle(vec![schema])?;
+        filter_experimental_schema(&mut bundle)?;
+
+        let bundle_str = serde_json::to_string(&bundle)?;
+        assert_eq!(bundle_str.contains("mockExperimentalField"), false);
+        assert_eq!(bundle_str.contains("additionalPermissions"), false);
+        let _cleanup = fs::remove_dir_all(&output_dir);
+        Ok(())
+    }
+
+    #[test]
     fn generate_json_filters_experimental_fields_and_methods() -> Result<()> {
         let output_dir = std::env::temp_dir().join(format!("codex_schema_{}", Uuid::now_v7()));
         fs::create_dir(&output_dir)?;
@@ -2740,18 +2811,8 @@ export type Config = { stableField: Keep, unstableField: string | null } & ({ [k
         let definitions = flat_v2_bundle["definitions"]
             .as_object()
             .expect("flat v2 bundle should include definitions");
-        let client_request_methods: BTreeSet<String> = definitions["ClientRequest"]["oneOf"]
-            .as_array()
-            .expect("flat v2 ClientRequest should remain a oneOf")
-            .iter()
-            .filter_map(|variant| {
-                variant["properties"]["method"]["enum"]
-                    .as_array()
-                    .and_then(|values| values.first())
-                    .and_then(Value::as_str)
-                    .map(str::to_string)
-            })
-            .collect();
+        let client_request_methods =
+            one_of_method_literals(&definitions["ClientRequest"], definitions);
         let missing_client_request_methods: Vec<String> = [
             "account/logout",
             "account/rateLimits/read",
@@ -2765,19 +2826,8 @@ export type Config = { stableField: Keep, unstableField: string | null } & ({ [k
         .map(str::to_string)
         .collect();
         assert_eq!(missing_client_request_methods, Vec::<String>::new());
-        let server_notification_methods: BTreeSet<String> =
-            definitions["ServerNotification"]["oneOf"]
-                .as_array()
-                .expect("flat v2 ServerNotification should remain a oneOf")
-                .iter()
-                .filter_map(|variant| {
-                    variant["properties"]["method"]["enum"]
-                        .as_array()
-                        .and_then(|values| values.first())
-                        .and_then(Value::as_str)
-                        .map(str::to_string)
-                })
-                .collect();
+        let server_notification_methods =
+            one_of_method_literals(&definitions["ServerNotification"], definitions);
         let missing_server_notification_methods: Vec<String> = [
             "fuzzyFileSearch/sessionCompleted",
             "fuzzyFileSearch/sessionUpdated",

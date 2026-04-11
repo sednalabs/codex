@@ -1,3 +1,6 @@
+use crate::extensions::NotificationDispatchKind;
+use crate::extensions::app_server_hooks;
+use crate::extensions::dispatch_notification_to_connection;
 use crate::outgoing_message::ConnectionId;
 use crate::outgoing_message::OutgoingMessageSender;
 use codex_app_server_protocol::FsChangedNotification;
@@ -131,7 +134,8 @@ impl FsWatchManager {
         let outgoing = self.outgoing.clone();
         let (subscriber, rx) = self.file_watcher.add_subscriber();
         let watch_root = params.path.clone();
-        let registration = subscriber.register_paths(watch_paths_for_target(&params.path));
+        let registration =
+            subscriber.register_paths(app_server_hooks().fs_watch_paths_for_target(&params.path));
         let (terminate_tx, terminate_rx) = oneshot::channel();
 
         self.state.lock().await.entries.insert(
@@ -164,7 +168,8 @@ impl FsWatchManager {
                     .into_iter()
                     .filter_map(|path| {
                         match AbsolutePathBuf::resolve_path_against_base(&path, &watch_root) {
-                            Ok(path) => changed_path_for_watch_target(&watch_root, path),
+                            Ok(path) => app_server_hooks()
+                                .fs_changed_path_for_watch_target(&watch_root, path),
                             Err(err) => {
                                 warn!(
                                     "failed to normalize watch event path ({}) for {}: {err}",
@@ -177,16 +182,19 @@ impl FsWatchManager {
                     })
                     .collect::<Vec<_>>();
                 changed_paths.sort_by(|left, right| left.as_path().cmp(right.as_path()));
-                changed_paths.dedup();
+                if app_server_hooks().dedupe_fs_changed_paths() {
+                    changed_paths.dedup();
+                }
                 if !changed_paths.is_empty() {
-                    // FsChanged notifications are debounced, best-effort updates: don't wait for
-                    // transport write completion here or one slow client can stall later batches
-                    // and even block fs/unwatch from finishing.
+                    // FsChanged notifications remain debounced, best-effort updates. The
+                    // exact dispatch policy now comes from the app-server extension seam.
                     tokio::select! {
                         biased;
                         _ = &mut terminate_rx => break,
-                        _ = outgoing.send_server_notification_to_connection(
+                        _ = dispatch_notification_to_connection(
+                            outgoing.as_ref(),
                             connection_id,
+                            NotificationDispatchKind::FsChanged,
                             ServerNotification::FsChanged(FsChangedNotification {
                                 watch_id: task_watch_id.clone(),
                                 changed_paths,
@@ -229,51 +237,6 @@ impl FsWatchManager {
             .entries
             .retain(|watch_key, _| watch_key.connection_id != connection_id);
     }
-}
-
-fn nearest_existing_watch_ancestor(path: &std::path::Path) -> Option<PathBuf> {
-    path.ancestors()
-        .skip(1)
-        .find(|ancestor| ancestor.exists())
-        .map(std::path::Path::to_path_buf)
-}
-
-fn watch_paths_for_target(path: &AbsolutePathBuf) -> Vec<WatchPath> {
-    let watch_path = path.to_path_buf();
-    let mut watched_paths = vec![WatchPath {
-        path: watch_path.clone(),
-        recursive: watch_path.is_dir(),
-    }];
-    if !watch_path.exists()
-        && let Some(existing_ancestor) = nearest_existing_watch_ancestor(&watch_path)
-    {
-        watched_paths.push(WatchPath {
-            // If the target path does not yet exist, we must still watch a recursive parent
-            // so that watch-before-create directory flows observe descendant creation.
-            // Avoid recursively watching the filesystem root for typoed or invalid paths.
-            recursive: existing_ancestor.parent().is_some(),
-            path: existing_ancestor,
-        });
-    }
-    watched_paths
-}
-
-fn changed_path_for_watch_target(
-    watch_target: &AbsolutePathBuf,
-    event_path: AbsolutePathBuf,
-) -> Option<AbsolutePathBuf> {
-    let watch_target = watch_target.as_path();
-    let event_path_ref = event_path.as_path();
-    if event_path_ref == watch_target {
-        return Some(event_path);
-    }
-    if watch_target.starts_with(event_path_ref) {
-        return AbsolutePathBuf::try_from(watch_target.to_path_buf()).ok();
-    }
-    if event_path_ref.starts_with(watch_target) {
-        return Some(event_path);
-    }
-    None
 }
 
 #[cfg(test)]
@@ -538,7 +501,8 @@ mod tests {
         let watched_file = absolute_path(temp_dir.path().join("file.txt"));
         let file_watcher = Arc::new(FileWatcher::noop());
         let (subscriber, raw_rx) = file_watcher.add_subscriber();
-        let _subscription = subscriber.register_paths(watch_paths_for_target(&watched_file));
+        let _subscription =
+            subscriber.register_paths(app_server_hooks().fs_watch_paths_for_target(&watched_file));
         let mut rx = DebouncedReceiver::new(raw_rx, Duration::from_millis(20));
 
         file_watcher
@@ -566,7 +530,7 @@ mod tests {
         let existing_directory = absolute_path(temp_dir.path().to_path_buf());
 
         assert_eq!(
-            watch_paths_for_target(&existing_directory),
+            app_server_hooks().fs_watch_paths_for_target(&existing_directory),
             vec![WatchPath {
                 path: existing_directory.to_path_buf(),
                 recursive: true,
@@ -581,7 +545,7 @@ mod tests {
         std::fs::write(existing_file.as_path(), b"hello").expect("write existing file");
 
         assert_eq!(
-            watch_paths_for_target(&existing_file),
+            app_server_hooks().fs_watch_paths_for_target(&existing_file),
             vec![WatchPath {
                 path: existing_file.to_path_buf(),
                 recursive: false,
@@ -597,7 +561,7 @@ mod tests {
             .parent()
             .expect("missing file should have a parent");
         assert_eq!(
-            watch_paths_for_target(&missing_path),
+            app_server_hooks().fs_watch_paths_for_target(&missing_path),
             vec![
                 WatchPath {
                     path: missing_path.to_path_buf(),
@@ -617,7 +581,7 @@ mod tests {
         let missing_path = absolute_path(temp_dir.path().join("refs/remotes/origin/HEAD"));
 
         assert_eq!(
-            watch_paths_for_target(&missing_path),
+            app_server_hooks().fs_watch_paths_for_target(&missing_path),
             vec![
                 WatchPath {
                     path: missing_path.to_path_buf(),
@@ -637,7 +601,7 @@ mod tests {
         let missing_path = absolute_path(PathBuf::from("/does/not/exist/file"));
 
         assert_eq!(
-            watch_paths_for_target(&missing_path),
+            app_server_hooks().fs_watch_paths_for_target(&missing_path),
             vec![
                 WatchPath {
                     path: missing_path.to_path_buf(),
@@ -776,10 +740,13 @@ mod tests {
         let sibling = absolute_path(temp_dir.path().join("ORIG_HEAD"));
 
         assert_eq!(
-            changed_path_for_watch_target(&missing_path, parent),
+            app_server_hooks().fs_changed_path_for_watch_target(&missing_path, parent),
             Some(missing_path.clone())
         );
-        assert_eq!(changed_path_for_watch_target(&missing_path, sibling), None);
+        assert_eq!(
+            app_server_hooks().fs_changed_path_for_watch_target(&missing_path, sibling),
+            None
+        );
     }
 
     #[tokio::test]
