@@ -9,7 +9,7 @@ from urllib.parse import urlparse
 
 ROOT = Path(__file__).resolve().parents[2]
 DOC_GLOBS = ("README.md", "docs/**/*.md")
-INLINE_LINK_RE = re.compile(r"(?<!\!)\[[^\]]+\]\(([^)]+)\)")
+INLINE_LINK_RE = re.compile(r"(?<!\!)\[[^\]]+\]\(([^)\s]+)(?:\s+[^)]+)?\)")
 
 
 def iter_markdown_files() -> list[Path]:
@@ -32,6 +32,8 @@ def should_ignore(target: str) -> bool:
 
 def resolve_target(source: Path, raw_target: str) -> Path:
     link_target = raw_target.split("#", 1)[0]
+    if link_target.startswith("/"):
+        return (ROOT / link_target.lstrip("/")).resolve()
     return (source.parent / link_target).resolve()
 
 

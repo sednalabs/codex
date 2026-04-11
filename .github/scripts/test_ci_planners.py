@@ -10,6 +10,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
+import yaml
+
 
 SCRIPTS_DIR = Path(__file__).resolve().parent
 REPO_ROOT = SCRIPTS_DIR.parent.parent
@@ -30,6 +32,12 @@ RESOLVE_VALIDATION_PLAN = load_module(
 RESOLVE_RUST_CI_MODE = load_module(
     "resolve_rust_ci_mode_module", SCRIPTS_DIR / "resolve_rust_ci_mode.py"
 )
+AGGREGATE_VALIDATION_SUMMARY = load_module(
+    "aggregate_validation_summary_module", SCRIPTS_DIR / "aggregate_validation_summary.py"
+)
+CHECK_MARKDOWN_LINKS = load_module(
+    "check_markdown_links_module", SCRIPTS_DIR / "check_markdown_links.py"
+)
 
 
 def run_script(script: Path, *args: str) -> dict:
@@ -43,34 +51,12 @@ def run_script(script: Path, *args: str) -> dict:
 
 
 def parse_workflow_dispatch_lane_options(workflow_path: Path) -> list[str]:
-    lines = workflow_path.read_text(encoding="utf-8").splitlines()
-    in_lane_block = False
-    in_options_block = False
-    options: list[str] = []
-
-    for line in lines:
-        stripped = line.strip()
-        indent = len(line) - len(line.lstrip(" "))
-
-        if not in_lane_block:
-            if stripped == "lane:" and indent >= 6:
-                in_lane_block = True
-            continue
-
-        if in_lane_block and not in_options_block:
-            if indent <= 6 and stripped and stripped != "lane:":
-                break
-            if stripped == "options:" and indent >= 8:
-                in_options_block = True
-            continue
-
-        if in_options_block:
-            if indent <= 8 and stripped and not stripped.startswith("- "):
-                break
-            if stripped.startswith("- "):
-                options.append(stripped[2:].strip())
-
-    return options
+    payload = yaml.load(workflow_path.read_text(encoding="utf-8"), Loader=yaml.BaseLoader)
+    return (
+        (((payload.get("on") or {}).get("workflow_dispatch") or {}).get("inputs") or {})
+        .get("lane", {})
+        .get("options", [])
+    )
 
 
 class TempGitRepo:
@@ -399,6 +385,79 @@ class RustCiModeScriptTests(unittest.TestCase):
             ),
         )
         self.assertEqual(outputs["run_argument_comment_lint_prebuilt"], "false")
+
+    def test_workflow_only_pr_skips_rust_compile_gates(self) -> None:
+        outputs = self.run_rust_ci_mode(
+            event_action="opened",
+            head_files={
+                ".github/workflows/rust-ci.yml": "workflow\n",
+                ".github/scripts/resolve_rust_ci_mode.py": "planner\n",
+                "justfile": "validation:\n",
+            },
+        )
+
+        self.assertEqual(outputs["validation_mode"], "full")
+        self.assertEqual(outputs["workflows"], "true")
+        self.assertEqual(outputs["has_relevant_changes"], "true")
+        self.assertEqual(outputs["run_general"], "false")
+        self.assertEqual(outputs["run_cargo_shear"], "false")
+        self.assertEqual(outputs["run_argument_comment_lint_prebuilt"], "false")
+        self.assertEqual(outputs["run_argument_comment_lint_package"], "true")
+
+    def test_skill_only_pr_is_irrelevant_to_rust_ci(self) -> None:
+        outputs = self.run_rust_ci_mode(
+            event_action="opened",
+            head_files={".codex/skills/example/SKILL.md": "hello\n"},
+        )
+
+        self.assertEqual(outputs["has_relevant_changes"], "false")
+        self.assertEqual(outputs["run_general"], "false")
+        self.assertEqual(outputs["run_cargo_shear"], "false")
+        self.assertEqual(outputs["run_argument_comment_lint_package"], "false")
+        self.assertEqual(outputs["run_argument_comment_lint_prebuilt"], "false")
+
+
+class HelperScriptTests(unittest.TestCase):
+    def test_build_results_tolerates_selected_lane_missing_from_matrix(self) -> None:
+        results = AGGREGATE_VALIDATION_SUMMARY.build_results(
+            planned_matrix=[],
+            selected_lane_ids=["lane.only.in.selection"],
+            actual_by_lane={},
+            smoke_gate_result="skipped",
+            setup_class_results={},
+            matrix_fail_fast=False,
+        )
+
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0]["lane_id"], "lane.only.in.selection")
+        self.assertEqual(results[0]["outcome"], "missing")
+        self.assertEqual(results[0]["summary_family"], "lane.only.in.selection")
+
+    def test_markdown_link_regex_excludes_optional_title(self) -> None:
+        match = CHECK_MARKDOWN_LINKS.INLINE_LINK_RE.search(
+            '[Spec](docs/example.md "Optional title")'
+        )
+        self.assertIsNotNone(match)
+        self.assertEqual(match.group(1), "docs/example.md")
+
+    def test_resolve_target_treats_root_relative_paths_as_repo_relative(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            docs_dir = root / "docs"
+            docs_dir.mkdir(parents=True, exist_ok=True)
+            source = docs_dir / "guide.md"
+            source.write_text("guide\n", encoding="utf-8")
+            readme = root / "README.md"
+            readme.write_text("root\n", encoding="utf-8")
+
+            original_root = CHECK_MARKDOWN_LINKS.ROOT
+            CHECK_MARKDOWN_LINKS.ROOT = root
+            try:
+                resolved = CHECK_MARKDOWN_LINKS.resolve_target(source, "/README.md")
+            finally:
+                CHECK_MARKDOWN_LINKS.ROOT = original_root
+
+        self.assertEqual(resolved, readme.resolve())
 
 
 if __name__ == "__main__":

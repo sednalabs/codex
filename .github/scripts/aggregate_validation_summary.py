@@ -191,7 +191,7 @@ def build_results(
 
     results: list[dict] = []
     for lane_id in ordered_lane_ids:
-        lane = dict(expected[lane_id])
+        lane = dict(expected.get(lane_id) or {"lane_id": lane_id})
         payload = actual_by_lane.get(lane_id)
         if payload is None:
             if lane.get("lane_phase") == "smoke_gate":
@@ -218,10 +218,17 @@ def build_results(
                 {
                     "outcome": outcome,
                     "exit_code": None,
+                    "status_class": lane.get("status_class", "active"),
                     "started_at_ms": None,
                     "finished_at_ms": None,
                     "duration_ms": None,
                     "log_available": False,
+                    "lane_phase": lane.get("lane_phase", "downstream_lanes"),
+                    "frontier_default": bool(lane.get("frontier_default", False)),
+                    "setup_class": lane.get("setup_class", "rust"),
+                    "frontier_role": lane.get("frontier_role", "sentinel"),
+                    "summary_family": lane.get("summary_family", lane_id),
+                    "cost_class": lane.get("cost_class", "medium"),
                     "primary_signal": "",
                     "error_lines": [],
                     "tail_excerpt": [],

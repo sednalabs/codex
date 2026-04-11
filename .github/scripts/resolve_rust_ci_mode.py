@@ -29,6 +29,21 @@ INITIAL_ROUTE_MAX_LINES = 300
 FOLLOWUP_ROUTE_MAX_FILES = 2
 FOLLOWUP_ROUTE_MAX_LINES = 20
 
+RUST_BUNDLE_PATTERNS = [
+    "codex-rs/**",
+    "Cargo.lock",
+    "Cargo.toml",
+    "**/Cargo.toml",
+    "rust-toolchain.toml",
+    "MODULE.bazel",
+    "MODULE.bazel.lock",
+]
+WORKFLOW_SURFACE_PATTERNS = [
+    ".github/**",
+    "justfile",
+    "scripts/**",
+]
+
 
 def catalog_path() -> Path:
     return Path(__file__).resolve().parent.parent / "validation-lanes.json"
@@ -88,11 +103,10 @@ def any_path_matches(paths: list[str], patterns: list[str]) -> bool:
 
 
 def classify_files(files: list[str]) -> dict[str, bool]:
-    codex = any(path.startswith("codex-rs/") for path in files)
+    codex = any(any(path_matches(path, pattern) for pattern in RUST_BUNDLE_PATTERNS) for path in files)
     argument_comment_lint = any(
-        path.startswith("codex-rs/")
+        any(path_matches(path, pattern) for pattern in RUST_BUNDLE_PATTERNS)
         or path.startswith("tools/argument-comment-lint/")
-        or path == "justfile"
         for path in files
     )
     argument_comment_lint_package = any(
@@ -101,7 +115,10 @@ def classify_files(files: list[str]) -> dict[str, bool]:
         or path == ".github/workflows/rust-ci-full.yml"
         for path in files
     )
-    workflows = any(path.startswith(".github/") for path in files)
+    workflows = any(
+        any(path_matches(path, pattern) for pattern in WORKFLOW_SURFACE_PATTERNS)
+        for path in files
+    )
     high_risk = any(any(path_matches(path, pattern) for pattern in HIGH_RISK_PATTERNS) for path in files)
     return {
         "codex": codex,
@@ -258,12 +275,10 @@ def main() -> None:
             "argument_comment_lint_package": as_output(primary["argument_comment_lint_package"]),
             "workflows": as_output(primary["workflows"]),
             "has_relevant_changes": as_output(primary["has_relevant_changes"]),
-            "run_general": as_output(primary["codex"] or primary["workflows"] or primary["high_risk"]),
-            "run_cargo_shear": as_output(primary["codex"] or primary["workflows"] or primary["high_risk"]),
+            "run_general": as_output(primary["codex"]),
+            "run_cargo_shear": as_output(primary["codex"]),
             "run_argument_comment_lint_package": as_output(primary["argument_comment_lint_package"]),
-            "run_argument_comment_lint_prebuilt": as_output(
-                primary["argument_comment_lint"] or primary["workflows"]
-            ),
+            "run_argument_comment_lint_prebuilt": as_output(primary["argument_comment_lint"]),
             "run_incremental_validation": "false",
             "incremental_profile": "",
             "incremental_lane_set": "",
