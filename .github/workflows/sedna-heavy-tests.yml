@@ -22,13 +22,28 @@ on:
           - codex.core-subagent-surface-targeted
           - codex.core-subagent-notification-contract-targeted
           - codex.core-subagent-notification-visibility-targeted
+          - codex.tui-thread-session-policy-targeted
+          - codex.tui-esc-interrupt-targeted
+          - codex.tui-front-queue-submit-targeted
+          - codex.tui-transcript-viewport-targeted
+          - codex.tui-config-refresh-session-targeted
+          - codex.tui-agent-picker-usage-targeted
+          - codex.tui-agent-picker-targeted
+          - codex.tui-agent-picker-model-surface-targeted
+          - codex.tui-agent-picker-tree-targeted
+          - codex.tui-agent-usage-totals-targeted
           - codex.core-multi-agent-orchestration-targeted
+          - codex.core-subagent-model-pinning-targeted
+          - codex.core-subagent-spawn-approval-targeted
           - codex.core-persisted-subagent-descendants-targeted
           - codex.core-context-serialization-targeted
           - codex.core-attestation-targeted
           - codex.state-spawn-lineage-contract-targeted
+          - codex.code-mode-declaration-targeted
           - codex.app-server-protocol-test
+          - codex.app-server-thread-cwd-targeted
           - codex.downstream-docs-check
+          - codex.release-linux-build-smoke
           - downstream-ledger-seam
         default: all
   pull_request:

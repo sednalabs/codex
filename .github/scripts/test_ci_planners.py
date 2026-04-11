@@ -42,6 +42,37 @@ def run_script(script: Path, *args: str) -> dict:
     return json.loads(proc.stdout)
 
 
+def parse_workflow_dispatch_lane_options(workflow_path: Path) -> list[str]:
+    lines = workflow_path.read_text(encoding="utf-8").splitlines()
+    in_lane_block = False
+    in_options_block = False
+    options: list[str] = []
+
+    for line in lines:
+        stripped = line.strip()
+        indent = len(line) - len(line.lstrip(" "))
+
+        if not in_lane_block:
+            if stripped == "lane:" and indent >= 6:
+                in_lane_block = True
+            continue
+
+        if in_lane_block and not in_options_block:
+            if indent <= 6 and stripped and stripped != "lane:":
+                break
+            if stripped == "options:" and indent >= 8:
+                in_options_block = True
+            continue
+
+        if in_options_block:
+            if indent <= 8 and stripped and not stripped.startswith("- "):
+                break
+            if stripped.startswith("- "):
+                options.append(stripped[2:].strip())
+
+    return options
+
+
 class TempGitRepo:
     def __init__(self) -> None:
         self._tmpdir = tempfile.TemporaryDirectory()
@@ -83,7 +114,8 @@ class RouteSelectionTests(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls) -> None:
-        cls.routes = RESOLVE_VALIDATION_PLAN.load_catalog()["followup_routes"]
+        cls.catalog = RESOLVE_VALIDATION_PLAN.load_catalog()
+        cls.routes = cls.catalog["followup_routes"]
 
     def test_picker_shared_surface_routes_to_both_picker_lanes(self) -> None:
         lanes = RESOLVE_VALIDATION_PLAN.select_followup_lanes(
@@ -129,6 +161,20 @@ class RouteSelectionTests(unittest.TestCase):
         self.assertEqual(
             lanes,
             ["codex.tui-agent-picker-model-surface-targeted"],
+        )
+
+    def test_heavy_workflow_dispatch_options_cover_catalog_lanes(self) -> None:
+        workflow_options = parse_workflow_dispatch_lane_options(
+            REPO_ROOT / ".github/workflows/sedna-heavy-tests.yml"
+        )
+        expected_lane_ids = [
+            lane["lane_id"]
+            for lane in self.catalog["lanes"]
+            if lane.get("lane_id")
+        ]
+        self.assertEqual(
+            workflow_options,
+            ["all", *expected_lane_ids],
         )
 
 
