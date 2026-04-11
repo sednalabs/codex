@@ -18,7 +18,7 @@ jobs:
     outputs:
       synced_upstream_main_sha: ${{ steps.capture-synced-sha.outputs.synced_upstream_main_sha }}
     steps:
-      - uses: actions/checkout@v6.0.2
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 0
           persist-credentials: false
@@ -76,7 +76,7 @@ jobs:
     needs: sync
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v6.0.2
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 0
 
