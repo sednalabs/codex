@@ -417,6 +417,14 @@ def _resolve_dispatch_ref(watcher, repo, requested_ref, dispatch_inputs):
     return watcher.detect_ref(requested_ref)
 
 
+def _resolve_validation_ref(requested_ref, dispatch_ref, dispatch_inputs):
+    if requested_ref == "auto":
+        logical_ref = _dispatch_input_value(dispatch_inputs, "ref")
+        if logical_ref:
+            return logical_ref
+    return dispatch_ref
+
+
 def _is_unexpected_supersession_input_error(err):
     message = str(err)
     return (
@@ -529,14 +537,15 @@ def main():
         return _emit_error(str(err))
 
     try:
-        ref = _resolve_dispatch_ref(watcher, repo, args.ref, dispatch_inputs)
+        dispatch_ref = _resolve_dispatch_ref(watcher, repo, args.ref, dispatch_inputs)
     except watcher.GhCommandError as err:
         return _emit_error(err)
+    validation_ref = _resolve_validation_ref(args.ref, dispatch_ref, dispatch_inputs)
 
     expected_sha = str(args.head_sha or "").strip()
     expected_sha_from_args = bool(expected_sha)
     if not expected_sha:
-        expected_sha = _resolve_remote_ref_sha(watcher, repo, ref) or (
+        expected_sha = _resolve_remote_ref_sha(watcher, repo, validation_ref) or (
             watcher.command_text(["git", "rev-parse", "HEAD"]) or ""
         ).strip()
     if not expected_sha:
@@ -551,22 +560,22 @@ def main():
         mismatch_observed_sha = _validate_expected_head_sha_against_remote_branch(
             watcher,
             repo,
-            ref,
+            validation_ref,
             expected_sha,
         )
         if mismatch_observed_sha:
             return _emit_expected_head_sha_mismatch(
                 workflow=args.workflow,
-                ref=ref,
+                ref=validation_ref,
                 expected_sha=expected_sha,
                 observed_sha=mismatch_observed_sha,
             )
 
-    if not watcher.is_sha_like(ref):
+    if not watcher.is_sha_like(validation_ref):
         ok, attempts = _wait_for_ref_to_match_expected(
             watcher,
             repo,
-            ref,
+            validation_ref,
             expected_sha,
             start_time=start_time,
             attempts=attempts,
@@ -576,11 +585,11 @@ def main():
         )
         if not ok:
             return _emit_error(
-                f"Timed out waiting for remote ref '{ref}' to match expected SHA prefix '{expected_sha}'."
+                f"Timed out waiting for remote ref '{validation_ref}' to match expected SHA prefix '{expected_sha}'."
             )
 
     try:
-        baseline_runs = watcher.list_workflow_runs(repo, args.workflow, ref)
+        baseline_runs = watcher.list_workflow_runs(repo, args.workflow, dispatch_ref)
         baseline_max_run_id = max(
             (int(run.get("databaseId") or 0) for run in baseline_runs),
             default=0,
@@ -600,7 +609,7 @@ def main():
                 watcher,
                 repo,
                 args.workflow,
-                ref,
+                dispatch_ref,
                 args.supersession_mode,
                 args.supersession_key,
                 dispatch_inputs,
@@ -609,12 +618,13 @@ def main():
             return _emit_error(f"Workflow dispatch failed: {err}")
 
         min_run_id = _effective_minimum_run_id(baseline_max_run_id, args.min_run_id)
+        selection_expected_head_sha = expected_sha if validation_ref == dispatch_ref else None
         selection, attempts = _select_newest_matching_run(
             watcher,
             repo,
             args.workflow,
-            ref,
-            expected_head_sha=expected_sha,
+            dispatch_ref,
+            expected_head_sha=selection_expected_head_sha,
             minimum_run_id=min_run_id,
             start_time=start_time,
             attempts=attempts,
@@ -644,17 +654,17 @@ def main():
             if dispatch_attempt >= max_dispatch_attempts:
                 return _emit_stale_head_timeout(
                     workflow=args.workflow,
-                    ref=ref,
+                    ref=dispatch_ref,
                     expected_sha=expected_sha,
                     attempts_used=dispatch_attempt,
                     retries_allowed=args.stale_head_retries,
                     stale_runs=stale_runs,
                 )
-            if not watcher.is_sha_like(ref):
+            if not watcher.is_sha_like(validation_ref):
                 ok, attempts = _wait_for_ref_to_match_expected(
                     watcher,
                     repo,
-                    ref,
+                    validation_ref,
                     expected_sha,
                     start_time=start_time,
                     attempts=attempts,
@@ -664,13 +674,13 @@ def main():
                 )
                 if not ok:
                     return _emit_error(
-                        f"Timed out waiting for remote ref '{ref}' to match expected SHA prefix '{expected_sha}'."
+                        f"Timed out waiting for remote ref '{validation_ref}' to match expected SHA prefix '{expected_sha}'."
                     )
             continue
         if kind == "appearance_timed_out":
             return _emit_dispatch_appearance_timeout(
                 workflow=args.workflow,
-                ref=ref,
+                ref=dispatch_ref,
                 expected_sha=expected_sha,
                 appearance_timeout_seconds=args.appearance_timeout_seconds,
                 attempts_used=dispatch_attempt,
@@ -682,14 +692,14 @@ def main():
         if stale_runs:
             return _emit_stale_head_timeout(
                 workflow=args.workflow,
-                ref=ref,
+                ref=dispatch_ref,
                 expected_sha=expected_sha,
                 attempts_used=max_dispatch_attempts,
                 retries_allowed=args.stale_head_retries,
                 stale_runs=stale_runs,
             )
         return _emit_error(
-            f"Timed out waiting for a new matching run for workflow '{args.workflow}', ref '{ref}', "
+            f"Timed out waiting for a new matching run for workflow '{args.workflow}', ref '{dispatch_ref}', "
             f"head-sha '{expected_sha}' after dispatch."
         )
 

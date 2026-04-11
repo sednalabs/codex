@@ -51,8 +51,7 @@ Accept any of the following:
 - optional `--min-run-id` when using a workflow target directly to skip older stale matching runs
 - no ref argument: infer the current branch when possible
 - when passing a logical workflow input like `ref=target-branch`, `--ref auto` resolves to the
-  repository default branch so downstream-style dispatches do not need a separately pinned host
-  SHA
+  repository default branch for dispatch while `--head-sha` keeps guarding the logical input ref
 - optional Gemini model override with `--gemini-model` when a failure should be summarized
 - optional `--no-gemini-diagnosis` to skip Gemini while still returning the structured diagnostic bundle
 - optional `--gemini-diagnosis` to override `GH_WORKFLOW_RUN_WATCH_DISABLE_GEMINI=1` for one run
@@ -216,6 +215,7 @@ Gemini failure summaries are collected with the direct Gemini REST API using `ge
 - Do not use a pure babysitter lane when the real seam is workflow watch plus bounded fix/rerun ownership.
 - Prefer exact run ids when the parent already knows them.
 - For a fresh dispatch, use `gh_dispatch_and_watch` to wait for remote branch tip sync, dispatch only when SHA matches, and watch only a newer matching run.
+- For downstream-style dispatches with a logical `ref=` input, keep `--ref auto` so the workflow dispatches from the repo default branch; the helper validates the logical input ref head before dispatch and then watches the newly created host-branch run.
 - When the parent only knows workflow plus ref, let the helper follow the newest matching run so cancelled superseded runs do not create noise.
 - When the parent knows the exact branch head it just dispatched, pass `--head-sha` so the watcher cannot latch onto an older completed run on the same ref.
 - If a `workflow_dispatch` run is hosted on a branch different from the logical ref (for example hosted on `main` while testing `validation/...` input), pass `--host-ref` (or `host-ref=` in `--target`) so the watcher can select it deterministically.

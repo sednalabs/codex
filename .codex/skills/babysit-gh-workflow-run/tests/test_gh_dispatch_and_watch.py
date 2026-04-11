@@ -422,6 +422,89 @@ class DispatchAndWatchTests(unittest.TestCase):
         self.assertIn((("repo", "view", "--json", "defaultBranchRef"), "owner/repo"), watcher.calls)
         self.assertNotIn(("detect_ref", "auto"), watcher.calls)
 
+    def test_main_dispatches_from_default_branch_for_downstream_ref_input(self):
+        calls = {"list_workflow_runs": []}
+
+        class FakeWatcher:
+            GhCommandError = RuntimeError
+
+            def detect_repo(self):
+                return "owner/repo"
+
+            def detect_ref(self, ref):
+                raise AssertionError("detect_ref should not be used when auto resolves downstream ref input")
+
+            def is_sha_like(self, value):
+                return False
+
+            def list_workflow_runs(self, repo, workflow, ref, expected_head_sha=None, minimum_run_id=None):
+                calls["list_workflow_runs"].append(
+                    (repo, workflow, ref, expected_head_sha, minimum_run_id)
+                )
+                return []
+
+            def command_text(self, *args, **kwargs):
+                raise AssertionError("command_text should not be used when head-sha is provided")
+
+            def gh_json(self, args, repo=None):
+                if args == ["repo", "view", "--json", "defaultBranchRef"]:
+                    return {"defaultBranchRef": {"name": "main"}}
+                raise AssertionError(f"unexpected gh_json call: {args!r}")
+
+        watcher = FakeWatcher()
+        argv = [
+            "gh_dispatch_and_watch",
+            "--workflow",
+            "validation-lab.yml",
+            "--head-sha",
+            "a206ca4957946e4ba491d6c9eaef4380243c9f07",
+            "--input",
+            "ref=w3710-route-coverage-20260411",
+            "--input",
+            "profile=targeted",
+            "--input",
+            "lane_set=mcp",
+            "--input",
+            "lanes=ops-mcp-http",
+        ]
+
+        with patch.object(sys, "argv", argv), patch.object(
+            MODULE, "_load_watcher", return_value=watcher
+        ), patch.object(
+            MODULE, "_validate_expected_head_sha_against_remote_branch", return_value=None
+        ) as validate_mock, patch.object(
+            MODULE, "_wait_for_ref_to_match_expected", return_value=(True, 0)
+        ) as wait_mock, patch.object(
+            MODULE, "_dispatch_workflow"
+        ) as dispatch_mock, patch.object(
+            MODULE,
+            "_select_newest_matching_run",
+            return_value=({"kind": "matched", "run": {"databaseId": 501}}, 0),
+        ) as select_mock, patch.object(MODULE, "_run_watcher", return_value=0) as run_mock:
+            rc = MODULE.main()
+
+        self.assertEqual(rc, 0)
+        validate_mock.assert_called_once_with(
+            watcher,
+            "owner/repo",
+            "w3710-route-coverage-20260411",
+            "a206ca4957946e4ba491d6c9eaef4380243c9f07",
+        )
+        wait_mock.assert_called_once()
+        self.assertEqual(wait_mock.call_args.args[1:4], (
+            "owner/repo",
+            "w3710-route-coverage-20260411",
+            "a206ca4957946e4ba491d6c9eaef4380243c9f07",
+        ))
+        self.assertEqual(dispatch_mock.call_args.args[3], "main")
+        self.assertIn(("profile", "targeted"), dispatch_mock.call_args.args[6])
+        self.assertIn(("lane_set", "mcp"), dispatch_mock.call_args.args[6])
+        self.assertIn(("lanes", "ops-mcp-http"), dispatch_mock.call_args.args[6])
+        self.assertEqual(calls["list_workflow_runs"][0][2], "main")
+        self.assertIsNone(select_mock.call_args.kwargs["expected_head_sha"])
+        self.assertEqual(select_mock.call_args.args[3], "main")
+        self.assertEqual(run_mock.call_args.args[1], 501)
+
     def test_effective_minimum_run_id_applies_override(self):
         self.assertEqual(MODULE._effective_minimum_run_id(100, None), 101)
         self.assertEqual(MODULE._effective_minimum_run_id(100, 50), 101)
