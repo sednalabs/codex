@@ -1,14 +1,13 @@
 use schemars::JsonSchema;
-use schemars::r#gen::SchemaGenerator;
-use schemars::r#gen::SchemaSettings;
-use schemars::schema::InstanceType;
-use schemars::schema::RootSchema;
-use schemars::schema::Schema;
-use schemars::schema::SchemaObject;
+use schemars::Schema;
+use schemars::SchemaGenerator;
+use schemars::generate::SchemaSettings;
 use serde::Deserialize;
 use serde::Serialize;
 use serde_json::Map;
 use serde_json::Value;
+use serde_json::json;
+use std::borrow::Cow;
 use std::path::Path;
 use std::path::PathBuf;
 
@@ -39,15 +38,16 @@ impl NullableString {
 }
 
 impl JsonSchema for NullableString {
-    fn schema_name() -> String {
-        "NullableString".to_string()
+    fn schema_name() -> Cow<'static, str> {
+        "NullableString".into()
     }
 
     fn json_schema(_gen: &mut SchemaGenerator) -> Schema {
-        Schema::Object(SchemaObject {
-            instance_type: Some(vec![InstanceType::String, InstanceType::Null].into()),
-            ..Default::default()
+        json!({
+            "type": ["string", "null"]
         })
+        .try_into()
+        .expect("nullable string schema should be valid")
     }
 }
 
@@ -412,32 +412,49 @@ where
     T: JsonSchema,
 {
     let schema = schema_for_type::<T>();
-    let value = serde_json::to_value(schema)?;
+    let mut value = serde_json::to_value(schema)?;
+    normalize_legacy_option_schema(&mut value);
     let value = canonicalize_json(&value);
     Ok(serde_json::to_vec_pretty(&value)?)
 }
 
-fn schema_for_type<T>() -> RootSchema
+fn schema_for_type<T>() -> Schema
 where
     T: JsonSchema,
 {
     SchemaSettings::draft07()
-        .with(|settings| {
-            settings.option_add_null_type = false;
-        })
         .into_generator()
         .into_root_schema_for::<T>()
 }
 
 fn canonicalize_json(value: &Value) -> Value {
+    canonicalize_json_with_key(/*key*/ None, value)
+}
+
+fn canonicalize_json_with_key(key: Option<&str>, value: &Value) -> Value {
     match value {
-        Value::Array(items) => Value::Array(items.iter().map(canonicalize_json).collect()),
+        Value::String(text) if key == Some("description") => {
+            Value::String(text.split_whitespace().collect::<Vec<_>>().join(" "))
+        }
+        Value::Array(items) => {
+            let mut canonical_items: Vec<_> = items
+                .iter()
+                .map(|item| canonicalize_json_with_key(/*key*/ None, item))
+                .collect();
+            if key == Some("required") {
+                canonical_items.sort_by(|left, right| left.as_str().cmp(&right.as_str()));
+            }
+            Value::Array(canonical_items)
+        }
         Value::Object(map) => {
             let mut entries: Vec<_> = map.iter().collect();
             entries.sort_by(|(left, _), (right, _)| left.cmp(right));
             let mut sorted = Map::with_capacity(map.len());
             for (key, child) in entries {
-                sorted.insert(key.clone(), canonicalize_json(child));
+                sorted.insert(
+                    key.clone(),
+                    canonicalize_json_with_key(Some(key.as_str()), child),
+                );
             }
             Value::Object(sorted)
         }
@@ -488,26 +505,86 @@ fn session_start_source_schema(_gen: &mut SchemaGenerator) -> Schema {
 }
 
 fn string_const_schema(value: &str) -> Schema {
-    let mut schema = SchemaObject {
-        instance_type: Some(InstanceType::String.into()),
-        ..Default::default()
-    };
-    schema.const_value = Some(Value::String(value.to_string()));
-    Schema::Object(schema)
+    json!({
+        "type": "string",
+        "const": value,
+    })
+    .try_into()
+    .expect("string const schema should be valid")
 }
 
 fn string_enum_schema(values: &[&str]) -> Schema {
-    let mut schema = SchemaObject {
-        instance_type: Some(InstanceType::String.into()),
-        ..Default::default()
-    };
-    schema.enum_values = Some(
-        values
-            .iter()
-            .map(|value| Value::String((*value).to_string()))
-            .collect(),
-    );
-    Schema::Object(schema)
+    json!({
+        "type": "string",
+        "enum": values,
+    })
+    .try_into()
+    .expect("string enum schema should be valid")
+}
+
+fn normalize_legacy_option_schema(value: &mut Value) {
+    match value {
+        Value::Array(items) => {
+            for item in items {
+                normalize_legacy_option_schema(item);
+            }
+        }
+        Value::Object(map) => {
+            for child in map.values_mut() {
+                normalize_legacy_option_schema(child);
+            }
+
+            let default_is_null = map.get("default").is_some_and(Value::is_null);
+            if !default_is_null {
+                return;
+            }
+
+            if let Some(Value::Array(types)) = map.get_mut("type") {
+                types.retain(|ty| ty != "null");
+                if types.len() == 1 {
+                    if let Some(single_type) = types.pop() {
+                        map.insert("type".to_string(), single_type);
+                    }
+                }
+            }
+
+            let Some(any_of) = map.remove("anyOf") else {
+                return;
+            };
+            let Value::Array(variants) = any_of else {
+                map.insert("anyOf".to_string(), any_of);
+                return;
+            };
+
+            let mut non_null_variants = Vec::new();
+            let mut removed_null_variant = false;
+            for variant in variants {
+                if is_null_schema_value(&variant) {
+                    removed_null_variant = true;
+                } else {
+                    non_null_variants.push(variant);
+                }
+            }
+
+            if removed_null_variant && !non_null_variants.is_empty() {
+                map.insert("allOf".to_string(), Value::Array(non_null_variants));
+            } else {
+                map.insert("anyOf".to_string(), Value::Array(non_null_variants));
+            }
+        }
+        _ => {}
+    }
+}
+
+fn is_null_schema_value(value: &Value) -> bool {
+    match value {
+        Value::Object(map) => match map.get("type") {
+            Some(Value::String(kind)) => kind == "null",
+            Some(Value::Array(types)) => !types.is_empty() && types.iter().all(|ty| ty == "null"),
+            _ => map.get("const").is_some_and(Value::is_null),
+        },
+        _ => false,
+    }
 }
 
 fn default_continue() -> bool {
