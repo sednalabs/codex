@@ -23,6 +23,27 @@ HIGH_RISK_PATTERNS = [
     "tools/argument-comment-lint/**",
 ]
 
+INITIAL_ROUTE_ACTIONS = {"opened", "reopened", "ready_for_review"}
+INITIAL_ROUTE_MAX_FILES = 10
+INITIAL_ROUTE_MAX_LINES = 300
+FOLLOWUP_ROUTE_MAX_FILES = 2
+FOLLOWUP_ROUTE_MAX_LINES = 20
+
+RUST_BUNDLE_PATTERNS = [
+    "codex-rs/**",
+    "Cargo.lock",
+    "Cargo.toml",
+    "**/Cargo.toml",
+    "rust-toolchain.toml",
+    "MODULE.bazel",
+    "MODULE.bazel.lock",
+]
+WORKFLOW_SURFACE_PATTERNS = [
+    ".github/**",
+    "justfile",
+    "scripts/**",
+]
+
 
 def catalog_path() -> Path:
     return Path(__file__).resolve().parent.parent / "validation-lanes.json"
@@ -82,11 +103,10 @@ def any_path_matches(paths: list[str], patterns: list[str]) -> bool:
 
 
 def classify_files(files: list[str]) -> dict[str, bool]:
-    codex = any(path.startswith("codex-rs/") for path in files)
+    codex = any(any(path_matches(path, pattern) for pattern in RUST_BUNDLE_PATTERNS) for path in files)
     argument_comment_lint = any(
-        path.startswith("codex-rs/")
+        any(path_matches(path, pattern) for pattern in RUST_BUNDLE_PATTERNS)
         or path.startswith("tools/argument-comment-lint/")
-        or path == "justfile"
         for path in files
     )
     argument_comment_lint_package = any(
@@ -95,7 +115,10 @@ def classify_files(files: list[str]) -> dict[str, bool]:
         or path == ".github/workflows/rust-ci-full.yml"
         for path in files
     )
-    workflows = any(path.startswith(".github/") for path in files)
+    workflows = any(
+        any(path_matches(path, pattern) for pattern in WORKFLOW_SURFACE_PATTERNS)
+        for path in files
+    )
     high_risk = any(any(path_matches(path, pattern) for pattern in HIGH_RISK_PATTERNS) for path in files)
     return {
         "codex": codex,
@@ -178,19 +201,30 @@ def main() -> None:
         primary_files = []
 
     primary = classify_files(primary_files)
+    primary_lines = diff_line_count(repo_root, args.base_sha, args.head_sha)
+    primary_lanes = select_followup_lanes(primary_files, routes)
 
     latest_delta_files = diff_files(repo_root, args.before_sha, args.head_sha)
     latest_delta = classify_files(latest_delta_files)
     latest_delta_lines = diff_line_count(repo_root, args.before_sha, args.head_sha)
 
     followup_lanes = select_followup_lanes(latest_delta_files, routes)
+    light_initial = (
+        args.event_name == "pull_request"
+        and args.event_action in INITIAL_ROUTE_ACTIONS
+        and bool(primary_files)
+        and len(primary_files) <= INITIAL_ROUTE_MAX_FILES
+        and primary_lines <= INITIAL_ROUTE_MAX_LINES
+        and not primary["high_risk"]
+        and bool(primary_lanes)
+    )
     light_followup = (
         args.event_name == "pull_request"
         and args.event_action == "synchronize"
         and args.previous_green_required == "true"
         and bool(latest_delta_files)
-        and len(latest_delta_files) <= 2
-        and latest_delta_lines <= 20
+        and len(latest_delta_files) <= FOLLOWUP_ROUTE_MAX_FILES
+        and latest_delta_lines <= FOLLOWUP_ROUTE_MAX_LINES
         and not latest_delta["high_risk"]
         and bool(followup_lanes)
     )
@@ -214,6 +248,25 @@ def main() -> None:
             "incremental_lane_set": "all",
             "incremental_lanes": ",".join(followup_lanes),
         }
+    elif light_initial:
+        outputs = {
+            "validation_mode": "light_initial",
+            "codex": as_output(primary["codex"]),
+            "argument_comment_lint": as_output(primary["argument_comment_lint"]),
+            "argument_comment_lint_package": as_output(primary["argument_comment_lint_package"]),
+            "workflows": as_output(primary["workflows"]),
+            "has_relevant_changes": as_output(primary["has_relevant_changes"]),
+            # For small initial PRs that map cleanly to one guarded seam, prove
+            # the exact route first instead of broadening to the full fast bundle.
+            "run_general": "false",
+            "run_cargo_shear": "false",
+            "run_argument_comment_lint_package": "false",
+            "run_argument_comment_lint_prebuilt": "false",
+            "run_incremental_validation": "true",
+            "incremental_profile": "targeted",
+            "incremental_lane_set": "all",
+            "incremental_lanes": ",".join(primary_lanes),
+        }
     else:
         outputs = {
             "validation_mode": "full",
@@ -222,12 +275,10 @@ def main() -> None:
             "argument_comment_lint_package": as_output(primary["argument_comment_lint_package"]),
             "workflows": as_output(primary["workflows"]),
             "has_relevant_changes": as_output(primary["has_relevant_changes"]),
-            "run_general": as_output(primary["codex"] or primary["workflows"] or primary["high_risk"]),
-            "run_cargo_shear": as_output(primary["codex"] or primary["workflows"] or primary["high_risk"]),
+            "run_general": as_output(primary["codex"]),
+            "run_cargo_shear": as_output(primary["codex"]),
             "run_argument_comment_lint_package": as_output(primary["argument_comment_lint_package"]),
-            "run_argument_comment_lint_prebuilt": as_output(
-                primary["argument_comment_lint"] or primary["workflows"]
-            ),
+            "run_argument_comment_lint_prebuilt": as_output(primary["argument_comment_lint"]),
             "run_incremental_validation": "false",
             "incremental_profile": "",
             "incremental_lane_set": "",
