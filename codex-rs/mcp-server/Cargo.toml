@@ -22,7 +22,6 @@ codex-core = { workspace = true }
 codex-exec-server = { workspace = true }
 codex-features = { workspace = true }
 codex-protocol = { workspace = true }
-codex-shell-command = { workspace = true }
 codex-utils-cli = { workspace = true }
 codex-utils-json-to-toml = { workspace = true }
 rmcp = { workspace = true }
@@ -45,5 +44,6 @@ core_test_support = { workspace = true }
 mcp_test_support = { workspace = true }
 os_info = { workspace = true }
 pretty_assertions = { workspace = true }
+codex-shell-command = { workspace = true }
 tempfile = { workspace = true }
 wiremock = { workspace = true }
