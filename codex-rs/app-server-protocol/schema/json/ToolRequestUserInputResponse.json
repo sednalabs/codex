@@ -1,6 +1,5 @@
 {
-  "$schema": "http://json-schema.org/draft-07/schema#",
-  "definitions": {
+  "$defs": {
     "ToolRequestUserInputAnswer": {
       "description": "EXPERIMENTAL. Captures a user's answer to a request_user_input question.",
       "properties": {
@@ -17,11 +16,12 @@
       "type": "object"
     }
   },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
   "description": "EXPERIMENTAL. Response payload mapping question ids to answers.",
   "properties": {
     "answers": {
       "additionalProperties": {
-        "$ref": "#/definitions/ToolRequestUserInputAnswer"
+        "$ref": "#/$defs/ToolRequestUserInputAnswer"
       },
       "type": "object"
     }
