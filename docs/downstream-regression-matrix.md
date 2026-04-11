@@ -98,8 +98,9 @@ GitHub Actions lane naming (`.github/workflows/sedna-heavy-tests.yml`):
     the full heavy matrix.
   - Applying the `ci:heavy` label promotes the PR to the full heavy matrix.
   - `merge_group` and `workflow_dispatch lane=all` run the full heavy matrix.
-  - `workflow_dispatch` can still run one named lane when a single shard is the
-    right debugging tool.
+  - `workflow_dispatch lane=<named-lane>` runs that shard directly when a single
+    heavy lane is the right debugging tool, instead of forcing the full smoke
+    gate ahead of the explicit manual request.
 - `validation-lab.yml` is the dispatch-only remote validation surface.
   - Use it for scratch refs, integration refs, orphan-branch experiments, and
     non-PR seam validation.

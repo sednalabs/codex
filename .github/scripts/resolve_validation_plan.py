@@ -539,6 +539,12 @@ def heavy_plan(args: argparse.Namespace) -> None:
         if enabled
     }
 
+    explicit_requested_lane = (
+        args.event_name == "workflow_dispatch"
+        and bool(args.requested_lane)
+        and args.requested_lane != "all"
+    )
+
     if route_lanes:
         selected = select_exact(
             catalog_by_id, route_lanes, lane_phase="downstream_lanes"
@@ -568,14 +574,21 @@ def heavy_plan(args: argparse.Namespace) -> None:
             seen.add(lane_id)
             selected.append(lane_payload(spec, lane_phase="downstream_lanes"))
 
-        groups = {group for spec in selected for group in spec["groups"]}
-        has_smoke_gate, smoke_gate_kind = determine_smoke_gate(groups)
-        smoke_matrix = select_smoke_matrix(catalog, smoke_gate_kind) if has_smoke_gate else []
-        run_smoke_gate = (
-            args.event_name != "workflow_dispatch" or parse_bool(args.run_all_lanes)
-        ) and bool(smoke_matrix)
-        if run_smoke_gate:
-            selected = exclude_smoke_gate_lanes(selected, smoke_matrix)
+        if explicit_requested_lane:
+            smoke_matrix = []
+            smoke_gate_kind = ""
+            run_smoke_gate = False
+        else:
+            groups = {group for spec in selected for group in spec["groups"]}
+            has_smoke_gate, smoke_gate_kind = determine_smoke_gate(groups)
+            smoke_matrix = (
+                select_smoke_matrix(catalog, smoke_gate_kind) if has_smoke_gate else []
+            )
+            run_smoke_gate = (
+                args.event_name != "workflow_dispatch" or parse_bool(args.run_all_lanes)
+            ) and bool(smoke_matrix)
+            if run_smoke_gate:
+                selected = exclude_smoke_gate_lanes(selected, smoke_matrix)
 
     parallel_limits = setup_parallel_limits("targeted")
     payload = {

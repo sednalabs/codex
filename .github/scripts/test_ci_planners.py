@@ -255,6 +255,38 @@ class ValidationPlanScriptTests(unittest.TestCase):
             ],
         )
 
+    def test_heavy_plan_exact_workflow_dispatch_lane_skips_smoke_gate(self) -> None:
+        payload = run_script(
+            SCRIPTS_DIR / "resolve_validation_plan.py",
+            "heavy",
+            "--event-name",
+            "workflow_dispatch",
+            "--requested-lane",
+            "codex.tui-agent-picker-model-surface-targeted",
+            "--run-all-lanes",
+            "true",
+            "--run-core-family",
+            "false",
+            "--run-attestation-family",
+            "false",
+            "--run-workflow-family",
+            "false",
+            "--run-ui-protocol-family",
+            "false",
+            "--run-docs-family",
+            "false",
+            "--changed-files-json",
+            "[]",
+        )
+
+        self.assertEqual(payload["run_smoke_gate"], "false")
+        self.assertEqual(payload["smoke_gate_kind"], "")
+        self.assertEqual(payload["smoke_heavy_lane_count"], 0)
+        self.assertEqual(
+            [lane["lane_id"] for lane in payload["selected_matrix"]["include"]],
+            ["codex.tui-agent-picker-model-surface-targeted"],
+        )
+
 
 class RustCiModeScriptTests(unittest.TestCase):
     maxDiff = None
