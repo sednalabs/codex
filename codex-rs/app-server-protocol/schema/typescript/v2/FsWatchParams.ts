@@ -6,7 +6,7 @@ import type { AbsolutePathBuf } from "../AbsolutePathBuf";
 /**
  * Start filesystem watch notifications for an absolute path.
  */
-export type FsWatchParams = { 
+export type FsWatchParams = {
 /**
  * Absolute file or directory path to watch.
  */

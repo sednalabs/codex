@@ -1,5 +1,5 @@
 {
-  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
   "properties": {
     "arguments": true,
     "callId": {
@@ -16,11 +16,11 @@
     }
   },
   "required": [
-    "arguments",
-    "callId",
     "threadId",
+    "turnId",
+    "callId",
     "tool",
-    "turnId"
+    "arguments"
   ],
   "title": "DynamicToolCallParams",
   "type": "object"
