@@ -134,7 +134,8 @@ jobs:
             esac
           done
 
-          selection_meta="$(python3 .github/scripts/resolve_validation_plan.py heavy --event-name '${{ github.event_name }}' --requested-lane '${{ inputs.lane }}' --run-all-lanes "${run_all_lanes}" --run-core-family "${run_core_family}" --run-attestation-family "${run_attestation_family}" --run-workflow-family "${run_workflow_family}" --run-ui-protocol-family "${run_ui_protocol_family}" --run-docs-family "${run_docs_family}")"
+          files_json="$(printf '%s\n' "${files[@]}" | jq -R . | jq -sc .)"
+          selection_meta="$(python3 .github/scripts/resolve_validation_plan.py heavy --event-name '${{ github.event_name }}' --requested-lane '${{ inputs.lane }}' --run-all-lanes "${run_all_lanes}" --run-core-family "${run_core_family}" --run-attestation-family "${run_attestation_family}" --run-workflow-family "${run_workflow_family}" --run-ui-protocol-family "${run_ui_protocol_family}" --run-docs-family "${run_docs_family}" --changed-files-json "${files_json}")"
           run_smoke_gate="$(SELECTION_META="${selection_meta}" python3 -c 'import json, os; print(json.loads(os.environ["SELECTION_META"])["run_smoke_gate"])')"
           smoke_gate_kind="$(SELECTION_META="${selection_meta}" python3 -c 'import json, os; print(json.loads(os.environ["SELECTION_META"])["smoke_gate_kind"])')"
           smoke_json="$(SELECTION_META="${selection_meta}" python3 -c 'import json, os; print(json.dumps(json.loads(os.environ["SELECTION_META"])["smoke_matrix"], separators=(",", ":")))')"

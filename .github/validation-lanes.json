@@ -128,6 +128,14 @@
       "frontier_lane_sets": ["ui-protocol", "subagents"]
     },
     {
+      "lane_id": "codex.tui-agent-picker-model-surface-targeted",
+      "run_command": "just --justfile ../justfile tui-agent-picker-model-surface-targeted",
+      "groups": ["ui_protocol"],
+      "lane_sets": ["all", "ui-protocol", "subagents"],
+      "frontier_default": false,
+      "summary_family": "agent-picker-model-surface"
+    },
+    {
       "lane_id": "codex.tui-agent-picker-tree-targeted",
       "run_command": "just --justfile ../justfile tui-agent-picker-tree-targeted",
       "groups": ["ui_protocol"],
@@ -258,6 +266,30 @@
         "codex-rs/tui/src/snapshots/codex_tui__multi_agents__tests__agent_picker*.snap",
         "docs/downstream-regression-matrix.md",
         "justfile"
+      ]
+    },
+    {
+      "route_id": "tui-agent-picker-model-surface",
+      "lane_ids": ["codex.tui-agent-picker-model-surface-targeted"],
+      "allowed_paths": [
+        "codex-rs/protocol/src/openai_models.rs",
+        "codex-rs/tools/src/agent_tool.rs",
+        "codex-rs/tools/src/agent_tool_tests.rs",
+        "codex-rs/core/tests/suite/spawn_agent_description.rs",
+        "codex-rs/tui/src/chatwidget.rs",
+        "codex-rs/tui/src/chatwidget/tests/popups_and_settings.rs",
+        "docs/downstream-regression-matrix.md",
+        "docs/downstream.md",
+        "docs/github-ci-offload.md",
+        "justfile"
+      ],
+      "required_any_paths": [
+        "codex-rs/protocol/src/openai_models.rs",
+        "codex-rs/tools/src/agent_tool.rs",
+        "codex-rs/tools/src/agent_tool_tests.rs",
+        "codex-rs/core/tests/suite/spawn_agent_description.rs",
+        "codex-rs/tui/src/chatwidget.rs",
+        "codex-rs/tui/src/chatwidget/tests/popups_and_settings.rs"
       ]
     },
     {

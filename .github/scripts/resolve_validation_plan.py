@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import fnmatch
 import json
 from collections import OrderedDict
 from pathlib import Path
@@ -203,6 +204,33 @@ def select_exact(
         seen.add(lane_id)
         selected.append(lane_payload(spec, lane_phase=lane_phase))
     return selected
+
+
+def path_matches(path: str, pattern: str) -> bool:
+    return fnmatch.fnmatch(path, pattern)
+
+
+def select_followup_lanes(files: list[str], routes: list[dict]) -> list[str]:
+    if not files:
+        return []
+
+    matching_routes: list[dict] = []
+    for route in routes:
+        allowed_paths = route.get("allowed_paths", [])
+        required_any_paths = route.get("required_any_paths", [])
+        if not allowed_paths:
+            continue
+        if not all(any(path_matches(path, pattern) for pattern in allowed_paths) for path in files):
+            continue
+        if required_any_paths and not any(
+            any(path_matches(path, pattern) for pattern in required_any_paths) for path in files
+        ):
+            continue
+        matching_routes.append(route)
+
+    if len(matching_routes) != 1:
+        return []
+    return list(matching_routes[0].get("lane_ids", []))
 
 
 def select_for_lane_set(
@@ -420,6 +448,13 @@ def lab_plan(args: argparse.Namespace) -> None:
 def heavy_plan(args: argparse.Namespace) -> None:
     catalog = normalize_catalog(load_catalog())
     validate_catalog(catalog)
+    catalog_by_id = {spec["lane_id"]: spec for spec in catalog["lanes"]}
+    changed_files = json.loads(args.changed_files_json) if args.changed_files_json else []
+    route_lanes = (
+        []
+        if parse_bool(args.run_all_lanes)
+        else select_followup_lanes(changed_files, catalog.get("followup_routes", []))
+    )
     active_groups = {
         group
         for enabled, group in [
@@ -432,35 +467,43 @@ def heavy_plan(args: argparse.Namespace) -> None:
         if enabled
     }
 
-    selected: list[dict] = []
-    seen: set[str] = set()
-    for spec in catalog["lanes"]:
-        lane_id = spec["lane_id"]
-        if (
-            args.event_name == "workflow_dispatch"
-            and args.requested_lane
-            and args.requested_lane != "all"
-        ):
-            if lane_id != args.requested_lane:
+    if route_lanes:
+        selected = select_exact(
+            catalog_by_id, route_lanes, lane_phase="downstream_lanes"
+        )
+        smoke_matrix: list[dict] = []
+        run_smoke_gate = False
+        smoke_gate_kind = ""
+    else:
+        selected = []
+        seen: set[str] = set()
+        for spec in catalog["lanes"]:
+            lane_id = spec["lane_id"]
+            if (
+                args.event_name == "workflow_dispatch"
+                and args.requested_lane
+                and args.requested_lane != "all"
+            ):
+                if lane_id != args.requested_lane:
+                    continue
+            elif not parse_bool(args.run_all_lanes):
+                if spec.get("explicit_only"):
+                    continue
+                if not active_groups.intersection(spec["groups"]):
+                    continue
+            if lane_id in seen:
                 continue
-        elif not parse_bool(args.run_all_lanes):
-            if spec.get("explicit_only"):
-                continue
-            if not active_groups.intersection(spec["groups"]):
-                continue
-        if lane_id in seen:
-            continue
-        seen.add(lane_id)
-        selected.append(lane_payload(spec, lane_phase="downstream_lanes"))
+            seen.add(lane_id)
+            selected.append(lane_payload(spec, lane_phase="downstream_lanes"))
 
-    groups = {group for spec in selected for group in spec["groups"]}
-    has_smoke_gate, smoke_gate_kind = determine_smoke_gate(groups)
-    smoke_matrix = select_smoke_matrix(catalog, smoke_gate_kind) if has_smoke_gate else []
-    run_smoke_gate = (
-        args.event_name != "workflow_dispatch" or parse_bool(args.run_all_lanes)
-    ) and bool(smoke_matrix)
-    if run_smoke_gate:
-        selected = exclude_smoke_gate_lanes(selected, smoke_matrix)
+        groups = {group for spec in selected for group in spec["groups"]}
+        has_smoke_gate, smoke_gate_kind = determine_smoke_gate(groups)
+        smoke_matrix = select_smoke_matrix(catalog, smoke_gate_kind) if has_smoke_gate else []
+        run_smoke_gate = (
+            args.event_name != "workflow_dispatch" or parse_bool(args.run_all_lanes)
+        ) and bool(smoke_matrix)
+        if run_smoke_gate:
+            selected = exclude_smoke_gate_lanes(selected, smoke_matrix)
 
     emit(
         {
@@ -494,6 +537,7 @@ def build_parser() -> argparse.ArgumentParser:
     heavy.add_argument("--run-workflow-family", dest="run_workflow_family", required=True)
     heavy.add_argument("--run-ui-protocol-family", required=True)
     heavy.add_argument("--run-docs-family", required=True)
+    heavy.add_argument("--changed-files-json", default="")
     heavy.set_defaults(func=heavy_plan)
 
     return parser

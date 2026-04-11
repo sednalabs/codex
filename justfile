@@ -106,6 +106,14 @@ tui-agent-picker-targeted:
     cargo test -p codex-tui multi_agents::tests::picker_description_includes_compact_age_when_known --lib -- --exact --test-threads=1
     cargo test -p codex-tui multi_agents::tests::picker_description_includes_model_effort_and_task_when_available --lib -- --exact --test-threads=1
 
+# Focused picker model-surface slice for upgradeable legacy visibility across
+# the TUI picker and spawn-agent tool descriptions.
+tui-agent-picker-model-surface-targeted:
+    cargo test -p codex-tui chatwidget::tests::popups_and_settings::model_picker_shows_upgradeable_legacy_models_from_cache --lib -- --exact --test-threads=1
+    cargo test -p codex-tools spawn_agent_tool_v2_requires_task_name_and_lists_visible_models --lib -- --exact --test-threads=1
+    cargo test -p codex-tools spawn_agent_tool_v2_lists_upgradeable_legacy_models --lib -- --exact --test-threads=1
+    CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo test -p codex-core --test all suite::spawn_agent_description::spawn_agent_description_lists_visible_models_and_reasoning_efforts -- --exact --test-threads=1
+
 # Focused /agent picker hierarchy visibility slice.
 tui-agent-picker-tree-targeted:
     cargo test -p codex-tui app::tests::open_agent_picker_marks_loaded_threads_open --lib -- --exact --test-threads=1
