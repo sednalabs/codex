@@ -15,7 +15,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Cancel active runs for the closed PR head commit
-        uses: actions/github-script@v8
+        uses: actions/github-script@v9
         with:
           script: |
             const owner = context.repo.owner;
