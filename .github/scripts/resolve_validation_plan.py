@@ -253,12 +253,17 @@ def select_for_lane_set(
 
 
 def select_frontier_all(catalog: dict) -> list[dict]:
+    def is_smoke_gate_lane(spec: dict) -> bool:
+        return bool(spec.get("smoke_gate_kinds")) and str(spec.get("lane_id") or "").endswith(
+            "-smoke"
+        )
+
     selected = [
         lane_payload(spec, lane_phase="downstream_lanes")
         for spec in catalog["lanes"]
         if spec.get("status_class") == "active"
-        and spec.get("frontier_default") is True
         and not spec.get("explicit_only")
+        and not is_smoke_gate_lane(spec)
     ]
     if selected:
         return selected
@@ -267,9 +272,8 @@ def select_frontier_all(catalog: dict) -> list[dict]:
         for spec in catalog["lanes"]
         if spec.get("status_class") == "active"
         and not spec.get("explicit_only")
-        and not spec.get("smoke_gate_kinds")
+        and not is_smoke_gate_lane(spec)
         and "release" not in spec.get("lane_sets", [])
-        and "docs" not in spec.get("lane_sets", [])
     ]
 
 
@@ -323,18 +327,18 @@ def setup_parallel_limits(profile: str, selected: list[dict] | None = None) -> d
     counts = Counter(lane["setup_class"] for lane in (selected or []))
     if profile == "frontier":
         return {
-            "light": max(1, min(counts.get("light", 0), 8)),
-            "rust": max(1, min(counts.get("rust", 0), 24)),
-            "heavy": max(1, min(counts.get("heavy", 0), 12)),
+            "light": max(1, min(counts.get("light", 0), 12)),
+            "rust": max(1, min(counts.get("rust", 0), 32)),
+            "heavy": max(1, min(counts.get("heavy", 0), 16)),
         }
     if profile in {"broad", "full"}:
         return {
-            "light": max(1, min(counts.get("light", 0), 8)),
-            "rust": max(1, min(counts.get("rust", 0), 20)),
-            "heavy": max(1, min(counts.get("heavy", 0), 8)),
+            "light": max(1, min(counts.get("light", 0), 10)),
+            "rust": max(1, min(counts.get("rust", 0), 24)),
+            "heavy": max(1, min(counts.get("heavy", 0), 10)),
         }
     if profile == "smoke":
-        return {"light": 4, "rust": 3, "heavy": 2}
+        return {"light": 6, "rust": 4, "heavy": 3}
     return {"light": 8, "rust": 4, "heavy": 2}
 
 
@@ -364,7 +368,7 @@ def profile_metadata(profile: str) -> tuple[str, str]:
     if profile == "frontier":
         return (
             "frontier",
-            "Bounded next-blocker harvest; trust a recent baseline first, then widen just enough to expose the next family.",
+            "Wide blocker harvest with fail-fast disabled; use the selected family to surface multiple independent failure groups in one remote pass.",
         )
     if profile in {"broad", "full"}:
         return (

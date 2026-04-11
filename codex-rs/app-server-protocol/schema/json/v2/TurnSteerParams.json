@@ -1,33 +1,28 @@
 {
-  "$schema": "http://json-schema.org/draft-07/schema#",
-  "definitions": {
+  "$defs": {
     "ByteRange": {
       "properties": {
         "end": {
           "format": "uint",
-          "minimum": 0.0,
+          "minimum": 0,
           "type": "integer"
         },
         "start": {
           "format": "uint",
-          "minimum": 0.0,
+          "minimum": 0,
           "type": "integer"
         }
       },
       "required": [
-        "end",
-        "start"
+        "start",
+        "end"
       ],
       "type": "object"
     },
     "TextElement": {
       "properties": {
         "byteRange": {
-          "allOf": [
-            {
-              "$ref": "#/definitions/ByteRange"
-            }
-          ],
+          "$ref": "#/$defs/ByteRange",
           "description": "Byte range in the parent `text` buffer that this element occupies."
         },
         "placeholder": {
@@ -54,21 +49,19 @@
               "default": [],
               "description": "UI-defined spans within `text` used to render or persist special elements.",
               "items": {
-                "$ref": "#/definitions/TextElement"
+                "$ref": "#/$defs/TextElement"
               },
               "type": "array"
             },
             "type": {
-              "enum": [
-                "text"
-              ],
+              "const": "text",
               "title": "TextUserInputType",
               "type": "string"
             }
           },
           "required": [
-            "text",
-            "type"
+            "type",
+            "text"
           ],
           "title": "TextUserInput",
           "type": "object"
@@ -76,9 +69,7 @@
         {
           "properties": {
             "type": {
-              "enum": [
-                "image"
-              ],
+              "const": "image",
               "title": "ImageUserInputType",
               "type": "string"
             },
@@ -99,16 +90,14 @@
               "type": "string"
             },
             "type": {
-              "enum": [
-                "localImage"
-              ],
+              "const": "localImage",
               "title": "LocalImageUserInputType",
               "type": "string"
             }
           },
           "required": [
-            "path",
-            "type"
+            "type",
+            "path"
           ],
           "title": "LocalImageUserInput",
           "type": "object"
@@ -122,17 +111,15 @@
               "type": "string"
             },
             "type": {
-              "enum": [
-                "skill"
-              ],
+              "const": "skill",
               "title": "SkillUserInputType",
               "type": "string"
             }
           },
           "required": [
+            "type",
             "name",
-            "path",
-            "type"
+            "path"
           ],
           "title": "SkillUserInput",
           "type": "object"
@@ -146,17 +133,15 @@
               "type": "string"
             },
             "type": {
-              "enum": [
-                "mention"
-              ],
+              "const": "mention",
               "title": "MentionUserInputType",
               "type": "string"
             }
           },
           "required": [
+            "type",
             "name",
-            "path",
-            "type"
+            "path"
           ],
           "title": "MentionUserInput",
           "type": "object"
@@ -164,14 +149,15 @@
       ]
     }
   },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
   "properties": {
     "expectedTurnId": {
-      "description": "Required active turn id precondition. The request fails when it does not match the currently active turn.",
+      "description": "Required active turn id precondition. The request fails when it does not\nmatch the currently active turn.",
       "type": "string"
     },
     "input": {
       "items": {
-        "$ref": "#/definitions/UserInput"
+        "$ref": "#/$defs/UserInput"
       },
       "type": "array"
     },
@@ -180,9 +166,9 @@
     }
   },
   "required": [
-    "expectedTurnId",
+    "threadId",
     "input",
-    "threadId"
+    "expectedTurnId"
   ],
   "title": "TurnSteerParams",
   "type": "object"

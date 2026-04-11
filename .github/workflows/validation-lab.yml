@@ -301,12 +301,10 @@ jobs:
   light_lanes:
     needs:
       - metadata
-      - smoke_gate
     if: >-
       ${{
         always() &&
-        fromJson(needs.metadata.outputs.selected_light_lane_count) > 0 &&
-        (needs.smoke_gate.result == 'success' || needs.smoke_gate.result == 'skipped')
+        fromJson(needs.metadata.outputs.selected_light_lane_count) > 0
       }}
     strategy:
       fail-fast: ${{ fromJson(needs.metadata.outputs.matrix_fail_fast) }}
@@ -330,12 +328,10 @@ jobs:
   rust_lanes:
     needs:
       - metadata
-      - smoke_gate
     if: >-
       ${{
         always() &&
-        fromJson(needs.metadata.outputs.selected_rust_lane_count) > 0 &&
-        (needs.smoke_gate.result == 'success' || needs.smoke_gate.result == 'skipped')
+        fromJson(needs.metadata.outputs.selected_rust_lane_count) > 0
       }}
     strategy:
       fail-fast: ${{ fromJson(needs.metadata.outputs.matrix_fail_fast) }}
@@ -359,12 +355,10 @@ jobs:
   heavy_lanes:
     needs:
       - metadata
-      - smoke_gate
     if: >-
       ${{
         always() &&
-        fromJson(needs.metadata.outputs.selected_heavy_lane_count) > 0 &&
-        (needs.smoke_gate.result == 'success' || needs.smoke_gate.result == 'skipped')
+        fromJson(needs.metadata.outputs.selected_heavy_lane_count) > 0
       }}
     strategy:
       fail-fast: ${{ fromJson(needs.metadata.outputs.matrix_fail_fast) }}
@@ -543,14 +537,16 @@ jobs:
           print(f"- Lane count: `{summary['lane_count']}`")
           print(f"- Total recorded lane runtime (ms): `{summary.get('total_duration_ms', 0)}`")
           print(f"- Failed lanes: `{summary['failed_lane_count']}`")
+          print(f"- Primary blocker families: `{len(primary_blockers)}`")
+          print(f"- Additional failing lanes: `{len(secondary_findings)}`")
           if setup_rows:
               print(f"- Setup classes exercised: `{len(setup_rows)}`")
           if first_failure:
-              print(f"- First failing lane: `{first_failure['lane_id']}`")
+              print(f"- First surfaced blocker: `{first_failure['lane_id']}`")
               if first_failure.get('signal'):
-                  print(f"- First failure signal: `{first_failure['signal']}`")
+                  print(f"- First blocker signal: `{first_failure['signal']}`")
           else:
-              print("- First failing lane: `none`")
+              print("- First surfaced blocker: `none`")
           if setup_rows:
               print("- Setup class results:")
               for row in setup_rows:
@@ -574,7 +570,7 @@ jobs:
           candidates = summary.get("candidate_next_slices") or []
           if candidates:
               print(f"- Frontier blocker count: `{len(candidates)}`")
-              for candidate in candidates[:5]:
+              for candidate in candidates[:10]:
                   lane_id = candidate.get("lane_id") or "unknown"
                   signal = candidate.get("signal") or ""
                   if signal:
@@ -583,7 +579,7 @@ jobs:
                       print(f"  - `{lane_id}`")
           if primary_blockers:
               print("- Primary blockers:")
-              for item in primary_blockers[:5]:
+              for item in primary_blockers[:10]:
                   signal = item.get("signal") or ""
                   if signal:
                       print(f"  - `{item['lane_id']}`: `{signal}`")
@@ -591,7 +587,7 @@ jobs:
                       print(f"  - `{item['lane_id']}`")
           if secondary_findings:
               print("- Secondary findings:")
-              for item in secondary_findings[:5]:
+              for item in secondary_findings[:10]:
                   signal = item.get("signal") or ""
                   if signal:
                       print(f"  - `{item['lane_id']}`: `{signal}`")

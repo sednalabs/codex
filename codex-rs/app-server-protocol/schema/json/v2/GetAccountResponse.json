@@ -1,14 +1,11 @@
 {
-  "$schema": "http://json-schema.org/draft-07/schema#",
-  "definitions": {
+  "$defs": {
     "Account": {
       "oneOf": [
         {
           "properties": {
             "type": {
-              "enum": [
-                "apiKey"
-              ],
+              "const": "apiKey",
               "title": "ApiKeyAccountType",
               "type": "string"
             }
@@ -25,20 +22,18 @@
               "type": "string"
             },
             "planType": {
-              "$ref": "#/definitions/PlanType"
+              "$ref": "#/$defs/PlanType"
             },
             "type": {
-              "enum": [
-                "chatgpt"
-              ],
+              "const": "chatgpt",
               "title": "ChatgptAccountType",
               "type": "string"
             }
           },
           "required": [
+            "type",
             "email",
-            "planType",
-            "type"
+            "planType"
           ],
           "title": "ChatgptAccount",
           "type": "object"
@@ -62,11 +57,12 @@
       "type": "string"
     }
   },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
   "properties": {
     "account": {
       "anyOf": [
         {
-          "$ref": "#/definitions/Account"
+          "$ref": "#/$defs/Account"
         },
         {
           "type": "null"

@@ -1,6 +1,5 @@
 {
-  "$schema": "http://json-schema.org/draft-07/schema#",
-  "definitions": {
+  "$defs": {
     "FuzzyFileSearchMatchType": {
       "enum": [
         "file",
@@ -17,7 +16,7 @@
         "indices": {
           "items": {
             "format": "uint32",
-            "minimum": 0.0,
+            "minimum": 0,
             "type": "integer"
           },
           "type": [
@@ -26,7 +25,7 @@
           ]
         },
         "match_type": {
-          "$ref": "#/definitions/FuzzyFileSearchMatchType"
+          "$ref": "#/$defs/FuzzyFileSearchMatchType"
         },
         "path": {
           "type": "string"
@@ -36,24 +35,25 @@
         },
         "score": {
           "format": "uint32",
-          "minimum": 0.0,
+          "minimum": 0,
           "type": "integer"
         }
       },
       "required": [
-        "file_name",
-        "match_type",
-        "path",
         "root",
+        "path",
+        "match_type",
+        "file_name",
         "score"
       ],
       "type": "object"
     }
   },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
   "properties": {
     "files": {
       "items": {
-        "$ref": "#/definitions/FuzzyFileSearchResult"
+        "$ref": "#/$defs/FuzzyFileSearchResult"
       },
       "type": "array"
     },
@@ -65,9 +65,9 @@
     }
   },
   "required": [
-    "files",
+    "sessionId",
     "query",
-    "sessionId"
+    "files"
   ],
   "title": "FuzzyFileSearchSessionUpdatedNotification",
   "type": "object"
