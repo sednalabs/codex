@@ -83,7 +83,7 @@ then pass the branch, tag, or commit you want to validate via the workflow input
 Use:
 
 ```bash
-gh workflow run 253621479 \
+gh workflow run validation-lab.yml \
   --repo sednalabs/codex \
   --ref main \
   -f ref=<branch-under-test> \

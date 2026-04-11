@@ -122,7 +122,7 @@ User-visible behavior:
 - Preferred pattern:
 
 ```bash
-gh workflow run 253621479 \
+gh workflow run validation-lab.yml \
   --repo sednalabs/codex \
   --ref main \
   -f ref=<branch-under-test> \
