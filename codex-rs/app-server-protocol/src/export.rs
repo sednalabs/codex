@@ -966,11 +966,8 @@ fn build_schema_bundle(schemas: Vec<GeneratedSchema>) -> Result<Value> {
         }
 
         let mut forced_namespace_refs: Vec<(String, String)> = Vec::new();
-        if let Value::Object(ref mut obj) = value
-            && let Some(defs) = obj.remove("definitions")
-            && let Value::Object(defs_obj) = defs
-        {
-            for (def_name, mut def_schema) in defs_obj {
+        if let Value::Object(ref mut obj) = value {
+            for (def_name, mut def_schema) in drain_schema_definitions(obj) {
                 if IGNORED_DEFINITIONS.contains(&def_name.as_str()) {
                     continue;
                 }
@@ -1024,6 +1021,20 @@ fn build_schema_bundle(schemas: Vec<GeneratedSchema>) -> Result<Value> {
     root.insert("definitions".to_string(), Value::Object(definitions));
 
     Ok(Value::Object(root))
+}
+
+fn drain_schema_definitions(schema: &mut Map<String, Value>) -> Vec<(String, Value)> {
+    let mut drained = Vec::new();
+    for defs_key in ["definitions", "$defs"] {
+        let Some(defs) = schema.remove(defs_key) else {
+            continue;
+        };
+        let Value::Object(defs_obj) = defs else {
+            continue;
+        };
+        drained.extend(defs_obj);
+    }
+    drained
 }
 
 /// Build a datamodel-code-generator-friendly v2 bundle from the mixed export.
@@ -2682,6 +2693,23 @@ export type Config = { stableField: Keep, unstableField: string | null } & ({ [k
 
         let bundle_str = serde_json::to_string(&bundle)?;
         assert_eq!(bundle_str.contains("mock/experimentalMethod"), false);
+        let _cleanup = fs::remove_dir_all(&output_dir);
+        Ok(())
+    }
+
+    #[test]
+    fn stable_schema_filter_removes_nested_experimental_fields_from_client_request_bundle()
+    -> Result<()> {
+        let output_dir = std::env::temp_dir().join(format!("codex_schema_{}", Uuid::now_v7()));
+        fs::create_dir(&output_dir)?;
+        let schema =
+            write_json_schema_with_return::<crate::ClientRequest>(&output_dir, "ClientRequest")?;
+        let mut bundle = build_schema_bundle(vec![schema])?;
+        filter_experimental_schema(&mut bundle)?;
+
+        let bundle_str = serde_json::to_string(&bundle)?;
+        assert_eq!(bundle_str.contains("mockExperimentalField"), false);
+        assert_eq!(bundle_str.contains("additionalPermissions"), false);
         let _cleanup = fs::remove_dir_all(&output_dir);
         Ok(())
     }
