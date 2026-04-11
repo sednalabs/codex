@@ -109,6 +109,30 @@ User-visible behavior:
 - Downstream docs and operator guidance prefer MCP tool surfaces that can block in-tool until useful state changes occur.
 - The intended execution model is: start work, block on the tool contract, resume on a terminal or timeout condition, rather than simulate a scheduler in the chat transcript.
 
+### GitHub Actions: downstream `validation-lab` dispatches from `main`
+
+Why:
+- Downstream validation lanes are designed so the live workflow definition comes from `main`, while the code under test can come from an arbitrary branch, tag, or commit via the workflow input `ref`.
+- Some downstream salvage, validation, or long-lived feature branches intentionally do not carry the latest workflow files.
+- Dispatching `validation-lab` with `--ref <feature-branch>` can therefore fail even when the live `main` workflow supports `workflow_dispatch`, because GitHub resolves the workflow file on the dispatch ref first.
+
+User-visible behavior:
+- Treat `validation-lab` as a fork-owned operator lane rooted on downstream `main`.
+- When dispatching manually, use the workflow from `main` and pass the branch under test as an input.
+- Preferred pattern:
+
+```bash
+gh workflow run validation-lab.yml \
+  --repo sednalabs/codex \
+  --ref main \
+  -f ref=<branch-under-test> \
+  -f profile=targeted \
+  -f lane_set=ui-protocol
+```
+
+- Avoid `gh workflow run validation-lab --ref <feature-branch> ...` unless that branch is known to contain `.github/workflows/validation-lab.yml`.
+- If a branch-scoped dispatch reports that `validation-lab` does not have `workflow_dispatch`, first check whether the branch actually contains the workflow file before treating it as an Actions outage or permission problem.
+
 ### Code mode: imported tool declarations instead of inline `tools` const examples
 
 Why:
@@ -171,6 +195,18 @@ Why:
 User-visible behavior:
 - Downstream safety fields remain available per server (`enable_elicitation`, `read_only`, `strict_tool_classification`, `require_approval_for_mutating`).
 - Upstream `oauth_resource` is also supported in the same server config entry.
+
+### TUI: restore upgradeable legacy models in the interactive picker
+
+Why:
+- Upstream/default picker behavior now hides some legacy models from the main interactive selection flow and points operators to `codex -m` or `config.toml`.
+- Downstream intentionally keeps upgradeable legacy models reachable from the interactive "All models" picker when they are still API-supported.
+- This preserves a fork-specific operator workflow where legacy-but-supported models such as `gpt-5.1-codex-mini` remain selectable without dropping to CLI-only or config-only model switching.
+
+User-visible behavior:
+- The interactive model picker includes upgradeable legacy models that remain API-supported, even when they are no longer part of the default upstream picker list.
+- Fully hidden models stay hidden; this divergence only restores models that have an upgrade path and are still directly selectable.
+- In practice, downstream picker surfaces can show entries like `gpt-5.1-codex-mini` in the "All models" flow instead of only showing the legacy-model guidance line.
 
 ### TUI: Queue slash metadata preparation and recall
 

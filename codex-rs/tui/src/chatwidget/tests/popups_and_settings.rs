@@ -1637,6 +1637,52 @@ async fn model_picker_hides_show_in_picker_false_models_from_cache() {
 }
 
 #[tokio::test]
+async fn model_picker_shows_upgradeable_legacy_models_from_cache() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(Some("test-visible-model")).await;
+    chat.thread_id = Some(ThreadId::new());
+    let preset = |slug: &str, show_in_picker: bool, upgrade_model: Option<&str>| ModelPreset {
+        id: slug.to_string(),
+        model: slug.to_string(),
+        display_name: slug.to_string(),
+        description: format!("{slug} description"),
+        default_reasoning_effort: ReasoningEffortConfig::Medium,
+        supported_reasoning_efforts: vec![ReasoningEffortPreset {
+            effort: ReasoningEffortConfig::Medium,
+            description: "medium".to_string(),
+        }],
+        supports_personality: false,
+        is_default: false,
+        upgrade: upgrade_model.map(|target| codex_protocol::openai_models::ModelUpgrade {
+            id: target.to_string(),
+            reasoning_effort_mapping: None,
+            migration_config_key: slug.to_string(),
+            model_link: None,
+            upgrade_copy: None,
+            migration_markdown: None,
+        }),
+        show_in_picker,
+        availability_nux: None,
+        supported_in_api: true,
+        input_modalities: default_input_modalities(),
+    };
+
+    chat.open_model_popup_with_presets(vec![
+        preset("test-visible-model", true, None),
+        preset("gpt-5.1-codex-mini", false, Some("gpt-5.4")),
+        preset("test-hidden-model", false, None),
+    ]);
+    let popup = render_bottom_popup(&chat, /*width*/ 80);
+    assert!(
+        popup.contains("gpt-5.1-codex-mini"),
+        "expected upgradeable legacy model to appear in picker:\n{popup}"
+    );
+    assert!(
+        !popup.contains("test-hidden-model"),
+        "expected fully hidden model to stay excluded from picker:\n{popup}"
+    );
+}
+
+#[tokio::test]
 async fn server_overloaded_error_does_not_switch_models() {
     let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(Some("gpt-5.2-codex")).await;
     chat.set_model("gpt-5.2-codex");
