@@ -48,6 +48,7 @@ Use the smallest validator that can answer the current question.
 
 1. Tiny local sanity checks
    - examples: `git diff --check`, syntax/schema/config validation
+   - for documentation-only changes, prefer `docs-sanity` as the first remote proof surface
 2. `validation-lab` `profile=smoke`
    - use when the branch changed substantially or the validation wiring changed
 3. `validation-lab` `profile=targeted`
@@ -56,6 +57,8 @@ Use the smallest validator that can answer the current question.
    - use only after a recent trusted smoke or targeted baseline
    - harvest a bounded queue of likely next blockers without running a full
      milestone checkpoint
+   - the default `lane_set=all` frontier sweep should come from curated lane
+     metadata, not by reusing the full targeted lane set with `fail-fast=false`
 5. `validation-lab` `profile=broad`
    - use only after the active seam is green
    - use it to reveal the next interaction-heavy divergence
@@ -76,7 +79,8 @@ Use separate runs only when the questions are genuinely independent.
 Default validation-lab policy:
 
 - `targeted`: low fan-out
-- `frontier`: bounded fan-out with `fail-fast=false`
+- `frontier`: bounded fan-out with `fail-fast=false` and split setup-class
+  matrices so lighter seams can use higher concurrency than heavy Rust lanes
 - `broad`: moderate fan-out
 - `full`: conservative fan-out
 
@@ -93,13 +97,25 @@ That summary should identify:
 
 - the validated ref and head SHA
 - the selected profile and lanes
-- the first failing lane, if any
+- setup-class job results and started-lane counts
+- the first strong blocker, if any
 - the frontier blocker queue when `profile=frontier`
+- one primary blocker per exercised summary family, rather than a raw duplicate
+  list of every failing sentinel and depth lane
+- secondary findings for remaining cancelled or missing depth lanes
 - the key failure signal, if available
 - whether smoke gate, targeted lanes, or artifact build ran
 
 Watchers and follow-up tooling should prefer this structured summary over raw
 log scraping when it is available.
+
+The summary should also state:
+
+- the profile intent (`smoke`, `targeted`, `frontier`, `checkpoint`, or
+  `buildability`)
+- short profile notes explaining when that mode is appropriate
+- a compact lane-selection summary so operators can see the active shape at a
+  glance
 
 ## Documentation boundaries
 

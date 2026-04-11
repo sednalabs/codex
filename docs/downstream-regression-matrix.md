@@ -47,6 +47,9 @@ Focused targeted lanes for iterative work on the current carry seams:
 - `codex.tui-esc-interrupt-targeted`
 - `codex.tui-transcript-viewport-targeted`
 - `codex.tui-agent-picker-targeted`
+- `codex.spawn-agent-tool-model-surface-targeted`
+- `codex.spawn-agent-description-model-surface-targeted`
+- `codex.tui-agent-picker-model-surface-targeted`
 - `codex.tui-agent-picker-tree-targeted`
 - `codex.tui-agent-usage-totals-targeted`
 - `codex.downstream-docs-check`
@@ -74,8 +77,11 @@ GitHub Actions lane naming (`.github/workflows/sedna-heavy-tests.yml`):
 - `rust-ci.yml` is the default PR fail-fast workflow.
   - It runs on `pull_request`, scheduled hygiene sweeps, and manual dispatch.
   - `CI results (required)` is the single required gate.
-  - On already-green PRs, tiny mapped follow-up pushes may reuse incremental
-    targeted validation instead of rerunning the full `rust-ci` bundle.
+  - Tiny mapped initial PRs and already-green follow-up pushes may reuse
+    incremental targeted validation instead of rerunning the full `rust-ci`
+    bundle.
+  - Workflow and route-map edits also run cheap planner fixture tests so
+    follow-up lane selection does not silently drift.
   - Any ambiguous or high-risk follow-up falls back to the normal `rust-ci`
     path.
 - `sedna-heavy-tests.yml` is the downstream-heavy lane workflow.
@@ -84,18 +90,24 @@ GitHub Actions lane naming (`.github/workflows/sedna-heavy-tests.yml`):
   - Non-doc heavy runs must clear the runtime smoke bundle
     (`core-compile-smoke`, `core-carry-core-smoke`, `core-carry-ui-smoke`,
     `core-ledger-smoke`, `core-runtime-surface-smoke`) before the broader lane
-    matrix fans out, and the heavy matrix itself is capped and fail-fast on
-    PRs.
+    matrix fans out.
+  - Both the smoke gate and the selected heavy lane fanout now split by
+    `setup_class` (`light`, `rust`, `heavy`) so cheap workflow/docs shards do
+    not queue behind heavier Rust runners.
+  - The heavy matrix remains capped and fail-fast on PRs.
   - Changes to workflow wiring or the `justfile` run the smoke gate plus a small
     representative workflow-validation lane set instead of promoting the PR to
     the full heavy matrix.
   - Applying the `ci:heavy` label promotes the PR to the full heavy matrix.
   - `merge_group` and `workflow_dispatch lane=all` run the full heavy matrix.
-  - `workflow_dispatch` can still run one named lane when a single shard is the
-    right debugging tool.
+  - `workflow_dispatch lane=<named-lane>` runs that shard directly when a single
+    heavy lane is the right debugging tool, instead of forcing the full smoke
+    gate ahead of the explicit manual request.
 - `validation-lab.yml` is the dispatch-only remote validation surface.
   - Use it for scratch refs, integration refs, orphan-branch experiments, and
     non-PR seam validation.
+  - Its workflow summary now records the selected profile intent, short profile
+    notes, and a compact lane-selection summary for easier babysitting.
   - `profile=smoke` and `profile=targeted` are the default inner-loop remote
     validation tools.
   - `profile=frontier` is the bounded next-blocker harvest mode to use only
@@ -107,6 +119,9 @@ GitHub Actions lane naming (`.github/workflows/sedna-heavy-tests.yml`):
     normal PR/main check surface.
   - It uploads a compact `validation-summary` artifact so watchers and follow-up
     tooling can prefer structured first-failure signal over raw log scraping.
+- `docs-sanity.yml` is the cheap documentation-link workflow.
+  - Use it when the real question is whether markdown links still resolve after
+    touching `README.md` or `docs/**`.
 - `sedna-branch-build.yml` is the preview artifact path.
   - It is manual-dispatch only.
   - Treat it as artifact validation, not the primary downstream correctness
@@ -135,6 +150,7 @@ GitHub Actions lane naming (`.github/workflows/sedna-heavy-tests.yml`):
 | TUI transcript viewport redraw and clipping regressions | `codex.tui-transcript-viewport-targeted` | `suite::vt100_history::tmux_like_viewport_preserves_preexisting_history_content`; `suite::vt100_history::android_style_narrow_viewport_keeps_url_content_from_being_clipped`; `suite::vt100_history::committed_rows_survive_redraw_and_viewport_pressure` |
 | Active-thread session state survives config refresh and fresh-session clones keep policy mutability before new-thread/fork flows (`codex-tui`) | `codex.tui-config-refresh-session-targeted` | `refresh_in_memory_config_from_disk_preserves_active_thread_session_state`; `fresh_session_config_uses_current_session_state`; `fresh_session_config_preserves_policy_mutability` |
 | `/agent` picker rows expose searchable cached thread metadata, compact age labels, and model/task previews without waiting on broader TUI validation | `codex.tui-agent-picker-targeted` | `open_agent_picker_marks_loaded_threads_open`; `inactive_thread_started_notification_initializes_replay_session`; `picker_description_falls_back_to_thread_id_without_usage`; `picker_description_includes_compact_token_usage_when_present`; `picker_description_includes_remaining_context_when_known`; `picker_description_includes_compact_age_when_known`; `picker_description_includes_model_effort_and_task_when_available` |
+| Upgradeable legacy models stay visible across the shared picker-model guidance surfaces without widening a mapped PR into the app-server-contaminated `codex-tui` build graph | `codex.spawn-agent-tool-model-surface-targeted`; `codex.spawn-agent-description-model-surface-targeted` | `spawn_agent_tool_v2_requires_task_name_and_lists_visible_models`; `spawn_agent_tool_v2_lists_upgradeable_legacy_models`; `suite::spawn_agent_description::spawn_agent_description_lists_visible_models_and_reasoning_efforts` |
 | `/agent` picker rows show visible parent/child hierarchy for thread-spawned subagents using cached agent paths instead of a flat list (`codex-tui`) | `codex.tui-agent-picker-tree-targeted` | `open_agent_picker_marks_loaded_threads_open`; `inactive_thread_started_notification_initializes_replay_session`; `picker_tree_prefixes_reflect_nested_agent_paths`; `finds_loaded_subagent_tree_for_primary_thread` |
 | `/agent` picker rows expose per-thread used-token totals, compact remaining-context visibility, compact age labels, searchable stale-session filtering, and selected-row permission/sandbox detail from existing cached thread metadata without a broader backend contract change (`codex-tui`) | `codex.tui-agent-picker-usage-targeted` | `agent_picker_thread_token_usage_reads_inactive_thread_store`; `agent_picker_thread_token_usage_prefers_live_active_thread_usage`; `agent_picker_thread_token_usage_does_not_fallback_when_active_live_usage_is_zero`; `open_agent_picker_marks_loaded_threads_open`; `inactive_thread_started_notification_initializes_replay_session`; `picker_description_falls_back_to_thread_id_without_usage`; `picker_description_includes_compact_token_usage_when_present`; `picker_description_includes_remaining_context_when_known`; `picker_description_includes_compact_age_when_known`; `picker_selected_description_includes_permission_details_when_available` |
 | Combined session token totals remain visible without overwriting current-thread token usage across `/status` and footer/status-line surfaces (`codex-tui`) | `codex.tui-agent-usage-totals-targeted` | `sync_session_tree_token_usage_updates_combined_status_line_items`; `sync_session_tree_token_usage_prefers_selected_subagent_usage_for_status_line`; `status_line_combined_token_items_use_session_totals`; `status_line_combined_used_tokens_footer_snapshot`; `status_snapshot_distinguishes_session_and_thread_token_usage` |

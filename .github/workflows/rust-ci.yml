@@ -188,6 +188,18 @@ jobs:
       supersession_mode: auto
       notes: rust-ci incremental follow-up validation
 
+  planner_fixtures:
+    name: Planner fixtures
+    runs-on: ubuntu-24.04
+    needs: changed
+    if: ${{ needs.changed.outputs.workflows == 'true' }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - name: Check planner script syntax
+        run: python3 -m py_compile .github/scripts/resolve_validation_plan.py .github/scripts/resolve_rust_ci_mode.py .github/scripts/test_ci_planners.py
+      - name: Run planner fixtures
+        run: python3 -m unittest discover -s .github/scripts -p 'test_ci_planners.py'
+
   # --- Fast Cargo-native PR checks -------------------------------------------
   general:
     name: Format / etc
@@ -321,6 +333,7 @@ jobs:
         changed,
         matrix_plan,
         incremental_validation,
+        planner_fixtures,
         general,
         cargo_shear,
         argument_comment_lint_package,
@@ -335,6 +348,7 @@ jobs:
           echo "mode   : ${{ needs.changed.outputs.validation_mode }}"
           echo "argpkg : ${{ needs.argument_comment_lint_package.result }}"
           echo "arglint: ${{ needs.argument_comment_lint_prebuilt.result }}"
+          echo "planner: ${{ needs.planner_fixtures.result }}"
           echo "general: ${{ needs.general.result }}"
           echo "shear  : ${{ needs.cargo_shear.result }}"
           echo "incr   : ${{ needs.incremental_validation.result }}"
@@ -352,6 +366,10 @@ jobs:
 
           if [[ '${{ needs.changed.outputs.run_argument_comment_lint_prebuilt }}' == 'true' ]]; then
             [[ '${{ needs.argument_comment_lint_prebuilt.result }}' == 'success' ]] || { echo 'argument_comment_lint_prebuilt failed'; exit 1; }
+          fi
+
+          if [[ '${{ needs.changed.outputs.workflows }}' == 'true' ]]; then
+            [[ '${{ needs.planner_fixtures.result }}' == 'success' ]] || { echo 'planner_fixtures failed'; exit 1; }
           fi
 
           if [[ '${{ needs.changed.outputs.run_general }}' == 'true' ]]; then

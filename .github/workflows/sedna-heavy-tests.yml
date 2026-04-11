@@ -22,13 +22,30 @@ on:
           - codex.core-subagent-surface-targeted
           - codex.core-subagent-notification-contract-targeted
           - codex.core-subagent-notification-visibility-targeted
+          - codex.tui-thread-session-policy-targeted
+          - codex.tui-esc-interrupt-targeted
+          - codex.tui-front-queue-submit-targeted
+          - codex.tui-transcript-viewport-targeted
+          - codex.tui-config-refresh-session-targeted
+          - codex.tui-agent-picker-usage-targeted
+          - codex.tui-agent-picker-targeted
+          - codex.tui-agent-picker-model-surface-targeted
+          - codex.spawn-agent-tool-model-surface-targeted
+          - codex.spawn-agent-description-model-surface-targeted
+          - codex.tui-agent-picker-tree-targeted
+          - codex.tui-agent-usage-totals-targeted
           - codex.core-multi-agent-orchestration-targeted
+          - codex.core-subagent-model-pinning-targeted
+          - codex.core-subagent-spawn-approval-targeted
           - codex.core-persisted-subagent-descendants-targeted
           - codex.core-context-serialization-targeted
           - codex.core-attestation-targeted
           - codex.state-spawn-lineage-contract-targeted
+          - codex.code-mode-declaration-targeted
           - codex.app-server-protocol-test
+          - codex.app-server-thread-cwd-targeted
           - codex.downstream-docs-check
+          - codex.release-linux-build-smoke
           - downstream-ledger-seam
         default: all
   pull_request:
@@ -62,9 +79,24 @@ jobs:
       checkout_ref: ${{ steps.meta.outputs.checkout_ref }}
       smoke_gate_kind: ${{ steps.meta.outputs.smoke_gate_kind }}
       smoke_matrix: ${{ steps.meta.outputs.smoke_matrix }}
+      smoke_light_matrix: ${{ steps.meta.outputs.smoke_light_matrix }}
+      smoke_rust_matrix: ${{ steps.meta.outputs.smoke_rust_matrix }}
+      smoke_heavy_matrix: ${{ steps.meta.outputs.smoke_heavy_matrix }}
+      smoke_light_lane_count: ${{ steps.meta.outputs.smoke_light_lane_count }}
+      smoke_rust_lane_count: ${{ steps.meta.outputs.smoke_rust_lane_count }}
+      smoke_heavy_lane_count: ${{ steps.meta.outputs.smoke_heavy_lane_count }}
       run_smoke_gate: ${{ steps.meta.outputs.run_smoke_gate }}
       run_selected_lanes: ${{ steps.meta.outputs.run_selected_lanes }}
       selected_matrix: ${{ steps.meta.outputs.selected_matrix }}
+      selected_light_matrix: ${{ steps.meta.outputs.selected_light_matrix }}
+      selected_rust_matrix: ${{ steps.meta.outputs.selected_rust_matrix }}
+      selected_heavy_matrix: ${{ steps.meta.outputs.selected_heavy_matrix }}
+      selected_light_lane_count: ${{ steps.meta.outputs.selected_light_lane_count }}
+      selected_rust_lane_count: ${{ steps.meta.outputs.selected_rust_lane_count }}
+      selected_heavy_lane_count: ${{ steps.meta.outputs.selected_heavy_lane_count }}
+      light_max_parallel: ${{ steps.meta.outputs.light_max_parallel }}
+      rust_max_parallel: ${{ steps.meta.outputs.rust_max_parallel }}
+      heavy_max_parallel: ${{ steps.meta.outputs.heavy_max_parallel }}
     steps:
       - uses: actions/checkout@v6
         with:
@@ -134,63 +166,234 @@ jobs:
             esac
           done
 
-          selection_meta="$(python3 .github/scripts/resolve_validation_plan.py heavy --event-name '${{ github.event_name }}' --requested-lane '${{ inputs.lane }}' --run-all-lanes "${run_all_lanes}" --run-core-family "${run_core_family}" --run-attestation-family "${run_attestation_family}" --run-workflow-family "${run_workflow_family}" --run-ui-protocol-family "${run_ui_protocol_family}" --run-docs-family "${run_docs_family}")"
+          files_json="$(printf '%s\n' "${files[@]}" | jq -R . | jq -sc .)"
+          selection_meta="$(python3 .github/scripts/resolve_validation_plan.py heavy --event-name '${{ github.event_name }}' --requested-lane '${{ inputs.lane }}' --run-all-lanes "${run_all_lanes}" --run-core-family "${run_core_family}" --run-attestation-family "${run_attestation_family}" --run-workflow-family "${run_workflow_family}" --run-ui-protocol-family "${run_ui_protocol_family}" --run-docs-family "${run_docs_family}" --changed-files-json "${files_json}")"
           run_smoke_gate="$(SELECTION_META="${selection_meta}" python3 -c 'import json, os; print(json.loads(os.environ["SELECTION_META"])["run_smoke_gate"])')"
           smoke_gate_kind="$(SELECTION_META="${selection_meta}" python3 -c 'import json, os; print(json.loads(os.environ["SELECTION_META"])["smoke_gate_kind"])')"
           smoke_json="$(SELECTION_META="${selection_meta}" python3 -c 'import json, os; print(json.dumps(json.loads(os.environ["SELECTION_META"])["smoke_matrix"], separators=(",", ":")))')"
+          smoke_light_json="$(SELECTION_META="${selection_meta}" python3 -c 'import json, os; print(json.dumps(json.loads(os.environ["SELECTION_META"])["smoke_light_matrix"], separators=(",", ":")))')"
+          smoke_rust_json="$(SELECTION_META="${selection_meta}" python3 -c 'import json, os; print(json.dumps(json.loads(os.environ["SELECTION_META"])["smoke_rust_matrix"], separators=(",", ":")))')"
+          smoke_heavy_json="$(SELECTION_META="${selection_meta}" python3 -c 'import json, os; print(json.dumps(json.loads(os.environ["SELECTION_META"])["smoke_heavy_matrix"], separators=(",", ":")))')"
           selected_json="$(SELECTION_META="${selection_meta}" python3 -c 'import json, os; print(json.dumps(json.loads(os.environ["SELECTION_META"])["selected_matrix"], separators=(",", ":")))')"
+          selected_light_json="$(SELECTION_META="${selection_meta}" python3 -c 'import json, os; print(json.dumps(json.loads(os.environ["SELECTION_META"])["selected_light_matrix"], separators=(",", ":")))')"
+          selected_rust_json="$(SELECTION_META="${selection_meta}" python3 -c 'import json, os; print(json.dumps(json.loads(os.environ["SELECTION_META"])["selected_rust_matrix"], separators=(",", ":")))')"
+          selected_heavy_json="$(SELECTION_META="${selection_meta}" python3 -c 'import json, os; print(json.dumps(json.loads(os.environ["SELECTION_META"])["selected_heavy_matrix"], separators=(",", ":")))')"
 
           {
             echo "checkout_ref=${checkout_ref}"
             echo "smoke_gate_kind=${smoke_gate_kind}"
             echo "smoke_matrix=${smoke_json}"
+            echo "smoke_light_matrix=${smoke_light_json}"
+            echo "smoke_rust_matrix=${smoke_rust_json}"
+            echo "smoke_heavy_matrix=${smoke_heavy_json}"
+            echo "smoke_light_lane_count=$(SELECTION_META="${selection_meta}" python3 -c 'import json, os; print(json.loads(os.environ["SELECTION_META"])["smoke_light_lane_count"])')"
+            echo "smoke_rust_lane_count=$(SELECTION_META="${selection_meta}" python3 -c 'import json, os; print(json.loads(os.environ["SELECTION_META"])["smoke_rust_lane_count"])')"
+            echo "smoke_heavy_lane_count=$(SELECTION_META="${selection_meta}" python3 -c 'import json, os; print(json.loads(os.environ["SELECTION_META"])["smoke_heavy_lane_count"])')"
             echo "run_smoke_gate=${run_smoke_gate}"
             echo "run_selected_lanes=$(SELECTION_META="${selection_meta}" python3 -c 'import json, os; print(json.loads(os.environ["SELECTION_META"])["run_selected_lanes"])')"
             echo "selected_matrix=${selected_json}"
+            echo "selected_light_matrix=${selected_light_json}"
+            echo "selected_rust_matrix=${selected_rust_json}"
+            echo "selected_heavy_matrix=${selected_heavy_json}"
+            echo "selected_light_lane_count=$(SELECTION_META="${selection_meta}" python3 -c 'import json, os; print(json.loads(os.environ["SELECTION_META"])["selected_light_lane_count"])')"
+            echo "selected_rust_lane_count=$(SELECTION_META="${selection_meta}" python3 -c 'import json, os; print(json.loads(os.environ["SELECTION_META"])["selected_rust_lane_count"])')"
+            echo "selected_heavy_lane_count=$(SELECTION_META="${selection_meta}" python3 -c 'import json, os; print(json.loads(os.environ["SELECTION_META"])["selected_heavy_lane_count"])')"
+            echo "light_max_parallel=$(SELECTION_META="${selection_meta}" python3 -c 'import json, os; print(json.loads(os.environ["SELECTION_META"])["light_max_parallel"])')"
+            echo "rust_max_parallel=$(SELECTION_META="${selection_meta}" python3 -c 'import json, os; print(json.loads(os.environ["SELECTION_META"])["rust_max_parallel"])')"
+            echo "heavy_max_parallel=$(SELECTION_META="${selection_meta}" python3 -c 'import json, os; print(json.loads(os.environ["SELECTION_META"])["heavy_max_parallel"])')"
           } >> "$GITHUB_OUTPUT"
 
-  smoke_gate:
-    name: Heavy preflight smoke
+  smoke_light_lanes:
+    name: Heavy preflight smoke (light)
     needs: metadata
     if: >-
       ${{
         needs.metadata.result == 'success' &&
-        needs.metadata.outputs.run_smoke_gate == 'true'
+        needs.metadata.outputs.run_smoke_gate == 'true' &&
+        fromJson(needs.metadata.outputs.smoke_light_lane_count) > 0
       }}
     strategy:
       fail-fast: true
-      # Keep Linux-only heavy validation from monopolizing the org runner pool.
-      max-parallel: 2
-      matrix: ${{ fromJson(needs.metadata.outputs.smoke_matrix) }}
+      max-parallel: ${{ fromJson(needs.metadata.outputs.light_max_parallel) }}
+      matrix: ${{ fromJson(needs.metadata.outputs.smoke_light_matrix) }}
     uses: ./.github/workflows/_sedna-linux-rust.yml
     with:
       checkout_ref: ${{ needs.metadata.outputs.checkout_ref }}
       lane_id: ${{ matrix.lane_id }}
       lane_phase: smoke_gate
       summary_title: ${{ matrix.lane_id }}
+      status_class: ${{ matrix.status_class }}
+      frontier_default: ${{ matrix.frontier_default }}
+      setup_class: ${{ matrix.setup_class }}
+      frontier_role: ${{ matrix.frontier_role }}
+      summary_family: ${{ matrix.summary_family }}
+      cost_class: ${{ matrix.cost_class }}
       run_command: ${{ matrix.run_command }}
       install_nextest: ${{ matrix.install_nextest }}
 
-  downstream_lanes:
-    needs:
-      - metadata
-      - smoke_gate
+  smoke_rust_lanes:
+    name: Heavy preflight smoke (rust)
+    needs: metadata
     if: >-
       ${{
         needs.metadata.result == 'success' &&
-        (needs.smoke_gate.result == 'success' || needs.smoke_gate.result == 'skipped') &&
+        needs.metadata.outputs.run_smoke_gate == 'true' &&
+        fromJson(needs.metadata.outputs.smoke_rust_lane_count) > 0
+      }}
+    strategy:
+      fail-fast: true
+      max-parallel: ${{ fromJson(needs.metadata.outputs.rust_max_parallel) }}
+      matrix: ${{ fromJson(needs.metadata.outputs.smoke_rust_matrix) }}
+    uses: ./.github/workflows/_sedna-linux-rust.yml
+    with:
+      checkout_ref: ${{ needs.metadata.outputs.checkout_ref }}
+      lane_id: ${{ matrix.lane_id }}
+      lane_phase: smoke_gate
+      summary_title: ${{ matrix.lane_id }}
+      status_class: ${{ matrix.status_class }}
+      frontier_default: ${{ matrix.frontier_default }}
+      setup_class: ${{ matrix.setup_class }}
+      frontier_role: ${{ matrix.frontier_role }}
+      summary_family: ${{ matrix.summary_family }}
+      cost_class: ${{ matrix.cost_class }}
+      run_command: ${{ matrix.run_command }}
+      install_nextest: ${{ matrix.install_nextest }}
+
+  smoke_heavy_lanes:
+    name: Heavy preflight smoke (heavy)
+    needs: metadata
+    if: >-
+      ${{
+        needs.metadata.result == 'success' &&
+        needs.metadata.outputs.run_smoke_gate == 'true' &&
+        fromJson(needs.metadata.outputs.smoke_heavy_lane_count) > 0
+      }}
+    strategy:
+      fail-fast: true
+      max-parallel: ${{ fromJson(needs.metadata.outputs.heavy_max_parallel) }}
+      matrix: ${{ fromJson(needs.metadata.outputs.smoke_heavy_matrix) }}
+    uses: ./.github/workflows/_sedna-linux-rust.yml
+    with:
+      checkout_ref: ${{ needs.metadata.outputs.checkout_ref }}
+      lane_id: ${{ matrix.lane_id }}
+      lane_phase: smoke_gate
+      summary_title: ${{ matrix.lane_id }}
+      status_class: ${{ matrix.status_class }}
+      frontier_default: ${{ matrix.frontier_default }}
+      setup_class: ${{ matrix.setup_class }}
+      frontier_role: ${{ matrix.frontier_role }}
+      summary_family: ${{ matrix.summary_family }}
+      cost_class: ${{ matrix.cost_class }}
+      run_command: ${{ matrix.run_command }}
+      install_nextest: ${{ matrix.install_nextest }}
+
+  light_lanes:
+    needs:
+      - metadata
+      - smoke_light_lanes
+      - smoke_rust_lanes
+      - smoke_heavy_lanes
+    if: >-
+      ${{
+        always() &&
+        fromJson(needs.metadata.outputs.selected_light_lane_count) > 0 &&
+        needs.metadata.result == 'success' &&
+        (
+          (needs.smoke_light_lanes.result == 'success' || needs.smoke_light_lanes.result == 'skipped') &&
+          (needs.smoke_rust_lanes.result == 'success' || needs.smoke_rust_lanes.result == 'skipped') &&
+          (needs.smoke_heavy_lanes.result == 'success' || needs.smoke_heavy_lanes.result == 'skipped')
+        ) &&
         needs.metadata.outputs.run_selected_lanes == 'true'
       }}
     strategy:
       fail-fast: true
-      # Keep Linux-only heavy validation from monopolizing the org runner pool.
-      max-parallel: 2
-      matrix: ${{ fromJson(needs.metadata.outputs.selected_matrix) }}
+      max-parallel: ${{ fromJson(needs.metadata.outputs.light_max_parallel) }}
+      matrix: ${{ fromJson(needs.metadata.outputs.selected_light_matrix) }}
     uses: ./.github/workflows/_sedna-linux-rust.yml
     with:
       checkout_ref: ${{ needs.metadata.outputs.checkout_ref }}
       lane_id: ${{ matrix.lane_id }}
       lane_phase: downstream_lanes
       summary_title: ${{ matrix.lane_id }}
+      status_class: ${{ matrix.status_class }}
+      frontier_default: ${{ matrix.frontier_default }}
+      setup_class: ${{ matrix.setup_class }}
+      frontier_role: ${{ matrix.frontier_role }}
+      summary_family: ${{ matrix.summary_family }}
+      cost_class: ${{ matrix.cost_class }}
+      run_command: ${{ matrix.run_command }}
+      install_nextest: ${{ matrix.install_nextest }}
+
+  rust_lanes:
+    needs:
+      - metadata
+      - smoke_light_lanes
+      - smoke_rust_lanes
+      - smoke_heavy_lanes
+    if: >-
+      ${{
+        always() &&
+        fromJson(needs.metadata.outputs.selected_rust_lane_count) > 0 &&
+        needs.metadata.result == 'success' &&
+        (
+          (needs.smoke_light_lanes.result == 'success' || needs.smoke_light_lanes.result == 'skipped') &&
+          (needs.smoke_rust_lanes.result == 'success' || needs.smoke_rust_lanes.result == 'skipped') &&
+          (needs.smoke_heavy_lanes.result == 'success' || needs.smoke_heavy_lanes.result == 'skipped')
+        ) &&
+        needs.metadata.outputs.run_selected_lanes == 'true'
+      }}
+    strategy:
+      fail-fast: true
+      max-parallel: ${{ fromJson(needs.metadata.outputs.rust_max_parallel) }}
+      matrix: ${{ fromJson(needs.metadata.outputs.selected_rust_matrix) }}
+    uses: ./.github/workflows/_sedna-linux-rust.yml
+    with:
+      checkout_ref: ${{ needs.metadata.outputs.checkout_ref }}
+      lane_id: ${{ matrix.lane_id }}
+      lane_phase: downstream_lanes
+      summary_title: ${{ matrix.lane_id }}
+      status_class: ${{ matrix.status_class }}
+      frontier_default: ${{ matrix.frontier_default }}
+      setup_class: ${{ matrix.setup_class }}
+      frontier_role: ${{ matrix.frontier_role }}
+      summary_family: ${{ matrix.summary_family }}
+      cost_class: ${{ matrix.cost_class }}
+      run_command: ${{ matrix.run_command }}
+      install_nextest: ${{ matrix.install_nextest }}
+
+  heavy_lanes:
+    needs:
+      - metadata
+      - smoke_light_lanes
+      - smoke_rust_lanes
+      - smoke_heavy_lanes
+    if: >-
+      ${{
+        always() &&
+        fromJson(needs.metadata.outputs.selected_heavy_lane_count) > 0 &&
+        needs.metadata.result == 'success' &&
+        (
+          (needs.smoke_light_lanes.result == 'success' || needs.smoke_light_lanes.result == 'skipped') &&
+          (needs.smoke_rust_lanes.result == 'success' || needs.smoke_rust_lanes.result == 'skipped') &&
+          (needs.smoke_heavy_lanes.result == 'success' || needs.smoke_heavy_lanes.result == 'skipped')
+        ) &&
+        needs.metadata.outputs.run_selected_lanes == 'true'
+      }}
+    strategy:
+      fail-fast: true
+      max-parallel: ${{ fromJson(needs.metadata.outputs.heavy_max_parallel) }}
+      matrix: ${{ fromJson(needs.metadata.outputs.selected_heavy_matrix) }}
+    uses: ./.github/workflows/_sedna-linux-rust.yml
+    with:
+      checkout_ref: ${{ needs.metadata.outputs.checkout_ref }}
+      lane_id: ${{ matrix.lane_id }}
+      lane_phase: downstream_lanes
+      summary_title: ${{ matrix.lane_id }}
+      status_class: ${{ matrix.status_class }}
+      frontier_default: ${{ matrix.frontier_default }}
+      setup_class: ${{ matrix.setup_class }}
+      frontier_role: ${{ matrix.frontier_role }}
+      summary_family: ${{ matrix.summary_family }}
+      cost_class: ${{ matrix.cost_class }}
       run_command: ${{ matrix.run_command }}
       install_nextest: ${{ matrix.install_nextest }}
