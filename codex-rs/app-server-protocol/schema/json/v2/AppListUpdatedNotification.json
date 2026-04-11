@@ -1,6 +1,5 @@
 {
-  "$schema": "http://json-schema.org/draft-07/schema#",
-  "definitions": {
+  "$defs": {
     "AppBranding": {
       "description": "EXPERIMENTAL - app metadata returned by app-list APIs.",
       "properties": {
@@ -49,7 +48,7 @@
         "appMetadata": {
           "anyOf": [
             {
-              "$ref": "#/definitions/AppMetadata"
+              "$ref": "#/$defs/AppMetadata"
             },
             {
               "type": "null"
@@ -59,7 +58,7 @@
         "branding": {
           "anyOf": [
             {
-              "$ref": "#/definitions/AppBranding"
+              "$ref": "#/$defs/AppBranding"
             },
             {
               "type": "null"
@@ -93,7 +92,7 @@
         },
         "isEnabled": {
           "default": true,
-          "description": "Whether this app is enabled in config.toml. Example: ```toml [apps.bad_app] enabled = false ```",
+          "description": "Whether this app is enabled in config.toml.\nExample:\n```toml\n[apps.bad_app]\nenabled = false\n```",
           "type": "boolean"
         },
         "labels": {
@@ -166,7 +165,7 @@
         "review": {
           "anyOf": [
             {
-              "$ref": "#/definitions/AppReview"
+              "$ref": "#/$defs/AppReview"
             },
             {
               "type": "null"
@@ -175,7 +174,7 @@
         },
         "screenshots": {
           "items": {
-            "$ref": "#/definitions/AppScreenshot"
+            "$ref": "#/$defs/AppScreenshot"
           },
           "type": [
             "array",
@@ -259,11 +258,12 @@
       "type": "object"
     }
   },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
   "description": "EXPERIMENTAL - notification emitted when the app list changes.",
   "properties": {
     "data": {
       "items": {
-        "$ref": "#/definitions/AppInfo"
+        "$ref": "#/$defs/AppInfo"
       },
       "type": "array"
     }
