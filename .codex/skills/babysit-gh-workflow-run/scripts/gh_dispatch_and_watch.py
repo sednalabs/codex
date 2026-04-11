@@ -540,10 +540,10 @@ def main():
     expected_sha = str(args.head_sha or "").strip()
     expected_sha_from_args = bool(expected_sha)
     if not expected_sha:
-        expected_sha = _resolve_remote_ref_sha(watcher, repo, validation_ref) or (
-            watcher.command_text(["git", "rev-parse", "HEAD"]) or ""
-        ).strip()
     if not expected_sha:
+        expected_sha = _resolve_remote_ref_sha(watcher, repo, validation_ref) or \
+                       _resolve_local_ref_sha(watcher, validation_ref) or \
+                       (watcher.command_text(["git", "rev-parse", "HEAD"]) or "").strip()
         return _emit_error("Expected head SHA is missing and `git rev-parse HEAD` returned nothing.")
     if not _is_head_sha_prefix(expected_sha):
         return _emit_error(f"Expected head SHA '{expected_sha}' is not a valid commit sha.")
