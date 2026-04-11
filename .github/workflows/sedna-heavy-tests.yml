@@ -30,6 +30,8 @@ on:
           - codex.tui-agent-picker-usage-targeted
           - codex.tui-agent-picker-targeted
           - codex.tui-agent-picker-model-surface-targeted
+          - codex.spawn-agent-tool-model-surface-targeted
+          - codex.spawn-agent-description-model-surface-targeted
           - codex.tui-agent-picker-tree-targeted
           - codex.tui-agent-usage-totals-targeted
           - codex.core-multi-agent-orchestration-targeted

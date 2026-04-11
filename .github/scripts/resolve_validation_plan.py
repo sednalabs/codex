@@ -320,12 +320,12 @@ def emit_grouped_setup_class_payload(payload: dict, lanes: list[dict], *, key_pr
 
 def setup_parallel_limits(profile: str) -> dict[str, int]:
     if profile == "frontier":
-        return {"light": 10, "rust": 6, "heavy": 3}
+        return {"light": 16, "rust": 10, "heavy": 4}
     if profile in {"broad", "full"}:
-        return {"light": 6, "rust": 4, "heavy": 2}
+        return {"light": 10, "rust": 6, "heavy": 3}
     if profile == "smoke":
-        return {"light": 2, "rust": 2, "heavy": 1}
-    return {"light": 4, "rust": 2, "heavy": 1}
+        return {"light": 4, "rust": 3, "heavy": 2}
+    return {"light": 8, "rust": 4, "heavy": 2}
 
 
 def determine_lab_matrix_policy(profile: str, selected: list[dict]) -> tuple[str, str, dict[str, int]]:

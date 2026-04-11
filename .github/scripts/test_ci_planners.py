@@ -148,7 +148,7 @@ class RouteSelectionTests(unittest.TestCase):
         self.assertEqual(
             lanes,
             [
-                "codex.tui-agent-picker-model-surface-targeted",
+                "codex.spawn-agent-tool-model-surface-targeted",
                 "codex.core-subagent-spawn-approval-targeted",
             ],
         )
@@ -160,7 +160,23 @@ class RouteSelectionTests(unittest.TestCase):
         )
         self.assertEqual(
             lanes,
-            ["codex.tui-agent-picker-model-surface-targeted"],
+            [
+                "codex.spawn-agent-tool-model-surface-targeted",
+                "codex.spawn-agent-description-model-surface-targeted",
+            ],
+        )
+
+    def test_picker_model_tui_path_reuses_shared_non_tui_routes(self) -> None:
+        lanes = RESOLVE_VALIDATION_PLAN.select_followup_lanes(
+            ["codex-rs/tui/src/chatwidget.rs"],
+            self.routes,
+        )
+        self.assertEqual(
+            lanes,
+            [
+                "codex.spawn-agent-tool-model-surface-targeted",
+                "codex.spawn-agent-description-model-surface-targeted",
+            ],
         )
 
     def test_heavy_workflow_dispatch_options_cover_catalog_lanes(self) -> None:
@@ -214,9 +230,9 @@ class ValidationPlanScriptTests(unittest.TestCase):
         self.assertGreater(payload["selected_light_lane_count"], 0)
         self.assertGreater(payload["selected_rust_lane_count"], 0)
         self.assertGreater(payload["selected_heavy_lane_count"], 0)
-        self.assertEqual(payload["light_max_parallel"], "4")
-        self.assertEqual(payload["rust_max_parallel"], "2")
-        self.assertEqual(payload["heavy_max_parallel"], "1")
+        self.assertEqual(payload["light_max_parallel"], "8")
+        self.assertEqual(payload["rust_max_parallel"], "4")
+        self.assertEqual(payload["heavy_max_parallel"], "2")
 
     def test_heavy_plan_route_uses_bounded_shared_spawn_surface(self) -> None:
         payload = run_script(
@@ -250,7 +266,7 @@ class ValidationPlanScriptTests(unittest.TestCase):
         self.assertEqual(
             [lane["lane_id"] for lane in payload["selected_matrix"]["include"]],
             [
-                "codex.tui-agent-picker-model-surface-targeted",
+                "codex.spawn-agent-tool-model-surface-targeted",
                 "codex.core-subagent-spawn-approval-targeted",
             ],
         )
@@ -335,7 +351,12 @@ class RustCiModeScriptTests(unittest.TestCase):
         self.assertEqual(outputs["run_incremental_validation"], "true")
         self.assertEqual(
             outputs["incremental_lanes"],
-            "codex.tui-agent-picker-model-surface-targeted",
+            ",".join(
+                [
+                    "codex.spawn-agent-tool-model-surface-targeted",
+                    "codex.spawn-agent-description-model-surface-targeted",
+                ]
+            ),
         )
         self.assertEqual(outputs["run_general"], "false")
         self.assertEqual(outputs["run_cargo_shear"], "false")
@@ -372,7 +393,7 @@ class RustCiModeScriptTests(unittest.TestCase):
             outputs["incremental_lanes"],
             ",".join(
                 [
-                    "codex.tui-agent-picker-model-surface-targeted",
+                    "codex.spawn-agent-tool-model-surface-targeted",
                     "codex.core-subagent-spawn-approval-targeted",
                 ]
             ),

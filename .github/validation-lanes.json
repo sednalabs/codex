@@ -132,6 +132,23 @@
       "run_command": "just --justfile ../justfile tui-agent-picker-model-surface-targeted",
       "groups": ["ui_protocol"],
       "lane_sets": ["all", "ui-protocol", "subagents"],
+      "explicit_only": true,
+      "frontier_default": false,
+      "summary_family": "agent-picker-model-surface"
+    },
+    {
+      "lane_id": "codex.spawn-agent-tool-model-surface-targeted",
+      "run_command": "just --justfile ../justfile spawn-agent-tool-model-surface-targeted",
+      "groups": ["ui_protocol"],
+      "lane_sets": ["all", "ui-protocol", "subagents"],
+      "frontier_default": false,
+      "summary_family": "agent-picker-model-surface"
+    },
+    {
+      "lane_id": "codex.spawn-agent-description-model-surface-targeted",
+      "run_command": "just --justfile ../justfile spawn-agent-description-model-surface-targeted",
+      "groups": ["ui_protocol"],
+      "lane_sets": ["all", "ui-protocol", "subagents"],
       "frontier_default": false,
       "summary_family": "agent-picker-model-surface"
     },
@@ -289,7 +306,10 @@
     },
     {
       "route_id": "tui-agent-picker-model-surface",
-      "lane_ids": ["codex.tui-agent-picker-model-surface-targeted"],
+      "lane_ids": [
+        "codex.spawn-agent-tool-model-surface-targeted",
+        "codex.spawn-agent-description-model-surface-targeted"
+      ],
       "allowed_paths": [
         "codex-rs/protocol/src/openai_models.rs",
         "codex-rs/core/tests/suite/spawn_agent_description.rs",
@@ -340,7 +360,7 @@
     {
       "route_id": "subagent-spawn-tool-surface",
       "lane_ids": [
-        "codex.tui-agent-picker-model-surface-targeted",
+        "codex.spawn-agent-tool-model-surface-targeted",
         "codex.core-subagent-spawn-approval-targeted"
       ],
       "allowed_paths": [
