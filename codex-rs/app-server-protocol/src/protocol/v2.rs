@@ -27,6 +27,7 @@ use codex_protocol::config_types::WebSearchToolConfig;
 use codex_protocol::items::AgentMessageContent as CoreAgentMessageContent;
 use codex_protocol::items::TurnItem as CoreTurnItem;
 use codex_protocol::mcp::Resource as McpResource;
+pub use codex_protocol::mcp::ResourceContent as McpResourceContent;
 use codex_protocol::mcp::ResourceTemplate as McpResourceTemplate;
 use codex_protocol::mcp::Tool as McpTool;
 use codex_protocol::memory_citation::MemoryCitation as CoreMemoryCitation;
@@ -848,6 +849,8 @@ pub struct ConfigReadResponse {
 pub struct ConfigRequirements {
     #[experimental(nested)]
     pub allowed_approval_policies: Option<Vec<AskForApproval>>,
+    #[experimental("configRequirements/read.allowedApprovalsReviewers")]
+    pub allowed_approvals_reviewers: Option<Vec<ApprovalsReviewer>>,
     pub allowed_sandbox_modes: Option<Vec<SandboxMode>>,
     pub allowed_web_search_modes: Option<Vec<WebSearchMode>>,
     pub feature_requirements: Option<BTreeMap<String, bool>>,
@@ -880,6 +883,7 @@ pub struct NetworkRequirements {
     /// Legacy compatibility view derived from `unix_sockets`.
     pub allow_unix_sockets: Option<Vec<String>>,
     pub allow_local_binding: Option<bool>,
+    pub danger_full_access_denylist_only: Option<bool>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, JsonSchema, TS)]
@@ -1945,6 +1949,18 @@ pub struct ListMcpServerStatusParams {
     /// Optional page size; defaults to a server-defined value.
     #[ts(optional = nullable)]
     pub limit: Option<u32>,
+    /// Controls how much MCP inventory data to fetch for each server.
+    /// Defaults to `Full` when omitted.
+    #[ts(optional = nullable)]
+    pub detail: Option<McpServerStatusDetail>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(rename_all = "camelCase", export_to = "v2/")]
+pub enum McpServerStatusDetail {
+    Full,
+    ToolsAndAuthOnly,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
@@ -1966,6 +1982,22 @@ pub struct ListMcpServerStatusResponse {
     /// Opaque cursor to pass to the next call to continue after the last item.
     /// If None, there are no more items to return.
     pub next_cursor: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct McpResourceReadParams {
+    pub thread_id: String,
+    pub server: String,
+    pub uri: String,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct McpResourceReadResponse {
+    pub contents: Vec<McpResourceContent>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default, JsonSchema, TS)]
@@ -2569,10 +2601,22 @@ pub struct ThreadStartParams {
     pub config: Option<HashMap<String, JsonValue>>,
     #[ts(optional = nullable)]
     pub service_name: Option<String>,
+    #[serde(
+        default,
+        deserialize_with = "super::serde_helpers::deserialize_double_option",
+        serialize_with = "super::serde_helpers::serialize_double_option",
+        skip_serializing_if = "Option::is_none"
+    )]
     #[ts(optional = nullable)]
-    pub base_instructions: Option<String>,
+    pub base_instructions: Option<Option<String>>,
+    #[serde(
+        default,
+        deserialize_with = "super::serde_helpers::deserialize_double_option",
+        serialize_with = "super::serde_helpers::serialize_double_option",
+        skip_serializing_if = "Option::is_none"
+    )]
     #[ts(optional = nullable)]
-    pub developer_instructions: Option<String>,
+    pub developer_instructions: Option<Option<String>>,
     #[ts(optional = nullable)]
     pub personality: Option<Personality>,
     #[ts(optional = nullable)]
@@ -2687,10 +2731,22 @@ pub struct ThreadResumeParams {
     pub sandbox: Option<SandboxMode>,
     #[ts(optional = nullable)]
     pub config: Option<HashMap<String, serde_json::Value>>,
+    #[serde(
+        default,
+        deserialize_with = "super::serde_helpers::deserialize_double_option",
+        serialize_with = "super::serde_helpers::serialize_double_option",
+        skip_serializing_if = "Option::is_none"
+    )]
     #[ts(optional = nullable)]
-    pub base_instructions: Option<String>,
+    pub base_instructions: Option<Option<String>>,
+    #[serde(
+        default,
+        deserialize_with = "super::serde_helpers::deserialize_double_option",
+        serialize_with = "super::serde_helpers::serialize_double_option",
+        skip_serializing_if = "Option::is_none"
+    )]
     #[ts(optional = nullable)]
-    pub developer_instructions: Option<String>,
+    pub developer_instructions: Option<Option<String>>,
     #[ts(optional = nullable)]
     pub personality: Option<Personality>,
     /// If true, persist additional rollout EventMsg variants required to
@@ -2764,10 +2820,22 @@ pub struct ThreadForkParams {
     pub sandbox: Option<SandboxMode>,
     #[ts(optional = nullable)]
     pub config: Option<HashMap<String, serde_json::Value>>,
+    #[serde(
+        default,
+        deserialize_with = "super::serde_helpers::deserialize_double_option",
+        serialize_with = "super::serde_helpers::serialize_double_option",
+        skip_serializing_if = "Option::is_none"
+    )]
     #[ts(optional = nullable)]
-    pub base_instructions: Option<String>,
+    pub base_instructions: Option<Option<String>>,
+    #[serde(
+        default,
+        deserialize_with = "super::serde_helpers::deserialize_double_option",
+        serialize_with = "super::serde_helpers::serialize_double_option",
+        skip_serializing_if = "Option::is_none"
+    )]
     #[ts(optional = nullable)]
-    pub developer_instructions: Option<String>,
+    pub developer_instructions: Option<Option<String>>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub ephemeral: bool,
     /// If true, persist additional rollout EventMsg variants required to
@@ -3572,6 +3640,8 @@ impl From<CoreSkillErrorInfo> for SkillErrorInfo {
 #[ts(export_to = "v2/")]
 pub struct Thread {
     pub id: String,
+    /// Source thread id when this thread was created by forking another thread.
+    pub forked_from_id: Option<String>,
     /// Usually the first user message in the thread, if available.
     pub preview: String,
     /// Whether the thread is ephemeral and should not be materialized on disk.
@@ -3687,6 +3757,15 @@ pub struct Turn {
     pub status: TurnStatus,
     /// Only populated when the Turn's status is failed.
     pub error: Option<TurnError>,
+    /// Unix timestamp (in seconds) when the turn started.
+    #[ts(type = "number | null")]
+    pub started_at: Option<i64>,
+    /// Unix timestamp (in seconds) when the turn completed.
+    #[ts(type = "number | null")]
+    pub completed_at: Option<i64>,
+    /// Duration between turn start and completion in milliseconds, if known.
+    #[ts(type = "number | null")]
+    pub duration_ms: Option<i64>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
@@ -4447,12 +4526,226 @@ impl From<CoreGuardianRiskLevel> for GuardianRiskLevel {
 #[ts(export_to = "v2/")]
 pub struct GuardianApprovalReview {
     pub status: GuardianApprovalReviewStatus,
-    #[serde(alias = "risk_score")]
     #[ts(type = "number | null")]
     pub risk_score: Option<u8>,
-    #[serde(alias = "risk_level")]
     pub risk_level: Option<GuardianRiskLevel>,
     pub rationale: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub enum GuardianCommandSource {
+    Shell,
+    UnifiedExec,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct GuardianCommandReviewAction {
+    pub source: GuardianCommandSource,
+    pub command: String,
+    pub cwd: PathBuf,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct GuardianExecveReviewAction {
+    pub source: GuardianCommandSource,
+    pub program: String,
+    pub argv: Vec<String>,
+    pub cwd: PathBuf,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct GuardianApplyPatchReviewAction {
+    pub cwd: PathBuf,
+    pub files: Vec<PathBuf>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct GuardianNetworkAccessReviewAction {
+    pub target: String,
+    pub host: String,
+    pub protocol: NetworkApprovalProtocol,
+    pub port: u16,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct GuardianMcpToolCallReviewAction {
+    pub server: String,
+    pub tool_name: String,
+    pub connector_id: Option<String>,
+    pub connector_name: Option<String>,
+    pub tool_title: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(tag = "type", rename_all = "camelCase")]
+#[ts(tag = "type", rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub enum GuardianApprovalReviewAction {
+    #[serde(rename_all = "camelCase")]
+    #[ts(rename_all = "camelCase")]
+    Command {
+        source: GuardianCommandSource,
+        command: String,
+        cwd: PathBuf,
+    },
+    #[serde(rename_all = "camelCase")]
+    #[ts(rename_all = "camelCase")]
+    Execve {
+        source: GuardianCommandSource,
+        program: String,
+        argv: Vec<String>,
+        cwd: PathBuf,
+    },
+    #[serde(rename_all = "camelCase")]
+    #[ts(rename_all = "camelCase")]
+    ApplyPatch { cwd: PathBuf, files: Vec<PathBuf> },
+    #[serde(rename_all = "camelCase")]
+    #[ts(rename_all = "camelCase")]
+    NetworkAccess {
+        target: String,
+        host: String,
+        protocol: NetworkApprovalProtocol,
+        port: u16,
+    },
+    #[serde(rename_all = "camelCase")]
+    #[ts(rename_all = "camelCase")]
+    McpToolCall {
+        server: String,
+        tool_name: String,
+        connector_id: Option<String>,
+        connector_name: Option<String>,
+        tool_title: Option<String>,
+    },
+    #[serde(rename_all = "camelCase")]
+    #[ts(rename_all = "camelCase")]
+    Unknown { raw: JsonValue },
+}
+
+impl GuardianApprovalReviewAction {
+    pub fn from_assessment_action(action: Option<JsonValue>) -> Self {
+        action
+            .map(Self::from_json_value)
+            .unwrap_or(GuardianApprovalReviewAction::Unknown {
+                raw: JsonValue::Null,
+            })
+    }
+
+    pub fn try_from_json_value(value: &JsonValue) -> Option<Self> {
+        let object = value.as_object()?;
+        let kind = object
+            .get("type")
+            .and_then(JsonValue::as_str)
+            .or_else(|| object.get("tool").and_then(JsonValue::as_str));
+
+        if object.contains_key("program") {
+            let program = object.get("program")?.as_str()?.to_string();
+            let argv = match object.get("argv").and_then(JsonValue::as_array) {
+                Some(items) => items
+                    .iter()
+                    .map(JsonValue::as_str)
+                    .collect::<Option<Vec<_>>>()?
+                    .into_iter()
+                    .map(ToOwned::to_owned)
+                    .collect(),
+                None => vec![program.clone()],
+            };
+            let cwd = PathBuf::from(object.get("cwd")?.as_str()?);
+            let source = object
+                .get("source")
+                .and_then(|source| serde_json::from_value(source.clone()).ok())
+                .unwrap_or(GuardianCommandSource::UnifiedExec);
+            return Some(Self::Execve {
+                source,
+                program,
+                argv,
+                cwd,
+            });
+        }
+
+        match kind? {
+            "command" | "shell" | "exec_command" => {
+                let command = match object.get("command")? {
+                    JsonValue::String(command) => command.clone(),
+                    JsonValue::Array(argv) => {
+                        let argv = argv
+                            .iter()
+                            .map(JsonValue::as_str)
+                            .collect::<Option<Vec<_>>>()?;
+                        shlex::try_join(argv.iter().copied())
+                            .ok()
+                            .unwrap_or_else(|| argv.join(" "))
+                    }
+                    _ => return None,
+                };
+                let cwd = PathBuf::from(object.get("cwd")?.as_str()?);
+                let source = object
+                    .get("source")
+                    .and_then(|source| serde_json::from_value(source.clone()).ok())
+                    .unwrap_or(match kind {
+                        Some("shell") => GuardianCommandSource::Shell,
+                        _ => GuardianCommandSource::UnifiedExec,
+                    });
+                Some(Self::Command {
+                    source,
+                    command,
+                    cwd,
+                })
+            }
+            "apply_patch" => Some(Self::ApplyPatch {
+                cwd: PathBuf::from(object.get("cwd")?.as_str()?),
+                files: match object.get("files").and_then(JsonValue::as_array) {
+                    Some(items) => items
+                        .iter()
+                        .map(JsonValue::as_str)
+                        .collect::<Option<Vec<_>>>()?
+                        .into_iter()
+                        .map(PathBuf::from)
+                        .collect(),
+                    None => Vec::new(),
+                },
+            }),
+            "network_access" => Some(Self::NetworkAccess {
+                target: object.get("target")?.as_str()?.to_string(),
+                host: object.get("host")?.as_str()?.to_string(),
+                protocol: serde_json::from_value(object.get("protocol")?.clone()).ok()?,
+                port: u16::try_from(object.get("port")?.as_u64()?).ok()?,
+            }),
+            "mcp_tool_call" => Some(Self::McpToolCall {
+                server: object.get("server")?.as_str()?.to_string(),
+                tool_name: object.get("tool_name")?.as_str()?.to_string(),
+                connector_id: object
+                    .get("connector_id")
+                    .and_then(JsonValue::as_str)
+                    .map(ToOwned::to_owned),
+                connector_name: object
+                    .get("connector_name")
+                    .and_then(JsonValue::as_str)
+                    .map(ToOwned::to_owned),
+                tool_title: object
+                    .get("tool_title")
+                    .and_then(JsonValue::as_str)
+                    .map(ToOwned::to_owned),
+            }),
+            _ => None,
+        }
+    }
+
+    fn from_json_value(value: JsonValue) -> Self {
+        Self::try_from_json_value(&value).unwrap_or(Self::Unknown { raw: value })
+    }
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
@@ -4935,7 +5228,7 @@ pub struct ItemGuardianApprovalReviewStartedNotification {
     pub turn_id: String,
     pub target_item_id: String,
     pub review: GuardianApprovalReview,
-    pub action: Option<JsonValue>,
+    pub action: GuardianApprovalReviewAction,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
@@ -4952,7 +5245,7 @@ pub struct ItemGuardianApprovalReviewCompletedNotification {
     pub turn_id: String,
     pub target_item_id: String,
     pub review: GuardianApprovalReview,
-    pub action: Option<JsonValue>,
+    pub action: GuardianApprovalReviewAction,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
@@ -7090,6 +7383,7 @@ mod tests {
                     request_permissions: false,
                     mcp_elicitations: false,
                 }]),
+                allowed_approvals_reviewers: None,
                 allowed_sandbox_modes: None,
                 allowed_web_search_modes: None,
                 feature_requirements: None,
@@ -7490,26 +7784,6 @@ mod tests {
     }
 
     #[test]
-    fn automatic_approval_review_deserializes_legacy_snake_case_risk_fields() {
-        let review: GuardianApprovalReview = serde_json::from_value(json!({
-            "status": "denied",
-            "risk_score": 91,
-            "risk_level": "high",
-            "rationale": "too risky"
-        }))
-        .expect("legacy snake_case automatic review should deserialize");
-        assert_eq!(
-            review,
-            GuardianApprovalReview {
-                status: GuardianApprovalReviewStatus::Denied,
-                risk_score: Some(91),
-                risk_level: Some(GuardianRiskLevel::High),
-                rationale: Some("too risky".to_string()),
-            }
-        );
-    }
-
-    #[test]
     fn automatic_approval_review_deserializes_aborted_status() {
         let review: GuardianApprovalReview = serde_json::from_value(json!({
             "status": "aborted",
@@ -7526,6 +7800,31 @@ mod tests {
                 risk_level: None,
                 rationale: None,
             }
+        );
+    }
+
+    #[test]
+    fn guardian_approval_review_action_round_trips_command_shape() {
+        let value = json!({
+            "type": "command",
+            "source": "shell",
+            "command": "rm -rf /tmp/example.sqlite",
+            "cwd": "/tmp",
+        });
+        let action: GuardianApprovalReviewAction =
+            serde_json::from_value(value.clone()).expect("guardian review action");
+
+        assert_eq!(
+            action,
+            GuardianApprovalReviewAction::Command {
+                source: GuardianCommandSource::Shell,
+                command: "rm -rf /tmp/example.sqlite".to_string(),
+                cwd: "/tmp".into(),
+            }
+        );
+        assert_eq!(
+            serde_json::to_value(&action).expect("serialize guardian review action"),
+            value
         );
     }
 
@@ -7549,6 +7848,7 @@ mod tests {
                 dangerously_allow_all_unix_sockets: None,
                 domains: None,
                 managed_allowed_domains_only: None,
+                danger_full_access_denylist_only: None,
                 allowed_domains: Some(vec!["api.openai.com".to_string()]),
                 denied_domains: Some(vec!["blocked.example.com".to_string()]),
                 unix_sockets: None,
@@ -7575,6 +7875,7 @@ mod tests {
                 ),
             ])),
             managed_allowed_domains_only: Some(true),
+            danger_full_access_denylist_only: Some(true),
             allowed_domains: Some(vec!["api.openai.com".to_string()]),
             denied_domains: Some(vec!["blocked.example.com".to_string()]),
             unix_sockets: Some(BTreeMap::from([
@@ -7605,6 +7906,7 @@ mod tests {
                     "blocked.example.com": "deny"
                 },
                 "managedAllowedDomainsOnly": true,
+                "dangerFullAccessDenylistOnly": true,
                 "allowedDomains": ["api.openai.com"],
                 "deniedDomains": ["blocked.example.com"],
                 "unixSockets": {
@@ -8048,6 +8350,35 @@ mod tests {
         let serialized_without_override =
             serde_json::to_value(ThreadStartParams::default()).expect("params should serialize");
         assert_eq!(serialized_without_override.get("serviceTier"), None);
+    }
+
+    #[test]
+    fn thread_start_params_preserve_explicit_null_instructions() {
+        let params: ThreadStartParams = serde_json::from_value(json!({
+            "baseInstructions": null,
+            "developerInstructions": null,
+        }))
+        .expect("params should deserialize");
+        assert_eq!(params.base_instructions, Some(None));
+        assert_eq!(params.developer_instructions, Some(None));
+
+        let serialized = serde_json::to_value(&params).expect("params should serialize");
+        assert_eq!(
+            serialized.get("baseInstructions"),
+            Some(&serde_json::Value::Null)
+        );
+        assert_eq!(
+            serialized.get("developerInstructions"),
+            Some(&serde_json::Value::Null)
+        );
+
+        let serialized_without_override =
+            serde_json::to_value(ThreadStartParams::default()).expect("params should serialize");
+        assert_eq!(serialized_without_override.get("baseInstructions"), None);
+        assert_eq!(
+            serialized_without_override.get("developerInstructions"),
+            None
+        );
     }
 
     #[test]
