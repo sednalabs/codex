@@ -1075,6 +1075,32 @@ def is_sha_like(value):
     return all(ch in "0123456789abcdefABCDEF" for ch in value) and len(value) >= 7
 
 
+def _normalized_head_sha_prefixes(expected_head_sha):
+    if not expected_head_sha:
+        return []
+    raw_prefixes = (
+        expected_head_sha
+        if isinstance(expected_head_sha, (list, tuple, set))
+        else [expected_head_sha]
+    )
+    prefixes = []
+    for prefix in raw_prefixes:
+        normalized = str(prefix or "").strip().lower()
+        if normalized:
+            prefixes.append(normalized)
+    return prefixes
+
+
+def _matches_head_sha_prefix(run_head_sha, expected_head_sha):
+    observed = str(run_head_sha or "").strip().lower()
+    if not observed:
+        return False
+    expected_prefixes = _normalized_head_sha_prefixes(expected_head_sha)
+    if not expected_prefixes:
+        return True
+    return any(observed.startswith(prefix) for prefix in expected_prefixes)
+
+
 def list_workflow_runs(repo, workflow, ref, expected_head_sha=None, minimum_run_id=None, host_ref=None):
     fields = "databaseId,displayTitle,event,headBranch,headSha,name,number,status,conclusion,url,workflowName,createdAt,updatedAt"
     cmd = ["run", "list", "--workflow", workflow, "--limit", "30", "--json", fields]
@@ -1094,11 +1120,11 @@ def list_workflow_runs(repo, workflow, ref, expected_head_sha=None, minimum_run_
         run_head_sha = str(run.get("headSha") or "")
         if ref:
             if is_sha_like(ref):
-                if not run_head_sha.startswith(ref):
+                if not _matches_head_sha_prefix(run_head_sha, ref):
                     continue
             elif branch_filter and head_branch != branch_filter:
                 continue
-        if expected_head_sha and not run_head_sha.startswith(str(expected_head_sha)):
+        if expected_head_sha and not _matches_head_sha_prefix(run_head_sha, expected_head_sha):
             continue
         run_id = int(run.get("databaseId") or 0)
         if minimum_run_id is not None and run_id < int(minimum_run_id):
