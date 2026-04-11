@@ -482,25 +482,17 @@ def _run_watcher(watcher, run_id, repo, wait_for, poll_seconds, appearance_timeo
         str(appearance_timeout),
     ]
 
-    result = subprocess.run(command, capture_output=True, text=True, check=False)
-    if result.stdout:
-        sys.stdout.write(result.stdout)
-        if not result.stdout.endswith("\n"):
-            sys.stdout.write("\n")
-    sys.stdout.flush()
-
-    if result.returncode != 0:
-        if result.stderr:
-            sys.stderr.write(result.stderr + ("\n" if not result.stderr.endswith("\n") else ""))
-        return 1
-
-    if not result.stdout:
-        return 0
-
     last_line = ""
-    for line in result.stdout.splitlines():
-        if line.strip():
-            last_line = line.strip()
+    with subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True) as proc:
+        if proc.stdout:
+            for line in proc.stdout:
+                sys.stdout.write(line)
+                sys.stdout.flush()
+                if line.strip():
+                    last_line = line.strip()
+        proc.wait()
+        if proc.returncode != 0:
+            return 1
     if last_line:
         try:
             payload = json.loads(last_line)
