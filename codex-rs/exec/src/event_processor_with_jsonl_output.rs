@@ -713,6 +713,9 @@ mod tests {
                         additional_details: None,
                         codex_error_info: None,
                     }),
+                    started_at: None,
+                    completed_at: None,
+                    duration_ms: None,
                 },
             },
         ));
