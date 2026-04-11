@@ -322,6 +322,26 @@ class DispatchAndWatchTests(unittest.TestCase):
         self.assertEqual(calls, [["api", "/repos/owner/repo/git/ref/heads/feature%2Fbranch"]])
         self.assertEqual(resolved, "abcdef1234567890")
 
+    def test_resolve_remote_ref_sha_accepts_full_head_ref(self):
+        calls = []
+
+        class FakeWatcher:
+            def is_sha_like(self, value):
+                if not value:
+                    return False
+                value = str(value)
+                return all(ch in "0123456789abcdefABCDEF" for ch in value) and len(value) >= 7
+
+            def gh_json(self, args, repo=None):
+                calls.append(list(args))
+                return {"object": {"sha": "abcdef1234567890"}}
+
+        resolved = MODULE._resolve_remote_ref_sha(
+            FakeWatcher(), "owner/repo", "refs/heads/feature/branch"
+        )
+        self.assertEqual(calls, [["api", "/repos/owner/repo/git/ref/heads/feature%2Fbranch"]])
+        self.assertEqual(resolved, "abcdef1234567890")
+
     def test_validate_expected_head_sha_against_remote_branch_detects_mismatch(self):
         class FakeWatcher:
             def is_sha_like(self, value):
@@ -506,6 +526,104 @@ class DispatchAndWatchTests(unittest.TestCase):
         self.assertEqual(select_mock.call_args.args[3], "main")
         self.assertEqual(run_mock.call_args.kwargs["appearance_timeout"], 300)
         self.assertEqual(run_mock.call_args.args[1], 501)
+
+    def test_main_resolves_expected_sha_from_local_ref_when_remote_lookup_fails(self):
+        class FakeWatcher:
+            GhCommandError = RuntimeError
+
+            def detect_repo(self):
+                return "owner/repo"
+
+            def detect_ref(self, ref):
+                return ref
+
+            def is_sha_like(self, value):
+                if not value:
+                    return False
+                value = str(value)
+                return all(ch in "0123456789abcdefABCDEF" for ch in value) and len(value) >= 7
+
+            def list_workflow_runs(self, *args, **kwargs):
+                return []
+
+            def command_text(self, args):
+                if args == ["git", "rev-parse", "--verify", "refs/heads/feature/branch"]:
+                    return "abcdef1234567890\n"
+                if args == ["git", "rev-parse", "--verify", "feature/branch"]:
+                    raise AssertionError("fallback ref lookup should stop after refs/heads succeeds")
+                if args == ["git", "rev-parse", "HEAD"]:
+                    raise AssertionError("HEAD fallback should not be used when local ref resolves")
+                raise AssertionError(f"unexpected command_text args: {args!r}")
+
+            def gh_json(self, args, repo=None):
+                raise RuntimeError("remote ref lookup unavailable")
+
+        watcher = FakeWatcher()
+        argv = [
+            "gh_dispatch_and_watch",
+            "--workflow",
+            "validation-lab.yml",
+            "--ref",
+            "feature/branch",
+        ]
+
+        with patch.object(sys, "argv", argv), patch.object(
+            MODULE, "_load_watcher", return_value=watcher
+        ), patch.object(
+            MODULE, "_wait_for_ref_to_match_expected", return_value=(True, 0)
+        ) as wait_mock, patch.object(
+            MODULE, "_dispatch_workflow"
+        ) as dispatch_mock, patch.object(
+            MODULE,
+            "_select_newest_matching_run",
+            return_value=({"kind": "matched", "run": {"databaseId": 501}}, 0),
+        ), patch.object(MODULE, "_run_watcher", return_value=0):
+            rc = MODULE.main()
+
+        self.assertEqual(rc, 0)
+        wait_mock.assert_called_once()
+        self.assertEqual(wait_mock.call_args.args[1:4], (
+            "owner/repo",
+            "feature/branch",
+            "abcdef1234567890",
+        ))
+        self.assertEqual(dispatch_mock.call_args.args[3], "feature/branch")
+
+    def test_run_watcher_preserves_timeout_signal_when_json_is_not_last_line(self):
+        output_lines = iter(
+            [
+                '{"actions":["stop_run_appearance_timeout"]}\n',
+                "warning: trailing non-json noise\n",
+            ]
+        )
+
+        class FakePopen:
+            def __init__(self, *args, **kwargs):
+                self.stdout = output_lines
+                self.returncode = 0
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def wait(self):
+                return 0
+
+        with patch.object(MODULE.subprocess, "Popen", return_value=FakePopen()), patch(
+            "sys.stdout", io.StringIO()
+        ):
+            rc = MODULE._run_watcher(
+                watcher=None,
+                run_id=501,
+                repo="owner/repo",
+                wait_for="first_action",
+                poll_seconds=10,
+                appearance_timeout=300,
+            )
+
+        self.assertEqual(rc, 1)
 
     def test_effective_minimum_run_id_applies_override(self):
         self.assertEqual(MODULE._effective_minimum_run_id(100, None), 101)

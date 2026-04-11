@@ -483,23 +483,26 @@ def _run_watcher(watcher, run_id, repo, wait_for, poll_seconds, appearance_timeo
         str(appearance_timeout),
     ]
 
-    last_line = ""
+    last_payload = None
     with subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True) as proc:
         if proc.stdout:
             for line in proc.stdout:
                 sys.stdout.write(line)
                 sys.stdout.flush()
-                if line.strip():
-                    last_line = line.strip()
+                stripped = line.strip()
+                if not stripped:
+                    continue
+                try:
+                    payload = json.loads(stripped)
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(payload, dict):
+                    last_payload = payload
         proc.wait()
         if proc.returncode != 0:
             return 1
-    if last_line:
-        try:
-            payload = json.loads(last_line)
-        except json.JSONDecodeError:
-            return 0
-        actions = payload.get("actions") or []
+    if last_payload:
+        actions = last_payload.get("actions") or []
         if "stop_run_appearance_timeout" in actions:
             return 1
     return 0
@@ -541,10 +544,12 @@ def main():
     expected_sha = str(args.head_sha or "").strip()
     expected_sha_from_args = bool(expected_sha)
     if not expected_sha:
+        expected_sha = (
+            _resolve_remote_ref_sha(watcher, repo, validation_ref)
+            or _resolve_local_ref_sha(watcher, validation_ref)
+            or (watcher.command_text(["git", "rev-parse", "HEAD"]) or "").strip()
+        )
     if not expected_sha:
-        expected_sha = _resolve_remote_ref_sha(watcher, repo, validation_ref) or \
-                       _resolve_local_ref_sha(watcher, validation_ref) or \
-                       (watcher.command_text(["git", "rev-parse", "HEAD"]) or "").strip()
         return _emit_error("Expected head SHA is missing and `git rev-parse HEAD` returned nothing.")
     if not _is_head_sha_prefix(expected_sha):
         return _emit_error(f"Expected head SHA '{expected_sha}' is not a valid commit sha.")
