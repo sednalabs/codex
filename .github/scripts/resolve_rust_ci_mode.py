@@ -30,7 +30,11 @@ FOLLOWUP_ROUTE_MAX_FILES = 2
 FOLLOWUP_ROUTE_MAX_LINES = 20
 
 RUST_BUNDLE_PATTERNS = [
-    "codex-rs/**",
+    "codex-rs/**/*.rs",
+    "codex-rs/**/build.rs",
+    "codex-rs/**/Cargo.toml",
+    "codex-rs/**/Cargo.lock",
+    "codex-rs/**/BUILD.bazel",
     "Cargo.lock",
     "Cargo.toml",
     "**/Cargo.toml",

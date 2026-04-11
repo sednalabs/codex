@@ -416,6 +416,35 @@ class RustCiModeScriptTests(unittest.TestCase):
         self.assertEqual(outputs["run_argument_comment_lint_package"], "false")
         self.assertEqual(outputs["run_argument_comment_lint_prebuilt"], "false")
 
+    def test_non_rust_codex_rs_asset_pr_is_irrelevant_to_rust_ci(self) -> None:
+        outputs = self.run_rust_ci_mode(
+            event_action="opened",
+            head_files={
+                "codex-rs/skills/src/assets/samples/skill-creator/scripts/init_skill.py": "print('hi')\n",
+            },
+        )
+
+        self.assertEqual(outputs["has_relevant_changes"], "false")
+        self.assertEqual(outputs["codex"], "false")
+        self.assertEqual(outputs["argument_comment_lint"], "false")
+        self.assertEqual(outputs["run_general"], "false")
+        self.assertEqual(outputs["run_cargo_shear"], "false")
+        self.assertEqual(outputs["run_argument_comment_lint_package"], "false")
+        self.assertEqual(outputs["run_argument_comment_lint_prebuilt"], "false")
+
+    def test_rust_build_script_pr_still_triggers_rust_ci(self) -> None:
+        outputs = self.run_rust_ci_mode(
+            event_action="opened",
+            head_files={"codex-rs/cli/build.rs": "fn main() {}\n"},
+        )
+
+        self.assertEqual(outputs["has_relevant_changes"], "true")
+        self.assertEqual(outputs["codex"], "true")
+        self.assertEqual(outputs["argument_comment_lint"], "true")
+        self.assertEqual(outputs["run_general"], "true")
+        self.assertEqual(outputs["run_cargo_shear"], "true")
+        self.assertEqual(outputs["run_argument_comment_lint_prebuilt"], "true")
+
 
 class HelperScriptTests(unittest.TestCase):
     def test_build_results_tolerates_selected_lane_missing_from_matrix(self) -> None:
