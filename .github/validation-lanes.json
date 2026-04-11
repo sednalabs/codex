@@ -43,33 +43,69 @@
       "lane_id": "codex.core-startup-sync-targeted",
       "run_command": "just --justfile ../justfile core-startup-sync-targeted",
       "groups": ["core"],
-      "lane_sets": ["all", "startup-sync", "core-carry"]
+      "lane_sets": ["all", "startup-sync", "core-carry"],
+      "frontier_default": true,
+      "frontier_lane_sets": ["startup-sync"]
     },
     {
       "lane_id": "codex.core-subagent-surface-targeted",
       "run_command": "just --justfile ../justfile core-subagent-surface-targeted",
       "groups": ["core"],
       "lane_sets": ["all", "subagents", "core-carry"],
-      "install_nextest": true
+      "install_nextest": true,
+      "frontier_default": true,
+      "frontier_lane_sets": ["subagents", "core-carry"]
     },
     {
       "lane_id": "codex.core-subagent-notification-contract-targeted",
       "run_command": "just --justfile ../justfile core-subagent-notification-contract-targeted",
       "groups": ["core"],
       "lane_sets": ["all", "subagents", "core-carry"],
-      "install_nextest": true
+      "install_nextest": true,
+      "frontier_default": true,
+      "frontier_lane_sets": ["subagents", "core-carry"]
     },
     {
       "lane_id": "codex.core-subagent-notification-visibility-targeted",
       "run_command": "just --justfile ../justfile core-subagent-notification-visibility-targeted",
       "groups": ["ui_protocol"],
-      "lane_sets": ["all", "subagents", "ui-protocol", "core-carry"]
+      "lane_sets": ["all", "subagents", "ui-protocol", "core-carry"],
+      "frontier_default": true,
+      "frontier_lane_sets": ["subagents", "ui-protocol", "core-carry"]
     },
     {
       "lane_id": "codex.tui-thread-session-policy-targeted",
       "run_command": "just --justfile ../justfile tui-thread-session-policy-targeted",
       "groups": ["ui_protocol"],
-      "lane_sets": ["all", "ui-protocol"]
+      "lane_sets": ["all", "ui-protocol"],
+      "install_nextest": true,
+      "frontier_default": true,
+      "frontier_lane_sets": ["ui-protocol"]
+    },
+    {
+      "lane_id": "codex.tui-esc-interrupt-targeted",
+      "run_command": "just --justfile ../justfile tui-esc-interrupt-targeted",
+      "groups": ["ui_protocol"],
+      "lane_sets": ["all", "ui-protocol"],
+      "install_nextest": true,
+      "frontier_default": true,
+      "frontier_lane_sets": ["ui-protocol"]
+    },
+    {
+      "lane_id": "codex.tui-front-queue-submit-targeted",
+      "run_command": "just --justfile ../justfile tui-front-queue-submit-targeted",
+      "groups": ["ui_protocol"],
+      "lane_sets": ["all", "ui-protocol"],
+      "frontier_default": true,
+      "frontier_lane_sets": ["ui-protocol"]
+    },
+    {
+      "lane_id": "codex.tui-transcript-viewport-targeted",
+      "run_command": "just --justfile ../justfile tui-transcript-viewport-targeted",
+      "groups": ["ui_protocol"],
+      "lane_sets": ["all", "ui-protocol"],
+      "frontier_default": true,
+      "frontier_lane_sets": ["ui-protocol"]
     },
     {
       "lane_id": "codex.tui-config-refresh-session-targeted",
@@ -78,60 +114,319 @@
       "lane_sets": ["all", "core-carry"]
     },
     {
+      "lane_id": "codex.tui-agent-picker-usage-targeted",
+      "run_command": "just --justfile ../justfile tui-agent-picker-usage-targeted",
+      "groups": ["ui_protocol"],
+      "lane_sets": ["all", "ui-protocol", "subagents"]
+    },
+    {
+      "lane_id": "codex.tui-agent-picker-targeted",
+      "run_command": "just --justfile ../justfile tui-agent-picker-targeted",
+      "groups": ["ui_protocol"],
+      "lane_sets": ["all", "ui-protocol", "subagents"],
+      "frontier_default": true,
+      "frontier_lane_sets": ["ui-protocol", "subagents"]
+    },
+    {
+      "lane_id": "codex.tui-agent-picker-model-surface-targeted",
+      "run_command": "just --justfile ../justfile tui-agent-picker-model-surface-targeted",
+      "groups": ["ui_protocol"],
+      "lane_sets": ["all", "ui-protocol", "subagents"],
+      "explicit_only": true,
+      "frontier_default": false,
+      "summary_family": "agent-picker-model-surface"
+    },
+    {
+      "lane_id": "codex.spawn-agent-tool-model-surface-targeted",
+      "run_command": "just --justfile ../justfile spawn-agent-tool-model-surface-targeted",
+      "groups": ["ui_protocol"],
+      "lane_sets": ["all", "ui-protocol", "subagents"],
+      "frontier_default": false,
+      "summary_family": "agent-picker-model-surface"
+    },
+    {
+      "lane_id": "codex.spawn-agent-description-model-surface-targeted",
+      "run_command": "just --justfile ../justfile spawn-agent-description-model-surface-targeted",
+      "groups": ["ui_protocol"],
+      "lane_sets": ["all", "ui-protocol", "subagents"],
+      "frontier_default": false,
+      "summary_family": "agent-picker-model-surface"
+    },
+    {
+      "lane_id": "codex.tui-agent-picker-tree-targeted",
+      "run_command": "just --justfile ../justfile tui-agent-picker-tree-targeted",
+      "groups": ["ui_protocol"],
+      "lane_sets": ["all", "ui-protocol", "subagents"],
+      "frontier_default": true,
+      "frontier_lane_sets": ["ui-protocol", "subagents"]
+    },
+    {
+      "lane_id": "codex.tui-agent-usage-totals-targeted",
+      "run_command": "just --justfile ../justfile tui-agent-usage-totals-targeted",
+      "groups": ["ui_protocol"],
+      "lane_sets": ["all", "ui-protocol"]
+    },
+    {
       "lane_id": "codex.core-multi-agent-orchestration-targeted",
       "run_command": "just --justfile ../justfile core-multi-agent-orchestration-targeted",
       "groups": ["core"],
-      "lane_sets": ["all", "subagents", "core-carry"]
+      "lane_sets": ["all", "subagents", "core-carry"],
+      "frontier_default": true,
+      "frontier_lane_sets": ["subagents", "core-carry"]
+    },
+    {
+      "lane_id": "codex.core-subagent-model-pinning-targeted",
+      "run_command": "just --justfile ../justfile core-subagent-model-pinning-targeted",
+      "groups": ["core"],
+      "lane_sets": ["all", "subagents", "core-carry"],
+      "frontier_default": true,
+      "frontier_lane_sets": ["subagents", "core-carry"]
+    },
+    {
+      "lane_id": "codex.core-subagent-spawn-approval-targeted",
+      "run_command": "just --justfile ../justfile core-subagent-spawn-approval-targeted",
+      "groups": ["core"],
+      "lane_sets": ["all", "subagents", "core-carry"],
+      "frontier_default": true,
+      "frontier_lane_sets": ["subagents", "core-carry"]
     },
     {
       "lane_id": "codex.core-persisted-subagent-descendants-targeted",
       "run_command": "just --justfile ../justfile core-persisted-subagent-descendants-targeted",
       "groups": ["core"],
-      "lane_sets": ["all", "subagents", "core-carry"]
+      "lane_sets": ["all", "subagents", "core-carry"],
+      "frontier_default": true,
+      "frontier_lane_sets": ["subagents", "core-carry"]
     },
     {
       "lane_id": "codex.core-context-serialization-targeted",
       "run_command": "just --justfile ../justfile core-context-serialization-targeted",
       "groups": ["core"],
-      "lane_sets": ["all", "core-carry"]
+      "lane_sets": ["all", "core-carry"],
+      "frontier_default": true,
+      "frontier_lane_sets": ["core-carry"]
     },
     {
       "lane_id": "codex.core-attestation-targeted",
       "run_command": "just --justfile ../justfile core-attestation-targeted",
       "groups": ["attestation"],
-      "lane_sets": ["all", "attestation", "core-carry"]
+      "lane_sets": ["all", "attestation", "core-carry"],
+      "frontier_default": true,
+      "frontier_lane_sets": ["attestation", "core-carry"]
     },
     {
       "lane_id": "codex.state-spawn-lineage-contract-targeted",
       "run_command": "just --justfile ../justfile core-state-spawn-lineage-contract-targeted",
       "groups": ["core"],
-      "lane_sets": ["all", "ledger", "subagents", "core-carry"]
+      "lane_sets": ["all", "ledger", "subagents", "core-carry"],
+      "frontier_default": true,
+      "frontier_lane_sets": ["ledger", "subagents", "core-carry"]
+    },
+    {
+      "lane_id": "codex.code-mode-declaration-targeted",
+      "run_command": "just --justfile ../justfile code-mode-declaration-targeted",
+      "groups": ["core"],
+      "lane_sets": ["all", "core-carry"],
+      "install_nextest": true,
+      "frontier_default": true,
+      "frontier_lane_sets": ["core-carry"]
     },
     {
       "lane_id": "codex.app-server-protocol-test",
       "run_command": "cargo test --locked -p codex-app-server-protocol",
       "groups": ["ui_protocol"],
-      "lane_sets": ["all", "ui-protocol"]
+      "lane_sets": ["all", "ui-protocol"],
+      "frontier_default": true,
+      "frontier_lane_sets": ["ui-protocol"]
+    },
+    {
+      "lane_id": "codex.app-server-thread-cwd-targeted",
+      "run_command": "just --justfile ../justfile app-server-thread-cwd-targeted",
+      "groups": ["ui_protocol"],
+      "lane_sets": ["all", "ui-protocol"],
+      "frontier_default": true,
+      "frontier_lane_sets": ["ui-protocol"]
     },
     {
       "lane_id": "codex.downstream-docs-check",
       "run_command": "just --justfile ../justfile downstream-docs-check",
       "groups": ["workflow", "docs"],
       "lane_sets": ["all", "docs"],
+      "frontier_default": false,
+      "frontier_lane_sets": ["docs"],
       "smoke_gate_kinds": ["workflow_docs"]
     },
     {
       "lane_id": "codex.release-linux-build-smoke",
       "run_command": "just --justfile ../justfile release-linux-build-smoke",
       "groups": ["core"],
-      "lane_sets": ["release"]
+      "lane_sets": ["release"],
+      "frontier_default": false,
+      "frontier_lane_sets": ["release"]
     },
     {
       "lane_id": "downstream-ledger-seam",
       "run_command": "just --justfile ../justfile downstream-ledger-seam",
       "groups": ["core", "ledger"],
       "lane_sets": ["ledger"],
-      "explicit_only": true
+      "explicit_only": true,
+      "status_class": "legacy"
+    }
+  ],
+  "followup_routes": [
+    {
+      "route_id": "tui-agent-picker-shared-surface",
+      "lane_ids": [
+        "codex.tui-agent-picker-targeted",
+        "codex.tui-agent-picker-tree-targeted"
+      ],
+      "allowed_paths": [
+        "codex-rs/tui/src/app.rs",
+        "codex-rs/tui/src/multi_agents.rs",
+        "codex-rs/tui/src/snapshots/codex_tui__multi_agents__tests__agent_picker*.snap",
+        "docs/downstream-regression-matrix.md",
+        "justfile"
+      ],
+      "required_any_paths": [
+        "codex-rs/tui/src/app.rs",
+        "codex-rs/tui/src/multi_agents.rs"
+      ]
+    },
+    {
+      "route_id": "tui-agent-picker",
+      "lane_ids": ["codex.tui-agent-picker-targeted"],
+      "allowed_paths": [
+        "codex-rs/tui/src/snapshots/codex_tui__multi_agents__tests__agent_picker*.snap",
+        "docs/downstream-regression-matrix.md",
+        "justfile"
+      ],
+      "required_any_paths": [
+        "codex-rs/tui/src/snapshots/codex_tui__multi_agents__tests__agent_picker*.snap"
+      ]
+    },
+    {
+      "route_id": "tui-agent-picker-model-surface",
+      "lane_ids": [
+        "codex.spawn-agent-tool-model-surface-targeted",
+        "codex.spawn-agent-description-model-surface-targeted"
+      ],
+      "allowed_paths": [
+        "codex-rs/protocol/src/openai_models.rs",
+        "codex-rs/core/tests/suite/spawn_agent_description.rs",
+        "codex-rs/tui/src/chatwidget.rs",
+        "codex-rs/tui/src/chatwidget/tests/popups_and_settings.rs",
+        "docs/downstream-regression-matrix.md",
+        "docs/downstream.md",
+        "docs/github-ci-offload.md",
+        "justfile"
+      ],
+      "required_any_paths": [
+        "codex-rs/protocol/src/openai_models.rs",
+        "codex-rs/core/tests/suite/spawn_agent_description.rs",
+        "codex-rs/tui/src/chatwidget.rs",
+        "codex-rs/tui/src/chatwidget/tests/popups_and_settings.rs"
+      ]
+    },
+    {
+      "route_id": "tui-agent-picker-tree",
+      "lane_ids": ["codex.tui-agent-picker-tree-targeted"],
+      "allowed_paths": [
+        "codex-rs/tui/src/app.rs",
+        "codex-rs/tui/src/app/agent_navigation.rs",
+        "codex-rs/tui/src/app/loaded_threads.rs",
+        "codex-rs/tui/src/multi_agents.rs",
+        "docs/downstream-regression-matrix.md",
+        "justfile"
+      ],
+      "required_any_paths": [
+        "codex-rs/tui/src/app/agent_navigation.rs",
+        "codex-rs/tui/src/app/loaded_threads.rs"
+      ]
+    },
+    {
+      "route_id": "core-subagent-model-pinning",
+      "lane_ids": ["codex.core-subagent-model-pinning-targeted"],
+      "allowed_paths": [
+        "codex-rs/core/src/tools/handlers/multi_agents_common.rs",
+        "codex-rs/core/src/tools/handlers/spawn.rs",
+        "codex-rs/core/src/agent/role.rs",
+        "codex-rs/core/src/tools/handlers/multi_agents_tests.rs",
+        "codex-rs/core/src/agent/role_tests.rs",
+        "codex-rs/tools/src/spawn_agent.rs",
+        "docs/downstream-regression-matrix.md",
+        "justfile"
+      ]
+    },
+    {
+      "route_id": "subagent-spawn-tool-surface",
+      "lane_ids": [
+        "codex.spawn-agent-tool-model-surface-targeted",
+        "codex.core-subagent-spawn-approval-targeted"
+      ],
+      "allowed_paths": [
+        "codex-rs/protocol/src/openai_models.rs",
+        "codex-rs/tools/src/agent_tool.rs",
+        "codex-rs/tools/src/agent_tool_tests.rs",
+        "codex-rs/core/tests/suite/spawn_agent_description.rs",
+        "codex-rs/tui/src/chatwidget.rs",
+        "codex-rs/tui/src/chatwidget/tests/popups_and_settings.rs",
+        "codex-rs/core/src/tools/handlers/multi_agents_common.rs",
+        "codex-rs/core/src/tools/handlers/multi_agents/spawn.rs",
+        "codex-rs/core/src/tools/handlers/multi_agents_v2/spawn.rs",
+        "codex-rs/core/src/tools/handlers/multi_agents_tests.rs",
+        "docs/downstream-regression-matrix.md",
+        "docs/downstream.md",
+        "docs/github-ci-offload.md",
+        "justfile"
+      ],
+      "required_any_paths": [
+        "codex-rs/tools/src/agent_tool.rs",
+        "codex-rs/tools/src/agent_tool_tests.rs"
+      ]
+    },
+    {
+      "route_id": "core-subagent-spawn-approval",
+      "lane_ids": ["codex.core-subagent-spawn-approval-targeted"],
+      "allowed_paths": [
+        "codex-rs/core/src/tools/handlers/multi_agents_common.rs",
+        "codex-rs/core/src/tools/handlers/multi_agents/spawn.rs",
+        "codex-rs/core/src/tools/handlers/multi_agents_v2/spawn.rs",
+        "codex-rs/core/src/tools/handlers/multi_agents_tests.rs",
+        "docs/downstream-regression-matrix.md",
+        "justfile"
+      ],
+      "required_any_paths": [
+        "codex-rs/core/src/tools/handlers/multi_agents_common.rs",
+        "codex-rs/core/src/tools/handlers/multi_agents/spawn.rs",
+        "codex-rs/core/src/tools/handlers/multi_agents_v2/spawn.rs",
+        "codex-rs/core/src/tools/handlers/multi_agents_tests.rs"
+      ]
+    },
+    {
+      "route_id": "app-server-thread-cwd",
+      "lane_ids": ["codex.app-server-thread-cwd-targeted"],
+      "allowed_paths": [
+        "codex-rs/app-server/**",
+        "codex-rs/app-server-protocol/**",
+        "codex-rs/tui/src/app_server_session.rs",
+        "docs/downstream-regression-matrix.md",
+        "justfile"
+      ],
+      "required_any_paths": [
+        "codex-rs/app-server/**",
+        "codex-rs/app-server-protocol/**",
+        "codex-rs/tui/src/app_server_session.rs"
+      ]
+    },
+    {
+      "route_id": "downstream-docs",
+      "lane_ids": ["codex.downstream-docs-check"],
+      "allowed_paths": [
+        "docs/downstream.md",
+        "docs/carry-divergence-ledger.md",
+        "docs/downstream-regression-matrix.md",
+        "docs/downstream-tool-surface-matrix.md"
+      ]
     }
   ]
 }

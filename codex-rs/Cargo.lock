@@ -1428,6 +1428,7 @@ dependencies = [
  "constant_time_eq",
  "core_test_support",
  "futures",
+ "gethostname",
  "hmac",
  "jsonwebtoken",
  "opentelemetry",
@@ -1450,6 +1451,7 @@ dependencies = [
  "tracing",
  "tracing-opentelemetry",
  "tracing-subscriber",
+ "url",
  "uuid",
  "wiremock",
 ]

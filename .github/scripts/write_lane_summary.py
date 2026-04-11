@@ -17,6 +17,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--lane-phase", default="downstream_lanes")
     parser.add_argument("--summary-title", required=True)
     parser.add_argument("--run-command", required=True)
+    parser.add_argument("--status-class", default="active")
+    parser.add_argument("--frontier-default", default="false")
+    parser.add_argument("--setup-class", default="rust")
+    parser.add_argument("--frontier-role", default="sentinel")
+    parser.add_argument("--summary-family", default="")
+    parser.add_argument("--cost-class", default="medium")
     parser.add_argument("--outcome", default="unknown")
     parser.add_argument("--exit-code", default="")
     parser.add_argument("--log-file", default="")
@@ -67,6 +73,10 @@ def parse_u64(raw: str) -> int | None:
     return parsed
 
 
+def parse_bool(raw: str) -> bool:
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
 def main() -> None:
     args = parse_args()
     log_path = Path(args.log_file) if args.log_file else None
@@ -79,6 +89,12 @@ def main() -> None:
         "lane_phase": args.lane_phase or "downstream_lanes",
         "summary_title": args.summary_title,
         "run_command": args.run_command,
+        "status_class": args.status_class or "active",
+        "frontier_default": parse_bool(args.frontier_default),
+        "setup_class": args.setup_class or "rust",
+        "frontier_role": args.frontier_role or "sentinel",
+        "summary_family": args.summary_family or args.lane_id,
+        "cost_class": args.cost_class or "medium",
         "outcome": args.outcome or "unknown",
         "exit_code": parse_exit_code(args.exit_code),
         "started_at_ms": parse_u64(args.started_at_ms),

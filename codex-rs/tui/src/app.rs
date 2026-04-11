@@ -17,7 +17,6 @@ use crate::bottom_pane::FeedbackAudience;
 use crate::bottom_pane::McpServerElicitationFormRequest;
 use crate::bottom_pane::SelectionItem;
 use crate::bottom_pane::SelectionViewParams;
-use crate::bottom_pane::popup_consts::standard_popup_hint_line;
 use crate::chatwidget::ChatWidget;
 use crate::chatwidget::ExternalEditorState;
 use crate::chatwidget::ReplayKind;
@@ -32,13 +31,17 @@ use crate::history_cell;
 use crate::history_cell::HistoryCell;
 #[cfg(not(debug_assertions))]
 use crate::history_cell::UpdateAvailableHistoryCell;
+use crate::key_hint;
 use crate::model_catalog::ModelCatalog;
 use crate::model_migration::ModelMigrationOutcome;
 use crate::model_migration::migration_copy_for_models;
 use crate::model_migration::run_model_migration_prompt;
+use crate::multi_agents::AgentPickerThreadUsage;
 use crate::multi_agents::SUBAGENT_LABEL;
 use crate::multi_agents::agent_picker_status_dot_spans;
+use crate::multi_agents::format_agent_picker_item_description;
 use crate::multi_agents::format_agent_picker_item_name;
+use crate::multi_agents::format_agent_picker_item_selected_description;
 use crate::multi_agents::next_agent_shortcut_matches;
 use crate::multi_agents::previous_agent_shortcut_matches;
 use crate::pager_overlay::Overlay;
@@ -119,6 +122,7 @@ use codex_protocol::protocol::RateLimitSnapshot;
 use codex_protocol::protocol::SandboxPolicy;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::SkillErrorInfo;
+use codex_protocol::protocol::SubAgentSource;
 use codex_protocol::protocol::TokenUsage;
 use codex_terminal_detection::user_agent;
 use codex_utils_absolute_path::AbsolutePathBuf;
@@ -539,6 +543,7 @@ struct ThreadEventStore {
     turns: Vec<Turn>,
     buffer: VecDeque<ThreadBufferedEvent>,
     token_usage: TokenUsage,
+    model_context_window: Option<i64>,
     pending_interactive_replay: PendingInteractiveReplayState,
     active_turn_id: Option<String>,
     input_state: Option<ThreadInputState>,
@@ -563,6 +568,7 @@ impl ThreadEventStore {
             turns: Vec::new(),
             buffer: VecDeque::new(),
             token_usage: TokenUsage::default(),
+            model_context_window: None,
             pending_interactive_replay: PendingInteractiveReplayState::default(),
             active_turn_id: None,
             input_state: None,
@@ -614,6 +620,7 @@ impl ThreadEventStore {
             }
             ServerNotification::ThreadTokenUsageUpdated(notification) => {
                 self.token_usage = token_usage_from_breakdown(&notification.token_usage.total);
+                self.model_context_window = notification.token_usage.model_context_window;
             }
             _ => {}
         }
@@ -1124,7 +1131,7 @@ impl App {
         self.apply_active_thread_session_state_to_config(&mut config);
         self.apply_runtime_policy_overrides(&mut config);
         self.config = config;
-        self.chat_widget.sync_plugin_mentions_config(&self.config);
+        self.chat_widget.sync_runtime_config(&self.config);
         Ok(())
     }
 
@@ -1754,6 +1761,24 @@ impl App {
             token_usage.add_assign(&store.token_usage);
         }
         token_usage
+    }
+
+    async fn status_surface_token_usage(&self) -> TokenUsage {
+        match (self.current_displayed_thread_id(), self.primary_thread_id) {
+            (Some(displayed_thread_id), Some(primary_thread_id))
+                if displayed_thread_id != primary_thread_id =>
+            {
+                self.agent_picker_thread_usage(displayed_thread_id)
+                    .await
+                    .token_usage
+            }
+            _ => self.session_tree_token_usage().await,
+        }
+    }
+
+    async fn sync_session_tree_token_usage_into_chat_widget(&mut self) {
+        let usage = self.status_surface_token_usage().await;
+        self.chat_widget.set_session_total_token_usage(usage);
     }
 
     async fn current_session_summary(&self) -> Option<SessionSummary> {
@@ -2547,6 +2572,10 @@ impl App {
         thread_id: ThreadId,
         notification: ServerNotification,
     ) -> Result<()> {
+        let is_token_usage_update = matches!(
+            &notification,
+            ServerNotification::ThreadTokenUsageUpdated(_)
+        );
         let inferred_session = self
             .infer_session_for_thread_notification(thread_id, &notification)
             .await;
@@ -2582,6 +2611,9 @@ impl App {
             }
         }
         self.refresh_pending_thread_approvals().await;
+        if is_token_usage_update {
+            self.sync_session_tree_token_usage_into_chat_widget().await;
+        }
         Ok(())
     }
 
@@ -2631,7 +2663,10 @@ impl App {
                         thread_id,
                         thread.agent_nickname,
                         thread.agent_role,
+                        Self::session_source_agent_path(&thread.source),
                         /*is_closed*/ false,
+                        Some(thread.created_at),
+                        Some(thread.updated_at),
                     );
                 }
                 Err(err) => {
@@ -2673,7 +2708,10 @@ impl App {
             thread_id,
             notification.thread.agent_nickname.clone(),
             notification.thread.agent_role.clone(),
+            Self::session_source_agent_path(&notification.thread.source),
             /*is_closed*/ false,
+            Some(notification.thread.created_at),
+            Some(notification.thread.updated_at),
         );
         Some(session)
     }
@@ -2783,7 +2821,8 @@ impl App {
         self.primary_session_configured = Some(session.clone());
         self.upsert_agent_picker_thread(
             thread_id, /*agent_nickname*/ None, /*agent_role*/ None,
-            /*is_closed*/ false,
+            /*agent_path*/ None, /*is_closed*/ false, /*created_at*/ None,
+            /*updated_at*/ None,
         );
         let channel = self.ensure_thread_channel(thread_id);
         {
@@ -2933,46 +2972,154 @@ impl App {
         }
 
         let mut initial_selected_idx = None;
-        let items: Vec<SelectionItem> = self
+        let tree_prefixes = self
             .agent_navigation
-            .ordered_threads()
-            .iter()
-            .enumerate()
-            .map(|(idx, (thread_id, entry))| {
-                if self.active_thread_id == Some(*thread_id) {
-                    initial_selected_idx = Some(idx);
-                }
-                let id = *thread_id;
-                let is_primary = self.primary_thread_id == Some(*thread_id);
-                let name = format_agent_picker_item_name(
-                    entry.agent_nickname.as_deref(),
-                    entry.agent_role.as_deref(),
-                    is_primary,
-                );
-                let uuid = thread_id.to_string();
-                SelectionItem {
-                    name: name.clone(),
-                    name_prefix_spans: agent_picker_status_dot_spans(entry.is_closed),
-                    description: Some(uuid.clone()),
-                    is_current: self.active_thread_id == Some(*thread_id),
-                    actions: vec![Box::new(move |tx| {
-                        tx.send(AppEvent::SelectAgentThread(id));
-                    })],
-                    dismiss_on_select: true,
-                    search_value: Some(format!("{name} {uuid}")),
-                    ..Default::default()
-                }
+            .picker_tree_prefixes(self.primary_thread_id);
+        let ordered_threads = self
+            .agent_navigation
+            .picker_tree_thread_ids(self.primary_thread_id)
+            .into_iter()
+            .filter_map(|thread_id| {
+                self.agent_navigation
+                    .get(&thread_id)
+                    .cloned()
+                    .map(|entry| (thread_id, entry))
             })
-            .collect();
+            .collect::<Vec<_>>();
+        let mut items = Vec::with_capacity(ordered_threads.len());
+        for (idx, (thread_id, entry)) in ordered_threads.into_iter().enumerate() {
+            if self.active_thread_id == Some(thread_id) {
+                initial_selected_idx = Some(idx);
+            }
+            let id = thread_id;
+            let is_primary = self.primary_thread_id == Some(thread_id);
+            let mut name = format_agent_picker_item_name(
+                entry.agent_nickname.as_deref(),
+                entry.agent_role.as_deref(),
+                is_primary,
+            );
+            if let Some(tree_prefix) = tree_prefixes.get(&thread_id) {
+                name = format!("{tree_prefix}{name}");
+            }
+            let usage = self.agent_picker_thread_usage(thread_id).await;
+            let description = format_agent_picker_item_description(
+                thread_id,
+                &usage.token_usage,
+                usage.model_context_window,
+                entry.updated_at,
+                entry.created_at,
+                usage.model.as_deref(),
+                usage.reasoning_effort,
+                usage.task_name.as_deref(),
+            );
+            let selected_description = format_agent_picker_item_selected_description(
+                thread_id,
+                &usage.token_usage,
+                usage.model_context_window,
+                entry.updated_at,
+                entry.created_at,
+                usage.model.as_deref(),
+                usage.reasoning_effort,
+                usage.task_name.as_deref(),
+                usage.approval_policy,
+                usage.approvals_reviewer,
+                usage.sandbox_policy.as_ref(),
+            );
+            let status_terms = if entry.is_closed {
+                "closed stale inactive finished"
+            } else {
+                "live active open"
+            };
+            items.push(SelectionItem {
+                name: name.clone(),
+                name_prefix_spans: agent_picker_status_dot_spans(entry.is_closed),
+                description: Some(description.clone()),
+                selected_description: Some(selected_description.clone()),
+                is_current: self.active_thread_id == Some(thread_id),
+                actions: vec![Box::new(move |tx| {
+                    tx.send(AppEvent::SelectAgentThread(id));
+                })],
+                dismiss_on_select: true,
+                search_value: Some(format!("{name} {selected_description} {status_terms}")),
+                ..Default::default()
+            });
+        }
 
         self.chat_widget.show_selection_view(SelectionViewParams {
             title: Some("Subagents".to_string()),
             subtitle: Some(AgentNavigationState::picker_subtitle()),
-            footer_hint: Some(standard_popup_hint_line()),
+            is_searchable: true,
+            search_placeholder: Some("Search agents or type 'closed'".to_string()),
+            footer_hint: Some(Self::agent_picker_popup_hint_line()),
             items,
             initial_selected_idx,
             ..Default::default()
         });
+    }
+
+    fn agent_picker_popup_hint_line() -> Line<'static> {
+        Line::from(vec![
+            "Press ".into(),
+            key_hint::plain(KeyCode::Enter).into(),
+            " to confirm, use ".into(),
+            key_hint::plain(KeyCode::Up).into(),
+            "/".into(),
+            key_hint::plain(KeyCode::Down).into(),
+            " to preview details, or ".into(),
+            key_hint::plain(KeyCode::Esc).into(),
+            " to go back".into(),
+        ])
+    }
+
+    async fn agent_picker_thread_usage(&self, thread_id: ThreadId) -> AgentPickerThreadUsage {
+        if self.active_thread_id == Some(thread_id) {
+            return AgentPickerThreadUsage {
+                token_usage: self.chat_widget.token_usage(),
+                model_context_window: self.chat_widget.token_usage_context_window(),
+                model: Some(self.chat_widget.current_model().to_string()),
+                reasoning_effort: self.chat_widget.current_reasoning_effort(),
+                task_name: self.chat_widget.thread_name(),
+                approval_policy: Some(self.chat_widget.current_approval_policy()),
+                approvals_reviewer: Some(self.chat_widget.current_approvals_reviewer()),
+                sandbox_policy: Some(self.chat_widget.current_sandbox_policy()),
+            };
+        }
+
+        if let Some(channel) = self.thread_event_channels.get(&thread_id) {
+            let store = channel.store.lock().await;
+            let (model, reasoning_effort, task_name) = store
+                .session
+                .as_ref()
+                .map(|session| {
+                    (
+                        Some(session.model.clone()),
+                        session.reasoning_effort,
+                        session.thread_name.clone(),
+                    )
+                })
+                .unwrap_or((None, None, None));
+            return AgentPickerThreadUsage {
+                token_usage: store.token_usage.clone(),
+                model_context_window: store.model_context_window,
+                model,
+                reasoning_effort,
+                task_name,
+                approval_policy: store
+                    .session
+                    .as_ref()
+                    .map(|session| session.approval_policy),
+                approvals_reviewer: store
+                    .session
+                    .as_ref()
+                    .map(|session| session.approvals_reviewer),
+                sandbox_policy: store
+                    .session
+                    .as_ref()
+                    .map(|session| session.sandbox_policy.clone()),
+            };
+        }
+
+        AgentPickerThreadUsage::default()
     }
 
     fn is_terminal_thread_read_error(err: &color_eyre::Report) -> bool {
@@ -2995,6 +3142,18 @@ impl App {
         })
     }
 
+    fn session_source_agent_path(
+        source: &codex_app_server_protocol::SessionSource,
+    ) -> Option<String> {
+        match source {
+            codex_app_server_protocol::SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                agent_path,
+                ..
+            }) => agent_path.as_ref().map(ToString::to_string),
+            _ => None,
+        }
+    }
+
     /// Updates cached picker metadata and then mirrors any visible-label change into the footer.
     ///
     /// These two writes stay paired so the picker rows and contextual footer continue to describe
@@ -3004,15 +3163,25 @@ impl App {
         thread_id: ThreadId,
         agent_nickname: Option<String>,
         agent_role: Option<String>,
+        agent_path: Option<String>,
         is_closed: bool,
+        created_at: Option<i64>,
+        updated_at: Option<i64>,
     ) {
         self.chat_widget.set_collab_agent_metadata(
             thread_id,
             agent_nickname.clone(),
             agent_role.clone(),
         );
-        self.agent_navigation
-            .upsert(thread_id, agent_nickname, agent_role, is_closed);
+        self.agent_navigation.upsert_with_path(
+            thread_id,
+            agent_nickname,
+            agent_role,
+            agent_path,
+            is_closed,
+            created_at,
+            updated_at,
+        );
         self.sync_active_agent_label();
     }
 
@@ -3049,10 +3218,17 @@ impl App {
                             .as_ref()
                             .and_then(|entry| entry.agent_role.clone())
                     }),
+                    Self::session_source_agent_path(&thread.source).or_else(|| {
+                        existing_entry
+                            .as_ref()
+                            .and_then(|entry| entry.agent_path.clone())
+                    }),
                     matches!(
                         thread.status,
                         codex_app_server_protocol::ThreadStatus::NotLoaded
                     ),
+                    Some(thread.created_at),
+                    Some(thread.updated_at),
                 );
                 true
             }
@@ -3070,12 +3246,16 @@ impl App {
                         thread_id,
                         entry.agent_nickname,
                         entry.agent_role,
+                        entry.agent_path,
                         is_closed,
+                        entry.created_at,
+                        entry.updated_at,
                     );
                 } else {
                     self.upsert_agent_picker_thread(
                         thread_id, /*agent_nickname*/ None, /*agent_role*/ None,
-                        is_closed,
+                        /*agent_path*/ None, is_closed, /*created_at*/ None,
+                        /*updated_at*/ None,
                     );
                 }
                 true
@@ -3527,7 +3707,10 @@ impl App {
                 thread.thread_id,
                 thread.agent_nickname,
                 thread.agent_role,
+                thread.agent_path,
                 /*is_closed*/ false,
+                Some(thread.created_at),
+                Some(thread.updated_at),
             );
         }
 
@@ -3604,9 +3787,20 @@ impl App {
         };
 
         let mut disconnected = false;
+        let mut saw_token_usage_update = false;
         loop {
             match rx.try_recv() {
-                Ok(event) => self.handle_thread_event_now(event),
+                Ok(event) => {
+                    if matches!(
+                        event,
+                        ThreadBufferedEvent::Notification(
+                            ServerNotification::ThreadTokenUsageUpdated(_)
+                        )
+                    ) {
+                        saw_token_usage_update = true;
+                    }
+                    self.handle_thread_event_now(event);
+                }
                 Err(TryRecvError::Empty) => break,
                 Err(TryRecvError::Disconnected) => {
                     disconnected = true;
@@ -3619,6 +3813,10 @@ impl App {
             self.active_thread_rx = Some(rx);
         } else {
             self.clear_active_thread().await;
+        }
+
+        if saw_token_usage_update {
+            self.sync_session_tree_token_usage_into_chat_widget().await;
         }
 
         if self.backtrack_render_pending {
@@ -5912,7 +6110,14 @@ impl App {
                 .await;
         }
 
+        let sync_session_tree_usage = matches!(
+            &event,
+            ThreadBufferedEvent::Notification(ServerNotification::ThreadTokenUsageUpdated(_))
+        );
         self.handle_thread_event_now(event);
+        if sync_session_tree_usage {
+            self.sync_session_tree_token_usage_into_chat_widget().await;
+        }
         if self.backtrack_render_pending {
             tui.frame_requester().schedule_frame();
         }
@@ -6492,6 +6697,7 @@ mod tests {
     use codex_protocol::protocol::SandboxPolicy;
     use codex_protocol::protocol::SessionConfiguredEvent;
     use codex_protocol::protocol::SessionSource;
+    use codex_protocol::protocol::TokenUsageInfo;
     use codex_protocol::protocol::TurnContextItem;
     use codex_protocol::user_input::TextElement;
     use codex_protocol::user_input::UserInput;
@@ -7204,6 +7410,121 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn front_queued_follow_up_runs_before_back_queued_follow_up() {
+        let (mut app, _app_event_rx, mut op_rx) = make_test_app_with_channels().await;
+        let thread_id = ThreadId::new();
+        let session = test_thread_session(thread_id, PathBuf::from("/tmp/project"));
+        app.chat_widget.handle_thread_session(session.clone());
+        app.chat_widget.handle_server_notification(
+            turn_started_notification(thread_id, "turn-1"),
+            /*replay_kind*/ None,
+        );
+        app.chat_widget.handle_server_notification(
+            agent_message_delta_notification(thread_id, "turn-1", "agent-1", "streaming"),
+            /*replay_kind*/ None,
+        );
+        while op_rx.try_recv().is_ok() {}
+
+        app.chat_widget
+            .apply_external_edit("queued follow-up".to_string());
+        app.chat_widget
+            .handle_key_event(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+        app.chat_widget.apply_external_edit("run next".to_string());
+        app.chat_widget.handle_key_event(KeyEvent::new(
+            KeyCode::Char('q'),
+            KeyModifiers::CONTROL.union(KeyModifiers::SHIFT),
+        ));
+
+        assert_eq!(
+            app.chat_widget.queued_user_message_texts(),
+            vec!["run next".to_string(), "queued follow-up".to_string()]
+        );
+
+        app.chat_widget.handle_server_notification(
+            turn_completed_notification(thread_id, "turn-1", TurnStatus::Completed),
+            /*replay_kind*/ None,
+        );
+
+        match next_user_turn_op(&mut op_rx) {
+            Op::UserTurn { items, .. } => assert_eq!(
+                items,
+                vec![UserInput::Text {
+                    text: "run next".to_string(),
+                    text_elements: Vec::new(),
+                }]
+            ),
+            other => panic!("expected front-queued follow-up submission, got {other:?}"),
+        }
+
+        assert_eq!(
+            app.chat_widget.queued_user_message_texts(),
+            vec!["queued follow-up".to_string()]
+        );
+    }
+
+    #[tokio::test]
+    async fn replayed_turn_complete_submits_restored_front_queued_follow_up_first() {
+        let (mut app, _app_event_rx, _op_rx) = make_test_app_with_channels().await;
+        let thread_id = ThreadId::new();
+        let session = test_thread_session(thread_id, PathBuf::from("/tmp/project"));
+        app.chat_widget.handle_thread_session(session.clone());
+        app.chat_widget.handle_server_notification(
+            turn_started_notification(thread_id, "turn-1"),
+            /*replay_kind*/ None,
+        );
+        app.chat_widget.handle_server_notification(
+            agent_message_delta_notification(thread_id, "turn-1", "agent-1", "streaming"),
+            /*replay_kind*/ None,
+        );
+        app.chat_widget
+            .apply_external_edit("queued follow-up".to_string());
+        app.chat_widget
+            .handle_key_event(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+        app.chat_widget.apply_external_edit("run next".to_string());
+        app.chat_widget.handle_key_event(KeyEvent::new(
+            KeyCode::Char('q'),
+            KeyModifiers::CONTROL.union(KeyModifiers::SHIFT),
+        ));
+        let input_state = app
+            .chat_widget
+            .capture_thread_input_state()
+            .expect("expected queued follow-up state");
+
+        let (chat_widget, _app_event_tx, _rx, mut new_op_rx) =
+            make_chatwidget_manual_with_sender().await;
+        app.chat_widget = chat_widget;
+        app.chat_widget.handle_thread_session(session.clone());
+        while new_op_rx.try_recv().is_ok() {}
+        app.replay_thread_snapshot(
+            ThreadEventSnapshot {
+                session: None,
+                turns: Vec::new(),
+                events: vec![ThreadBufferedEvent::Notification(
+                    turn_completed_notification(thread_id, "turn-1", TurnStatus::Completed),
+                )],
+                input_state: Some(input_state),
+            },
+            /*resume_restored_queue*/ true,
+        );
+
+        match next_user_turn_op(&mut new_op_rx) {
+            Op::UserTurn { items, .. } => assert_eq!(
+                items,
+                vec![UserInput::Text {
+                    text: "run next".to_string(),
+                    text_elements: Vec::new(),
+                }]
+            ),
+            other => panic!("expected front-queued follow-up submission, got {other:?}"),
+        }
+
+        assert_eq!(
+            app.chat_widget.queued_user_message_texts(),
+            vec!["queued follow-up".to_string()]
+        );
+    }
+
+    #[tokio::test]
     async fn replay_only_thread_keeps_restored_queue_visible() {
         let (mut app, _app_event_rx, _op_rx) = make_test_app_with_channels().await;
         let thread_id = ThreadId::new();
@@ -7720,6 +8041,132 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn sync_session_tree_token_usage_updates_combined_status_line_items() {
+        let mut app = make_test_app().await;
+        let main_thread_id = ThreadId::new();
+        let subagent_thread_id = ThreadId::new();
+        let cwd = PathBuf::from("/tmp/project");
+        let main_session = test_thread_session(main_thread_id, cwd.clone());
+        let subagent_session = test_thread_session(subagent_thread_id, cwd);
+
+        app.primary_thread_id = Some(main_thread_id);
+        app.chat_widget.handle_thread_session(main_session.clone());
+        app.chat_widget.set_token_info(Some(TokenUsageInfo {
+            total_token_usage: TokenUsage {
+                input_tokens: 900,
+                cached_input_tokens: 100,
+                output_tokens: 300,
+                total_tokens: 1_300,
+                ..TokenUsage::default()
+            },
+            last_token_usage: TokenUsage::default(),
+            model_context_window: Some(950_000),
+        }));
+        app.chat_widget.setup_status_line(vec![
+            crate::bottom_pane::StatusLineItem::CombinedUsedTokens,
+            crate::bottom_pane::StatusLineItem::CombinedInputTokens,
+            crate::bottom_pane::StatusLineItem::CombinedOutputTokens,
+        ]);
+
+        let subagent_channel =
+            ThreadEventChannel::new_with_session(/*capacity*/ 8, subagent_session, Vec::new());
+        {
+            let mut store = subagent_channel.store.lock().await;
+            store.push_notification(ServerNotification::ThreadTokenUsageUpdated(
+                ThreadTokenUsageUpdatedNotification {
+                    thread_id: subagent_thread_id.to_string(),
+                    turn_id: "turn-2".to_string(),
+                    token_usage: ThreadTokenUsage {
+                        total: TokenUsageBreakdown {
+                            total_tokens: 2_600,
+                            input_tokens: 1_600,
+                            cached_input_tokens: 400,
+                            output_tokens: 600,
+                            reasoning_output_tokens: 0,
+                        },
+                        last: TokenUsageBreakdown {
+                            total_tokens: 0,
+                            input_tokens: 0,
+                            cached_input_tokens: 0,
+                            output_tokens: 0,
+                            reasoning_output_tokens: 0,
+                        },
+                        model_context_window: None,
+                    },
+                },
+            ));
+        }
+        app.thread_event_channels.insert(
+            main_thread_id,
+            ThreadEventChannel::new_with_session(/*capacity*/ 8, main_session, Vec::new()),
+        );
+        app.thread_event_channels
+            .insert(subagent_thread_id, subagent_channel);
+
+        app.sync_session_tree_token_usage_into_chat_widget().await;
+
+        assert_eq!(
+            app.chat_widget.status_line_text(),
+            Some("3.9K session used · 2.5K session in · 900 session out".into())
+        );
+    }
+
+    #[tokio::test]
+    async fn sync_session_tree_token_usage_prefers_selected_subagent_usage_for_status_line() {
+        let mut app = make_test_app().await;
+        let main_thread_id = ThreadId::new();
+        let subagent_thread_id = ThreadId::new();
+        let cwd = PathBuf::from("/tmp/project");
+        let main_session = test_thread_session(main_thread_id, cwd.clone());
+        let subagent_session = test_thread_session(subagent_thread_id, cwd);
+
+        app.primary_thread_id = Some(main_thread_id);
+        app.active_thread_id = Some(subagent_thread_id);
+        app.chat_widget
+            .handle_thread_session(subagent_session.clone());
+        app.handle_thread_event_now(ThreadBufferedEvent::Notification(token_usage_notification(
+            subagent_thread_id,
+            "turn-subagent",
+            /*model_context_window*/ None,
+        )));
+        app.chat_widget
+            .setup_status_line(vec![crate::bottom_pane::StatusLineItem::CombinedUsedTokens]);
+
+        let main_channel =
+            ThreadEventChannel::new_with_session(/*capacity*/ 8, main_session, Vec::new());
+        {
+            let mut store = main_channel.store.lock().await;
+            store.push_notification(token_usage_notification(
+                main_thread_id,
+                "turn-main",
+                /*model_context_window*/ None,
+            ));
+        }
+        app.thread_event_channels
+            .insert(main_thread_id, main_channel);
+
+        let subagent_channel =
+            ThreadEventChannel::new_with_session(/*capacity*/ 8, subagent_session, Vec::new());
+        {
+            let mut store = subagent_channel.store.lock().await;
+            store.push_notification(token_usage_notification(
+                subagent_thread_id,
+                "turn-subagent",
+                /*model_context_window*/ None,
+            ));
+        }
+        app.thread_event_channels
+            .insert(subagent_thread_id, subagent_channel);
+
+        app.sync_session_tree_token_usage_into_chat_widget().await;
+
+        assert_eq!(
+            app.chat_widget.status_line_text(),
+            Some("10 session used".into())
+        );
+    }
+
+    #[tokio::test]
     async fn open_agent_picker_keeps_missing_threads_for_replay() -> Result<()> {
         let mut app = make_test_app().await;
         let mut app_server =
@@ -7738,7 +8185,10 @@ mod tests {
             Some(&AgentPickerThreadEntry {
                 agent_nickname: None,
                 agent_role: None,
+                agent_path: None,
                 is_closed: true,
+                created_at: None,
+                updated_at: None,
             })
         );
         assert_eq!(app.agent_navigation.ordered_thread_ids(), vec![thread_id]);
@@ -7760,6 +8210,8 @@ mod tests {
             Some("Robie".to_string()),
             Some("explorer".to_string()),
             /*is_closed*/ true,
+            /*created_at*/ None,
+            /*updated_at*/ None,
         );
 
         app.open_agent_picker(&mut app_server).await;
@@ -7770,7 +8222,10 @@ mod tests {
             Some(&AgentPickerThreadEntry {
                 agent_nickname: Some("Robie".to_string()),
                 agent_role: Some("explorer".to_string()),
+                agent_path: None,
                 is_closed: true,
+                created_at: None,
+                updated_at: None,
             })
         );
         Ok(())
@@ -7789,6 +8244,8 @@ mod tests {
             Some("Ghost".to_string()),
             Some("worker".to_string()),
             /*is_closed*/ false,
+            /*created_at*/ None,
+            /*updated_at*/ None,
         );
 
         app.open_agent_picker(&mut app_server).await;
@@ -7813,6 +8270,8 @@ mod tests {
             Some("Robie".to_string()),
             Some("explorer".to_string()),
             /*is_closed*/ false,
+            /*created_at*/ None,
+            /*updated_at*/ None,
         );
 
         app.open_agent_picker(&mut app_server).await;
@@ -7822,7 +8281,10 @@ mod tests {
             Some(&AgentPickerThreadEntry {
                 agent_nickname: Some("Robie".to_string()),
                 agent_role: Some("explorer".to_string()),
+                agent_path: None,
                 is_closed: true,
+                created_at: None,
+                updated_at: None,
             })
         );
         Ok(())
@@ -7892,6 +8354,9 @@ mod tests {
             .start_thread(app.chat_widget.config_ref())
             .await?;
         let thread_id = started.session.thread_id;
+        let expected_thread = app_server
+            .thread_read(thread_id, /*include_turns*/ false)
+            .await?;
         app.thread_event_channels
             .insert(thread_id, ThreadEventChannel::new(/*capacity*/ 1));
 
@@ -7902,7 +8367,10 @@ mod tests {
             Some(&AgentPickerThreadEntry {
                 agent_nickname: None,
                 agent_role: None,
+                agent_path: None,
                 is_closed: false,
+                created_at: Some(expected_thread.created_at),
+                updated_at: Some(expected_thread.updated_at),
             })
         );
         Ok(())
@@ -7925,6 +8393,8 @@ mod tests {
             Some("Scout".to_string()),
             Some("worker".to_string()),
             /*is_closed*/ false,
+            /*created_at*/ None,
+            /*updated_at*/ None,
         );
 
         let err = app
@@ -7957,6 +8427,8 @@ mod tests {
             Some("Scout".to_string()),
             Some("worker".to_string()),
             /*is_closed*/ false,
+            /*created_at*/ None,
+            /*updated_at*/ None,
         );
 
         let err = app
@@ -7981,6 +8453,8 @@ mod tests {
             Some("Ghost".to_string()),
             Some("worker".to_string()),
             /*is_closed*/ true,
+            /*created_at*/ None,
+            /*updated_at*/ None,
         );
 
         assert!(!app.should_attach_live_thread_for_selection(thread_id));
@@ -7990,6 +8464,8 @@ mod tests {
             Some("Ghost".to_string()),
             Some("worker".to_string()),
             /*is_closed*/ false,
+            /*created_at*/ None,
+            /*updated_at*/ None,
         );
         assert!(app.should_attach_live_thread_for_selection(thread_id));
 
@@ -8012,6 +8488,8 @@ mod tests {
             Some("Ghost".to_string()),
             Some("worker".to_string()),
             /*is_closed*/ false,
+            /*created_at*/ None,
+            /*updated_at*/ None,
         );
 
         let is_available = app
@@ -8722,6 +9200,8 @@ guardian_approval = true
             Some("Robie".to_string()),
             Some("explorer".to_string()),
             /*is_closed*/ false,
+            /*created_at*/ None,
+            /*updated_at*/ None,
         );
 
         app.refresh_pending_thread_approvals().await;
@@ -8765,6 +9245,8 @@ guardian_approval = true
             Some("Robie".to_string()),
             Some("explorer".to_string()),
             /*is_closed*/ false,
+            /*created_at*/ None,
+            /*updated_at*/ None,
         );
 
         app.enqueue_thread_request(
@@ -8925,6 +9407,8 @@ guardian_approval = true
             Some("Robie".to_string()),
             Some("explorer".to_string()),
             /*is_closed*/ false,
+            /*created_at*/ None,
+            /*updated_at*/ None,
         );
 
         app.enqueue_thread_request(
@@ -9058,7 +9542,10 @@ guardian_approval = true
             Some(&AgentPickerThreadEntry {
                 agent_nickname: Some("Robie".to_string()),
                 agent_role: Some("explorer".to_string()),
+                agent_path: None,
                 is_closed: false,
+                created_at: Some(1),
+                updated_at: Some(2),
             })
         );
 
@@ -10983,6 +11470,8 @@ guardian_approval = true
             Some("Robie".to_string()),
             Some("explorer".to_string()),
             /*is_closed*/ false,
+            /*created_at*/ None,
+            /*updated_at*/ None,
         );
 
         let replacement = ChatWidget::new_with_app_event(ChatWidgetInit {
@@ -11483,6 +11972,123 @@ guardian_approval = true
         assert_eq!(
             summary.resume_command,
             Some("codex resume my-session".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn agent_picker_thread_token_usage_reads_inactive_thread_store() {
+        let mut app = make_test_app().await;
+        let thread_id = ThreadId::new();
+        let session = test_thread_session(thread_id, PathBuf::from("/tmp/agent"));
+        let channel =
+            ThreadEventChannel::new_with_session(/*capacity*/ 8, session, Vec::new());
+        {
+            let mut store = channel.store.lock().await;
+            store.push_notification(token_usage_notification(
+                thread_id,
+                "turn-store",
+                /*model_context_window*/ None,
+            ));
+        }
+        app.thread_event_channels.insert(thread_id, channel);
+
+        assert_eq!(
+            app.agent_picker_thread_usage(thread_id).await,
+            AgentPickerThreadUsage {
+                token_usage: TokenUsage {
+                    input_tokens: 4,
+                    cached_input_tokens: 1,
+                    output_tokens: 5,
+                    reasoning_output_tokens: 0,
+                    total_tokens: 10,
+                },
+                model_context_window: None,
+                model: Some("gpt-test".to_string()),
+                reasoning_effort: None,
+                task_name: None,
+                approval_policy: Some(AskForApproval::Never),
+                approvals_reviewer: Some(ApprovalsReviewer::User),
+                sandbox_policy: Some(SandboxPolicy::new_read_only_policy()),
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn agent_picker_thread_token_usage_prefers_live_active_thread_usage() {
+        let mut app = make_test_app().await;
+        let thread_id = ThreadId::new();
+        app.active_thread_id = Some(thread_id);
+        app.chat_widget
+            .handle_thread_session(test_thread_session(thread_id, PathBuf::from("/tmp/main")));
+        app.handle_thread_event_now(ThreadBufferedEvent::Notification(token_usage_notification(
+            thread_id,
+            "turn-live",
+            /*model_context_window*/ Some(950_000),
+        )));
+
+        let channel = ThreadEventChannel::new_with_session(
+            /*capacity*/ 8,
+            test_thread_session(thread_id, PathBuf::from("/tmp/main")),
+            Vec::new(),
+        );
+        app.thread_event_channels.insert(thread_id, channel);
+
+        assert_eq!(
+            app.agent_picker_thread_usage(thread_id).await,
+            AgentPickerThreadUsage {
+                token_usage: TokenUsage {
+                    input_tokens: 4,
+                    cached_input_tokens: 1,
+                    output_tokens: 5,
+                    reasoning_output_tokens: 0,
+                    total_tokens: 10,
+                },
+                model_context_window: Some(950_000),
+                model: Some("gpt-test".to_string()),
+                reasoning_effort: None,
+                task_name: None,
+                approval_policy: Some(AskForApproval::Never),
+                approvals_reviewer: Some(ApprovalsReviewer::User),
+                sandbox_policy: Some(SandboxPolicy::new_read_only_policy()),
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn agent_picker_thread_token_usage_does_not_fallback_when_active_live_usage_is_zero() {
+        let mut app = make_test_app().await;
+        let thread_id = ThreadId::new();
+        app.active_thread_id = Some(thread_id);
+        app.chat_widget
+            .handle_thread_session(test_thread_session(thread_id, PathBuf::from("/tmp/main")));
+
+        let channel = ThreadEventChannel::new_with_session(
+            /*capacity*/ 8,
+            test_thread_session(thread_id, PathBuf::from("/tmp/main")),
+            Vec::new(),
+        );
+        {
+            let mut store = channel.store.lock().await;
+            store.push_notification(token_usage_notification(
+                thread_id,
+                "turn-store",
+                /*model_context_window*/ None,
+            ));
+        }
+        app.thread_event_channels.insert(thread_id, channel);
+
+        assert_eq!(
+            app.agent_picker_thread_usage(thread_id).await,
+            AgentPickerThreadUsage {
+                token_usage: TokenUsage::default(),
+                model_context_window: None,
+                model: Some("gpt-test".to_string()),
+                reasoning_effort: None,
+                task_name: None,
+                approval_policy: Some(AskForApproval::Never),
+                approvals_reviewer: Some(ApprovalsReviewer::User),
+                sandbox_policy: Some(SandboxPolicy::new_read_only_policy()),
+            }
         );
     }
 

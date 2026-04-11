@@ -1067,6 +1067,68 @@ async fn status_line_model_with_reasoning_fast_footer_snapshot() {
 }
 
 #[tokio::test]
+async fn status_line_combined_token_items_use_session_totals() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.config.tui_status_line = Some(vec![
+        "used-tokens".to_string(),
+        "combined-used-tokens".to_string(),
+        "combined-input-tokens".to_string(),
+        "combined-output-tokens".to_string(),
+    ]);
+    chat.set_token_info(Some(TokenUsageInfo {
+        total_token_usage: TokenUsage {
+            input_tokens: 900,
+            cached_input_tokens: 100,
+            output_tokens: 300,
+            total_tokens: 1_300,
+            ..TokenUsage::default()
+        },
+        last_token_usage: TokenUsage::default(),
+        model_context_window: Some(1_000_000),
+    }));
+    chat.set_session_total_token_usage(TokenUsage {
+        input_tokens: 2_400,
+        cached_input_tokens: 600,
+        output_tokens: 900,
+        total_tokens: 3_900,
+        ..TokenUsage::default()
+    });
+
+    assert_eq!(
+        status_line_text(&chat),
+        Some("1.3K used · 3.9K session used · 2.4K session in · 900 session out".to_string())
+    );
+}
+
+#[tokio::test]
+async fn status_line_combined_used_tokens_footer_snapshot() {
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.show_welcome_banner = false;
+    chat.config.tui_status_line = Some(vec!["combined-used-tokens".to_string()]);
+    chat.set_session_total_token_usage(TokenUsage {
+        input_tokens: 2_400,
+        cached_input_tokens: 600,
+        output_tokens: 900,
+        total_tokens: 3_900,
+        ..TokenUsage::default()
+    });
+
+    let width = 80;
+    let height = chat.desired_height(width);
+    let mut terminal = Terminal::new(TestBackend::new(width, height)).expect("create terminal");
+    terminal
+        .draw(|f| chat.render(f.area(), f.buffer_mut()))
+        .expect("draw combined-used-tokens footer");
+    assert_chatwidget_snapshot!(
+        "status_line_combined_used_tokens_footer",
+        normalized_backend_snapshot(terminal.backend())
+    );
+}
+
+#[tokio::test]
 async fn runtime_metrics_websocket_timing_logs_and_final_separator_sums_totals() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
     chat.set_feature_enabled(Feature::RuntimeMetrics, /*enabled*/ true);

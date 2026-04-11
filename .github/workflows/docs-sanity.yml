@@ -1,0 +1,48 @@
+name: docs-sanity
+
+on:
+  pull_request:
+    paths:
+      - "README.md"
+      - "docs/**"
+      - ".github/workflows/docs-sanity.yml"
+      - ".github/scripts/check_markdown_links.py"
+  push:
+    paths:
+      - "README.md"
+      - "docs/**"
+      - ".github/workflows/docs-sanity.yml"
+      - ".github/scripts/check_markdown_links.py"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  markdown-links:
+    name: Markdown link sanity
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.x"
+
+      - name: Check relative markdown links
+        shell: bash
+        run: python3 .github/scripts/check_markdown_links.py
+
+      - name: Emit summary
+        shell: bash
+        run: |
+          {
+            echo "## docs-sanity"
+            echo
+            echo "- checked: \`README.md\` and \`docs/**/*.md\`"
+            echo "- validation: relative markdown links"
+            echo "- scope: documentation-only workflow intended to stay cheap"
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -339,6 +339,9 @@ pub struct Config {
     /// - `never`: Never use alternate screen (inline mode, preserves scrollback).
     pub tui_alternate_screen: AltScreenMode,
 
+    /// Whether interrupting a running turn requires `Esc Esc` confirmation.
+    pub tui_double_esc_interrupt: bool,
+
     /// Ordered list of status line item identifiers for the TUI.
     ///
     /// When unset, the TUI defaults to: `model-with-reasoning`, `context-remaining`, and
@@ -2733,6 +2736,11 @@ impl Config {
                 .as_ref()
                 .map(|t| t.alternate_screen)
                 .unwrap_or_default(),
+            tui_double_esc_interrupt: cfg
+                .tui
+                .as_ref()
+                .map(|t| t.double_esc_interrupt)
+                .unwrap_or(true),
             tui_status_line: cfg.tui.as_ref().and_then(|t| t.status_line.clone()),
             tui_weekly_limit_pacing_style: cfg
                 .tui

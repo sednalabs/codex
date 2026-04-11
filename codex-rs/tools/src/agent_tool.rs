@@ -433,6 +433,15 @@ fn spawn_agent_output_schema_v1() -> Value {
                 "description": "Last known status of the spawned agent.",
                 "allOf": [agent_status_output_schema()]
             },
+            "requested_model": {
+                "type": ["string", "null"],
+                "description": "Model slug explicitly requested for the spawned agent when provided."
+            },
+            "requested_reasoning_effort": {
+                "type": ["string", "null"],
+                "enum": [null, "none", "minimal", "low", "medium", "high", "xhigh"],
+                "description": "Reasoning effort explicitly requested for the spawned agent when provided."
+            },
             "effective_model": {
                 "type": ["string", "null"],
                 "description": "Effective model resolved for the spawned agent when available."
@@ -456,6 +465,8 @@ fn spawn_agent_output_schema_v1() -> Value {
             "nickname",
             "role",
             "status",
+            "requested_model",
+            "requested_reasoning_effort",
             "effective_model",
             "effective_reasoning_effort",
             "effective_model_provider_id",
@@ -480,9 +491,35 @@ fn spawn_agent_output_schema_v2() -> Value {
             "nickname": {
                 "type": ["string", "null"],
                 "description": "User-facing nickname for the spawned agent when available."
+            },
+            "requested_model": {
+                "type": ["string", "null"],
+                "description": "Model slug explicitly requested for the spawned agent when provided."
+            },
+            "requested_reasoning_effort": {
+                "type": ["string", "null"],
+                "enum": [null, "none", "minimal", "low", "medium", "high", "xhigh"],
+                "description": "Reasoning effort explicitly requested for the spawned agent when provided."
+            },
+            "effective_model": {
+                "type": ["string", "null"],
+                "description": "Effective model reported back for the spawned agent when available."
+            },
+            "effective_reasoning_effort": {
+                "type": ["string", "null"],
+                "enum": [null, "none", "minimal", "low", "medium", "high", "xhigh"],
+                "description": "Effective reasoning effort reported back for the spawned agent when available."
             }
         },
-        "required": ["agent_id", "task_name", "nickname"],
+        "required": [
+            "agent_id",
+            "task_name",
+            "nickname",
+            "requested_model",
+            "requested_reasoning_effort",
+            "effective_model",
+            "effective_reasoning_effort"
+        ],
         "additionalProperties": false
     })
 }
@@ -864,6 +901,15 @@ fn spawn_agent_common_properties(agent_type_description: &str) -> BTreeMap<Strin
                 ),
             },
         ),
+        (
+            "spawn_approval".to_string(),
+            JsonSchema::String {
+                description: Some(
+                    "Optional user-approval mode before spawning: `auto` (default) or `ask_user`."
+                        .to_string(),
+                ),
+            },
+        ),
     ])
 }
 
@@ -921,8 +967,10 @@ fn spawn_agent_tool_description(
 }
 
 fn spawn_agent_models_description(models: &[ModelPreset]) -> String {
-    let visible_models: Vec<&ModelPreset> =
-        models.iter().filter(|model| model.show_in_picker).collect();
+    let visible_models: Vec<&ModelPreset> = models
+        .iter()
+        .filter(|model| model.show_in_interactive_picker())
+        .collect();
     if visible_models.is_empty() {
         return "No picker-visible models are currently loaded.".to_string();
     }

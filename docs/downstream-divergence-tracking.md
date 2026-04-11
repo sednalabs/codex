@@ -3,7 +3,10 @@
 This note records the next-step maintenance model for downstream divergence
 tracking.
 
-It is a design note, not an implemented generator contract yet.
+Phase 1 is now implemented as the CI-backed `scripts/downstream-divergence-audit.py`
+runner plus the checked-in `docs/divergences/index.yaml` registry. The later
+generation phases below remain the forward path for ledger and regression
+projection.
 
 ## Why This Exists
 
@@ -91,6 +94,7 @@ Keep the schema small:
 - `category`
 - `behavior`
 - `surface`
+- `surface_type`
 - `files`
 - `introduced_in`
 - `upstream_equivalent`
@@ -98,6 +102,10 @@ Keep the schema small:
 - `tests`
 - `owner`
 - `notes`
+
+Paths can point at directories (terminate with `/` to capture every child) or use glob-friendly tokens (`*`, `?`, `[]`). The audit matches these specs against the live diff so you can cover a directory such as `.github/workflows/` without listing each workflow individually.
+
+The optional `surface_type` string (for example `agent-facing`, `operator-facing`, or `both`) signals how a divergence presents itself. The downstream audit renders that value in the registry reconciliation table and the code-path surface column to show whether a change touches agent-facing or operator-facing surfaces.
 
 ## Suggested Taxonomy
 
@@ -137,6 +145,10 @@ in the repository.
 5. Keep historical upstream-equivalent items in the registry with
    `status: upstream-equivalent` instead of deleting them.
 
+## Workflow write permission secret
+
+The `sedna-sync-upstream` job fast-forwards `origin/upstream-main`, which contains workflow definitions and scripts. GitHub's `GITHUB_TOKEN` lacks the `workflow: write` scope needed to modify workflow files, so the job depends on the `SEDNA_SYNC_UPSTREAM_PUSH_TOKEN` secret. This should hold a PAT or machine-account token with `repo` write access plus `workflow: write`, stored only in this repository's secrets and rotated per policy. The secret is only used by the sync job when pushing the mirrored ref.
+
 ## Phased Adoption
 
 Phase 1:
@@ -144,6 +156,8 @@ Phase 1:
 - keep the current manual docs current
 - use `docs/downstream-tool-surface-matrix.md` for high-signal field-level
   comparison
+- use `scripts/downstream-divergence-audit.py` and `docs/divergences/index.yaml`
+  for the authoritative audit path
 
 Phase 2:
 

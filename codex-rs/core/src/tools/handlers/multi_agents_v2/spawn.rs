@@ -33,6 +33,8 @@ impl ToolHandler for Handler {
         } = invocation;
         let arguments = function_arguments(payload)?;
         let args: SpawnAgentArgs = parse_arguments(&arguments)?;
+        let requested_model = args.model.clone();
+        let requested_reasoning_effort = args.reasoning_effort;
         let fork_mode = args.fork_mode()?;
         let role_name = args
             .agent_type
@@ -51,6 +53,16 @@ impl ToolHandler for Handler {
                 "Agent depth limit reached. Solve the task yourself.".to_string(),
             ));
         }
+        require_spawn_agent_approval_if_requested(
+            &session,
+            turn.as_ref(),
+            args.spawn_approval,
+            &call_id,
+            role_name,
+            args.model.as_deref(),
+            &prompt,
+        )
+        .await?;
         session
             .send_event(
                 &turn,
@@ -75,8 +87,8 @@ impl ToolHandler for Handler {
             &session,
             turn.as_ref(),
             &mut config,
-            args.model.as_deref(),
-            args.reasoning_effort,
+            requested_model.as_deref(),
+            requested_reasoning_effort,
         )
         .await?;
         if let Some(model) = config.model.clone() {
@@ -188,12 +200,15 @@ impl ToolHandler for Handler {
             };
         let effective_model = agent_snapshot
             .as_ref()
-            .map(|snapshot| snapshot.model.clone())
-            .unwrap_or_else(|| args.model.clone().unwrap_or_default());
+            .map(|snapshot| snapshot.model.clone());
         let effective_reasoning_effort = agent_snapshot
             .as_ref()
             .and_then(|snapshot| snapshot.reasoning_effort)
-            .unwrap_or(args.reasoning_effort.unwrap_or_default());
+            .or(requested_reasoning_effort);
+        let requested_model_honored_flag =
+            requested_model_honored(requested_model.as_deref(), effective_model.as_deref());
+        let effective_model_for_event = effective_model.clone().unwrap_or_default();
+        let effective_reasoning_effort_for_event = effective_reasoning_effort.unwrap_or_default();
         let nickname = new_agent_nickname.clone();
         session
             .send_event(
@@ -205,8 +220,8 @@ impl ToolHandler for Handler {
                     new_agent_nickname,
                     new_agent_role,
                     prompt,
-                    model: effective_model,
-                    reasoning_effort: effective_reasoning_effort,
+                    model: effective_model_for_event,
+                    reasoning_effort: effective_reasoning_effort_for_event,
                     status,
                 }
                 .into(),
@@ -229,6 +244,11 @@ impl ToolHandler for Handler {
             agent_id: None,
             task_name,
             nickname,
+            requested_model,
+            requested_reasoning_effort,
+            effective_model,
+            requested_model_honored: requested_model_honored_flag,
+            effective_reasoning_effort,
         })
     }
 }
@@ -241,6 +261,8 @@ struct SpawnAgentArgs {
     agent_type: Option<String>,
     model: Option<String>,
     reasoning_effort: Option<ReasoningEffort>,
+    #[serde(default)]
+    spawn_approval: SpawnAgentApproval,
     fork_turns: Option<String>,
     fork_context: Option<bool>,
 }
@@ -289,6 +311,11 @@ pub(crate) struct SpawnAgentResult {
     agent_id: Option<String>,
     task_name: String,
     nickname: Option<String>,
+    requested_model: Option<String>,
+    requested_reasoning_effort: Option<ReasoningEffort>,
+    effective_model: Option<String>,
+    requested_model_honored: Option<bool>,
+    effective_reasoning_effort: Option<ReasoningEffort>,
 }
 
 impl ToolOutput for SpawnAgentResult {

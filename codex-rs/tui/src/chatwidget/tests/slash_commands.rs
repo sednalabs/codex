@@ -231,14 +231,17 @@ async fn queued_sandbox_read_root_command_waits_before_next_message() {
     // Simulate an active turn and queue follow-ups in order: a sandbox grant
     // command with args, then a plain message.
     chat.bottom_pane.set_task_running(/*running*/ true);
-    chat.queue_slash_command(QueuedSlashCommand::CommandWithArgs {
-        cmd: SlashCommand::SandboxReadRoot,
-        args: "/tmp".to_string(),
-        text_elements: Vec::new(),
-        local_images: Vec::new(),
-        remote_image_urls: Vec::new(),
-        mention_bindings: Vec::new(),
-    });
+    chat.queue_slash_command(
+        QueuedSlashCommand::CommandWithArgs {
+            cmd: SlashCommand::SandboxReadRoot,
+            args: "/tmp".to_string(),
+            text_elements: Vec::new(),
+            local_images: Vec::new(),
+            remote_image_urls: Vec::new(),
+            mention_bindings: Vec::new(),
+        },
+        /*queue_front*/ false,
+    );
     chat.bottom_pane.set_composer_text(
         "queued after sandbox grant".to_string(),
         Vec::new(),
@@ -276,7 +279,10 @@ async fn queued_elevate_sandbox_command_waits_before_next_message() {
     // Simulate an active turn and queue follow-ups in order: sandbox setup,
     // then a plain message.
     chat.bottom_pane.set_task_running(/*running*/ true);
-    chat.queue_slash_command(QueuedSlashCommand::Command(SlashCommand::ElevateSandbox));
+    chat.queue_slash_command(
+        QueuedSlashCommand::Command(SlashCommand::ElevateSandbox),
+        /*queue_front*/ false,
+    );
     chat.bottom_pane.set_composer_text(
         "queued after sandbox setup".to_string(),
         Vec::new(),

@@ -1,5 +1,6 @@
 use super::*;
 use codex_protocol::openai_models::ModelPreset;
+use codex_protocol::openai_models::ModelUpgrade;
 use codex_protocol::openai_models::ReasoningEffort;
 use codex_protocol::openai_models::ReasoningEffortPreset;
 use pretty_assertions::assert_eq;
@@ -20,6 +21,34 @@ fn model_preset(id: &str, show_in_picker: bool) -> ModelPreset {
         is_default: false,
         upgrade: None,
         show_in_picker,
+        availability_nux: None,
+        supported_in_api: true,
+        input_modalities: Vec::new(),
+    }
+}
+
+fn upgradeable_hidden_model_preset() -> ModelPreset {
+    ModelPreset {
+        id: "gpt-5.1-codex-mini".to_string(),
+        model: "gpt-5.1-codex-mini".to_string(),
+        display_name: "gpt-5.1-codex-mini".to_string(),
+        description: "Optimized for Codex. Cheaper, faster, but less capable.".to_string(),
+        default_reasoning_effort: ReasoningEffort::Medium,
+        supported_reasoning_efforts: vec![ReasoningEffortPreset {
+            effort: ReasoningEffort::Medium,
+            description: "Balanced".to_string(),
+        }],
+        supports_personality: false,
+        is_default: false,
+        upgrade: Some(ModelUpgrade {
+            id: "gpt-5.4".to_string(),
+            reasoning_effort_mapping: None,
+            migration_config_key: "gpt-5.1-codex-mini".to_string(),
+            model_link: None,
+            upgrade_copy: None,
+            migration_markdown: None,
+        }),
+        show_in_picker: false,
         availability_nux: None,
         supported_in_api: true,
         input_modalities: Vec::new(),
@@ -56,6 +85,7 @@ fn spawn_agent_tool_v2_requires_task_name_and_lists_visible_models() {
     assert!(description.contains("visible display (`visible-model`)"));
     assert!(!description.contains("hidden display (`hidden-model`)"));
     assert!(properties.contains_key("task_name"));
+    assert!(properties.contains_key("spawn_approval"));
     assert_eq!(
         properties.get("agent_type"),
         Some(&JsonSchema::String {
@@ -65,8 +95,35 @@ fn spawn_agent_tool_v2_requires_task_name_and_lists_visible_models() {
     assert_eq!(required, Some(vec!["task_name".to_string()]));
     assert_eq!(
         output_schema.expect("spawn_agent output schema")["required"],
-        json!(["agent_id", "task_name", "nickname"])
+        json!([
+            "agent_id",
+            "task_name",
+            "nickname",
+            "requested_model",
+            "requested_reasoning_effort",
+            "effective_model",
+            "effective_reasoning_effort"
+        ])
     );
+}
+
+#[test]
+fn spawn_agent_tool_v2_lists_upgradeable_legacy_models() {
+    let tool = create_spawn_agent_tool_v2(SpawnAgentToolOptions {
+        available_models: &[
+            model_preset("visible", /*show_in_picker*/ true),
+            upgradeable_hidden_model_preset(),
+        ],
+        agent_type_description: "role help".to_string(),
+    });
+
+    let ToolSpec::Function(ResponsesApiTool { description, .. }) = tool else {
+        panic!("spawn_agent should be a function tool");
+    };
+    assert!(description.contains("visible display (`visible-model`)"));
+    assert!(description.contains(
+        "gpt-5.1-codex-mini (`gpt-5.1-codex-mini`): Optimized for Codex. Cheaper, faster, but less capable."
+    ));
 }
 
 #[test]
@@ -86,6 +143,8 @@ fn spawn_agent_tool_v1_exposes_runtime_metadata_fields() {
             "nickname",
             "role",
             "status",
+            "requested_model",
+            "requested_reasoning_effort",
             "effective_model",
             "effective_reasoning_effort",
             "effective_model_provider_id",

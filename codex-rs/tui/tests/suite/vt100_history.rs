@@ -278,38 +278,43 @@ fn committed_rows_survive_redraw_and_viewport_pressure() {
     scenario.redraw_viewport("live redraw #3".into());
     scenario.run_insert(vec!["C0-tail-after-pressure".into()]);
 
-    let rows = scenario.term.backend().vt100().screen().contents();
+    let rows = scenario
+        .term
+        .backend()
+        .vt100()
+        .screen()
+        .rows(0, 10)
+        .collect::<Vec<String>>();
 
-    for marker in [
-        "A0-visible-before-redraw",
-        "A1-visible-before-redraw",
-        "B0-pressure-wrap-wrap-wrap-wrap",
-        "B1-pressure-wrap-wrap-wrap-wrap",
-        "C0-tail-after-pressure",
-    ] {
+    for marker in ["A0-visible", "A1-visible", "C0-tail-af", "live redra"] {
         assert!(
-            rows.contains(marker),
-            "expected marker {marker:?} to remain visible after redraw pressure:\n{rows}"
+            rows.iter().any(|row| row.contains(marker)),
+            "expected marker {marker:?} to remain visible after redraw pressure, rows: {rows:?}"
         );
     }
 
     let a0 = rows
-        .find("A0-visible-before-redraw")
+        .iter()
+        .position(|row| row.contains("A0-visible"))
         .expect("missing A0 marker");
     let a1 = rows
-        .find("A1-visible-before-redraw")
+        .iter()
+        .position(|row| row.contains("A1-visible"))
         .expect("missing A1 marker");
     let b0 = rows
-        .find("B0-pressure-wrap-wrap-wrap-wrap")
+        .iter()
+        .position(|row| row.contains("B0-pressur"))
         .expect("missing B0 marker");
     let b1 = rows
-        .find("B1-pressure-wrap-wrap-wrap-wrap")
+        .iter()
+        .position(|row| row.contains("B1-pressur"))
         .expect("missing B1 marker");
     let c0 = rows
-        .find("C0-tail-after-pressure")
+        .iter()
+        .position(|row| row.contains("C0-tail-af"))
         .expect("missing C0 marker");
     assert!(
         a0 < a1 && a1 < b0 && b0 < b1 && b1 < c0,
-        "expected markers to keep transcript order without overwrite:\n{rows}"
+        "expected markers to keep transcript order without overwrite, rows: {rows:?}"
     );
 }

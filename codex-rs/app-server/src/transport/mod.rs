@@ -17,6 +17,7 @@ use std::str::FromStr;
 use std::sync::Arc;
 use std::sync::RwLock;
 use std::sync::atomic::AtomicBool;
+use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
@@ -28,9 +29,11 @@ use tracing::warn;
 /// plenty for an interactive CLI.
 pub(crate) const CHANNEL_CAPACITY: usize = 128;
 
+mod remote_control;
 mod stdio;
 mod websocket;
 
+pub(crate) use remote_control::start_remote_control;
 pub(crate) use stdio::start_stdio_connection;
 pub(crate) use websocket::start_websocket_acceptor;
 
@@ -38,6 +41,7 @@ pub(crate) use websocket::start_websocket_acceptor;
 pub enum AppServerTransport {
     Stdio,
     WebSocket { bind_address: SocketAddr },
+    Off,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -51,7 +55,7 @@ impl std::fmt::Display for AppServerTransportParseError {
         match self {
             AppServerTransportParseError::UnsupportedListenUrl(listen_url) => write!(
                 f,
-                "unsupported --listen URL `{listen_url}`; expected `stdio://` or `ws://IP:PORT`"
+                "unsupported --listen URL `{listen_url}`; expected `stdio://`, `ws://IP:PORT`, or `off`"
             ),
             AppServerTransportParseError::InvalidWebSocketListenUrl(listen_url) => write!(
                 f,
@@ -69,6 +73,10 @@ impl AppServerTransport {
     pub fn from_listen_url(listen_url: &str) -> Result<Self, AppServerTransportParseError> {
         if listen_url == Self::DEFAULT_LISTEN_URL {
             return Ok(Self::Stdio);
+        }
+
+        if listen_url == "off" {
+            return Ok(Self::Off);
         }
 
         if let Some(socket_addr) = listen_url.strip_prefix("ws://") {
@@ -106,6 +114,12 @@ pub(crate) enum TransportEvent {
         connection_id: ConnectionId,
         message: JSONRPCMessage,
     },
+}
+
+static CONNECTION_ID_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+fn next_connection_id() -> ConnectionId {
+    ConnectionId(CONNECTION_ID_COUNTER.fetch_add(1, Ordering::Relaxed))
 }
 
 pub(crate) struct ConnectionState {
@@ -409,6 +423,13 @@ mod tests {
                 bind_address: "127.0.0.1:1234".parse().expect("valid socket address"),
             }
         );
+    }
+
+    #[test]
+    fn app_server_transport_parses_off_listen_url() {
+        let transport =
+            AppServerTransport::from_listen_url("off").expect("off listen URL should parse");
+        assert_eq!(transport, AppServerTransport::Off);
     }
 
     #[test]

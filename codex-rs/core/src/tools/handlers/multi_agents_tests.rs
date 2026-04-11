@@ -33,6 +33,7 @@ use crate::turn_diff_tracker::TurnDiffTracker;
 use codex_features::Feature;
 use codex_protocol::AgentPath;
 use codex_protocol::ThreadId;
+use codex_protocol::config_types::ModeKind;
 use codex_protocol::models::BaseInstructions;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::FunctionCallOutputBody;
@@ -239,6 +240,92 @@ async fn spawn_agent_rejects_when_message_and_items_are_both_set() {
 }
 
 #[tokio::test]
+async fn spawn_agent_requires_user_approval_when_requested() {
+    let (session, mut turn) = make_session_and_context().await;
+    turn.collaboration_mode.mode = ModeKind::Plan;
+    let invocation = invocation(
+        Arc::new(session),
+        Arc::new(turn),
+        "spawn_agent",
+        function_payload(json!({
+            "message": "inspect this repo",
+            "spawn_approval": "ask_user"
+        })),
+    );
+    let Err(err) = SpawnAgentHandler.handle(invocation).await else {
+        panic!("spawn approval should be required");
+    };
+    assert_eq!(
+        err,
+        FunctionCallError::RespondToModel(
+            "spawn_agent cancelled because no user approval response was received".to_string()
+        )
+    );
+}
+
+#[tokio::test]
+async fn multi_agent_v2_spawn_requires_user_approval_when_requested() {
+    let (session, mut turn) = make_session_and_context().await;
+    turn.collaboration_mode.mode = ModeKind::Plan;
+    let invocation = invocation(
+        Arc::new(session),
+        Arc::new(turn),
+        "spawn_agent",
+        function_payload(json!({
+            "message": "inspect this repo",
+            "task_name": "worker",
+            "spawn_approval": "ask_user"
+        })),
+    );
+    let Err(err) = SpawnAgentHandlerV2.handle(invocation).await else {
+        panic!("spawn approval should be required");
+    };
+    assert_eq!(
+        err,
+        FunctionCallError::RespondToModel(
+            "spawn_agent cancelled because no user approval response was received".to_string()
+        )
+    );
+}
+
+#[tokio::test]
+async fn spawn_agent_approval_respects_request_user_input_mode_availability() {
+    let (session, mut turn) = make_session_and_context().await;
+    turn.collaboration_mode.mode = ModeKind::Default;
+    turn.tools_config.default_mode_request_user_input = false;
+    let invocation = invocation(
+        Arc::new(session),
+        Arc::new(turn),
+        "spawn_agent",
+        function_payload(json!({
+            "message": "inspect this repo",
+            "spawn_approval": "ask_user"
+        })),
+    );
+    let Err(err) = SpawnAgentHandler.handle(invocation).await else {
+        panic!("spawn approval should honor request_user_input mode availability");
+    };
+    assert_eq!(
+        err,
+        FunctionCallError::RespondToModel(
+            "request_user_input is unavailable in Default mode".to_string()
+        )
+    );
+}
+
+#[test]
+fn spawn_agent_approval_question_includes_preview_role_and_model_context() {
+    let question = build_spawn_agent_approval_question_text(
+        Some("explorer"),
+        Some("gpt-5.4-mini"),
+        "inspect this repo and summarize",
+    );
+    assert!(question.contains("Task preview: `inspect this repo and summarize`."));
+    assert!(question.contains("Requested role: `explorer`."));
+    assert!(question.contains("Requested model: `gpt-5.4-mini`."));
+}
+
+#[tokio::test]
 async fn spawn_agent_uses_explorer_role_and_preserves_approval_policy() {
     #[derive(Debug, Deserialize)]
     struct SpawnAgentResult {
@@ -368,9 +455,14 @@ async fn spawn_agent_preserves_model_override_through_role_layering() {
     let result: serde_json::Value =
         serde_json::from_str(&content).expect("spawn_agent result should be json");
     assert_eq!(
+        result["requested_model"].as_str(),
+        Some("gpt-5.1-codex-max")
+    );
+    assert_eq!(
         result["effective_model"].as_str(),
         Some("gpt-5.1-codex-max")
     );
+    assert_eq!(result["requested_model_honored"].as_bool(), Some(true));
 
     let agent_id = parse_agent_id(
         result["agent_id"]
@@ -384,6 +476,72 @@ async fn spawn_agent_preserves_model_override_through_role_layering() {
         .config_snapshot()
         .await;
     assert_eq!(snapshot.model.as_str(), "gpt-5.1-codex-max");
+}
+
+#[tokio::test]
+async fn spawn_agent_preserves_exact_model_slug_override_through_role_layering() {
+    let (mut session, mut turn) = make_session_and_context().await;
+    let manager = thread_manager();
+    session.services.agent_control = manager.agent_control();
+
+    tokio::fs::create_dir_all(&turn.config.codex_home)
+        .await
+        .expect("ensure codex_home exists");
+    let role_path = turn.config.codex_home.join("custom-orchestrator.toml");
+    tokio::fs::write(&role_path, r#"model = "gpt-5.4""#)
+        .await
+        .expect("write role config");
+
+    let mut config = (*turn.config).clone();
+    config.agent_roles.insert(
+        "custom-orchestrator".to_string(),
+        AgentRoleConfig {
+            description: None,
+            config_file: Some(role_path),
+            nickname_candidates: None,
+        },
+    );
+    turn.config = Arc::new(config);
+
+    let output = SpawnAgentHandler
+        .handle(invocation(
+            Arc::new(session),
+            Arc::new(turn),
+            "spawn_agent",
+            function_payload(json!({
+                "message": "check model",
+                "agent_type": "custom-orchestrator",
+                "model": "gpt-5.1-codex-mini"
+            })),
+        ))
+        .await
+        .expect("spawn_agent should succeed");
+
+    let (content, _) = expect_text_output(output);
+    let result: serde_json::Value =
+        serde_json::from_str(&content).expect("spawn_agent result should be json");
+    assert_eq!(
+        result["requested_model"].as_str(),
+        Some("gpt-5.1-codex-mini")
+    );
+    assert_eq!(
+        result["effective_model"].as_str(),
+        Some("gpt-5.1-codex-mini")
+    );
+    assert_eq!(result["requested_model_honored"].as_bool(), Some(true));
+
+    let agent_id = parse_agent_id(
+        result["agent_id"]
+            .as_str()
+            .expect("agent_id should be present"),
+    );
+    let snapshot = manager
+        .get_thread(agent_id)
+        .await
+        .expect("spawned agent thread should exist")
+        .config_snapshot()
+        .await;
+    assert_eq!(snapshot.model.as_str(), "gpt-5.1-codex-mini");
 }
 
 #[tokio::test]
@@ -608,6 +766,69 @@ async fn multi_agent_v2_spawn_returns_path_and_send_message_accepts_relative_pat
                         && !communication.trigger_turn
             )
     }));
+}
+
+#[tokio::test]
+async fn multi_agent_v2_spawn_reports_requested_and_effective_model_metadata() {
+    let (mut session, mut turn) = make_session_and_context().await;
+    let manager = thread_manager();
+    let root = manager
+        .start_thread((*turn.config).clone())
+        .await
+        .expect("root thread should start");
+    session.services.agent_control = manager.agent_control();
+    session.conversation_id = root.thread_id;
+
+    tokio::fs::create_dir_all(&turn.config.codex_home)
+        .await
+        .expect("ensure codex_home exists");
+    let role_path = turn.config.codex_home.join("custom-orchestrator.toml");
+    tokio::fs::write(&role_path, r#"model = "gpt-5.4""#)
+        .await
+        .expect("write role config");
+
+    let mut config = (*turn.config).clone();
+    config.agent_roles.insert(
+        "custom-orchestrator".to_string(),
+        AgentRoleConfig {
+            description: None,
+            config_file: Some(role_path),
+            nickname_candidates: None,
+        },
+    );
+    config
+        .features
+        .enable(Feature::MultiAgentV2)
+        .expect("test config should allow feature update");
+    turn.config = Arc::new(config);
+
+    let output = SpawnAgentHandlerV2
+        .handle(invocation(
+            Arc::new(session),
+            Arc::new(turn),
+            "spawn_agent",
+            function_payload(json!({
+                "message": "check model",
+                "task_name": "check_model",
+                "agent_type": "custom-orchestrator",
+                "model": "gpt-5.1-codex-mini"
+            })),
+        ))
+        .await
+        .expect("spawn_agent should succeed");
+
+    let (content, _) = expect_text_output(output);
+    let result: serde_json::Value =
+        serde_json::from_str(&content).expect("spawn_agent result should be json");
+    assert_eq!(
+        result["requested_model"].as_str(),
+        Some("gpt-5.1-codex-mini")
+    );
+    assert_eq!(
+        result["effective_model"].as_str(),
+        Some("gpt-5.1-codex-mini")
+    );
+    assert_eq!(result["requested_model_honored"].as_bool(), Some(true));
 }
 
 #[tokio::test]

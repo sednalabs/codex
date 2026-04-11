@@ -6,7 +6,7 @@ on:
     - cron: "0 */12 * * *"
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: sedna-sync-upstream
@@ -15,10 +15,13 @@ concurrency:
 jobs:
   sync:
     runs-on: ubuntu-24.04
+    outputs:
+      synced_upstream_main_sha: ${{ steps.capture-synced-sha.outputs.synced_upstream_main_sha }}
     steps:
       - uses: actions/checkout@v6.0.2
         with:
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Configure git identity
         shell: bash
@@ -28,8 +31,17 @@ jobs:
 
       - name: Fast-forward upstream mirror
         shell: bash
+        env:
+          SYNC_UPSTREAM_PUSH_TOKEN: ${{ secrets.SEDNA_SYNC_UPSTREAM_PUSH_TOKEN }}
         run: |
           set -euo pipefail
+
+          if [ -z "${SYNC_UPSTREAM_PUSH_TOKEN:-}" ]; then
+            echo "Missing SEDNA_SYNC_UPSTREAM_PUSH_TOKEN secret with permission to update workflow files." >&2
+            exit 1
+          fi
+
+          git remote set-url origin "https://x-access-token:${SYNC_UPSTREAM_PUSH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
 
           if git remote get-url upstream >/dev/null 2>&1; then
             git remote set-url upstream https://github.com/openai/codex.git
@@ -53,3 +65,61 @@ jobs:
           fi
 
           git push origin refs/remotes/upstream/main:refs/heads/upstream-main
+
+      - id: capture-synced-sha
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "synced_upstream_main_sha=$(git rev-parse refs/remotes/upstream/main)" >> "$GITHUB_OUTPUT"
+
+  audit:
+    needs: sync
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6.0.2
+        with:
+          fetch-depth: 0
+
+      - name: Configure git identity
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Configure upstream remote
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if git remote get-url upstream >/dev/null 2>&1; then
+            git remote set-url upstream https://github.com/openai/codex.git
+          else
+            git remote add upstream https://github.com/openai/codex.git
+          fi
+
+      - name: Run downstream divergence audit
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python3 scripts/downstream-divergence-audit.py \
+            --repo "$PWD" \
+            --downstream-remote origin \
+            --downstream-branch main \
+            --mirror-remote origin \
+            --mirror-branch upstream-main \
+            --upstream-remote upstream \
+            --upstream-branch main \
+            --expected-mirror-sha "${{ needs.sync.outputs.synced_upstream_main_sha }}" \
+            --registry-path docs/divergences/index.yaml \
+            --output-dir target/downstream-divergence-audit \
+            --format both \
+            --code-only \
+            --enforce-registry
+
+      - name: Upload audit artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: downstream-divergence-audit
+          path: target/downstream-divergence-audit

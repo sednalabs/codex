@@ -34,6 +34,8 @@ impl ToolHandler for Handler {
         } = invocation;
         let arguments = function_arguments(payload)?;
         let args: SpawnAgentArgs = parse_arguments(&arguments)?;
+        let requested_model = args.model.clone();
+        let requested_reasoning_effort = args.reasoning_effort;
         let role_name = args
             .agent_type
             .as_deref()
@@ -50,6 +52,16 @@ impl ToolHandler for Handler {
                 "Agent depth limit reached. Solve the task yourself.".to_string(),
             ));
         }
+        require_spawn_agent_approval_if_requested(
+            &session,
+            turn.as_ref(),
+            args.spawn_approval,
+            &call_id,
+            role_name,
+            args.model.as_deref(),
+            &prompt,
+        )
+        .await?;
         session
             .send_event(
                 &turn,
@@ -74,8 +86,8 @@ impl ToolHandler for Handler {
             &session,
             turn.as_ref(),
             &mut config,
-            args.model.as_deref(),
-            args.reasoning_effort,
+            requested_model.as_deref(),
+            requested_reasoning_effort,
         )
         .await?;
         if let Some(model) = config.model.clone() {
@@ -211,13 +223,20 @@ impl ToolHandler for Handler {
             /*inc*/ 1,
             &[("role", role_tag)],
         );
+        let requested_model_honored_flag = requested_model_honored(
+            requested_model.as_deref(),
+            new_agent.effective_model.as_deref(),
+        );
 
         Ok(SpawnAgentResult {
             agent_id: new_thread_id.to_string(),
             nickname,
             role,
             status,
+            requested_model,
+            requested_reasoning_effort,
             effective_model: new_agent.effective_model,
+            requested_model_honored: requested_model_honored_flag,
             effective_reasoning_effort: new_agent.effective_reasoning_effort,
             effective_model_provider_id: new_agent.effective_model_provider_id,
             identity_source: new_agent.identity_source,
@@ -234,6 +253,8 @@ struct SpawnAgentArgs {
     model: Option<String>,
     reasoning_effort: Option<ReasoningEffort>,
     #[serde(default)]
+    spawn_approval: SpawnAgentApproval,
+    #[serde(default)]
     fork_context: bool,
 }
 
@@ -243,7 +264,10 @@ pub(crate) struct SpawnAgentResult {
     nickname: Option<String>,
     role: Option<String>,
     status: AgentStatus,
+    requested_model: Option<String>,
+    requested_reasoning_effort: Option<ReasoningEffort>,
     effective_model: Option<String>,
+    requested_model_honored: Option<bool>,
     effective_reasoning_effort: Option<ReasoningEffort>,
     effective_model_provider_id: String,
     identity_source: String,

@@ -449,6 +449,15 @@ impl From<ModelInfo> for ModelPreset {
 }
 
 impl ModelPreset {
+    /// Whether this preset should be shown in interactive picker-style surfaces.
+    ///
+    /// Some legacy models remain directly supported in the API and intentionally advertise an
+    /// upgrade path even when they are hidden from the default picker list. Keep those models
+    /// reachable from downstream "All models" flows without re-exposing fully hidden models.
+    pub fn show_in_interactive_picker(&self) -> bool {
+        self.show_in_picker || (self.supported_in_api && self.upgrade.is_some())
+    }
+
     /// Filter models based on authentication mode.
     ///
     /// In ChatGPT mode, all models are visible. Otherwise, only API-supported models are shown.

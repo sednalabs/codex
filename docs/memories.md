@@ -1,6 +1,6 @@
 # Memories
 
-Codex Memories is the local startup memory pipeline that turns prior interactive rollouts into bounded, reusable context. It is separate from `ops-knowledge`: this is per-user/local Codex state under `~/.codex/memories`, not a shared knowledge MCP server.
+Codex Memories is the local startup memory pipeline that turns prior interactive rollouts into bounded, reusable context. The artifacts live under `~/.codex/memories` for each user, and the pipeline keeps its own state rather than relying on any shared knowledge service.
 
 ## What it stores
 
