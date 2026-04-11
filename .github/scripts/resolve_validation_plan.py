@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import fnmatch
 import json
+from collections import Counter
 from collections import OrderedDict
 from pathlib import Path
 
@@ -318,9 +319,14 @@ def emit_grouped_setup_class_payload(payload: dict, lanes: list[dict], *, key_pr
         payload[f"{key_prefix}_{setup_class}_lane_count"] = len(grouped_lanes)
 
 
-def setup_parallel_limits(profile: str) -> dict[str, int]:
+def setup_parallel_limits(profile: str, selected: list[dict] | None = None) -> dict[str, int]:
     if profile == "frontier":
-        return {"light": 16, "rust": 10, "heavy": 4}
+        counts = Counter(lane["setup_class"] for lane in (selected or []))
+        return {
+            "light": max(1, min(counts.get("light", 0), 8)),
+            "rust": max(1, min(counts.get("rust", 0), 24)),
+            "heavy": max(1, min(counts.get("heavy", 0), 12)),
+        }
     if profile in {"broad", "full"}:
         return {"light": 10, "rust": 6, "heavy": 3}
     if profile == "smoke":
@@ -330,7 +336,7 @@ def setup_parallel_limits(profile: str) -> dict[str, int]:
 
 def determine_lab_matrix_policy(profile: str, selected: list[dict]) -> tuple[str, str, dict[str, int]]:
     fail_fast = "false" if profile == "frontier" else "true"
-    parallel_limits = setup_parallel_limits(profile)
+    parallel_limits = setup_parallel_limits(profile, selected)
     active_limits = [
         parallel_limits[lane["setup_class"]]
         for lane in selected

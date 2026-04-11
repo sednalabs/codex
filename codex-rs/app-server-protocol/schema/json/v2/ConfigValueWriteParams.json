@@ -1,6 +1,5 @@
 {
-  "$schema": "http://json-schema.org/draft-07/schema#",
-  "definitions": {
+  "$defs": {
     "MergeStrategy": {
       "enum": [
         "replace",
@@ -9,6 +8,7 @@
       "type": "string"
     }
   },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
   "properties": {
     "expectedVersion": {
       "type": [
@@ -27,14 +27,14 @@
       "type": "string"
     },
     "mergeStrategy": {
-      "$ref": "#/definitions/MergeStrategy"
+      "$ref": "#/$defs/MergeStrategy"
     },
     "value": true
   },
   "required": [
     "keyPath",
-    "mergeStrategy",
-    "value"
+    "value",
+    "mergeStrategy"
   ],
   "title": "ConfigValueWriteParams",
   "type": "object"
