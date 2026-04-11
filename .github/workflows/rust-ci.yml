@@ -118,7 +118,7 @@ jobs:
       - name: Check previous required result on follow-up head
         id: previous_required
         if: ${{ github.event_name == 'pull_request' && github.event.action == 'synchronize' }}
-        uses: actions/github-script@v8
+        uses: actions/github-script@v9
         env:
           BEFORE_SHA: ${{ steps.shas.outputs.before_sha }}
         with:
