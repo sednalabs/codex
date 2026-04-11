@@ -245,7 +245,8 @@ def _effective_minimum_run_id(baseline_max_run_id, requested_min_run_id):
 
 
 def _query_remote_ref_sha(watcher, repo, ref):
-    endpoint = f"/repos/{repo}/git/ref/heads/{quote(ref, safe='')}"
+    branch = ref[len("refs/heads/"):] if ref.startswith("refs/heads/") else ref
+    endpoint = f"/repos/{repo}/git/ref/heads/{quote(branch, safe='')}"
     payload = watcher.gh_json(["api", endpoint], repo=repo)
     if not isinstance(payload, dict):
         raise RuntimeError(f"Unexpected response when reading remote ref '{ref}'.")
