@@ -222,6 +222,7 @@ use codex_core::find_thread_name_by_id;
 use codex_core::find_thread_names_by_ids;
 use codex_core::find_thread_path_by_id_str;
 use codex_core::parse_cursor;
+use codex_core::path_utils;
 use codex_core::plugins::MarketplaceError;
 use codex_core::plugins::MarketplacePluginSource;
 use codex_core::plugins::OPENAI_CURATED_MARKETPLACE_NAME;
@@ -4768,9 +4769,9 @@ impl CodexMessageProcessor {
                 if source_kind_filter
                     .as_ref()
                     .is_none_or(|filter| source_kind_matches(&summary.source, filter))
-                    && cwd
-                        .as_ref()
-                        .is_none_or(|expected_cwd| &summary.cwd == expected_cwd)
+                    && cwd.as_ref().is_none_or(|expected_cwd| {
+                        path_utils::paths_match_after_normalization(&summary.cwd, expected_cwd)
+                    })
                 {
                     filtered.push(summary);
                     if filtered.len() >= remaining {
