@@ -18,6 +18,7 @@ pub use model::Phase2InputSelection;
 pub use model::Phase2JobClaimOutcome;
 /// Preferred entrypoint: owns configuration and metrics.
 pub use runtime::StateRuntime;
+pub use runtime::RemoteControlEnrollmentRecord;
 
 /// Low-level storage engine: useful for focused tests.
 ///
