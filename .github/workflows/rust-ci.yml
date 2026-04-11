@@ -304,6 +304,10 @@ jobs:
           BUILDBUDDY_API_KEY: ${{ secrets.BUILDBUDDY_API_KEY }}
         shell: bash
         run: |
+          bazel_extra_args=()
+          if [[ "${RUNNER_OS}" == "macOS" ]]; then
+            bazel_extra_args+=(--jobs=8 --loading_phase_threads=8)
+          fi
           bazel_targets=()
           while IFS= read -r bazel_target; do
             bazel_targets+=("${bazel_target}")
@@ -312,6 +316,7 @@ jobs:
             -- \
             build \
             --config=argument-comment-lint \
+            "${bazel_extra_args[@]}" \
             --keep_going \
             "--build_metadata=COMMIT_SHA=${GITHUB_SHA}" \
             -- \
