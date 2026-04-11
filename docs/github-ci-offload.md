@@ -9,6 +9,9 @@ artifacts.
   - trigger: manual dispatch only
   - purpose: remote-first validation for scratch refs, integration refs, orphan-branch experiments,
     and broad targeted sweeps that should not pollute normal PR status surfaces
+  - frontier model: `targeted` keeps the full named seam, while `frontier` uses curated lane
+    metadata and split setup-class fanout instead of reusing the same lane selection with
+    `fail-fast=false`
   - retention: summary plus any requested preview artifacts
 - `sedna-branch-build`
   - trigger: manual dispatch only
@@ -63,6 +66,10 @@ artifacts.
    - `profile=smoke` fans out the smoke bundle as parallel shards instead of
      running one serial smoke recipe on a single runner.
    - Reason: best signal per runner-minute without polluting PR surfaces.
+   - `profile=frontier` now derives a curated blocker-harvest bundle from lane
+     metadata and runs it by setup class (`light`, `rust`, `heavy`) so cheap
+     workflow/docs seams can fan out harder without letting heavier Rust lanes
+     monopolize the same runner budget.
 3. `validation-lab` broad/full only when the question is broader.
    - Use `profile=broad` or `profile=full` only when multiple seams are moving or you need a
      deliberate soak.
@@ -102,6 +109,40 @@ artifacts.
 - release workflow artifacts retain for 3 days in Actions storage
 - official GitHub Releases remain until manually removed
 - branch and lab artifacts are disposable; delete or ignore them if they are no longer useful
+
+## Frontier metadata
+
+`validation-lab` frontier planning now relies on per-lane metadata in
+`.github/validation-lanes.json`.
+
+The important fields are:
+
+- `frontier_default`: whether the lane belongs in the default `lane_set=all`
+  frontier harvest
+- `frontier_lane_sets`: named frontier families for non-`all` frontier runs
+- `setup_class`: runner-cost bucket used for split fanout and per-class
+  parallelism
+- `frontier_role`: whether the lane is a family sentinel or a deeper companion
+- `summary_family`: the family key used to collapse raw lane failures into one
+  primary blocker per family
+- `cost_class`: a lightweight signal for relative runner cost
+
+When the requested validation target predates these fields, the host workflow
+derives them deterministically so dispatching `validation-lab` from downstream
+`main` can still validate older refs truthfully.
+
+## Summary artifact
+
+The top-level `validation-summary` artifact is now family-aware.
+
+It records:
+
+- setup-class job results and started-lane counts
+- `primary_blockers`: one strongest active blocker per family, plus setup-class
+  startup failures when no lanes in that class ever started
+- `secondary_findings`: the remaining cancelled or missing depth lanes
+- `candidate_next_slices`: the watcher-facing next queue derived from those
+  blockers instead of a flat raw failed-lane list
 
 ## Bootstrap limitation
 

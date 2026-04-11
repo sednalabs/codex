@@ -18,6 +18,30 @@ on:
         required: false
         type: string
         default: downstream_lanes
+      status_class:
+        required: false
+        type: string
+        default: active
+      frontier_default:
+        required: false
+        type: boolean
+        default: false
+      setup_class:
+        required: false
+        type: string
+        default: rust
+      frontier_role:
+        required: false
+        type: string
+        default: sentinel
+      summary_family:
+        required: false
+        type: string
+        default: validation-lane
+      cost_class:
+        required: false
+        type: string
+        default: medium
       run_command:
         required: true
         type: string
@@ -241,6 +265,12 @@ jobs:
           LANE_ID: ${{ inputs.lane_id != '' && inputs.lane_id || inputs.summary_title }}
           ARTIFACT_NAME: ${{ inputs.artifact_name }}
           LANE_PHASE: ${{ inputs.lane_phase }}
+          STATUS_CLASS: ${{ inputs.status_class }}
+          FRONTIER_DEFAULT: ${{ inputs.frontier_default && 'true' || 'false' }}
+          SETUP_CLASS: ${{ inputs.setup_class }}
+          FRONTIER_ROLE: ${{ inputs.frontier_role }}
+          SUMMARY_FAMILY: ${{ inputs.summary_family }}
+          COST_CLASS: ${{ inputs.cost_class }}
           RUN_OUTCOME: ${{ steps.run_lane.outcome }}
           EXIT_CODE: ${{ steps.run_lane.outputs.exit_code }}
           LOG_FILE: ${{ steps.run_lane.outputs.log_file }}
@@ -259,6 +289,12 @@ jobs:
             --lane-phase "${LANE_PHASE}" \
             --summary-title "${SUMMARY_TITLE}" \
             --run-command "${LANE_COMMAND}" \
+            --status-class "${STATUS_CLASS}" \
+            --frontier-default "${FRONTIER_DEFAULT}" \
+            --setup-class "${SETUP_CLASS}" \
+            --frontier-role "${FRONTIER_ROLE}" \
+            --summary-family "${SUMMARY_FAMILY}" \
+            --cost-class "${COST_CLASS}" \
             --outcome "${RUN_OUTCOME}" \
             --exit-code "${EXIT_CODE}" \
             --log-file "${LOG_FILE}" \

@@ -5,27 +5,193 @@ from __future__ import annotations
 
 import argparse
 import json
+from collections import OrderedDict
 from pathlib import Path
+
+VALID_SETUP_CLASSES = {"light", "rust", "heavy"}
+VALID_FRONTIER_ROLES = {"sentinel", "depth"}
+VALID_STATUS_CLASSES = {"active", "legacy"}
+VALID_COST_CLASSES = {"low", "medium", "high"}
+ORDERED_SETUP_CLASSES = ["light", "rust", "heavy"]
 
 
 def catalog_path() -> Path:
     return Path(__file__).resolve().parent.parent / "validation-lanes.json"
 
 
-def load_catalog() -> list[dict]:
-    return json.loads(catalog_path().read_text(encoding="utf-8"))["lanes"]
+def load_catalog(path: Path | None = None) -> dict:
+    catalog_file = path or catalog_path()
+    payload = json.loads(catalog_file.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict) or "lanes" not in payload:
+        raise SystemExit(f"invalid validation catalog at {catalog_file}")
+    return payload
 
 
-def lane_payload(spec: dict) -> dict:
+def derive_summary_family(lane: dict) -> str:
+    lane_id = str(lane.get("lane_id") or "")
+    if "agent-picker" in lane_id:
+        return "agent-picker"
+    if "subagent-notification" in lane_id:
+        return "subagent-notifications"
+    if "app-server-" in lane_id:
+        return "app-server"
+    if "state-spawn-lineage" in lane_id:
+        return "state-lineage"
+    if "core-subagent-surface" in lane_id:
+        return "subagent-surface"
+    if "core-subagent-model-pinning" in lane_id:
+        return "subagent-model-pinning"
+    if "core-subagent-spawn-approval" in lane_id:
+        return "subagent-spawn-approval"
+    if "core-persisted-subagent-descendants" in lane_id:
+        return "persisted-subagent-descendants"
+
+    normalized = lane_id.removeprefix("codex.")
+    for suffix in ("-targeted", "-test", "-smoke"):
+        if normalized.endswith(suffix):
+            normalized = normalized[: -len(suffix)]
+    return normalized or lane_id or "validation-lane"
+
+
+def derive_setup_class(lane: dict) -> str:
+    groups = set(lane.get("groups", []))
+    lane_id = str(lane.get("lane_id") or "")
+    lane_sets = set(lane.get("lane_sets", []))
+
+    if groups & {"workflow", "docs"}:
+        return "light"
+    if lane.get("install_nextest"):
+        return "heavy"
+    if lane.get("smoke_gate_kinds"):
+        return "heavy"
+    if "release" in lane_sets:
+        return "heavy"
+    if any(
+        token in lane_id
+        for token in (
+            "compile-smoke",
+            "core-smoke",
+            "ui-smoke",
+            "ledger-smoke",
+            "runtime-surface-smoke",
+        )
+    ):
+        return "heavy"
+    return "rust"
+
+
+def derive_cost_class(setup_class: str) -> str:
+    return {
+        "light": "low",
+        "rust": "medium",
+        "heavy": "high",
+    }[setup_class]
+
+
+def family_key_for_lane(lane: dict) -> tuple[str, str]:
+    lane_id = str(lane.get("lane_id") or "<unknown>")
+    try:
+        return (lane["status_class"], lane["summary_family"])
+    except KeyError as exc:
+        missing = exc.args[0]
+        raise SystemExit(
+            f"lane {lane_id} must define {missing} for validation planning"
+        ) from exc
+
+
+def normalize_catalog(catalog: dict) -> dict:
+    """Backfill derived lane metadata for older target refs."""
+
+    normalized_lanes: list[dict] = []
+    family_sentinel_ids: dict[tuple[str, str], str] = {}
+
+    for original in catalog["lanes"]:
+        lane = dict(original)
+        lane.setdefault("status_class", "active")
+        lane.setdefault("setup_class", derive_setup_class(lane))
+        lane.setdefault("summary_family", derive_summary_family(lane))
+        lane.setdefault("cost_class", derive_cost_class(lane["setup_class"]))
+        lane.setdefault("frontier_default", False)
+        if "frontier_lane_sets" not in lane:
+            if lane.get("status_class") == "active" and not lane.get("explicit_only"):
+                lane["frontier_lane_sets"] = (
+                    [lane_set for lane_set in lane.get("lane_sets", []) if lane_set != "all"]
+                    if lane.get("frontier_default")
+                    else []
+                )
+            else:
+                lane["frontier_lane_sets"] = []
+
+        family_key = family_key_for_lane(lane)
+        lane_id = lane["lane_id"]
+        chosen = family_sentinel_ids.get(family_key)
+        if chosen is None or lane_id < chosen:
+            family_sentinel_ids[family_key] = lane_id
+
+        normalized_lanes.append(lane)
+
+    for lane in normalized_lanes:
+        if "frontier_role" not in lane:
+            family_key = family_key_for_lane(lane)
+            lane["frontier_role"] = (
+                "sentinel"
+                if lane["lane_id"] == family_sentinel_ids[family_key]
+                else "depth"
+            )
+
+    normalized = dict(catalog)
+    normalized["lanes"] = normalized_lanes
+    return normalized
+
+
+def validate_catalog(catalog: dict) -> None:
+    seen_lane_ids: set[str] = set()
+    for lane in catalog["lanes"]:
+        lane_id = lane["lane_id"]
+        if lane_id in seen_lane_ids:
+            raise SystemExit(f"duplicate lane id in validation catalog: {lane_id}")
+        seen_lane_ids.add(lane_id)
+
+        status_class = lane.get("status_class")
+        if status_class not in VALID_STATUS_CLASSES:
+            valid = ", ".join(sorted(VALID_STATUS_CLASSES))
+            raise SystemExit(f"lane {lane_id} must set status_class to one of: {valid}")
+
+        setup_class = lane.get("setup_class")
+        if setup_class not in VALID_SETUP_CLASSES:
+            valid = ", ".join(sorted(VALID_SETUP_CLASSES))
+            raise SystemExit(f"lane {lane_id} must set setup_class to one of: {valid}")
+
+        frontier_role = lane.get("frontier_role")
+        if frontier_role not in VALID_FRONTIER_ROLES:
+            valid = ", ".join(sorted(VALID_FRONTIER_ROLES))
+            raise SystemExit(f"lane {lane_id} must set frontier_role to one of: {valid}")
+
+        cost_class = lane.get("cost_class")
+        if cost_class not in VALID_COST_CLASSES:
+            valid = ", ".join(sorted(VALID_COST_CLASSES))
+            raise SystemExit(f"lane {lane_id} must set cost_class to one of: {valid}")
+
+
+def lane_payload(spec: dict, *, lane_phase: str) -> dict:
     return {
         "lane_id": spec["lane_id"],
+        "lane_phase": lane_phase,
         "run_command": spec["run_command"],
         "groups": spec["groups"],
         "install_nextest": bool(spec.get("install_nextest", False)),
+        "status_class": spec["status_class"],
+        "frontier_default": bool(spec.get("frontier_default", False)),
+        "setup_class": spec["setup_class"],
+        "frontier_role": spec["frontier_role"],
+        "summary_family": spec["summary_family"],
+        "cost_class": spec["cost_class"],
     }
 
 
-def select_exact(catalog_by_id: dict[str, dict], lane_ids: list[str]) -> list[dict]:
+def select_exact(
+    catalog_by_id: dict[str, dict], lane_ids: list[str], *, lane_phase: str
+) -> list[dict]:
     selected: list[dict] = []
     seen: set[str] = set()
     for lane_id in lane_ids:
@@ -35,27 +201,53 @@ def select_exact(catalog_by_id: dict[str, dict], lane_ids: list[str]) -> list[di
         if lane_id in seen:
             continue
         seen.add(lane_id)
-        selected.append(lane_payload(spec))
+        selected.append(lane_payload(spec, lane_phase=lane_phase))
     return selected
 
 
 def select_for_lane_set(
-    catalog: list[dict], target_lane_set: str, *, include_explicit_only: bool = False
+    catalog: dict,
+    target_lane_set: str,
+    *,
+    lane_phase: str,
+    field_name: str = "lane_sets",
+    include_explicit_only: bool = False,
 ) -> list[dict]:
     selected: list[dict] = []
-    for spec in catalog:
-        if target_lane_set not in spec["lane_sets"]:
+    for spec in catalog["lanes"]:
+        if target_lane_set not in spec.get(field_name, []):
             continue
         if spec.get("explicit_only") and not include_explicit_only:
             continue
-        selected.append(lane_payload(spec))
+        selected.append(lane_payload(spec, lane_phase=lane_phase))
     return selected
 
 
-def select_smoke_matrix(catalog: list[dict], smoke_gate_kind: str) -> list[dict]:
+def select_frontier_all(catalog: dict) -> list[dict]:
+    selected = [
+        lane_payload(spec, lane_phase="downstream_lanes")
+        for spec in catalog["lanes"]
+        if spec.get("status_class") == "active"
+        and spec.get("frontier_default") is True
+        and not spec.get("explicit_only")
+    ]
+    if selected:
+        return selected
     return [
-        lane_payload(spec)
-        for spec in catalog
+        lane_payload(spec, lane_phase="downstream_lanes")
+        for spec in catalog["lanes"]
+        if spec.get("status_class") == "active"
+        and not spec.get("explicit_only")
+        and not spec.get("smoke_gate_kinds")
+        and "release" not in spec.get("lane_sets", [])
+        and "docs" not in spec.get("lane_sets", [])
+    ]
+
+
+def select_smoke_matrix(catalog: dict, smoke_gate_kind: str) -> list[dict]:
+    return [
+        lane_payload(spec, lane_phase="smoke_gate")
+        for spec in catalog["lanes"]
         if smoke_gate_kind in spec.get("smoke_gate_kinds", [])
     ]
 
@@ -82,28 +274,52 @@ def determine_smoke_gate(groups: set[str]) -> tuple[bool, str]:
     return bool(has_runtime or has_docs), smoke_gate_kind
 
 
-def determine_lab_matrix_policy(profile: str) -> tuple[str, str]:
-    policies = {
-        "targeted": ("true", "2"),
-        "frontier": ("false", "2"),
-        "broad": ("true", "2"),
-        "full": ("true", "2"),
-        "artifact": ("true", "2"),
-    }
-    return policies.get(profile, ("true", "1"))
+def group_lanes_by_setup_class(lanes: list[dict]) -> OrderedDict[str, list[dict]]:
+    grouped: OrderedDict[str, list[dict]] = OrderedDict(
+        (name, []) for name in ORDERED_SETUP_CLASSES
+    )
+    for lane in lanes:
+        grouped[lane["setup_class"]].append(lane)
+    return grouped
+
+
+def setup_parallel_limits(profile: str) -> dict[str, int]:
+    if profile == "frontier":
+        return {"light": 10, "rust": 6, "heavy": 3}
+    if profile in {"broad", "full"}:
+        return {"light": 6, "rust": 4, "heavy": 2}
+    if profile == "smoke":
+        return {"light": 2, "rust": 2, "heavy": 1}
+    return {"light": 4, "rust": 2, "heavy": 1}
+
+
+def determine_lab_matrix_policy(profile: str, selected: list[dict]) -> tuple[str, str, dict[str, int]]:
+    fail_fast = "false" if profile == "frontier" else "true"
+    parallel_limits = setup_parallel_limits(profile)
+    active_limits = [
+        parallel_limits[lane["setup_class"]]
+        for lane in selected
+        if lane["setup_class"] in parallel_limits
+    ]
+    max_parallel = str(max(active_limits) if active_limits else 1)
+    return fail_fast, max_parallel, parallel_limits
 
 
 def lab_plan(args: argparse.Namespace) -> None:
-    catalog = load_catalog()
-    catalog_by_id = {spec["lane_id"]: spec for spec in catalog}
+    catalog = normalize_catalog(
+        load_catalog(Path(args.catalog_path) if args.catalog_path else None)
+    )
+    validate_catalog(catalog)
+    catalog_by_id = {spec["lane_id"]: spec for spec in catalog["lanes"]}
     requested_lanes = [lane.strip() for lane in args.lanes.split(",") if lane.strip()]
     run_artifact = args.profile == "artifact" or parse_bool(args.artifact_build)
-    matrix_fail_fast, matrix_max_parallel = determine_lab_matrix_policy(args.profile)
 
     smoke_matrix: list[dict] = []
 
     if requested_lanes:
-        selected = select_exact(catalog_by_id, requested_lanes)
+        selected = select_exact(
+            catalog_by_id, requested_lanes, lane_phase="downstream_lanes"
+        )
         run_smoke_gate = False
         smoke_gate_kind = ""
     elif args.profile == "smoke":
@@ -112,21 +328,51 @@ def lab_plan(args: argparse.Namespace) -> None:
         smoke_matrix = select_smoke_matrix(catalog, smoke_gate_kind)
         run_smoke_gate = bool(smoke_matrix)
     elif args.profile == "artifact":
-        selected = [] if args.lane_set == "all" else select_for_lane_set(catalog, args.lane_set)
-        run_smoke_gate = False
-        smoke_gate_kind = ""
-    elif args.profile in {"targeted", "frontier"}:
-        if args.profile == "targeted" and args.lane_set == "all":
-            raise SystemExit(
-                f"profile={args.profile} requires a named lane_set or explicit lanes"
+        selected = (
+            []
+            if args.lane_set == "all"
+            else select_for_lane_set(
+                catalog, args.lane_set, lane_phase="downstream_lanes"
             )
-        selected = select_for_lane_set(
-            catalog, "all" if args.lane_set == "all" else args.lane_set
         )
         run_smoke_gate = False
         smoke_gate_kind = ""
+    elif args.profile == "targeted":
+        if args.lane_set == "all":
+            raise SystemExit("profile=targeted requires a named lane_set or explicit lanes")
+        selected = select_for_lane_set(
+            catalog, args.lane_set, lane_phase="downstream_lanes"
+        )
+        run_smoke_gate = False
+        smoke_gate_kind = ""
+    elif args.profile == "frontier":
+        if args.lane_set == "all":
+            selected = select_frontier_all(catalog)
+        else:
+            selected = select_for_lane_set(
+                catalog,
+                args.lane_set,
+                lane_phase="downstream_lanes",
+                field_name="frontier_lane_sets",
+            )
+            if not selected:
+                selected = [
+                    lane
+                    for lane in select_for_lane_set(
+                        catalog,
+                        args.lane_set,
+                        lane_phase="downstream_lanes",
+                    )
+                    if lane.get("status_class") == "active"
+                ]
+        run_smoke_gate = False
+        smoke_gate_kind = ""
     elif args.profile in {"broad", "full"}:
-        selected = select_for_lane_set(catalog, "all" if args.lane_set == "all" else args.lane_set)
+        selected = select_for_lane_set(
+            catalog,
+            "all" if args.lane_set == "all" else args.lane_set,
+            lane_phase="downstream_lanes",
+        )
         groups = {group for spec in selected for group in spec["groups"]}
         has_smoke_gate, smoke_gate_kind = determine_smoke_gate(groups)
         smoke_matrix = select_smoke_matrix(catalog, smoke_gate_kind) if has_smoke_gate else []
@@ -136,9 +382,20 @@ def lab_plan(args: argparse.Namespace) -> None:
     else:
         raise SystemExit(f"unsupported profile: {args.profile}")
 
+    matrix_fail_fast, matrix_max_parallel, parallel_limits = determine_lab_matrix_policy(
+        args.profile, selected
+    )
+    grouped = group_lanes_by_setup_class(selected)
+    selected_setup_classes = [
+        setup_class for setup_class, lanes in grouped.items() if lanes
+    ]
+    planned_matrix = {"include": [*smoke_matrix, *selected]}
+
     emit(
         {
             "selected_matrix": {"include": selected},
+            "planned_matrix": planned_matrix,
+            "selected_lane_ids": [lane["lane_id"] for lane in selected],
             "smoke_matrix": {"include": smoke_matrix},
             "run_selected_lanes": "true" if bool(selected) else "false",
             "run_smoke_gate": "true" if run_smoke_gate else "false",
@@ -146,12 +403,23 @@ def lab_plan(args: argparse.Namespace) -> None:
             "run_artifact": "true" if run_artifact else "false",
             "matrix_fail_fast": matrix_fail_fast,
             "matrix_max_parallel": matrix_max_parallel,
+            "selected_setup_classes": selected_setup_classes,
+            "selected_light_matrix": {"include": grouped["light"]},
+            "selected_rust_matrix": {"include": grouped["rust"]},
+            "selected_heavy_matrix": {"include": grouped["heavy"]},
+            "selected_light_lane_count": len(grouped["light"]),
+            "selected_rust_lane_count": len(grouped["rust"]),
+            "selected_heavy_lane_count": len(grouped["heavy"]),
+            "light_max_parallel": str(parallel_limits["light"]),
+            "rust_max_parallel": str(parallel_limits["rust"]),
+            "heavy_max_parallel": str(parallel_limits["heavy"]),
         }
     )
 
 
 def heavy_plan(args: argparse.Namespace) -> None:
-    catalog = load_catalog()
+    catalog = normalize_catalog(load_catalog())
+    validate_catalog(catalog)
     active_groups = {
         group
         for enabled, group in [
@@ -166,9 +434,13 @@ def heavy_plan(args: argparse.Namespace) -> None:
 
     selected: list[dict] = []
     seen: set[str] = set()
-    for spec in catalog:
+    for spec in catalog["lanes"]:
         lane_id = spec["lane_id"]
-        if args.event_name == "workflow_dispatch" and args.requested_lane and args.requested_lane != "all":
+        if (
+            args.event_name == "workflow_dispatch"
+            and args.requested_lane
+            and args.requested_lane != "all"
+        ):
             if lane_id != args.requested_lane:
                 continue
         elif not parse_bool(args.run_all_lanes):
@@ -179,12 +451,14 @@ def heavy_plan(args: argparse.Namespace) -> None:
         if lane_id in seen:
             continue
         seen.add(lane_id)
-        selected.append(lane_payload(spec))
+        selected.append(lane_payload(spec, lane_phase="downstream_lanes"))
 
     groups = {group for spec in selected for group in spec["groups"]}
     has_smoke_gate, smoke_gate_kind = determine_smoke_gate(groups)
     smoke_matrix = select_smoke_matrix(catalog, smoke_gate_kind) if has_smoke_gate else []
-    run_smoke_gate = (args.event_name != "workflow_dispatch" or parse_bool(args.run_all_lanes)) and bool(smoke_matrix)
+    run_smoke_gate = (
+        args.event_name != "workflow_dispatch" or parse_bool(args.run_all_lanes)
+    ) and bool(smoke_matrix)
     if run_smoke_gate:
         selected = exclude_smoke_gate_lanes(selected, smoke_matrix)
 
@@ -208,6 +482,7 @@ def build_parser() -> argparse.ArgumentParser:
     lab.add_argument("--lane-set", required=True)
     lab.add_argument("--lanes", default="")
     lab.add_argument("--artifact-build", default="false")
+    lab.add_argument("--catalog-path", default="")
     lab.set_defaults(func=lab_plan)
 
     heavy = subparsers.add_parser("heavy")
@@ -216,7 +491,7 @@ def build_parser() -> argparse.ArgumentParser:
     heavy.add_argument("--run-all-lanes", required=True)
     heavy.add_argument("--run-core-family", required=True)
     heavy.add_argument("--run-attestation-family", required=True)
-    heavy.add_argument("--run-workflow-family", required=True)
+    heavy.add_argument("--run-workflow-family", dest="run_workflow_family", required=True)
     heavy.add_argument("--run-ui-protocol-family", required=True)
     heavy.add_argument("--run-docs-family", required=True)
     heavy.set_defaults(func=heavy_plan)
