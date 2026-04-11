@@ -6352,6 +6352,9 @@ impl ChatWidget {
                 items,
                 status,
                 error,
+                started_at,
+                completed_at,
+                duration_ms,
             } = turn;
             if matches!(status, TurnStatus::InProgress) {
                 self.last_non_retry_error = None;
@@ -6372,6 +6375,9 @@ impl ChatWidget {
                             items: Vec::new(),
                             status,
                             error,
+                            started_at,
+                            completed_at,
+                            duration_ms,
                         },
                     },
                     Some(replay_kind),
@@ -7191,7 +7197,7 @@ impl ChatWidget {
         id: String,
         turn_id: String,
         review: codex_app_server_protocol::GuardianApprovalReview,
-        action: Option<serde_json::Value>,
+        action: codex_app_server_protocol::GuardianApprovalReviewAction,
     ) {
         self.on_guardian_assessment(GuardianAssessmentEvent {
             id,
@@ -7223,7 +7229,7 @@ impl ChatWidget {
                 }
             }),
             rationale: review.rationale,
-            action,
+            action: serde_json::to_value(action).ok(),
         });
     }
 

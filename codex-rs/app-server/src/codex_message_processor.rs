@@ -6,6 +6,8 @@ use crate::error_code::INPUT_TOO_LARGE_ERROR_CODE;
 use crate::error_code::INTERNAL_ERROR_CODE;
 use crate::error_code::INVALID_PARAMS_ERROR_CODE;
 use crate::error_code::INVALID_REQUEST_ERROR_CODE;
+use crate::extensions::ConfigMutationKind;
+use crate::extensions::app_server_hooks;
 use crate::fuzzy_file_search::FuzzyFileSearchSession;
 use crate::fuzzy_file_search::run_fuzzy_file_search;
 use crate::fuzzy_file_search::start_fuzzy_file_search_session;
@@ -74,11 +76,15 @@ use codex_app_server_protocol::LoginAccountResponse;
 use codex_app_server_protocol::LoginApiKeyParams;
 use codex_app_server_protocol::LogoutAccountResponse;
 use codex_app_server_protocol::MarketplaceInterface;
+use codex_app_server_protocol::McpResourceContent;
+use codex_app_server_protocol::McpResourceReadParams;
+use codex_app_server_protocol::McpResourceReadResponse;
 use codex_app_server_protocol::McpServerOauthLoginCompletedNotification;
 use codex_app_server_protocol::McpServerOauthLoginParams;
 use codex_app_server_protocol::McpServerOauthLoginResponse;
 use codex_app_server_protocol::McpServerRefreshResponse;
 use codex_app_server_protocol::McpServerStatus;
+use codex_app_server_protocol::McpServerStatusDetail;
 use codex_app_server_protocol::MockExperimentalMethodParams;
 use codex_app_server_protocol::MockExperimentalMethodResponse;
 use codex_app_server_protocol::ModelListParams;
@@ -218,10 +224,13 @@ use codex_core::find_archived_thread_path_by_id_str;
 use codex_core::find_thread_name_by_id;
 use codex_core::find_thread_names_by_ids;
 use codex_core::find_thread_path_by_id_str;
+use codex_core::mcp::McpSnapshotDetail;
 use codex_core::mcp::auth::discover_supported_scopes;
 use codex_core::mcp::auth::resolve_oauth_scopes;
-use codex_core::mcp::collect_mcp_snapshot;
+use codex_core::mcp::collect_mcp_snapshot_with_detail;
 use codex_core::mcp::group_tools_by_server;
+use codex_core::mcp::read_mcp_resource;
+use codex_core::mcp::sanitize_responses_api_tool_name;
 use codex_core::models_manager::collaboration_mode_presets::CollaborationModesConfig;
 use codex_core::parse_cursor;
 use codex_core::plugins::MarketplaceError;
@@ -291,6 +300,8 @@ use codex_state::log_db::LogDbLayer;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use codex_utils_json_to_toml::json_to_toml;
 use codex_utils_pty::DEFAULT_OUTPUT_BYTES_CAP;
+use rmcp::model::ReadResourceRequestParams;
+use rmcp::model::ResourceContents;
 use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::collections::HashSet;
@@ -486,6 +497,17 @@ impl CodexMessageProcessor {
                     self.thread_manager.auth_manager(),
                 ),
             Err(err) => warn!("failed to load latest config for plugin startup tasks: {err:?}"),
+        }
+    }
+
+    pub(crate) async fn apply_config_mutation_follow_up(&self, kind: ConfigMutationKind) {
+        let follow_up = app_server_hooks().config_mutation_follow_up(kind);
+        if follow_up.clear_plugin_related_caches {
+            self.clear_plugin_related_caches();
+        }
+        if follow_up.maybe_start_plugin_startup_tasks_for_latest_config {
+            self.maybe_start_plugin_startup_tasks_for_latest_config()
+                .await;
         }
     }
 
@@ -880,6 +902,10 @@ impl CodexMessageProcessor {
             }
             ClientRequest::McpServerStatusList { request_id, params } => {
                 self.list_mcp_server_status(to_connection_request_id(request_id), params)
+                    .await;
+            }
+            ClientRequest::McpResourceRead { request_id, params } => {
+                self.mcp_resource_read(to_connection_request_id(request_id), params)
                     .await;
             }
             ClientRequest::WindowsSandboxSetupStart { request_id, params } => {
@@ -2064,7 +2090,7 @@ impl CodexMessageProcessor {
             approval_policy,
             approvals_reviewer,
             sandbox,
-            config,
+            config: mut request_overrides,
             service_name,
             base_instructions,
             developer_instructions,
@@ -2075,6 +2101,11 @@ impl CodexMessageProcessor {
             ephemeral,
             persist_extended_history,
         } = params;
+        preserve_explicit_instruction_null_overrides(
+            &mut request_overrides,
+            &base_instructions,
+            &developer_instructions,
+        );
         let mut typesafe_overrides = self.build_thread_config_overrides(
             model,
             model_provider,
@@ -2109,7 +2140,7 @@ impl CodexMessageProcessor {
                 runtime_feature_enablement,
                 cloud_requirements,
                 request_id,
-                config,
+                request_overrides,
                 typesafe_overrides,
                 dynamic_tools,
                 persist_extended_history,
@@ -2383,8 +2414,8 @@ impl CodexMessageProcessor {
         approval_policy: Option<codex_app_server_protocol::AskForApproval>,
         approvals_reviewer: Option<codex_app_server_protocol::ApprovalsReviewer>,
         sandbox: Option<SandboxMode>,
-        base_instructions: Option<String>,
-        developer_instructions: Option<String>,
+        base_instructions: Option<Option<String>>,
+        developer_instructions: Option<Option<String>>,
         personality: Option<Personality>,
     ) -> ConfigOverrides {
         ConfigOverrides {
@@ -2399,8 +2430,8 @@ impl CodexMessageProcessor {
             sandbox_mode: sandbox.map(SandboxMode::to_core),
             codex_linux_sandbox_exe: self.arg0_paths.codex_linux_sandbox_exe.clone(),
             main_execve_wrapper_exe: self.arg0_paths.main_execve_wrapper_exe.clone(),
-            base_instructions,
-            developer_instructions,
+            base_instructions: base_instructions.flatten(),
+            developer_instructions: developer_instructions.flatten(),
             personality,
             ..Default::default()
         }
@@ -3523,6 +3554,11 @@ impl CodexMessageProcessor {
             }
             build_thread_from_snapshot(thread_uuid, &config_snapshot, loaded_rollout_path)
         };
+        if thread.forked_from_id.is_none()
+            && let Some(rollout_path) = rollout_path.as_ref()
+        {
+            thread.forked_from_id = forked_from_id_from_rollout(rollout_path).await;
+        }
         self.attach_thread_name(thread_uuid, &mut thread).await;
 
         if include_turns && let Some(rollout_path) = rollout_path.as_ref() {
@@ -3554,8 +3590,19 @@ impl CodexMessageProcessor {
             }
         }
 
+        let active_turn = if loaded_thread.is_some() {
+            let thread_state = self.thread_state_manager.thread_state(thread_uuid).await;
+            let state = thread_state.lock().await;
+            state.active_turn_snapshot()
+        } else {
+            None
+        };
+
         let has_live_in_progress_turn = if let Some(loaded_thread) = loaded_thread.as_ref() {
             matches!(loaded_thread.agent_status().await, AgentStatus::Running)
+                || active_turn
+                    .as_ref()
+                    .is_some_and(|turn| matches!(turn.status, TurnStatus::InProgress))
         } else {
             false
         };
@@ -3568,6 +3615,11 @@ impl CodexMessageProcessor {
         set_thread_status_and_interrupt_stale_turns(
             &mut thread,
             thread_status,
+            has_live_in_progress_turn,
+        );
+        app_server_hooks().augment_thread_read(
+            &mut thread,
+            active_turn.as_ref(),
             has_live_in_progress_turn,
         );
         let response = ThreadReadResponse { thread };
@@ -3688,6 +3740,11 @@ impl CodexMessageProcessor {
         };
 
         let history_cwd = thread_history.session_cwd();
+        preserve_explicit_instruction_null_overrides(
+            &mut request_overrides,
+            &base_instructions,
+            &developer_instructions,
+        );
         let mut typesafe_overrides = self.build_thread_config_overrides(
             model,
             model_provider,
@@ -4244,11 +4301,16 @@ impl CodexMessageProcessor {
                 WindowsSandboxLevel::Disabled => {}
             }
         }
-        let request_overrides = if cli_overrides.is_empty() {
+        let mut request_overrides = if cli_overrides.is_empty() {
             None
         } else {
             Some(cli_overrides)
         };
+        preserve_explicit_instruction_null_overrides(
+            &mut request_overrides,
+            &base_instructions,
+            &developer_instructions,
+        );
         let mut typesafe_overrides = self.build_thread_config_overrides(
             model,
             model_provider,
@@ -4352,7 +4414,12 @@ impl CodexMessageProcessor {
             )
             .await
             {
-                Ok(summary) => summary_to_thread(summary),
+                Ok(summary) => {
+                    let mut thread = summary_to_thread(summary);
+                    thread.forked_from_id =
+                        forked_from_id_from_rollout(fork_rollout_path.as_path()).await;
+                    thread
+                }
                 Err(err) => {
                     self.send_internal_error(
                         request_id,
@@ -5051,7 +5118,14 @@ impl CodexMessageProcessor {
         params: ListMcpServerStatusParams,
         config: Config,
     ) {
-        let snapshot = collect_mcp_snapshot(&config).await;
+        let snapshot = collect_mcp_snapshot_with_detail(
+            &config,
+            match params.detail.unwrap_or(McpServerStatusDetail::Full) {
+                McpServerStatusDetail::Full => McpSnapshotDetail::Full,
+                McpServerStatusDetail::ToolsAndAuthOnly => McpSnapshotDetail::ToolsAndAuthOnly,
+            },
+        )
+        .await;
 
         let tools_by_server = group_tools_by_server(&snapshot.tools);
 
@@ -5065,6 +5139,13 @@ impl CodexMessageProcessor {
             .collect();
         server_names.sort();
         server_names.dedup();
+
+        let mut sanitized_server_name_counts = HashMap::new();
+        for name in &server_names {
+            *sanitized_server_name_counts
+                .entry(sanitize_responses_api_tool_name(name))
+                .or_insert(0usize) += 1;
+        }
 
         let total = server_names.len();
         let limit = params.limit.unwrap_or(total as u32).max(1) as usize;
@@ -5099,21 +5180,32 @@ impl CodexMessageProcessor {
 
         let data: Vec<McpServerStatus> = server_names[start..end]
             .iter()
-            .map(|name| McpServerStatus {
-                name: name.clone(),
-                tools: tools_by_server.get(name).cloned().unwrap_or_default(),
-                resources: snapshot.resources.get(name).cloned().unwrap_or_default(),
-                resource_templates: snapshot
-                    .resource_templates
-                    .get(name)
-                    .cloned()
-                    .unwrap_or_default(),
-                auth_status: snapshot
-                    .auth_statuses
-                    .get(name)
-                    .cloned()
-                    .unwrap_or(CoreMcpAuthStatus::Unsupported)
-                    .into(),
+            .map(|name| {
+                let sanitized_server_name = sanitize_responses_api_tool_name(name);
+                let tools = match sanitized_server_name_counts.get(&sanitized_server_name) {
+                    Some(1) => tools_by_server
+                        .get(&sanitized_server_name)
+                        .cloned()
+                        .unwrap_or_default(),
+                    _ => HashMap::new(),
+                };
+
+                McpServerStatus {
+                    name: name.clone(),
+                    tools,
+                    resources: snapshot.resources.get(name).cloned().unwrap_or_default(),
+                    resource_templates: snapshot
+                        .resource_templates
+                        .get(name)
+                        .cloned()
+                        .unwrap_or_default(),
+                    auth_status: snapshot
+                        .auth_statuses
+                        .get(name)
+                        .cloned()
+                        .unwrap_or(CoreMcpAuthStatus::Unsupported)
+                        .into(),
+                }
             })
             .collect();
 
@@ -5126,6 +5218,75 @@ impl CodexMessageProcessor {
         let response = ListMcpServerStatusResponse { data, next_cursor };
 
         outgoing.send_response(request_id, response).await;
+    }
+
+    async fn mcp_resource_read(
+        &self,
+        request_id: ConnectionRequestId,
+        params: McpResourceReadParams,
+    ) {
+        let (_, thread) = match self.load_thread(&params.thread_id).await {
+            Ok(loaded) => loaded,
+            Err(error) => {
+                self.outgoing.send_error(request_id, error).await;
+                return;
+            }
+        };
+
+        let fallback_cwd = thread.config_snapshot().await.cwd;
+        let config = match self.load_latest_config(Some(fallback_cwd)).await {
+            Ok(config) => config,
+            Err(error) => {
+                self.outgoing.send_error(request_id, error).await;
+                return;
+            }
+        };
+
+        let outgoing = Arc::clone(&self.outgoing);
+        tokio::spawn(async move {
+            Self::mcp_resource_read_task(outgoing, request_id, params, config).await;
+        });
+    }
+
+    async fn mcp_resource_read_task(
+        outgoing: Arc<OutgoingMessageSender>,
+        request_id: ConnectionRequestId,
+        params: McpResourceReadParams,
+        config: Config,
+    ) {
+        let result = read_mcp_resource(
+            &config,
+            &params.server,
+            ReadResourceRequestParams {
+                uri: params.uri.clone(),
+                meta: None,
+            },
+        )
+        .await;
+
+        match result {
+            Ok(result) => {
+                let response = McpResourceReadResponse {
+                    contents: result
+                        .contents
+                        .into_iter()
+                        .map(map_resource_content)
+                        .collect(),
+                };
+                outgoing.send_response(request_id, response).await;
+            }
+            Err(err) => {
+                let error = JSONRPCErrorError {
+                    code: INTERNAL_ERROR_CODE,
+                    message: format!(
+                        "failed to read MCP resource '{}' from '{}': {err}",
+                        params.uri, params.server
+                    ),
+                    data: None,
+                };
+                outgoing.send_error(request_id, error).await;
+            }
+        }
     }
 
     async fn send_invalid_request_error(&self, request_id: ConnectionRequestId, message: String) {
@@ -6050,8 +6211,8 @@ impl CodexMessageProcessor {
 
         match result {
             Ok(()) => {
-                self.thread_manager.plugins_manager().clear_cache();
-                self.thread_manager.skills_manager().clear_cache();
+                self.apply_config_mutation_follow_up(ConfigMutationKind::SkillsConfigWrite)
+                    .await;
                 self.outgoing
                     .send_response(
                         request_id,
@@ -6114,7 +6275,8 @@ impl CodexMessageProcessor {
                     }
                 };
 
-                self.clear_plugin_related_caches();
+                self.apply_config_mutation_follow_up(ConfigMutationKind::PluginInstall)
+                    .await;
 
                 let plugin_mcp_servers = load_plugin_mcp_servers(result.installed_path.as_path());
 
@@ -6273,7 +6435,8 @@ impl CodexMessageProcessor {
 
         match uninstall_result {
             Ok(()) => {
-                self.clear_plugin_related_caches();
+                self.apply_config_mutation_follow_up(ConfigMutationKind::PluginUninstall)
+                    .await;
                 self.outgoing
                     .send_response(request_id, PluginUninstallResponse {})
                     .await;
@@ -6418,6 +6581,9 @@ impl CodexMessageProcessor {
                     items: vec![],
                     error: None,
                     status: TurnStatus::InProgress,
+                    started_at: None,
+                    completed_at: None,
+                    duration_ms: None,
                 };
 
                 let response = TurnStartResponse { turn };
@@ -6753,6 +6919,9 @@ impl CodexMessageProcessor {
             items,
             error: None,
             status: TurnStatus::InProgress,
+            started_at: None,
+            completed_at: None,
+            duration_ms: None,
         }
     }
 
@@ -7683,6 +7852,11 @@ async fn handle_pending_thread_resume_request(
         thread_status,
         has_live_in_progress_turn,
     );
+    app_server_hooks().augment_thread_resume(
+        &mut thread,
+        active_turn.as_ref(),
+        has_live_in_progress_turn,
+    );
 
     match find_thread_name_by_id(codex_home, &conversation_id).await {
         Ok(thread_name) => thread.name = thread_name,
@@ -7796,6 +7970,33 @@ fn set_thread_status_and_interrupt_stale_turns(
         }
     }
     thread.status = status;
+}
+
+fn map_resource_content(content: ResourceContents) -> McpResourceContent {
+    match content {
+        ResourceContents::TextResourceContents {
+            uri,
+            mime_type,
+            text,
+            meta,
+        } => McpResourceContent::Text {
+            uri,
+            mime_type,
+            text,
+            meta: meta.and_then(|meta| serde_json::to_value(meta).ok()),
+        },
+        ResourceContents::BlobResourceContents {
+            uri,
+            mime_type,
+            blob,
+            meta,
+        } => McpResourceContent::Blob {
+            uri,
+            mime_type,
+            blob,
+            meta: meta.and_then(|meta| serde_json::to_value(meta).ok()),
+        },
+    }
 }
 
 fn collect_resume_override_mismatches(
@@ -7925,6 +8126,24 @@ fn merge_persisted_resume_metadata(
         request_overrides.get_or_insert_with(HashMap::new).insert(
             "model_reasoning_effort".to_string(),
             serde_json::Value::String(reasoning_effort.to_string()),
+        );
+    }
+}
+
+fn preserve_explicit_instruction_null_overrides(
+    request_overrides: &mut Option<HashMap<String, serde_json::Value>>,
+    base_instructions: &Option<Option<String>>,
+    developer_instructions: &Option<Option<String>>,
+) {
+    if matches!(base_instructions, Some(None)) {
+        request_overrides
+            .get_or_insert_with(HashMap::new)
+            .insert("base_instructions".to_string(), serde_json::Value::Null);
+    }
+    if matches!(developer_instructions, Some(None)) {
+        request_overrides.get_or_insert_with(HashMap::new).insert(
+            "developer_instructions".to_string(),
+            serde_json::Value::Null,
         );
     }
 }
@@ -8188,6 +8407,7 @@ async fn derive_config_from_params(
         .cloud_requirements(cloud_requirements.clone())
         .build()
         .await?;
+    normalize_explicit_empty_instruction_overrides(&mut config);
     apply_runtime_feature_enablement(&mut config, runtime_feature_enablement);
     Ok(config)
 }
@@ -8220,8 +8440,19 @@ async fn derive_config_for_cwd(
         .cloud_requirements(cloud_requirements.clone())
         .build()
         .await?;
+    normalize_explicit_empty_instruction_overrides(&mut config);
     apply_runtime_feature_enablement(&mut config, runtime_feature_enablement);
     Ok(config)
+}
+
+fn normalize_explicit_empty_instruction_overrides(config: &mut Config) {
+    // Explicit JSON null overrides currently transit the config layer as empty
+    // strings. Preserve empty base instructions as the "clear inherited
+    // instructions" sentinel, but drop empty developer instructions so we do
+    // not emit empty developer message items.
+    if config.developer_instructions.as_deref() == Some("") {
+        config.developer_instructions = None;
+    }
 }
 
 async fn read_history_cwd_from_state_db(
@@ -8567,6 +8798,14 @@ async fn load_thread_summary_for_rollout(
     Ok(thread)
 }
 
+async fn forked_from_id_from_rollout(path: &Path) -> Option<String> {
+    read_session_meta_line(path)
+        .await
+        .ok()
+        .and_then(|meta_line| meta_line.meta.forked_from_id)
+        .map(|thread_id| thread_id.to_string())
+}
+
 fn merge_mutable_thread_metadata(thread: &mut Thread, persisted_thread: Thread) {
     thread.git_info = persisted_thread.git_info;
 }
@@ -8648,6 +8887,7 @@ fn build_thread_from_snapshot(
     Thread {
         id: thread_id.to_string(),
         preview: String::new(),
+        forked_from_id: None,
         ephemeral: config_snapshot.ephemeral,
         model_provider: config_snapshot.model_provider_id.clone(),
         created_at: now,
@@ -8690,6 +8930,7 @@ pub(crate) fn summary_to_thread(summary: ConversationSummary) -> Thread {
     Thread {
         id: conversation_id.to_string(),
         preview,
+        forked_from_id: None,
         ephemeral: false,
         model_provider,
         created_at: created_at.map(|dt| dt.timestamp()).unwrap_or(0),
@@ -9018,6 +9259,28 @@ mod tests {
         assert_eq!(typesafe_overrides.model, None);
         assert_eq!(request_overrides, None);
         Ok(())
+    }
+
+    #[test]
+    fn preserve_explicit_instruction_null_overrides_inserts_null_entries() {
+        let mut request_overrides = None;
+
+        preserve_explicit_instruction_null_overrides(
+            &mut request_overrides,
+            &Some(None),
+            &Some(None),
+        );
+
+        assert_eq!(
+            request_overrides,
+            Some(HashMap::from([
+                ("base_instructions".to_string(), serde_json::Value::Null),
+                (
+                    "developer_instructions".to_string(),
+                    serde_json::Value::Null,
+                ),
+            ]))
+        );
     }
 
     #[test]
