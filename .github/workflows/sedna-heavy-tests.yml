@@ -169,6 +169,12 @@ jobs:
       lane_id: ${{ matrix.lane_id }}
       lane_phase: smoke_gate
       summary_title: ${{ matrix.lane_id }}
+      status_class: ${{ matrix.status_class }}
+      frontier_default: ${{ matrix.frontier_default }}
+      setup_class: ${{ matrix.setup_class }}
+      frontier_role: ${{ matrix.frontier_role }}
+      summary_family: ${{ matrix.summary_family }}
+      cost_class: ${{ matrix.cost_class }}
       run_command: ${{ matrix.run_command }}
       install_nextest: ${{ matrix.install_nextest }}
 
@@ -193,5 +199,11 @@ jobs:
       lane_id: ${{ matrix.lane_id }}
       lane_phase: downstream_lanes
       summary_title: ${{ matrix.lane_id }}
+      status_class: ${{ matrix.status_class }}
+      frontier_default: ${{ matrix.frontier_default }}
+      setup_class: ${{ matrix.setup_class }}
+      frontier_role: ${{ matrix.frontier_role }}
+      summary_family: ${{ matrix.summary_family }}
+      cost_class: ${{ matrix.cost_class }}
       run_command: ${{ matrix.run_command }}
       install_nextest: ${{ matrix.install_nextest }}

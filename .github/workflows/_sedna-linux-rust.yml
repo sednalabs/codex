@@ -90,11 +90,13 @@ jobs:
           path: .workflow-src
 
       - name: Set up Node.js for js_repl tests
+        if: ${{ inputs.setup_class != 'light' }}
         uses: actions/setup-node@v6
         with:
           node-version-file: codex-rs/node-version.txt
 
       - name: Install Linux build dependencies
+        if: ${{ inputs.setup_class != 'light' }}
         shell: bash
         run: |
           set -euo pipefail
@@ -105,10 +107,12 @@ jobs:
         uses: facebook/install-dotslash@v2
 
       - uses: dtolnay/rust-toolchain@1.93.0
+        if: ${{ inputs.setup_class != 'light' }}
         with:
           targets: x86_64-unknown-linux-gnu
 
       - name: Compute lockfile hash
+        if: ${{ inputs.setup_class != 'light' }}
         id: lockhash
         shell: bash
         run: |
@@ -117,6 +121,7 @@ jobs:
           echo "toolchain_hash=$(sha256sum rust-toolchain.toml | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
 
       - name: Restore cargo home cache
+        if: ${{ inputs.setup_class != 'light' }}
         id: cache_cargo_home_restore
         uses: actions/cache/restore@v5
         with:
@@ -128,11 +133,13 @@ jobs:
           key: cargo-home-linux-rust-${{ steps.lockhash.outputs.hash }}-${{ steps.lockhash.outputs.toolchain_hash }}
 
       - name: Install sccache
+        if: ${{ inputs.setup_class != 'light' }}
         uses: taiki-e/install-action@44c6d64aa62cd779e873306675c7a58e86d6d532 # v2
         with:
           tool: sccache
 
       - name: Configure sccache backend
+        if: ${{ inputs.setup_class != 'light' }}
         shell: bash
         run: |
           set -euo pipefail
@@ -146,11 +153,12 @@ jobs:
           fi
 
       - name: Enable sccache wrapper
+        if: ${{ inputs.setup_class != 'light' }}
         shell: bash
         run: echo "RUSTC_WRAPPER=sccache" >> "$GITHUB_ENV"
 
       - name: Restore sccache cache (fallback)
-        if: ${{ env.SCCACHE_GHA_ENABLED != 'true' }}
+        if: ${{ inputs.setup_class != 'light' && env.SCCACHE_GHA_ENABLED != 'true' }}
         id: cache_sccache_restore
         uses: actions/cache/restore@v5
         with:
@@ -161,7 +169,7 @@ jobs:
             sccache-linux-rust-${{ steps.lockhash.outputs.hash }}-
 
       - uses: taiki-e/install-action@44c6d64aa62cd779e873306675c7a58e86d6d532 # v2
-        if: ${{ inputs.install_nextest }}
+        if: ${{ inputs.setup_class != 'light' && inputs.install_nextest }}
         with:
           tool: nextest
           version: 0.9.103
@@ -172,7 +180,7 @@ jobs:
           tool: just
 
       - name: Enable unprivileged user namespaces (Linux)
-        if: ${{ inputs.install_nextest }}
+        if: ${{ inputs.setup_class != 'light' && inputs.install_nextest }}
         shell: bash
         run: |
           sudo sysctl -w kernel.unprivileged_userns_clone=1
@@ -324,7 +332,7 @@ jobs:
           retention-days: 3
 
       - name: Save cargo home cache
-        if: ${{ always() && !cancelled() && steps.cache_cargo_home_restore.outputs.cache-hit != 'true' }}
+        if: ${{ always() && !cancelled() && inputs.setup_class != 'light' && steps.cache_cargo_home_restore.outputs.cache-hit != 'true' }}
         continue-on-error: true
         uses: actions/cache/save@v5
         with:
@@ -336,7 +344,7 @@ jobs:
           key: cargo-home-linux-rust-${{ steps.lockhash.outputs.hash }}-${{ steps.lockhash.outputs.toolchain_hash }}
 
       - name: Save sccache cache (fallback)
-        if: ${{ always() && !cancelled() && env.SCCACHE_GHA_ENABLED != 'true' }}
+        if: ${{ always() && !cancelled() && inputs.setup_class != 'light' && env.SCCACHE_GHA_ENABLED != 'true' }}
         continue-on-error: true
         uses: actions/cache/save@v5
         with:
@@ -344,13 +352,13 @@ jobs:
           key: sccache-linux-rust-${{ steps.lockhash.outputs.hash }}-${{ steps.lockhash.outputs.toolchain_hash }}-${{ github.run_id }}
 
       - name: sccache stats
-        if: ${{ always() }}
+        if: ${{ always() && inputs.setup_class != 'light' }}
         continue-on-error: true
         shell: bash
         run: sccache --show-stats || true
 
       - name: sccache summary
-        if: ${{ always() }}
+        if: ${{ always() && inputs.setup_class != 'light' }}
         shell: bash
         run: |
           {
