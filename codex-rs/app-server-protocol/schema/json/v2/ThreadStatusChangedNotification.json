@@ -1,6 +1,5 @@
 {
-  "$schema": "http://json-schema.org/draft-07/schema#",
-  "definitions": {
+  "$defs": {
     "ThreadActiveFlag": {
       "enum": [
         "waitingOnApproval",
@@ -13,9 +12,7 @@
         {
           "properties": {
             "type": {
-              "enum": [
-                "notLoaded"
-              ],
+              "const": "notLoaded",
               "title": "NotLoadedThreadStatusType",
               "type": "string"
             }
@@ -29,9 +26,7 @@
         {
           "properties": {
             "type": {
-              "enum": [
-                "idle"
-              ],
+              "const": "idle",
               "title": "IdleThreadStatusType",
               "type": "string"
             }
@@ -45,9 +40,7 @@
         {
           "properties": {
             "type": {
-              "enum": [
-                "systemError"
-              ],
+              "const": "systemError",
               "title": "SystemErrorThreadStatusType",
               "type": "string"
             }
@@ -62,21 +55,19 @@
           "properties": {
             "activeFlags": {
               "items": {
-                "$ref": "#/definitions/ThreadActiveFlag"
+                "$ref": "#/$defs/ThreadActiveFlag"
               },
               "type": "array"
             },
             "type": {
-              "enum": [
-                "active"
-              ],
+              "const": "active",
               "title": "ActiveThreadStatusType",
               "type": "string"
             }
           },
           "required": [
-            "activeFlags",
-            "type"
+            "type",
+            "activeFlags"
           ],
           "title": "ActiveThreadStatus",
           "type": "object"
@@ -84,17 +75,18 @@
       ]
     }
   },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
   "properties": {
     "status": {
-      "$ref": "#/definitions/ThreadStatus"
+      "$ref": "#/$defs/ThreadStatus"
     },
     "threadId": {
       "type": "string"
     }
   },
   "required": [
-    "status",
-    "threadId"
+    "threadId",
+    "status"
   ],
   "title": "ThreadStatusChangedNotification",
   "type": "object"
