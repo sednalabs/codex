@@ -12,4 +12,4 @@ rustflags = ["-C", "link-arg=-Wl,--stack,8388608"]
 
 [alias]
 # Make CI-reported `suite::...` codex-core tests runnable without remembering `--test all`.
-core-suite-test = "test -p codex-core --test all"
+core-suite = "test -p codex-core --test all"
