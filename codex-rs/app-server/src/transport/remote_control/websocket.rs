@@ -836,7 +836,7 @@ mod tests {
     use codex_app_server_protocol::AuthMode;
     use codex_app_server_protocol::ConfigWarningNotification;
     use codex_app_server_protocol::ServerNotification;
-    use codex_config::types::AuthCredentialsStoreMode;
+    use codex_core::auth::AuthCredentialsStoreMode;
     use codex_core::test_support::auth_manager_from_auth;
     use codex_login::AuthDotJson;
     use codex_login::CodexAuth;
