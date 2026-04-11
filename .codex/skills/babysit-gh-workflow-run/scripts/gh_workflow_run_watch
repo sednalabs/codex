@@ -1,0 +1,48 @@
+#!/bin/sh
+set -eu
+
+case "$0" in
+  */*) SCRIPT_DIR=${0%/*} ;;
+  *) SCRIPT_DIR=. ;;
+esac
+SCRIPT_DIR=$(CDPATH= cd -- "$SCRIPT_DIR" && pwd)
+PYTHON_OVERRIDE=${GH_WORKFLOW_RUN_WATCH_PYTHON:-}
+REPO_OVERRIDE=${GH_WORKFLOW_RUN_WATCH_REPO:-${GITHUB_REPOSITORY:-${GH_REPO:-}}}
+
+resolve_python() {
+  if [ -n "$PYTHON_OVERRIDE" ] && [ -x "$PYTHON_OVERRIDE" ]; then
+    printf '%s\n' "$PYTHON_OVERRIDE"
+    return 0
+  fi
+
+  for candidate in \
+    "$(command -v python3 2>/dev/null || true)" \
+    "$(command -v python 2>/dev/null || true)" \
+    /usr/local/bin/python3 \
+    /opt/homebrew/bin/python3 \
+    /usr/bin/python3 \
+    /bin/python3 \
+    /usr/local/bin/python \
+    /opt/homebrew/bin/python \
+    /usr/bin/python \
+    /bin/python \
+    "$HOME/.pyenv/shims/python3" \
+    "$HOME/.pyenv/shims/python"
+  do
+    if [ -n "$candidate" ] && [ -x "$candidate" ]; then
+      printf '%s\n' "$candidate"
+      return 0
+    fi
+  done
+
+  printf '%s\n' "Unable to locate a Python interpreter for gh_workflow_run_watch." >&2
+  printf '%s\n' "Set GH_WORKFLOW_RUN_WATCH_PYTHON to an explicit interpreter path." >&2
+  exit 1
+}
+
+PYTHON=$(resolve_python)
+if [ -n "$REPO_OVERRIDE" ]; then
+  exec "$PYTHON" "$SCRIPT_DIR/gh_workflow_run_watch.py" --repo "$REPO_OVERRIDE" "$@"
+else
+  exec "$PYTHON" "$SCRIPT_DIR/gh_workflow_run_watch.py" "$@"
+fi
