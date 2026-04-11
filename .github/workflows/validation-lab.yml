@@ -456,7 +456,7 @@ jobs:
 
       - name: Download lane summary artifacts
         continue-on-error: true
-        uses: actions/download-artifact@v5
+        uses: actions/download-artifact@v8
         with:
           pattern: validation-lane-summary-*
           path: ${{ runner.temp }}/validation-lane-summaries
