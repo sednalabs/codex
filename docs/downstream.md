@@ -104,7 +104,7 @@ User-visible behavior:
 - Build-helper presets are local operator configuration on the shared host rather than a tracked repo contract.
 - When local presets are present, downstream instructions can reference them for reproducible validation and release steps on that host.
 - The default progressive path remains `just core-test-progressive`, which runs compile, carry-divergence, and usage-ledger smoke gates before the larger codex-core suite.
-- [`downstream-regression-matrix.md`](/home/grant/mmm/codex/docs/downstream-regression-matrix.md) maps each intentional divergence to a concrete smoke/progressive lane.
+- [`downstream-regression-matrix.md`](downstream-regression-matrix.md) maps each intentional divergence to a concrete smoke/progressive lane.
 - For routine build-helper runs, downstream local guidance prefers `wait_until_terminal=true` so the tool layer, not the model transcript, absorbs the wait.
 - Downstream docs and operator guidance prefer MCP tool surfaces that can block in-tool until useful state changes occur.
 - The intended execution model is: start work, block on the tool contract, resume on a terminal or timeout condition, rather than simulate a scheduler in the chat transcript.
