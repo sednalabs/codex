@@ -541,10 +541,10 @@ fn normalize_legacy_option_schema(value: &mut Value) {
 
             if let Some(Value::Array(types)) = map.get_mut("type") {
                 types.retain(|ty| ty != "null");
-                if types.len() == 1 {
-                    if let Some(single_type) = types.pop() {
-                        map.insert("type".to_string(), single_type);
-                    }
+                if types.len() == 1
+                    && let Some(single_type) = types.pop()
+                {
+                    map.insert("type".to_string(), single_type);
                 }
             }
 

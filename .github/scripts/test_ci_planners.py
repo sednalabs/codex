@@ -59,6 +59,11 @@ def parse_workflow_dispatch_lane_options(workflow_path: Path) -> list[str]:
     )
 
 
+def load_workflow_payload(workflow_path: Path) -> dict:
+    payload = yaml.load(workflow_path.read_text(encoding="utf-8"), Loader=yaml.BaseLoader)
+    return payload if isinstance(payload, dict) else {}
+
+
 class TempGitRepo:
     def __init__(self) -> None:
         self._tmpdir = tempfile.TemporaryDirectory()
@@ -288,6 +293,14 @@ class ValidationPlanScriptTests(unittest.TestCase):
             [lane["lane_id"] for lane in payload["selected_matrix"]["include"]],
             ["codex.tui-agent-picker-model-surface-targeted"],
         )
+
+    def test_validation_lab_selected_lanes_do_not_block_on_smoke_gate(self) -> None:
+        payload = load_workflow_payload(REPO_ROOT / ".github/workflows/validation-lab.yml")
+        jobs = payload.get("jobs") or {}
+
+        self.assertEqual((jobs.get("light_lanes") or {}).get("needs"), ["metadata"])
+        self.assertEqual((jobs.get("rust_lanes") or {}).get("needs"), ["metadata"])
+        self.assertEqual((jobs.get("heavy_lanes") or {}).get("needs"), ["metadata"])
 
 
 class RustCiModeScriptTests(unittest.TestCase):

@@ -301,12 +301,10 @@ jobs:
   light_lanes:
     needs:
       - metadata
-      - smoke_gate
     if: >-
       ${{
         always() &&
-        fromJson(needs.metadata.outputs.selected_light_lane_count) > 0 &&
-        (needs.smoke_gate.result == 'success' || needs.smoke_gate.result == 'skipped')
+        fromJson(needs.metadata.outputs.selected_light_lane_count) > 0
       }}
     strategy:
       fail-fast: ${{ fromJson(needs.metadata.outputs.matrix_fail_fast) }}
@@ -330,12 +328,10 @@ jobs:
   rust_lanes:
     needs:
       - metadata
-      - smoke_gate
     if: >-
       ${{
         always() &&
-        fromJson(needs.metadata.outputs.selected_rust_lane_count) > 0 &&
-        (needs.smoke_gate.result == 'success' || needs.smoke_gate.result == 'skipped')
+        fromJson(needs.metadata.outputs.selected_rust_lane_count) > 0
       }}
     strategy:
       fail-fast: ${{ fromJson(needs.metadata.outputs.matrix_fail_fast) }}
@@ -359,12 +355,10 @@ jobs:
   heavy_lanes:
     needs:
       - metadata
-      - smoke_gate
     if: >-
       ${{
         always() &&
-        fromJson(needs.metadata.outputs.selected_heavy_lane_count) > 0 &&
-        (needs.smoke_gate.result == 'success' || needs.smoke_gate.result == 'skipped')
+        fromJson(needs.metadata.outputs.selected_heavy_lane_count) > 0
       }}
     strategy:
       fail-fast: ${{ fromJson(needs.metadata.outputs.matrix_fail_fast) }}
