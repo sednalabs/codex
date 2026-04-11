@@ -266,8 +266,8 @@ def _resolve_remote_ref_sha(watcher, repo, ref):
 
 def _wait_for_ref_to_match_expected(watcher, repo, ref, expected_sha, *, start_time, attempts, max_wait_seconds, max_retries, poll_seconds):
     while True:
-        remote_head_sha = _query_remote_ref_sha(watcher, repo, ref)
-        if _head_sha_matches_prefix(remote_head_sha, expected_sha):
+        remote_head_sha = _resolve_remote_ref_sha(watcher, repo, ref)
+        if remote_head_sha and _head_sha_matches_prefix(remote_head_sha, expected_sha):
             return True, attempts
 
         if _budget_exceeded(start_time, attempts, max_wait_seconds, max_retries):
