@@ -109,6 +109,48 @@ class GeminiWatcherTests(unittest.TestCase):
         self.assertEqual(len(filtered), 1)
         self.assertEqual(filtered[0]["databaseId"], 200)
 
+    def test_list_workflow_runs_matches_expected_head_sha_case_insensitively(self):
+        runs = [
+            {
+                "databaseId": 100,
+                "headBranch": "integration/test",
+                "headSha": "A206CA4957946E4BA491D6C9EAEF4380243C9F07",
+                "status": "queued",
+                "conclusion": "",
+            }
+        ]
+        with patch.object(MODULE, "gh_json", return_value=runs):
+            filtered = MODULE.list_workflow_runs(
+                "owner/repo",
+                "validation-lab",
+                "integration/test",
+                "a206ca49",
+            )
+
+        self.assertEqual(len(filtered), 1)
+        self.assertEqual(filtered[0]["databaseId"], 100)
+
+    def test_list_workflow_runs_accepts_multiple_expected_head_sha_prefixes(self):
+        runs = [
+            {
+                "databaseId": 100,
+                "headBranch": "main",
+                "headSha": "b3710929c80726c970083486d691d3a5ebd17043",
+                "status": "queued",
+                "conclusion": "",
+            }
+        ]
+        with patch.object(MODULE, "gh_json", return_value=runs):
+            filtered = MODULE.list_workflow_runs(
+                "owner/repo",
+                "validation-lab",
+                "main",
+                ["deadbeef", "B3710929"],
+            )
+
+        self.assertEqual(len(filtered), 1)
+        self.assertEqual(filtered[0]["databaseId"], 100)
+
     def test_target_state_surfaces_dispatch_host_branch_mismatch(self):
         args = types.SimpleNamespace(
             no_gemini_diagnosis=True,
