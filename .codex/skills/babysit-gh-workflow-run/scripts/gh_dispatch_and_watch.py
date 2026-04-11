@@ -99,8 +99,11 @@ def parse_args():
     parser.add_argument(
         "--appearance-timeout-seconds",
         type=int,
-        default=0,
-        help="Pass-through to watcher --appearance-timeout-seconds.",
+        default=300,
+        help=(
+            "Pass-through to watcher --appearance-timeout-seconds. Defaults to 300s so a fresh "
+            "dispatch gets the same appearance warm-up window as the watcher."
+        ),
     )
     parser.add_argument(
         "--supersession-mode",

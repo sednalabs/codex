@@ -69,7 +69,7 @@ Optional:
 
 - repo override
 - explicit poll interval
-- appearance timeout override with `--appearance-timeout-seconds`
+- appearance timeout override with `--appearance-timeout-seconds` (defaults to 300s in `gh_dispatch_and_watch` so a freshly dispatched run gets a warm-up window)
 - completion behavior with `--wait-for` when used with `--watch-until-action`
 - hold until a failure target's run reaches status completed by adding `--require-terminal-run` with `--watch-until-action`
 - terminal-wait semantics in one flag: `--watch-until-terminal` (alias `--wait-until-terminal`) implies both `--watch-until-action` and `--require-terminal-run`

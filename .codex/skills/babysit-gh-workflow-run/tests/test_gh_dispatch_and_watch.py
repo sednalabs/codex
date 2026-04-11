@@ -500,9 +500,11 @@ class DispatchAndWatchTests(unittest.TestCase):
         self.assertIn(("profile", "targeted"), dispatch_mock.call_args.args[6])
         self.assertIn(("lane_set", "mcp"), dispatch_mock.call_args.args[6])
         self.assertIn(("lanes", "ops-mcp-http"), dispatch_mock.call_args.args[6])
+        self.assertEqual(select_mock.call_args.kwargs["appearance_timeout_seconds"], 300)
         self.assertEqual(calls["list_workflow_runs"][0][2], "main")
         self.assertIsNone(select_mock.call_args.kwargs["expected_head_sha"])
         self.assertEqual(select_mock.call_args.args[3], "main")
+        self.assertEqual(run_mock.call_args.kwargs["appearance_timeout"], 300)
         self.assertEqual(run_mock.call_args.args[1], 501)
 
     def test_effective_minimum_run_id_applies_override(self):
