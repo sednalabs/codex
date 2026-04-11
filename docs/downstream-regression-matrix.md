@@ -75,8 +75,9 @@ GitHub Actions lane naming (`.github/workflows/sedna-heavy-tests.yml`):
 - `rust-ci.yml` is the default PR fail-fast workflow.
   - It runs on `pull_request`, scheduled hygiene sweeps, and manual dispatch.
   - `CI results (required)` is the single required gate.
-  - On already-green PRs, tiny mapped follow-up pushes may reuse incremental
-    targeted validation instead of rerunning the full `rust-ci` bundle.
+  - Tiny mapped initial PRs and already-green follow-up pushes may reuse
+    incremental targeted validation instead of rerunning the full `rust-ci`
+    bundle.
   - Any ambiguous or high-risk follow-up falls back to the normal `rust-ci`
     path.
 - `sedna-heavy-tests.yml` is the downstream-heavy lane workflow.

@@ -43,9 +43,10 @@ artifacts.
 3. Commit and push.
 4. Use `validation-lab` for ordinary remote-first validation on `validation/*`, `integration/*`,
    or other non-PR refs.
-5. Let `rust-ci` handle routine PR gating; tiny already-green PR follow-up
-   pushes may route to incremental targeted validation automatically when the
-   latest delta is small and maps cleanly to one guarded seam.
+5. Let `rust-ci` handle routine PR gating; tiny initial PRs and already-green
+   PR follow-up pushes may route to incremental targeted validation
+   automatically when the relevant diff is small and maps cleanly to one
+   guarded seam.
 6. Use `validation-lab` `profile=targeted` with `lane_set=release` when the question is Linux
    release-build dependency or lockfile readiness under `--locked`.
 7. Use `sedna-heavy-tests` only when the change needs labeled PR heavy validation, merge-group
