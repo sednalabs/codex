@@ -50,6 +50,9 @@ Accept any of the following:
 - optional host-ref when the run host branch differs from the logical ref (common for `workflow_dispatch` with an input ref)
 - optional `--min-run-id` when using a workflow target directly to skip older stale matching runs
 - no ref argument: infer the current branch when possible
+- when passing a logical workflow input like `ref=target-branch`, `--ref auto` resolves to the
+  repository default branch so downstream-style dispatches do not need a separately pinned host
+  SHA
 - optional Gemini model override with `--gemini-model` when a failure should be summarized
 - optional `--no-gemini-diagnosis` to skip Gemini while still returning the structured diagnostic bundle
 - optional `--gemini-diagnosis` to override `GH_WORKFLOW_RUN_WATCH_DISABLE_GEMINI=1` for one run

@@ -394,6 +394,34 @@ class DispatchAndWatchTests(unittest.TestCase):
         )
         self.assertIsNone(mismatch)
 
+    def test_resolve_dispatch_ref_uses_default_branch_for_downstream_ref_input(self):
+        class FakeWatcher:
+            def __init__(self):
+                self.calls = []
+
+            def detect_ref(self, ref):
+                self.calls.append(("detect_ref", ref))
+                return "feature/branch"
+
+            def gh_json(self, args, repo=None):
+                self.calls.append((tuple(args), repo))
+                return {"defaultBranchRef": {"name": "main"}}
+
+        watcher = FakeWatcher()
+        self.assertEqual(
+            MODULE._resolve_dispatch_ref(watcher, "owner/repo", "auto", []),
+            "feature/branch",
+        )
+        self.assertIn(("detect_ref", "auto"), watcher.calls)
+
+        watcher = FakeWatcher()
+        self.assertEqual(
+            MODULE._resolve_dispatch_ref(watcher, "owner/repo", "auto", [("ref", "target-branch")]),
+            "main",
+        )
+        self.assertIn((("repo", "view", "--json", "defaultBranchRef"), "owner/repo"), watcher.calls)
+        self.assertNotIn(("detect_ref", "auto"), watcher.calls)
+
     def test_effective_minimum_run_id_applies_override(self):
         self.assertEqual(MODULE._effective_minimum_run_id(100, None), 101)
         self.assertEqual(MODULE._effective_minimum_run_id(100, 50), 101)

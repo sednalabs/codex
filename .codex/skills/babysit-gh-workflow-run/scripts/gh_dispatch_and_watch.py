@@ -51,7 +51,10 @@ def parse_args():
     parser.add_argument(
         "--ref",
         default="auto",
-        help="Branch or ref to dispatch against (default: auto).",
+        help=(
+            "Branch or ref to dispatch against (default: auto; downstream-style ref inputs "
+            "use the repository default branch when auto is left in place)."
+        ),
     )
     parser.add_argument(
         "--head-sha",
@@ -375,6 +378,45 @@ def _parse_dispatch_inputs(raw_inputs):
     return parsed
 
 
+def _dispatch_input_value(dispatch_inputs, key):
+    key = str(key or "").strip()
+    if not key:
+        return None
+    value = None
+    for input_key, input_value in dispatch_inputs or []:
+        if input_key == key:
+            value = input_value
+    return value
+
+
+def _resolve_default_dispatch_ref(watcher, repo):
+    try:
+        payload = watcher.gh_json(["repo", "view", "--json", "defaultBranchRef"], repo=repo)
+    except Exception:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    default_branch_ref = payload.get("defaultBranchRef")
+    if not isinstance(default_branch_ref, dict):
+        return None
+    branch = str(default_branch_ref.get("name") or "").strip()
+    return branch or None
+
+
+def _resolve_dispatch_ref(watcher, repo, requested_ref, dispatch_inputs):
+    if requested_ref != "auto":
+        return watcher.detect_ref(requested_ref)
+
+    # Downstream-style dispatches usually validate a logical ref input while the
+    # workflow itself must still be dispatched from the repo's default branch.
+    if _dispatch_input_value(dispatch_inputs, "ref"):
+        default_branch = _resolve_default_dispatch_ref(watcher, repo)
+        if default_branch:
+            return default_branch
+
+    return watcher.detect_ref(requested_ref)
+
+
 def _is_unexpected_supersession_input_error(err):
     message = str(err)
     return (
@@ -482,7 +524,12 @@ def main():
         )
 
     try:
-        ref = watcher.detect_ref(args.ref)
+        dispatch_inputs = _parse_dispatch_inputs(args.input)
+    except ValueError as err:
+        return _emit_error(str(err))
+
+    try:
+        ref = _resolve_dispatch_ref(watcher, repo, args.ref, dispatch_inputs)
     except watcher.GhCommandError as err:
         return _emit_error(err)
 
@@ -496,10 +543,6 @@ def main():
         return _emit_error("Expected head SHA is missing and `git rev-parse HEAD` returned nothing.")
     if not _is_head_sha_prefix(expected_sha):
         return _emit_error(f"Expected head SHA '{expected_sha}' is not a valid commit sha.")
-    try:
-        dispatch_inputs = _parse_dispatch_inputs(args.input)
-    except ValueError as err:
-        return _emit_error(str(err))
 
     start_time = time.monotonic()
     attempts = 0
