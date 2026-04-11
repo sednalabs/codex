@@ -14,6 +14,7 @@ use codex_core::file_watcher::FileWatcher;
 use codex_core::file_watcher::FileWatcherEvent;
 use codex_core::file_watcher::FileWatcherSubscriber;
 use codex_core::file_watcher::Receiver;
+#[cfg(test)]
 use codex_core::file_watcher::WatchPath;
 use codex_core::file_watcher::WatchRegistration;
 use codex_utils_absolute_path::AbsolutePathBuf;
