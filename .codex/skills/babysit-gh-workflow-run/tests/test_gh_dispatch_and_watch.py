@@ -5,7 +5,7 @@ import os
 import sys
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import call, patch
 
 
 MODULE_PATH = Path(
@@ -382,6 +382,22 @@ class DispatchAndWatchTests(unittest.TestCase):
         self.assertFalse(MODULE._is_head_sha_prefix("zzzzz"))
         self.assertFalse(MODULE._is_head_sha_prefix(""))
 
+    def test_head_sha_matches_prefix_is_case_insensitive(self):
+        self.assertTrue(
+            MODULE._head_sha_matches_prefix(
+                "A206CA4957946E4BA491D6C9EAEF4380243C9F07",
+                "a206ca49",
+            )
+        )
+
+    def test_head_sha_matches_prefix_accepts_multiple_prefix_candidates(self):
+        self.assertTrue(
+            MODULE._head_sha_matches_prefix(
+                "B3710929C80726C970083486D691D3A5EBD17043",
+                ["deadbeef", "b3710929"],
+            )
+        )
+
     def test_validate_expected_head_sha_against_remote_branch_skips_when_unknown(self):
         class FakeWatcher:
             def is_sha_like(self, value):
@@ -493,6 +509,13 @@ class DispatchAndWatchTests(unittest.TestCase):
         ), patch.object(
             MODULE, "_validate_expected_head_sha_against_remote_branch", return_value=None
         ) as validate_mock, patch.object(
+            MODULE,
+            "_resolve_remote_ref_sha",
+            side_effect=[
+                "b3710929c80726c970083486d691d3a5ebd17043",
+                "c5a55086fd9234a5938a8fc72e9b9d7812345678",
+            ],
+        ) as resolve_dispatch_sha_mock, patch.object(
             MODULE, "_wait_for_ref_to_match_expected", return_value=(True, 0)
         ) as wait_mock, patch.object(
             MODULE, "_dispatch_workflow"
@@ -510,6 +533,13 @@ class DispatchAndWatchTests(unittest.TestCase):
             "w3710-route-coverage-20260411",
             "a206ca4957946e4ba491d6c9eaef4380243c9f07",
         )
+        self.assertEqual(
+            resolve_dispatch_sha_mock.call_args_list,
+            [
+                call(watcher, "owner/repo", "main"),
+                call(watcher, "owner/repo", "main"),
+            ],
+        )
         wait_mock.assert_called_once()
         self.assertEqual(wait_mock.call_args.args[1:4], (
             "owner/repo",
@@ -522,7 +552,13 @@ class DispatchAndWatchTests(unittest.TestCase):
         self.assertIn(("lanes", "ops-mcp-http"), dispatch_mock.call_args.args[6])
         self.assertEqual(select_mock.call_args.kwargs["appearance_timeout_seconds"], 300)
         self.assertEqual(calls["list_workflow_runs"][0][2], "main")
-        self.assertIsNone(select_mock.call_args.kwargs["expected_head_sha"])
+        self.assertEqual(
+            select_mock.call_args.kwargs["expected_head_sha"],
+            [
+                "b3710929c80726c970083486d691d3a5ebd17043",
+                "c5a55086fd9234a5938a8fc72e9b9d7812345678",
+            ],
+        )
         self.assertEqual(select_mock.call_args.args[3], "main")
         self.assertEqual(run_mock.call_args.kwargs["appearance_timeout"], 300)
         self.assertEqual(run_mock.call_args.args[1], 501)
