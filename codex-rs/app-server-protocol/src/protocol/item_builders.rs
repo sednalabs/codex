@@ -153,7 +153,7 @@ pub fn build_item_from_guardian_event(
             Some(ThreadItem::CommandExecution {
                 id: assessment.id.clone(),
                 command,
-                cwd: cwd.clone(),
+                cwd,
                 process_id: None,
                 source: CommandExecutionSource::Agent,
                 status,
@@ -185,7 +185,7 @@ pub fn build_item_from_guardian_event(
             Some(ThreadItem::CommandExecution {
                 id: assessment.id.clone(),
                 command,
-                cwd: cwd.clone(),
+                cwd,
                 process_id: None,
                 source: CommandExecutionSource::Agent,
                 status,
