@@ -810,6 +810,7 @@
             "id",
             "server",
             "status",
+            "timedOut",
             "tool",
             "type"
           ],
@@ -952,7 +953,6 @@
             "receiverThreadIds",
             "senderThreadId",
             "status",
-            "timedOut",
             "tool",
             "type"
           ],
