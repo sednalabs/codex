@@ -1,5 +1,3 @@
-// GENERATED CODE! DO NOT MODIFY BY HAND!
-
 export type { Account } from "./Account";
 export type { AccountLoginCompletedNotification } from "./AccountLoginCompletedNotification";
 export type { AccountRateLimitsUpdatedNotification } from "./AccountRateLimitsUpdatedNotification";
@@ -123,7 +121,9 @@ export type { GetAccountResponse } from "./GetAccountResponse";
 export type { GitInfo } from "./GitInfo";
 export type { GrantedPermissionProfile } from "./GrantedPermissionProfile";
 export type { GuardianApprovalReview } from "./GuardianApprovalReview";
+export type { GuardianApprovalReviewAction } from "./GuardianApprovalReviewAction";
 export type { GuardianApprovalReviewStatus } from "./GuardianApprovalReviewStatus";
+export type { GuardianCommandSource } from "./GuardianCommandSource";
 export type { GuardianRiskLevel } from "./GuardianRiskLevel";
 export type { HookCompletedNotification } from "./HookCompletedNotification";
 export type { HookEventName } from "./HookEventName";
@@ -170,6 +170,8 @@ export type { McpElicitationTitledSingleSelectEnumSchema } from "./McpElicitatio
 export type { McpElicitationUntitledEnumItems } from "./McpElicitationUntitledEnumItems";
 export type { McpElicitationUntitledMultiSelectEnumSchema } from "./McpElicitationUntitledMultiSelectEnumSchema";
 export type { McpElicitationUntitledSingleSelectEnumSchema } from "./McpElicitationUntitledSingleSelectEnumSchema";
+export type { McpResourceReadParams } from "./McpResourceReadParams";
+export type { McpResourceReadResponse } from "./McpResourceReadResponse";
 export type { McpServerElicitationAction } from "./McpServerElicitationAction";
 export type { McpServerElicitationRequestParams } from "./McpServerElicitationRequestParams";
 export type { McpServerElicitationRequestResponse } from "./McpServerElicitationRequestResponse";
@@ -179,6 +181,7 @@ export type { McpServerOauthLoginResponse } from "./McpServerOauthLoginResponse"
 export type { McpServerRefreshResponse } from "./McpServerRefreshResponse";
 export type { McpServerStartupState } from "./McpServerStartupState";
 export type { McpServerStatus } from "./McpServerStatus";
+export type { McpServerStatusDetail } from "./McpServerStatusDetail";
 export type { McpServerStatusUpdatedNotification } from "./McpServerStatusUpdatedNotification";
 export type { McpToolCallError } from "./McpToolCallError";
 export type { McpToolCallProgressNotification } from "./McpToolCallProgressNotification";
@@ -344,3 +347,5 @@ export type { WindowsSandboxSetupStartParams } from "./WindowsSandboxSetupStartP
 export type { WindowsSandboxSetupStartResponse } from "./WindowsSandboxSetupStartResponse";
 export type { WindowsWorldWritableWarningNotification } from "./WindowsWorldWritableWarningNotification";
 export type { WriteStatus } from "./WriteStatus";
+
+

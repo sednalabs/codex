@@ -1,5 +1,3 @@
-// GENERATED CODE! DO NOT MODIFY BY HAND!
-
 export type { AbsolutePathBuf } from "./AbsolutePathBuf";
 export type { AgentPath } from "./AgentPath";
 export type { ApplyPatchApprovalParams } from "./ApplyPatchApprovalParams";
@@ -55,6 +53,7 @@ export type { ReasoningItemReasoningSummary } from "./ReasoningItemReasoningSumm
 export type { ReasoningSummary } from "./ReasoningSummary";
 export type { RequestId } from "./RequestId";
 export type { Resource } from "./Resource";
+export type { ResourceContent } from "./ResourceContent";
 export type { ResourceTemplate } from "./ResourceTemplate";
 export type { ResponseItem } from "./ResponseItem";
 export type { ReviewDecision } from "./ReviewDecision";
@@ -73,3 +72,5 @@ export type { WebSearchLocation } from "./WebSearchLocation";
 export type { WebSearchMode } from "./WebSearchMode";
 export type { WebSearchToolConfig } from "./WebSearchToolConfig";
 export * as v2 from "./v2";
+
+

@@ -103,6 +103,7 @@ pub fn write_schema_fixtures_with_options(
             ..crate::GenerateTsOptions::default()
         },
     )?;
+    normalize_typescript_fixture_tree(&typescript_out_dir)?;
     crate::generate_json_with_experimental(&json_out_dir, options.experimental_api)?;
 
     Ok(())
@@ -129,20 +130,47 @@ fn read_file_bytes(path: &Path) -> Result<Vec<u8>> {
         return Ok(normalized);
     }
     if path.extension().is_some_and(|ext| ext == "ts") {
-        // Windows checkouts (and some generators) may produce CRLF; normalize so the
-        // fixture test is platform-independent.
         let text = String::from_utf8(bytes)
             .with_context(|| format!("expected UTF-8 TypeScript in {}", path.display()))?;
-        let text = text.replace("\r\n", "\n").replace('\r', "\n");
-        // Fixture comparisons care about schema content, not whether the generator
-        // re-prepended the standard banner to every TypeScript file.
-        let text = text
-            .strip_prefix(GENERATED_TS_HEADER)
-            .unwrap_or(&text)
-            .to_string();
+        let text = normalize_typescript_fixture_text(text, /*strip_header*/ true);
         return Ok(text.into_bytes());
     }
     Ok(bytes)
+}
+
+fn normalize_typescript_fixture_text(text: String, strip_header: bool) -> String {
+    // Keep fixture comparisons platform-independent and ignore trailing whitespace churn
+    // from generators or prettier differences.
+    let text = text.replace("\r\n", "\n").replace('\r', "\n");
+    let text = if strip_header {
+        text.strip_prefix(GENERATED_TS_HEADER)
+            .unwrap_or(&text)
+            .to_string()
+    } else {
+        text
+    };
+    let mut normalized = String::with_capacity(text.len());
+    for line in text.split('\n') {
+        normalized.push_str(line.trim_end_matches([' ', '\t']));
+        normalized.push('\n');
+    }
+    if !text.ends_with('\n') && normalized.ends_with('\n') {
+        normalized.pop();
+    }
+    normalized
+}
+
+fn normalize_typescript_fixture_tree(root: &Path) -> Result<()> {
+    let files = collect_files_recursive(root)?;
+    for (rel, bytes) in files {
+        let path = root.join(rel);
+        let text = String::from_utf8(bytes)
+            .with_context(|| format!("expected UTF-8 TypeScript in {}", path.display()))?;
+        let normalized = normalize_typescript_fixture_text(text, /*strip_header*/ false);
+        std::fs::write(&path, normalized)
+            .with_context(|| format!("failed to rewrite {}", path.display()))?;
+    }
+    Ok(())
 }
 
 fn canonicalize_json(value: &Value) -> Value {
@@ -278,7 +306,7 @@ fn collect_typescript_fixture_file<T: TS + 'static + ?Sized>(
     let output_path = normalize_relative_fixture_path(&output_path);
     files.insert(
         output_path,
-        contents.replace("\r\n", "\n").replace('\r', "\n"),
+        normalize_typescript_fixture_text(contents, /*strip_header*/ false),
     );
 
     let mut visitor = TypeScriptFixtureCollector {
