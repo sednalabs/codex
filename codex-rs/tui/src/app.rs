@@ -6442,6 +6442,7 @@ async fn fetch_all_mcp_server_statuses(
                 params: ListMcpServerStatusParams {
                     cursor: cursor.clone(),
                     limit: Some(100),
+                    detail: None,
                 },
             })
             .await

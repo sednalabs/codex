@@ -1,8 +1,7 @@
 {
-  "$schema": "http://json-schema.org/draft-07/schema#",
-  "definitions": {
+  "$defs": {
     "AbsolutePathBuf": {
-      "description": "A path that is guaranteed to be absolute and normalized (though it is not guaranteed to be canonicalized or exist on the filesystem).\n\nIMPORTANT: When deserializing an `AbsolutePathBuf`, a base path must be set using [AbsolutePathBufGuard::new]. If no base path is set, the deserialization will fail unless the path being deserialized is already absolute.",
+      "description": "A path that is guaranteed to be absolute and normalized (though it is not\nguaranteed to be canonicalized or exist on the filesystem).\n\nIMPORTANT: When deserializing an `AbsolutePathBuf`, a base path must be set\nusing [AbsolutePathBufGuard::new]. If no base path is set, the\ndeserialization will fail unless the path being deserialized is already\nabsolute.",
       "type": "string"
     },
     "AnalyticsConfig": {
@@ -22,7 +21,7 @@
         "default_tools_approval_mode": {
           "anyOf": [
             {
-              "$ref": "#/definitions/AppToolApproval"
+              "$ref": "#/$defs/AppToolApproval"
             },
             {
               "type": "null"
@@ -54,7 +53,7 @@
         "tools": {
           "anyOf": [
             {
-              "$ref": "#/definitions/AppToolsConfig"
+              "$ref": "#/$defs/AppToolsConfig"
             },
             {
               "type": "null"
@@ -77,7 +76,7 @@
         "approval_mode": {
           "anyOf": [
             {
-              "$ref": "#/definitions/AppToolApproval"
+              "$ref": "#/$defs/AppToolApproval"
             },
             {
               "type": "null"
@@ -94,10 +93,13 @@
       "type": "object"
     },
     "AppToolsConfig": {
+      "additionalProperties": {
+        "$ref": "#/$defs/AppToolConfig"
+      },
       "type": "object"
     },
     "ApprovalsReviewer": {
-      "description": "Configures who approval requests are routed to for review. Examples include sandbox escapes, blocked network access, MCP approval prompts, and ARC escalations. Defaults to `user`. `guardian_subagent` uses a carefully prompted subagent to gather relevant context and apply a risk-based decision framework before approving or denying the request.",
+      "description": "Configures who approval requests are routed to for review. Examples\ninclude sandbox escapes, blocked network access, MCP approval prompts, and\nARC escalations. Defaults to `user`. `guardian_subagent` uses a carefully\nprompted subagent to gather relevant context and apply a risk-based\ndecision framework before approving or denying the request.",
       "enum": [
         "user",
         "guardian_subagent"
@@ -105,11 +107,14 @@
       "type": "string"
     },
     "AppsConfig": {
+      "additionalProperties": {
+        "$ref": "#/$defs/AppConfig"
+      },
       "properties": {
         "_default": {
           "anyOf": [
             {
-              "$ref": "#/definitions/AppsDefaultConfig"
+              "$ref": "#/$defs/AppsDefaultConfig"
             },
             {
               "type": "null"
@@ -172,9 +177,9 @@
                 }
               },
               "required": [
-                "mcp_elicitations",
+                "sandbox_approval",
                 "rules",
-                "sandbox_approval"
+                "mcp_elicitations"
               ],
               "type": "object"
             }
@@ -193,7 +198,7 @@
         "analytics": {
           "anyOf": [
             {
-              "$ref": "#/definitions/AnalyticsConfig"
+              "$ref": "#/$defs/AnalyticsConfig"
             },
             {
               "type": "null"
@@ -203,7 +208,7 @@
         "approval_policy": {
           "anyOf": [
             {
-              "$ref": "#/definitions/AskForApproval"
+              "$ref": "#/$defs/AskForApproval"
             },
             {
               "type": "null"
@@ -213,13 +218,24 @@
         "approvals_reviewer": {
           "anyOf": [
             {
-              "$ref": "#/definitions/ApprovalsReviewer"
+              "$ref": "#/$defs/ApprovalsReviewer"
             },
             {
               "type": "null"
             }
           ],
-          "description": "[UNSTABLE] Optional default for where approval requests are routed for review."
+          "description": "[UNSTABLE] Optional default for where approval requests are routed for\nreview."
+        },
+        "apps": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AppsConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
         },
         "compact_prompt": {
           "type": [
@@ -242,7 +258,7 @@
         "forced_login_method": {
           "anyOf": [
             {
-              "$ref": "#/definitions/ForcedLoginMethod"
+              "$ref": "#/$defs/ForcedLoginMethod"
             },
             {
               "type": "null"
@@ -284,7 +300,7 @@
         "model_reasoning_effort": {
           "anyOf": [
             {
-              "$ref": "#/definitions/ReasoningEffort"
+              "$ref": "#/$defs/ReasoningEffort"
             },
             {
               "type": "null"
@@ -294,7 +310,7 @@
         "model_reasoning_summary": {
           "anyOf": [
             {
-              "$ref": "#/definitions/ReasoningSummary"
+              "$ref": "#/$defs/ReasoningSummary"
             },
             {
               "type": "null"
@@ -304,7 +320,7 @@
         "model_verbosity": {
           "anyOf": [
             {
-              "$ref": "#/definitions/Verbosity"
+              "$ref": "#/$defs/Verbosity"
             },
             {
               "type": "null"
@@ -319,7 +335,7 @@
         },
         "profiles": {
           "additionalProperties": {
-            "$ref": "#/definitions/ProfileV2"
+            "$ref": "#/$defs/ProfileV2"
           },
           "default": {},
           "type": "object"
@@ -333,7 +349,7 @@
         "sandbox_mode": {
           "anyOf": [
             {
-              "$ref": "#/definitions/SandboxMode"
+              "$ref": "#/$defs/SandboxMode"
             },
             {
               "type": "null"
@@ -343,7 +359,7 @@
         "sandbox_workspace_write": {
           "anyOf": [
             {
-              "$ref": "#/definitions/SandboxWorkspaceWrite"
+              "$ref": "#/$defs/SandboxWorkspaceWrite"
             },
             {
               "type": "null"
@@ -353,7 +369,7 @@
         "service_tier": {
           "anyOf": [
             {
-              "$ref": "#/definitions/ServiceTier"
+              "$ref": "#/$defs/ServiceTier"
             },
             {
               "type": "null"
@@ -363,7 +379,7 @@
         "tools": {
           "anyOf": [
             {
-              "$ref": "#/definitions/ToolsV2"
+              "$ref": "#/$defs/ToolsV2"
             },
             {
               "type": "null"
@@ -373,7 +389,7 @@
         "web_search": {
           "anyOf": [
             {
-              "$ref": "#/definitions/WebSearchMode"
+              "$ref": "#/$defs/WebSearchMode"
             },
             {
               "type": "null"
@@ -393,23 +409,23 @@
           ]
         },
         "name": {
-          "$ref": "#/definitions/ConfigLayerSource"
+          "$ref": "#/$defs/ConfigLayerSource"
         },
         "version": {
           "type": "string"
         }
       },
       "required": [
-        "config",
         "name",
-        "version"
+        "version",
+        "config"
       ],
       "type": "object"
     },
     "ConfigLayerMetadata": {
       "properties": {
         "name": {
-          "$ref": "#/definitions/ConfigLayerSource"
+          "$ref": "#/$defs/ConfigLayerSource"
         },
         "version": {
           "type": "string"
@@ -433,17 +449,15 @@
               "type": "string"
             },
             "type": {
-              "enum": [
-                "mdm"
-              ],
+              "const": "mdm",
               "title": "MdmConfigLayerSourceType",
               "type": "string"
             }
           },
           "required": [
+            "type",
             "domain",
-            "key",
-            "type"
+            "key"
           ],
           "title": "MdmConfigLayerSource",
           "type": "object"
@@ -452,71 +466,57 @@
           "description": "Managed config layer from a file (usually `managed_config.toml`).",
           "properties": {
             "file": {
-              "allOf": [
-                {
-                  "$ref": "#/definitions/AbsolutePathBuf"
-                }
-              ],
-              "description": "This is the path to the system config.toml file, though it is not guaranteed to exist."
+              "$ref": "#/$defs/AbsolutePathBuf",
+              "description": "This is the path to the system config.toml file, though it is not\nguaranteed to exist."
             },
             "type": {
-              "enum": [
-                "system"
-              ],
+              "const": "system",
               "title": "SystemConfigLayerSourceType",
               "type": "string"
             }
           },
           "required": [
-            "file",
-            "type"
+            "type",
+            "file"
           ],
           "title": "SystemConfigLayerSource",
           "type": "object"
         },
         {
-          "description": "User config layer from $CODEX_HOME/config.toml. This layer is special in that it is expected to be: - writable by the user - generally outside the workspace directory",
+          "description": "User config layer from $CODEX_HOME/config.toml. This layer is special\nin that it is expected to be:\n- writable by the user\n- generally outside the workspace directory",
           "properties": {
             "file": {
-              "allOf": [
-                {
-                  "$ref": "#/definitions/AbsolutePathBuf"
-                }
-              ],
-              "description": "This is the path to the user's config.toml file, though it is not guaranteed to exist."
+              "$ref": "#/$defs/AbsolutePathBuf",
+              "description": "This is the path to the user's config.toml file, though it is not\nguaranteed to exist."
             },
             "type": {
-              "enum": [
-                "user"
-              ],
+              "const": "user",
               "title": "UserConfigLayerSourceType",
               "type": "string"
             }
           },
           "required": [
-            "file",
-            "type"
+            "type",
+            "file"
           ],
           "title": "UserConfigLayerSource",
           "type": "object"
         },
         {
-          "description": "Path to a .codex/ folder within a project. There could be multiple of these between `cwd` and the project/repo root.",
+          "description": "Path to a .codex/ folder within a project. There could be multiple of\nthese between `cwd` and the project/repo root.",
           "properties": {
             "dotCodexFolder": {
-              "$ref": "#/definitions/AbsolutePathBuf"
+              "$ref": "#/$defs/AbsolutePathBuf"
             },
             "type": {
-              "enum": [
-                "project"
-              ],
+              "const": "project",
               "title": "ProjectConfigLayerSourceType",
               "type": "string"
             }
           },
           "required": [
-            "dotCodexFolder",
-            "type"
+            "type",
+            "dotCodexFolder"
           ],
           "title": "ProjectConfigLayerSource",
           "type": "object"
@@ -525,9 +525,7 @@
           "description": "Session-layer overrides supplied via `-c`/`--config`.",
           "properties": {
             "type": {
-              "enum": [
-                "sessionFlags"
-              ],
+              "const": "sessionFlags",
               "title": "SessionFlagsConfigLayerSourceType",
               "type": "string"
             }
@@ -539,22 +537,20 @@
           "type": "object"
         },
         {
-          "description": "`managed_config.toml` was designed to be a config that was loaded as the last layer on top of everything else. This scheme did not quite work out as intended, but we keep this variant as a \"best effort\" while we phase out `managed_config.toml` in favor of `requirements.toml`.",
+          "description": "`managed_config.toml` was designed to be a config that was loaded\nas the last layer on top of everything else. This scheme did not quite\nwork out as intended, but we keep this variant as a \"best effort\" while\nwe phase out `managed_config.toml` in favor of `requirements.toml`.",
           "properties": {
             "file": {
-              "$ref": "#/definitions/AbsolutePathBuf"
+              "$ref": "#/$defs/AbsolutePathBuf"
             },
             "type": {
-              "enum": [
-                "legacyManagedConfigTomlFromFile"
-              ],
+              "const": "legacyManagedConfigTomlFromFile",
               "title": "LegacyManagedConfigTomlFromFileConfigLayerSourceType",
               "type": "string"
             }
           },
           "required": [
-            "file",
-            "type"
+            "type",
+            "file"
           ],
           "title": "LegacyManagedConfigTomlFromFileConfigLayerSource",
           "type": "object"
@@ -562,9 +558,7 @@
         {
           "properties": {
             "type": {
-              "enum": [
-                "legacyManagedConfigTomlFromMdm"
-              ],
+              "const": "legacyManagedConfigTomlFromMdm",
               "title": "LegacyManagedConfigTomlFromMdmConfigLayerSourceType",
               "type": "string"
             }
@@ -590,7 +584,7 @@
         "approval_policy": {
           "anyOf": [
             {
-              "$ref": "#/definitions/AskForApproval"
+              "$ref": "#/$defs/AskForApproval"
             },
             {
               "type": "null"
@@ -600,13 +594,13 @@
         "approvals_reviewer": {
           "anyOf": [
             {
-              "$ref": "#/definitions/ApprovalsReviewer"
+              "$ref": "#/$defs/ApprovalsReviewer"
             },
             {
               "type": "null"
             }
           ],
-          "description": "[UNSTABLE] Optional profile-level override for where approval requests are routed for review. If omitted, the enclosing config default is used."
+          "description": "[UNSTABLE] Optional profile-level override for where approval requests\nare routed for review. If omitted, the enclosing config default is\nused."
         },
         "chatgpt_base_url": {
           "type": [
@@ -629,7 +623,7 @@
         "model_reasoning_effort": {
           "anyOf": [
             {
-              "$ref": "#/definitions/ReasoningEffort"
+              "$ref": "#/$defs/ReasoningEffort"
             },
             {
               "type": "null"
@@ -639,7 +633,7 @@
         "model_reasoning_summary": {
           "anyOf": [
             {
-              "$ref": "#/definitions/ReasoningSummary"
+              "$ref": "#/$defs/ReasoningSummary"
             },
             {
               "type": "null"
@@ -649,7 +643,7 @@
         "model_verbosity": {
           "anyOf": [
             {
-              "$ref": "#/definitions/Verbosity"
+              "$ref": "#/$defs/Verbosity"
             },
             {
               "type": "null"
@@ -659,7 +653,7 @@
         "service_tier": {
           "anyOf": [
             {
-              "$ref": "#/definitions/ServiceTier"
+              "$ref": "#/$defs/ServiceTier"
             },
             {
               "type": "null"
@@ -669,7 +663,7 @@
         "tools": {
           "anyOf": [
             {
-              "$ref": "#/definitions/ToolsV2"
+              "$ref": "#/$defs/ToolsV2"
             },
             {
               "type": "null"
@@ -679,7 +673,7 @@
         "web_search": {
           "anyOf": [
             {
-              "$ref": "#/definitions/WebSearchMode"
+              "$ref": "#/$defs/WebSearchMode"
             },
             {
               "type": "null"
@@ -702,7 +696,7 @@
       "type": "string"
     },
     "ReasoningSummary": {
-      "description": "A summary of the reasoning performed by the model. This can be useful for debugging and understanding the model's reasoning process. See https://platform.openai.com/docs/guides/reasoning?api-mode=responses#reasoning-summaries",
+      "description": "A summary of the reasoning performed by the model. This can be useful for\ndebugging and understanding the model's reasoning process.\nSee https://platform.openai.com/docs/guides/reasoning?api-mode=responses#reasoning-summaries",
       "oneOf": [
         {
           "enum": [
@@ -713,10 +707,8 @@
           "type": "string"
         },
         {
+          "const": "none",
           "description": "Option to disable reasoning summaries.",
-          "enum": [
-            "none"
-          ],
           "type": "string"
         }
       ]
@@ -771,7 +763,7 @@
         "web_search": {
           "anyOf": [
             {
-              "$ref": "#/definitions/WebSearchToolConfig"
+              "$ref": "#/$defs/WebSearchToolConfig"
             },
             {
               "type": "null"
@@ -782,7 +774,7 @@
       "type": "object"
     },
     "Verbosity": {
-      "description": "Controls output length/detail on GPT-5 models via the Responses API. Serialized with lowercase values to match the OpenAI API.",
+      "description": "Controls output length/detail on GPT-5 models via the Responses API.\nSerialized with lowercase values to match the OpenAI API.",
       "enum": [
         "low",
         "medium",
@@ -851,7 +843,7 @@
         "context_size": {
           "anyOf": [
             {
-              "$ref": "#/definitions/WebSearchContextSize"
+              "$ref": "#/$defs/WebSearchContextSize"
             },
             {
               "type": "null"
@@ -861,7 +853,7 @@
         "location": {
           "anyOf": [
             {
-              "$ref": "#/definitions/WebSearchLocation"
+              "$ref": "#/$defs/WebSearchLocation"
             },
             {
               "type": "null"
@@ -872,13 +864,14 @@
       "type": "object"
     }
   },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
   "properties": {
     "config": {
-      "$ref": "#/definitions/Config"
+      "$ref": "#/$defs/Config"
     },
     "layers": {
       "items": {
-        "$ref": "#/definitions/ConfigLayer"
+        "$ref": "#/$defs/ConfigLayer"
       },
       "type": [
         "array",
@@ -887,7 +880,7 @@
     },
     "origins": {
       "additionalProperties": {
-        "$ref": "#/definitions/ConfigLayerMetadata"
+        "$ref": "#/$defs/ConfigLayerMetadata"
       },
       "type": "object"
     }
