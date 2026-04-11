@@ -9,6 +9,7 @@ use codex_features::Feature;
 use codex_protocol::config_types::ReasoningSummary;
 use codex_protocol::openai_models::ConfigShellToolType;
 use codex_protocol::openai_models::ModelInfo;
+use codex_protocol::openai_models::ModelInfoUpgrade;
 use codex_protocol::openai_models::ModelVisibility;
 use codex_protocol::openai_models::ModelsResponse;
 use codex_protocol::openai_models::ReasoningEffort;
@@ -91,6 +92,30 @@ fn test_model_info(
     }
 }
 
+fn test_model_info_with_upgrade(
+    slug: &str,
+    display_name: &str,
+    description: &str,
+    visibility: ModelVisibility,
+    default_reasoning_level: ReasoningEffort,
+    supported_reasoning_levels: Vec<ReasoningEffortPreset>,
+    upgrade_model: &str,
+) -> ModelInfo {
+    let mut model = test_model_info(
+        slug,
+        display_name,
+        description,
+        visibility,
+        default_reasoning_level,
+        supported_reasoning_levels,
+    );
+    model.upgrade = Some(ModelInfoUpgrade {
+        model: upgrade_model.to_string(),
+        migration_markdown: String::new(),
+    });
+    model
+}
+
 async fn wait_for_model_available(manager: &Arc<ModelsManager>, slug: &str) {
     let deadline = Instant::now() + Duration::from_secs(2);
     loop {
@@ -140,6 +165,24 @@ async fn spawn_agent_description_lists_visible_models_and_reasoning_efforts() ->
                         description: "Not visible".to_string(),
                     }],
                 ),
+                test_model_info_with_upgrade(
+                    "gpt-5.1-codex-mini",
+                    "gpt-5.1-codex-mini",
+                    "Optimized for Codex. Cheaper, faster, but less capable.",
+                    ModelVisibility::Hide,
+                    ReasoningEffort::Medium,
+                    vec![
+                        ReasoningEffortPreset {
+                            effort: ReasoningEffort::Low,
+                            description: "Fast responses".to_string(),
+                        },
+                        ReasoningEffortPreset {
+                            effort: ReasoningEffort::Medium,
+                            description: "Balanced default".to_string(),
+                        },
+                    ],
+                    "gpt-5.4",
+                ),
             ],
         },
     )
@@ -183,6 +226,12 @@ async fn spawn_agent_description_lists_visible_models_and_reasoning_efforts() ->
     assert!(
         !description.contains("Hidden Model"),
         "hidden picker model should be omitted from spawn_agent description: {description:?}"
+    );
+    assert!(
+        description.contains(
+            "- gpt-5.1-codex-mini (`gpt-5.1-codex-mini`): Optimized for Codex. Cheaper, faster, but less capable."
+        ),
+        "expected upgradeable legacy model in spawn_agent description: {description:?}"
     );
     assert!(
         description.contains(

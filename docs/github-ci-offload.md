@@ -100,6 +100,26 @@ artifacts.
    - Use `validation-lab` `lane_set=release` when the question is specifically the Linux
      `cargo build --locked --release` path without needing packaging or publishing.
 
+### `validation-lab` dispatch rule
+
+`validation-lab` is an intentional downstream operator workflow. Dispatch it from downstream `main`,
+then pass the branch, tag, or commit you want to validate via the workflow input `ref`.
+
+Use:
+
+```bash
+gh workflow run validation-lab.yml \
+  --repo sednalabs/codex \
+  --ref main \
+  -f ref=<branch-under-test> \
+  -f profile=targeted \
+  -f lane_set=ui-protocol
+```
+
+Do not assume `gh workflow run validation-lab --ref <feature-branch> ...` will work. Some downstream
+branches intentionally do not carry the latest workflow file, so GitHub may resolve the workflow on
+that branch first and return a misleading missing-`workflow_dispatch` error.
+
 ## Workflow replacement matrix
 
 | Workflow | Status | Sedna role |
