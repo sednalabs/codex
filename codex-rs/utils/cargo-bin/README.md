@@ -9,8 +9,9 @@ behavior consistent in local and remote builds on all platforms. Bazel sets
 Function behavior:
 - `cargo_bin`: reads `CARGO_BIN_EXE_*` environment variables (set by Cargo or
   Bazel) and resolves them via the runfiles manifest when `RUNFILES_MANIFEST_FILE`
-  is present. When not under runfiles, it only accepts absolute paths from
-  `CARGO_BIN_EXE_*` and returns an error otherwise.
+  is present. When not under runfiles, it accepts absolute paths from
+  `CARGO_BIN_EXE_*` and otherwise falls back to the Cargo target-directory path
+  derived from the current test binary.
 - `find_resource!`: used by tests to locate fixtures. It chooses the Bazel
   runfiles resolution path when `RUNFILES_MANIFEST_FILE` is set, otherwise it
   falls back to a `CARGO_MANIFEST_DIR`-relative path for Cargo runs.
