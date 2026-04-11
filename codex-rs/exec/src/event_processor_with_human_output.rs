@@ -733,6 +733,9 @@ mod tests {
                     }],
                     status: TurnStatus::Completed,
                     error: None,
+                    started_at: None,
+                    completed_at: None,
+                    duration_ms: None,
                 },
             },
         ));
@@ -777,6 +780,9 @@ mod tests {
                     }],
                     status: TurnStatus::Completed,
                     error: None,
+                    started_at: None,
+                    completed_at: None,
+                    duration_ms: None,
                 },
             },
         ));
@@ -817,6 +823,9 @@ mod tests {
                     items: Vec::new(),
                     status: TurnStatus::Completed,
                     error: None,
+                    started_at: None,
+                    completed_at: None,
+                    duration_ms: None,
                 },
             },
         ));
@@ -857,6 +866,9 @@ mod tests {
                     items: Vec::new(),
                     status: TurnStatus::Failed,
                     error: None,
+                    started_at: None,
+                    completed_at: None,
+                    duration_ms: None,
                 },
             },
         ));
@@ -898,6 +910,9 @@ mod tests {
                     items: Vec::new(),
                     status: TurnStatus::Interrupted,
                     error: None,
+                    started_at: None,
+                    completed_at: None,
+                    duration_ms: None,
                 },
             },
         ));
