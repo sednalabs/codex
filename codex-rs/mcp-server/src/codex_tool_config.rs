@@ -10,7 +10,8 @@ use codex_utils_json_to_toml::json_to_toml;
 use rmcp::model::JsonObject;
 use rmcp::model::Tool;
 use schemars::JsonSchema;
-use schemars::r#gen::SchemaSettings;
+use schemars::Schema;
+use schemars::generate::SchemaSettings;
 use serde::Deserialize;
 use serde::Serialize;
 use std::collections::HashMap;
@@ -111,7 +112,6 @@ pub(crate) fn create_tool_for_codex_tool_call_param() -> Tool {
     let schema = SchemaSettings::draft2019_09()
         .with(|s| {
             s.inline_subschemas = true;
-            s.option_add_null_type = false;
         })
         .into_generator()
         .into_root_schema_for::<CodexToolCallParam>();
@@ -236,7 +236,6 @@ pub(crate) fn create_tool_for_codex_tool_call_reply_param() -> Tool {
     let schema = SchemaSettings::draft2019_09()
         .with(|s| {
             s.inline_subschemas = true;
-            s.option_add_null_type = false;
         })
         .into_generator()
         .into_root_schema_for::<CodexToolCallReplyParam>();
@@ -258,12 +257,10 @@ pub(crate) fn create_tool_for_codex_tool_call_reply_param() -> Tool {
     }
 }
 
-fn create_tool_input_schema(
-    schema: schemars::schema::RootSchema,
-    panic_message: &str,
-) -> Arc<JsonObject> {
+fn create_tool_input_schema(schema: Schema, panic_message: &str) -> Arc<JsonObject> {
     #[expect(clippy::expect_used)]
-    let schema_value = serde_json::to_value(&schema).expect(panic_message);
+    let mut schema_value = serde_json::to_value(&schema).expect(panic_message);
+    normalize_legacy_option_schema(&mut schema_value);
     let mut schema_object = match schema_value {
         serde_json::Value::Object(object) => object,
         _ => panic!("tool schema should serialize to a JSON object"),
@@ -280,6 +277,79 @@ fn create_tool_input_schema(
     }
 
     Arc::new(input_schema)
+}
+
+fn normalize_legacy_option_schema(value: &mut serde_json::Value) {
+    match value {
+        serde_json::Value::Array(items) => {
+            for item in items {
+                normalize_legacy_option_schema(item);
+            }
+        }
+        serde_json::Value::Object(map) => {
+            for child in map.values_mut() {
+                normalize_legacy_option_schema(child);
+            }
+
+            let default_is_null = map.get("default").is_some_and(serde_json::Value::is_null);
+            if !default_is_null {
+                return;
+            }
+
+            if let Some(serde_json::Value::Array(types)) = map.get_mut("type") {
+                types.retain(|ty| ty != "null");
+                if types.len() == 1 {
+                    if let Some(single_type) = types.pop() {
+                        map.insert("type".to_string(), single_type);
+                    }
+                }
+            }
+
+            let Some(any_of) = map.remove("anyOf") else {
+                return;
+            };
+            let serde_json::Value::Array(variants) = any_of else {
+                map.insert("anyOf".to_string(), any_of);
+                return;
+            };
+
+            let mut non_null_variants = Vec::new();
+            let mut removed_null_variant = false;
+            for variant in variants {
+                if is_null_schema_value(&variant) {
+                    removed_null_variant = true;
+                } else {
+                    non_null_variants.push(variant);
+                }
+            }
+
+            if removed_null_variant && !non_null_variants.is_empty() {
+                map.insert(
+                    "allOf".to_string(),
+                    serde_json::Value::Array(non_null_variants),
+                );
+            } else {
+                map.insert(
+                    "anyOf".to_string(),
+                    serde_json::Value::Array(non_null_variants),
+                );
+            }
+        }
+        _ => {}
+    }
+}
+
+fn is_null_schema_value(value: &serde_json::Value) -> bool {
+    match value {
+        serde_json::Value::Object(map) => match map.get("type") {
+            Some(serde_json::Value::String(kind)) => kind == "null",
+            Some(serde_json::Value::Array(types)) => {
+                !types.is_empty() && types.iter().all(|ty| ty == "null")
+            }
+            _ => map.get("const").is_some_and(serde_json::Value::is_null),
+        },
+        _ => false,
+    }
 }
 
 #[cfg(test)]

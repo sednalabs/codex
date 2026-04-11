@@ -6442,6 +6442,7 @@ async fn fetch_all_mcp_server_statuses(
                 params: ListMcpServerStatusParams {
                     cursor: cursor.clone(),
                     limit: Some(100),
+                    detail: None,
                 },
             })
             .await
@@ -9500,6 +9501,7 @@ guardian_approval = true
             ServerNotification::ThreadStarted(ThreadStartedNotification {
                 thread: Thread {
                     id: agent_thread_id.to_string(),
+                    forked_from_id: None,
                     preview: "agent thread".to_string(),
                     ephemeral: false,
                     model_provider: "agent-provider".to_string(),
@@ -9583,6 +9585,7 @@ guardian_approval = true
             ServerNotification::ThreadStarted(ThreadStartedNotification {
                 thread: Thread {
                     id: agent_thread_id.to_string(),
+                    forked_from_id: None,
                     preview: "agent thread".to_string(),
                     ephemeral: false,
                     model_provider: "agent-provider".to_string(),
@@ -10048,6 +10051,9 @@ guardian_approval = true
             items,
             status,
             error: None,
+            started_at: None,
+            completed_at: None,
+            duration_ms: None,
         }
     }
 
@@ -11410,6 +11416,9 @@ guardian_approval = true
                         }],
                         status: TurnStatus::Completed,
                         error: None,
+                        started_at: None,
+                        completed_at: None,
+                        duration_ms: None,
                     },
                     Turn {
                         id: "turn-2".to_string(),
@@ -11430,6 +11439,9 @@ guardian_approval = true
                         ],
                         status: TurnStatus::Completed,
                         error: None,
+                        started_at: None,
+                        completed_at: None,
+                        duration_ms: None,
                     },
                 ],
                 events: Vec::new(),
@@ -11673,6 +11685,7 @@ guardian_approval = true
             &ThreadRollbackResponse {
                 thread: Thread {
                     id: thread_id.to_string(),
+                    forked_from_id: None,
                     preview: String::new(),
                     ephemeral: false,
                     model_provider: "openai".to_string(),

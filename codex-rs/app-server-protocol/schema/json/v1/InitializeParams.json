@@ -1,6 +1,5 @@
 {
-  "$schema": "http://json-schema.org/draft-07/schema#",
-  "definitions": {
+  "$defs": {
     "ClientInfo": {
       "properties": {
         "name": {
@@ -31,7 +30,7 @@
           "type": "boolean"
         },
         "optOutNotificationMethods": {
-          "description": "Exact notification method names that should be suppressed for this connection (for example `thread/started`).",
+          "description": "Exact notification method names that should be suppressed for this\nconnection (for example `thread/started`).",
           "items": {
             "type": "string"
           },
@@ -44,11 +43,12 @@
       "type": "object"
     }
   },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
   "properties": {
     "capabilities": {
       "anyOf": [
         {
-          "$ref": "#/definitions/InitializeCapabilities"
+          "$ref": "#/$defs/InitializeCapabilities"
         },
         {
           "type": "null"
@@ -56,7 +56,7 @@
       ]
     },
     "clientInfo": {
-      "$ref": "#/definitions/ClientInfo"
+      "$ref": "#/$defs/ClientInfo"
     }
   },
   "required": [

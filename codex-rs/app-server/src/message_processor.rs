@@ -11,6 +11,8 @@ use crate::codex_message_processor::CodexMessageProcessorArgs;
 use crate::config_api::ConfigApi;
 use crate::error_code::INTERNAL_ERROR_CODE;
 use crate::error_code::INVALID_REQUEST_ERROR_CODE;
+use crate::extensions::ConfigMutationKind;
+use crate::extensions::app_server_hooks;
 use crate::external_agent_config_api::ExternalAgentConfigApi;
 use crate::fs_api::FsApi;
 use crate::fs_watch::FsWatchManager;
@@ -261,11 +263,7 @@ impl MessageProcessor {
             feedback,
             log_db,
         });
-        // Keep plugin startup warmups aligned at app-server startup.
-        // TODO(xl): Move into PluginManager once this no longer depends on config feature gating.
-        thread_manager
-            .plugins_manager()
-            .maybe_start_plugin_startup_tasks_for_config(&config, auth_manager.clone());
+        app_server_hooks().on_app_server_start(&thread_manager, &config, auth_manager.clone());
         let config_api = ConfigApi::new(
             config.codex_home.clone(),
             cli_overrides,
@@ -872,9 +870,8 @@ impl MessageProcessor {
     ) {
         match self.config_api.write_value(params).await {
             Ok(response) => {
-                self.codex_message_processor.clear_plugin_related_caches();
                 self.codex_message_processor
-                    .maybe_start_plugin_startup_tasks_for_latest_config()
+                    .apply_config_mutation_follow_up(ConfigMutationKind::ValueWrite)
                     .await;
                 self.outgoing.send_response(request_id, response).await;
             }
@@ -887,8 +884,12 @@ impl MessageProcessor {
         request_id: ConnectionRequestId,
         params: ConfigBatchWriteParams,
     ) {
-        self.handle_config_mutation_result(request_id, self.config_api.batch_write(params).await)
-            .await;
+        self.handle_config_mutation_result(
+            request_id,
+            ConfigMutationKind::BatchWrite,
+            self.config_api.batch_write(params).await,
+        )
+        .await;
     }
 
     async fn handle_experimental_feature_enablement_set(
@@ -903,9 +904,10 @@ impl MessageProcessor {
             .await
         {
             Ok(response) => {
-                self.codex_message_processor.clear_plugin_related_caches();
                 self.codex_message_processor
-                    .maybe_start_plugin_startup_tasks_for_latest_config()
+                    .apply_config_mutation_follow_up(
+                        ConfigMutationKind::ExperimentalFeatureEnablementSet,
+                    )
                     .await;
                 self.outgoing.send_response(request_id, response).await;
                 if should_refresh_apps_list {
@@ -982,13 +984,13 @@ impl MessageProcessor {
     async fn handle_config_mutation_result<T: serde::Serialize>(
         &self,
         request_id: ConnectionRequestId,
+        mutation_kind: ConfigMutationKind,
         result: std::result::Result<T, JSONRPCErrorError>,
     ) {
         match result {
             Ok(response) => {
-                self.codex_message_processor.clear_plugin_related_caches();
                 self.codex_message_processor
-                    .maybe_start_plugin_startup_tasks_for_latest_config()
+                    .apply_config_mutation_follow_up(mutation_kind)
                     .await;
                 self.outgoing.send_response(request_id, response).await;
             }

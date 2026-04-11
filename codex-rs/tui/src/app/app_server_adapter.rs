@@ -1107,6 +1107,9 @@ mod tests {
                     items: Vec::new(),
                     status: TurnStatus::Completed,
                     error: None,
+                    started_at: None,
+                    completed_at: None,
+                    duration_ms: None,
                 },
             }),
         )
@@ -1255,6 +1258,7 @@ mod tests {
     fn replays_command_execution_items_from_thread_snapshots() {
         let thread = Thread {
             id: "019cee8c-b993-7e33-88c0-014d4e62612d".to_string(),
+            forked_from_id: None,
             preview: String::new(),
             ephemeral: false,
             model_provider: "openai".to_string(),
@@ -1287,6 +1291,9 @@ mod tests {
                 }],
                 status: TurnStatus::Completed,
                 error: None,
+                started_at: None,
+                completed_at: None,
+                duration_ms: None,
             }],
         };
 
@@ -1318,6 +1325,9 @@ mod tests {
                     items: Vec::new(),
                     status: TurnStatus::Interrupted,
                     error: None,
+                    started_at: None,
+                    completed_at: None,
+                    duration_ms: None,
                 },
             }),
         )
@@ -1354,6 +1364,9 @@ mod tests {
                         codex_error_info: Some(CodexErrorInfo::Other),
                         additional_details: None,
                     }),
+                    started_at: None,
+                    completed_at: None,
+                    duration_ms: None,
                 },
             }),
         )
@@ -1421,6 +1434,7 @@ mod tests {
         let events = thread_snapshot_events(
             &Thread {
                 id: thread_id.to_string(),
+                forked_from_id: None,
                 preview: "hello".to_string(),
                 ephemeral: false,
                 model_provider: "openai".to_string(),
@@ -1455,12 +1469,18 @@ mod tests {
                         ],
                         status: TurnStatus::Completed,
                         error: None,
+                        started_at: None,
+                        completed_at: None,
+                        duration_ms: None,
                     },
                     Turn {
                         id: "turn-interrupted".to_string(),
                         items: Vec::new(),
                         status: TurnStatus::Interrupted,
                         error: None,
+                        started_at: None,
+                        completed_at: None,
+                        duration_ms: None,
                     },
                     Turn {
                         id: "turn-failed".to_string(),
@@ -1471,6 +1491,9 @@ mod tests {
                             codex_error_info: Some(CodexErrorInfo::Other),
                             additional_details: None,
                         }),
+                        started_at: None,
+                        completed_at: None,
+                        duration_ms: None,
                     },
                 ],
             },
@@ -1530,6 +1553,9 @@ mod tests {
                 ],
                 status: TurnStatus::Completed,
                 error: None,
+                started_at: None,
+                completed_at: None,
+                duration_ms: None,
             },
             /*show_raw_agent_reasoning*/ false,
         );
@@ -1573,6 +1599,9 @@ mod tests {
                 }],
                 status: TurnStatus::Completed,
                 error: None,
+                started_at: None,
+                completed_at: None,
+                duration_ms: None,
             },
             /*show_raw_agent_reasoning*/ true,
         );
