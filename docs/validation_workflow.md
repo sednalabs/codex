@@ -48,6 +48,7 @@ Use the smallest validator that can answer the current question.
 
 1. Tiny local sanity checks
    - examples: `git diff --check`, syntax/schema/config validation
+   - for documentation-only changes, prefer `docs-sanity` as the first remote proof surface
 2. `validation-lab` `profile=smoke`
    - use when the branch changed substantially or the validation wiring changed
 3. `validation-lab` `profile=targeted`
@@ -107,6 +108,14 @@ That summary should identify:
 
 Watchers and follow-up tooling should prefer this structured summary over raw
 log scraping when it is available.
+
+The summary should also state:
+
+- the profile intent (`smoke`, `targeted`, `frontier`, `checkpoint`, or
+  `buildability`)
+- short profile notes explaining when that mode is appropriate
+- a compact lane-selection summary so operators can see the active shape at a
+  glance
 
 ## Documentation boundaries
 

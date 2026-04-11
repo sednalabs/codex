@@ -12,7 +12,13 @@ artifacts.
   - frontier model: `targeted` keeps the full named seam, while `frontier` uses curated lane
     metadata and split setup-class fanout instead of reusing the same lane selection with
     `fail-fast=false`
+  - operator signal: metadata now records `profile_intent`, `profile_notes`, and a compact
+    `lane_summary` so watchers can understand the selection without reopening the planner
   - retention: summary plus any requested preview artifacts
+- `docs-sanity`
+  - trigger: pushes and PRs that touch `README.md`, `docs/**`, or its own checker wiring
+  - purpose: cheap markdown-link proof whenever documentation moves, without widening into validation-lab
+  - retention: ordinary workflow logs only
 - `sedna-branch-build`
   - trigger: manual dispatch only
   - purpose: disposable preview binaries when buildability is the actual question
@@ -43,18 +49,20 @@ artifacts.
 3. Commit and push.
 4. Use `validation-lab` for ordinary remote-first validation on `validation/*`, `integration/*`,
    or other non-PR refs.
-5. Let `rust-ci` handle routine PR gating; tiny initial PRs and already-green
+5. Let `docs-sanity` answer documentation-only changes first instead of manually dispatching
+   `validation-lab`.
+6. Let `rust-ci` handle routine PR gating; tiny initial PRs and already-green
    PR follow-up pushes may route to incremental targeted validation
    automatically when the relevant diff is small and maps cleanly to one
    guarded seam.
-6. Use `validation-lab` `profile=targeted` with `lane_set=release` when the question is Linux
+7. Use `validation-lab` `profile=targeted` with `lane_set=release` when the question is Linux
    release-build dependency or lockfile readiness under `--locked`.
-7. Use `sedna-heavy-tests` only when the change needs labeled PR heavy validation, merge-group
+8. Use `sedna-heavy-tests` only when the change needs labeled PR heavy validation, merge-group
    heavy validation, or a named heavy lane.
-8. Use `rust-ci-full` only for scheduled/manual broad Cargo-native checkpoints,
+9. Use `rust-ci-full` only for scheduled/manual broad Cargo-native checkpoints,
    not as a routine post-merge rerun.
-9. Use `sedna-branch-build` only when you intentionally want a preview binary.
-10. Use `sedna-release` only for official releases.
+10. Use `sedna-branch-build` only when you intentionally want a preview binary.
+11. Use `sedna-release` only for official releases.
 
 ## Validation ladder
 
@@ -66,6 +74,8 @@ artifacts.
    - Default to `profile=smoke` or `profile=targeted`.
    - `profile=smoke` fans out the smoke bundle as parallel shards instead of
      running one serial smoke recipe on a single runner.
+   - The workflow summary now records the profile intent, profile notes, and a
+     compact lane-selection summary for operator handoff.
    - Reason: best signal per runner-minute without polluting PR surfaces.
    - `profile=frontier` now derives a curated blocker-harvest bundle from lane
      metadata and runs it by setup class (`light`, `rust`, `heavy`) so cheap
@@ -77,7 +87,10 @@ artifacts.
    - Reason: these runs are expensive and should answer a specific question.
 4. PR checks once the branch is promotion-ready.
    - `rust-ci` and path-aware heavy lanes are the formal promotion gate, not the exploratory lab.
-5. Preview/buildability validation only at deliberate checkpoints.
+5. Docs-only proof should stay cheap.
+   - Use `docs-sanity` for relative markdown-link proof on documentation-only changes instead of
+     widening into lab or PR-heavy validation.
+6. Preview/buildability validation only at deliberate checkpoints.
    - Use `sedna-branch-build`, `validation-lab` artifact mode, merge-group, or `main` promotion
      when the question is shipping/buildability rather than seam correctness.
    - Use `validation-lab` `lane_set=release` when the question is specifically the Linux
@@ -92,6 +105,7 @@ artifacts.
 | `ci.yml` | rewrite in place | JS/docs/root checks on the Sedna branch model |
 | `cargo-deny.yml` | keep with new branch topology | Dependency policy on `main` and `upstream-main` |
 | `codespell.yml` | keep with new branch topology | Fast text hygiene on `main` and `upstream-main` |
+| `docs-sanity.yml` | new | Cheap docs-only markdown link proof |
 | `bazel.yml` | keep with new branch topology | Experimental Bazel validation |
 | `sdk.yml` | rewrite in place | SDK checks on GitHub-hosted Linux for the Sedna branch model |
 | `v8-canary.yml` | rewrite in place | V8 canary validation on `main` and `upstream-main` |

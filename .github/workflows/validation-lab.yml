@@ -122,6 +122,9 @@ jobs:
       checkout_ref: ${{ steps.meta.outputs.checkout_ref }}
       display_ref: ${{ steps.meta.outputs.display_ref }}
       head_sha: ${{ steps.meta.outputs.head_sha }}
+      profile_intent: ${{ steps.meta.outputs.profile_intent }}
+      profile_notes: ${{ steps.meta.outputs.profile_notes }}
+      lane_summary: ${{ steps.meta.outputs.lane_summary }}
       selected_matrix: ${{ steps.meta.outputs.selected_matrix }}
       planned_matrix: ${{ steps.meta.outputs.planned_matrix }}
       selected_lane_ids: ${{ steps.meta.outputs.selected_lane_ids }}
@@ -190,6 +193,9 @@ jobs:
 
           selection_meta="$(python3 .github/scripts/resolve_validation_plan.py lab --profile "${LAB_PROFILE}" --lane-set "${LAB_LANE_SET}" --lanes "${LAB_LANES}" --artifact-build "${LAB_ARTIFACT_BUILD}" "${catalog_args[@]}")"
 
+          profile_intent="$(SELECTION_META="${selection_meta}" python3 -c 'import json, os; print(json.loads(os.environ["SELECTION_META"])["profile_intent"])')"
+          profile_notes="$(SELECTION_META="${selection_meta}" python3 -c 'import json, os; print(json.loads(os.environ["SELECTION_META"])["profile_notes"])')"
+          lane_summary="$(SELECTION_META="${selection_meta}" python3 -c 'import json, os; print(json.loads(os.environ["SELECTION_META"])["lane_summary"])')"
           run_selected_lanes="$(SELECTION_META="${selection_meta}" python3 -c 'import json, os; print(json.loads(os.environ["SELECTION_META"])["run_selected_lanes"])')"
           run_smoke_gate="$(SELECTION_META="${selection_meta}" python3 -c 'import json, os; print(json.loads(os.environ["SELECTION_META"])["run_smoke_gate"])')"
           smoke_gate_kind="$(SELECTION_META="${selection_meta}" python3 -c 'import json, os; print(json.loads(os.environ["SELECTION_META"])["smoke_gate_kind"])')"
@@ -215,6 +221,9 @@ jobs:
             echo "checkout_ref=${checkout_ref}"
             echo "display_ref=${display_ref}"
             echo "head_sha=${head_sha}"
+            echo "profile_intent=${profile_intent}"
+            echo "profile_notes=${profile_notes}"
+            echo "lane_summary=${lane_summary}"
             echo "run_selected_lanes=${run_selected_lanes}"
             echo "run_smoke_gate=${run_smoke_gate}"
             echo "smoke_gate_kind=${smoke_gate_kind}"
@@ -250,12 +259,15 @@ jobs:
             echo "- Ref: \`${{ steps.meta.outputs.display_ref }}\`"
             echo "- Head SHA: \`${{ steps.meta.outputs.head_sha }}\`"
             echo "- Profile: \`${{ inputs.profile }}\`"
+            echo "- Profile intent: \`${{ steps.meta.outputs.profile_intent }}\`"
             echo "- Lane set: \`${{ inputs.lane_set }}\`"
+            echo "- Selection summary: \`${{ steps.meta.outputs.lane_summary }}\`"
             echo "- Explicit lanes: \`${{ inputs.lanes || 'none' }}\`"
             echo "- Setup classes: \`${{ steps.meta.outputs.selected_setup_classes || '[]' }}\`"
             echo "- Artifact build: \`${{ inputs.artifact_build && 'true' || 'false' }}\`"
             echo "- Supersession mode: \`${{ inputs.supersession_mode }}\`"
             echo "- Supersession key: \`${{ inputs.supersession_key || 'none' }}\`"
+            echo "- Profile notes: ${{ steps.meta.outputs.profile_notes }}"
             if [[ -n "${LAB_NOTES}" ]]; then
               echo "- Notes supplied: \`true\`"
             fi
@@ -462,6 +474,9 @@ jobs:
             --head-sha "${{ needs.metadata.outputs.head_sha }}" \
             --profile "${{ inputs.profile }}" \
             --lane-set "${{ inputs.lane_set }}" \
+            --profile-intent "${{ needs.metadata.outputs.profile_intent }}" \
+            --profile-notes "${{ needs.metadata.outputs.profile_notes }}" \
+            --lane-summary "${{ needs.metadata.outputs.lane_summary }}" \
             --planned-matrix-json '${{ needs.metadata.outputs.planned_matrix }}' \
             --selected-lane-ids-json '${{ needs.metadata.outputs.selected_lane_ids }}' \
             --explicit-lanes "${{ inputs.lanes }}" \
@@ -514,7 +529,13 @@ jobs:
           print(f"- Ref: `{payload['ref']['display_ref']}`")
           print(f"- Head SHA: `{payload['ref']['head_sha']}`")
           print(f"- Profile: `{payload['selection']['profile']}`")
+          if payload['selection'].get('profile_intent'):
+              print(f"- Profile intent: `{payload['selection']['profile_intent']}`")
           print(f"- Lane set: `{payload['selection']['lane_set']}`")
+          if payload['selection'].get('lane_summary'):
+              print(f"- Selection summary: `{payload['selection']['lane_summary']}`")
+          if payload['selection'].get('profile_notes'):
+              print(f"- Profile notes: {payload['selection']['profile_notes']}")
           print(f"- Supersession mode: `{payload['selection']['supersession']['mode']}`")
           if payload['selection']['supersession'].get('key'):
               print(f"- Supersession key: `{payload['selection']['supersession']['key']}`")

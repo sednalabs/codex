@@ -333,6 +333,59 @@ def determine_lab_matrix_policy(profile: str, selected: list[dict]) -> tuple[str
     return fail_fast, max_parallel, parallel_limits
 
 
+def profile_metadata(profile: str) -> tuple[str, str]:
+    if profile == "smoke":
+        return (
+            "smoke",
+            "Fast proof that the representative smoke seams still start cleanly before wider validation.",
+        )
+    if profile == "targeted":
+        return (
+            "targeted",
+            "One active seam only; prove the current question before widening.",
+        )
+    if profile == "frontier":
+        return (
+            "frontier",
+            "Bounded next-blocker harvest; trust a recent baseline first, then widen just enough to expose the next family.",
+        )
+    if profile in {"broad", "full"}:
+        return (
+            "checkpoint",
+            "Explicit checkpoint mode; use for milestone confidence rather than routine iteration.",
+        )
+    if profile == "artifact":
+        return (
+            "buildability",
+            "Packaging or preview-delivery proof; use when the question is buildability rather than seam correctness alone.",
+        )
+    raise SystemExit(f"unsupported profile: {profile}")
+
+
+def summarize_lab_selection(
+    *,
+    selected: list[dict],
+    smoke_matrix: list[dict],
+    run_smoke_gate: bool,
+    smoke_gate_kind: str,
+    run_artifact: bool,
+    selected_setup_classes: list[str],
+) -> str:
+    parts = [f"selected={len(selected)}"]
+    if selected_setup_classes:
+        parts.append(f"setup={','.join(selected_setup_classes)}")
+    if run_smoke_gate:
+        parts.append(f"smoke={smoke_gate_kind or 'true'}")
+        parts.append(f"smoke_lanes={len(smoke_matrix)}")
+    if selected:
+        preview_ids = [lane["lane_id"] for lane in selected[:3]]
+        suffix = "" if len(selected) <= 3 else ",..."
+        parts.append(f"lanes={','.join(preview_ids)}{suffix}")
+    if run_artifact:
+        parts.append("artifact=true")
+    return ", ".join(parts)
+
+
 def lab_plan(args: argparse.Namespace) -> None:
     catalog = normalize_catalog(
         load_catalog(Path(args.catalog_path) if args.catalog_path else None)
@@ -417,10 +470,22 @@ def lab_plan(args: argparse.Namespace) -> None:
     selected_setup_classes = [
         setup_class for setup_class, lanes in grouped.items() if lanes
     ]
+    profile_intent, profile_notes = profile_metadata(args.profile)
+    lane_summary = summarize_lab_selection(
+        selected=selected,
+        smoke_matrix=smoke_matrix,
+        run_smoke_gate=run_smoke_gate,
+        smoke_gate_kind=smoke_gate_kind,
+        run_artifact=run_artifact,
+        selected_setup_classes=selected_setup_classes,
+    )
     planned_matrix = {"include": [*smoke_matrix, *selected]}
 
     emit(
         {
+            "profile_intent": profile_intent,
+            "profile_notes": profile_notes,
+            "lane_summary": lane_summary,
             "selected_matrix": {"include": selected},
             "planned_matrix": planned_matrix,
             "selected_lane_ids": [lane["lane_id"] for lane in selected],

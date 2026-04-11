@@ -98,6 +98,8 @@ GitHub Actions lane naming (`.github/workflows/sedna-heavy-tests.yml`):
 - `validation-lab.yml` is the dispatch-only remote validation surface.
   - Use it for scratch refs, integration refs, orphan-branch experiments, and
     non-PR seam validation.
+  - Its workflow summary now records the selected profile intent, short profile
+    notes, and a compact lane-selection summary for easier babysitting.
   - `profile=smoke` and `profile=targeted` are the default inner-loop remote
     validation tools.
   - `profile=frontier` is the bounded next-blocker harvest mode to use only
@@ -109,6 +111,9 @@ GitHub Actions lane naming (`.github/workflows/sedna-heavy-tests.yml`):
     normal PR/main check surface.
   - It uploads a compact `validation-summary` artifact so watchers and follow-up
     tooling can prefer structured first-failure signal over raw log scraping.
+- `docs-sanity.yml` is the cheap documentation-link workflow.
+  - Use it when the real question is whether markdown links still resolve after
+    touching `README.md` or `docs/**`.
 - `sedna-branch-build.yml` is the preview artifact path.
   - It is manual-dispatch only.
   - Treat it as artifact validation, not the primary downstream correctness

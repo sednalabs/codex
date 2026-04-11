@@ -23,6 +23,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--head-sha", required=True)
     parser.add_argument("--profile", required=True)
     parser.add_argument("--lane-set", required=True)
+    parser.add_argument("--profile-intent", default="")
+    parser.add_argument("--profile-notes", default="")
+    parser.add_argument("--lane-summary", default="")
     parser.add_argument("--planned-matrix-json", default="")
     parser.add_argument("--selected-lane-ids-json", default="")
     parser.add_argument("--explicit-lanes", default="")
@@ -537,7 +540,10 @@ def main() -> None:
         },
         "selection": {
             "profile": args.profile,
+            "profile_intent": args.profile_intent or "",
+            "profile_notes": args.profile_notes or "",
             "lane_set": args.lane_set,
+            "lane_summary": args.lane_summary or "",
             "explicit_lanes": explicit_lanes,
             "notes_supplied": parse_bool(args.notes_supplied),
             "baseline_required": args.profile == "frontier",
