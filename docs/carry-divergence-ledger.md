@@ -37,11 +37,11 @@ live divergence.
   where operators have them configured, but those presets are not a tracked
   repository contract.
 - Divergence regression ownership is tracked in
-  [`downstream-regression-matrix.md`](/home/grant/mmm/codex/docs/downstream-regression-matrix.md).
+  [`downstream-regression-matrix.md`](downstream-regression-matrix.md).
 - Field-level native tool-surface deltas are summarized in
-  [`downstream-tool-surface-matrix.md`](/home/grant/mmm/codex/docs/downstream-tool-surface-matrix.md).
+  [`downstream-tool-surface-matrix.md`](downstream-tool-surface-matrix.md).
 - Future registry-plus-generation maintenance direction is captured in
-  [`downstream-divergence-tracking.md`](/home/grant/mmm/codex/docs/downstream-divergence-tracking.md).
+  [`downstream-divergence-tracking.md`](downstream-divergence-tracking.md).
 - Downstream operator workflows prefer MCP tool surfaces with blocking wait
   semantics over transcript-driven polling when the tool contract supports it.
 - Primary files:
