@@ -258,14 +258,33 @@
   ],
   "followup_routes": [
     {
-      "route_id": "tui-agent-picker",
-      "lane_ids": ["codex.tui-agent-picker-targeted"],
+      "route_id": "tui-agent-picker-shared-surface",
+      "lane_ids": [
+        "codex.tui-agent-picker-targeted",
+        "codex.tui-agent-picker-tree-targeted"
+      ],
       "allowed_paths": [
         "codex-rs/tui/src/app.rs",
         "codex-rs/tui/src/multi_agents.rs",
         "codex-rs/tui/src/snapshots/codex_tui__multi_agents__tests__agent_picker*.snap",
         "docs/downstream-regression-matrix.md",
         "justfile"
+      ],
+      "required_any_paths": [
+        "codex-rs/tui/src/app.rs",
+        "codex-rs/tui/src/multi_agents.rs"
+      ]
+    },
+    {
+      "route_id": "tui-agent-picker",
+      "lane_ids": ["codex.tui-agent-picker-targeted"],
+      "allowed_paths": [
+        "codex-rs/tui/src/snapshots/codex_tui__multi_agents__tests__agent_picker*.snap",
+        "docs/downstream-regression-matrix.md",
+        "justfile"
+      ],
+      "required_any_paths": [
+        "codex-rs/tui/src/snapshots/codex_tui__multi_agents__tests__agent_picker*.snap"
       ]
     },
     {
@@ -273,8 +292,6 @@
       "lane_ids": ["codex.tui-agent-picker-model-surface-targeted"],
       "allowed_paths": [
         "codex-rs/protocol/src/openai_models.rs",
-        "codex-rs/tools/src/agent_tool.rs",
-        "codex-rs/tools/src/agent_tool_tests.rs",
         "codex-rs/core/tests/suite/spawn_agent_description.rs",
         "codex-rs/tui/src/chatwidget.rs",
         "codex-rs/tui/src/chatwidget/tests/popups_and_settings.rs",
@@ -285,8 +302,6 @@
       ],
       "required_any_paths": [
         "codex-rs/protocol/src/openai_models.rs",
-        "codex-rs/tools/src/agent_tool.rs",
-        "codex-rs/tools/src/agent_tool_tests.rs",
         "codex-rs/core/tests/suite/spawn_agent_description.rs",
         "codex-rs/tui/src/chatwidget.rs",
         "codex-rs/tui/src/chatwidget/tests/popups_and_settings.rs"
@@ -302,6 +317,10 @@
         "codex-rs/tui/src/multi_agents.rs",
         "docs/downstream-regression-matrix.md",
         "justfile"
+      ],
+      "required_any_paths": [
+        "codex-rs/tui/src/app/agent_navigation.rs",
+        "codex-rs/tui/src/app/loaded_threads.rs"
       ]
     },
     {
@@ -319,6 +338,33 @@
       ]
     },
     {
+      "route_id": "subagent-spawn-tool-surface",
+      "lane_ids": [
+        "codex.tui-agent-picker-model-surface-targeted",
+        "codex.core-subagent-spawn-approval-targeted"
+      ],
+      "allowed_paths": [
+        "codex-rs/protocol/src/openai_models.rs",
+        "codex-rs/tools/src/agent_tool.rs",
+        "codex-rs/tools/src/agent_tool_tests.rs",
+        "codex-rs/core/tests/suite/spawn_agent_description.rs",
+        "codex-rs/tui/src/chatwidget.rs",
+        "codex-rs/tui/src/chatwidget/tests/popups_and_settings.rs",
+        "codex-rs/core/src/tools/handlers/multi_agents_common.rs",
+        "codex-rs/core/src/tools/handlers/multi_agents/spawn.rs",
+        "codex-rs/core/src/tools/handlers/multi_agents_v2/spawn.rs",
+        "codex-rs/core/src/tools/handlers/multi_agents_tests.rs",
+        "docs/downstream-regression-matrix.md",
+        "docs/downstream.md",
+        "docs/github-ci-offload.md",
+        "justfile"
+      ],
+      "required_any_paths": [
+        "codex-rs/tools/src/agent_tool.rs",
+        "codex-rs/tools/src/agent_tool_tests.rs"
+      ]
+    },
+    {
       "route_id": "core-subagent-spawn-approval",
       "lane_ids": ["codex.core-subagent-spawn-approval-targeted"],
       "allowed_paths": [
@@ -326,10 +372,14 @@
         "codex-rs/core/src/tools/handlers/multi_agents/spawn.rs",
         "codex-rs/core/src/tools/handlers/multi_agents_v2/spawn.rs",
         "codex-rs/core/src/tools/handlers/multi_agents_tests.rs",
-        "codex-rs/tools/src/agent_tool.rs",
-        "codex-rs/tools/src/agent_tool_tests.rs",
         "docs/downstream-regression-matrix.md",
         "justfile"
+      ],
+      "required_any_paths": [
+        "codex-rs/core/src/tools/handlers/multi_agents_common.rs",
+        "codex-rs/core/src/tools/handlers/multi_agents/spawn.rs",
+        "codex-rs/core/src/tools/handlers/multi_agents_v2/spawn.rs",
+        "codex-rs/core/src/tools/handlers/multi_agents_tests.rs"
       ]
     },
     {
@@ -338,10 +388,14 @@
       "allowed_paths": [
         "codex-rs/app-server/**",
         "codex-rs/app-server-protocol/**",
-        "codex-rs/protocol/**",
         "codex-rs/tui/src/app_server_session.rs",
         "docs/downstream-regression-matrix.md",
         "justfile"
+      ],
+      "required_any_paths": [
+        "codex-rs/app-server/**",
+        "codex-rs/app-server-protocol/**",
+        "codex-rs/tui/src/app_server_session.rs"
       ]
     },
     {

@@ -311,6 +311,13 @@ def group_lanes_by_setup_class(lanes: list[dict]) -> OrderedDict[str, list[dict]
     return grouped
 
 
+def emit_grouped_setup_class_payload(payload: dict, lanes: list[dict], *, key_prefix: str) -> None:
+    grouped = group_lanes_by_setup_class(lanes)
+    for setup_class, grouped_lanes in grouped.items():
+        payload[f"{key_prefix}_{setup_class}_matrix"] = {"include": grouped_lanes}
+        payload[f"{key_prefix}_{setup_class}_lane_count"] = len(grouped_lanes)
+
+
 def setup_parallel_limits(profile: str) -> dict[str, int]:
     if profile == "frontier":
         return {"light": 10, "rust": 6, "heavy": 3}
@@ -570,15 +577,20 @@ def heavy_plan(args: argparse.Namespace) -> None:
         if run_smoke_gate:
             selected = exclude_smoke_gate_lanes(selected, smoke_matrix)
 
-    emit(
-        {
-            "selected_matrix": {"include": selected},
-            "smoke_matrix": {"include": smoke_matrix},
-            "run_selected_lanes": "true" if bool(selected) else "false",
-            "run_smoke_gate": "true" if run_smoke_gate else "false",
-            "smoke_gate_kind": smoke_gate_kind,
-        }
-    )
+    parallel_limits = setup_parallel_limits("targeted")
+    payload = {
+        "selected_matrix": {"include": selected},
+        "smoke_matrix": {"include": smoke_matrix},
+        "run_selected_lanes": "true" if bool(selected) else "false",
+        "run_smoke_gate": "true" if run_smoke_gate else "false",
+        "smoke_gate_kind": smoke_gate_kind,
+        "light_max_parallel": str(parallel_limits["light"]),
+        "rust_max_parallel": str(parallel_limits["rust"]),
+        "heavy_max_parallel": str(parallel_limits["heavy"]),
+    }
+    emit_grouped_setup_class_payload(payload, selected, key_prefix="selected")
+    emit_grouped_setup_class_payload(payload, smoke_matrix, key_prefix="smoke")
+    emit(payload)
 
 
 def build_parser() -> argparse.ArgumentParser:

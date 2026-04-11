@@ -33,6 +33,8 @@ artifacts.
   - trigger: manual dispatch, `ci:heavy` PR label, and merge-group checkpoints
   - purpose: expensive Linux-heavy Rust validation without using the shared local machine as the
     build factory
+  - fanout: smoke and selected lanes now split by `setup_class` so light workflow/docs shards do
+    not queue behind heavier Rust runners
   - scopes: `protocol`, `tui`, `cli`, `core`, `workspace`
 - `sedna-release`
   - trigger: Sedna release tags or manual dispatch
@@ -55,6 +57,8 @@ artifacts.
    PR follow-up pushes may route to incremental targeted validation
    automatically when the relevant diff is small and maps cleanly to one
    guarded seam.
+   - Workflow planning and route-map edits also run cheap planner fixtures so
+     the exact-route path stays trustworthy.
 7. Use `validation-lab` `profile=targeted` with `lane_set=release` when the question is Linux
    release-build dependency or lockfile readiness under `--locked`.
 8. Use `sedna-heavy-tests` only when the change needs labeled PR heavy validation, merge-group

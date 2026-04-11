@@ -78,6 +78,8 @@ GitHub Actions lane naming (`.github/workflows/sedna-heavy-tests.yml`):
   - Tiny mapped initial PRs and already-green follow-up pushes may reuse
     incremental targeted validation instead of rerunning the full `rust-ci`
     bundle.
+  - Workflow and route-map edits also run cheap planner fixture tests so
+    follow-up lane selection does not silently drift.
   - Any ambiguous or high-risk follow-up falls back to the normal `rust-ci`
     path.
 - `sedna-heavy-tests.yml` is the downstream-heavy lane workflow.
@@ -86,8 +88,11 @@ GitHub Actions lane naming (`.github/workflows/sedna-heavy-tests.yml`):
   - Non-doc heavy runs must clear the runtime smoke bundle
     (`core-compile-smoke`, `core-carry-core-smoke`, `core-carry-ui-smoke`,
     `core-ledger-smoke`, `core-runtime-surface-smoke`) before the broader lane
-    matrix fans out, and the heavy matrix itself is capped and fail-fast on
-    PRs.
+    matrix fans out.
+  - Both the smoke gate and the selected heavy lane fanout now split by
+    `setup_class` (`light`, `rust`, `heavy`) so cheap workflow/docs shards do
+    not queue behind heavier Rust runners.
+  - The heavy matrix remains capped and fail-fast on PRs.
   - Changes to workflow wiring or the `justfile` run the smoke gate plus a small
     representative workflow-validation lane set instead of promoting the PR to
     the full heavy matrix.
