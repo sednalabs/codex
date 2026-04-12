@@ -98,7 +98,8 @@ There are multiple submission paths, but they share the same core rules:
 
 When steer mode is enabled:
 
-- `Enter` always submits immediately.
+- `Enter` submits immediately from the composer. Higher-level chat flow may queue that submission
+  when a non-steerable busy state is already running.
 - `Tab` requests queuing at the back if a task is already running; otherwise it submits
   immediately.
 - `Ctrl+Shift+Q` requests queuing at the front if a task is already running; otherwise it also

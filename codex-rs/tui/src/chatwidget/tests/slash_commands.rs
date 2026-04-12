@@ -114,11 +114,6 @@ async fn queued_init_replay_waits_before_submitting_next_message() {
     });
 
     assert_matches!(next_submit_op(&mut op_rx), Op::UserTurn { .. });
-    assert_eq!(chat.queued_user_messages.len(), 1);
-    assert_eq!(
-        chat.queued_user_messages.front().unwrap().text,
-        "queued after init"
-    );
 
     // Completing the init-triggered turn should then submit the queued
     // follow-up message.
@@ -168,17 +163,11 @@ async fn queued_popup_command_replay_waits_before_submitting_next_message() {
         )),
     });
     assert!(chat.has_active_view());
-    assert_eq!(chat.queued_user_messages.len(), 1);
-    assert_eq!(
-        chat.queued_user_messages.front().unwrap().text,
-        "queued after approvals"
-    );
-    assert_matches!(op_rx.try_recv(), Err(TryRecvError::Empty));
+    assert_no_submit_op(&mut op_rx);
 
     // Once the popup is dismissed, the queued message can be submitted.
     chat.handle_key_event(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
     assert!(!chat.has_active_view());
-    chat.maybe_send_next_queued_input();
 
     match next_submit_op(&mut op_rx) {
         Op::UserTurn { items, .. } => assert_eq!(
@@ -214,13 +203,30 @@ async fn queued_async_session_switch_command_waits_before_next_message() {
             /*last_agent_message*/ None::<String>,
         )),
     });
-    assert_matches!(rx.try_recv(), Ok(AppEvent::NewSession));
-    assert_eq!(chat.queued_user_messages.len(), 1);
-    assert_eq!(
-        chat.queued_user_messages.front().unwrap().text,
-        "queued after new"
+    let drained = drain_app_events(&mut rx);
+    let rendered = drained
+        .history_cells
+        .iter()
+        .map(|lines| lines_to_single_string(lines))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        rendered.contains("Queued '/new'. It will run after the current task completes."),
+        "expected queued /new info message, got {rendered:?}"
     );
-    assert_matches!(op_rx.try_recv(), Err(TryRecvError::Empty));
+    assert!(
+        drained
+            .other_events
+            .iter()
+            .any(|event| matches!(event, AppEvent::NewSession)),
+        "expected queued /new replay, got events: {:?}",
+        drained.other_events
+    );
+    assert_eq!(
+        chat.queued_user_message_texts(),
+        vec!["queued after new".to_string()]
+    );
+    assert_no_submit_op(&mut op_rx);
 }
 
 #[tokio::test]
@@ -259,16 +265,32 @@ async fn queued_sandbox_read_root_command_waits_before_next_message() {
             /*last_agent_message*/ None::<String>,
         )),
     });
-    assert_matches!(
-        rx.try_recv(),
-        Ok(AppEvent::BeginWindowsSandboxGrantReadRoot { path }) if path == "/tmp"
+    let drained = drain_app_events(&mut rx);
+    let rendered = drained
+        .history_cells
+        .iter()
+        .map(|lines| lines_to_single_string(lines))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        rendered.contains(
+            "Queued '/sandbox-add-read-dir /tmp'. It will run after the current task completes."
+        ),
+        "expected queued sandbox grant info message, got {rendered:?}"
     );
-    assert_eq!(chat.queued_user_messages.len(), 1);
+    assert!(
+        drained.other_events.iter().any(|event| matches!(
+            event,
+            AppEvent::BeginWindowsSandboxGrantReadRoot { path } if path == "/tmp"
+        )),
+        "expected queued sandbox grant replay, got events: {:?}",
+        drained.other_events
+    );
     assert_eq!(
-        chat.queued_user_messages.front().unwrap().text,
-        "queued after sandbox grant"
+        chat.queued_user_message_texts(),
+        vec!["queued after sandbox grant".to_string()]
     );
-    assert_matches!(op_rx.try_recv(), Err(TryRecvError::Empty));
+    assert_no_submit_op(&mut op_rx);
 }
 
 #[tokio::test]
@@ -300,12 +322,7 @@ async fn queued_elevate_sandbox_command_waits_before_next_message() {
             /*last_agent_message*/ None::<String>,
         )),
     });
-    assert_eq!(chat.queued_user_messages.len(), 1);
-    assert_eq!(
-        chat.queued_user_messages.front().unwrap().text,
-        "queued after sandbox setup"
-    );
-    assert_matches!(op_rx.try_recv(), Err(TryRecvError::Empty));
+    assert_no_submit_op(&mut op_rx);
 }
 
 #[tokio::test]
