@@ -518,36 +518,40 @@ fn server_notification_thread_events(
             );
             Some((thread_id, events))
         }
-        ServerNotification::ItemStarted(notification) => Some((
-            ThreadId::from_string(&notification.thread_id).ok()?,
-            command_execution_started_event(&notification.turn_id, &notification.item).or_else(
-                || {
+        ServerNotification::ItemStarted(notification) => {
+            let thread_id = ThreadId::from_string(&notification.thread_id).ok()?;
+            let turn_id = notification.turn_id;
+            Some((
+                thread_id,
+                command_execution_started_event(&turn_id, &notification.item).or_else(|| {
                     Some(vec![Event {
                         id: String::new(),
                         msg: EventMsg::ItemStarted(ItemStartedEvent {
-                            thread_id: ThreadId::from_string(&notification.thread_id).ok()?,
-                            turn_id: notification.turn_id.clone(),
+                            thread_id,
+                            turn_id,
                             item: thread_item_to_core(&notification.item)?,
                         }),
                     }])
-                },
-            )?,
-        )),
-        ServerNotification::ItemCompleted(notification) => Some((
-            ThreadId::from_string(&notification.thread_id).ok()?,
-            command_execution_completed_event(&notification.turn_id, &notification.item).or_else(
-                || {
+                })?,
+            ))
+        }
+        ServerNotification::ItemCompleted(notification) => {
+            let thread_id = ThreadId::from_string(&notification.thread_id).ok()?;
+            let turn_id = notification.turn_id;
+            Some((
+                thread_id,
+                command_execution_completed_event(&turn_id, &notification.item).or_else(|| {
                     Some(vec![Event {
                         id: String::new(),
                         msg: EventMsg::ItemCompleted(ItemCompletedEvent {
-                            thread_id: ThreadId::from_string(&notification.thread_id).ok()?,
-                            turn_id: notification.turn_id.clone(),
+                            thread_id,
+                            turn_id,
                             item: thread_item_to_core(&notification.item)?,
                         }),
                     }])
-                },
-            )?,
-        )),
+                })?,
+            ))
+        }
         ServerNotification::CommandExecutionOutputDelta(notification) => Some((
             ThreadId::from_string(&notification.thread_id).ok()?,
             vec![Event {
@@ -1107,6 +1111,9 @@ mod tests {
                     items: Vec::new(),
                     status: TurnStatus::Completed,
                     error: None,
+                    started_at: None,
+                    completed_at: None,
+                    duration_ms: None,
                 },
             }),
         )
@@ -1255,6 +1262,7 @@ mod tests {
     fn replays_command_execution_items_from_thread_snapshots() {
         let thread = Thread {
             id: "019cee8c-b993-7e33-88c0-014d4e62612d".to_string(),
+            forked_from_id: None,
             preview: String::new(),
             ephemeral: false,
             model_provider: "openai".to_string(),
@@ -1287,6 +1295,9 @@ mod tests {
                 }],
                 status: TurnStatus::Completed,
                 error: None,
+                started_at: None,
+                completed_at: None,
+                duration_ms: None,
             }],
         };
 
@@ -1318,6 +1329,9 @@ mod tests {
                     items: Vec::new(),
                     status: TurnStatus::Interrupted,
                     error: None,
+                    started_at: None,
+                    completed_at: None,
+                    duration_ms: None,
                 },
             }),
         )
@@ -1354,6 +1368,9 @@ mod tests {
                         codex_error_info: Some(CodexErrorInfo::Other),
                         additional_details: None,
                     }),
+                    started_at: None,
+                    completed_at: None,
+                    duration_ms: None,
                 },
             }),
         )
@@ -1421,6 +1438,7 @@ mod tests {
         let events = thread_snapshot_events(
             &Thread {
                 id: thread_id.to_string(),
+                forked_from_id: None,
                 preview: "hello".to_string(),
                 ephemeral: false,
                 model_provider: "openai".to_string(),
@@ -1455,12 +1473,18 @@ mod tests {
                         ],
                         status: TurnStatus::Completed,
                         error: None,
+                        started_at: None,
+                        completed_at: None,
+                        duration_ms: None,
                     },
                     Turn {
                         id: "turn-interrupted".to_string(),
                         items: Vec::new(),
                         status: TurnStatus::Interrupted,
                         error: None,
+                        started_at: None,
+                        completed_at: None,
+                        duration_ms: None,
                     },
                     Turn {
                         id: "turn-failed".to_string(),
@@ -1471,6 +1495,9 @@ mod tests {
                             codex_error_info: Some(CodexErrorInfo::Other),
                             additional_details: None,
                         }),
+                        started_at: None,
+                        completed_at: None,
+                        duration_ms: None,
                     },
                 ],
             },
@@ -1530,6 +1557,9 @@ mod tests {
                 ],
                 status: TurnStatus::Completed,
                 error: None,
+                started_at: None,
+                completed_at: None,
+                duration_ms: None,
             },
             /*show_raw_agent_reasoning*/ false,
         );
@@ -1573,6 +1603,9 @@ mod tests {
                 }],
                 status: TurnStatus::Completed,
                 error: None,
+                started_at: None,
+                completed_at: None,
+                duration_ms: None,
             },
             /*show_raw_agent_reasoning*/ true,
         );
