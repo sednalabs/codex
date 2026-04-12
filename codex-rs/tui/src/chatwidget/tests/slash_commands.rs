@@ -214,6 +214,13 @@ async fn queued_async_session_switch_command_waits_before_next_message() {
             /*last_agent_message*/ None::<String>,
         )),
     });
+    let cells = drain_insert_history(&mut rx);
+    assert_eq!(cells.len(), 1, "expected queued /new info message");
+    let rendered = lines_to_single_string(&cells[0]);
+    assert!(
+        rendered.contains("Queued '/new'. It will run after the current task completes."),
+        "expected queued /new info message, got {rendered:?}"
+    );
     assert_matches!(rx.try_recv(), Ok(AppEvent::NewSession));
     assert_eq!(chat.queued_user_messages.len(), 1);
     assert_eq!(
@@ -259,6 +266,15 @@ async fn queued_sandbox_read_root_command_waits_before_next_message() {
             /*last_agent_message*/ None::<String>,
         )),
     });
+    let cells = drain_insert_history(&mut rx);
+    assert_eq!(cells.len(), 1, "expected queued sandbox grant info message");
+    let rendered = lines_to_single_string(&cells[0]);
+    assert!(
+        rendered.contains(
+            "Queued '/sandbox-add-read-dir /tmp'. It will run after the current task completes."
+        ),
+        "expected queued sandbox grant info message, got {rendered:?}"
+    );
     assert_matches!(
         rx.try_recv(),
         Ok(AppEvent::BeginWindowsSandboxGrantReadRoot { path }) if path == "/tmp"
