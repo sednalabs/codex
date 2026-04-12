@@ -120,6 +120,30 @@ Do not assume `gh workflow run validation-lab --ref <feature-branch> ...` will w
 branches intentionally do not carry the latest workflow file, so GitHub may resolve the workflow on
 that branch first and return a misleading missing-`workflow_dispatch` error.
 
+### Dirty or orphan local state
+
+If the worktree is dirty, detached, or on an orphan scratch branch, GitHub still
+cannot validate it until that exact tree exists on a fetchable remote ref.
+
+Use the snapshot helper:
+
+```bash
+scripts/dispatch-validation-lab-snapshot.sh \
+  --profile targeted \
+  --lanes codex.app-server-protocol-test,codex.app-server-thread-cwd-targeted
+```
+
+What it does:
+
+1. Builds a disposable commit from the current local worktree state without
+   rewriting the current branch.
+2. Pushes that commit to a disposable `validation/snapshot-*` ref on `origin`.
+3. Dispatches `validation-lab.yml` from downstream `main` against that pushed
+   snapshot ref.
+
+This is the preferred low-friction path when the real question is "prove the
+exact local tree remotely" and the branch is not yet in public-PR shape.
+
 ## Workflow replacement matrix
 
 | Workflow | Status | Sedna role |
