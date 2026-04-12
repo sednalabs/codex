@@ -459,7 +459,7 @@ mod tests {
         let header = URL_SAFE_NO_PAD.encode(br#"{"alg":"HS256","typ":"JWT"}"#);
         let claims_segment = URL_SAFE_NO_PAD.encode(serde_json::to_vec(&claims).unwrap());
         let payload = format!("{header}.{claims_segment}");
-        let mut mac = HmacSha256::new_from_slice(shared_secret).unwrap();
+        let mut mac = Hmac::<Sha256>::new_from_slice(shared_secret).unwrap();
         mac.update(payload.as_bytes());
         let signature = URL_SAFE_NO_PAD.encode(mac.finalize().into_bytes());
         format!("{payload}.{signature}")
