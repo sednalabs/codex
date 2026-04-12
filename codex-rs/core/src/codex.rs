@@ -3188,13 +3188,12 @@ impl Session {
         let event_id = sub_id.clone();
         let prev_entry = {
             let mut active = self.active_turn.lock().await;
-            match active.as_mut() {
-                Some(at) => {
-                    let mut ts = at.turn_state.lock().await;
-                    ts.insert_pending_user_input(sub_id, tx_response)
-                }
-                None => None,
-            }
+            let Some(at) = active.as_mut() else {
+                warn!("Cannot request user input without an active turn for sub_id: {event_id}");
+                return None;
+            };
+            let mut ts = at.turn_state.lock().await;
+            ts.insert_pending_user_input(sub_id, tx_response)
         };
         if prev_entry.is_some() {
             warn!("Overwriting existing pending user input for sub_id: {event_id}");
