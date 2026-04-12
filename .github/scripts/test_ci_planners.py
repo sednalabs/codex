@@ -59,6 +59,11 @@ def parse_workflow_dispatch_lane_options(workflow_path: Path) -> list[str]:
     )
 
 
+def load_workflow_payload(workflow_path: Path) -> dict:
+    payload = yaml.load(workflow_path.read_text(encoding="utf-8"), Loader=yaml.BaseLoader)
+    return payload if isinstance(payload, dict) else {}
+
+
 class TempGitRepo:
     def __init__(self) -> None:
         self._tmpdir = tempfile.TemporaryDirectory()
@@ -165,6 +170,24 @@ class RouteSelectionTests(unittest.TestCase):
             ],
         )
 
+    def test_workflow_ci_route_stays_lightweight(self) -> None:
+        lanes = RESOLVE_VALIDATION_PLAN.select_followup_lanes(
+            [
+                ".github/workflows/validation-lab.yml",
+                ".github/scripts/resolve_validation_plan.py",
+                "docs/validation_workflow.md",
+                "justfile",
+            ],
+            self.routes,
+        )
+        self.assertEqual(
+            lanes,
+            [
+                "codex.workflow-ci-sanity",
+                "codex.downstream-docs-check",
+            ],
+        )
+
     def test_heavy_workflow_dispatch_options_cover_catalog_lanes(self) -> None:
         workflow_options = parse_workflow_dispatch_lane_options(
             REPO_ROOT / ".github/workflows/sedna-heavy-tests.yml"
@@ -177,6 +200,17 @@ class RouteSelectionTests(unittest.TestCase):
         self.assertEqual(
             workflow_options,
             ["all", *expected_lane_ids],
+        )
+
+    def test_workflow_ci_sanity_lane_uses_host_checkout_justfile(self) -> None:
+        lane = next(
+            lane
+            for lane in self.catalog["lanes"]
+            if lane["lane_id"] == "codex.workflow-ci-sanity"
+        )
+        self.assertEqual(
+            lane["run_command"],
+            "just --justfile ../.workflow-src/justfile workflow-ci-sanity",
         )
 
 
@@ -289,6 +323,254 @@ class ValidationPlanScriptTests(unittest.TestCase):
             ["codex.tui-agent-picker-model-surface-targeted"],
         )
 
+    def test_heavy_plan_route_keeps_workflow_ci_changes_on_light_lanes(self) -> None:
+        payload = run_script(
+            SCRIPTS_DIR / "resolve_validation_plan.py",
+            "heavy",
+            "--event-name",
+            "pull_request",
+            "--requested-lane",
+            "",
+            "--run-all-lanes",
+            "false",
+            "--run-core-family",
+            "false",
+            "--run-attestation-family",
+            "false",
+            "--run-workflow-family",
+            "true",
+            "--run-ui-protocol-family",
+            "false",
+            "--run-docs-family",
+            "true",
+            "--changed-files-json",
+            json.dumps(
+                [
+                    ".github/workflows/validation-lab.yml",
+                    ".github/scripts/resolve_validation_plan.py",
+                    "docs/validation_workflow.md",
+                    "justfile",
+                ]
+            ),
+        )
+
+        self.assertEqual(payload["run_smoke_gate"], "false")
+        self.assertEqual(payload["selected_light_lane_count"], 2)
+        self.assertEqual(payload["selected_rust_lane_count"], 0)
+        self.assertEqual(payload["selected_heavy_lane_count"], 0)
+        self.assertEqual(
+            [lane["lane_id"] for lane in payload["selected_matrix"]["include"]],
+            [
+                "codex.workflow-ci-sanity",
+                "codex.downstream-docs-check",
+            ],
+        )
+
+    def test_validation_lab_selected_lanes_do_not_block_on_smoke_gate(self) -> None:
+        payload = load_workflow_payload(REPO_ROOT / ".github/workflows/validation-lab.yml")
+        jobs = payload.get("jobs") or {}
+
+        self.assertEqual((jobs.get("light_lanes") or {}).get("needs"), ["metadata"])
+        self.assertEqual((jobs.get("rust_lanes") or {}).get("needs"), ["metadata"])
+        self.assertEqual((jobs.get("heavy_lanes") or {}).get("needs"), ["metadata"])
+
+    def test_validation_lab_frontier_all_widens_to_all_active_non_explicit_lanes(self) -> None:
+        payload = run_script(
+            SCRIPTS_DIR / "resolve_validation_plan.py",
+            "lab",
+            "--profile",
+            "frontier",
+            "--lane-set",
+            "all",
+            "--lanes",
+            "",
+            "--artifact-build",
+            "false",
+        )
+
+        selected_lane_ids = [lane["lane_id"] for lane in payload["selected_matrix"]["include"]]
+        self.assertIn("codex.downstream-docs-check", selected_lane_ids)
+        self.assertIn("codex.workflow-ci-sanity", selected_lane_ids)
+        self.assertIn("codex.release-linux-build-smoke", selected_lane_ids)
+        self.assertIn("codex.tui-config-refresh-session-targeted", selected_lane_ids)
+        self.assertIn("codex.spawn-agent-description-model-surface-targeted", selected_lane_ids)
+        self.assertNotIn("codex.tui-agent-picker-model-surface-targeted", selected_lane_ids)
+        self.assertEqual(payload["selected_light_lane_count"], 2)
+        self.assertEqual(payload["selected_rust_lane_count"], 20)
+        self.assertEqual(payload["selected_heavy_lane_count"], 6)
+        self.assertEqual(payload["rust_max_parallel"], "20")
+        self.assertEqual(payload["heavy_max_parallel"], "6")
+
+    def test_validation_lab_frontier_all_can_include_explicit_only_lanes(self) -> None:
+        payload = run_script(
+            SCRIPTS_DIR / "resolve_validation_plan.py",
+            "lab",
+            "--profile",
+            "frontier",
+            "--lane-set",
+            "all",
+            "--lanes",
+            "",
+            "--artifact-build",
+            "false",
+            "--include-explicit-lanes",
+            "true",
+        )
+
+        selected_lane_ids = [lane["lane_id"] for lane in payload["selected_matrix"]["include"]]
+        self.assertIn("codex.tui-agent-picker-model-surface-targeted", selected_lane_ids)
+        self.assertIn("downstream-ledger-seam", selected_lane_ids)
+        self.assertEqual(payload["selected_light_lane_count"], 2)
+        self.assertEqual(payload["selected_rust_lane_count"], 22)
+        self.assertEqual(payload["selected_heavy_lane_count"], 6)
+        self.assertEqual(payload["rust_max_parallel"], "22")
+        self.assertEqual(payload["heavy_max_parallel"], "6")
+
+    def test_validation_lab_frontier_all_excludes_smoke_gate_lanes_by_metadata(self) -> None:
+        catalog = {
+            "lanes": [
+                {
+                    "lane_id": "codex.synthetic-runtime-gate",
+                    "run_command": "echo synthetic-gate",
+                    "groups": ["core"],
+                    "status_class": "active",
+                    "setup_class": "heavy",
+                    "frontier_role": "sentinel",
+                    "summary_family": "synthetic-gate",
+                    "cost_class": "high",
+                    "smoke_gate_only": True,
+                    "smoke_gate_kinds": ["runtime"],
+                },
+                {
+                    "lane_id": "codex.synthetic-real-lane",
+                    "run_command": "echo synthetic-real-lane",
+                    "groups": ["core"],
+                    "status_class": "active",
+                    "setup_class": "rust",
+                    "frontier_role": "sentinel",
+                    "summary_family": "synthetic-real-lane",
+                    "cost_class": "medium",
+                },
+            ]
+        }
+
+        selected = RESOLVE_VALIDATION_PLAN.select_frontier_all(catalog)
+
+        self.assertEqual(
+            [lane["lane_id"] for lane in selected],
+            ["codex.synthetic-real-lane"],
+        )
+
+    def test_heavy_plan_workflow_dispatch_all_uses_frontier_harvest_policy(self) -> None:
+        payload = run_script(
+            SCRIPTS_DIR / "resolve_validation_plan.py",
+            "heavy",
+            "--event-name",
+            "workflow_dispatch",
+            "--requested-lane",
+            "all",
+            "--run-all-lanes",
+            "true",
+            "--run-core-family",
+            "false",
+            "--run-attestation-family",
+            "false",
+            "--run-workflow-family",
+            "false",
+            "--run-ui-protocol-family",
+            "false",
+            "--run-docs-family",
+            "false",
+            "--changed-files-json",
+            "[]",
+        )
+
+        self.assertEqual(payload["matrix_fail_fast"], "false")
+        self.assertEqual(payload["continue_after_smoke_failure"], "true")
+        self.assertEqual(payload["light_max_parallel"], "2")
+        self.assertEqual(payload["rust_max_parallel"], "22")
+        self.assertEqual(payload["heavy_max_parallel"], "11")
+        planned_lane_ids = [lane["lane_id"] for lane in payload["planned_matrix"]["include"]]
+        selected_lane_ids = payload["selected_lane_ids"]
+        self.assertEqual(
+            planned_lane_ids[:5],
+            [
+                "core-compile-smoke",
+                "core-carry-core-smoke",
+                "core-carry-ui-smoke",
+                "core-ledger-smoke",
+                "core-runtime-surface-smoke",
+            ],
+        )
+        self.assertEqual(planned_lane_ids[5:], selected_lane_ids)
+        self.assertIn("codex.core-startup-sync-targeted", selected_lane_ids)
+        self.assertIn("codex.downstream-docs-check", selected_lane_ids)
+
+    def test_sedna_heavy_manual_harvest_jobs_follow_metadata_fail_fast(self) -> None:
+        payload = load_workflow_payload(REPO_ROOT / ".github/workflows/sedna-heavy-tests.yml")
+        jobs = payload.get("jobs") or {}
+
+        metadata_outputs = (jobs.get("metadata") or {}).get("outputs") or {}
+        self.assertEqual(metadata_outputs.get("display_ref"), "${{ steps.meta.outputs.display_ref }}")
+        self.assertEqual(metadata_outputs.get("checkout_sha"), "${{ steps.meta.outputs.checkout_sha }}")
+        self.assertEqual(
+            metadata_outputs.get("planned_matrix"),
+            "${{ steps.meta.outputs.planned_matrix }}",
+        )
+        self.assertEqual(
+            metadata_outputs.get("selected_lane_ids"),
+            "${{ steps.meta.outputs.selected_lane_ids }}",
+        )
+        self.assertEqual(
+            ((jobs.get("smoke_light_lanes") or {}).get("strategy") or {}).get("fail-fast"),
+            "${{ fromJson(needs.metadata.outputs.matrix_fail_fast) }}",
+        )
+        self.assertEqual(
+            ((jobs.get("rust_lanes") or {}).get("strategy") or {}).get("fail-fast"),
+            "${{ fromJson(needs.metadata.outputs.matrix_fail_fast) }}",
+        )
+        rust_if = (jobs.get("rust_lanes") or {}).get("if") or ""
+        self.assertIn("needs.metadata.outputs.continue_after_smoke_failure == 'true'", rust_if)
+
+    def test_sedna_heavy_summary_job_aggregates_lane_artifacts(self) -> None:
+        payload = load_workflow_payload(REPO_ROOT / ".github/workflows/sedna-heavy-tests.yml")
+        jobs = payload.get("jobs") or {}
+        summary = jobs.get("summary") or {}
+
+        self.assertEqual(
+            summary.get("needs"),
+            [
+                "metadata",
+                "smoke_light_lanes",
+                "smoke_rust_lanes",
+                "smoke_heavy_lanes",
+                "light_lanes",
+                "rust_lanes",
+                "heavy_lanes",
+            ],
+        )
+        summary_if = summary.get("if") or ""
+        self.assertIn("always()", summary_if)
+        self.assertIn("needs.metadata.result == 'success'", summary_if)
+        self.assertEqual(summary.get("runs-on"), "ubuntu-24.04")
+
+        steps = summary.get("steps") or []
+        self.assertEqual((steps[0] or {}).get("uses"), "actions/checkout@v6")
+        self.assertEqual((steps[1] or {}).get("uses"), "actions/download-artifact@v8")
+        self.assertIn(
+            "aggregate_validation_summary.py",
+            (steps[2] or {}).get("run") or "",
+        )
+        self.assertIn(
+            '--planned-matrix-json \'${{ needs.metadata.outputs.planned_matrix }}\'',
+            (steps[2] or {}).get("run") or "",
+        )
+        self.assertIn(
+            '--head-sha "${{ needs.metadata.outputs.checkout_sha }}"',
+            (steps[2] or {}).get("run") or "",
+        )
+        self.assertEqual((steps[3] or {}).get("uses"), "actions/upload-artifact@v7")
+
 
 class RustCiModeScriptTests(unittest.TestCase):
     maxDiff = None
@@ -396,13 +678,23 @@ class RustCiModeScriptTests(unittest.TestCase):
             },
         )
 
-        self.assertEqual(outputs["validation_mode"], "full")
+        self.assertEqual(outputs["validation_mode"], "light_initial")
         self.assertEqual(outputs["workflows"], "true")
         self.assertEqual(outputs["has_relevant_changes"], "true")
         self.assertEqual(outputs["run_general"], "false")
         self.assertEqual(outputs["run_cargo_shear"], "false")
         self.assertEqual(outputs["run_argument_comment_lint_prebuilt"], "false")
-        self.assertEqual(outputs["run_argument_comment_lint_package"], "true")
+        self.assertEqual(outputs["run_argument_comment_lint_package"], "false")
+        self.assertEqual(outputs["run_incremental_validation"], "true")
+        self.assertEqual(
+            outputs["incremental_lanes"],
+            ",".join(
+                [
+                    "codex.workflow-ci-sanity",
+                    "codex.downstream-docs-check",
+                ]
+            ),
+        )
 
     def test_skill_only_pr_is_irrelevant_to_rust_ci(self) -> None:
         outputs = self.run_rust_ci_mode(

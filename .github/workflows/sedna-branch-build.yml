@@ -1,4 +1,7 @@
 name: sedna-branch-build
+run-name: >-
+  sedna-branch-build
+  [target=${{ inputs.ref || github.ref_name }}]
 
 on:
   workflow_dispatch:

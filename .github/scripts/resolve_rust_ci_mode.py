@@ -157,6 +157,20 @@ def select_followup_lanes(files: list[str], routes: list[dict]) -> list[str]:
     return matching_routes[0].get("lane_ids", [])
 
 
+def route_lanes_are_light_workflow_only(lane_ids: list[str], catalog: dict) -> bool:
+    if not lane_ids:
+        return False
+    catalog_by_id = {lane["lane_id"]: lane for lane in catalog.get("lanes", [])}
+    for lane_id in lane_ids:
+        lane = catalog_by_id.get(lane_id)
+        if lane is None:
+            return False
+        groups = set(lane.get("groups", []))
+        if not groups or not groups.issubset({"workflow", "docs"}):
+            return False
+    return True
+
+
 def forced_full_outputs() -> dict[str, str]:
     return {
         "validation_mode": "full",
@@ -207,19 +221,21 @@ def main() -> None:
     primary = classify_files(primary_files)
     primary_lines = diff_line_count(repo_root, args.base_sha, args.head_sha)
     primary_lanes = select_followup_lanes(primary_files, routes)
+    primary_light_workflow_route = route_lanes_are_light_workflow_only(primary_lanes, catalog)
 
     latest_delta_files = diff_files(repo_root, args.before_sha, args.head_sha)
     latest_delta = classify_files(latest_delta_files)
     latest_delta_lines = diff_line_count(repo_root, args.before_sha, args.head_sha)
 
     followup_lanes = select_followup_lanes(latest_delta_files, routes)
+    followup_light_workflow_route = route_lanes_are_light_workflow_only(followup_lanes, catalog)
     light_initial = (
         args.event_name == "pull_request"
         and args.event_action in INITIAL_ROUTE_ACTIONS
         and bool(primary_files)
         and len(primary_files) <= INITIAL_ROUTE_MAX_FILES
         and primary_lines <= INITIAL_ROUTE_MAX_LINES
-        and not primary["high_risk"]
+        and (not primary["high_risk"] or primary_light_workflow_route)
         and bool(primary_lanes)
     )
     light_followup = (
@@ -229,7 +245,7 @@ def main() -> None:
         and bool(latest_delta_files)
         and len(latest_delta_files) <= FOLLOWUP_ROUTE_MAX_FILES
         and latest_delta_lines <= FOLLOWUP_ROUTE_MAX_LINES
-        and not latest_delta["high_risk"]
+        and (not latest_delta["high_risk"] or followup_light_workflow_route)
         and bool(followup_lanes)
     )
 

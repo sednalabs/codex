@@ -5,6 +5,7 @@
       "run_command": "just --justfile ../justfile core-compile-smoke",
       "groups": ["core"],
       "lane_sets": ["all", "core-carry"],
+      "smoke_gate_only": true,
       "smoke_gate_kinds": ["runtime"]
     },
     {
@@ -13,6 +14,7 @@
       "groups": ["core"],
       "lane_sets": ["all", "core-carry"],
       "install_nextest": true,
+      "smoke_gate_only": true,
       "smoke_gate_kinds": ["runtime"]
     },
     {
@@ -21,6 +23,7 @@
       "groups": ["ui_protocol"],
       "lane_sets": ["all", "core-carry"],
       "install_nextest": true,
+      "smoke_gate_only": true,
       "smoke_gate_kinds": ["runtime"]
     },
     {
@@ -29,6 +32,7 @@
       "groups": ["core"],
       "lane_sets": ["all", "ledger", "core-carry"],
       "install_nextest": true,
+      "smoke_gate_only": true,
       "smoke_gate_kinds": ["runtime"]
     },
     {
@@ -37,6 +41,7 @@
       "groups": ["core"],
       "lane_sets": ["all", "core-carry"],
       "install_nextest": true,
+      "smoke_gate_only": true,
       "smoke_gate_kinds": ["runtime"]
     },
     {
@@ -248,6 +253,13 @@
       "frontier_lane_sets": ["ui-protocol"]
     },
     {
+      "lane_id": "codex.workflow-ci-sanity",
+      "run_command": "just --justfile ../.workflow-src/justfile workflow-ci-sanity",
+      "groups": ["workflow"],
+      "lane_sets": ["all"],
+      "frontier_default": false
+    },
+    {
       "lane_id": "codex.downstream-docs-check",
       "run_command": "just --justfile ../justfile downstream-docs-check",
       "groups": ["workflow", "docs"],
@@ -274,6 +286,43 @@
     }
   ],
   "followup_routes": [
+    {
+      "route_id": "workflow-ci-planner",
+      "lane_ids": [
+        "codex.workflow-ci-sanity",
+        "codex.downstream-docs-check"
+      ],
+      "allowed_paths": [
+        ".github/workflows/_sedna-linux-rust.yml",
+        ".github/workflows/docs-sanity.yml",
+        ".github/workflows/rust-ci-full.yml",
+        ".github/workflows/rust-ci.yml",
+        ".github/workflows/sedna-heavy-tests.yml",
+        ".github/workflows/validation-lab.yml",
+        ".github/scripts/aggregate_validation_summary.py",
+        ".github/scripts/check_markdown_links.py",
+        ".github/scripts/resolve_rust_ci_mode.py",
+        ".github/scripts/resolve_validation_plan.py",
+        ".github/scripts/test_ci_planners.py",
+        "docs/downstream-regression-matrix.md",
+        "docs/github-ci-offload.md",
+        "docs/validation_workflow.md",
+        "justfile"
+      ],
+      "required_any_paths": [
+        ".github/workflows/_sedna-linux-rust.yml",
+        ".github/workflows/docs-sanity.yml",
+        ".github/workflows/rust-ci-full.yml",
+        ".github/workflows/rust-ci.yml",
+        ".github/workflows/sedna-heavy-tests.yml",
+        ".github/workflows/validation-lab.yml",
+        ".github/scripts/aggregate_validation_summary.py",
+        ".github/scripts/check_markdown_links.py",
+        ".github/scripts/resolve_rust_ci_mode.py",
+        ".github/scripts/resolve_validation_plan.py",
+        ".github/scripts/test_ci_planners.py"
+      ]
+    },
     {
       "route_id": "tui-agent-picker-shared-surface",
       "lane_ids": [

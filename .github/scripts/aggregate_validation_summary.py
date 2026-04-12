@@ -18,6 +18,7 @@ OUTCOME_PRIORITY = {"failure": 0, "cancelled": 1, "missing": 2}
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--repo", required=True)
+    parser.add_argument("--host-ref", required=True)
     parser.add_argument("--display-ref", required=True)
     parser.add_argument("--checkout-ref", required=True)
     parser.add_argument("--head-sha", required=True)
@@ -392,7 +393,7 @@ def summarize_runtime(results: list[dict]) -> tuple[int, dict[str, int], list[di
     return (
         total_duration_ms,
         dict(sorted(phase_runtime_ms.items(), key=lambda item: item[1], reverse=True)),
-        sorted(lanes_with_runtime, key=lambda lane: lane["duration_ms"], reverse=True)[:5],
+        sorted(lanes_with_runtime, key=lambda lane: lane["duration_ms"], reverse=True)[:10],
     )
 
 
@@ -482,7 +483,7 @@ def main() -> None:
     other_lane_count = lane_count - successful_lane_count - raw_failed_lane_count
 
     candidate_next_slices: list[dict] = []
-    for item in queue[:5]:
+    for item in queue[:20]:
         if item["kind"] == "setup_class":
             candidate_next_slices.append(
                 {
@@ -541,6 +542,7 @@ def main() -> None:
     payload = {
         "repo": args.repo,
         "ref": {
+            "host_ref": args.host_ref,
             "display_ref": args.display_ref,
             "checkout_ref": args.checkout_ref,
             "head_sha": args.head_sha,

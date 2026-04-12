@@ -95,6 +95,8 @@ baseline is trustworthy, and only then widen deliberately.
 
 That summary should identify:
 
+- the host workflow ref when the run is dispatched from a branch that carries
+  newer workflow behavior than the validated target
 - the validated ref and head SHA
 - the selected profile and lanes
 - setup-class job results and started-lane counts
@@ -116,6 +118,11 @@ The summary should also state:
 - short profile notes explaining when that mode is appropriate
 - a compact lane-selection summary so operators can see the active shape at a
   glance
+
+For workflow/planner-only changes, prefer an exact light-weight route instead
+of broad product lanes. In this fork that means remote proof should stay on the
+workflow sanity and downstream docs lanes unless the diff also touches real
+runtime/product seams.
 
 ## Documentation boundaries
 
