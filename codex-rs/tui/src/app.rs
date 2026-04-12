@@ -36,6 +36,7 @@ use crate::model_catalog::ModelCatalog;
 use crate::model_migration::ModelMigrationOutcome;
 use crate::model_migration::migration_copy_for_models;
 use crate::model_migration::run_model_migration_prompt;
+use crate::multi_agents::AgentPickerThreadEntry;
 use crate::multi_agents::AgentPickerThreadUsage;
 use crate::multi_agents::SUBAGENT_LABEL;
 use crate::multi_agents::agent_picker_status_dot_spans;
@@ -2661,12 +2662,14 @@ impl App {
                 Ok(thread) => {
                     self.upsert_agent_picker_thread(
                         thread_id,
-                        thread.agent_nickname,
-                        thread.agent_role,
-                        Self::session_source_agent_path(&thread.source),
-                        /*is_closed*/ false,
-                        Some(thread.created_at),
-                        Some(thread.updated_at),
+                        AgentPickerThreadEntry {
+                            agent_nickname: thread.agent_nickname,
+                            agent_role: thread.agent_role,
+                            agent_path: Self::session_source_agent_path(&thread.source),
+                            is_closed: false,
+                            created_at: Some(thread.created_at),
+                            updated_at: Some(thread.updated_at),
+                        },
                     );
                 }
                 Err(err) => {
@@ -2706,12 +2709,14 @@ impl App {
         session.rollout_path = rollout_path;
         self.upsert_agent_picker_thread(
             thread_id,
-            notification.thread.agent_nickname.clone(),
-            notification.thread.agent_role.clone(),
-            Self::session_source_agent_path(&notification.thread.source),
-            /*is_closed*/ false,
-            Some(notification.thread.created_at),
-            Some(notification.thread.updated_at),
+            AgentPickerThreadEntry {
+                agent_nickname: notification.thread.agent_nickname.clone(),
+                agent_role: notification.thread.agent_role.clone(),
+                agent_path: Self::session_source_agent_path(&notification.thread.source),
+                is_closed: false,
+                created_at: Some(notification.thread.created_at),
+                updated_at: Some(notification.thread.updated_at),
+            },
         );
         Some(session)
     }
@@ -2819,11 +2824,7 @@ impl App {
         let thread_id = session.thread_id;
         self.primary_thread_id = Some(thread_id);
         self.primary_session_configured = Some(session.clone());
-        self.upsert_agent_picker_thread(
-            thread_id, /*agent_nickname*/ None, /*agent_role*/ None,
-            /*agent_path*/ None, /*is_closed*/ false, /*created_at*/ None,
-            /*updated_at*/ None,
-        );
+        self.upsert_agent_picker_thread(thread_id, AgentPickerThreadEntry::default());
         let channel = self.ensure_thread_channel(thread_id);
         {
             let mut store = channel.store.lock().await;
@@ -3002,29 +3003,9 @@ impl App {
                 name = format!("{tree_prefix}{name}");
             }
             let usage = self.agent_picker_thread_usage(thread_id).await;
-            let description = format_agent_picker_item_description(
-                thread_id,
-                &usage.token_usage,
-                usage.model_context_window,
-                entry.updated_at,
-                entry.created_at,
-                usage.model.as_deref(),
-                usage.reasoning_effort,
-                usage.task_name.as_deref(),
-            );
-            let selected_description = format_agent_picker_item_selected_description(
-                thread_id,
-                &usage.token_usage,
-                usage.model_context_window,
-                entry.updated_at,
-                entry.created_at,
-                usage.model.as_deref(),
-                usage.reasoning_effort,
-                usage.task_name.as_deref(),
-                usage.approval_policy,
-                usage.approvals_reviewer,
-                usage.sandbox_policy.as_ref(),
-            );
+            let description = format_agent_picker_item_description(thread_id, &entry, &usage);
+            let selected_description =
+                format_agent_picker_item_selected_description(thread_id, &entry, &usage);
             let status_terms = if entry.is_closed {
                 "closed stale inactive finished"
             } else {
@@ -3158,30 +3139,13 @@ impl App {
     ///
     /// These two writes stay paired so the picker rows and contextual footer continue to describe
     /// the same displayed thread after nickname or role updates.
-    fn upsert_agent_picker_thread(
-        &mut self,
-        thread_id: ThreadId,
-        agent_nickname: Option<String>,
-        agent_role: Option<String>,
-        agent_path: Option<String>,
-        is_closed: bool,
-        created_at: Option<i64>,
-        updated_at: Option<i64>,
-    ) {
+    fn upsert_agent_picker_thread(&mut self, thread_id: ThreadId, entry: AgentPickerThreadEntry) {
         self.chat_widget.set_collab_agent_metadata(
             thread_id,
-            agent_nickname.clone(),
-            agent_role.clone(),
+            entry.agent_nickname.clone(),
+            entry.agent_role.clone(),
         );
-        self.agent_navigation.upsert_with_path(
-            thread_id,
-            agent_nickname,
-            agent_role,
-            agent_path,
-            is_closed,
-            created_at,
-            updated_at,
-        );
+        self.agent_navigation.upsert_with_path(thread_id, entry);
         self.sync_active_agent_label();
     }
 
@@ -3208,27 +3172,29 @@ impl App {
             Ok(thread) => {
                 self.upsert_agent_picker_thread(
                     thread_id,
-                    thread.agent_nickname.or_else(|| {
-                        existing_entry
-                            .as_ref()
-                            .and_then(|entry| entry.agent_nickname.clone())
-                    }),
-                    thread.agent_role.or_else(|| {
-                        existing_entry
-                            .as_ref()
-                            .and_then(|entry| entry.agent_role.clone())
-                    }),
-                    Self::session_source_agent_path(&thread.source).or_else(|| {
-                        existing_entry
-                            .as_ref()
-                            .and_then(|entry| entry.agent_path.clone())
-                    }),
-                    matches!(
-                        thread.status,
-                        codex_app_server_protocol::ThreadStatus::NotLoaded
-                    ),
-                    Some(thread.created_at),
-                    Some(thread.updated_at),
+                    AgentPickerThreadEntry {
+                        agent_nickname: thread.agent_nickname.or_else(|| {
+                            existing_entry
+                                .as_ref()
+                                .and_then(|entry| entry.agent_nickname.clone())
+                        }),
+                        agent_role: thread.agent_role.or_else(|| {
+                            existing_entry
+                                .as_ref()
+                                .and_then(|entry| entry.agent_role.clone())
+                        }),
+                        agent_path: Self::session_source_agent_path(&thread.source).or_else(|| {
+                            existing_entry
+                                .as_ref()
+                                .and_then(|entry| entry.agent_path.clone())
+                        }),
+                        is_closed: matches!(
+                            thread.status,
+                            codex_app_server_protocol::ThreadStatus::NotLoaded
+                        ),
+                        created_at: Some(thread.created_at),
+                        updated_at: Some(thread.updated_at),
+                    },
                 );
                 true
             }
@@ -3244,18 +3210,15 @@ impl App {
                 if let Some(entry) = existing_entry {
                     self.upsert_agent_picker_thread(
                         thread_id,
-                        entry.agent_nickname,
-                        entry.agent_role,
-                        entry.agent_path,
-                        is_closed,
-                        entry.created_at,
-                        entry.updated_at,
+                        AgentPickerThreadEntry { is_closed, ..entry },
                     );
                 } else {
                     self.upsert_agent_picker_thread(
-                        thread_id, /*agent_nickname*/ None, /*agent_role*/ None,
-                        /*agent_path*/ None, is_closed, /*created_at*/ None,
-                        /*updated_at*/ None,
+                        thread_id,
+                        AgentPickerThreadEntry {
+                            is_closed,
+                            ..AgentPickerThreadEntry::default()
+                        },
                     );
                 }
                 true
@@ -3705,12 +3668,14 @@ impl App {
         for thread in find_loaded_subagent_threads_for_primary(threads, primary_thread_id) {
             self.upsert_agent_picker_thread(
                 thread.thread_id,
-                thread.agent_nickname,
-                thread.agent_role,
-                thread.agent_path,
-                /*is_closed*/ false,
-                Some(thread.created_at),
-                Some(thread.updated_at),
+                AgentPickerThreadEntry {
+                    agent_nickname: thread.agent_nickname,
+                    agent_role: thread.agent_role,
+                    agent_path: thread.agent_path,
+                    is_closed: false,
+                    created_at: Some(thread.created_at),
+                    updated_at: Some(thread.updated_at),
+                },
             );
         }
 
@@ -6442,6 +6407,7 @@ async fn fetch_all_mcp_server_statuses(
                 params: ListMcpServerStatusParams {
                     cursor: cursor.clone(),
                     limit: Some(100),
+                    detail: None,
                 },
             })
             .await
@@ -7414,7 +7380,7 @@ mod tests {
         let (mut app, _app_event_rx, mut op_rx) = make_test_app_with_channels().await;
         let thread_id = ThreadId::new();
         let session = test_thread_session(thread_id, PathBuf::from("/tmp/project"));
-        app.chat_widget.handle_thread_session(session.clone());
+        app.chat_widget.handle_thread_session(session);
         app.chat_widget.handle_server_notification(
             turn_started_notification(thread_id, "turn-1"),
             /*replay_kind*/ None,
@@ -9500,6 +9466,7 @@ guardian_approval = true
             ServerNotification::ThreadStarted(ThreadStartedNotification {
                 thread: Thread {
                     id: agent_thread_id.to_string(),
+                    forked_from_id: None,
                     preview: "agent thread".to_string(),
                     ephemeral: false,
                     model_provider: "agent-provider".to_string(),
@@ -9583,6 +9550,7 @@ guardian_approval = true
             ServerNotification::ThreadStarted(ThreadStartedNotification {
                 thread: Thread {
                     id: agent_thread_id.to_string(),
+                    forked_from_id: None,
                     preview: "agent thread".to_string(),
                     ephemeral: false,
                     model_provider: "agent-provider".to_string(),
@@ -10048,6 +10016,9 @@ guardian_approval = true
             items,
             status,
             error: None,
+            started_at: None,
+            completed_at: None,
+            duration_ms: None,
         }
     }
 
@@ -11410,6 +11381,9 @@ guardian_approval = true
                         }],
                         status: TurnStatus::Completed,
                         error: None,
+                        started_at: None,
+                        completed_at: None,
+                        duration_ms: None,
                     },
                     Turn {
                         id: "turn-2".to_string(),
@@ -11430,6 +11404,9 @@ guardian_approval = true
                         ],
                         status: TurnStatus::Completed,
                         error: None,
+                        started_at: None,
+                        completed_at: None,
+                        duration_ms: None,
                     },
                 ],
                 events: Vec::new(),
@@ -11673,6 +11650,7 @@ guardian_approval = true
             &ThreadRollbackResponse {
                 thread: Thread {
                     id: thread_id.to_string(),
+                    forked_from_id: None,
                     preview: String::new(),
                     ephemeral: false,
                     model_provider: "openai".to_string(),
