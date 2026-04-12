@@ -95,6 +95,8 @@ baseline is trustworthy, and only then widen deliberately.
 
 That summary should identify:
 
+- the host workflow ref when the run is dispatched from a branch that carries
+  newer workflow behavior than the validated target
 - the validated ref and head SHA
 - the selected profile and lanes
 - setup-class job results and started-lane counts

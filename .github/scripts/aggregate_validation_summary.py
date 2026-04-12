@@ -18,6 +18,7 @@ OUTCOME_PRIORITY = {"failure": 0, "cancelled": 1, "missing": 2}
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--repo", required=True)
+    parser.add_argument("--host-ref", required=True)
     parser.add_argument("--display-ref", required=True)
     parser.add_argument("--checkout-ref", required=True)
     parser.add_argument("--head-sha", required=True)
@@ -541,6 +542,7 @@ def main() -> None:
     payload = {
         "repo": args.repo,
         "ref": {
+            "host_ref": args.host_ref,
             "display_ref": args.display_ref,
             "checkout_ref": args.checkout_ref,
             "head_sha": args.head_sha,

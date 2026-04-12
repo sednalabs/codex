@@ -1,4 +1,8 @@
 name: validation-lab
+run-name: >-
+  validation-lab [${{ inputs.profile }}/${{ inputs.lane_set }}]
+  target=${{ inputs.ref || github.ref_name }}
+  host=${{ github.ref_name }}
 
 on:
   workflow_call:
@@ -129,6 +133,7 @@ jobs:
     name: Resolve lab checkout ref and lane selection
     runs-on: ubuntu-24.04
     outputs:
+      host_ref: ${{ steps.meta.outputs.host_ref }}
       checkout_ref: ${{ steps.meta.outputs.checkout_ref }}
       display_ref: ${{ steps.meta.outputs.display_ref }}
       head_sha: ${{ steps.meta.outputs.head_sha }}
@@ -182,6 +187,7 @@ jobs:
         run: |
           set -euo pipefail
 
+          host_ref='${{ github.ref_name }}'
           checkout_ref='${{ inputs.ref || github.sha }}'
           display_ref='${{ inputs.ref || github.ref_name }}'
           target_checkout="${GITHUB_WORKSPACE}/validation-target"
@@ -229,6 +235,7 @@ jobs:
           heavy_max_parallel="$(SELECTION_META="${selection_meta}" python3 -c 'import json, os; print(json.loads(os.environ["SELECTION_META"])["heavy_max_parallel"])')"
 
           {
+            echo "host_ref=${host_ref}"
             echo "checkout_ref=${checkout_ref}"
             echo "display_ref=${display_ref}"
             echo "head_sha=${head_sha}"
@@ -267,7 +274,8 @@ jobs:
           {
             echo "### Validation lab"
             echo
-            echo "- Ref: \`${{ steps.meta.outputs.display_ref }}\`"
+            echo "- Host workflow ref: \`${{ steps.meta.outputs.host_ref }}\`"
+            echo "- Validated target ref: \`${{ steps.meta.outputs.display_ref }}\`"
             echo "- Head SHA: \`${{ steps.meta.outputs.head_sha }}\`"
             echo "- Profile: \`${{ inputs.profile }}\`"
             echo "- Profile intent: \`${{ steps.meta.outputs.profile_intent }}\`"
@@ -476,6 +484,7 @@ jobs:
           summary_file="${RUNNER_TEMP}/validation-summary.json"
           python3 .github/scripts/aggregate_validation_summary.py \
             --repo "${GITHUB_REPOSITORY}" \
+            --host-ref "${{ needs.metadata.outputs.host_ref }}" \
             --display-ref "${{ needs.metadata.outputs.display_ref }}" \
             --checkout-ref "${{ needs.metadata.outputs.checkout_ref }}" \
             --head-sha "${{ needs.metadata.outputs.head_sha }}" \
@@ -533,7 +542,8 @@ jobs:
           print("### Validation summary")
           print()
           print(f"- Overall conclusion: `{summary['overall_conclusion']}`")
-          print(f"- Ref: `{payload['ref']['display_ref']}`")
+          print(f"- Host workflow ref: `{payload['ref']['host_ref']}`")
+          print(f"- Validated target ref: `{payload['ref']['display_ref']}`")
           print(f"- Head SHA: `{payload['ref']['head_sha']}`")
           print(f"- Profile: `{payload['selection']['profile']}`")
           if payload['selection'].get('profile_intent'):
