@@ -304,7 +304,10 @@ jobs:
           BUILDBUDDY_API_KEY: ${{ secrets.BUILDBUDDY_API_KEY }}
         shell: bash
         run: |
-          mapfile -t bazel_targets < <(./tools/argument-comment-lint/list-bazel-targets.sh)
+          bazel_targets=()
+          while IFS= read -r bazel_target; do
+            bazel_targets+=("${bazel_target}")
+          done < <(./tools/argument-comment-lint/list-bazel-targets.sh)
           ./.github/scripts/run-bazel-ci.sh \
             -- \
             build \
