@@ -59,7 +59,6 @@ constant_time_eq = { workspace = true }
 futures = { workspace = true }
 gethostname = { workspace = true }
 hmac = { workspace = true }
-jsonwebtoken = { workspace = true }
 owo-colors = { workspace = true, features = ["supports-colors"] }
 rmcp = { workspace = true, default-features = false, features = [
     "elicitation",

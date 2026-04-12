@@ -2,15 +2,16 @@ use anyhow::Context;
 use axum::http::HeaderMap;
 use axum::http::StatusCode;
 use axum::http::header::AUTHORIZATION;
+use base64::Engine;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use clap::Args;
 use clap::ValueEnum;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use constant_time_eq::constant_time_eq_32;
-use jsonwebtoken::Algorithm;
-use jsonwebtoken::DecodingKey;
-use jsonwebtoken::Validation;
-use jsonwebtoken::decode;
+use hmac::Hmac;
+use hmac::Mac;
 use serde::Deserialize;
+use serde::de::DeserializeOwned;
 use sha2::Digest;
 use sha2::Sha256;
 use std::io;
@@ -105,6 +106,11 @@ struct JwtClaims {
     nbf: Option<i64>,
     iss: Option<String>,
     aud: Option<JwtAudienceClaim>,
+}
+
+#[derive(Deserialize)]
+struct JwtHeader {
+    alg: String,
 }
 
 #[derive(Deserialize)]
@@ -280,19 +286,15 @@ fn verify_signed_bearer_token(
 }
 
 fn decode_jwt_claims(token: &str, shared_secret: &[u8]) -> Result<JwtClaims, WebsocketAuthError> {
-    let mut validation = Validation::new(Algorithm::HS256);
-    validation.required_spec_claims.clear();
-    // We disable the library's standard claim checks here because we want the
-    // transport layer to own the exact exp/nbf/iss/aud semantics and error
-    // messages, including optional issuer/audience support and configurable
-    // clock skew handling in validate_jwt_claims below.
-    validation.validate_exp = false;
-    validation.validate_nbf = false;
-    validation.validate_aud = false;
+    let (header_segment, claims_segment, signature_segment) = split_jwt_segments(token)?;
+    let header: JwtHeader = decode_jwt_json_segment(header_segment)?;
+    if header.alg != "HS256" {
+        return Err(unauthorized("invalid websocket jwt"));
+    }
 
-    decode::<JwtClaims>(token, &DecodingKey::from_secret(shared_secret), &validation)
-        .map(|token_data| token_data.claims)
-        .map_err(|_| unauthorized("invalid websocket jwt"))
+    let signed_payload = format!("{header_segment}.{claims_segment}");
+    verify_hs256_signature(&signed_payload, signature_segment, shared_secret)?;
+    decode_jwt_json_segment(claims_segment)
 }
 
 fn validate_jwt_claims(
@@ -332,6 +334,47 @@ fn audience_matches(audience: Option<&JwtAudienceClaim>, expected_audience: &str
         }
         None => false,
     }
+}
+
+fn split_jwt_segments(token: &str) -> Result<(&str, &str, &str), WebsocketAuthError> {
+    let mut segments = token.split('.');
+    let Some(header) = segments.next() else {
+        return Err(unauthorized("invalid websocket jwt"));
+    };
+    let Some(claims) = segments.next() else {
+        return Err(unauthorized("invalid websocket jwt"));
+    };
+    let Some(signature) = segments.next() else {
+        return Err(unauthorized("invalid websocket jwt"));
+    };
+    if segments.next().is_some() || header.is_empty() || claims.is_empty() || signature.is_empty() {
+        return Err(unauthorized("invalid websocket jwt"));
+    }
+    Ok((header, claims, signature))
+}
+
+fn decode_jwt_json_segment<T: DeserializeOwned>(segment: &str) -> Result<T, WebsocketAuthError> {
+    let bytes = URL_SAFE_NO_PAD
+        .decode(segment)
+        .map_err(|_| unauthorized("invalid websocket jwt"))?;
+    serde_json::from_slice(&bytes).map_err(|_| unauthorized("invalid websocket jwt"))
+}
+
+fn verify_hs256_signature(
+    signed_payload: &str,
+    signature_segment: &str,
+    shared_secret: &[u8],
+) -> Result<(), WebsocketAuthError> {
+    type HmacSha256 = Hmac<Sha256>;
+
+    let signature = URL_SAFE_NO_PAD
+        .decode(signature_segment)
+        .map_err(|_| unauthorized("invalid websocket jwt"))?;
+    let mut mac = HmacSha256::new_from_slice(shared_secret)
+        .map_err(|_| unauthorized("invalid websocket jwt"))?;
+    mac.update(signed_payload.as_bytes());
+    mac.verify_slice(&signature)
+        .map_err(|_| unauthorized("invalid websocket jwt"))
 }
 
 fn bearer_token_from_headers(headers: &HeaderMap) -> Result<&str, WebsocketAuthError> {
@@ -407,16 +450,10 @@ fn unauthorized(message: &'static str) -> WebsocketAuthError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use base64::Engine;
-    use base64::engine::general_purpose::URL_SAFE_NO_PAD;
-    use hmac::Hmac;
-    use hmac::Mac;
     use serde_json::json;
     use std::io::ErrorKind;
     use std::io::Write;
     use tempfile::NamedTempFile;
-
-    type HmacSha256 = Hmac<Sha256>;
 
     fn signed_token(shared_secret: &[u8], claims: serde_json::Value) -> String {
         let header = URL_SAFE_NO_PAD.encode(br#"{"alg":"HS256","typ":"JWT"}"#);

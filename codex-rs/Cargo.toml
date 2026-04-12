@@ -231,7 +231,6 @@ indexmap = "2.12.0"
 insta = "1.46.3"
 inventory = "0.3.22"
 itertools = "0.14.0"
-jsonwebtoken = { version = "10.3.0", features = ["rust_crypto"] }
 keyring = { version = "3.6", default-features = false }
 landlock = "0.4.4"
 lazy_static = "1"
