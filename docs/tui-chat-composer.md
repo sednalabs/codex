@@ -98,7 +98,7 @@ There are multiple submission paths, but they share the same core rules:
 
 When steer mode is enabled:
 
-- `Enter` always submits immediately.
+- `Enter` submits immediately while idle, and queues at the back while a task is already running.
 - `Tab` requests queuing at the back if a task is already running; otherwise it submits
   immediately.
 - `Ctrl+Shift+Q` requests queuing at the front if a task is already running; otherwise it also

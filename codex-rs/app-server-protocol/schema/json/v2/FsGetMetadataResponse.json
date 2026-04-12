@@ -1,5 +1,5 @@
 {
-  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
   "description": "Metadata returned by `fs/getMetadata`.",
   "properties": {
     "createdAtMs": {
@@ -22,9 +22,9 @@
     }
   },
   "required": [
-    "createdAtMs",
     "isDirectory",
     "isFile",
+    "createdAtMs",
     "modifiedAtMs"
   ],
   "title": "FsGetMetadataResponse",

@@ -31,8 +31,9 @@
 //!
 //! # Submission and Prompt Expansion
 //!
-//! `Enter` submits immediately. `Tab` requests queuing at the back while a task is running; if no
-//! task is running, `Tab` submits just like Enter so input is never dropped.
+//! `Enter` submits immediately while idle, and queues at the back while a task is running.
+//! `Tab` also requests queuing at the back while a task is running; if no task is running, `Tab`
+//! submits just like Enter so input is never dropped.
 //! `Ctrl+Shift+Q` requests queuing at the front so the draft runs next after the active task; if
 //! no task is running, it also falls back to immediate submit.
 //! `Tab` does not submit when entering a `!` shell command.
@@ -2291,8 +2292,13 @@ impl ChatComposer {
                     text,
                     text_elements,
                 },
-                (true, SubmissionMode::Immediate)
-                | (false, SubmissionMode::Immediate)
+                (true, SubmissionMode::Immediate) | (true, SubmissionMode::QueueBackWhenBusy) => {
+                    InputResult::Queued {
+                        text,
+                        text_elements,
+                    }
+                }
+                (false, SubmissionMode::Immediate)
                 | (false, SubmissionMode::QueueBackWhenBusy)
                 | (false, SubmissionMode::QueueFrontWhenBusy) => InputResult::Submitted {
                     text,
@@ -6503,6 +6509,35 @@ mod tests {
         assert!(matches!(
             result,
             InputResult::QueuedFront { ref text, .. } if text == "next"
+        ));
+        assert!(composer.textarea.is_empty());
+    }
+
+    #[test]
+    fn enter_queues_back_when_task_running() {
+        use crossterm::event::KeyCode;
+        use crossterm::event::KeyEvent;
+        use crossterm::event::KeyModifiers;
+
+        let (tx, _rx) = unbounded_channel::<AppEvent>();
+        let sender = AppEventSender::new(tx);
+        let mut composer = ChatComposer::new(
+            /*has_input_focus*/ true,
+            sender,
+            /*enhanced_keys_supported*/ false,
+            "Ask Codex to do anything".to_string(),
+            /*disable_paste_burst*/ false,
+        );
+        composer.set_task_running(/*running*/ true);
+
+        type_chars_humanlike(&mut composer, &['n', 'e', 'x', 't']);
+
+        let (result, _needs_redraw) =
+            composer.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+        assert!(matches!(
+            result,
+            InputResult::Queued { ref text, .. } if text == "next"
         ));
         assert!(composer.textarea.is_empty());
     }
