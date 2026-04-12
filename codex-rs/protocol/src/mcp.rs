@@ -102,6 +102,34 @@ pub struct ResourceTemplate {
     pub mime_type: Option<String>,
 }
 
+/// Contents returned when reading a resource from an MCP server.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema, TS)]
+#[serde(untagged)]
+pub enum ResourceContent {
+    Text {
+        /// The URI of this resource.
+        uri: String,
+        #[serde(rename = "mimeType", alias = "mime_type", default)]
+        #[ts(optional)]
+        mime_type: Option<String>,
+        text: String,
+        #[serde(rename = "_meta", default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        meta: Option<serde_json::Value>,
+    },
+    Blob {
+        /// The URI of this resource.
+        uri: String,
+        #[serde(rename = "mimeType", alias = "mime_type", default)]
+        #[ts(optional)]
+        mime_type: Option<String>,
+        blob: String,
+        #[serde(rename = "_meta", default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        meta: Option<serde_json::Value>,
+    },
+}
+
 /// The server's response to a tool call.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema, TS)]
 #[serde(rename_all = "camelCase")]

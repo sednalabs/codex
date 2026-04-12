@@ -1,6 +1,5 @@
 {
-  "$schema": "http://json-schema.org/draft-07/schema#",
-  "definitions": {
+  "$defs": {
     "ContentItem": {
       "oneOf": [
         {
@@ -9,16 +8,14 @@
               "type": "string"
             },
             "type": {
-              "enum": [
-                "input_text"
-              ],
+              "const": "input_text",
               "title": "InputTextContentItemType",
               "type": "string"
             }
           },
           "required": [
-            "text",
-            "type"
+            "type",
+            "text"
           ],
           "title": "InputTextContentItem",
           "type": "object"
@@ -29,16 +26,14 @@
               "type": "string"
             },
             "type": {
-              "enum": [
-                "input_image"
-              ],
+              "const": "input_image",
               "title": "InputImageContentItemType",
               "type": "string"
             }
           },
           "required": [
-            "image_url",
-            "type"
+            "type",
+            "image_url"
           ],
           "title": "InputImageContentItem",
           "type": "object"
@@ -49,16 +44,14 @@
               "type": "string"
             },
             "type": {
-              "enum": [
-                "output_text"
-              ],
+              "const": "output_text",
               "title": "OutputTextContentItemType",
               "type": "string"
             }
           },
           "required": [
-            "text",
-            "type"
+            "type",
+            "text"
           ],
           "title": "OutputTextContentItem",
           "type": "object"
@@ -72,14 +65,14 @@
         },
         {
           "items": {
-            "$ref": "#/definitions/FunctionCallOutputContentItem"
+            "$ref": "#/$defs/FunctionCallOutputContentItem"
           },
           "type": "array"
         }
       ]
     },
     "FunctionCallOutputContentItem": {
-      "description": "Responses API compatible content items that can be returned by a tool call. This is a subset of ContentItem with the types we support as function call outputs.",
+      "description": "Responses API compatible content items that can be returned by a tool call.\nThis is a subset of ContentItem with the types we support as function call outputs.",
       "oneOf": [
         {
           "properties": {
@@ -87,16 +80,14 @@
               "type": "string"
             },
             "type": {
-              "enum": [
-                "input_text"
-              ],
+              "const": "input_text",
               "title": "InputTextFunctionCallOutputContentItemType",
               "type": "string"
             }
           },
           "required": [
-            "text",
-            "type"
+            "type",
+            "text"
           ],
           "title": "InputTextFunctionCallOutputContentItem",
           "type": "object"
@@ -106,7 +97,7 @@
             "detail": {
               "anyOf": [
                 {
-                  "$ref": "#/definitions/ImageDetail"
+                  "$ref": "#/$defs/ImageDetail"
                 },
                 {
                   "type": "null"
@@ -117,16 +108,14 @@
               "type": "string"
             },
             "type": {
-              "enum": [
-                "input_image"
-              ],
+              "const": "input_image",
               "title": "InputImageFunctionCallOutputContentItemType",
               "type": "string"
             }
           },
           "required": [
-            "image_url",
-            "type"
+            "type",
+            "image_url"
           ],
           "title": "InputImageFunctionCallOutputContentItem",
           "type": "object"
@@ -160,8 +149,8 @@
       },
       "required": [
         "id",
-        "preexisting_untracked_dirs",
-        "preexisting_untracked_files"
+        "preexisting_untracked_files",
+        "preexisting_untracked_dirs"
       ],
       "type": "object"
     },
@@ -177,58 +166,64 @@
     "LocalShellAction": {
       "oneOf": [
         {
+          "$ref": "#/$defs/LocalShellExecAction",
           "properties": {
-            "command": {
-              "items": {
-                "type": "string"
-              },
-              "type": "array"
-            },
-            "env": {
-              "additionalProperties": {
-                "type": "string"
-              },
-              "type": [
-                "object",
-                "null"
-              ]
-            },
-            "timeout_ms": {
-              "format": "uint64",
-              "minimum": 0.0,
-              "type": [
-                "integer",
-                "null"
-              ]
-            },
             "type": {
-              "enum": [
-                "exec"
-              ],
+              "const": "exec",
               "title": "ExecLocalShellActionType",
               "type": "string"
-            },
-            "user": {
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "working_directory": {
-              "type": [
-                "string",
-                "null"
-              ]
             }
           },
           "required": [
-            "command",
             "type"
           ],
           "title": "ExecLocalShellAction",
           "type": "object"
         }
       ]
+    },
+    "LocalShellExecAction": {
+      "properties": {
+        "command": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "env": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "type": [
+            "object",
+            "null"
+          ]
+        },
+        "timeout_ms": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "user": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "working_directory": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "command"
+      ],
+      "type": "object"
     },
     "LocalShellStatus": {
       "enum": [
@@ -239,20 +234,16 @@
       "type": "string"
     },
     "MessagePhase": {
-      "description": "Classifies an assistant message as interim commentary or final answer text.\n\nProviders do not emit this consistently, so callers must treat `None` as \"phase unknown\" and keep compatibility behavior for legacy models.",
+      "description": "Classifies an assistant message as interim commentary or final answer text.\n\nProviders do not emit this consistently, so callers must treat `None` as\n\"phase unknown\" and keep compatibility behavior for legacy models.",
       "oneOf": [
         {
-          "description": "Mid-turn assistant text (for example preamble/progress narration).\n\nAdditional tool calls or assistant output may follow before turn completion.",
-          "enum": [
-            "commentary"
-          ],
+          "const": "commentary",
+          "description": "Mid-turn assistant text (for example preamble/progress narration).\n\nAdditional tool calls or assistant output may follow before turn\ncompletion.",
           "type": "string"
         },
         {
+          "const": "final_answer",
           "description": "The assistant's terminal answer text for the current turn.",
-          "enum": [
-            "final_answer"
-          ],
           "type": "string"
         }
       ]
@@ -265,16 +256,14 @@
               "type": "string"
             },
             "type": {
-              "enum": [
-                "reasoning_text"
-              ],
+              "const": "reasoning_text",
               "title": "ReasoningTextReasoningItemContentType",
               "type": "string"
             }
           },
           "required": [
-            "text",
-            "type"
+            "type",
+            "text"
           ],
           "title": "ReasoningTextReasoningItemContent",
           "type": "object"
@@ -285,16 +274,14 @@
               "type": "string"
             },
             "type": {
-              "enum": [
-                "text"
-              ],
+              "const": "text",
               "title": "TextReasoningItemContentType",
               "type": "string"
             }
           },
           "required": [
-            "text",
-            "type"
+            "type",
+            "text"
           ],
           "title": "TextReasoningItemContent",
           "type": "object"
@@ -309,16 +296,14 @@
               "type": "string"
             },
             "type": {
-              "enum": [
-                "summary_text"
-              ],
+              "const": "summary_text",
               "title": "SummaryTextReasoningItemReasoningSummaryType",
               "type": "string"
             }
           },
           "required": [
-            "text",
-            "type"
+            "type",
+            "text"
           ],
           "title": "SummaryTextReasoningItemReasoningSummary",
           "type": "object"
@@ -331,7 +316,7 @@
           "properties": {
             "content": {
               "items": {
-                "$ref": "#/definitions/ContentItem"
+                "$ref": "#/$defs/ContentItem"
               },
               "type": "array"
             },
@@ -351,7 +336,7 @@
             "phase": {
               "anyOf": [
                 {
-                  "$ref": "#/definitions/MessagePhase"
+                  "$ref": "#/$defs/MessagePhase"
                 },
                 {
                   "type": "null"
@@ -362,17 +347,15 @@
               "type": "string"
             },
             "type": {
-              "enum": [
-                "message"
-              ],
+              "const": "message",
               "title": "MessageResponseItemType",
               "type": "string"
             }
           },
           "required": [
-            "content",
+            "type",
             "role",
-            "type"
+            "content"
           ],
           "title": "MessageResponseItem",
           "type": "object"
@@ -382,7 +365,7 @@
             "content": {
               "default": null,
               "items": {
-                "$ref": "#/definitions/ReasoningItemContent"
+                "$ref": "#/$defs/ReasoningItemContent"
               },
               "type": [
                 "array",
@@ -397,21 +380,19 @@
             },
             "summary": {
               "items": {
-                "$ref": "#/definitions/ReasoningItemReasoningSummary"
+                "$ref": "#/$defs/ReasoningItemReasoningSummary"
               },
               "type": "array"
             },
             "type": {
-              "enum": [
-                "reasoning"
-              ],
+              "const": "reasoning",
               "title": "ReasoningResponseItemType",
               "type": "string"
             }
           },
           "required": [
-            "summary",
-            "type"
+            "type",
+            "summary"
           ],
           "title": "ReasoningResponseItem",
           "type": "object"
@@ -419,7 +400,7 @@
         {
           "properties": {
             "action": {
-              "$ref": "#/definitions/LocalShellAction"
+              "$ref": "#/$defs/LocalShellAction"
             },
             "call_id": {
               "description": "Set when using the Responses API.",
@@ -437,20 +418,18 @@
               "writeOnly": true
             },
             "status": {
-              "$ref": "#/definitions/LocalShellStatus"
+              "$ref": "#/$defs/LocalShellStatus"
             },
             "type": {
-              "enum": [
-                "local_shell_call"
-              ],
+              "const": "local_shell_call",
               "title": "LocalShellCallResponseItemType",
               "type": "string"
             }
           },
           "required": [
-            "action",
+            "type",
             "status",
-            "type"
+            "action"
           ],
           "title": "LocalShellCallResponseItem",
           "type": "object"
@@ -480,18 +459,16 @@
               ]
             },
             "type": {
-              "enum": [
-                "function_call"
-              ],
+              "const": "function_call",
               "title": "FunctionCallResponseItemType",
               "type": "string"
             }
           },
           "required": [
-            "arguments",
-            "call_id",
+            "type",
             "name",
-            "type"
+            "arguments",
+            "call_id"
           ],
           "title": "FunctionCallResponseItem",
           "type": "object"
@@ -522,17 +499,15 @@
               ]
             },
             "type": {
-              "enum": [
-                "tool_search_call"
-              ],
+              "const": "tool_search_call",
               "title": "ToolSearchCallResponseItemType",
               "type": "string"
             }
           },
           "required": [
-            "arguments",
+            "type",
             "execution",
-            "type"
+            "arguments"
           ],
           "title": "ToolSearchCallResponseItem",
           "type": "object"
@@ -543,20 +518,18 @@
               "type": "string"
             },
             "output": {
-              "$ref": "#/definitions/FunctionCallOutputBody"
+              "$ref": "#/$defs/FunctionCallOutputBody"
             },
             "type": {
-              "enum": [
-                "function_call_output"
-              ],
+              "const": "function_call_output",
               "title": "FunctionCallOutputResponseItemType",
               "type": "string"
             }
           },
           "required": [
+            "type",
             "call_id",
-            "output",
-            "type"
+            "output"
           ],
           "title": "FunctionCallOutputResponseItem",
           "type": "object"
@@ -586,18 +559,16 @@
               ]
             },
             "type": {
-              "enum": [
-                "custom_tool_call"
-              ],
+              "const": "custom_tool_call",
               "title": "CustomToolCallResponseItemType",
               "type": "string"
             }
           },
           "required": [
+            "type",
             "call_id",
-            "input",
             "name",
-            "type"
+            "input"
           ],
           "title": "CustomToolCallResponseItem",
           "type": "object"
@@ -614,20 +585,18 @@
               ]
             },
             "output": {
-              "$ref": "#/definitions/FunctionCallOutputBody"
+              "$ref": "#/$defs/FunctionCallOutputBody"
             },
             "type": {
-              "enum": [
-                "custom_tool_call_output"
-              ],
+              "const": "custom_tool_call_output",
               "title": "CustomToolCallOutputResponseItemType",
               "type": "string"
             }
           },
           "required": [
+            "type",
             "call_id",
-            "output",
-            "type"
+            "output"
           ],
           "title": "CustomToolCallOutputResponseItem",
           "type": "object"
@@ -651,18 +620,16 @@
               "type": "array"
             },
             "type": {
-              "enum": [
-                "tool_search_output"
-              ],
+              "const": "tool_search_output",
               "title": "ToolSearchOutputResponseItemType",
               "type": "string"
             }
           },
           "required": [
-            "execution",
+            "type",
             "status",
-            "tools",
-            "type"
+            "execution",
+            "tools"
           ],
           "title": "ToolSearchOutputResponseItem",
           "type": "object"
@@ -672,7 +639,7 @@
             "action": {
               "anyOf": [
                 {
-                  "$ref": "#/definitions/ResponsesApiWebSearchAction"
+                  "$ref": "#/$defs/ResponsesApiWebSearchAction"
                 },
                 {
                   "type": "null"
@@ -693,9 +660,7 @@
               ]
             },
             "type": {
-              "enum": [
-                "web_search_call"
-              ],
+              "const": "web_search_call",
               "title": "WebSearchCallResponseItemType",
               "type": "string"
             }
@@ -724,18 +689,16 @@
               "type": "string"
             },
             "type": {
-              "enum": [
-                "image_generation_call"
-              ],
+              "const": "image_generation_call",
               "title": "ImageGenerationCallResponseItemType",
               "type": "string"
             }
           },
           "required": [
+            "type",
             "id",
-            "result",
             "status",
-            "type"
+            "result"
           ],
           "title": "ImageGenerationCallResponseItem",
           "type": "object"
@@ -743,19 +706,17 @@
         {
           "properties": {
             "ghost_commit": {
-              "$ref": "#/definitions/GhostCommit"
+              "$ref": "#/$defs/GhostCommit"
             },
             "type": {
-              "enum": [
-                "ghost_snapshot"
-              ],
+              "const": "ghost_snapshot",
               "title": "GhostSnapshotResponseItemType",
               "type": "string"
             }
           },
           "required": [
-            "ghost_commit",
-            "type"
+            "type",
+            "ghost_commit"
           ],
           "title": "GhostSnapshotResponseItem",
           "type": "object"
@@ -766,16 +727,14 @@
               "type": "string"
             },
             "type": {
-              "enum": [
-                "compaction"
-              ],
+              "const": "compaction",
               "title": "CompactionResponseItemType",
               "type": "string"
             }
           },
           "required": [
-            "encrypted_content",
-            "type"
+            "type",
+            "encrypted_content"
           ],
           "title": "CompactionResponseItem",
           "type": "object"
@@ -783,9 +742,7 @@
         {
           "properties": {
             "type": {
-              "enum": [
-                "other"
-              ],
+              "const": "other",
               "title": "OtherResponseItemType",
               "type": "string"
             }
@@ -818,9 +775,7 @@
               ]
             },
             "type": {
-              "enum": [
-                "search"
-              ],
+              "const": "search",
               "title": "SearchResponsesApiWebSearchActionType",
               "type": "string"
             }
@@ -834,9 +789,7 @@
         {
           "properties": {
             "type": {
-              "enum": [
-                "open_page"
-              ],
+              "const": "open_page",
               "title": "OpenPageResponsesApiWebSearchActionType",
               "type": "string"
             },
@@ -862,9 +815,7 @@
               ]
             },
             "type": {
-              "enum": [
-                "find_in_page"
-              ],
+              "const": "find_in_page",
               "title": "FindInPageResponsesApiWebSearchActionType",
               "type": "string"
             },
@@ -884,9 +835,7 @@
         {
           "properties": {
             "type": {
-              "enum": [
-                "other"
-              ],
+              "const": "other",
               "title": "OtherResponsesApiWebSearchActionType",
               "type": "string"
             }
@@ -900,9 +849,10 @@
       ]
     }
   },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
   "properties": {
     "item": {
-      "$ref": "#/definitions/ResponseItem"
+      "$ref": "#/$defs/ResponseItem"
     },
     "threadId": {
       "type": "string"
@@ -912,9 +862,9 @@
     }
   },
   "required": [
-    "item",
     "threadId",
-    "turnId"
+    "turnId",
+    "item"
   ],
   "title": "RawResponseItemCompletedNotification",
   "type": "object"

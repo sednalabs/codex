@@ -1,6 +1,5 @@
 {
-  "$schema": "http://json-schema.org/draft-07/schema#",
-  "definitions": {
+  "$defs": {
     "SkillsListExtraRootsForCwd": {
       "properties": {
         "cwd": {
@@ -20,6 +19,7 @@
       "type": "object"
     }
   },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
   "properties": {
     "cwds": {
       "description": "When empty, defaults to the current session working directory.",
@@ -36,7 +36,7 @@
       "default": null,
       "description": "Optional per-cwd extra roots to scan as user-scoped skills.",
       "items": {
-        "$ref": "#/definitions/SkillsListExtraRootsForCwd"
+        "$ref": "#/$defs/SkillsListExtraRootsForCwd"
       },
       "type": [
         "array",

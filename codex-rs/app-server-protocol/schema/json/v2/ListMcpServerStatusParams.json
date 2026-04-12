@@ -1,5 +1,14 @@
 {
-  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$defs": {
+    "McpServerStatusDetail": {
+      "enum": [
+        "full",
+        "toolsAndAuthOnly"
+      ],
+      "type": "string"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
   "properties": {
     "cursor": {
       "description": "Opaque pagination cursor returned by a previous call.",
@@ -8,10 +17,21 @@
         "null"
       ]
     },
+    "detail": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/McpServerStatusDetail"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Controls how much MCP inventory data to fetch for each server.\nDefaults to `Full` when omitted."
+    },
     "limit": {
       "description": "Optional page size; defaults to a server-defined value.",
       "format": "uint32",
-      "minimum": 0.0,
+      "minimum": 0,
       "type": [
         "integer",
         "null"

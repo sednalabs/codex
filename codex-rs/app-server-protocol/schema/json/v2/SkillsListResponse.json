@@ -1,11 +1,10 @@
 {
-  "$schema": "http://json-schema.org/draft-07/schema#",
-  "definitions": {
+  "$defs": {
     "SkillDependencies": {
       "properties": {
         "tools": {
           "items": {
-            "$ref": "#/definitions/SkillToolDependency"
+            "$ref": "#/$defs/SkillToolDependency"
           },
           "type": "array"
         }
@@ -25,8 +24,8 @@
         }
       },
       "required": [
-        "message",
-        "path"
+        "path",
+        "message"
       ],
       "type": "object"
     },
@@ -76,7 +75,7 @@
         "dependencies": {
           "anyOf": [
             {
-              "$ref": "#/definitions/SkillDependencies"
+              "$ref": "#/$defs/SkillDependencies"
             },
             {
               "type": "null"
@@ -92,7 +91,7 @@
         "interface": {
           "anyOf": [
             {
-              "$ref": "#/definitions/SkillInterface"
+              "$ref": "#/$defs/SkillInterface"
             },
             {
               "type": "null"
@@ -106,7 +105,7 @@
           "type": "string"
         },
         "scope": {
-          "$ref": "#/definitions/SkillScope"
+          "$ref": "#/$defs/SkillScope"
         },
         "shortDescription": {
           "description": "Legacy short_description from SKILL.md. Prefer SKILL.json interface.short_description.",
@@ -117,11 +116,11 @@
         }
       },
       "required": [
-        "description",
-        "enabled",
         "name",
+        "description",
         "path",
-        "scope"
+        "scope",
+        "enabled"
       ],
       "type": "object"
     },
@@ -180,29 +179,30 @@
         },
         "errors": {
           "items": {
-            "$ref": "#/definitions/SkillErrorInfo"
+            "$ref": "#/$defs/SkillErrorInfo"
           },
           "type": "array"
         },
         "skills": {
           "items": {
-            "$ref": "#/definitions/SkillMetadata"
+            "$ref": "#/$defs/SkillMetadata"
           },
           "type": "array"
         }
       },
       "required": [
         "cwd",
-        "errors",
-        "skills"
+        "skills",
+        "errors"
       ],
       "type": "object"
     }
   },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
   "properties": {
     "data": {
       "items": {
-        "$ref": "#/definitions/SkillsListEntry"
+        "$ref": "#/$defs/SkillsListEntry"
       },
       "type": "array"
     }

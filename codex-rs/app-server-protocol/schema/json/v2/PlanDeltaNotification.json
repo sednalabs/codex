@@ -1,6 +1,6 @@
 {
-  "$schema": "http://json-schema.org/draft-07/schema#",
-  "description": "EXPERIMENTAL - proposed plan streaming deltas for plan items. Clients should not assume concatenated deltas match the completed plan item content.",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "EXPERIMENTAL - proposed plan streaming deltas for plan items. Clients should\nnot assume concatenated deltas match the completed plan item content.",
   "properties": {
     "delta": {
       "type": "string"
@@ -16,10 +16,10 @@
     }
   },
   "required": [
-    "delta",
-    "itemId",
     "threadId",
-    "turnId"
+    "turnId",
+    "itemId",
+    "delta"
   ],
   "title": "PlanDeltaNotification",
   "type": "object"

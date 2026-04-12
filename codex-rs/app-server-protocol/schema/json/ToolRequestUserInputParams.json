@@ -1,6 +1,5 @@
 {
-  "$schema": "http://json-schema.org/draft-07/schema#",
-  "definitions": {
+  "$defs": {
     "ToolRequestUserInputOption": {
       "description": "EXPERIMENTAL. Defines a single selectable option for request_user_input.",
       "properties": {
@@ -12,8 +11,8 @@
         }
       },
       "required": [
-        "description",
-        "label"
+        "label",
+        "description"
       ],
       "type": "object"
     },
@@ -36,7 +35,7 @@
         },
         "options": {
           "items": {
-            "$ref": "#/definitions/ToolRequestUserInputOption"
+            "$ref": "#/$defs/ToolRequestUserInputOption"
           },
           "type": [
             "array",
@@ -48,13 +47,14 @@
         }
       },
       "required": [
-        "header",
         "id",
+        "header",
         "question"
       ],
       "type": "object"
     }
   },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
   "description": "EXPERIMENTAL. Params sent with a request_user_input event.",
   "properties": {
     "itemId": {
@@ -62,7 +62,7 @@
     },
     "questions": {
       "items": {
-        "$ref": "#/definitions/ToolRequestUserInputQuestion"
+        "$ref": "#/$defs/ToolRequestUserInputQuestion"
       },
       "type": "array"
     },
@@ -74,10 +74,10 @@
     }
   },
   "required": [
-    "itemId",
-    "questions",
     "threadId",
-    "turnId"
+    "turnId",
+    "itemId",
+    "questions"
   ],
   "title": "ToolRequestUserInputParams",
   "type": "object"

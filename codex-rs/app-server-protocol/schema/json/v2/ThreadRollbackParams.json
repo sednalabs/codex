@@ -1,10 +1,10 @@
 {
-  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
   "properties": {
     "numTurns": {
-      "description": "The number of turns to drop from the end of the thread. Must be >= 1.\n\nThis only modifies the thread's history and does not revert local file changes that have been made by the agent. Clients are responsible for reverting these changes.",
+      "description": "The number of turns to drop from the end of the thread. Must be >= 1.\n\nThis only modifies the thread's history and does not revert local file changes\nthat have been made by the agent. Clients are responsible for reverting these changes.",
       "format": "uint32",
-      "minimum": 0.0,
+      "minimum": 0,
       "type": "integer"
     },
     "threadId": {
@@ -12,8 +12,8 @@
     }
   },
   "required": [
-    "numTurns",
-    "threadId"
+    "threadId",
+    "numTurns"
   ],
   "title": "ThreadRollbackParams",
   "type": "object"

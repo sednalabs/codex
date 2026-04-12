@@ -43,11 +43,12 @@ impl JsonSchema for NullableString {
     }
 
     fn json_schema(_gen: &mut SchemaGenerator) -> Schema {
-        json!({
-            "type": ["string", "null"]
-        })
-        .try_into()
-        .expect("nullable string schema should be valid")
+        schema_from_json_literal(
+            json!({
+                "type": ["string", "null"]
+            }),
+            "nullable string schema",
+        )
     }
 }
 
@@ -504,22 +505,31 @@ fn session_start_source_schema(_gen: &mut SchemaGenerator) -> Schema {
     string_enum_schema(&["startup", "resume", "clear"])
 }
 
+fn schema_from_json_literal(value: Value, description: &'static str) -> Schema {
+    match value.try_into() {
+        Ok(schema) => schema,
+        Err(err) => unreachable!("internal {description} was invalid: {err}"),
+    }
+}
+
 fn string_const_schema(value: &str) -> Schema {
-    json!({
-        "type": "string",
-        "const": value,
-    })
-    .try_into()
-    .expect("string const schema should be valid")
+    schema_from_json_literal(
+        json!({
+            "type": "string",
+            "const": value,
+        }),
+        "string const schema",
+    )
 }
 
 fn string_enum_schema(values: &[&str]) -> Schema {
-    json!({
-        "type": "string",
-        "enum": values,
-    })
-    .try_into()
-    .expect("string enum schema should be valid")
+    schema_from_json_literal(
+        json!({
+            "type": "string",
+            "enum": values,
+        }),
+        "string enum schema",
+    )
 }
 
 fn normalize_legacy_option_schema(value: &mut Value) {
@@ -541,10 +551,10 @@ fn normalize_legacy_option_schema(value: &mut Value) {
 
             if let Some(Value::Array(types)) = map.get_mut("type") {
                 types.retain(|ty| ty != "null");
-                if types.len() == 1 {
-                    if let Some(single_type) = types.pop() {
-                        map.insert("type".to_string(), single_type);
-                    }
+                if types.len() == 1
+                    && let Some(single_type) = types.pop()
+                {
+                    map.insert("type".to_string(), single_type);
                 }
             }
 

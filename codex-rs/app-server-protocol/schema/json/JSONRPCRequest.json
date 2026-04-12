@@ -1,6 +1,5 @@
 {
-  "$schema": "http://json-schema.org/draft-07/schema#",
-  "definitions": {
+  "$defs": {
     "RequestId": {
       "anyOf": [
         {
@@ -30,10 +29,11 @@
       "type": "object"
     }
   },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
   "description": "A request that expects a response.",
   "properties": {
     "id": {
-      "$ref": "#/definitions/RequestId"
+      "$ref": "#/$defs/RequestId"
     },
     "method": {
       "type": "string"
@@ -42,7 +42,7 @@
     "trace": {
       "anyOf": [
         {
-          "$ref": "#/definitions/W3cTraceContext"
+          "$ref": "#/$defs/W3cTraceContext"
         },
         {
           "type": "null"

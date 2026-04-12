@@ -1,10 +1,9 @@
 {
-  "$schema": "http://json-schema.org/draft-07/schema#",
-  "definitions": {
+  "$defs": {
     "ThreadTokenUsage": {
       "properties": {
         "last": {
-          "$ref": "#/definitions/TokenUsageBreakdown"
+          "$ref": "#/$defs/TokenUsageBreakdown"
         },
         "modelContextWindow": {
           "format": "int64",
@@ -14,12 +13,12 @@
           ]
         },
         "total": {
-          "$ref": "#/definitions/TokenUsageBreakdown"
+          "$ref": "#/$defs/TokenUsageBreakdown"
         }
       },
       "required": [
-        "last",
-        "total"
+        "total",
+        "last"
       ],
       "type": "object"
     },
@@ -47,21 +46,22 @@
         }
       },
       "required": [
-        "cachedInputTokens",
+        "totalTokens",
         "inputTokens",
+        "cachedInputTokens",
         "outputTokens",
-        "reasoningOutputTokens",
-        "totalTokens"
+        "reasoningOutputTokens"
       ],
       "type": "object"
     }
   },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
   "properties": {
     "threadId": {
       "type": "string"
     },
     "tokenUsage": {
-      "$ref": "#/definitions/ThreadTokenUsage"
+      "$ref": "#/$defs/ThreadTokenUsage"
     },
     "turnId": {
       "type": "string"
@@ -69,8 +69,8 @@
   },
   "required": [
     "threadId",
-    "tokenUsage",
-    "turnId"
+    "turnId",
+    "tokenUsage"
   ],
   "title": "ThreadTokenUsageUpdatedNotification",
   "type": "object"

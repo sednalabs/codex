@@ -1,20 +1,19 @@
 {
-  "$schema": "http://json-schema.org/draft-07/schema#",
-  "definitions": {
+  "$defs": {
     "ConfigEdit": {
       "properties": {
         "keyPath": {
           "type": "string"
         },
         "mergeStrategy": {
-          "$ref": "#/definitions/MergeStrategy"
+          "$ref": "#/$defs/MergeStrategy"
         },
         "value": true
       },
       "required": [
         "keyPath",
-        "mergeStrategy",
-        "value"
+        "value",
+        "mergeStrategy"
       ],
       "type": "object"
     },
@@ -26,10 +25,11 @@
       "type": "string"
     }
   },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
   "properties": {
     "edits": {
       "items": {
-        "$ref": "#/definitions/ConfigEdit"
+        "$ref": "#/$defs/ConfigEdit"
       },
       "type": "array"
     },
