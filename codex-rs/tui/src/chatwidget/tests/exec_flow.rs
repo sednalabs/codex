@@ -1016,6 +1016,7 @@ async fn bang_shell_command_submits_run_user_shell_command_in_app_server_tui() {
 async fn model_slash_command_opens_picker_while_task_running() {
     // Build a chat widget and simulate an active task
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.thread_id = Some(ThreadId::new());
     chat.bottom_pane.set_task_running(/*running*/ true);
 
     // Dispatching /model while a task runs should open the picker immediately
@@ -1042,6 +1043,7 @@ async fn model_slash_command_opens_picker_while_task_running() {
 #[tokio::test]
 async fn queued_follow_up_waits_for_model_picker_to_close() {
     let (mut chat, _rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.thread_id = Some(ThreadId::new());
     chat.bottom_pane.set_task_running(/*running*/ true);
     chat.bottom_pane.set_composer_text(
         "queued after model picker".to_string(),
@@ -1059,12 +1061,7 @@ async fn queued_follow_up_waits_for_model_picker_to_close() {
     chat.bottom_pane.set_task_running(/*running*/ false);
     chat.maybe_send_next_queued_input();
 
-    assert_matches!(op_rx.try_recv(), Err(TryRecvError::Empty));
-    assert_eq!(chat.queued_user_messages.len(), 1);
-    assert_eq!(
-        chat.queued_user_messages[0].text,
-        "queued after model picker"
-    );
+    assert_no_submit_op(&mut op_rx);
 
     chat.handle_key_event(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
 

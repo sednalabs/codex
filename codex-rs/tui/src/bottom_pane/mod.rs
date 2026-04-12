@@ -483,10 +483,8 @@ impl BottomPane {
                 } else {
                     true
                 };
-                if should_interrupt {
-                    if let Some(status) = self.status.as_mut() {
-                        status.interrupt();
-                    }
+                if should_interrupt && let Some(status) = self.status.as_mut() {
+                    status.interrupt();
                 }
                 self.request_redraw();
                 return InputResult::None;
