@@ -323,6 +323,14 @@ class ValidationPlanScriptTests(unittest.TestCase):
             ["codex.tui-agent-picker-model-surface-targeted"],
         )
 
+    def test_validation_lab_selected_lanes_do_not_block_on_smoke_gate(self) -> None:
+        payload = load_workflow_payload(REPO_ROOT / ".github/workflows/validation-lab.yml")
+        jobs = payload.get("jobs") or {}
+
+        self.assertEqual((jobs.get("light_lanes") or {}).get("needs"), ["metadata"])
+        self.assertEqual((jobs.get("rust_lanes") or {}).get("needs"), ["metadata"])
+        self.assertEqual((jobs.get("heavy_lanes") or {}).get("needs"), ["metadata"])
+
     def test_heavy_plan_route_keeps_workflow_ci_changes_on_light_lanes(self) -> None:
         payload = run_script(
             SCRIPTS_DIR / "resolve_validation_plan.py",
@@ -365,14 +373,6 @@ class ValidationPlanScriptTests(unittest.TestCase):
                 "codex.downstream-docs-check",
             ],
         )
-
-    def test_validation_lab_selected_lanes_do_not_block_on_smoke_gate(self) -> None:
-        payload = load_workflow_payload(REPO_ROOT / ".github/workflows/validation-lab.yml")
-        jobs = payload.get("jobs") or {}
-
-        self.assertEqual((jobs.get("light_lanes") or {}).get("needs"), ["metadata"])
-        self.assertEqual((jobs.get("rust_lanes") or {}).get("needs"), ["metadata"])
-        self.assertEqual((jobs.get("heavy_lanes") or {}).get("needs"), ["metadata"])
 
     def test_validation_lab_frontier_all_widens_to_all_active_non_explicit_lanes(self) -> None:
         payload = run_script(
@@ -531,7 +531,6 @@ class ValidationPlanScriptTests(unittest.TestCase):
         )
         rust_if = (jobs.get("rust_lanes") or {}).get("if") or ""
         self.assertIn("needs.metadata.outputs.continue_after_smoke_failure == 'true'", rust_if)
-
     def test_sedna_heavy_summary_job_aggregates_lane_artifacts(self) -> None:
         payload = load_workflow_payload(REPO_ROOT / ".github/workflows/sedna-heavy-tests.yml")
         jobs = payload.get("jobs") or {}
@@ -570,7 +569,6 @@ class ValidationPlanScriptTests(unittest.TestCase):
             (steps[2] or {}).get("run") or "",
         )
         self.assertEqual((steps[3] or {}).get("uses"), "actions/upload-artifact@v7")
-
 
 class RustCiModeScriptTests(unittest.TestCase):
     maxDiff = None
