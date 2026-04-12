@@ -478,9 +478,11 @@ impl EventProcessorWithJsonOutput {
             }
             ServerNotification::ItemStarted(notification) => {
                 if let Some(item) = self.map_started_item(notification.item) {
+                    let thread_id = notification.thread_id;
+                    let turn_id = notification.turn_id;
                     events.push(ThreadEvent::ItemStarted(ItemStartedEvent {
-                        thread_id: Some(notification.thread_id.clone()),
-                        turn_id: Some(notification.turn_id.clone()),
+                        thread_id: Some(thread_id),
+                        turn_id: Some(turn_id),
                         item,
                     }));
                 }
@@ -493,18 +495,22 @@ impl EventProcessorWithJsonOutput {
                     {
                         self.final_message = Some(text.clone());
                     }
+                    let thread_id = notification.thread_id;
+                    let turn_id = notification.turn_id;
                     events.push(ThreadEvent::ItemCompleted(ItemCompletedEvent {
-                        thread_id: Some(notification.thread_id.clone()),
-                        turn_id: Some(notification.turn_id.clone()),
+                        thread_id: Some(thread_id),
+                        turn_id: Some(turn_id),
                         item,
                     }));
                 }
                 CodexStatus::Running
             }
             ServerNotification::ModelRerouted(notification) => {
+                let thread_id = notification.thread_id;
+                let turn_id = notification.turn_id;
                 events.push(ThreadEvent::ItemCompleted(ItemCompletedEvent {
-                    thread_id: Some(notification.thread_id.clone()),
-                    turn_id: Some(notification.turn_id.clone()),
+                    thread_id: Some(thread_id),
+                    turn_id: Some(turn_id),
                     item: ExecThreadItem {
                         id: self.next_item_id(),
                         details: ThreadItemDetails::Error(ErrorItem {
@@ -597,9 +603,11 @@ impl EventProcessorWithJsonOutput {
                 if let Some(running) = self.running_todo_list.as_mut() {
                     running.items = items.clone();
                     let item_id = running.item_id.clone();
+                    let thread_id = notification.thread_id;
+                    let turn_id = notification.turn_id;
                     events.push(ThreadEvent::ItemUpdated(ItemUpdatedEvent {
-                        thread_id: Some(notification.thread_id.clone()),
-                        turn_id: Some(notification.turn_id.clone()),
+                        thread_id: Some(thread_id),
+                        turn_id: Some(turn_id),
                         item: ExecThreadItem {
                             id: item_id,
                             details: ThreadItemDetails::TodoList(TodoListItem { items }),
@@ -611,9 +619,11 @@ impl EventProcessorWithJsonOutput {
                         item_id: item_id.clone(),
                         items: items.clone(),
                     });
+                    let thread_id = notification.thread_id;
+                    let turn_id = notification.turn_id;
                     events.push(ThreadEvent::ItemStarted(ItemStartedEvent {
-                        thread_id: Some(notification.thread_id.clone()),
-                        turn_id: Some(notification.turn_id.clone()),
+                        thread_id: Some(thread_id),
+                        turn_id: Some(turn_id),
                         item: ExecThreadItem {
                             id: item_id,
                             details: ThreadItemDetails::TodoList(TodoListItem { items }),
@@ -623,9 +633,11 @@ impl EventProcessorWithJsonOutput {
                 CodexStatus::Running
             }
             ServerNotification::TurnStarted(notification) => {
+                let thread_id = notification.thread_id;
+                let turn_id = notification.turn.id;
                 events.push(ThreadEvent::TurnStarted(TurnStartedEvent {
-                    thread_id: notification.thread_id.clone(),
-                    turn_id: notification.turn.id.clone(),
+                    thread_id,
+                    turn_id,
                 }));
                 CodexStatus::Running
             }

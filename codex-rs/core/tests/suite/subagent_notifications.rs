@@ -119,10 +119,7 @@ async fn wait_for_spawned_thread_id_from_receiver(
     match tokio::time::timeout(timeout, receiver.recv()).await {
         Ok(Ok(thread_id)) => Ok(thread_id.to_string()),
         Ok(Err(RecvError::Lagged(skipped))) => {
-            anyhow::bail!(
-                "missed spawned thread notification ({} messages dropped)",
-                skipped
-            )
+            anyhow::bail!("missed spawned thread notification ({skipped} messages dropped)")
         }
         Ok(Err(RecvError::Closed)) => {
             anyhow::bail!("thread creation notification channel closed")
