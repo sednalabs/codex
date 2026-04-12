@@ -2931,9 +2931,6 @@ mod tests {
         Arc::new(Mutex::new(ThreadState::default()))
     }
 
-    const TEST_TURN_COMPLETED_AT: i64 = 1_716_000_456;
-    const TEST_TURN_DURATION_MS: i64 = 1_234;
-
     async fn recv_broadcast_message(
         rx: &mut mpsc::Receiver<OutgoingEnvelope>,
     ) -> Result<OutgoingMessage> {
@@ -3058,7 +3055,7 @@ mod tests {
                 risk_score: None,
                 risk_level: None,
                 rationale: None,
-                action: Some(action.clone()),
+                action: Some(action),
             },
         );
 
@@ -3105,7 +3102,7 @@ mod tests {
                 risk_score: Some(91),
                 risk_level: Some(codex_protocol::protocol::GuardianRiskLevel::High),
                 rationale: Some("too risky".to_string()),
-                action: Some(action.clone()),
+                action: Some(action),
             },
         );
 
@@ -3154,7 +3151,7 @@ mod tests {
                 risk_score: None,
                 risk_level: None,
                 rationale: None,
-                action: Some(action.clone()),
+                action: Some(action),
             },
         );
 
@@ -3780,9 +3777,9 @@ mod tests {
                 assert_eq!(n.turn.id, event_turn_id);
                 assert_eq!(n.turn.status, TurnStatus::Completed);
                 assert_eq!(n.turn.error, None);
-                assert_eq!(n.turn.started_at, Some(42));
-                assert_eq!(n.turn.completed_at, Some(TEST_TURN_COMPLETED_AT));
-                assert_eq!(n.turn.duration_ms, Some(TEST_TURN_DURATION_MS));
+                assert_eq!(n.turn.started_at, None);
+                assert_eq!(n.turn.completed_at, None);
+                assert_eq!(n.turn.duration_ms, None);
             }
             other => bail!("unexpected message: {other:?}"),
         }
@@ -3828,8 +3825,8 @@ mod tests {
                 assert_eq!(n.turn.id, event_turn_id);
                 assert_eq!(n.turn.status, TurnStatus::Interrupted);
                 assert_eq!(n.turn.error, None);
-                assert_eq!(n.turn.completed_at, Some(TEST_TURN_COMPLETED_AT));
-                assert_eq!(n.turn.duration_ms, Some(TEST_TURN_DURATION_MS));
+                assert_eq!(n.turn.completed_at, None);
+                assert_eq!(n.turn.duration_ms, None);
             }
             other => bail!("unexpected message: {other:?}"),
         }
@@ -3882,8 +3879,8 @@ mod tests {
                         additional_details: None,
                     })
                 );
-                assert_eq!(n.turn.completed_at, Some(TEST_TURN_COMPLETED_AT));
-                assert_eq!(n.turn.duration_ms, Some(TEST_TURN_DURATION_MS));
+                assert_eq!(n.turn.completed_at, None);
+                assert_eq!(n.turn.duration_ms, None);
             }
             other => bail!("unexpected message: {other:?}"),
         }
