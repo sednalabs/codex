@@ -44,7 +44,7 @@ const COLLAB_AGENT_RESPONSE_PREVIEW_GRAPHEMES: usize = 240;
 const AGENT_PICKER_TASK_PREVIEW_GRAPHEMES: usize = 48;
 pub(crate) const SUBAGENT_LABEL: &str = "Subagent";
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct AgentPickerThreadEntry {
     /// Human-friendly nickname shown in picker rows and footer labels.
     pub(crate) agent_nickname: Option<String>,
@@ -119,54 +119,40 @@ pub(crate) fn format_agent_picker_item_name(
 
 pub(crate) fn format_agent_picker_item_description(
     thread_id: ThreadId,
-    token_usage: &TokenUsage,
-    model_context_window: Option<i64>,
-    updated_at: Option<i64>,
-    created_at: Option<i64>,
-    model: Option<&str>,
-    reasoning_effort: Option<ReasoningEffortConfig>,
-    task_name: Option<&str>,
+    entry: &AgentPickerThreadEntry,
+    usage: &AgentPickerThreadUsage,
 ) -> String {
-    format_agent_picker_item_description_at(
-        thread_id,
-        token_usage,
-        model_context_window,
-        updated_at,
-        created_at,
-        model,
-        reasoning_effort,
-        task_name,
-        Utc::now().timestamp(),
-    )
+    format_agent_picker_item_description_at(thread_id, entry, usage, Utc::now().timestamp())
 }
 
 fn format_agent_picker_item_description_at(
     thread_id: ThreadId,
-    token_usage: &TokenUsage,
-    model_context_window: Option<i64>,
-    updated_at: Option<i64>,
-    created_at: Option<i64>,
-    model: Option<&str>,
-    reasoning_effort: Option<ReasoningEffortConfig>,
-    task_name: Option<&str>,
+    entry: &AgentPickerThreadEntry,
+    usage: &AgentPickerThreadUsage,
     now_ts: i64,
 ) -> String {
     let uuid = thread_id.to_string();
     let mut parts: Vec<String> = Vec::new();
 
-    let model = model.map(str::trim).filter(|model| !model.is_empty());
-    if model.is_some() || reasoning_effort.is_some() {
+    let model = usage
+        .model
+        .as_deref()
+        .map(str::trim)
+        .filter(|model| !model.is_empty());
+    if model.is_some() || usage.reasoning_effort.is_some() {
         let mut model_parts = Vec::new();
         if let Some(model) = model {
             model_parts.push(model.to_string());
         }
-        if let Some(reasoning_effort) = reasoning_effort {
+        if let Some(reasoning_effort) = usage.reasoning_effort {
             model_parts.push(reasoning_effort.to_string());
         }
         parts.push(model_parts.join(" "));
     }
 
-    if let Some(task_name) = task_name
+    if let Some(task_name) = usage
+        .task_name
+        .as_deref()
         .map(str::trim)
         .filter(|task_name| !task_name.is_empty())
     {
@@ -177,19 +163,21 @@ fn format_agent_picker_item_description_at(
     }
 
     parts.push(uuid);
-    if token_usage.total_tokens > 0 {
+    if usage.token_usage.total_tokens > 0 {
         parts.push(format!(
             "{} used",
-            format_tokens_compact(token_usage.total_tokens)
+            format_tokens_compact(usage.token_usage.total_tokens)
         ));
-        if let Some(context_window) = model_context_window {
+        if let Some(context_window) = usage.model_context_window {
             parts.push(format!(
                 "{}% left",
-                token_usage.percent_of_context_window_remaining(context_window)
+                usage
+                    .token_usage
+                    .percent_of_context_window_remaining(context_window)
             ));
         }
     }
-    if let Some(age) = format_agent_picker_age(updated_at, created_at, now_ts) {
+    if let Some(age) = format_agent_picker_age(entry.updated_at, entry.created_at, now_ts) {
         parts.push(age);
     }
     parts.join(" • ")
@@ -197,30 +185,15 @@ fn format_agent_picker_item_description_at(
 
 pub(crate) fn format_agent_picker_item_selected_description(
     thread_id: ThreadId,
-    token_usage: &TokenUsage,
-    model_context_window: Option<i64>,
-    updated_at: Option<i64>,
-    created_at: Option<i64>,
-    model: Option<&str>,
-    reasoning_effort: Option<ReasoningEffortConfig>,
-    task_name: Option<&str>,
-    approval_policy: Option<AskForApproval>,
-    approvals_reviewer: Option<ApprovalsReviewer>,
-    sandbox_policy: Option<&SandboxPolicy>,
+    entry: &AgentPickerThreadEntry,
+    usage: &AgentPickerThreadUsage,
 ) -> String {
-    let mut description = format_agent_picker_item_description(
-        thread_id,
-        token_usage,
-        model_context_window,
-        updated_at,
-        created_at,
-        model,
-        reasoning_effort,
-        task_name,
-    );
-    if let Some(policy_details) =
-        format_agent_picker_policy_details(approval_policy, approvals_reviewer, sandbox_policy)
-    {
+    let mut description = format_agent_picker_item_description(thread_id, entry, usage);
+    if let Some(policy_details) = format_agent_picker_policy_details(
+        usage.approval_policy,
+        usage.approvals_reviewer,
+        usage.sandbox_policy.as_ref(),
+    ) {
         description.push_str(" • ");
         description.push_str(&policy_details);
     }
@@ -834,13 +807,8 @@ mod tests {
         assert_eq!(
             format_agent_picker_item_description(
                 thread_id,
-                &TokenUsage::default(),
-                /*model_context_window*/ None,
-                /*updated_at*/ None,
-                /*created_at*/ None,
-                /*model*/ None,
-                /*reasoning_effort*/ None,
-                /*task_name*/ None,
+                &AgentPickerThreadEntry::default(),
+                &AgentPickerThreadUsage::default(),
             ),
             "00000000-0000-0000-0000-000000000111"
         );
@@ -859,9 +827,12 @@ mod tests {
         };
         assert_eq!(
             format_agent_picker_item_description(
-                thread_id, &usage, /*model_context_window*/ None, /*updated_at*/ None,
-                /*created_at*/ None, /*model*/ None, /*reasoning_effort*/ None,
-                /*task_name*/ None,
+                thread_id,
+                &AgentPickerThreadEntry::default(),
+                &AgentPickerThreadUsage {
+                    token_usage: usage,
+                    ..AgentPickerThreadUsage::default()
+                },
             ),
             "00000000-0000-0000-0000-000000000112 • 12.3K used"
         );
@@ -879,13 +850,12 @@ mod tests {
         assert_eq!(
             format_agent_picker_item_description_at(
                 thread_id,
-                &usage,
-                /*model_context_window*/ Some(24_000),
-                /*updated_at*/ None,
-                /*created_at*/ None,
-                /*model*/ None,
-                /*reasoning_effort*/ None,
-                /*task_name*/ None,
+                &AgentPickerThreadEntry::default(),
+                &AgentPickerThreadUsage {
+                    token_usage: usage,
+                    model_context_window: Some(24_000),
+                    ..AgentPickerThreadUsage::default()
+                },
                 /*now_ts*/ 1_000,
             ),
             "00000000-0000-0000-0000-000000000113 • 12.3K used • 98% left"
@@ -904,35 +874,37 @@ mod tests {
         let snapshot = [
             format_agent_picker_item_description_at(
                 thread_id,
-                &usage,
-                /*model_context_window*/ None,
-                /*updated_at*/ Some(958),
-                /*created_at*/ Some(900),
-                /*model*/ None,
-                /*reasoning_effort*/ None,
-                /*task_name*/ None,
+                &AgentPickerThreadEntry {
+                    created_at: Some(900),
+                    updated_at: Some(958),
+                    ..AgentPickerThreadEntry::default()
+                },
+                &AgentPickerThreadUsage {
+                    token_usage: usage.clone(),
+                    ..AgentPickerThreadUsage::default()
+                },
                 /*now_ts*/ 1_000,
             ),
             format_agent_picker_item_description_at(
                 thread_id,
-                &usage,
-                /*model_context_window*/ None,
-                /*updated_at*/ Some(400),
-                /*created_at*/ Some(300),
-                /*model*/ None,
-                /*reasoning_effort*/ None,
-                /*task_name*/ None,
+                &AgentPickerThreadEntry {
+                    created_at: Some(300),
+                    updated_at: Some(400),
+                    ..AgentPickerThreadEntry::default()
+                },
+                &AgentPickerThreadUsage {
+                    token_usage: usage,
+                    ..AgentPickerThreadUsage::default()
+                },
                 /*now_ts*/ 1_000,
             ),
             format_agent_picker_item_description_at(
                 thread_id,
-                &TokenUsage::default(),
-                /*model_context_window*/ None,
-                /*updated_at*/ None,
-                /*created_at*/ Some(1_000 - 3 * 60 * 60),
-                /*model*/ None,
-                /*reasoning_effort*/ None,
-                /*task_name*/ None,
+                &AgentPickerThreadEntry {
+                    created_at: Some(1_000 - 3 * 60 * 60),
+                    ..AgentPickerThreadEntry::default()
+                },
+                &AgentPickerThreadUsage::default(),
                 /*now_ts*/ 1_000,
             ),
         ]
@@ -953,13 +925,14 @@ mod tests {
         assert_eq!(
             format_agent_picker_item_description(
                 thread_id,
-                &usage,
-                /*model_context_window*/ None,
-                /*updated_at*/ None,
-                /*created_at*/ None,
-                Some("gpt-5.4-mini"),
-                Some(ReasoningEffortConfig::Medium),
-                Some("Investigate /agent picker metadata display"),
+                &AgentPickerThreadEntry::default(),
+                &AgentPickerThreadUsage {
+                    token_usage: usage,
+                    model: Some("gpt-5.4-mini".to_string()),
+                    reasoning_effort: Some(ReasoningEffortConfig::Medium),
+                    task_name: Some("Investigate /agent picker metadata display".to_string()),
+                    ..AgentPickerThreadUsage::default()
+                },
             ),
             "gpt-5.4-mini medium • task: Investigate /agent picker metadata display • 00000000-0000-0000-0000-000000000114 • 120 used"
         );
@@ -973,13 +946,12 @@ mod tests {
         assert_eq!(
             format_agent_picker_item_description(
                 thread_id,
-                &TokenUsage::default(),
-                /*model_context_window*/ None,
-                /*updated_at*/ None,
-                /*created_at*/ None,
-                Some("   "),
-                /*reasoning_effort*/ None,
-                Some("   "),
+                &AgentPickerThreadEntry::default(),
+                &AgentPickerThreadUsage {
+                    model: Some("   ".to_string()),
+                    task_name: Some("   ".to_string()),
+                    ..AgentPickerThreadUsage::default()
+                },
             ),
             "00000000-0000-0000-0000-000000000115"
         );
@@ -990,21 +962,22 @@ mod tests {
         let thread_id = ThreadId::from_string("00000000-0000-0000-0000-000000000114").unwrap();
         let description = format_agent_picker_item_selected_description(
             thread_id,
-            &TokenUsage {
-                input_tokens: 100,
-                output_tokens: 20,
-                total_tokens: 120,
-                ..Default::default()
+            &AgentPickerThreadEntry::default(),
+            &AgentPickerThreadUsage {
+                token_usage: TokenUsage {
+                    input_tokens: 100,
+                    output_tokens: 20,
+                    total_tokens: 120,
+                    ..Default::default()
+                },
+                model: Some("gpt-5.4-mini".to_string()),
+                reasoning_effort: Some(ReasoningEffortConfig::Medium),
+                task_name: Some("Investigate /agent picker metadata display".to_string()),
+                approval_policy: Some(AskForApproval::OnRequest),
+                approvals_reviewer: Some(ApprovalsReviewer::GuardianSubagent),
+                sandbox_policy: Some(SandboxPolicy::new_workspace_write_policy()),
+                ..AgentPickerThreadUsage::default()
             },
-            /*model_context_window*/ None,
-            /*updated_at*/ None,
-            /*created_at*/ None,
-            Some("gpt-5.4-mini"),
-            Some(ReasoningEffortConfig::Medium),
-            Some("Investigate /agent picker metadata display"),
-            Some(AskForApproval::OnRequest),
-            Some(ApprovalsReviewer::GuardianSubagent),
-            Some(&SandboxPolicy::new_workspace_write_policy()),
         );
         assert_snapshot!("agent_picker_item_selected_description", description);
     }
