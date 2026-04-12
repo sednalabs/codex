@@ -103,6 +103,9 @@ GitHub Actions lane naming (`.github/workflows/sedna-heavy-tests.yml`):
   - `workflow_dispatch lane=<named-lane>` runs that shard directly when a single
     heavy lane is the right debugging tool, instead of forcing the full smoke
     gate ahead of the explicit manual request.
+  - The workflow now uploads a top-level `validation-summary` artifact and
+    step summary so operators can read one structured blocker report instead of
+    trawling lane logs.
 - `validation-lab.yml` is the dispatch-only remote validation surface.
   - Use it for scratch refs, integration refs, orphan-branch experiments, and
     non-PR seam validation.

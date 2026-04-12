@@ -484,6 +484,12 @@ class ValidationPlanScriptTests(unittest.TestCase):
         payload = load_workflow_payload(REPO_ROOT / ".github/workflows/sedna-heavy-tests.yml")
         jobs = payload.get("jobs") or {}
 
+        metadata_outputs = (jobs.get("metadata") or {}).get("outputs") or {}
+        self.assertEqual(metadata_outputs.get("display_ref"), "${{ steps.meta.outputs.display_ref }}")
+        self.assertEqual(
+            metadata_outputs.get("selected_lane_ids"),
+            "${{ steps.meta.outputs.selected_lane_ids }}",
+        )
         self.assertEqual(
             ((jobs.get("smoke_light_lanes") or {}).get("strategy") or {}).get("fail-fast"),
             "${{ fromJson(needs.metadata.outputs.matrix_fail_fast) }}",
@@ -494,6 +500,37 @@ class ValidationPlanScriptTests(unittest.TestCase):
         )
         rust_if = (jobs.get("rust_lanes") or {}).get("if") or ""
         self.assertIn("needs.metadata.outputs.continue_after_smoke_failure == 'true'", rust_if)
+
+    def test_sedna_heavy_summary_job_aggregates_lane_artifacts(self) -> None:
+        payload = load_workflow_payload(REPO_ROOT / ".github/workflows/sedna-heavy-tests.yml")
+        jobs = payload.get("jobs") or {}
+        summary = jobs.get("summary") or {}
+
+        self.assertEqual(
+            summary.get("needs"),
+            [
+                "metadata",
+                "smoke_light_lanes",
+                "smoke_rust_lanes",
+                "smoke_heavy_lanes",
+                "light_lanes",
+                "rust_lanes",
+                "heavy_lanes",
+            ],
+        )
+        summary_if = summary.get("if") or ""
+        self.assertIn("always()", summary_if)
+        self.assertIn("needs.metadata.result == 'success'", summary_if)
+        self.assertEqual(summary.get("runs-on"), "ubuntu-24.04")
+
+        steps = summary.get("steps") or []
+        self.assertEqual((steps[0] or {}).get("uses"), "actions/checkout@v6")
+        self.assertEqual((steps[1] or {}).get("uses"), "actions/download-artifact@v8")
+        self.assertIn(
+            "aggregate_validation_summary.py",
+            (steps[2] or {}).get("run") or "",
+        )
+        self.assertEqual((steps[3] or {}).get("uses"), "actions/upload-artifact@v7")
 
 
 class RustCiModeScriptTests(unittest.TestCase):
