@@ -1,6 +1,5 @@
 {
-  "$schema": "http://json-schema.org/draft-07/schema#",
-  "definitions": {
+  "$defs": {
     "FileChange": {
       "oneOf": [
         {
@@ -9,16 +8,14 @@
               "type": "string"
             },
             "type": {
-              "enum": [
-                "add"
-              ],
+              "const": "add",
               "title": "AddFileChangeType",
               "type": "string"
             }
           },
           "required": [
-            "content",
-            "type"
+            "type",
+            "content"
           ],
           "title": "AddFileChange",
           "type": "object"
@@ -29,16 +26,14 @@
               "type": "string"
             },
             "type": {
-              "enum": [
-                "delete"
-              ],
+              "const": "delete",
               "title": "DeleteFileChangeType",
               "type": "string"
             }
           },
           "required": [
-            "content",
-            "type"
+            "type",
+            "content"
           ],
           "title": "DeleteFileChange",
           "type": "object"
@@ -52,9 +47,7 @@
               ]
             },
             "type": {
-              "enum": [
-                "update"
-              ],
+              "const": "update",
               "title": "UpdateFileChangeType",
               "type": "string"
             },
@@ -75,22 +68,23 @@
       "type": "string"
     }
   },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
   "properties": {
     "callId": {
-      "description": "Use to correlate this with [codex_protocol::protocol::PatchApplyBeginEvent] and [codex_protocol::protocol::PatchApplyEndEvent].",
+      "description": "Use to correlate this with [codex_protocol::protocol::PatchApplyBeginEvent]\nand [codex_protocol::protocol::PatchApplyEndEvent].",
       "type": "string"
     },
     "conversationId": {
-      "$ref": "#/definitions/ThreadId"
+      "$ref": "#/$defs/ThreadId"
     },
     "fileChanges": {
       "additionalProperties": {
-        "$ref": "#/definitions/FileChange"
+        "$ref": "#/$defs/FileChange"
       },
       "type": "object"
     },
     "grantRoot": {
-      "description": "When set, the agent is asking the user to allow writes under this root for the remainder of the session (unclear if this is honored today).",
+      "description": "When set, the agent is asking the user to allow writes under this root\nfor the remainder of the session (unclear if this is honored today).",
       "type": [
         "string",
         "null"
@@ -105,8 +99,8 @@
     }
   },
   "required": [
-    "callId",
     "conversationId",
+    "callId",
     "fileChanges"
   ],
   "title": "ApplyPatchApprovalParams",

@@ -31,8 +31,10 @@
 //!
 //! # Submission and Prompt Expansion
 //!
-//! `Enter` submits immediately. `Tab` requests queuing at the back while a task is running; if no
-//! task is running, `Tab` submits just like Enter so input is never dropped.
+//! `Enter` submits immediately from the composer. Higher-level chat flow may choose to turn that
+//! into a queued follow-up when a non-steerable busy state is active. `Tab` requests queuing at
+//! the back while a task is running; if no task is running, `Tab` submits just like Enter so
+//! input is never dropped.
 //! `Ctrl+Shift+Q` requests queuing at the front so the draft runs next after the active task; if
 //! no task is running, it also falls back to immediate submit.
 //! `Tab` does not submit when entering a `!` shell command.
@@ -2291,8 +2293,11 @@ impl ChatComposer {
                     text,
                     text_elements,
                 },
-                (true, SubmissionMode::Immediate)
-                | (false, SubmissionMode::Immediate)
+                (true, SubmissionMode::Immediate) => InputResult::Submitted {
+                    text,
+                    text_elements,
+                },
+                (false, SubmissionMode::Immediate)
                 | (false, SubmissionMode::QueueBackWhenBusy)
                 | (false, SubmissionMode::QueueFrontWhenBusy) => InputResult::Submitted {
                     text,

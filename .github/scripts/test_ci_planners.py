@@ -374,6 +374,49 @@ class ValidationPlanScriptTests(unittest.TestCase):
         self.assertEqual((jobs.get("rust_lanes") or {}).get("needs"), ["metadata"])
         self.assertEqual((jobs.get("heavy_lanes") or {}).get("needs"), ["metadata"])
 
+    def test_heavy_plan_route_keeps_workflow_ci_changes_on_light_lanes(self) -> None:
+        payload = run_script(
+            SCRIPTS_DIR / "resolve_validation_plan.py",
+            "heavy",
+            "--event-name",
+            "pull_request",
+            "--requested-lane",
+            "",
+            "--run-all-lanes",
+            "false",
+            "--run-core-family",
+            "false",
+            "--run-attestation-family",
+            "false",
+            "--run-workflow-family",
+            "true",
+            "--run-ui-protocol-family",
+            "false",
+            "--run-docs-family",
+            "true",
+            "--changed-files-json",
+            json.dumps(
+                [
+                    ".github/workflows/validation-lab.yml",
+                    ".github/scripts/resolve_validation_plan.py",
+                    "docs/validation_workflow.md",
+                    "justfile",
+                ]
+            ),
+        )
+
+        self.assertEqual(payload["run_smoke_gate"], "false")
+        self.assertEqual(payload["selected_light_lane_count"], 2)
+        self.assertEqual(payload["selected_rust_lane_count"], 0)
+        self.assertEqual(payload["selected_heavy_lane_count"], 0)
+        self.assertEqual(
+            [lane["lane_id"] for lane in payload["selected_matrix"]["include"]],
+            [
+                "codex.workflow-ci-sanity",
+                "codex.downstream-docs-check",
+            ],
+        )
+
     def test_validation_lab_frontier_all_widens_to_all_active_non_explicit_lanes(self) -> None:
         payload = run_script(
             SCRIPTS_DIR / "resolve_validation_plan.py",
@@ -531,7 +574,6 @@ class ValidationPlanScriptTests(unittest.TestCase):
         )
         rust_if = (jobs.get("rust_lanes") or {}).get("if") or ""
         self.assertIn("needs.metadata.outputs.continue_after_smoke_failure == 'true'", rust_if)
-
     def test_sedna_heavy_summary_job_aggregates_lane_artifacts(self) -> None:
         payload = load_workflow_payload(REPO_ROOT / ".github/workflows/sedna-heavy-tests.yml")
         jobs = payload.get("jobs") or {}
@@ -570,7 +612,6 @@ class ValidationPlanScriptTests(unittest.TestCase):
             (steps[2] or {}).get("run") or "",
         )
         self.assertEqual((steps[3] or {}).get("uses"), "actions/upload-artifact@v7")
-
 
 class RustCiModeScriptTests(unittest.TestCase):
     maxDiff = None

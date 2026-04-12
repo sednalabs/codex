@@ -448,7 +448,7 @@ mod tests {
             .expect_err("unsupported scheme should fail");
         assert_eq!(
             err.to_string(),
-            "unsupported --listen URL `http://127.0.0.1:1234`; expected `stdio://` or `ws://IP:PORT`"
+            "unsupported --listen URL `http://127.0.0.1:1234`; expected `stdio://`, `ws://IP:PORT`, or `off`"
         );
     }
 

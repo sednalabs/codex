@@ -1,15 +1,14 @@
 {
-  "$schema": "http://json-schema.org/draft-07/schema#",
-  "definitions": {
+  "$defs": {
     "AbsolutePathBuf": {
-      "description": "A path that is guaranteed to be absolute and normalized (though it is not guaranteed to be canonicalized or exist on the filesystem).\n\nIMPORTANT: When deserializing an `AbsolutePathBuf`, a base path must be set using [AbsolutePathBufGuard::new]. If no base path is set, the deserialization will fail unless the path being deserialized is already absolute.",
+      "description": "A path that is guaranteed to be absolute and normalized (though it is not\nguaranteed to be canonicalized or exist on the filesystem).\n\nIMPORTANT: When deserializing an `AbsolutePathBuf`, a base path must be set\nusing [AbsolutePathBufGuard::new]. If no base path is set, the\ndeserialization will fail unless the path being deserialized is already\nabsolute.",
       "type": "string"
     },
     "AdditionalFileSystemPermissions": {
       "properties": {
         "read": {
           "items": {
-            "$ref": "#/definitions/AbsolutePathBuf"
+            "$ref": "#/$defs/AbsolutePathBuf"
           },
           "type": [
             "array",
@@ -18,7 +17,7 @@
         },
         "write": {
           "items": {
-            "$ref": "#/definitions/AbsolutePathBuf"
+            "$ref": "#/$defs/AbsolutePathBuf"
           },
           "type": [
             "array",
@@ -44,7 +43,7 @@
         "fileSystem": {
           "anyOf": [
             {
-              "$ref": "#/definitions/AdditionalFileSystemPermissions"
+              "$ref": "#/$defs/AdditionalFileSystemPermissions"
             },
             {
               "type": "null"
@@ -54,7 +53,7 @@
         "network": {
           "anyOf": [
             {
-              "$ref": "#/definitions/AdditionalNetworkPermissions"
+              "$ref": "#/$defs/AdditionalNetworkPermissions"
             },
             {
               "type": "null"
@@ -78,18 +77,16 @@
               "type": "string"
             },
             "type": {
-              "enum": [
-                "read"
-              ],
+              "const": "read",
               "title": "ReadCommandActionType",
               "type": "string"
             }
           },
           "required": [
+            "type",
             "command",
             "name",
-            "path",
-            "type"
+            "path"
           ],
           "title": "ReadCommandAction",
           "type": "object"
@@ -106,16 +103,14 @@
               ]
             },
             "type": {
-              "enum": [
-                "listFiles"
-              ],
+              "const": "listFiles",
               "title": "ListFilesCommandActionType",
               "type": "string"
             }
           },
           "required": [
-            "command",
-            "type"
+            "type",
+            "command"
           ],
           "title": "ListFilesCommandAction",
           "type": "object"
@@ -138,16 +133,14 @@
               ]
             },
             "type": {
-              "enum": [
-                "search"
-              ],
+              "const": "search",
               "title": "SearchCommandActionType",
               "type": "string"
             }
           },
           "required": [
-            "command",
-            "type"
+            "type",
+            "command"
           ],
           "title": "SearchCommandAction",
           "type": "object"
@@ -158,16 +151,14 @@
               "type": "string"
             },
             "type": {
-              "enum": [
-                "unknown"
-              ],
+              "const": "unknown",
               "title": "UnknownCommandActionType",
               "type": "string"
             }
           },
           "required": [
-            "command",
-            "type"
+            "type",
+            "command"
           ],
           "title": "UnknownCommandAction",
           "type": "object"
@@ -177,22 +168,18 @@
     "CommandExecutionApprovalDecision": {
       "oneOf": [
         {
+          "const": "accept",
           "description": "User approved the command.",
-          "enum": [
-            "accept"
-          ],
           "type": "string"
         },
         {
-          "description": "User approved the command and future prompts in the same session-scoped approval cache should run without prompting.",
-          "enum": [
-            "acceptForSession"
-          ],
+          "const": "acceptForSession",
+          "description": "User approved the command and future prompts in the same session-scoped\napproval cache should run without prompting.",
           "type": "string"
         },
         {
           "additionalProperties": false,
-          "description": "User approved the command, and wants to apply the proposed execpolicy amendment so future matching commands can run without prompting.",
+          "description": "User approved the command, and wants to apply the proposed execpolicy amendment so future\nmatching commands can run without prompting.",
           "properties": {
             "acceptWithExecpolicyAmendment": {
               "properties": {
@@ -222,7 +209,7 @@
             "applyNetworkPolicyAmendment": {
               "properties": {
                 "network_policy_amendment": {
-                  "$ref": "#/definitions/NetworkPolicyAmendment"
+                  "$ref": "#/$defs/NetworkPolicyAmendment"
                 }
               },
               "required": [
@@ -238,17 +225,13 @@
           "type": "object"
         },
         {
+          "const": "decline",
           "description": "User denied the command. The agent will continue the turn.",
-          "enum": [
-            "decline"
-          ],
           "type": "string"
         },
         {
+          "const": "cancel",
           "description": "User denied the command. The turn will also be immediately interrupted.",
-          "enum": [
-            "cancel"
-          ],
           "type": "string"
         }
       ]
@@ -259,7 +242,7 @@
           "type": "string"
         },
         "protocol": {
-          "$ref": "#/definitions/NetworkApprovalProtocol"
+          "$ref": "#/$defs/NetworkApprovalProtocol"
         }
       },
       "required": [
@@ -280,15 +263,15 @@
     "NetworkPolicyAmendment": {
       "properties": {
         "action": {
-          "$ref": "#/definitions/NetworkPolicyRuleAction"
+          "$ref": "#/$defs/NetworkPolicyRuleAction"
         },
         "host": {
           "type": "string"
         }
       },
       "required": [
-        "action",
-        "host"
+        "host",
+        "action"
       ],
       "type": "object"
     },
@@ -300,9 +283,10 @@
       "type": "string"
     }
   },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
   "properties": {
     "approvalId": {
-      "description": "Unique identifier for this specific approval callback.\n\nFor regular shell/unified_exec approvals, this is null.\n\nFor zsh-exec-bridge subcommand approvals, multiple callbacks can belong to one parent `itemId`, so `approvalId` is a distinct opaque callback id (a UUID) used to disambiguate routing.",
+      "description": "Unique identifier for this specific approval callback.\n\nFor regular shell/unified_exec approvals, this is null.\n\nFor zsh-exec-bridge subcommand approvals, multiple callbacks can belong to\none parent `itemId`, so `approvalId` is a distinct opaque callback id\n(a UUID) used to disambiguate routing.",
       "type": [
         "string",
         "null"
@@ -318,7 +302,7 @@
     "commandActions": {
       "description": "Best-effort parsed command actions for friendly display.",
       "items": {
-        "$ref": "#/definitions/CommandAction"
+        "$ref": "#/$defs/CommandAction"
       },
       "type": [
         "array",
@@ -338,7 +322,7 @@
     "networkApprovalContext": {
       "anyOf": [
         {
-          "$ref": "#/definitions/NetworkApprovalContext"
+          "$ref": "#/$defs/NetworkApprovalContext"
         },
         {
           "type": "null"
@@ -359,7 +343,7 @@
     "proposedNetworkPolicyAmendments": {
       "description": "Optional proposed network policy amendments (allow/deny host) for future requests.",
       "items": {
-        "$ref": "#/definitions/NetworkPolicyAmendment"
+        "$ref": "#/$defs/NetworkPolicyAmendment"
       },
       "type": [
         "array",
@@ -381,9 +365,9 @@
     }
   },
   "required": [
-    "itemId",
     "threadId",
-    "turnId"
+    "turnId",
+    "itemId"
   ],
   "title": "CommandExecutionRequestApprovalParams",
   "type": "object"

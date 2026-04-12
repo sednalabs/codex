@@ -1,43 +1,43 @@
 {
-  "$schema": "http://json-schema.org/draft-07/schema#",
-  "definitions": {
+  "$defs": {
     "TextPosition": {
       "properties": {
         "column": {
           "description": "1-based column number (in Unicode scalar values).",
           "format": "uint",
-          "minimum": 0.0,
+          "minimum": 0,
           "type": "integer"
         },
         "line": {
           "description": "1-based line number.",
           "format": "uint",
-          "minimum": 0.0,
+          "minimum": 0,
           "type": "integer"
         }
       },
       "required": [
-        "column",
-        "line"
+        "line",
+        "column"
       ],
       "type": "object"
     },
     "TextRange": {
       "properties": {
         "end": {
-          "$ref": "#/definitions/TextPosition"
+          "$ref": "#/$defs/TextPosition"
         },
         "start": {
-          "$ref": "#/definitions/TextPosition"
+          "$ref": "#/$defs/TextPosition"
         }
       },
       "required": [
-        "end",
-        "start"
+        "start",
+        "end"
       ],
       "type": "object"
     }
   },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
   "properties": {
     "details": {
       "description": "Optional extra guidance or error details.",
@@ -56,7 +56,7 @@
     "range": {
       "anyOf": [
         {
-          "$ref": "#/definitions/TextRange"
+          "$ref": "#/$defs/TextRange"
         },
         {
           "type": "null"

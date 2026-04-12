@@ -1917,6 +1917,7 @@ mod tests {
             source: codex_app_server_protocol::SessionSource::Exec,
             agent_nickname: None,
             agent_role: None,
+            forked_from_id: None,
             git_info: None,
             name: None,
             turns: vec![
@@ -1930,6 +1931,9 @@ mod tests {
                     }],
                     status: codex_app_server_protocol::TurnStatus::Completed,
                     error: None,
+                    started_at: None,
+                    completed_at: None,
+                    duration_ms: None,
                 },
                 codex_app_server_protocol::Turn {
                     id: "turn-2".to_string(),
@@ -1939,6 +1943,9 @@ mod tests {
                     }],
                     status: codex_app_server_protocol::TurnStatus::Completed,
                     error: None,
+                    started_at: None,
+                    completed_at: None,
+                    duration_ms: None,
                 },
             ],
         };
@@ -2035,6 +2042,7 @@ mod tests {
                 source: codex_app_server_protocol::SessionSource::Cli,
                 agent_nickname: None,
                 agent_role: None,
+                forked_from_id: None,
                 git_info: None,
                 name: Some("thread".to_string()),
                 turns: vec![],

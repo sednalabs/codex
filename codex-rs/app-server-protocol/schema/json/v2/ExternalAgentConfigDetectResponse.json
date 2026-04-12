@@ -1,6 +1,5 @@
 {
-  "$schema": "http://json-schema.org/draft-07/schema#",
-  "definitions": {
+  "$defs": {
     "ExternalAgentConfigMigrationItem": {
       "properties": {
         "cwd": {
@@ -14,12 +13,12 @@
           "type": "string"
         },
         "itemType": {
-          "$ref": "#/definitions/ExternalAgentConfigMigrationItemType"
+          "$ref": "#/$defs/ExternalAgentConfigMigrationItemType"
         }
       },
       "required": [
-        "description",
-        "itemType"
+        "itemType",
+        "description"
       ],
       "type": "object"
     },
@@ -33,10 +32,11 @@
       "type": "string"
     }
   },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
   "properties": {
     "items": {
       "items": {
-        "$ref": "#/definitions/ExternalAgentConfigMigrationItem"
+        "$ref": "#/$defs/ExternalAgentConfigMigrationItem"
       },
       "type": "array"
     }

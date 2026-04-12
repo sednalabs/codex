@@ -1,6 +1,13 @@
 {
-  "$schema": "http://json-schema.org/draft-07/schema#",
-  "definitions": {
+  "$defs": {
+    "ApprovalsReviewer": {
+      "description": "Configures who approval requests are routed to for review. Examples\ninclude sandbox escapes, blocked network access, MCP approval prompts, and\nARC escalations. Defaults to `user`. `guardian_subagent` uses a carefully\nprompted subagent to gather relevant context and apply a risk-based\ndecision framework before approving or denying the request.",
+      "enum": [
+        "user",
+        "guardian_subagent"
+      ],
+      "type": "string"
+    },
     "AskForApproval": {
       "oneOf": [
         {
@@ -36,9 +43,9 @@
                 }
               },
               "required": [
-                "mcp_elicitations",
+                "sandbox_approval",
                 "rules",
-                "sandbox_approval"
+                "mcp_elicitations"
               ],
               "type": "object"
             }
@@ -55,7 +62,16 @@
       "properties": {
         "allowedApprovalPolicies": {
           "items": {
-            "$ref": "#/definitions/AskForApproval"
+            "$ref": "#/$defs/AskForApproval"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "allowedApprovalsReviewers": {
+          "items": {
+            "$ref": "#/$defs/ApprovalsReviewer"
           },
           "type": [
             "array",
@@ -64,7 +80,7 @@
         },
         "allowedSandboxModes": {
           "items": {
-            "$ref": "#/definitions/SandboxMode"
+            "$ref": "#/$defs/SandboxMode"
           },
           "type": [
             "array",
@@ -73,7 +89,7 @@
         },
         "allowedWebSearchModes": {
           "items": {
-            "$ref": "#/definitions/WebSearchMode"
+            "$ref": "#/$defs/WebSearchMode"
           },
           "type": [
             "array",
@@ -83,7 +99,7 @@
         "enforceResidency": {
           "anyOf": [
             {
-              "$ref": "#/definitions/ResidencyRequirement"
+              "$ref": "#/$defs/ResidencyRequirement"
             },
             {
               "type": "null"
@@ -97,6 +113,16 @@
           "type": [
             "object",
             "null"
+          ]
+        },
+        "network": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/NetworkRequirements"
+            },
+            {
+              "type": "null"
+            }
           ]
         }
       },
@@ -143,6 +169,12 @@
             "null"
           ]
         },
+        "dangerFullAccessDenylistOnly": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
         "dangerouslyAllowAllUnixSockets": {
           "type": [
             "boolean",
@@ -167,7 +199,7 @@
         },
         "domains": {
           "additionalProperties": {
-            "$ref": "#/definitions/NetworkDomainPermission"
+            "$ref": "#/$defs/NetworkDomainPermission"
           },
           "description": "Canonical network permission map for `experimental_network`.",
           "type": [
@@ -183,14 +215,15 @@
         },
         "httpPort": {
           "format": "uint16",
-          "minimum": 0.0,
+          "maximum": 65535,
+          "minimum": 0,
           "type": [
             "integer",
             "null"
           ]
         },
         "managedAllowedDomainsOnly": {
-          "description": "When true, only managed allowlist entries are respected while managed network enforcement is active.",
+          "description": "When true, only managed allowlist entries are respected while managed\nnetwork enforcement is active.",
           "type": [
             "boolean",
             "null"
@@ -198,7 +231,8 @@
         },
         "socksPort": {
           "format": "uint16",
-          "minimum": 0.0,
+          "maximum": 65535,
+          "minimum": 0,
           "type": [
             "integer",
             "null"
@@ -206,7 +240,7 @@
         },
         "unixSockets": {
           "additionalProperties": {
-            "$ref": "#/definitions/NetworkUnixSocketPermission"
+            "$ref": "#/$defs/NetworkUnixSocketPermission"
           },
           "description": "Canonical unix socket permission map for `experimental_network`.",
           "type": [
@@ -247,11 +281,12 @@
       "type": "string"
     }
   },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
   "properties": {
     "requirements": {
       "anyOf": [
         {
-          "$ref": "#/definitions/ConfigRequirements"
+          "$ref": "#/$defs/ConfigRequirements"
         },
         {
           "type": "null"

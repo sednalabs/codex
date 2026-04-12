@@ -1,8 +1,7 @@
 {
-  "$schema": "http://json-schema.org/draft-07/schema#",
-  "definitions": {
+  "$defs": {
     "AbsolutePathBuf": {
-      "description": "A path that is guaranteed to be absolute and normalized (though it is not guaranteed to be canonicalized or exist on the filesystem).\n\nIMPORTANT: When deserializing an `AbsolutePathBuf`, a base path must be set using [AbsolutePathBufGuard::new]. If no base path is set, the deserialization will fail unless the path being deserialized is already absolute.",
+      "description": "A path that is guaranteed to be absolute and normalized (though it is not\nguaranteed to be canonicalized or exist on the filesystem).\n\nIMPORTANT: When deserializing an `AbsolutePathBuf`, a base path must be set\nusing [AbsolutePathBufGuard::new]. If no base path is set, the\ndeserialization will fail unless the path being deserialized is already\nabsolute.",
       "type": "string"
     },
     "MarketplaceInterface": {
@@ -19,7 +18,7 @@
     "MarketplaceLoadErrorInfo": {
       "properties": {
         "marketplacePath": {
-          "$ref": "#/definitions/AbsolutePathBuf"
+          "$ref": "#/$defs/AbsolutePathBuf"
         },
         "message": {
           "type": "string"
@@ -69,7 +68,7 @@
         "composerIcon": {
           "anyOf": [
             {
-              "$ref": "#/definitions/AbsolutePathBuf"
+              "$ref": "#/$defs/AbsolutePathBuf"
             },
             {
               "type": "null"
@@ -77,7 +76,7 @@
           ]
         },
         "defaultPrompt": {
-          "description": "Starter prompts for the plugin. Capped at 3 entries with a maximum of 128 characters per entry.",
+          "description": "Starter prompts for the plugin. Capped at 3 entries with a maximum of\n128 characters per entry.",
           "items": {
             "type": "string"
           },
@@ -101,7 +100,7 @@
         "logo": {
           "anyOf": [
             {
-              "$ref": "#/definitions/AbsolutePathBuf"
+              "$ref": "#/$defs/AbsolutePathBuf"
             },
             {
               "type": "null"
@@ -122,7 +121,7 @@
         },
         "screenshots": {
           "items": {
-            "$ref": "#/definitions/AbsolutePathBuf"
+            "$ref": "#/$defs/AbsolutePathBuf"
           },
           "type": "array"
         },
@@ -156,7 +155,7 @@
         "interface": {
           "anyOf": [
             {
-              "$ref": "#/definitions/MarketplaceInterface"
+              "$ref": "#/$defs/MarketplaceInterface"
             },
             {
               "type": "null"
@@ -167,11 +166,11 @@
           "type": "string"
         },
         "path": {
-          "$ref": "#/definitions/AbsolutePathBuf"
+          "$ref": "#/$defs/AbsolutePathBuf"
         },
         "plugins": {
           "items": {
-            "$ref": "#/definitions/PluginSummary"
+            "$ref": "#/$defs/PluginSummary"
           },
           "type": "array"
         }
@@ -188,19 +187,17 @@
         {
           "properties": {
             "path": {
-              "$ref": "#/definitions/AbsolutePathBuf"
+              "$ref": "#/$defs/AbsolutePathBuf"
             },
             "type": {
-              "enum": [
-                "local"
-              ],
+              "const": "local",
               "title": "LocalPluginSourceType",
               "type": "string"
             }
           },
           "required": [
-            "path",
-            "type"
+            "type",
+            "path"
           ],
           "title": "LocalPluginSource",
           "type": "object"
@@ -210,7 +207,7 @@
     "PluginSummary": {
       "properties": {
         "authPolicy": {
-          "$ref": "#/definitions/PluginAuthPolicy"
+          "$ref": "#/$defs/PluginAuthPolicy"
         },
         "enabled": {
           "type": "boolean"
@@ -219,7 +216,7 @@
           "type": "string"
         },
         "installPolicy": {
-          "$ref": "#/definitions/PluginInstallPolicy"
+          "$ref": "#/$defs/PluginInstallPolicy"
         },
         "installed": {
           "type": "boolean"
@@ -227,7 +224,7 @@
         "interface": {
           "anyOf": [
             {
-              "$ref": "#/definitions/PluginInterface"
+              "$ref": "#/$defs/PluginInterface"
             },
             {
               "type": "null"
@@ -238,21 +235,22 @@
           "type": "string"
         },
         "source": {
-          "$ref": "#/definitions/PluginSource"
+          "$ref": "#/$defs/PluginSource"
         }
       },
       "required": [
-        "authPolicy",
-        "enabled",
         "id",
-        "installPolicy",
-        "installed",
         "name",
-        "source"
+        "source",
+        "installed",
+        "enabled",
+        "installPolicy",
+        "authPolicy"
       ],
       "type": "object"
     }
   },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
   "properties": {
     "featuredPluginIds": {
       "default": [],
@@ -264,13 +262,13 @@
     "marketplaceLoadErrors": {
       "default": [],
       "items": {
-        "$ref": "#/definitions/MarketplaceLoadErrorInfo"
+        "$ref": "#/$defs/MarketplaceLoadErrorInfo"
       },
       "type": "array"
     },
     "marketplaces": {
       "items": {
-        "$ref": "#/definitions/PluginMarketplaceEntry"
+        "$ref": "#/$defs/PluginMarketplaceEntry"
       },
       "type": "array"
     },

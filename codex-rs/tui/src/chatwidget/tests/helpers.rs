@@ -361,20 +361,39 @@ pub(crate) async fn make_chatwidget_manual_with_sender() -> (
     (widget, app_event_tx, rx, op_rx)
 }
 
+pub(super) struct DrainedAppEvents {
+    pub(super) history_cells: Vec<Vec<ratatui::text::Line<'static>>>,
+    pub(super) other_events: Vec<AppEvent>,
+}
+
+pub(super) fn drain_app_events(
+    rx: &mut tokio::sync::mpsc::UnboundedReceiver<AppEvent>,
+) -> DrainedAppEvents {
+    let mut history_cells = Vec::new();
+    let mut other_events = Vec::new();
+    while let Ok(ev) = rx.try_recv() {
+        match ev {
+            AppEvent::InsertHistoryCell(cell) => {
+                let mut lines = cell.display_lines(/*width*/ 80);
+                if !cell.is_stream_continuation() && !history_cells.is_empty() && !lines.is_empty()
+                {
+                    lines.insert(0, "".into());
+                }
+                history_cells.push(lines);
+            }
+            other => other_events.push(other),
+        }
+    }
+    DrainedAppEvents {
+        history_cells,
+        other_events,
+    }
+}
+
 pub(super) fn drain_insert_history(
     rx: &mut tokio::sync::mpsc::UnboundedReceiver<AppEvent>,
 ) -> Vec<Vec<ratatui::text::Line<'static>>> {
-    let mut out = Vec::new();
-    while let Ok(ev) = rx.try_recv() {
-        if let AppEvent::InsertHistoryCell(cell) = ev {
-            let mut lines = cell.display_lines(/*width*/ 80);
-            if !cell.is_stream_continuation() && !out.is_empty() && !lines.is_empty() {
-                lines.insert(0, "".into());
-            }
-            out.push(lines)
-        }
-    }
-    out
+    drain_app_events(rx).history_cells
 }
 
 pub(super) fn lines_to_single_string(lines: &[ratatui::text::Line<'static>]) -> String {

@@ -293,6 +293,25 @@ mod tests {
     use crate::USAGE_DB_FILENAME;
     use crate::USAGE_DB_VERSION;
     use pretty_assertions::assert_eq;
+    use std::io;
+    use std::path::Path;
+    use std::time::Duration;
+
+    async fn remove_dir_all_with_retry(path: &Path) -> io::Result<()> {
+        let mut last_err = None;
+        for attempt in 0..5 {
+            match tokio::fs::remove_dir_all(path).await {
+                Ok(()) => return Ok(()),
+                Err(err) if attempt < 4 => {
+                    last_err = Some(err);
+                    tokio::time::sleep(Duration::from_millis(25 * (attempt + 1) as u64)).await;
+                }
+                Err(err) => return Err(err),
+            }
+        }
+
+        Err(last_err.unwrap_or_else(|| io::Error::other("cleanup retry loop exhausted")))
+    }
 
     #[tokio::test]
     async fn init_removes_legacy_logs_and_usage_db_files() {
@@ -407,7 +426,7 @@ mod tests {
         );
 
         drop(runtime);
-        tokio::fs::remove_dir_all(codex_home)
+        remove_dir_all_with_retry(&codex_home)
             .await
             .expect("failed to clean up temp directory");
     }

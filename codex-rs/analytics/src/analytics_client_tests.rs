@@ -60,6 +60,7 @@ fn sample_thread(thread_id: &str, ephemeral: bool) -> Thread {
         id: thread_id.to_string(),
         preview: "first prompt".to_string(),
         ephemeral,
+        forked_from_id: None,
         model_provider: "openai".to_string(),
         created_at: 1,
         updated_at: 2,

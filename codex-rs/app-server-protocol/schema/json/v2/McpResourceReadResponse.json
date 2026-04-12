@@ -1,0 +1,71 @@
+{
+  "$defs": {
+    "ResourceContent": {
+      "anyOf": [
+        {
+          "properties": {
+            "_meta": true,
+            "mimeType": {
+              "default": null,
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "text": {
+              "type": "string"
+            },
+            "uri": {
+              "description": "The URI of this resource.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "uri",
+            "text"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "_meta": true,
+            "blob": {
+              "type": "string"
+            },
+            "mimeType": {
+              "default": null,
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "uri": {
+              "description": "The URI of this resource.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "uri",
+            "blob"
+          ],
+          "type": "object"
+        }
+      ],
+      "description": "Contents returned when reading a resource from an MCP server."
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "contents": {
+      "items": {
+        "$ref": "#/$defs/ResourceContent"
+      },
+      "type": "array"
+    }
+  },
+  "required": [
+    "contents"
+  ],
+  "title": "McpResourceReadResponse",
+  "type": "object"
+}

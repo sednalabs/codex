@@ -1,6 +1,5 @@
 {
-  "$schema": "http://json-schema.org/draft-07/schema#",
-  "definitions": {
+  "$defs": {
     "ReviewDelivery": {
       "enum": [
         "inline",
@@ -14,9 +13,7 @@
           "description": "Review the working tree: staged, unstaged, and untracked files.",
           "properties": {
             "type": {
-              "enum": [
-                "uncommittedChanges"
-              ],
+              "const": "uncommittedChanges",
               "title": "UncommittedChangesReviewTargetType",
               "type": "string"
             }
@@ -34,16 +31,14 @@
               "type": "string"
             },
             "type": {
-              "enum": [
-                "baseBranch"
-              ],
+              "const": "baseBranch",
               "title": "BaseBranchReviewTargetType",
               "type": "string"
             }
           },
           "required": [
-            "branch",
-            "type"
+            "type",
+            "branch"
           ],
           "title": "BaseBranchReviewTarget",
           "type": "object"
@@ -62,16 +57,14 @@
               ]
             },
             "type": {
-              "enum": [
-                "commit"
-              ],
+              "const": "commit",
               "title": "CommitReviewTargetType",
               "type": "string"
             }
           },
           "required": [
-            "sha",
-            "type"
+            "type",
+            "sha"
           ],
           "title": "CommitReviewTarget",
           "type": "object"
@@ -83,16 +76,14 @@
               "type": "string"
             },
             "type": {
-              "enum": [
-                "custom"
-              ],
+              "const": "custom",
               "title": "CustomReviewTargetType",
               "type": "string"
             }
           },
           "required": [
-            "instructions",
-            "type"
+            "type",
+            "instructions"
           ],
           "title": "CustomReviewTarget",
           "type": "object"
@@ -100,29 +91,30 @@
       ]
     }
   },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
   "properties": {
     "delivery": {
       "anyOf": [
         {
-          "$ref": "#/definitions/ReviewDelivery"
+          "$ref": "#/$defs/ReviewDelivery"
         },
         {
           "type": "null"
         }
       ],
       "default": null,
-      "description": "Where to run the review: inline (default) on the current thread or detached on a new thread (returned in `reviewThreadId`)."
+      "description": "Where to run the review: inline (default) on the current thread or\ndetached on a new thread (returned in `reviewThreadId`)."
     },
     "target": {
-      "$ref": "#/definitions/ReviewTarget"
+      "$ref": "#/$defs/ReviewTarget"
     },
     "threadId": {
       "type": "string"
     }
   },
   "required": [
-    "target",
-    "threadId"
+    "threadId",
+    "target"
   ],
   "title": "ReviewStartParams",
   "type": "object"

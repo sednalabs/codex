@@ -1,6 +1,5 @@
 {
-  "$schema": "http://json-schema.org/draft-07/schema#",
-  "definitions": {
+  "$defs": {
     "ModelRerouteReason": {
       "enum": [
         "highRiskCyberActivity"
@@ -8,12 +7,13 @@
       "type": "string"
     }
   },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
   "properties": {
     "fromModel": {
       "type": "string"
     },
     "reason": {
-      "$ref": "#/definitions/ModelRerouteReason"
+      "$ref": "#/$defs/ModelRerouteReason"
     },
     "threadId": {
       "type": "string"
@@ -26,11 +26,11 @@
     }
   },
   "required": [
-    "fromModel",
-    "reason",
     "threadId",
+    "turnId",
+    "fromModel",
     "toModel",
-    "turnId"
+    "reason"
   ],
   "title": "ModelReroutedNotification",
   "type": "object"
