@@ -415,6 +415,41 @@ class ValidationPlanScriptTests(unittest.TestCase):
         self.assertEqual(payload["rust_max_parallel"], "22")
         self.assertEqual(payload["heavy_max_parallel"], "6")
 
+    def test_validation_lab_frontier_all_excludes_smoke_gate_lanes_by_metadata(self) -> None:
+        catalog = {
+            "lanes": [
+                {
+                    "lane_id": "codex.synthetic-runtime-gate",
+                    "run_command": "echo synthetic-gate",
+                    "groups": ["core"],
+                    "status_class": "active",
+                    "setup_class": "heavy",
+                    "frontier_role": "sentinel",
+                    "summary_family": "synthetic-gate",
+                    "cost_class": "high",
+                    "smoke_gate_only": True,
+                    "smoke_gate_kinds": ["runtime"],
+                },
+                {
+                    "lane_id": "codex.synthetic-real-lane",
+                    "run_command": "echo synthetic-real-lane",
+                    "groups": ["core"],
+                    "status_class": "active",
+                    "setup_class": "rust",
+                    "frontier_role": "sentinel",
+                    "summary_family": "synthetic-real-lane",
+                    "cost_class": "medium",
+                },
+            ]
+        }
+
+        selected = RESOLVE_VALIDATION_PLAN.select_frontier_all(catalog)
+
+        self.assertEqual(
+            [lane["lane_id"] for lane in selected],
+            ["codex.synthetic-real-lane"],
+        )
+
     def test_heavy_plan_workflow_dispatch_all_uses_frontier_harvest_policy(self) -> None:
         payload = run_script(
             SCRIPTS_DIR / "resolve_validation_plan.py",

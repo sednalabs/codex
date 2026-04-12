@@ -114,6 +114,11 @@ def normalize_catalog(catalog: dict) -> dict:
         lane.setdefault("summary_family", derive_summary_family(lane))
         lane.setdefault("cost_class", derive_cost_class(lane["setup_class"]))
         lane.setdefault("frontier_default", False)
+        lane.setdefault(
+            "smoke_gate_only",
+            bool(lane.get("smoke_gate_kinds"))
+            and str(lane.get("lane_id") or "").endswith("-smoke"),
+        )
         if "frontier_lane_sets" not in lane:
             if lane.get("status_class") == "active" and not lane.get("explicit_only"):
                 lane["frontier_lane_sets"] = (
@@ -252,29 +257,18 @@ def select_for_lane_set(
     return selected
 
 
-def select_frontier_all(catalog: dict, *, include_explicit_only: bool = False) -> list[dict]:
-    def is_smoke_gate_lane(spec: dict) -> bool:
-        return bool(spec.get("smoke_gate_kinds")) and str(spec.get("lane_id") or "").endswith(
-            "-smoke"
-        )
+def is_smoke_gate_lane(spec: dict) -> bool:
+    return bool(spec.get("smoke_gate_only"))
 
+
+def select_frontier_all(catalog: dict, *, include_explicit_only: bool = False) -> list[dict]:
     allowed_status_classes = {"active", "legacy"} if include_explicit_only else {"active"}
-    selected = [
-        lane_payload(spec, lane_phase="downstream_lanes")
-        for spec in catalog["lanes"]
-        if spec.get("status_class") in allowed_status_classes
-        and (include_explicit_only or not spec.get("explicit_only"))
-        and not is_smoke_gate_lane(spec)
-    ]
-    if selected:
-        return selected
     return [
         lane_payload(spec, lane_phase="downstream_lanes")
         for spec in catalog["lanes"]
         if spec.get("status_class") in allowed_status_classes
         and (include_explicit_only or not spec.get("explicit_only"))
         and not is_smoke_gate_lane(spec)
-        and "release" not in spec.get("lane_sets", [])
     ]
 
 
