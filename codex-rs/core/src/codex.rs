@@ -3175,7 +3175,7 @@ impl Session {
         // with_additional_permissions. V0 still routes this surface through
         // the existing manual RequestPermissions event flow.
         let event = EventMsg::RequestPermissions(RequestPermissionsEvent {
-            call_id,
+            call_id: call_id.clone(),
             turn_id: turn_context.sub_id.clone(),
             reason: args.reason,
             permissions: args.permissions,
@@ -3215,7 +3215,7 @@ impl Session {
                 return None;
             };
             let mut ts = at.turn_state.lock().await;
-            ts.insert_pending_user_input(sub_id, tx_response)
+            ts.insert_pending_user_input(sub_id.clone(), tx_response)
         };
         if prev_entry.is_some() {
             warn!("Overwriting existing pending user input for sub_id: {event_id}");
