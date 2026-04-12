@@ -119,6 +119,11 @@ The summary should also state:
 - a compact lane-selection summary so operators can see the active shape at a
   glance
 
+For workflow/planner-only changes, prefer an exact light-weight route instead
+of broad product lanes. In this fork that means remote proof should stay on the
+workflow sanity and downstream docs lanes unless the diff also touches real
+runtime/product seams.
+
 ## Documentation boundaries
 
 Keep tracked repository docs contributor-safe and generalized.

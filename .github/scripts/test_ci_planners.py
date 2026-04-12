@@ -170,6 +170,24 @@ class RouteSelectionTests(unittest.TestCase):
             ],
         )
 
+    def test_workflow_ci_route_stays_lightweight(self) -> None:
+        lanes = RESOLVE_VALIDATION_PLAN.select_followup_lanes(
+            [
+                ".github/workflows/validation-lab.yml",
+                ".github/scripts/resolve_validation_plan.py",
+                "docs/validation_workflow.md",
+                "justfile",
+            ],
+            self.routes,
+        )
+        self.assertEqual(
+            lanes,
+            [
+                "codex.workflow-ci-sanity",
+                "codex.downstream-docs-check",
+            ],
+        )
+
     def test_heavy_workflow_dispatch_options_cover_catalog_lanes(self) -> None:
         workflow_options = parse_workflow_dispatch_lane_options(
             REPO_ROOT / ".github/workflows/sedna-heavy-tests.yml"
@@ -294,6 +312,49 @@ class ValidationPlanScriptTests(unittest.TestCase):
             ["codex.tui-agent-picker-model-surface-targeted"],
         )
 
+    def test_heavy_plan_route_keeps_workflow_ci_changes_on_light_lanes(self) -> None:
+        payload = run_script(
+            SCRIPTS_DIR / "resolve_validation_plan.py",
+            "heavy",
+            "--event-name",
+            "pull_request",
+            "--requested-lane",
+            "",
+            "--run-all-lanes",
+            "false",
+            "--run-core-family",
+            "false",
+            "--run-attestation-family",
+            "false",
+            "--run-workflow-family",
+            "true",
+            "--run-ui-protocol-family",
+            "false",
+            "--run-docs-family",
+            "true",
+            "--changed-files-json",
+            json.dumps(
+                [
+                    ".github/workflows/validation-lab.yml",
+                    ".github/scripts/resolve_validation_plan.py",
+                    "docs/validation_workflow.md",
+                    "justfile",
+                ]
+            ),
+        )
+
+        self.assertEqual(payload["run_smoke_gate"], "false")
+        self.assertEqual(payload["selected_light_lane_count"], 2)
+        self.assertEqual(payload["selected_rust_lane_count"], 0)
+        self.assertEqual(payload["selected_heavy_lane_count"], 0)
+        self.assertEqual(
+            [lane["lane_id"] for lane in payload["selected_matrix"]["include"]],
+            [
+                "codex.workflow-ci-sanity",
+                "codex.downstream-docs-check",
+            ],
+        )
+
     def test_validation_lab_selected_lanes_do_not_block_on_smoke_gate(self) -> None:
         payload = load_workflow_payload(REPO_ROOT / ".github/workflows/validation-lab.yml")
         jobs = payload.get("jobs") or {}
@@ -318,11 +379,12 @@ class ValidationPlanScriptTests(unittest.TestCase):
 
         selected_lane_ids = [lane["lane_id"] for lane in payload["selected_matrix"]["include"]]
         self.assertIn("codex.downstream-docs-check", selected_lane_ids)
+        self.assertIn("codex.workflow-ci-sanity", selected_lane_ids)
         self.assertIn("codex.release-linux-build-smoke", selected_lane_ids)
         self.assertIn("codex.tui-config-refresh-session-targeted", selected_lane_ids)
         self.assertIn("codex.spawn-agent-description-model-surface-targeted", selected_lane_ids)
         self.assertNotIn("codex.tui-agent-picker-model-surface-targeted", selected_lane_ids)
-        self.assertEqual(payload["selected_light_lane_count"], 1)
+        self.assertEqual(payload["selected_light_lane_count"], 2)
         self.assertEqual(payload["selected_rust_lane_count"], 20)
         self.assertEqual(payload["selected_heavy_lane_count"], 6)
         self.assertEqual(payload["rust_max_parallel"], "20")
@@ -347,7 +409,7 @@ class ValidationPlanScriptTests(unittest.TestCase):
         selected_lane_ids = [lane["lane_id"] for lane in payload["selected_matrix"]["include"]]
         self.assertIn("codex.tui-agent-picker-model-surface-targeted", selected_lane_ids)
         self.assertIn("downstream-ledger-seam", selected_lane_ids)
-        self.assertEqual(payload["selected_light_lane_count"], 1)
+        self.assertEqual(payload["selected_light_lane_count"], 2)
         self.assertEqual(payload["selected_rust_lane_count"], 22)
         self.assertEqual(payload["selected_heavy_lane_count"], 6)
         self.assertEqual(payload["rust_max_parallel"], "22")
@@ -379,7 +441,7 @@ class ValidationPlanScriptTests(unittest.TestCase):
 
         self.assertEqual(payload["matrix_fail_fast"], "false")
         self.assertEqual(payload["continue_after_smoke_failure"], "true")
-        self.assertEqual(payload["light_max_parallel"], "1")
+        self.assertEqual(payload["light_max_parallel"], "2")
         self.assertEqual(payload["rust_max_parallel"], "22")
         self.assertEqual(payload["heavy_max_parallel"], "11")
 
@@ -505,13 +567,23 @@ class RustCiModeScriptTests(unittest.TestCase):
             },
         )
 
-        self.assertEqual(outputs["validation_mode"], "full")
+        self.assertEqual(outputs["validation_mode"], "light_initial")
         self.assertEqual(outputs["workflows"], "true")
         self.assertEqual(outputs["has_relevant_changes"], "true")
         self.assertEqual(outputs["run_general"], "false")
         self.assertEqual(outputs["run_cargo_shear"], "false")
         self.assertEqual(outputs["run_argument_comment_lint_prebuilt"], "false")
-        self.assertEqual(outputs["run_argument_comment_lint_package"], "true")
+        self.assertEqual(outputs["run_argument_comment_lint_package"], "false")
+        self.assertEqual(outputs["run_incremental_validation"], "true")
+        self.assertEqual(
+            outputs["incremental_lanes"],
+            ",".join(
+                [
+                    "codex.workflow-ci-sanity",
+                    "codex.downstream-docs-check",
+                ]
+            ),
+        )
 
     def test_skill_only_pr_is_irrelevant_to_rust_ci(self) -> None:
         outputs = self.run_rust_ci_mode(

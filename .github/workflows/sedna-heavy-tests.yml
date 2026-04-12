@@ -44,6 +44,7 @@ on:
           - codex.code-mode-declaration-targeted
           - codex.app-server-protocol-test
           - codex.app-server-thread-cwd-targeted
+          - codex.workflow-ci-sanity
           - codex.downstream-docs-check
           - codex.release-linux-build-smoke
           - downstream-ledger-seam
