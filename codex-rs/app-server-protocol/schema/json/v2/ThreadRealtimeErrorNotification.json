@@ -1,5 +1,5 @@
 {
-  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
   "description": "EXPERIMENTAL - emitted when thread realtime encounters an error.",
   "properties": {
     "message": {
@@ -10,8 +10,8 @@
     }
   },
   "required": [
-    "message",
-    "threadId"
+    "threadId",
+    "message"
   ],
   "title": "ThreadRealtimeErrorNotification",
   "type": "object"
