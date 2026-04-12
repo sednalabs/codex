@@ -1,28 +1,21 @@
 {
-  "$schema": "http://json-schema.org/draft-07/schema#",
-  "definitions": {
+  "$defs": {
     "AuthMode": {
       "description": "Authentication mode for OpenAI-backed providers.",
       "oneOf": [
         {
+          "const": "apikey",
           "description": "OpenAI API key provided by the caller and stored by Codex.",
-          "enum": [
-            "apikey"
-          ],
           "type": "string"
         },
         {
+          "const": "chatgpt",
           "description": "ChatGPT OAuth managed by Codex (tokens persisted and refreshed by Codex).",
-          "enum": [
-            "chatgpt"
-          ],
           "type": "string"
         },
         {
-          "description": "[UNSTABLE] FOR OPENAI INTERNAL USE ONLY - DO NOT USE.\n\nChatGPT auth tokens are supplied by an external host app and are only stored in memory. Token refresh must be handled by the external host app.",
-          "enum": [
-            "chatgptAuthTokens"
-          ],
+          "const": "chatgptAuthTokens",
+          "description": "[UNSTABLE] FOR OPENAI INTERNAL USE ONLY - DO NOT USE.\n\nChatGPT auth tokens are supplied by an external host app and are only\nstored in memory. Token refresh must be handled by the external host app.",
           "type": "string"
         }
       ]
@@ -44,11 +37,12 @@
       "type": "string"
     }
   },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
   "properties": {
     "authMode": {
       "anyOf": [
         {
-          "$ref": "#/definitions/AuthMode"
+          "$ref": "#/$defs/AuthMode"
         },
         {
           "type": "null"
@@ -58,7 +52,7 @@
     "planType": {
       "anyOf": [
         {
-          "$ref": "#/definitions/PlanType"
+          "$ref": "#/$defs/PlanType"
         },
         {
           "type": "null"

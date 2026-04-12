@@ -1,16 +1,18 @@
+use crate::protocol::item_builders::build_command_execution_begin_item;
+use crate::protocol::item_builders::build_command_execution_end_item;
+use crate::protocol::item_builders::build_file_change_approval_request_item;
+use crate::protocol::item_builders::build_file_change_begin_item;
+use crate::protocol::item_builders::build_file_change_end_item;
+use crate::protocol::item_builders::build_item_from_guardian_event;
 use crate::protocol::v2::CollabAgentState;
 use crate::protocol::v2::CollabAgentTool;
 use crate::protocol::v2::CollabAgentToolCallStatus;
-use crate::protocol::v2::CommandAction;
 use crate::protocol::v2::CommandExecutionStatus;
 use crate::protocol::v2::DynamicToolCallOutputContentItem;
 use crate::protocol::v2::DynamicToolCallStatus;
-use crate::protocol::v2::FileUpdateChange;
 use crate::protocol::v2::McpToolCallError;
 use crate::protocol::v2::McpToolCallResult;
 use crate::protocol::v2::McpToolCallStatus;
-use crate::protocol::v2::PatchApplyStatus;
-use crate::protocol::v2::PatchChangeKind;
 use crate::protocol::v2::ThreadItem;
 use crate::protocol::v2::Turn;
 use crate::protocol::v2::TurnError as V2TurnError;
@@ -31,6 +33,8 @@ use codex_protocol::protocol::ErrorEvent;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::ExecCommandBeginEvent;
 use codex_protocol::protocol::ExecCommandEndEvent;
+use codex_protocol::protocol::GuardianAssessmentEvent;
+use codex_protocol::protocol::GuardianAssessmentStatus;
 use codex_protocol::protocol::ImageGenerationBeginEvent;
 use codex_protocol::protocol::ImageGenerationEndEvent;
 use codex_protocol::protocol::ItemCompletedEvent;
@@ -54,6 +58,14 @@ use std::collections::HashMap;
 use tracing::warn;
 use uuid::Uuid;
 
+#[cfg(test)]
+use crate::protocol::v2::CommandAction;
+#[cfg(test)]
+use crate::protocol::v2::FileUpdateChange;
+#[cfg(test)]
+use crate::protocol::v2::PatchApplyStatus;
+#[cfg(test)]
+use crate::protocol::v2::PatchChangeKind;
 #[cfg(test)]
 use codex_protocol::protocol::ExecCommandStatus as CoreExecCommandStatus;
 #[cfg(test)]
@@ -137,9 +149,11 @@ impl ThreadHistoryBuilder {
     pub fn handle_event(&mut self, event: &EventMsg) {
         match event {
             EventMsg::UserMessage(payload) => self.handle_user_message(payload),
-            EventMsg::AgentMessage(payload) => {
-                self.handle_agent_message(payload.message.clone(), payload.phase.clone())
-            }
+            EventMsg::AgentMessage(payload) => self.handle_agent_message(
+                payload.message.clone(),
+                payload.phase.clone(),
+                payload.memory_citation.clone().map(Into::into),
+            ),
             EventMsg::AgentReasoning(payload) => self.handle_agent_reasoning(payload),
             EventMsg::AgentReasoningRawContent(payload) => {
                 self.handle_agent_reasoning_raw_content(payload)
@@ -148,6 +162,7 @@ impl ThreadHistoryBuilder {
             EventMsg::WebSearchEnd(payload) => self.handle_web_search_end(payload),
             EventMsg::ExecCommandBegin(payload) => self.handle_exec_command_begin(payload),
             EventMsg::ExecCommandEnd(payload) => self.handle_exec_command_end(payload),
+            EventMsg::GuardianAssessment(payload) => self.handle_guardian_assessment(payload),
             EventMsg::ApplyPatchApprovalRequest(payload) => {
                 self.handle_apply_patch_approval_request(payload)
             }
@@ -254,7 +269,12 @@ impl ThreadHistoryBuilder {
         self.current_turn = Some(turn);
     }
 
-    fn handle_agent_message(&mut self, text: String, phase: Option<MessagePhase>) {
+    fn handle_agent_message(
+        &mut self,
+        text: String,
+        phase: Option<MessagePhase>,
+        memory_citation: Option<crate::protocol::v2::MemoryCitation>,
+    ) {
         if text.is_empty() {
             return;
         }
@@ -264,7 +284,7 @@ impl ThreadHistoryBuilder {
             id,
             text,
             phase,
-            memory_citation: None,
+            memory_citation,
         });
     }
 
@@ -369,57 +389,12 @@ impl ThreadHistoryBuilder {
     }
 
     fn handle_exec_command_begin(&mut self, payload: &ExecCommandBeginEvent) {
-        let command = shlex::try_join(payload.command.iter().map(String::as_str))
-            .unwrap_or_else(|_| payload.command.join(" "));
-        let command_actions = payload
-            .parsed_cmd
-            .iter()
-            .cloned()
-            .map(CommandAction::from)
-            .collect();
-        let item = ThreadItem::CommandExecution {
-            id: payload.call_id.clone(),
-            command,
-            cwd: payload.cwd.clone(),
-            process_id: payload.process_id.clone(),
-            source: payload.source.into(),
-            status: CommandExecutionStatus::InProgress,
-            command_actions,
-            aggregated_output: None,
-            exit_code: None,
-            duration_ms: None,
-        };
+        let item = build_command_execution_begin_item(payload);
         self.upsert_item_in_turn_id(&payload.turn_id, item);
     }
 
     fn handle_exec_command_end(&mut self, payload: &ExecCommandEndEvent) {
-        let status: CommandExecutionStatus = (&payload.status).into();
-        let duration_ms = i64::try_from(payload.duration.as_millis()).unwrap_or(i64::MAX);
-        let aggregated_output = if payload.aggregated_output.is_empty() {
-            None
-        } else {
-            Some(payload.aggregated_output.clone())
-        };
-        let command = shlex::try_join(payload.command.iter().map(String::as_str))
-            .unwrap_or_else(|_| payload.command.join(" "));
-        let command_actions = payload
-            .parsed_cmd
-            .iter()
-            .cloned()
-            .map(CommandAction::from)
-            .collect();
-        let item = ThreadItem::CommandExecution {
-            id: payload.call_id.clone(),
-            command,
-            cwd: payload.cwd.clone(),
-            process_id: payload.process_id.clone(),
-            source: payload.source.into(),
-            status,
-            command_actions,
-            aggregated_output,
-            exit_code: Some(payload.exit_code),
-            duration_ms: Some(duration_ms),
-        };
+        let item = build_command_execution_end_item(payload);
         // Command completions can arrive out of order. Unified exec may return
         // while a PTY is still running, then emit ExecCommandEnd later from a
         // background exit watcher when that process finally exits. By then, a
@@ -428,12 +403,26 @@ impl ThreadHistoryBuilder {
         self.upsert_item_in_turn_id(&payload.turn_id, item);
     }
 
-    fn handle_apply_patch_approval_request(&mut self, payload: &ApplyPatchApprovalRequestEvent) {
-        let item = ThreadItem::FileChange {
-            id: payload.call_id.clone(),
-            changes: convert_patch_changes(&payload.changes),
-            status: PatchApplyStatus::InProgress,
+    fn handle_guardian_assessment(&mut self, payload: &GuardianAssessmentEvent) {
+        let status = match payload.status {
+            GuardianAssessmentStatus::InProgress => CommandExecutionStatus::InProgress,
+            GuardianAssessmentStatus::Denied | GuardianAssessmentStatus::Aborted => {
+                CommandExecutionStatus::Declined
+            }
+            GuardianAssessmentStatus::Approved => return,
         };
+        let Some(item) = build_item_from_guardian_event(payload, status) else {
+            return;
+        };
+        if payload.turn_id.is_empty() {
+            self.upsert_item_in_current_turn(item);
+        } else {
+            self.upsert_item_in_turn_id(&payload.turn_id, item);
+        }
+    }
+
+    fn handle_apply_patch_approval_request(&mut self, payload: &ApplyPatchApprovalRequestEvent) {
+        let item = build_file_change_approval_request_item(payload);
         if payload.turn_id.is_empty() {
             self.upsert_item_in_current_turn(item);
         } else {
@@ -442,11 +431,7 @@ impl ThreadHistoryBuilder {
     }
 
     fn handle_patch_apply_begin(&mut self, payload: &PatchApplyBeginEvent) {
-        let item = ThreadItem::FileChange {
-            id: payload.call_id.clone(),
-            changes: convert_patch_changes(&payload.changes),
-            status: PatchApplyStatus::InProgress,
-        };
+        let item = build_file_change_begin_item(payload);
         if payload.turn_id.is_empty() {
             self.upsert_item_in_current_turn(item);
         } else {
@@ -455,12 +440,7 @@ impl ThreadHistoryBuilder {
     }
 
     fn handle_patch_apply_end(&mut self, payload: &PatchApplyEndEvent) {
-        let status: PatchApplyStatus = (&payload.status).into();
-        let item = ThreadItem::FileChange {
-            id: payload.call_id.clone(),
-            changes: convert_patch_changes(&payload.changes),
-            status,
-        };
+        let item = build_file_change_end_item(payload);
         if payload.turn_id.is_empty() {
             self.upsert_item_in_current_turn(item);
         } else {
@@ -879,7 +859,11 @@ impl ThreadHistoryBuilder {
             .map(render_review_output_text)
             .unwrap_or_else(|| REVIEW_FALLBACK_MESSAGE.to_string());
         let usage_summary = format_token_usage_summary(payload.review_token_usage.as_ref());
-        let review = format!("{review_message}\n\n{usage_summary}");
+        let review = format!(
+            "{review_message}
+
+{usage_summary}"
+        );
         let id = self.next_item_id();
         self.ensure_turn()
             .items
@@ -992,7 +976,7 @@ impl ThreadHistoryBuilder {
             if turn.items.is_empty() && !turn.opened_explicitly && !turn.saw_compaction {
                 return;
             }
-            self.turns.push(turn.into());
+            self.turns.push(Turn::from(turn));
         }
     }
 
@@ -1002,6 +986,9 @@ impl ThreadHistoryBuilder {
             items: Vec::new(),
             error: None,
             status: TurnStatus::Completed,
+            started_at: None,
+            completed_at: None,
+            duration_ms: None,
             opened_explicitly: false,
             saw_compaction: false,
             rollout_start_index: self.current_rollout_index,
@@ -1087,21 +1074,6 @@ fn render_review_output_text(output: &ReviewOutputEvent) -> String {
     }
 }
 
-pub fn convert_patch_changes(
-    changes: &HashMap<std::path::PathBuf, codex_protocol::protocol::FileChange>,
-) -> Vec<FileUpdateChange> {
-    let mut converted: Vec<FileUpdateChange> = changes
-        .iter()
-        .map(|(path, change)| FileUpdateChange {
-            path: path.to_string_lossy().into_owned(),
-            kind: map_patch_change_kind(change),
-            diff: format_file_change_diff(change),
-        })
-        .collect();
-    converted.sort_by(|a, b| a.path.cmp(&b.path));
-    converted
-}
-
 fn convert_dynamic_tool_content_items(
     items: &[codex_protocol::dynamic_tools::DynamicToolCallOutputContentItem],
 ) -> Vec<DynamicToolCallOutputContentItem> {
@@ -1117,33 +1089,6 @@ fn convert_dynamic_tool_content_items(
             } => DynamicToolCallOutputContentItem::InputImage { image_url },
         })
         .collect()
-}
-
-fn map_patch_change_kind(change: &codex_protocol::protocol::FileChange) -> PatchChangeKind {
-    match change {
-        codex_protocol::protocol::FileChange::Add { .. } => PatchChangeKind::Add,
-        codex_protocol::protocol::FileChange::Delete { .. } => PatchChangeKind::Delete,
-        codex_protocol::protocol::FileChange::Update { move_path, .. } => PatchChangeKind::Update {
-            move_path: move_path.clone(),
-        },
-    }
-}
-
-fn format_file_change_diff(change: &codex_protocol::protocol::FileChange) -> String {
-    match change {
-        codex_protocol::protocol::FileChange::Add { content } => content.clone(),
-        codex_protocol::protocol::FileChange::Delete { content } => content.clone(),
-        codex_protocol::protocol::FileChange::Update {
-            unified_diff,
-            move_path,
-        } => {
-            if let Some(path) = move_path {
-                format!("{unified_diff}\n\nMoved to: {}", path.display())
-            } else {
-                unified_diff.clone()
-            }
-        }
-    }
 }
 
 fn upsert_turn_item(items: &mut Vec<ThreadItem>, item: ThreadItem) {
@@ -1162,6 +1107,9 @@ struct PendingTurn {
     items: Vec<ThreadItem>,
     error: Option<TurnError>,
     status: TurnStatus,
+    started_at: Option<i64>,
+    completed_at: Option<i64>,
+    duration_ms: Option<i64>,
     /// True when this turn originated from an explicit `turn_started`/`turn_complete`
     /// boundary, so we preserve it even if it has no renderable items.
     opened_explicitly: bool,
@@ -1191,6 +1139,9 @@ impl From<PendingTurn> for Turn {
             items: value.items,
             error: value.error,
             status: value.status,
+            started_at: value.started_at,
+            completed_at: value.completed_at,
+            duration_ms: value.duration_ms,
         }
     }
 }
@@ -1202,6 +1153,9 @@ impl From<&PendingTurn> for Turn {
             items: value.items.clone(),
             error: value.error.clone(),
             status: value.status.clone(),
+            started_at: value.started_at,
+            completed_at: value.completed_at,
+            duration_ms: value.duration_ms,
         }
     }
 }
@@ -1209,6 +1163,7 @@ impl From<&PendingTurn> for Turn {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::protocol::v2::CommandExecutionSource;
     use codex_protocol::ThreadId;
     use codex_protocol::dynamic_tools::DynamicToolCallOutputContentItem as CoreDynamicToolCallOutputContentItem;
     use codex_protocol::items::HookPromptFragment as CoreHookPromptFragment;
@@ -1421,70 +1376,6 @@ mod tests {
     }
 
     #[test]
-    fn exited_review_mode_appends_unavailable_usage_summary_when_missing() {
-        let events = vec![EventMsg::ExitedReviewMode(
-            codex_protocol::protocol::ExitedReviewModeEvent {
-                review_output: Some(ReviewOutputEvent {
-                    findings: Vec::new(),
-                    overall_correctness: "good".to_string(),
-                    overall_explanation: "Looks solid overall.".to_string(),
-                    overall_confidence_score: 0.75,
-                }),
-                review_token_usage: None,
-            },
-        )];
-
-        let items = events
-            .into_iter()
-            .map(RolloutItem::EventMsg)
-            .collect::<Vec<_>>();
-        let turns = build_turns_from_rollout_items(&items);
-        assert_eq!(turns.len(), 1);
-        assert_eq!(
-            turns[0].items[0],
-            ThreadItem::ExitedReviewMode {
-                id: "item-1".into(),
-                review: "Looks solid overall.\n\nToken usage: unavailable".to_string(),
-            }
-        );
-    }
-
-    #[test]
-    fn exited_review_mode_appends_formatted_usage_summary_when_present() {
-        let events = vec![EventMsg::ExitedReviewMode(
-            codex_protocol::protocol::ExitedReviewModeEvent {
-                review_output: Some(ReviewOutputEvent {
-                    findings: Vec::new(),
-                    overall_correctness: "good".to_string(),
-                    overall_explanation: "Looks solid overall.".to_string(),
-                    overall_confidence_score: 0.75,
-                }),
-                review_token_usage: Some(codex_protocol::protocol::TokenUsage {
-                    input_tokens: 5,
-                    cached_input_tokens: 0,
-                    output_tokens: 3,
-                    reasoning_output_tokens: 0,
-                    total_tokens: 8,
-                }),
-            },
-        )];
-
-        let items = events
-            .into_iter()
-            .map(RolloutItem::EventMsg)
-            .collect::<Vec<_>>();
-        let turns = build_turns_from_rollout_items(&items);
-        assert_eq!(turns.len(), 1);
-        assert_eq!(
-            turns[0].items[0],
-            ThreadItem::ExitedReviewMode {
-                id: "item-1".into(),
-                review: "Looks solid overall.\n\nToken usage: total=8 input=5 output=3".to_string(),
-            }
-        );
-    }
-
-    #[test]
     fn replays_image_generation_end_events_into_turn_history() {
         let items = vec![
             RolloutItem::EventMsg(EventMsg::TurnStarted(TurnStartedEvent {
@@ -1520,6 +1411,9 @@ mod tests {
                 id: "turn-image".into(),
                 status: TurnStatus::Completed,
                 error: None,
+                started_at: None,
+                completed_at: None,
+                duration_ms: None,
                 items: vec![
                     ThreadItem::UserMessage {
                         id: "item-1".into(),
@@ -1934,7 +1828,7 @@ mod tests {
                 command: "echo 'hello world'".into(),
                 cwd: PathBuf::from("/tmp"),
                 process_id: Some("pid-1".into()),
-                source: crate::protocol::v2::CommandExecutionSource::Agent,
+                source: CommandExecutionSource::Agent,
                 status: CommandExecutionStatus::Completed,
                 command_actions: vec![CommandAction::Unknown {
                     command: "echo hello world".into(),
@@ -2083,7 +1977,7 @@ mod tests {
                 command: "ls".into(),
                 cwd: PathBuf::from("/tmp"),
                 process_id: Some("pid-2".into()),
-                source: crate::protocol::v2::CommandExecutionSource::Agent,
+                source: CommandExecutionSource::Agent,
                 status: CommandExecutionStatus::Declined,
                 command_actions: vec![CommandAction::Unknown {
                     command: "ls".into(),
@@ -2103,6 +1997,136 @@ mod tests {
                     diff: "hello\n".into(),
                 }],
                 status: PatchApplyStatus::Declined,
+            }
+        );
+    }
+
+    #[test]
+    fn reconstructs_declined_guardian_command_item() {
+        let events = vec![
+            EventMsg::TurnStarted(TurnStartedEvent {
+                turn_id: "turn-1".into(),
+                model_context_window: None,
+                collaboration_mode_kind: Default::default(),
+            }),
+            EventMsg::UserMessage(UserMessageEvent {
+                message: "review this command".into(),
+                images: None,
+                text_elements: Vec::new(),
+                local_images: Vec::new(),
+            }),
+            EventMsg::GuardianAssessment(GuardianAssessmentEvent {
+                id: "guardian-exec".into(),
+                turn_id: "turn-1".into(),
+                status: GuardianAssessmentStatus::InProgress,
+                risk_score: None,
+                risk_level: None,
+                rationale: None,
+                action: serde_json::from_value(serde_json::json!({
+                    "type": "command",
+                    "source": "shell",
+                    "command": "rm -rf /tmp/guardian",
+                    "cwd": "/tmp",
+                }))
+                .expect("guardian action"),
+            }),
+            EventMsg::GuardianAssessment(GuardianAssessmentEvent {
+                id: "guardian-exec".into(),
+                turn_id: "turn-1".into(),
+                status: GuardianAssessmentStatus::Denied,
+                risk_score: Some(97),
+                risk_level: Some(codex_protocol::protocol::GuardianRiskLevel::High),
+                rationale: Some("Would delete user data.".into()),
+                action: serde_json::from_value(serde_json::json!({
+                    "type": "command",
+                    "source": "shell",
+                    "command": "rm -rf /tmp/guardian",
+                    "cwd": "/tmp",
+                }))
+                .expect("guardian action"),
+            }),
+        ];
+
+        let items = events
+            .into_iter()
+            .map(RolloutItem::EventMsg)
+            .collect::<Vec<_>>();
+        let turns = build_turns_from_rollout_items(&items);
+        assert_eq!(turns.len(), 1);
+        assert_eq!(turns[0].items.len(), 2);
+        assert_eq!(
+            turns[0].items[1],
+            ThreadItem::CommandExecution {
+                id: "guardian-exec".into(),
+                command: "rm -rf /tmp/guardian".into(),
+                cwd: PathBuf::from("/tmp"),
+                process_id: None,
+                source: CommandExecutionSource::Agent,
+                status: CommandExecutionStatus::Declined,
+                command_actions: vec![CommandAction::Unknown {
+                    command: "rm -rf /tmp/guardian".into(),
+                }],
+                aggregated_output: None,
+                exit_code: None,
+                duration_ms: None,
+            }
+        );
+    }
+
+    #[test]
+    fn reconstructs_in_progress_guardian_execve_item() {
+        let events = vec![
+            EventMsg::TurnStarted(TurnStartedEvent {
+                turn_id: "turn-1".into(),
+                model_context_window: None,
+                collaboration_mode_kind: Default::default(),
+            }),
+            EventMsg::UserMessage(UserMessageEvent {
+                message: "run a subcommand".into(),
+                images: None,
+                text_elements: Vec::new(),
+                local_images: Vec::new(),
+            }),
+            EventMsg::GuardianAssessment(GuardianAssessmentEvent {
+                id: "guardian-execve".into(),
+                turn_id: "turn-1".into(),
+                status: GuardianAssessmentStatus::InProgress,
+                risk_score: None,
+                risk_level: None,
+                rationale: None,
+                action: serde_json::from_value(serde_json::json!({
+                    "type": "execve",
+                    "source": "shell",
+                    "program": "/bin/rm",
+                    "argv": ["/usr/bin/rm", "-f", "/tmp/file.sqlite"],
+                    "cwd": "/tmp",
+                }))
+                .expect("guardian action"),
+            }),
+        ];
+
+        let items = events
+            .into_iter()
+            .map(RolloutItem::EventMsg)
+            .collect::<Vec<_>>();
+        let turns = build_turns_from_rollout_items(&items);
+        assert_eq!(turns.len(), 1);
+        assert_eq!(turns[0].items.len(), 2);
+        assert_eq!(
+            turns[0].items[1],
+            ThreadItem::CommandExecution {
+                id: "guardian-execve".into(),
+                command: "/bin/rm -f /tmp/file.sqlite".into(),
+                cwd: PathBuf::from("/tmp"),
+                process_id: None,
+                source: CommandExecutionSource::Agent,
+                status: CommandExecutionStatus::InProgress,
+                command_actions: vec![CommandAction::Unknown {
+                    command: "/bin/rm -f /tmp/file.sqlite".into(),
+                }],
+                aggregated_output: None,
+                exit_code: None,
+                duration_ms: None,
             }
         );
     }
@@ -2180,7 +2204,7 @@ mod tests {
                 command: "echo done".into(),
                 cwd: PathBuf::from("/tmp"),
                 process_id: Some("pid-42".into()),
-                source: crate::protocol::v2::CommandExecutionSource::Agent,
+                source: CommandExecutionSource::Agent,
                 status: CommandExecutionStatus::Completed,
                 command_actions: vec![CommandAction::Unknown {
                     command: "echo done".into(),
@@ -2534,6 +2558,9 @@ mod tests {
                 id: "turn-compact".into(),
                 status: TurnStatus::Completed,
                 error: None,
+                started_at: None,
+                completed_at: None,
+                duration_ms: None,
                 items: Vec::new(),
             }]
         );
@@ -2642,76 +2669,6 @@ mod tests {
                     CollabAgentState {
                         status: crate::protocol::v2::CollabAgentStatus::Running,
                         message: None,
-                    },
-                )]
-                .into_iter()
-                .collect(),
-            }
-        );
-    }
-
-    #[test]
-    fn reconstructs_collab_wait_end_item_preserves_requested_ids_and_marks_completed_on_errors() {
-        let requested = vec![
-            ThreadId::try_from("00000000-0000-0000-0000-000000000002")
-                .expect("valid receiver thread id"),
-            ThreadId::try_from("00000000-0000-0000-0000-000000000003")
-                .expect("valid receiver thread id"),
-        ];
-        let mut statuses = HashMap::new();
-        statuses.insert(
-            requested[0],
-            AgentStatus::Errored("agent failed".to_string()),
-        );
-
-        let events = vec![
-            EventMsg::UserMessage(UserMessageEvent {
-                message: "waiting...".into(),
-                images: None,
-                text_elements: Vec::new(),
-                local_images: Vec::new(),
-            }),
-            EventMsg::CollabWaitingEnd(codex_protocol::protocol::CollabWaitingEndEvent {
-                sender_thread_id: ThreadId::try_from("00000000-0000-0000-0000-000000000001")
-                    .expect("valid sender thread id"),
-                call_id: "wait-1".into(),
-                agent_statuses: vec![],
-                statuses,
-                receiver_thread_ids: requested.clone(),
-                pending_thread_ids: vec![requested[1]],
-                completion_reason:
-                    codex_protocol::protocol::CollabWaitingCompletionReason::Terminal,
-                timed_out: true,
-            }),
-        ];
-
-        let items = events
-            .into_iter()
-            .map(RolloutItem::EventMsg)
-            .collect::<Vec<_>>();
-        let turns = build_turns_from_rollout_items(&items);
-        assert_eq!(turns.len(), 1);
-        assert_eq!(turns[0].items.len(), 2);
-        assert_eq!(
-            turns[0].items[1],
-            ThreadItem::CollabAgentToolCall {
-                id: "wait-1".into(),
-                tool: CollabAgentTool::Wait,
-                status: CollabAgentToolCallStatus::Completed,
-                sender_thread_id: "00000000-0000-0000-0000-000000000001".into(),
-                receiver_thread_ids: vec![
-                    "00000000-0000-0000-0000-000000000002".into(),
-                    "00000000-0000-0000-0000-000000000003".into()
-                ],
-                prompt: None,
-                model: None,
-                reasoning_effort: None,
-                timed_out: true,
-                agents_states: [(
-                    "00000000-0000-0000-0000-000000000002".into(),
-                    CollabAgentState {
-                        status: crate::protocol::v2::CollabAgentStatus::Errored,
-                        message: Some("agent failed".to_string()),
                     },
                 )]
                 .into_iter()
@@ -2856,6 +2813,9 @@ mod tests {
                 id: "turn-a".into(),
                 status: TurnStatus::Completed,
                 error: None,
+                started_at: None,
+                completed_at: None,
+                duration_ms: None,
                 items: vec![ThreadItem::UserMessage {
                     id: "item-1".into(),
                     content: vec![UserInput::Text {

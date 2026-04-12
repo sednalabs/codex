@@ -87,25 +87,18 @@ impl AgentNavigationState {
     ) {
         self.upsert_with_path(
             thread_id,
-            agent_nickname,
-            agent_role,
-            /*agent_path*/ None,
-            is_closed,
-            created_at,
-            updated_at,
+            AgentPickerThreadEntry {
+                agent_nickname,
+                agent_role,
+                agent_path: None,
+                is_closed,
+                created_at,
+                updated_at,
+            },
         );
     }
 
-    pub(crate) fn upsert_with_path(
-        &mut self,
-        thread_id: ThreadId,
-        agent_nickname: Option<String>,
-        agent_role: Option<String>,
-        agent_path: Option<String>,
-        is_closed: bool,
-        created_at: Option<i64>,
-        updated_at: Option<i64>,
-    ) {
+    pub(crate) fn upsert_with_path(&mut self, thread_id: ThreadId, entry: AgentPickerThreadEntry) {
         let existing = self.threads.get(&thread_id).cloned();
         if !self.threads.contains_key(&thread_id) {
             self.order.push(thread_id);
@@ -113,13 +106,16 @@ impl AgentNavigationState {
         self.threads.insert(
             thread_id,
             AgentPickerThreadEntry {
-                agent_nickname,
-                agent_role,
-                agent_path: agent_path
+                agent_path: entry
+                    .agent_path
                     .or(existing.as_ref().and_then(|entry| entry.agent_path.clone())),
-                is_closed,
-                created_at: created_at.or(existing.as_ref().and_then(|entry| entry.created_at)),
-                updated_at: updated_at.or(existing.as_ref().and_then(|entry| entry.updated_at)),
+                created_at: entry
+                    .created_at
+                    .or(existing.as_ref().and_then(|entry| entry.created_at)),
+                updated_at: entry
+                    .updated_at
+                    .or(existing.as_ref().and_then(|entry| entry.updated_at)),
+                ..entry
             },
         );
     }
@@ -551,39 +547,37 @@ mod tests {
 
         state.upsert_with_path(
             main_thread_id,
-            /*agent_nickname*/ None,
-            /*agent_role*/ None,
-            Some("/root".to_string()),
-            /*is_closed*/ false,
-            /*created_at*/ None,
-            /*updated_at*/ None,
+            AgentPickerThreadEntry {
+                agent_path: Some("/root".to_string()),
+                ..AgentPickerThreadEntry::default()
+            },
         );
         state.upsert_with_path(
             researcher_thread_id,
-            Some("Scout".to_string()),
-            Some("researcher".to_string()),
-            Some("/root/researcher".to_string()),
-            /*is_closed*/ false,
-            /*created_at*/ None,
-            /*updated_at*/ None,
+            AgentPickerThreadEntry {
+                agent_nickname: Some("Scout".to_string()),
+                agent_role: Some("researcher".to_string()),
+                agent_path: Some("/root/researcher".to_string()),
+                ..AgentPickerThreadEntry::default()
+            },
         );
         state.upsert_with_path(
             worker_thread_id,
-            Some("Builder".to_string()),
-            Some("worker".to_string()),
-            Some("/root/researcher/worker".to_string()),
-            /*is_closed*/ false,
-            /*created_at*/ None,
-            /*updated_at*/ None,
+            AgentPickerThreadEntry {
+                agent_nickname: Some("Builder".to_string()),
+                agent_role: Some("worker".to_string()),
+                agent_path: Some("/root/researcher/worker".to_string()),
+                ..AgentPickerThreadEntry::default()
+            },
         );
         state.upsert_with_path(
             reviewer_thread_id,
-            Some("Critic".to_string()),
-            Some("reviewer".to_string()),
-            Some("/root/reviewer".to_string()),
-            /*is_closed*/ false,
-            /*created_at*/ None,
-            /*updated_at*/ None,
+            AgentPickerThreadEntry {
+                agent_nickname: Some("Critic".to_string()),
+                agent_role: Some("reviewer".to_string()),
+                agent_path: Some("/root/reviewer".to_string()),
+                ..AgentPickerThreadEntry::default()
+            },
         );
 
         let prefixes = state.picker_tree_prefixes(Some(main_thread_id));
@@ -608,30 +602,28 @@ mod tests {
 
         state.upsert_with_path(
             worker_thread_id,
-            Some("Worker".to_string()),
-            Some("worker".to_string()),
-            Some("/root/primary/worker".to_string()),
-            /*is_closed*/ false,
-            /*created_at*/ None,
-            /*updated_at*/ None,
+            AgentPickerThreadEntry {
+                agent_nickname: Some("Worker".to_string()),
+                agent_role: Some("worker".to_string()),
+                agent_path: Some("/root/primary/worker".to_string()),
+                ..AgentPickerThreadEntry::default()
+            },
         );
         state.upsert_with_path(
             main_thread_id,
-            /*agent_nickname*/ None,
-            /*agent_role*/ None,
-            Some("/root/primary".to_string()),
-            /*is_closed*/ false,
-            /*created_at*/ None,
-            /*updated_at*/ None,
+            AgentPickerThreadEntry {
+                agent_path: Some("/root/primary".to_string()),
+                ..AgentPickerThreadEntry::default()
+            },
         );
         state.upsert_with_path(
             critic_thread_id,
-            Some("Critic".to_string()),
-            Some("reviewer".to_string()),
-            Some("/root/primary/reviewer".to_string()),
-            /*is_closed*/ false,
-            /*created_at*/ None,
-            /*updated_at*/ None,
+            AgentPickerThreadEntry {
+                agent_nickname: Some("Critic".to_string()),
+                agent_role: Some("reviewer".to_string()),
+                agent_path: Some("/root/primary/reviewer".to_string()),
+                ..AgentPickerThreadEntry::default()
+            },
         );
 
         let tree_order = state.picker_tree_thread_ids(Some(main_thread_id));
@@ -656,21 +648,19 @@ mod tests {
 
         state.upsert_with_path(
             main_thread_id,
-            /*agent_nickname*/ None,
-            /*agent_role*/ None,
-            Some("/root/main".to_string()),
-            /*is_closed*/ false,
-            /*created_at*/ None,
-            /*updated_at*/ None,
+            AgentPickerThreadEntry {
+                agent_path: Some("/root/main".to_string()),
+                ..AgentPickerThreadEntry::default()
+            },
         );
         state.upsert_with_path(
             child_thread_id,
-            Some("Child".to_string()),
-            Some("child".to_string()),
-            Some("/root/main/child".to_string()),
-            /*is_closed*/ false,
-            /*created_at*/ None,
-            /*updated_at*/ None,
+            AgentPickerThreadEntry {
+                agent_nickname: Some("Child".to_string()),
+                agent_role: Some("child".to_string()),
+                agent_path: Some("/root/main/child".to_string()),
+                ..AgentPickerThreadEntry::default()
+            },
         );
 
         let prefixes = state.picker_tree_prefixes(Some(main_thread_id));

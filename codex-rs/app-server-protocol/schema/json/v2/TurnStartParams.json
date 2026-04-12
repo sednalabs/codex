@@ -1,12 +1,11 @@
 {
-  "$schema": "http://json-schema.org/draft-07/schema#",
-  "definitions": {
+  "$defs": {
     "AbsolutePathBuf": {
-      "description": "A path that is guaranteed to be absolute and normalized (though it is not guaranteed to be canonicalized or exist on the filesystem).\n\nIMPORTANT: When deserializing an `AbsolutePathBuf`, a base path must be set using [AbsolutePathBufGuard::new]. If no base path is set, the deserialization will fail unless the path being deserialized is already absolute.",
+      "description": "A path that is guaranteed to be absolute and normalized (though it is not\nguaranteed to be canonicalized or exist on the filesystem).\n\nIMPORTANT: When deserializing an `AbsolutePathBuf`, a base path must be set\nusing [AbsolutePathBufGuard::new]. If no base path is set, the\ndeserialization will fail unless the path being deserialized is already\nabsolute.",
       "type": "string"
     },
     "ApprovalsReviewer": {
-      "description": "Configures who approval requests are routed to for review. Examples include sandbox escapes, blocked network access, MCP approval prompts, and ARC escalations. Defaults to `user`. `guardian_subagent` uses a carefully prompted subagent to gather relevant context and apply a risk-based decision framework before approving or denying the request.",
+      "description": "Configures who approval requests are routed to for review. Examples\ninclude sandbox escapes, blocked network access, MCP approval prompts, and\nARC escalations. Defaults to `user`. `guardian_subagent` uses a carefully\nprompted subagent to gather relevant context and apply a risk-based\ndecision framework before approving or denying the request.",
       "enum": [
         "user",
         "guardian_subagent"
@@ -48,9 +47,9 @@
                 }
               },
               "required": [
-                "mcp_elicitations",
+                "sandbox_approval",
                 "rules",
-                "sandbox_approval"
+                "mcp_elicitations"
               ],
               "type": "object"
             }
@@ -67,18 +66,18 @@
       "properties": {
         "end": {
           "format": "uint",
-          "minimum": 0.0,
+          "minimum": 0,
           "type": "integer"
         },
         "start": {
           "format": "uint",
-          "minimum": 0.0,
+          "minimum": 0,
           "type": "integer"
         }
       },
       "required": [
-        "end",
-        "start"
+        "start",
+        "end"
       ],
       "type": "object"
     },
@@ -86,10 +85,10 @@
       "description": "Collaboration mode for a Codex session.",
       "properties": {
         "mode": {
-          "$ref": "#/definitions/ModeKind"
+          "$ref": "#/$defs/ModeKind"
         },
         "settings": {
-          "$ref": "#/definitions/Settings"
+          "$ref": "#/$defs/Settings"
         }
       },
       "required": [
@@ -132,14 +131,12 @@
             "readableRoots": {
               "default": [],
               "items": {
-                "$ref": "#/definitions/AbsolutePathBuf"
+                "$ref": "#/$defs/AbsolutePathBuf"
               },
               "type": "array"
             },
             "type": {
-              "enum": [
-                "restricted"
-              ],
+              "const": "restricted",
               "title": "RestrictedReadOnlyAccessType",
               "type": "string"
             }
@@ -153,9 +150,7 @@
         {
           "properties": {
             "type": {
-              "enum": [
-                "fullAccess"
-              ],
+              "const": "fullAccess",
               "title": "FullAccessReadOnlyAccessType",
               "type": "string"
             }
@@ -181,7 +176,7 @@
       "type": "string"
     },
     "ReasoningSummary": {
-      "description": "A summary of the reasoning performed by the model. This can be useful for debugging and understanding the model's reasoning process. See https://platform.openai.com/docs/guides/reasoning?api-mode=responses#reasoning-summaries",
+      "description": "A summary of the reasoning performed by the model. This can be useful for\ndebugging and understanding the model's reasoning process.\nSee https://platform.openai.com/docs/guides/reasoning?api-mode=responses#reasoning-summaries",
       "oneOf": [
         {
           "enum": [
@@ -192,10 +187,8 @@
           "type": "string"
         },
         {
+          "const": "none",
           "description": "Option to disable reasoning summaries.",
-          "enum": [
-            "none"
-          ],
           "type": "string"
         }
       ]
@@ -205,9 +198,7 @@
         {
           "properties": {
             "type": {
-              "enum": [
-                "dangerFullAccess"
-              ],
+              "const": "dangerFullAccess",
               "title": "DangerFullAccessSandboxPolicyType",
               "type": "string"
             }
@@ -221,11 +212,7 @@
         {
           "properties": {
             "access": {
-              "allOf": [
-                {
-                  "$ref": "#/definitions/ReadOnlyAccess"
-                }
-              ],
+              "$ref": "#/$defs/ReadOnlyAccess",
               "default": {
                 "type": "fullAccess"
               }
@@ -235,9 +222,7 @@
               "type": "boolean"
             },
             "type": {
-              "enum": [
-                "readOnly"
-              ],
+              "const": "readOnly",
               "title": "ReadOnlySandboxPolicyType",
               "type": "string"
             }
@@ -251,17 +236,11 @@
         {
           "properties": {
             "networkAccess": {
-              "allOf": [
-                {
-                  "$ref": "#/definitions/NetworkAccess"
-                }
-              ],
+              "$ref": "#/$defs/NetworkAccess",
               "default": "restricted"
             },
             "type": {
-              "enum": [
-                "externalSandbox"
-              ],
+              "const": "externalSandbox",
               "title": "ExternalSandboxSandboxPolicyType",
               "type": "string"
             }
@@ -287,26 +266,20 @@
               "type": "boolean"
             },
             "readOnlyAccess": {
-              "allOf": [
-                {
-                  "$ref": "#/definitions/ReadOnlyAccess"
-                }
-              ],
+              "$ref": "#/$defs/ReadOnlyAccess",
               "default": {
                 "type": "fullAccess"
               }
             },
             "type": {
-              "enum": [
-                "workspaceWrite"
-              ],
+              "const": "workspaceWrite",
               "title": "WorkspaceWriteSandboxPolicyType",
               "type": "string"
             },
             "writableRoots": {
               "default": [],
               "items": {
-                "$ref": "#/definitions/AbsolutePathBuf"
+                "$ref": "#/$defs/AbsolutePathBuf"
               },
               "type": "array"
             }
@@ -341,7 +314,7 @@
         "reasoning_effort": {
           "anyOf": [
             {
-              "$ref": "#/definitions/ReasoningEffort"
+              "$ref": "#/$defs/ReasoningEffort"
             },
             {
               "type": "null"
@@ -357,11 +330,7 @@
     "TextElement": {
       "properties": {
         "byteRange": {
-          "allOf": [
-            {
-              "$ref": "#/definitions/ByteRange"
-            }
-          ],
+          "$ref": "#/$defs/ByteRange",
           "description": "Byte range in the parent `text` buffer that this element occupies."
         },
         "placeholder": {
@@ -388,21 +357,19 @@
               "default": [],
               "description": "UI-defined spans within `text` used to render or persist special elements.",
               "items": {
-                "$ref": "#/definitions/TextElement"
+                "$ref": "#/$defs/TextElement"
               },
               "type": "array"
             },
             "type": {
-              "enum": [
-                "text"
-              ],
+              "const": "text",
               "title": "TextUserInputType",
               "type": "string"
             }
           },
           "required": [
-            "text",
-            "type"
+            "type",
+            "text"
           ],
           "title": "TextUserInput",
           "type": "object"
@@ -410,9 +377,7 @@
         {
           "properties": {
             "type": {
-              "enum": [
-                "image"
-              ],
+              "const": "image",
               "title": "ImageUserInputType",
               "type": "string"
             },
@@ -433,16 +398,14 @@
               "type": "string"
             },
             "type": {
-              "enum": [
-                "localImage"
-              ],
+              "const": "localImage",
               "title": "LocalImageUserInputType",
               "type": "string"
             }
           },
           "required": [
-            "path",
-            "type"
+            "type",
+            "path"
           ],
           "title": "LocalImageUserInput",
           "type": "object"
@@ -456,17 +419,15 @@
               "type": "string"
             },
             "type": {
-              "enum": [
-                "skill"
-              ],
+              "const": "skill",
               "title": "SkillUserInputType",
               "type": "string"
             }
           },
           "required": [
+            "type",
             "name",
-            "path",
-            "type"
+            "path"
           ],
           "title": "SkillUserInput",
           "type": "object"
@@ -480,17 +441,15 @@
               "type": "string"
             },
             "type": {
-              "enum": [
-                "mention"
-              ],
+              "const": "mention",
               "title": "MentionUserInputType",
               "type": "string"
             }
           },
           "required": [
+            "type",
             "name",
-            "path",
-            "type"
+            "path"
           ],
           "title": "MentionUserInput",
           "type": "object"
@@ -498,11 +457,12 @@
       ]
     }
   },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
   "properties": {
     "approvalPolicy": {
       "anyOf": [
         {
-          "$ref": "#/definitions/AskForApproval"
+          "$ref": "#/$defs/AskForApproval"
         },
         {
           "type": "null"
@@ -513,13 +473,13 @@
     "approvalsReviewer": {
       "anyOf": [
         {
-          "$ref": "#/definitions/ApprovalsReviewer"
+          "$ref": "#/$defs/ApprovalsReviewer"
         },
         {
           "type": "null"
         }
       ],
-      "description": "Override where approval requests are routed for review on this turn and subsequent turns."
+      "description": "Override where approval requests are routed for review on this turn and\nsubsequent turns."
     },
     "cwd": {
       "description": "Override the working directory for this turn and subsequent turns.",
@@ -531,7 +491,7 @@
     "effort": {
       "anyOf": [
         {
-          "$ref": "#/definitions/ReasoningEffort"
+          "$ref": "#/$defs/ReasoningEffort"
         },
         {
           "type": "null"
@@ -541,7 +501,7 @@
     },
     "input": {
       "items": {
-        "$ref": "#/definitions/UserInput"
+        "$ref": "#/$defs/UserInput"
       },
       "type": "array"
     },
@@ -553,12 +513,12 @@
       ]
     },
     "outputSchema": {
-      "description": "Optional JSON Schema used to constrain the final assistant message for this turn."
+      "description": "Optional JSON Schema used to constrain the final assistant message for\nthis turn."
     },
     "personality": {
       "anyOf": [
         {
-          "$ref": "#/definitions/Personality"
+          "$ref": "#/$defs/Personality"
         },
         {
           "type": "null"
@@ -569,7 +529,7 @@
     "sandboxPolicy": {
       "anyOf": [
         {
-          "$ref": "#/definitions/SandboxPolicy"
+          "$ref": "#/$defs/SandboxPolicy"
         },
         {
           "type": "null"
@@ -580,14 +540,7 @@
     "serviceTier": {
       "anyOf": [
         {
-          "anyOf": [
-            {
-              "$ref": "#/definitions/ServiceTier"
-            },
-            {
-              "type": "null"
-            }
-          ]
+          "$ref": "#/$defs/ServiceTier"
         },
         {
           "type": "null"
@@ -598,7 +551,7 @@
     "summary": {
       "anyOf": [
         {
-          "$ref": "#/definitions/ReasoningSummary"
+          "$ref": "#/$defs/ReasoningSummary"
         },
         {
           "type": "null"
@@ -611,8 +564,8 @@
     }
   },
   "required": [
-    "input",
-    "threadId"
+    "threadId",
+    "input"
   ],
   "title": "TurnStartParams",
   "type": "object"
