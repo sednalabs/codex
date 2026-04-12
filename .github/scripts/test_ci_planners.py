@@ -202,6 +202,17 @@ class RouteSelectionTests(unittest.TestCase):
             ["all", *expected_lane_ids],
         )
 
+    def test_workflow_ci_sanity_lane_uses_host_checkout_justfile(self) -> None:
+        lane = next(
+            lane
+            for lane in self.catalog["lanes"]
+            if lane["lane_id"] == "codex.workflow-ci-sanity"
+        )
+        self.assertEqual(
+            lane["run_command"],
+            "just --justfile ../.workflow-src/justfile workflow-ci-sanity",
+        )
+
 
 class ValidationPlanScriptTests(unittest.TestCase):
     maxDiff = None

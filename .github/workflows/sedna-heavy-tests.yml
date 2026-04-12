@@ -221,6 +221,15 @@ jobs:
             echo "heavy_max_parallel=$(SELECTION_META="${selection_meta}" python3 -c 'import json, os; print(json.loads(os.environ["SELECTION_META"])["heavy_max_parallel"])')"
           } >> "$GITHUB_OUTPUT"
 
+          {
+            echo "### sedna-heavy-tests plan"
+            echo
+            echo "- Host workflow ref: \`${{ github.ref_name }}\`"
+            echo "- Validated checkout ref: \`${checkout_ref}\`"
+            echo "- Display ref: \`${display_ref}\`"
+            echo "- Requested lane: \`${{ inputs.lane || 'auto' }}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
   smoke_light_lanes:
     name: Heavy preflight smoke (light)
     needs: metadata

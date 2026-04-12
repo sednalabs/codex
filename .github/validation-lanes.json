@@ -254,7 +254,7 @@
     },
     {
       "lane_id": "codex.workflow-ci-sanity",
-      "run_command": "just --justfile ../justfile workflow-ci-sanity",
+      "run_command": "just --justfile ../.workflow-src/justfile workflow-ci-sanity",
       "groups": ["workflow"],
       "lane_sets": ["all"],
       "frontier_default": false
