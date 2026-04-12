@@ -1,6 +1,5 @@
 {
-  "$schema": "http://json-schema.org/draft-07/schema#",
-  "definitions": {
+  "$defs": {
     "McpAuthStatus": {
       "enum": [
         "unsupported",
@@ -13,36 +12,36 @@
     "McpServerStatus": {
       "properties": {
         "authStatus": {
-          "$ref": "#/definitions/McpAuthStatus"
+          "$ref": "#/$defs/McpAuthStatus"
         },
         "name": {
           "type": "string"
         },
         "resourceTemplates": {
           "items": {
-            "$ref": "#/definitions/ResourceTemplate"
+            "$ref": "#/$defs/ResourceTemplate"
           },
           "type": "array"
         },
         "resources": {
           "items": {
-            "$ref": "#/definitions/Resource"
+            "$ref": "#/$defs/Resource"
           },
           "type": "array"
         },
         "tools": {
           "additionalProperties": {
-            "$ref": "#/definitions/Tool"
+            "$ref": "#/$defs/Tool"
           },
           "type": "object"
         }
       },
       "required": [
-        "authStatus",
         "name",
-        "resourceTemplates",
+        "tools",
         "resources",
-        "tools"
+        "resourceTemplates",
+        "authStatus"
       ],
       "type": "object"
     },
@@ -126,8 +125,8 @@
         }
       },
       "required": [
-        "name",
-        "uriTemplate"
+        "uriTemplate",
+        "name"
       ],
       "type": "object"
     },
@@ -162,21 +161,22 @@
         }
       },
       "required": [
-        "inputSchema",
-        "name"
+        "name",
+        "inputSchema"
       ],
       "type": "object"
     }
   },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
   "properties": {
     "data": {
       "items": {
-        "$ref": "#/definitions/McpServerStatus"
+        "$ref": "#/$defs/McpServerStatus"
       },
       "type": "array"
     },
     "nextCursor": {
-      "description": "Opaque cursor to pass to the next call to continue after the last item. If None, there are no more items to return.",
+      "description": "Opaque cursor to pass to the next call to continue after the last item.\nIf None, there are no more items to return.",
       "type": [
         "string",
         "null"

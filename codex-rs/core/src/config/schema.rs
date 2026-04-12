@@ -29,23 +29,29 @@ pub(crate) fn features_schema(schema_gen: &mut SchemaGenerator) -> Schema {
         );
     }
 
-    json!({
+    match json!({
         "type": "object",
         "properties": properties,
         "additionalProperties": false,
     })
     .try_into()
-    .expect("features schema should be valid")
+    {
+        Ok(schema) => schema,
+        Err(err) => panic!("features schema should be valid: {err}"),
+    }
 }
 
 /// Schema for the `[mcp_servers]` map using the raw input shape.
 pub(crate) fn mcp_servers_schema(schema_gen: &mut SchemaGenerator) -> Schema {
-    json!({
+    match json!({
         "type": "object",
         "additionalProperties": schema_gen.subschema_for::<RawMcpServerConfig>(),
     })
     .try_into()
-    .expect("mcp servers schema should be valid")
+    {
+        Ok(schema) => schema,
+        Err(err) => panic!("mcp servers schema should be valid: {err}"),
+    }
 }
 
 /// Build the config schema for `config.toml`.
@@ -123,10 +129,10 @@ fn normalize_legacy_option_schema(value: &mut Value) {
 
             if let Some(Value::Array(types)) = map.get_mut("type") {
                 types.retain(|ty| ty != "null");
-                if types.len() == 1 {
-                    if let Some(single_type) = types.pop() {
-                        map.insert("type".to_string(), single_type);
-                    }
+                if types.len() == 1
+                    && let Some(single_type) = types.pop()
+                {
+                    map.insert("type".to_string(), single_type);
                 }
             }
 
