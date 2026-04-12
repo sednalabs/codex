@@ -617,7 +617,9 @@ def heavy_plan(args: argparse.Namespace) -> None:
     parallel_limits = setup_parallel_limits(
         "frontier" if manual_harvest else "targeted", [*smoke_matrix, *selected]
     )
+    planned_matrix = {"include": [*smoke_matrix, *selected]}
     payload = {
+        "planned_matrix": planned_matrix,
         "selected_matrix": {"include": selected},
         "selected_lane_ids": [lane["lane_id"] for lane in selected],
         "smoke_matrix": {"include": smoke_matrix},

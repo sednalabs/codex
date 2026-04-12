@@ -83,6 +83,7 @@ jobs:
     runs-on: ubuntu-24.04
     outputs:
       checkout_ref: ${{ steps.meta.outputs.checkout_ref }}
+      checkout_sha: ${{ steps.meta.outputs.checkout_sha }}
       display_ref: ${{ steps.meta.outputs.display_ref }}
       smoke_gate_kind: ${{ steps.meta.outputs.smoke_gate_kind }}
       smoke_matrix: ${{ steps.meta.outputs.smoke_matrix }}
@@ -94,6 +95,7 @@ jobs:
       smoke_heavy_lane_count: ${{ steps.meta.outputs.smoke_heavy_lane_count }}
       run_smoke_gate: ${{ steps.meta.outputs.run_smoke_gate }}
       run_selected_lanes: ${{ steps.meta.outputs.run_selected_lanes }}
+      planned_matrix: ${{ steps.meta.outputs.planned_matrix }}
       selected_matrix: ${{ steps.meta.outputs.selected_matrix }}
       selected_light_matrix: ${{ steps.meta.outputs.selected_light_matrix }}
       selected_rust_matrix: ${{ steps.meta.outputs.selected_rust_matrix }}
@@ -122,6 +124,7 @@ jobs:
           set -euo pipefail
 
           checkout_ref='${{ github.sha }}'
+          checkout_sha='${{ github.sha }}'
           display_ref='${{ github.ref_name }}'
           run_all_lanes=false
           run_core_family=false
@@ -137,6 +140,11 @@ jobs:
           elif [[ '${{ github.event_name }}' == 'pull_request' ]]; then
             checkout_ref='${{ github.event.pull_request.head.sha }}'
             display_ref='${{ github.event.pull_request.head.ref }}'
+          fi
+
+          if [[ ! "${checkout_ref}" =~ ^[0-9a-f]{40}$ ]]; then
+            git fetch --no-tags --depth=1 origin "${checkout_ref}"
+            checkout_sha="$(git rev-parse FETCH_HEAD)"
           fi
 
           if [[ '${{ github.event_name }}' == 'pull_request' ]]; then
@@ -187,6 +195,7 @@ jobs:
           smoke_light_json="$(SELECTION_META="${selection_meta}" python3 -c 'import json, os; print(json.dumps(json.loads(os.environ["SELECTION_META"])["smoke_light_matrix"], separators=(",", ":")))')"
           smoke_rust_json="$(SELECTION_META="${selection_meta}" python3 -c 'import json, os; print(json.dumps(json.loads(os.environ["SELECTION_META"])["smoke_rust_matrix"], separators=(",", ":")))')"
           smoke_heavy_json="$(SELECTION_META="${selection_meta}" python3 -c 'import json, os; print(json.dumps(json.loads(os.environ["SELECTION_META"])["smoke_heavy_matrix"], separators=(",", ":")))')"
+          planned_json="$(SELECTION_META="${selection_meta}" python3 -c 'import json, os; print(json.dumps(json.loads(os.environ["SELECTION_META"])["planned_matrix"], separators=(",", ":")))')"
           selected_json="$(SELECTION_META="${selection_meta}" python3 -c 'import json, os; print(json.dumps(json.loads(os.environ["SELECTION_META"])["selected_matrix"], separators=(",", ":")))')"
           selected_light_json="$(SELECTION_META="${selection_meta}" python3 -c 'import json, os; print(json.dumps(json.loads(os.environ["SELECTION_META"])["selected_light_matrix"], separators=(",", ":")))')"
           selected_rust_json="$(SELECTION_META="${selection_meta}" python3 -c 'import json, os; print(json.dumps(json.loads(os.environ["SELECTION_META"])["selected_rust_matrix"], separators=(",", ":")))')"
@@ -195,6 +204,7 @@ jobs:
 
           {
             echo "checkout_ref=${checkout_ref}"
+            echo "checkout_sha=${checkout_sha}"
             echo "display_ref=${display_ref}"
             echo "smoke_gate_kind=${smoke_gate_kind}"
             echo "smoke_matrix=${smoke_json}"
@@ -208,6 +218,7 @@ jobs:
             echo "matrix_fail_fast=$(SELECTION_META="${selection_meta}" python3 -c 'import json, os; print(json.loads(os.environ["SELECTION_META"])["matrix_fail_fast"])')"
             echo "continue_after_smoke_failure=$(SELECTION_META="${selection_meta}" python3 -c 'import json, os; print(json.loads(os.environ["SELECTION_META"])["continue_after_smoke_failure"])')"
             echo "run_selected_lanes=$(SELECTION_META="${selection_meta}" python3 -c 'import json, os; print(json.loads(os.environ["SELECTION_META"])["run_selected_lanes"])')"
+            echo "planned_matrix=${planned_json}"
             echo "selected_matrix=${selected_json}"
             echo "selected_light_matrix=${selected_light_json}"
             echo "selected_rust_matrix=${selected_rust_json}"
@@ -226,6 +237,7 @@ jobs:
             echo
             echo "- Host workflow ref: \`${{ github.ref_name }}\`"
             echo "- Validated checkout ref: \`${checkout_ref}\`"
+            echo "- Resolved checkout SHA: \`${checkout_sha}\`"
             echo "- Display ref: \`${display_ref}\`"
             echo "- Requested lane: \`${{ inputs.lane || 'auto' }}\`"
           } >> "$GITHUB_STEP_SUMMARY"
@@ -508,13 +520,13 @@ jobs:
             --host-ref "${{ github.ref_name }}" \
             --display-ref "${{ needs.metadata.outputs.display_ref }}" \
             --checkout-ref "${{ needs.metadata.outputs.checkout_ref }}" \
-            --head-sha "${{ needs.metadata.outputs.checkout_ref }}" \
+            --head-sha "${{ needs.metadata.outputs.checkout_sha }}" \
             --profile "heavy" \
             --lane-set "${lane_set}" \
             --profile-intent "heavy downstream validation" \
             --profile-notes "sedna-heavy-tests workflow summary" \
             --lane-summary "${lane_summary}" \
-            --planned-matrix-json '${{ needs.metadata.outputs.selected_matrix }}' \
+            --planned-matrix-json '${{ needs.metadata.outputs.planned_matrix }}' \
             --selected-lane-ids-json '${{ needs.metadata.outputs.selected_lane_ids }}' \
             --explicit-lanes "${explicit_lanes}" \
             --supersession-mode "manual" \

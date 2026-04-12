@@ -490,7 +490,19 @@ class ValidationPlanScriptTests(unittest.TestCase):
         self.assertEqual(payload["light_max_parallel"], "2")
         self.assertEqual(payload["rust_max_parallel"], "22")
         self.assertEqual(payload["heavy_max_parallel"], "11")
+        planned_lane_ids = [lane["lane_id"] for lane in payload["planned_matrix"]["include"]]
         selected_lane_ids = payload["selected_lane_ids"]
+        self.assertEqual(
+            planned_lane_ids[:5],
+            [
+                "core-compile-smoke",
+                "core-carry-core-smoke",
+                "core-carry-ui-smoke",
+                "core-ledger-smoke",
+                "core-runtime-surface-smoke",
+            ],
+        )
+        self.assertEqual(planned_lane_ids[5:], selected_lane_ids)
         self.assertIn("codex.core-startup-sync-targeted", selected_lane_ids)
         self.assertIn("codex.downstream-docs-check", selected_lane_ids)
 
@@ -500,6 +512,11 @@ class ValidationPlanScriptTests(unittest.TestCase):
 
         metadata_outputs = (jobs.get("metadata") or {}).get("outputs") or {}
         self.assertEqual(metadata_outputs.get("display_ref"), "${{ steps.meta.outputs.display_ref }}")
+        self.assertEqual(metadata_outputs.get("checkout_sha"), "${{ steps.meta.outputs.checkout_sha }}")
+        self.assertEqual(
+            metadata_outputs.get("planned_matrix"),
+            "${{ steps.meta.outputs.planned_matrix }}",
+        )
         self.assertEqual(
             metadata_outputs.get("selected_lane_ids"),
             "${{ steps.meta.outputs.selected_lane_ids }}",
@@ -542,6 +559,14 @@ class ValidationPlanScriptTests(unittest.TestCase):
         self.assertEqual((steps[1] or {}).get("uses"), "actions/download-artifact@v8")
         self.assertIn(
             "aggregate_validation_summary.py",
+            (steps[2] or {}).get("run") or "",
+        )
+        self.assertIn(
+            '--planned-matrix-json \'${{ needs.metadata.outputs.planned_matrix }}\'',
+            (steps[2] or {}).get("run") or "",
+        )
+        self.assertIn(
+            '--head-sha "${{ needs.metadata.outputs.checkout_sha }}"',
             (steps[2] or {}).get("run") or "",
         )
         self.assertEqual((steps[3] or {}).get("uses"), "actions/upload-artifact@v7")
