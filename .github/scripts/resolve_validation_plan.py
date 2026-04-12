@@ -619,6 +619,7 @@ def heavy_plan(args: argparse.Namespace) -> None:
     )
     payload = {
         "selected_matrix": {"include": selected},
+        "selected_lane_ids": [lane["lane_id"] for lane in selected],
         "smoke_matrix": {"include": smoke_matrix},
         "run_selected_lanes": "true" if bool(selected) else "false",
         "run_smoke_gate": "true" if run_smoke_gate else "false",

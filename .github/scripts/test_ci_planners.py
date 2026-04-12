@@ -479,6 +479,9 @@ class ValidationPlanScriptTests(unittest.TestCase):
         self.assertEqual(payload["light_max_parallel"], "2")
         self.assertEqual(payload["rust_max_parallel"], "22")
         self.assertEqual(payload["heavy_max_parallel"], "11")
+        selected_lane_ids = payload["selected_lane_ids"]
+        self.assertIn("codex.core-startup-sync-targeted", selected_lane_ids)
+        self.assertIn("codex.downstream-docs-check", selected_lane_ids)
 
     def test_sedna_heavy_manual_harvest_jobs_follow_metadata_fail_fast(self) -> None:
         payload = load_workflow_payload(REPO_ROOT / ".github/workflows/sedna-heavy-tests.yml")
