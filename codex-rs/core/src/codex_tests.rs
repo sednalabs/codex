@@ -2877,6 +2877,84 @@ async fn request_permissions_emits_event_when_granular_policy_allows_requests() 
 }
 
 #[tokio::test]
+async fn request_permissions_returns_none_when_event_channel_is_closed() {
+    let (session, mut turn_context) = make_session_and_context().await;
+    *session.active_turn.lock().await = Some(ActiveTurn::default());
+    turn_context
+        .approval_policy
+        .set(crate::protocol::AskForApproval::Granular(
+            crate::protocol::GranularApprovalConfig {
+                sandbox_approval: true,
+                rules: true,
+                skill_approval: true,
+                request_permissions: true,
+                mcp_elicitations: true,
+            },
+        ))
+        .expect("test setup should allow updating approval policy");
+
+    let response = tokio::time::timeout(
+        StdDuration::from_secs(1),
+        session.request_permissions(
+            &turn_context,
+            "call-closed".to_string(),
+            codex_protocol::request_permissions::RequestPermissionsArgs {
+                reason: Some("need network".to_string()),
+                permissions: RequestPermissionProfile {
+                    network: Some(codex_protocol::models::NetworkPermissions {
+                        enabled: Some(true),
+                    }),
+                    ..RequestPermissionProfile::default()
+                },
+            },
+        ),
+    )
+    .await
+    .expect("request_permissions should not hang when the event channel is closed");
+
+    assert_eq!(response, None);
+}
+
+#[tokio::test]
+async fn request_user_input_returns_none_when_event_channel_is_closed() {
+    let (session, turn_context) = make_session_and_context().await;
+    *session.active_turn.lock().await = Some(ActiveTurn::default());
+
+    let response = tokio::time::timeout(
+        StdDuration::from_secs(1),
+        session.request_user_input(
+            &turn_context,
+            "call-closed".to_string(),
+            codex_protocol::request_user_input::RequestUserInputArgs {
+                questions: vec![
+                    codex_protocol::request_user_input::RequestUserInputQuestion {
+                        id: "q1".to_string(),
+                        header: "Confirm".to_string(),
+                        question: "Proceed?".to_string(),
+                        is_other: false,
+                        is_secret: false,
+                        options: Some(vec![
+                            codex_protocol::request_user_input::RequestUserInputQuestionOption {
+                                label: "Yes".to_string(),
+                                description: "Continue".to_string(),
+                            },
+                            codex_protocol::request_user_input::RequestUserInputQuestionOption {
+                                label: "No".to_string(),
+                                description: "Stop".to_string(),
+                            },
+                        ]),
+                    },
+                ],
+            },
+        ),
+    )
+    .await
+    .expect("request_user_input should not hang when the event channel is closed");
+
+    assert_eq!(response, None);
+}
+
+#[tokio::test]
 async fn request_permissions_is_auto_denied_when_granular_policy_blocks_tool_requests() {
     let (session, mut turn_context, rx) = make_session_and_context_with_rx().await;
     *session.active_turn.lock().await = Some(ActiveTurn::default());
