@@ -19,6 +19,10 @@ on:
         required: false
         type: boolean
         default: false
+      include_explicit_lanes:
+        required: false
+        type: boolean
+        default: false
       supersession_mode:
         required: false
         type: string
@@ -71,6 +75,11 @@ on:
         required: false
         type: boolean
         default: false
+      include_explicit_lanes:
+        description: Include explicit-only seams in the selected validation set
+        required: false
+        type: boolean
+        default: false
       supersession_mode:
         description: Whether newer same-question runs should supersede this run
         required: true
@@ -95,12 +104,13 @@ concurrency:
     ${{
       inputs.supersession_mode == 'auto' &&
       format(
-        'validation-lab::auto::{0}::{1}::{2}::{3}::{4}',
+        'validation-lab::auto::{0}::{1}::{2}::{3}::{4}::{5}',
         inputs.ref || github.ref_name,
         inputs.profile,
         inputs.lane_set,
         inputs.lanes || 'default',
-        inputs.artifact_build && 'artifact' || 'no-artifact'
+        inputs.artifact_build && 'artifact' || 'no-artifact',
+        inputs.include_explicit_lanes && 'explicit' || 'default'
       ) ||
       format(
         'validation-lab::retained::{0}::{1}::{2}',
@@ -168,6 +178,7 @@ jobs:
           LAB_LANE_SET: ${{ inputs.lane_set }}
           LAB_LANES: ${{ inputs.lanes }}
           LAB_ARTIFACT_BUILD: ${{ inputs.artifact_build }}
+          LAB_INCLUDE_EXPLICIT_LANES: ${{ inputs.include_explicit_lanes }}
         run: |
           set -euo pipefail
 
@@ -191,7 +202,7 @@ jobs:
           display_slug="$(printf '%s' "${display_ref}" | tr '/:@ ' '-' | tr -cd '[:alnum:]._-' | cut -c1-48)"
           preview_version="${base_version}-ci.${GITHUB_RUN_NUMBER}+g${short_sha}"
 
-          selection_meta="$(python3 .github/scripts/resolve_validation_plan.py lab --profile "${LAB_PROFILE}" --lane-set "${LAB_LANE_SET}" --lanes "${LAB_LANES}" --artifact-build "${LAB_ARTIFACT_BUILD}" "${catalog_args[@]}")"
+          selection_meta="$(python3 .github/scripts/resolve_validation_plan.py lab --profile "${LAB_PROFILE}" --lane-set "${LAB_LANE_SET}" --lanes "${LAB_LANES}" --artifact-build "${LAB_ARTIFACT_BUILD}" --include-explicit-lanes "${LAB_INCLUDE_EXPLICIT_LANES}" "${catalog_args[@]}")"
 
           profile_intent="$(SELECTION_META="${selection_meta}" python3 -c 'import json, os; print(json.loads(os.environ["SELECTION_META"])["profile_intent"])')"
           profile_notes="$(SELECTION_META="${selection_meta}" python3 -c 'import json, os; print(json.loads(os.environ["SELECTION_META"])["profile_notes"])')"
@@ -263,6 +274,7 @@ jobs:
             echo "- Lane set: \`${{ inputs.lane_set }}\`"
             echo "- Selection summary: \`${{ steps.meta.outputs.lane_summary }}\`"
             echo "- Explicit lanes: \`${{ inputs.lanes || 'none' }}\`"
+            echo "- Include explicit-only lanes: \`${{ inputs.include_explicit_lanes && 'true' || 'false' }}\`"
             echo "- Setup classes: \`${{ steps.meta.outputs.selected_setup_classes || '[]' }}\`"
             echo "- Artifact build: \`${{ inputs.artifact_build && 'true' || 'false' }}\`"
             echo "- Supersession mode: \`${{ inputs.supersession_mode }}\`"
@@ -301,12 +313,10 @@ jobs:
   light_lanes:
     needs:
       - metadata
-      - smoke_gate
     if: >-
       ${{
         always() &&
-        fromJson(needs.metadata.outputs.selected_light_lane_count) > 0 &&
-        (needs.smoke_gate.result == 'success' || needs.smoke_gate.result == 'skipped')
+        fromJson(needs.metadata.outputs.selected_light_lane_count) > 0
       }}
     strategy:
       fail-fast: ${{ fromJson(needs.metadata.outputs.matrix_fail_fast) }}
@@ -330,12 +340,10 @@ jobs:
   rust_lanes:
     needs:
       - metadata
-      - smoke_gate
     if: >-
       ${{
         always() &&
-        fromJson(needs.metadata.outputs.selected_rust_lane_count) > 0 &&
-        (needs.smoke_gate.result == 'success' || needs.smoke_gate.result == 'skipped')
+        fromJson(needs.metadata.outputs.selected_rust_lane_count) > 0
       }}
     strategy:
       fail-fast: ${{ fromJson(needs.metadata.outputs.matrix_fail_fast) }}
@@ -359,12 +367,10 @@ jobs:
   heavy_lanes:
     needs:
       - metadata
-      - smoke_gate
     if: >-
       ${{
         always() &&
-        fromJson(needs.metadata.outputs.selected_heavy_lane_count) > 0 &&
-        (needs.smoke_gate.result == 'success' || needs.smoke_gate.result == 'skipped')
+        fromJson(needs.metadata.outputs.selected_heavy_lane_count) > 0
       }}
     strategy:
       fail-fast: ${{ fromJson(needs.metadata.outputs.matrix_fail_fast) }}
@@ -543,14 +549,16 @@ jobs:
           print(f"- Lane count: `{summary['lane_count']}`")
           print(f"- Total recorded lane runtime (ms): `{summary.get('total_duration_ms', 0)}`")
           print(f"- Failed lanes: `{summary['failed_lane_count']}`")
+          print(f"- Primary blocker families: `{len(primary_blockers)}`")
+          print(f"- Additional failing lanes: `{len(secondary_findings)}`")
           if setup_rows:
               print(f"- Setup classes exercised: `{len(setup_rows)}`")
           if first_failure:
-              print(f"- First failing lane: `{first_failure['lane_id']}`")
+              print(f"- First surfaced blocker: `{first_failure['lane_id']}`")
               if first_failure.get('signal'):
-                  print(f"- First failure signal: `{first_failure['signal']}`")
+                  print(f"- First blocker signal: `{first_failure['signal']}`")
           else:
-              print("- First failing lane: `none`")
+              print("- First surfaced blocker: `none`")
           if setup_rows:
               print("- Setup class results:")
               for row in setup_rows:
@@ -574,7 +582,7 @@ jobs:
           candidates = summary.get("candidate_next_slices") or []
           if candidates:
               print(f"- Frontier blocker count: `{len(candidates)}`")
-              for candidate in candidates[:5]:
+              for candidate in candidates[:20]:
                   lane_id = candidate.get("lane_id") or "unknown"
                   signal = candidate.get("signal") or ""
                   if signal:
@@ -583,7 +591,7 @@ jobs:
                       print(f"  - `{lane_id}`")
           if primary_blockers:
               print("- Primary blockers:")
-              for item in primary_blockers[:5]:
+              for item in primary_blockers[:20]:
                   signal = item.get("signal") or ""
                   if signal:
                       print(f"  - `{item['lane_id']}`: `{signal}`")
@@ -591,7 +599,7 @@ jobs:
                       print(f"  - `{item['lane_id']}`")
           if secondary_findings:
               print("- Secondary findings:")
-              for item in secondary_findings[:5]:
+              for item in secondary_findings[:20]:
                   signal = item.get("signal") or ""
                   if signal:
                       print(f"  - `{item['lane_id']}`: `{signal}`")

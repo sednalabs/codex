@@ -1,6 +1,5 @@
 {
-  "$schema": "http://json-schema.org/draft-07/schema#",
-  "definitions": {
+  "$defs": {
     "McpServerStartupState": {
       "enum": [
         "starting",
@@ -11,6 +10,7 @@
       "type": "string"
     }
   },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
   "properties": {
     "error": {
       "type": [
@@ -22,7 +22,7 @@
       "type": "string"
     },
     "status": {
-      "$ref": "#/definitions/McpServerStartupState"
+      "$ref": "#/$defs/McpServerStartupState"
     }
   },
   "required": [

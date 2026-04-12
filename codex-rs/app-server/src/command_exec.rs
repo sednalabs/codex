@@ -37,6 +37,8 @@ use tokio::sync::watch;
 use crate::error_code::INTERNAL_ERROR_CODE;
 use crate::error_code::INVALID_PARAMS_ERROR_CODE;
 use crate::error_code::INVALID_REQUEST_ERROR_CODE;
+use crate::extensions::NotificationDispatchKind;
+use crate::extensions::dispatch_notification_to_connection;
 use crate::outgoing_message::ConnectionId;
 use crate::outgoing_message::ConnectionRequestId;
 use crate::outgoing_message::OutgoingMessageSender;
@@ -603,19 +605,20 @@ fn spawn_process_output(params: SpawnProcessOutputParams) -> tokio::task::JoinHa
             };
             let cap_reached = Some(observed_num_bytes) == output_bytes_cap;
             if let (true, Some(process_id)) = (stream_output, process_id.as_ref()) {
-                outgoing
-                    .send_server_notification_to_connections(
-                        &[connection_id],
-                        ServerNotification::CommandExecOutputDelta(
-                            CommandExecOutputDeltaNotification {
-                                process_id: process_id.clone(),
-                                stream,
-                                delta_base64: STANDARD.encode(capped_chunk),
-                                cap_reached,
-                            },
-                        ),
-                    )
-                    .await;
+                dispatch_notification_to_connection(
+                    outgoing.as_ref(),
+                    connection_id,
+                    NotificationDispatchKind::CommandExecOutputDelta,
+                    ServerNotification::CommandExecOutputDelta(
+                        CommandExecOutputDeltaNotification {
+                            process_id: process_id.clone(),
+                            stream,
+                            delta_base64: STANDARD.encode(capped_chunk),
+                            cap_reached,
+                        },
+                    ),
+                )
+                .await;
             } else if !stream_output {
                 buffer.extend_from_slice(capped_chunk);
             }

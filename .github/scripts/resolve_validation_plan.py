@@ -252,24 +252,29 @@ def select_for_lane_set(
     return selected
 
 
-def select_frontier_all(catalog: dict) -> list[dict]:
+def select_frontier_all(catalog: dict, *, include_explicit_only: bool = False) -> list[dict]:
+    def is_smoke_gate_lane(spec: dict) -> bool:
+        return bool(spec.get("smoke_gate_kinds")) and str(spec.get("lane_id") or "").endswith(
+            "-smoke"
+        )
+
+    allowed_status_classes = {"active", "legacy"} if include_explicit_only else {"active"}
     selected = [
         lane_payload(spec, lane_phase="downstream_lanes")
         for spec in catalog["lanes"]
-        if spec.get("status_class") == "active"
-        and spec.get("frontier_default") is True
-        and not spec.get("explicit_only")
+        if spec.get("status_class") in allowed_status_classes
+        and (include_explicit_only or not spec.get("explicit_only"))
+        and not is_smoke_gate_lane(spec)
     ]
     if selected:
         return selected
     return [
         lane_payload(spec, lane_phase="downstream_lanes")
         for spec in catalog["lanes"]
-        if spec.get("status_class") == "active"
-        and not spec.get("explicit_only")
-        and not spec.get("smoke_gate_kinds")
+        if spec.get("status_class") in allowed_status_classes
+        and (include_explicit_only or not spec.get("explicit_only"))
+        and not is_smoke_gate_lane(spec)
         and "release" not in spec.get("lane_sets", [])
-        and "docs" not in spec.get("lane_sets", [])
     ]
 
 
@@ -323,18 +328,18 @@ def setup_parallel_limits(profile: str, selected: list[dict] | None = None) -> d
     counts = Counter(lane["setup_class"] for lane in (selected or []))
     if profile == "frontier":
         return {
-            "light": max(1, min(counts.get("light", 0), 8)),
-            "rust": max(1, min(counts.get("rust", 0), 24)),
-            "heavy": max(1, min(counts.get("heavy", 0), 12)),
+            "light": max(1, min(counts.get("light", 0), 12)),
+            "rust": max(1, min(counts.get("rust", 0), 32)),
+            "heavy": max(1, min(counts.get("heavy", 0), 16)),
         }
     if profile in {"broad", "full"}:
         return {
-            "light": max(1, min(counts.get("light", 0), 8)),
-            "rust": max(1, min(counts.get("rust", 0), 20)),
-            "heavy": max(1, min(counts.get("heavy", 0), 8)),
+            "light": max(1, min(counts.get("light", 0), 10)),
+            "rust": max(1, min(counts.get("rust", 0), 24)),
+            "heavy": max(1, min(counts.get("heavy", 0), 10)),
         }
     if profile == "smoke":
-        return {"light": 4, "rust": 3, "heavy": 2}
+        return {"light": 6, "rust": 4, "heavy": 3}
     return {"light": 8, "rust": 4, "heavy": 2}
 
 
@@ -364,7 +369,7 @@ def profile_metadata(profile: str) -> tuple[str, str]:
     if profile == "frontier":
         return (
             "frontier",
-            "Bounded next-blocker harvest; trust a recent baseline first, then widen just enough to expose the next family.",
+            "Wide blocker harvest with fail-fast disabled; use the selected family to surface multiple independent failure groups in one remote pass.",
         )
     if profile in {"broad", "full"}:
         return (
@@ -387,6 +392,7 @@ def summarize_lab_selection(
     smoke_gate_kind: str,
     run_artifact: bool,
     selected_setup_classes: list[str],
+    include_explicit_lanes: bool,
 ) -> str:
     parts = [f"selected={len(selected)}"]
     if selected_setup_classes:
@@ -400,6 +406,8 @@ def summarize_lab_selection(
         parts.append(f"lanes={','.join(preview_ids)}{suffix}")
     if run_artifact:
         parts.append("artifact=true")
+    if include_explicit_lanes:
+        parts.append("explicit=true")
     return ", ".join(parts)
 
 
@@ -411,6 +419,7 @@ def lab_plan(args: argparse.Namespace) -> None:
     catalog_by_id = {spec["lane_id"]: spec for spec in catalog["lanes"]}
     requested_lanes = [lane.strip() for lane in args.lanes.split(",") if lane.strip()]
     run_artifact = args.profile == "artifact" or parse_bool(args.artifact_build)
+    include_explicit_lanes = parse_bool(args.include_explicit_lanes)
 
     smoke_matrix: list[dict] = []
 
@@ -444,14 +453,20 @@ def lab_plan(args: argparse.Namespace) -> None:
         run_smoke_gate = False
         smoke_gate_kind = ""
     elif args.profile == "frontier":
+        allowed_status_classes = (
+            {"active", "legacy"} if include_explicit_lanes else {"active"}
+        )
         if args.lane_set == "all":
-            selected = select_frontier_all(catalog)
+            selected = select_frontier_all(
+                catalog, include_explicit_only=include_explicit_lanes
+            )
         else:
             selected = select_for_lane_set(
                 catalog,
                 args.lane_set,
                 lane_phase="downstream_lanes",
                 field_name="frontier_lane_sets",
+                include_explicit_only=include_explicit_lanes,
             )
             if not selected:
                 selected = [
@@ -460,8 +475,9 @@ def lab_plan(args: argparse.Namespace) -> None:
                         catalog,
                         args.lane_set,
                         lane_phase="downstream_lanes",
+                        include_explicit_only=include_explicit_lanes,
                     )
-                    if lane.get("status_class") == "active"
+                    if lane.get("status_class") in allowed_status_classes
                 ]
         run_smoke_gate = False
         smoke_gate_kind = ""
@@ -495,6 +511,7 @@ def lab_plan(args: argparse.Namespace) -> None:
         smoke_gate_kind=smoke_gate_kind,
         run_artifact=run_artifact,
         selected_setup_classes=selected_setup_classes,
+        include_explicit_lanes=include_explicit_lanes,
     )
     planned_matrix = {"include": [*smoke_matrix, *selected]}
 
@@ -600,13 +617,20 @@ def heavy_plan(args: argparse.Namespace) -> None:
             if run_smoke_gate:
                 selected = exclude_smoke_gate_lanes(selected, smoke_matrix)
 
-    parallel_limits = setup_parallel_limits("targeted")
+    manual_harvest = explicit_requested_lane is False and (
+        args.event_name == "workflow_dispatch" and parse_bool(args.run_all_lanes)
+    )
+    parallel_limits = setup_parallel_limits(
+        "frontier" if manual_harvest else "targeted", [*smoke_matrix, *selected]
+    )
     payload = {
         "selected_matrix": {"include": selected},
         "smoke_matrix": {"include": smoke_matrix},
         "run_selected_lanes": "true" if bool(selected) else "false",
         "run_smoke_gate": "true" if run_smoke_gate else "false",
         "smoke_gate_kind": smoke_gate_kind,
+        "matrix_fail_fast": "false" if manual_harvest else "true",
+        "continue_after_smoke_failure": "true" if manual_harvest else "false",
         "light_max_parallel": str(parallel_limits["light"]),
         "rust_max_parallel": str(parallel_limits["rust"]),
         "heavy_max_parallel": str(parallel_limits["heavy"]),
@@ -625,6 +649,7 @@ def build_parser() -> argparse.ArgumentParser:
     lab.add_argument("--lane-set", required=True)
     lab.add_argument("--lanes", default="")
     lab.add_argument("--artifact-build", default="false")
+    lab.add_argument("--include-explicit-lanes", default="false")
     lab.add_argument("--catalog-path", default="")
     lab.set_defaults(func=lab_plan)
 

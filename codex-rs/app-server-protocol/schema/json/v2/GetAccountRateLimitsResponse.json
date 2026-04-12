@@ -1,6 +1,5 @@
 {
-  "$schema": "http://json-schema.org/draft-07/schema#",
-  "definitions": {
+  "$defs": {
     "CreditsSnapshot": {
       "properties": {
         "balance": {
@@ -43,7 +42,7 @@
         "credits": {
           "anyOf": [
             {
-              "$ref": "#/definitions/CreditsSnapshot"
+              "$ref": "#/$defs/CreditsSnapshot"
             },
             {
               "type": "null"
@@ -65,7 +64,7 @@
         "planType": {
           "anyOf": [
             {
-              "$ref": "#/definitions/PlanType"
+              "$ref": "#/$defs/PlanType"
             },
             {
               "type": "null"
@@ -75,7 +74,7 @@
         "primary": {
           "anyOf": [
             {
-              "$ref": "#/definitions/RateLimitWindow"
+              "$ref": "#/$defs/RateLimitWindow"
             },
             {
               "type": "null"
@@ -85,7 +84,7 @@
         "secondary": {
           "anyOf": [
             {
-              "$ref": "#/definitions/RateLimitWindow"
+              "$ref": "#/$defs/RateLimitWindow"
             },
             {
               "type": "null"
@@ -122,18 +121,15 @@
       "type": "object"
     }
   },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
   "properties": {
     "rateLimits": {
-      "allOf": [
-        {
-          "$ref": "#/definitions/RateLimitSnapshot"
-        }
-      ],
+      "$ref": "#/$defs/RateLimitSnapshot",
       "description": "Backward-compatible single-bucket view; mirrors the historical payload."
     },
     "rateLimitsByLimitId": {
       "additionalProperties": {
-        "$ref": "#/definitions/RateLimitSnapshot"
+        "$ref": "#/$defs/RateLimitSnapshot"
       },
       "description": "Multi-bucket view keyed by metered `limit_id` (for example, `codex`).",
       "type": [
