@@ -3484,9 +3484,12 @@ impl ChatWidget {
         // care about into a short footer/history summary without depending on
         // the full raw JSON shape in the rest of the widget.
         let guardian_action_summary = |action: &serde_json::Value| {
-            let tool = action.get("tool").and_then(serde_json::Value::as_str)?;
+            let tool = action
+                .get("tool")
+                .and_then(serde_json::Value::as_str)
+                .or_else(|| action.get("type").and_then(serde_json::Value::as_str))?;
             match tool {
-                "shell" | "exec_command" => match action.get("command") {
+                "shell" | "exec_command" | "command" => match action.get("command") {
                     Some(serde_json::Value::String(command)) => Some(command.clone()),
                     Some(serde_json::Value::Array(command)) => {
                         let args = command
@@ -3499,7 +3502,25 @@ impl ChatWidget {
                     }
                     _ => None,
                 },
-                "apply_patch" => {
+                "execve" => {
+                    let program = action.get("program").and_then(serde_json::Value::as_str)?;
+                    let argv = action
+                        .get("argv")
+                        .and_then(serde_json::Value::as_array)
+                        .map(|argv| {
+                            argv.iter()
+                                .filter_map(serde_json::Value::as_str)
+                                .collect::<Vec<_>>()
+                        })
+                        .unwrap_or_default();
+                    let command = std::iter::once(program)
+                        .chain(argv.iter().copied())
+                        .collect::<Vec<_>>();
+                    shlex::try_join(command.iter().copied())
+                        .ok()
+                        .or_else(|| Some(command.join(" ")))
+                }
+                "apply_patch" | "applyPatch" => {
                     let files = action
                         .get("files")
                         .and_then(serde_json::Value::as_array)
@@ -3523,11 +3544,11 @@ impl ChatWidget {
                         )
                     })
                 }
-                "network_access" => action
+                "network_access" | "networkAccess" => action
                     .get("target")
                     .and_then(serde_json::Value::as_str)
                     .map(|target| format!("network access to {target}")),
-                "mcp_tool_call" => {
+                "mcp_tool_call" | "mcpToolCall" => {
                     let tool_name = action
                         .get("tool_name")
                         .and_then(serde_json::Value::as_str)?;
@@ -6352,6 +6373,9 @@ impl ChatWidget {
                 items,
                 status,
                 error,
+                started_at,
+                completed_at,
+                duration_ms,
             } = turn;
             if matches!(status, TurnStatus::InProgress) {
                 self.last_non_retry_error = None;
@@ -6372,6 +6396,9 @@ impl ChatWidget {
                             items: Vec::new(),
                             status,
                             error,
+                            started_at,
+                            completed_at,
+                            duration_ms,
                         },
                     },
                     Some(replay_kind),
@@ -7191,7 +7218,7 @@ impl ChatWidget {
         id: String,
         turn_id: String,
         review: codex_app_server_protocol::GuardianApprovalReview,
-        action: Option<serde_json::Value>,
+        action: codex_app_server_protocol::GuardianApprovalReviewAction,
     ) {
         self.on_guardian_assessment(GuardianAssessmentEvent {
             id,
@@ -7223,7 +7250,7 @@ impl ChatWidget {
                 }
             }),
             rationale: review.rationale,
-            action,
+            action: serde_json::to_value(action).ok(),
         });
     }
 
@@ -8709,7 +8736,7 @@ impl ChatWidget {
     pub(crate) fn open_model_popup_with_presets(&mut self, presets: Vec<ModelPreset>) {
         let presets: Vec<ModelPreset> = presets
             .into_iter()
-            .filter(|preset| preset.show_in_interactive_picker())
+            .filter(ModelPreset::show_in_interactive_picker)
             .collect();
 
         let current_model = self.current_model();
