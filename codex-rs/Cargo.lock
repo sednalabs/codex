@@ -1431,7 +1431,6 @@ dependencies = [
  "futures",
  "gethostname",
  "hmac",
- "jsonwebtoken",
  "opentelemetry",
  "opentelemetry_sdk",
  "owo-colors",
@@ -1487,6 +1486,7 @@ dependencies = [
  "codex-experimental-api-macros",
  "codex-git-utils",
  "codex-protocol",
+ "codex-shell-command",
  "codex-utils-absolute-path",
  "codex-utils-cargo-bin",
  "inventory",
@@ -2764,7 +2764,6 @@ dependencies = [
 name = "codex-utils-cargo-bin"
 version = "0.0.0"
 dependencies = [
- "assert_cmd",
  "runfiles",
  "thiserror 2.0.18",
 ]
@@ -5574,22 +5573,6 @@ checksum = "8c942ebf8e95485ca0d52d97da7c5a2c387d0e7f0ba4c35e93bfcaee045955b3"
 dependencies = [
  "once_cell",
  "wasm-bindgen",
-]
-
-[[package]]
-name = "jsonwebtoken"
-version = "10.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0529410abe238729a60b108898784df8984c87f6054c9c4fcacc47e4803c1ce1"
-dependencies = [
- "base64 0.22.1",
- "getrandom 0.2.17",
- "js-sys",
- "pem",
- "serde",
- "serde_json",
- "signature",
- "simple_asn1",
 ]
 
 [[package]]
@@ -9047,18 +9030,6 @@ name = "similar"
 version = "2.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bbbb5d9659141646ae647b42fe094daf6c6192d1620870b449d9557f748b2daa"
-
-[[package]]
-name = "simple_asn1"
-version = "0.6.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0d585997b0ac10be3c5ee635f1bab02d512760d14b7c468801ac8a01d9ae5f1d"
-dependencies = [
- "num-bigint",
- "num-traits",
- "thiserror 2.0.18",
- "time",
-]
 
 [[package]]
 name = "siphasher"

@@ -366,6 +366,7 @@ fn map_requirements_toml_to_api(requirements: ConfigRequirementsToml) -> ConfigR
                 .map(codex_app_server_protocol::AskForApproval::from)
                 .collect()
         }),
+        allowed_approvals_reviewers: None,
         allowed_sandbox_modes: requirements.allowed_sandbox_modes.map(|modes| {
             modes
                 .into_iter()
@@ -433,6 +434,7 @@ fn map_network_requirements_to_api(
         allow_upstream_proxy: network.allow_upstream_proxy,
         dangerously_allow_non_loopback_proxy: network.dangerously_allow_non_loopback_proxy,
         dangerously_allow_all_unix_sockets: network.dangerously_allow_all_unix_sockets,
+        danger_full_access_denylist_only: None,
         domains: network.domains.map(|domains| {
             domains
                 .entries
@@ -643,6 +645,7 @@ mod tests {
                 )])),
                 allow_unix_sockets: Some(vec!["/tmp/proxy.sock".to_string()]),
                 allow_local_binding: Some(true),
+                danger_full_access_denylist_only: None,
             }),
         );
     }
@@ -699,6 +702,7 @@ mod tests {
                 )])),
                 allow_unix_sockets: None,
                 allow_local_binding: None,
+                danger_full_access_denylist_only: None,
             }),
         );
     }

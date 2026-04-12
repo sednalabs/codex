@@ -198,12 +198,15 @@ core-subagent-spawn-approval-targeted:
 core-persisted-subagent-descendants-targeted:
     cargo test -p codex-state thread_spawn_edges_track_directional_status --lib -- --exact --test-threads=1
 
-# Focused app-server rollout cwd portability slice.
+# Focused app-server thread surface slice.
 app-server-thread-cwd-targeted:
     cargo test --locked -p codex-app-server --test all suite::conversation_summary:: -- --test-threads=1
     cargo test --locked -p codex-app-server --test all suite::v2::thread_list:: -- --test-threads=1
     cargo test --locked -p codex-app-server --test all suite::v2::thread_read::thread_read_returns_summary_without_turns -- --exact --test-threads=1
     cargo test --locked -p codex-app-server --test all suite::v2::thread_resume::thread_resume_returns_rollout_history -- --exact --test-threads=1
+    cargo test --locked -p codex-app-server --test all suite::v2::thread_fork::thread_fork_honors_explicit_null_thread_instructions -- --exact --test-threads=1
+    cargo test --locked -p codex-app-server --test all suite::v2::turn_start::turn_start_honors_explicit_null_thread_instructions -- --exact --test-threads=1
+    cargo test --locked -p codex-app-server --test all suite::v2::turn_start::turn_start_emits_spawn_agent_item_with_requested_model_metadata_when_role_layering_is_present_v2 -- --exact --test-threads=1
 
 # Focused code-mode declaration rendering and metadata slice.
 code-mode-declaration-targeted:

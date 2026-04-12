@@ -3149,6 +3149,13 @@ impl Session {
             | AskForApproval::Granular(_) => {}
         }
 
+        if self.tx_event.is_closed() {
+            warn!(
+                "Cannot request permissions without a live event receiver for call_id: {call_id}"
+            );
+            return None;
+        }
+
         let (tx_response, rx_response) = oneshot::channel();
         let prev_entry = {
             let mut active = self.active_turn.lock().await;
@@ -3168,12 +3175,23 @@ impl Session {
         // with_additional_permissions. V0 still routes this surface through
         // the existing manual RequestPermissions event flow.
         let event = EventMsg::RequestPermissions(RequestPermissionsEvent {
-            call_id,
+            call_id: call_id.clone(),
             turn_id: turn_context.sub_id.clone(),
             reason: args.reason,
             permissions: args.permissions,
         });
         self.send_event(turn_context, event).await;
+        if self.tx_event.is_closed() {
+            let mut active = self.active_turn.lock().await;
+            if let Some(at) = active.as_mut() {
+                let mut ts = at.turn_state.lock().await;
+                ts.remove_pending_request_permissions(&call_id);
+            }
+            warn!(
+                "Request permissions was dropped because the event channel is closed for call_id: {call_id}"
+            );
+            return None;
+        }
         rx_response.await.ok()
     }
 
@@ -3184,17 +3202,20 @@ impl Session {
         args: RequestUserInputArgs,
     ) -> Option<RequestUserInputResponse> {
         let sub_id = turn_context.sub_id.clone();
+        if self.tx_event.is_closed() {
+            warn!("Cannot request user input without a live event receiver for sub_id: {sub_id}");
+            return None;
+        }
         let (tx_response, rx_response) = oneshot::channel();
         let event_id = sub_id.clone();
         let prev_entry = {
             let mut active = self.active_turn.lock().await;
-            match active.as_mut() {
-                Some(at) => {
-                    let mut ts = at.turn_state.lock().await;
-                    ts.insert_pending_user_input(sub_id, tx_response)
-                }
-                None => None,
-            }
+            let Some(at) = active.as_mut() else {
+                warn!("Cannot request user input without an active turn for sub_id: {event_id}");
+                return None;
+            };
+            let mut ts = at.turn_state.lock().await;
+            ts.insert_pending_user_input(sub_id.clone(), tx_response)
         };
         if prev_entry.is_some() {
             warn!("Overwriting existing pending user input for sub_id: {event_id}");
@@ -3206,6 +3227,17 @@ impl Session {
             questions: args.questions,
         });
         self.send_event(turn_context, event).await;
+        if self.tx_event.is_closed() {
+            let mut active = self.active_turn.lock().await;
+            if let Some(at) = active.as_mut() {
+                let mut ts = at.turn_state.lock().await;
+                ts.remove_pending_user_input(&sub_id);
+            }
+            warn!(
+                "Request user input was dropped because the event channel is closed for sub_id: {sub_id}"
+            );
+            return None;
+        }
         rx_response.await.ok()
     }
 

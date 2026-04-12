@@ -254,11 +254,11 @@ def select_for_lane_set(
         if spec.get("explicit_only") and not include_explicit_only:
             continue
         selected.append(lane_payload(spec, lane_phase=lane_phase))
-    return selected
-
-
 def is_smoke_gate_lane(spec: dict) -> bool:
-    return bool(spec.get("smoke_gate_only"))
+    return bool(spec.get("smoke_gate_only")) or (
+        bool(spec.get("smoke_gate_kinds"))
+        and str(spec.get("lane_id") or "").endswith("-smoke")
+    )
 
 
 def select_frontier_all(catalog: dict, *, include_explicit_only: bool = False) -> list[dict]:

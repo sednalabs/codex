@@ -3,6 +3,7 @@ use crate::AuthManager;
 use crate::CodexAuth;
 use crate::ThreadManager;
 use crate::built_in_model_providers;
+use crate::codex::SessionSettingsUpdate;
 use crate::codex::make_session_and_context;
 use crate::config::AgentRoleConfig;
 use crate::config::DEFAULT_AGENT_MAX_DEPTH;
@@ -243,6 +244,13 @@ async fn spawn_agent_rejects_when_message_and_items_are_both_set() {
 async fn spawn_agent_requires_user_approval_when_requested() {
     let (session, mut turn) = make_session_and_context().await;
     turn.collaboration_mode.mode = ModeKind::Plan;
+    session
+        .update_settings(SessionSettingsUpdate {
+            collaboration_mode: Some(turn.collaboration_mode.clone()),
+            ..Default::default()
+        })
+        .await
+        .expect("session settings should accept plan mode");
     let invocation = invocation(
         Arc::new(session),
         Arc::new(turn),
@@ -267,6 +275,13 @@ async fn spawn_agent_requires_user_approval_when_requested() {
 async fn multi_agent_v2_spawn_requires_user_approval_when_requested() {
     let (session, mut turn) = make_session_and_context().await;
     turn.collaboration_mode.mode = ModeKind::Plan;
+    session
+        .update_settings(SessionSettingsUpdate {
+            collaboration_mode: Some(turn.collaboration_mode.clone()),
+            ..Default::default()
+        })
+        .await
+        .expect("session settings should accept plan mode");
     let invocation = invocation(
         Arc::new(session),
         Arc::new(turn),
