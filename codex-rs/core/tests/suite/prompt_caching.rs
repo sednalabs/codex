@@ -136,7 +136,7 @@ async fn prompt_tools_are_consistent_across_requests() -> anyhow::Result<()> {
                 .model
                 .as_deref()
                 .expect("test config should have a model"),
-            &config,
+            &config.to_models_manager_config(),
         )
         .await
         .base_instructions;
@@ -148,6 +148,7 @@ async fn prompt_tools_are_consistent_across_requests() -> anyhow::Result<()> {
                 text_elements: Vec::new(),
             }],
             final_output_json_schema: None,
+            responsesapi_client_metadata: None,
         })
         .await?;
     wait_for_event(&codex, |ev| matches!(ev, EventMsg::TurnComplete(_))).await;
@@ -159,6 +160,7 @@ async fn prompt_tools_are_consistent_across_requests() -> anyhow::Result<()> {
                 text_elements: Vec::new(),
             }],
             final_output_json_schema: None,
+            responsesapi_client_metadata: None,
         })
         .await?;
     wait_for_event(&codex, |ev| matches!(ev, EventMsg::TurnComplete(_))).await;
@@ -266,6 +268,7 @@ async fn gpt_5_tools_without_apply_patch_append_apply_patch_instructions() -> an
                 text_elements: Vec::new(),
             }],
             final_output_json_schema: None,
+            responsesapi_client_metadata: None,
         })
         .await?;
 
@@ -277,6 +280,7 @@ async fn gpt_5_tools_without_apply_patch_append_apply_patch_instructions() -> an
                 text_elements: Vec::new(),
             }],
             final_output_json_schema: None,
+            responsesapi_client_metadata: None,
         })
         .await?;
 
@@ -339,6 +343,7 @@ async fn prefixes_context_and_instructions_once_and_consistently_across_requests
                 text_elements: Vec::new(),
             }],
             final_output_json_schema: None,
+            responsesapi_client_metadata: None,
         })
         .await?;
     wait_for_event(&codex, |ev| matches!(ev, EventMsg::TurnComplete(_))).await;
@@ -350,6 +355,7 @@ async fn prefixes_context_and_instructions_once_and_consistently_across_requests
                 text_elements: Vec::new(),
             }],
             final_output_json_schema: None,
+            responsesapi_client_metadata: None,
         })
         .await?;
     wait_for_event(&codex, |ev| matches!(ev, EventMsg::TurnComplete(_))).await;
@@ -431,6 +437,7 @@ async fn overrides_turn_context_but_keeps_cached_prefix_and_key_constant() -> an
                 text_elements: Vec::new(),
             }],
             final_output_json_schema: None,
+            responsesapi_client_metadata: None,
         })
         .await?;
     wait_for_event(&codex, |ev| matches!(ev, EventMsg::TurnComplete(_))).await;
@@ -467,6 +474,7 @@ async fn overrides_turn_context_but_keeps_cached_prefix_and_key_constant() -> an
                 text_elements: Vec::new(),
             }],
             final_output_json_schema: None,
+            responsesapi_client_metadata: None,
         })
         .await?;
     wait_for_event(&codex, |ev| matches!(ev, EventMsg::TurnComplete(_))).await;
@@ -549,6 +557,7 @@ async fn override_before_first_turn_emits_environment_context() -> anyhow::Resul
                 text_elements: Vec::new(),
             }],
             final_output_json_schema: None,
+            responsesapi_client_metadata: None,
         })
         .await?;
 
@@ -700,6 +709,7 @@ async fn per_turn_overrides_keep_cached_prefix_and_key_constant() -> anyhow::Res
                 text_elements: Vec::new(),
             }],
             final_output_json_schema: None,
+            responsesapi_client_metadata: None,
         })
         .await?;
     wait_for_event(&codex, |ev| matches!(ev, EventMsg::TurnComplete(_))).await;

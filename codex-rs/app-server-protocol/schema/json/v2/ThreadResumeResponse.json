@@ -506,6 +506,7 @@
     },
     "McpToolCallResult": {
       "properties": {
+        "_meta": true,
         "content": {
           "items": true,
           "type": "array"
@@ -2055,6 +2056,14 @@
     },
     "cwd": {
       "type": "string"
+    },
+    "instructionSources": {
+      "default": [],
+      "description": "Instruction source files currently loaded for this thread.",
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
     },
     "model": {
       "type": "string"

@@ -61,6 +61,19 @@ fn base_policy_allows_node_cpu_sysctls() {
 }
 
 #[test]
+fn base_policy_allows_kmp_registration_shm_read_create_and_unlink() {
+    let expected = r##"(allow ipc-posix-shm-read-data
+  ipc-posix-shm-write-create
+  ipc-posix-shm-write-unlink
+  (ipc-posix-name-regex #"^/__KMP_REGISTERED_LIB_[0-9]+$"))"##;
+
+    assert!(
+        MACOS_SEATBELT_BASE_POLICY.contains(expected),
+        "base policy must allow only KMP registration shm read/create/unlink:\n{MACOS_SEATBELT_BASE_POLICY}"
+    );
+}
+
+#[test]
 fn create_seatbelt_args_routes_network_through_proxy_ports() {
     let policy = dynamic_network_policy(
         &SandboxPolicy::new_read_only_policy(),
@@ -86,12 +99,16 @@ fn create_seatbelt_args_routes_network_through_proxy_ports() {
         "policy should not include blanket outbound allowance when proxy ports are present:\n{policy}"
     );
     assert!(
-        !policy.contains("(allow network-bind (local ip \"localhost:*\"))"),
-        "policy should not allow loopback binding unless explicitly enabled:\n{policy}"
+        !policy.contains("(allow network-bind (local ip \"*:*\"))"),
+        "policy should not allow local binding unless explicitly enabled:\n{policy}"
     );
     assert!(
         !policy.contains("(allow network-inbound (local ip \"localhost:*\"))"),
         "policy should not allow loopback inbound unless explicitly enabled:\n{policy}"
+    );
+    assert!(
+        !policy.contains("(allow network-outbound (remote ip \"*:53\"))"),
+        "policy should not allow raw DNS unless local binding is explicitly enabled:\n{policy}"
     );
 }
 
@@ -277,7 +294,7 @@ fn create_seatbelt_args_allows_local_binding_when_explicitly_enabled() {
     );
 
     assert!(
-        policy.contains("(allow network-bind (local ip \"localhost:*\"))"),
+        policy.contains("(allow network-bind (local ip \"*:*\"))"),
         "policy should allow loopback local binding when explicitly enabled:\n{policy}"
     );
     assert!(
@@ -287,6 +304,10 @@ fn create_seatbelt_args_allows_local_binding_when_explicitly_enabled() {
     assert!(
         policy.contains("(allow network-outbound (remote ip \"localhost:*\"))"),
         "policy should allow loopback outbound when explicitly enabled:\n{policy}"
+    );
+    assert!(
+        policy.contains("(allow network-outbound (remote ip \"*:53\"))"),
+        "policy should allow DNS egress when local binding is explicitly enabled:\n{policy}"
     );
     assert!(
         !policy.contains("\n(allow network-outbound)\n"),
@@ -325,6 +346,39 @@ fn dynamic_network_policy_preserves_restricted_policy_when_proxy_config_without_
         !policy.contains("(allow network-outbound (remote ip \"localhost:"),
         "policy should not include proxy port allowance when proxy config is present without ports:\n{policy}"
     );
+    assert!(
+        !policy.contains("(allow network-outbound (remote ip \"*:53\"))"),
+        "policy should stay fail-closed for DNS when no proxy ports are available:\n{policy}"
+    );
+}
+
+#[test]
+fn dynamic_network_policy_blocks_dns_when_local_binding_has_no_proxy_ports() {
+    let policy = dynamic_network_policy(
+        &SandboxPolicy::WorkspaceWrite {
+            writable_roots: vec![],
+            read_only_access: Default::default(),
+            network_access: true,
+            exclude_tmpdir_env_var: false,
+            exclude_slash_tmp: false,
+        },
+        /*enforce_managed_network*/ false,
+        &ProxyPolicyInputs {
+            ports: vec![],
+            has_proxy_config: true,
+            allow_local_binding: true,
+            ..ProxyPolicyInputs::default()
+        },
+    );
+
+    assert!(
+        policy.contains("(allow network-bind (local ip \"*:*\"))"),
+        "policy should still allow explicitly configured local binding:\n{policy}"
+    );
+    assert!(
+        !policy.contains("(allow network-outbound (remote ip \"*:53\"))"),
+        "policy should not allow DNS egress when no proxy ports are available:\n{policy}"
+    );
 }
 
 #[test]
@@ -353,6 +407,10 @@ fn dynamic_network_policy_preserves_restricted_policy_for_managed_network_withou
     assert!(
         !policy.contains("\n(allow network-outbound)\n"),
         "policy should not include blanket outbound allowance when managed network is active without proxy endpoints:\n{policy}"
+    );
+    assert!(
+        !policy.contains("(allow network-outbound (remote ip \"*:53\"))"),
+        "policy should stay fail-closed for DNS when no proxy endpoints are available:\n{policy}"
     );
 }
 

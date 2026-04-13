@@ -1,6 +1,5 @@
 use super::storage::rebuild_raw_memories_file_from_memories;
 use super::storage::sync_rollout_summaries_from_memories;
-use crate::config::types::DEFAULT_MEMORIES_MAX_RAW_MEMORIES_FOR_CONSOLIDATION;
 use crate::memories::clear_memory_root_contents;
 use crate::memories::ensure_layout;
 use crate::memories::memory_root;
@@ -8,6 +7,7 @@ use crate::memories::raw_memories_file;
 use crate::memories::rollout_summaries_dir;
 use chrono::TimeZone;
 use chrono::Utc;
+use codex_config::types::DEFAULT_MEMORIES_MAX_RAW_MEMORIES_FOR_CONSOLIDATION;
 use codex_protocol::ThreadId;
 use codex_state::Stage1Output;
 use pretty_assertions::assert_eq;
@@ -422,7 +422,6 @@ task_outcome: success
 }
 
 mod phase2 {
-    use crate::CodexAuth;
     use crate::ThreadManager;
     use crate::agent::AgentControl;
     use crate::codex::Session;
@@ -436,6 +435,7 @@ mod phase2 {
     use crate::memories::rollout_summaries_dir;
     use chrono::Utc;
     use codex_config::Constrained;
+    use codex_login::CodexAuth;
     use codex_protocol::ThreadId;
     use codex_protocol::protocol::AskForApproval;
     use codex_protocol::protocol::FileSystemSandboxPolicy;
@@ -1836,11 +1836,16 @@ mod phase2 {
             other => panic!("unexpected sandbox policy: {other:?}"),
         }
         subagent.codex.session.ensure_rollout_materialized().await;
-        subagent.codex.session.flush_rollout().await;
+        subagent
+            .codex
+            .session
+            .flush_rollout()
+            .await
+            .expect("subagent rollout should flush");
         let rollout_path = subagent
             .rollout_path()
             .expect("consolidation thread should have a rollout path");
-        crate::state_db::read_repair_rollout_path(
+        codex_rollout::state_db::read_repair_rollout_path(
             Some(harness.state_db.as_ref()),
             Some(thread_id),
             Some(/*archived_only*/ false),
