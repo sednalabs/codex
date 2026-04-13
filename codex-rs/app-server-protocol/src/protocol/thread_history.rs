@@ -409,6 +409,7 @@ impl ThreadHistoryBuilder {
             GuardianAssessmentStatus::Denied | GuardianAssessmentStatus::Aborted => {
                 CommandExecutionStatus::Declined
             }
+            GuardianAssessmentStatus::TimedOut => CommandExecutionStatus::Failed,
             GuardianAssessmentStatus::Approved => return,
         };
         let Some(item) = build_item_from_guardian_event(payload, status) else {
@@ -2017,11 +2018,13 @@ mod tests {
             }),
             EventMsg::GuardianAssessment(GuardianAssessmentEvent {
                 id: "guardian-exec".into(),
+                target_item_id: None,
                 turn_id: "turn-1".into(),
                 status: GuardianAssessmentStatus::InProgress,
-                risk_score: None,
                 risk_level: None,
+                user_authorization: None,
                 rationale: None,
+                decision_source: None,
                 action: serde_json::from_value(serde_json::json!({
                     "type": "command",
                     "source": "shell",
@@ -2032,11 +2035,15 @@ mod tests {
             }),
             EventMsg::GuardianAssessment(GuardianAssessmentEvent {
                 id: "guardian-exec".into(),
+                target_item_id: None,
                 turn_id: "turn-1".into(),
                 status: GuardianAssessmentStatus::Denied,
-                risk_score: Some(97),
                 risk_level: Some(codex_protocol::protocol::GuardianRiskLevel::High),
+                user_authorization: Some(codex_protocol::approvals::GuardianUserAuthorization::Low),
                 rationale: Some("Would delete user data.".into()),
+                decision_source: Some(
+                    codex_protocol::approvals::GuardianAssessmentDecisionSource::Agent,
+                ),
                 action: serde_json::from_value(serde_json::json!({
                     "type": "command",
                     "source": "shell",
@@ -2089,11 +2096,13 @@ mod tests {
             }),
             EventMsg::GuardianAssessment(GuardianAssessmentEvent {
                 id: "guardian-execve".into(),
+                target_item_id: None,
                 turn_id: "turn-1".into(),
                 status: GuardianAssessmentStatus::InProgress,
-                risk_score: None,
                 risk_level: None,
+                user_authorization: None,
                 rationale: None,
+                decision_source: None,
                 action: serde_json::from_value(serde_json::json!({
                     "type": "execve",
                     "source": "shell",

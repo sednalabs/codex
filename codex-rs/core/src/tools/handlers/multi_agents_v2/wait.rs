@@ -3,6 +3,7 @@ use crate::agent::agent_resolver::resolve_agent_targets;
 use crate::agent::status::is_final;
 use crate::codex::Session;
 use codex_protocol::ThreadId;
+use codex_protocol::error::CodexErr;
 use codex_protocol::protocol::CollabAgentRef;
 use codex_protocol::protocol::CollabWaitingCompletionReason;
 use futures::StreamExt;
@@ -96,7 +97,7 @@ impl ToolHandler for Handler {
                     }
                     status_rxs.push((*id, rx));
                 }
-                Err(crate::error::CodexErr::ThreadNotFound(_)) => {
+                Err(CodexErr::ThreadNotFound(_)) => {
                     initial_final_statuses.push((*id, AgentStatus::NotFound));
                 }
                 Err(err) => {

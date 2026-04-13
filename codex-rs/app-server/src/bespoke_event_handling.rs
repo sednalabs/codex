@@ -424,6 +424,7 @@ pub(crate) async fn apply_bespoke_event_handling(
                             ))
                             .await;
                     }
+                    RealtimeEvent::ResponseCreated(_) | RealtimeEvent::ResponseDone(_) => {}
                     RealtimeEvent::ConversationItemAdded(item) => {
                         let notification = ThreadRealtimeItemAddedNotification {
                             thread_id: conversation_id.to_string(),

@@ -7,7 +7,7 @@ pub const CODEX_DISPLAY_VERSION: &str = codex_utils_version::DISPLAY_VERSION;
 /// The GitHub repository used for release/update checks.
 pub const CODEX_RELEASE_REPOSITORY: &str = match option_env!("CODEX_RELEASE_REPOSITORY") {
     Some(repository) => repository,
-    None => "SednaLabs/codex",
+    None => "sednalabs/codex",
 };
 
 /// The tag prefix used to derive a version string from release tags.

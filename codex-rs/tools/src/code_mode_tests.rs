@@ -140,6 +140,22 @@ fn normalize_code_mode_fields(fields: &[String]) -> Vec<String> {
     fields
 }
 
+fn empty_namespace_descriptions() -> BTreeMap<String, codex_code_mode::ToolNamespaceDescription> {
+    BTreeMap::new()
+}
+
+fn update_plan_definition() -> codex_code_mode::ToolDefinition {
+    codex_code_mode::ToolDefinition {
+        name: "update_plan".to_string(),
+        all_tools_name: None,
+        all_tools_module: None,
+        description: "Update the plan".to_string(),
+        kind: codex_code_mode::CodeModeToolKind::Function,
+        input_schema: None,
+        output_schema: None,
+    }
+}
+
 fn split_code_mode_description(description: &str) -> Option<(&str, &str, &str)> {
     let (prose, after_wrapper) = description.split_once("\n\nexec tool declaration:\n```ts\n")?;
     let (declaration, trailing) = after_wrapper.split_once("\n```")?;
@@ -280,14 +296,11 @@ fn augment_tool_spec_for_code_mode_augments_function_tools() {
         description: "Look up an order".to_string(),
         strict: false,
         defer_loading: Some(true),
-        parameters: JsonSchema::Object {
-            properties: BTreeMap::from([(
-                "order_id".to_string(),
-                JsonSchema::String { description: None },
-            )]),
-            required: Some(vec!["order_id".to_string()]),
-            additional_properties: Some(AdditionalProperties::Boolean(false)),
-        },
+        parameters: JsonSchema::object(
+            BTreeMap::from([("order_id".to_string(), JsonSchema::string(None))]),
+            Some(vec!["order_id".to_string()]),
+            Some(AdditionalProperties::Boolean(false)),
+        ),
         output_schema: Some(json!({
             "type": "object",
             "properties": {
@@ -305,14 +318,11 @@ fn augment_tool_spec_for_code_mode_augments_function_tools() {
     assert_eq!(tool.defer_loading, Some(true));
     assert_eq!(
         tool.parameters,
-        JsonSchema::Object {
-            properties: BTreeMap::from([(
-                "order_id".to_string(),
-                JsonSchema::String { description: None },
-            )]),
-            required: Some(vec!["order_id".to_string()]),
-            additional_properties: Some(AdditionalProperties::Boolean(false)),
-        }
+        JsonSchema::object(
+            BTreeMap::from([("order_id".to_string(), JsonSchema::string(None))]),
+            Some(vec!["order_id".to_string()]),
+            Some(AdditionalProperties::Boolean(false)),
+        )
     );
     assert_eq!(
         tool.output_schema,
@@ -395,14 +405,11 @@ fn tool_spec_to_code_mode_tool_definition_preserves_mcp_module_metadata() {
         description: "Echo text".to_string(),
         strict: false,
         defer_loading: None,
-        parameters: JsonSchema::Object {
-            properties: BTreeMap::from([(
-                "message".to_string(),
-                JsonSchema::String { description: None },
-            )]),
-            required: Some(vec!["message".to_string()]),
-            additional_properties: Some(AdditionalProperties::Boolean(false)),
-        },
+        parameters: JsonSchema::object(
+            BTreeMap::from([("message".to_string(), JsonSchema::string(None))]),
+            Some(vec!["message".to_string()]),
+            Some(AdditionalProperties::Boolean(false)),
+        ),
         output_schema: Some(json!({
             "type": "object",
             "properties": {
@@ -458,11 +465,7 @@ fn tool_spec_to_code_mode_tool_definition_skips_unsupported_variants() {
         tool_spec_to_code_mode_tool_definition(&ToolSpec::ToolSearch {
             execution: "sync".to_string(),
             description: "Search".to_string(),
-            parameters: JsonSchema::Object {
-                properties: BTreeMap::new(),
-                required: None,
-                additional_properties: None,
-            },
+            parameters: JsonSchema::object(BTreeMap::new(), None, None),
         }),
         None
     );
@@ -481,44 +484,35 @@ fn create_wait_tool_matches_expected_spec() {
             ),
             strict: false,
             defer_loading: None,
-            parameters: JsonSchema::Object {
-                properties: BTreeMap::from([
+            parameters: JsonSchema::object(
+                BTreeMap::from([
                     (
                         "cell_id".to_string(),
-                        JsonSchema::String {
-                            description: Some("Identifier of the running exec cell.".to_string()),
-                        },
-                    ),
-                    (
-                        "max_tokens".to_string(),
-                        JsonSchema::Number {
-                            description: Some(
-                                "Maximum number of output tokens to return for this wait call."
-                                    .to_string(),
-                            ),
-                        },
-                    ),
-                    (
-                        "terminate".to_string(),
-                        JsonSchema::Boolean {
-                            description: Some(
-                                "Whether to terminate the running exec cell.".to_string(),
-                            ),
-                        },
+                        JsonSchema::string(Some("Identifier of the running exec cell.".to_string())),
                     ),
                     (
                         "yield_time_ms".to_string(),
-                        JsonSchema::Number {
-                            description: Some(
-                                "How long to wait (in milliseconds) for more output before yielding again."
-                                    .to_string(),
-                            ),
-                        },
+                        JsonSchema::number(Some(
+                            "How long to wait (in milliseconds) for more output before yielding again."
+                                .to_string(),
+                        )),
+                    ),
+                    (
+                        "max_tokens".to_string(),
+                        JsonSchema::number(Some(
+                            "Maximum number of output tokens to return for this wait call.".to_string(),
+                        )),
+                    ),
+                    (
+                        "terminate".to_string(),
+                        JsonSchema::boolean(Some(
+                            "Whether to terminate the running exec cell.".to_string(),
+                        )),
                     ),
                 ]),
-                required: Some(vec!["cell_id".to_string()]),
-                additional_properties: Some(false.into()),
-            },
+                Some(vec!["cell_id".to_string()]),
+                Some(false.into()),
+            ),
             output_schema: None,
         })
     );
@@ -526,14 +520,20 @@ fn create_wait_tool_matches_expected_spec() {
 
 #[test]
 fn create_code_mode_tool_matches_expected_spec() {
-    let enabled_tools = vec![("update_plan".to_string(), "Update the plan".to_string())];
+    let enabled_tools = vec![update_plan_definition()];
+    let namespace_descriptions = empty_namespace_descriptions();
 
     assert_eq!(
-        create_code_mode_tool(&enabled_tools, /*code_mode_only_enabled*/ true),
+        create_code_mode_tool(
+            &enabled_tools,
+            &namespace_descriptions,
+            /*code_mode_only_enabled*/ true
+        ),
         ToolSpec::Freeform(FreeformTool {
             name: codex_code_mode::PUBLIC_TOOL_NAME.to_string(),
             description: codex_code_mode::build_exec_tool_description(
                 &enabled_tools,
+                &namespace_descriptions,
                 /*code_mode_only*/ true
             ),
             format: FreeformToolFormat {

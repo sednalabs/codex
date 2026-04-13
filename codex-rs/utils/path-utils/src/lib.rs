@@ -1,6 +1,6 @@
 //! Path normalization, symlink resolution, and atomic writes shared across Codex crates.
 
-pub(crate) mod env;
+pub mod env;
 pub use env::is_headless_environment;
 pub use env::is_wsl;
 

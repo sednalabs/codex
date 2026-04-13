@@ -925,7 +925,6 @@ impl ThreadManagerState {
             inherited_exec_policy,
             user_shell_override,
             parent_trace,
-            analytics_events_client: self.analytics_events_client.clone(),
         })
         .await?;
         self.finalize_thread_spawn(codex, thread_id, watch_registration)
@@ -1081,8 +1080,6 @@ fn append_interrupted_boundary(history: InitialHistory, turn_id: Option<String>)
     let aborted_event = RolloutItem::EventMsg(EventMsg::TurnAborted(TurnAbortedEvent {
         turn_id,
         reason: TurnAbortReason::Interrupted,
-        completed_at: None,
-        duration_ms: None,
     }));
 
     match history {

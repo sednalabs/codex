@@ -9,7 +9,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use std::time::Instant;
 
-use async_trait::async_trait;
+use futures::future::BoxFuture;
 use tokio::select;
 use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
@@ -19,7 +19,6 @@ use tracing::info_span;
 use tracing::trace;
 use tracing::warn;
 
-use crate::AuthManager;
 use crate::codex::Session;
 use crate::codex::TurnContext;
 use crate::contextual_user_message::TURN_ABORTED_CLOSE_TAG;
@@ -28,23 +27,26 @@ use crate::hook_runtime::PendingInputHookDisposition;
 use crate::hook_runtime::inspect_pending_input;
 use crate::hook_runtime::record_additional_contexts;
 use crate::hook_runtime::record_pending_input;
-use crate::models_manager::manager::ModelsManager;
-use crate::protocol::EventMsg;
-use crate::protocol::TurnAbortReason;
-use crate::protocol::TurnAbortedEvent;
-use crate::protocol::TurnCompleteEvent;
 use crate::state::ActiveTurn;
 use crate::state::RunningTask;
 use crate::state::TaskKind;
+use codex_login::AuthManager;
+use codex_models_manager::manager::ModelsManager;
 use codex_otel::SessionTelemetry;
-use codex_otel::metrics::names::TURN_E2E_DURATION_METRIC;
-use codex_otel::metrics::names::TURN_NETWORK_PROXY_METRIC;
-use codex_otel::metrics::names::TURN_TOKEN_USAGE_METRIC;
-use codex_otel::metrics::names::TURN_TOOL_CALL_METRIC;
+use codex_otel::TURN_E2E_DURATION_METRIC;
+use codex_otel::TURN_NETWORK_PROXY_METRIC;
+use codex_otel::TURN_TOKEN_USAGE_METRIC;
+use codex_otel::TURN_TOOL_CALL_METRIC;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::ResponseInputItem;
 use codex_protocol::models::ResponseItem;
+use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::RolloutItem;
+use codex_protocol::protocol::TokenUsage;
+use codex_protocol::protocol::TurnAbortReason;
+use codex_protocol::protocol::TurnAbortedEvent;
+use codex_protocol::protocol::TurnCompleteEvent;
+use codex_protocol::protocol::WarningEvent;
 use codex_protocol::user_input::UserInput;
 
 use codex_features::Feature;
@@ -125,7 +127,6 @@ impl SessionTaskContext {
 /// intentionally small: implementers identify themselves via
 /// [`SessionTask::kind`], perform their work in [`SessionTask::run`], and may
 /// release resources in [`SessionTask::abort`].
-#[async_trait]
 pub(crate) trait SessionTask: Send + Sync + 'static {
     /// Describes the type of work the task performs so the session can
     /// surface it in telemetry and UI.
@@ -142,21 +143,84 @@ pub(crate) trait SessionTask: Send + Sync + 'static {
     /// abort; implementers should watch for it and terminate quickly once it
     /// fires. Returning [`Some`] yields a final message that
     /// [`Session::on_task_finished`] will emit to the client.
-    async fn run(
+    fn run(
         self: Arc<Self>,
         session: Arc<SessionTaskContext>,
         ctx: Arc<TurnContext>,
         input: Vec<UserInput>,
         cancellation_token: CancellationToken,
-    ) -> Option<String>;
+    ) -> impl std::future::Future<Output = Option<String>> + Send;
 
     /// Gives the task a chance to perform cleanup after an abort.
     ///
     /// The default implementation is a no-op; override this if additional
     /// teardown or notifications are required once
     /// [`Session::abort_all_tasks`] cancels the task.
-    async fn abort(&self, session: Arc<SessionTaskContext>, ctx: Arc<TurnContext>) {
-        let _ = (session, ctx);
+    fn abort(
+        &self,
+        session: Arc<SessionTaskContext>,
+        ctx: Arc<TurnContext>,
+    ) -> impl std::future::Future<Output = ()> + Send {
+        async move {
+            let _ = (session, ctx);
+        }
+    }
+}
+
+pub(crate) trait AnySessionTask: Send + Sync + 'static {
+    fn kind(&self) -> TaskKind;
+
+    fn span_name(&self) -> &'static str;
+
+    fn run(
+        self: Arc<Self>,
+        session: Arc<SessionTaskContext>,
+        ctx: Arc<TurnContext>,
+        input: Vec<UserInput>,
+        cancellation_token: CancellationToken,
+    ) -> BoxFuture<'static, Option<String>>;
+
+    fn abort<'a>(
+        &'a self,
+        session: Arc<SessionTaskContext>,
+        ctx: Arc<TurnContext>,
+    ) -> BoxFuture<'a, ()>;
+}
+
+impl<T> AnySessionTask for T
+where
+    T: SessionTask,
+{
+    fn kind(&self) -> TaskKind {
+        SessionTask::kind(self)
+    }
+
+    fn span_name(&self) -> &'static str {
+        SessionTask::span_name(self)
+    }
+
+    fn run(
+        self: Arc<Self>,
+        session: Arc<SessionTaskContext>,
+        ctx: Arc<TurnContext>,
+        input: Vec<UserInput>,
+        cancellation_token: CancellationToken,
+    ) -> BoxFuture<'static, Option<String>> {
+        Box::pin(SessionTask::run(
+            self,
+            session,
+            ctx,
+            input,
+            cancellation_token,
+        ))
+    }
+
+    fn abort<'a>(
+        &'a self,
+        session: Arc<SessionTaskContext>,
+        ctx: Arc<TurnContext>,
+    ) -> BoxFuture<'a, ()> {
+        Box::pin(SessionTask::abort(self, session, ctx))
     }
 }
 
@@ -178,7 +242,7 @@ impl Session {
         input: Vec<UserInput>,
         task: T,
     ) {
-        let task: Arc<dyn SessionTask> = Arc::new(task);
+        let task: Arc<dyn AnySessionTask> = Arc::new(task);
         let task_kind = task.kind();
         let span_name = task.span_name();
         let started_at = Instant::now();
@@ -331,7 +395,6 @@ impl Session {
             .cancel_git_enrichment_task();
 
         let mut pending_input = Vec::<ResponseInputItem>::new();
-        let mut compaction_events_in_turn = 0;
         let mut should_clear_active_turn = false;
         let mut token_usage_at_turn_start = None;
         let mut turn_tool_calls = 0_u64;
@@ -353,7 +416,6 @@ impl Session {
         if let Some(turn_state) = turn_state {
             let mut ts = turn_state.lock().await;
             pending_input = ts.take_pending_input();
-            compaction_events_in_turn = ts.take_compaction_events_in_turn();
             turn_tool_calls = ts.tool_calls;
             token_usage_at_turn_start = Some(ts.token_usage_at_turn_start.clone());
         }
@@ -407,7 +469,7 @@ impl Session {
                 &[tmp_mem],
             );
             let total_token_usage = self.total_token_usage().await.unwrap_or_default();
-            let turn_token_usage = crate::protocol::TokenUsage {
+            let turn_token_usage = TokenUsage {
                 input_tokens: (total_token_usage.input_tokens
                     - token_usage_at_turn_start.input_tokens)
                     .max(0),
@@ -450,6 +512,19 @@ impl Session {
                 &[("token_type", "reasoning_output"), tmp_mem],
             );
         }
+        let turn_state = {
+            self.active_turn
+                .lock()
+                .await
+                .as_ref()
+                .map(|active_turn| Arc::clone(&active_turn.turn_state))
+        };
+        let compaction_events_in_turn = if let Some(turn_state) = turn_state {
+            let mut turn_state = turn_state.lock().await;
+            turn_state.take_compaction_events_in_turn()
+        } else {
+            0
+        };
         let event = EventMsg::TurnComplete(TurnCompleteEvent {
             turn_id: turn_context.sub_id.clone(),
             last_agent_message,

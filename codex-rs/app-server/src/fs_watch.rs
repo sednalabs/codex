@@ -168,18 +168,8 @@ impl FsWatchManager {
                     .paths
                     .into_iter()
                     .filter_map(|path| {
-                        match AbsolutePathBuf::resolve_path_against_base(&path, &watch_root) {
-                            Ok(path) => app_server_hooks()
-                                .fs_changed_path_for_watch_target(&watch_root, path),
-                            Err(err) => {
-                                warn!(
-                                    "failed to normalize watch event path ({}) for {}: {err}",
-                                    path.display(),
-                                    watch_root.display()
-                                );
-                                None
-                            }
-                        }
+                        let path = AbsolutePathBuf::resolve_path_against_base(&path, &watch_root);
+                        app_server_hooks().fs_changed_path_for_watch_target(&watch_root, path)
                     })
                     .collect::<Vec<_>>();
                 changed_paths.sort_by(|left, right| left.as_path().cmp(right.as_path()));
