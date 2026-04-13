@@ -33,6 +33,7 @@ use codex_app_server_protocol::ThreadStartParams;
 use codex_app_server_protocol::ThreadStartResponse;
 use codex_app_server_protocol::TurnStartParams;
 use codex_app_server_protocol::UserInput;
+use codex_utils_version::RELEASE_VERSION;
 use serde::Serialize;
 
 use crate::output::Output;
@@ -99,7 +100,7 @@ impl AppServerClient {
                 client_info: ClientInfo {
                     name: "debug-client".to_string(),
                     title: Some("Debug Client".to_string()),
-                    version: env!("CARGO_PKG_VERSION").to_string(),
+                    version: RELEASE_VERSION.to_string(),
                 },
                 capabilities: Some(InitializeCapabilities {
                     experimental_api: true,

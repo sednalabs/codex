@@ -7,13 +7,18 @@ on:
   workflow_dispatch:
     inputs:
       release_tag:
-        description: Sedna release tag, for example v0.117.0-sedna.1
+        description: Sedna release tag, for example v0.119.0-sedna.2
         required: true
         type: string
       draft:
         description: Create the GitHub release as a draft
         required: false
         default: true
+        type: boolean
+      prerelease:
+        description: Mark the GitHub release as a prerelease
+        required: false
+        default: false
         type: boolean
 
 concurrency:
@@ -50,26 +55,42 @@ jobs:
           if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
             release_tag="${{ inputs.release_tag }}"
             draft="${{ inputs.draft }}"
+            prerelease="${{ inputs.prerelease }}"
           else
             release_tag="${GITHUB_REF_NAME}"
             draft="false"
+            prerelease="false"
           fi
 
           if [[ ! "${release_tag}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([-.][0-9A-Za-z.]+)*-sedna\.[0-9]+$ ]]; then
-            echo "Release tag must look like v0.117.0-sedna.1"
+            echo "Release tag must look like v0.119.0-sedna.2"
             echo "Got: ${release_tag}"
             exit 1
           fi
 
           release_version="${release_tag#v}"
-          prerelease="false"
-          if [[ "${release_tag}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-[0-9A-Za-z.]+-sedna\.[0-9]+$ ]]; then
-            prerelease="true"
-          fi
+          upstream_line="${release_version%-sedna.*}"
+          upstream_track="${upstream_line%%-*}"
+          git fetch origin upstream-main --tags
+          downstream_commit_full="$(git rev-parse "${GITHUB_SHA}^{commit}")"
+          downstream_commit_short="$(git rev-parse --short=8 "${downstream_commit_full}")"
+          upstream_base_commit_full="$(git merge-base "${downstream_commit_full}" refs/remotes/origin/upstream-main)"
+          upstream_base_commit_short="$(git rev-parse --short=8 "${upstream_base_commit_full}")"
+          upstream_base_tag="$(git describe --tags --exact-match --match 'rust-v*' "${upstream_base_commit_full}" 2>/dev/null || true)"
+          build_provenance="up:${upstream_base_commit_short} down:${downstream_commit_short}"
+          version_display="${release_version} (${build_provenance})"
 
           {
             echo "release_tag=${release_tag}"
             echo "release_version=${release_version}"
+            echo "upstream_track=${upstream_track}"
+            echo "upstream_base_commit_full=${upstream_base_commit_full}"
+            echo "upstream_base_commit_short=${upstream_base_commit_short}"
+            echo "upstream_base_tag=${upstream_base_tag}"
+            echo "downstream_commit_full=${downstream_commit_full}"
+            echo "downstream_commit_short=${downstream_commit_short}"
+            echo "build_provenance=${build_provenance}"
+            echo "version_display=${version_display}"
             echo "draft=${draft}"
             echo "prerelease=${prerelease}"
           } >> "$GITHUB_OUTPUT"
@@ -91,6 +112,10 @@ jobs:
           CODEX_RELEASE_REPOSITORY: ${{ github.repository }}
           CODEX_RELEASE_TAG_PREFIX: v
           CODEX_RELEASE_VERSION: ${{ steps.meta.outputs.release_version }}
+          CODEX_UPSTREAM_TRACK: ${{ steps.meta.outputs.upstream_track }}
+          CODEX_UPSTREAM_BASE_COMMIT: ${{ steps.meta.outputs.upstream_base_commit_short }}
+          CODEX_UPSTREAM_BASE_TAG: ${{ steps.meta.outputs.upstream_base_tag }}
+          CODEX_DOWNSTREAM_COMMIT: ${{ steps.meta.outputs.downstream_commit_short }}
         run: |
           set -euo pipefail
           cargo build --locked --target "${TARGET}" --release --bin codex --bin codex-responses-api-proxy
@@ -104,7 +129,15 @@ jobs:
       - name: Stage release assets
         shell: bash
         env:
+          BUILD_PROVENANCE: ${{ steps.meta.outputs.build_provenance }}
+          DOWNSTREAM_COMMIT_FULL: ${{ steps.meta.outputs.downstream_commit_full }}
+          RELEASE_TAG: ${{ steps.meta.outputs.release_tag }}
           RELEASE_VERSION: ${{ steps.meta.outputs.release_version }}
+          REPOSITORY: ${{ github.repository }}
+          UPSTREAM_BASE_COMMIT_FULL: ${{ steps.meta.outputs.upstream_base_commit_full }}
+          UPSTREAM_BASE_TAG: ${{ steps.meta.outputs.upstream_base_tag }}
+          UPSTREAM_TRACK: ${{ steps.meta.outputs.upstream_track }}
+          VERSION_DISPLAY: ${{ steps.meta.outputs.version_display }}
         run: |
           set -euo pipefail
 
@@ -126,10 +159,40 @@ jobs:
           cat > "${dist_dir}/RELEASE-METADATA.txt" <<EOF
           release_tag=${{ steps.meta.outputs.release_tag }}
           release_version=${RELEASE_VERSION}
+          version_display=${VERSION_DISPLAY}
+          build_provenance=${BUILD_PROVENANCE}
+          upstream_track=${UPSTREAM_TRACK}
+          upstream_base_commit=${UPSTREAM_BASE_COMMIT_FULL}
+          upstream_base_tag=${UPSTREAM_BASE_TAG}
+          downstream_commit=${DOWNSTREAM_COMMIT_FULL}
           repository=${{ github.repository }}
           target=${TARGET}
-          commit=${GITHUB_SHA}
+          git_describe=$(git describe --tags --always)
           EOF
+
+          python3 - <<'PY' > "${dist_dir}/RELEASE-METADATA.json"
+          import json
+          import os
+
+          json.dump(
+              {
+                  "release_tag": os.environ["RELEASE_TAG"],
+                  "release_version": os.environ["RELEASE_VERSION"],
+                  "version_display": os.environ["VERSION_DISPLAY"],
+                  "build_provenance": os.environ["BUILD_PROVENANCE"],
+                  "upstream_track": os.environ["UPSTREAM_TRACK"],
+                  "upstream_base_commit": os.environ["UPSTREAM_BASE_COMMIT_FULL"],
+                  "upstream_base_tag": os.environ["UPSTREAM_BASE_TAG"] or None,
+                  "downstream_commit": os.environ["DOWNSTREAM_COMMIT_FULL"],
+                  "repository": os.environ["REPOSITORY"],
+                  "target": os.environ["TARGET"],
+              },
+              fp=os.sys.stdout,
+              indent=2,
+              sort_keys=True,
+          )
+          os.sys.stdout.write("\n")
+          PY
 
           (
             cd "${dist_dir}"

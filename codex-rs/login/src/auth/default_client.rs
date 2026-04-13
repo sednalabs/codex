@@ -9,6 +9,7 @@ use codex_client::CodexHttpClient;
 pub use codex_client::CodexRequestBuilder;
 use codex_client::build_reqwest_client_with_custom_ca;
 use codex_terminal_detection::user_agent;
+use codex_utils_version::RELEASE_VERSION;
 use reqwest::header::HeaderMap;
 use reqwest::header::HeaderValue;
 use std::sync::LazyLock;
@@ -129,12 +130,12 @@ pub fn is_first_party_chat_originator(originator_value: &str) -> bool {
 }
 
 pub fn get_codex_user_agent() -> String {
-    let build_version = env!("CARGO_PKG_VERSION");
     let os_info = os_info::get();
     let originator = originator();
     let prefix = format!(
-        "{}/{build_version} ({} {}; {}) {}",
+        "{}/{} ({} {}; {}) {}",
         originator.value.as_str(),
+        RELEASE_VERSION,
         os_info.os_type(),
         os_info.version(),
         os_info.architecture().unwrap_or("unknown"),

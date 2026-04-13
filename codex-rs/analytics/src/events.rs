@@ -5,6 +5,7 @@ use crate::facts::TrackEventsContext;
 use codex_login::default_client::originator;
 use codex_plugin::PluginTelemetryMetadata;
 use codex_protocol::protocol::SessionSource;
+use codex_utils_version::RELEASE_VERSION;
 use serde::Serialize;
 
 #[derive(Clone, Copy, Debug, Serialize)]
@@ -222,7 +223,7 @@ pub(crate) fn thread_source_name(thread_source: &SessionSource) -> Option<&'stat
 pub(crate) fn current_runtime_metadata() -> CodexRuntimeMetadata {
     let os_info = os_info::get();
     CodexRuntimeMetadata {
-        codex_rs_version: env!("CARGO_PKG_VERSION").to_string(),
+        codex_rs_version: RELEASE_VERSION.to_string(),
         runtime_os: std::env::consts::OS.to_string(),
         runtime_os_version: os_info.version().to_string(),
         runtime_arch: std::env::consts::ARCH.to_string(),

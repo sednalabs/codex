@@ -1,8 +1,8 @@
-/// The current Codex CLI version as embedded at compile time.
-pub const CODEX_CLI_VERSION: &str = match option_env!("CODEX_RELEASE_VERSION") {
-    Some(version) => version,
-    None => env!("CARGO_PKG_VERSION"),
-};
+/// The current Codex release version used for semver comparisons and persistence.
+pub const CODEX_CLI_VERSION: &str = codex_utils_version::RELEASE_VERSION;
+
+/// The human-readable version label shown in user-facing surfaces.
+pub const CODEX_DISPLAY_VERSION: &str = codex_utils_version::DISPLAY_VERSION;
 
 /// The GitHub repository used for release/update checks.
 pub const CODEX_RELEASE_REPOSITORY: &str = match option_env!("CODEX_RELEASE_REPOSITORY") {

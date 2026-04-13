@@ -54,6 +54,7 @@ use codex_terminal_detection::terminal_info;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use codex_utils_oss::ensure_oss_provider_ready;
 use codex_utils_oss::get_default_model_for_oss_provider;
+use codex_utils_version::RELEASE_VERSION;
 use color_eyre::eyre::WrapErr;
 use cwd_prompt::CwdPromptAction;
 use cwd_prompt::CwdPromptOutcome;
@@ -335,7 +336,7 @@ async fn connect_remote_app_server(
         websocket_url,
         auth_token,
         client_name: "codex-tui".to_string(),
-        client_version: env!("CARGO_PKG_VERSION").to_string(),
+        client_version: RELEASE_VERSION.to_string(),
         experimental_api: true,
         opt_out_notification_methods: Vec::new(),
         channel_capacity: DEFAULT_IN_PROCESS_CHANNEL_CAPACITY,
@@ -430,7 +431,7 @@ where
         session_source: codex_protocol::protocol::SessionSource::Cli,
         enable_codex_api_key_env: false,
         client_name: "codex-tui".to_string(),
-        client_version: env!("CARGO_PKG_VERSION").to_string(),
+        client_version: RELEASE_VERSION.to_string(),
         experimental_api: true,
         opt_out_notification_methods: Vec::new(),
         channel_capacity: DEFAULT_IN_PROCESS_CHANNEL_CAPACITY,
@@ -861,7 +862,7 @@ pub async fn run_main(
     let otel = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         codex_core::otel_init::build_provider(
             &config,
-            env!("CARGO_PKG_VERSION"),
+            RELEASE_VERSION,
             /*service_name_override*/ None,
             /*default_analytics_enabled*/ true,
         )

@@ -64,7 +64,7 @@ In the codex-rs folder where the rust code lives:
 
 Run `just fmt` (in `codex-rs` directory) automatically after you have finished making Rust code changes; do not ask for approval to run it. Additionally, use this validation ladder:
 
-1. Run the smallest relevant local check first. Prefer Build Helper presets or project-scoped tests over workspace-wide `cargo` commands on this shared machine.
+1. Run the smallest relevant local check first. Prefer configured helper presets or project-scoped tests over workspace-wide `cargo` commands.
 2. If you changed Rust behavior in a specific crate, run the narrowest crate-level validation that covers it.
 3. Heavy validation, release-mode builds, workspace-wide tests, and expensive `nextest` sweeps should go to GitHub Actions after the branch is committed and pushed unless the user explicitly asks for a local run.
 4. If any changes were made in common, core, or protocol and you still need a complete local test suite, ask the user before running it.
@@ -87,8 +87,9 @@ Also run `just argument-comment-lint` to ensure the codebase is clean of comment
 - Treat GitHub Actions as the default factory for remote seam validation, preview binaries, heavy Rust tests, and official releases.
 - Use `validation-lab.yml` as the default remote-first validation surface for scratch refs, integration refs, and other non-PR exploratory work.
 - Prefer `profile=targeted` for one active seam and `profile=frontier` for bounded next-blocker harvesting once there is a recent trusted baseline.
-- Local Build Helper remains the preferred narrow local lane for smoke checks, formatting, and targeted validation.
-- Do not run routine direct terminal `cargo build` or `cargo test` commands for expensive shared-host validation when the same work can be offloaded to GitHub CI.
+- Downstream support is currently limited to Linux `x86_64`. Public release artifacts, heavyweight checkpoint workflows, and routine remote validation should target Linux `x86_64` only unless the user explicitly asks to revive another platform and the supporting docs/workflows are updated in the same change.
+- Configured helper presets remain a good narrow local lane for smoke checks, formatting, and targeted validation.
+- Do not run routine direct terminal `cargo build` or `cargo test` commands for expensive local validation when the same work can be offloaded to GitHub CI.
 - Heavy remote CI only starts after the relevant work is committed and pushed.
 - Preview/build workflows are buildability checkpoints, not every-commit branch defaults.
 - Preview artifacts are disposable and non-release. Only the protected Sedna release workflow produces public release artifacts.

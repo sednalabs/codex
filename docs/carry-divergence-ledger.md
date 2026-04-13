@@ -28,21 +28,20 @@ live divergence.
 
 ## Current Live Divergences
 
-### Fork Workflow And Operator Policy
+### Fork Workflow And Validation Policy
 
 - `main` is now the default PR and integration branch, while `upstream-main`
   is the exact upstream mirror.
 - Downstream sync policy is merge-based, not rebase-based.
-- Shared-host validation and release flows may use local build-helper presets
-  where operators have them configured, but those presets are not a tracked
-  repository contract.
+- Helper-backed local validation and release flows may be used when configured,
+  but those presets are not a tracked repository contract.
 - Divergence regression ownership is tracked in
   [`downstream-regression-matrix.md`](downstream-regression-matrix.md).
 - Field-level native tool-surface deltas are summarized in
   [`downstream-tool-surface-matrix.md`](downstream-tool-surface-matrix.md).
 - Future registry-plus-generation maintenance direction is captured in
   [`downstream-divergence-tracking.md`](downstream-divergence-tracking.md).
-- Downstream operator workflows prefer MCP tool surfaces with blocking wait
+- Downstream guidance prefers MCP tool surfaces with blocking wait
   semantics over transcript-driven polling when the tool contract supports it.
 - Primary files:
   - `docs/contributing.md`
@@ -110,12 +109,15 @@ live divergence.
   - `codex-rs/state/migrations/0024_phase2_attestation_roots.sql`
   - `docs/memories.md`
 
-### CLI Git Metadata And Rebuild Triggers
+### Release Metadata And Rebuild Triggers
 
-- CLI builds embed `git describe` metadata.
-- CLI builds rerun when git state changes, including shared worktree git state.
+- Release builds embed canonical release identity plus compact provenance
+  metadata.
+- Version metadata rebuilds when git state changes, including shared worktree
+  git state.
 - Primary files:
-  - `codex-rs/cli/build.rs`
+  - `codex-rs/utils/version/build.rs`
+  - `codex-rs/utils/version/src/lib.rs`
   - `codex-rs/cli/src/main.rs`
 
 ### Sub-agent orchestration override preservation, inventory metadata, and wait joins
@@ -166,8 +168,8 @@ live divergence.
 - Timeout notes are appended to returned `raw_output`.
 - The downstream intent is to absorb long-running shell waits in the tool layer
   instead of spending model turns on repeated short-poll status checks.
-- In local downstream operator workflows, this composes with existing blocking
-  coordination primitives such as `wait_agent` and build-helper `*_and_wait`
+- In local downstream workflows, this composes with existing blocking
+  coordination primitives such as `wait_agent` and helper-backed `*_and_wait`
   calls so joins happen on state transitions rather than transcript churn.
 - This blocking MCP tool pattern was carried downstream before task support was
   fully operational.
@@ -263,7 +265,7 @@ live divergence.
   `$CODEX_HOME/prompts`, including optional frontmatter metadata for slash-popup
   descriptions and argument hints.
 - The TUI review flow also keeps the downstream custom-prompt entry point, so
-  operators can open a dedicated custom prompt view from the review popup and
+  users can open a dedicated custom prompt view from the review popup and
   submit ad hoc review text without losing the standard review interaction.
 - Primary files:
   - `codex-rs/core/src/custom_prompts.rs`
