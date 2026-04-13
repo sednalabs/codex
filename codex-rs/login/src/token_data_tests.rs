@@ -1,6 +1,7 @@
 use super::*;
 use chrono::TimeZone;
 use chrono::Utc;
+use codex_protocol::auth::KnownPlan;
 use pretty_assertions::assert_eq;
 use serde::Serialize;
 
@@ -149,6 +150,12 @@ fn workspace_account_detection_matches_workspace_plans() {
 
     let personal = IdTokenInfo {
         chatgpt_plan_type: Some(PlanType::Known(KnownPlan::Pro)),
+        ..IdTokenInfo::default()
+    };
+    assert_eq!(personal.is_workspace_account(), false);
+
+    let personal = IdTokenInfo {
+        chatgpt_plan_type: Some(PlanType::Known(KnownPlan::ProLite)),
         ..IdTokenInfo::default()
     };
     assert_eq!(personal.is_workspace_account(), false);

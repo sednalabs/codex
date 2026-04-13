@@ -9,10 +9,8 @@ use tracing::Instrument;
 use tracing::instrument;
 use tracing::trace_span;
 
-use crate::client_common::tools::ToolSpec;
 use crate::codex::Session;
 use crate::codex::TurnContext;
-use crate::error::CodexErr;
 use crate::function_tool::FunctionCallError;
 use crate::tools::context::AbortedToolOutput;
 use crate::tools::context::SharedTurnDiffTracker;
@@ -21,7 +19,9 @@ use crate::tools::registry::AnyToolResult;
 use crate::tools::router::ToolCall;
 use crate::tools::router::ToolCallSource;
 use crate::tools::router::ToolRouter;
+use codex_protocol::error::CodexErr;
 use codex_protocol::models::ResponseInputItem;
+use codex_tools::ToolSpec;
 
 #[derive(Clone)]
 pub(crate) struct ToolCallRuntime {
@@ -85,11 +85,12 @@ impl ToolCallRuntime {
         let tracker = Arc::clone(&self.tracker);
         let lock = Arc::clone(&self.parallel_execution);
         let started = Instant::now();
+        let display_name = call.tool_name.display();
 
         let dispatch_span = trace_span!(
             "dispatch_tool_call_with_code_mode_result",
-            otel.name = call.tool_name.as_str(),
-            tool_name = call.tool_name.as_str(),
+            otel.name = display_name.as_str(),
+            tool_name = display_name.as_str(),
             call_id = call.call_id.as_str(),
             aborted = false,
         );
@@ -171,11 +172,15 @@ impl ToolCallRuntime {
     }
 
     fn abort_message(call: &ToolCall, secs: f32) -> String {
-        match call.tool_name.as_str() {
-            "shell" | "container.exec" | "local_shell" | "shell_command" | "unified_exec" => {
-                format!("Wall time: {secs:.1} seconds\naborted by user")
-            }
-            _ => format!("aborted by user after {secs:.1}s"),
+        if call.tool_name.namespace.is_none()
+            && matches!(
+                call.tool_name.name.as_str(),
+                "shell" | "container.exec" | "local_shell" | "shell_command" | "unified_exec"
+            )
+        {
+            format!("Wall time: {secs:.1} seconds\naborted by user")
+        } else {
+            format!("aborted by user after {secs:.1}s")
         }
     }
 }

@@ -30,9 +30,14 @@ pub static CODEX_ALIASES_TEMP_DIR: Option<TestCodexAliasesGuard> = unsafe {
         .and_then(|name| name.to_str())
         .unwrap_or("");
     let argv1 = args.next().unwrap_or_default();
+    if argv1 == CODEX_CORE_APPLY_PATCH_ARG1 {
+        let _ = arg0_dispatch();
+        return None;
+    }
+
     // Helper re-execs inherit this ctor too, but they may run inside a sandbox
     // where creating another CODEX_HOME tempdir under /tmp is not allowed.
-    if exe_name == CODEX_LINUX_SANDBOX_ARG0 || argv1 == CODEX_CORE_APPLY_PATCH_ARG1 {
+    if exe_name == CODEX_LINUX_SANDBOX_ARG0 {
         return None;
     }
 
@@ -74,10 +79,10 @@ pub static CODEX_ALIASES_TEMP_DIR: Option<TestCodexAliasesGuard> = unsafe {
 mod abort_tasks;
 mod agent_jobs;
 mod agent_websocket;
+mod agents_md;
 mod apply_patch_cli;
 #[cfg(not(target_os = "windows"))]
 mod approvals;
-mod auth_refresh;
 mod cli_stream;
 mod client;
 mod client_websockets;
@@ -101,12 +106,12 @@ mod json_result;
 mod live_cli;
 mod live_reload;
 mod memories;
-mod model_info_overrides;
 mod model_overrides;
 mod model_switching;
 mod model_visible_layout;
 mod models_cache_ttl;
 mod models_etag_responses;
+mod openai_file_mcp;
 mod otel;
 mod pending_input;
 mod permissions_messages;
@@ -124,6 +129,7 @@ mod request_permissions;
 #[cfg(not(target_os = "windows"))]
 mod request_permissions_tool;
 mod request_user_input;
+mod responses_api_proxy_headers;
 mod resume;
 mod resume_warning;
 mod review;
@@ -142,7 +148,6 @@ mod sqlite_state;
 mod stream_error_allows_next_turn;
 mod stream_no_completed;
 mod subagent_notifications;
-mod text_encoding_fix;
 mod tool_harness;
 mod tool_parallelism;
 mod tool_suggest;
@@ -157,3 +162,4 @@ mod user_shell_cmd;
 mod view_image;
 mod web_search;
 mod websocket_fallback;
+mod window_headers;
