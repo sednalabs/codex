@@ -88,6 +88,9 @@ developer message Codex inserts when realtime becomes active. It only affects
 the realtime start message in prompt history and does not change websocket
 backend prompt settings or the realtime end/inactive message.
 
+For how this developer-layer message fits into the assembled prompt stack, see
+[Prompt Stack Deep Dive](prompt-stack-deep-dive.md#8-realtime-transition-instructions).
+
 Ctrl+C/Ctrl+D quitting uses a ~1 second double-press hint (`ctrl + c again to quit`).
 
 ## Realtime startup context
@@ -102,3 +105,7 @@ project-doc blends, and memory summaries are **not** included in that payload.
 This setting is independent of
 [`AGENTS.md` / `AGENTS.override.md` precedence](agents_md.md#local-override-precedence),
 which controls project instructions rather than realtime startup context.
+
+For the broader prompt-stack position of realtime developer messages,
+`user_instructions`, and project-doc instructions, see
+[Prompt Stack Deep Dive](prompt-stack-deep-dive.md).
