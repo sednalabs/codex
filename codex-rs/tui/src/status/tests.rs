@@ -244,7 +244,7 @@ async fn status_snapshot_distinguishes_session_and_thread_token_usage() {
             *line = line.replace('\\', "/");
         }
     }
-    let sanitized = sanitize_directory(rendered_lines).join("\n");
+    let sanitized = sanitize_version_banner(sanitize_directory(rendered_lines)).join("\n");
     assert_snapshot!(sanitized);
 }
 
