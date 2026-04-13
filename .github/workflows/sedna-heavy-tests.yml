@@ -65,10 +65,20 @@ on:
 #  schedule:
 #    - cron: "15 16 * * *"
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event_name == 'workflow_dispatch' && inputs.ref || github.ref_name }}
+  group: >-
+    ${{
+      github.workflow
+    }}-${{
+      github.event_name == 'workflow_dispatch' &&
+      format('{0}-{1}', inputs.ref || github.ref_name, inputs.lane || 'all') ||
+      github.event_name == 'pull_request' &&
+      format('pr-{0}', github.event.pull_request.number) ||
+      github.ref_name
+    }}
   cancel-in-progress: ${{ github.event_name != 'workflow_dispatch' && github.ref_name != 'main' && github.ref_name != 'upstream-main' }}
 
 permissions:
+  actions: read
   contents: read
 
 jobs:
@@ -77,14 +87,18 @@ jobs:
     if: >-
       ${{
         github.event_name != 'pull_request' ||
-        github.event.action != 'labeled' ||
-        github.event.label.name == 'ci:heavy'
+        (
+          (github.event.action != 'labeled' || github.event.label.name == 'ci:heavy') &&
+          (github.event.pull_request.draft == false || github.event.label.name == 'ci:heavy')
+        )
       }}
     runs-on: ubuntu-24.04
     outputs:
       checkout_ref: ${{ steps.meta.outputs.checkout_ref }}
       checkout_sha: ${{ steps.meta.outputs.checkout_sha }}
       display_ref: ${{ steps.meta.outputs.display_ref }}
+      planner_fingerprint: ${{ steps.meta.outputs.planner_fingerprint }}
+      dedupe_reason: ${{ steps.meta.outputs.dedupe_reason }}
       smoke_gate_kind: ${{ steps.meta.outputs.smoke_gate_kind }}
       smoke_matrix: ${{ steps.meta.outputs.smoke_matrix }}
       smoke_light_matrix: ${{ steps.meta.outputs.smoke_light_matrix }}
@@ -120,6 +134,8 @@ jobs:
       - name: Compute checkout ref
         id: meta
         shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
 
@@ -201,35 +217,88 @@ jobs:
           selected_rust_json="$(SELECTION_META="${selection_meta}" python3 -c 'import json, os; print(json.dumps(json.loads(os.environ["SELECTION_META"])["selected_rust_matrix"], separators=(",", ":")))')"
           selected_heavy_json="$(SELECTION_META="${selection_meta}" python3 -c 'import json, os; print(json.dumps(json.loads(os.environ["SELECTION_META"])["selected_heavy_matrix"], separators=(",", ":")))')"
           selected_lane_ids_json="$(SELECTION_META="${selection_meta}" python3 -c 'import json, os; print(json.dumps(json.loads(os.environ["SELECTION_META"])["selected_lane_ids"], separators=(",", ":")))')"
+          smoke_light_lane_count="$(SELECTION_META="${selection_meta}" python3 -c 'import json, os; print(json.loads(os.environ["SELECTION_META"])["smoke_light_lane_count"])')"
+          smoke_rust_lane_count="$(SELECTION_META="${selection_meta}" python3 -c 'import json, os; print(json.loads(os.environ["SELECTION_META"])["smoke_rust_lane_count"])')"
+          smoke_heavy_lane_count="$(SELECTION_META="${selection_meta}" python3 -c 'import json, os; print(json.loads(os.environ["SELECTION_META"])["smoke_heavy_lane_count"])')"
+          selected_light_lane_count="$(SELECTION_META="${selection_meta}" python3 -c 'import json, os; print(json.loads(os.environ["SELECTION_META"])["selected_light_lane_count"])')"
+          selected_rust_lane_count="$(SELECTION_META="${selection_meta}" python3 -c 'import json, os; print(json.loads(os.environ["SELECTION_META"])["selected_rust_lane_count"])')"
+          selected_heavy_lane_count="$(SELECTION_META="${selection_meta}" python3 -c 'import json, os; print(json.loads(os.environ["SELECTION_META"])["selected_heavy_lane_count"])')"
+          light_max_parallel="$(SELECTION_META="${selection_meta}" python3 -c 'import json, os; print(json.loads(os.environ["SELECTION_META"])["light_max_parallel"])')"
+          rust_max_parallel="$(SELECTION_META="${selection_meta}" python3 -c 'import json, os; print(json.loads(os.environ["SELECTION_META"])["rust_max_parallel"])')"
+          heavy_max_parallel="$(SELECTION_META="${selection_meta}" python3 -c 'import json, os; print(json.loads(os.environ["SELECTION_META"])["heavy_max_parallel"])')"
+          planner_fingerprint="$(SELECTION_META="${selection_meta}" python3 -c 'import hashlib, json, os; payload = json.loads(os.environ["SELECTION_META"]); source = json.dumps({\"requested_lane\": \"${{ inputs.lane }}\", \"run_smoke_gate\": payload[\"run_smoke_gate\"], \"selected_lane_ids\": payload[\"selected_lane_ids\"]}, sort_keys=True, separators=(\",\", \":\")); print(hashlib.sha256(source.encode(\"utf-8\")).hexdigest()[:16])')"
+          dedupe_reason=""
+
+          if [[ '${{ github.event_name }}' == 'pull_request' && '${{ github.event.action }}' == 'ready_for_review' ]]; then
+            duplicate_run="$(
+              gh api \
+                -H 'Accept: application/vnd.github+json' \
+                "/repos/${GITHUB_REPOSITORY}/actions/workflows/sedna-heavy-tests.yml/runs?event=pull_request&per_page=100" \
+                --jq '
+                  first(
+                    .workflow_runs[]
+                    | select(.id != ('"${GITHUB_RUN_ID}"' | tonumber))
+                    | select(.head_sha == "'"${checkout_sha}"'")
+                    | select(any(.pull_requests[]?; .number == ('"${{ github.event.pull_request.number }}"' | tonumber)))
+                    | select((.status == "queued") or (.status == "in_progress") or (.conclusion == "success"))
+                    | .html_url
+                  ) // ""
+                '
+            )"
+            if [[ -n "${duplicate_run}" ]]; then
+              dedupe_reason="ready_for_review duplicate skipped; equivalent heavy evidence already exists for ${checkout_sha} (${duplicate_run})"
+              run_smoke_gate="false"
+              run_selected_lanes="false"
+              smoke_gate_kind=""
+              smoke_json='{"include":[]}'
+              smoke_light_json='{"include":[]}'
+              smoke_rust_json='{"include":[]}'
+              smoke_heavy_json='{"include":[]}'
+              planned_json='{"include":[]}'
+              selected_json='{"include":[]}'
+              selected_light_json='{"include":[]}'
+              selected_rust_json='{"include":[]}'
+              selected_heavy_json='{"include":[]}'
+              selected_lane_ids_json='[]'
+              smoke_light_lane_count='0'
+              smoke_rust_lane_count='0'
+              smoke_heavy_lane_count='0'
+              selected_light_lane_count='0'
+              selected_rust_lane_count='0'
+              selected_heavy_lane_count='0'
+            fi
+          fi
 
           {
             echo "checkout_ref=${checkout_ref}"
             echo "checkout_sha=${checkout_sha}"
             echo "display_ref=${display_ref}"
+            echo "planner_fingerprint=${planner_fingerprint}"
+            echo "dedupe_reason=${dedupe_reason}"
             echo "smoke_gate_kind=${smoke_gate_kind}"
             echo "smoke_matrix=${smoke_json}"
             echo "smoke_light_matrix=${smoke_light_json}"
             echo "smoke_rust_matrix=${smoke_rust_json}"
             echo "smoke_heavy_matrix=${smoke_heavy_json}"
-            echo "smoke_light_lane_count=$(SELECTION_META="${selection_meta}" python3 -c 'import json, os; print(json.loads(os.environ["SELECTION_META"])["smoke_light_lane_count"])')"
-            echo "smoke_rust_lane_count=$(SELECTION_META="${selection_meta}" python3 -c 'import json, os; print(json.loads(os.environ["SELECTION_META"])["smoke_rust_lane_count"])')"
-            echo "smoke_heavy_lane_count=$(SELECTION_META="${selection_meta}" python3 -c 'import json, os; print(json.loads(os.environ["SELECTION_META"])["smoke_heavy_lane_count"])')"
+            echo "smoke_light_lane_count=${smoke_light_lane_count}"
+            echo "smoke_rust_lane_count=${smoke_rust_lane_count}"
+            echo "smoke_heavy_lane_count=${smoke_heavy_lane_count}"
             echo "run_smoke_gate=${run_smoke_gate}"
             echo "matrix_fail_fast=$(SELECTION_META="${selection_meta}" python3 -c 'import json, os; print(json.loads(os.environ["SELECTION_META"])["matrix_fail_fast"])')"
             echo "continue_after_smoke_failure=$(SELECTION_META="${selection_meta}" python3 -c 'import json, os; print(json.loads(os.environ["SELECTION_META"])["continue_after_smoke_failure"])')"
-            echo "run_selected_lanes=$(SELECTION_META="${selection_meta}" python3 -c 'import json, os; print(json.loads(os.environ["SELECTION_META"])["run_selected_lanes"])')"
+            echo "run_selected_lanes=${run_selected_lanes}"
             echo "planned_matrix=${planned_json}"
             echo "selected_matrix=${selected_json}"
             echo "selected_light_matrix=${selected_light_json}"
             echo "selected_rust_matrix=${selected_rust_json}"
             echo "selected_heavy_matrix=${selected_heavy_json}"
             echo "selected_lane_ids=${selected_lane_ids_json}"
-            echo "selected_light_lane_count=$(SELECTION_META="${selection_meta}" python3 -c 'import json, os; print(json.loads(os.environ["SELECTION_META"])["selected_light_lane_count"])')"
-            echo "selected_rust_lane_count=$(SELECTION_META="${selection_meta}" python3 -c 'import json, os; print(json.loads(os.environ["SELECTION_META"])["selected_rust_lane_count"])')"
-            echo "selected_heavy_lane_count=$(SELECTION_META="${selection_meta}" python3 -c 'import json, os; print(json.loads(os.environ["SELECTION_META"])["selected_heavy_lane_count"])')"
-            echo "light_max_parallel=$(SELECTION_META="${selection_meta}" python3 -c 'import json, os; print(json.loads(os.environ["SELECTION_META"])["light_max_parallel"])')"
-            echo "rust_max_parallel=$(SELECTION_META="${selection_meta}" python3 -c 'import json, os; print(json.loads(os.environ["SELECTION_META"])["rust_max_parallel"])')"
-            echo "heavy_max_parallel=$(SELECTION_META="${selection_meta}" python3 -c 'import json, os; print(json.loads(os.environ["SELECTION_META"])["heavy_max_parallel"])')"
+            echo "selected_light_lane_count=${selected_light_lane_count}"
+            echo "selected_rust_lane_count=${selected_rust_lane_count}"
+            echo "selected_heavy_lane_count=${selected_heavy_lane_count}"
+            echo "light_max_parallel=${light_max_parallel}"
+            echo "rust_max_parallel=${rust_max_parallel}"
+            echo "heavy_max_parallel=${heavy_max_parallel}"
           } >> "$GITHUB_OUTPUT"
 
           {
@@ -240,6 +309,10 @@ jobs:
             echo "- Resolved checkout SHA: \`${checkout_sha}\`"
             echo "- Display ref: \`${display_ref}\`"
             echo "- Requested lane: \`${{ inputs.lane || 'auto' }}\`"
+            echo "- Planner fingerprint: \`${planner_fingerprint}\`"
+            if [[ -n "${dedupe_reason}" ]]; then
+              echo "- Dedupe: ${dedupe_reason}"
+            fi
           } >> "$GITHUB_STEP_SUMMARY"
 
   smoke_light_lanes:
