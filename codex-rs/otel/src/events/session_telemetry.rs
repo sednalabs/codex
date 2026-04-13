@@ -40,6 +40,7 @@ use codex_protocol::protocol::ReviewDecision;
 use codex_protocol::protocol::SandboxPolicy;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::user_input::UserInput;
+use codex_utils_version::RELEASE_VERSION;
 use eventsource_stream::Event as StreamEvent;
 use eventsource_stream::EventStreamError as StreamError;
 use opentelemetry_sdk::metrics::data::ResourceMetrics;
@@ -281,7 +282,7 @@ impl SessionTelemetry {
                 model: model.to_owned(),
                 slug: slug.to_owned(),
                 log_user_prompts,
-                app_version: env!("CARGO_PKG_VERSION"),
+                app_version: RELEASE_VERSION,
                 terminal_type,
             },
             metrics: crate::metrics::global(),

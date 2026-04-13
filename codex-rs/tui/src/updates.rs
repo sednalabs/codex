@@ -205,6 +205,10 @@ mod tests {
             extract_version_from_latest_tag("v1.5.0-sedna.1").expect("failed to parse version"),
             "1.5.0-sedna.1"
         );
+        assert_eq!(
+            extract_version_from_latest_tag("v0.119.0-sedna.2").expect("failed to parse version"),
+            "0.119.0-sedna.2"
+        );
     }
 
     #[test]
@@ -222,6 +226,10 @@ mod tests {
     fn fork_release_suffixes_compare_correctly() {
         assert_eq!(is_newer("0.117.0-sedna.2", "0.117.0-sedna.1"), Some(true));
         assert_eq!(is_newer("0.117.0-sedna.1", "0.117.0+abcdef12"), Some(false));
+        assert_eq!(
+            is_newer("0.119.0-sedna.2", "0.119.0-alpha.2-sedna.1"),
+            Some(true)
+        );
     }
 
     #[test]

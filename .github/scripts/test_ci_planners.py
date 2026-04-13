@@ -59,6 +59,11 @@ def parse_workflow_dispatch_lane_options(workflow_path: Path) -> list[str]:
     )
 
 
+def parse_pull_request_types(workflow_path: Path) -> list[str]:
+    payload = yaml.load(workflow_path.read_text(encoding="utf-8"), Loader=yaml.BaseLoader)
+    return (((payload.get("on") or {}).get("pull_request") or {}).get("types") or [])
+
+
 def load_workflow_payload(workflow_path: Path) -> dict:
     payload = yaml.load(workflow_path.read_text(encoding="utf-8"), Loader=yaml.BaseLoader)
     return payload if isinstance(payload, dict) else {}
@@ -574,6 +579,43 @@ class ValidationPlanScriptTests(unittest.TestCase):
         )
         rust_if = (jobs.get("rust_lanes") or {}).get("if") or ""
         self.assertIn("needs.metadata.outputs.continue_after_smoke_failure == 'true'", rust_if)
+
+    def test_sedna_heavy_pr_triggers_keep_ready_for_review(self) -> None:
+        trigger_types = parse_pull_request_types(
+            REPO_ROOT / ".github/workflows/sedna-heavy-tests.yml"
+        )
+        self.assertEqual(
+            trigger_types,
+            ["opened", "synchronize", "reopened", "ready_for_review", "labeled"],
+        )
+
+    def test_sedna_heavy_metadata_skips_draft_pr_churn_without_ci_heavy(self) -> None:
+        payload = load_workflow_payload(REPO_ROOT / ".github/workflows/sedna-heavy-tests.yml")
+        metadata_if = ((payload.get("jobs") or {}).get("metadata") or {}).get("if") or ""
+
+        self.assertIn("github.event.pull_request.draft == false", metadata_if)
+        self.assertIn("github.event.label.name == 'ci:heavy'", metadata_if)
+
+    def test_sedna_heavy_workflow_dispatch_concurrency_keys_on_lane(self) -> None:
+        payload = load_workflow_payload(REPO_ROOT / ".github/workflows/sedna-heavy-tests.yml")
+        concurrency = payload.get("concurrency") or {}
+        group = concurrency.get("group") or ""
+
+        self.assertIn("inputs.lane || 'all'", group)
+        self.assertIn("github.event.pull_request.number", group)
+
+    def test_sedna_heavy_metadata_exposes_planner_fingerprint_and_dedupe_reason(self) -> None:
+        payload = load_workflow_payload(REPO_ROOT / ".github/workflows/sedna-heavy-tests.yml")
+        metadata_outputs = (((payload.get("jobs") or {}).get("metadata") or {}).get("outputs") or {})
+
+        self.assertEqual(
+            metadata_outputs.get("planner_fingerprint"),
+            "${{ steps.meta.outputs.planner_fingerprint }}",
+        )
+        self.assertEqual(
+            metadata_outputs.get("dedupe_reason"),
+            "${{ steps.meta.outputs.dedupe_reason }}",
+        )
     def test_sedna_heavy_summary_job_aggregates_lane_artifacts(self) -> None:
         payload = load_workflow_payload(REPO_ROOT / ".github/workflows/sedna-heavy-tests.yml")
         jobs = payload.get("jobs") or {}

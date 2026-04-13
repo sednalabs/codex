@@ -39,7 +39,7 @@ git remote set-url origin git@github.com:SednaLabs/codex.git
 - use remote validation as the default measurement surface for substantive work
 - `validation-lab` `profile=smoke`, `targeted`, and `frontier` are the default non-PR remote validation ladder
 - PR and merge-group workflows are promotion surfaces rather than the default inner-loop validator
-- local Build Helper runs are optional operator infrastructure when they are configured on a shared host, not the tracked repository default
+- helper-backed local runs are optional convenience infrastructure when available, not the tracked repository default
 - heavy Rust tests, release-mode builds, and preview binaries should be offloaded to GitHub Actions after commit and push
 - branch artifacts are disposable and retain for 3 days
 - official releases are published only from the protected Sedna release workflow
@@ -65,7 +65,7 @@ Supporting docs:
 Why:
 - Support "wait until terminal" semantics directly on `exec_command` and `write_stdin` for long-running exact/tool-driven command flows.
 - Avoid model-layer short-poll loops that waste turns, duplicate context, and make orchestration look busy without changing state.
-- Let downstream operator workflows treat long-running shell work as an actual blocking join instead of repeated "check again" tool chatter.
+- Let downstream interactive automation treat long-running shell work as an actual blocking join instead of repeated "check again" tool chatter.
 - Keep wait responses aligned with the current unified-exec output shape after upstream refactors.
 - Expose compaction count on turn completion so clients can distinguish "normal turn complete" from "turn completed after one or more compactions".
 
@@ -76,7 +76,7 @@ User-visible behavior:
 - `TurnCompleteEvent` includes `compaction_events_in_turn`.
 - Guardrails for the carry-only turn-complete compaction count currently live in `codex.app-server-protocol-test` (`preserves_compaction_only_turn`) plus broader `TurnCompleteEvent` shape coverage in `codex-core`, `codex-exec`, and `codex-tui` tests.
 - Sub-agent delegate forwarding continues to emit `TokenCount` events back to the parent session, ensuring the downstream token accounting and provider/model metadata remain accurate even if upstream-native structures eventually rehost this carry.
-- In downstream operator environments, this pairs cleanly with other blocking coordination primitives such as `wait_agent` and build-helper `*_and_wait` flows, so agents can wait on real state transitions instead of spinning on repeated status polls.
+- This pairs cleanly with other blocking coordination primitives such as `wait_agent` and helper-backed `*_and_wait` flows, so agents can wait on real state transitions instead of spinning on repeated status polls.
 - This downstream blocking MCP tool pattern predates fully operational task support and exists specifically so the tool layer, not the transcript, absorbs the wait.
 
 ### Usage ledger: first-party local `usage.sqlite`
@@ -95,18 +95,18 @@ User-visible behavior:
 ### MCP tool orchestration: blocking waits before task support matured
 
 Why:
-- Shared-host validation and release builds are more reliable when they run through build-helper MCP instead of ad hoc shell commands.
+- Validation and release work are more reliable when they run through a task-oriented tool surface instead of ad hoc shell commands.
 - The same downstream execution model should apply to build/test orchestration: prefer a blocking wait on a real task over repeated status polling from the model layer.
-- Downstream operator workflows benefit when long-running MCP tool calls can block on a real state transition instead of relying on repeated model-driven status polling.
+- Downstream automation benefits when long-running MCP tool calls can block on a real state transition instead of relying on repeated model-driven status polling.
 - This fork implemented blocking wait semantics before task support was fully operational, so agents could coordinate against terminal states without transcript churn.
 
 User-visible behavior:
-- Build-helper presets are local operator configuration on the shared host rather than a tracked repo contract.
-- When local presets are present, downstream instructions can reference them for reproducible validation and release steps on that host.
+- Helper presets, when used, are environment-local convenience configuration rather than a tracked repo contract.
+- When local presets are present, downstream instructions can reference them for reproducible validation and release steps in that environment.
 - The default progressive path remains `just core-test-progressive`, which runs compile, carry-divergence, and usage-ledger smoke gates before the larger codex-core suite.
-- [`downstream-regression-matrix.md`](/home/grant/mmm/codex/docs/downstream-regression-matrix.md) maps each intentional divergence to a concrete smoke/progressive lane.
-- For routine build-helper runs, downstream local guidance prefers `wait_until_terminal=true` so the tool layer, not the model transcript, absorbs the wait.
-- Downstream docs and operator guidance prefer MCP tool surfaces that can block in-tool until useful state changes occur.
+- [`downstream-regression-matrix.md`](downstream-regression-matrix.md) maps each intentional divergence to a concrete smoke/progressive lane.
+- For helper-backed or other long-running tool calls, prefer `wait_until_terminal=true` so the tool layer, not the model transcript, absorbs the wait.
+- Downstream docs prefer MCP tool surfaces that can block in-tool until useful state changes occur.
 - The intended execution model is: start work, block on the tool contract, resume on a terminal or timeout condition, rather than simulate a scheduler in the chat transcript.
 
 ### Code mode: imported tool declarations instead of inline `tools` const examples
@@ -125,20 +125,20 @@ User-visible behavior:
 Why:
 - Upstream already supports explicit `spawn_agent(model=..., reasoning_effort=...)` child overrides, so the live downstream divergence is narrower than the historical carry title suggests.
 - Preserve those explicit child overrides at the spawn boundary, even when launching a role-backed sub-agent whose role file does not lock model/economy fields, so downstream economical deployments do not drift back to inherited parent-profile defaults during role reload.
-- Surface the effective resolved child settings directly in the tool layer so operators can see what actually launched.
+- Surface the effective resolved child settings directly in the tool layer so callers can see what actually launched.
 - Let downstream multi-agent orchestration block on clear tool contracts (`list_agents`, `inspect_agent_tree`, `wait_agent(return_when=...)`) instead of transcript polling.
-- Upstream-native reimplementation is welcome when it preserves the live nested-agent visibility, the cheap `list_agents` surface, the richer `inspect_agent_tree` inspection, and the explicit blocking `wait_agent` contract so we can shrink the divergence without losing the downstream operator experience.
+- Upstream-native reimplementation is welcome when it preserves the live nested-agent visibility, the cheap `list_agents` surface, the richer `inspect_agent_tree` inspection, and the explicit blocking `wait_agent` contract so we can shrink the divergence without losing the downstream visibility model.
 
 User-visible behavior:
 - Explicit child `model` and `model_reasoning_effort` requests survive role application unless the selected role explicitly sets those fields or locks the summary, and the `model_reasoning_summary` is preserved internally so downstream metadata can keep the intended reasoning context even though it is not part of the tool response. The role reload itself stays on the upstream-native profile/provider path; the sticky child override carry now lives in the spawn handlers.
-- `spawn_agent` returns `role`, `status`, `identity_source`, `effective_model`, `effective_reasoning_effort`, and `effective_model_provider_id`, letting operators see the resolved settings that actually launched after the role/profile overrides. That preserved `model_reasoning_summary` stays available through our internal metadata, not the raw tool response or inventory fields.
+- `spawn_agent` returns `role`, `status`, `identity_source`, `effective_model`, `effective_reasoning_effort`, and `effective_model_provider_id`, letting callers see the resolved settings that actually launched after the role/profile overrides. That preserved `model_reasoning_summary` stays available through our internal metadata, not the raw tool response or inventory fields.
 - Active-profile updates (parent/session config/role) that set `model`, `model_reasoning_summary`, or `model_reasoning_effort` continue to override child requests; the precedence stack is role-defined fields > active profile overrides > child requests, and the split between `core/src/agent/role.rs` and the spawn handlers encodes that boundary explicitly.
-- The built-in `explorer` role no longer hard-locks a model or reasoning setting; instead the cheap-first policy lives in availability-aware `spawn_agent` and orchestrator guidance so codebase-question lanes stay compatible with the caller's loaded model catalog.
-- `list_agents` remains the always-on, cheap live inventory view across both collaboration surfaces rather than being hidden behind `MultiAgentV2`; it exposes `has_active_subagents` / `active_subagent_count` plus nested visibility/status metadata so operators retain nested-agent live visibility without dumping full trees.
+- The built-in `explorer` role no longer hard-locks a model or reasoning setting; instead the cheap-first policy lives in availability-aware `spawn_agent` behavior and supporting guidance so codebase-question lanes stay compatible with the caller's loaded model catalog.
+- `list_agents` remains the always-on, cheap live inventory view across both collaboration surfaces rather than being hidden behind `MultiAgentV2`; it exposes `has_active_subagents` / `active_subagent_count` plus nested visibility/status metadata so callers retain nested-agent live visibility without dumping full trees.
 - `inspect_agent_tree` is the intentionally richer downstream observability surface, separate from `list_agents`: it inspects the current subtree or a target path, can toggle `live` versus `stale` descendant visibility, can filter to selected branches with `agent_roots`, and returns compact tree rows with bounded depth and row limits.
 - `wait_agent` supports `return_when=any|all` and returns `requested_ids`, `pending_ids`, `completion_reason`, and `timed_out`.
 - Roles that explicitly set `model`, `model_provider`, `model_reasoning_effort`, or `model_verbosity` continue to be authoritative, even when a child requests a different setting.
-- Docs and tooling now spell out the precedence stack, a cheap-first sidecar waterfall, and the intended `list_agents` / `inspect_agent_tree` / `wait_agent` orchestration pattern: cheap live view first to keep nested-agent visibility, compact nested or stale inspection when deeper context is needed, blocking wait only when a transition must complete, start with the smallest visible native Codex lane, use the `gpt-5.1-codex-mini` / `gpt-5.3-codex-spark` / `gpt-5.4-mini` ladder only when those exact slugs are actually loaded, and escalate beyond that only with a concrete reason.
+- Docs and tooling now spell out the precedence stack and the intended `list_agents` / `inspect_agent_tree` / `wait_agent` workflow: cheap live view first to keep nested-agent visibility, compact nested or stale inspection when deeper context is needed, and blocking wait only when a transition must complete.
 
 Primary files:
 - `codex-rs/core/src/agent/role.rs`
@@ -209,7 +209,7 @@ User-visible behavior:
 ### TUI: thread-session continuity and `/agent` / status accounting
 
 Why:
-- Preserve the operator's per-thread approval/sandbox/reviewer choices while moving between the main thread and subagents.
+- Preserve per-thread approval/sandbox/reviewer choices while moving between the main thread and subagents.
 - Keep config refresh and fresh-session cloning from silently resetting the active thread's mutable session policy.
 - Surface enough `/agent` and status-line accounting to explain per-thread versus combined-session usage without requiring a broader context/history pass.
 

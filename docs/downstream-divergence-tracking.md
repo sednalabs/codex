@@ -12,7 +12,7 @@ projection.
 
 The current downstream docs are doing three jobs at once:
 
-- stable fork policy and operator guidance
+- stable fork policy and workflow guidance
 - live divergence inventory
 - historical upstream-equivalent carry history
 
@@ -51,7 +51,7 @@ Add one future canonical registry:
 ## What Should Stay Manual
 
 - branch policy
-- operator guidance
+- workflow guidance
 - narrative rationale for why a divergence exists
 - taxonomy choices
 - the decision that a change is a real divergence rather than derivative churn
@@ -132,7 +132,7 @@ The registry should be reconciled against live git state:
 - `git diff upstream/main...carry/main --name-only`
 - `git log --left-right --cherry-pick --oneline upstream/main...carry/main`
 
-Where useful, generator code can also read local build-helper preset metadata,
+Where useful, generator code can also read local helper preset metadata,
 but the tracked docs should not depend on a committed preset file being present
 in the repository.
 

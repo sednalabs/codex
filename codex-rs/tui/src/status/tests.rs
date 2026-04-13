@@ -82,6 +82,31 @@ fn sanitize_directory(lines: Vec<String>) -> Vec<String> {
         .collect()
 }
 
+fn sanitize_version_banner(lines: Vec<String>) -> Vec<String> {
+    lines
+        .into_iter()
+        .map(|line| {
+            if let (Some(title_pos), Some(pipe_idx)) =
+                (line.find("OpenAI Codex (v"), line.rfind('│'))
+            {
+                let prefix = &line[..title_pos];
+                let suffix = &line[pipe_idx..];
+                let content_width = pipe_idx.saturating_sub(title_pos);
+                let replacement = "OpenAI Codex (v0.0.0)";
+                let mut rebuilt = prefix.to_string();
+                rebuilt.push_str(replacement);
+                if content_width > replacement.len() {
+                    rebuilt.push_str(&" ".repeat(content_width - replacement.len()));
+                }
+                rebuilt.push_str(suffix);
+                rebuilt
+            } else {
+                line
+            }
+        })
+        .collect()
+}
+
 fn reset_at_from(captured_at: &chrono::DateTime<chrono::Local>, seconds: i64) -> i64 {
     (*captured_at + ChronoDuration::seconds(seconds))
         .with_timezone(&Utc)
@@ -165,7 +190,7 @@ async fn status_snapshot_includes_reasoning_details() {
             *line = line.replace('\\', "/");
         }
     }
-    let sanitized = sanitize_directory(rendered_lines).join("\n");
+    let sanitized = sanitize_version_banner(sanitize_directory(rendered_lines)).join("\n");
     assert_snapshot!(sanitized);
 }
 
@@ -219,7 +244,7 @@ async fn status_snapshot_distinguishes_session_and_thread_token_usage() {
             *line = line.replace('\\', "/");
         }
     }
-    let sanitized = sanitize_directory(rendered_lines).join("\n");
+    let sanitized = sanitize_version_banner(sanitize_directory(rendered_lines)).join("\n");
     assert_snapshot!(sanitized);
 }
 

@@ -13,6 +13,7 @@ use anyhow::Result;
 use anyhow::anyhow;
 use codex_protocol::ThreadId;
 use codex_protocol::protocol::SessionSource;
+use codex_utils_version::RELEASE_VERSION;
 use feedback_diagnostics::FEEDBACK_DIAGNOSTICS_ATTACHMENT_FILENAME;
 use feedback_diagnostics::FeedbackDiagnostics;
 use tracing::Event;
@@ -274,11 +275,10 @@ impl FeedbackSnapshot {
             ..Default::default()
         });
 
-        let cli_version = env!("CARGO_PKG_VERSION");
         let mut tags = BTreeMap::from([
             (String::from("thread_id"), self.thread_id.to_string()),
             (String::from("classification"), classification.to_string()),
-            (String::from("cli_version"), cli_version.to_string()),
+            (String::from("cli_version"), RELEASE_VERSION.to_string()),
         ]);
         if let Some(source) = session_source.as_ref() {
             tags.insert(String::from("session_source"), source.to_string());

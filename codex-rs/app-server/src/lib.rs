@@ -9,6 +9,7 @@ use codex_core::config_loader::CloudRequirementsLoader;
 use codex_core::config_loader::ConfigLayerStackOrdering;
 use codex_core::config_loader::LoaderOverrides;
 use codex_utils_cli::CliConfigOverrides;
+use codex_utils_version::RELEASE_VERSION;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::io::ErrorKind;
@@ -474,7 +475,7 @@ pub async fn run_main_with_transport(
 
     let otel = codex_core::otel_init::build_provider(
         &config,
-        env!("CARGO_PKG_VERSION"),
+        RELEASE_VERSION,
         Some("codex-app-server"),
         default_analytics_enabled,
     )

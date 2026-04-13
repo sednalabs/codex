@@ -4,14 +4,14 @@
 </p>
 </br>
 Codex Sedna keeps close to the upstream Codex experience while shipping Sedna-owned releases, downstream CI policy, and fork-specific operational behavior.
-</br>Use <a href="https://github.com/SednaLabs/codex/releases/latest">SednaLabs/codex releases</a> for supported binaries, and see <a href="./docs/downstream.md">downstream notes</a> plus <a href="./docs/sedna-release.md">Sedna release policy</a> for fork-specific workflow details.
+</br>Use <a href="https://github.com/SednaLabs/codex/releases">SednaLabs/codex releases</a> for supported binaries, and see <a href="./docs/downstream.md">downstream notes</a> plus <a href="./docs/sedna-release.md">Sedna release policy</a> for fork-specific workflow details.
 </br>If you are looking for the upstream OpenAI distribution, IDE integrations, or Codex Web, use the official <a href="https://developers.openai.com/codex">Codex docs</a> and <a href="https://chatgpt.com/codex">chatgpt.com/codex</a>.</p>
 
 ---
 
 ## Codex Sedna identity
 
-This repository publishes the Codex Sedna fork maintained by SednaLabs, not a lightly edited upstream mirror. We keep the openai/codex sources in sync, but Sedna controls the public release cadence, version naming (for example, `v0.119.0-alpha.2-sedna.1`), and downstream CI policy described in `docs/sedna-release.md` and `docs/github-ci-offload.md`. The sections under `docs/downstream.md` explain how we track `upstream/main`, protect the downstream branch, and manage fork-only additions.
+This repository publishes the Codex Sedna fork maintained by SednaLabs, not a lightly edited upstream mirror. We keep the openai/codex sources in sync, but Sedna controls the public release cadence, version naming (for example, `v0.119.0-sedna.2`), and downstream CI policy described in `docs/sedna-release.md` and `docs/github-ci-offload.md`. The sections under `docs/downstream.md` explain how we track `upstream/main`, protect the downstream branch, and manage fork-only additions.
 
 ---
 
@@ -22,18 +22,16 @@ This repository publishes the Codex Sedna fork maintained by SednaLabs, not a li
 The supported Sedna distribution path is the latest GitHub Release from `SednaLabs/codex`.
 
 <details open>
-<summary>Download a binary from the <a href="https://github.com/SednaLabs/codex/releases/latest">latest GitHub Release</a>.</summary>
+<summary>Download a binary from the <a href="https://github.com/SednaLabs/codex/releases">GitHub Releases page</a>.</summary>
 
-Each GitHub Release contains many executables, but in practice, you likely want one of these:
+Each GitHub Release currently contains one supported downstream CLI archive:
 
-- macOS
-  - Apple Silicon/arm64: `codex-aarch64-apple-darwin.tar.gz`
-  - x86_64 (older Mac hardware): `codex-x86_64-apple-darwin.tar.gz`
 - Linux
-  - x86_64: `codex-x86_64-unknown-linux-musl.tar.gz`
-  - arm64: `codex-aarch64-unknown-linux-musl.tar.gz`
+  - x86_64: `codex-sedna-<version>-x86_64-unknown-linux-gnu.tar.gz`
 
-Each archive contains a single entry with the platform baked into the name (e.g., `codex-x86_64-unknown-linux-musl`), so you likely want to rename it to `codex` after extracting it.
+The archive contains `codex` plus `codex-responses-api-proxy`.
+
+macOS, Windows, Linux arm64, and other historical upstream targets remain in the source tree for future re-enablement, but they are not currently supported Sedna release targets.
 
 </details>
 

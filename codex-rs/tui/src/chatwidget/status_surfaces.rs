@@ -477,7 +477,7 @@ impl ChatWidget {
                     .unwrap_or_else(|| "weekly".to_string());
                 self.status_line_weekly_limit_display(window, captured_at, &label)
             }
-            StatusLineItem::CodexVersion => Some(CODEX_CLI_VERSION.to_string()),
+            StatusLineItem::CodexVersion => Some(crate::version::CODEX_DISPLAY_VERSION.to_string()),
             StatusLineItem::ContextWindowSize => self
                 .status_line_context_window_size()
                 .map(|cws| format!("{} window", format_tokens_compact(cws))),

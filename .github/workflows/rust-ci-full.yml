@@ -3,13 +3,12 @@ on:
   workflow_dispatch:
     inputs:
       platform_scope:
-        description: Platform coverage to run
+        description: Downstream platform coverage to run
         required: false
         type: choice
         options:
-          - linux-x86-only
-          - full-cross-platform
-        default: linux-x86-only
+          - linux-x86_64-only
+        default: linux-x86_64-only
   schedule:
     - cron: "15 18 * * *"
 
@@ -26,31 +25,16 @@ jobs:
     steps:
       - name: Compute platform matrices
         id: plan
-        env:
-          FULL_PLATFORM_RUN: ${{ github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.platform_scope == 'full-cross-platform') }}
         shell: bash
         run: |
           python3 - <<'PY' >> "$GITHUB_OUTPUT"
           import json
-          import os
 
-          full_platform_run = os.environ["FULL_PLATFORM_RUN"] == "true"
-
-          linux_arg_comment_lint = [
-              {"name": "Linux", "runner": "ubuntu-24.04"},
+          # Downstream checkpoint coverage is intentionally Linux x86_64 only for now.
+          linux_x86_64_arg_comment_lint = [
+              {"name": "Linux x86_64", "runner": "ubuntu-24.04"},
           ]
-          full_arg_comment_lint = [
-              {"name": "Linux", "runner": "ubuntu-24.04"},
-              {"name": "macOS", "runner": "macos-15"},
-              {"name": "Windows", "runner": "windows-2025"},
-          ]
-
-          linux_lint_build = [
-              {
-                  "runner": "ubuntu-24.04",
-                  "target": "x86_64-unknown-linux-musl",
-                  "profile": "dev",
-              },
+          linux_x86_64_lint_build = [
               {
                   "runner": "ubuntu-24.04",
                   "target": "x86_64-unknown-linux-gnu",
@@ -58,79 +42,12 @@ jobs:
               },
               {
                   "runner": "ubuntu-24.04",
-                  "target": "x86_64-unknown-linux-musl",
-                  "profile": "release",
-              },
-          ]
-          full_lint_build = [
-              {
-                  "runner": "macos-15",
-                  "target": "aarch64-apple-darwin",
-                  "profile": "dev",
-              },
-              {
-                  "runner": "macos-15",
-                  "target": "x86_64-apple-darwin",
-                  "profile": "dev",
-              },
-              {
-                  "runner": "ubuntu-24.04",
-                  "target": "x86_64-unknown-linux-musl",
-                  "profile": "dev",
-              },
-              {
-                  "runner": "ubuntu-24.04",
                   "target": "x86_64-unknown-linux-gnu",
-                  "profile": "dev",
-              },
-              {
-                  "runner": "ubuntu-24.04-arm",
-                  "target": "aarch64-unknown-linux-musl",
-                  "profile": "dev",
-              },
-              {
-                  "runner": "ubuntu-24.04-arm",
-                  "target": "aarch64-unknown-linux-gnu",
-                  "profile": "dev",
-              },
-              {
-                  "runner": "windows-2025",
-                  "target": "x86_64-pc-windows-msvc",
-                  "profile": "dev",
-              },
-              {
-                  "runner": "windows-11-arm",
-                  "target": "aarch64-pc-windows-msvc",
-                  "profile": "dev",
-              },
-              {
-                  "runner": "macos-15",
-                  "target": "aarch64-apple-darwin",
-                  "profile": "release",
-              },
-              {
-                  "runner": "ubuntu-24.04",
-                  "target": "x86_64-unknown-linux-musl",
-                  "profile": "release",
-              },
-              {
-                  "runner": "ubuntu-24.04-arm",
-                  "target": "aarch64-unknown-linux-musl",
-                  "profile": "release",
-              },
-              {
-                  "runner": "windows-2025",
-                  "target": "x86_64-pc-windows-msvc",
-                  "profile": "release",
-              },
-              {
-                  "runner": "windows-11-arm",
-                  "target": "aarch64-pc-windows-msvc",
                   "profile": "release",
               },
           ]
 
-          linux_tests = [
+          linux_x86_64_tests = [
               {
                   "runner": "ubuntu-24.04",
                   "target": "x86_64-unknown-linux-gnu",
@@ -138,49 +55,15 @@ jobs:
                   "remote_env": "true",
               }
           ]
-          full_tests = [
-              {
-                  "runner": "macos-15",
-                  "target": "aarch64-apple-darwin",
-                  "profile": "dev",
-              },
-              {
-                  "runner": "ubuntu-24.04",
-                  "target": "x86_64-unknown-linux-gnu",
-                  "profile": "dev",
-                  "remote_env": "true",
-              },
-              {
-                  "runner": "ubuntu-24.04-arm",
-                  "target": "aarch64-unknown-linux-gnu",
-                  "profile": "dev",
-              },
-              {
-                  "runner": "windows-2025",
-                  "target": "x86_64-pc-windows-msvc",
-                  "profile": "dev",
-              },
-              {
-                  "runner": "windows-11-arm",
-                  "target": "aarch64-pc-windows-msvc",
-                  "profile": "dev",
-              },
-          ]
 
           def emit(name: str, value: list[dict]) -> None:
               print(
                   f"{name}={json.dumps({'include': value}, separators=(',', ':'))}"
               )
 
-          emit(
-              "argument_comment_lint_matrix",
-              full_arg_comment_lint if full_platform_run else linux_arg_comment_lint,
-          )
-          emit(
-              "lint_build_matrix",
-              full_lint_build if full_platform_run else linux_lint_build,
-          )
-          emit("tests_matrix", full_tests if full_platform_run else linux_tests)
+          emit("argument_comment_lint_matrix", linux_x86_64_arg_comment_lint)
+          emit("lint_build_matrix", linux_x86_64_lint_build)
+          emit("tests_matrix", linux_x86_64_tests)
           PY
 
   # --- CI that doesn't need specific targets ---------------------------------

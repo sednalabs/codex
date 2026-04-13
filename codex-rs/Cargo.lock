@@ -533,9 +533,9 @@ dependencies = [
 
 [[package]]
 name = "assert_cmd"
-version = "2.2.0"
+version = "2.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9a686bbee5efb88a82df0621b236e74d925f470e5445d3220a5648b892ec99c9"
+checksum = "9c5bcfa8749ac45dd12cb11055aeeb6b27a3895560d60d71e3c23bf979e60514"
 dependencies = [
  "anstyle",
  "bstr",
@@ -1342,6 +1342,7 @@ dependencies = [
  "codex-login",
  "codex-plugin",
  "codex-protocol",
+ "codex-utils-version",
  "os_info",
  "pretty_assertions",
  "serde",
@@ -1426,6 +1427,7 @@ dependencies = [
  "codex-utils-json-to-toml",
  "codex-utils-pty",
  "codex-utils-rustls-provider",
+ "codex-utils-version",
  "constant_time_eq",
  "core_test_support",
  "futures",
@@ -1643,6 +1645,7 @@ dependencies = [
  "codex-tui",
  "codex-utils-cargo-bin",
  "codex-utils-cli",
+ "codex-utils-version",
  "codex-windows-sandbox",
  "libc",
  "owo-colors",
@@ -1877,6 +1880,7 @@ dependencies = [
  "codex-utils-stream-parser",
  "codex-utils-string",
  "codex-utils-template",
+ "codex-utils-version",
  "codex-windows-sandbox",
  "core-foundation 0.9.4",
  "core_test_support",
@@ -1976,6 +1980,7 @@ dependencies = [
  "anyhow",
  "clap",
  "codex-app-server-protocol",
+ "codex-utils-version",
  "pretty_assertions",
  "serde",
  "serde_json",
@@ -2002,6 +2007,7 @@ dependencies = [
  "codex-utils-cargo-bin",
  "codex-utils-cli",
  "codex-utils-oss",
+ "codex-utils-version",
  "core_test_support",
  "libc",
  "opentelemetry",
@@ -2114,6 +2120,7 @@ version = "0.0.0"
 dependencies = [
  "anyhow",
  "codex-protocol",
+ "codex-utils-version",
  "pretty_assertions",
  "sentry",
  "tracing",
@@ -2240,6 +2247,7 @@ dependencies = [
  "codex-protocol",
  "codex-terminal-detection",
  "codex-utils-template",
+ "codex-utils-version",
  "core_test_support",
  "keyring",
  "once_cell",
@@ -2277,6 +2285,7 @@ dependencies = [
  "codex-shell-command",
  "codex-utils-cli",
  "codex-utils-json-to-toml",
+ "codex-utils-version",
  "core_test_support",
  "mcp_test_support",
  "os_info",
@@ -2352,6 +2361,7 @@ dependencies = [
  "codex-protocol",
  "codex-utils-absolute-path",
  "codex-utils-string",
+ "codex-utils-version",
  "eventsource-stream",
  "gethostname",
  "http 1.4.0",
@@ -2485,6 +2495,7 @@ dependencies = [
  "codex-state",
  "codex-utils-path",
  "codex-utils-string",
+ "codex-utils-version",
  "pretty_assertions",
  "serde",
  "serde_json",
@@ -2678,6 +2689,7 @@ dependencies = [
  "codex-utils-sandbox-summary",
  "codex-utils-sleep-inhibitor",
  "codex-utils-string",
+ "codex-utils-version",
  "codex-windows-sandbox",
  "color-eyre",
  "cpal",
@@ -2929,6 +2941,10 @@ version = "0.0.0"
 dependencies = [
  "pretty_assertions",
 ]
+
+[[package]]
+name = "codex-utils-version"
+version = "0.0.0"
 
 [[package]]
 name = "codex-v8-poc"
@@ -7452,9 +7468,9 @@ dependencies = [
 
 [[package]]
 name = "quote"
-version = "1.0.45"
+version = "1.0.44"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "41f2619966050689382d2b44f664f4bc593e129785a36d6ee376ddf37259b924"
+checksum = "21b2ebcf727b7760c461f091f9f0f539b77b8e87f2fd88131e7f1b433b3cece4"
 dependencies = [
  "proc-macro2",
 ]
