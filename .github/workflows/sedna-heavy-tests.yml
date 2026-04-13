@@ -228,6 +228,7 @@ jobs:
           heavy_max_parallel="$(SELECTION_META="${selection_meta}" python3 -c 'import json, os; print(json.loads(os.environ["SELECTION_META"])["heavy_max_parallel"])')"
           planner_fingerprint="$(SELECTION_META="${selection_meta}" python3 -c 'import hashlib, json, os; payload = json.loads(os.environ["SELECTION_META"]); source = json.dumps({"requested_lane": "${{ inputs.lane }}", "run_smoke_gate": payload["run_smoke_gate"], "selected_lane_ids": payload["selected_lane_ids"]}, sort_keys=True, separators=(",", ":")); print(hashlib.sha256(source.encode("utf-8")).hexdigest()[:16])')"
           dedupe_reason=""
+          run_selected_lanes="true"
 
           if [[ '${{ github.event_name }}' == 'pull_request' && '${{ github.event.action }}' == 'ready_for_review' ]]; then
             duplicate_run="$(
