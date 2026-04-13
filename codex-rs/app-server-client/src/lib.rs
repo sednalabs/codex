@@ -67,7 +67,6 @@ pub mod legacy_core {
     pub use codex_core::DEFAULT_PROJECT_DOC_FILENAME;
     pub use codex_core::INTERACTIVE_SESSION_SOURCES;
     pub use codex_core::LOCAL_PROJECT_DOC_FILENAME;
-    pub use codex_core::McpManager;
     pub use codex_core::PLUGIN_TEXT_MENTION_SIGIL;
     pub use codex_core::RolloutRecorder;
     pub use codex_core::TOOL_MENTION_SIGIL;
@@ -87,6 +86,7 @@ pub mod legacy_core {
     pub use codex_core::path_utils;
     pub use codex_core::read_session_meta_line;
     pub use codex_core::web_search_detail;
+    pub use codex_mcp::McpManager;
 
     pub mod config {
         pub use codex_core::config::*;
@@ -405,7 +405,6 @@ impl InProcessClientStartArgs {
             loader_overrides: self.loader_overrides,
             cloud_requirements: self.cloud_requirements,
             feedback: self.feedback,
-            environment_manager: self.environment_manager,
             config_warnings: self.config_warnings,
             session_source: self.session_source,
             enable_codex_api_key_env: self.enable_codex_api_key_env,

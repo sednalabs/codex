@@ -1,12 +1,12 @@
 use crate::config::test_config;
-use crate::models_manager::manager::ModelsManager;
-use crate::models_manager::model_info::with_config_overrides;
 use crate::shell::Shell;
 use crate::shell::ShellType;
 use crate::tools::ToolRouter;
 use crate::tools::handlers::multi_agents_common::DEFAULT_WAIT_TIMEOUT_MS;
 use crate::tools::router::ToolRouterParams;
 use codex_app_server_protocol::AppInfo;
+use codex_models_manager::manager::ModelsManager;
+use codex_models_manager::model_info::with_config_overrides;
 use codex_protocol::models::VIEW_IMAGE_TOOL_NAME;
 use codex_protocol::openai_models::InputModality;
 use codex_protocol::openai_models::ModelInfo;
@@ -180,6 +180,9 @@ fn spawn_agent_tool_options(config: &ToolsConfig) -> SpawnAgentToolOptions<'_> {
     SpawnAgentToolOptions {
         available_models: &config.available_models,
         agent_type_description: crate::agent::role::spawn_tool_spec::build(&config.agent_roles),
+        hide_agent_type_model_reasoning: config.hide_spawn_agent_metadata,
+        include_usage_hint: config.spawn_agent_usage_hint,
+        usage_hint_text: config.spawn_agent_usage_hint_text.clone(),
     }
 }
 

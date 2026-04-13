@@ -92,6 +92,11 @@
           "type": "string"
         },
         {
+          "const": "timed_out",
+          "description": "The approval flow timed out before the user or guardian completed a\ndecision. Downstream may surface this distinctly from an explicit\ndenial so agents can retry or explain the timeout accurately.",
+          "type": "string"
+        },
+        {
           "const": "abort",
           "description": "User has denied this command and the agent should not do anything until\nthe user's next command.",
           "type": "string"

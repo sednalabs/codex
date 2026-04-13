@@ -42,6 +42,7 @@ use codex_app_server_protocol::ThreadRealtimeAppendTextParams;
 use codex_app_server_protocol::ThreadRealtimeAppendTextResponse;
 use codex_app_server_protocol::ThreadRealtimeStartParams;
 use codex_app_server_protocol::ThreadRealtimeStartResponse;
+use codex_app_server_protocol::ThreadRealtimeStartTransport;
 use codex_app_server_protocol::ThreadRealtimeStopParams;
 use codex_app_server_protocol::ThreadRealtimeStopResponse;
 use codex_app_server_protocol::ThreadResumeParams;
@@ -74,6 +75,7 @@ use codex_protocol::openai_models::ReasoningEffortPreset;
 use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::ConversationAudioParams;
 use codex_protocol::protocol::ConversationStartParams;
+use codex_protocol::protocol::ConversationStartTransport;
 use codex_protocol::protocol::ConversationTextParams;
 use codex_protocol::protocol::CreditsSnapshot;
 use codex_protocol::protocol::RateLimitSnapshot;
@@ -104,6 +106,7 @@ pub(crate) struct AppServerBootstrap {
 pub(crate) struct AppServerSession {
     client: AppServerClient,
     next_request_id: i64,
+    remote_cwd_override: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -150,7 +153,17 @@ impl AppServerSession {
         Self {
             client,
             next_request_id: 1,
+            remote_cwd_override: None,
         }
+    }
+
+    pub(crate) fn with_remote_cwd_override(mut self, remote_cwd_override: Option<PathBuf>) -> Self {
+        self.remote_cwd_override = remote_cwd_override;
+        self
+    }
+
+    pub(crate) fn remote_cwd_override(&self) -> Option<&PathBuf> {
+        self.remote_cwd_override.as_ref()
     }
 
     pub(crate) fn is_remote(&self) -> bool {
@@ -417,6 +430,7 @@ impl AppServerSession {
                 params: TurnStartParams {
                     thread_id: thread_id.to_string(),
                     input: items.into_iter().map(Into::into).collect(),
+                    responsesapi_client_metadata: None,
                     cwd: Some(cwd),
                     approval_policy: Some(approval_policy.into()),
                     approvals_reviewer: Some(approvals_reviewer.into()),
@@ -454,6 +468,19 @@ impl AppServerSession {
         Ok(())
     }
 
+    pub(crate) async fn read_account(&mut self) -> Result<GetAccountResponse> {
+        let request_id = self.next_request_id();
+        self.client
+            .request_typed(ClientRequest::GetAccount {
+                request_id,
+                params: GetAccountParams {
+                    refresh_token: false,
+                },
+            })
+            .await
+            .wrap_err("account/read failed in TUI")
+    }
+
     pub(crate) async fn turn_steer(
         &mut self,
         thread_id: ThreadId,
@@ -467,6 +494,7 @@ impl AppServerSession {
                 params: TurnSteerParams {
                     thread_id: thread_id.to_string(),
                     input: items.into_iter().map(Into::into).collect(),
+                    responsesapi_client_metadata: None,
                     expected_turn_id: turn_id,
                 },
             })
@@ -641,6 +669,15 @@ impl AppServerSession {
                     thread_id: thread_id.to_string(),
                     prompt: params.prompt,
                     session_id: params.session_id,
+                    transport: params.transport.map(|transport| match transport {
+                        ConversationStartTransport::Websocket => {
+                            ThreadRealtimeStartTransport::Websocket
+                        }
+                        ConversationStartTransport::Webrtc { sdp } => {
+                            ThreadRealtimeStartTransport::Webrtc { sdp }
+                        }
+                    }),
+                    voice: params.voice,
                 },
             })
             .await
@@ -792,6 +829,7 @@ fn model_preset_from_api_model(model: ApiModel) -> ModelPreset {
             })
             .collect(),
         supports_personality: model.supports_personality,
+        additional_speed_tiers: Vec::new(),
         is_default: model.is_default,
         upgrade,
         show_in_picker: !model.hidden,
@@ -1214,6 +1252,7 @@ mod tests {
             approvals_reviewer: codex_app_server_protocol::ApprovalsReviewer::User,
             sandbox: codex_protocol::protocol::SandboxPolicy::new_read_only_policy().into(),
             reasoning_effort: None,
+            instruction_sources: Vec::new(),
         };
 
         let started = started_thread_from_resume_response(response.clone(), &config)

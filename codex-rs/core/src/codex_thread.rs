@@ -84,7 +84,8 @@ impl CodexThread {
 
     #[doc(hidden)]
     pub async fn flush_rollout(&self) -> std::io::Result<()> {
-        self.codex.session.flush_rollout().await
+        self.codex.session.flush_rollout().await;
+        Ok(())
     }
 
     pub async fn submit_with_trace(

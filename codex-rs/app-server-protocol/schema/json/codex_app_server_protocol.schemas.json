@@ -3287,6 +3287,11 @@
           "type": "string"
         },
         {
+          "const": "timed_out",
+          "description": "The approval flow timed out before the user or guardian completed a\ndecision. Downstream may surface this distinctly from an explicit\ndenial so agents can retry or explain the timeout accurately.",
+          "type": "string"
+        },
+        {
           "const": "abort",
           "description": "User has denied this command and the agent should not do anything until\nthe user's next command.",
           "type": "string"
@@ -5275,6 +5280,13 @@
           }
         ]
       },
+      "AutoReviewDecisionSource": {
+        "description": "[UNSTABLE] Source that produced a terminal guardian approval review decision.",
+        "enum": [
+          "agent"
+        ],
+        "type": "string"
+      },
       "ByteRange": {
         "properties": {
           "end": {
@@ -7109,6 +7121,15 @@
               "null"
             ]
           },
+          "tags": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": [
+              "object",
+              "null"
+            ]
+          },
           "threadId": {
             "type": [
               "string",
@@ -7464,9 +7485,14 @@
           "path": {
             "$ref": "#/definitions/v2/AbsolutePathBuf",
             "description": "Absolute file or directory path to watch."
+          },
+          "watchId": {
+            "description": "Connection-scoped watch identifier used for `fs/unwatch` and `fs/changed`.",
+            "type": "string"
           }
         },
         "required": [
+          "watchId",
           "path"
         ],
         "title": "FsWatchParams",
@@ -7715,17 +7741,18 @@
               }
             ]
           },
-          "riskScore": {
-            "format": "uint8",
-            "maximum": 255,
-            "minimum": 0,
-            "type": [
-              "integer",
-              "null"
-            ]
-          },
           "status": {
             "$ref": "#/definitions/v2/GuardianApprovalReviewStatus"
+          },
+          "userAuthorization": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/v2/GuardianUserAuthorization"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "required": [
@@ -7891,22 +7918,6 @@
             ],
             "title": "McpToolCallGuardianApprovalReviewAction",
             "type": "object"
-          },
-          {
-            "properties": {
-              "raw": true,
-              "type": {
-                "const": "unknown",
-                "title": "UnknownGuardianApprovalReviewActionType",
-                "type": "string"
-              }
-            },
-            "required": [
-              "type",
-              "raw"
-            ],
-            "title": "UnknownGuardianApprovalReviewAction",
-            "type": "object"
           }
         ]
       },
@@ -7916,6 +7927,7 @@
           "inProgress",
           "approved",
           "denied",
+          "timedOut",
           "aborted"
         ],
         "type": "string"
@@ -7930,6 +7942,17 @@
       "GuardianRiskLevel": {
         "description": "[UNSTABLE] Risk level assigned by guardian approval review.",
         "enum": [
+          "low",
+          "medium",
+          "high",
+          "critical"
+        ],
+        "type": "string"
+      },
+      "GuardianUserAuthorization": {
+        "description": "[UNSTABLE] Authorization level assigned by guardian approval review.",
+        "enum": [
+          "unknown",
           "low",
           "medium",
           "high"
@@ -8188,11 +8211,22 @@
           "action": {
             "$ref": "#/definitions/v2/GuardianApprovalReviewAction"
           },
+          "decisionSource": {
+            "$ref": "#/definitions/v2/AutoReviewDecisionSource"
+          },
           "review": {
             "$ref": "#/definitions/v2/GuardianApprovalReview"
           },
-          "targetItemId": {
+          "reviewId": {
+            "description": "Stable identifier for this review.",
             "type": "string"
+          },
+          "targetItemId": {
+            "description": "Identifier for the reviewed item or tool call when one exists.\n\nIn most cases, one review maps to one target item. The exceptions are\n- execve reviews, where a single command may contain multiple execve\n  calls to review (only possible when using the shell_zsh_fork feature)\n- network policy reviews, where there is no target item\n\nA network call is triggered by a CommandExecution item, so having a\ntarget_item_id set to the CommandExecution item would be misleading\nbecause the review is about the network call, not the command execution.\nTherefore, target_item_id is set to None for network policy reviews.",
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "threadId": {
             "type": "string"
@@ -8204,7 +8238,8 @@
         "required": [
           "threadId",
           "turnId",
-          "targetItemId",
+          "reviewId",
+          "decisionSource",
           "review",
           "action"
         ],
@@ -8221,8 +8256,16 @@
           "review": {
             "$ref": "#/definitions/v2/GuardianApprovalReview"
           },
-          "targetItemId": {
+          "reviewId": {
+            "description": "Stable identifier for this review.",
             "type": "string"
+          },
+          "targetItemId": {
+            "description": "Identifier for the reviewed item or tool call when one exists.\n\nIn most cases, one review maps to one target item. The exceptions are\n- execve reviews, where a single command may contain multiple execve\n  calls to review (only possible when using the shell_zsh_fork feature)\n- network policy reviews, where there is no target item\n\nA network call is triggered by a CommandExecution item, so having a\ntarget_item_id set to the CommandExecution item would be misleading\nbecause the review is about the network call, not the command execution.\nTherefore, target_item_id is set to None for network policy reviews.",
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "threadId": {
             "type": "string"
@@ -8234,7 +8277,7 @@
         "required": [
           "threadId",
           "turnId",
-          "targetItemId",
+          "reviewId",
           "review",
           "action"
         ],
@@ -8917,6 +8960,13 @@
       },
       "Model": {
         "properties": {
+          "additionalSpeedTiers": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
           "availabilityNux": {
             "anyOf": [
               {
@@ -9396,6 +9446,7 @@
           "go",
           "plus",
           "pro",
+          "prolite",
           "team",
           "self_serve_business_usage_based",
           "business",
@@ -10080,6 +10131,30 @@
         ],
         "type": "string"
       },
+      "RealtimeVoice": {
+        "enum": [
+          "alloy",
+          "arbor",
+          "ash",
+          "ballad",
+          "breeze",
+          "cedar",
+          "coral",
+          "cove",
+          "echo",
+          "ember",
+          "juniper",
+          "maple",
+          "marin",
+          "sage",
+          "shimmer",
+          "sol",
+          "spruce",
+          "vale",
+          "verse"
+        ],
+        "type": "string"
+      },
       "ReasoningEffort": {
         "description": "See https://platform.openai.com/docs/guides/reasoning?api-mode=responses#get-started-with-reasoning",
         "enum": [
@@ -10346,7 +10421,6 @@
             "properties": {
               "_meta": true,
               "mimeType": {
-                "default": null,
                 "type": [
                   "string",
                   "null"
@@ -10373,7 +10447,6 @@
                 "type": "string"
               },
               "mimeType": {
-                "default": null,
                 "type": [
                   "string",
                   "null"
@@ -12121,6 +12194,14 @@
           "cwd": {
             "type": "string"
           },
+          "instructionSources": {
+            "default": [],
+            "description": "Instruction source files currently loaded for this thread.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
           "model": {
             "type": "string"
           },
@@ -13139,6 +13220,43 @@
         "title": "ThreadRealtimeOutputAudioDeltaNotification",
         "type": "object"
       },
+      "ThreadRealtimeStartTransport": {
+        "description": "EXPERIMENTAL - transport used by thread realtime.",
+        "oneOf": [
+          {
+            "properties": {
+              "type": {
+                "const": "websocket",
+                "title": "WebsocketThreadRealtimeStartTransportType",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "title": "WebsocketThreadRealtimeStartTransport",
+            "type": "object"
+          },
+          {
+            "properties": {
+              "sdp": {
+                "type": "string"
+              },
+              "type": {
+                "const": "webrtc",
+                "title": "WebrtcThreadRealtimeStartTransportType",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "sdp"
+            ],
+            "title": "WebrtcThreadRealtimeStartTransport",
+            "type": "object"
+          }
+        ]
+      },
       "ThreadRealtimeStartedNotification": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "description": "EXPERIMENTAL - emitted when thread realtime startup is accepted.",
@@ -13300,6 +13418,14 @@
           },
           "cwd": {
             "type": "string"
+          },
+          "instructionSources": {
+            "default": [],
+            "description": "Instruction source files currently loaded for this thread.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
           },
           "model": {
             "type": "string"
@@ -13549,6 +13675,16 @@
                 "type": "null"
               }
             ]
+          },
+          "sessionStartSource": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/v2/ThreadStartSource"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "title": "ThreadStartParams",
@@ -13566,6 +13702,14 @@
           },
           "cwd": {
             "type": "string"
+          },
+          "instructionSources": {
+            "default": [],
+            "description": "Instruction source files currently loaded for this thread.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
           },
           "model": {
             "type": "string"
@@ -13611,6 +13755,13 @@
         ],
         "title": "ThreadStartResponse",
         "type": "object"
+      },
+      "ThreadStartSource": {
+        "enum": [
+          "startup",
+          "clear"
+        ],
+        "type": "string"
       },
       "ThreadStartedNotification": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",

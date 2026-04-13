@@ -18,8 +18,8 @@
     }
   },
   "required": [
-    "path",
-    "watchId"
+    "watchId",
+    "path"
   ],
   "title": "FsWatchParams",
   "type": "object"

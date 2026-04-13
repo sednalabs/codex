@@ -5,10 +5,11 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
+use std::time::SystemTime;
+use std::time::UNIX_EPOCH;
 
 use crate::AuthManager;
 use crate::CodexAuth;
-use crate::SandboxState;
 use crate::agent::AgentControl;
 use crate::agent::AgentStatus;
 use crate::agent::Mailbox;
@@ -16,7 +17,6 @@ use crate::agent::MailboxReceiver;
 use crate::agent::agent_status_from_event;
 use crate::agent::status::is_final;
 use crate::apps::render_apps_section;
-use crate::auth_env_telemetry::collect_auth_env_telemetry;
 use crate::commit_attribution::commit_message_trailer_instruction;
 use crate::compact;
 use crate::compact::InitialContextInjection;
@@ -26,11 +26,6 @@ use crate::compact_remote::run_inline_remote_auto_compact_task;
 use crate::config::ManagedFeatures;
 use crate::connectors;
 use crate::exec_policy::ExecPolicyManager;
-#[cfg(test)]
-use crate::models_manager::collaboration_mode_presets::CollaborationModesConfig;
-use crate::models_manager::manager::ModelsManager;
-use crate::models_manager::manager::RefreshStrategy;
-use crate::parse_command::parse_command;
 use crate::parse_turn_item;
 use crate::path_utils::normalize_for_native_workdir;
 use crate::realtime_conversation::RealtimeConversationManager;
@@ -39,7 +34,7 @@ use crate::realtime_conversation::handle_close as handle_realtime_conversation_c
 use crate::realtime_conversation::handle_start as handle_realtime_conversation_start;
 use crate::realtime_conversation::handle_text as handle_realtime_conversation_text;
 use crate::render_skills_section;
-use crate::rollout::session_index;
+use crate::rollout::find_thread_name_by_id;
 use crate::session_prefix::format_subagent_notification_message;
 use crate::skills_load_input_from_config;
 use crate::stream_events_utils::HandleOutputCtx;
@@ -56,10 +51,14 @@ use chrono::Local;
 use chrono::Utc;
 use codex_analytics::AnalyticsEventsClient;
 use codex_analytics::AppInvocation;
+use codex_analytics::CompactionPhase;
+use codex_analytics::CompactionReason;
 use codex_analytics::InvocationType;
+use codex_analytics::SubAgentThreadStartedInput;
 use codex_analytics::build_track_events_context;
 use codex_app_server_protocol::McpServerElicitationRequest;
 use codex_app_server_protocol::McpServerElicitationRequestParams;
+use codex_config::types::OAuthCredentialsStoreMode;
 use codex_exec_server::Environment;
 use codex_exec_server::EnvironmentManager;
 use codex_features::FEATURES;
@@ -71,6 +70,18 @@ use codex_hooks::HookPayload;
 use codex_hooks::HookResult;
 use codex_hooks::Hooks;
 use codex_hooks::HooksConfig;
+use codex_login::auth_env_telemetry::collect_auth_env_telemetry;
+use codex_login::default_client::originator;
+use codex_mcp::McpConnectionManager;
+use codex_mcp::SandboxState;
+use codex_mcp::ToolInfo;
+use codex_mcp::codex_apps_tools_cache_key;
+use codex_mcp::filter_non_codex_apps_mcp_tools_only;
+use codex_model_provider_info::ModelProviderInfo;
+#[cfg(test)]
+use codex_models_manager::collaboration_mode_presets::CollaborationModesConfig;
+use codex_models_manager::manager::ModelsManager;
+use codex_models_manager::manager::RefreshStrategy;
 use codex_network_proxy::NetworkProxy;
 use codex_network_proxy::NetworkProxyAuditMetadata;
 use codex_network_proxy::normalize_host;
@@ -88,6 +99,8 @@ use codex_protocol::config_types::Settings;
 use codex_protocol::config_types::WebSearchMode;
 use codex_protocol::dynamic_tools::DynamicToolResponse;
 use codex_protocol::dynamic_tools::DynamicToolSpec;
+use codex_protocol::error::CodexErr;
+use codex_protocol::error::Result as CodexResult;
 use codex_protocol::items::PlanItem;
 use codex_protocol::items::TurnItem;
 use codex_protocol::items::UserMessageItem;
@@ -121,8 +134,10 @@ use codex_protocol::request_permissions::RequestPermissionsResponse;
 use codex_protocol::request_user_input::RequestUserInputArgs;
 use codex_protocol::request_user_input::RequestUserInputResponse;
 use codex_rmcp_client::ElicitationResponse;
-use codex_rmcp_client::OAuthCredentialsStoreMode;
+use codex_shell_command::parse_command::parse_command;
 use codex_terminal_detection::user_agent;
+use codex_tools::ToolsConfig;
+use codex_tools::ToolsConfigParams;
 use codex_tools::filter_tool_suggest_discoverable_tools_for_client;
 use codex_utils_output_truncation::TruncationPolicy;
 use codex_utils_stream_parser::AssistantTextChunk;
@@ -165,7 +180,6 @@ use uuid::Uuid;
 use codex_state::UsageLogger;
 use codex_utils_version::RELEASE_VERSION;
 
-use crate::ModelProviderInfo;
 use crate::client::ModelClient;
 use crate::client::ModelClientSession;
 use crate::client_common::Prompt;
@@ -183,10 +197,9 @@ use crate::config::types::ShellEnvironmentPolicy;
 use crate::context_manager::ContextManager;
 use crate::context_manager::TotalTokenUsageBreakdown;
 use crate::environment_context::EnvironmentContext;
-use crate::error::CodexErr;
-use crate::error::Result as CodexResult;
 #[cfg(test)]
 use crate::exec::StreamOutput;
+use crate::installation_id::resolve_installation_id;
 use codex_config::CONFIG_TOML_FILE;
 
 mod rollout_reconstruction;
@@ -270,9 +283,6 @@ use crate::mcp::McpManager;
 use crate::mcp::auth::compute_auth_statuses;
 use crate::mcp::maybe_prompt_and_install_mcp_dependencies;
 use crate::mcp::with_codex_apps_mcp;
-use crate::mcp_connection_manager::McpConnectionManager;
-use crate::mcp_connection_manager::codex_apps_tools_cache_key;
-use crate::mcp_connection_manager::filter_non_codex_apps_mcp_tools_only;
 use crate::memories;
 use crate::mentions::build_connector_slug_counts;
 use crate::mentions::build_skill_name_counts;
@@ -284,43 +294,6 @@ use crate::plugins::PluginsManager;
 use crate::plugins::build_plugin_injections;
 use crate::plugins::render_plugins_section;
 use crate::project_doc::get_user_instructions;
-use crate::protocol::AgentMessageContentDeltaEvent;
-use crate::protocol::AgentReasoningSectionBreakEvent;
-use crate::protocol::ApplyPatchApprovalRequestEvent;
-use crate::protocol::AskForApproval;
-use crate::protocol::BackgroundEventEvent;
-use crate::protocol::CompactedItem;
-use crate::protocol::DeprecationNoticeEvent;
-use crate::protocol::ErrorEvent;
-use crate::protocol::Event;
-use crate::protocol::EventMsg;
-use crate::protocol::ExecApprovalRequestEvent;
-use crate::protocol::McpServerRefreshConfig;
-use crate::protocol::ModelRerouteEvent;
-use crate::protocol::ModelRerouteReason;
-use crate::protocol::NetworkApprovalContext;
-use crate::protocol::Op;
-use crate::protocol::PlanDeltaEvent;
-use crate::protocol::RateLimitSnapshot;
-use crate::protocol::ReasoningContentDeltaEvent;
-use crate::protocol::ReasoningRawContentDeltaEvent;
-use crate::protocol::RequestUserInputEvent;
-use crate::protocol::ReviewDecision;
-use crate::protocol::SandboxPolicy;
-use crate::protocol::SessionConfiguredEvent;
-use crate::protocol::SessionNetworkProxyRuntime;
-use crate::protocol::SkillDependencies as ProtocolSkillDependencies;
-use crate::protocol::SkillErrorInfo;
-use crate::protocol::SkillInterface as ProtocolSkillInterface;
-use crate::protocol::SkillMetadata as ProtocolSkillMetadata;
-use crate::protocol::SkillToolDependency as ProtocolSkillToolDependency;
-use crate::protocol::StreamErrorEvent;
-use crate::protocol::Submission;
-use crate::protocol::TokenCountEvent;
-use crate::protocol::TokenUsage;
-use crate::protocol::TokenUsageInfo;
-use crate::protocol::TurnDiffEvent;
-use crate::protocol::WarningEvent;
 use crate::resolve_skill_dependencies_for_turn;
 use crate::rollout::RolloutRecorder;
 use crate::rollout::RolloutRecorderParams;
@@ -350,8 +323,7 @@ use crate::tools::network_approval::build_network_policy_decider;
 use crate::tools::parallel::ToolCallRuntime;
 use crate::tools::router::ToolRouterParams;
 use crate::tools::sandboxing::ApprovalStore;
-use crate::tools::spec::ToolsConfig;
-use crate::tools::spec::ToolsConfigParams;
+use crate::tools::spec::tool_user_shell_type;
 use crate::turn_diff_tracker::TurnDiffTracker;
 use crate::turn_timing::TurnTimingState;
 use crate::turn_timing::record_turn_ttfm_metric;
@@ -362,8 +334,8 @@ use crate::windows_sandbox::WindowsSandboxLevelExt;
 use codex_async_utils::OrCancelExt;
 use codex_git_utils::get_git_repo_root;
 use codex_otel::SessionTelemetry;
+use codex_otel::THREAD_STARTED_METRIC;
 use codex_otel::TelemetryAuthMode;
-use codex_otel::metrics::names::THREAD_STARTED_METRIC;
 use codex_protocol::config_types::CollaborationMode;
 use codex_protocol::config_types::Personality;
 use codex_protocol::config_types::ReasoningSummary as ReasoningSummaryConfig;
@@ -374,9 +346,46 @@ use codex_protocol::models::DeveloperInstructions;
 use codex_protocol::models::ResponseInputItem;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::openai_models::ReasoningEffort as ReasoningEffortConfig;
+use codex_protocol::protocol::AgentMessageContentDeltaEvent;
+use codex_protocol::protocol::AgentReasoningSectionBreakEvent;
+use codex_protocol::protocol::ApplyPatchApprovalRequestEvent;
+use codex_protocol::protocol::AskForApproval;
+use codex_protocol::protocol::BackgroundEventEvent;
 use codex_protocol::protocol::CodexErrorInfo;
+use codex_protocol::protocol::CompactedItem;
+use codex_protocol::protocol::DeprecationNoticeEvent;
+use codex_protocol::protocol::ErrorEvent;
+use codex_protocol::protocol::Event;
+use codex_protocol::protocol::EventMsg;
+use codex_protocol::protocol::ExecApprovalRequestEvent;
 use codex_protocol::protocol::InitialHistory;
+use codex_protocol::protocol::McpServerRefreshConfig;
+use codex_protocol::protocol::ModelRerouteEvent;
+use codex_protocol::protocol::ModelRerouteReason;
+use codex_protocol::protocol::NetworkApprovalContext;
 use codex_protocol::protocol::NonSteerableTurnKind;
+use codex_protocol::protocol::Op;
+use codex_protocol::protocol::PlanDeltaEvent;
+use codex_protocol::protocol::RateLimitSnapshot;
+use codex_protocol::protocol::ReasoningContentDeltaEvent;
+use codex_protocol::protocol::ReasoningRawContentDeltaEvent;
+use codex_protocol::protocol::RequestUserInputEvent;
+use codex_protocol::protocol::ReviewDecision;
+use codex_protocol::protocol::SandboxPolicy;
+use codex_protocol::protocol::SessionConfiguredEvent;
+use codex_protocol::protocol::SessionNetworkProxyRuntime;
+use codex_protocol::protocol::SkillDependencies as ProtocolSkillDependencies;
+use codex_protocol::protocol::SkillErrorInfo;
+use codex_protocol::protocol::SkillInterface as ProtocolSkillInterface;
+use codex_protocol::protocol::SkillMetadata as ProtocolSkillMetadata;
+use codex_protocol::protocol::SkillToolDependency as ProtocolSkillToolDependency;
+use codex_protocol::protocol::StreamErrorEvent;
+use codex_protocol::protocol::Submission;
+use codex_protocol::protocol::TokenCountEvent;
+use codex_protocol::protocol::TokenUsage;
+use codex_protocol::protocol::TokenUsageInfo;
+use codex_protocol::protocol::TurnDiffEvent;
+use codex_protocol::protocol::WarningEvent;
 use codex_protocol::user_input::UserInput;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use codex_utils_readiness::Readiness;
@@ -532,7 +541,11 @@ impl Codex {
             config.startup_warnings.push(message);
         }
 
-        let user_instructions = get_user_instructions(&config).await;
+        let environment = environment_manager
+            .current()
+            .await
+            .map_err(|err| CodexErr::Fatal(format!("failed to create environment: {err}")))?;
+        let user_instructions = get_user_instructions(&config, environment.as_deref()).await;
 
         let exec_policy = if crate::guardian::is_guardian_reviewer_source(&session_source) {
             // Guardian review should rely on the built-in shell safety checks,
@@ -551,13 +564,13 @@ impl Codex {
 
         let config = Arc::new(config);
         let refresh_strategy = match session_source {
-            SessionSource::SubAgent(_) => crate::models_manager::manager::RefreshStrategy::Offline,
-            _ => crate::models_manager::manager::RefreshStrategy::OnlineIfUncached,
+            SessionSource::SubAgent(_) => codex_models_manager::manager::RefreshStrategy::Offline,
+            _ => codex_models_manager::manager::RefreshStrategy::OnlineIfUncached,
         };
         if config.model.is_none()
             || !matches!(
                 refresh_strategy,
-                crate::models_manager::manager::RefreshStrategy::Offline
+                codex_models_manager::manager::RefreshStrategy::Offline
             )
         {
             let _ = models_manager.list_models(refresh_strategy).await;
@@ -570,7 +583,9 @@ impl Codex {
         // 1. config.base_instructions override
         // 2. conversation history => session_meta.base_instructions
         // 3. base_instructions for current model
-        let model_info = models_manager.get_model_info(model.as_str(), &config).await;
+        let model_info = models_manager
+            .get_model_info(model.as_str(), &config.to_models_manager_config())
+            .await;
         let base_instructions = config
             .base_instructions
             .clone()
@@ -583,7 +598,7 @@ impl Codex {
             let thread_id = match &conversation_history {
                 InitialHistory::Resumed(resumed) => Some(resumed.conversation_id),
                 InitialHistory::Forked(_) => conversation_history.forked_from_id(),
-                InitialHistory::New => None,
+                InitialHistory::New | InitialHistory::Cleared => None,
             };
             match thread_id {
                 Some(thread_id) => {
@@ -636,6 +651,7 @@ impl Codex {
             original_config_do_not_use: Arc::clone(&config),
             metrics_service_name,
             app_server_client_name: None,
+            app_server_client_version: None,
             session_source,
             dynamic_tools,
             persist_extended_history,
@@ -751,17 +767,22 @@ impl Codex {
         &self,
         input: Vec<UserInput>,
         expected_turn_id: Option<&str>,
+        responsesapi_client_metadata: Option<HashMap<String, String>>,
     ) -> Result<String, SteerInputError> {
-        self.session.steer_input(input, expected_turn_id).await
+        self.session
+            .steer_input(input, expected_turn_id, responsesapi_client_metadata)
+            .await
     }
 
-    pub(crate) async fn set_app_server_client_name(
+    pub(crate) async fn set_app_server_client_info(
         &self,
         app_server_client_name: Option<String>,
+        app_server_client_version: Option<String>,
     ) -> ConstraintResult<()> {
         self.session
             .update_settings(SessionSettingsUpdate {
                 app_server_client_name,
+                app_server_client_version,
                 ..Default::default()
             })
             .await
@@ -896,14 +917,21 @@ impl TurnContext {
     }
 
     pub(crate) fn apps_enabled(&self) -> bool {
-        self.features
-            .apps_enabled_cached(self.auth_manager.as_deref())
+        let is_chatgpt_auth = self
+            .auth_manager
+            .as_deref()
+            .and_then(AuthManager::auth_cached)
+            .as_ref()
+            .is_some_and(CodexAuth::is_chatgpt_auth);
+        self.features.apps_enabled_for_auth(is_chatgpt_auth)
     }
 
     pub(crate) async fn with_model(&self, model: String, models_manager: &ModelsManager) -> Self {
         let mut config = (*self.config).clone();
         config.model = Some(model.clone());
-        let model_info = models_manager.get_model_info(model.as_str(), &config).await;
+        let model_info = models_manager
+            .get_model_info(model.as_str(), &config.to_models_manager_config())
+            .await;
         let truncation_policy = model_info.truncation_policy.into();
         let supported_reasoning_levels = model_info
             .supported_reasoning_levels
@@ -939,6 +967,9 @@ impl TurnContext {
                 .list_models(RefreshStrategy::OnlineIfUncached)
                 .await,
             features: &features,
+            image_generation_tool_auth_allowed: image_generation_tool_auth_allowed(
+                self.auth_manager.as_deref(),
+            ),
             web_search_mode: self.tools_config.web_search_mode,
             session_source: self.session_source.clone(),
             sandbox_policy: self.sandbox_policy.get(),
@@ -946,9 +977,7 @@ impl TurnContext {
         })
         .with_unified_exec_shell_mode(self.tools_config.unified_exec_shell_mode.clone())
         .with_web_search_config(self.tools_config.web_search_config.clone())
-        .with_wait_agent_default_timeout_ms(config.background_terminal_max_timeout)
-        .with_allow_login_shell(self.tools_config.allow_login_shell)
-        .with_agent_roles(config.agent_roles.clone());
+        .with_allow_login_shell(self.tools_config.allow_login_shell);
 
         Self {
             sub_id: self.sub_id.clone(),
@@ -1055,6 +1084,13 @@ impl TurnContext {
     }
 }
 
+fn image_generation_tool_auth_allowed(auth_manager: Option<&AuthManager>) -> bool {
+    auth_manager
+        .and_then(AuthManager::auth_cached)
+        .as_ref()
+        .is_some_and(CodexAuth::is_chatgpt_auth)
+}
+
 fn local_time_context() -> (String, String) {
     match iana_time_zone::get_timezone() {
         Ok(timezone) => (Local::now().format("%Y-%m-%d").to_string(), timezone),
@@ -1113,6 +1149,7 @@ pub(crate) struct SessionConfiguration {
     /// Optional service name tag for session metrics.
     metrics_service_name: Option<String>,
     app_server_client_name: Option<String>,
+    app_server_client_version: Option<String>,
     /// Source of the session (cli, vscode, exec, mcp, ...)
     session_source: SessionSource,
     dynamic_tools: Vec<DynamicToolSpec>,
@@ -1206,6 +1243,9 @@ impl SessionConfiguration {
         if let Some(app_server_client_name) = updates.app_server_client_name.clone() {
             next_configuration.app_server_client_name = Some(app_server_client_name);
         }
+        if let Some(app_server_client_version) = updates.app_server_client_version.clone() {
+            next_configuration.app_server_client_version = Some(app_server_client_version);
+        }
         Ok(next_configuration)
     }
 }
@@ -1223,9 +1263,26 @@ pub(crate) struct SessionSettingsUpdate {
     pub(crate) final_output_json_schema: Option<Option<Value>>,
     pub(crate) personality: Option<Personality>,
     pub(crate) app_server_client_name: Option<String>,
+    pub(crate) app_server_client_version: Option<String>,
+}
+
+pub(crate) struct AppServerClientMetadata {
+    pub(crate) client_name: Option<String>,
+    pub(crate) client_version: Option<String>,
 }
 
 impl Session {
+    pub(crate) async fn app_server_client_metadata(&self) -> AppServerClientMetadata {
+        let state = self.state.lock().await;
+        AppServerClientMetadata {
+            client_name: state.session_configuration.app_server_client_name.clone(),
+            client_version: state
+                .session_configuration
+                .app_server_client_version
+                .clone(),
+        }
+    }
+
     /// Builds the `x-codex-beta-features` header value for this session.
     ///
     /// `ModelClient` is session-scoped and intentionally does not depend on the full `Config`, so
@@ -1394,20 +1451,21 @@ impl Session {
             model_info: &model_info,
             available_models: &models_manager.try_list_models().unwrap_or_default(),
             features: &per_turn_config.features,
+            image_generation_tool_auth_allowed: image_generation_tool_auth_allowed(
+                auth_manager_for_context.as_deref(),
+            ),
             web_search_mode: Some(per_turn_config.web_search_mode.value()),
             session_source: session_source.clone(),
             sandbox_policy: session_configuration.sandbox_policy.get(),
             windows_sandbox_level: session_configuration.windows_sandbox_level,
         })
         .with_unified_exec_shell_mode_for_session(
-            user_shell,
+            tool_user_shell_type(user_shell),
             shell_zsh_path,
             main_execve_wrapper_exe,
         )
         .with_web_search_config(per_turn_config.web_search_config.clone())
-        .with_wait_agent_default_timeout_ms(per_turn_config.background_terminal_max_timeout)
-        .with_allow_login_shell(per_turn_config.permissions.allow_login_shell)
-        .with_agent_roles(per_turn_config.agent_roles.clone());
+        .with_allow_login_shell(per_turn_config.permissions.allow_login_shell);
 
         let cwd = session_configuration.cwd.clone();
 
@@ -1492,7 +1550,7 @@ impl Session {
         let forked_from_id = initial_history.forked_from_id();
 
         let (conversation_id, rollout_params) = match &initial_history {
-            InitialHistory::New | InitialHistory::Forked(_) => {
+            InitialHistory::New | InitialHistory::Cleared | InitialHistory::Forked(_) => {
                 let conversation_id = ThreadId::default();
                 (
                     conversation_id,
@@ -1529,7 +1587,7 @@ impl Session {
                 resumed.history.as_slice(),
                 resumed.rollout_path.as_path(),
             ),
-            InitialHistory::New | InitialHistory::Forked(_) => None,
+            InitialHistory::New | InitialHistory::Cleared | InitialHistory::Forked(_) => None,
         };
 
         // Kick off independent async setup tasks in parallel to reduce startup latency.
@@ -1701,7 +1759,7 @@ impl Session {
         let auth_mode = auth.map(CodexAuth::auth_mode).map(TelemetryAuthMode::from);
         let account_id = auth.and_then(CodexAuth::get_account_id);
         let account_email = auth.and_then(CodexAuth::get_account_email);
-        let originator = crate::default_client::originator().value;
+        let originator = originator().value;
         let terminal_type = user_agent();
         let session_model = session_configuration.collaboration_mode.model().to_string();
         let auth_env_telemetry = collect_auth_env_telemetry(
@@ -1804,20 +1862,19 @@ impl Session {
             default_shell.shell_snapshot = rx;
             tx
         };
-        let thread_name =
-            match session_index::find_thread_name_by_id(&config.codex_home, &conversation_id)
-                .instrument(info_span!(
-                    "session_init.thread_name_lookup",
-                    otel.name = "session_init.thread_name_lookup",
-                ))
-                .await
-            {
-                Ok(name) => name,
-                Err(err) => {
-                    warn!("Failed to read session index for thread name: {err}");
-                    None
-                }
-            };
+        let thread_name = match find_thread_name_by_id(&config.codex_home, &conversation_id)
+            .instrument(info_span!(
+                "session_init.thread_name_lookup",
+                otel.name = "session_init.thread_name_lookup",
+            ))
+            .await
+        {
+            Ok(name) => name,
+            Err(err) => {
+                warn!("Failed to read session index for thread name: {err}");
+                None
+            }
+        };
         session_configuration.thread_name = thread_name.clone();
         let state = SessionState::new(session_configuration.clone());
         let managed_network_requirements_enabled = config.managed_network_requirements_enabled();
@@ -1894,6 +1951,11 @@ impl Session {
             });
         }
 
+        let environment = match environment_manager.current().await? {
+            Some(environment) => environment,
+            None => Arc::new(Environment::create(/*exec_server_url*/ None).await?),
+        };
+
         let services = SessionServices {
             // Initialize the MCP connection manager with an uninitialized
             // instance. It will be replaced with one created via
@@ -1904,6 +1966,7 @@ impl Session {
             // setup is straightforward enough and performs well.
             mcp_connection_manager: Arc::new(RwLock::new(McpConnectionManager::new_uninitialized(
                 &config.permissions.approval_policy,
+                &config.permissions.sandbox_policy,
             ))),
             mcp_startup_cancellation_token: Mutex::new(CancellationToken::new()),
             unified_exec_manager: UnifiedExecProcessManager::new(
@@ -1926,6 +1989,7 @@ impl Session {
             session_telemetry,
             models_manager: Arc::clone(&models_manager),
             tool_approvals: Mutex::new(ApprovalStore::default()),
+            guardian_rejections: Mutex::new(HashMap::new()),
             skills_manager,
             plugins_manager: Arc::clone(&plugins_manager),
             mcp_manager: Arc::clone(&mcp_manager),
@@ -1938,6 +2002,7 @@ impl Session {
             model_client: ModelClient::new(
                 Some(Arc::clone(&auth_manager)),
                 conversation_id,
+                resolve_installation_id(&config.codex_home).await?,
                 session_configuration.provider.clone(),
                 session_configuration.session_source.clone(),
                 config.model_verbosity,
@@ -1948,7 +2013,7 @@ impl Session {
             code_mode_service: crate::tools::code_mode::CodeModeService::new(
                 config.js_repl_node_path.clone(),
             ),
-            environment: environment_manager.current().await?,
+            environment: environment.clone(),
         };
         let js_repl = Arc::new(JsReplHandle::with_node_path(
             config.js_repl_node_path.clone(),
@@ -2038,6 +2103,7 @@ impl Session {
             config.mcp_oauth_credentials_store_mode,
             auth_statuses.clone(),
             &session_configuration.approval_policy,
+            INITIAL_SUBMIT_ID.to_owned(),
             tx_event.clone(),
             sandbox_state,
             config.codex_home.clone(),
@@ -2090,7 +2156,7 @@ impl Session {
             .await;
         let session_start_source = match &initial_history {
             InitialHistory::Resumed(_) => codex_hooks::SessionStartSource::Resume,
-            InitialHistory::New | InitialHistory::Forked(_) => {
+            InitialHistory::New | InitialHistory::Cleared | InitialHistory::Forked(_) => {
                 codex_hooks::SessionStartSource::Startup
             }
         };
@@ -2161,6 +2227,7 @@ impl Session {
                     text_elements: Vec::new(),
                 }],
                 final_output_json_schema: None,
+                responsesapi_client_metadata: None,
             },
         )
         .await;
@@ -2227,7 +2294,7 @@ impl Session {
             )
         };
         match conversation_history {
-            InitialHistory::New => {
+            InitialHistory::New | InitialHistory::Cleared => {
                 // Defer initial context insertion until the first real turn starts so
                 // turn/start overrides can be merged before we write model-visible context.
                 self.set_previous_turn_settings(/*previous_turn_settings*/ None)
@@ -2500,7 +2567,7 @@ impl Session {
             .models_manager
             .get_model_info(
                 session_configuration.collaboration_mode.model(),
-                &per_turn_config,
+                &per_turn_config.to_models_manager_config(),
             )
             .await;
         let plugin_outcome = self
@@ -3399,6 +3466,41 @@ impl Session {
         state.granted_permissions()
     }
 
+    pub(crate) async fn defer_mailbox_delivery_to_next_turn(&self, _turn_id: &str) {
+        let turn_state = {
+            let active = self.active_turn.lock().await;
+            active.as_ref().map(|active| Arc::clone(&active.turn_state))
+        };
+        if let Some(turn_state) = turn_state {
+            let mut turn_state = turn_state.lock().await;
+            turn_state.set_mailbox_delivery_phase(crate::state::MailboxDeliveryPhase::NextTurn);
+        }
+    }
+
+    pub(crate) async fn accept_mailbox_delivery_for_current_turn(&self, _turn_id: &str) {
+        let turn_state = {
+            let active = self.active_turn.lock().await;
+            active.as_ref().map(|active| Arc::clone(&active.turn_state))
+        };
+        if let Some(turn_state) = turn_state {
+            let mut turn_state = turn_state.lock().await;
+            turn_state.accept_mailbox_delivery_for_current_turn();
+        }
+    }
+
+    pub(crate) async fn resolve_mcp_tool_info(
+        &self,
+        name: &str,
+        namespace: Option<&str>,
+    ) -> Option<ToolInfo> {
+        self.services
+            .mcp_connection_manager
+            .read()
+            .await
+            .resolve_tool_info(name, namespace)
+            .await
+    }
+
     pub async fn notify_dynamic_tool_response(&self, call_id: &str, response: DynamicToolResponse) {
         let entry = {
             let mut active = self.active_turn.lock().await;
@@ -4063,6 +4165,7 @@ impl Session {
         &self,
         input: Vec<UserInput>,
         expected_turn_id: Option<&str>,
+        responsesapi_client_metadata: Option<HashMap<String, String>>,
     ) -> Result<String, SteerInputError> {
         if input.is_empty() {
             return Err(SteerInputError::EmptyInput);
@@ -4099,6 +4202,15 @@ impl Session {
                 });
             }
             None => return Err(SteerInputError::NoActiveTurn(input)),
+        }
+
+        if let Some(responsesapi_client_metadata) = responsesapi_client_metadata
+            && let Some((_, active_task)) = active_turn.tasks.first()
+        {
+            active_task
+                .turn_context
+                .turn_metadata_state
+                .set_responsesapi_client_metadata(responsesapi_client_metadata);
         }
 
         let mut turn_state = active_turn.turn_state.lock().await;
@@ -4268,19 +4380,20 @@ impl Session {
     ) -> Option<(String, String)> {
         let tool_name = if let Some(namespace) = namespace {
             if name.starts_with(namespace.as_str()) {
-                name
+                name.to_string()
             } else {
-                &format!("{namespace}{name}")
+                format!("{namespace}{name}")
             }
         } else {
-            name
+            name.to_string()
         };
         self.services
             .mcp_connection_manager
             .read()
             .await
-            .parse_tool_name(tool_name)
+            .resolve_tool_info(&tool_name, /*namespace*/ None)
             .await
+            .map(|tool| (tool.server_name, tool.tool.name.to_string()))
     }
 
     pub async fn interrupt_task(self: &Arc<Self>) {
@@ -4333,12 +4446,8 @@ impl Session {
             .services
             .mcp_manager
             .tool_plugin_provenance(config.as_ref());
-        let mcp_servers = with_codex_apps_mcp(
-            mcp_servers,
-            self.features.apps_enabled_for_auth(auth.as_ref()),
-            auth.as_ref(),
-            config.as_ref(),
-        );
+        let mcp_config = config.to_mcp_config(self.services.plugins_manager.as_ref());
+        let mcp_servers = with_codex_apps_mcp(mcp_servers, auth.as_ref(), &mcp_config);
         let auth_statuses = compute_auth_statuses(mcp_servers.iter(), store_mode).await;
         let sandbox_state = SandboxState {
             sandbox_policy: turn_context.sandbox_policy.get().clone(),
@@ -4356,6 +4465,7 @@ impl Session {
             store_mode,
             auth_statuses,
             &turn_context.config.permissions.approval_policy,
+            turn_context.sub_id.clone(),
             self.get_tx_event(),
             sandbox_state,
             config.codex_home.clone(),
@@ -4438,6 +4548,39 @@ impl Session {
             .await
             .cancel();
     }
+}
+
+pub(crate) fn emit_subagent_session_started(
+    analytics_events_client: &AnalyticsEventsClient,
+    client_metadata: AppServerClientMetadata,
+    thread_id: ThreadId,
+    parent_thread_id: Option<ThreadId>,
+    thread_config: ThreadConfigSnapshot,
+    subagent_source: SubAgentSource,
+) {
+    let AppServerClientMetadata {
+        client_name,
+        client_version,
+    } = client_metadata;
+    let (Some(client_name), Some(client_version)) = (client_name, client_version) else {
+        tracing::warn!("skipping subagent thread analytics: missing inherited client metadata");
+        return;
+    };
+    let created_at = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    analytics_events_client.track_subagent_thread_started(SubAgentThreadStartedInput {
+        thread_id: thread_id.to_string(),
+        parent_thread_id: parent_thread_id.map(|thread_id| thread_id.to_string()),
+        product_client_id: client_name.clone(),
+        client_name,
+        client_version,
+        model: thread_config.model,
+        ephemeral: thread_config.ephemeral,
+        subagent_source,
+        created_at,
+    });
 }
 
 async fn submission_loop(sess: Arc<Session>, config: Arc<Config>, rx_sub: Receiver<Submission>) {
@@ -4702,7 +4845,6 @@ mod handlers {
     use crate::mcp::collect_mcp_snapshot_from_manager;
     use crate::review_prompts::resolve_review_request;
     use crate::rollout::RolloutRecorder;
-    use crate::rollout::session_index;
     use crate::tasks::CompactTask;
     use crate::tasks::UndoTask;
     use crate::tasks::UserShellCommandMode;
@@ -4768,7 +4910,7 @@ mod handlers {
     }
 
     pub async fn user_input_or_turn(sess: &Arc<Session>, sub_id: String, op: Op) {
-        let (items, updates) = match op {
+        let (items, updates, responsesapi_client_metadata) = match op {
             Op::UserTurn {
                 cwd,
                 approval_policy,
@@ -4807,18 +4949,22 @@ mod handlers {
                         final_output_json_schema: Some(final_output_json_schema),
                         personality,
                         app_server_client_name: None,
+                        app_server_client_version: None,
                     },
+                    None,
                 )
             }
             Op::UserInput {
                 items,
                 final_output_json_schema,
+                responsesapi_client_metadata,
             } => (
                 items,
                 SessionSettingsUpdate {
                     final_output_json_schema: Some(final_output_json_schema),
                     ..Default::default()
                 },
+                responsesapi_client_metadata,
             ),
             _ => unreachable!(),
         };
@@ -4830,7 +4976,11 @@ mod handlers {
         sess.maybe_emit_unknown_model_warning_for_turn(current_context.as_ref())
             .await;
         match sess
-            .steer_input(items.clone(), /*expected_turn_id*/ None)
+            .steer_input(
+                items.clone(),
+                /*expected_turn_id*/ None,
+                responsesapi_client_metadata,
+            )
             .await
         {
             Ok(_) => current_context.session_telemetry.user_prompt(&items),
@@ -5403,7 +5553,7 @@ mod handlers {
 
         let codex_home = sess.codex_home().await;
         if let Err(e) =
-            session_index::append_thread_name(&codex_home, sess.conversation_id, &name).await
+            crate::rollout::append_thread_name(&codex_home, sess.conversation_id, &name).await
         {
             let event = Event {
                 id: sub_id,
@@ -5530,7 +5680,7 @@ async fn spawn_review_thread(
     let review_model_info = sess
         .services
         .models_manager
-        .get_model_info(&model, &config)
+        .get_model_info(&model, &config.to_models_manager_config())
         .await;
     // For reviews, disable web_search and view_image regardless of global settings.
     let mut review_features = sess.features.clone();
@@ -5545,20 +5695,21 @@ async fn spawn_review_thread(
             .list_models(RefreshStrategy::OnlineIfUncached)
             .await,
         features: &review_features,
+        image_generation_tool_auth_allowed: image_generation_tool_auth_allowed(
+            parent_turn_context.auth_manager.as_deref(),
+        ),
         web_search_mode: Some(review_web_search_mode),
         session_source: parent_turn_context.session_source.clone(),
         sandbox_policy: parent_turn_context.sandbox_policy.get(),
         windows_sandbox_level: parent_turn_context.windows_sandbox_level,
     })
     .with_unified_exec_shell_mode_for_session(
-        sess.services.user_shell.as_ref(),
+        tool_user_shell_type(sess.services.user_shell.as_ref()),
         sess.services.shell_zsh_path.as_ref(),
         sess.services.main_execve_wrapper_exe.as_ref(),
     )
     .with_web_search_config(/*web_search_config*/ None)
-    .with_wait_agent_default_timeout_ms(config.background_terminal_max_timeout)
-    .with_allow_login_shell(config.permissions.allow_login_shell)
-    .with_agent_roles(config.agent_roles.clone());
+    .with_allow_login_shell(config.permissions.allow_login_shell);
 
     let review_prompt = resolved.prompt.clone();
     let provider = parent_turn_context.provider.clone();
@@ -6328,6 +6479,8 @@ async fn run_auto_compact(
             Arc::clone(sess),
             Arc::clone(turn_context),
             initial_context_injection,
+            CompactionReason::ContextLimit,
+            CompactionPhase::MidTurn,
         )
         .await?;
     } else {
@@ -6335,6 +6488,8 @@ async fn run_auto_compact(
             Arc::clone(sess),
             Arc::clone(turn_context),
             initial_context_injection,
+            CompactionReason::ContextLimit,
+            CompactionPhase::MidTurn,
         )
         .await?;
     }
@@ -6469,10 +6624,10 @@ fn connector_inserted_in_messages(
 }
 
 fn filter_codex_apps_mcp_tools(
-    mcp_tools: &HashMap<String, crate::mcp_connection_manager::ToolInfo>,
+    mcp_tools: &HashMap<String, ToolInfo>,
     connectors: &[connectors::AppInfo],
     config: &Config,
-) -> HashMap<String, crate::mcp_connection_manager::ToolInfo> {
+) -> HashMap<String, ToolInfo> {
     let allowed: HashSet<&str> = connectors
         .iter()
         .map(|connector| connector.id.as_str())
@@ -6493,7 +6648,7 @@ fn filter_codex_apps_mcp_tools(
         .collect()
 }
 
-fn codex_apps_connector_id(tool: &crate::mcp_connection_manager::ToolInfo) -> Option<&str> {
+fn codex_apps_connector_id(tool: &ToolInfo) -> Option<&str> {
     tool.connector_id.as_deref()
 }
 
@@ -6787,13 +6942,8 @@ pub(crate) async fn built_tools(
     Ok(Arc::new(ToolRouter::from_config(
         &turn_context.tools_config,
         ToolRouterParams {
-            mcp_tools: has_mcp_servers.then(|| {
-                mcp_tools
-                    .into_iter()
-                    .map(|(name, tool)| (name, tool.tool))
-                    .collect()
-            }),
-            app_tools,
+            mcp_tools: has_mcp_servers.then_some(mcp_tools),
+            deferred_mcp_tools: app_tools,
             discoverable_tools,
             dynamic_tools: turn_context.dynamic_tools.as_slice(),
         },
@@ -6987,6 +7137,7 @@ fn realtime_text_for_event(msg: &EventMsg) -> Option<String> {
         EventMsg::Error(_)
         | EventMsg::Warning(_)
         | EventMsg::RealtimeConversationStarted(_)
+        | EventMsg::RealtimeConversationSdp(_)
         | EventMsg::RealtimeConversationRealtime(_)
         | EventMsg::RealtimeConversationClosed(_)
         | EventMsg::ModelReroute(_)
@@ -7036,6 +7187,7 @@ fn realtime_text_for_event(msg: &EventMsg) -> Option<String> {
         | EventMsg::GetHistoryEntryResponse(_)
         | EventMsg::McpListToolsResponse(_)
         | EventMsg::ListSkillsResponse(_)
+        | EventMsg::RealtimeConversationListVoicesResponse(_)
         | EventMsg::SkillsUpdateAvailable
         | EventMsg::PlanUpdate(_)
         | EventMsg::TurnAborted(_)

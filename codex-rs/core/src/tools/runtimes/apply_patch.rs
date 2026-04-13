@@ -215,12 +215,10 @@ impl ToolRuntime<ApplyPatchRequest, ExecToolCallOutput> for ApplyPatchRuntime {
         attempt: &SandboxAttempt<'_>,
         ctx: &ToolCtx,
     ) -> Result<ExecToolCallOutput, ToolError> {
-        if let Some(environment) = ctx.turn.environment.as_ref().filter(|env| env.is_remote()) {
+        let environment = ctx.turn.environment.as_ref();
+        if environment.is_remote() {
             let started_at = Instant::now();
             let fs = environment.get_filesystem();
-            let sandbox = ctx
-                .turn
-                .file_system_sandbox_context(req.additional_permissions.clone());
             let mut stdout = Vec::new();
             let mut stderr = Vec::new();
             let result = codex_apply_patch::apply_patch(
@@ -229,7 +227,7 @@ impl ToolRuntime<ApplyPatchRequest, ExecToolCallOutput> for ApplyPatchRuntime {
                 &mut stdout,
                 &mut stderr,
                 fs.as_ref(),
-                Some(&sandbox),
+                None,
             )
             .await;
             let stdout = String::from_utf8_lossy(&stdout).into_owned();

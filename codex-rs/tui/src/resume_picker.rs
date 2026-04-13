@@ -175,7 +175,9 @@ pub async fn run_resume_picker_with_app_server(
     let cwd_filter = if show_all {
         None
     } else {
-        app_server.remote_cwd_override().map(Path::to_path_buf)
+        app_server
+            .remote_cwd_override()
+            .map(|path| path.to_path_buf())
     };
     run_session_picker_with_loader(
         tui,
@@ -200,7 +202,9 @@ pub async fn run_fork_picker_with_app_server(
     let cwd_filter = if show_all {
         None
     } else {
-        app_server.remote_cwd_override().map(Path::to_path_buf)
+        app_server
+            .remote_cwd_override()
+            .map(|path| path.to_path_buf())
     };
     run_session_picker_with_loader(
         tui,

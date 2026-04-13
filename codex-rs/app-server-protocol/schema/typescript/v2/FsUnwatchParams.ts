@@ -7,6 +7,6 @@
  */
 export type FsUnwatchParams = {
 /**
- * Watch identifier previously provided to `fs/watch`.
+ * Watch identifier returned by `fs/watch`.
  */
 watchId: string, };

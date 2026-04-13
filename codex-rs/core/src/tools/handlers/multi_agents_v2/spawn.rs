@@ -11,7 +11,6 @@ use codex_protocol::protocol::Op;
 
 pub(crate) struct Handler;
 
-#[async_trait]
 impl ToolHandler for Handler {
     type Output = SpawnAgentResult;
 
@@ -95,7 +94,7 @@ impl ToolHandler for Handler {
             let model_info = session
                 .services
                 .models_manager
-                .get_model_info(&model, &config)
+                .get_model_info(&model, &config.to_models_manager_config())
                 .await;
 
             match config.model_reasoning_effort {

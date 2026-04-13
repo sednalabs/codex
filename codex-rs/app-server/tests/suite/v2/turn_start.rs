@@ -364,8 +364,8 @@ async fn thread_start_omits_empty_instruction_overrides_from_model_request() -> 
                 "include_permissions_instructions".to_string(),
                 json!(false),
             )])),
-            base_instructions: Some(String::new()),
-            developer_instructions: Some(String::new()),
+            base_instructions: Some(Some(String::new())),
+            developer_instructions: Some(Some(String::new())),
             ..Default::default()
         })
         .await?;

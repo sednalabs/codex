@@ -9,7 +9,6 @@ use crate::tools::handlers::multi_agents_common::tool_output_response_item;
 use crate::tools::handlers::parse_arguments;
 use crate::tools::registry::ToolHandler;
 use crate::tools::registry::ToolKind;
-use async_trait::async_trait;
 use codex_protocol::models::ResponseInputItem;
 use serde::Deserialize;
 use serde_json::Value as JsonValue;
@@ -19,7 +18,6 @@ const DEFAULT_TREE_MAX_AGENTS: usize = 25;
 
 pub struct InspectAgentTreeHandler;
 
-#[async_trait]
 impl ToolHandler for InspectAgentTreeHandler {
     type Output = AgentTreeInspection;
 

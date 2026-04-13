@@ -281,7 +281,6 @@
     },
     "McpToolCallResult": {
       "properties": {
-        "_meta": true,
         "content": {
           "items": true,
           "type": "array"

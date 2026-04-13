@@ -1,6 +1,7 @@
 use codex_protocol::ThreadId;
 use codex_protocol::models::ShellCommandToolCallParams;
 use codex_protocol::models::ShellToolCallParams;
+use codex_utils_absolute_path::AbsolutePathBuf;
 use serde_json::Value as JsonValue;
 use std::sync::Arc;
 
@@ -95,7 +96,8 @@ impl ShellHandler {
     ) -> ExecParams {
         ExecParams {
             command: params.command.clone(),
-            cwd: turn_context.resolve_path(params.workdir.clone()),
+            cwd: AbsolutePathBuf::try_from(turn_context.resolve_path(params.workdir.clone()))
+                .expect("shell tool workdir must resolve to an absolute path"),
             expiration: params.timeout_ms.into(),
             capture_policy: ExecCapturePolicy::ShellTool,
             env: create_env(&turn_context.shell_environment_policy, Some(thread_id)),
@@ -150,7 +152,8 @@ impl ShellCommandHandler {
 
         Ok(ExecParams {
             command,
-            cwd: turn_context.resolve_path(params.workdir.clone()),
+            cwd: AbsolutePathBuf::try_from(turn_context.resolve_path(params.workdir.clone()))
+                .expect("shell_command workdir must resolve to an absolute path"),
             expiration: params.timeout_ms.into(),
             capture_policy: ExecCapturePolicy::ShellTool,
             env: create_env(&turn_context.shell_environment_policy, Some(thread_id)),
@@ -395,11 +398,7 @@ impl ShellHandler {
         } = args;
 
         let mut exec_params = exec_params;
-        let Some(environment) = turn.environment.as_ref() else {
-            return Err(FunctionCallError::RespondToModel(
-                "shell is unavailable in this session".to_string(),
-            ));
-        };
+        let environment = turn.environment.as_ref();
         let fs = environment.get_filesystem();
 
         let dependency_env = session.dependency_env().await;

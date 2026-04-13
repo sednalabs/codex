@@ -711,6 +711,7 @@ fn internal_error(message: String) -> JSONRPCErrorError {
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
+    use std::path::PathBuf;
 
     use codex_protocol::config_types::WindowsSandboxLevel;
     use codex_protocol::permissions::FileSystemSandboxPolicy;
@@ -1072,7 +1073,7 @@ mod tests {
                         "-c".to_string(),
                         "printf 'streaming-output'".to_string(),
                     ],
-                    PathBuf::from("."),
+                    AbsolutePathBuf::try_from(PathBuf::from(".")).unwrap(),
                     HashMap::new(),
                     /*network*/ None,
                     ExecExpiration::DefaultTimeout,

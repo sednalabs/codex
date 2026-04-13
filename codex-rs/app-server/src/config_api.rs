@@ -554,7 +554,8 @@ mod tests {
             allowed_web_search_modes: Some(vec![
                 codex_core::config_loader::WebSearchModeRequirement::Cached,
             ]),
-            guardian_developer_instructions: None,
+            allowed_approvals_reviewers: None,
+            guardian_policy_config: None,
             feature_requirements: Some(codex_core::config_loader::FeatureRequirementsToml {
                 entries: std::collections::BTreeMap::from([
                     ("apps".to_string(), false),
@@ -572,6 +573,7 @@ mod tests {
                 allow_upstream_proxy: Some(false),
                 dangerously_allow_non_loopback_proxy: Some(false),
                 dangerously_allow_all_unix_sockets: Some(true),
+                danger_full_access_denylist_only: Some(true),
                 domains: Some(CoreNetworkDomainPermissionsToml {
                     entries: std::collections::BTreeMap::from([
                         (
@@ -637,6 +639,7 @@ mod tests {
                     ("example.com".to_string(), NetworkDomainPermission::Deny),
                 ])),
                 managed_allowed_domains_only: Some(false),
+                danger_full_access_denylist_only: Some(true),
                 allowed_domains: Some(vec!["api.openai.com".to_string()]),
                 denied_domains: Some(vec!["example.com".to_string()]),
                 unix_sockets: Some(std::collections::BTreeMap::from([(
@@ -645,7 +648,6 @@ mod tests {
                 )])),
                 allow_unix_sockets: Some(vec!["/tmp/proxy.sock".to_string()]),
                 allow_local_binding: Some(true),
-                danger_full_access_denylist_only: None,
             }),
         );
     }
@@ -656,7 +658,8 @@ mod tests {
             allowed_approval_policies: None,
             allowed_sandbox_modes: None,
             allowed_web_search_modes: None,
-            guardian_developer_instructions: None,
+            allowed_approvals_reviewers: None,
+            guardian_policy_config: None,
             feature_requirements: None,
             mcp_servers: None,
             apps: None,
@@ -669,6 +672,7 @@ mod tests {
                 allow_upstream_proxy: None,
                 dangerously_allow_non_loopback_proxy: None,
                 dangerously_allow_all_unix_sockets: None,
+                danger_full_access_denylist_only: None,
                 domains: None,
                 managed_allowed_domains_only: None,
                 unix_sockets: Some(CoreNetworkUnixSocketPermissionsToml {
@@ -694,6 +698,7 @@ mod tests {
                 dangerously_allow_all_unix_sockets: None,
                 domains: None,
                 managed_allowed_domains_only: None,
+                danger_full_access_denylist_only: None,
                 allowed_domains: None,
                 denied_domains: None,
                 unix_sockets: Some(std::collections::BTreeMap::from([(
@@ -702,7 +707,6 @@ mod tests {
                 )])),
                 allow_unix_sockets: None,
                 allow_local_binding: None,
-                danger_full_access_denylist_only: None,
             }),
         );
     }
@@ -713,7 +717,8 @@ mod tests {
             allowed_approval_policies: None,
             allowed_sandbox_modes: None,
             allowed_web_search_modes: Some(Vec::new()),
-            guardian_developer_instructions: None,
+            allowed_approvals_reviewers: None,
+            guardian_policy_config: None,
             feature_requirements: None,
             mcp_servers: None,
             apps: None,

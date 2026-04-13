@@ -112,9 +112,6 @@ impl ThreadState {
     }
 
     pub(crate) fn track_current_turn_event(&mut self, event: &EventMsg) {
-        if let EventMsg::TurnStarted(payload) = event {
-            self.turn_summary.started_at = payload.started_at;
-        }
         self.current_turn_history.handle_event(event);
         if matches!(event, EventMsg::TurnAborted(_) | EventMsg::TurnComplete(_))
             && !self.current_turn_history.has_active_turn()

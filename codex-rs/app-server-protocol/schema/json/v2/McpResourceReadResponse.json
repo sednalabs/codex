@@ -6,7 +6,6 @@
           "properties": {
             "_meta": true,
             "mimeType": {
-              "default": null,
               "type": [
                 "string",
                 "null"
@@ -33,7 +32,6 @@
               "type": "string"
             },
             "mimeType": {
-              "default": null,
               "type": [
                 "string",
                 "null"

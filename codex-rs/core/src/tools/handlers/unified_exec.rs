@@ -1,8 +1,6 @@
 use crate::function_tool::FunctionCallError;
 use crate::is_safe_command::is_known_safe_command;
 use crate::maybe_emit_implicit_skill_invocation;
-use crate::protocol::EventMsg;
-use crate::protocol::TerminalInteractionEvent;
 use crate::sandboxing::SandboxPermissions;
 use crate::shell::Shell;
 use crate::shell::get_shell_by_model_provided_path;
@@ -21,18 +19,20 @@ use crate::tools::registry::PostToolUsePayload;
 use crate::tools::registry::PreToolUsePayload;
 use crate::tools::registry::ToolHandler;
 use crate::tools::registry::ToolKind;
-use crate::tools::spec::UnifiedExecShellMode;
 use crate::unified_exec::ExecCommandRequest;
 use crate::unified_exec::MIN_EMPTY_YIELD_TIME_MS;
 use crate::unified_exec::UNIFIED_EXEC_OUTPUT_MAX_BYTES;
 use crate::unified_exec::UnifiedExecContext;
 use crate::unified_exec::UnifiedExecProcessManager;
 use crate::unified_exec::WriteStdinRequest;
-use async_trait::async_trait;
 use codex_features::Feature;
 use codex_otel::SessionTelemetry;
-use codex_otel::metrics::names::TOOL_CALL_UNIFIED_EXEC_METRIC;
+use codex_otel::TOOL_CALL_UNIFIED_EXEC_METRIC;
 use codex_protocol::models::PermissionProfile;
+use codex_protocol::protocol::EventMsg;
+use codex_protocol::protocol::TerminalInteractionEvent;
+use codex_tools::UnifiedExecShellMode;
+use codex_utils_absolute_path::AbsolutePathBuf;
 use codex_utils_output_truncation::approx_token_count;
 use serde::Deserialize;
 use std::path::PathBuf;
@@ -235,7 +235,6 @@ async fn wait_for_terminal_completion(
     Ok(response)
 }
 
-#[async_trait]
 impl ToolHandler for UnifiedExecHandler {
     type Output = ExecCommandToolOutput;
 
@@ -272,7 +271,7 @@ impl ToolHandler for UnifiedExecHandler {
     }
 
     fn pre_tool_use_payload(&self, invocation: &ToolInvocation) -> Option<PreToolUsePayload> {
-        if invocation.tool_name != "exec_command" {
+        if invocation.tool_name != "exec_command".into() {
             return None;
         }
 
@@ -330,11 +329,10 @@ impl ToolHandler for UnifiedExecHandler {
         let manager: &UnifiedExecProcessManager = &session.services.unified_exec_manager;
         let context = UnifiedExecContext::new(session.clone(), turn.clone(), call_id.clone());
 
-        let response = match tool_name.as_str() {
+        let response = match tool_name.name.as_str() {
             "exec_command" => {
-                let cwd = resolve_workdir_base_path(&arguments, context.turn.cwd.as_path())?;
-                let args: ExecCommandArgs =
-                    parse_arguments_with_base_path(&arguments, cwd.as_path())?;
+                let cwd = resolve_workdir_base_path(&arguments, &context.turn.cwd)?;
+                let args: ExecCommandArgs = parse_arguments_with_base_path(&arguments, &cwd)?;
                 let workdir = context.turn.resolve_path(args.workdir.clone());
                 maybe_emit_implicit_skill_invocation(
                     session.as_ref(),
@@ -401,7 +399,10 @@ impl ToolHandler for UnifiedExecHandler {
 
                 let workdir = workdir.filter(|value| !value.is_empty());
 
-                let workdir = workdir.map(|dir| context.turn.resolve_path(Some(dir)));
+                let workdir = workdir.map(|dir| {
+                    AbsolutePathBuf::try_from(context.turn.resolve_path(Some(dir)))
+                        .expect("exec_command workdir must resolve to an absolute path")
+                });
                 let cwd = workdir.clone().unwrap_or(cwd);
                 let normalized_additional_permissions = match implicit_granted_permissions(
                     sandbox_permissions,
@@ -428,15 +429,17 @@ impl ToolHandler for UnifiedExecHandler {
                     }
                 };
 
+                let exec_fs = context.turn.environment.get_filesystem();
                 if let Some(output) = intercept_apply_patch(
                     &command,
                     &cwd,
+                    exec_fs.as_ref(),
                     Some(yield_time_ms),
                     context.session.clone(),
                     context.turn.clone(),
                     Some(&tracker),
                     &context.call_id,
-                    tool_name.as_str(),
+                    tool_name.name.as_str(),
                 )
                 .await?
                 {

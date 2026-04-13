@@ -30,7 +30,7 @@ git switch main
 If your `origin` remote still points at the personal namespace, update it:
 
 ```bash
-git remote set-url origin git@github.com:SednaLabs/codex.git
+git remote set-url origin git@github.com:sednalabs/codex.git
 ```
 
 ## Validation policy

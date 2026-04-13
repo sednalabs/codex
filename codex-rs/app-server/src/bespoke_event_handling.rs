@@ -424,6 +424,7 @@ pub(crate) async fn apply_bespoke_event_handling(
                             ))
                             .await;
                     }
+                    RealtimeEvent::ResponseCreated(_) | RealtimeEvent::ResponseDone(_) => {}
                     RealtimeEvent::ConversationItemAdded(item) => {
                         let notification = ThreadRealtimeItemAddedNotification {
                             thread_id: conversation_id.to_string(),
@@ -2974,27 +2975,36 @@ mod tests {
         turn_id: &str,
         status: GuardianAssessmentStatus,
     ) -> GuardianAssessmentEvent {
-        let (risk_score, risk_level, rationale) = match status {
+        let (risk_level, user_authorization, rationale) = match status {
             GuardianAssessmentStatus::InProgress => (None, None, None),
             GuardianAssessmentStatus::Approved => (
-                Some(12),
                 Some(codex_protocol::protocol::GuardianRiskLevel::Low),
+                Some(codex_protocol::approvals::GuardianUserAuthorization::High),
                 Some("looks safe".to_string()),
             ),
             GuardianAssessmentStatus::Denied => (
-                Some(88),
                 Some(codex_protocol::protocol::GuardianRiskLevel::High),
+                Some(codex_protocol::approvals::GuardianUserAuthorization::Low),
                 Some("too risky".to_string()),
             ),
+            GuardianAssessmentStatus::TimedOut => {
+                (None, None, Some("review timed out".to_string()))
+            }
             GuardianAssessmentStatus::Aborted => (None, None, None),
         };
         GuardianAssessmentEvent {
-            id: id.to_string(),
+            id: format!("review-{id}"),
+            target_item_id: Some(id.to_string()),
             turn_id: turn_id.to_string(),
             status,
-            risk_score,
             risk_level,
+            user_authorization,
             rationale,
+            decision_source: if matches!(status, GuardianAssessmentStatus::InProgress) {
+                None
+            } else {
+                Some(codex_protocol::approvals::GuardianAssessmentDecisionSource::Agent)
+            },
             action: serde_json::from_value(json!({
                 "type": "command",
                 "source": "shell",
@@ -3040,22 +3050,24 @@ mod tests {
     #[test]
     fn guardian_assessment_started_uses_event_turn_id_fallback() {
         let conversation_id = ThreadId::new();
-        let action = json!({
-            "tool": "shell",
-            "command": ["rm", "-rf", "/tmp/example.sqlite"],
-            "cwd": "/tmp",
-        });
+        let action = codex_protocol::approvals::GuardianAssessmentAction::Command {
+            source: codex_protocol::approvals::GuardianCommandSource::Shell,
+            command: "rm -rf /tmp/example.sqlite".to_string(),
+            cwd: "/tmp".into(),
+        };
         let notification = guardian_auto_approval_review_notification(
             &conversation_id,
             "turn-from-event",
             &GuardianAssessmentEvent {
-                id: "item-1".to_string(),
+                id: "review-1".to_string(),
+                target_item_id: Some("item-1".to_string()),
                 turn_id: String::new(),
                 status: codex_protocol::protocol::GuardianAssessmentStatus::InProgress,
-                risk_score: None,
                 risk_level: None,
+                user_authorization: None,
                 rationale: None,
-                action: Some(action),
+                decision_source: None,
+                action: action.clone(),
             },
         );
 
@@ -3063,22 +3075,16 @@ mod tests {
             ServerNotification::ItemGuardianApprovalReviewStarted(payload) => {
                 assert_eq!(payload.thread_id, conversation_id.to_string());
                 assert_eq!(payload.turn_id, "turn-from-event");
-                assert_eq!(payload.target_item_id, "item-1");
+                assert_eq!(payload.review_id, "review-1");
+                assert_eq!(payload.target_item_id.as_deref(), Some("item-1"));
                 assert_eq!(
                     payload.review.status,
                     GuardianApprovalReviewStatus::InProgress
                 );
-                assert_eq!(payload.review.risk_score, None);
                 assert_eq!(payload.review.risk_level, None);
+                assert_eq!(payload.review.user_authorization, None);
                 assert_eq!(payload.review.rationale, None);
-                assert_eq!(
-                    payload.action,
-                    codex_app_server_protocol::GuardianApprovalReviewAction::Command {
-                        source: codex_app_server_protocol::GuardianCommandSource::Shell,
-                        command: "rm -rf /tmp/example.sqlite".to_string(),
-                        cwd: "/tmp".into(),
-                    }
-                );
+                assert_eq!(payload.action, action.into());
             }
             other => panic!("unexpected notification: {other:?}"),
         }
@@ -3087,22 +3093,26 @@ mod tests {
     #[test]
     fn guardian_assessment_completed_emits_review_payload() {
         let conversation_id = ThreadId::new();
-        let action = json!({
-            "tool": "shell",
-            "command": ["rm", "-rf", "/tmp/example.sqlite"],
-            "cwd": "/tmp",
-        });
+        let action = codex_protocol::approvals::GuardianAssessmentAction::Command {
+            source: codex_protocol::approvals::GuardianCommandSource::Shell,
+            command: "rm -rf /tmp/example.sqlite".to_string(),
+            cwd: "/tmp".into(),
+        };
         let notification = guardian_auto_approval_review_notification(
             &conversation_id,
             "turn-from-event",
             &GuardianAssessmentEvent {
-                id: "item-2".to_string(),
+                id: "review-2".to_string(),
+                target_item_id: Some("item-2".to_string()),
                 turn_id: "turn-from-assessment".to_string(),
                 status: codex_protocol::protocol::GuardianAssessmentStatus::Denied,
-                risk_score: Some(91),
                 risk_level: Some(codex_protocol::protocol::GuardianRiskLevel::High),
+                user_authorization: Some(codex_protocol::approvals::GuardianUserAuthorization::Low),
                 rationale: Some("too risky".to_string()),
-                action: Some(action),
+                decision_source: Some(
+                    codex_protocol::approvals::GuardianAssessmentDecisionSource::Agent,
+                ),
+                action: action.clone(),
             },
         );
 
@@ -3110,22 +3120,19 @@ mod tests {
             ServerNotification::ItemGuardianApprovalReviewCompleted(payload) => {
                 assert_eq!(payload.thread_id, conversation_id.to_string());
                 assert_eq!(payload.turn_id, "turn-from-assessment");
-                assert_eq!(payload.target_item_id, "item-2");
+                assert_eq!(payload.review_id, "review-2");
+                assert_eq!(payload.target_item_id.as_deref(), Some("item-2"));
                 assert_eq!(payload.review.status, GuardianApprovalReviewStatus::Denied);
-                assert_eq!(payload.review.risk_score, Some(91));
                 assert_eq!(
                     payload.review.risk_level,
                     Some(codex_app_server_protocol::GuardianRiskLevel::High)
                 );
-                assert_eq!(payload.review.rationale.as_deref(), Some("too risky"));
                 assert_eq!(
-                    payload.action,
-                    codex_app_server_protocol::GuardianApprovalReviewAction::Command {
-                        source: codex_app_server_protocol::GuardianCommandSource::Shell,
-                        command: "rm -rf /tmp/example.sqlite".to_string(),
-                        cwd: "/tmp".into(),
-                    }
+                    payload.review.user_authorization,
+                    Some(codex_app_server_protocol::GuardianUserAuthorization::Low)
                 );
+                assert_eq!(payload.review.rationale.as_deref(), Some("too risky"));
+                assert_eq!(payload.action, action.into());
             }
             other => panic!("unexpected notification: {other:?}"),
         }
@@ -3134,24 +3141,25 @@ mod tests {
     #[test]
     fn guardian_assessment_aborted_emits_completed_review_payload() {
         let conversation_id = ThreadId::new();
-        let action = json!({
-            "tool": "network_access",
-            "target": "api.openai.com:443",
-            "host": "api.openai.com",
-            "protocol": "https",
-            "port": 443,
-        });
+        let action = codex_protocol::approvals::GuardianAssessmentAction::NetworkAccess {
+            protocol: codex_protocol::approvals::NetworkApprovalProtocol::Https,
+            host: "api.openai.com".to_string(),
+            port: 443,
+            target: "api.openai.com:443".to_string(),
+        };
         let notification = guardian_auto_approval_review_notification(
             &conversation_id,
             "turn-from-event",
             &GuardianAssessmentEvent {
-                id: "item-3".to_string(),
+                id: "review-3".to_string(),
+                target_item_id: Some("item-3".to_string()),
                 turn_id: "turn-from-assessment".to_string(),
                 status: codex_protocol::protocol::GuardianAssessmentStatus::Aborted,
-                risk_score: None,
                 risk_level: None,
+                user_authorization: None,
                 rationale: None,
-                action: Some(action),
+                decision_source: None,
+                action: action.clone(),
             },
         );
 
@@ -3159,20 +3167,13 @@ mod tests {
             ServerNotification::ItemGuardianApprovalReviewCompleted(payload) => {
                 assert_eq!(payload.thread_id, conversation_id.to_string());
                 assert_eq!(payload.turn_id, "turn-from-assessment");
-                assert_eq!(payload.target_item_id, "item-3");
+                assert_eq!(payload.review_id, "review-3");
+                assert_eq!(payload.target_item_id.as_deref(), Some("item-3"));
                 assert_eq!(payload.review.status, GuardianApprovalReviewStatus::Aborted);
-                assert_eq!(payload.review.risk_score, None);
                 assert_eq!(payload.review.risk_level, None);
+                assert_eq!(payload.review.user_authorization, None);
                 assert_eq!(payload.review.rationale, None);
-                assert_eq!(
-                    payload.action,
-                    codex_app_server_protocol::GuardianApprovalReviewAction::NetworkAccess {
-                        target: "api.openai.com:443".to_string(),
-                        host: "api.openai.com".to_string(),
-                        protocol: codex_app_server_protocol::NetworkApprovalProtocol::Https,
-                        port: 443,
-                    }
-                );
+                assert_eq!(payload.action, action.into());
             }
             other => panic!("unexpected notification: {other:?}"),
         }
@@ -3384,7 +3385,10 @@ mod tests {
             OutgoingMessage::AppServerNotification(
                 ServerNotification::ItemGuardianApprovalReviewStarted(payload),
             ) => {
-                assert_eq!(payload.target_item_id, "cmd-guardian-approved");
+                assert_eq!(
+                    payload.target_item_id.as_deref(),
+                    Some("cmd-guardian-approved")
+                );
                 assert_eq!(
                     payload.review.status,
                     GuardianApprovalReviewStatus::InProgress
@@ -3405,7 +3409,10 @@ mod tests {
             OutgoingMessage::AppServerNotification(
                 ServerNotification::ItemGuardianApprovalReviewCompleted(payload),
             ) => {
-                assert_eq!(payload.target_item_id, "cmd-guardian-approved");
+                assert_eq!(
+                    payload.target_item_id.as_deref(),
+                    Some("cmd-guardian-approved")
+                );
                 assert_eq!(
                     payload.review.status,
                     GuardianApprovalReviewStatus::Approved
@@ -3442,7 +3449,10 @@ mod tests {
             OutgoingMessage::AppServerNotification(
                 ServerNotification::ItemGuardianApprovalReviewStarted(payload),
             ) => {
-                assert_eq!(payload.target_item_id, "cmd-guardian-denied");
+                assert_eq!(
+                    payload.target_item_id.as_deref(),
+                    Some("cmd-guardian-denied")
+                );
                 assert_eq!(
                     payload.review.status,
                     GuardianApprovalReviewStatus::InProgress
@@ -3463,7 +3473,10 @@ mod tests {
             OutgoingMessage::AppServerNotification(
                 ServerNotification::ItemGuardianApprovalReviewCompleted(payload),
             ) => {
-                assert_eq!(payload.target_item_id, "cmd-guardian-denied");
+                assert_eq!(
+                    payload.target_item_id.as_deref(),
+                    Some("cmd-guardian-denied")
+                );
                 assert_eq!(payload.review.status, GuardianApprovalReviewStatus::Denied);
             }
             other => bail!("unexpected message: {other:?}"),
@@ -3753,6 +3766,7 @@ mod tests {
             state.track_current_turn_event(&EventMsg::TurnStarted(
                 codex_protocol::protocol::TurnStartedEvent {
                     turn_id: event_turn_id.clone(),
+                    started_at: None,
                     model_context_window: None,
                     collaboration_mode_kind: Default::default(),
                 },

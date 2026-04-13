@@ -5,8 +5,6 @@ use crate::agent::role::DEFAULT_ROLE_NAME;
 use crate::agent::role::resolve_role_config;
 use crate::agent::status::is_final;
 use crate::codex_thread::ThreadConfigSnapshot;
-use crate::error::CodexErr;
-use crate::error::Result as CodexResult;
 use crate::find_archived_thread_path_by_id_str;
 use crate::find_thread_path_by_id_str;
 use crate::rollout::RolloutRecorder;
@@ -19,6 +17,8 @@ use crate::thread_rollout_truncation::truncate_rollout_to_last_n_fork_turns;
 use codex_features::Feature;
 use codex_protocol::AgentPath;
 use codex_protocol::ThreadId;
+use codex_protocol::error::CodexErr;
+use codex_protocol::error::Result as CodexResult;
 use codex_protocol::models::FunctionCallOutputPayload;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::openai_models::ReasoningEffort;
@@ -1538,6 +1538,13 @@ impl AgentControl {
         }
 
         Ok(descendants)
+    }
+
+    pub(crate) async fn list_live_agent_subtree_thread_ids(
+        &self,
+        root_thread_id: ThreadId,
+    ) -> CodexResult<Vec<ThreadId>> {
+        self.live_thread_spawn_descendants(root_thread_id).await
     }
 
     async fn load_agent_tree_record(

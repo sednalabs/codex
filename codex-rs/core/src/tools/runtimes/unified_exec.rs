@@ -205,11 +205,8 @@ impl<'a> ToolRuntime<UnifiedExecRequest, UnifiedExecProcess> for UnifiedExecRunt
     ) -> Result<UnifiedExecProcess, ToolError> {
         let base_command = &req.command;
         let session_shell = ctx.session.user_shell();
-        let environment_is_remote = ctx
-            .turn
-            .environment
-            .as_ref()
-            .is_some_and(|environment| environment.is_remote());
+        let environment = ctx.turn.environment.as_ref();
+        let environment_is_remote = environment.is_remote();
         let command = if environment_is_remote {
             base_command.to_vec()
         } else {
@@ -253,11 +250,6 @@ impl<'a> ToolRuntime<UnifiedExecRequest, UnifiedExecProcess> for UnifiedExecRunt
             .await?
             {
                 Some(prepared) => {
-                    let Some(environment) = ctx.turn.environment.as_ref() else {
-                        return Err(ToolError::Rejected(
-                            "exec_command is unavailable in this session".to_string(),
-                        ));
-                    };
                     if environment.is_remote() {
                         return Err(ToolError::Rejected(
                             "unified_exec zsh-fork is not supported when exec_server_url is configured".to_string(),
@@ -270,7 +262,7 @@ impl<'a> ToolRuntime<UnifiedExecRequest, UnifiedExecProcess> for UnifiedExecRunt
                             &prepared.exec_request,
                             req.tty,
                             prepared.spawn_lifecycle,
-                            environment.as_ref(),
+                            environment,
                         )
                         .await
                         .map_err(|err| match err {
@@ -301,18 +293,13 @@ impl<'a> ToolRuntime<UnifiedExecRequest, UnifiedExecProcess> for UnifiedExecRunt
             .env_for(command, options, req.network.as_ref())
             .map_err(|err| ToolError::Codex(err.into()))?;
         exec_env.exec_server_env_config = req.exec_server_env_config.clone();
-        let Some(environment) = ctx.turn.environment.as_ref() else {
-            return Err(ToolError::Rejected(
-                "exec_command is unavailable in this session".to_string(),
-            ));
-        };
         self.manager
             .open_session_with_exec_env(
                 req.process_id,
                 &exec_env,
                 req.tty,
                 Box::new(NoopSpawnLifecycle),
-                environment.as_ref(),
+                environment,
             )
             .await
             .map_err(|err| match err {

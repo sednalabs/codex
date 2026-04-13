@@ -237,6 +237,6 @@ pub(crate) async fn handle_message_items_tool(
     interrupt: bool,
 ) -> Result<MessageToolResult, FunctionCallError> {
     let tool_name = invocation.tool_name.clone();
-    let prompt = message_content_from_items(&tool_name, items)?;
+    let prompt = message_content_from_items(tool_name.name.as_str(), items)?;
     handle_message_submission(invocation, mode, target, prompt, interrupt).await
 }

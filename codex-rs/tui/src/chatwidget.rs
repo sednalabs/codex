@@ -91,6 +91,7 @@ use codex_app_server_protocol::TurnCompletedNotification;
 use codex_app_server_protocol::TurnPlanStepStatus;
 use codex_app_server_protocol::TurnStatus;
 use codex_chatgpt::connectors;
+use codex_core::DEFAULT_PROJECT_DOC_FILENAME;
 use codex_core::config::Config;
 use codex_core::config::Constrained;
 use codex_core::config::ConstraintResult;
@@ -101,7 +102,6 @@ use codex_core::config::types::WindowsSandboxModeToml;
 use codex_core::config_loader::ConfigLayerStackOrdering;
 use codex_core::find_thread_name_by_id;
 use codex_core::plugins::PluginsManager;
-use codex_core::project_doc::DEFAULT_PROJECT_DOC_FILENAME;
 use codex_core::skills::model::SkillMetadata;
 #[cfg(target_os = "windows")]
 use codex_core::windows_sandbox::WindowsSandboxLevelExt;
@@ -118,6 +118,7 @@ use codex_otel::SessionTelemetry;
 use codex_protocol::ThreadId;
 use codex_protocol::account::PlanType;
 use codex_protocol::approvals::ElicitationRequestEvent;
+use codex_protocol::approvals::GuardianUserAuthorization;
 use codex_protocol::config_types::CollaborationMode;
 use codex_protocol::config_types::CollaborationModeMask;
 use codex_protocol::config_types::ModeKind;
@@ -317,8 +318,8 @@ use crate::bottom_pane::SelectionItem;
 use crate::bottom_pane::SelectionViewParams;
 use crate::bottom_pane::custom_prompt_view::CustomPromptView;
 use crate::bottom_pane::popup_consts::standard_popup_hint_line;
+use crate::clipboard_copy as clipboard_text;
 use crate::clipboard_paste::paste_image_to_temp_png;
-use crate::clipboard_text;
 use crate::collaboration_modes;
 use crate::diff_render::display_path_for;
 use crate::exec_cell::CommandOutput;
@@ -2288,6 +2289,7 @@ impl ChatWidget {
     ) {
         let view = crate::bottom_pane::FeedbackNoteView::new(
             category,
+            /*turn_id*/ None,
             self.app_event_tx.clone(),
             include_logs,
         );
@@ -3491,6 +3493,7 @@ impl ChatWidget {
     /// render the final approved/denied history cell when guardian returns a
     /// decision.
     fn on_guardian_assessment(&mut self, ev: GuardianAssessmentEvent) {
+        let action_json = serde_json::to_value(&ev.action).ok();
         // Guardian emits a compact JSON action payload; map the stable fields we
         // care about into a short footer/history summary without depending on
         // the full raw JSON shape in the rest of the widget.
@@ -3589,7 +3592,7 @@ impl ChatWidget {
         };
 
         if ev.status == GuardianAssessmentStatus::InProgress
-            && let Some(action) = ev.action.as_ref()
+            && let Some(action) = action_json.as_ref()
             && let Some(detail) = guardian_action_summary(action)
         {
             // In-progress assessments own the live footer state while the
@@ -3632,20 +3635,20 @@ impl ChatWidget {
         }
 
         if ev.status == GuardianAssessmentStatus::Approved {
-            let Some(action) = ev.action else {
-                return;
-            };
-
-            let cell = if let Some(command) = guardian_command(&action) {
+            let cell = if let Some(action) = action_json.as_ref()
+                && let Some(command) = guardian_command(action)
+            {
                 history_cell::new_approval_decision_cell(
                     command,
                     codex_protocol::protocol::ReviewDecision::Approved,
                     history_cell::ApprovalDecisionActor::Guardian,
                 )
-            } else if let Some(summary) = guardian_action_summary(&action) {
+            } else if let Some(action) = action_json.as_ref()
+                && let Some(summary) = guardian_action_summary(action)
+            {
                 history_cell::new_guardian_approved_action_request(summary)
             } else {
-                let summary = serde_json::to_string(&action)
+                let summary = serde_json::to_string(&ev.action)
                     .unwrap_or_else(|_| "<unrenderable guardian action>".to_string());
                 history_cell::new_guardian_approved_action_request(summary)
             };
@@ -3658,65 +3661,55 @@ impl ChatWidget {
         if ev.status != GuardianAssessmentStatus::Denied {
             return;
         }
-        let Some(action) = ev.action else {
-            return;
-        };
-
-        let tool = action.get("tool").and_then(serde_json::Value::as_str);
-        let cell = if let Some(command) = guardian_command(&action) {
+        let tool = action_json
+            .as_ref()
+            .and_then(|action| action.get("tool").and_then(serde_json::Value::as_str));
+        let cell = if let Some(action) = action_json.as_ref()
+            && let Some(command) = guardian_command(action)
+        {
             history_cell::new_approval_decision_cell(
                 command,
                 codex_protocol::protocol::ReviewDecision::Denied,
                 history_cell::ApprovalDecisionActor::Guardian,
             )
         } else {
-            match tool {
-                Some("apply_patch") => {
-                    let files = action
-                        .get("files")
-                        .and_then(serde_json::Value::as_array)
-                        .map(|files| {
-                            files
-                                .iter()
-                                .filter_map(serde_json::Value::as_str)
-                                .map(ToOwned::to_owned)
-                                .collect::<Vec<_>>()
-                        })
-                        .unwrap_or_default();
-                    let change_count = action
-                        .get("change_count")
-                        .and_then(serde_json::Value::as_u64)
-                        .and_then(|count| usize::try_from(count).ok())
-                        .unwrap_or(files.len());
-                    history_cell::new_guardian_denied_patch_request(files, change_count)
+            match &ev.action {
+                codex_protocol::approvals::GuardianAssessmentAction::ApplyPatch {
+                    files, ..
+                } => {
+                    let files = files
+                        .iter()
+                        .map(|path| path.display().to_string())
+                        .collect();
+                    history_cell::new_guardian_denied_patch_request(files)
                 }
-                Some("mcp_tool_call") => {
-                    let server = action
-                        .get("server")
-                        .and_then(serde_json::Value::as_str)
-                        .unwrap_or("unknown server");
-                    let tool_name = action
-                        .get("tool_name")
-                        .and_then(serde_json::Value::as_str)
-                        .unwrap_or("unknown tool");
-                    history_cell::new_guardian_denied_action_request(format!(
-                        "codex to call MCP tool {server}.{tool_name}"
-                    ))
-                }
-                Some("network_access") => {
-                    let target = action
-                        .get("target")
-                        .and_then(serde_json::Value::as_str)
-                        .or_else(|| action.get("host").and_then(serde_json::Value::as_str))
-                        .unwrap_or("network target");
+                codex_protocol::approvals::GuardianAssessmentAction::McpToolCall {
+                    server,
+                    tool_name,
+                    ..
+                } => history_cell::new_guardian_denied_action_request(format!(
+                    "codex to call MCP tool {server}.{tool_name}"
+                )),
+                codex_protocol::approvals::GuardianAssessmentAction::NetworkAccess {
+                    target,
+                    host,
+                    ..
+                } => {
+                    let target = if target.is_empty() { host } else { target };
                     history_cell::new_guardian_denied_action_request(format!(
                         "codex to access {target}"
                     ))
                 }
                 _ => {
-                    let summary = serde_json::to_string(&action)
-                        .unwrap_or_else(|_| "<unrenderable guardian action>".to_string());
-                    history_cell::new_guardian_denied_action_request(summary)
+                    if let Some(action) = action_json.as_ref() {
+                        let summary = serde_json::to_string(action)
+                            .unwrap_or_else(|_| "<unrenderable guardian action>".to_string());
+                        history_cell::new_guardian_denied_action_request(summary)
+                    } else {
+                        history_cell::new_guardian_denied_action_request(
+                            "<unrenderable guardian action>".to_string(),
+                        )
+                    }
                 }
             }
         };
@@ -5090,7 +5083,7 @@ impl ChatWidget {
             .set_queued_message_edit_binding(widget.queued_message_edit_binding);
         widget
             .bottom_pane
-            .set_esc_interrupt_requires_double_press(widget.config.tui_double_esc_interrupt);
+            .set_esc_interrupt_requires_double_press(false);
         #[cfg(target_os = "windows")]
         widget.bottom_pane.set_windows_degraded_sandbox_active(
             codex_core::windows_sandbox::ELEVATED_SANDBOX_NUX_ENABLED
@@ -5435,15 +5428,7 @@ impl ChatWidget {
                 self.app_event_tx.send(AppEvent::ForkCurrentSession);
             }
             SlashCommand::Init => {
-                let init_target = match self.config.cwd.join(DEFAULT_PROJECT_DOC_FILENAME) {
-                    Ok(path) => path,
-                    Err(err) => {
-                        self.add_error_message(format!(
-                            "Failed to prepare {DEFAULT_PROJECT_DOC_FILENAME}: {err}",
-                        ));
-                        return;
-                    }
-                };
+                let init_target = self.config.cwd.join(DEFAULT_PROJECT_DOC_FILENAME);
                 if init_target.exists() {
                     let message = format!(
                         "{DEFAULT_PROJECT_DOC_FILENAME} already exists here. Skipping /init to avoid overwriting it."
@@ -5637,10 +5622,10 @@ impl ChatWidget {
                     return;
                 };
 
-                let copy_result = clipboard_text::copy_text_to_clipboard(text);
+                let copy_result = clipboard_text::copy_to_clipboard(text);
 
                 match copy_result {
-                    Ok(()) => {
+                    Ok(_) => {
                         let hint = self.agent_turn_running.then_some(
                             "Current turn is still running; copied the latest completed output (not the in-progress response)."
                                 .to_string(),
@@ -5667,8 +5652,11 @@ impl ChatWidget {
                     self.next_status_refresh_request_id =
                         self.next_status_refresh_request_id.wrapping_add(1);
                     self.add_status_output(/*refreshing_rate_limits*/ true, Some(request_id));
-                    self.app_event_tx
-                        .send(AppEvent::RefreshRateLimits { request_id });
+                    self.app_event_tx.send(AppEvent::RefreshRateLimits {
+                        origin: crate::app_event::RateLimitRefreshOrigin::StatusCommand {
+                            request_id,
+                        },
+                    });
                 } else {
                     self.add_status_output(
                         /*refreshing_rate_limits*/ false, /*request_id*/ None,
@@ -6031,6 +6019,13 @@ impl ChatWidget {
         } else {
             self.submit_user_message(user_message);
         }
+    }
+
+    fn maybe_defer_user_message_for_realtime(
+        &mut self,
+        user_message: UserMessage,
+    ) -> Option<UserMessage> {
+        Some(user_message)
     }
 
     fn queue_slash_command(&mut self, queued_command: QueuedSlashCommand, queue_front: bool) {
@@ -7232,13 +7227,17 @@ impl ChatWidget {
 
     fn on_guardian_review_notification(
         &mut self,
-        id: String,
+        target_item_id: Option<String>,
         turn_id: String,
         review: codex_app_server_protocol::GuardianApprovalReview,
         action: codex_app_server_protocol::GuardianApprovalReviewAction,
     ) {
+        let id = target_item_id
+            .clone()
+            .unwrap_or_else(|| format!("guardian-review-{turn_id}"));
         self.on_guardian_assessment(GuardianAssessmentEvent {
             id,
+            target_item_id,
             turn_id,
             status: match review.status {
                 codex_app_server_protocol::GuardianApprovalReviewStatus::InProgress => {
@@ -7253,8 +7252,10 @@ impl ChatWidget {
                 codex_app_server_protocol::GuardianApprovalReviewStatus::Aborted => {
                     GuardianAssessmentStatus::Aborted
                 }
+                codex_app_server_protocol::GuardianApprovalReviewStatus::TimedOut => {
+                    GuardianAssessmentStatus::TimedOut
+                }
             },
-            risk_score: review.risk_score,
             risk_level: review.risk_level.map(|risk_level| match risk_level {
                 codex_app_server_protocol::GuardianRiskLevel::Low => {
                     codex_protocol::protocol::GuardianRiskLevel::Low
@@ -7265,9 +7266,27 @@ impl ChatWidget {
                 codex_app_server_protocol::GuardianRiskLevel::High => {
                     codex_protocol::protocol::GuardianRiskLevel::High
                 }
+                codex_app_server_protocol::GuardianRiskLevel::Critical => {
+                    codex_protocol::protocol::GuardianRiskLevel::Critical
+                }
+            }),
+            user_authorization: review.user_authorization.map(|level| match level {
+                codex_app_server_protocol::GuardianUserAuthorization::Unknown => {
+                    GuardianUserAuthorization::Unknown
+                }
+                codex_app_server_protocol::GuardianUserAuthorization::Low => {
+                    GuardianUserAuthorization::Low
+                }
+                codex_app_server_protocol::GuardianUserAuthorization::Medium => {
+                    GuardianUserAuthorization::Medium
+                }
+                codex_app_server_protocol::GuardianUserAuthorization::High => {
+                    GuardianUserAuthorization::High
+                }
             }),
             rationale: review.rationale,
-            action: serde_json::to_value(action).ok(),
+            decision_source: None,
+            action: action.into(),
         });
     }
 
@@ -7364,6 +7383,8 @@ impl ChatWidget {
                 self.on_agent_reasoning_final();
             }
             EventMsg::AgentReasoningSectionBreak(_) => self.on_reasoning_section_break(),
+            EventMsg::RealtimeConversationSdp(_) => {}
+            EventMsg::RealtimeConversationListVoicesResponse(_) => {}
             EventMsg::TurnStarted(event) => {
                 if !is_resume_initial_replay {
                     self.apply_turn_started_context_window(event.model_context_window);
@@ -7727,7 +7748,7 @@ impl ChatWidget {
     }
 
     fn notify(&mut self, notification: Notification) {
-        if !notification.allowed_for(&self.config.tui_notifications) {
+        if !notification.allowed_for(&self.config.tui_notifications.notifications) {
             return;
         }
         if let Some(existing) = self.pending_notification.as_ref()
@@ -8212,7 +8233,7 @@ impl ChatWidget {
         let Some(pacing) = Self::status_line_weekly_pacing_snapshot(window, captured_at) else {
             return Some(base);
         };
-        match self.config.tui_weekly_limit_pacing_style {
+        match WeeklyLimitPacingStyle::default() {
             WeeklyLimitPacingStyle::Qualitative => {
                 Some(format!("{base} ({})", pacing.signal.label()))
             }
@@ -11395,9 +11416,8 @@ impl ChatWidget {
     pub(crate) fn sync_runtime_config(&mut self, config: &Config) {
         self.config.features = config.features.clone();
         self.config.config_layer_stack = config.config_layer_stack.clone();
-        self.config.tui_double_esc_interrupt = config.tui_double_esc_interrupt;
         self.bottom_pane
-            .set_esc_interrupt_requires_double_press(config.tui_double_esc_interrupt);
+            .set_esc_interrupt_requires_double_press(false);
     }
 
     pub(crate) fn open_review_popup(&mut self) {
