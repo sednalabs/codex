@@ -409,6 +409,7 @@ impl ThreadHistoryBuilder {
             GuardianAssessmentStatus::Denied | GuardianAssessmentStatus::Aborted => {
                 CommandExecutionStatus::Declined
             }
+            GuardianAssessmentStatus::TimedOut => CommandExecutionStatus::Failed,
             GuardianAssessmentStatus::Approved => return,
         };
         let Some(item) = build_item_from_guardian_event(payload, status) else {
@@ -1309,6 +1310,7 @@ mod tests {
                 turn_id: turn_id.to_string(),
                 model_context_window: None,
                 collaboration_mode_kind: Default::default(),
+                started_at: None,
             }),
             EventMsg::UserMessage(UserMessageEvent {
                 message: "hello".into(),
@@ -1382,6 +1384,7 @@ mod tests {
                 turn_id: "turn-image".into(),
                 model_context_window: None,
                 collaboration_mode_kind: Default::default(),
+                started_at: None,
             })),
             RolloutItem::EventMsg(EventMsg::UserMessage(UserMessageEvent {
                 message: "generate an image".into(),
@@ -1702,6 +1705,7 @@ mod tests {
                 turn_id: "turn-a".into(),
                 model_context_window: None,
                 collaboration_mode_kind: Default::default(),
+                started_at: None,
             }),
             EventMsg::UserMessage(UserMessageEvent {
                 message: "Start".into(),
@@ -1757,6 +1761,7 @@ mod tests {
                 turn_id: "turn-1".into(),
                 model_context_window: None,
                 collaboration_mode_kind: Default::default(),
+                started_at: None,
             }),
             EventMsg::UserMessage(UserMessageEvent {
                 message: "run tools".into(),
@@ -1862,6 +1867,7 @@ mod tests {
                 turn_id: "turn-1".into(),
                 model_context_window: None,
                 collaboration_mode_kind: Default::default(),
+                started_at: None,
             }),
             EventMsg::UserMessage(UserMessageEvent {
                 message: "run dynamic tool".into(),
@@ -1921,6 +1927,7 @@ mod tests {
                 turn_id: "turn-1".into(),
                 model_context_window: None,
                 collaboration_mode_kind: Default::default(),
+                started_at: None,
             }),
             EventMsg::UserMessage(UserMessageEvent {
                 message: "run tools".into(),
@@ -2008,6 +2015,7 @@ mod tests {
                 turn_id: "turn-1".into(),
                 model_context_window: None,
                 collaboration_mode_kind: Default::default(),
+                started_at: None,
             }),
             EventMsg::UserMessage(UserMessageEvent {
                 message: "review this command".into(),
@@ -2016,12 +2024,14 @@ mod tests {
                 local_images: Vec::new(),
             }),
             EventMsg::GuardianAssessment(GuardianAssessmentEvent {
-                id: "guardian-exec".into(),
+                id: "review-guardian-exec".into(),
+                target_item_id: Some("guardian-exec".into()),
                 turn_id: "turn-1".into(),
                 status: GuardianAssessmentStatus::InProgress,
-                risk_score: None,
                 risk_level: None,
+                user_authorization: None,
                 rationale: None,
+                decision_source: None,
                 action: serde_json::from_value(serde_json::json!({
                     "type": "command",
                     "source": "shell",
@@ -2031,12 +2041,16 @@ mod tests {
                 .expect("guardian action"),
             }),
             EventMsg::GuardianAssessment(GuardianAssessmentEvent {
-                id: "guardian-exec".into(),
+                id: "review-guardian-exec".into(),
+                target_item_id: Some("guardian-exec".into()),
                 turn_id: "turn-1".into(),
                 status: GuardianAssessmentStatus::Denied,
-                risk_score: Some(97),
                 risk_level: Some(codex_protocol::protocol::GuardianRiskLevel::High),
+                user_authorization: Some(codex_protocol::approvals::GuardianUserAuthorization::Low),
                 rationale: Some("Would delete user data.".into()),
+                decision_source: Some(
+                    codex_protocol::approvals::GuardianAssessmentDecisionSource::Agent,
+                ),
                 action: serde_json::from_value(serde_json::json!({
                     "type": "command",
                     "source": "shell",
@@ -2080,6 +2094,7 @@ mod tests {
                 turn_id: "turn-1".into(),
                 model_context_window: None,
                 collaboration_mode_kind: Default::default(),
+                started_at: None,
             }),
             EventMsg::UserMessage(UserMessageEvent {
                 message: "run a subcommand".into(),
@@ -2088,12 +2103,14 @@ mod tests {
                 local_images: Vec::new(),
             }),
             EventMsg::GuardianAssessment(GuardianAssessmentEvent {
-                id: "guardian-execve".into(),
+                id: "review-guardian-execve".into(),
+                target_item_id: Some("guardian-execve".into()),
                 turn_id: "turn-1".into(),
                 status: GuardianAssessmentStatus::InProgress,
-                risk_score: None,
                 risk_level: None,
+                user_authorization: None,
                 rationale: None,
+                decision_source: None,
                 action: serde_json::from_value(serde_json::json!({
                     "type": "execve",
                     "source": "shell",
@@ -2138,6 +2155,7 @@ mod tests {
                 turn_id: "turn-a".into(),
                 model_context_window: None,
                 collaboration_mode_kind: Default::default(),
+                started_at: None,
             }),
             EventMsg::UserMessage(UserMessageEvent {
                 message: "first".into(),
@@ -2154,6 +2172,7 @@ mod tests {
                 turn_id: "turn-b".into(),
                 model_context_window: None,
                 collaboration_mode_kind: Default::default(),
+                started_at: None,
             }),
             EventMsg::UserMessage(UserMessageEvent {
                 message: "second".into(),
@@ -2223,6 +2242,7 @@ mod tests {
                 turn_id: "turn-a".into(),
                 model_context_window: None,
                 collaboration_mode_kind: Default::default(),
+                started_at: None,
             }),
             EventMsg::UserMessage(UserMessageEvent {
                 message: "first".into(),
@@ -2239,6 +2259,7 @@ mod tests {
                 turn_id: "turn-b".into(),
                 model_context_window: None,
                 collaboration_mode_kind: Default::default(),
+                started_at: None,
             }),
             EventMsg::UserMessage(UserMessageEvent {
                 message: "second".into(),
@@ -2303,6 +2324,7 @@ mod tests {
                 turn_id: turn_id.to_string(),
                 model_context_window: None,
                 collaboration_mode_kind: Default::default(),
+                started_at: None,
             }),
             EventMsg::UserMessage(UserMessageEvent {
                 message: "apply patch".into(),
@@ -2366,6 +2388,7 @@ mod tests {
                 turn_id: turn_id.to_string(),
                 model_context_window: None,
                 collaboration_mode_kind: Default::default(),
+                started_at: None,
             }),
             EventMsg::UserMessage(UserMessageEvent {
                 message: "apply patch".into(),
@@ -2428,6 +2451,7 @@ mod tests {
                 turn_id: "turn-a".into(),
                 model_context_window: None,
                 collaboration_mode_kind: Default::default(),
+                started_at: None,
             }),
             EventMsg::UserMessage(UserMessageEvent {
                 message: "first".into(),
@@ -2444,6 +2468,7 @@ mod tests {
                 turn_id: "turn-b".into(),
                 model_context_window: None,
                 collaboration_mode_kind: Default::default(),
+                started_at: None,
             }),
             EventMsg::UserMessage(UserMessageEvent {
                 message: "second".into(),
@@ -2486,6 +2511,7 @@ mod tests {
                 turn_id: "turn-a".into(),
                 model_context_window: None,
                 collaboration_mode_kind: Default::default(),
+                started_at: None,
             }),
             EventMsg::UserMessage(UserMessageEvent {
                 message: "first".into(),
@@ -2502,6 +2528,7 @@ mod tests {
                 turn_id: "turn-b".into(),
                 model_context_window: None,
                 collaboration_mode_kind: Default::default(),
+                started_at: None,
             }),
             EventMsg::UserMessage(UserMessageEvent {
                 message: "second".into(),
@@ -2539,6 +2566,7 @@ mod tests {
                 turn_id: "turn-compact".into(),
                 model_context_window: None,
                 collaboration_mode_kind: Default::default(),
+                started_at: None,
             })),
             RolloutItem::Compacted(CompactedItem {
                 message: String::new(),
@@ -2783,6 +2811,7 @@ mod tests {
                 turn_id: "turn-a".into(),
                 model_context_window: None,
                 collaboration_mode_kind: Default::default(),
+                started_at: None,
             }),
             EventMsg::UserMessage(UserMessageEvent {
                 message: "hello".into(),
@@ -2834,6 +2863,7 @@ mod tests {
                 turn_id: "turn-a".into(),
                 model_context_window: None,
                 collaboration_mode_kind: Default::default(),
+                started_at: None,
             }),
             EventMsg::UserMessage(UserMessageEvent {
                 message: "hello".into(),
@@ -2888,6 +2918,7 @@ mod tests {
                 turn_id: "turn-a".into(),
                 model_context_window: None,
                 collaboration_mode_kind: Default::default(),
+                started_at: None,
             })),
             RolloutItem::EventMsg(EventMsg::UserMessage(UserMessageEvent {
                 message: "hello".into(),
@@ -2932,6 +2963,7 @@ mod tests {
                 turn_id: "turn-a".into(),
                 model_context_window: None,
                 collaboration_mode_kind: Default::default(),
+                started_at: None,
             })),
             RolloutItem::ResponseItem(codex_protocol::models::ResponseItem::Message {
                 id: Some("msg-1".into()),

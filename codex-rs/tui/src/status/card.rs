@@ -303,7 +303,7 @@ impl StatusHistoryCell {
         } else {
             format!("Custom ({sandbox}, {approval})")
         };
-        let agents_summary = compose_agents_summary(config);
+        let agents_summary = compose_agents_summary(config, &[]);
         let model_provider = format_model_provider(config);
         let account = compose_account_display(account_display);
         let session_id = session_id.as_ref().map(std::string::ToString::to_string);
@@ -459,6 +459,9 @@ impl StatusHistoryCell {
                     .dim()],
                 )]
             }
+            StatusRateLimitData::Unavailable => {
+                vec![formatter.line("Limits", vec![Span::from("unavailable").dim()])]
+            }
         }
     }
 
@@ -537,7 +540,9 @@ impl StatusHistoryCell {
                 }
                 push_label(labels, seen, "Warning");
             }
-            StatusRateLimitData::Missing => push_label(labels, seen, "Limits"),
+            StatusRateLimitData::Missing | StatusRateLimitData::Unavailable => {
+                push_label(labels, seen, "Limits")
+            }
         }
     }
 }

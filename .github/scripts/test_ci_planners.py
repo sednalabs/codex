@@ -222,6 +222,24 @@ class RouteSelectionTests(unittest.TestCase):
 class ValidationPlanScriptTests(unittest.TestCase):
     maxDiff = None
 
+    def test_lab_targeted_ui_protocol_lane_set_returns_selected_matrix(self) -> None:
+        payload = run_script(
+            SCRIPTS_DIR / "resolve_validation_plan.py",
+            "lab",
+            "--profile",
+            "targeted",
+            "--lane-set",
+            "ui-protocol",
+            "--catalog-path",
+            str(REPO_ROOT / ".github/validation-lanes.json"),
+        )
+
+        self.assertEqual(payload["run_selected_lanes"], "true")
+        self.assertEqual(payload["run_smoke_gate"], "false")
+        self.assertEqual(payload["selected_light_lane_count"], 0)
+        self.assertGreater(payload["selected_rust_lane_count"], 0)
+        self.assertGreater(payload["selected_heavy_lane_count"], 0)
+
     def test_heavy_plan_splits_selected_lanes_by_setup_class(self) -> None:
         payload = run_script(
             SCRIPTS_DIR / "resolve_validation_plan.py",

@@ -564,7 +564,7 @@ async fn run_list(config_overrides: &CliConfigOverrides, list_args: ListArgs) ->
                 } else {
                     args.join(" ")
                 };
-                let env_display = format_env_display(env.as_ref(), env_vars);
+                let env_display = format_env_display(env.as_ref(), env_vars.as_slice());
                 let cwd_display = cwd
                     .as_ref()
                     .map(|path| path.display().to_string())
@@ -826,7 +826,7 @@ async fn run_get(config_overrides: &CliConfigOverrides, get_args: GetArgs) -> Re
                 .filter(|value| !value.is_empty())
                 .unwrap_or_else(|| "-".to_string());
             println!("  cwd: {cwd_display}");
-            let env_display = format_env_display(env.as_ref(), env_vars);
+            let env_display = format_env_display(env.as_ref(), env_vars.as_slice());
             println!("  env: {env_display}");
         }
         McpServerTransportConfig::StreamableHttp {

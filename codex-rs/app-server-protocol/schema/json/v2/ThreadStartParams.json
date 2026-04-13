@@ -214,7 +214,7 @@
     "sessionStartSource": {
       "anyOf": [
         {
-          "$ref": "#/definitions/ThreadStartSource"
+          "$ref": "#/$defs/ThreadStartSource"
         },
         {
           "type": "null"

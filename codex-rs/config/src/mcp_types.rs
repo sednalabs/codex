@@ -93,6 +93,22 @@ pub struct McpServerConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub disabled_tools: Option<Vec<String>>,
 
+    /// Whether this server may issue elicitation requests to the client.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub enable_elicitation: bool,
+
+    /// Whether all tools from this server should be treated as read-only.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub read_only: bool,
+
+    /// Whether tool classification from this server should be treated strictly.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub strict_tool_classification: bool,
+
+    /// Whether mutating tools require explicit approval when elicitation is enabled.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub require_approval_for_mutating: bool,
+
     /// Optional OAuth scopes to request during MCP login.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scopes: Option<Vec<String>>,
@@ -150,6 +166,14 @@ pub struct RawMcpServerConfig {
     #[serde(default)]
     pub disabled_tools: Option<Vec<String>>,
     #[serde(default)]
+    pub enable_elicitation: bool,
+    #[serde(default)]
+    pub read_only: bool,
+    #[serde(default)]
+    pub strict_tool_classification: bool,
+    #[serde(default)]
+    pub require_approval_for_mutating: bool,
+    #[serde(default)]
     pub scopes: Option<Vec<String>>,
     #[serde(default)]
     pub oauth_resource: Option<String>,
@@ -182,11 +206,21 @@ impl TryFrom<RawMcpServerConfig> for McpServerConfig {
             required,
             enabled_tools,
             disabled_tools,
+            enable_elicitation,
+            read_only,
+            strict_tool_classification,
+            require_approval_for_mutating,
             scopes,
             oauth_resource,
             _name: _,
             tools,
         } = raw;
+
+        if require_approval_for_mutating && !enable_elicitation {
+            return Err(
+                "require_approval_for_mutating requires enable_elicitation=true".to_string(),
+            );
+        }
 
         let startup_timeout_sec = match (startup_timeout_sec, startup_timeout_ms) {
             (Some(sec), _) => {
@@ -246,6 +280,10 @@ impl TryFrom<RawMcpServerConfig> for McpServerConfig {
             disabled_reason: None,
             enabled_tools,
             disabled_tools,
+            enable_elicitation,
+            read_only,
+            strict_tool_classification,
+            require_approval_for_mutating,
             scopes,
             oauth_resource,
             tools: tools.unwrap_or_default(),

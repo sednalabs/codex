@@ -676,13 +676,25 @@ impl ChatComposer {
         offset: usize,
         entry: Option<String>,
     ) -> bool {
-        let Some(entry) = self.history.on_entry_response(log_id, offset, entry) else {
-            return false;
-        };
-        // Persistent ↑/↓ history is text-only (backwards-compatible and avoids persisting
-        // attachments), but local in-session ↑/↓ history can rehydrate elements and image paths.
-        self.apply_history_entry(entry);
-        true
+        match self
+            .history
+            .on_entry_response(log_id, offset, entry, &self.app_event_tx)
+        {
+            super::chat_composer_history::HistoryEntryResponse::Found(entry) => {
+                // Persistent ↑/↓ history is text-only (backwards-compatible and avoids persisting
+                // attachments), but local in-session ↑/↓ history can rehydrate elements and image paths.
+                self.apply_history_entry(entry);
+                true
+            }
+            super::chat_composer_history::HistoryEntryResponse::Search(_)
+            | super::chat_composer_history::HistoryEntryResponse::Ignored => false,
+        }
+    }
+
+    pub(crate) fn record_pending_slash_command_history(&mut self) {}
+
+    pub(crate) fn cancel_history_search(&mut self) -> bool {
+        false
     }
 
     /// Integrate pasted text into the composer.
@@ -2909,6 +2921,7 @@ impl ChatComposer {
         };
 
         match self.footer_mode {
+            FooterMode::HistorySearch => FooterMode::HistorySearch,
             FooterMode::EscHint => FooterMode::EscHint,
             FooterMode::ShortcutOverlay => FooterMode::ShortcutOverlay,
             FooterMode::QuitShortcutReminder if self.quit_shortcut_hint_visible() => {
@@ -3560,12 +3573,14 @@ impl ChatComposer {
                 let show_shortcuts_hint = match footer_props.mode {
                     FooterMode::ComposerEmpty => !self.is_in_paste_burst(),
                     FooterMode::ComposerHasDraft => false,
+                    FooterMode::HistorySearch => false,
                     FooterMode::QuitShortcutReminder
                     | FooterMode::ShortcutOverlay
                     | FooterMode::EscHint => false,
                 };
                 let show_queue_hint = match footer_props.mode {
                     FooterMode::ComposerHasDraft => footer_props.is_task_running,
+                    FooterMode::HistorySearch => false,
                     FooterMode::QuitShortcutReminder
                     | FooterMode::ComposerEmpty
                     | FooterMode::ShortcutOverlay
@@ -3678,6 +3693,7 @@ impl ChatComposer {
                                 show_queue_hint,
                             ))
                         }
+                        FooterMode::HistorySearch => None,
                         FooterMode::EscHint
                         | FooterMode::QuitShortcutReminder
                         | FooterMode::ShortcutOverlay => None,
@@ -3781,8 +3797,13 @@ impl ChatComposer {
 
         let mut state = self.textarea_state.borrow_mut();
         if let Some(mask_char) = mask_char {
-            self.textarea
-                .render_ref_masked(textarea_rect, buf, &mut state, mask_char);
+            self.textarea.render_ref_masked(
+                textarea_rect,
+                buf,
+                &mut state,
+                mask_char,
+                ratatui::style::Style::default(),
+            );
         } else {
             StatefulWidgetRef::render_ref(&(&self.textarea), textarea_rect, buf, &mut state);
         }

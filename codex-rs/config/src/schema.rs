@@ -2,89 +2,100 @@ use crate::config_toml::ConfigToml;
 use crate::types::RawMcpServerConfig;
 use codex_features::FEATURES;
 use codex_features::legacy_feature_keys;
-use schemars::r#gen::SchemaGenerator;
-use schemars::r#gen::SchemaSettings;
-use schemars::schema::InstanceType;
-use schemars::schema::ObjectValidation;
-use schemars::schema::RootSchema;
-use schemars::schema::Schema;
-use schemars::schema::SchemaObject;
+use schemars::Schema;
+use schemars::SchemaGenerator;
+use schemars::generate::SchemaSettings;
 use serde_json::Map;
 use serde_json::Value;
+use serde_json::json;
 use std::path::Path;
 
 /// Schema for the `[features]` map with known + legacy keys only.
 pub fn features_schema(schema_gen: &mut SchemaGenerator) -> Schema {
-    let mut object = SchemaObject {
-        instance_type: Some(InstanceType::Object.into()),
-        ..Default::default()
-    };
-
-    let mut validation = ObjectValidation::default();
+    let mut properties = Map::new();
     for feature in FEATURES {
         if feature.id == codex_features::Feature::Artifact {
             continue;
         }
         if feature.id == codex_features::Feature::MultiAgentV2 {
-            validation.properties.insert(
+            properties.insert(
                 feature.key.to_string(),
-                schema_gen.subschema_for::<codex_features::FeatureToml<
-                    codex_features::MultiAgentV2ConfigToml,
-                >>(),
+                schema_gen
+                    .subschema_for::<
+                        codex_features::FeatureToml<codex_features::MultiAgentV2ConfigToml>,
+                    >()
+                    .into(),
             );
             continue;
         }
-        validation
-            .properties
-            .insert(feature.key.to_string(), schema_gen.subschema_for::<bool>());
+        properties.insert(
+            feature.key.to_string(),
+            schema_gen.subschema_for::<bool>().into(),
+        );
     }
     for legacy_key in legacy_feature_keys() {
-        validation
-            .properties
-            .insert(legacy_key.to_string(), schema_gen.subschema_for::<bool>());
+        properties.insert(
+            legacy_key.to_string(),
+            schema_gen.subschema_for::<bool>().into(),
+        );
     }
-    validation.additional_properties = Some(Box::new(Schema::Bool(false)));
-    object.object = Some(Box::new(validation));
 
-    Schema::Object(object)
+    match json!({
+        "type": "object",
+        "properties": properties,
+        "additionalProperties": false,
+    })
+    .try_into()
+    {
+        Ok(schema) => schema,
+        Err(err) => panic!("features schema should be valid: {err}"),
+    }
 }
 
 /// Schema for the `[mcp_servers]` map using the raw input shape.
 pub fn mcp_servers_schema(schema_gen: &mut SchemaGenerator) -> Schema {
-    let mut object = SchemaObject {
-        instance_type: Some(InstanceType::Object.into()),
-        ..Default::default()
-    };
-
-    let validation = ObjectValidation {
-        additional_properties: Some(Box::new(schema_gen.subschema_for::<RawMcpServerConfig>())),
-        ..Default::default()
-    };
-    object.object = Some(Box::new(validation));
-
-    Schema::Object(object)
+    match json!({
+        "type": "object",
+        "additionalProperties": schema_gen.subschema_for::<RawMcpServerConfig>(),
+    })
+    .try_into()
+    {
+        Ok(schema) => schema,
+        Err(err) => panic!("mcp servers schema should be valid: {err}"),
+    }
 }
 
 /// Build the config schema for `config.toml`.
-pub fn config_schema() -> RootSchema {
+pub fn config_schema() -> Schema {
     SchemaSettings::draft07()
-        .with(|settings| {
-            settings.option_add_null_type = false;
-        })
         .into_generator()
         .into_root_schema_for::<ConfigToml>()
 }
 
-/// Canonicalize a JSON value by sorting its keys.
-pub fn canonicalize(value: &Value) -> Value {
+fn canonicalize(value: &Value) -> Value {
+    canonicalize_with_key(None, value)
+}
+
+fn canonicalize_with_key(key: Option<&str>, value: &Value) -> Value {
     match value {
-        Value::Array(items) => Value::Array(items.iter().map(canonicalize).collect()),
+        Value::String(text) if key == Some("description") => {
+            Value::String(text.split_whitespace().collect::<Vec<_>>().join(" "))
+        }
+        Value::Array(items) => Value::Array(
+            items
+                .iter()
+                .map(|item| canonicalize_with_key(None, item))
+                .collect(),
+        ),
         Value::Object(map) => {
             let mut entries: Vec<_> = map.iter().collect();
             entries.sort_by(|(left, _), (right, _)| left.cmp(right));
             let mut sorted = Map::with_capacity(map.len());
             for (key, child) in entries {
-                sorted.insert(key.clone(), canonicalize(child));
+                sorted.insert(
+                    key.clone(),
+                    canonicalize_with_key(Some(key.as_str()), child),
+                );
             }
             Value::Object(sorted)
         }
@@ -95,7 +106,8 @@ pub fn canonicalize(value: &Value) -> Value {
 /// Render the config schema as pretty-printed JSON.
 pub fn config_schema_json() -> anyhow::Result<Vec<u8>> {
     let schema = config_schema();
-    let value = serde_json::to_value(schema)?;
+    let mut value = serde_json::to_value(schema)?;
+    normalize_legacy_option_schema(&mut value);
     let value = canonicalize(&value);
     let json = serde_json::to_vec_pretty(&value)?;
     Ok(json)
@@ -106,4 +118,34 @@ pub fn write_config_schema(out_path: &Path) -> anyhow::Result<()> {
     let json = config_schema_json()?;
     std::fs::write(out_path, json)?;
     Ok(())
+}
+
+fn normalize_legacy_option_schema(value: &mut Value) {
+    match value {
+        Value::Array(items) => {
+            for item in items {
+                normalize_legacy_option_schema(item);
+            }
+        }
+        Value::Object(map) => {
+            for child in map.values_mut() {
+                normalize_legacy_option_schema(child);
+            }
+
+            let is_any_of_option =
+                map.get("anyOf")
+                    .and_then(Value::as_array)
+                    .is_some_and(|variants| {
+                        variants.len() == 2
+                            && variants
+                                .iter()
+                                .any(|variant| variant == &json!({"type": "null"}))
+                    });
+
+            if is_any_of_option && let Some(any_of) = map.remove("anyOf") {
+                map.insert("oneOf".to_string(), any_of);
+            }
+        }
+        _ => {}
+    }
 }

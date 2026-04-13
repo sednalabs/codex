@@ -51,7 +51,6 @@ use codex_protocol::protocol::SandboxPolicy;
 use codex_rmcp_client::ElicitationResponse;
 use codex_rmcp_client::RmcpClient;
 use codex_rmcp_client::SendElicitation;
-use codex_utils_version::RELEASE_VERSION;
 use futures::future::BoxFuture;
 use futures::future::FutureExt;
 use futures::future::Shared;
@@ -1458,7 +1457,7 @@ async fn start_server_task(
         },
         client_info: Implementation {
             name: "codex-mcp-client".to_owned(),
-            version: RELEASE_VERSION.to_owned(),
+            version: env!("CARGO_PKG_VERSION").to_owned(),
             title: Some("Codex".into()),
             description: None,
             icons: None,

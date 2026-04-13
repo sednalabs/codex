@@ -25,6 +25,7 @@ use crate::create_code_mode_tool;
 use crate::create_exec_command_tool;
 use crate::create_followup_task_tool;
 use crate::create_image_generation_tool;
+use crate::create_inspect_agent_tree_tool;
 use crate::create_js_repl_reset_tool;
 use crate::create_js_repl_tool;
 use crate::create_list_agents_tool;
@@ -405,12 +406,18 @@ pub fn build_tool_registry_plan(
                 /*supports_parallel_tool_calls*/ false,
                 config.code_mode_enabled,
             );
+            plan.push_spec(
+                create_inspect_agent_tree_tool(),
+                /*supports_parallel_tool_calls*/ false,
+                config.code_mode_enabled,
+            );
             plan.register_handler("spawn_agent", ToolHandlerKind::SpawnAgentV2);
             plan.register_handler("send_message", ToolHandlerKind::SendMessageV2);
             plan.register_handler("followup_task", ToolHandlerKind::FollowupTaskV2);
             plan.register_handler("wait_agent", ToolHandlerKind::WaitAgentV2);
             plan.register_handler("close_agent", ToolHandlerKind::CloseAgentV2);
             plan.register_handler("list_agents", ToolHandlerKind::ListAgentsV2);
+            plan.register_handler("inspect_agent_tree", ToolHandlerKind::InspectAgentTree);
         } else {
             let agent_type_description =
                 agent_type_description(config, params.default_agent_type_description);
@@ -446,10 +453,16 @@ pub fn build_tool_registry_plan(
                 /*supports_parallel_tool_calls*/ false,
                 config.code_mode_enabled,
             );
+            plan.push_spec(
+                create_inspect_agent_tree_tool(),
+                /*supports_parallel_tool_calls*/ false,
+                config.code_mode_enabled,
+            );
             plan.register_handler("spawn_agent", ToolHandlerKind::SpawnAgentV1);
             plan.register_handler("send_input", ToolHandlerKind::SendInputV1);
             plan.register_handler("wait_agent", ToolHandlerKind::WaitAgentV1);
             plan.register_handler("close_agent", ToolHandlerKind::CloseAgentV1);
+            plan.register_handler("inspect_agent_tree", ToolHandlerKind::InspectAgentTree);
         }
     }
 

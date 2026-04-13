@@ -132,6 +132,9 @@ pub struct ModelPreset {
     /// Whether this model supports personality-specific instructions.
     #[serde(default)]
     pub supports_personality: bool,
+    /// Additional speed tiers this model can run with beyond the standard path.
+    #[serde(default)]
+    pub additional_speed_tiers: Vec<String>,
     /// Whether this is the default model for new users.
     pub is_default: bool,
     /// recommended upgrade model
@@ -252,6 +255,8 @@ pub struct ModelInfo {
     pub visibility: ModelVisibility,
     pub supported_in_api: bool,
     pub priority: i32,
+    #[serde(default)]
+    pub additional_speed_tiers: Vec<String>,
     pub availability_nux: Option<ModelAvailabilityNux>,
     pub upgrade: Option<ModelInfoUpgrade>,
     pub base_instructions: String,
@@ -428,6 +433,7 @@ impl From<ModelInfo> for ModelPreset {
                 .unwrap_or(ReasoningEffort::None),
             supported_reasoning_efforts: info.supported_reasoning_levels.clone(),
             supports_personality,
+            additional_speed_tiers: info.additional_speed_tiers.clone(),
             is_default: false, // default is the highest priority available model
             upgrade: info.upgrade.as_ref().map(|upgrade| ModelUpgrade {
                 id: upgrade.model.clone(),
@@ -536,6 +542,7 @@ mod tests {
             visibility: ModelVisibility::List,
             supported_in_api: true,
             priority: 1,
+            additional_speed_tiers: vec![],
             availability_nux: None,
             upgrade: None,
             base_instructions: "base".to_string(),

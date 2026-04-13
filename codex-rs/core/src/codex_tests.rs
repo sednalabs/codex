@@ -12,8 +12,6 @@ use crate::config_loader::Sourced;
 use crate::exec::ExecCapturePolicy;
 use crate::exec::ExecToolCallOutput;
 use crate::function_tool::FunctionCallError;
-use crate::mcp_connection_manager::ToolInfo;
-use crate::models_manager::model_info;
 use crate::shell::default_user_shell;
 use crate::tools::format_exec_output_str;
 
@@ -66,6 +64,8 @@ use codex_app_server_protocol::AppInfo;
 use codex_execpolicy::Decision;
 use codex_execpolicy::NetworkRuleProtocol;
 use codex_execpolicy::Policy;
+use codex_mcp::ToolInfo;
+use codex_models_manager::model_info;
 use codex_network_proxy::NetworkProxyConfig;
 use codex_otel::TelemetryAuthMode;
 use codex_protocol::config_types::CollaborationMode;
@@ -250,7 +250,7 @@ fn test_model_client_session() -> crate::client::ModelClientSession {
         /*auth_manager*/ None,
         ThreadId::try_from("00000000-0000-4000-8000-000000000001")
             .expect("test thread id should be valid"),
-        crate::model_provider_info::ModelProviderInfo::create_openai_provider(
+        codex_model_provider_info::ModelProviderInfo::create_openai_provider(
             /* base_url */ /*base_url*/ None,
         ),
         codex_protocol::protocol::SessionSource::Exec,

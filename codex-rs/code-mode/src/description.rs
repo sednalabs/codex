@@ -1,6 +1,7 @@
 use serde::Deserialize;
 use serde::Serialize;
 use serde_json::Value as JsonValue;
+use std::collections::BTreeMap;
 
 use crate::PUBLIC_TOOL_NAME;
 
@@ -55,6 +56,12 @@ pub struct ToolDefinition {
     pub kind: CodeModeToolKind,
     pub input_schema: Option<JsonValue>,
     pub output_schema: Option<JsonValue>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ToolNamespaceDescription {
+    pub name: String,
+    pub description: String,
 }
 
 #[derive(Debug, Default, Deserialize, PartialEq, Eq)]
@@ -162,7 +169,8 @@ pub fn is_code_mode_nested_tool(tool_name: &str) -> bool {
 }
 
 pub fn build_exec_tool_description(
-    enabled_tools: &[(String, String)],
+    enabled_tools: &[ToolDefinition],
+    namespace_descriptions: &BTreeMap<String, ToolNamespaceDescription>,
     code_mode_only: bool,
 ) -> String {
     if !code_mode_only {
@@ -175,17 +183,41 @@ pub fn build_exec_tool_description(
     ];
 
     if !enabled_tools.is_empty() {
-        let nested_tool_reference = enabled_tools
-            .iter()
-            .map(|(name, nested_description)| {
-                let global_name = normalize_code_mode_identifier(name);
-                format!(
-                    "### `{global_name}` (`{name}`)\n{}",
-                    nested_description.trim()
-                )
-            })
-            .collect::<Vec<_>>()
-            .join("\n\n");
+        let mut current_namespace: Option<&str> = None;
+        let mut nested_tool_sections = Vec::with_capacity(enabled_tools.len());
+
+        for tool in enabled_tools {
+            let name = tool.name.as_str();
+            let nested_description = render_code_mode_sample_for_definition(tool);
+            let next_namespace = namespace_descriptions
+                .get(name)
+                .map(|namespace_description| namespace_description.name.as_str());
+            if next_namespace != current_namespace {
+                if let Some(namespace_description) = namespace_descriptions.get(name) {
+                    let namespace_description_text = namespace_description.description.trim();
+                    if !namespace_description_text.is_empty() {
+                        nested_tool_sections.push(format!(
+                            "## {}\n{namespace_description_text}",
+                            namespace_description.name
+                        ));
+                    }
+                }
+                current_namespace = next_namespace;
+            }
+
+            let global_name = normalize_code_mode_identifier(name);
+            let nested_description = nested_description.trim();
+            if nested_description.is_empty() {
+                nested_tool_sections.push(render_tool_heading(&global_name, name));
+            } else {
+                nested_tool_sections.push(format!(
+                    "{}\n{nested_description}",
+                    render_tool_heading(&global_name, name)
+                ));
+            }
+        }
+
+        let nested_tool_reference = nested_tool_sections.join("\n\n");
         sections.push(nested_tool_reference);
     }
 
@@ -222,7 +254,7 @@ pub fn normalize_code_mode_identifier(tool_key: &str) -> String {
 
 pub fn augment_tool_definition(mut definition: ToolDefinition) -> ToolDefinition {
     if definition.name != PUBLIC_TOOL_NAME {
-        definition.description = append_code_mode_sample_for_definition(&definition);
+        definition.description = render_code_mode_sample_for_definition(&definition);
     }
     definition
 }
@@ -251,7 +283,7 @@ pub struct EnabledToolMetadata {
     pub kind: CodeModeToolKind,
 }
 
-pub fn append_code_mode_sample(
+pub fn render_code_mode_sample(
     description: &str,
     tool_name: &str,
     input_name: &str,
@@ -265,7 +297,7 @@ pub fn append_code_mode_sample(
     format!("{description}\n\nexec tool declaration:\n```ts\n{declaration}\n```")
 }
 
-fn append_code_mode_sample_for_definition(definition: &ToolDefinition) -> String {
+fn render_code_mode_sample_for_definition(definition: &ToolDefinition) -> String {
     let input_name = match definition.kind {
         CodeModeToolKind::Function => "args",
         CodeModeToolKind::Freeform => "input",
@@ -283,7 +315,7 @@ fn append_code_mode_sample_for_definition(definition: &ToolDefinition) -> String
         .as_ref()
         .map(render_json_schema_to_typescript)
         .unwrap_or_else(|| "unknown".to_string());
-    append_code_mode_sample(
+    render_code_mode_sample(
         &definition.description,
         &definition.name,
         input_name,
@@ -300,6 +332,14 @@ fn render_code_mode_tool_declaration(
 ) -> String {
     let tool_name = normalize_code_mode_identifier(tool_name);
     format!("{tool_name}({input_name}: {input_type}): Promise<{output_type}>;")
+}
+
+fn render_tool_heading(global_name: &str, raw_name: &str) -> String {
+    if global_name == raw_name {
+        format!("### `{global_name}`")
+    } else {
+        format!("### `{global_name}` (`{raw_name}`)")
+    }
 }
 
 pub fn render_json_schema_to_typescript(schema: &JsonValue) -> String {
@@ -492,6 +532,7 @@ mod tests {
     use super::parse_exec_source;
     use pretty_assertions::assert_eq;
     use serde_json::json;
+    use std::collections::BTreeMap;
 
     #[test]
     fn parse_exec_source_without_pragma() {
@@ -588,8 +629,18 @@ mod tests {
 
     #[test]
     fn code_mode_only_description_includes_nested_tools() {
+        let definitions = [ToolDefinition {
+            name: "foo".to_string(),
+            all_tools_name: Some("foo".to_string()),
+            all_tools_module: None,
+            description: "bar".to_string(),
+            kind: CodeModeToolKind::Function,
+            input_schema: None,
+            output_schema: None,
+        }];
         let description = build_exec_tool_description(
-            &[("foo".to_string(), "bar".to_string())],
+            &definitions,
+            &BTreeMap::new(),
             /*code_mode_only*/ true,
         );
         assert!(description.contains("### `foo` (`foo`)"));

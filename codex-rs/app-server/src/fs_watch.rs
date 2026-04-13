@@ -168,18 +168,8 @@ impl FsWatchManager {
                     .paths
                     .into_iter()
                     .filter_map(|path| {
-                        match AbsolutePathBuf::resolve_path_against_base(&path, &watch_root) {
-                            Ok(path) => app_server_hooks()
-                                .fs_changed_path_for_watch_target(&watch_root, path),
-                            Err(err) => {
-                                warn!(
-                                    "failed to normalize watch event path ({}) for {}: {err}",
-                                    path.display(),
-                                    watch_root.display()
-                                );
-                                None
-                            }
-                        }
+                        let path = AbsolutePathBuf::resolve_path_against_base(&path, &watch_root);
+                        app_server_hooks().fs_changed_path_for_watch_target(&watch_root, path)
                     })
                     .collect::<Vec<_>>();
                 changed_paths.sort_by(|left, right| left.as_path().cmp(right.as_path()));
@@ -269,6 +259,13 @@ mod tests {
         )
     }
 
+    fn watch_params(watch_id: &str, path: AbsolutePathBuf) -> FsWatchParams {
+        FsWatchParams {
+            watch_id: watch_id.to_string(),
+            path,
+        }
+    }
+
     #[tokio::test]
     async fn watch_returns_a_v7_id_and_tracks_the_owner_scoped_entry() {
         let temp_dir = TempDir::new().expect("temp dir");
@@ -278,7 +275,7 @@ mod tests {
         let manager = manager_with_noop_watcher();
         let path = absolute_path(head_path);
         let response = manager
-            .watch(ConnectionId(1), FsWatchParams { path: path.clone() })
+            .watch(ConnectionId(1), watch_params("watch-1", path.clone()))
             .await
             .expect("watch should succeed");
 
@@ -306,9 +303,7 @@ mod tests {
         let response = manager
             .watch(
                 ConnectionId(1),
-                FsWatchParams {
-                    path: absolute_path(head_path),
-                },
+                watch_params("watch-1", absolute_path(head_path)),
             )
             .await
             .expect("watch should succeed");
@@ -354,27 +349,21 @@ mod tests {
         let response_1 = manager
             .watch(
                 ConnectionId(1),
-                FsWatchParams {
-                    path: absolute_path(head_path),
-                },
+                watch_params("watch-1", absolute_path(head_path)),
             )
             .await
             .expect("first watch should succeed");
         let response_2 = manager
             .watch(
                 ConnectionId(1),
-                FsWatchParams {
-                    path: absolute_path(fetch_head_path),
-                },
+                watch_params("watch-2", absolute_path(fetch_head_path)),
             )
             .await
             .expect("second watch should succeed");
         let response_3 = manager
             .watch(
                 ConnectionId(2),
-                FsWatchParams {
-                    path: absolute_path(packed_refs_path),
-                },
+                watch_params("watch-3", absolute_path(packed_refs_path)),
             )
             .await
             .expect("third watch should succeed");
@@ -449,7 +438,7 @@ mod tests {
         let file_c = absolute_path(file_c);
 
         let response = manager
-            .watch(ConnectionId(1), FsWatchParams { path: watch_root })
+            .watch(ConnectionId(1), watch_params("watch-1", watch_root))
             .await
             .expect("watch should succeed");
 
@@ -631,9 +620,7 @@ mod tests {
         let response = manager
             .watch(
                 ConnectionId(1),
-                FsWatchParams {
-                    path: missing_path.clone(),
-                },
+                watch_params("watch-1", missing_path.clone()),
             )
             .await
             .expect("watch should succeed");
@@ -672,9 +659,7 @@ mod tests {
         let response = manager
             .watch(
                 ConnectionId(1),
-                FsWatchParams {
-                    path: missing_dir.clone(),
-                },
+                watch_params("watch-1", missing_dir.clone()),
             )
             .await
             .expect("watch should succeed");
@@ -708,9 +693,7 @@ mod tests {
         let response = manager
             .watch(
                 ConnectionId(1),
-                FsWatchParams {
-                    path: missing_path.clone(),
-                },
+                watch_params("watch-1", missing_path.clone()),
             )
             .await
             .expect("watch should succeed");
@@ -766,9 +749,7 @@ mod tests {
         let response = manager
             .watch(
                 ConnectionId(1),
-                FsWatchParams {
-                    path: watched_path.clone(),
-                },
+                watch_params("watch-1", watched_path.clone()),
             )
             .await
             .expect("watch should succeed");

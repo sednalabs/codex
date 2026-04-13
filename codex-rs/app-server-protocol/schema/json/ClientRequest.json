@@ -642,6 +642,15 @@
             "null"
           ]
         },
+        "tags": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "type": [
+            "object",
+            "null"
+          ]
+        },
         "threadId": {
           "type": [
             "string",
@@ -782,9 +791,14 @@
         "path": {
           "$ref": "#/$defs/AbsolutePathBuf",
           "description": "Absolute file or directory path to watch."
+        },
+        "watchId": {
+          "description": "Connection-scoped watch identifier used for `fs/unwatch` and `fs/changed`.",
+          "type": "string"
         }
       },
       "required": [
+        "watchId",
         "path"
       ],
       "type": "object"
@@ -1520,6 +1534,30 @@
           "type": "object"
         }
       ]
+    },
+    "RealtimeVoice": {
+      "enum": [
+        "alloy",
+        "arbor",
+        "ash",
+        "ballad",
+        "breeze",
+        "cedar",
+        "coral",
+        "cove",
+        "echo",
+        "ember",
+        "juniper",
+        "maple",
+        "marin",
+        "sage",
+        "shimmer",
+        "sol",
+        "spruce",
+        "vale",
+        "verse"
+      ],
+      "type": "string"
     },
     "ReasoningEffort": {
       "description": "See https://platform.openai.com/docs/guides/reasoning?api-mode=responses#get-started-with-reasoning",
@@ -2915,7 +2953,10 @@
       "description": "EXPERIMENTAL - start a thread-scoped realtime session.",
       "properties": {
         "prompt": {
-          "type": "string"
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "sessionId": {
           "type": [
@@ -2925,13 +2966,69 @@
         },
         "threadId": {
           "type": "string"
+        },
+        "transport": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ThreadRealtimeStartTransport"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "voice": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RealtimeVoice"
+            },
+            {
+              "type": "null"
+            }
+          ]
         }
       },
       "required": [
-        "threadId",
-        "prompt"
+        "threadId"
       ],
       "type": "object"
+    },
+    "ThreadRealtimeStartTransport": {
+      "description": "EXPERIMENTAL - transport used by thread realtime.",
+      "oneOf": [
+        {
+          "properties": {
+            "type": {
+              "const": "websocket",
+              "title": "WebsocketThreadRealtimeStartTransportType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "title": "WebsocketThreadRealtimeStartTransport",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "sdp": {
+              "type": "string"
+            },
+            "type": {
+              "const": "webrtc",
+              "title": "WebrtcThreadRealtimeStartTransportType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "sdp"
+          ],
+          "title": "WebrtcThreadRealtimeStartTransport",
+          "type": "object"
+        }
+      ]
     },
     "ThreadRealtimeStopParams": {
       "description": "EXPERIMENTAL - stop thread realtime.",
@@ -3266,9 +3363,26 @@
               "type": "null"
             }
           ]
+        },
+        "sessionStartSource": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ThreadStartSource"
+            },
+            {
+              "type": "null"
+            }
+          ]
         }
       },
       "type": "object"
+    },
+    "ThreadStartSource": {
+      "enum": [
+        "startup",
+        "clear"
+      ],
+      "type": "string"
     },
     "ThreadUnarchiveParams": {
       "properties": {
@@ -3387,6 +3501,16 @@
           ],
           "description": "Override the personality for this turn and subsequent turns."
         },
+        "responsesapiClientMetadata": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "Optional turn-scoped Responses API client metadata.",
+          "type": [
+            "object",
+            "null"
+          ]
+        },
         "sandboxPolicy": {
           "anyOf": [
             {
@@ -3441,6 +3565,16 @@
             "$ref": "#/$defs/UserInput"
           },
           "type": "array"
+        },
+        "responsesapiClientMetadata": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "Optional turn-scoped Responses API client metadata.",
+          "type": [
+            "object",
+            "null"
+          ]
         },
         "threadId": {
           "type": "string"

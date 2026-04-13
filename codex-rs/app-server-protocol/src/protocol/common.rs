@@ -1337,6 +1337,7 @@ mod tests {
                 approvals_reviewer: v2::ApprovalsReviewer::User,
                 sandbox: v2::SandboxPolicy::DangerFullAccess,
                 reasoning_effort: None,
+                instruction_sources: Vec::new(),
             },
         };
 
@@ -1377,7 +1378,8 @@ mod tests {
                     "sandbox": {
                         "type": "dangerFullAccess"
                     },
-                    "reasoningEffort": null
+                    "reasoningEffort": null,
+                    "instructionSources": []
                 }
             }),
             serde_json::to_value(&response)?,
@@ -1635,6 +1637,7 @@ mod tests {
         let request = ClientRequest::FsWatch {
             request_id: RequestId::Integer(10),
             params: v2::FsWatchParams {
+                watch_id: "watch-1".to_string(),
                 path: absolute_path("tmp/repo/.git"),
             },
         };
@@ -1643,6 +1646,7 @@ mod tests {
                 "method": "fs/watch",
                 "id": 10,
                 "params": {
+                    "watchId": "watch-1",
                     "path": absolute_path_string("tmp/repo/.git")
                 }
             }),
@@ -1698,8 +1702,10 @@ mod tests {
             request_id: RequestId::Integer(9),
             params: v2::ThreadRealtimeStartParams {
                 thread_id: "thr_123".to_string(),
-                prompt: "You are on a call".to_string(),
+                prompt: Some(Some("You are on a call".to_string())),
                 session_id: Some("sess_456".to_string()),
+                transport: None,
+                voice: None,
             },
         };
         assert_eq!(
@@ -1709,7 +1715,9 @@ mod tests {
                 "params": {
                     "threadId": "thr_123",
                     "prompt": "You are on a call",
-                    "sessionId": "sess_456"
+                    "sessionId": "sess_456",
+                    "transport": null,
+                    "voice": null
                 }
             }),
             serde_json::to_value(&request)?,
@@ -1787,8 +1795,10 @@ mod tests {
             request_id: RequestId::Integer(1),
             params: v2::ThreadRealtimeStartParams {
                 thread_id: "thr_123".to_string(),
-                prompt: "You are on a call".to_string(),
+                prompt: Some(Some("You are on a call".to_string())),
                 session_id: None,
+                transport: None,
+                voice: None,
             },
         };
         let reason = crate::experimental_api::ExperimentalApi::experimental_reason(&request);

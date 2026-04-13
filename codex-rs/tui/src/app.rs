@@ -4,6 +4,7 @@ use crate::app_command::AppCommandView;
 use crate::app_event::AppEvent;
 use crate::app_event::ExitMode;
 use crate::app_event::FeedbackCategory;
+use crate::app_event::RateLimitRefreshOrigin;
 use crate::app_event::RealtimeAudioDeviceKind;
 #[cfg(target_os = "windows")]
 use crate::app_event::WindowsSandboxEnableMode;
@@ -98,12 +99,13 @@ use codex_core::config::types::ApprovalsReviewer;
 use codex_core::config::types::ModelAvailabilityNuxConfig;
 use codex_core::config_loader::ConfigLayerStackOrdering;
 use codex_core::message_history;
-use codex_core::models_manager::collaboration_mode_presets::CollaborationModesConfig;
-use codex_core::models_manager::model_presets::HIDE_GPT_5_1_CODEX_MAX_MIGRATION_PROMPT_CONFIG;
-use codex_core::models_manager::model_presets::HIDE_GPT5_1_MIGRATION_PROMPT_CONFIG;
 #[cfg(target_os = "windows")]
 use codex_core::windows_sandbox::WindowsSandboxLevelExt;
+use codex_exec_server::EnvironmentManager;
 use codex_features::Feature;
+use codex_models_manager::collaboration_mode_presets::CollaborationModesConfig;
+use codex_models_manager::model_presets::HIDE_GPT_5_1_CODEX_MAX_MIGRATION_PROMPT_CONFIG;
+use codex_models_manager::model_presets::HIDE_GPT5_1_MIGRATION_PROMPT_CONFIG;
 use codex_otel::SessionTelemetry;
 use codex_protocol::ThreadId;
 use codex_protocol::approvals::ExecApprovalRequestEvent;
@@ -500,8 +502,10 @@ fn emit_project_config_warnings(app_event_tx: &AppEventSender, config: &Config) 
     )));
 }
 
-fn emit_system_bwrap_warning(app_event_tx: &AppEventSender) {
-    let Some(message) = codex_core::config::system_bwrap_warning() else {
+fn emit_system_bwrap_warning(app_event_tx: &AppEventSender, config: &Config) {
+    let Some(message) =
+        codex_core::config::system_bwrap_warning(config.permissions.sandbox_policy.get())
+    else {
         return;
     };
 
@@ -1013,6 +1017,7 @@ pub(crate) struct App {
     feedback_audience: FeedbackAudience,
     remote_app_server_url: Option<String>,
     remote_app_server_auth_token: Option<String>,
+    environment_manager: Arc<EnvironmentManager>,
     /// Set when the user confirms an update; propagated on exit.
     pub(crate) pending_update_action: Option<UpdateAction>,
 
@@ -1061,7 +1066,7 @@ fn normalize_harness_overrides_for_cwd(
 
     let mut normalized = Vec::with_capacity(overrides.additional_writable_roots.len());
     for root in overrides.additional_writable_roots.drain(..) {
-        let absolute = AbsolutePathBuf::resolve_path_against_base(root, base_cwd)?;
+        let absolute = AbsolutePathBuf::resolve_path_against_base(root, base_cwd);
         normalized.push(absolute.into_path_buf());
     }
     overrides.additional_writable_roots = normalized;
@@ -2037,14 +2042,18 @@ impl App {
         });
     }
 
-    fn refresh_rate_limits(&mut self, app_server: &AppServerSession, request_id: u64) {
+    fn refresh_rate_limits(
+        &mut self,
+        app_server: &AppServerSession,
+        origin: RateLimitRefreshOrigin,
+    ) {
         let request_handle = app_server.request_handle();
         let app_event_tx = self.app_event_tx.clone();
         tokio::spawn(async move {
             let result = fetch_account_rate_limits(request_handle)
                 .await
                 .map_err(|err| err.to_string());
-            app_event_tx.send(AppEvent::RateLimitsLoaded { request_id, result });
+            app_event_tx.send(AppEvent::RateLimitsLoaded { origin, result });
         });
     }
 
@@ -2271,7 +2280,9 @@ impl App {
 
         self.chat_widget
             .add_to_history(history_cell::new_mcp_tools_output_from_statuses(
-                &config, &statuses,
+                &config,
+                &statuses,
+                codex_app_server_protocol::McpServerStatusDetail::ToolsAndAuthOnly,
             ));
     }
 
@@ -3892,13 +3903,17 @@ impl App {
         should_prompt_windows_sandbox_nux_at_startup: bool,
         remote_app_server_url: Option<String>,
         remote_app_server_auth_token: Option<String>,
+        environment_manager: Arc<EnvironmentManager>,
     ) -> Result<AppExitInfo> {
         use tokio_stream::StreamExt;
         let (app_event_tx, mut app_event_rx) = unbounded_channel();
         let app_event_tx = AppEventSender::new(app_event_tx);
         emit_project_config_warnings(&app_event_tx, &config);
-        emit_system_bwrap_warning(&app_event_tx);
-        tui.set_notification_method(config.tui_notification_method);
+        emit_system_bwrap_warning(&app_event_tx, &config);
+        tui.set_notification_settings(
+            config.tui_notifications.method,
+            config.tui_notifications.condition,
+        );
 
         let harness_overrides =
             normalize_harness_overrides_for_cwd(harness_overrides, &config.cwd)?;
@@ -4109,6 +4124,7 @@ impl App {
             feedback_audience,
             remote_app_server_url,
             remote_app_server_auth_token,
+            environment_manager,
             pending_update_action: None,
             pending_shutdown_exit_thread_id: None,
             pending_subagent_exit_mode: None,
@@ -4365,6 +4381,7 @@ impl App {
                         },
                         None => crate::AppServerTarget::Embedded,
                     },
+                    self.environment_manager.clone(),
                 )
                 .await
                 {
@@ -4429,7 +4446,10 @@ impl App {
                             Ok(resumed) => {
                                 self.shutdown_current_thread(app_server).await;
                                 self.config = resume_config;
-                                tui.set_notification_method(self.config.tui_notification_method);
+                                tui.set_notification_settings(
+                                    self.config.tui_notifications.method,
+                                    self.config.tui_notifications.condition,
+                                );
                                 self.file_search
                                     .update_search_dir(self.config.cwd.to_path_buf());
                                 match self
@@ -4474,6 +4494,20 @@ impl App {
 
                 // Leaving alt-screen may blank the inline viewport; force a redraw either way.
                 tui.frame_requester().schedule_frame();
+            }
+            AppEvent::ResumeSessionByIdOrName(target) => {
+                self.chat_widget.add_error_message(format!(
+                    "Direct /resume targeting is not wired on this integration branch yet: {target}"
+                ));
+            }
+            AppEvent::RealtimeWebrtcOfferCreated { result } => {
+                self.chat_widget.on_realtime_webrtc_offer_created(result);
+            }
+            AppEvent::RealtimeWebrtcEvent(event) => {
+                self.chat_widget.on_realtime_webrtc_event(event);
+            }
+            AppEvent::RealtimeWebrtcLocalAudioLevel(peak) => {
+                self.chat_widget.on_realtime_webrtc_local_audio_level(peak);
             }
             AppEvent::ForkCurrentSession => {
                 self.session_telemetry.counter(
@@ -4765,21 +4799,25 @@ impl App {
             AppEvent::FileSearchResult { query, matches } => {
                 self.chat_widget.apply_file_search_result(query, matches);
             }
-            AppEvent::RefreshRateLimits { request_id } => {
-                self.refresh_rate_limits(app_server, request_id);
+            AppEvent::RefreshRateLimits { origin } => {
+                self.refresh_rate_limits(app_server, origin);
             }
-            AppEvent::RateLimitsLoaded { request_id, result } => match result {
+            AppEvent::RateLimitsLoaded { origin, result } => match result {
                 Ok(snapshots) => {
                     for snapshot in snapshots {
                         self.chat_widget.on_rate_limit_snapshot(Some(snapshot));
                     }
-                    self.chat_widget
-                        .finish_status_rate_limit_refresh(request_id);
+                    if let RateLimitRefreshOrigin::StatusCommand { request_id } = origin {
+                        self.chat_widget
+                            .finish_status_rate_limit_refresh(request_id);
+                    }
                 }
                 Err(err) => {
                     tracing::warn!("account/rateLimits/read failed during TUI refresh: {err}");
-                    self.chat_widget
-                        .finish_status_rate_limit_refresh(request_id);
+                    if let RateLimitRefreshOrigin::StatusCommand { request_id } = origin {
+                        self.chat_widget
+                            .finish_status_rate_limit_refresh(request_id);
+                    }
                 }
             },
             AppEvent::ConnectorsLoaded { result, is_final } => {
@@ -4851,6 +4889,7 @@ impl App {
             AppEvent::SubmitFeedback {
                 category,
                 reason,
+                turn_id: _,
                 include_logs,
             } => {
                 self.submit_feedback(app_server, category, reason, include_logs);
@@ -6523,6 +6562,7 @@ fn build_feedback_upload_params(
         thread_id: origin_thread_id.map(|thread_id| thread_id.to_string()),
         include_logs,
         extra_log_files,
+        tags: None,
     }
 }
 
@@ -9916,6 +9956,7 @@ guardian_approval = true
             feedback_audience: FeedbackAudience::External,
             remote_app_server_url: None,
             remote_app_server_auth_token: None,
+            environment_manager: Arc::new(EnvironmentManager::new(/*exec_server_url*/ None)),
             pending_update_action: None,
             pending_shutdown_exit_thread_id: None,
             pending_subagent_exit_mode: None,
@@ -9971,6 +10012,9 @@ guardian_approval = true
                 feedback_audience: FeedbackAudience::External,
                 remote_app_server_url: None,
                 remote_app_server_auth_token: None,
+                environment_manager: Arc::new(EnvironmentManager::new(
+                    /*exec_server_url*/ None,
+                )),
                 pending_update_action: None,
                 pending_shutdown_exit_thread_id: None,
                 pending_subagent_exit_mode: None,

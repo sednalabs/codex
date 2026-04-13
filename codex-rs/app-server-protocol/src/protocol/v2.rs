@@ -8,6 +8,10 @@ use codex_experimental_api_macros::ExperimentalApi;
 use codex_protocol::account::PlanType;
 use codex_protocol::approvals::ElicitationRequest as CoreElicitationRequest;
 use codex_protocol::approvals::ExecPolicyAmendment as CoreExecPolicyAmendment;
+use codex_protocol::approvals::GuardianAssessmentAction as CoreGuardianAssessmentAction;
+use codex_protocol::approvals::GuardianAssessmentDecisionSource as CoreGuardianAssessmentDecisionSource;
+use codex_protocol::approvals::GuardianCommandSource as CoreGuardianCommandSource;
+use codex_protocol::approvals::GuardianUserAuthorization as CoreGuardianUserAuthorization;
 use codex_protocol::approvals::NetworkApprovalContext as CoreNetworkApprovalContext;
 use codex_protocol::approvals::NetworkApprovalProtocol as CoreNetworkApprovalProtocol;
 use codex_protocol::approvals::NetworkPolicyAmendment as CoreNetworkPolicyAmendment;
@@ -26,6 +30,7 @@ use codex_protocol::config_types::WebSearchMode;
 use codex_protocol::config_types::WebSearchToolConfig;
 use codex_protocol::items::AgentMessageContent as CoreAgentMessageContent;
 use codex_protocol::items::TurnItem as CoreTurnItem;
+use codex_protocol::mcp::CallToolResult as CoreMcpCallToolResult;
 use codex_protocol::mcp::Resource as McpResource;
 pub use codex_protocol::mcp::ResourceContent as McpResourceContent;
 use codex_protocol::mcp::ResourceTemplate as McpResourceTemplate;
@@ -69,6 +74,8 @@ use codex_protocol::protocol::RateLimitWindow as CoreRateLimitWindow;
 use codex_protocol::protocol::ReadOnlyAccess as CoreReadOnlyAccess;
 use codex_protocol::protocol::RealtimeAudioFrame as CoreRealtimeAudioFrame;
 use codex_protocol::protocol::RealtimeConversationVersion;
+use codex_protocol::protocol::RealtimeVoice;
+use codex_protocol::protocol::RealtimeVoicesList;
 use codex_protocol::protocol::ReviewDecision as CoreReviewDecision;
 use codex_protocol::protocol::SessionSource as CoreSessionSource;
 use codex_protocol::protocol::SkillDependencies as CoreSkillDependencies;
@@ -406,6 +413,14 @@ v2_enum_from_core!(
         Warning, Stop, Feedback, Context, Error
     }
 );
+
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(rename_all = "camelCase", export_to = "v2/")]
+pub enum ThreadStartSource {
+    Startup,
+    Clear,
+}
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
 #[serde(rename_all = "camelCase")]
@@ -1054,7 +1069,7 @@ impl From<CoreReviewDecision> for CommandExecutionApprovalDecision {
                 network_policy_amendment: network_policy_amendment.into(),
             },
             CoreReviewDecision::Abort => Self::Cancel,
-            CoreReviewDecision::Denied => Self::Decline,
+            CoreReviewDecision::Denied | CoreReviewDecision::TimedOut => Self::Decline,
         }
     }
 }
@@ -1789,6 +1804,8 @@ pub struct Model {
     pub input_modalities: Vec<InputModality>,
     #[serde(default)]
     pub supports_personality: bool,
+    #[serde(default)]
+    pub additional_speed_tiers: Vec<String>,
     // Only one model should be marked as default.
     pub is_default: bool,
 }
@@ -2000,6 +2017,48 @@ pub struct McpResourceReadResponse {
     pub contents: Vec<McpResourceContent>,
 }
 
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct McpServerToolCallParams {
+    pub thread_id: String,
+    pub server: String,
+    pub tool: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub arguments: Option<JsonValue>,
+    #[serde(rename = "_meta", default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub meta: Option<JsonValue>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct McpServerToolCallResponse {
+    pub content: Vec<JsonValue>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub structured_content: Option<JsonValue>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub is_error: Option<bool>,
+    #[serde(rename = "_meta", default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub meta: Option<JsonValue>,
+}
+
+impl From<CoreMcpCallToolResult> for McpServerToolCallResponse {
+    fn from(result: CoreMcpCallToolResult) -> Self {
+        Self {
+            content: result.content,
+            structured_content: result.structured_content,
+            is_error: result.is_error,
+            meta: result.meta,
+        }
+    }
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default, JsonSchema, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export_to = "v2/")]
@@ -2182,6 +2241,8 @@ pub struct FeedbackUploadParams {
     pub include_logs: bool,
     #[ts(optional = nullable)]
     pub extra_log_files: Option<Vec<PathBuf>>,
+    #[ts(optional = nullable)]
+    pub tags: Option<BTreeMap<String, String>>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
@@ -2347,6 +2408,8 @@ pub struct FsCopyResponse {}
 #[serde(rename_all = "camelCase")]
 #[ts(export_to = "v2/")]
 pub struct FsWatchParams {
+    /// Connection-scoped watch identifier used for `fs/unwatch` and `fs/changed`.
+    pub watch_id: String,
     /// Absolute file or directory path to watch.
     pub path: AbsolutePathBuf,
 }
@@ -2621,6 +2684,8 @@ pub struct ThreadStartParams {
     pub personality: Option<Personality>,
     #[ts(optional = nullable)]
     pub ephemeral: Option<bool>,
+    #[ts(optional = nullable)]
+    pub session_start_source: Option<ThreadStartSource>,
     #[experimental("thread/start.dynamicTools")]
     #[ts(optional = nullable)]
     pub dynamic_tools: Option<Vec<DynamicToolSpec>>,
@@ -2667,6 +2732,9 @@ pub struct ThreadStartResponse {
     pub model_provider: String,
     pub service_tier: Option<ServiceTier>,
     pub cwd: PathBuf,
+    /// Instruction source files currently loaded for this thread.
+    #[serde(default)]
+    pub instruction_sources: Vec<PathBuf>,
     #[experimental(nested)]
     pub approval_policy: AskForApproval,
     /// Reviewer currently used for approval requests on this thread.
@@ -2765,6 +2833,9 @@ pub struct ThreadResumeResponse {
     pub model_provider: String,
     pub service_tier: Option<ServiceTier>,
     pub cwd: PathBuf,
+    /// Instruction source files currently loaded for this thread.
+    #[serde(default)]
+    pub instruction_sources: Vec<PathBuf>,
     #[experimental(nested)]
     pub approval_policy: AskForApproval,
     /// Reviewer currently used for approval requests on this thread.
@@ -2854,6 +2925,9 @@ pub struct ThreadForkResponse {
     pub model_provider: String,
     pub service_tier: Option<ServiceTier>,
     pub cwd: PathBuf,
+    /// Instruction source files currently loaded for this thread.
+    #[serde(default)]
+    pub instruction_sources: Vec<PathBuf>,
     #[experimental(nested)]
     pub approval_policy: AskForApproval,
     /// Reviewer currently used for approval requests on this thread.
@@ -3885,9 +3959,29 @@ impl From<ThreadRealtimeAudioChunk> for CoreRealtimeAudioFrame {
 #[ts(export_to = "v2/")]
 pub struct ThreadRealtimeStartParams {
     pub thread_id: String,
-    pub prompt: String,
+    #[serde(
+        default,
+        deserialize_with = "super::serde_helpers::deserialize_double_option",
+        serialize_with = "super::serde_helpers::serialize_double_option",
+        skip_serializing_if = "Option::is_none"
+    )]
+    #[ts(optional = nullable)]
+    pub prompt: Option<Option<String>>,
     #[ts(optional = nullable)]
     pub session_id: Option<String>,
+    #[ts(optional = nullable)]
+    pub transport: Option<ThreadRealtimeStartTransport>,
+    #[ts(optional = nullable)]
+    pub voice: Option<RealtimeVoice>,
+}
+
+/// EXPERIMENTAL - transport used by thread realtime.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(tag = "type", rename_all = "camelCase")]
+#[ts(export_to = "v2/", tag = "type")]
+pub enum ThreadRealtimeStartTransport {
+    Websocket,
+    Webrtc { sdp: String },
 }
 
 /// EXPERIMENTAL - response for starting thread realtime.
@@ -3940,6 +4034,20 @@ pub struct ThreadRealtimeStopParams {
 #[ts(export_to = "v2/")]
 pub struct ThreadRealtimeStopResponse {}
 
+/// EXPERIMENTAL - list voices supported by thread realtime.
+#[derive(Serialize, Deserialize, Debug, Default, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ThreadRealtimeListVoicesParams {}
+
+/// EXPERIMENTAL - response for listing supported realtime voices.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ThreadRealtimeListVoicesResponse {
+    pub voices: RealtimeVoicesList,
+}
+
 /// EXPERIMENTAL - emitted when thread realtime startup is accepted.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
 #[serde(rename_all = "camelCase")]
@@ -3979,6 +4087,15 @@ pub struct ThreadRealtimeOutputAudioDeltaNotification {
     pub audio: ThreadRealtimeAudioChunk,
 }
 
+/// EXPERIMENTAL - emitted with the remote SDP for a WebRTC realtime session.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ThreadRealtimeSdpNotification {
+    pub thread_id: String,
+    pub sdp: String,
+}
+
 /// EXPERIMENTAL - emitted when thread realtime encounters an error.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
 #[serde(rename_all = "camelCase")]
@@ -4016,6 +4133,10 @@ pub enum TurnStatus {
 pub struct TurnStartParams {
     pub thread_id: String,
     pub input: Vec<UserInput>,
+    /// Optional turn-scoped Responses API client metadata.
+    #[experimental("turn/start.responsesapiClientMetadata")]
+    #[ts(optional = nullable)]
+    pub responsesapi_client_metadata: Option<HashMap<String, String>>,
     /// Override the working directory for this turn and subsequent turns.
     #[ts(optional = nullable)]
     pub cwd: Option<PathBuf>,
@@ -4126,12 +4247,18 @@ pub struct TurnStartResponse {
     pub turn: Turn,
 }
 
-#[derive(Serialize, Deserialize, Debug, Default, Clone, PartialEq, JsonSchema, TS)]
+#[derive(
+    Serialize, Deserialize, Debug, Default, Clone, PartialEq, JsonSchema, TS, ExperimentalApi,
+)]
 #[serde(rename_all = "camelCase")]
 #[ts(export_to = "v2/")]
 pub struct TurnSteerParams {
     pub thread_id: String,
     pub input: Vec<UserInput>,
+    /// Optional turn-scoped Responses API client metadata.
+    #[experimental("turn/steer.responsesapiClientMetadata")]
+    #[ts(optional = nullable)]
+    pub responsesapi_client_metadata: Option<HashMap<String, String>>,
     /// Required active turn id precondition. The request fails when it does not
     /// match the currently active turn.
     pub expected_turn_id: String,
@@ -4495,7 +4622,24 @@ pub enum GuardianApprovalReviewStatus {
     InProgress,
     Approved,
     Denied,
+    TimedOut,
     Aborted,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+/// [UNSTABLE] Source that produced a terminal guardian approval review decision.
+pub enum AutoReviewDecisionSource {
+    Agent,
+}
+
+impl From<CoreGuardianAssessmentDecisionSource> for AutoReviewDecisionSource {
+    fn from(value: CoreGuardianAssessmentDecisionSource) -> Self {
+        match value {
+            CoreGuardianAssessmentDecisionSource::Agent => Self::Agent,
+        }
+    }
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, JsonSchema, TS)]
@@ -4506,6 +4650,7 @@ pub enum GuardianRiskLevel {
     Low,
     Medium,
     High,
+    Critical,
 }
 
 impl From<CoreGuardianRiskLevel> for GuardianRiskLevel {
@@ -4514,6 +4659,29 @@ impl From<CoreGuardianRiskLevel> for GuardianRiskLevel {
             CoreGuardianRiskLevel::Low => Self::Low,
             CoreGuardianRiskLevel::Medium => Self::Medium,
             CoreGuardianRiskLevel::High => Self::High,
+            CoreGuardianRiskLevel::Critical => Self::Critical,
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "lowercase")]
+#[ts(export_to = "v2/")]
+/// [UNSTABLE] Authorization level assigned by guardian approval review.
+pub enum GuardianUserAuthorization {
+    Unknown,
+    Low,
+    Medium,
+    High,
+}
+
+impl From<CoreGuardianUserAuthorization> for GuardianUserAuthorization {
+    fn from(value: CoreGuardianUserAuthorization) -> Self {
+        match value {
+            CoreGuardianUserAuthorization::Unknown => Self::Unknown,
+            CoreGuardianUserAuthorization::Low => Self::Low,
+            CoreGuardianUserAuthorization::Medium => Self::Medium,
+            CoreGuardianUserAuthorization::High => Self::High,
         }
     }
 }
@@ -4526,9 +4694,8 @@ impl From<CoreGuardianRiskLevel> for GuardianRiskLevel {
 #[ts(export_to = "v2/")]
 pub struct GuardianApprovalReview {
     pub status: GuardianApprovalReviewStatus,
-    #[ts(type = "number | null")]
-    pub risk_score: Option<u8>,
     pub risk_level: Option<GuardianRiskLevel>,
+    pub user_authorization: Option<GuardianUserAuthorization>,
     pub rationale: Option<String>,
 }
 
@@ -4539,6 +4706,24 @@ pub struct GuardianApprovalReview {
 pub enum GuardianCommandSource {
     Shell,
     UnifiedExec,
+}
+
+impl From<CoreGuardianCommandSource> for GuardianCommandSource {
+    fn from(value: CoreGuardianCommandSource) -> Self {
+        match value {
+            CoreGuardianCommandSource::Shell => Self::Shell,
+            CoreGuardianCommandSource::UnifiedExec => Self::UnifiedExec,
+        }
+    }
+}
+
+impl From<GuardianCommandSource> for CoreGuardianCommandSource {
+    fn from(value: GuardianCommandSource) -> Self {
+        match value {
+            GuardianCommandSource::Shell => Self::Shell,
+            GuardianCommandSource::UnifiedExec => Self::UnifiedExec,
+        }
+    }
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
@@ -4629,122 +4814,113 @@ pub enum GuardianApprovalReviewAction {
         connector_name: Option<String>,
         tool_title: Option<String>,
     },
-    #[serde(rename_all = "camelCase")]
-    #[ts(rename_all = "camelCase")]
-    Unknown { raw: JsonValue },
 }
 
-impl GuardianApprovalReviewAction {
-    pub fn from_assessment_action(action: Option<JsonValue>) -> Self {
-        action
-            .map(Self::from_json_value)
-            .unwrap_or(GuardianApprovalReviewAction::Unknown {
-                raw: JsonValue::Null,
-            })
-    }
-
-    pub fn try_from_json_value(value: &JsonValue) -> Option<Self> {
-        let object = value.as_object()?;
-        let kind = object
-            .get("type")
-            .and_then(JsonValue::as_str)
-            .or_else(|| object.get("tool").and_then(JsonValue::as_str));
-
-        if object.contains_key("program") {
-            let program = object.get("program")?.as_str()?.to_string();
-            let argv = match object.get("argv").and_then(JsonValue::as_array) {
-                Some(items) => items
-                    .iter()
-                    .map(JsonValue::as_str)
-                    .collect::<Option<Vec<_>>>()?
-                    .into_iter()
-                    .map(ToOwned::to_owned)
-                    .collect(),
-                None => vec![program.clone()],
-            };
-            let cwd = PathBuf::from(object.get("cwd")?.as_str()?);
-            let source = object
-                .get("source")
-                .and_then(|source| serde_json::from_value(source.clone()).ok())
-                .unwrap_or(GuardianCommandSource::UnifiedExec);
-            return Some(Self::Execve {
+impl From<CoreGuardianAssessmentAction> for GuardianApprovalReviewAction {
+    fn from(value: CoreGuardianAssessmentAction) -> Self {
+        match value {
+            CoreGuardianAssessmentAction::Command {
+                source,
+                command,
+                cwd,
+            } => Self::Command {
+                source: source.into(),
+                command,
+                cwd,
+            },
+            CoreGuardianAssessmentAction::Execve {
                 source,
                 program,
                 argv,
                 cwd,
-            });
-        }
-
-        match kind? {
-            "command" | "shell" | "exec_command" => {
-                let command = match object.get("command")? {
-                    JsonValue::String(command) => command.clone(),
-                    JsonValue::Array(argv) => {
-                        let argv = argv
-                            .iter()
-                            .map(JsonValue::as_str)
-                            .collect::<Option<Vec<_>>>()?;
-                        shlex::try_join(argv.iter().copied())
-                            .ok()
-                            .unwrap_or_else(|| argv.join(" "))
-                    }
-                    _ => return None,
-                };
-                let cwd = PathBuf::from(object.get("cwd")?.as_str()?);
-                let source = object
-                    .get("source")
-                    .and_then(|source| serde_json::from_value(source.clone()).ok())
-                    .unwrap_or(match kind {
-                        Some("shell") => GuardianCommandSource::Shell,
-                        _ => GuardianCommandSource::UnifiedExec,
-                    });
-                Some(Self::Command {
-                    source,
-                    command,
-                    cwd,
-                })
+            } => Self::Execve {
+                source: source.into(),
+                program,
+                argv,
+                cwd,
+            },
+            CoreGuardianAssessmentAction::ApplyPatch { cwd, files } => {
+                Self::ApplyPatch { cwd, files }
             }
-            "apply_patch" => Some(Self::ApplyPatch {
-                cwd: PathBuf::from(object.get("cwd")?.as_str()?),
-                files: match object.get("files").and_then(JsonValue::as_array) {
-                    Some(items) => items
-                        .iter()
-                        .map(JsonValue::as_str)
-                        .collect::<Option<Vec<_>>>()?
-                        .into_iter()
-                        .map(PathBuf::from)
-                        .collect(),
-                    None => Vec::new(),
-                },
-            }),
-            "network_access" => Some(Self::NetworkAccess {
-                target: object.get("target")?.as_str()?.to_string(),
-                host: object.get("host")?.as_str()?.to_string(),
-                protocol: serde_json::from_value(object.get("protocol")?.clone()).ok()?,
-                port: u16::try_from(object.get("port")?.as_u64()?).ok()?,
-            }),
-            "mcp_tool_call" => Some(Self::McpToolCall {
-                server: object.get("server")?.as_str()?.to_string(),
-                tool_name: object.get("tool_name")?.as_str()?.to_string(),
-                connector_id: object
-                    .get("connector_id")
-                    .and_then(JsonValue::as_str)
-                    .map(ToOwned::to_owned),
-                connector_name: object
-                    .get("connector_name")
-                    .and_then(JsonValue::as_str)
-                    .map(ToOwned::to_owned),
-                tool_title: object
-                    .get("tool_title")
-                    .and_then(JsonValue::as_str)
-                    .map(ToOwned::to_owned),
-            }),
-            _ => None,
+            CoreGuardianAssessmentAction::NetworkAccess {
+                target,
+                host,
+                protocol,
+                port,
+            } => Self::NetworkAccess {
+                target,
+                host,
+                protocol: protocol.into(),
+                port,
+            },
+            CoreGuardianAssessmentAction::McpToolCall {
+                server,
+                tool_name,
+                connector_id,
+                connector_name,
+                tool_title,
+            } => Self::McpToolCall {
+                server,
+                tool_name,
+                connector_id,
+                connector_name,
+                tool_title,
+            },
         }
     }
+}
 
-    fn from_json_value(value: JsonValue) -> Self {
-        Self::try_from_json_value(&value).unwrap_or(Self::Unknown { raw: value })
+impl From<GuardianApprovalReviewAction> for CoreGuardianAssessmentAction {
+    fn from(value: GuardianApprovalReviewAction) -> Self {
+        match value {
+            GuardianApprovalReviewAction::Command {
+                source,
+                command,
+                cwd,
+            } => Self::Command {
+                source: source.into(),
+                command,
+                cwd,
+            },
+            GuardianApprovalReviewAction::Execve {
+                source,
+                program,
+                argv,
+                cwd,
+            } => Self::Execve {
+                source: source.into(),
+                program,
+                argv,
+                cwd,
+            },
+            GuardianApprovalReviewAction::ApplyPatch { cwd, files } => {
+                Self::ApplyPatch { cwd, files }
+            }
+            GuardianApprovalReviewAction::NetworkAccess {
+                target,
+                host,
+                protocol,
+                port,
+            } => Self::NetworkAccess {
+                target,
+                host,
+                protocol: protocol.to_core(),
+                port,
+            },
+            GuardianApprovalReviewAction::McpToolCall {
+                server,
+                tool_name,
+                connector_id,
+                connector_name,
+                tool_title,
+            } => Self::McpToolCall {
+                server,
+                tool_name,
+                connector_id,
+                connector_name,
+                tool_title,
+            },
+        }
     }
 }
 
@@ -5226,7 +5402,20 @@ pub struct ItemStartedNotification {
 pub struct ItemGuardianApprovalReviewStartedNotification {
     pub thread_id: String,
     pub turn_id: String,
-    pub target_item_id: String,
+    /// Stable identifier for this review.
+    pub review_id: String,
+    /// Identifier for the reviewed item or tool call when one exists.
+    ///
+    /// In most cases, one review maps to one target item. The exceptions are
+    /// - execve reviews, where a single command may contain multiple execve
+    ///   calls to review (only possible when using the shell_zsh_fork feature)
+    /// - network policy reviews, where there is no target item
+    ///
+    /// A network call is triggered by a CommandExecution item, so having a
+    /// target_item_id set to the CommandExecution item would be misleading
+    /// because the review is about the network call, not the command execution.
+    /// Therefore, target_item_id is set to None for network policy reviews.
+    pub target_item_id: Option<String>,
     pub review: GuardianApprovalReview,
     pub action: GuardianApprovalReviewAction,
 }
@@ -5243,7 +5432,21 @@ pub struct ItemGuardianApprovalReviewStartedNotification {
 pub struct ItemGuardianApprovalReviewCompletedNotification {
     pub thread_id: String,
     pub turn_id: String,
-    pub target_item_id: String,
+    /// Stable identifier for this review.
+    pub review_id: String,
+    /// Identifier for the reviewed item or tool call when one exists.
+    ///
+    /// In most cases, one review maps to one target item. The exceptions are
+    /// - execve reviews, where a single command may contain multiple execve
+    ///   calls to review (only possible when using the shell_zsh_fork feature)
+    /// - network policy reviews, where there is no target item
+    ///
+    /// A network call is triggered by a CommandExecution item, so having a
+    /// target_item_id set to the CommandExecution item would be misleading
+    /// because the review is about the network call, not the command execution.
+    /// Therefore, target_item_id is set to None for network policy reviews.
+    pub target_item_id: Option<String>,
+    pub decision_source: AutoReviewDecisionSource,
     pub review: GuardianApprovalReview,
     pub action: GuardianApprovalReviewAction,
 }
@@ -7787,8 +7990,8 @@ mod tests {
     fn automatic_approval_review_deserializes_aborted_status() {
         let review: GuardianApprovalReview = serde_json::from_value(json!({
             "status": "aborted",
-            "riskScore": null,
             "riskLevel": null,
+            "userAuthorization": null,
             "rationale": null
         }))
         .expect("aborted automatic review should deserialize");
@@ -7796,8 +7999,8 @@ mod tests {
             review,
             GuardianApprovalReview {
                 status: GuardianApprovalReviewStatus::Aborted,
-                risk_score: None,
                 risk_level: None,
+                user_authorization: None,
                 rationale: None,
             }
         );
@@ -8400,6 +8603,7 @@ mod tests {
         let without_override = TurnStartParams {
             thread_id: "thread_123".to_string(),
             input: vec![],
+            responsesapi_client_metadata: None,
             cwd: None,
             approval_policy: None,
             approvals_reviewer: None,

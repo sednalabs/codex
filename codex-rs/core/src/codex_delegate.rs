@@ -78,11 +78,10 @@ pub(crate) async fn run_codex_thread_interactive(
     let CodexSpawnOk { codex, .. } = Codex::spawn(CodexSpawnArgs {
         config,
         auth_manager,
-        analytics_events_client: Some(parent_session.services.analytics_events_client.clone()),
         models_manager,
-        environment_manager: Arc::new(EnvironmentManager::from_environment(
-            parent_ctx.environment.as_deref(),
-        )),
+        environment_manager: Arc::new(EnvironmentManager::from_environment(Some(
+            parent_ctx.environment.as_ref(),
+        ))),
         skills_manager: Arc::clone(&parent_session.services.skills_manager),
         plugins_manager: Arc::clone(&parent_session.services.plugins_manager),
         mcp_manager: Arc::clone(&parent_session.services.mcp_manager),

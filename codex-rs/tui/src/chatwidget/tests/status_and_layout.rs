@@ -74,6 +74,7 @@ async fn turn_started_uses_runtime_context_window_before_first_token_count() {
             turn_id: "turn-1".to_string(),
             model_context_window: Some(950_000),
             collaboration_mode_kind: ModeKind::Default,
+            started_at: None,
         }),
     });
 
@@ -629,6 +630,7 @@ async fn ui_snapshots_small_heights_task_running() {
             turn_id: "turn-1".to_string(),
             model_context_window: None,
             collaboration_mode_kind: ModeKind::Default,
+            started_at: None,
         }),
     });
     chat.handle_codex_event(Event {
@@ -662,6 +664,7 @@ async fn status_widget_and_approval_modal_snapshot() {
             turn_id: "turn-1".to_string(),
             model_context_window: None,
             collaboration_mode_kind: ModeKind::Default,
+            started_at: None,
         }),
     });
     // Provide a deterministic header for the status line.
@@ -724,6 +727,7 @@ async fn status_widget_active_snapshot() {
             turn_id: "turn-1".to_string(),
             model_context_window: None,
             collaboration_mode_kind: ModeKind::Default,
+            started_at: None,
         }),
     });
     // Provide a deterministic header via a bold reasoning chunk.
@@ -1183,6 +1187,7 @@ async fn multiple_agent_messages_in_single_turn_emit_multiple_headers() {
             turn_id: "turn-1".to_string(),
             model_context_window: None,
             collaboration_mode_kind: ModeKind::Default,
+            started_at: None,
         }),
     });
 
@@ -1488,6 +1493,7 @@ async fn chatwidget_exec_and_status_layout_vt100_snapshot() {
             turn_id: "turn-1".to_string(),
             model_context_window: None,
             collaboration_mode_kind: ModeKind::Default,
+            started_at: None,
         }),
     });
     chat.handle_codex_event(Event {
@@ -1569,6 +1575,7 @@ async fn chatwidget_markdown_code_blocks_vt100_snapshot() {
             turn_id: "turn-1".to_string(),
             model_context_window: None,
             collaboration_mode_kind: ModeKind::Default,
+            started_at: None,
         }),
     });
     // Build a vt100 visual from the history insertions only (no UI overlay)
@@ -1664,6 +1671,7 @@ async fn chatwidget_tall() {
             turn_id: "turn-1".to_string(),
             model_context_window: None,
             collaboration_mode_kind: ModeKind::Default,
+            started_at: None,
         }),
     });
     for i in 0..30 {

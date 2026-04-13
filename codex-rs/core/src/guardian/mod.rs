@@ -18,7 +18,7 @@ mod review_session;
 
 use std::time::Duration;
 
-use codex_protocol::protocol::GuardianAssessmentDecisionSource;
+use codex_protocol::approvals::GuardianAssessmentDecisionSource;
 use serde::Deserialize;
 use serde::Serialize;
 
@@ -57,7 +57,7 @@ pub(crate) enum GuardianAssessmentOutcome {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub(crate) struct GuardianAssessment {
     pub(crate) risk_level: codex_protocol::protocol::GuardianRiskLevel,
-    pub(crate) user_authorization: codex_protocol::protocol::GuardianUserAuthorization,
+    pub(crate) user_authorization: codex_protocol::approvals::GuardianUserAuthorization,
     pub(crate) outcome: GuardianAssessmentOutcome,
     pub(crate) rationale: String,
 }

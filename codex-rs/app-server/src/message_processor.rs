@@ -23,6 +23,7 @@ use crate::outgoing_message::RequestContext;
 use crate::transport::AppServerTransport;
 use async_trait::async_trait;
 use codex_app_server_protocol::AppListUpdatedNotification;
+use codex_app_server_protocol::AuthMode as LoginAuthMode;
 use codex_app_server_protocol::ChatgptAuthTokensRefreshParams;
 use codex_app_server_protocol::ChatgptAuthTokensRefreshReason;
 use codex_app_server_protocol::ChatgptAuthTokensRefreshResponse;
@@ -69,15 +70,14 @@ use codex_core::default_client::USER_AGENT_SUFFIX;
 use codex_core::default_client::get_codex_user_agent;
 use codex_core::default_client::set_default_client_residency_requirement;
 use codex_core::default_client::set_default_originator;
-use codex_core::models_manager::collaboration_mode_presets::CollaborationModesConfig;
 use codex_exec_server::EnvironmentManager;
 use codex_features::Feature;
 use codex_feedback::CodexFeedback;
-use codex_login::AuthMode as LoginAuthMode;
 use codex_login::auth::ExternalAuth;
 use codex_login::auth::ExternalAuthRefreshContext;
 use codex_login::auth::ExternalAuthRefreshReason;
 use codex_login::auth::ExternalAuthTokens;
+use codex_models_manager::collaboration_mode_presets::CollaborationModesConfig;
 use codex_protocol::ThreadId;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::W3cTraceContext;
@@ -218,14 +218,14 @@ impl MessageProcessor {
             enable_codex_api_key_env,
             rpc_transport,
         } = args;
-        let auth_manager = AuthManager::shared_with_external_auth(
+        let auth_manager = Arc::new(AuthManager::new(
             config.codex_home.clone(),
             enable_codex_api_key_env,
             config.cli_auth_credentials_store_mode,
-            Arc::new(ExternalAuthRefreshBridge {
-                outgoing: outgoing.clone(),
-            }),
-        );
+        ));
+        auth_manager.set_external_auth(Arc::new(ExternalAuthRefreshBridge {
+            outgoing: outgoing.clone(),
+        }));
         let thread_manager = Arc::new(ThreadManager::new(
             config.as_ref(),
             auth_manager.clone(),
@@ -236,6 +236,7 @@ impl MessageProcessor {
                     .enabled(Feature::DefaultModeRequestUserInput),
             },
             environment_manager,
+            None,
         ));
         auth_manager.set_forced_chatgpt_workspace_id(config.forced_chatgpt_workspace_id.clone());
         let analytics_events_client = AnalyticsEventsClient::new(
@@ -934,7 +935,13 @@ impl MessageProcessor {
                 return;
             }
         };
-        if !config.features.apps_enabled(Some(&self.auth_manager)).await {
+        let has_chatgpt_auth = self
+            .auth_manager
+            .auth()
+            .await
+            .as_ref()
+            .is_some_and(codex_login::CodexAuth::is_chatgpt_auth);
+        if !config.features.apps_enabled_for_auth(has_chatgpt_auth) {
             return;
         }
 

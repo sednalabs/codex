@@ -1,4 +1,3 @@
-use crate::default_client::build_reqwest_client;
 use std::collections::HashMap;
 use std::collections::hash_map::Entry;
 use std::path::Path;
@@ -11,8 +10,9 @@ use std::sync::Mutex;
 use std::sync::OnceLock;
 use std::time::Duration;
 
-use codex_otel::metrics::names::CURATED_PLUGINS_STARTUP_SYNC_FINAL_METRIC;
-use codex_otel::metrics::names::CURATED_PLUGINS_STARTUP_SYNC_METRIC;
+use codex_login::default_client::build_reqwest_client;
+use codex_otel::CURATED_PLUGINS_STARTUP_SYNC_FINAL_METRIC;
+use codex_otel::CURATED_PLUGINS_STARTUP_SYNC_METRIC;
 use reqwest::Client;
 use serde::Deserialize;
 use tempfile::TempDir;
@@ -762,7 +762,7 @@ fn emit_curated_plugins_startup_sync_counter(
     transport: &'static str,
     status: &'static str,
 ) {
-    let Some(metrics) = codex_otel::metrics::global() else {
+    let Some(metrics) = codex_otel::global() else {
         return;
     };
     let tags = [("transport", transport), ("status", status)];

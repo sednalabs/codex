@@ -1,4 +1,3 @@
-use async_trait::async_trait;
 use codex_protocol::request_permissions::RequestPermissionsArgs;
 use codex_sandboxing::policy_transforms::normalize_additional_permissions;
 
@@ -7,7 +6,6 @@ use crate::tools::context::FunctionToolOutput;
 use crate::tools::context::ToolInvocation;
 use crate::tools::context::ToolPayload;
 use crate::tools::handlers::parse_arguments_with_base_path;
-use crate::tools::handlers::resolve_workdir_base_path;
 use crate::tools::registry::ToolHandler;
 use crate::tools::registry::ToolKind;
 
@@ -18,7 +16,6 @@ pub(crate) fn request_permissions_tool_description() -> String {
 
 pub struct RequestPermissionsHandler;
 
-#[async_trait]
 impl ToolHandler for RequestPermissionsHandler {
     type Output = FunctionToolOutput;
 
@@ -44,9 +41,8 @@ impl ToolHandler for RequestPermissionsHandler {
             }
         };
 
-        let base_path = resolve_workdir_base_path(&arguments, turn.cwd.as_path())?;
         let mut args: RequestPermissionsArgs =
-            parse_arguments_with_base_path(&arguments, base_path.as_path())?;
+            parse_arguments_with_base_path(&arguments, &turn.cwd)?;
         args.permissions = normalize_additional_permissions(args.permissions.into())
             .map(codex_protocol::request_permissions::RequestPermissionProfile::from)
             .map_err(FunctionCallError::RespondToModel)?;
@@ -100,9 +96,8 @@ mod tests {
             }
         }"#;
 
-        let base_path = resolve_workdir_base_path(json, cwd.path())?;
-        let mut args: RequestPermissionsArgs =
-            parse_arguments_with_base_path(json, base_path.as_path())?;
+        let base_path = AbsolutePathBuf::try_from(cwd.path().to_path_buf())?;
+        let mut args: RequestPermissionsArgs = parse_arguments_with_base_path(json, &base_path)?;
         args.permissions = normalize_additional_permissions(args.permissions.into())
             .map_err(anyhow::Error::msg)?
             .into();

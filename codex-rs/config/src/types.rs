@@ -1,9 +1,14 @@
-//! Types used to define the fields of [`crate::config::Config`].
+//! Types used to define loaded and effective Codex configuration values.
 
 // Note this file should generally be restricted to simple struct/enum
 // definitions that do not contain business logic.
 
-use crate::config_loader::RequirementSource;
+pub use crate::mcp_types::AppToolApproval;
+pub use crate::mcp_types::McpServerConfig;
+pub use crate::mcp_types::McpServerDisabledReason;
+pub use crate::mcp_types::McpServerToolConfig;
+pub use crate::mcp_types::McpServerTransportConfig;
+pub use crate::mcp_types::RawMcpServerConfig;
 pub use codex_protocol::config_types::AltScreenMode;
 pub use codex_protocol::config_types::ApprovalsReviewer;
 pub use codex_protocol::config_types::ModeKind;
@@ -14,15 +19,11 @@ use codex_utils_absolute_path::AbsolutePathBuf;
 use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::fmt;
-use std::path::PathBuf;
-use std::time::Duration;
 use wildmatch::WildMatchPattern;
 
 use schemars::JsonSchema;
 use serde::Deserialize;
-use serde::Deserializer;
 use serde::Serialize;
-use serde::de::Error as SerdeError;
 
 pub const DEFAULT_OTEL_ENVIRONMENT: &str = "dev";
 pub const DEFAULT_MEMORIES_MAX_ROLLOUTS_PER_STARTUP: usize = 16;
@@ -30,6 +31,40 @@ pub const DEFAULT_MEMORIES_MAX_ROLLOUT_AGE_DAYS: i64 = 30;
 pub const DEFAULT_MEMORIES_MIN_ROLLOUT_IDLE_HOURS: i64 = 6;
 pub const DEFAULT_MEMORIES_MAX_RAW_MEMORIES_FOR_CONSOLIDATION: usize = 256;
 pub const DEFAULT_MEMORIES_MAX_UNUSED_DAYS: i64 = 30;
+
+const fn default_enabled() -> bool {
+    true
+}
+
+/// Determine where Codex should store CLI auth credentials.
+#[derive(Debug, Default, Copy, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum AuthCredentialsStoreMode {
+    #[default]
+    /// Persist credentials in CODEX_HOME/auth.json.
+    File,
+    /// Persist credentials in the keyring. Fail if unavailable.
+    Keyring,
+    /// Use keyring when available; otherwise, fall back to a file in CODEX_HOME.
+    Auto,
+    /// Store credentials in memory only for the current process.
+    Ephemeral,
+}
+
+/// Determine where Codex should store and read MCP credentials.
+#[derive(Debug, Default, Copy, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum OAuthCredentialsStoreMode {
+    /// `Keyring` when available; otherwise, `File`.
+    /// Credentials stored in the keyring will only be readable by Codex unless the user explicitly grants access via OS-level keyring access.
+    #[default]
+    Auto,
+    /// CODEX_HOME/.credentials.json
+    /// This file will be readable to Codex and other applications running as the same user.
+    File,
+    /// Keyring when available, otherwise fail.
+    Keyring,
+}
 
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, JsonSchema)]
 #[serde(rename_all = "kebab-case")]
@@ -45,312 +80,6 @@ pub struct WindowsToml {
     /// Defaults to `true`. Set to `false` to launch the final sandboxed child
     /// process on `Winsta0\\Default` instead of a private desktop.
     pub sandbox_private_desktop: Option<bool>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum McpServerDisabledReason {
-    Unknown,
-    Requirements { source: RequirementSource },
-}
-
-impl fmt::Display for McpServerDisabledReason {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            McpServerDisabledReason::Unknown => write!(f, "unknown"),
-            McpServerDisabledReason::Requirements { source } => {
-                write!(f, "requirements ({source})")
-            }
-        }
-    }
-}
-
-#[derive(Serialize, Debug, Clone, PartialEq)]
-pub struct McpServerConfig {
-    #[serde(flatten)]
-    pub transport: McpServerTransportConfig,
-
-    /// When `false`, Codex skips initializing this MCP server.
-    #[serde(default = "default_enabled")]
-    pub enabled: bool,
-
-    /// When `true`, `codex exec` exits with an error if this MCP server fails to initialize.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub required: bool,
-
-    /// Reason this server was disabled after applying requirements.
-    #[serde(skip)]
-    pub disabled_reason: Option<McpServerDisabledReason>,
-
-    /// Startup timeout in seconds for initializing MCP server & initially listing tools.
-    #[serde(
-        default,
-        with = "option_duration_secs",
-        skip_serializing_if = "Option::is_none"
-    )]
-    pub startup_timeout_sec: Option<Duration>,
-
-    /// Default timeout for MCP tool calls initiated via this server.
-    #[serde(default, with = "option_duration_secs")]
-    pub tool_timeout_sec: Option<Duration>,
-
-    /// Explicit allow-list of tools exposed from this server. When set, only these tools will be registered.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub enabled_tools: Option<Vec<String>>,
-
-    /// Explicit deny-list of tools. These tools will be removed after applying `enabled_tools`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub disabled_tools: Option<Vec<String>>,
-
-    /// Optional OAuth scopes to request during MCP login.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub scopes: Option<Vec<String>>,
-
-    /// Advertise MCP elicitation capability to this server.
-    ///
-    /// When enabled, the server can request user input through MCP elicitation.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub enable_elicitation: bool,
-
-    /// Enforce read-only behavior for this server by blocking mutating tools.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub read_only: bool,
-
-    /// Fail closed when a tool does not advertise read-only classification metadata.
-    ///
-    /// This applies only when read-only enforcement or mutation approval policy is enabled.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub strict_tool_classification: bool,
-
-    /// Require explicit user approval before running mutating tools.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub require_approval_for_mutating: bool,
-    /// Optional OAuth resource parameter to include during MCP login (RFC 8707).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub oauth_resource: Option<String>,
-
-    /// Per-tool approval settings keyed by tool name.
-    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
-    pub tools: HashMap<String, McpServerToolConfig>,
-}
-
-// Raw MCP config shape used for deserialization and JSON Schema generation.
-// Keep this in sync with the validation logic in `McpServerConfig`.
-#[derive(Deserialize, Clone, JsonSchema)]
-#[schemars(deny_unknown_fields)]
-pub(crate) struct RawMcpServerConfig {
-    // stdio
-    pub command: Option<String>,
-    #[serde(default)]
-    pub args: Option<Vec<String>>,
-    #[serde(default)]
-    pub env: Option<HashMap<String, String>>,
-    #[serde(default)]
-    pub env_vars: Option<Vec<String>>,
-    #[serde(default)]
-    pub cwd: Option<PathBuf>,
-    pub http_headers: Option<HashMap<String, String>>,
-    #[serde(default)]
-    pub env_http_headers: Option<HashMap<String, String>>,
-
-    // streamable_http
-    pub url: Option<String>,
-    pub bearer_token: Option<String>,
-    pub bearer_token_env_var: Option<String>,
-
-    // shared
-    #[serde(default)]
-    pub startup_timeout_sec: Option<f64>,
-    #[serde(default)]
-    pub startup_timeout_ms: Option<u64>,
-    #[serde(default, with = "option_duration_secs")]
-    #[schemars(with = "Option<f64>")]
-    pub tool_timeout_sec: Option<Duration>,
-    #[serde(default)]
-    pub enabled: Option<bool>,
-    #[serde(default)]
-    pub required: Option<bool>,
-    #[serde(default)]
-    pub enabled_tools: Option<Vec<String>>,
-    #[serde(default)]
-    pub disabled_tools: Option<Vec<String>>,
-    #[serde(default)]
-    pub scopes: Option<Vec<String>>,
-    #[serde(default)]
-    pub enable_elicitation: Option<bool>,
-    #[serde(default)]
-    pub read_only: Option<bool>,
-    #[serde(default)]
-    pub strict_tool_classification: Option<bool>,
-    #[serde(default)]
-    pub require_approval_for_mutating: Option<bool>,
-    pub oauth_resource: Option<String>,
-    /// Legacy display-name field accepted for backward compatibility.
-    #[serde(default, rename = "name")]
-    pub _name: Option<String>,
-    #[serde(default)]
-    pub tools: Option<HashMap<String, McpServerToolConfig>>,
-}
-
-impl<'de> Deserialize<'de> for McpServerConfig {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let mut raw = RawMcpServerConfig::deserialize(deserializer)?;
-
-        let startup_timeout_sec = match (raw.startup_timeout_sec, raw.startup_timeout_ms) {
-            (Some(sec), _) => {
-                let duration = Duration::try_from_secs_f64(sec).map_err(SerdeError::custom)?;
-                Some(duration)
-            }
-            (None, Some(ms)) => Some(Duration::from_millis(ms)),
-            (None, None) => None,
-        };
-        let tool_timeout_sec = raw.tool_timeout_sec;
-        let enabled = raw.enabled.unwrap_or_else(default_enabled);
-        let required = raw.required.unwrap_or_default();
-        let enabled_tools = raw.enabled_tools.clone();
-        let disabled_tools = raw.disabled_tools.clone();
-        let scopes = raw.scopes.clone();
-        let enable_elicitation = raw.enable_elicitation.unwrap_or(false);
-        let read_only = raw.read_only.unwrap_or(false);
-        let strict_tool_classification = raw.strict_tool_classification.unwrap_or(false);
-        let require_approval_for_mutating = raw.require_approval_for_mutating.unwrap_or(false);
-
-        if require_approval_for_mutating && !enable_elicitation {
-            return Err(SerdeError::custom(
-                "require_approval_for_mutating requires enable_elicitation=true",
-            ));
-        }
-        let oauth_resource = raw.oauth_resource.clone();
-        let tools = raw.tools.clone().unwrap_or_default();
-
-        fn throw_if_set<E, T>(transport: &str, field: &str, value: Option<&T>) -> Result<(), E>
-        where
-            E: SerdeError,
-        {
-            if value.is_none() {
-                return Ok(());
-            }
-            Err(E::custom(format!(
-                "{field} is not supported for {transport}",
-            )))
-        }
-
-        let transport = if let Some(command) = raw.command.clone() {
-            throw_if_set("stdio", "url", raw.url.as_ref())?;
-            throw_if_set(
-                "stdio",
-                "bearer_token_env_var",
-                raw.bearer_token_env_var.as_ref(),
-            )?;
-            throw_if_set("stdio", "bearer_token", raw.bearer_token.as_ref())?;
-            throw_if_set("stdio", "http_headers", raw.http_headers.as_ref())?;
-            throw_if_set("stdio", "env_http_headers", raw.env_http_headers.as_ref())?;
-            throw_if_set("stdio", "oauth_resource", raw.oauth_resource.as_ref())?;
-            McpServerTransportConfig::Stdio {
-                command,
-                args: raw.args.clone().unwrap_or_default(),
-                env: raw.env.clone(),
-                env_vars: raw.env_vars.clone().unwrap_or_default(),
-                cwd: raw.cwd.take(),
-            }
-        } else if let Some(url) = raw.url.clone() {
-            throw_if_set("streamable_http", "args", raw.args.as_ref())?;
-            throw_if_set("streamable_http", "env", raw.env.as_ref())?;
-            throw_if_set("streamable_http", "env_vars", raw.env_vars.as_ref())?;
-            throw_if_set("streamable_http", "cwd", raw.cwd.as_ref())?;
-            throw_if_set("streamable_http", "bearer_token", raw.bearer_token.as_ref())?;
-            McpServerTransportConfig::StreamableHttp {
-                url,
-                bearer_token_env_var: raw.bearer_token_env_var.clone(),
-                http_headers: raw.http_headers.clone(),
-                env_http_headers: raw.env_http_headers.take(),
-            }
-        } else {
-            return Err(SerdeError::custom("invalid transport"));
-        };
-
-        Ok(Self {
-            transport,
-            startup_timeout_sec,
-            tool_timeout_sec,
-            enabled,
-            required,
-            disabled_reason: None,
-            enabled_tools,
-            disabled_tools,
-            scopes,
-            enable_elicitation,
-            read_only,
-            strict_tool_classification,
-            require_approval_for_mutating,
-            oauth_resource,
-            tools,
-        })
-    }
-}
-
-const fn default_enabled() -> bool {
-    true
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema)]
-#[serde(untagged, deny_unknown_fields, rename_all = "snake_case")]
-pub enum McpServerTransportConfig {
-    /// https://modelcontextprotocol.io/specification/2025-06-18/basic/transports#stdio
-    Stdio {
-        command: String,
-        #[serde(default)]
-        args: Vec<String>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        env: Option<HashMap<String, String>>,
-        #[serde(default, skip_serializing_if = "Vec::is_empty")]
-        env_vars: Vec<String>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        cwd: Option<PathBuf>,
-    },
-    /// https://modelcontextprotocol.io/specification/2025-06-18/basic/transports#streamable-http
-    StreamableHttp {
-        url: String,
-        /// Name of the environment variable to read for an HTTP bearer token.
-        /// When set, requests will include the token via `Authorization: Bearer <token>`.
-        /// The actual secret value must be provided via the environment.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        bearer_token_env_var: Option<String>,
-        /// Additional HTTP headers to include in requests to this server.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        http_headers: Option<HashMap<String, String>>,
-        /// HTTP headers where the value is sourced from an environment variable.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        env_http_headers: Option<HashMap<String, String>>,
-    },
-}
-
-mod option_duration_secs {
-    use serde::Deserialize;
-    use serde::Deserializer;
-    use serde::Serializer;
-    use std::time::Duration;
-
-    pub fn serialize<S>(value: &Option<Duration>, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        match value {
-            Some(duration) => serializer.serialize_some(&duration.as_secs_f64()),
-            None => serializer.serialize_none(),
-        }
-    }
-
-    pub fn deserialize<'de, D>(deserializer: D) -> Result<Option<Duration>, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let secs = Option::<f64>::deserialize(deserializer)?;
-        secs.map(|secs| Duration::try_from_secs_f64(secs).map_err(serde::de::Error::custom))
-            .transpose()
-    }
 }
 
 #[derive(Serialize, Deserialize, Debug, Copy, Clone, PartialEq, JsonSchema)]
@@ -536,24 +265,6 @@ impl From<MemoriesToml> for MemoriesConfig {
             consolidation_model: toml.consolidation_model,
         }
     }
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Default, JsonSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum AppToolApproval {
-    #[default]
-    Auto,
-    Prompt,
-    Approve,
-}
-
-/// Per-tool approval settings for a single MCP server tool.
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, Default, JsonSchema)]
-#[schemars(deny_unknown_fields)]
-pub struct McpServerToolConfig {
-    /// Approval mode for this tool.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub approval_mode: Option<AppToolApproval>,
 }
 
 /// Default settings that apply to all apps.
@@ -762,11 +473,41 @@ impl fmt::Display for NotificationMethod {
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, JsonSchema, Default)]
-#[serde(rename_all = "kebab-case")]
-pub enum WeeklyLimitPacingStyle {
+#[serde(rename_all = "lowercase")]
+pub enum NotificationCondition {
+    /// Emit TUI notifications only while the terminal is unfocused.
     #[default]
-    Qualitative,
-    Ratio,
+    Unfocused,
+    /// Emit TUI notifications regardless of terminal focus.
+    Always,
+}
+
+impl fmt::Display for NotificationCondition {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            NotificationCondition::Unfocused => write!(f, "unfocused"),
+            NotificationCondition::Always => write!(f, "always"),
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, Default, JsonSchema)]
+#[schemars(deny_unknown_fields)]
+pub struct TuiNotificationSettings {
+    /// Enable desktop notifications from the TUI.
+    /// Defaults to `true`.
+    #[serde(default, rename = "notifications")]
+    pub notifications: Notifications,
+
+    /// Notification method to use for terminal notifications.
+    /// Defaults to `auto`.
+    #[serde(default, rename = "notification_method")]
+    pub method: NotificationMethod,
+
+    /// Controls whether TUI notifications are delivered only when the terminal is unfocused or
+    /// regardless of focus. Defaults to `unfocused`.
+    #[serde(default, rename = "notification_condition")]
+    pub condition: NotificationCondition,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, Default, JsonSchema)]
@@ -781,15 +522,8 @@ pub struct ModelAvailabilityNuxConfig {
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default, JsonSchema)]
 #[schemars(deny_unknown_fields)]
 pub struct Tui {
-    /// Enable desktop notifications from the TUI when the terminal is unfocused.
-    /// Defaults to `true`.
-    #[serde(default)]
-    pub notifications: Notifications,
-
-    /// Notification method to use for unfocused terminal notifications.
-    /// Defaults to `auto`.
-    #[serde(default)]
-    pub notification_method: NotificationMethod,
+    #[serde(default, flatten)]
+    pub notification_settings: TuiNotificationSettings,
 
     /// Enable animations (welcome screen, shimmer effects, spinners).
     /// Defaults to `true`.
@@ -812,27 +546,13 @@ pub struct Tui {
     #[serde(default)]
     pub alternate_screen: AltScreenMode,
 
-    /// Require `Esc Esc` (double-press) to interrupt a running turn.
-    ///
-    /// Defaults to `true` to avoid accidental interruptions on terminals that emit
-    /// bare `Esc` for Alt/meta.
-    #[serde(default = "default_true")]
-    pub double_esc_interrupt: bool,
-
     /// Ordered list of status line item identifiers.
     ///
     /// When set, the TUI renders the selected items as the status line.
-    /// When unset, the TUI defaults to: `model-with-reasoning`, `context-remaining`, and
-    /// `current-dir`.
+    /// When unset, the TUI defaults to: `model-with-reasoning` and `current-dir`.
     #[serde(default)]
     pub status_line: Option<Vec<String>>,
 
-    /// Controls how fresh weekly status-line pacing details are rendered.
-    ///
-    /// - `qualitative` (default): Show `(on pace)`, `(over N%)`, or `(under N%)`.
-    /// - `ratio`: Show `{usage_remaining}%/{week_remaining}%`.
-    #[serde(default)]
-    pub weekly_limit_pacing_style: WeeklyLimitPacingStyle,
     /// Ordered list of terminal title item identifiers.
     ///
     /// When set, the TUI renders the selected items into the terminal window/tab title.
@@ -877,20 +597,41 @@ pub struct Notice {
     pub model_migrations: BTreeMap<String, String>,
 }
 
-impl Notice {
-    /// referenced by config_edit helpers when writing notice flags
-    pub(crate) const TABLE_KEY: &'static str = "notice";
-}
-
-pub use codex_config::BundledSkillsConfig;
-pub use codex_config::SkillConfig;
-pub use codex_config::SkillsConfig;
+pub use crate::skills_config::BundledSkillsConfig;
+pub use crate::skills_config::SkillConfig;
+pub use crate::skills_config::SkillsConfig;
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema)]
 #[schemars(deny_unknown_fields)]
 pub struct PluginConfig {
     #[serde(default = "default_enabled")]
     pub enabled: bool,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, Default, JsonSchema)]
+#[schemars(deny_unknown_fields)]
+pub struct MarketplaceConfig {
+    /// Last time Codex successfully added or refreshed this marketplace.
+    #[serde(default)]
+    pub last_updated: Option<String>,
+    /// Source kind used to install this marketplace.
+    #[serde(default)]
+    pub source_type: Option<MarketplaceSourceType>,
+    /// Source location used when the marketplace was added.
+    #[serde(default)]
+    pub source: Option<String>,
+    /// Git ref to check out when `source_type` is `git`.
+    #[serde(default, rename = "ref")]
+    pub ref_name: Option<String>,
+    /// Sparse checkout paths used when `source_type` is `git`.
+    #[serde(default)]
+    pub sparse_paths: Option<Vec<String>>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum MarketplaceSourceType {
+    Git,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default, JsonSchema)]
@@ -917,7 +658,7 @@ impl From<SandboxWorkspaceWrite> for codex_app_server_protocol::SandboxSettings 
     }
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default, JsonSchema)]
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, Default, JsonSchema)]
 #[serde(rename_all = "kebab-case")]
 pub enum ShellEnvironmentPolicyInherit {
     /// "Core" environment variables for the platform. On UNIX, this would
