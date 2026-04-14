@@ -54,8 +54,9 @@ use crate::resume_picker::SessionSelection;
 #[cfg(test)]
 use crate::test_support::PathBufExt;
 #[cfg(test)]
-use crate::test_support::test_path_display;
 use crate::test_support::test_path_buf;
+#[cfg(test)]
+use crate::test_support::test_path_display;
 use crate::tui;
 use crate::tui::TuiEvent;
 use crate::update_action::UpdateAction;
@@ -100,6 +101,7 @@ use codex_core::config::types::ApprovalsReviewer;
 use codex_core::config::types::ModelAvailabilityNuxConfig;
 use codex_core::config_loader::ConfigLayerStackOrdering;
 use codex_core::message_history;
+use codex_core::plugins::PluginsManager;
 #[cfg(target_os = "windows")]
 use codex_core::windows_sandbox::WindowsSandboxLevelExt;
 use codex_exec_server::EnvironmentManager;
