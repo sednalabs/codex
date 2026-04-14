@@ -7323,6 +7323,7 @@ impl CodexMessageProcessor {
                 &request_id,
                 thread.as_ref(),
                 Op::RealtimeConversationStart(ConversationStartParams {
+                    output_modality: params.output_modality,
                     prompt: params.prompt,
                     session_id: params.session_id,
                     transport: params.transport.map(|transport| match transport {

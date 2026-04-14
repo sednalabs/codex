@@ -221,6 +221,7 @@ fn decode_call_id_from_location(headers: &HeaderMap) -> Result<String, ApiError>
 mod tests {
     use super::*;
     use crate::endpoint::realtime_websocket::RealtimeEventParser;
+    use crate::endpoint::realtime_websocket::RealtimeOutputModality;
     use crate::endpoint::realtime_websocket::RealtimeSessionMode;
     use crate::provider::RetryConfig;
     use async_trait::async_trait;
@@ -311,6 +312,7 @@ mod tests {
             session_id: Some(session_id.to_string()),
             event_parser: RealtimeEventParser::RealtimeV2,
             session_mode: RealtimeSessionMode::Conversational,
+            output_modality: RealtimeOutputModality::Audio,
             voice: RealtimeVoice::Marin,
         }
     }
