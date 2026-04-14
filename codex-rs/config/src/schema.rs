@@ -73,7 +73,7 @@ pub fn config_schema() -> Schema {
 }
 
 fn canonicalize(value: &Value) -> Value {
-    canonicalize_with_key(None, value)
+    canonicalize_with_key(/*key*/ None, value)
 }
 
 fn canonicalize_with_key(key: Option<&str>, value: &Value) -> Value {
@@ -84,7 +84,7 @@ fn canonicalize_with_key(key: Option<&str>, value: &Value) -> Value {
         Value::Array(items) => Value::Array(
             items
                 .iter()
-                .map(|item| canonicalize_with_key(None, item))
+                .map(|item| canonicalize_with_key(/*key*/ None, item))
                 .collect(),
         ),
         Value::Object(map) => {

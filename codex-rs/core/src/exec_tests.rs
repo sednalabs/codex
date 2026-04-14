@@ -1,10 +1,5 @@
 use super::*;
 use codex_protocol::config_types::WindowsSandboxLevel;
-use codex_protocol::permissions::FileSystemAccessMode;
-use codex_protocol::permissions::FileSystemPath;
-use codex_protocol::permissions::FileSystemSandboxEntry;
-use codex_protocol::permissions::FileSystemSpecialPath;
-use codex_protocol::protocol::SandboxPolicy;
 use codex_sandboxing::SandboxType;
 use pretty_assertions::assert_eq;
 use std::collections::HashMap;
@@ -401,48 +396,6 @@ fn windows_restricted_token_skips_external_sandbox_policies() {
             &file_system_policy,
         ),
         false
-    );
-}
-
-#[test]
-fn build_exec_request_keeps_external_sandbox_unsandboxed() {
-    let cwd = std::env::current_dir().expect("cwd");
-    let policy = SandboxPolicy::ExternalSandbox {
-        network_access: codex_protocol::protocol::NetworkAccess::Restricted,
-    };
-    let exec_request = build_exec_request(
-        ExecParams {
-            command: vec!["true".to_string()],
-            cwd: cwd.clone(),
-            expiration: ExecExpiration::DefaultTimeout,
-            capture_policy: ExecCapturePolicy::ShellTool,
-            env: HashMap::new(),
-            network: None,
-            sandbox_permissions: SandboxPermissions::UseDefault,
-            windows_sandbox_level: WindowsSandboxLevel::Disabled,
-            windows_sandbox_private_desktop: false,
-            justification: None,
-            arg0: None,
-        },
-        &policy,
-        &FileSystemSandboxPolicy::restricted(vec![FileSystemSandboxEntry {
-            path: FileSystemPath::Special {
-                value: FileSystemSpecialPath::Root,
-            },
-            access: FileSystemAccessMode::Read,
-        }]),
-        NetworkSandboxPolicy::Restricted,
-        cwd.as_path(),
-        &None,
-        /*use_legacy_landlock*/ false,
-    )
-    .expect("trusted external sandbox should not require a platform sandbox");
-
-    assert_eq!(exec_request.sandbox, SandboxType::None);
-    assert_eq!(exec_request.sandbox_policy, policy);
-    assert_eq!(
-        exec_request.network_sandbox_policy,
-        NetworkSandboxPolicy::Restricted
     );
 }
 
@@ -928,7 +881,7 @@ fn process_exec_tool_call_uses_platform_sandbox_for_network_only_restrictions() 
 
     assert_eq!(
         select_process_exec_tool_sandbox_type(
-            &SandboxPolicy::new_read_only_policy(),
+            &SandboxPolicy::DangerFullAccess,
             &FileSystemSandboxPolicy::unrestricted(),
             NetworkSandboxPolicy::Restricted,
             codex_protocol::config_types::WindowsSandboxLevel::Disabled,

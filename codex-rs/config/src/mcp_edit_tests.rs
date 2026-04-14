@@ -29,6 +29,10 @@ async fn replace_mcp_servers_serializes_per_tool_approval_overrides() -> anyhow:
             tool_timeout_sec: None,
             enabled_tools: None,
             disabled_tools: None,
+            enable_elicitation: false,
+            read_only: false,
+            strict_tool_classification: false,
+            require_approval_for_mutating: false,
             scopes: None,
             oauth_resource: None,
             tools: HashMap::from([
