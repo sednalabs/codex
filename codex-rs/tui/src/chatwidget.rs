@@ -118,6 +118,7 @@ use codex_otel::SessionTelemetry;
 use codex_protocol::ThreadId;
 use codex_protocol::account::PlanType;
 use codex_protocol::approvals::ElicitationRequestEvent;
+use codex_protocol::approvals::GuardianAssessmentAction;
 use codex_protocol::approvals::GuardianUserAuthorization;
 use codex_protocol::config_types::CollaborationMode;
 use codex_protocol::config_types::CollaborationModeMask;
@@ -3660,7 +3661,9 @@ impl ChatWidget {
         }
 
         if ev.status == GuardianAssessmentStatus::TimedOut {
-            let cell = if let Some(command) = guardian_command(&ev.action) {
+            let cell = if let Some(action) = action_json.as_ref()
+                && let Some(command) = guardian_command(action)
+            {
                 history_cell::new_approval_decision_cell(
                     command,
                     codex_protocol::protocol::ReviewDecision::TimedOut,
