@@ -351,11 +351,14 @@ impl ToolHandler for ShellCommandHandler {
         let cwd = resolve_workdir_base_path(&arguments, &turn.cwd)?;
         let params: ShellCommandToolCallParams = parse_arguments_with_base_path(&arguments, &cwd)?;
         let workdir = turn.resolve_path(params.workdir.clone());
+        let absolute_workdir = AbsolutePathBuf::try_from(workdir.clone()).map_err(|err| {
+            FunctionCallError::RespondToModel(format!("invalid shell workdir: {err}"))
+        })?;
         maybe_emit_implicit_skill_invocation(
             session.as_ref(),
             turn.as_ref(),
             &params.command,
-            &workdir,
+            &absolute_workdir,
         )
         .await;
         let prefix_rule = params.prefix_rule.clone();

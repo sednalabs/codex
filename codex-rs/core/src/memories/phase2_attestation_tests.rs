@@ -37,10 +37,11 @@ fn selection_for_attested_outputs(selected: Vec<Stage1Output>) -> Phase2InputSel
 
 fn config_for_memory_root(root: &Path) -> Arc<Config> {
     let mut config = test_config();
-    config.codex_home = root
-        .parent()
-        .expect("memory root should have a codex home parent")
-        .to_path_buf();
+    config.codex_home = codex_utils_absolute_path::AbsolutePathBuf::from_absolute_path(
+        root.parent()
+            .expect("memory root should have a codex home parent"),
+    )
+    .expect("codex home should be absolute");
     Arc::new(config)
 }
 

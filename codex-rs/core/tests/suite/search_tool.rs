@@ -653,6 +653,7 @@ async fn tool_search_indexes_only_enabled_non_app_mcp_tools() -> Result<()> {
                     require_approval_for_mutating: false,
                     scopes: None,
                     oauth_resource: None,
+                    supports_parallel_tool_calls: false,
                     tools: HashMap::new(),
                 },
             );

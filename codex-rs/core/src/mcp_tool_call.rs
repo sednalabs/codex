@@ -1551,7 +1551,7 @@ async fn persist_custom_mcp_tool_approval(
         if !servers.contains_key(server) {
             anyhow::bail!("MCP server `{server}` is not configured in config.toml");
         }
-        config.codex_home.clone()
+        config.codex_home.to_path_buf()
     };
 
     ConfigEditsBuilder::new(&config_folder)
