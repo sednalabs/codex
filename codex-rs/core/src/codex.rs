@@ -977,6 +977,9 @@ impl TurnContext {
         })
         .with_unified_exec_shell_mode(self.tools_config.unified_exec_shell_mode.clone())
         .with_web_search_config(self.tools_config.web_search_config.clone())
+        .with_spawn_agent_usage_hint(config.multi_agent_v2.usage_hint_enabled)
+        .with_spawn_agent_usage_hint_text(config.multi_agent_v2.usage_hint_text.clone())
+        .with_hide_spawn_agent_metadata(config.multi_agent_v2.hide_spawn_agent_metadata)
         .with_allow_login_shell(self.tools_config.allow_login_shell);
 
         Self {
@@ -1465,6 +1468,9 @@ impl Session {
             main_execve_wrapper_exe,
         )
         .with_web_search_config(per_turn_config.web_search_config.clone())
+        .with_spawn_agent_usage_hint(per_turn_config.multi_agent_v2.usage_hint_enabled)
+        .with_spawn_agent_usage_hint_text(per_turn_config.multi_agent_v2.usage_hint_text.clone())
+        .with_hide_spawn_agent_metadata(per_turn_config.multi_agent_v2.hide_spawn_agent_metadata)
         .with_allow_login_shell(per_turn_config.permissions.allow_login_shell);
 
         let cwd = session_configuration.cwd.clone();
@@ -5709,6 +5715,9 @@ async fn spawn_review_thread(
         sess.services.main_execve_wrapper_exe.as_ref(),
     )
     .with_web_search_config(/*web_search_config*/ None)
+    .with_spawn_agent_usage_hint(config.multi_agent_v2.usage_hint_enabled)
+    .with_spawn_agent_usage_hint_text(config.multi_agent_v2.usage_hint_text.clone())
+    .with_hide_spawn_agent_metadata(config.multi_agent_v2.hide_spawn_agent_metadata)
     .with_allow_login_shell(config.permissions.allow_login_shell);
 
     let review_prompt = resolved.prompt.clone();

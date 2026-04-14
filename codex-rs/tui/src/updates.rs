@@ -177,7 +177,7 @@ fn parse_version(v: &str) -> Option<Version> {
 }
 
 fn is_source_build_version(version: &str) -> bool {
-    parse_version(version) == Some((0, 0, 0))
+    parse_version(version) == Some(Version::new(0, 0, 0))
 }
 
 #[cfg(test)]
