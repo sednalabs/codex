@@ -5981,15 +5981,12 @@ impl CodexMessageProcessor {
             .as_ref()
             .is_some_and(codex_login::CodexAuth::is_chatgpt_auth);
         if !config.features.apps_enabled_for_auth(has_chatgpt_auth) {
-            self.outgoing
-                .send_response(
-                    request_id,
-                    AppsListResponse {
-                        data: Vec::new(),
-                        next_cursor: None,
-                    },
-                )
-                .await;
+            let mut response = AppsListResponse {
+                data: Vec::new(),
+                next_cursor: None,
+            };
+            app_server_hooks().augment_apps_list_response(&mut response);
+            self.outgoing.send_response(request_id, response).await;
             return;
         }
 
@@ -6168,7 +6165,8 @@ impl CodexMessageProcessor {
 
             if accessible_loaded && all_loaded {
                 match apps_list_helpers::paginate_apps(merged.as_slice(), start, limit) {
-                    Ok(response) => {
+                    Ok(mut response) => {
+                        app_server_hooks().augment_apps_list_response(&mut response);
                         outgoing.send_response(request_id, response).await;
                         return;
                     }
@@ -6466,16 +6464,13 @@ impl CodexMessageProcessor {
 
         match result {
             Ok(outcome) => {
-                self.outgoing
-                    .send_response(
-                        request_id,
-                        MarketplaceAddResponse {
-                            marketplace_name: outcome.marketplace_name,
-                            installed_root: outcome.installed_root,
-                            already_added: outcome.already_added,
-                        },
-                    )
-                    .await;
+                let mut response = MarketplaceAddResponse {
+                    marketplace_name: outcome.marketplace_name,
+                    installed_root: outcome.installed_root,
+                    already_added: outcome.already_added,
+                };
+                app_server_hooks().augment_marketplace_add_response(&mut response);
+                self.outgoing.send_response(request_id, response).await;
             }
             Err(MarketplaceAddError::InvalidRequest(message)) => {
                 self.send_invalid_request_error(request_id, message).await;
@@ -6820,9 +6815,9 @@ impl CodexMessageProcessor {
             Ok(()) => {
                 self.apply_config_mutation_follow_up(ConfigMutationKind::PluginUninstall)
                     .await;
-                self.outgoing
-                    .send_response(request_id, PluginUninstallResponse {})
-                    .await;
+                let mut response = PluginUninstallResponse {};
+                app_server_hooks().augment_plugin_uninstall_response(&mut response);
+                self.outgoing.send_response(request_id, response).await;
             }
             Err(err) => {
                 if err.is_invalid_request() {
