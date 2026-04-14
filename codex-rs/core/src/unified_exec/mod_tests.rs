@@ -100,7 +100,7 @@ async fn exec_command_with_tty(
                 &request,
                 tty,
                 Box::new(NoopSpawnLifecycle),
-                turn.environment.as_ref().expect("turn environment"),
+                &turn.environment,
             )
             .await?,
     );
@@ -369,15 +369,12 @@ async fn unified_exec_timeouts() -> anyhow::Result<()> {
 async fn unified_exec_pause_blocks_yield_timeout() -> anyhow::Result<()> {
     skip_if_sandbox!(Ok(()));
 
-    let pause_duration = Duration::from_secs(2);
-    let minimum_expected_block = pause_duration.saturating_sub(Duration::from_millis(150));
-
     let (session, turn) = test_session_and_turn().await;
     session.set_out_of_band_elicitation_pause_state(/*paused*/ true);
 
     let paused_session = Arc::clone(&session);
     tokio::spawn(async move {
-        tokio::time::sleep(pause_duration).await;
+        tokio::time::sleep(Duration::from_secs(2)).await;
         paused_session.set_out_of_band_elicitation_pause_state(/*paused*/ false);
     });
 
@@ -392,7 +389,7 @@ async fn unified_exec_pause_blocks_yield_timeout() -> anyhow::Result<()> {
     .await?;
 
     assert!(
-        started.elapsed() >= minimum_expected_block,
+        started.elapsed() >= Duration::from_secs(2),
         "pause should block the unified exec yield timeout"
     );
     assert!(
@@ -598,7 +595,7 @@ async fn remote_exec_server_rejects_inherited_fd_launches() -> anyhow::Result<()
 
     let remote_test_env = remote_test_env().await?;
     let (_, mut turn) = make_session_and_context().await;
-    turn.environment = Some(Arc::new(remote_test_env.environment().clone()));
+    turn.environment = Arc::new(remote_test_env.environment().clone());
 
     let request = test_exec_request(
         &turn,
@@ -616,7 +613,7 @@ async fn remote_exec_server_rejects_inherited_fd_launches() -> anyhow::Result<()
             Box::new(TestSpawnLifecycle {
                 inherited_fds: vec![42],
             }),
-            turn.environment.as_ref().expect("turn environment"),
+            &turn.environment,
         )
         .await
         .expect_err("expected inherited fd rejection");

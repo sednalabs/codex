@@ -12,6 +12,7 @@ use codex_config::types::ApprovalsReviewer;
 use codex_config::types::AppsConfigToml;
 use codex_config::types::McpServerConfig;
 use codex_config::types::McpServerToolConfig;
+use codex_protocol::approvals::GuardianAssessmentDecisionSource;
 use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::SandboxPolicy;
 use core_test_support::responses::ev_assistant_message;
@@ -826,7 +827,7 @@ async fn guardian_review_decision_maps_to_mcp_tool_decision() {
         "review-id".to_string(),
         crate::guardian::GuardianRejection {
             rationale: "too risky".to_string(),
-            source: codex_protocol::protocol::GuardianAssessmentDecisionSource::Agent,
+            source: GuardianAssessmentDecisionSource::Agent,
         },
     );
     let denial = mcp_tool_approval_decision_from_guardian(
@@ -1001,22 +1002,6 @@ fn accepted_elicitation_response_uses_always_persist_meta() {
             content: None,
             meta: Some(serde_json::json!({
                 MCP_TOOL_APPROVAL_PERSIST_KEY: MCP_TOOL_APPROVAL_PERSIST_ALWAYS,
-            })),
-        }),
-        "approval",
-    );
-
-    assert_eq!(response, McpToolApprovalDecision::AcceptAndRemember);
-}
-
-#[test]
-fn accepted_elicitation_response_uses_array_persist_meta() {
-    let response = parse_mcp_tool_approval_elicitation_response(
-        Some(ElicitationResponse {
-            action: ElicitationAction::Accept,
-            content: None,
-            meta: Some(serde_json::json!({
-                MCP_TOOL_APPROVAL_PERSIST_KEY: [MCP_TOOL_APPROVAL_PERSIST_ALWAYS],
             })),
         }),
         "approval",

@@ -197,10 +197,10 @@ use crate::config::types::ShellEnvironmentPolicy;
 use crate::context_manager::ContextManager;
 use crate::context_manager::TotalTokenUsageBreakdown;
 use crate::environment_context::EnvironmentContext;
-#[cfg(test)]
-use crate::exec::StreamOutput;
 use crate::installation_id::resolve_installation_id;
 use codex_config::CONFIG_TOML_FILE;
+#[cfg(test)]
+use codex_protocol::exec_output::StreamOutput;
 
 mod rollout_reconstruction;
 #[cfg(test)]

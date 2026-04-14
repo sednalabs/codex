@@ -41,6 +41,264 @@ const DEFAULT_WAIT_TIMEOUT_MS: i64 = 30_000;
 const MIN_WAIT_TIMEOUT_MS: i64 = 10_000;
 const MAX_WAIT_TIMEOUT_MS: i64 = 3_600_000;
 
+#[derive(Debug)]
+struct ParsedCodeModeDeclaration {
+    name: String,
+    input_name: String,
+    args: Vec<String>,
+    output: Vec<String>,
+}
+
+#[derive(Clone, Copy, Default)]
+struct CodeModeQuoteState {
+    in_single_quoted: bool,
+    in_double_quoted: bool,
+    in_template_literal: bool,
+    escaped: bool,
+}
+
+impl CodeModeQuoteState {
+    fn in_quote(self) -> bool {
+        self.in_single_quoted || self.in_double_quoted || self.in_template_literal
+    }
+}
+
+fn advance_code_mode_quote_state(ch: char, state: &mut CodeModeQuoteState) {
+    if state.escaped {
+        state.escaped = false;
+        return;
+    }
+
+    match ch {
+        '\\' if state.in_quote() => {
+            state.escaped = true;
+        }
+        '\'' if !state.in_double_quoted && !state.in_template_literal => {
+            state.in_single_quoted = !state.in_single_quoted;
+        }
+        '"' if !state.in_single_quoted && !state.in_template_literal => {
+            state.in_double_quoted = !state.in_double_quoted;
+        }
+        '`' if !state.in_single_quoted && !state.in_double_quoted => {
+            state.in_template_literal = !state.in_template_literal;
+        }
+        _ => {}
+    }
+}
+
+fn assert_code_mode_description(
+    description: &str,
+    prose: &str,
+    name: &str,
+    input_name: &str,
+    arg_fields: &[&str],
+    output_fields: &[&str],
+) {
+    let (actual_prose, _, trailing) = split_code_mode_description(description)
+        .expect("description should match code-mode description shape");
+    assert_eq!(actual_prose, prose);
+    assert_eq!(trailing, "");
+    assert_code_mode_declaration_fields(description, name, input_name, arg_fields, output_fields);
+}
+
+fn assert_code_mode_declaration_fields(
+    description: &str,
+    name: &str,
+    input_name: &str,
+    arg_fields: &[&str],
+    output_fields: &[&str],
+) {
+    let declaration = parse_code_mode_declaration(description)
+        .expect("description should include code-mode declaration");
+    assert_eq!(declaration.name, name);
+    assert_eq!(declaration.input_name, input_name);
+    assert_eq!(declaration.args, normalize_code_mode_field_set(arg_fields));
+    assert_eq!(
+        declaration.output,
+        normalize_code_mode_field_set(output_fields)
+    );
+}
+
+fn compact_type(typ: &str) -> String {
+    let mut compacted = String::with_capacity(typ.len());
+    let mut quote_state = CodeModeQuoteState::default();
+
+    for ch in typ.chars() {
+        let was_escaped = quote_state.escaped;
+        let was_in_quote = quote_state.in_quote();
+        advance_code_mode_quote_state(ch, &mut quote_state);
+
+        if was_escaped || was_in_quote || quote_state.in_quote() {
+            compacted.push(ch);
+            continue;
+        }
+
+        if !ch.is_whitespace() {
+            compacted.push(ch);
+        }
+    }
+
+    compacted
+}
+
+fn normalize_code_mode_field_set(fields: &[&str]) -> Vec<String> {
+    let mut fields = fields
+        .iter()
+        .map(|field| compact_type(field))
+        .collect::<Vec<_>>();
+    fields.sort_unstable();
+    fields
+}
+
+fn normalize_code_mode_type(ty: &str) -> Vec<String> {
+    let ty = ty.trim();
+    if ty.starts_with('{') && ty.ends_with('}') {
+        normalize_code_mode_fields(&split_code_mode_fields(&ty[1..ty.len() - 1]))
+    } else {
+        vec![compact_type(ty)]
+    }
+}
+
+fn normalize_code_mode_fields(fields: &[String]) -> Vec<String> {
+    let mut fields = fields
+        .iter()
+        .map(|field| compact_type(field))
+        .collect::<Vec<_>>();
+    fields.sort_unstable();
+    fields
+}
+
+fn split_code_mode_description(description: &str) -> Option<(&str, &str, &str)> {
+    let (prose, after_wrapper) = description.split_once("\n\nexec tool declaration:\n```ts\n")?;
+    let (declaration, trailing) = after_wrapper.split_once("\n```")?;
+    Some((prose, declaration, trailing))
+}
+
+fn parse_code_mode_declaration(description: &str) -> Option<ParsedCodeModeDeclaration> {
+    let declaration = split_code_mode_description(description)?.1.trim();
+    let body = declaration.split_once("declare const tools:")?.1.trim();
+    let body = body.strip_prefix("{")?.trim();
+    let body = body.strip_suffix("};")?.trim();
+
+    let open_paren = body.find('(')?;
+    let (name, args_and_return) = body.split_at(open_paren);
+    let args_and_return = &args_and_return[1..];
+    let close_call = matching_paren_end(args_and_return)?;
+    let (decl_input_name, args) = args_and_return[..close_call].split_once(':')?;
+    let mut output_tail = args_and_return[close_call + 1..].trim_start();
+    output_tail = output_tail.strip_prefix(":")?;
+    let output_tail = output_tail.trim_start();
+    let output_tail = output_tail.strip_prefix("Promise<")?;
+    let output_end = matching_generic_end(output_tail)?;
+
+    Some(ParsedCodeModeDeclaration {
+        name: compact_type(name),
+        input_name: compact_type(decl_input_name),
+        args: normalize_code_mode_type(args),
+        output: normalize_code_mode_type(&output_tail[..output_end]),
+    })
+}
+
+fn matching_paren_end(typ: &str) -> Option<usize> {
+    let mut depth = 1usize;
+    let mut quote_state = CodeModeQuoteState::default();
+
+    for (idx, ch) in typ.char_indices() {
+        let was_escaped = quote_state.escaped;
+        let was_in_quote = quote_state.in_quote();
+        advance_code_mode_quote_state(ch, &mut quote_state);
+        if was_escaped || was_in_quote {
+            continue;
+        }
+
+        match ch {
+            '(' => depth += 1,
+            ')' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(idx);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    None
+}
+
+fn matching_generic_end(typ: &str) -> Option<usize> {
+    let mut depth = 1usize;
+    let mut quote_state = CodeModeQuoteState::default();
+
+    for (idx, ch) in typ.char_indices() {
+        let was_escaped = quote_state.escaped;
+        let was_in_quote = quote_state.in_quote();
+        advance_code_mode_quote_state(ch, &mut quote_state);
+        if was_escaped || was_in_quote {
+            continue;
+        }
+
+        match ch {
+            '<' => depth += 1,
+            '>' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(idx);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    None
+}
+
+fn split_code_mode_fields(fields: &str) -> Vec<String> {
+    let mut parts = Vec::new();
+    let mut start = 0usize;
+    let mut brace_depth = 0usize;
+    let mut angle_depth = 0usize;
+    let mut square_depth = 0usize;
+    let mut paren_depth = 0usize;
+    let mut quote_state = CodeModeQuoteState::default();
+
+    for (idx, ch) in fields.char_indices() {
+        let was_escaped = quote_state.escaped;
+        let was_in_quote = quote_state.in_quote();
+        advance_code_mode_quote_state(ch, &mut quote_state);
+        if was_escaped || was_in_quote {
+            continue;
+        }
+
+        match ch {
+            '{' => brace_depth += 1,
+            '}' => brace_depth = brace_depth.saturating_sub(1),
+            '<' => angle_depth += 1,
+            '>' => angle_depth = angle_depth.saturating_sub(1),
+            '[' => square_depth += 1,
+            ']' => square_depth = square_depth.saturating_sub(1),
+            '(' => paren_depth += 1,
+            ')' => paren_depth = paren_depth.saturating_sub(1),
+            ';' if brace_depth == 0
+                && angle_depth == 0
+                && square_depth == 0
+                && paren_depth == 0 =>
+            {
+                parts.push(fields[start..=idx].trim().to_string());
+                start = idx + 1;
+            }
+            _ => {}
+        }
+    }
+
+    let tail = fields[start..].trim();
+    if !tail.is_empty() {
+        parts.push(tail.to_string());
+    }
+
+    parts
+}
+
 #[test]
 fn test_full_toolset_specs_for_gpt5_codex_unified_exec_web_search() {
     let model_info = model_info();
@@ -1602,14 +1860,18 @@ fn code_mode_augments_mcp_tool_descriptions_with_namespaced_sample() {
         panic!("expected function tool");
     };
 
-    assert_eq!(
+    assert_code_mode_description(
         description,
-        r#"Echo text
-
-exec tool declaration:
-```ts
-declare const tools: { mcp__sample__echo(args: { message: string; }): Promise<CallToolResult>; };
-```"#
+        "Echo text",
+        "mcp__sample__echo",
+        "args",
+        &["message: string;"],
+        &[
+            "_meta?: { [key: string]: unknown; };",
+            "content: Array<{ [key: string]: unknown; }>;",
+            "isError?: boolean;",
+            "structuredContent?: unknown;",
+        ],
     );
 }
 
@@ -1691,12 +1953,22 @@ fn code_mode_preserves_nullable_and_literal_mcp_input_shapes() {
         panic!("expected function tool");
     };
 
-    assert!(description.contains(
-        r#"exec tool declaration:
-```ts
-declare const tools: { mcp__sample__fn(args: { open?: Array<{ lineno?: number | null; ref_id: string; }> | null; response_length?: "short" | "medium" | "long"; tagged_list?: Array<{ kind: "tagged"; scope: "one" | "two"; variant: "alpha" | "beta"; }> | null; }): Promise<CallToolResult>; };
-```"#
-    ));
+    assert_code_mode_declaration_fields(
+        description,
+        "mcp__sample__fn",
+        "args",
+        &[
+            "open?: Array<{ lineno?: number | null; ref_id: string; }> | null;",
+            "response_length?: \"short\" | \"medium\" | \"long\";",
+            "tagged_list?: Array<{ kind: \"tagged\"; scope: \"one\" | \"two\"; variant: \"alpha\" | \"beta\"; }> | null;",
+        ],
+        &[
+            "_meta?: { [key: string]: unknown; };",
+            "content: Array<{ [key: string]: unknown; }>;",
+            "isError?: boolean;",
+            "structuredContent?: unknown;",
+        ],
+    );
 }
 
 #[test]
@@ -1729,9 +2001,13 @@ fn code_mode_augments_builtin_tool_descriptions_with_typed_sample() {
         panic!("expected function tool");
     };
 
-    assert_eq!(
+    assert_code_mode_description(
         description,
-        "View a local image from the filesystem (only use if given a full filepath by the user, and the image isn't already attached to the thread context within <image ...> tags).\n\nexec tool declaration:\n```ts\ndeclare const tools: { view_image(args: {\n  // Local filesystem path to an image file\n  path: string;\n}): Promise<{\n  // Image detail hint returned by view_image. Returns `original` when original resolution is preserved, otherwise `null`.\n  detail: string | null;\n  // Data URL for the loaded image.\n  image_url: string;\n}>; };\n```"
+        "View a local image from the filesystem (only use if given a full filepath by the user, and the image isn't already attached to the thread context within <image ...> tags).",
+        VIEW_IMAGE_TOOL_NAME,
+        "args",
+        &["path: string;"],
+        &["detail: string | null;", "image_url: string;"],
     );
 }
 
@@ -1980,14 +2256,18 @@ fn code_mode_augments_mcp_tool_descriptions_with_structured_output_sample() {
         panic!("expected function tool");
     };
 
-    assert_eq!(
+    assert_code_mode_description(
         description,
-        r#"Echo text
-
-exec tool declaration:
-```ts
-declare const tools: { mcp__sample__echo(args: { message: string; }): Promise<CallToolResult<{ echo: string; env: string | null; }>>; };
-```"#
+        "Echo text",
+        "mcp__sample__echo",
+        "args",
+        &["message: string;"],
+        &[
+            "_meta?: { [key: string]: unknown; };",
+            "content: Array<{ [key: string]: unknown; }>;",
+            "isError?: boolean;",
+            "structuredContent?: { echo: string; env: string | null; };",
+        ],
     );
 }
 

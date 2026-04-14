@@ -21,6 +21,7 @@ use crate::tools::router::ToolCallSource;
 use crate::tools::router::ToolRouter;
 use codex_protocol::error::CodexErr;
 use codex_protocol::models::ResponseInputItem;
+use codex_tools::ToolName;
 use codex_tools::ToolSpec;
 
 #[derive(Clone)]
@@ -191,8 +192,7 @@ mod tests {
 
     fn tool_call(tool_name: &str) -> ToolCall {
         ToolCall {
-            tool_name: tool_name.to_string(),
-            tool_namespace: None,
+            tool_name: ToolName::plain(tool_name),
             call_id: "call-1".to_string(),
             payload: ToolPayload::Function {
                 arguments: "{}".to_string(),
