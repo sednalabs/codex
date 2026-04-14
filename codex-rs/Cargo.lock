@@ -1363,7 +1363,7 @@ checksum = "af491d569909a7e4dee0ad7db7f5341fef5c614d5b8ec8cf765732aba3cff681"
 dependencies = [
  "serde",
  "termcolor",
- "unicode-width 0.1.14",
+ "unicode-width 0.2.1",
 ]
 
 [[package]]
@@ -1438,6 +1438,7 @@ dependencies = [
  "base64 0.22.1",
  "chrono",
  "clap",
+ "codex-analytics",
  "codex-app-server-protocol",
  "codex-arg0",
  "codex-backend-client",
@@ -1830,6 +1831,7 @@ name = "codex-code-mode"
 version = "0.0.0"
 dependencies = [
  "async-trait",
+ "deno_core_icudata",
  "pretty_assertions",
  "serde",
  "serde_json",
@@ -1904,7 +1906,6 @@ dependencies = [
  "codex-api",
  "codex-app-server-protocol",
  "codex-apply-patch",
- "codex-arg0",
  "codex-async-utils",
  "codex-code-mode",
  "codex-config",
@@ -1934,6 +1935,7 @@ dependencies = [
  "codex-shell-escalation",
  "codex-state",
  "codex-terminal-detection",
+ "codex-test-binary-support",
  "codex-tools",
  "codex-utils-absolute-path",
  "codex-utils-cache",
@@ -1953,7 +1955,7 @@ dependencies = [
  "core-foundation 0.9.4",
  "core_test_support",
  "csv",
- "ctor 0.8.0",
+ "ctor 0.6.3",
  "dirs",
  "dunce",
  "env-flags",
@@ -2109,9 +2111,10 @@ dependencies = [
  "codex-config",
  "codex-protocol",
  "codex-sandboxing",
+ "codex-test-binary-support",
  "codex-utils-absolute-path",
- "codex-utils-cargo-bin",
  "codex-utils-pty",
+ "ctor 0.6.3",
  "futures",
  "pretty_assertions",
  "serde",
@@ -2361,6 +2364,7 @@ dependencies = [
  "codex-plugin",
  "codex-protocol",
  "codex-rmcp-client",
+ "codex-utils-absolute-path",
  "codex-utils-plugins",
  "futures",
  "pretty_assertions",
@@ -2625,7 +2629,7 @@ dependencies = [
  "anyhow",
  "clap",
  "codex-process-hardening",
- "ctor 0.8.0",
+ "ctor 0.6.3",
  "libc",
  "pretty_assertions",
  "reqwest",
@@ -2827,6 +2831,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "codex-test-binary-support"
+version = "0.0.0"
+dependencies = [
+ "codex-arg0",
+ "tempfile",
+]
+
+[[package]]
 name = "codex-tools"
 version = "0.0.0"
 dependencies = [
@@ -3004,6 +3016,7 @@ version = "0.0.0"
 name = "codex-utils-home-dir"
 version = "0.0.0"
 dependencies = [
+ "codex-utils-absolute-path",
  "dirs",
  "pretty_assertions",
  "tempfile",
@@ -3395,7 +3408,7 @@ dependencies = [
  "codex-protocol",
  "codex-utils-absolute-path",
  "codex-utils-cargo-bin",
- "ctor 0.8.0",
+ "ctor 0.6.3",
  "futures",
  "notify",
  "opentelemetry",
@@ -3544,7 +3557,7 @@ checksum = "d0a5c400df2834b80a4c3327b3aad3a4c4cd4de0629063962b03235697506a28"
 [[package]]
 name = "crossterm"
 version = "0.28.1"
-source = "git+https://github.com/nornagon/crossterm?branch=nornagon%2Fcolor-query#87db8bfa6dc99427fd3b071681b07fc31c6ce995"
+source = "git+https://github.com/nornagon/crossterm?rev=87db8bfa6dc99427fd3b071681b07fc31c6ce995#87db8bfa6dc99427fd3b071681b07fc31c6ce995"
 dependencies = [
  "bitflags 2.10.0",
  "crossterm_winapi",
@@ -3615,9 +3628,9 @@ dependencies = [
 
 [[package]]
 name = "ctor"
-version = "0.8.0"
+version = "0.6.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "352d39c2f7bef1d6ad73db6f5160efcaed66d94ef8c6c573a8410c00bf909a98"
+checksum = "424e0138278faeb2b401f174ad17e715c829512d74f3d1e81eb43365c2e0590e"
 dependencies = [
  "ctor-proc-macro",
  "dtor",
@@ -3871,6 +3884,12 @@ name = "deflate64"
 version = "0.1.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "26bf8fc351c5ed29b5c2f0cbbac1b209b74f60ecd62e675a998df72c49af5204"
+
+[[package]]
+name = "deno_core_icudata"
+version = "0.77.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a9efff8990a82c1ae664292507e1a5c6749ddd2312898cdf9cd7cb1fd4bc64c6"
 
 [[package]]
 name = "der"
@@ -4132,9 +4151,9 @@ checksum = "75b325c5dbd37f80359721ad39aca5a29fb04c89279657cffdda8736d0c0b9d2"
 
 [[package]]
 name = "dtor"
-version = "0.3.0"
+version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f1057d6c64987086ff8ed0fd3fbf377a6b7d205cc7715868cd401705f715cbe4"
+checksum = "404d02eeb088a82cfd873006cb713fe411306c7d182c344905e101fb1167d301"
 dependencies = [
  "dtor-proc-macro",
 ]
@@ -4879,7 +4898,7 @@ dependencies = [
  "gobject-sys",
  "libc",
  "system-deps",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -7844,7 +7863,7 @@ checksum = "22505a5c94da8e3b7c2996394d1c933236c4d743e81a410bcca4e6989fc066a4"
 dependencies = [
  "bytes",
  "heck 0.5.0",
- "itertools 0.10.5",
+ "itertools 0.11.0",
  "log",
  "multimap",
  "once_cell",
@@ -7864,7 +7883,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "81bddcdb20abf9501610992b6759a4c888aef7d1a7247ef75e2404275ac24af1"
 dependencies = [
  "anyhow",
- "itertools 0.10.5",
+ "itertools 0.11.0",
  "proc-macro2",
  "quote",
  "syn 2.0.114",
@@ -8422,7 +8441,7 @@ dependencies = [
 [[package]]
 name = "ratatui"
 version = "0.29.0"
-source = "git+https://github.com/nornagon/ratatui?branch=nornagon-v0.29.0-patch#9b2ad1298408c45918ee9f8241a6f95498cdbed2"
+source = "git+https://github.com/nornagon/ratatui?rev=9b2ad1298408c45918ee9f8241a6f95498cdbed2#9b2ad1298408c45918ee9f8241a6f95498cdbed2"
 dependencies = [
  "bitflags 2.10.0",
  "cassowary",

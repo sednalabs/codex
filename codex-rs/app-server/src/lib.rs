@@ -401,15 +401,12 @@ pub async fn run_main_with_transport(
                 }
             }
 
-            let auth_manager = AuthManager::shared(
-                config.codex_home.clone(),
-                /*enable_codex_api_key_env*/ false,
-                config.cli_auth_credentials_store_mode,
-            );
+            let auth_manager =
+                AuthManager::shared_from_config(&config, /*enable_codex_api_key_env*/ false);
             cloud_requirements_loader(
                 auth_manager,
                 config.chatgpt_base_url,
-                config.codex_home.clone(),
+                config.codex_home.to_path_buf(),
             )
         }
         Err(err) => {
@@ -566,11 +563,8 @@ pub async fn run_main_with_transport(
         AppServerTransport::Off => {}
     }
 
-    let auth_manager = AuthManager::shared(
-        config.codex_home.clone(),
-        /*enable_codex_api_key_env*/ false,
-        config.cli_auth_credentials_store_mode,
-    );
+    let auth_manager =
+        AuthManager::shared_from_config(&config, /*enable_codex_api_key_env*/ false);
 
     if config.features.enabled(Feature::RemoteControl) {
         let accept_handle = start_remote_control(

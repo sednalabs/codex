@@ -449,7 +449,7 @@ mod phase2 {
     use codex_state::Stage1OutputRef;
     use codex_state::ThreadMetadataBuilder;
     use codex_utils_absolute_path::AbsolutePathBuf;
-    use core_test_support::PathBufExt;
+
     use std::path::PathBuf;
     use std::sync::Arc;
     use std::time::Duration;
@@ -482,10 +482,11 @@ mod phase2 {
 
     fn config_for_memory_root(root: &std::path::Path) -> Arc<Config> {
         let mut config = test_config();
-        config.codex_home = root
-            .parent()
-            .expect("memory root should have a codex home parent")
-            .to_path_buf();
+        config.codex_home = codex_utils_absolute_path::AbsolutePathBuf::from_absolute_path(
+            root.parent()
+                .expect("memory root should have a codex home parent"),
+        )
+        .expect("codex home should be absolute");
         Arc::new(config)
     }
 
@@ -509,12 +510,14 @@ mod phase2 {
         async fn new() -> Self {
             let codex_home = tempfile::tempdir().expect("create temp codex home");
             let mut config = test_config();
-            config.codex_home = codex_home.path().to_path_buf();
-            config.cwd = config.codex_home.abs();
+            config.codex_home =
+                codex_utils_absolute_path::AbsolutePathBuf::from_absolute_path(codex_home.path())
+                    .expect("codex home is absolute");
+            config.cwd = config.codex_home.clone();
             let config = Arc::new(config);
 
             let state_db = codex_state::StateRuntime::init(
-                config.codex_home.clone(),
+                config.codex_home.to_path_buf(),
                 config.model_provider_id.clone(),
             )
             .await
@@ -523,7 +526,7 @@ mod phase2 {
             let manager = ThreadManager::with_models_provider_and_home_for_tests(
                 CodexAuth::from_api_key("dummy"),
                 config.model_provider.clone(),
-                config.codex_home.clone(),
+                config.codex_home.to_path_buf(),
                 Arc::new(codex_exec_server::EnvironmentManager::new(
                     /*exec_server_url*/ None,
                 )),
@@ -547,7 +550,8 @@ mod phase2 {
                 thread_id,
                 self.config
                     .codex_home
-                    .join(format!("rollout-{thread_id}.jsonl")),
+                    .join(format!("rollout-{thread_id}.jsonl"))
+                    .to_path_buf(),
                 Utc::now(),
                 SessionSource::Cli,
             );
@@ -1666,7 +1670,8 @@ mod phase2 {
         let temp_dir = tempfile::tempdir().expect("temp dir");
         let canonical_temp_dir =
             std::fs::canonicalize(temp_dir.path()).expect("canonical temp dir");
-        let codex_home = canonical_temp_dir.clone();
+        let codex_home =
+            AbsolutePathBuf::from_absolute_path(&canonical_temp_dir).expect("canonical codex home");
         let mut config = test_config();
         config.codex_home = codex_home;
         config.cwd =
@@ -1734,7 +1739,8 @@ mod phase2 {
             .expect("symlink codex home");
 
         let mut config = test_config();
-        config.codex_home = linked_codex_home;
+        config.codex_home =
+            AbsolutePathBuf::from_absolute_path(&linked_codex_home).expect("linked codex home");
         config.cwd = AbsolutePathBuf::from_absolute_path(workspace).expect("workspace path");
 
         assert!(
@@ -1756,7 +1762,8 @@ mod phase2 {
         std::os::unix::fs::symlink(&real_parent, &linked_parent).expect("symlink parent ancestor");
 
         let mut config = test_config();
-        config.codex_home = linked_parent.join("codex-home");
+        config.codex_home = AbsolutePathBuf::from_absolute_path(linked_parent.join("codex-home"))
+            .expect("linked parent codex home");
         config.cwd = AbsolutePathBuf::from_absolute_path(workspace).expect("workspace path");
 
         let agent_config = phase2::test_consolidation_agent_config(Arc::new(config))
@@ -2032,12 +2039,14 @@ mod phase2 {
     async fn dispatch_marks_job_for_retry_when_spawn_agent_fails() {
         let codex_home = tempfile::tempdir().expect("create temp codex home");
         let mut config = test_config();
-        config.codex_home = codex_home.path().to_path_buf();
-        config.cwd = config.codex_home.abs();
+        config.codex_home =
+            codex_utils_absolute_path::AbsolutePathBuf::from_absolute_path(codex_home.path())
+                .expect("codex home is absolute");
+        config.cwd = config.codex_home.clone();
         let config = Arc::new(config);
 
         let state_db = codex_state::StateRuntime::init(
-            config.codex_home.clone(),
+            config.codex_home.to_path_buf(),
             config.model_provider_id.clone(),
         )
         .await
@@ -2051,7 +2060,10 @@ mod phase2 {
         let thread_id = ThreadId::new();
         let mut metadata_builder = ThreadMetadataBuilder::new(
             thread_id,
-            config.codex_home.join(format!("rollout-{thread_id}.jsonl")),
+            config
+                .codex_home
+                .join(format!("rollout-{thread_id}.jsonl"))
+                .to_path_buf(),
             Utc::now(),
             SessionSource::Cli,
         );

@@ -1103,6 +1103,29 @@
           "type": "object"
         },
         {
+          "description": "Append raw Responses API items to the thread history without starting a user turn.",
+          "properties": {
+            "id": {
+              "$ref": "#/definitions/RequestId"
+            },
+            "method": {
+              "const": "thread/inject_items",
+              "title": "Thread/injectItemsRequestMethod",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/definitions/ThreadInjectItemsParams"
+            }
+          },
+          "required": [
+            "method",
+            "id",
+            "params"
+          ],
+          "title": "Thread/injectItemsRequest",
+          "type": "object"
+        },
+        {
           "properties": {
             "id": {
               "$ref": "#/definitions/RequestId"
@@ -1122,6 +1145,28 @@
             "params"
           ],
           "title": "Skills/listRequest",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "id": {
+              "$ref": "#/definitions/RequestId"
+            },
+            "method": {
+              "const": "marketplace/add",
+              "title": "Marketplace/addRequestMethod",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/definitions/MarketplaceAddParams"
+            }
+          },
+          "required": [
+            "method",
+            "id",
+            "params"
+          ],
+          "title": "Marketplace/addRequest",
           "type": "object"
         },
         {
@@ -4070,11 +4115,15 @@
           "type": "integer"
         },
         "isDirectory": {
-          "description": "Whether the path currently resolves to a directory.",
+          "description": "Whether the path resolves to a directory.",
           "type": "boolean"
         },
         "isFile": {
-          "description": "Whether the path currently resolves to a regular file.",
+          "description": "Whether the path resolves to a regular file.",
+          "type": "boolean"
+        },
+        "isSymlink": {
+          "description": "Whether the path itself is a symbolic link.",
           "type": "boolean"
         },
         "modifiedAtMs": {
@@ -4086,6 +4135,7 @@
       "required": [
         "isDirectory",
         "isFile",
+        "isSymlink",
         "createdAtMs",
         "modifiedAtMs"
       ],
@@ -5360,6 +5410,55 @@
     "LogoutAccountResponse": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "title": "LogoutAccountResponse",
+      "type": "object"
+    },
+    "MarketplaceAddParams": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "properties": {
+        "refName": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "source": {
+          "type": "string"
+        },
+        "sparsePaths": {
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "source"
+      ],
+      "title": "MarketplaceAddParams",
+      "type": "object"
+    },
+    "MarketplaceAddResponse": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "properties": {
+        "alreadyAdded": {
+          "type": "boolean"
+        },
+        "installedRoot": {
+          "$ref": "#/definitions/AbsolutePathBuf"
+        },
+        "marketplaceName": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "marketplaceName",
+        "installedRoot",
+        "alreadyAdded"
+      ],
+      "title": "MarketplaceAddResponse",
       "type": "object"
     },
     "MarketplaceInterface": {
@@ -6884,6 +6983,13 @@
       "enum": [
         "v1",
         "v2"
+      ],
+      "type": "string"
+    },
+    "RealtimeOutputModality": {
+      "enum": [
+        "text",
+        "audio"
       ],
       "type": "string"
     },
@@ -8866,19 +8972,37 @@
         {
           "properties": {
             "method": {
-              "const": "thread/realtime/transcriptUpdated",
-              "title": "Thread/realtime/transcriptUpdatedNotificationMethod",
+              "const": "thread/realtime/transcript/delta",
+              "title": "Thread/realtime/transcript/deltaNotificationMethod",
               "type": "string"
             },
             "params": {
-              "$ref": "#/definitions/ThreadRealtimeTranscriptUpdatedNotification"
+              "$ref": "#/definitions/ThreadRealtimeTranscriptDeltaNotification"
             }
           },
           "required": [
             "method",
             "params"
           ],
-          "title": "Thread/realtime/transcriptUpdatedNotification",
+          "title": "Thread/realtime/transcript/deltaNotification",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "thread/realtime/transcript/done",
+              "title": "Thread/realtime/transcript/doneNotificationMethod",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/definitions/ThreadRealtimeTranscriptDoneNotification"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "title": "Thread/realtime/transcript/doneNotification",
           "type": "object"
         },
         {
@@ -9187,7 +9311,7 @@
           "type": "string"
         },
         "path": {
-          "type": "string"
+          "$ref": "#/definitions/AbsolutePathBuf"
         },
         "scope": {
           "$ref": "#/definitions/SkillScope"
@@ -9240,7 +9364,7 @@
           "type": "string"
         },
         "path": {
-          "type": "string"
+          "$ref": "#/definitions/AbsolutePathBuf"
         },
         "shortDescription": {
           "type": [
@@ -9935,6 +10059,30 @@
     },
     "ThreadId": {
       "type": "string"
+    },
+    "ThreadInjectItemsParams": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "properties": {
+        "items": {
+          "description": "Raw Responses API items to append to the thread's model-visible history.",
+          "items": true,
+          "type": "array"
+        },
+        "threadId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "threadId",
+        "items"
+      ],
+      "title": "ThreadInjectItemsParams",
+      "type": "object"
+    },
+    "ThreadInjectItemsResponse": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "title": "ThreadInjectItemsResponse",
+      "type": "object"
     },
     "ThreadItem": {
       "oneOf": [
@@ -10682,6 +10830,13 @@
       "title": "ThreadLoadedListResponse",
       "type": "object"
     },
+    "ThreadMemoryMode": {
+      "enum": [
+        "enabled",
+        "disabled"
+      ],
+      "type": "string"
+    },
     "ThreadMetadataGitInfoUpdateParams": {
       "properties": {
         "branch": {
@@ -10967,14 +11122,38 @@
       "title": "ThreadRealtimeStartedNotification",
       "type": "object"
     },
-    "ThreadRealtimeTranscriptUpdatedNotification": {
+    "ThreadRealtimeTranscriptDeltaNotification": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "description": "EXPERIMENTAL - flat transcript delta emitted whenever realtime\ntranscript text changes.",
+      "properties": {
+        "delta": {
+          "description": "Live transcript delta from the realtime event.",
+          "type": "string"
+        },
+        "role": {
+          "type": "string"
+        },
+        "threadId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "threadId",
+        "role",
+        "delta"
+      ],
+      "title": "ThreadRealtimeTranscriptDeltaNotification",
+      "type": "object"
+    },
+    "ThreadRealtimeTranscriptDoneNotification": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "EXPERIMENTAL - final transcript text emitted when realtime completes\na transcript part.",
       "properties": {
         "role": {
           "type": "string"
         },
         "text": {
+          "description": "Final complete text for the transcript part.",
           "type": "string"
         },
         "threadId": {
@@ -10986,7 +11165,7 @@
         "role",
         "text"
       ],
-      "title": "ThreadRealtimeTranscriptUpdatedNotification",
+      "title": "ThreadRealtimeTranscriptDoneNotification",
       "type": "object"
     },
     "ThreadResumeParams": {

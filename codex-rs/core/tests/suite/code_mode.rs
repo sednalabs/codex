@@ -483,6 +483,7 @@ async fn run_code_mode_turn_with_rmcp(
                 },
                 enabled: true,
                 required: false,
+                supports_parallel_tool_calls: false,
                 disabled_reason: None,
                 startup_timeout_sec: Some(Duration::from_secs(/*secs*/ 10)),
                 tool_timeout_sec: None,
@@ -502,6 +503,7 @@ async fn run_code_mode_turn_with_rmcp(
             .set(servers)
             .expect("test mcp servers should accept any configuration");
     });
+    builder = builder.with_model("test-gpt-5.1-codex");
     let test = builder.build(server).await?;
 
     responses::mount_sse_once(

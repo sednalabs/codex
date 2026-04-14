@@ -83,6 +83,7 @@ fn stdio_mcp(command: &str) -> McpServerConfig {
         },
         enabled: true,
         required: false,
+        supports_parallel_tool_calls: false,
         disabled_reason: None,
         startup_timeout_sec: None,
         tool_timeout_sec: None,
@@ -108,6 +109,7 @@ fn http_mcp(url: &str) -> McpServerConfig {
         },
         enabled: true,
         required: false,
+        supports_parallel_tool_calls: false,
         disabled_reason: None,
         startup_timeout_sec: None,
         tool_timeout_sec: None,
@@ -133,7 +135,7 @@ fn load_config_normalizes_relative_cwd_override() -> std::io::Result<()> {
             cwd: Some(PathBuf::from("nested")),
             ..Default::default()
         },
-        codex_home.abs().into_path_buf(),
+        codex_home.abs(),
     )?;
 
     assert_eq!(config.cwd, expected_cwd);
@@ -149,7 +151,7 @@ fn load_config_records_global_agents_path() -> std::io::Result<()> {
     let config = Config::load_from_base_config_with_overrides(
         ConfigToml::default(),
         ConfigOverrides::default(),
-        codex_home.abs().into_path_buf(),
+        codex_home.abs(),
     )?;
 
     assert_eq!(
@@ -176,7 +178,7 @@ fn load_config_records_preferred_global_agents_override_path() -> std::io::Resul
     let config = Config::load_from_base_config_with_overrides(
         ConfigToml::default(),
         ConfigOverrides::default(),
-        codex_home.abs().into_path_buf(),
+        codex_home.abs(),
     )?;
 
     assert_eq!(
@@ -255,7 +257,7 @@ consolidation_model = "gpt-5"
     let config = Config::load_from_base_config_with_overrides(
         memories_cfg,
         ConfigOverrides::default(),
-        tempdir().expect("tempdir").path().to_path_buf(),
+        tempdir().expect("tempdir").abs(),
     )
     .expect("load config from memories settings");
     assert_eq!(
@@ -387,7 +389,7 @@ fn runtime_config_defaults_model_availability_nux() {
     let cfg = Config::load_from_base_config_with_overrides(
         ConfigToml::default(),
         ConfigOverrides::default(),
-        tempdir().expect("tempdir").path().to_path_buf(),
+        tempdir().expect("tempdir").abs(),
     )
     .expect("load config");
 
@@ -502,7 +504,7 @@ fn permissions_profiles_network_populates_runtime_network_proxy_spec() -> std::i
             cwd: Some(cwd.path().to_path_buf()),
             ..Default::default()
         },
-        codex_home.path().to_path_buf(),
+        codex_home.abs(),
     )?;
     let network = config
         .permissions
@@ -552,7 +554,7 @@ fn permissions_profiles_network_disabled_by_default_does_not_start_proxy() -> st
             cwd: Some(cwd.path().to_path_buf()),
             ..Default::default()
         },
-        codex_home.path().to_path_buf(),
+        codex_home.abs(),
     )?;
 
     assert!(config.permissions.network.is_none());
@@ -600,7 +602,7 @@ fn default_permissions_profile_populates_runtime_sandbox_policy() -> std::io::Re
             cwd: Some(cwd.path().to_path_buf()),
             ..Default::default()
         },
-        codex_home.path().to_path_buf(),
+        codex_home.abs(),
     )?;
 
     let memories_root = codex_home.path().join("memories").abs();
@@ -681,7 +683,7 @@ fn permissions_profiles_require_default_permissions() -> std::io::Result<()> {
             cwd: Some(cwd.path().to_path_buf()),
             ..Default::default()
         },
-        codex_home.path().to_path_buf(),
+        codex_home.abs(),
     )
     .expect_err("missing default_permissions should be rejected");
 
@@ -723,7 +725,7 @@ fn permissions_profiles_reject_writes_outside_workspace_root() -> std::io::Resul
             cwd: Some(cwd.path().to_path_buf()),
             ..Default::default()
         },
-        codex_home.path().to_path_buf(),
+        codex_home.abs(),
     )
     .expect_err("writes outside the workspace root should be rejected");
 
@@ -768,7 +770,7 @@ fn permissions_profiles_reject_nested_entries_for_non_project_roots() -> std::io
             cwd: Some(cwd.path().to_path_buf()),
             ..Default::default()
         },
-        codex_home.path().to_path_buf(),
+        codex_home.abs(),
     )
     .expect_err("nested entries outside :project_roots should be rejected");
 
@@ -797,7 +799,7 @@ fn load_workspace_permission_profile(profile: PermissionProfileToml) -> std::io:
             cwd: Some(cwd.path().to_path_buf()),
             ..Default::default()
         },
-        codex_home.path().to_path_buf(),
+        codex_home.abs(),
     )
 }
 
@@ -965,7 +967,7 @@ fn permissions_profiles_reject_project_root_parent_traversal() -> std::io::Resul
             cwd: Some(cwd.path().to_path_buf()),
             ..Default::default()
         },
-        codex_home.path().to_path_buf(),
+        codex_home.abs(),
     )
     .expect_err("parent traversal should be rejected for project root subpaths");
 
@@ -1009,7 +1011,7 @@ fn permissions_profiles_allow_network_enablement() -> std::io::Result<()> {
             cwd: Some(cwd.path().to_path_buf()),
             ..Default::default()
         },
-        codex_home.path().to_path_buf(),
+        codex_home.abs(),
     )?;
 
     assert!(
@@ -1237,7 +1239,7 @@ exclude_slash_tmp = true
                 cwd: Some(cwd.path().to_path_buf()),
                 ..Default::default()
             },
-            codex_home.path().to_path_buf(),
+            codex_home.abs(),
         )?;
 
         let sandbox_policy = config.permissions.sandbox_policy.get();
@@ -1417,7 +1419,7 @@ fn add_dir_override_extends_workspace_writable_roots() -> std::io::Result<()> {
     let config = Config::load_from_base_config_with_overrides(
         ConfigToml::default(),
         overrides,
-        temp_dir.path().to_path_buf(),
+        temp_dir.path().abs(),
     )?;
 
     let expected_backend = backend.abs();
@@ -1455,7 +1457,7 @@ fn sqlite_home_defaults_to_codex_home_for_workspace_write() -> std::io::Result<(
             sandbox_mode: Some(SandboxMode::WorkspaceWrite),
             ..Default::default()
         },
-        codex_home.path().to_path_buf(),
+        codex_home.abs(),
     )?;
 
     assert_eq!(config.sqlite_home, codex_home.path().to_path_buf());
@@ -1479,7 +1481,7 @@ fn workspace_write_always_includes_memories_root_once() -> std::io::Result<()> {
             sandbox_mode: Some(SandboxMode::WorkspaceWrite),
             ..Default::default()
         },
-        codex_home.path().to_path_buf(),
+        codex_home.abs(),
     )?;
 
     if cfg!(target_os = "windows") {
@@ -1521,7 +1523,7 @@ fn config_defaults_to_file_cli_auth_store_mode() -> std::io::Result<()> {
     let config = Config::load_from_base_config_with_overrides(
         cfg,
         ConfigOverrides::default(),
-        codex_home.path().to_path_buf(),
+        codex_home.abs(),
     )?;
 
     assert_eq!(
@@ -1543,7 +1545,7 @@ fn config_resolves_explicit_keyring_auth_store_mode() -> std::io::Result<()> {
     let config = Config::load_from_base_config_with_overrides(
         cfg,
         ConfigOverrides::default(),
-        codex_home.path().to_path_buf(),
+        codex_home.abs(),
     )?;
 
     assert_eq!(
@@ -1565,7 +1567,7 @@ fn config_resolves_default_oauth_store_mode() -> std::io::Result<()> {
     let config = Config::load_from_base_config_with_overrides(
         cfg,
         ConfigOverrides::default(),
-        codex_home.path().to_path_buf(),
+        codex_home.abs(),
     )?;
 
     assert_eq!(
@@ -1641,7 +1643,7 @@ fn feedback_enabled_defaults_to_true() -> std::io::Result<()> {
     let config = Config::load_from_base_config_with_overrides(
         cfg,
         ConfigOverrides::default(),
-        codex_home.path().to_path_buf(),
+        codex_home.abs(),
     )?;
 
     assert_eq!(config.feedback_enabled, true);
@@ -1803,7 +1805,7 @@ fn profile_sandbox_mode_overrides_base() -> std::io::Result<()> {
     let config = Config::load_from_base_config_with_overrides(
         cfg,
         ConfigOverrides::default(),
-        codex_home.path().to_path_buf(),
+        codex_home.abs(),
     )?;
 
     assert!(matches!(
@@ -1836,11 +1838,7 @@ fn cli_override_takes_precedence_over_profile_sandbox_mode() -> std::io::Result<
         ..Default::default()
     };
 
-    let config = Config::load_from_base_config_with_overrides(
-        cfg,
-        overrides,
-        codex_home.path().to_path_buf(),
-    )?;
+    let config = Config::load_from_base_config_with_overrides(cfg, overrides, codex_home.abs())?;
 
     if cfg!(target_os = "windows") {
         assert!(matches!(
@@ -1870,7 +1868,7 @@ fn feature_table_overrides_legacy_flags() -> std::io::Result<()> {
     let config = Config::load_from_base_config_with_overrides(
         cfg,
         ConfigOverrides::default(),
-        codex_home.path().to_path_buf(),
+        codex_home.abs(),
     )?;
 
     assert!(!config.features.enabled(Feature::ApplyPatchFreeform));
@@ -1891,7 +1889,7 @@ fn legacy_toggles_map_to_features() -> std::io::Result<()> {
     let config = Config::load_from_base_config_with_overrides(
         cfg,
         ConfigOverrides::default(),
-        codex_home.path().to_path_buf(),
+        codex_home.abs(),
     )?;
 
     assert!(config.features.enabled(Feature::ApplyPatchFreeform));
@@ -1918,7 +1916,7 @@ fn responses_websocket_features_do_not_change_wire_api() -> std::io::Result<()> 
         let config = Config::load_from_base_config_with_overrides(
             cfg,
             ConfigOverrides::default(),
-            codex_home.path().to_path_buf(),
+            codex_home.abs(),
         )?;
 
         assert_eq!(config.model_provider.wire_api, WireApi::Responses);
@@ -1938,7 +1936,7 @@ fn config_honors_explicit_file_oauth_store_mode() -> std::io::Result<()> {
     let config = Config::load_from_base_config_with_overrides(
         cfg,
         ConfigOverrides::default(),
-        codex_home.path().to_path_buf(),
+        codex_home.abs(),
     )?;
 
     assert_eq!(
@@ -1983,7 +1981,7 @@ async fn managed_config_overrides_oauth_store_mode() -> anyhow::Result<()> {
     let final_config = Config::load_from_base_config_with_overrides(
         cfg,
         ConfigOverrides::default(),
-        codex_home.path().to_path_buf(),
+        codex_home.abs(),
     )?;
     assert_eq!(
         final_config.mcp_oauth_credentials_store_mode,
@@ -2023,6 +2021,7 @@ async fn replace_mcp_servers_round_trips_entries() -> anyhow::Result<()> {
             },
             enabled: true,
             required: false,
+            supports_parallel_tool_calls: false,
             disabled_reason: None,
             startup_timeout_sec: Some(Duration::from_secs(3)),
             tool_timeout_sec: Some(Duration::from_secs(5)),
@@ -2205,25 +2204,25 @@ approval_mode = "approve"
     );
 }
 
-#[test]
-fn to_mcp_config_preserves_apps_feature_from_config() -> std::io::Result<()> {
+#[tokio::test]
+async fn to_mcp_config_preserves_apps_feature_from_config() -> std::io::Result<()> {
     let codex_home = TempDir::new()?;
     let mut config = Config::load_from_base_config_with_overrides(
         ConfigToml::default(),
         ConfigOverrides::default(),
-        codex_home.path().to_path_buf(),
+        codex_home.abs(),
     )?;
     let plugins_manager = PluginsManager::new(codex_home.path().to_path_buf());
 
-    let mcp_config = config.to_mcp_config(&plugins_manager);
+    let mcp_config = config.to_mcp_config(&plugins_manager).await;
     assert!(mcp_config.apps_enabled);
 
     let _ = config.features.disable(Feature::Apps);
-    let mcp_config = config.to_mcp_config(&plugins_manager);
+    let mcp_config = config.to_mcp_config(&plugins_manager).await;
     assert!(!mcp_config.apps_enabled);
 
     let _ = config.features.enable(Feature::Apps);
-    let mcp_config = config.to_mcp_config(&plugins_manager);
+    let mcp_config = config.to_mcp_config(&plugins_manager).await;
     assert!(mcp_config.apps_enabled);
 
     Ok(())
@@ -2273,6 +2272,7 @@ async fn replace_mcp_servers_serializes_env_sorted() -> anyhow::Result<()> {
             },
             enabled: true,
             required: false,
+            supports_parallel_tool_calls: false,
             disabled_reason: None,
             startup_timeout_sec: None,
             tool_timeout_sec: None,
@@ -2350,6 +2350,7 @@ async fn replace_mcp_servers_serializes_env_vars() -> anyhow::Result<()> {
             },
             enabled: true,
             required: false,
+            supports_parallel_tool_calls: false,
             disabled_reason: None,
             startup_timeout_sec: None,
             tool_timeout_sec: None,
@@ -2407,6 +2408,7 @@ async fn replace_mcp_servers_serializes_cwd() -> anyhow::Result<()> {
             },
             enabled: true,
             required: false,
+            supports_parallel_tool_calls: false,
             disabled_reason: None,
             startup_timeout_sec: None,
             tool_timeout_sec: None,
@@ -2462,6 +2464,7 @@ async fn replace_mcp_servers_streamable_http_serializes_bearer_token() -> anyhow
             },
             enabled: true,
             required: false,
+            supports_parallel_tool_calls: false,
             disabled_reason: None,
             startup_timeout_sec: Some(Duration::from_secs(2)),
             tool_timeout_sec: None,
@@ -2533,6 +2536,7 @@ async fn replace_mcp_servers_streamable_http_serializes_custom_headers() -> anyh
             },
             enabled: true,
             required: false,
+            supports_parallel_tool_calls: false,
             disabled_reason: None,
             startup_timeout_sec: Some(Duration::from_secs(2)),
             tool_timeout_sec: None,
@@ -2616,6 +2620,7 @@ async fn replace_mcp_servers_streamable_http_removes_optional_sections() -> anyh
             },
             enabled: true,
             required: false,
+            supports_parallel_tool_calls: false,
             disabled_reason: None,
             startup_timeout_sec: Some(Duration::from_secs(2)),
             tool_timeout_sec: None,
@@ -2652,6 +2657,7 @@ async fn replace_mcp_servers_streamable_http_removes_optional_sections() -> anyh
             },
             enabled: true,
             required: false,
+            supports_parallel_tool_calls: false,
             disabled_reason: None,
             startup_timeout_sec: None,
             tool_timeout_sec: None,
@@ -2723,6 +2729,7 @@ async fn replace_mcp_servers_streamable_http_isolates_headers_between_servers() 
                 },
                 enabled: true,
                 required: false,
+                supports_parallel_tool_calls: false,
                 disabled_reason: None,
                 startup_timeout_sec: Some(Duration::from_secs(2)),
                 tool_timeout_sec: None,
@@ -2749,6 +2756,7 @@ async fn replace_mcp_servers_streamable_http_isolates_headers_between_servers() 
                 },
                 enabled: true,
                 required: false,
+                supports_parallel_tool_calls: false,
                 disabled_reason: None,
                 startup_timeout_sec: None,
                 tool_timeout_sec: None,
@@ -2838,6 +2846,7 @@ async fn replace_mcp_servers_serializes_disabled_flag() -> anyhow::Result<()> {
             },
             enabled: false,
             required: false,
+            supports_parallel_tool_calls: false,
             disabled_reason: None,
             startup_timeout_sec: None,
             tool_timeout_sec: None,
@@ -2889,6 +2898,7 @@ async fn replace_mcp_servers_serializes_required_flag() -> anyhow::Result<()> {
             },
             enabled: true,
             required: true,
+            supports_parallel_tool_calls: false,
             disabled_reason: None,
             startup_timeout_sec: None,
             tool_timeout_sec: None,
@@ -2940,6 +2950,7 @@ async fn replace_mcp_servers_serializes_tool_filters() -> anyhow::Result<()> {
             },
             enabled: true,
             required: false,
+            supports_parallel_tool_calls: false,
             disabled_reason: None,
             startup_timeout_sec: None,
             tool_timeout_sec: None,
@@ -2995,6 +3006,7 @@ async fn replace_mcp_servers_streamable_http_serializes_oauth_resource() -> anyh
             },
             enabled: true,
             required: false,
+            supports_parallel_tool_calls: false,
             disabled_reason: None,
             startup_timeout_sec: None,
             tool_timeout_sec: None,
@@ -3295,8 +3307,8 @@ impl PrecedenceTestFixture {
         self.cwd.path().to_path_buf()
     }
 
-    fn codex_home(&self) -> PathBuf {
-        self.codex_home.path().to_path_buf()
+    fn codex_home(&self) -> AbsolutePathBuf {
+        self.codex_home.abs()
     }
 }
 
@@ -3311,7 +3323,7 @@ fn cli_override_sets_compact_prompt() -> std::io::Result<()> {
     let config = Config::load_from_base_config_with_overrides(
         ConfigToml::default(),
         overrides,
-        codex_home.path().to_path_buf(),
+        codex_home.abs(),
     )?;
 
     assert_eq!(
@@ -3341,11 +3353,7 @@ fn loads_compact_prompt_from_file() -> std::io::Result<()> {
         ..Default::default()
     };
 
-    let config = Config::load_from_base_config_with_overrides(
-        cfg,
-        overrides,
-        codex_home.path().to_path_buf(),
-    )?;
+    let config = Config::load_from_base_config_with_overrides(cfg, overrides, codex_home.abs())?;
 
     assert_eq!(
         config.compact_prompt.as_deref(),
@@ -3376,7 +3384,7 @@ fn load_config_uses_requirements_guardian_policy_config() -> std::io::Result<()>
             cwd: Some(codex_home.path().to_path_buf()),
             ..Default::default()
         },
-        codex_home.path().to_path_buf(),
+        codex_home.abs(),
         config_layer_stack,
     )?;
 
@@ -3407,7 +3415,7 @@ fn load_config_ignores_empty_requirements_guardian_policy_config() -> std::io::R
             cwd: Some(codex_home.path().to_path_buf()),
             ..Default::default()
         },
-        codex_home.path().to_path_buf(),
+        codex_home.abs(),
         config_layer_stack,
     )?;
 
@@ -3440,7 +3448,7 @@ fn load_config_rejects_missing_agent_role_config_file() -> std::io::Result<()> {
     let result = Config::load_from_base_config_with_overrides(
         cfg,
         ConfigOverrides::default(),
-        codex_home.path().to_path_buf(),
+        codex_home.abs(),
     );
     let err = result.expect_err("missing role config file should be rejected");
     assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
@@ -4308,7 +4316,7 @@ fn load_config_normalizes_agent_role_nickname_candidates() -> std::io::Result<()
     let config = Config::load_from_base_config_with_overrides(
         cfg,
         ConfigOverrides::default(),
-        codex_home.path().to_path_buf(),
+        codex_home.abs(),
     )?;
 
     assert_eq!(
@@ -4346,7 +4354,7 @@ fn load_config_rejects_empty_agent_role_nickname_candidates() -> std::io::Result
     let result = Config::load_from_base_config_with_overrides(
         cfg,
         ConfigOverrides::default(),
-        codex_home.path().to_path_buf(),
+        codex_home.abs(),
     );
     let err = result.expect_err("empty nickname candidates should be rejected");
     assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
@@ -4381,7 +4389,7 @@ fn load_config_rejects_duplicate_agent_role_nickname_candidates() -> std::io::Re
     let result = Config::load_from_base_config_with_overrides(
         cfg,
         ConfigOverrides::default(),
-        codex_home.path().to_path_buf(),
+        codex_home.abs(),
     );
     let err = result.expect_err("duplicate nickname candidates should be rejected");
     assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
@@ -4416,7 +4424,7 @@ fn load_config_rejects_unsafe_agent_role_nickname_candidates() -> std::io::Resul
     let result = Config::load_from_base_config_with_overrides(
         cfg,
         ConfigOverrides::default(),
-        codex_home.path().to_path_buf(),
+        codex_home.abs(),
     );
     let err = result.expect_err("unsafe nickname candidates should be rejected");
     assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
@@ -4447,7 +4455,7 @@ fn model_catalog_json_loads_from_path() -> std::io::Result<()> {
     let config = Config::load_from_base_config_with_overrides(
         cfg,
         ConfigOverrides::default(),
-        codex_home.path().to_path_buf(),
+        codex_home.abs(),
     )?;
 
     assert_eq!(config.model_catalog, Some(catalog));
@@ -4468,7 +4476,7 @@ fn model_catalog_json_rejects_empty_catalog() -> std::io::Result<()> {
     let err = Config::load_from_base_config_with_overrides(
         cfg,
         ConfigOverrides::default(),
-        codex_home.path().to_path_buf(),
+        codex_home.abs(),
     )
     .expect_err("empty custom catalog should fail config load");
 
@@ -4654,8 +4662,8 @@ fn test_precedence_fixture_with_o3_profile() -> std::io::Result<()> {
             memories: MemoriesConfig::default(),
             agent_job_max_runtime_seconds: DEFAULT_AGENT_JOB_MAX_RUNTIME_SECONDS,
             codex_home: fixture.codex_home(),
-            sqlite_home: fixture.codex_home(),
-            log_dir: fixture.codex_home().join("log"),
+            sqlite_home: fixture.codex_home().to_path_buf(),
+            log_dir: fixture.codex_home().join("log").to_path_buf(),
             config_layer_stack: Default::default(),
             startup_warnings: Vec::new(),
             history: History::default(),
@@ -4803,8 +4811,8 @@ fn test_precedence_fixture_with_gpt3_profile() -> std::io::Result<()> {
         memories: MemoriesConfig::default(),
         agent_job_max_runtime_seconds: DEFAULT_AGENT_JOB_MAX_RUNTIME_SECONDS,
         codex_home: fixture.codex_home(),
-        sqlite_home: fixture.codex_home(),
-        log_dir: fixture.codex_home().join("log"),
+        sqlite_home: fixture.codex_home().to_path_buf(),
+        log_dir: fixture.codex_home().join("log").to_path_buf(),
         config_layer_stack: Default::default(),
         startup_warnings: Vec::new(),
         history: History::default(),
@@ -4950,8 +4958,8 @@ fn test_precedence_fixture_with_zdr_profile() -> std::io::Result<()> {
         memories: MemoriesConfig::default(),
         agent_job_max_runtime_seconds: DEFAULT_AGENT_JOB_MAX_RUNTIME_SECONDS,
         codex_home: fixture.codex_home(),
-        sqlite_home: fixture.codex_home(),
-        log_dir: fixture.codex_home().join("log"),
+        sqlite_home: fixture.codex_home().to_path_buf(),
+        log_dir: fixture.codex_home().join("log").to_path_buf(),
         config_layer_stack: Default::default(),
         startup_warnings: Vec::new(),
         history: History::default(),
@@ -5083,8 +5091,8 @@ fn test_precedence_fixture_with_gpt5_profile() -> std::io::Result<()> {
         memories: MemoriesConfig::default(),
         agent_job_max_runtime_seconds: DEFAULT_AGENT_JOB_MAX_RUNTIME_SECONDS,
         codex_home: fixture.codex_home(),
-        sqlite_home: fixture.codex_home(),
-        log_dir: fixture.codex_home().join("log"),
+        sqlite_home: fixture.codex_home().to_path_buf(),
+        log_dir: fixture.codex_home().join("log").to_path_buf(),
         config_layer_stack: Default::default(),
         startup_warnings: Vec::new(),
         history: History::default(),
@@ -5385,7 +5393,7 @@ fn test_load_config_rejects_legacy_ollama_chat_provider_with_helpful_error() -> 
     let result = Config::load_from_base_config_with_overrides(
         cfg,
         ConfigOverrides::default(),
-        codex_home.path().to_path_buf(),
+        codex_home.abs(),
     );
     assert!(result.is_err());
     let error = result.unwrap_err();
@@ -5648,7 +5656,7 @@ mcp_oauth_callback_port = 5678
     let config = Config::load_from_base_config_with_overrides(
         cfg,
         ConfigOverrides::default(),
-        codex_home.path().to_path_buf(),
+        codex_home.abs(),
     )?;
 
     assert_eq!(config.mcp_oauth_callback_port, Some(5678));
@@ -5669,7 +5677,7 @@ allow_login_shell = false
     let config = Config::load_from_base_config_with_overrides(
         cfg,
         ConfigOverrides::default(),
-        codex_home.path().to_path_buf(),
+        codex_home.abs(),
     )?;
 
     assert!(!config.permissions.allow_login_shell);
@@ -5689,7 +5697,7 @@ mcp_oauth_callback_url = "https://example.com/callback"
     let config = Config::load_from_base_config_with_overrides(
         cfg,
         ConfigOverrides::default(),
-        codex_home.path().to_path_buf(),
+        codex_home.abs(),
     )?;
 
     assert_eq!(
@@ -5719,7 +5727,7 @@ fn test_untrusted_project_gets_unless_trusted_approval_policy() -> anyhow::Resul
             cwd: Some(test_path.to_path_buf()),
             ..Default::default()
         },
-        codex_home.path().to_path_buf(),
+        codex_home.abs(),
     )?;
 
     // Verify that untrusted projects get UnlessTrusted approval policy
@@ -6453,7 +6461,7 @@ discoverables = [
     let config = Config::load_from_base_config_with_overrides(
         cfg,
         ConfigOverrides::default(),
-        codex_home.path().to_path_buf(),
+        codex_home.abs(),
     )?;
 
     assert_eq!(
@@ -6492,7 +6500,7 @@ experimental_realtime_start_instructions = "start instructions from config"
     let config = Config::load_from_base_config_with_overrides(
         cfg,
         ConfigOverrides::default(),
-        codex_home.path().to_path_buf(),
+        codex_home.abs(),
     )?;
 
     assert_eq!(
@@ -6520,7 +6528,7 @@ experimental_realtime_ws_base_url = "http://127.0.0.1:8011"
     let config = Config::load_from_base_config_with_overrides(
         cfg,
         ConfigOverrides::default(),
-        codex_home.path().to_path_buf(),
+        codex_home.abs(),
     )?;
 
     assert_eq!(
@@ -6548,7 +6556,7 @@ experimental_realtime_ws_backend_prompt = "prompt from config"
     let config = Config::load_from_base_config_with_overrides(
         cfg,
         ConfigOverrides::default(),
-        codex_home.path().to_path_buf(),
+        codex_home.abs(),
     )?;
 
     assert_eq!(
@@ -6576,7 +6584,7 @@ experimental_realtime_ws_startup_context = "startup context from config"
     let config = Config::load_from_base_config_with_overrides(
         cfg,
         ConfigOverrides::default(),
-        codex_home.path().to_path_buf(),
+        codex_home.abs(),
     )?;
 
     assert_eq!(
@@ -6604,7 +6612,7 @@ experimental_realtime_ws_model = "realtime-test-model"
     let config = Config::load_from_base_config_with_overrides(
         cfg,
         ConfigOverrides::default(),
-        codex_home.path().to_path_buf(),
+        codex_home.abs(),
     )?;
 
     assert_eq!(
@@ -6628,7 +6636,7 @@ voice = "marin"
     let config = Config::load_from_base_config_with_overrides(
         cfg,
         ConfigOverrides::default(),
-        codex_home.path().to_path_buf(),
+        codex_home.abs(),
     )?;
 
     assert_eq!(
@@ -6668,7 +6676,7 @@ voice = "cedar"
     let config = Config::load_from_base_config_with_overrides(
         cfg,
         ConfigOverrides::default(),
-        codex_home.path().to_path_buf(),
+        codex_home.abs(),
     )?;
 
     assert_eq!(
@@ -6705,7 +6713,7 @@ speaker = "Desk Speakers"
     let config = Config::load_from_base_config_with_overrides(
         cfg,
         ConfigOverrides::default(),
-        codex_home.path().to_path_buf(),
+        codex_home.abs(),
     )?;
 
     assert_eq!(config.realtime_audio.microphone.as_deref(), Some("USB Mic"));

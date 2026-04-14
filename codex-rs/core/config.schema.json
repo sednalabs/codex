@@ -1794,7 +1794,7 @@
           "format": "double",
           "type": "number"
         },
-        "strict_tool_classification": {
+        "supports_parallel_tool_calls": {
           "default": null,
           "type": "boolean"
         },

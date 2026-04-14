@@ -4120,13 +4120,35 @@
       ],
       "type": "object"
     },
-    "ThreadRealtimeTranscriptUpdatedNotification": {
+    "ThreadRealtimeTranscriptDeltaNotification": {
       "description": "EXPERIMENTAL - flat transcript delta emitted whenever realtime\ntranscript text changes.",
+      "properties": {
+        "delta": {
+          "description": "Live transcript delta from the realtime event.",
+          "type": "string"
+        },
+        "role": {
+          "type": "string"
+        },
+        "threadId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "threadId",
+        "role",
+        "delta"
+      ],
+      "type": "object"
+    },
+    "ThreadRealtimeTranscriptDoneNotification": {
+      "description": "EXPERIMENTAL - final transcript text emitted when realtime completes\na transcript part.",
       "properties": {
         "role": {
           "type": "string"
         },
         "text": {
+          "description": "Final complete text for the transcript part.",
           "type": "string"
         },
         "threadId": {
@@ -5571,19 +5593,37 @@
     {
       "properties": {
         "method": {
-          "const": "thread/realtime/transcriptUpdated",
-          "title": "Thread/realtime/transcriptUpdatedNotificationMethod",
+          "const": "thread/realtime/transcript/delta",
+          "title": "Thread/realtime/transcript/deltaNotificationMethod",
           "type": "string"
         },
         "params": {
-          "$ref": "#/$defs/ThreadRealtimeTranscriptUpdatedNotification"
+          "$ref": "#/$defs/ThreadRealtimeTranscriptDeltaNotification"
         }
       },
       "required": [
         "method",
         "params"
       ],
-      "title": "Thread/realtime/transcriptUpdatedNotification",
+      "title": "Thread/realtime/transcript/deltaNotification",
+      "type": "object"
+    },
+    {
+      "properties": {
+        "method": {
+          "const": "thread/realtime/transcript/done",
+          "title": "Thread/realtime/transcript/doneNotificationMethod",
+          "type": "string"
+        },
+        "params": {
+          "$ref": "#/$defs/ThreadRealtimeTranscriptDoneNotification"
+        }
+      },
+      "required": [
+        "method",
+        "params"
+      ],
+      "title": "Thread/realtime/transcript/doneNotification",
       "type": "object"
     },
     {

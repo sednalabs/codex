@@ -1286,6 +1286,32 @@
         }
       ]
     },
+    "MarketplaceAddParams": {
+      "properties": {
+        "refName": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "source": {
+          "type": "string"
+        },
+        "sparsePaths": {
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "source"
+      ],
+      "type": "object"
+    },
     "McpResourceReadParams": {
       "properties": {
         "server": {
@@ -1534,6 +1560,13 @@
           "type": "object"
         }
       ]
+    },
+    "RealtimeOutputModality": {
+      "enum": [
+        "text",
+        "audio"
+      ],
+      "type": "string"
     },
     "RealtimeVoice": {
       "enum": [
@@ -2720,6 +2753,23 @@
       ],
       "type": "object"
     },
+    "ThreadInjectItemsParams": {
+      "properties": {
+        "items": {
+          "description": "Raw Responses API items to append to the thread's model-visible history.",
+          "items": true,
+          "type": "array"
+        },
+        "threadId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "threadId",
+        "items"
+      ],
+      "type": "object"
+    },
     "ThreadListParams": {
       "properties": {
         "archived": {
@@ -2812,6 +2862,28 @@
           ]
         }
       },
+      "type": "object"
+    },
+    "ThreadMemoryMode": {
+      "enum": [
+        "enabled",
+        "disabled"
+      ],
+      "type": "string"
+    },
+    "ThreadMemoryModeSetParams": {
+      "properties": {
+        "mode": {
+          "$ref": "#/$defs/ThreadMemoryMode"
+        },
+        "threadId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "threadId",
+        "mode"
+      ],
       "type": "object"
     },
     "ThreadMetadataGitInfoUpdateParams": {
@@ -2952,6 +3024,10 @@
     "ThreadRealtimeStartParams": {
       "description": "EXPERIMENTAL - start a thread-scoped realtime session.",
       "properties": {
+        "outputModality": {
+          "$ref": "#/$defs/RealtimeOutputModality",
+          "description": "Selects text or audio output for the realtime session. Transport and voice stay\nindependent so clients can choose how they connect separately from what the model emits."
+        },
         "prompt": {
           "type": [
             "string",
@@ -2989,7 +3065,8 @@
         }
       },
       "required": [
-        "threadId"
+        "threadId",
+        "outputModality"
       ],
       "type": "object"
     },
@@ -4061,6 +4138,29 @@
       "type": "object"
     },
     {
+      "description": "Append raw Responses API items to the thread history without starting a user turn.",
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/RequestId"
+        },
+        "method": {
+          "const": "thread/inject_items",
+          "title": "Thread/injectItemsRequestMethod",
+          "type": "string"
+        },
+        "params": {
+          "$ref": "#/$defs/ThreadInjectItemsParams"
+        }
+      },
+      "required": [
+        "method",
+        "id",
+        "params"
+      ],
+      "title": "Thread/injectItemsRequest",
+      "type": "object"
+    },
+    {
       "properties": {
         "id": {
           "$ref": "#/$defs/RequestId"
@@ -4080,6 +4180,28 @@
         "params"
       ],
       "title": "Skills/listRequest",
+      "type": "object"
+    },
+    {
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/RequestId"
+        },
+        "method": {
+          "const": "marketplace/add",
+          "title": "Marketplace/addRequestMethod",
+          "type": "string"
+        },
+        "params": {
+          "$ref": "#/$defs/MarketplaceAddParams"
+        }
+      },
+      "required": [
+        "method",
+        "id",
+        "params"
+      ],
+      "title": "Marketplace/addRequest",
       "type": "object"
     },
     {

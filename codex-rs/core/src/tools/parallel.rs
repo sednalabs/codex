@@ -21,7 +21,6 @@ use crate::tools::router::ToolCallSource;
 use crate::tools::router::ToolRouter;
 use codex_protocol::error::CodexErr;
 use codex_protocol::models::ResponseInputItem;
-use codex_tools::ToolName;
 use codex_tools::ToolSpec;
 
 #[derive(Clone)]
@@ -79,7 +78,7 @@ impl ToolCallRuntime {
         source: ToolCallSource,
         cancellation_token: CancellationToken,
     ) -> impl std::future::Future<Output = Result<AnyToolResult, FunctionCallError>> {
-        let supports_parallel = self.router.tool_supports_parallel(&call.tool_name);
+        let supports_parallel = self.router.tool_supports_parallel(&call);
         let router = Arc::clone(&self.router);
         let session = Arc::clone(&self.session);
         let turn = Arc::clone(&self.turn_context);
@@ -189,6 +188,7 @@ impl ToolCallRuntime {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use codex_tools::ToolName;
 
     fn tool_call(tool_name: &str) -> ToolCall {
         ToolCall {
