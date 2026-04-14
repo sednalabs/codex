@@ -361,6 +361,7 @@ fn test_build_specs_gpt5_codex_default() {
             "resume_agent",
             "wait_agent",
             "close_agent",
+            "inspect_agent_tree",
         ],
     );
 }
@@ -384,6 +385,7 @@ fn test_build_specs_gpt51_codex_default() {
             "resume_agent",
             "wait_agent",
             "close_agent",
+            "inspect_agent_tree",
         ],
     );
 }
@@ -409,6 +411,7 @@ fn test_build_specs_gpt5_codex_unified_exec_web_search() {
             "resume_agent",
             "wait_agent",
             "close_agent",
+            "inspect_agent_tree",
         ],
     );
 }
@@ -434,6 +437,7 @@ fn test_build_specs_gpt51_codex_unified_exec_web_search() {
             "resume_agent",
             "wait_agent",
             "close_agent",
+            "inspect_agent_tree",
         ],
     );
 }
@@ -457,6 +461,7 @@ fn test_gpt_5_1_codex_max_defaults() {
             "resume_agent",
             "wait_agent",
             "close_agent",
+            "inspect_agent_tree",
         ],
     );
 }
@@ -480,6 +485,7 @@ fn test_codex_5_1_mini_defaults() {
             "resume_agent",
             "wait_agent",
             "close_agent",
+            "inspect_agent_tree",
         ],
     );
 }
@@ -502,6 +508,7 @@ fn test_gpt_5_defaults() {
             "resume_agent",
             "wait_agent",
             "close_agent",
+            "inspect_agent_tree",
         ],
     );
 }
@@ -525,6 +532,7 @@ fn test_gpt_5_1_defaults() {
             "resume_agent",
             "wait_agent",
             "close_agent",
+            "inspect_agent_tree",
         ],
     );
 }
@@ -550,6 +558,7 @@ fn test_gpt_5_1_codex_max_unified_exec_web_search() {
             "resume_agent",
             "wait_agent",
             "close_agent",
+            "inspect_agent_tree",
         ],
     );
 }

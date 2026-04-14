@@ -2678,10 +2678,10 @@ text(JSON.stringify(ALL_TOOLS));
         "args",
         &["env_var?: string", "message: string"],
         &[
-            "_meta?: unknown",
-            "content: Array<unknown>",
+            "_meta?: { [key: string]: unknown; }",
+            "content: Array<{ [key: string]: unknown; }>",
             "isError?: boolean",
-            "structuredContent?: unknown",
+            "structuredContent?: { echo: string; env: string | null; }",
         ],
     );
 

@@ -156,18 +156,7 @@ fn spawn_agent_tool_v1_exposes_runtime_metadata_fields() {
     };
     assert_eq!(
         output_schema.expect("spawn_agent output schema")["required"],
-        json!([
-            "agent_id",
-            "nickname",
-            "role",
-            "status",
-            "requested_model",
-            "requested_reasoning_effort",
-            "effective_model",
-            "effective_reasoning_effort",
-            "effective_model_provider_id",
-            "identity_source"
-        ])
+        json!(["agent_id", "nickname"])
     );
 }
 
