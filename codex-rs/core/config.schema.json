@@ -398,9 +398,6 @@
             "guardian_approval": {
               "type": "boolean"
             },
-            "image_detail_original": {
-              "type": "boolean"
-            },
             "image_generation": {
               "type": "boolean"
             },
@@ -2252,9 +2249,6 @@
           "type": "boolean"
         },
         "guardian_approval": {
-          "type": "boolean"
-        },
-        "image_detail_original": {
           "type": "boolean"
         },
         "image_generation": {
