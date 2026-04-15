@@ -490,10 +490,10 @@ mod phase2 {
         Arc::new(config)
     }
 
-    async fn create_and_canonicalize_memory_root(
-        codex_home: &codex_utils_absolute_path::AbsolutePathBuf,
-    ) -> PathBuf {
-        let root = memory_root(codex_home);
+    async fn create_and_canonicalize_memory_root(codex_home: &std::path::Path) -> PathBuf {
+        let codex_home = codex_utils_absolute_path::AbsolutePathBuf::from_absolute_path(codex_home)
+            .expect("codex home should be absolute");
+        let root = memory_root(&codex_home);
         tokio::fs::create_dir_all(&root)
             .await
             .expect("create memory root");
