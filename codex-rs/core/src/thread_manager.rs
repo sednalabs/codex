@@ -947,6 +947,7 @@ impl ThreadManagerState {
             inherited_exec_policy,
             user_shell_override,
             parent_trace,
+            analytics_events_client: self.analytics_events_client.clone(),
         })
         .await?;
         self.finalize_thread_spawn(codex, thread_id, watch_registration)

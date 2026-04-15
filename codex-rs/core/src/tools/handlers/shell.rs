@@ -1,7 +1,6 @@
 use codex_protocol::ThreadId;
 use codex_protocol::models::ShellCommandToolCallParams;
 use codex_protocol::models::ShellToolCallParams;
-use codex_utils_absolute_path::AbsolutePathBuf;
 use serde_json::Value as JsonValue;
 use std::sync::Arc;
 
@@ -96,8 +95,7 @@ impl ShellHandler {
     ) -> ExecParams {
         ExecParams {
             command: params.command.clone(),
-            cwd: AbsolutePathBuf::try_from(turn_context.resolve_path(params.workdir.clone()))
-                .expect("shell tool workdir must resolve to an absolute path"),
+            cwd: turn_context.resolve_path(params.workdir.clone()),
             expiration: params.timeout_ms.into(),
             capture_policy: ExecCapturePolicy::ShellTool,
             env: create_env(&turn_context.shell_environment_policy, Some(thread_id)),
@@ -152,8 +150,7 @@ impl ShellCommandHandler {
 
         Ok(ExecParams {
             command,
-            cwd: AbsolutePathBuf::try_from(turn_context.resolve_path(params.workdir.clone()))
-                .expect("shell_command workdir must resolve to an absolute path"),
+            cwd: turn_context.resolve_path(params.workdir.clone()),
             expiration: params.timeout_ms.into(),
             capture_policy: ExecCapturePolicy::ShellTool,
             env: create_env(&turn_context.shell_environment_policy, Some(thread_id)),
@@ -351,14 +348,11 @@ impl ToolHandler for ShellCommandHandler {
         let cwd = resolve_workdir_base_path(&arguments, &turn.cwd)?;
         let params: ShellCommandToolCallParams = parse_arguments_with_base_path(&arguments, &cwd)?;
         let workdir = turn.resolve_path(params.workdir.clone());
-        let absolute_workdir = AbsolutePathBuf::try_from(workdir.clone()).map_err(|err| {
-            FunctionCallError::RespondToModel(format!("invalid shell workdir: {err}"))
-        })?;
         maybe_emit_implicit_skill_invocation(
             session.as_ref(),
             turn.as_ref(),
             &params.command,
-            &absolute_workdir,
+            &workdir,
         )
         .await;
         let prefix_rule = params.prefix_rule.clone();
@@ -401,7 +395,11 @@ impl ShellHandler {
         } = args;
 
         let mut exec_params = exec_params;
-        let environment = turn.environment.as_ref();
+        let Some(environment) = turn.environment.as_ref() else {
+            return Err(FunctionCallError::RespondToModel(
+                "shell is unavailable in this session".to_string(),
+            ));
+        };
         let fs = environment.get_filesystem();
 
         let dependency_env = session.dependency_env().await;

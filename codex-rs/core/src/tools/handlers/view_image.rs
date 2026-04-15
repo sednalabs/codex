@@ -4,7 +4,6 @@ use codex_protocol::models::FunctionCallOutputPayload;
 use codex_protocol::models::ImageDetail;
 use codex_protocol::models::ResponseInputItem;
 use codex_protocol::openai_models::InputModality;
-use codex_utils_absolute_path::AbsolutePathBuf;
 use codex_utils_image::PromptImageMode;
 use codex_utils_image::load_for_prompt_bytes;
 use serde::Deserialize;
@@ -87,13 +86,19 @@ impl ToolHandler for ViewImageHandler {
             }
         };
 
-        let abs_path = AbsolutePathBuf::try_from(turn.resolve_path(Some(args.path)))
-            .expect("view_image path must resolve to an absolute path");
-        let environment = turn.environment.as_ref();
+        let abs_path = turn.resolve_path(Some(args.path));
+        let Some(environment) = turn.environment.as_ref() else {
+            return Err(FunctionCallError::RespondToModel(
+                "view_image is unavailable in this session".to_string(),
+            ));
+        };
+        let sandbox = environment
+            .is_remote()
+            .then(|| turn.file_system_sandbox_context(/*additional_permissions*/ None));
 
         let metadata = environment
             .get_filesystem()
-            .get_metadata(&abs_path, None)
+            .get_metadata(&abs_path, sandbox.as_ref())
             .await
             .map_err(|error| {
                 FunctionCallError::RespondToModel(format!(
@@ -110,7 +115,7 @@ impl ToolHandler for ViewImageHandler {
         }
         let file_bytes = environment
             .get_filesystem()
-            .read_file(&abs_path, None)
+            .read_file(&abs_path, sandbox.as_ref())
             .await
             .map_err(|error| {
                 FunctionCallError::RespondToModel(format!(

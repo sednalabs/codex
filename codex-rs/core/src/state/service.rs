@@ -63,7 +63,7 @@ pub(crate) struct SessionServices {
     pub(crate) model_client: ModelClient,
     pub(crate) code_mode_service: CodeModeService,
     pub(crate) usage_logger: Option<Mutex<UsageLogger>>,
-    pub(crate) environment: Arc<Environment>,
+    pub(crate) environment: Option<Arc<Environment>>,
 }
 
 impl SessionServices {
