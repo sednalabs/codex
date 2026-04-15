@@ -133,7 +133,9 @@ preview includes both queued message drafts and queued slash commands. Front-que
 are inserted ahead of the existing queued message backlog so they run next after the active task,
 while `Tab`-queued drafts preserve the existing append-to-back FIFO behavior. `Alt+Up` recalls
 queued entries for editing from that list in strict reverse-chronological order across both entry
-types.
+types. If replay hits a mode-changing queued slash command such as `/plan`, that mode switch must
+take effect before any later queued message is autosent; otherwise the drain pauses and leaves the
+later drafts queued.
 
 The composer also treats the textarea kill buffer as separate editing state from the visible draft.
 After submit or slash-command dispatch clears the textarea, the most recent `Ctrl+K` payload is

@@ -54,7 +54,9 @@
 //! The numeric auto-submit path used by the slash popup performs the same pending-paste expansion
 //! and attachment pruning, and clears pending paste state on success.
 //! Slash commands with arguments (like `/plan` and `/review`) reuse the same preparation path so
-//! pasted content and text elements are preserved when extracting args.
+//! pasted content and text elements are preserved when extracting args. Higher-level queued replay
+//! semantics still own whether a mode-changing command like `/plan` is allowed to autosend later
+//! queued drafts.
 //!
 //! # Remote Image Rows (Up/Down/Delete)
 //!
@@ -2343,9 +2345,6 @@ impl ChatComposer {
             && let Some(cmd) =
                 slash_commands::find_builtin_command(name, self.builtin_command_flags())
         {
-            if self.reject_slash_command_if_unavailable(cmd) {
-                return Some(InputResult::None);
-            }
             self.textarea.set_text_clearing_elements("");
             Some(InputResult::Command {
                 cmd,
@@ -2380,9 +2379,6 @@ impl ChatComposer {
         if !cmd.supports_inline_args() {
             return None;
         }
-        if self.reject_slash_command_if_unavailable(cmd) {
-            return Some(InputResult::None);
-        }
 
         let mut args_elements =
             Self::slash_command_args_elements(rest, rest_offset, &self.textarea.text_elements());
@@ -2416,20 +2412,6 @@ impl ChatComposer {
         let trimmed_rest = prepared_rest.trim();
         args_elements = Self::trim_text_elements(prepared_rest, trimmed_rest, args_elements);
         Some((trimmed_rest.to_string(), args_elements))
-    }
-
-    fn reject_slash_command_if_unavailable(&self, cmd: SlashCommand) -> bool {
-        if !self.is_task_running || cmd.available_during_task() {
-            return false;
-        }
-        let message = format!(
-            "'/{}' is disabled while a task is in progress.",
-            cmd.command()
-        );
-        self.app_event_tx.send(AppEvent::InsertHistoryCell(Box::new(
-            history_cell::new_error_event(message),
-        )));
-        true
     }
 
     /// Translate full-text element ranges into command-argument ranges.
@@ -6251,7 +6233,7 @@ mod tests {
     }
 
     #[test]
-    fn slash_command_disabled_while_task_running_keeps_text() {
+    fn slash_command_with_args_dispatches_while_task_running() {
         use crossterm::event::KeyCode;
         use crossterm::event::KeyEvent;
         use crossterm::event::KeyModifiers;
@@ -6273,24 +6255,27 @@ mod tests {
         let (result, _needs_redraw) =
             composer.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
 
-        assert_eq!(InputResult::None, result);
-        assert_eq!("/review these changes", composer.textarea.text());
-
-        let mut found_error = false;
-        while let Ok(event) = rx.try_recv() {
-            if let AppEvent::InsertHistoryCell(cell) = event {
-                let message = cell
-                    .display_lines(/*width*/ 80)
-                    .into_iter()
-                    .map(|line| line.to_string())
-                    .collect::<Vec<_>>()
-                    .join("\n");
-                assert!(message.contains("disabled while a task is in progress"));
-                found_error = true;
-                break;
+        match result {
+            InputResult::CommandWithArgs {
+                cmd,
+                args,
+                queue_front_when_busy,
+                ..
+            } => {
+                assert_eq!(cmd, SlashCommand::Review);
+                assert_eq!(args, "these changes");
+                assert!(!queue_front_when_busy);
             }
+            other => panic!("expected /review dispatch while task running, got {other:?}"),
         }
-        assert!(found_error, "expected error history cell to be sent");
+        assert_eq!(composer.textarea.text(), "/review these changes");
+        assert!(
+            matches!(
+                rx.try_recv(),
+                Err(tokio::sync::mpsc::error::TryRecvError::Empty)
+            ),
+            "expected no disabled-command history event for /review"
+        );
     }
 
     #[test]
