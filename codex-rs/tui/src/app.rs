@@ -1211,7 +1211,7 @@ impl App {
         session.approval_policy = config.permissions.approval_policy.value();
         session.approvals_reviewer = config.approvals_reviewer;
         session.sandbox_policy = config.permissions.sandbox_policy.get().clone();
-        session.cwd = config.cwd.to_path_buf();
+        session.cwd = config.cwd.clone();
         session.reasoning_effort = reasoning_effort;
     }
 
@@ -1928,7 +1928,8 @@ impl App {
                     cwd: self
                         .thread_cwd(thread_id)
                         .await
-                        .unwrap_or_else(|| self.config.cwd.clone()),
+                        .unwrap_or_else(|| self.config.cwd.clone())
+                        .to_path_buf(),
                     changes: HashMap::new(),
                 }),
             ),
@@ -3284,6 +3285,7 @@ impl App {
                 reasoning_effort: self.chat_widget.current_reasoning_effort(),
                 history_log_id: 0,
                 history_entry_count: 0,
+                instruction_source_paths: Vec::new(),
                 network_proxy: None,
                 rollout_path: thread.path.clone(),
             });
@@ -5815,7 +5817,11 @@ impl App {
             AppEvent::FullScreenApprovalRequest(request) => match request {
                 ApprovalRequest::ApplyPatch { cwd, changes, .. } => {
                     let _ = tui.enter_alt_screen();
-                    let diff_summary = DiffSummary::new(changes, cwd);
+                    let diff_summary = DiffSummary::new(
+                        changes,
+                        AbsolutePathBuf::from_absolute_path(cwd.as_path())
+                            .expect("approval cwd should be absolute"),
+                    );
                     self.overlay = Some(Overlay::new_static_with_renderables(
                         vec![diff_summary.into()],
                         "P A T C H".to_string(),
