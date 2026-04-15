@@ -1204,8 +1204,11 @@ async fn status_line_model_with_reasoning_context_remaining_percent_footer_snaps
     use ratatui::backend::TestBackend;
 
     let (mut chat, _rx, _op_rx) = make_chatwidget_manual(Some("gpt-5.4")).await;
-    set_fast_mode_test_catalog(&mut chat);
-    assert!(get_available_model(&chat, "gpt-5.4").supports_fast_mode());
+    chat.set_feature_enabled(codex_core::config::Feature::FastMode, /*enabled*/ true);
+    assert!(chat
+        .config
+        .features
+        .enabled(codex_core::config::Feature::FastMode));
     chat.show_welcome_banner = false;
     chat.config.cwd = test_project_path().abs();
     chat.config.tui_status_line = Some(vec![
@@ -1216,8 +1219,11 @@ async fn status_line_model_with_reasoning_context_remaining_percent_footer_snaps
     chat.set_reasoning_effort(Some(ReasoningEffortConfig::XHigh));
     chat.set_service_tier(Some(ServiceTier::Fast));
     set_chatgpt_auth(&mut chat);
-    set_fast_mode_test_catalog(&mut chat);
-    assert!(get_available_model(&chat, "gpt-5.4").supports_fast_mode());
+    chat.set_feature_enabled(codex_core::config::Feature::FastMode, /*enabled*/ true);
+    assert!(chat
+        .config
+        .features
+        .enabled(codex_core::config::Feature::FastMode));
     chat.refresh_status_line();
 
     let width = 80;
@@ -1918,9 +1924,7 @@ async fn hidden_active_hook_does_not_add_transcript_separator() {
     assert_eq!(hidden_hook_transcript.len(), exec_only_line_count);
 
     reveal_running_hooks(&mut chat);
-    let visible_hook_lines = chat
-        .active_hook_cell
-        .as_ref()
+    let visible_hook_lines = active_hook_cell(&chat)
         .expect("active hook cell")
         .transcript_lines(/*width*/ 80);
     let visible_hook_transcript = chat
