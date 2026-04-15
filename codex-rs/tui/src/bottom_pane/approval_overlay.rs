@@ -499,7 +499,14 @@ fn build_header(request: &ApprovalRequest) -> Box<dyn Renderable> {
                 ));
                 header.push(Box::new(Line::from("")));
             }
-            header.push(DiffSummary::new(changes.clone(), cwd.clone()).into());
+            header.push(
+                DiffSummary::new(
+                    changes.clone(),
+                    AbsolutePathBuf::from_absolute_path(cwd.as_path())
+                        .expect("approval cwd should be absolute"),
+                )
+                .into(),
+            );
             Box::new(ColumnRenderable::with(header))
         }
         ApprovalRequest::McpElicitation {

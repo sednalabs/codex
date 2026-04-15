@@ -985,6 +985,7 @@ async fn thread_session_state_from_thread_start_response(
         response.approvals_reviewer.to_core(),
         response.sandbox.to_core(),
         response.cwd.clone(),
+        response.instruction_sources.clone(),
         response.reasoning_effort,
         config,
     )
@@ -1006,6 +1007,7 @@ async fn thread_session_state_from_thread_resume_response(
         response.approvals_reviewer.to_core(),
         response.sandbox.to_core(),
         response.cwd.clone(),
+        response.instruction_sources.clone(),
         response.reasoning_effort,
         config,
     )
@@ -1027,6 +1029,7 @@ async fn thread_session_state_from_thread_fork_response(
         response.approvals_reviewer.to_core(),
         response.sandbox.to_core(),
         response.cwd.clone(),
+        response.instruction_sources.clone(),
         response.reasoning_effort,
         config,
     )

@@ -388,6 +388,9 @@ fn server_notification_thread_target(
         ServerNotification::ThreadRealtimeTranscriptDelta(notification) => {
             Some(notification.thread_id.as_str())
         }
+        ServerNotification::ThreadRealtimeSdp(notification) => {
+            Some(notification.thread_id.as_str())
+        }
         ServerNotification::ThreadRealtimeTranscriptDone(notification) => {
             Some(notification.thread_id.as_str())
         }
