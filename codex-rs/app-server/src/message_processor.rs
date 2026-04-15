@@ -83,6 +83,7 @@ use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::W3cTraceContext;
 use codex_state::log_db::LogDbLayer;
 use futures::FutureExt;
+use tokio::sync::Mutex;
 use tokio::sync::broadcast;
 use tokio::sync::watch;
 use tokio::time::Duration;
@@ -162,7 +163,7 @@ impl ExternalAuth for ExternalAuthRefreshBridge {
 
 pub(crate) struct MessageProcessor {
     outgoing: Arc<OutgoingMessageSender>,
-    codex_message_processor: CodexMessageProcessor,
+    codex_message_processor: Mutex<CodexMessageProcessor>,
     config_api: ConfigApi,
     external_agent_config_api: ExternalAgentConfigApi,
     fs_api: FsApi,
@@ -321,7 +322,7 @@ impl MessageProcessor {
 
         Self {
             outgoing,
-            codex_message_processor,
+            codex_message_processor: Mutex::new(codex_message_processor),
             config_api,
             external_agent_config_api,
             fs_api,
@@ -479,8 +480,11 @@ impl MessageProcessor {
         request_fut.instrument(request_context.span()).await;
     }
 
-    pub(crate) fn thread_created_receiver(&self) -> broadcast::Receiver<ThreadId> {
-        self.codex_message_processor.thread_created_receiver()
+    pub(crate) async fn thread_created_receiver(&self) -> broadcast::Receiver<ThreadId> {
+        self.codex_message_processor
+            .lock()
+            .await
+            .thread_created_receiver()
     }
 
     pub(crate) async fn send_initialize_notifications_to_connection(
@@ -499,6 +503,8 @@ impl MessageProcessor {
 
     pub(crate) async fn connection_initialized(&self, connection_id: ConnectionId) {
         self.codex_message_processor
+            .lock()
+            .await
             .connection_initialized(connection_id)
             .await;
     }
@@ -517,38 +523,58 @@ impl MessageProcessor {
         connection_ids: Vec<ConnectionId>,
     ) {
         self.codex_message_processor
+            .lock()
+            .await
             .try_attach_thread_listener(thread_id, connection_ids)
             .await;
     }
 
     pub(crate) async fn drain_background_tasks(&self) {
-        self.codex_message_processor.drain_background_tasks().await;
+        self.codex_message_processor
+            .lock()
+            .await
+            .drain_background_tasks()
+            .await;
     }
 
     pub(crate) async fn cancel_active_login(&self) {
-        self.codex_message_processor.cancel_active_login().await;
+        self.codex_message_processor
+            .lock()
+            .await
+            .cancel_active_login()
+            .await;
     }
 
     pub(crate) async fn clear_all_thread_listeners(&self) {
         self.codex_message_processor
+            .lock()
+            .await
             .clear_all_thread_listeners()
             .await;
     }
 
     pub(crate) async fn shutdown_threads(&self) {
-        self.codex_message_processor.shutdown_threads().await;
+        self.codex_message_processor
+            .lock()
+            .await
+            .shutdown_threads()
+            .await;
     }
 
     pub(crate) async fn connection_closed(&self, connection_id: ConnectionId) {
         self.outgoing.connection_closed(connection_id).await;
         self.fs_watch_manager.connection_closed(connection_id).await;
         self.codex_message_processor
+            .lock()
+            .await
             .connection_closed(connection_id)
             .await;
     }
 
-    pub(crate) fn subscribe_running_assistant_turn_count(&self) -> watch::Receiver<usize> {
+    pub(crate) async fn subscribe_running_assistant_turn_count(&self) -> watch::Receiver<usize> {
         self.codex_message_processor
+            .lock()
+            .await
             .subscribe_running_assistant_turn_count()
     }
 
@@ -703,6 +729,8 @@ impl MessageProcessor {
                 // initialize handling for the specific connection.
                 outbound_initialized.store(true, Ordering::Release);
                 self.codex_message_processor
+                    .lock()
+                    .await
                     .connection_initialized(connection_id)
                     .await;
             }
@@ -950,6 +978,8 @@ impl MessageProcessor {
                 // inline the full `CodexMessageProcessor::process_request` future, which
                 // can otherwise push worker-thread stack usage over the edge.
                 self.codex_message_processor
+                    .lock()
+                    .await
                     .process_request(
                         connection_id,
                         other,
@@ -1087,7 +1117,10 @@ impl MessageProcessor {
     }
 
     async fn handle_config_mutation(&self) {
-        self.codex_message_processor.handle_config_mutation();
+        self.codex_message_processor
+            .lock()
+            .await
+            .handle_config_mutation();
         let Some(remote_control_handle) = &self.remote_control_handle else {
             return;
         };

@@ -38,16 +38,16 @@
 //! which wraps this module behind a worker task with async request/response
 //! helpers, surface-specific startup policy, and bounded shutdown.
 
+use std::collections::hash_map::Entry;
 use std::collections::HashMap;
 use std::collections::HashSet;
-use std::collections::hash_map::Entry;
 use std::io::Error as IoError;
 use std::io::ErrorKind;
 use std::io::Result as IoResult;
-use std::sync::Arc;
-use std::sync::RwLock;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
+use std::sync::Arc;
+use std::sync::RwLock;
 use std::time::Duration;
 
 use crate::error_code::INTERNAL_ERROR_CODE;
@@ -61,9 +61,9 @@ use crate::outgoing_message::OutgoingEnvelope;
 use crate::outgoing_message::OutgoingMessage;
 use crate::outgoing_message::OutgoingMessageSender;
 use crate::outgoing_message::QueuedOutgoingMessage;
-use crate::transport::CHANNEL_CAPACITY;
-use crate::transport::OutboundConnectionState;
 use crate::transport::route_outgoing_envelope;
+use crate::transport::OutboundConnectionState;
+use crate::transport::CHANNEL_CAPACITY;
 use codex_analytics::AppServerRpcTransport;
 use codex_app_server_protocol::ClientNotification;
 use codex_app_server_protocol::ClientRequest;
@@ -402,7 +402,7 @@ fn start_uninitialized(args: InProcessStartArgs) -> InProcessClientHandle {
                 rpc_transport: AppServerRpcTransport::InProcess,
                 remote_control_handle: None,
             }));
-            let mut thread_created_rx = processor.thread_created_receiver();
+            let mut thread_created_rx = processor.thread_created_receiver().await;
             let session = Arc::new(ConnectionSessionState::default());
             let mut listen_for_threads = true;
 

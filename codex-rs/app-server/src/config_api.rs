@@ -16,8 +16,6 @@ use codex_app_server_protocol::NetworkDomainPermission;
 use codex_app_server_protocol::NetworkRequirements;
 use codex_app_server_protocol::NetworkUnixSocketPermission;
 use codex_app_server_protocol::SandboxMode;
-use codex_core::AnalyticsEventsClient;
-use codex_core::ThreadManager;
 use codex_core::config::Config;
 use codex_core::config::ConfigService;
 use codex_core::config::ConfigServiceError;
@@ -26,9 +24,11 @@ use codex_core::config_loader::ConfigRequirementsToml;
 use codex_core::config_loader::LoaderOverrides;
 use codex_core::config_loader::ResidencyRequirement as CoreResidencyRequirement;
 use codex_core::config_loader::SandboxModeRequirement as CoreSandboxModeRequirement;
-use codex_core::plugins::PluginId;
 use codex_core::plugins::collect_plugin_enabled_candidates;
 use codex_core::plugins::installed_plugin_telemetry_metadata;
+use codex_core::plugins::PluginId;
+use codex_core::AnalyticsEventsClient;
+use codex_core::ThreadManager;
 use codex_features::canonical_feature_for_key;
 use codex_features::feature_for_key;
 use codex_protocol::config_types::WebSearchMode;
@@ -437,7 +437,6 @@ fn map_network_requirements_to_api(
         allow_upstream_proxy: network.allow_upstream_proxy,
         dangerously_allow_non_loopback_proxy: network.dangerously_allow_non_loopback_proxy,
         dangerously_allow_all_unix_sockets: network.dangerously_allow_all_unix_sockets,
-        danger_full_access_denylist_only: None,
         domains: network.domains.map(|domains| {
             domains
                 .entries
@@ -515,14 +514,14 @@ fn config_write_error(code: ConfigWriteErrorCode, message: impl Into<String>) ->
 #[cfg(test)]
 mod tests {
     use super::*;
-    use codex_core::AnalyticsEventsClient;
-    use codex_core::AuthManager;
-    use codex_core::CodexAuth;
     use codex_core::config_loader::NetworkDomainPermissionToml as CoreNetworkDomainPermissionToml;
     use codex_core::config_loader::NetworkDomainPermissionsToml as CoreNetworkDomainPermissionsToml;
     use codex_core::config_loader::NetworkRequirementsToml as CoreNetworkRequirementsToml;
     use codex_core::config_loader::NetworkUnixSocketPermissionToml as CoreNetworkUnixSocketPermissionToml;
     use codex_core::config_loader::NetworkUnixSocketPermissionsToml as CoreNetworkUnixSocketPermissionsToml;
+    use codex_core::AnalyticsEventsClient;
+    use codex_core::AuthManager;
+    use codex_core::CodexAuth;
     use codex_features::Feature;
     use codex_protocol::protocol::AskForApproval as CoreAskForApproval;
     use pretty_assertions::assert_eq;
@@ -576,7 +575,6 @@ mod tests {
                 allow_upstream_proxy: Some(false),
                 dangerously_allow_non_loopback_proxy: Some(false),
                 dangerously_allow_all_unix_sockets: Some(true),
-                danger_full_access_denylist_only: Some(true),
                 domains: Some(CoreNetworkDomainPermissionsToml {
                     entries: std::collections::BTreeMap::from([
                         (
@@ -674,7 +672,6 @@ mod tests {
                 allow_upstream_proxy: None,
                 dangerously_allow_non_loopback_proxy: None,
                 dangerously_allow_all_unix_sockets: None,
-                danger_full_access_denylist_only: None,
                 domains: None,
                 managed_allowed_domains_only: None,
                 unix_sockets: Some(CoreNetworkUnixSocketPermissionsToml {

@@ -669,8 +669,8 @@ pub async fn run_main_with_transport(
             rpc_transport: analytics_rpc_transport(transport),
             remote_control_handle: Some(remote_control_handle),
         }));
-        let mut thread_created_rx = processor.thread_created_receiver();
-        let mut running_turn_count_rx = processor.subscribe_running_assistant_turn_count();
+        let mut thread_created_rx = processor.thread_created_receiver().await;
+        let mut running_turn_count_rx = processor.subscribe_running_assistant_turn_count().await;
         let mut connections = HashMap::<ConnectionId, ConnectionState>::new();
         let transport_shutdown_token = transport_shutdown_token.clone();
         async move {
