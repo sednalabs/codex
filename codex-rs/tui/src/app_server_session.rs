@@ -1253,7 +1253,6 @@ mod tests {
             approvals_reviewer: codex_app_server_protocol::ApprovalsReviewer::User,
             sandbox: codex_protocol::protocol::SandboxPolicy::new_read_only_policy().into(),
             reasoning_effort: None,
-            instruction_sources: Vec::new(),
         };
 
         let started = started_thread_from_resume_response(response.clone(), &config)

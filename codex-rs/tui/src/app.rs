@@ -6763,6 +6763,17 @@ mod tests {
     use tempfile::tempdir;
     use tokio::time;
 
+    fn ignore_same_thread_resume(app: &mut App, target: &crate::resume_picker::SessionTarget) -> bool {
+        if app.active_thread_id == Some(target.thread_id) {
+            app.chat_widget.add_info_message(
+                format!("Already viewing {}.", target.display_label()),
+                /*hint*/ None,
+            );
+            return true;
+        }
+        false
+    }
+
     #[test]
     fn normalize_harness_overrides_resolves_relative_add_dirs() -> Result<()> {
         let temp_dir = tempdir()?;
@@ -6965,7 +6976,7 @@ mod tests {
         app.activate_thread_channel(thread_id).await;
         while app_event_rx.try_recv().is_ok() {}
 
-        let ignored = app.ignore_same_thread_resume(&crate::resume_picker::SessionTarget {
+        let ignored = ignore_same_thread_resume(&mut app, &crate::resume_picker::SessionTarget {
             path: Some(test_path_buf("/tmp/project")),
             thread_id,
         });
@@ -6989,7 +7000,7 @@ mod tests {
         let session = test_thread_session(thread_id, test_path_buf("/tmp/project"));
         app.chat_widget.handle_thread_session(session);
 
-        let ignored = app.ignore_same_thread_resume(&crate::resume_picker::SessionTarget {
+        let ignored = ignore_same_thread_resume(&mut app, &crate::resume_picker::SessionTarget {
             path: Some(test_path_buf("/tmp/project")),
             thread_id,
         });
@@ -11081,7 +11092,7 @@ guardian_approval = true
                 approval_policy: AskForApproval::Never,
                 approvals_reviewer: ApprovalsReviewer::GuardianSubagent,
                 sandbox_policy: SandboxPolicy::new_read_only_policy(),
-                cwd: session_cwd.clone(),
+                cwd: session_cwd.clone().abs(),
                 reasoning_effort: Some(ReasoningEffortConfig::High),
                 history_log_id: 0,
                 history_entry_count: 0,
@@ -11184,7 +11195,7 @@ guardian_approval = true
                 approval_policy: AskForApproval::Never,
                 approvals_reviewer: ApprovalsReviewer::GuardianSubagent,
                 sandbox_policy: SandboxPolicy::new_read_only_policy(),
-                cwd: session_cwd.clone(),
+                cwd: session_cwd.clone().abs(),
                 reasoning_effort: Some(ReasoningEffortConfig::High),
                 history_log_id: 0,
                 history_entry_count: 0,
@@ -11994,7 +12005,7 @@ guardian_approval = true
         assert_eq!(app.chat_widget.thread_id(), Some(primary_thread_id));
         assert_eq!(
             app.chat_widget.config_ref().cwd.to_path_buf(),
-            primary_session.cwd
+            primary_session.cwd.to_path_buf()
         );
         assert!(app.active_thread_rx.is_some());
         assert!(matches!(control, AppRunControl::Continue));
