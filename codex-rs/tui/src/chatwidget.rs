@@ -442,6 +442,10 @@ impl QueuedSlashCommand {
     }
 
     fn continues_follow_up_drain_after_replay(&self) -> bool {
+        matches!(self, QueuedSlashCommand::Command(SlashCommand::Plan))
+    }
+
+    fn requires_plan_mode_after_replay(&self) -> bool {
         matches!(
             self,
             QueuedSlashCommand::Command(SlashCommand::Plan)
@@ -7975,10 +7979,16 @@ impl ChatWidget {
                 }
                 QueuedFollowUpInput::SlashCommand(queued_command) => match queued_command {
                     QueuedSlashCommand::Command(cmd) => {
-                        let should_continue = QueuedSlashCommand::Command(cmd)
-                            .continues_follow_up_drain_after_replay();
+                        let replayed_command = QueuedSlashCommand::Command(cmd);
+                        let should_continue =
+                            replayed_command.continues_follow_up_drain_after_replay();
                         self.dispatch_command(cmd);
                         self.refresh_pending_input_preview();
+                        if replayed_command.requires_plan_mode_after_replay()
+                            && self.active_mode_kind() != ModeKind::Plan
+                        {
+                            return;
+                        }
                         if !should_continue
                             || self.bottom_pane.is_task_running()
                             || !self.no_modal_or_popup_active()
@@ -8003,6 +8013,15 @@ impl ChatWidget {
                             mention_bindings: mention_bindings.clone(),
                         }
                         .continues_follow_up_drain_after_replay();
+                        let requires_plan_mode = QueuedSlashCommand::CommandWithArgs {
+                            cmd,
+                            args: args.clone(),
+                            text_elements: text_elements.clone(),
+                            local_images: local_images.clone(),
+                            remote_image_urls: remote_image_urls.clone(),
+                            mention_bindings: mention_bindings.clone(),
+                        }
+                        .requires_plan_mode_after_replay();
                         self.dispatch_prepared_inline_command(
                             cmd,
                             args,
@@ -8013,6 +8032,9 @@ impl ChatWidget {
                             /*drain_submission_state*/ false,
                         );
                         self.refresh_pending_input_preview();
+                        if requires_plan_mode && self.active_mode_kind() != ModeKind::Plan {
+                            return;
+                        }
                         if !should_continue
                             || self.bottom_pane.is_task_running()
                             || !self.no_modal_or_popup_active()
