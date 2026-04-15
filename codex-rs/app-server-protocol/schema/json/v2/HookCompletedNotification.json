@@ -1,8 +1,7 @@
 {
-  "$schema": "http://json-schema.org/draft-07/schema#",
-  "definitions": {
+  "$defs": {
     "AbsolutePathBuf": {
-      "description": "A path that is guaranteed to be absolute and normalized (though it is not guaranteed to be canonicalized or exist on the filesystem).\n\nIMPORTANT: When deserializing an `AbsolutePathBuf`, a base path must be set using [AbsolutePathBufGuard::new]. If no base path is set, the deserialization will fail unless the path being deserialized is already absolute.",
+      "description": "A path that is guaranteed to be absolute and normalized (though it is not\nguaranteed to be canonicalized or exist on the filesystem).\n\nIMPORTANT: When deserializing an `AbsolutePathBuf`, a base path must be set\nusing [AbsolutePathBufGuard::new]. If no base path is set, the\ndeserialization will fail unless the path being deserialized is already\nabsolute.",
       "type": "string"
     },
     "HookEventName": {
@@ -33,7 +32,7 @@
     "HookOutputEntry": {
       "properties": {
         "kind": {
-          "$ref": "#/definitions/HookOutputEntryKind"
+          "$ref": "#/$defs/HookOutputEntryKind"
         },
         "text": {
           "type": "string"
@@ -87,34 +86,34 @@
         },
         "entries": {
           "items": {
-            "$ref": "#/definitions/HookOutputEntry"
+            "$ref": "#/$defs/HookOutputEntry"
           },
           "type": "array"
         },
         "eventName": {
-          "$ref": "#/definitions/HookEventName"
+          "$ref": "#/$defs/HookEventName"
         },
         "executionMode": {
-          "$ref": "#/definitions/HookExecutionMode"
+          "$ref": "#/$defs/HookExecutionMode"
         },
         "handlerType": {
-          "$ref": "#/definitions/HookHandlerType"
+          "$ref": "#/$defs/HookHandlerType"
         },
         "id": {
           "type": "string"
         },
         "scope": {
-          "$ref": "#/definitions/HookScope"
+          "$ref": "#/$defs/HookScope"
         },
         "sourcePath": {
-          "$ref": "#/definitions/AbsolutePathBuf"
+          "$ref": "#/$defs/AbsolutePathBuf"
         },
         "startedAt": {
           "format": "int64",
           "type": "integer"
         },
         "status": {
-          "$ref": "#/definitions/HookRunStatus"
+          "$ref": "#/$defs/HookRunStatus"
         },
         "statusMessage": {
           "type": [
@@ -124,16 +123,16 @@
         }
       },
       "required": [
-        "displayOrder",
-        "entries",
-        "eventName",
-        "executionMode",
-        "handlerType",
         "id",
+        "eventName",
+        "handlerType",
+        "executionMode",
         "scope",
         "sourcePath",
+        "displayOrder",
+        "status",
         "startedAt",
-        "status"
+        "entries"
       ],
       "type": "object"
     },
@@ -145,9 +144,10 @@
       "type": "string"
     }
   },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
   "properties": {
     "run": {
-      "$ref": "#/definitions/HookRunSummary"
+      "$ref": "#/$defs/HookRunSummary"
     },
     "threadId": {
       "type": "string"
@@ -160,8 +160,8 @@
     }
   },
   "required": [
-    "run",
-    "threadId"
+    "threadId",
+    "run"
   ],
   "title": "HookCompletedNotification",
   "type": "object"

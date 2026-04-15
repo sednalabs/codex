@@ -15,7 +15,7 @@
         "details": {
           "anyOf": [
             {
-              "$ref": "#/definitions/MigrationDetails"
+              "$ref": "#/$defs/MigrationDetails"
             },
             {
               "type": "null"
@@ -46,7 +46,7 @@
       "properties": {
         "plugins": {
           "items": {
-            "$ref": "#/definitions/PluginsMigration"
+            "$ref": "#/$defs/PluginsMigration"
           },
           "type": "array"
         }

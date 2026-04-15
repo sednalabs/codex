@@ -602,7 +602,7 @@
               "type": "string"
             },
             "path": {
-              "$ref": "#/definitions/AbsolutePathBuf"
+              "$ref": "#/$defs/AbsolutePathBuf"
             },
             "type": {
               "const": "read",
@@ -1308,7 +1308,7 @@
               "type": "string"
             },
             "cwd": {
-              "$ref": "#/definitions/AbsolutePathBuf"
+              "$ref": "#/$defs/AbsolutePathBuf"
             },
             "source": {
               "$ref": "#/$defs/GuardianCommandSource"
@@ -1337,7 +1337,7 @@
               "type": "array"
             },
             "cwd": {
-              "$ref": "#/definitions/AbsolutePathBuf"
+              "$ref": "#/$defs/AbsolutePathBuf"
             },
             "program": {
               "type": "string"
@@ -1364,11 +1364,11 @@
         {
           "properties": {
             "cwd": {
-              "$ref": "#/definitions/AbsolutePathBuf"
+              "$ref": "#/$defs/AbsolutePathBuf"
             },
             "files": {
               "items": {
-                "$ref": "#/definitions/AbsolutePathBuf"
+                "$ref": "#/$defs/AbsolutePathBuf"
               },
               "type": "array"
             },
@@ -1637,7 +1637,7 @@
           "$ref": "#/$defs/HookScope"
         },
         "sourcePath": {
-          "$ref": "#/definitions/AbsolutePathBuf"
+          "$ref": "#/$defs/AbsolutePathBuf"
         },
         "startedAt": {
           "format": "int64",
@@ -3259,11 +3259,7 @@
           "type": "integer"
         },
         "cwd": {
-          "allOf": [
-            {
-              "$ref": "#/definitions/AbsolutePathBuf"
-            }
-          ],
+          "$ref": "#/$defs/AbsolutePathBuf",
           "description": "Working directory captured for the thread."
         },
         "ephemeral": {
@@ -3553,11 +3549,7 @@
               "type": "array"
             },
             "cwd": {
-              "allOf": [
-                {
-                  "$ref": "#/definitions/AbsolutePathBuf"
-                }
-              ],
+              "$ref": "#/$defs/AbsolutePathBuf",
               "description": "The command's working directory."
             },
             "durationMs": {
@@ -3868,7 +3860,7 @@
               "type": "string"
             },
             "path": {
-              "$ref": "#/definitions/AbsolutePathBuf"
+              "$ref": "#/$defs/AbsolutePathBuf"
             },
             "type": {
               "const": "imageView",
@@ -3901,7 +3893,7 @@
             "savedPath": {
               "anyOf": [
                 {
-                  "$ref": "#/definitions/AbsolutePathBuf"
+                  "$ref": "#/$defs/AbsolutePathBuf"
                 },
                 {
                   "type": "null"
@@ -4107,6 +4099,22 @@
       "required": [
         "threadId",
         "audio"
+      ],
+      "type": "object"
+    },
+    "ThreadRealtimeSdpNotification": {
+      "description": "EXPERIMENTAL - emitted with the remote SDP for a WebRTC realtime session.",
+      "properties": {
+        "sdp": {
+          "type": "string"
+        },
+        "threadId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "threadId",
+        "sdp"
       ],
       "type": "object"
     },
@@ -5654,6 +5662,24 @@
         "params"
       ],
       "title": "Thread/realtime/outputAudio/deltaNotification",
+      "type": "object"
+    },
+    {
+      "properties": {
+        "method": {
+          "const": "thread/realtime/sdp",
+          "title": "Thread/realtime/sdpNotificationMethod",
+          "type": "string"
+        },
+        "params": {
+          "$ref": "#/$defs/ThreadRealtimeSdpNotification"
+        }
+      },
+      "required": [
+        "method",
+        "params"
+      ],
+      "title": "Thread/realtime/sdpNotification",
       "type": "object"
     },
     {

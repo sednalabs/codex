@@ -603,7 +603,7 @@
         "details": {
           "anyOf": [
             {
-              "$ref": "#/definitions/MigrationDetails"
+              "$ref": "#/$defs/MigrationDetails"
             },
             {
               "type": "null"
@@ -611,7 +611,7 @@
           ]
         },
         "itemType": {
-          "$ref": "#/definitions/ExternalAgentConfigMigrationItemType"
+          "$ref": "#/$defs/ExternalAgentConfigMigrationItemType"
         }
       },
       "required": [
@@ -1376,6 +1376,27 @@
       ],
       "type": "string"
     },
+    "McpServerToolCallParams": {
+      "properties": {
+        "_meta": true,
+        "arguments": true,
+        "server": {
+          "type": "string"
+        },
+        "threadId": {
+          "type": "string"
+        },
+        "tool": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "threadId",
+        "server",
+        "tool"
+      ],
+      "type": "object"
+    },
     "MergeStrategy": {
       "enum": [
         "replace",
@@ -1398,6 +1419,20 @@
         }
       ]
     },
+    "MigrationDetails": {
+      "properties": {
+        "plugins": {
+          "items": {
+            "$ref": "#/$defs/PluginsMigration"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "plugins"
+      ],
+      "type": "object"
+    },
     "MockExperimentalMethodParams": {
       "properties": {
         "value": {
@@ -1408,20 +1443,6 @@
           ]
         }
       },
-      "type": "object"
-    },
-    "MigrationDetails": {
-      "properties": {
-        "plugins": {
-          "items": {
-            "$ref": "#/definitions/PluginsMigration"
-          },
-          "type": "array"
-        }
-      },
-      "required": [
-        "plugins"
-      ],
       "type": "object"
     },
     "ModeKind": {
@@ -3062,6 +3083,10 @@
         "sampleRate",
         "numChannels"
       ],
+      "type": "object"
+    },
+    "ThreadRealtimeListVoicesParams": {
+      "description": "EXPERIMENTAL - list voices supported by thread realtime.",
       "type": "object"
     },
     "ThreadRealtimeStartParams": {
@@ -4816,6 +4841,28 @@
         "params"
       ],
       "title": "McpServer/resource/readRequest",
+      "type": "object"
+    },
+    {
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/RequestId"
+        },
+        "method": {
+          "const": "mcpServer/tool/call",
+          "title": "McpServer/tool/callRequestMethod",
+          "type": "string"
+        },
+        "params": {
+          "$ref": "#/$defs/McpServerToolCallParams"
+        }
+      },
+      "required": [
+        "method",
+        "id",
+        "params"
+      ],
+      "title": "McpServer/tool/callRequest",
       "type": "object"
     },
     {
