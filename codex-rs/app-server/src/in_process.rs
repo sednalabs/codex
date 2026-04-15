@@ -64,6 +64,7 @@ use crate::outgoing_message::QueuedOutgoingMessage;
 use crate::transport::CHANNEL_CAPACITY;
 use crate::transport::OutboundConnectionState;
 use crate::transport::route_outgoing_envelope;
+use codex_analytics::AppServerRpcTransport;
 use codex_app_server_protocol::ClientNotification;
 use codex_app_server_protocol::ClientRequest;
 use codex_app_server_protocol::ConfigWarningNotification;
@@ -74,12 +75,12 @@ use codex_app_server_protocol::Result;
 use codex_app_server_protocol::ServerNotification;
 use codex_app_server_protocol::ServerRequest;
 use codex_arg0::Arg0DispatchPaths;
-use codex_core::AppServerRpcTransport;
 use codex_core::config::Config;
 use codex_core::config_loader::CloudRequirementsLoader;
 use codex_core::config_loader::LoaderOverrides;
 use codex_exec_server::EnvironmentManager;
 use codex_feedback::CodexFeedback;
+use codex_login::AuthManager;
 use codex_protocol::protocol::SessionSource;
 use tokio::sync::mpsc;
 use tokio::sync::oneshot;
@@ -116,6 +117,8 @@ pub struct InProcessStartArgs {
     pub cloud_requirements: CloudRequirementsLoader,
     /// Feedback sink used by app-server/core telemetry and logs.
     pub feedback: CodexFeedback,
+    /// Environment manager used by core execution and filesystem operations.
+    pub environment_manager: Arc<EnvironmentManager>,
     /// Startup warnings emitted after initialize succeeds.
     pub config_warnings: Vec<ConfigWarningNotification>,
     /// Session source stamped into thread/session metadata.
@@ -379,13 +382,15 @@ fn start_uninitialized(args: InProcessStartArgs) -> InProcessClientHandle {
         });
 
         let processor_outgoing = Arc::clone(&outgoing_message_sender);
+        let auth_manager =
+            AuthManager::shared_from_config(args.config.as_ref(), args.enable_codex_api_key_env);
         let (processor_tx, mut processor_rx) = mpsc::channel::<ProcessorCommand>(channel_capacity);
         let mut processor_handle = tokio::spawn(async move {
-            let mut processor = MessageProcessor::new(MessageProcessorArgs {
+            let processor = Arc::new(MessageProcessor::new(MessageProcessorArgs {
                 outgoing: Arc::clone(&processor_outgoing),
                 arg0_paths: args.arg0_paths,
                 config: args.config,
-                environment_manager: Arc::new(EnvironmentManager::from_env()),
+                environment_manager: args.environment_manager,
                 cli_overrides: args.cli_overrides,
                 loader_overrides: args.loader_overrides,
                 cloud_requirements: args.cloud_requirements,
@@ -393,11 +398,12 @@ fn start_uninitialized(args: InProcessStartArgs) -> InProcessClientHandle {
                 log_db: None,
                 config_warnings: args.config_warnings,
                 session_source: args.session_source,
-                enable_codex_api_key_env: args.enable_codex_api_key_env,
+                auth_manager,
                 rpc_transport: AppServerRpcTransport::InProcess,
-            });
+                remote_control_handle: None,
+            }));
             let mut thread_created_rx = processor.thread_created_receiver();
-            let mut session = ConnectionSessionState::default();
+            let session = Arc::new(ConnectionSessionState::default());
             let mut listen_for_threads = true;
 
             loop {
@@ -405,28 +411,33 @@ fn start_uninitialized(args: InProcessStartArgs) -> InProcessClientHandle {
                     command = processor_rx.recv() => {
                         match command {
                             Some(ProcessorCommand::Request(request)) => {
-                                let was_initialized = session.initialized;
+                                let was_initialized = session.initialized();
                                 processor
                                     .process_client_request(
                                         IN_PROCESS_CONNECTION_ID,
                                         *request,
-                                        &mut session,
+                                        Arc::clone(&session),
                                         &outbound_initialized,
                                     )
                                     .await;
+                                let opted_out_notification_methods_snapshot =
+                                    session.opted_out_notification_methods();
+                                let experimental_api_enabled =
+                                    session.experimental_api_enabled();
+                                let is_initialized = session.initialized();
                                 if let Ok(mut opted_out_notification_methods) =
                                     outbound_opted_out_notification_methods.write()
                                 {
                                     *opted_out_notification_methods =
-                                        session.opted_out_notification_methods.clone();
+                                        opted_out_notification_methods_snapshot;
                                 } else {
                                     warn!("failed to update outbound opted-out notifications");
                                 }
                                 outbound_experimental_api_enabled.store(
-                                    session.experimental_api_enabled,
+                                    experimental_api_enabled,
                                     Ordering::Release,
                                 );
-                                if !was_initialized && session.initialized {
+                                if !was_initialized && is_initialized {
                                     processor.send_initialize_notifications().await;
                                 }
                             }
@@ -441,7 +452,7 @@ fn start_uninitialized(args: InProcessStartArgs) -> InProcessClientHandle {
                     created = thread_created_rx.recv(), if listen_for_threads => {
                         match created {
                             Ok(thread_id) => {
-                                let connection_ids = if session.initialized {
+                                let connection_ids = if session.initialized() {
                                     vec![IN_PROCESS_CONNECTION_ID]
                                 } else {
                                     Vec::<ConnectionId>::new()
@@ -717,6 +728,7 @@ mod tests {
             loader_overrides: LoaderOverrides::default(),
             cloud_requirements: CloudRequirementsLoader::default(),
             feedback: CodexFeedback::new(),
+            environment_manager: Arc::new(EnvironmentManager::new(/*exec_server_url*/ None)),
             config_warnings: Vec::new(),
             session_source,
             enable_codex_api_key_env: false,
@@ -824,7 +836,7 @@ mod tests {
                     status: TurnStatus::Completed,
                     error: None,
                     started_at: None,
-                    completed_at: None,
+                    completed_at: Some(0),
                     duration_ms: None,
                 },
             })

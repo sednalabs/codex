@@ -7,6 +7,7 @@ use crate::transport::AppServerTransport;
 use anyhow::Result;
 use app_test_support::create_mock_responses_server_repeating_assistant;
 use app_test_support::write_mock_responses_config_toml;
+use codex_analytics::AppServerRpcTransport;
 use codex_app_server_protocol::ClientInfo;
 use codex_app_server_protocol::ClientRequest;
 use codex_app_server_protocol::InitializeCapabilities;
@@ -20,13 +21,13 @@ use codex_app_server_protocol::TurnStartParams;
 use codex_app_server_protocol::TurnStartResponse;
 use codex_app_server_protocol::UserInput;
 use codex_arg0::Arg0DispatchPaths;
-use codex_core::AppServerRpcTransport;
 use codex_core::config::Config;
 use codex_core::config::ConfigBuilder;
 use codex_core::config_loader::CloudRequirementsLoader;
 use codex_core::config_loader::LoaderOverrides;
 use codex_exec_server::EnvironmentManager;
 use codex_feedback::CodexFeedback;
+use codex_login::AuthManager;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::W3cTraceContext;
 use opentelemetry::global;
@@ -108,9 +109,9 @@ fn tracing_test_guard() -> &'static tokio::sync::Mutex<()> {
 struct TracingHarness {
     _server: MockServer,
     _codex_home: TempDir,
-    processor: MessageProcessor,
+    processor: Arc<MessageProcessor>,
     outgoing_rx: mpsc::Receiver<crate::outgoing_message::OutgoingEnvelope>,
-    session: ConnectionSessionState,
+    session: Arc<ConnectionSessionState>,
     tracing: &'static TestTracing,
 }
 
@@ -128,7 +129,7 @@ impl TracingHarness {
             _codex_home: codex_home,
             processor,
             outgoing_rx,
-            session: ConnectionSessionState::default(),
+            session: Arc::new(ConnectionSessionState::default()),
             tracing,
         };
 
@@ -151,7 +152,7 @@ impl TracingHarness {
                 /*trace*/ None,
             )
             .await;
-        assert!(harness.session.initialized);
+        assert!(harness.session.initialized());
 
         Ok(harness)
     }
@@ -181,7 +182,7 @@ impl TracingHarness {
                 TEST_CONNECTION_ID,
                 request,
                 AppServerTransport::Stdio,
-                &mut self.session,
+                Arc::clone(&self.session),
             )
             .await;
         read_response(&mut self.outgoing_rx, request_id).await
@@ -229,12 +230,14 @@ async fn build_test_config(codex_home: &Path, server_uri: &str) -> Result<Config
 fn build_test_processor(
     config: Arc<Config>,
 ) -> (
-    MessageProcessor,
+    Arc<MessageProcessor>,
     mpsc::Receiver<crate::outgoing_message::OutgoingEnvelope>,
 ) {
     let (outgoing_tx, outgoing_rx) = mpsc::channel(16);
     let outgoing = Arc::new(OutgoingMessageSender::new(outgoing_tx));
-    let processor = MessageProcessor::new(MessageProcessorArgs {
+    let auth_manager =
+        AuthManager::shared_from_config(config.as_ref(), /*enable_codex_api_key_env*/ false);
+    let processor = Arc::new(MessageProcessor::new(MessageProcessorArgs {
         outgoing,
         arg0_paths: Arg0DispatchPaths::default(),
         config,
@@ -246,9 +249,10 @@ fn build_test_processor(
         log_db: None,
         config_warnings: Vec::new(),
         session_source: SessionSource::VSCode,
-        enable_codex_api_key_env: false,
+        auth_manager,
         rpc_transport: AppServerRpcTransport::Stdio,
-    });
+        remote_control_handle: None,
+    }));
     (processor, outgoing_rx)
 }
 

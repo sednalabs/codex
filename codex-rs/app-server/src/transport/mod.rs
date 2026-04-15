@@ -126,7 +126,7 @@ pub(crate) struct ConnectionState {
     pub(crate) outbound_initialized: Arc<AtomicBool>,
     pub(crate) outbound_experimental_api_enabled: Arc<AtomicBool>,
     pub(crate) outbound_opted_out_notification_methods: Arc<RwLock<HashSet<String>>>,
-    pub(crate) session: ConnectionSessionState,
+    pub(crate) session: Arc<ConnectionSessionState>,
 }
 
 impl ConnectionState {
@@ -139,7 +139,7 @@ impl ConnectionState {
             outbound_initialized,
             outbound_experimental_api_enabled,
             outbound_opted_out_notification_methods,
-            session: ConnectionSessionState::default(),
+            session: Arc::new(ConnectionSessionState::default()),
         }
     }
 }
@@ -398,7 +398,6 @@ mod tests {
     use codex_utils_absolute_path::AbsolutePathBuf;
     use pretty_assertions::assert_eq;
     use serde_json::json;
-    use std::path::PathBuf;
     use tokio::time::Duration;
     use tokio::time::timeout;
 
@@ -811,7 +810,7 @@ mod tests {
                         reason: Some("Need extra read access".to_string()),
                         network_approval_context: None,
                         command: Some("cat file".to_string()),
-                        cwd: Some(PathBuf::from("/tmp")),
+                        cwd: Some(absolute_path("/tmp")),
                         command_actions: None,
                         additional_permissions: Some(
                             codex_app_server_protocol::AdditionalPermissionProfile {
@@ -873,7 +872,7 @@ mod tests {
                         reason: Some("Need extra read access".to_string()),
                         network_approval_context: None,
                         command: Some("cat file".to_string()),
-                        cwd: Some(PathBuf::from("/tmp")),
+                        cwd: Some(absolute_path("/tmp")),
                         command_actions: None,
                         additional_permissions: Some(
                             codex_app_server_protocol::AdditionalPermissionProfile {

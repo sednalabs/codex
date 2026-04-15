@@ -14,12 +14,11 @@ use codex_core::file_watcher::FileWatcher;
 use codex_core::file_watcher::FileWatcherEvent;
 use codex_core::file_watcher::FileWatcherSubscriber;
 use codex_core::file_watcher::Receiver;
-#[cfg(test)]
 use codex_core::file_watcher::WatchPath;
 use codex_core::file_watcher::WatchRegistration;
-use codex_utils_absolute_path::AbsolutePathBuf;
 use std::collections::HashMap;
 use std::collections::HashSet;
+use std::collections::hash_map::Entry;
 use std::hash::Hash;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -139,17 +138,24 @@ impl FsWatchManager {
             subscriber.register_paths(app_server_hooks().fs_watch_paths_for_target(&params.path));
         let (terminate_tx, terminate_rx) = oneshot::channel();
 
-        self.state.lock().await.entries.insert(
-            WatchKey {
-                connection_id,
-                watch_id: watch_id.clone(),
-            },
-            WatchEntry {
-                terminate_tx,
-                _subscriber: subscriber,
-                _registration: registration,
-            },
-        );
+        let watch_key = WatchKey {
+            connection_id,
+            watch_id: watch_id.clone(),
+        };
+        match self.state.lock().await.entries.entry(watch_key) {
+            Entry::Occupied(_) => {
+                return Err(invalid_request(format!(
+                    "watchId already exists: {watch_id}"
+                )));
+            }
+            Entry::Vacant(entry) => {
+                entry.insert(WatchEntry {
+                    terminate_tx,
+                    _subscriber: subscriber,
+                    _registration: registration,
+                });
+            }
+        }
 
         let task_watch_id = watch_id.clone();
         tokio::spawn(async move {
@@ -168,7 +174,7 @@ impl FsWatchManager {
                     .paths
                     .into_iter()
                     .filter_map(|path| {
-                        let path = AbsolutePathBuf::resolve_path_against_base(&path, &watch_root);
+                        let path = watch_root.join(path);
                         app_server_hooks().fs_changed_path_for_watch_target(&watch_root, path)
                     })
                     .collect::<Vec<_>>();

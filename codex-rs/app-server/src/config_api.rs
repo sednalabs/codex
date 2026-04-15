@@ -642,7 +642,6 @@ mod tests {
                     ("example.com".to_string(), NetworkDomainPermission::Deny),
                 ])),
                 managed_allowed_domains_only: Some(false),
-                danger_full_access_denylist_only: Some(true),
                 allowed_domains: Some(vec!["api.openai.com".to_string()]),
                 denied_domains: Some(vec!["example.com".to_string()]),
                 unix_sockets: Some(std::collections::BTreeMap::from([(
@@ -701,7 +700,6 @@ mod tests {
                 dangerously_allow_all_unix_sockets: None,
                 domains: None,
                 managed_allowed_domains_only: None,
-                danger_full_access_denylist_only: None,
                 allowed_domains: None,
                 denied_domains: None,
                 unix_sockets: Some(std::collections::BTreeMap::from([(

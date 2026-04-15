@@ -2,6 +2,7 @@ use std::collections::BTreeMap;
 use std::collections::HashSet;
 use std::future::Future;
 use std::sync::Arc;
+use std::sync::OnceLock;
 use std::sync::RwLock;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
@@ -10,8 +11,6 @@ use crate::codex_message_processor::CodexMessageProcessor;
 use crate::codex_message_processor::CodexMessageProcessorArgs;
 use crate::config_api::ConfigApi;
 use crate::error_code::INVALID_REQUEST_ERROR_CODE;
-use crate::extensions::ConfigMutationKind;
-use crate::extensions::app_server_hooks;
 use crate::external_agent_config_api::ExternalAgentConfigApi;
 use crate::fs_api::FsApi;
 use crate::fs_watch::FsWatchManager;
@@ -20,7 +19,11 @@ use crate::outgoing_message::ConnectionRequestId;
 use crate::outgoing_message::OutgoingMessageSender;
 use crate::outgoing_message::RequestContext;
 use crate::transport::AppServerTransport;
+use crate::transport::RemoteControlHandle;
 use async_trait::async_trait;
+use axum::http::HeaderValue;
+use codex_analytics::AnalyticsEventsClient;
+use codex_analytics::AppServerRpcTransport;
 use codex_app_server_protocol::AppListUpdatedNotification;
 use codex_app_server_protocol::AuthMode as LoginAuthMode;
 use codex_app_server_protocol::ChatgptAuthTokensRefreshParams;
@@ -57,25 +60,23 @@ use codex_app_server_protocol::ServerRequestPayload;
 use codex_app_server_protocol::experimental_required_message;
 use codex_arg0::Arg0DispatchPaths;
 use codex_chatgpt::connectors;
-use codex_core::AnalyticsEventsClient;
-use codex_core::AppServerRpcTransport;
-use codex_core::AuthManager;
 use codex_core::ThreadManager;
 use codex_core::config::Config;
 use codex_core::config_loader::CloudRequirementsLoader;
 use codex_core::config_loader::LoaderOverrides;
-use codex_core::default_client::SetOriginatorError;
-use codex_core::default_client::USER_AGENT_SUFFIX;
-use codex_core::default_client::get_codex_user_agent;
-use codex_core::default_client::set_default_client_residency_requirement;
-use codex_core::default_client::set_default_originator;
 use codex_exec_server::EnvironmentManager;
 use codex_features::Feature;
 use codex_feedback::CodexFeedback;
+use codex_login::AuthManager;
 use codex_login::auth::ExternalAuth;
 use codex_login::auth::ExternalAuthRefreshContext;
 use codex_login::auth::ExternalAuthRefreshReason;
 use codex_login::auth::ExternalAuthTokens;
+use codex_login::default_client::SetOriginatorError;
+use codex_login::default_client::USER_AGENT_SUFFIX;
+use codex_login::default_client::get_codex_user_agent;
+use codex_login::default_client::set_default_client_residency_requirement;
+use codex_login::default_client::set_default_originator;
 use codex_models_manager::collaboration_mode_presets::CollaborationModesConfig;
 use codex_protocol::ThreadId;
 use codex_protocol::protocol::SessionSource;
@@ -171,15 +172,55 @@ pub(crate) struct MessageProcessor {
     config: Arc<Config>,
     config_warnings: Arc<Vec<ConfigWarningNotification>>,
     rpc_transport: AppServerRpcTransport,
+    remote_control_handle: Option<RemoteControlHandle>,
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Debug, Default)]
 pub(crate) struct ConnectionSessionState {
-    pub(crate) initialized: bool,
-    pub(crate) experimental_api_enabled: bool,
-    pub(crate) opted_out_notification_methods: HashSet<String>,
-    pub(crate) app_server_client_name: Option<String>,
-    pub(crate) client_version: Option<String>,
+    initialized: OnceLock<InitializedConnectionSessionState>,
+}
+
+#[derive(Debug)]
+struct InitializedConnectionSessionState {
+    experimental_api_enabled: bool,
+    opted_out_notification_methods: HashSet<String>,
+    app_server_client_name: String,
+    client_version: String,
+}
+
+impl ConnectionSessionState {
+    pub(crate) fn initialized(&self) -> bool {
+        self.initialized.get().is_some()
+    }
+
+    pub(crate) fn experimental_api_enabled(&self) -> bool {
+        self.initialized
+            .get()
+            .is_some_and(|session| session.experimental_api_enabled)
+    }
+
+    pub(crate) fn opted_out_notification_methods(&self) -> HashSet<String> {
+        self.initialized
+            .get()
+            .map(|session| session.opted_out_notification_methods.clone())
+            .unwrap_or_default()
+    }
+
+    pub(crate) fn app_server_client_name(&self) -> Option<&str> {
+        self.initialized
+            .get()
+            .map(|session| session.app_server_client_name.as_str())
+    }
+
+    pub(crate) fn client_version(&self) -> Option<&str> {
+        self.initialized
+            .get()
+            .map(|session| session.client_version.as_str())
+    }
+
+    fn initialize(&self, session: InitializedConnectionSessionState) -> Result<(), ()> {
+        self.initialized.set(session).map_err(|_| ())
+    }
 }
 
 pub(crate) struct MessageProcessorArgs {
@@ -194,8 +235,9 @@ pub(crate) struct MessageProcessorArgs {
     pub(crate) log_db: Option<LogDbLayer>,
     pub(crate) config_warnings: Vec<ConfigWarningNotification>,
     pub(crate) session_source: SessionSource,
-    pub(crate) enable_codex_api_key_env: bool,
+    pub(crate) auth_manager: Arc<AuthManager>,
     pub(crate) rpc_transport: AppServerRpcTransport,
+    pub(crate) remote_control_handle: Option<RemoteControlHandle>,
 }
 
 impl MessageProcessor {
@@ -214,14 +256,18 @@ impl MessageProcessor {
             log_db,
             config_warnings,
             session_source,
-            enable_codex_api_key_env,
+            auth_manager,
             rpc_transport,
+            remote_control_handle,
         } = args;
-        let auth_manager =
-            AuthManager::shared_from_config(config.as_ref(), enable_codex_api_key_env);
         auth_manager.set_external_auth(Arc::new(ExternalAuthRefreshBridge {
             outgoing: outgoing.clone(),
         }));
+        let analytics_events_client = AnalyticsEventsClient::new(
+            Arc::clone(&auth_manager),
+            config.chatgpt_base_url.trim_end_matches('/').to_string(),
+            config.analytics_enabled,
+        );
         let thread_manager = Arc::new(ThreadManager::new(
             config.as_ref(),
             auth_manager.clone(),
@@ -232,14 +278,8 @@ impl MessageProcessor {
                     .enabled(Feature::DefaultModeRequestUserInput),
             },
             environment_manager,
-            None,
+            Some(analytics_events_client.clone()),
         ));
-        auth_manager.set_forced_chatgpt_workspace_id(config.forced_chatgpt_workspace_id.clone());
-        let analytics_events_client = AnalyticsEventsClient::new(
-            Arc::clone(&auth_manager),
-            config.chatgpt_base_url.trim_end_matches('/').to_string(),
-            config.analytics_enabled,
-        );
         thread_manager
             .plugins_manager()
             .set_analytics_events_client(analytics_events_client.clone());
@@ -260,7 +300,11 @@ impl MessageProcessor {
             feedback,
             log_db,
         });
-        app_server_hooks().on_app_server_start(&thread_manager, &config, auth_manager.clone());
+        // Keep plugin startup warmups aligned at app-server startup.
+        // TODO(xl): Move into PluginManager once this no longer depends on config feature gating.
+        thread_manager
+            .plugins_manager()
+            .maybe_start_plugin_startup_tasks_for_config(&config, auth_manager.clone());
         let config_api = ConfigApi::new(
             config.codex_home.to_path_buf(),
             cli_overrides,
@@ -287,6 +331,7 @@ impl MessageProcessor {
             config,
             config_warnings: Arc::new(config_warnings),
             rpc_transport,
+            remote_control_handle,
         }
     }
 
@@ -295,11 +340,11 @@ impl MessageProcessor {
     }
 
     pub(crate) async fn process_request(
-        &mut self,
+        self: &Arc<Self>,
         connection_id: ConnectionId,
         request: JSONRPCRequest,
         transport: AppServerTransport,
-        session: &mut ConnectionSessionState,
+        session: Arc<ConnectionSessionState>,
     ) {
         let request_method = request.method.as_str();
         tracing::trace!(
@@ -312,7 +357,7 @@ impl MessageProcessor {
             request_id: request.id.clone(),
         };
         let request_span =
-            crate::app_server_tracing::request_span(&request, transport, connection_id, session);
+            crate::app_server_tracing::request_span(&request, transport, connection_id, &session);
         let request_trace = request.trace.as_ref().map(|trace| W3cTraceContext {
             traceparent: trace.traceparent.clone(),
             tracestate: trace.tracestate.clone(),
@@ -354,7 +399,7 @@ impl MessageProcessor {
                 self.handle_client_request(
                     request_id.clone(),
                     codex_request,
-                    session,
+                    Arc::clone(&session),
                     /*outbound_initialized*/ None,
                     request_context.clone(),
                 )
@@ -369,10 +414,10 @@ impl MessageProcessor {
     /// This bypasses JSON request deserialization but keeps identical request
     /// semantics by delegating to `handle_client_request`.
     pub(crate) async fn process_client_request(
-        &mut self,
+        self: &Arc<Self>,
         connection_id: ConnectionId,
         request: ClientRequest,
-        session: &mut ConnectionSessionState,
+        session: Arc<ConnectionSessionState>,
         outbound_initialized: &AtomicBool,
     ) {
         let request_id = ConnectionRequestId {
@@ -380,7 +425,7 @@ impl MessageProcessor {
             request_id: request.id().clone(),
         };
         let request_span =
-            crate::app_server_tracing::typed_request_span(&request, connection_id, session);
+            crate::app_server_tracing::typed_request_span(&request, connection_id, &session);
         let request_context =
             RequestContext::new(request_id.clone(), request_span, /*parent_trace*/ None);
         tracing::trace!(
@@ -398,7 +443,7 @@ impl MessageProcessor {
                 self.handle_client_request(
                     request_id.clone(),
                     request,
-                    session,
+                    Arc::clone(&session),
                     Some(outbound_initialized),
                     request_context.clone(),
                 )
@@ -467,7 +512,7 @@ impl MessageProcessor {
     }
 
     pub(crate) async fn try_attach_thread_listener(
-        &mut self,
+        &self,
         thread_id: ThreadId,
         connection_ids: Vec<ConnectionId>,
     ) {
@@ -494,7 +539,7 @@ impl MessageProcessor {
         self.codex_message_processor.shutdown_threads().await;
     }
 
-    pub(crate) async fn connection_closed(&mut self, connection_id: ConnectionId) {
+    pub(crate) async fn connection_closed(&self, connection_id: ConnectionId) {
         self.outgoing.connection_closed(connection_id).await;
         self.fs_watch_manager.connection_closed(connection_id).await;
         self.codex_message_processor
@@ -508,23 +553,23 @@ impl MessageProcessor {
     }
 
     /// Handle a standalone JSON-RPC response originating from the peer.
-    pub(crate) async fn process_response(&mut self, response: JSONRPCResponse) {
+    pub(crate) async fn process_response(&self, response: JSONRPCResponse) {
         tracing::info!("<- response: {:?}", response);
         let JSONRPCResponse { id, result, .. } = response;
         self.outgoing.notify_client_response(id, result).await
     }
 
     /// Handle an error object received from the peer.
-    pub(crate) async fn process_error(&mut self, err: JSONRPCError) {
+    pub(crate) async fn process_error(&self, err: JSONRPCError) {
         tracing::error!("<- error: {:?}", err);
         self.outgoing.notify_client_error(err.id, err.error).await;
     }
 
     async fn handle_client_request(
-        &mut self,
+        self: &Arc<Self>,
         connection_request_id: ConnectionRequestId,
         codex_request: ClientRequest,
-        session: &mut ConnectionSessionState,
+        session: Arc<ConnectionSessionState>,
         // `Some(...)` means the caller wants initialize to immediately mark the
         // connection outbound-ready. Websocket JSON-RPC calls pass `None` so
         // lib.rs can deliver connection-scoped initialize notifications first.
@@ -532,126 +577,168 @@ impl MessageProcessor {
         request_context: RequestContext,
     ) {
         let connection_id = connection_request_id.connection_id;
-        match codex_request {
+        if let ClientRequest::Initialize { request_id, params } = codex_request {
             // Handle Initialize internally so CodexMessageProcessor does not have to concern
             // itself with the `initialized` bool.
-            ClientRequest::Initialize { request_id, params } => {
-                let connection_request_id = ConnectionRequestId {
-                    connection_id,
-                    request_id,
+            let connection_request_id = ConnectionRequestId {
+                connection_id,
+                request_id,
+            };
+            if session.initialized() {
+                let error = JSONRPCErrorError {
+                    code: INVALID_REQUEST_ERROR_CODE,
+                    message: "Already initialized".to_string(),
+                    data: None,
                 };
-                if session.initialized {
-                    let error = JSONRPCErrorError {
-                        code: INVALID_REQUEST_ERROR_CODE,
-                        message: "Already initialized".to_string(),
-                        data: None,
-                    };
-                    self.outgoing.send_error(connection_request_id, error).await;
-                    return;
-                }
-
-                // TODO(maxj): Revisit capability scoping for `experimental_api_enabled`.
-                // Current behavior is per-connection. Reviewer feedback notes this can
-                // create odd cross-client behavior (for example dynamic tool calls on a
-                // shared thread when another connected client did not opt into
-                // experimental API). Proposed direction is instance-global first-write-wins
-                // with initialize-time mismatch rejection.
-                let analytics_initialize_params = params.clone();
-                let (experimental_api_enabled, opt_out_notification_methods) =
-                    match params.capabilities {
-                        Some(capabilities) => (
-                            capabilities.experimental_api,
-                            capabilities
-                                .opt_out_notification_methods
-                                .unwrap_or_default(),
-                        ),
-                        None => (false, Vec::new()),
-                    };
-                session.experimental_api_enabled = experimental_api_enabled;
-                session.opted_out_notification_methods =
-                    opt_out_notification_methods.into_iter().collect();
-                let ClientInfo {
-                    name,
-                    title: _title,
-                    version,
-                } = params.client_info;
-                session.app_server_client_name = Some(name.clone());
-                session.client_version = Some(version.clone());
-                let originator = name.clone();
-                if let Err(error) = set_default_originator(originator.clone()) {
-                    match error {
-                        SetOriginatorError::InvalidHeaderValue => {
-                            let error = JSONRPCErrorError {
-                                code: INVALID_REQUEST_ERROR_CODE,
-                                message: format!(
-                                    "Invalid clientInfo.name: '{name}'. Must be a valid HTTP header value."
-                                ),
-                                data: None,
-                            };
-                            self.outgoing
-                                .send_error(connection_request_id.clone(), error)
-                                .await;
-                            return;
-                        }
-                        SetOriginatorError::AlreadyInitialized => {
-                            // No-op. This is expected to happen if the originator is already set via env var.
-                            // TODO(owen): Once we remove support for CODEX_INTERNAL_ORIGINATOR_OVERRIDE,
-                            // this will be an unexpected state and we can return a JSON-RPC error indicating
-                            // internal server error.
-                        }
-                    }
-                }
-                if self.config.features.enabled(Feature::GeneralAnalytics) {
-                    self.analytics_events_client.track_initialize(
-                        connection_id.0,
-                        analytics_initialize_params,
-                        originator,
-                        self.rpc_transport,
-                    );
-                }
-                set_default_client_residency_requirement(self.config.enforce_residency.value());
-                let user_agent_suffix = format!("{name}; {version}");
-                if let Ok(mut suffix) = USER_AGENT_SUFFIX.lock() {
-                    *suffix = Some(user_agent_suffix);
-                }
-
-                let user_agent = get_codex_user_agent();
-                let response = InitializeResponse {
-                    user_agent,
-                    codex_home: self.config.codex_home.clone(),
-                    platform_family: std::env::consts::FAMILY.to_string(),
-                    platform_os: std::env::consts::OS.to_string(),
-                };
-                self.outgoing
-                    .send_response(connection_request_id, response)
-                    .await;
-
-                session.initialized = true;
-                if let Some(outbound_initialized) = outbound_initialized {
-                    // In-process clients can complete readiness immediately here. The
-                    // websocket path defers this until lib.rs finishes transport-layer
-                    // initialize handling for the specific connection.
-                    outbound_initialized.store(true, Ordering::Release);
-                    self.codex_message_processor
-                        .connection_initialized(connection_id)
-                        .await;
-                }
+                self.outgoing.send_error(connection_request_id, error).await;
                 return;
             }
-            _ => {
-                if !session.initialized {
-                    let error = JSONRPCErrorError {
-                        code: INVALID_REQUEST_ERROR_CODE,
-                        message: "Not initialized".to_string(),
-                        data: None,
-                    };
-                    self.outgoing.send_error(connection_request_id, error).await;
-                    return;
+
+            // TODO(maxj): Revisit capability scoping for `experimental_api_enabled`.
+            // Current behavior is per-connection. Reviewer feedback notes this can
+            // create odd cross-client behavior (for example dynamic tool calls on a
+            // shared thread when another connected client did not opt into
+            // experimental API). Proposed direction is instance-global first-write-wins
+            // with initialize-time mismatch rejection.
+            let analytics_initialize_params = params.clone();
+            let (experimental_api_enabled, opt_out_notification_methods) = match params.capabilities
+            {
+                Some(capabilities) => (
+                    capabilities.experimental_api,
+                    capabilities
+                        .opt_out_notification_methods
+                        .unwrap_or_default(),
+                ),
+                None => (false, Vec::new()),
+            };
+            let ClientInfo {
+                name,
+                title: _title,
+                version,
+            } = params.client_info;
+            // Validate before committing; set_default_originator validates while
+            // mutating process-global metadata.
+            if HeaderValue::from_str(&name).is_err() {
+                let error = JSONRPCErrorError {
+                    code: INVALID_REQUEST_ERROR_CODE,
+                    message: format!(
+                        "Invalid clientInfo.name: '{name}'. Must be a valid HTTP header value."
+                    ),
+                    data: None,
+                };
+                self.outgoing
+                    .send_error(connection_request_id.clone(), error)
+                    .await;
+                return;
+            }
+            let originator = name.clone();
+            let user_agent_suffix = format!("{name}; {version}");
+            let codex_home = self.config.codex_home.clone();
+            if session
+                .initialize(InitializedConnectionSessionState {
+                    experimental_api_enabled,
+                    opted_out_notification_methods: opt_out_notification_methods
+                        .into_iter()
+                        .collect(),
+                    app_server_client_name: name.clone(),
+                    client_version: version,
+                })
+                .is_err()
+            {
+                let error = JSONRPCErrorError {
+                    code: INVALID_REQUEST_ERROR_CODE,
+                    message: "Already initialized".to_string(),
+                    data: None,
+                };
+                self.outgoing.send_error(connection_request_id, error).await;
+                return;
+            }
+
+            // Only the request that wins session initialization may mutate
+            // process-global client metadata.
+            if let Err(error) = set_default_originator(originator.clone()) {
+                match error {
+                    SetOriginatorError::InvalidHeaderValue => {
+                        tracing::warn!(
+                            client_info_name = %name,
+                            "validated clientInfo.name was rejected while setting originator"
+                        );
+                    }
+                    SetOriginatorError::AlreadyInitialized => {
+                        // No-op. This is expected to happen if the originator is already set via env var.
+                        // TODO(owen): Once we remove support for CODEX_INTERNAL_ORIGINATOR_OVERRIDE,
+                        // this will be an unexpected state and we can return a JSON-RPC error indicating
+                        // internal server error.
+                    }
                 }
             }
+            if self.config.features.enabled(Feature::GeneralAnalytics) {
+                self.analytics_events_client.track_initialize(
+                    connection_id.0,
+                    analytics_initialize_params,
+                    originator,
+                    self.rpc_transport,
+                );
+            }
+            set_default_client_residency_requirement(self.config.enforce_residency.value());
+            if let Ok(mut suffix) = USER_AGENT_SUFFIX.lock() {
+                *suffix = Some(user_agent_suffix);
+            }
+
+            let user_agent = get_codex_user_agent();
+            let response = InitializeResponse {
+                user_agent,
+                codex_home,
+                platform_family: std::env::consts::FAMILY.to_string(),
+                platform_os: std::env::consts::OS.to_string(),
+            };
+
+            self.outgoing
+                .send_response(connection_request_id, response)
+                .await;
+
+            if let Some(outbound_initialized) = outbound_initialized {
+                // In-process clients can complete readiness immediately here. The
+                // websocket path defers this until lib.rs finishes transport-layer
+                // initialize handling for the specific connection.
+                outbound_initialized.store(true, Ordering::Release);
+                self.codex_message_processor
+                    .connection_initialized(connection_id)
+                    .await;
+            }
+            return;
         }
+
+        self.dispatch_initialized_client_request(
+            connection_request_id,
+            codex_request,
+            session,
+            request_context,
+        )
+        .await;
+    }
+
+    async fn dispatch_initialized_client_request(
+        self: &Arc<Self>,
+        connection_request_id: ConnectionRequestId,
+        codex_request: ClientRequest,
+        session: Arc<ConnectionSessionState>,
+        request_context: RequestContext,
+    ) {
+        let connection_id = connection_request_id.connection_id;
+
+        if !session.initialized() {
+            let error = JSONRPCErrorError {
+                code: INVALID_REQUEST_ERROR_CODE,
+                message: "Not initialized".to_string(),
+                data: None,
+            };
+            self.outgoing.send_error(connection_request_id, error).await;
+            return;
+        }
+
         if let Some(reason) = codex_request.experimental_reason()
-            && !session.experimental_api_enabled
+            && !session.experimental_api_enabled()
         {
             let error = JSONRPCErrorError {
                 code: INVALID_REQUEST_ERROR_CODE,
@@ -671,6 +758,29 @@ impl MessageProcessor {
                 codex_request.clone(),
             );
         }
+
+        let app_server_client_name = session.app_server_client_name().map(str::to_string);
+        let client_version = session.client_version().map(str::to_string);
+        Arc::clone(self)
+            .handle_initialized_client_request(
+                connection_request_id,
+                codex_request,
+                request_context,
+                app_server_client_name,
+                client_version,
+            )
+            .await;
+    }
+
+    async fn handle_initialized_client_request(
+        self: Arc<Self>,
+        connection_request_id: ConnectionRequestId,
+        codex_request: ClientRequest,
+        request_context: RequestContext,
+        app_server_client_name: Option<String>,
+        client_version: Option<String>,
+    ) {
+        let connection_id = connection_request_id.connection_id;
 
         match codex_request {
             ClientRequest::ConfigRead { request_id, params } => {
@@ -843,7 +953,8 @@ impl MessageProcessor {
                     .process_request(
                         connection_id,
                         other,
-                        session.app_server_client_name.clone(),
+                        app_server_client_name,
+                        client_version,
                         request_context,
                     )
                     .boxed()
@@ -864,15 +975,8 @@ impl MessageProcessor {
         request_id: ConnectionRequestId,
         params: ConfigValueWriteParams,
     ) {
-        match self.config_api.write_value(params).await {
-            Ok(response) => {
-                self.codex_message_processor
-                    .apply_config_mutation_follow_up(ConfigMutationKind::ValueWrite)
-                    .await;
-                self.outgoing.send_response(request_id, response).await;
-            }
-            Err(error) => self.outgoing.send_error(request_id, error).await,
-        }
+        let result = self.config_api.write_value(params).await;
+        self.handle_config_mutation_result(request_id, result).await
     }
 
     async fn handle_config_batch_write(
@@ -880,12 +984,8 @@ impl MessageProcessor {
         request_id: ConnectionRequestId,
         params: ConfigBatchWriteParams,
     ) {
-        self.handle_config_mutation_result(
-            request_id,
-            ConfigMutationKind::BatchWrite,
-            self.config_api.batch_write(params).await,
-        )
-        .await;
+        let result = self.config_api.batch_write(params).await;
+        self.handle_config_mutation_result(request_id, result).await;
     }
 
     async fn handle_experimental_feature_enablement_set(
@@ -894,24 +994,15 @@ impl MessageProcessor {
         params: ExperimentalFeatureEnablementSetParams,
     ) {
         let should_refresh_apps_list = params.enablement.get("apps").copied() == Some(true);
-        match self
+        let result = self
             .config_api
             .set_experimental_feature_enablement(params)
-            .await
-        {
-            Ok(response) => {
-                self.codex_message_processor
-                    .apply_config_mutation_follow_up(
-                        ConfigMutationKind::ExperimentalFeatureEnablementSet,
-                    )
-                    .await;
-                self.outgoing.send_response(request_id, response).await;
-                if should_refresh_apps_list {
-                    self.refresh_apps_list_after_experimental_feature_enablement_set()
-                        .await;
-                }
-            }
-            Err(error) => self.outgoing.send_error(request_id, error).await,
+            .await;
+        let is_ok = result.is_ok();
+        self.handle_config_mutation_result(request_id, result).await;
+        if should_refresh_apps_list && is_ok {
+            self.refresh_apps_list_after_experimental_feature_enablement_set()
+                .await;
         }
     }
 
@@ -930,13 +1021,11 @@ impl MessageProcessor {
                 return;
             }
         };
-        let has_chatgpt_auth = self
-            .auth_manager
-            .auth()
-            .await
-            .as_ref()
-            .is_some_and(codex_login::CodexAuth::is_chatgpt_auth);
-        if !config.features.apps_enabled_for_auth(has_chatgpt_auth) {
+        let auth = self.auth_manager.auth().await;
+        if !config.features.apps_enabled_for_auth(
+            auth.as_ref()
+                .is_some_and(codex_login::CodexAuth::is_chatgpt_auth),
+        ) {
             return;
         }
 
@@ -986,17 +1075,37 @@ impl MessageProcessor {
     async fn handle_config_mutation_result<T: serde::Serialize>(
         &self,
         request_id: ConnectionRequestId,
-        mutation_kind: ConfigMutationKind,
         result: std::result::Result<T, JSONRPCErrorError>,
     ) {
         match result {
             Ok(response) => {
-                self.codex_message_processor
-                    .apply_config_mutation_follow_up(mutation_kind)
-                    .await;
+                self.handle_config_mutation().await;
                 self.outgoing.send_response(request_id, response).await;
             }
             Err(error) => self.outgoing.send_error(request_id, error).await,
+        }
+    }
+
+    async fn handle_config_mutation(&self) {
+        self.codex_message_processor.handle_config_mutation();
+        let Some(remote_control_handle) = &self.remote_control_handle else {
+            return;
+        };
+
+        match self
+            .config_api
+            .load_latest_config(/*fallback_cwd*/ None)
+            .await
+        {
+            Ok(config) => {
+                remote_control_handle.set_enabled(config.features.enabled(Feature::RemoteControl));
+            }
+            Err(error) => {
+                tracing::warn!(
+                    "failed to load config for remote control enablement refresh after config mutation: {}",
+                    error.message
+                );
+            }
         }
     }
 
