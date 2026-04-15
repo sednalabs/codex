@@ -209,7 +209,7 @@ pub(super) async fn run(session: &Arc<Session>, config: Arc<Config>) {
         new_watermark,
         raw_memories.clone(),
         thread_id,
-        root,
+        root.to_path_buf(),
         artifacts_not_before,
         allow_existing_artifacts_without_rewrite,
         prepared_input_artifact_tree_sha256,

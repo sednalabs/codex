@@ -382,6 +382,7 @@ use codex_protocol::protocol::TokenUsage;
 use codex_protocol::protocol::TokenUsageInfo;
 use codex_protocol::protocol::TurnDiffEvent;
 use codex_protocol::protocol::WarningEvent;
+use codex_state::UsageLogger;
 use codex_protocol::user_input::UserInput;
 use codex_tools::ToolsConfig;
 use codex_tools::ToolsConfigParams;
@@ -1779,6 +1780,41 @@ impl Session {
         let rollout_path = rollout_recorder
             .as_ref()
             .map(|rec| rec.rollout_path().to_path_buf());
+        let usage_logger = if let Some(state_db) = state_db_ctx.as_ref() {
+            let usage_source = state_builder
+                .as_ref()
+                .map(|builder| builder.source.clone())
+                .unwrap_or(session_configuration.session_source.clone());
+            let agent_nickname = state_builder
+                .as_ref()
+                .and_then(|builder| builder.agent_nickname.clone())
+                .or_else(|| usage_source.get_nickname());
+            let agent_role = state_builder
+                .as_ref()
+                .and_then(|builder| builder.agent_role.clone())
+                .or_else(|| usage_source.get_agent_role());
+            let forked_from_id = initial_history
+                .forked_from_id()
+                .or_else(|| session_configuration.session_source.parent_thread_id());
+            match UsageLogger::try_new(
+                state_db.clone(),
+                conversation_id,
+                usage_source,
+                forked_from_id,
+                agent_nickname,
+                agent_role,
+            )
+            .await
+            {
+                Ok(logger) => Some(Mutex::new(logger)),
+                Err(err) => {
+                    warn!("failed to initialize usage logger: {err}");
+                    None
+                }
+            }
+        } else {
+            None
+        };
 
         let mut post_session_configured_events = Vec::<Event>::new();
 
@@ -2070,6 +2106,7 @@ impl Session {
             network_proxy,
             network_approval: Arc::clone(&network_approval),
             state_db: state_db_ctx.clone(),
+            usage_logger,
             model_client: ModelClient::new(
                 Some(Arc::clone(&auth_manager)),
                 conversation_id,
@@ -4080,7 +4117,12 @@ impl Session {
             let state = self.state.lock().await;
             state.token_info_and_rate_limits()
         };
-        let event = EventMsg::TokenCount(TokenCountEvent { info, rate_limits });
+        let event = EventMsg::TokenCount(TokenCountEvent {
+            info,
+            rate_limits,
+            provider: Some(turn_context.provider.name.clone()),
+            model_used: Some(turn_context.model_info.slug.clone()),
+        });
         self.send_event(turn_context, event).await;
     }
 
