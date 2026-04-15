@@ -236,6 +236,7 @@ use codex_core::find_thread_name_by_id;
 use codex_core::find_thread_names_by_ids;
 use codex_core::find_thread_path_by_id_str;
 use codex_core::parse_cursor;
+use codex_core::path_utils;
 use codex_core::plugins::MarketplaceAddError;
 use codex_core::plugins::MarketplaceError;
 use codex_core::plugins::MarketplacePluginSource;
