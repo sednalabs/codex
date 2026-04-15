@@ -1376,6 +1376,7 @@ dependencies = [
  "codex-plugin",
  "codex-protocol",
  "codex-utils-version",
+ "codex-utils-absolute-path",
  "os_info",
  "pretty_assertions",
  "serde",
@@ -1671,6 +1672,7 @@ dependencies = [
  "assert_matches",
  "clap",
  "clap_complete",
+ "codex-api",
  "codex-app-server",
  "codex-app-server-protocol",
  "codex-app-server-test-client",
@@ -1694,6 +1696,7 @@ dependencies = [
  "codex-stdio-to-uds",
  "codex-terminal-detection",
  "codex-tui",
+ "codex-utils-absolute-path",
  "codex-utils-cargo-bin",
  "codex-utils-cli",
  "codex-utils-path",
@@ -2020,6 +2023,7 @@ dependencies = [
  "codex-analytics",
  "codex-app-server-protocol",
  "codex-config",
+ "codex-exec-server",
  "codex-instructions",
  "codex-login",
  "codex-otel",
@@ -2245,6 +2249,7 @@ dependencies = [
  "chrono",
  "codex-config",
  "codex-protocol",
+ "codex-utils-absolute-path",
  "futures",
  "pretty_assertions",
  "regex",
@@ -2395,6 +2400,7 @@ dependencies = [
  "codex-models-manager",
  "codex-protocol",
  "codex-shell-command",
+ "codex-utils-absolute-path",
  "codex-utils-cli",
  "codex-utils-json-to-toml",
  "codex-utils-version",
@@ -2703,6 +2709,8 @@ dependencies = [
 name = "codex-sandboxing"
 version = "0.0.0"
 dependencies = [
+ "anyhow",
+ "async-trait",
  "codex-network-proxy",
  "codex-protocol",
  "codex-utils-absolute-path",
@@ -2711,6 +2719,7 @@ dependencies = [
  "pretty_assertions",
  "serde_json",
  "tempfile",
+ "tokio",
  "tracing",
  "url",
  "which 8.0.0",
@@ -2836,6 +2845,17 @@ version = "0.0.0"
 dependencies = [
  "codex-arg0",
  "tempfile",
+]
+
+[[package]]
+name = "codex-thread-store"
+version = "0.0.0"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "codex-protocol",
+ "serde",
+ "thiserror 2.0.18",
 ]
 
 [[package]]
@@ -3076,10 +3096,13 @@ dependencies = [
 name = "codex-utils-plugins"
 version = "0.0.0"
 dependencies = [
+ "codex-exec-server",
  "codex-login",
+ "codex-utils-absolute-path",
  "serde",
  "serde_json",
  "tempfile",
+ "tokio",
 ]
 
 [[package]]

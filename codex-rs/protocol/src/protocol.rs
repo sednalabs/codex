@@ -1662,7 +1662,7 @@ pub struct HookRunSummary {
     pub handler_type: HookHandlerType,
     pub execution_mode: HookExecutionMode,
     pub scope: HookScope,
-    pub source_path: PathBuf,
+    pub source_path: AbsolutePathBuf,
     pub display_order: i64,
     pub status: HookRunStatus,
     pub status_message: Option<String>,
@@ -2443,7 +2443,7 @@ pub struct ImageGenerationEndEvent {
     pub result: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
-    pub saved_path: Option<String>,
+    pub saved_path: Option<AbsolutePathBuf>,
 }
 
 // Conversation kept for backward compatibility.
@@ -2642,6 +2642,15 @@ impl SessionSource {
             "unknown" => SessionSource::Unknown,
             _ => SessionSource::Custom(normalized),
         })
+    }
+
+    /// Low cardinality thread source label for analytics.
+    pub fn thread_source_name(&self) -> Option<&'static str> {
+        match self {
+            SessionSource::Cli | SessionSource::VSCode | SessionSource::Exec => Some("user"),
+            SessionSource::SubAgent(_) => Some("subagent"),
+            SessionSource::Mcp | SessionSource::Custom(_) | SessionSource::Unknown => None,
+        }
     }
 
     pub fn get_nickname(&self) -> Option<String> {
@@ -3057,7 +3066,7 @@ pub struct ExecCommandBeginEvent {
     /// The command to be executed.
     pub command: Vec<String>,
     /// The command's working directory if not the default cwd for the agent.
-    pub cwd: PathBuf,
+    pub cwd: AbsolutePathBuf,
     pub parsed_cmd: Vec<ParsedCommand>,
     /// Where the command originated. Defaults to Agent for backward compatibility.
     #[serde(default)]
@@ -3081,7 +3090,7 @@ pub struct ExecCommandEndEvent {
     /// The command that was executed.
     pub command: Vec<String>,
     /// The command's working directory if not the default cwd for the agent.
-    pub cwd: PathBuf,
+    pub cwd: AbsolutePathBuf,
     pub parsed_cmd: Vec<ParsedCommand>,
     /// Where the command originated. Defaults to Agent for backward compatibility.
     #[serde(default)]
@@ -3114,7 +3123,7 @@ pub struct ViewImageToolCallEvent {
     /// Identifier for the originating tool call.
     pub call_id: String,
     /// Local filesystem path provided to the tool.
-    pub path: PathBuf,
+    pub path: AbsolutePathBuf,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, JsonSchema, TS)]
@@ -3397,9 +3406,9 @@ pub struct SkillInterface {
     #[ts(optional)]
     pub short_description: Option<String>,
     #[ts(optional)]
-    pub icon_small: Option<PathBuf>,
+    pub icon_small: Option<AbsolutePathBuf>,
     #[ts(optional)]
-    pub icon_large: Option<PathBuf>,
+    pub icon_large: Option<AbsolutePathBuf>,
     #[ts(optional)]
     pub brand_color: Option<String>,
     #[ts(optional)]
@@ -3483,7 +3492,7 @@ pub struct SessionConfiguredEvent {
 
     /// Working directory that should be treated as the *root* of the
     /// session.
-    pub cwd: PathBuf,
+    pub cwd: AbsolutePathBuf,
 
     /// The effort the model is putting into reasoning about the user's request.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -3841,6 +3850,8 @@ mod tests {
     use crate::permissions::NetworkSandboxPolicy;
     use anyhow::Result;
     use codex_utils_absolute_path::AbsolutePathBuf;
+    use codex_utils_absolute_path::test_support::PathBufExt;
+    use codex_utils_absolute_path::test_support::test_path_buf;
     use pretty_assertions::assert_eq;
     use serde_json::json;
     use std::path::PathBuf;
@@ -3929,6 +3940,24 @@ mod tests {
             .get_agent_path(),
             Some(agent_path)
         );
+    }
+
+    #[test]
+    fn session_source_thread_source_name_classifies_user_and_subagent_sources() {
+        for (source, expected) in [
+            (SessionSource::Cli, Some("user")),
+            (SessionSource::VSCode, Some("user")),
+            (SessionSource::Exec, Some("user")),
+            (
+                SessionSource::SubAgent(SubAgentSource::Review),
+                Some("subagent"),
+            ),
+            (SessionSource::Mcp, None),
+            (SessionSource::Custom("atlas".to_string()), None),
+            (SessionSource::Unknown, None),
+        ] {
+            assert_eq!(source.thread_source_name(), expected);
+        }
     }
 
     #[test]
@@ -4597,7 +4626,7 @@ mod tests {
                 status: "completed".into(),
                 revised_prompt: Some("A tiny blue square".into()),
                 result: "Zm9v".into(),
-                saved_path: Some("/tmp/ig-1.png".into()),
+                saved_path: Some(test_path_buf("/tmp/ig-1.png").abs()),
             }),
         };
 
@@ -4609,7 +4638,10 @@ mod tests {
                 assert_eq!(event.status, "completed");
                 assert_eq!(event.revised_prompt.as_deref(), Some("A tiny blue square"));
                 assert_eq!(event.result, "Zm9v");
-                assert_eq!(event.saved_path.as_deref(), Some("/tmp/ig-1.png"));
+                assert_eq!(
+                    event.saved_path.as_ref().map(AbsolutePathBuf::as_path),
+                    Some(test_path_buf("/tmp/ig-1.png").as_path())
+                );
             }
             _ => panic!("expected ImageGenerationEnd event"),
         }
@@ -4940,7 +4972,7 @@ mod tests {
     #[test]
     fn turn_context_item_deserializes_without_network() -> Result<()> {
         let item: TurnContextItem = serde_json::from_value(json!({
-            "cwd": "/tmp",
+            "cwd": test_path_buf("/tmp"),
             "approval_policy": "never",
             "sandbox_policy": { "type": "danger-full-access" },
             "model": "gpt-5",
@@ -4957,7 +4989,7 @@ mod tests {
         let item = TurnContextItem {
             turn_id: None,
             trace_id: None,
-            cwd: PathBuf::from("/tmp"),
+            cwd: test_path_buf("/tmp"),
             current_date: None,
             timezone: None,
             approval_policy: AskForApproval::Never,
@@ -5007,7 +5039,7 @@ mod tests {
                 approval_policy: AskForApproval::Never,
                 approvals_reviewer: ApprovalsReviewer::User,
                 sandbox_policy: SandboxPolicy::new_read_only_policy(),
-                cwd: PathBuf::from("/home/user/project"),
+                cwd: test_path_buf("/home/user/project").abs(),
                 reasoning_effort: Some(ReasoningEffortConfig::default()),
                 history_log_id: 0,
                 history_entry_count: 0,
@@ -5029,7 +5061,7 @@ mod tests {
                 "sandbox_policy": {
                     "type": "read-only"
                 },
-                "cwd": "/home/user/project",
+                "cwd": test_path_buf("/home/user/project"),
                 "reasoning_effort": "medium",
                 "history_log_id": 0,
                 "history_entry_count": 0,

@@ -80,10 +80,7 @@ async fn status_command_renders_immediately_without_rate_limit_refresh() {
 #[tokio::test]
 async fn status_command_renders_instruction_sources_from_thread_session() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
-    let temp_dir = tempfile::tempdir().expect("temp dir");
-    let agents_path = temp_dir.path().join("AGENTS.md");
-    std::fs::write(&agents_path, "# test agents\n").expect("write AGENTS.md");
-    chat.config.cwd = temp_dir.path().to_path_buf().abs();
+    chat.instruction_source_paths = vec![chat.config.cwd.join("AGENTS.md")];
 
     chat.dispatch_command(SlashCommand::Status);
 
