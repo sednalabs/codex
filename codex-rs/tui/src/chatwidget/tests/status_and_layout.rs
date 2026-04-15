@@ -1204,11 +1204,11 @@ async fn status_line_model_with_reasoning_context_remaining_percent_footer_snaps
     use ratatui::backend::TestBackend;
 
     let (mut chat, _rx, _op_rx) = make_chatwidget_manual(Some("gpt-5.4")).await;
-    chat.set_feature_enabled(codex_core::config::Feature::FastMode, /*enabled*/ true);
+    chat.set_feature_enabled(Feature::FastMode, /*enabled*/ true);
     assert!(chat
         .config
         .features
-        .enabled(codex_core::config::Feature::FastMode));
+        .enabled(Feature::FastMode));
     chat.show_welcome_banner = false;
     chat.config.cwd = test_project_path().abs();
     chat.config.tui_status_line = Some(vec![
@@ -1219,11 +1219,11 @@ async fn status_line_model_with_reasoning_context_remaining_percent_footer_snaps
     chat.set_reasoning_effort(Some(ReasoningEffortConfig::XHigh));
     chat.set_service_tier(Some(ServiceTier::Fast));
     set_chatgpt_auth(&mut chat);
-    chat.set_feature_enabled(codex_core::config::Feature::FastMode, /*enabled*/ true);
+    chat.set_feature_enabled(Feature::FastMode, /*enabled*/ true);
     assert!(chat
         .config
         .features
-        .enabled(codex_core::config::Feature::FastMode));
+        .enabled(Feature::FastMode));
     chat.refresh_status_line();
 
     let width = 80;
@@ -2178,7 +2178,7 @@ async fn exec_command_begin_clears_compaction_status_header() {
             process_id: None,
             turn_id: "turn-1".into(),
             command: vec!["bash".into(), "-lc".into(), "echo done".into()],
-            cwd: std::path::PathBuf::from("."),
+            cwd: std::path::PathBuf::from(".").abs(),
             parsed_cmd: vec![ParsedCommand::Unknown {
                 cmd: "bash -lc 'echo done'".into(),
             }],
