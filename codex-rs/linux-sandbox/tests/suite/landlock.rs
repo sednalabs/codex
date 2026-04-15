@@ -10,6 +10,7 @@ use codex_core::exec::process_exec_tool_call;
 use codex_core::exec_env::create_env;
 use codex_core::sandboxing::SandboxPermissions;
 use codex_protocol::config_types::WindowsSandboxLevel;
+use codex_protocol::exec_output::ExecToolCallOutput;
 use codex_protocol::permissions::FileSystemAccessMode;
 use codex_protocol::permissions::FileSystemPath;
 use codex_protocol::permissions::FileSystemSandboxEntry;
@@ -67,7 +68,7 @@ async fn run_cmd_output(
     cmd: &[&str],
     writable_roots: &[PathBuf],
     timeout_ms: u64,
-) -> codex_core::exec::ExecToolCallOutput {
+) -> ExecToolCallOutput {
     match run_cmd_result_with_writable_roots(
         cmd,
         writable_roots,
@@ -101,7 +102,7 @@ async fn run_cmd_result_with_writable_roots(
     timeout_ms: u64,
     use_legacy_landlock: bool,
     network_access: bool,
-) -> Result<codex_core::exec::ExecToolCallOutput> {
+) -> Result<ExecToolCallOutput> {
     let sandbox_policy = SandboxPolicy::WorkspaceWrite {
         writable_roots: writable_roots
             .iter()
@@ -136,12 +137,12 @@ async fn run_cmd_result_with_policies(
     network_sandbox_policy: NetworkSandboxPolicy,
     timeout_ms: u64,
     use_legacy_landlock: bool,
-) -> Result<codex_core::exec::ExecToolCallOutput> {
+) -> Result<ExecToolCallOutput> {
     let cwd = std::env::current_dir().expect("cwd should exist");
-    let sandbox_cwd = cwd.clone();
+    let sandbox_cwd = AbsolutePathBuf::try_from(cwd.as_path()).expect("cwd should be absolute");
     let params = ExecParams {
         command: cmd.iter().copied().map(str::to_owned).collect(),
-        cwd,
+        cwd: sandbox_cwd.clone(),
         expiration: timeout_ms.into(),
         capture_policy: ExecCapturePolicy::ShellTool,
         env: create_env_from_core_vars(),
@@ -168,7 +169,7 @@ async fn run_cmd_result_with_policies(
     .await
 }
 
-fn is_bwrap_unavailable_output(output: &codex_core::exec::ExecToolCallOutput) -> bool {
+fn is_bwrap_unavailable_output(output: &ExecToolCallOutput) -> bool {
     output.stderr.text.contains(BWRAP_UNAVAILABLE_ERR)
         || BWRAP_PERMISSION_ERR_SNIPPETS
             .iter()
@@ -203,10 +204,7 @@ async fn should_skip_bwrap_tests() -> bool {
     }
 }
 
-fn expect_denied(
-    result: Result<codex_core::exec::ExecToolCallOutput>,
-    context: &str,
-) -> codex_core::exec::ExecToolCallOutput {
+fn expect_denied(result: Result<ExecToolCallOutput>, context: &str) -> ExecToolCallOutput {
     match result {
         Ok(output) => {
             assert_ne!(output.exit_code, 0, "{context}: expected nonzero exit code");
@@ -399,10 +397,10 @@ async fn test_timeout() {
 #[expect(clippy::expect_used)]
 async fn assert_network_blocked(cmd: &[&str]) {
     let cwd = std::env::current_dir().expect("cwd should exist");
-    let sandbox_cwd = cwd.clone();
+    let sandbox_cwd = AbsolutePathBuf::try_from(cwd.as_path()).expect("cwd should be absolute");
     let params = ExecParams {
         command: cmd.iter().copied().map(str::to_owned).collect(),
-        cwd,
+        cwd: sandbox_cwd.clone(),
         // Give the tool a generous 2-second timeout so even slow DNS timeouts
         // do not stall the suite.
         expiration: NETWORK_TIMEOUT_MS.into(),

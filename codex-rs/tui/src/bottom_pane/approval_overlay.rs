@@ -530,11 +530,17 @@ fn build_header(request: &ApprovalRequest) -> Box<dyn Renderable> {
 mod tests {
     use super::*;
     use crate::app_event::AppEvent;
+    use crate::bottom_pane::approval_state::exec_options;
+    use crate::bottom_pane::approval_state::permissions_options;
+    use codex_protocol::ThreadId;
     use codex_protocol::models::FileSystemPermissions;
     use codex_protocol::models::NetworkPermissions;
+    use codex_protocol::models::PermissionProfile;
     use codex_protocol::protocol::ExecPolicyAmendment;
+    use codex_protocol::protocol::NetworkApprovalContext;
     use codex_protocol::protocol::NetworkApprovalProtocol;
     use codex_protocol::protocol::NetworkPolicyAmendment;
+    use codex_protocol::protocol::NetworkPolicyRuleAction;
     use codex_utils_absolute_path::AbsolutePathBuf;
     use insta::assert_snapshot;
     use pretty_assertions::assert_eq;

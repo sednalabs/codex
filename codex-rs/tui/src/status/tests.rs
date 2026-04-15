@@ -23,6 +23,7 @@ use codex_protocol::protocol::TokenUsageInfo;
 use insta::assert_snapshot;
 use pretty_assertions::assert_eq;
 use ratatui::prelude::*;
+use std::path::PathBuf;
 use tempfile::TempDir;
 
 async fn test_config(temp_home: &TempDir) -> Config {

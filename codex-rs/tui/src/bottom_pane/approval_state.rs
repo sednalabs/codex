@@ -132,7 +132,7 @@ pub(crate) fn build_approval_options(request: &ApprovalRequest) -> (Vec<Approval
     }
 }
 
-fn exec_options(
+pub(crate) fn exec_options(
     available_decisions: &[ReviewDecision],
     network_approval_context: Option<&NetworkApprovalContext>,
     additional_permissions: Option<&PermissionProfile>,
@@ -289,7 +289,7 @@ fn patch_options() -> Vec<ApprovalOption> {
     ]
 }
 
-fn permissions_options() -> Vec<ApprovalOption> {
+pub(crate) fn permissions_options() -> Vec<ApprovalOption> {
     vec![
         ApprovalOption {
             label: "Yes, grant these permissions".to_string(),
