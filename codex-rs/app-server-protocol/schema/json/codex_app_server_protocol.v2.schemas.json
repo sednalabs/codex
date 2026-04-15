@@ -1746,6 +1746,28 @@
               "$ref": "#/definitions/RequestId"
             },
             "method": {
+              "const": "mcpServer/tool/call",
+              "title": "McpServer/tool/callRequestMethod",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/definitions/McpServerToolCallParams"
+            }
+          },
+          "required": [
+            "method",
+            "id",
+            "params"
+          ],
+          "title": "McpServer/tool/callRequest",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "id": {
+              "$ref": "#/definitions/RequestId"
+            },
+            "method": {
               "const": "windowsSandbox/setupStart",
               "title": "WindowsSandbox/setupStartRequestMethod",
               "type": "string"
@@ -5689,6 +5711,51 @@
       "title": "McpServerStatusUpdatedNotification",
       "type": "object"
     },
+    "McpServerToolCallParams": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "properties": {
+        "_meta": true,
+        "arguments": true,
+        "server": {
+          "type": "string"
+        },
+        "threadId": {
+          "type": "string"
+        },
+        "tool": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "threadId",
+        "server",
+        "tool"
+      ],
+      "title": "McpServerToolCallParams",
+      "type": "object"
+    },
+    "McpServerToolCallResponse": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "properties": {
+        "_meta": true,
+        "content": {
+          "items": true,
+          "type": "array"
+        },
+        "isError": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "structuredContent": true
+      },
+      "required": [
+        "content"
+      ],
+      "title": "McpServerToolCallResponse",
+      "type": "object"
+    },
     "McpToolCallError": {
       "properties": {
         "message": {
@@ -7053,6 +7120,35 @@
         "verse"
       ],
       "type": "string"
+    },
+    "RealtimeVoicesList": {
+      "properties": {
+        "defaultV1": {
+          "$ref": "#/definitions/RealtimeVoice"
+        },
+        "defaultV2": {
+          "$ref": "#/definitions/RealtimeVoice"
+        },
+        "v1": {
+          "items": {
+            "$ref": "#/definitions/RealtimeVoice"
+          },
+          "type": "array"
+        },
+        "v2": {
+          "items": {
+            "$ref": "#/definitions/RealtimeVoice"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "v1",
+        "v2",
+        "defaultV1",
+        "defaultV2"
+      ],
+      "type": "object"
     },
     "ReasoningEffort": {
       "description": "See https://platform.openai.com/docs/guides/reasoning?api-mode=responses#get-started-with-reasoning",
@@ -9063,6 +9159,24 @@
         {
           "properties": {
             "method": {
+              "const": "thread/realtime/sdp",
+              "title": "Thread/realtime/sdpNotificationMethod",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/definitions/ThreadRealtimeSdpNotification"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "title": "Thread/realtime/sdpNotification",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
               "const": "thread/realtime/error",
               "title": "Thread/realtime/errorNotificationMethod",
               "type": "string"
@@ -9785,11 +9899,7 @@
           "type": "integer"
         },
         "cwd": {
-          "allOf": [
-            {
-              "$ref": "#/definitions/AbsolutePathBuf"
-            }
-          ],
+          "$ref": "#/definitions/AbsolutePathBuf",
           "description": "Working directory captured for the thread."
         },
         "ephemeral": {
@@ -10305,11 +10415,7 @@
               "type": "array"
             },
             "cwd": {
-              "allOf": [
-                {
-                  "$ref": "#/definitions/AbsolutePathBuf"
-                }
-              ],
+              "$ref": "#/definitions/AbsolutePathBuf",
               "description": "The command's working directory."
             },
             "durationMs": {
@@ -11116,6 +11222,24 @@
         "audio"
       ],
       "title": "ThreadRealtimeOutputAudioDeltaNotification",
+      "type": "object"
+    },
+    "ThreadRealtimeSdpNotification": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "EXPERIMENTAL - emitted with the remote SDP for a WebRTC realtime session.",
+      "properties": {
+        "sdp": {
+          "type": "string"
+        },
+        "threadId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "threadId",
+        "sdp"
+      ],
+      "title": "ThreadRealtimeSdpNotification",
       "type": "object"
     },
     "ThreadRealtimeStartTransport": {

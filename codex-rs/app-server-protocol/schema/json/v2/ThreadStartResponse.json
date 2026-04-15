@@ -279,7 +279,7 @@
               "type": "string"
             },
             "path": {
-              "$ref": "#/definitions/AbsolutePathBuf"
+              "$ref": "#/$defs/AbsolutePathBuf"
             },
             "type": {
               "const": "read",
@@ -981,11 +981,7 @@
           "type": "integer"
         },
         "cwd": {
-          "allOf": [
-            {
-              "$ref": "#/definitions/AbsolutePathBuf"
-            }
-          ],
+          "$ref": "#/$defs/AbsolutePathBuf",
           "description": "Working directory captured for the thread."
         },
         "ephemeral": {
@@ -1253,11 +1249,7 @@
               "type": "array"
             },
             "cwd": {
-              "allOf": [
-                {
-                  "$ref": "#/definitions/AbsolutePathBuf"
-                }
-              ],
+              "$ref": "#/$defs/AbsolutePathBuf",
               "description": "The command's working directory."
             },
             "durationMs": {
@@ -1568,7 +1560,7 @@
               "type": "string"
             },
             "path": {
-              "$ref": "#/definitions/AbsolutePathBuf"
+              "$ref": "#/$defs/AbsolutePathBuf"
             },
             "type": {
               "const": "imageView",
@@ -1601,7 +1593,7 @@
             "savedPath": {
               "anyOf": [
                 {
-                  "$ref": "#/definitions/AbsolutePathBuf"
+                  "$ref": "#/$defs/AbsolutePathBuf"
                 },
                 {
                   "type": "null"
@@ -2066,13 +2058,13 @@
       "description": "Reviewer currently used for approval requests on this thread."
     },
     "cwd": {
-      "$ref": "#/definitions/AbsolutePathBuf"
+      "$ref": "#/$defs/AbsolutePathBuf"
     },
     "instructionSources": {
       "default": [],
       "description": "Instruction source files currently loaded for this thread.",
       "items": {
-        "$ref": "#/definitions/AbsolutePathBuf"
+        "$ref": "#/$defs/AbsolutePathBuf"
       },
       "type": "array"
     },
