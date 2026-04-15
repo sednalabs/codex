@@ -1,6 +1,7 @@
 use crate::extensions::NotificationDispatchKind;
 use crate::extensions::app_server_hooks;
 use crate::extensions::dispatch_notification_to_connection;
+use crate::fs_api::invalid_request;
 use crate::outgoing_message::ConnectionId;
 use crate::outgoing_message::OutgoingMessageSender;
 use codex_app_server_protocol::FsChangedNotification;

@@ -71,6 +71,7 @@ mod command_exec;
 mod config_api;
 mod dynamic_tools;
 mod error_code;
+mod extensions;
 mod external_agent_config_api;
 mod filters;
 mod fs_api;
