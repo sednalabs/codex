@@ -405,6 +405,7 @@ impl InProcessClientStartArgs {
             loader_overrides: self.loader_overrides,
             cloud_requirements: self.cloud_requirements,
             feedback: self.feedback,
+            environment_manager: self.environment_manager,
             config_warnings: self.config_warnings,
             session_source: self.session_source,
             enable_codex_api_key_env: self.enable_codex_api_key_env,
