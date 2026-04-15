@@ -231,6 +231,9 @@ pub struct RemotePluginSyncResult {
 
 #[derive(Debug, thiserror::Error)]
 pub enum PluginRemoteSyncError {
+    #[error("remote plugin sync aborted")]
+    Aborted,
+
     #[error("chatgpt authentication required to sync remote plugins")]
     AuthRequired,
 

@@ -21,6 +21,23 @@ Branch tracking should remain:
 - `main` tracks `origin/main`.
 - `upstream-main` tracks `origin/upstream-main`.
 
+## Upstream Integration Philosophy
+
+- Prefer upstream behavior by default. When syncing `main` with `upstream-main`, treat downstream carry as a cost that must justify itself.
+- The ideal downstream state is: minimal fork-specific behavior in hot core files, with as much downstream customization as possible moved behind explicit extension seams or plugin-like layers.
+- When an integration or conflict forces a choice, prefer:
+  1. taking upstream unchanged,
+  2. re-expressing downstream behavior behind an existing seam or a new narrow internal seam,
+  3. only then carrying a direct fork patch in a hot upstream file.
+- If downstream behavior can be dropped temporarily and re-implemented more cleanly behind an extension point with lower long-term maintenance cost, prefer that over preserving a messy carry patch.
+- Favor internal extensibility over repeated fork edits:
+  - app-server behavior should prefer hook-style seams such as `extensions.rs`
+  - plugin/app augmentation should prefer narrow extension boundaries over processor-file carry
+  - TUI carry should be extracted into small dedicated modules before adding more logic to `app.rs`, `chatwidget.rs`, or other high-churn orchestration files
+- Treat work that reduces future upstream-sync pain as first-class engineering value, even when the immediate feature could be patched faster in place.
+- Do not invent broad dynamic plugin systems during conflict resolution unless explicitly requested. Prefer small, static, upstream-shaped seams that let downstream behavior plug in without changing public contracts.
+- Preserve important downstream product behavior intentionally. For this fork, do not casually drop realtime, voice, or realtime-text behavior during sync just to make merges easier.
+
 In the codex-rs folder where the rust code lives:
 
 - Crate names are prefixed with `codex-`. For example, the `core` folder's crate is named `codex-core`

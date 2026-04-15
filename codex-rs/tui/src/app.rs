@@ -10998,7 +10998,8 @@ guardian_approval = true
         let codex_home = tempdir()?;
         let session_cwd_tmp = tempdir()?;
         let session_cwd = session_cwd_tmp.path().to_path_buf();
-        app.config.codex_home = codex_home.path().to_path_buf();
+        app.config.codex_home =
+            AbsolutePathBuf::from_absolute_path(codex_home.path()).expect("absolute codex home");
 
         app.chat_widget.handle_codex_event(Event {
             id: String::new(),

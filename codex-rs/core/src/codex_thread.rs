@@ -220,7 +220,7 @@ impl CodexThread {
             .session
             .record_conversation_items(turn_context.as_ref(), &items)
             .await;
-        self.codex.session.flush_rollout().await?;
+        self.codex.session.flush_rollout().await;
         Ok(())
     }
 
