@@ -367,7 +367,7 @@ async fn thread_list_pagination_next_cursor_none_on_last_page() -> Result<()> {
     )
     .await?;
     assert_eq!(data1.len(), 2);
-    let expected_cwd = default_rollout_cwd()?;
+    let expected_cwd = codex_utils_absolute_path::AbsolutePathBuf::try_from(default_rollout_cwd()?).expect("rollout cwd should be absolute");
     for thread in &data1 {
         assert_eq!(thread.preview, "Hello");
         assert_eq!(thread.model_provider, "mock_provider");
@@ -456,7 +456,7 @@ async fn thread_list_respects_provider_filter() -> Result<()> {
     let expected_ts = chrono::DateTime::parse_from_rfc3339("2025-01-02T11:00:00Z")?.timestamp();
     assert_eq!(thread.created_at, expected_ts);
     assert_eq!(thread.updated_at, expected_ts);
-    assert_eq!(thread.cwd, default_rollout_cwd()?);
+    assert_eq!(thread.cwd, codex_utils_absolute_path::AbsolutePathBuf::try_from(default_rollout_cwd()?).expect("rollout cwd should be absolute"));
     assert_eq!(thread.cli_version, "0.0.0");
     assert_eq!(thread.source, SessionSource::Cli);
     assert_eq!(thread.git_info, None);
@@ -1033,7 +1033,7 @@ async fn thread_list_includes_git_info() -> Result<()> {
     };
     assert_eq!(thread.git_info, Some(expected_git));
     assert_eq!(thread.source, SessionSource::Cli);
-    assert_eq!(thread.cwd, default_rollout_cwd()?);
+    assert_eq!(thread.cwd, codex_utils_absolute_path::AbsolutePathBuf::try_from(default_rollout_cwd()?).expect("rollout cwd should be absolute"));
     assert_eq!(thread.cli_version, "0.0.0");
 
     Ok(())
