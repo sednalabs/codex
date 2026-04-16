@@ -1346,7 +1346,7 @@ impl PluginUninstallError {
     }
 }
 
-fn configured_plugins_from_stack(
+pub(crate) fn configured_plugins_from_stack(
     config_layer_stack: &ConfigLayerStack,
 ) -> HashMap<String, PluginConfig> {
     // Plugin entries remain persisted user config only.
