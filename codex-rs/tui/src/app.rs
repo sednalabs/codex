@@ -11248,7 +11248,7 @@ guardian_approval = true
                 approval_policy: AskForApproval::Never,
                 approvals_reviewer: ApprovalsReviewer::GuardianSubagent,
                 sandbox_policy: SandboxPolicy::new_read_only_policy(),
-                cwd: session_cwd,
+                cwd: session_cwd.abs(),
                 reasoning_effort: Some(ReasoningEffortConfig::High),
                 history_log_id: 0,
                 history_entry_count: 0,
