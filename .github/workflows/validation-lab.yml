@@ -210,29 +210,58 @@ jobs:
 
           selection_meta="$(python3 .github/scripts/resolve_validation_plan.py lab --profile "${LAB_PROFILE}" --lane-set "${LAB_LANE_SET}" --lanes "${LAB_LANES}" --artifact-build "${LAB_ARTIFACT_BUILD}" --include-explicit-lanes "${LAB_INCLUDE_EXPLICIT_LANES}" "${catalog_args[@]}")"
 
-          profile_intent="$(SELECTION_META="${selection_meta}" python3 -c 'import json, os; print(json.loads(os.environ["SELECTION_META"])["profile_intent"])')"
-          profile_notes="$(SELECTION_META="${selection_meta}" python3 -c 'import json, os; print(json.loads(os.environ["SELECTION_META"])["profile_notes"])')"
-          lane_summary="$(SELECTION_META="${selection_meta}" python3 -c 'import json, os; print(json.loads(os.environ["SELECTION_META"])["lane_summary"])')"
-          run_selected_lanes="$(SELECTION_META="${selection_meta}" python3 -c 'import json, os; print(json.loads(os.environ["SELECTION_META"])["run_selected_lanes"])')"
-          run_smoke_gate="$(SELECTION_META="${selection_meta}" python3 -c 'import json, os; print(json.loads(os.environ["SELECTION_META"])["run_smoke_gate"])')"
-          smoke_gate_kind="$(SELECTION_META="${selection_meta}" python3 -c 'import json, os; print(json.loads(os.environ["SELECTION_META"])["smoke_gate_kind"])')"
-          smoke_matrix="$(SELECTION_META="${selection_meta}" python3 -c 'import json, os; print(json.dumps(json.loads(os.environ["SELECTION_META"])["smoke_matrix"], separators=(",", ":")))')"
-          selected_matrix="$(SELECTION_META="${selection_meta}" python3 -c 'import json, os; print(json.dumps(json.loads(os.environ["SELECTION_META"])["selected_matrix"], separators=(",", ":")))')"
-          planned_matrix="$(SELECTION_META="${selection_meta}" python3 -c 'import json, os; print(json.dumps(json.loads(os.environ["SELECTION_META"])["planned_matrix"], separators=(",", ":")))')"
-          selected_lane_ids="$(SELECTION_META="${selection_meta}" python3 -c 'import json, os; print(json.dumps(json.loads(os.environ["SELECTION_META"])["selected_lane_ids"], separators=(",", ":")))')"
-          run_artifact="$(SELECTION_META="${selection_meta}" python3 -c 'import json, os; print(json.loads(os.environ["SELECTION_META"])["run_artifact"])')"
-          matrix_fail_fast="$(SELECTION_META="${selection_meta}" python3 -c 'import json, os; print(json.loads(os.environ["SELECTION_META"])["matrix_fail_fast"])')"
-          matrix_max_parallel="$(SELECTION_META="${selection_meta}" python3 -c 'import json, os; print(json.loads(os.environ["SELECTION_META"])["matrix_max_parallel"])')"
-          selected_setup_classes="$(SELECTION_META="${selection_meta}" python3 -c 'import json, os; print(json.dumps(json.loads(os.environ["SELECTION_META"])["selected_setup_classes"], separators=(",", ":")))')"
-          selected_light_matrix="$(SELECTION_META="${selection_meta}" python3 -c 'import json, os; print(json.dumps(json.loads(os.environ["SELECTION_META"])["selected_light_matrix"], separators=(",", ":")))')"
-          selected_rust_matrix="$(SELECTION_META="${selection_meta}" python3 -c 'import json, os; print(json.dumps(json.loads(os.environ["SELECTION_META"])["selected_rust_matrix"], separators=(",", ":")))')"
-          selected_heavy_matrix="$(SELECTION_META="${selection_meta}" python3 -c 'import json, os; print(json.dumps(json.loads(os.environ["SELECTION_META"])["selected_heavy_matrix"], separators=(",", ":")))')"
-          selected_light_lane_count="$(SELECTION_META="${selection_meta}" python3 -c 'import json, os; print(json.loads(os.environ["SELECTION_META"])["selected_light_lane_count"])')"
-          selected_rust_lane_count="$(SELECTION_META="${selection_meta}" python3 -c 'import json, os; print(json.loads(os.environ["SELECTION_META"])["selected_rust_lane_count"])')"
-          selected_heavy_lane_count="$(SELECTION_META="${selection_meta}" python3 -c 'import json, os; print(json.loads(os.environ["SELECTION_META"])["selected_heavy_lane_count"])')"
-          light_max_parallel="$(SELECTION_META="${selection_meta}" python3 -c 'import json, os; print(json.loads(os.environ["SELECTION_META"])["light_max_parallel"])')"
-          rust_max_parallel="$(SELECTION_META="${selection_meta}" python3 -c 'import json, os; print(json.loads(os.environ["SELECTION_META"])["rust_max_parallel"])')"
-          heavy_max_parallel="$(SELECTION_META="${selection_meta}" python3 -c 'import json, os; print(json.loads(os.environ["SELECTION_META"])["heavy_max_parallel"])')"
+          # Helper function for robustly parsing the validation plan metadata.
+          # We include explicit error reporting for missing fields or malformed JSON
+          # to diagnose environment-specific CI failures.
+          parse_meta() {
+            local field="$1"
+            python3 -c "
+import json, os, sys
+try:
+    meta = json.loads(os.environ['SELECTION_META'])
+    val = meta['${field}']
+    # For complex types, dump to JSON string, otherwise print value
+    if isinstance(val, (dict, list)):
+        print(json.dumps(val, separators=(',', ':')))
+    else:
+        print(val)
+except KeyError:
+    sys.stderr.write(f'ERROR: Key \"${field}\" not found in SELECTION_META\n')
+    sys.stderr.write(f'META: {os.environ[\"SELECTION_META\"][:500]}\n')
+    sys.exit(1)
+except json.JSONDecodeError:
+    sys.stderr.write('ERROR: Failed to parse SELECTION_META as JSON\n')
+    sys.stderr.write(f'META: {os.environ[\"SELECTION_META\"][:500]}\n')
+    sys.exit(1)
+except Exception as e:
+    sys.stderr.write(f'ERROR: Unexpected error parsing {field}: {e}\n')
+    sys.exit(1)
+"
+          }
+
+          profile_intent="$(SELECTION_META="${selection_meta}" parse_meta "profile_intent")"
+          profile_notes="$(SELECTION_META="${selection_meta}" parse_meta "profile_notes")"
+          lane_summary="$(SELECTION_META="${selection_meta}" parse_meta "lane_summary")"
+          run_selected_lanes="$(SELECTION_META="${selection_meta}" parse_meta "run_selected_lanes")"
+          run_smoke_gate="$(SELECTION_META="${selection_meta}" parse_meta "run_smoke_gate")"
+          smoke_gate_kind="$(SELECTION_META="${selection_meta}" parse_meta "smoke_gate_kind")"
+          smoke_matrix="$(SELECTION_META="${selection_meta}" parse_meta "smoke_matrix")"
+          selected_matrix="$(SELECTION_META="${selection_meta}" parse_meta "selected_matrix")"
+          planned_matrix="$(SELECTION_META="${selection_meta}" parse_meta "planned_matrix")"
+          selected_lane_ids="$(SELECTION_META="${selection_meta}" parse_meta "selected_lane_ids")"
+          run_artifact="$(SELECTION_META="${selection_meta}" parse_meta "run_artifact")"
+          matrix_fail_fast="$(SELECTION_META="${selection_meta}" parse_meta "matrix_fail_fast")"
+          matrix_max_parallel="$(SELECTION_META="${selection_meta}" parse_meta "matrix_max_parallel")"
+          selected_setup_classes="$(SELECTION_META="${selection_meta}" parse_meta "selected_setup_classes")"
+          selected_light_matrix="$(SELECTION_META="${selection_meta}" parse_meta "selected_light_matrix")"
+          selected_rust_matrix="$(SELECTION_META="${selection_meta}" parse_meta "selected_rust_matrix")"
+          selected_heavy_matrix="$(SELECTION_META="${selection_meta}" parse_meta "selected_heavy_matrix")"
+          selected_light_lane_count="$(SELECTION_META="${selection_meta}" parse_meta "selected_light_lane_count")"
+          selected_rust_lane_count="$(SELECTION_META="${selection_meta}" parse_meta "selected_rust_lane_count")"
+          selected_heavy_lane_count="$(SELECTION_META="${selection_meta}" parse_meta "selected_heavy_lane_count")"
+          light_max_parallel="$(SELECTION_META="${selection_meta}" parse_meta "light_max_parallel")"
+          rust_max_parallel="$(SELECTION_META="${selection_meta}" parse_meta "rust_max_parallel")"
+          heavy_max_parallel="$(SELECTION_META="${selection_meta}" parse_meta "heavy_max_parallel")"
 
           {
             echo "host_ref=${host_ref}"
