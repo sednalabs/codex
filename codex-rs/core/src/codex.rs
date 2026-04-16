@@ -265,6 +265,7 @@ use crate::SkillInjections;
 use crate::SkillLoadOutcome;
 use crate::SkillMetadata;
 use crate::SkillsManager;
+use crate::agents_md::AgentsMdManager;
 use crate::build_skill_injections;
 use crate::collect_env_var_dependencies;
 use crate::collect_explicit_skill_mentions;
@@ -293,7 +294,6 @@ use crate::network_policy_decision::execpolicy_network_rule_amendment;
 use crate::plugins::PluginsManager;
 use crate::plugins::build_plugin_injections;
 use crate::plugins::render_plugins_section;
-use crate::project_doc::get_user_instructions;
 use crate::resolve_skill_dependencies_for_turn;
 use crate::rollout::RolloutRecorder;
 use crate::rollout::RolloutRecorderParams;
@@ -556,7 +556,9 @@ impl Codex {
             config.startup_warnings.push(message);
         }
 
-        let user_instructions = get_user_instructions(&config, environment.as_deref()).await;
+        let user_instructions = AgentsMdManager::new(&config)
+            .user_instructions(environment.as_deref())
+            .await;
 
         let exec_policy = if crate::guardian::is_guardian_reviewer_source(&session_source) {
             // Guardian review should rely on the built-in shell safety checks,
