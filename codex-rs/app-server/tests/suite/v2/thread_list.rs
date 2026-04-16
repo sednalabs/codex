@@ -486,7 +486,7 @@ async fn thread_list_respects_cwd_filter() -> Result<()> {
         /*git_info*/ None,
     )?;
 
-    let target_cwd = codex_home.path().join("target-cwd");
+    let target_cwd = codex_utils_absolute_path::AbsolutePathBuf::try_from(codex_home.path().join("target-cwd")).expect("tempdir should be absolute");
     fs::create_dir_all(&target_cwd)?;
     set_rollout_cwd(
         rollout_path(codex_home.path(), "2025-01-02T10-00-00", &filtered_id).as_path(),
