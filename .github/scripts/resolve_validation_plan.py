@@ -253,7 +253,8 @@ def select_for_lane_set(
             continue
         if spec.get("explicit_only") and not include_explicit_only:
             continue
-    selected.append(lane_payload(spec, lane_phase=lane_phase))
+        selected.append(lane_payload(spec, lane_phase=lane_phase))
+    return selected
 
 
 def is_smoke_gate_lane(spec: dict) -> bool:
