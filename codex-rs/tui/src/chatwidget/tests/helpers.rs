@@ -261,6 +261,7 @@ pub(super) async fn make_chatwidget_manual(
         suppressed_exec_calls: HashSet::new(),
         skills_all: Vec::new(),
         skills_initial_state: None,
+        instruction_source_paths: Vec::new(),
         last_unified_wait: None,
         unified_exec_wait_streak: None,
         turn_sleep_inhibitor: SleepInhibitor::new(prevent_idle_sleep),
