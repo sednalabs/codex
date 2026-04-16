@@ -1,0 +1,12 @@
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          parse_meta() {
+            python3 -c "
+import json
+print(json.dumps({'a': 1}))
+"
+          }
+          parse_meta
