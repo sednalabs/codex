@@ -1083,6 +1083,18 @@ impl TurnContext {
     }
 
     pub(crate) fn to_turn_context_item(&self) -> TurnContextItem {
+        let legacy_file_system_sandbox_policy = FileSystemSandboxPolicy::from_legacy_sandbox_policy(
+            self.sandbox_policy.get(),
+            &self.cwd,
+        );
+        // Omit the derived split filesystem policy when it is equivalent to
+        // the legacy sandbox policy. This keeps turn-context payloads stable
+        // while both fields exist; once callers consume only the split policy,
+        // this comparison and the legacy projection should go away.
+        let file_system_sandbox_policy = (self.file_system_sandbox_policy
+            != legacy_file_system_sandbox_policy)
+            .then(|| self.file_system_sandbox_policy.clone());
+
         TurnContextItem {
             turn_id: Some(self.sub_id.clone()),
             trace_id: self.trace_id.clone(),
@@ -1092,6 +1104,7 @@ impl TurnContext {
             approval_policy: self.approval_policy.value(),
             sandbox_policy: self.sandbox_policy.get().clone(),
             network: self.turn_context_network_item(),
+            file_system_sandbox_policy,
             model: self.model_info.slug.clone(),
             personality: self.personality,
             collaboration_mode: Some(self.collaboration_mode.clone()),
@@ -1287,7 +1300,14 @@ impl SessionConfiguration {
 
         let cwd_changed = absolute_cwd.as_path() != self.cwd.as_path();
         next_configuration.cwd = absolute_cwd;
-        if sandbox_policy_changed || (cwd_changed && file_system_policy_matches_legacy) {
+        if sandbox_policy_changed {
+            next_configuration.file_system_sandbox_policy =
+                FileSystemSandboxPolicy::from_legacy_sandbox_policy_preserving_deny_entries(
+                    next_configuration.sandbox_policy.get(),
+                    &next_configuration.cwd,
+                    &self.file_system_sandbox_policy,
+                );
+        } else if cwd_changed && file_system_policy_matches_legacy {
             // Preserve richer split policies across cwd-only updates; only
             // rederive when the session is already using the legacy bridge.
             next_configuration.file_system_sandbox_policy =
