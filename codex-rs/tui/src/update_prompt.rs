@@ -2,6 +2,7 @@
 
 use crate::history_cell::padded_emoji;
 use crate::key_hint;
+use crate::legacy_core::config::Config;
 use crate::render::Insets;
 use crate::render::renderable::ColumnRenderable;
 use crate::render::renderable::Renderable;
@@ -14,7 +15,6 @@ use crate::update_action::UpdateAction;
 use crate::updates;
 use crate::version::CODEX_DISPLAY_VERSION;
 use crate::version::latest_release_notes_url;
-use crate::legacy_core::config::Config;
 use color_eyre::Result;
 use crossterm::event::KeyCode;
 use crossterm::event::KeyEvent;
