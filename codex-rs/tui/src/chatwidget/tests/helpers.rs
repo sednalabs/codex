@@ -137,9 +137,10 @@ pub(super) fn test_model_catalog(config: &Config) -> Arc<ModelCatalog> {
 }
 
 pub(super) fn active_hook_cell(chat: &ChatWidget) -> Option<&crate::history_cell::HookCell> {
-    chat.active_cell
-        .as_ref()
-        .and_then(|cell| cell.as_any().downcast_ref::<crate::history_cell::HookCell>())
+    chat.active_cell.as_ref().and_then(|cell| {
+        cell.as_any()
+            .downcast_ref::<crate::history_cell::HookCell>()
+    })
 }
 
 pub(super) fn active_hook_blob(chat: &ChatWidget) -> String {
@@ -149,33 +150,30 @@ pub(super) fn active_hook_blob(chat: &ChatWidget) -> String {
 }
 
 pub(super) fn reveal_running_hooks(chat: &mut ChatWidget) {
-    let Some(cell) = chat
-        .active_cell
-        .as_mut()
-        .and_then(|cell| cell.as_any_mut().downcast_mut::<crate::history_cell::HookCell>())
-    else {
+    let Some(cell) = chat.active_cell.as_mut().and_then(|cell| {
+        cell.as_any_mut()
+            .downcast_mut::<crate::history_cell::HookCell>()
+    }) else {
         panic!("expected an active hook cell");
     };
     cell.reveal_running_runs_now_for_test();
 }
 
 pub(super) fn reveal_running_hooks_after_delayed_redraw(chat: &mut ChatWidget) {
-    let Some(cell) = chat
-        .active_cell
-        .as_mut()
-        .and_then(|cell| cell.as_any_mut().downcast_mut::<crate::history_cell::HookCell>())
-    else {
+    let Some(cell) = chat.active_cell.as_mut().and_then(|cell| {
+        cell.as_any_mut()
+            .downcast_mut::<crate::history_cell::HookCell>()
+    }) else {
         panic!("expected an active hook cell");
     };
     cell.reveal_running_runs_after_delayed_redraw_for_test();
 }
 
 pub(super) fn expire_quiet_hook_linger(chat: &mut ChatWidget) {
-    let Some(cell) = chat
-        .active_cell
-        .as_mut()
-        .and_then(|cell| cell.as_any_mut().downcast_mut::<crate::history_cell::HookCell>())
-    else {
+    let Some(cell) = chat.active_cell.as_mut().and_then(|cell| {
+        cell.as_any_mut()
+            .downcast_mut::<crate::history_cell::HookCell>()
+    }) else {
         panic!("expected an active hook cell");
     };
     cell.expire_quiet_runs_now_for_test();

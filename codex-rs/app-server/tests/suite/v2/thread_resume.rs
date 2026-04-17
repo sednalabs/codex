@@ -245,7 +245,11 @@ async fn thread_resume_returns_rollout_history() -> Result<()> {
     assert_eq!(thread.preview, preview);
     assert_eq!(thread.model_provider, "mock_provider");
     assert!(thread.path.as_ref().expect("thread path").is_absolute());
-    assert_eq!(thread.cwd, codex_utils_absolute_path::AbsolutePathBuf::try_from(default_rollout_cwd()?).expect("rollout cwd should be absolute"));
+    assert_eq!(
+        thread.cwd,
+        codex_utils_absolute_path::AbsolutePathBuf::try_from(default_rollout_cwd()?)
+            .expect("rollout cwd should be absolute")
+    );
     assert_eq!(thread.cli_version, "0.0.0");
     assert_eq!(thread.source, SessionSource::Cli);
     assert_eq!(thread.git_info, None);
