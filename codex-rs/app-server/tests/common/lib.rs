@@ -41,6 +41,7 @@ pub use rollout::create_fake_rollout;
 pub use rollout::create_fake_rollout_with_source;
 pub use rollout::create_fake_rollout_with_text_elements;
 pub use rollout::create_fake_rollout_with_token_usage;
+pub use rollout::default_rollout_cwd;
 pub use rollout::rollout_path;
 use serde::de::DeserializeOwned;
 
