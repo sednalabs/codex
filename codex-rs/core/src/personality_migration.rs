@@ -1,6 +1,5 @@
 use crate::config::ConfigToml;
 use crate::config::edit::ConfigEditsBuilder;
-use codex_config::config_toml::ConfigToml;
 use codex_protocol::config_types::Personality;
 use codex_thread_store::ListThreadsParams;
 use codex_thread_store::LocalThreadStore;
