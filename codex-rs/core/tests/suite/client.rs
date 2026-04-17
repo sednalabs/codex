@@ -2377,7 +2377,7 @@ async fn token_count_includes_rate_limits_snapshot() {
                 "credits": null,
                 "plan_type": null
             },
-            "provider": "OpenAI",
+            "provider": "openai",
             "model_used": "gpt-5.3-codex"
         })
     );
@@ -2430,7 +2430,7 @@ async fn token_count_includes_rate_limits_snapshot() {
                 "credits": null,
                 "plan_type": null
             },
-            "provider": "OpenAI",
+            "provider": "openai",
             "model_used": "gpt-5.3-codex"
         })
     );
@@ -2530,7 +2530,7 @@ async fn usage_limit_error_emits_rate_limit_event() -> anyhow::Result<()> {
         json!({
             "info": null,
             "model_used": "gpt-5.3-codex",
-            "provider": "OpenAI",
+            "provider": "openai",
             "rate_limits": expected_limits
         })
     );
