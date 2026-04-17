@@ -8,13 +8,13 @@ live divergence.
 
 ## Audit Baseline
 
-- Audited on: `2026-03-21`
-- `upstream/main`: `e5f4d1fef59a3309339394575052c7cc1fff0996`
-- historical downstream branch name `carry/main`: `5d474e652d91c7f371a28ad2069cc51a1c5b9ee8`
-- historical mirror branch name `main`: `e5f4d1fef59a3309339394575052c7cc1fff0996`
-- historical `carry/main` vs `upstream/main`: `175` ahead, `0` behind
-- Carry-only commits at audit time: `133` non-merge, `42` merge
-- Exact-subject upstream matches found during audit: `41`
+- Audited on: `2026-04-17`
+- `upstream/main`: `fe7c959e90d46abb8311e4a0b369e6cb32bf337e`
+- downstream branch `main` (`origin/main`): `88b12a0e145af4533b58cf1a8b67369795eb7786`
+- mirror branch `upstream-main` (`origin/upstream-main`): `fe7c959e90d46abb8311e4a0b369e6cb32bf337e`
+- `main` vs `upstream/main`: `624` ahead, `103` behind
+- Downstream-only commits at audit time: `554` non-merge, `70` merge
+- Patch-equivalent downstream commits in symmetric diff: `0`
 
 ## Audit Rules
 
@@ -280,7 +280,7 @@ live divergence.
 
 ### Code-Mode Declaration Formatting
 
-- `carry/main` still emits imported tool declarations of the form:
+- `main` still emits imported tool declarations of the form:
   `import { tools } from "..."; declare function ...`
 - `upstream/main` still emits the older inline
   `declare const tools: { ... }` example.
@@ -294,8 +294,8 @@ live divergence.
   - `39` carry-only merge commits are sync history, not independent downstream
     behaviors.
 - Merge-repair and promotion-fix history:
-  - examples include `Fix carry/main core regressions after upstream sync`,
-    `Fix carry/main promotion follow-ups`, and
+  - examples include `Fix main core regressions after upstream sync`,
+    `Fix main promotion follow-ups`, and
     `Fix hybrid merge API drift in core/tui tests`
 - Generated and derivative churn:
   - schema outputs under `codex-rs/app-server-protocol/schema/`

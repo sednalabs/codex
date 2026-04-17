@@ -48,13 +48,22 @@ git remote set-url origin git@github.com:sednalabs/codex.git
 
 ## Divergence Summary
 
-This section tracks intentional downstream behavior differences from `upstream-main`.
-References to `carry/main` elsewhere in the repo are historical pre-cutover baselines and should be
-read as prior names for the maintained downstream branch.
+This section tracks intentional downstream behavior differences from
+`upstream/main`.
+References to `carry/main` elsewhere in the repo are historical pre-cutover
+baselines and should be read as prior names for the maintained downstream
+branch.
 
-Current state at the last validated pre-cutover review baseline (`5d474e652d91c7f371a28ad2069cc51a1c5b9ee8`):
-- downstream branch (then `carry/main`, now `main`) was `175` commits ahead and `0` behind `upstream/main`
-- mirror branch (then `main`, now `upstream-main`) matched `upstream/main`
+Current live baseline (validated on `2026-04-17`):
+- `upstream/main`: `fe7c959e90d46abb8311e4a0b369e6cb32bf337e`
+- downstream branch `main` (`origin/main`):
+  `88b12a0e145af4533b58cf1a8b67369795eb7786`
+- mirror branch `upstream-main` (`origin/upstream-main`):
+  `fe7c959e90d46abb8311e4a0b369e6cb32bf337e`
+- divergence counts (`upstream/main...origin/main`): `103` upstream ahead,
+  `624` downstream ahead
+- mirror health (`upstream/main...origin/upstream-main`): `0` ahead / `0`
+  behind (`exact`)
 
 Supporting docs:
 - [`downstream-tool-surface-matrix.md`](downstream-tool-surface-matrix.md) captures the exact native tool-surface deltas that remain live on the downstream branch.
