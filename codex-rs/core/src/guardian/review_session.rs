@@ -884,9 +884,9 @@ mod tests {
         assert!(!guardian_config.features.enabled(Feature::CodexHooks));
     }
 
-    #[test]
-    fn guardian_review_session_config_rebuilds_split_sandbox_policies() {
-        let parent_config = crate::config::test_config();
+    #[tokio::test]
+    async fn guardian_review_session_config_rebuilds_split_sandbox_policies() {
+        let parent_config = crate::config::test_config().await;
 
         let guardian_config = build_guardian_review_session_config(
             &parent_config,
