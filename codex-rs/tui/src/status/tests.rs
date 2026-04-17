@@ -222,7 +222,7 @@ async fn status_snapshot_distinguishes_session_and_thread_token_usage() {
         .with_ymd_and_hms(2024, 1, 2, 3, 4, 5)
         .single()
         .expect("timestamp");
-    let model_slug = codex_core::test_support::get_model_offline(config.model.as_deref());
+    let model_slug = crate::legacy_core::test_support::get_model_offline(config.model.as_deref());
     let token_info = token_info_for(&model_slug, &config, &thread_usage);
 
     let composite = new_status_output(

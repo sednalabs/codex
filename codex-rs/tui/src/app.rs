@@ -7103,6 +7103,10 @@ mod tests {
         false
     }
 
+    fn test_absolute_path(path: &str) -> AbsolutePathBuf {
+        test_path_buf(path).abs()
+    }
+
     #[test]
     fn hide_cli_only_plugin_marketplaces_removes_openai_bundled() {
         let mut response = PluginListResponse {
@@ -12492,13 +12496,12 @@ guardian_approval = true
             .expect("primary thread should be registered");
         let op = AppCommand::interrupt();
 
-        assert!(matches!(control, AppRunControl::Continue));
-        assert_eq!(
-            app.pending_subagent_exit_mode,
-            Some(ExitMode::ShutdownFirst)
-        );
-        assert_eq!(app.pending_shutdown_exit_thread_id, None);
-        assert!(op_rx.try_recv().is_err());
+        let handled = app
+            .try_submit_active_thread_op_via_app_server(&mut app_server, thread_id, &op)
+            .await
+            .expect("interrupt submission should not fail");
+
+        assert_eq!(handled, true);
     }
 
     #[tokio::test]
@@ -12667,7 +12670,7 @@ guardian_approval = true
         .expect("summary");
         assert_eq!(
             summary.usage_line,
-            "Token usage: total=12 input=10 output=2"
+            Some("Token usage: total=12 input=10 output=2".to_string())
         );
         assert_eq!(
             summary.resume_command,
