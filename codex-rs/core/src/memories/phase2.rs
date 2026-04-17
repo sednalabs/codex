@@ -168,7 +168,7 @@ pub(super) async fn run(session: &Arc<Session>, config: Arc<Config>) {
     }
 
     // 5. Spawn the agent
-    let prompt = agent::get_prompt(config, &selection, &removed_extension_resources);
+    let prompt = agent::get_prompt(&config, &selection, &removed_extension_resources);
     let source = SessionSource::SubAgent(SubAgentSource::MemoryConsolidation);
     let artifacts_not_before = SystemTime::now();
     let allow_existing_artifacts_without_rewrite =
@@ -901,7 +901,7 @@ pub(in crate::memories) mod agent {
             .consolidation_model
             .as_deref()
             .unwrap_or(phase_two::MODEL);
-        let prompt = build_consolidation_prompt(root, selection);
+        let prompt = build_consolidation_prompt(root, selection, &[]);
         consolidator_contract_fingerprint(
             &config.model_provider_id,
             model,
