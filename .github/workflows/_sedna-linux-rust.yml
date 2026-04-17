@@ -89,6 +89,55 @@ jobs:
           ref: ${{ github.sha }}
           path: .workflow-src
 
+      - name: Reclaim runner disk headroom
+        if: ${{ runner.os == 'Linux' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          workspace_path="${GITHUB_WORKSPACE}"
+          soft_threshold_bytes=$((12 * 1024 * 1024 * 1024))
+          hard_threshold_bytes=$((6 * 1024 * 1024 * 1024))
+
+          available_bytes() {
+            df --block-size=1 --output=avail "${workspace_path}" | tail -n 1 | tr -d '[:space:]'
+          }
+
+          append_disk_snapshot() {
+            local heading="$1"
+            {
+              echo "### ${heading}"
+              echo
+              echo '```text'
+              df -h "${workspace_path}" /
+              echo
+              du -sh /usr/local/lib/android 2>/dev/null || true
+              du -sh /usr/share/dotnet 2>/dev/null || true
+              du -sh /opt/ghc 2>/dev/null || true
+              du -sh /usr/local/share/boost 2>/dev/null || true
+              du -sh /opt/hostedtoolcache/CodeQL 2>/dev/null || true
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+          }
+
+          before_bytes="$(available_bytes)"
+          append_disk_snapshot "Runner disk before cleanup"
+
+          if [[ "${before_bytes}" -lt "${soft_threshold_bytes}" ]]; then
+            echo "::warning title=Low runner disk before lane setup::Available disk is $(numfmt --to=iec "${before_bytes}") before dependency setup; reclaiming headroom."
+            sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/share/boost /opt/hostedtoolcache/CodeQL || true
+            sudo apt-get clean || true
+            sudo rm -rf /var/lib/apt/lists/* || true
+          fi
+
+          after_bytes="$(available_bytes)"
+          append_disk_snapshot "Runner disk after cleanup"
+
+          if [[ "${after_bytes}" -lt "${hard_threshold_bytes}" ]]; then
+            echo "::error title=Insufficient runner disk::Available disk after cleanup is $(numfmt --to=iec "${after_bytes}"), below the 6 GiB safety floor for validation lanes."
+            exit 1
+          fi
+
       - name: Set up Node.js for js_repl tests
         if: ${{ inputs.setup_class != 'light' }}
         uses: actions/setup-node@v6
