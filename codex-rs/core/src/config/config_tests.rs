@@ -44,6 +44,7 @@ use codex_config::types::SkillsConfig;
 use codex_config::types::ToolSuggestDiscoverableType;
 use codex_config::types::Tui;
 use codex_config::types::TuiNotificationSettings;
+use codex_exec_server::LOCAL_FS;
 use codex_features::Feature;
 use codex_features::FeaturesToml;
 use codex_model_provider_info::LMSTUDIO_OSS_PROVIDER_ID;
@@ -1194,7 +1195,7 @@ network_access = false  # This should be ignored.
             sandbox_mode_override,
             /*profile_sandbox_mode*/ None,
             WindowsSandboxLevel::Disabled,
-            &PathBuf::from("/tmp/test"),
+            /*active_project*/ None,
             /*sandbox_policy_constraint*/ None,
         )
         .await;
@@ -1215,7 +1216,7 @@ network_access = true  # This should be ignored.
             sandbox_mode_override,
             /*profile_sandbox_mode*/ None,
             WindowsSandboxLevel::Disabled,
-            &PathBuf::from("/tmp/test"),
+            /*active_project*/ None,
             /*sandbox_policy_constraint*/ None,
         )
         .await;
@@ -1232,6 +1233,9 @@ writable_roots = [
 ]
 exclude_tmpdir_env_var = true
 exclude_slash_tmp = true
+
+[projects."/tmp/test"]
+trust_level = "trusted"
 "#,
         serde_json::json!(writable_root)
     );
@@ -1244,7 +1248,7 @@ exclude_slash_tmp = true
             sandbox_mode_override,
             /*profile_sandbox_mode*/ None,
             WindowsSandboxLevel::Disabled,
-            &PathBuf::from("/tmp/test"),
+            /*active_project*/ None,
             /*sandbox_policy_constraint*/ None,
         )
         .await;
@@ -1273,9 +1277,6 @@ writable_roots = [
 ]
 exclude_tmpdir_env_var = true
 exclude_slash_tmp = true
-
-[projects."/tmp/test"]
-trust_level = "trusted"
 "#,
         serde_json::json!(writable_root)
     );
@@ -1288,7 +1289,7 @@ trust_level = "trusted"
             sandbox_mode_override,
             /*profile_sandbox_mode*/ None,
             WindowsSandboxLevel::Disabled,
-            &PathBuf::from("/tmp/test"),
+            /*active_project*/ None,
             /*sandbox_policy_constraint*/ None,
         )
         .await;
@@ -2085,6 +2086,7 @@ async fn managed_config_overrides_oauth_store_mode() -> anyhow::Result<()> {
 
     let cwd = codex_home.path().abs();
     let config_layer_stack = load_config_layers_state(
+        LOCAL_FS.as_ref(),
         codex_home.path(),
         Some(cwd),
         &Vec::new(),
@@ -2218,6 +2220,7 @@ async fn managed_config_wins_over_cli_overrides() -> anyhow::Result<()> {
 
     let cwd = codex_home.path().abs();
     let config_layer_stack = load_config_layers_state(
+        LOCAL_FS.as_ref(),
         codex_home.path(),
         Some(cwd),
         &[("model".to_string(), TomlValue::String("cli".to_string()))],
@@ -3486,6 +3489,7 @@ async fn load_config_uses_requirements_guardian_policy_config() -> std::io::Resu
     .map_err(std::io::Error::other)?;
 
     let config = Config::load_config_with_layer_stack(
+        LOCAL_FS.as_ref(),
         ConfigToml::default(),
         ConfigOverrides {
             cwd: Some(codex_home.path().to_path_buf()),
@@ -3518,6 +3522,7 @@ async fn load_config_ignores_empty_requirements_guardian_policy_config() -> std:
     .map_err(std::io::Error::other)?;
 
     let config = Config::load_config_with_layer_stack(
+        LOCAL_FS.as_ref(),
         ConfigToml::default(),
         ConfigOverrides {
             cwd: Some(codex_home.path().to_path_buf()),
@@ -5330,6 +5335,7 @@ async fn test_requirements_web_search_mode_allowlist_does_not_warn_when_unset() 
             .expect("config layer stack");
 
     let config = Config::load_config_with_layer_stack(
+        LOCAL_FS.as_ref(),
         fixture.cfg.clone(),
         ConfigOverrides {
             cwd: Some(fixture.cwd_path()),
@@ -5537,13 +5543,16 @@ trust_level = "untrusted"
 
     let cfg = toml::from_str::<ConfigToml>(config_with_untrusted)
         .expect("TOML deserialization should succeed");
+    let active_project = ProjectConfig {
+        trust_level: Some(TrustLevel::Untrusted),
+    };
 
     let resolution = cfg
         .derive_sandbox_policy(
             /*sandbox_mode_override*/ None,
             /*profile_sandbox_mode*/ None,
             WindowsSandboxLevel::Disabled,
-            &PathBuf::from("/tmp/test"),
+            Some(&active_project),
             /*sandbox_policy_constraint*/ None,
         )
         .await;
@@ -5579,6 +5588,9 @@ async fn derive_sandbox_policy_falls_back_to_constraint_value_for_implicit_defau
         )])),
         ..Default::default()
     };
+    let active_project = ProjectConfig {
+        trust_level: Some(TrustLevel::Trusted),
+    };
     let constrained = Constrained::new(SandboxPolicy::DangerFullAccess, |candidate| {
         if matches!(candidate, SandboxPolicy::DangerFullAccess) {
             Ok(())
@@ -5597,7 +5609,7 @@ async fn derive_sandbox_policy_falls_back_to_constraint_value_for_implicit_defau
             /*sandbox_mode_override*/ None,
             /*profile_sandbox_mode*/ None,
             WindowsSandboxLevel::Disabled,
-            &project_path,
+            Some(&active_project),
             Some(&constrained),
         )
         .await;
@@ -5621,6 +5633,9 @@ async fn derive_sandbox_policy_preserves_windows_downgrade_for_unsupported_fallb
         )])),
         ..Default::default()
     };
+    let active_project = ProjectConfig {
+        trust_level: Some(TrustLevel::Trusted),
+    };
     let constrained = Constrained::new(SandboxPolicy::new_workspace_write_policy(), |candidate| {
         if matches!(candidate, SandboxPolicy::WorkspaceWrite { .. }) {
             Ok(())
@@ -5639,7 +5654,7 @@ async fn derive_sandbox_policy_preserves_windows_downgrade_for_unsupported_fallb
             /*sandbox_mode_override*/ None,
             /*profile_sandbox_mode*/ None,
             WindowsSandboxLevel::Disabled,
-            &project_path,
+            Some(&active_project),
             Some(&constrained),
         )
         .await;
