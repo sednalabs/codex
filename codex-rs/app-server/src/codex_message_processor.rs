@@ -228,9 +228,6 @@ use codex_core::config_loader::CloudRequirementsLoader;
 use codex_core::config_loader::LoaderOverrides;
 use codex_core::config_loader::load_config_layers_state;
 use codex_core::config_loader::project_trust_key;
-use codex_core::default_client::set_default_client_residency_requirement;
-use codex_core::error::CodexErr;
-use codex_core::error::Result as CodexResult;
 use codex_core::exec::ExecCapturePolicy;
 use codex_core::exec::ExecExpiration;
 use codex_core::exec::ExecParams;
@@ -269,10 +266,13 @@ use codex_feedback::CodexFeedback;
 use codex_feedback::FeedbackUploadOptions;
 use codex_git_utils::git_diff_to_remote;
 use codex_git_utils::resolve_root_git_project_for_trust;
+use codex_login::CLIENT_ID;
 use codex_login::ServerOptions as LoginServerOptions;
 use codex_login::ShutdownHandle;
 use codex_login::auth::login_with_chatgpt_auth_tokens;
 use codex_login::complete_device_code_login;
+use codex_login::default_client::set_default_client_residency_requirement;
+use codex_login::login_with_api_key;
 use codex_login::request_device_code;
 use codex_login::run_login_server;
 use codex_mcp::McpSnapshotDetail;
@@ -289,6 +289,8 @@ use codex_protocol::config_types::Personality;
 use codex_protocol::config_types::TrustLevel;
 use codex_protocol::config_types::WindowsSandboxLevel;
 use codex_protocol::dynamic_tools::DynamicToolSpec as CoreDynamicToolSpec;
+use codex_protocol::error::CodexErr;
+use codex_protocol::error::Result as CodexResult;
 use codex_protocol::items::TurnItem;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::AgentStatus;
@@ -3811,6 +3813,10 @@ impl CodexMessageProcessor {
             )));
         };
 
+        let active_turn = {
+            let state = self.thread_state_manager.thread_state(thread_id).await;
+            state.lock().await.active_turn_snapshot()
+        };
         let has_live_in_progress_turn = if let Some(loaded_thread) = loaded_thread {
             matches!(loaded_thread.agent_status().await, AgentStatus::Running)
                 || active_turn
@@ -9183,12 +9189,6 @@ async fn thread_titles_by_ids(
         }
     }
     names
-}
-
-async fn open_state_db_for_direct_thread_lookup(config: &Config) -> Option<StateDbHandle> {
-    StateRuntime::init(config.sqlite_home.clone(), config.model_provider_id.clone())
-        .await
-        .ok()
 }
 
 fn non_empty_title(metadata: &ThreadMetadata) -> Option<String> {
