@@ -87,7 +87,6 @@ pub mod legacy_core {
     pub use codex_core::path_utils;
     pub use codex_core::read_session_meta_line;
     pub use codex_core::web_search_detail;
-    pub use codex_mcp::McpManager;
 
     pub mod config {
         pub use codex_core::config::*;
