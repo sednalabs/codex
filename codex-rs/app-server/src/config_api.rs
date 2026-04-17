@@ -210,7 +210,7 @@ impl ConfigApi {
             .write_value(params)
             .await
             .map_err(map_error)?;
-        self.emit_plugin_toggle_events(pending_changes);
+        self.emit_plugin_toggle_events(pending_changes).await;
         Ok(response)
     }
 
@@ -230,7 +230,7 @@ impl ConfigApi {
             .batch_write(params)
             .await
             .map_err(map_error)?;
-        self.emit_plugin_toggle_events(pending_changes);
+        self.emit_plugin_toggle_events(pending_changes).await;
         if reload_user_config {
             self.user_config_reloader.reload_user_config().await;
         }
@@ -299,13 +299,16 @@ impl ConfigApi {
         Ok(ExperimentalFeatureEnablementSetResponse { enablement })
     }
 
-    fn emit_plugin_toggle_events(&self, pending_changes: std::collections::BTreeMap<String, bool>) {
+    async fn emit_plugin_toggle_events(
+        &self,
+        pending_changes: std::collections::BTreeMap<String, bool>,
+    ) {
         for (plugin_id, enabled) in pending_changes {
             let Ok(plugin_id) = PluginId::parse(&plugin_id) else {
                 continue;
             };
             let metadata =
-                installed_plugin_telemetry_metadata(self.codex_home.as_path(), &plugin_id);
+                installed_plugin_telemetry_metadata(self.codex_home.as_path(), &plugin_id).await;
             if enabled {
                 self.analytics_events_client.track_plugin_enabled(metadata);
             } else {
@@ -434,7 +437,6 @@ fn map_network_requirements_to_api(
         allow_upstream_proxy: network.allow_upstream_proxy,
         dangerously_allow_non_loopback_proxy: network.dangerously_allow_non_loopback_proxy,
         dangerously_allow_all_unix_sockets: network.dangerously_allow_all_unix_sockets,
-        danger_full_access_denylist_only: None,
         domains: network.domains.map(|domains| {
             domains
                 .entries
@@ -554,7 +556,8 @@ mod tests {
             allowed_web_search_modes: Some(vec![
                 codex_core::config_loader::WebSearchModeRequirement::Cached,
             ]),
-            guardian_developer_instructions: None,
+            allowed_approvals_reviewers: None,
+            guardian_policy_config: None,
             feature_requirements: Some(codex_core::config_loader::FeatureRequirementsToml {
                 entries: std::collections::BTreeMap::from([
                     ("apps".to_string(), false),
@@ -645,7 +648,6 @@ mod tests {
                 )])),
                 allow_unix_sockets: Some(vec!["/tmp/proxy.sock".to_string()]),
                 allow_local_binding: Some(true),
-                danger_full_access_denylist_only: None,
             }),
         );
     }
@@ -656,7 +658,8 @@ mod tests {
             allowed_approval_policies: None,
             allowed_sandbox_modes: None,
             allowed_web_search_modes: None,
-            guardian_developer_instructions: None,
+            allowed_approvals_reviewers: None,
+            guardian_policy_config: None,
             feature_requirements: None,
             mcp_servers: None,
             apps: None,
@@ -702,7 +705,6 @@ mod tests {
                 )])),
                 allow_unix_sockets: None,
                 allow_local_binding: None,
-                danger_full_access_denylist_only: None,
             }),
         );
     }
@@ -713,7 +715,8 @@ mod tests {
             allowed_approval_policies: None,
             allowed_sandbox_modes: None,
             allowed_web_search_modes: Some(Vec::new()),
-            guardian_developer_instructions: None,
+            allowed_approvals_reviewers: None,
+            guardian_policy_config: None,
             feature_requirements: None,
             mcp_servers: None,
             apps: None,

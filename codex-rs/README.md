@@ -11,7 +11,7 @@ npm i -g @openai/codex
 codex
 ```
 
-You can also install via Homebrew (`brew install --cask codex`) or download a platform-specific release directly from this repository's [GitHub Releases](https://github.com/SednaLabs/codex/releases).
+You can also install via Homebrew (`brew install --cask codex`) or download a platform-specific release directly from this repository's [GitHub Releases](https://github.com/sednalabs/codex/releases).
 
 ## Documentation quickstart
 

@@ -15,15 +15,15 @@ use chrono::DateTime;
 use chrono::Duration as ChronoDuration;
 use chrono::Utc;
 use codex_backend_client::Client as BackendClient;
-use codex_core::AuthManager;
-use codex_core::auth::AuthCredentialsStoreMode;
-use codex_core::auth::CodexAuth;
-use codex_core::auth::RefreshTokenError;
+use codex_config::types::AuthCredentialsStoreMode;
 use codex_core::config_loader::CloudRequirementsLoadError;
 use codex_core::config_loader::CloudRequirementsLoadErrorCode;
 use codex_core::config_loader::CloudRequirementsLoader;
 use codex_core::config_loader::ConfigRequirementsToml;
 use codex_core::util::backoff;
+use codex_login::AuthManager;
+use codex_login::CodexAuth;
+use codex_login::RefreshTokenError;
 use codex_protocol::account::PlanType;
 use hmac::Hmac;
 use hmac::Mac;
@@ -51,6 +51,7 @@ const CLOUD_REQUIREMENTS_FETCH_ATTEMPT_METRIC: &str = "codex.cloud_requirements.
 const CLOUD_REQUIREMENTS_FETCH_FINAL_METRIC: &str = "codex.cloud_requirements.fetch_final";
 const CLOUD_REQUIREMENTS_LOAD_METRIC: &str = "codex.cloud_requirements.load";
 const CLOUD_REQUIREMENTS_LOAD_FAILED_MESSAGE: &str = "failed to load your workspace-managed config";
+const CLOUD_REQUIREMENTS_PARSE_FAILED_MESSAGE: &str = "Your workspace-managed config is invalid and could not be parsed. Please contact your workspace admin.";
 const CLOUD_REQUIREMENTS_AUTH_RECOVERY_FAILED_MESSAGE: &str = "Your authentication session could not be refreshed automatically. Please log out and sign in again.";
 const CLOUD_REQUIREMENTS_CACHE_WRITE_HMAC_KEY: &[u8] =
     b"codex-cloud-requirements-cache-v3-064f8542-75b4-494c-a294-97d3ce597271";
@@ -491,7 +492,7 @@ impl CloudRequirementsService {
                         return Err(CloudRequirementsLoadError::new(
                             CloudRequirementsLoadErrorCode::Parse,
                             /*status_code*/ None,
-                            CLOUD_REQUIREMENTS_LOAD_FAILED_MESSAGE,
+                            format_cloud_requirements_parse_failed_message(contents, &err),
                         ));
                     }
                 },
@@ -749,6 +750,13 @@ fn parse_cloud_requirements(
     }
 }
 
+fn format_cloud_requirements_parse_failed_message(
+    _contents: &str,
+    err: &toml::de::Error,
+) -> String {
+    format!("{CLOUD_REQUIREMENTS_PARSE_FAILED_MESSAGE}\n\nDetails:\n{err}")
+}
+
 fn emit_fetch_attempt_metric(
     trigger: &str,
     attempt: usize,
@@ -806,7 +814,7 @@ fn status_code_tag(status_code: Option<u16>) -> String {
 }
 
 fn emit_metric(metric_name: &str, tags: Vec<(&str, String)>) {
-    if let Some(metrics) = codex_otel::metrics::global() {
+    if let Some(metrics) = codex_otel::global() {
         let tag_refs = tags
             .iter()
             .map(|(key, value)| (*key, value.as_str()))
@@ -820,7 +828,7 @@ mod tests {
     use super::*;
     use base64::Engine;
     use base64::engine::general_purpose::URL_SAFE_NO_PAD;
-    use codex_core::auth::AuthCredentialsStoreMode;
+    use codex_config::types::AuthCredentialsStoreMode;
     use codex_protocol::protocol::AskForApproval;
     use pretty_assertions::assert_eq;
     use serde_json::json;
@@ -1154,9 +1162,10 @@ mod tests {
             service.fetch().await,
             Ok(Some(ConfigRequirementsToml {
                 allowed_approval_policies: Some(vec![AskForApproval::Never]),
+                allowed_approvals_reviewers: None,
                 allowed_sandbox_modes: None,
                 allowed_web_search_modes: None,
-                guardian_developer_instructions: None,
+                guardian_policy_config: None,
                 feature_requirements: None,
                 mcp_servers: None,
                 apps: None,
@@ -1182,9 +1191,10 @@ mod tests {
             service.fetch().await,
             Ok(Some(ConfigRequirementsToml {
                 allowed_approval_policies: Some(vec![AskForApproval::Never]),
+                allowed_approvals_reviewers: None,
                 allowed_sandbox_modes: None,
                 allowed_web_search_modes: None,
-                guardian_developer_instructions: None,
+                guardian_policy_config: None,
                 feature_requirements: None,
                 mcp_servers: None,
                 apps: None,
@@ -1210,9 +1220,10 @@ mod tests {
             service.fetch().await,
             Ok(Some(ConfigRequirementsToml {
                 allowed_approval_policies: Some(vec![AskForApproval::Never]),
+                allowed_approvals_reviewers: None,
                 allowed_sandbox_modes: None,
                 allowed_web_search_modes: None,
-                guardian_developer_instructions: None,
+                guardian_policy_config: None,
                 feature_requirements: None,
                 mcp_servers: None,
                 apps: None,
@@ -1255,9 +1266,10 @@ mod tests {
             result,
             Some(ConfigRequirementsToml {
                 allowed_approval_policies: Some(vec![AskForApproval::Never]),
+                allowed_approvals_reviewers: None,
                 allowed_sandbox_modes: None,
                 allowed_web_search_modes: None,
-                guardian_developer_instructions: None,
+                guardian_policy_config: None,
                 feature_requirements: None,
                 mcp_servers: None,
                 apps: None,
@@ -1336,9 +1348,10 @@ enabled = false
             handle.await.expect("cloud requirements task"),
             Ok(Some(ConfigRequirementsToml {
                 allowed_approval_policies: Some(vec![AskForApproval::Never]),
+                allowed_approvals_reviewers: None,
                 allowed_sandbox_modes: None,
                 allowed_web_search_modes: None,
-                guardian_developer_instructions: None,
+                guardian_policy_config: None,
                 feature_requirements: None,
                 mcp_servers: None,
                 apps: None,
@@ -1407,9 +1420,10 @@ enabled = false
             service.fetch().await,
             Ok(Some(ConfigRequirementsToml {
                 allowed_approval_policies: Some(vec![AskForApproval::Never]),
+                allowed_approvals_reviewers: None,
                 allowed_sandbox_modes: None,
                 allowed_web_search_modes: None,
-                guardian_developer_instructions: None,
+                guardian_policy_config: None,
                 feature_requirements: None,
                 mcp_servers: None,
                 apps: None,
@@ -1476,9 +1490,10 @@ enabled = false
             service.fetch().await,
             Ok(Some(ConfigRequirementsToml {
                 allowed_approval_policies: Some(vec![AskForApproval::Never]),
+                allowed_approvals_reviewers: None,
                 allowed_sandbox_modes: None,
                 allowed_web_search_modes: None,
-                guardian_developer_instructions: None,
+                guardian_policy_config: None,
                 feature_requirements: None,
                 mcp_servers: None,
                 apps: None,
@@ -1610,8 +1625,41 @@ enabled = false
             CLOUD_REQUIREMENTS_TIMEOUT,
         );
 
-        assert!(service.fetch().await.is_err());
+        let err = service
+            .fetch()
+            .await
+            .expect_err("parse error should fail closed");
+        let err_text = err.to_string();
+        assert!(err_text.contains(CLOUD_REQUIREMENTS_PARSE_FAILED_MESSAGE));
+        assert!(err_text.contains("Details:"));
+        assert!(err_text.contains("not = ["));
+        assert_eq!(err.code(), CloudRequirementsLoadErrorCode::Parse);
         assert_eq!(fetcher.request_count.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn fetch_cloud_requirements_invalid_enum_value_surfaces_field_name() {
+        let fetcher = Arc::new(SequenceFetcher::new(vec![Ok(Some(
+            "allowed_approval_policies = [\"definitely-not-valid\"]".to_string(),
+        ))]));
+        let codex_home = tempdir().expect("tempdir");
+        let service = CloudRequirementsService::new(
+            auth_manager_with_plan("business"),
+            fetcher,
+            codex_home.path().to_path_buf(),
+            CLOUD_REQUIREMENTS_TIMEOUT,
+        );
+
+        let err = service
+            .fetch()
+            .await
+            .expect_err("invalid enum value should fail closed");
+        let err_text = err.to_string();
+        assert!(err_text.contains(CLOUD_REQUIREMENTS_PARSE_FAILED_MESSAGE));
+        assert!(err_text.contains("allowed_approval_policies"));
+        assert!(err_text.contains("definitely-not-valid"));
+        assert!(err_text.contains("unknown variant"));
+        assert_eq!(err.code(), CloudRequirementsLoadErrorCode::Parse);
     }
 
     #[tokio::test]
@@ -1639,9 +1687,10 @@ enabled = false
             service.fetch().await,
             Ok(Some(ConfigRequirementsToml {
                 allowed_approval_policies: Some(vec![AskForApproval::Never]),
+                allowed_approvals_reviewers: None,
                 allowed_sandbox_modes: None,
                 allowed_web_search_modes: None,
-                guardian_developer_instructions: None,
+                guardian_policy_config: None,
                 feature_requirements: None,
                 mcp_servers: None,
                 apps: None,
@@ -1673,9 +1722,10 @@ enabled = false
             service.fetch().await,
             Ok(Some(ConfigRequirementsToml {
                 allowed_approval_policies: Some(vec![AskForApproval::Never]),
+                allowed_approvals_reviewers: None,
                 allowed_sandbox_modes: None,
                 allowed_web_search_modes: None,
-                guardian_developer_instructions: None,
+                guardian_policy_config: None,
                 feature_requirements: None,
                 mcp_servers: None,
                 apps: None,
@@ -1727,9 +1777,10 @@ enabled = false
             service.fetch().await,
             Ok(Some(ConfigRequirementsToml {
                 allowed_approval_policies: Some(vec![AskForApproval::OnRequest]),
+                allowed_approvals_reviewers: None,
                 allowed_sandbox_modes: None,
                 allowed_web_search_modes: None,
-                guardian_developer_instructions: None,
+                guardian_policy_config: None,
                 feature_requirements: None,
                 mcp_servers: None,
                 apps: None,
@@ -1776,9 +1827,10 @@ enabled = false
             service.fetch().await,
             Ok(Some(ConfigRequirementsToml {
                 allowed_approval_policies: Some(vec![AskForApproval::OnRequest]),
+                allowed_approvals_reviewers: None,
                 allowed_sandbox_modes: None,
                 allowed_web_search_modes: None,
-                guardian_developer_instructions: None,
+                guardian_policy_config: None,
                 feature_requirements: None,
                 mcp_servers: None,
                 apps: None,
@@ -1829,9 +1881,10 @@ enabled = false
             service.fetch().await,
             Ok(Some(ConfigRequirementsToml {
                 allowed_approval_policies: Some(vec![AskForApproval::Never]),
+                allowed_approvals_reviewers: None,
                 allowed_sandbox_modes: None,
                 allowed_web_search_modes: None,
-                guardian_developer_instructions: None,
+                guardian_policy_config: None,
                 feature_requirements: None,
                 mcp_servers: None,
                 apps: None,
@@ -1883,9 +1936,10 @@ enabled = false
             service.fetch().await,
             Ok(Some(ConfigRequirementsToml {
                 allowed_approval_policies: Some(vec![AskForApproval::Never]),
+                allowed_approvals_reviewers: None,
                 allowed_sandbox_modes: None,
                 allowed_web_search_modes: None,
-                guardian_developer_instructions: None,
+                guardian_policy_config: None,
                 feature_requirements: None,
                 mcp_servers: None,
                 apps: None,
@@ -1937,9 +1991,10 @@ enabled = false
                 .and_then(|contents| parse_cloud_requirements(contents).ok().flatten()),
             Some(ConfigRequirementsToml {
                 allowed_approval_policies: Some(vec![AskForApproval::Never]),
+                allowed_approvals_reviewers: None,
                 allowed_sandbox_modes: None,
                 allowed_web_search_modes: None,
-                guardian_developer_instructions: None,
+                guardian_policy_config: None,
                 feature_requirements: None,
                 mcp_servers: None,
                 apps: None,
@@ -2024,9 +2079,10 @@ enabled = false
             service.fetch().await,
             Ok(Some(ConfigRequirementsToml {
                 allowed_approval_policies: Some(vec![AskForApproval::Never]),
+                allowed_approvals_reviewers: None,
                 allowed_sandbox_modes: None,
                 allowed_web_search_modes: None,
-                guardian_developer_instructions: None,
+                guardian_policy_config: None,
                 feature_requirements: None,
                 mcp_servers: None,
                 apps: None,
@@ -2050,9 +2106,10 @@ enabled = false
                 .and_then(|contents| parse_cloud_requirements(contents).ok().flatten()),
             Some(ConfigRequirementsToml {
                 allowed_approval_policies: Some(vec![AskForApproval::OnRequest]),
+                allowed_approvals_reviewers: None,
                 allowed_sandbox_modes: None,
                 allowed_web_search_modes: None,
-                guardian_developer_instructions: None,
+                guardian_policy_config: None,
                 feature_requirements: None,
                 mcp_servers: None,
                 apps: None,

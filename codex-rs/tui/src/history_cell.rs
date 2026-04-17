@@ -19,6 +19,8 @@ use crate::exec_cell::output_lines;
 use crate::exec_cell::spinner;
 use crate::exec_command::relativize_to_home;
 use crate::exec_command::strip_bash_lc_and_escape;
+use crate::legacy_core::config::Config;
+use crate::legacy_core::web_search_detail;
 use crate::live_wrap::take_prefix_by_width;
 use crate::markdown::append_markdown;
 use crate::render::line_utils::line_to_static;
@@ -29,6 +31,8 @@ use crate::style::proposed_plan_style;
 use crate::style::user_message_style;
 #[cfg(test)]
 use crate::test_support::PathBufExt;
+#[cfg(test)]
+use crate::test_support::test_path_buf;
 use crate::text_formatting::format_and_truncate_tool_result;
 use crate::text_formatting::truncate_text;
 use crate::tooltips;
@@ -42,15 +46,10 @@ use crate::wrapping::adaptive_wrap_line;
 use crate::wrapping::adaptive_wrap_lines;
 use base64::Engine;
 use codex_app_server_protocol::McpServerStatus;
-use codex_core::config::Config;
-use codex_core::config::types::McpServerTransportConfig;
+use codex_app_server_protocol::McpServerStatusDetail;
+use codex_config::types::McpServerTransportConfig;
 #[cfg(test)]
-use codex_core::mcp::McpManager;
-#[cfg(test)]
-use codex_core::mcp::qualified_mcp_tool_name_prefix;
-#[cfg(test)]
-use codex_core::plugins::PluginsManager;
-use codex_core::web_search::web_search_detail;
+use codex_mcp::qualified_mcp_tool_name_prefix;
 use codex_otel::RuntimeMetricsSummary;
 use codex_protocol::account::PlanType;
 use codex_protocol::config_types::ServiceTier;
@@ -71,7 +70,8 @@ use codex_protocol::protocol::SessionConfiguredEvent;
 use codex_protocol::request_user_input::RequestUserInputAnswer;
 use codex_protocol::request_user_input::RequestUserInputQuestion;
 use codex_protocol::user_input::TextElement;
-use codex_utils_cli::format_env_display::format_env_display;
+use codex_utils_absolute_path::AbsolutePathBuf;
+use codex_utils_cli::format_env_display;
 use image::DynamicImage;
 use image::ImageReader;
 use ratatui::prelude::*;
@@ -87,13 +87,18 @@ use std::collections::HashMap;
 use std::io::Cursor;
 use std::path::Path;
 use std::path::PathBuf;
-#[cfg(test)]
-use std::sync::Arc;
 use std::time::Duration;
 use std::time::Instant;
 use tracing::error;
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
+use url::Url;
+
+mod hook_cell;
+
+pub(crate) use hook_cell::HookCell;
+pub(crate) use hook_cell::new_active_hook_cell;
+pub(crate) use hook_cell::new_completed_hook_cell;
 
 /// Represents an event to display in the conversation history. Returns its
 /// `Vec<Line<'static>>` representation to make it easier to display in a
@@ -903,6 +908,18 @@ pub fn new_approval_decision_cell(
             };
             ("✗ ".red(), summary)
         }
+        TimedOut => {
+            let snippet = Span::from(exec_snippet(&command)).dim();
+            (
+                "✗ ".red(),
+                vec![
+                    "Review ".into(),
+                    "timed out".bold(),
+                    " before codex could run ".into(),
+                    snippet,
+                ],
+            )
+        }
         Abort => {
             let snippet = Span::from(exec_snippet(&command)).dim();
             (
@@ -939,10 +956,7 @@ impl ApprovalDecisionActor {
     }
 }
 
-pub fn new_guardian_denied_patch_request(
-    files: Vec<String>,
-    change_count: usize,
-) -> Box<dyn HistoryCell> {
+pub fn new_guardian_denied_patch_request(files: Vec<String>) -> Box<dyn HistoryCell> {
     let mut summary = vec![
         "Request ".into(),
         "denied".bold(),
@@ -952,7 +966,7 @@ pub fn new_guardian_denied_patch_request(
         summary.push("a patch touching ".into());
         summary.push(Span::from(files[0].clone()).dim());
     } else {
-        summary.push(format!("a patch touching {change_count} changes across ").into());
+        summary.push("a patch touching ".into());
         summary.push(Span::from(files.len().to_string()).dim());
         summary.push(" files".into());
     }
@@ -982,6 +996,38 @@ pub fn new_guardian_approved_action_request(summary: String) -> Box<dyn HistoryC
         Span::from(summary).dim(),
     ]);
     Box::new(PrefixedWrappedHistoryCell::new(line, "✔ ".green(), "  "))
+}
+
+pub fn new_guardian_timed_out_patch_request(files: Vec<String>) -> Box<dyn HistoryCell> {
+    let mut summary = vec![
+        "Review ".into(),
+        "timed out".bold(),
+        " before codex could apply ".into(),
+    ];
+    if files.len() == 1 {
+        summary.push("a patch touching ".into());
+        summary.push(Span::from(files[0].clone()).dim());
+    } else {
+        summary.push("a patch touching ".into());
+        summary.push(Span::from(files.len().to_string()).dim());
+        summary.push(" files".into());
+    }
+
+    Box::new(PrefixedWrappedHistoryCell::new(
+        Line::from(summary),
+        "✗ ".red(),
+        "  ",
+    ))
+}
+
+pub fn new_guardian_timed_out_action_request(summary: String) -> Box<dyn HistoryCell> {
+    let line = Line::from(vec![
+        "Review ".into(),
+        "timed out".bold(),
+        " before ".into(),
+        Span::from(summary).dim(),
+    ]);
+    Box::new(PrefixedWrappedHistoryCell::new(line, "✗ ".red(), "  "))
 }
 
 /// Cyan history cell line showing the current review status.
@@ -1839,8 +1885,7 @@ pub(crate) fn new_mcp_tools_output(
         lines.push("".into());
     }
 
-    let mcp_manager = McpManager::new(Arc::new(PluginsManager::new(config.codex_home.clone())));
-    let effective_servers = mcp_manager.effective_servers(config, /*auth*/ None);
+    let effective_servers = config.mcp_servers.get();
     let mut servers: Vec<_> = effective_servers.iter().collect();
     servers.sort_by(|(a, _), (b, _)| a.cmp(b));
 
@@ -1863,7 +1908,10 @@ pub(crate) fn new_mcp_tools_output(
             header.push("(disabled)".red());
             lines.push(header.into());
             if let Some(reason) = cfg.disabled_reason.as_ref().map(ToString::to_string) {
-                lines.push(vec!["    • Reason: ".into(), reason.dim()].into());
+                lines.push(Line::from(vec![
+                    Span::from("    • Reason: "),
+                    Span::from(reason).dim(),
+                ]));
             }
             lines.push(Line::from(""));
             continue;
@@ -1892,7 +1940,7 @@ pub(crate) fn new_mcp_tools_output(
                     lines.push(vec!["    • Cwd: ".into(), cwd.display().to_string().into()].into());
                 }
 
-                let env_display = format_env_display(env.as_ref(), env_vars);
+                let env_display = format_env_display(env.as_ref(), env_vars.as_slice());
                 if env_display != "-" {
                     lines.push(vec!["    • Env: ".into(), env_display.into()].into());
                 }
@@ -1994,10 +2042,12 @@ pub(crate) fn new_mcp_tools_output(
 /// transport details such as command, URL, cwd, and environment display.
 ///
 /// This mirrors the layout of [`new_mcp_tools_output`] but sources data from
-/// the paginated RPC response rather than the in-process `McpManager`.
+/// the paginated RPC response rather than the in-process `McpManager`. The
+/// `detail` flag controls whether resources and resource templates are rendered.
 pub(crate) fn new_mcp_tools_output_from_statuses(
     config: &Config,
     statuses: &[McpServerStatus],
+    detail: McpServerStatusDetail,
 ) -> PlainHistoryCell {
     let mut lines: Vec<Line<'static>> = vec![
         "/mcp".magenta().into(),
@@ -2109,48 +2159,50 @@ pub(crate) fn new_mcp_tools_output_from_statuses(
             lines.push(vec!["    • Tools: ".into(), names.join(", ").into()].into());
         }
 
-        let server_resources = status
-            .map(|status| status.resources.clone())
-            .unwrap_or_default();
-        if server_resources.is_empty() {
-            lines.push("    • Resources: (none)".into());
-        } else {
-            let mut spans: Vec<Span<'static>> = vec!["    • Resources: ".into()];
+        if matches!(detail, McpServerStatusDetail::Full) {
+            let server_resources = status
+                .map(|status| status.resources.clone())
+                .unwrap_or_default();
+            if server_resources.is_empty() {
+                lines.push("    • Resources: (none)".into());
+            } else {
+                let mut spans: Vec<Span<'static>> = vec!["    • Resources: ".into()];
 
-            for (idx, resource) in server_resources.iter().enumerate() {
-                if idx > 0 {
-                    spans.push(", ".into());
+                for (idx, resource) in server_resources.iter().enumerate() {
+                    if idx > 0 {
+                        spans.push(", ".into());
+                    }
+
+                    let label = resource.title.as_ref().unwrap_or(&resource.name);
+                    spans.push(label.clone().into());
+                    spans.push(" ".into());
+                    spans.push(format!("({})", resource.uri).dim());
                 }
 
-                let label = resource.title.as_ref().unwrap_or(&resource.name);
-                spans.push(label.clone().into());
-                spans.push(" ".into());
-                spans.push(format!("({})", resource.uri).dim());
+                lines.push(spans.into());
             }
 
-            lines.push(spans.into());
-        }
+            let server_templates = status
+                .map(|status| status.resource_templates.clone())
+                .unwrap_or_default();
+            if server_templates.is_empty() {
+                lines.push("    • Resource templates: (none)".into());
+            } else {
+                let mut spans: Vec<Span<'static>> = vec!["    • Resource templates: ".into()];
 
-        let server_templates = status
-            .map(|status| status.resource_templates.clone())
-            .unwrap_or_default();
-        if server_templates.is_empty() {
-            lines.push("    • Resource templates: (none)".into());
-        } else {
-            let mut spans: Vec<Span<'static>> = vec!["    • Resource templates: ".into()];
+                for (idx, template) in server_templates.iter().enumerate() {
+                    if idx > 0 {
+                        spans.push(", ".into());
+                    }
 
-            for (idx, template) in server_templates.iter().enumerate() {
-                if idx > 0 {
-                    spans.push(", ".into());
+                    let label = template.title.as_ref().unwrap_or(&template.name);
+                    spans.push(label.clone().into());
+                    spans.push(" ".into());
+                    spans.push(format!("({})", template.uri_template).dim());
                 }
 
-                let label = template.title.as_ref().unwrap_or(&template.name);
-                spans.push(label.clone().into());
-                spans.push(" ".into());
-                spans.push(format!("({})", template.uri_template).dim());
+                lines.push(spans.into());
             }
-
-            lines.push(spans.into());
         }
 
         lines.push(Line::from(""));
@@ -2540,8 +2592,8 @@ pub(crate) fn new_patch_apply_failure(stderr: String) -> PlainHistoryCell {
     PlainHistoryCell { lines }
 }
 
-pub(crate) fn new_view_image_tool_call(path: PathBuf, cwd: &Path) -> PlainHistoryCell {
-    let display_path = display_path_for(&path, cwd);
+pub(crate) fn new_view_image_tool_call(path: AbsolutePathBuf, cwd: &Path) -> PlainHistoryCell {
+    let display_path = display_path_for(path.as_path(), cwd);
 
     let lines: Vec<Line<'static>> = vec![
         vec!["• ".dim(), "Viewed Image".bold()].into(),
@@ -2554,7 +2606,7 @@ pub(crate) fn new_view_image_tool_call(path: PathBuf, cwd: &Path) -> PlainHistor
 pub(crate) fn new_image_generation_call(
     call_id: String,
     revised_prompt: Option<String>,
-    saved_path: Option<String>,
+    saved_path: Option<AbsolutePathBuf>,
 ) -> PlainHistoryCell {
     let detail = revised_prompt.unwrap_or_else(|| call_id.clone());
 
@@ -2563,6 +2615,9 @@ pub(crate) fn new_image_generation_call(
         vec!["  └ ".dim(), detail.dim()].into(),
     ];
     if let Some(saved_path) = saved_path {
+        let saved_path = Url::from_file_path(saved_path.as_path())
+            .map(|url| url.to_string())
+            .unwrap_or_else(|_| saved_path.display().to_string());
         lines.push(vec!["  └ ".dim(), "Saved to: ".dim(), saved_path.into()].into());
     }
 
@@ -2783,10 +2838,10 @@ mod tests {
     use crate::exec_cell::CommandOutput;
     use crate::exec_cell::ExecCall;
     use crate::exec_cell::ExecCell;
-    use codex_core::config::Config;
-    use codex_core::config::ConfigBuilder;
-    use codex_core::config::types::McpServerConfig;
-    use codex_core::config::types::McpServerDisabledReason;
+    use crate::legacy_core::config::Config;
+    use crate::legacy_core::config::ConfigBuilder;
+    use codex_config::types::McpServerConfig;
+    use codex_config::types::McpServerDisabledReason;
     use codex_otel::RuntimeMetricTotals;
     use codex_otel::RuntimeMetricsSummary;
     use codex_protocol::ThreadId;
@@ -2952,11 +3007,16 @@ mod tests {
 
     #[test]
     fn image_generation_call_renders_saved_path() {
-        let saved_path = "file:///tmp/generated-image.png".to_string();
+        let saved_path = test_path_buf("/tmp/generated-image.png").abs();
+        let expected_saved_path = format!(
+            "  └ Saved to: {}",
+            Url::from_file_path(saved_path.as_path())
+                .expect("test path should convert to file URL")
+        );
         let cell = new_image_generation_call(
             "call-image-generation".to_string(),
             Some("A tiny blue square".to_string()),
-            Some(saved_path.clone()),
+            Some(saved_path),
         );
 
         assert_eq!(
@@ -2964,7 +3024,7 @@ mod tests {
             vec![
                 "• Generated Image:".to_string(),
                 "  └ A tiny blue square".to_string(),
-                format!("  └ Saved to: {saved_path}"),
+                expected_saved_path,
             ],
         );
     }
@@ -2980,7 +3040,7 @@ mod tests {
             approval_policy: AskForApproval::Never,
             approvals_reviewer: codex_protocol::config_types::ApprovalsReviewer::User,
             sandbox_policy: SandboxPolicy::new_read_only_policy(),
-            cwd: PathBuf::from("/tmp/project").abs().to_path_buf(),
+            cwd: test_path_buf("/tmp/project").abs(),
             reasoning_effort: None,
             history_log_id: 0,
             history_entry_count: 0,
@@ -3100,7 +3160,7 @@ mod tests {
     )]
     async fn session_info_availability_nux_tooltip_snapshot() {
         let mut config = test_config().await;
-        config.cwd = PathBuf::from("/tmp/project").abs();
+        config.cwd = test_path_buf("/tmp/project").abs();
         let cell = new_session_info(
             &config,
             "gpt-5",
@@ -3355,7 +3415,11 @@ mod tests {
             auth_status: codex_app_server_protocol::McpAuthStatus::Unsupported,
         }];
 
-        let cell = new_mcp_tools_output_from_statuses(&config, &statuses);
+        let cell = new_mcp_tools_output_from_statuses(
+            &config,
+            &statuses,
+            McpServerStatusDetail::ToolsAndAuthOnly,
+        );
         let rendered = render_lines(&cell.display_lines(/*width*/ 120)).join("\n");
 
         insta::assert_snapshot!(rendered);
@@ -4069,7 +4133,7 @@ mod tests {
     #[test]
     fn multiline_command_wraps_with_extra_indent_on_subsequent_lines() {
         // Create a completed exec cell with a multiline command
-        let cmd = "set -o pipefail\ncargo test --all-features --quiet".to_string();
+        let cmd = "set -o pipefail\ncargo test -p codex-tui --quiet".to_string();
         let call_id = "c1".to_string();
         let mut cell = ExecCell::new(
             ExecCall {
@@ -4087,7 +4151,7 @@ mod tests {
         // Mark call complete so it renders as "Ran"
         cell.complete_call(&call_id, CommandOutput::default(), Duration::from_millis(1));
 
-        // Small width to force wrapping on both lines
+        // Small width to keep the wrapped continuation-indent path covered.
         let width: u16 = 28;
         let lines = cell.display_lines(width);
         let rendered = render_lines(&lines).join("\n");

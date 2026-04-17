@@ -74,7 +74,7 @@
               "type": "string"
             },
             "path": {
-              "type": "string"
+              "$ref": "#/$defs/AbsolutePathBuf"
             },
             "type": {
               "const": "read",
@@ -310,11 +310,15 @@
       ]
     },
     "cwd": {
-      "description": "The command's working directory.",
-      "type": [
-        "string",
-        "null"
-      ]
+      "anyOf": [
+        {
+          "$ref": "#/$defs/AbsolutePathBuf"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "The command's working directory."
     },
     "itemId": {
       "type": "string"

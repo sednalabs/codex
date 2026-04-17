@@ -290,15 +290,23 @@
           ]
         },
         "iconLarge": {
-          "type": [
-            "string",
-            "null"
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AbsolutePathBuf"
+            },
+            {
+              "type": "null"
+            }
           ]
         },
         "iconSmall": {
-          "type": [
-            "string",
-            "null"
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AbsolutePathBuf"
+            },
+            {
+              "type": "null"
+            }
           ]
         },
         "shortDescription": {
@@ -332,7 +340,7 @@
           "type": "string"
         },
         "path": {
-          "type": "string"
+          "$ref": "#/$defs/AbsolutePathBuf"
         },
         "shortDescription": {
           "type": [

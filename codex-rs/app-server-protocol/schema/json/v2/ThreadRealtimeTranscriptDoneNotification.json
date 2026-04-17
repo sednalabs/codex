@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "EXPERIMENTAL - final transcript text emitted when realtime completes\na transcript part.",
+  "properties": {
+    "role": {
+      "type": "string"
+    },
+    "text": {
+      "description": "Final complete text for the transcript part.",
+      "type": "string"
+    },
+    "threadId": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "threadId",
+    "role",
+    "text"
+  ],
+  "title": "ThreadRealtimeTranscriptDoneNotification",
+  "type": "object"
+}

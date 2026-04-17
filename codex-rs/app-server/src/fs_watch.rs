@@ -1,6 +1,7 @@
 use crate::extensions::NotificationDispatchKind;
 use crate::extensions::app_server_hooks;
 use crate::extensions::dispatch_notification_to_connection;
+use crate::fs_api::invalid_request;
 use crate::outgoing_message::ConnectionId;
 use crate::outgoing_message::OutgoingMessageSender;
 use codex_app_server_protocol::FsChangedNotification;
@@ -14,12 +15,11 @@ use codex_core::file_watcher::FileWatcher;
 use codex_core::file_watcher::FileWatcherEvent;
 use codex_core::file_watcher::FileWatcherSubscriber;
 use codex_core::file_watcher::Receiver;
-#[cfg(test)]
 use codex_core::file_watcher::WatchPath;
 use codex_core::file_watcher::WatchRegistration;
-use codex_utils_absolute_path::AbsolutePathBuf;
 use std::collections::HashMap;
 use std::collections::HashSet;
+use std::collections::hash_map::Entry;
 use std::hash::Hash;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -139,17 +139,24 @@ impl FsWatchManager {
             subscriber.register_paths(app_server_hooks().fs_watch_paths_for_target(&params.path));
         let (terminate_tx, terminate_rx) = oneshot::channel();
 
-        self.state.lock().await.entries.insert(
-            WatchKey {
-                connection_id,
-                watch_id: watch_id.clone(),
-            },
-            WatchEntry {
-                terminate_tx,
-                _subscriber: subscriber,
-                _registration: registration,
-            },
-        );
+        let watch_key = WatchKey {
+            connection_id,
+            watch_id: watch_id.clone(),
+        };
+        match self.state.lock().await.entries.entry(watch_key) {
+            Entry::Occupied(_) => {
+                return Err(invalid_request(format!(
+                    "watchId already exists: {watch_id}"
+                )));
+            }
+            Entry::Vacant(entry) => {
+                entry.insert(WatchEntry {
+                    terminate_tx,
+                    _subscriber: subscriber,
+                    _registration: registration,
+                });
+            }
+        }
 
         let task_watch_id = watch_id.clone();
         tokio::spawn(async move {
@@ -168,18 +175,8 @@ impl FsWatchManager {
                     .paths
                     .into_iter()
                     .filter_map(|path| {
-                        match AbsolutePathBuf::resolve_path_against_base(&path, &watch_root) {
-                            Ok(path) => app_server_hooks()
-                                .fs_changed_path_for_watch_target(&watch_root, path),
-                            Err(err) => {
-                                warn!(
-                                    "failed to normalize watch event path ({}) for {}: {err}",
-                                    path.display(),
-                                    watch_root.display()
-                                );
-                                None
-                            }
-                        }
+                        let path = watch_root.join(path);
+                        app_server_hooks().fs_changed_path_for_watch_target(&watch_root, path)
                     })
                     .collect::<Vec<_>>();
                 changed_paths.sort_by(|left, right| left.as_path().cmp(right.as_path()));
@@ -269,6 +266,13 @@ mod tests {
         )
     }
 
+    fn watch_params(watch_id: &str, path: AbsolutePathBuf) -> FsWatchParams {
+        FsWatchParams {
+            watch_id: watch_id.to_string(),
+            path,
+        }
+    }
+
     #[tokio::test]
     async fn watch_returns_a_v7_id_and_tracks_the_owner_scoped_entry() {
         let temp_dir = TempDir::new().expect("temp dir");
@@ -278,7 +282,7 @@ mod tests {
         let manager = manager_with_noop_watcher();
         let path = absolute_path(head_path);
         let response = manager
-            .watch(ConnectionId(1), FsWatchParams { path: path.clone() })
+            .watch(ConnectionId(1), watch_params("watch-1", path.clone()))
             .await
             .expect("watch should succeed");
 
@@ -306,9 +310,7 @@ mod tests {
         let response = manager
             .watch(
                 ConnectionId(1),
-                FsWatchParams {
-                    path: absolute_path(head_path),
-                },
+                watch_params("watch-1", absolute_path(head_path)),
             )
             .await
             .expect("watch should succeed");
@@ -354,27 +356,21 @@ mod tests {
         let response_1 = manager
             .watch(
                 ConnectionId(1),
-                FsWatchParams {
-                    path: absolute_path(head_path),
-                },
+                watch_params("watch-1", absolute_path(head_path)),
             )
             .await
             .expect("first watch should succeed");
         let response_2 = manager
             .watch(
                 ConnectionId(1),
-                FsWatchParams {
-                    path: absolute_path(fetch_head_path),
-                },
+                watch_params("watch-2", absolute_path(fetch_head_path)),
             )
             .await
             .expect("second watch should succeed");
         let response_3 = manager
             .watch(
                 ConnectionId(2),
-                FsWatchParams {
-                    path: absolute_path(packed_refs_path),
-                },
+                watch_params("watch-3", absolute_path(packed_refs_path)),
             )
             .await
             .expect("third watch should succeed");
@@ -449,7 +445,7 @@ mod tests {
         let file_c = absolute_path(file_c);
 
         let response = manager
-            .watch(ConnectionId(1), FsWatchParams { path: watch_root })
+            .watch(ConnectionId(1), watch_params("watch-1", watch_root))
             .await
             .expect("watch should succeed");
 
@@ -631,9 +627,7 @@ mod tests {
         let response = manager
             .watch(
                 ConnectionId(1),
-                FsWatchParams {
-                    path: missing_path.clone(),
-                },
+                watch_params("watch-1", missing_path.clone()),
             )
             .await
             .expect("watch should succeed");
@@ -672,9 +666,7 @@ mod tests {
         let response = manager
             .watch(
                 ConnectionId(1),
-                FsWatchParams {
-                    path: missing_dir.clone(),
-                },
+                watch_params("watch-1", missing_dir.clone()),
             )
             .await
             .expect("watch should succeed");
@@ -708,9 +700,7 @@ mod tests {
         let response = manager
             .watch(
                 ConnectionId(1),
-                FsWatchParams {
-                    path: missing_path.clone(),
-                },
+                watch_params("watch-1", missing_path.clone()),
             )
             .await
             .expect("watch should succeed");
@@ -766,9 +756,7 @@ mod tests {
         let response = manager
             .watch(
                 ConnectionId(1),
-                FsWatchParams {
-                    path: watched_path.clone(),
-                },
+                watch_params("watch-1", watched_path.clone()),
             )
             .await
             .expect("watch should succeed");

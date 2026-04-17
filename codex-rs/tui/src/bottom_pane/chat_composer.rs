@@ -54,7 +54,9 @@
 //! The numeric auto-submit path used by the slash popup performs the same pending-paste expansion
 //! and attachment pruning, and clears pending paste state on success.
 //! Slash commands with arguments (like `/plan` and `/review`) reuse the same preparation path so
-//! pasted content and text elements are preserved when extracting args.
+//! pasted content and text elements are preserved when extracting args. Higher-level queued replay
+//! semantics still own whether a mode-changing command like `/plan` is allowed to autosend later
+//! queued drafts.
 //!
 //! # Remote Image Rows (Up/Down/Delete)
 //!
@@ -499,6 +501,7 @@ impl ChatComposer {
 
     pub fn set_skill_mentions(&mut self, skills: Option<Vec<SkillMetadata>>) {
         self.skills = skills;
+        self.sync_popups();
     }
 
     pub fn set_plugin_mentions(&mut self, plugins: Option<Vec<PluginCapabilitySummary>>) {
@@ -676,13 +679,25 @@ impl ChatComposer {
         offset: usize,
         entry: Option<String>,
     ) -> bool {
-        let Some(entry) = self.history.on_entry_response(log_id, offset, entry) else {
-            return false;
-        };
-        // Persistent ↑/↓ history is text-only (backwards-compatible and avoids persisting
-        // attachments), but local in-session ↑/↓ history can rehydrate elements and image paths.
-        self.apply_history_entry(entry);
-        true
+        match self
+            .history
+            .on_entry_response(log_id, offset, entry, &self.app_event_tx)
+        {
+            super::chat_composer_history::HistoryEntryResponse::Found(entry) => {
+                // Persistent ↑/↓ history is text-only (backwards-compatible and avoids persisting
+                // attachments), but local in-session ↑/↓ history can rehydrate elements and image paths.
+                self.apply_history_entry(entry);
+                true
+            }
+            super::chat_composer_history::HistoryEntryResponse::Search(_)
+            | super::chat_composer_history::HistoryEntryResponse::Ignored => false,
+        }
+    }
+
+    pub(crate) fn record_pending_slash_command_history(&mut self) {}
+
+    pub(crate) fn cancel_history_search(&mut self) -> bool {
+        false
     }
 
     /// Integrate pasted text into the composer.
@@ -2331,9 +2346,6 @@ impl ChatComposer {
             && let Some(cmd) =
                 slash_commands::find_builtin_command(name, self.builtin_command_flags())
         {
-            if self.reject_slash_command_if_unavailable(cmd) {
-                return Some(InputResult::None);
-            }
             self.textarea.set_text_clearing_elements("");
             Some(InputResult::Command {
                 cmd,
@@ -2368,9 +2380,6 @@ impl ChatComposer {
         if !cmd.supports_inline_args() {
             return None;
         }
-        if self.reject_slash_command_if_unavailable(cmd) {
-            return Some(InputResult::None);
-        }
 
         let mut args_elements =
             Self::slash_command_args_elements(rest, rest_offset, &self.textarea.text_elements());
@@ -2404,20 +2413,6 @@ impl ChatComposer {
         let trimmed_rest = prepared_rest.trim();
         args_elements = Self::trim_text_elements(prepared_rest, trimmed_rest, args_elements);
         Some((trimmed_rest.to_string(), args_elements))
-    }
-
-    fn reject_slash_command_if_unavailable(&self, cmd: SlashCommand) -> bool {
-        if !self.is_task_running || cmd.available_during_task() {
-            return false;
-        }
-        let message = format!(
-            "'/{}' is disabled while a task is in progress.",
-            cmd.command()
-        );
-        self.app_event_tx.send(AppEvent::InsertHistoryCell(Box::new(
-            history_cell::new_error_event(message),
-        )));
-        true
     }
 
     /// Translate full-text element ranges into command-argument ranges.
@@ -2909,6 +2904,7 @@ impl ChatComposer {
         };
 
         match self.footer_mode {
+            FooterMode::HistorySearch => FooterMode::HistorySearch,
             FooterMode::EscHint => FooterMode::EscHint,
             FooterMode::ShortcutOverlay => FooterMode::ShortcutOverlay,
             FooterMode::QuitShortcutReminder if self.quit_shortcut_hint_visible() => {
@@ -3560,12 +3556,14 @@ impl ChatComposer {
                 let show_shortcuts_hint = match footer_props.mode {
                     FooterMode::ComposerEmpty => !self.is_in_paste_burst(),
                     FooterMode::ComposerHasDraft => false,
+                    FooterMode::HistorySearch => false,
                     FooterMode::QuitShortcutReminder
                     | FooterMode::ShortcutOverlay
                     | FooterMode::EscHint => false,
                 };
                 let show_queue_hint = match footer_props.mode {
                     FooterMode::ComposerHasDraft => footer_props.is_task_running,
+                    FooterMode::HistorySearch => false,
                     FooterMode::QuitShortcutReminder
                     | FooterMode::ComposerEmpty
                     | FooterMode::ShortcutOverlay
@@ -3678,6 +3676,7 @@ impl ChatComposer {
                                 show_queue_hint,
                             ))
                         }
+                        FooterMode::HistorySearch => None,
                         FooterMode::EscHint
                         | FooterMode::QuitShortcutReminder
                         | FooterMode::ShortcutOverlay => None,
@@ -3781,8 +3780,13 @@ impl ChatComposer {
 
         let mut state = self.textarea_state.borrow_mut();
         if let Some(mask_char) = mask_char {
-            self.textarea
-                .render_ref_masked(textarea_rect, buf, &mut state, mask_char);
+            self.textarea.render_ref_masked(
+                textarea_rect,
+                buf,
+                &mut state,
+                mask_char,
+                ratatui::style::Style::default(),
+            );
         } else {
             StatefulWidgetRef::render_ref(&(&self.textarea), textarea_rect, buf, &mut state);
         }
@@ -3807,6 +3811,8 @@ impl ChatComposer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::PathBufExt;
+    use crate::test_support::test_path_buf;
     use image::ImageBuffer;
     use image::Rgba;
     use pretty_assertions::assert_eq;
@@ -4803,7 +4809,44 @@ mod tests {
     }
 
     #[test]
+    fn set_skill_mentions_refreshes_open_mention_popup() {
+        let (tx, _rx) = unbounded_channel::<AppEvent>();
+        let sender = AppEventSender::new(tx);
+        let mut composer = ChatComposer::new(
+            /*has_input_focus*/ true,
+            sender,
+            /*enhanced_keys_supported*/ false,
+            "Ask Codex to do anything".to_string(),
+            /*disable_paste_burst*/ false,
+        );
+        composer.set_text_content("$".to_string(), Vec::new(), Vec::new());
+        assert!(matches!(composer.active_popup, ActivePopup::None));
+
+        let skill_path = test_path_buf("/tmp/skill/SKILL.md").abs();
+        composer.set_skill_mentions(Some(vec![SkillMetadata {
+            name: "codex".to_string(),
+            description: "Primary personal Codex repo skill.".to_string(),
+            short_description: None,
+            interface: None,
+            dependencies: None,
+            policy: None,
+            path_to_skills_md: skill_path.clone(),
+            scope: codex_protocol::protocol::SkillScope::User,
+        }]));
+
+        let ActivePopup::Skill(popup) = &composer.active_popup else {
+            panic!("expected mention popup to open after skills update");
+        };
+        let mention = popup
+            .selected_mention()
+            .expect("expected skill mention to be selected");
+        assert_eq!(mention.insert_text, "$codex".to_string());
+        assert_eq!(mention.path, Some(skill_path.display().to_string()));
+    }
+
+    #[test]
     fn mention_items_show_plugin_owned_skill_and_app_duplicates() {
+        let skill_path = test_path_buf("/tmp/repo/google-calendar/SKILL.md").abs();
         let (tx, _rx) = unbounded_channel::<AppEvent>();
         let sender = AppEventSender::new(tx);
         let mut composer = ChatComposer::new(
@@ -4829,7 +4872,7 @@ mod tests {
             }),
             dependencies: None,
             policy: None,
-            path_to_skills_md: PathBuf::from("/tmp/repo/google-calendar/SKILL.md"),
+            path_to_skills_md: skill_path.clone(),
             scope: codex_protocol::protocol::SkillScope::Repo,
         }]));
         composer.set_plugin_mentions(Some(vec![PluginCapabilitySummary {
@@ -4866,10 +4909,7 @@ mod tests {
         let mentions = composer.mention_items();
         assert_eq!(mentions.len(), 3);
         assert_eq!(mentions[0].category_tag, Some("[Skill]".to_string()));
-        assert_eq!(
-            mentions[0].path,
-            Some("/tmp/repo/google-calendar/SKILL.md".to_string())
-        );
+        assert_eq!(mentions[0].path, Some(skill_path.display().to_string()));
         assert_eq!(mentions[0].display_name, "Google Calendar".to_string());
         assert_eq!(mentions[1].category_tag, Some("[Plugin]".to_string()));
         assert_eq!(
@@ -4927,7 +4967,7 @@ mod tests {
                     }),
                     dependencies: None,
                     policy: None,
-                    path_to_skills_md: PathBuf::from("/tmp/repo/google-calendar/SKILL.md"),
+                    path_to_skills_md: test_path_buf("/tmp/repo/google-calendar/SKILL.md").abs(),
                     scope: codex_protocol::protocol::SkillScope::Repo,
                 }]));
                 composer.set_plugin_mentions(Some(vec![PluginCapabilitySummary {
@@ -6230,7 +6270,7 @@ mod tests {
     }
 
     #[test]
-    fn slash_command_disabled_while_task_running_keeps_text() {
+    fn slash_command_with_args_dispatches_while_task_running() {
         use crossterm::event::KeyCode;
         use crossterm::event::KeyEvent;
         use crossterm::event::KeyModifiers;
@@ -6252,24 +6292,27 @@ mod tests {
         let (result, _needs_redraw) =
             composer.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
 
-        assert_eq!(InputResult::None, result);
-        assert_eq!("/review these changes", composer.textarea.text());
-
-        let mut found_error = false;
-        while let Ok(event) = rx.try_recv() {
-            if let AppEvent::InsertHistoryCell(cell) = event {
-                let message = cell
-                    .display_lines(/*width*/ 80)
-                    .into_iter()
-                    .map(|line| line.to_string())
-                    .collect::<Vec<_>>()
-                    .join("\n");
-                assert!(message.contains("disabled while a task is in progress"));
-                found_error = true;
-                break;
+        match result {
+            InputResult::CommandWithArgs {
+                cmd,
+                args,
+                queue_front_when_busy,
+                ..
+            } => {
+                assert_eq!(cmd, SlashCommand::Review);
+                assert_eq!(args, "these changes");
+                assert!(!queue_front_when_busy);
             }
+            other => panic!("expected /review dispatch while task running, got {other:?}"),
         }
-        assert!(found_error, "expected error history cell to be sent");
+        assert_eq!(composer.textarea.text(), "/review these changes");
+        assert!(
+            matches!(
+                rx.try_recv(),
+                Err(tokio::sync::mpsc::error::TryRecvError::Empty)
+            ),
+            "expected no disabled-command history event for /review"
+        );
     }
 
     #[test]

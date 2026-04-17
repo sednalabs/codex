@@ -18,6 +18,8 @@ fn domain_permissions(
 #[test]
 fn build_state_with_audit_metadata_threads_metadata_to_state() {
     let spec = NetworkProxySpec {
+        base_config: NetworkProxyConfig::default(),
+        requirements: None,
         config: NetworkProxyConfig::default(),
         constraints: NetworkProxyConstraints::default(),
         hard_deny_allowlist_misses: false,

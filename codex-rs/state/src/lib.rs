@@ -16,8 +16,6 @@ pub use model::LogQuery;
 pub use model::LogRow;
 pub use model::Phase2InputSelection;
 pub use model::Phase2JobClaimOutcome;
-/// Persisted remote-control server enrollment.
-pub use runtime::RemoteControlEnrollmentRecord;
 /// Preferred entrypoint: owns configuration and metrics.
 pub use runtime::StateRuntime;
 
@@ -48,6 +46,7 @@ pub use model::Stage1StartupClaimParams;
 pub use model::ThreadMetadata;
 pub use model::ThreadMetadataBuilder;
 pub use model::ThreadsPage;
+pub use runtime::RemoteControlEnrollmentRecord;
 pub use runtime::logs_db_filename;
 pub use runtime::logs_db_path;
 pub use runtime::state_db_filename;

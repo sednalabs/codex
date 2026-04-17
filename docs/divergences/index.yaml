@@ -287,6 +287,32 @@
       "notes": "Preserves the downstream mutability guardrails."
     },
     {
+      "id": "mcp-oauth-fallback-file-hardening",
+      "title": "MCP OAuth fallback file hardening",
+      "status": "live",
+      "category": "mcp",
+      "surface": [
+        "oauth fallback credentials file",
+        "best-effort fallback recovery"
+      ],
+      "files": [
+        "codex-rs/rmcp-client/src/oauth.rs"
+      ],
+      "behavior": "Downstream treats MCP OAuth fallback credentials files as best-effort state: empty or corrupt files no longer abort auth loading, and writes replace the fallback file atomically.",
+      "upstream_equivalent": false,
+      "introduced_in": {
+        "carry_commit": null,
+        "upstream_commit": null
+      },
+      "guardrail_lane": "ops-mcp-safety",
+      "tests": [
+        "load_oauth_tokens_ignores_empty_fallback_file",
+        "load_oauth_tokens_auto_ignores_corrupt_fallback_when_keyring_errors"
+      ],
+      "owner": "downstream",
+      "notes": "Keeps broken or partially-written fallback credential files from turning into hard auth failures during MCP login and reconnect flows."
+    },
+    {
       "id": "startup-plugin-sync-bounded-wait",
       "title": "Startup plugin sync bounded wait and completion re-arm",
       "status": "live",

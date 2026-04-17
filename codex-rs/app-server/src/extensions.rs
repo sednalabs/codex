@@ -1,5 +1,11 @@
 use crate::outgoing_message::ConnectionId;
 use crate::outgoing_message::OutgoingMessageSender;
+use codex_app_server_protocol::AppsListResponse;
+use codex_app_server_protocol::MarketplaceAddResponse;
+use codex_app_server_protocol::PluginDetail;
+use codex_app_server_protocol::PluginInstallResponse;
+use codex_app_server_protocol::PluginListResponse;
+use codex_app_server_protocol::PluginUninstallResponse;
 use codex_app_server_protocol::ServerNotification;
 use codex_app_server_protocol::Thread;
 use codex_app_server_protocol::Turn;
@@ -78,6 +84,24 @@ pub(crate) trait AppServerHooks: Send + Sync + 'static {
     fn dedupe_fs_changed_paths(&self) -> bool {
         false
     }
+
+    /// Opportunity to overlay plugin marketplace/list state before it reaches clients.
+    fn augment_plugin_list(&self, _response: &mut PluginListResponse) {}
+
+    /// Opportunity to overlay plugin/read details before they reach clients.
+    fn augment_plugin_read(&self, _plugin: &mut PluginDetail) {}
+
+    /// Opportunity to overlay plugin/install follow-up state before it reaches clients.
+    fn augment_plugin_install_response(&self, _response: &mut PluginInstallResponse) {}
+
+    /// Opportunity to overlay plugin/uninstall follow-up state before it reaches clients.
+    fn augment_plugin_uninstall_response(&self, _response: &mut PluginUninstallResponse) {}
+
+    /// Opportunity to overlay marketplace/add state before it reaches clients.
+    fn augment_marketplace_add_response(&self, _response: &mut MarketplaceAddResponse) {}
+
+    /// Opportunity to overlay app/list state before it reaches clients.
+    fn augment_apps_list_response(&self, _response: &mut AppsListResponse) {}
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -225,6 +249,18 @@ impl AppServerHooks for SednaAppServerHooks {
     fn dedupe_fs_changed_paths(&self) -> bool {
         true
     }
+
+    fn augment_plugin_list(&self, _response: &mut PluginListResponse) {}
+
+    fn augment_plugin_read(&self, _plugin: &mut PluginDetail) {}
+
+    fn augment_plugin_install_response(&self, _response: &mut PluginInstallResponse) {}
+
+    fn augment_plugin_uninstall_response(&self, _response: &mut PluginUninstallResponse) {}
+
+    fn augment_marketplace_add_response(&self, _response: &mut MarketplaceAddResponse) {}
+
+    fn augment_apps_list_response(&self, _response: &mut AppsListResponse) {}
 }
 
 fn nearest_existing_watch_ancestor(path: &Path) -> Option<PathBuf> {
@@ -308,5 +344,66 @@ mod tests {
             AbsolutePathBuf::try_from(temp_dir.path().to_path_buf()).expect("absolute root"),
         );
         assert_eq!(mapped, Some(target));
+    }
+
+    #[test]
+    fn noop_hooks_leave_plugin_surfaces_unchanged() {
+        let mut list_response = PluginListResponse {
+            marketplaces: vec![],
+            marketplace_load_errors: vec![],
+            remote_sync_error: None,
+            featured_plugin_ids: vec!["plugin.one".into()],
+        };
+        let mut plugin = PluginDetail {
+            marketplace_name: "test".into(),
+            marketplace_path: AbsolutePathBuf::try_from(PathBuf::from("/tmp/marketplace.json"))
+                .expect("absolute marketplace path"),
+            summary: codex_app_server_protocol::PluginSummary {
+                id: "plugin.one".into(),
+                name: "Plugin One".into(),
+                source: codex_app_server_protocol::PluginSource::Local {
+                    path: AbsolutePathBuf::try_from(PathBuf::from("/tmp/plugin"))
+                        .expect("absolute plugin path"),
+                },
+                installed: true,
+                enabled: true,
+                install_policy: codex_app_server_protocol::PluginInstallPolicy::Available,
+                auth_policy: codex_app_server_protocol::PluginAuthPolicy::OnUse,
+                interface: None,
+            },
+            description: None,
+            skills: vec![],
+            apps: vec![],
+            mcp_servers: vec![],
+        };
+        let mut install_response = PluginInstallResponse {
+            auth_policy: codex_app_server_protocol::PluginAuthPolicy::OnUse,
+            apps_needing_auth: vec![],
+        };
+        let mut uninstall_response = PluginUninstallResponse {};
+        let mut marketplace_add_response = MarketplaceAddResponse {
+            marketplace_name: "test".into(),
+            installed_root: AbsolutePathBuf::try_from(PathBuf::from("/tmp/marketplace"))
+                .expect("absolute install root"),
+            already_added: false,
+        };
+        let mut apps_list_response = AppsListResponse {
+            data: vec![],
+            next_cursor: Some("2".into()),
+        };
+
+        noop_app_server_hooks().augment_plugin_list(&mut list_response);
+        noop_app_server_hooks().augment_plugin_read(&mut plugin);
+        noop_app_server_hooks().augment_plugin_install_response(&mut install_response);
+        noop_app_server_hooks().augment_plugin_uninstall_response(&mut uninstall_response);
+        noop_app_server_hooks().augment_marketplace_add_response(&mut marketplace_add_response);
+        noop_app_server_hooks().augment_apps_list_response(&mut apps_list_response);
+
+        assert_eq!(list_response.featured_plugin_ids, vec!["plugin.one"]);
+        assert_eq!(plugin.marketplace_name, "test");
+        assert!(install_response.apps_needing_auth.is_empty());
+        assert_eq!(uninstall_response, PluginUninstallResponse {});
+        assert_eq!(marketplace_add_response.marketplace_name, "test");
+        assert_eq!(apps_list_response.next_cursor.as_deref(), Some("2"));
     }
 }

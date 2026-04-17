@@ -1,7 +1,5 @@
 use std::collections::HashMap;
 use std::collections::HashSet;
-use std::path::Path;
-use std::path::PathBuf;
 
 use super::ChatWidget;
 use crate::app_event::AppEvent;
@@ -10,18 +8,20 @@ use crate::bottom_pane::SelectionViewParams;
 use crate::bottom_pane::SkillsToggleItem;
 use crate::bottom_pane::SkillsToggleView;
 use crate::bottom_pane::popup_consts::standard_popup_hint_line;
+use crate::legacy_core::TOOL_MENTION_SIGIL;
+use crate::legacy_core::connectors::connector_mention_slug;
+use crate::legacy_core::skills::model::SkillDependencies;
+use crate::legacy_core::skills::model::SkillInterface;
+use crate::legacy_core::skills::model::SkillMetadata;
+use crate::legacy_core::skills::model::SkillToolDependency;
 use crate::skills_helpers::skill_description;
 use crate::skills_helpers::skill_display_name;
 use codex_chatgpt::connectors::AppInfo;
-use codex_core::connectors::connector_mention_slug;
-use codex_core::mention_syntax::TOOL_MENTION_SIGIL;
-use codex_core::skills::model::SkillDependencies;
-use codex_core::skills::model::SkillInterface;
-use codex_core::skills::model::SkillMetadata;
-use codex_core::skills::model::SkillToolDependency;
+use codex_protocol::parse_command::ParsedCommand;
 use codex_protocol::protocol::ListSkillsResponseEvent;
 use codex_protocol::protocol::SkillMetadata as ProtocolSkillMetadata;
 use codex_protocol::protocol::SkillsListEntry;
+use codex_utils_absolute_path::AbsolutePathBuf;
 
 impl ChatWidget {
     pub(crate) fn open_skills_list(&mut self) {
@@ -67,7 +67,7 @@ impl ChatWidget {
 
         let mut initial_state = HashMap::new();
         for skill in &self.skills_all {
-            initial_state.insert(normalize_skill_config_path(&skill.path), skill.enabled);
+            initial_state.insert(skill.path.clone(), skill.enabled);
         }
         self.skills_initial_state = Some(initial_state);
 
@@ -94,10 +94,9 @@ impl ChatWidget {
         self.bottom_pane.show_view(Box::new(view));
     }
 
-    pub(crate) fn update_skill_enabled(&mut self, path: PathBuf, enabled: bool) {
-        let target = normalize_skill_config_path(&path);
+    pub(crate) fn update_skill_enabled(&mut self, path: AbsolutePathBuf, enabled: bool) {
         for skill in &mut self.skills_all {
-            if normalize_skill_config_path(&skill.path) == target {
+            if skill.path == path {
                 skill.enabled = enabled;
             }
         }
@@ -110,7 +109,7 @@ impl ChatWidget {
         };
         let mut current_state = HashMap::new();
         for skill in &self.skills_all {
-            current_state.insert(normalize_skill_config_path(&skill.path), skill.enabled);
+            current_state.insert(skill.path.clone(), skill.enabled);
         }
 
         let mut enabled_count = 0;
@@ -142,12 +141,44 @@ impl ChatWidget {
         self.skills_all = skills;
         self.set_skills(Some(enabled_skills_for_mentions(&self.skills_all)));
     }
+
+    pub(crate) fn annotate_skill_reads_in_parsed_cmd(
+        &self,
+        mut parsed_cmd: Vec<ParsedCommand>,
+    ) -> Vec<ParsedCommand> {
+        if self.skills_all.is_empty() {
+            return parsed_cmd;
+        }
+
+        for parsed in &mut parsed_cmd {
+            let ParsedCommand::Read { name, path, .. } = parsed else {
+                continue;
+            };
+            if name != "SKILL.md" {
+                continue;
+            }
+
+            // Best effort only: annotate exact SKILL.md path matches from the loaded skills list.
+            if let Some(skill) = self
+                .skills_all
+                .iter()
+                .find(|skill| skill.path.as_path() == path)
+            {
+                *name = format!("{name} ({} skill)", skill.name);
+            }
+        }
+
+        parsed_cmd
+    }
 }
 
-fn skills_for_cwd(cwd: &Path, skills_entries: &[SkillsListEntry]) -> Vec<ProtocolSkillMetadata> {
+fn skills_for_cwd(
+    cwd: &AbsolutePathBuf,
+    skills_entries: &[SkillsListEntry],
+) -> Vec<ProtocolSkillMetadata> {
     skills_entries
         .iter()
-        .find(|entry| entry.cwd.as_path() == cwd)
+        .find(|entry| entry.cwd.as_path() == cwd.as_path())
         .map(|entry| entry.skills.clone())
         .unwrap_or_default()
 }
@@ -194,10 +225,6 @@ fn protocol_skill_to_core(skill: &ProtocolSkillMetadata) -> SkillMetadata {
         path_to_skills_md: skill.path.clone(),
         scope: skill.scope,
     }
-}
-
-fn normalize_skill_config_path(path: &Path) -> PathBuf {
-    dunce::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
 }
 
 pub(crate) fn collect_tool_mentions(

@@ -600,6 +600,16 @@
         "description": {
           "type": "string"
         },
+        "details": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/MigrationDetails"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "itemType": {
           "$ref": "#/$defs/ExternalAgentConfigMigrationItemType"
         }
@@ -615,6 +625,7 @@
         "AGENTS_MD",
         "CONFIG",
         "SKILLS",
+        "PLUGINS",
         "MCP_SERVER_CONFIG"
       ],
       "type": "string"
@@ -639,6 +650,15 @@
         "reason": {
           "type": [
             "string",
+            "null"
+          ]
+        },
+        "tags": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "type": [
+            "object",
             "null"
           ]
         },
@@ -782,9 +802,14 @@
         "path": {
           "$ref": "#/$defs/AbsolutePathBuf",
           "description": "Absolute file or directory path to watch."
+        },
+        "watchId": {
+          "description": "Connection-scoped watch identifier used for `fs/unwatch` and `fs/changed`.",
+          "type": "string"
         }
       },
       "required": [
+        "watchId",
         "path"
       ],
       "type": "object"
@@ -1272,6 +1297,32 @@
         }
       ]
     },
+    "MarketplaceAddParams": {
+      "properties": {
+        "refName": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "source": {
+          "type": "string"
+        },
+        "sparsePaths": {
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "source"
+      ],
+      "type": "object"
+    },
     "McpResourceReadParams": {
       "properties": {
         "server": {
@@ -1325,6 +1376,27 @@
       ],
       "type": "string"
     },
+    "McpServerToolCallParams": {
+      "properties": {
+        "_meta": true,
+        "arguments": true,
+        "server": {
+          "type": "string"
+        },
+        "threadId": {
+          "type": "string"
+        },
+        "tool": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "threadId",
+        "server",
+        "tool"
+      ],
+      "type": "object"
+    },
     "MergeStrategy": {
       "enum": [
         "replace",
@@ -1346,6 +1418,20 @@
           "type": "string"
         }
       ]
+    },
+    "MigrationDetails": {
+      "properties": {
+        "plugins": {
+          "items": {
+            "$ref": "#/$defs/PluginsMigration"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "plugins"
+      ],
+      "type": "object"
     },
     "MockExperimentalMethodParams": {
       "properties": {
@@ -1478,6 +1564,24 @@
       ],
       "type": "object"
     },
+    "PluginsMigration": {
+      "properties": {
+        "marketplaceName": {
+          "type": "string"
+        },
+        "pluginNames": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "marketplaceName",
+        "pluginNames"
+      ],
+      "type": "object"
+    },
     "ReadOnlyAccess": {
       "oneOf": [
         {
@@ -1520,6 +1624,37 @@
           "type": "object"
         }
       ]
+    },
+    "RealtimeOutputModality": {
+      "enum": [
+        "text",
+        "audio"
+      ],
+      "type": "string"
+    },
+    "RealtimeVoice": {
+      "enum": [
+        "alloy",
+        "arbor",
+        "ash",
+        "ballad",
+        "breeze",
+        "cedar",
+        "coral",
+        "cove",
+        "echo",
+        "ember",
+        "juniper",
+        "maple",
+        "marin",
+        "sage",
+        "shimmer",
+        "sol",
+        "spruce",
+        "vale",
+        "verse"
+      ],
+      "type": "string"
     },
     "ReasoningEffort": {
       "description": "See https://platform.openai.com/docs/guides/reasoning?api-mode=responses#get-started-with-reasoning",
@@ -2682,6 +2817,23 @@
       ],
       "type": "object"
     },
+    "ThreadInjectItemsParams": {
+      "properties": {
+        "items": {
+          "description": "Raw Responses API items to append to the thread's model-visible history.",
+          "items": true,
+          "type": "array"
+        },
+        "threadId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "threadId",
+        "items"
+      ],
+      "type": "object"
+    },
     "ThreadListParams": {
       "properties": {
         "archived": {
@@ -2774,6 +2926,28 @@
           ]
         }
       },
+      "type": "object"
+    },
+    "ThreadMemoryMode": {
+      "enum": [
+        "enabled",
+        "disabled"
+      ],
+      "type": "string"
+    },
+    "ThreadMemoryModeSetParams": {
+      "properties": {
+        "mode": {
+          "$ref": "#/$defs/ThreadMemoryMode"
+        },
+        "threadId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "threadId",
+        "mode"
+      ],
       "type": "object"
     },
     "ThreadMetadataGitInfoUpdateParams": {
@@ -2911,11 +3085,22 @@
       ],
       "type": "object"
     },
+    "ThreadRealtimeListVoicesParams": {
+      "description": "EXPERIMENTAL - list voices supported by thread realtime.",
+      "type": "object"
+    },
     "ThreadRealtimeStartParams": {
       "description": "EXPERIMENTAL - start a thread-scoped realtime session.",
       "properties": {
+        "outputModality": {
+          "$ref": "#/$defs/RealtimeOutputModality",
+          "description": "Selects text or audio output for the realtime session. Transport and voice stay\nindependent so clients can choose how they connect separately from what the model emits."
+        },
         "prompt": {
-          "type": "string"
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "sessionId": {
           "type": [
@@ -2925,13 +3110,70 @@
         },
         "threadId": {
           "type": "string"
+        },
+        "transport": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ThreadRealtimeStartTransport"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "voice": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RealtimeVoice"
+            },
+            {
+              "type": "null"
+            }
+          ]
         }
       },
       "required": [
         "threadId",
-        "prompt"
+        "outputModality"
       ],
       "type": "object"
+    },
+    "ThreadRealtimeStartTransport": {
+      "description": "EXPERIMENTAL - transport used by thread realtime.",
+      "oneOf": [
+        {
+          "properties": {
+            "type": {
+              "const": "websocket",
+              "title": "WebsocketThreadRealtimeStartTransportType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "title": "WebsocketThreadRealtimeStartTransport",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "sdp": {
+              "type": "string"
+            },
+            "type": {
+              "const": "webrtc",
+              "title": "WebrtcThreadRealtimeStartTransportType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "sdp"
+          ],
+          "title": "WebrtcThreadRealtimeStartTransport",
+          "type": "object"
+        }
+      ]
     },
     "ThreadRealtimeStopParams": {
       "description": "EXPERIMENTAL - stop thread realtime.",
@@ -3266,9 +3508,26 @@
               "type": "null"
             }
           ]
+        },
+        "sessionStartSource": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ThreadStartSource"
+            },
+            {
+              "type": "null"
+            }
+          ]
         }
       },
       "type": "object"
+    },
+    "ThreadStartSource": {
+      "enum": [
+        "startup",
+        "clear"
+      ],
+      "type": "string"
     },
     "ThreadUnarchiveParams": {
       "properties": {
@@ -3387,6 +3646,16 @@
           ],
           "description": "Override the personality for this turn and subsequent turns."
         },
+        "responsesapiClientMetadata": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "Optional turn-scoped Responses API client metadata.",
+          "type": [
+            "object",
+            "null"
+          ]
+        },
         "sandboxPolicy": {
           "anyOf": [
             {
@@ -3441,6 +3710,16 @@
             "$ref": "#/$defs/UserInput"
           },
           "type": "array"
+        },
+        "responsesapiClientMetadata": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "Optional turn-scoped Responses API client metadata.",
+          "type": [
+            "object",
+            "null"
+          ]
         },
         "threadId": {
           "type": "string"
@@ -3927,6 +4206,29 @@
       "type": "object"
     },
     {
+      "description": "Append raw Responses API items to the thread history without starting a user turn.",
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/RequestId"
+        },
+        "method": {
+          "const": "thread/inject_items",
+          "title": "Thread/injectItemsRequestMethod",
+          "type": "string"
+        },
+        "params": {
+          "$ref": "#/$defs/ThreadInjectItemsParams"
+        }
+      },
+      "required": [
+        "method",
+        "id",
+        "params"
+      ],
+      "title": "Thread/injectItemsRequest",
+      "type": "object"
+    },
+    {
       "properties": {
         "id": {
           "$ref": "#/$defs/RequestId"
@@ -3946,6 +4248,28 @@
         "params"
       ],
       "title": "Skills/listRequest",
+      "type": "object"
+    },
+    {
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/RequestId"
+        },
+        "method": {
+          "const": "marketplace/add",
+          "title": "Marketplace/addRequestMethod",
+          "type": "string"
+        },
+        "params": {
+          "$ref": "#/$defs/MarketplaceAddParams"
+        }
+      },
+      "required": [
+        "method",
+        "id",
+        "params"
+      ],
+      "title": "Marketplace/addRequest",
       "type": "object"
     },
     {
@@ -4517,6 +4841,28 @@
         "params"
       ],
       "title": "McpServer/resource/readRequest",
+      "type": "object"
+    },
+    {
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/RequestId"
+        },
+        "method": {
+          "const": "mcpServer/tool/call",
+          "title": "McpServer/tool/callRequestMethod",
+          "type": "string"
+        },
+        "params": {
+          "$ref": "#/$defs/McpServerToolCallParams"
+        }
+      },
+      "required": [
+        "method",
+        "id",
+        "params"
+      ],
+      "title": "McpServer/tool/callRequest",
       "type": "object"
     },
     {

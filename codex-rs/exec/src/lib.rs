@@ -14,6 +14,8 @@ pub use cli::Cli;
 pub use cli::Command;
 pub use cli::ReviewArgs;
 use codex_app_server_client::DEFAULT_IN_PROCESS_CHANNEL_CAPACITY;
+use codex_app_server_client::EnvironmentManager;
+use codex_app_server_client::ExecServerRuntimePaths;
 use codex_app_server_client::InProcessAppServerClient;
 use codex_app_server_client::InProcessClientStartArgs;
 use codex_app_server_client::InProcessServerEvent;
@@ -91,6 +93,7 @@ use std::io::IsTerminal;
 use std::io::Read;
 use std::path::Path;
 use std::path::PathBuf;
+use std::sync::Arc;
 use supports_color::Stream;
 use tokio::sync::mpsc;
 use tracing::Instrument;
@@ -241,6 +244,13 @@ pub async fn run_main(cli: Cli, arg0_paths: Arg0DispatchPaths) -> anyhow::Result
         }
     };
 
+    let environment_manager = Arc::new(EnvironmentManager::from_env_with_runtime_paths(Some(
+        ExecServerRuntimePaths::from_optional_paths(
+            arg0_paths.codex_self_exe.clone(),
+            arg0_paths.codex_linux_sandbox_exe.clone(),
+        )?,
+    )));
+
     let resolved_cwd = cwd.clone();
     let config_cwd = match resolved_cwd.as_deref() {
         Some(path) => AbsolutePathBuf::from_absolute_path(path.canonicalize()?)?,
@@ -260,7 +270,7 @@ pub async fn run_main(cli: Cli, arg0_paths: Arg0DispatchPaths) -> anyhow::Result
     #[allow(clippy::print_stderr)]
     let config_toml = match load_config_as_toml_with_cli_overrides(
         &codex_home,
-        &config_cwd,
+        Some(&config_cwd),
         cli_kv_overrides.clone(),
     )
     .await
@@ -289,7 +299,7 @@ pub async fn run_main(cli: Cli, arg0_paths: Arg0DispatchPaths) -> anyhow::Result
         .unwrap_or_else(|| "https://chatgpt.com/backend-api/".to_string());
     // TODO(gt): Make cloud requirements failures blocking once we can fail-closed.
     let cloud_requirements = cloud_requirements_loader_for_storage(
-        codex_home.clone(),
+        codex_home.to_path_buf(),
         /*enable_codex_api_key_env*/ false,
         config_toml.cli_auth_credentials_store.unwrap_or_default(),
         chatgpt_base_url,
@@ -331,9 +341,6 @@ pub async fn run_main(cli: Cli, arg0_paths: Arg0DispatchPaths) -> anyhow::Result
     // Load configuration and determine approval policy
     let overrides = ConfigOverrides {
         model,
-        model_reasoning_effort: None,
-        model_reasoning_summary: None,
-        model_verbosity: None,
         review_model: None,
         config_profile,
         // Default to never ask for approvals in headless mode. Feature flags can override.
@@ -382,7 +389,7 @@ pub async fn run_main(cli: Cli, arg0_paths: Arg0DispatchPaths) -> anyhow::Result
     set_default_client_residency_requirement(config.enforce_residency.value());
 
     if let Err(err) = enforce_login_restrictions(&AuthConfig {
-        codex_home: config.codex_home.clone(),
+        codex_home: config.codex_home.to_path_buf(),
         auth_credentials_store_mode: config.cli_auth_credentials_store_mode,
         forced_login_method: config.forced_login_method,
         forced_chatgpt_workspace_id: config.forced_chatgpt_workspace_id.clone(),
@@ -441,6 +448,7 @@ pub async fn run_main(cli: Cli, arg0_paths: Arg0DispatchPaths) -> anyhow::Result
         loader_overrides: run_loader_overrides,
         cloud_requirements: run_cloud_requirements,
         feedback: CodexFeedback::new(),
+        environment_manager,
         config_warnings,
         session_source: SessionSource::Exec,
         enable_codex_api_key_env: true,
@@ -655,7 +663,10 @@ async fn run_exec_session(args: ExecRunArgs) -> anyhow::Result<()> {
     // Print the effective configuration and initial request so users can see what Codex
     // is using.
     event_processor.print_config_summary(&config, &prompt_summary, &session_configured);
-    if !json_mode && let Some(message) = codex_core::config::system_bwrap_warning() {
+    if !json_mode
+        && let Some(message) =
+            codex_core::config::system_bwrap_warning(config.permissions.sandbox_policy.get())
+    {
         event_processor.process_warning(message);
     }
 
@@ -681,6 +692,7 @@ async fn run_exec_session(args: ExecRunArgs) -> anyhow::Result<()> {
                     params: TurnStartParams {
                         thread_id: primary_thread_id_for_span.clone(),
                         input: items.into_iter().map(Into::into).collect(),
+                        responsesapi_client_metadata: None,
                         cwd: Some(default_cwd),
                         approval_policy: Some(default_approval_policy.into()),
                         approvals_reviewer: None,
@@ -969,7 +981,7 @@ fn session_configured_from_thread_response(
     approval_policy: AskForApproval,
     approvals_reviewer: codex_protocol::config_types::ApprovalsReviewer,
     sandbox_policy: SandboxPolicy,
-    cwd: PathBuf,
+    cwd: AbsolutePathBuf,
     reasoning_effort: Option<codex_protocol::openai_models::ReasoningEffort>,
 ) -> Result<SessionConfiguredEvent, String> {
     let session_id = codex_protocol::ThreadId::from_string(thread_id)
@@ -1124,7 +1136,7 @@ async fn latest_thread_cwd(thread: &AppServerThread) -> PathBuf {
     {
         return cwd;
     }
-    thread.cwd.clone()
+    thread.cwd.to_path_buf()
 }
 
 async fn parse_latest_turn_context_cwd(path: &Path) -> Option<PathBuf> {
@@ -1184,7 +1196,8 @@ async fn resolve_resume_thread_id(
             .await
             .map_err(anyhow::Error::msg)?;
             for thread in response.data {
-                if args.all || cwds_match(config.cwd.as_path(), &latest_thread_cwd(&thread).await) {
+                let latest_cwd = latest_thread_cwd(&thread).await;
+                if args.all || cwds_match(config.cwd.as_path(), latest_cwd.as_path()) {
                     return Ok(Some(thread.id));
                 }
             }
@@ -1230,7 +1243,8 @@ async fn resolve_resume_thread_id(
             if thread.name.as_deref() != Some(session_id) {
                 continue;
             }
-            if args.all || cwds_match(config.cwd.as_path(), &latest_thread_cwd(&thread).await) {
+            let latest_cwd = latest_thread_cwd(&thread).await;
+            if args.all || cwds_match(config.cwd.as_path(), latest_cwd.as_path()) {
                 return Ok(Some(thread.id));
             }
         }
@@ -1665,6 +1679,8 @@ mod tests {
     use super::*;
     use codex_otel::set_parent_from_w3c_trace_context;
     use codex_protocol::config_types::ApprovalsReviewer;
+    use codex_utils_absolute_path::test_support::PathBufExt;
+    use codex_utils_absolute_path::test_support::test_path_buf;
     use opentelemetry::trace::TraceContextExt;
     use opentelemetry::trace::TraceId;
     use opentelemetry::trace::TracerProvider as _;
@@ -1913,7 +1929,7 @@ mod tests {
             updated_at: 0,
             status: codex_app_server_protocol::ThreadStatus::Idle,
             path: None,
-            cwd: PathBuf::from("/tmp/project"),
+            cwd: test_path_buf("/tmp/project").abs(),
             cli_version: "0.0.0-test".to_string(),
             source: codex_app_server_protocol::SessionSource::Exec,
             agent_nickname: None,
@@ -2038,7 +2054,7 @@ mod tests {
                 updated_at: 0,
                 status: codex_app_server_protocol::ThreadStatus::Idle,
                 path: Some(PathBuf::from("/tmp/rollout.jsonl")),
-                cwd: PathBuf::from("/tmp"),
+                cwd: test_path_buf("/tmp").abs(),
                 cli_version: "0.0.0".to_string(),
                 source: codex_app_server_protocol::SessionSource::Cli,
                 agent_nickname: None,
@@ -2051,7 +2067,8 @@ mod tests {
             model: "gpt-5.4".to_string(),
             model_provider: "openai".to_string(),
             service_tier: None,
-            cwd: PathBuf::from("/tmp"),
+            cwd: test_path_buf("/tmp").abs(),
+            instruction_sources: Vec::new(),
             approval_policy: codex_app_server_protocol::AskForApproval::OnRequest,
             approvals_reviewer: codex_app_server_protocol::ApprovalsReviewer::GuardianSubagent,
             sandbox: codex_app_server_protocol::SandboxPolicy::WorkspaceWrite {

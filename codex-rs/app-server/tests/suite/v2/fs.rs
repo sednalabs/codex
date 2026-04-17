@@ -21,8 +21,6 @@ use std::path::PathBuf;
 use tempfile::TempDir;
 use tokio::time::Duration;
 use tokio::time::timeout;
-use uuid::Uuid;
-use uuid::Version;
 
 #[cfg(unix)]
 use std::os::unix::fs::symlink;
@@ -91,6 +89,7 @@ async fn fs_get_metadata_returns_only_used_fields() -> Result<()> {
             "createdAtMs".to_string(),
             "isDirectory".to_string(),
             "isFile".to_string(),
+            "isSymlink".to_string(),
             "modifiedAtMs".to_string(),
         ]
     );
@@ -101,6 +100,7 @@ async fn fs_get_metadata_returns_only_used_fields() -> Result<()> {
         FsGetMetadataResponse {
             is_directory: false,
             is_file: true,
+            is_symlink: false,
             created_at_ms: stat.created_at_ms,
             modified_at_ms: stat.modified_at_ms,
         }
@@ -109,6 +109,35 @@ async fn fs_get_metadata_returns_only_used_fields() -> Result<()> {
         stat.modified_at_ms > 0,
         "modifiedAtMs should be populated for existing files"
     );
+
+    Ok(())
+}
+
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn fs_get_metadata_reports_symlink() -> Result<()> {
+    let codex_home = TempDir::new()?;
+    let file_path = codex_home.path().join("note.txt");
+    let symlink_path = codex_home.path().join("note-link.txt");
+    std::fs::write(&file_path, "hello")?;
+    symlink(&file_path, &symlink_path)?;
+
+    let mut mcp = initialized_mcp(&codex_home).await?;
+    let request_id = mcp
+        .send_fs_get_metadata_request(codex_app_server_protocol::FsGetMetadataParams {
+            path: absolute_path(symlink_path),
+        })
+        .await?;
+    let response = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(request_id)),
+    )
+    .await??;
+
+    let stat: FsGetMetadataResponse = to_response(response)?;
+    assert_eq!(stat.is_directory, false);
+    assert_eq!(stat.is_file, true);
+    assert_eq!(stat.is_symlink, true);
 
     Ok(())
 }
@@ -628,8 +657,10 @@ async fn fs_watch_directory_reports_changed_child_paths_and_unwatch_stops_notifi
     std::fs::write(&fetch_head, "old\n")?;
 
     let mut mcp = initialized_mcp(&codex_home).await?;
+    let watch_id = "watch-git-dir".to_string();
     let watch_request_id = mcp
         .send_fs_watch_request(codex_app_server_protocol::FsWatchParams {
+            watch_id: watch_id.clone(),
             path: absolute_path(git_dir.clone()),
         })
         .await?;
@@ -641,8 +672,6 @@ async fn fs_watch_directory_reports_changed_child_paths_and_unwatch_stops_notifi
         .await??,
     )?;
     assert_eq!(watch_response.path, absolute_path(git_dir.clone()));
-    let watch_id = Uuid::parse_str(&watch_response.watch_id)?;
-    assert_eq!(watch_id.get_version(), Some(Version::SortRand));
 
     std::fs::write(&fetch_head, "updated\n")?;
 
@@ -650,7 +679,7 @@ async fn fs_watch_directory_reports_changed_child_paths_and_unwatch_stops_notifi
     // Keep validating notification shape when the backend does emit, but do not
     // fail the whole suite if no OS event arrives.
     if let Some(changed) = maybe_fs_changed_notification(&mut mcp).await? {
-        assert_eq!(changed.watch_id, watch_response.watch_id.clone());
+        assert_eq!(changed.watch_id, watch_id.clone());
         assert_eq!(
             changed.changed_paths,
             vec![absolute_path(fetch_head.clone())]
@@ -665,9 +694,7 @@ async fn fs_watch_directory_reports_changed_child_paths_and_unwatch_stops_notifi
     {}
 
     let unwatch_request_id = mcp
-        .send_fs_unwatch_request(FsUnwatchParams {
-            watch_id: watch_response.watch_id,
-        })
+        .send_fs_unwatch_request(FsUnwatchParams { watch_id })
         .await?;
     timeout(
         DEFAULT_READ_TIMEOUT,
@@ -698,8 +725,10 @@ async fn fs_watch_file_reports_atomic_replace_events() -> Result<()> {
     std::fs::write(&head_path, "ref: refs/heads/main\n")?;
 
     let mut mcp = initialized_mcp(&codex_home).await?;
+    let watch_id = "watch-head".to_string();
     let watch_request_id = mcp
         .send_fs_watch_request(codex_app_server_protocol::FsWatchParams {
+            watch_id: watch_id.clone(),
             path: absolute_path(head_path.clone()),
         })
         .await?;
@@ -718,7 +747,7 @@ async fn fs_watch_file_reports_atomic_replace_events() -> Result<()> {
         assert_eq!(
             changed,
             FsChangedNotification {
-                watch_id: watch_response.watch_id,
+                watch_id,
                 changed_paths: vec![absolute_path(head_path.clone())],
             }
         );
@@ -735,8 +764,10 @@ async fn fs_watch_allows_missing_file_targets() -> Result<()> {
     std::fs::create_dir_all(&git_dir)?;
 
     let mut mcp = initialized_mcp(&codex_home).await?;
+    let watch_id = "watch-fetch-head".to_string();
     let watch_request_id = mcp
         .send_fs_watch_request(codex_app_server_protocol::FsWatchParams {
+            watch_id: watch_id.clone(),
             path: absolute_path(fetch_head.clone()),
         })
         .await?;
@@ -755,7 +786,7 @@ async fn fs_watch_allows_missing_file_targets() -> Result<()> {
         assert_eq!(
             changed,
             FsChangedNotification {
-                watch_id: watch_response.watch_id,
+                watch_id,
                 changed_paths: vec![absolute_path(fetch_head.clone())],
             }
         );
@@ -770,7 +801,10 @@ async fn fs_watch_rejects_relative_paths() -> Result<()> {
     let mut mcp = initialized_mcp(&codex_home).await?;
 
     let watch_id = mcp
-        .send_raw_request("fs/watch", Some(json!({ "path": "relative-path" })))
+        .send_raw_request(
+            "fs/watch",
+            Some(json!({ "watchId": "watch-relative", "path": "relative-path" })),
+        )
         .await?;
     expect_error_message(
         &mut mcp,

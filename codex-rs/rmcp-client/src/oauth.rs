@@ -19,6 +19,7 @@
 use anyhow::Context;
 use anyhow::Error;
 use anyhow::Result;
+use codex_config::types::OAuthCredentialsStoreMode;
 use oauth2::AccessToken;
 use oauth2::EmptyExtraTokenFields;
 use oauth2::RefreshToken;
@@ -26,7 +27,6 @@ use oauth2::Scope;
 use oauth2::TokenResponse;
 use oauth2::basic::BasicTokenType;
 use rmcp::transport::auth::OAuthTokenResponse;
-use schemars::JsonSchema;
 use serde::Deserialize;
 use serde::Serialize;
 use serde_json::Value;
@@ -36,6 +36,7 @@ use sha2::Sha256;
 use std::collections::BTreeMap;
 use std::fs;
 use std::io::ErrorKind;
+use std::io::Write;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -61,21 +62,6 @@ pub struct StoredOAuthTokens {
     pub token_response: WrappedOAuthTokenResponse,
     #[serde(default)]
     pub expires_at: Option<u64>,
-}
-
-/// Determine where Codex should store and read MCP credentials.
-#[derive(Debug, Default, Copy, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "lowercase")]
-pub enum OAuthCredentialsStoreMode {
-    /// `Keyring` when available; otherwise, `File`.
-    /// Credentials stored in the keyring will only be readable by Codex unless the user explicitly grants access via OS-level keyring access.
-    #[default]
-    Auto,
-    /// CODEX_HOME/.credentials.json
-    /// This file will be readable to Codex and other applications running as the same user.
-    File,
-    /// Keyring when available, otherwise fail.
-    Keyring,
 }
 
 /// Wrap OAuthTokenResponse to allow for partial equality comparison.
@@ -140,11 +126,23 @@ fn load_oauth_tokens_from_keyring_with_fallback_to_file<K: KeyringStore>(
 ) -> Result<Option<StoredOAuthTokens>> {
     match load_oauth_tokens_from_keyring(keyring_store, server_name, url) {
         Ok(Some(tokens)) => Ok(Some(tokens)),
-        Ok(None) => load_oauth_tokens_from_file(server_name, url),
+        Ok(None) => load_oauth_tokens_from_file_best_effort(server_name, url),
         Err(error) => {
             warn!("failed to read OAuth tokens from keyring: {error}");
-            load_oauth_tokens_from_file(server_name, url)
-                .with_context(|| format!("failed to read OAuth tokens from keyring: {error}"))
+            load_oauth_tokens_from_file_best_effort(server_name, url)
+        }
+    }
+}
+
+fn load_oauth_tokens_from_file_best_effort(
+    server_name: &str,
+    url: &str,
+) -> Result<Option<StoredOAuthTokens>> {
+    match load_oauth_tokens_from_file(server_name, url) {
+        Ok(tokens) => Ok(tokens),
+        Err(error) => {
+            warn!("failed to read OAuth tokens from fallback file: {error:?}");
+            Ok(None)
         }
     }
 }
@@ -535,9 +533,7 @@ fn compute_store_key(server_name: &str, server_url: &str) -> Result<String> {
 }
 
 fn fallback_file_path() -> Result<PathBuf> {
-    let mut path = find_codex_home()?;
-    path.push(FALLBACK_FILENAME);
-    Ok(path)
+    Ok(find_codex_home()?.join(FALLBACK_FILENAME).to_path_buf())
 }
 
 fn read_fallback_file() -> Result<Option<FallbackFile>> {
@@ -552,6 +548,10 @@ fn read_fallback_file() -> Result<Option<FallbackFile>> {
             ));
         }
     };
+
+    if contents.trim().is_empty() {
+        return Ok(None);
+    }
 
     match serde_json::from_str::<FallbackFile>(&contents) {
         Ok(store) => Ok(Some(store)),
@@ -577,13 +577,107 @@ fn write_fallback_file(store: &FallbackFile) -> Result<()> {
     }
 
     let serialized = serde_json::to_string(store)?;
-    fs::write(&path, serialized)?;
+    let parent = path
+        .parent()
+        .context("credentials file path is missing a parent directory")?;
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_else(|_| Duration::from_secs(0))
+        .as_nanos();
+    let tmp_path = parent.join(format!(
+        ".{FALLBACK_FILENAME}.tmp-{}-{nonce}",
+        std::process::id()
+    ));
+
+    {
+        let mut tmp_file = fs::OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .open(&tmp_path)
+            .with_context(|| {
+                format!(
+                    "failed to create temp credentials file at {}",
+                    tmp_path.display()
+                )
+            })?;
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let perms = fs::Permissions::from_mode(0o600);
+            tmp_file.set_permissions(perms).with_context(|| {
+                format!(
+                    "failed to set permissions on temp credentials file at {}",
+                    tmp_path.display()
+                )
+            })?;
+        }
+
+        tmp_file.write_all(serialized.as_bytes()).with_context(|| {
+            format!(
+                "failed to write temp credentials file at {}",
+                tmp_path.display()
+            )
+        })?;
+        tmp_file.sync_all().with_context(|| {
+            format!(
+                "failed to sync temp credentials file at {}",
+                tmp_path.display()
+            )
+        })?;
+    }
+
+    match fs::rename(&tmp_path, &path) {
+        Ok(()) => {}
+        Err(initial_error) => {
+            #[cfg(target_os = "windows")]
+            {
+                if path.exists() {
+                    fs::remove_file(&path).with_context(|| {
+                        format!(
+                            "failed to remove existing credentials file at {} before replace",
+                            path.display()
+                        )
+                    })?;
+                    fs::rename(&tmp_path, &path).with_context(|| {
+                        format!(
+                            "failed to replace credentials file at {} with {}",
+                            path.display(),
+                            tmp_path.display()
+                        )
+                    })?;
+                } else {
+                    let _ = fs::remove_file(&tmp_path);
+                    return Err(initial_error).with_context(|| {
+                        format!(
+                            "failed to atomically replace credentials file at {} with {}",
+                            path.display(),
+                            tmp_path.display()
+                        )
+                    });
+                }
+            }
+
+            #[cfg(not(target_os = "windows"))]
+            {
+                let _ = fs::remove_file(&tmp_path);
+                return Err(initial_error).with_context(|| {
+                    format!(
+                        "failed to atomically replace credentials file at {} with {}",
+                        path.display(),
+                        tmp_path.display()
+                    )
+                });
+            }
+        }
+    }
 
     #[cfg(unix)]
     {
-        use std::os::unix::fs::PermissionsExt;
-        let perms = fs::Permissions::from_mode(0o600);
-        fs::set_permissions(&path, perms)?;
+        let dir = fs::File::open(parent)
+            .with_context(|| format!("failed to open {}", parent.display()))?;
+        dir.sync_all()
+            .with_context(|| format!("failed to sync {}", parent.display()))?;
     }
 
     Ok(())
@@ -699,6 +793,35 @@ mod tests {
         )?
         .expect("tokens should load from fallback");
         assert_tokens_match_without_expiry(&loaded, &expected);
+        Ok(())
+    }
+
+    #[test]
+    fn load_oauth_tokens_ignores_empty_fallback_file() -> Result<()> {
+        let _env = TempCodexHome::new();
+        let fallback_path = super::fallback_file_path()?;
+        fs::write(&fallback_path, "   \n\t")?;
+
+        let loaded = super::load_oauth_tokens_from_file("missing", "https://example.com")?;
+        assert!(loaded.is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn load_oauth_tokens_auto_ignores_corrupt_fallback_when_keyring_errors() -> Result<()> {
+        let _env = TempCodexHome::new();
+        let store = MockKeyringStore::default();
+        let tokens = sample_tokens();
+        let key = super::compute_store_key(&tokens.server_name, &tokens.url)?;
+        store.set_error(&key, KeyringError::Invalid("error".into(), "load".into()));
+        fs::write(super::fallback_file_path()?, "{not-json")?;
+
+        let loaded = super::load_oauth_tokens_from_keyring_with_fallback_to_file(
+            &store,
+            &tokens.server_name,
+            &tokens.url,
+        )?;
+        assert!(loaded.is_none());
         Ok(())
     }
 

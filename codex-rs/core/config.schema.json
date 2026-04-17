@@ -3,92 +3,82 @@
   "additionalProperties": false,
   "definitions": {
     "AbsolutePathBuf": {
-      "description": "A path that is guaranteed to be absolute and normalized (though it is not guaranteed to be canonicalized or exist on the filesystem). IMPORTANT: When deserializing an `AbsolutePathBuf`, a base path must be set using [AbsolutePathBufGuard::new]. If no base path is set, the deserialization will fail unless the path being deserialized is already absolute.",
+      "description": "A path that is guaranteed to be absolute and normalized (though it is not guaranteed to be canonicalized or exist on the filesystem).\n\nIMPORTANT: When deserializing an `AbsolutePathBuf`, a base path must be set using [AbsolutePathBufGuard::new]. If no base path is set, the deserialization will fail unless the path being deserialized is already absolute.",
       "type": "string"
     },
     "AgentRoleToml": {
       "additionalProperties": false,
       "properties": {
         "config_file": {
-          "anyOf": [
+          "allOf": [
             {
               "$ref": "#/definitions/AbsolutePathBuf"
-            },
-            {
-              "type": "null"
             }
           ],
           "description": "Path to a role-specific config layer. Relative paths are resolved relative to the `config.toml` that defines them."
         },
         "description": {
           "description": "Human-facing role documentation used in spawn tool guidance. Required unless supplied by the referenced agent role file.",
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": "string"
         },
         "nickname_candidates": {
           "description": "Candidate nicknames for agents spawned with this role.",
           "items": {
             "type": "string"
           },
-          "type": [
-            "array",
-            "null"
-          ]
+          "type": "array"
         }
       },
       "type": "object"
     },
     "AgentsToml": {
-      "additionalProperties": false,
+      "additionalProperties": {
+        "$ref": "#/definitions/AgentRoleToml"
+      },
       "properties": {
         "job_max_runtime_seconds": {
           "description": "Default maximum runtime in seconds for agent job workers.",
           "format": "uint64",
-          "minimum": 1,
-          "type": [
-            "integer",
-            "null"
-          ]
+          "minimum": 1.0,
+          "type": "integer"
         },
         "max_depth": {
           "description": "Maximum nesting depth allowed for spawned agent threads. Root sessions start at depth 0.",
           "format": "int32",
-          "minimum": 1,
-          "type": [
-            "integer",
-            "null"
-          ]
+          "minimum": 1.0,
+          "type": "integer"
         },
         "max_threads": {
           "description": "Maximum number of agent threads that can be open concurrently. When unset, no limit is enforced.",
           "format": "uint",
-          "minimum": 1,
-          "type": [
-            "integer",
-            "null"
-          ]
+          "minimum": 1.0,
+          "type": "integer"
         }
       },
       "type": "object"
     },
     "AltScreenMode": {
-      "description": "Controls whether the TUI uses the terminal's alternate screen buffer. **Background:** The alternate screen buffer provides a cleaner fullscreen experience without polluting the terminal's scrollback history. However, it conflicts with terminal multiplexers like Zellij that strictly follow the xterm specification, which defines that alternate screen buffers should not have scrollback. **Zellij's behavior:** Zellij intentionally disables scrollback in alternate screen mode (see https://github.com/zellij-org/zellij/pull/1032) to comply with the xterm spec. This is by design and not configurable in Zellij—there is no option to enable scrollback in alternate screen mode. **Solution:** This setting provides a pragmatic workaround: - `auto` (default): Automatically detect the terminal multiplexer. If running in Zellij, disable alternate screen to preserve scrollback. Enable it everywhere else. - `always`: Always use alternate screen mode (original behavior before this fix). - `never`: Never use alternate screen mode. Runs in inline mode, preserving scrollback in all multiplexers. The CLI flag `--no-alt-screen` can override this setting at runtime.",
+      "description": "Controls whether the TUI uses the terminal's alternate screen buffer.\n\n**Background:** The alternate screen buffer provides a cleaner fullscreen experience without polluting the terminal's scrollback history. However, it conflicts with terminal multiplexers like Zellij that strictly follow the xterm specification, which defines that alternate screen buffers should not have scrollback.\n\n**Zellij's behavior:** Zellij intentionally disables scrollback in alternate screen mode (see https://github.com/zellij-org/zellij/pull/1032) to comply with the xterm spec. This is by design and not configurable in Zellij—there is no option to enable scrollback in alternate screen mode.\n\n**Solution:** This setting provides a pragmatic workaround: - `auto` (default): Automatically detect the terminal multiplexer. If running in Zellij, disable alternate screen to preserve scrollback. Enable it everywhere else. - `always`: Always use alternate screen mode (original behavior before this fix). - `never`: Never use alternate screen mode. Runs in inline mode, preserving scrollback in all multiplexers.\n\nThe CLI flag `--no-alt-screen` can override this setting at runtime.",
       "oneOf": [
         {
-          "const": "auto",
           "description": "Auto-detect: disable alternate screen in Zellij, enable elsewhere.",
+          "enum": [
+            "auto"
+          ],
           "type": "string"
         },
         {
-          "const": "always",
           "description": "Always use alternate screen (original behavior).",
+          "enum": [
+            "always"
+          ],
           "type": "string"
         },
         {
-          "const": "never",
           "description": "Never use alternate screen (inline mode only).",
+          "enum": [
+            "never"
+          ],
           "type": "string"
         }
       ]
@@ -99,10 +89,7 @@
       "properties": {
         "enabled": {
           "description": "When `false`, disables analytics across Codex product surfaces in this profile.",
-          "type": [
-            "boolean",
-            "null"
-          ]
+          "type": "boolean"
         }
       },
       "type": "object"
@@ -112,29 +99,20 @@
       "description": "Config values for a single app/connector.",
       "properties": {
         "default_tools_approval_mode": {
-          "anyOf": [
+          "allOf": [
             {
               "$ref": "#/definitions/AppToolApproval"
-            },
-            {
-              "type": "null"
             }
           ],
           "description": "Approval mode for tools in this app unless a tool override exists."
         },
         "default_tools_enabled": {
           "description": "Whether tools are enabled by default for this app.",
-          "type": [
-            "boolean",
-            "null"
-          ]
+          "type": "boolean"
         },
         "destructive_enabled": {
           "description": "Whether tools with `destructive_hint = true` are allowed for this app.",
-          "type": [
-            "boolean",
-            "null"
-          ]
+          "type": "boolean"
         },
         "enabled": {
           "default": true,
@@ -143,18 +121,12 @@
         },
         "open_world_enabled": {
           "description": "Whether tools with `open_world_hint = true` are allowed for this app.",
-          "type": [
-            "boolean",
-            "null"
-          ]
+          "type": "boolean"
         },
         "tools": {
-          "anyOf": [
+          "allOf": [
             {
               "$ref": "#/definitions/AppToolsConfig"
-            },
-            {
-              "type": "null"
             }
           ],
           "description": "Per-tool settings for this app."
@@ -175,28 +147,24 @@
       "description": "Per-tool settings for a single app tool.",
       "properties": {
         "approval_mode": {
-          "anyOf": [
+          "allOf": [
             {
               "$ref": "#/definitions/AppToolApproval"
-            },
-            {
-              "type": "null"
             }
           ],
           "description": "Approval mode for this tool."
         },
         "enabled": {
           "description": "Whether this tool is enabled. `Some(true)` explicitly allows this tool.",
-          "type": [
-            "boolean",
-            "null"
-          ]
+          "type": "boolean"
         }
       },
       "type": "object"
     },
     "AppToolsConfig": {
-      "additionalProperties": false,
+      "additionalProperties": {
+        "$ref": "#/definitions/AppToolConfig"
+      },
       "description": "Tool settings for a single app.",
       "type": "object"
     },
@@ -209,16 +177,15 @@
       "type": "string"
     },
     "AppsConfigToml": {
-      "additionalProperties": false,
+      "additionalProperties": {
+        "$ref": "#/definitions/AppConfig"
+      },
       "description": "App/connector settings loaded from `config.toml`.",
       "properties": {
         "_default": {
-          "anyOf": [
+          "allOf": [
             {
               "$ref": "#/definitions/AppsDefaultConfig"
-            },
-            {
-              "type": "null"
             }
           ],
           "description": "Default settings for all apps."
@@ -250,23 +217,29 @@
       "description": "Determines the conditions under which the user is consulted to approve running the command proposed by Codex.",
       "oneOf": [
         {
-          "const": "untrusted",
           "description": "Under this policy, only \"known safe\" commands—as determined by `is_safe_command()`—that **only read files** are auto‑approved. Everything else will ask the user to approve.",
+          "enum": [
+            "untrusted"
+          ],
           "type": "string"
         },
         {
-          "const": "on-failure",
           "description": "DEPRECATED: *All* commands are auto‑approved, but they are expected to run inside a sandbox where network access is disabled and writes are confined to a specific set of paths. If the command fails, it will be escalated to the user to approve execution without a sandbox. Prefer `OnRequest` for interactive runs or `Never` for non-interactive runs.",
+          "enum": [
+            "on-failure"
+          ],
           "type": "string"
         },
         {
-          "const": "on-request",
           "description": "The model decides when to ask the user for approval.",
+          "enum": [
+            "on-request"
+          ],
           "type": "string"
         },
         {
           "additionalProperties": false,
-          "description": "Fine-grained controls for individual approval flows. When a field is `true`, commands in that category are allowed. When it is `false`, those requests are automatically rejected instead of shown to the user.",
+          "description": "Fine-grained controls for individual approval flows.\n\nWhen a field is `true`, commands in that category are allowed. When it is `false`, those requests are automatically rejected instead of shown to the user.",
           "properties": {
             "granular": {
               "$ref": "#/definitions/GranularApprovalConfig"
@@ -278,8 +251,10 @@
           "type": "object"
         },
         {
-          "const": "never",
           "description": "Never ask the user to approve commands. Failures are immediately returned to the model, and never escalated to the user for approval.",
+          "enum": [
+            "never"
+          ],
           "type": "string"
         }
       ]
@@ -288,23 +263,31 @@
       "description": "Determine where Codex should store CLI auth credentials.",
       "oneOf": [
         {
-          "const": "file",
           "description": "Persist credentials in CODEX_HOME/auth.json.",
+          "enum": [
+            "file"
+          ],
           "type": "string"
         },
         {
-          "const": "keyring",
           "description": "Persist credentials in the keyring. Fail if unavailable.",
+          "enum": [
+            "keyring"
+          ],
           "type": "string"
         },
         {
-          "const": "auto",
           "description": "Use keyring when available; otherwise, fall back to a file in CODEX_HOME.",
+          "enum": [
+            "auto"
+          ],
           "type": "string"
         },
         {
-          "const": "ephemeral",
           "description": "Store credentials in memory only for the current process.",
+          "enum": [
+            "ephemeral"
+          ],
           "type": "string"
         }
       ]
@@ -324,62 +307,25 @@
       "description": "Collection of common configuration options that a user can define as a unit in `config.toml`.",
       "properties": {
         "analytics": {
-          "anyOf": [
-            {
-              "$ref": "#/definitions/AnalyticsConfigToml"
-            },
-            {
-              "type": "null"
-            }
-          ]
+          "$ref": "#/definitions/AnalyticsConfigToml"
         },
         "approval_policy": {
-          "anyOf": [
-            {
-              "$ref": "#/definitions/AskForApproval"
-            },
-            {
-              "type": "null"
-            }
-          ]
+          "$ref": "#/definitions/AskForApproval"
         },
         "approvals_reviewer": {
-          "anyOf": [
-            {
-              "$ref": "#/definitions/ApprovalsReviewer"
-            },
-            {
-              "type": "null"
-            }
-          ]
+          "$ref": "#/definitions/ApprovalsReviewer"
         },
         "chatgpt_base_url": {
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": "string"
         },
         "experimental_compact_prompt_file": {
-          "anyOf": [
-            {
-              "$ref": "#/definitions/AbsolutePathBuf"
-            },
-            {
-              "type": "null"
-            }
-          ]
+          "$ref": "#/definitions/AbsolutePathBuf"
         },
         "experimental_use_freeform_apply_patch": {
-          "type": [
-            "boolean",
-            "null"
-          ]
+          "type": "boolean"
         },
         "experimental_use_unified_exec_tool": {
-          "type": [
-            "boolean",
-            "null"
-          ]
+          "type": "boolean"
         },
         "features": {
           "additionalProperties": false,
@@ -477,7 +423,7 @@
               "type": "boolean"
             },
             "multi_agent_v2": {
-              "type": "boolean"
+              "$ref": "#/definitions/FeatureToml_for_MultiAgentV2ConfigToml"
             },
             "personality": {
               "type": "boolean"
@@ -539,6 +485,9 @@
             "steer": {
               "type": "boolean"
             },
+            "telepathy": {
+              "type": "boolean"
+            },
             "tool_call_mcp_elicitation": {
               "type": "boolean"
             },
@@ -555,6 +504,9 @@
               "type": "boolean"
             },
             "unified_exec": {
+              "type": "boolean"
+            },
+            "use_agent_identity": {
               "type": "boolean"
             },
             "use_legacy_landlock": {
@@ -576,167 +528,82 @@
           "type": "object"
         },
         "include_apply_patch_tool": {
-          "type": [
-            "boolean",
-            "null"
-          ]
+          "type": "boolean"
+        },
+        "include_apps_instructions": {
+          "type": "boolean"
+        },
+        "include_environment_context": {
+          "type": "boolean"
+        },
+        "include_permissions_instructions": {
+          "type": "boolean"
         },
         "js_repl_node_module_dirs": {
           "description": "Ordered list of directories to search for Node modules in `js_repl`.",
           "items": {
             "$ref": "#/definitions/AbsolutePathBuf"
           },
-          "type": [
-            "array",
-            "null"
-          ]
+          "type": "array"
         },
         "js_repl_node_path": {
-          "anyOf": [
-            {
-              "$ref": "#/definitions/AbsolutePathBuf"
-            },
-            {
-              "type": "null"
-            }
-          ]
+          "$ref": "#/definitions/AbsolutePathBuf"
         },
         "model": {
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": "string"
         },
         "model_catalog_json": {
-          "anyOf": [
+          "allOf": [
             {
               "$ref": "#/definitions/AbsolutePathBuf"
-            },
-            {
-              "type": "null"
             }
           ],
           "description": "Optional path to a JSON model catalog (applied on startup only)."
         },
         "model_instructions_file": {
-          "anyOf": [
+          "allOf": [
             {
               "$ref": "#/definitions/AbsolutePathBuf"
-            },
-            {
-              "type": "null"
             }
           ],
           "description": "Optional path to a file containing model instructions."
         },
         "model_provider": {
           "description": "The key in the `model_providers` map identifying the [`ModelProviderInfo`] to use.",
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": "string"
         },
         "model_reasoning_effort": {
-          "anyOf": [
-            {
-              "$ref": "#/definitions/ReasoningEffort"
-            },
-            {
-              "type": "null"
-            }
-          ]
+          "$ref": "#/definitions/ReasoningEffort"
         },
         "model_reasoning_summary": {
-          "anyOf": [
-            {
-              "$ref": "#/definitions/ReasoningSummary"
-            },
-            {
-              "type": "null"
-            }
-          ]
+          "$ref": "#/definitions/ReasoningSummary"
         },
         "model_verbosity": {
-          "anyOf": [
-            {
-              "$ref": "#/definitions/Verbosity"
-            },
-            {
-              "type": "null"
-            }
-          ]
+          "$ref": "#/definitions/Verbosity"
         },
         "oss_provider": {
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": "string"
         },
         "personality": {
-          "anyOf": [
-            {
-              "$ref": "#/definitions/Personality"
-            },
-            {
-              "type": "null"
-            }
-          ]
+          "$ref": "#/definitions/Personality"
         },
         "plan_mode_reasoning_effort": {
-          "anyOf": [
-            {
-              "$ref": "#/definitions/ReasoningEffort"
-            },
-            {
-              "type": "null"
-            }
-          ]
+          "$ref": "#/definitions/ReasoningEffort"
         },
         "sandbox_mode": {
-          "anyOf": [
-            {
-              "$ref": "#/definitions/SandboxMode"
-            },
-            {
-              "type": "null"
-            }
-          ]
+          "$ref": "#/definitions/SandboxMode"
         },
         "service_tier": {
-          "anyOf": [
-            {
-              "$ref": "#/definitions/ServiceTier"
-            },
-            {
-              "type": "null"
-            }
-          ]
+          "$ref": "#/definitions/ServiceTier"
         },
         "tools": {
-          "anyOf": [
-            {
-              "$ref": "#/definitions/ToolsToml"
-            },
-            {
-              "type": "null"
-            }
-          ]
+          "$ref": "#/definitions/ToolsToml"
         },
         "tools_view_image": {
-          "type": [
-            "boolean",
-            "null"
-          ]
+          "type": "boolean"
         },
         "web_search": {
-          "anyOf": [
-            {
-              "$ref": "#/definitions/WebSearchMode"
-            },
-            {
-              "type": "null"
-            }
-          ]
+          "$ref": "#/definitions/WebSearchMode"
         },
         "windows": {
           "allOf": [
@@ -747,12 +614,9 @@
           "default": null
         },
         "zsh_path": {
-          "anyOf": [
+          "allOf": [
             {
               "$ref": "#/definitions/AbsolutePathBuf"
-            },
-            {
-              "type": "null"
             }
           ],
           "description": "Optional absolute path to patched zsh used by zsh-exec-bridge-backed shell execution."
@@ -760,21 +624,28 @@
       },
       "type": "object"
     },
+    "FeatureToml_for_MultiAgentV2ConfigToml": {
+      "anyOf": [
+        {
+          "type": "boolean"
+        },
+        {
+          "$ref": "#/definitions/MultiAgentV2ConfigToml"
+        }
+      ]
+    },
     "FeedbackConfigToml": {
       "additionalProperties": false,
       "properties": {
         "enabled": {
           "description": "When `false`, disables the feedback flow across Codex product surfaces.",
-          "type": [
-            "boolean",
-            "null"
-          ]
+          "type": "boolean"
         }
       },
       "type": "object"
     },
     "FileSystemAccessMode": {
-      "description": "Access mode for a filesystem entry. When two equally specific entries target the same path, we compare these by conflict precedence rather than by capability breadth: `none` beats `write`, and `write` beats `read`.",
+      "description": "Access mode for a filesystem entry.\n\nWhen two equally specific entries target the same path, we compare these by conflict precedence rather than by capability breadth: `none` beats `write`, and `write` beats `read`.",
       "enum": [
         "read",
         "write",
@@ -796,9 +667,6 @@
       ]
     },
     "FilesystemPermissionsToml": {
-      "additionalProperties": {
-        "$ref": "#/definitions/FilesystemPermissionToml"
-      },
       "type": "object"
     },
     "ForcedLoginMethod": {
@@ -813,26 +681,17 @@
       "properties": {
         "disable_warnings": {
           "description": "Disable all ghost snapshot warning events.",
-          "type": [
-            "boolean",
-            "null"
-          ]
+          "type": "boolean"
         },
         "ignore_large_untracked_dirs": {
           "description": "Ignore untracked directories that contain this many files or more. (Still emits a warning unless warnings are disabled.)",
           "format": "int64",
-          "type": [
-            "integer",
-            "null"
-          ]
+          "type": "integer"
         },
         "ignore_large_untracked_files": {
           "description": "Exclude untracked files larger than this many bytes from ghost snapshots.",
           "format": "int64",
-          "type": [
-            "integer",
-            "null"
-          ]
+          "type": "integer"
         }
       },
       "type": "object"
@@ -863,9 +722,9 @@
         }
       },
       "required": [
-        "sandbox_approval",
+        "mcp_elicitations",
         "rules",
-        "mcp_elicitations"
+        "sandbox_approval"
       ],
       "type": "object"
     },
@@ -876,11 +735,8 @@
         "max_bytes": {
           "description": "If set, the maximum size of the history file in bytes. The oldest entries are dropped once the file exceeds this limit.",
           "format": "uint",
-          "minimum": 0,
-          "type": [
-            "integer",
-            "null"
-          ]
+          "minimum": 0.0,
+          "type": "integer"
         },
         "persistence": {
           "allOf": [
@@ -899,28 +755,74 @@
     "HistoryPersistence": {
       "oneOf": [
         {
-          "const": "save-all",
           "description": "Save all history entries to disk.",
+          "enum": [
+            "save-all"
+          ],
           "type": "string"
         },
         {
-          "const": "none",
           "description": "Do not write history to disk.",
+          "enum": [
+            "none"
+          ],
           "type": "string"
         }
       ]
+    },
+    "MarketplaceConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "last_updated": {
+          "default": null,
+          "description": "Last time Codex successfully added or refreshed this marketplace.",
+          "type": "string"
+        },
+        "ref": {
+          "default": null,
+          "description": "Git ref to check out when `source_type` is `git`.",
+          "type": "string"
+        },
+        "source": {
+          "default": null,
+          "description": "Source location used when the marketplace was added.",
+          "type": "string"
+        },
+        "source_type": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/MarketplaceSourceType"
+            }
+          ],
+          "default": null,
+          "description": "Source kind used to install this marketplace."
+        },
+        "sparse_paths": {
+          "default": null,
+          "description": "Sparse checkout paths used when `source_type` is `git`.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "type": "object"
+    },
+    "MarketplaceSourceType": {
+      "enum": [
+        "git",
+        "local"
+      ],
+      "type": "string"
     },
     "McpServerToolConfig": {
       "additionalProperties": false,
       "description": "Per-tool approval settings for a single MCP server tool.",
       "properties": {
         "approval_mode": {
-          "anyOf": [
+          "allOf": [
             {
               "$ref": "#/definitions/AppToolApproval"
-            },
-            {
-              "type": "null"
             }
           ],
           "description": "Approval mode for this tool."
@@ -934,86 +836,60 @@
       "properties": {
         "consolidation_model": {
           "description": "Model used for memory consolidation.",
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": "string"
         },
         "extract_model": {
           "description": "Model used for thread summarisation.",
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": "string"
         },
         "generate_memories": {
           "description": "When `false`, newly created threads are stored with `memory_mode = \"disabled\"` in the state DB.",
-          "type": [
-            "boolean",
-            "null"
-          ]
+          "type": "boolean"
         },
         "max_raw_memories_for_consolidation": {
           "description": "Maximum number of recent raw memories retained for global consolidation.",
           "format": "uint",
-          "minimum": 0,
-          "type": [
-            "integer",
-            "null"
-          ]
+          "minimum": 0.0,
+          "type": "integer"
         },
         "max_rollout_age_days": {
           "description": "Maximum age of the threads used for memories.",
           "format": "int64",
-          "type": [
-            "integer",
-            "null"
-          ]
+          "type": "integer"
         },
         "max_rollouts_per_startup": {
           "description": "Maximum number of rollout candidates processed per pass.",
           "format": "uint",
-          "minimum": 0,
-          "type": [
-            "integer",
-            "null"
-          ]
+          "minimum": 0.0,
+          "type": "integer"
         },
         "max_unused_days": {
           "description": "Maximum number of days since a memory was last used before it becomes ineligible for phase 2 selection.",
           "format": "int64",
-          "type": [
-            "integer",
-            "null"
-          ]
+          "type": "integer"
         },
         "min_rollout_idle_hours": {
           "description": "Minimum idle time between last thread activity and memory creation (hours). > 12h recommended.",
           "format": "int64",
-          "type": [
-            "integer",
-            "null"
-          ]
+          "type": "integer"
         },
         "no_memories_if_mcp_or_web_search": {
           "description": "When `true`, web searches and MCP tool calls mark the thread `memory_mode` as `\"polluted\"`.",
-          "type": [
-            "boolean",
-            "null"
-          ]
+          "type": "boolean"
         },
         "use_memories": {
           "description": "When `false`, skip injecting memory usage instructions into developer prompts.",
-          "type": [
-            "boolean",
-            "null"
-          ]
+          "type": "boolean"
         }
       },
       "type": "object"
     },
     "ModelAvailabilityNuxConfig": {
-      "additionalProperties": false,
+      "additionalProperties": {
+        "format": "uint32",
+        "minimum": 0.0,
+        "type": "integer"
+      },
       "type": "object"
     },
     "ModelProviderAuthInfo": {
@@ -1042,16 +918,16 @@
         },
         "refresh_interval_ms": {
           "default": 300000,
-          "description": "Maximum age for the cached token before rerunning the command.",
+          "description": "Maximum age for the cached token before rerunning the command. Set to `0` to disable proactive refresh and only rerun after a 401 retry path.",
           "format": "uint64",
-          "minimum": 1,
+          "minimum": 0.0,
           "type": "integer"
         },
         "timeout_ms": {
           "default": 5000,
           "description": "Maximum time to wait for the token command to exit successfully.",
           "format": "uint64",
-          "minimum": 1,
+          "minimum": 1.0,
           "type": "integer"
         }
       },
@@ -1065,63 +941,42 @@
       "description": "Serializable representation of a provider definition.",
       "properties": {
         "auth": {
-          "anyOf": [
+          "allOf": [
             {
               "$ref": "#/definitions/ModelProviderAuthInfo"
-            },
-            {
-              "type": "null"
             }
           ],
           "description": "Command-backed bearer-token configuration for this provider."
         },
         "base_url": {
           "description": "Base URL for the provider's OpenAI-compatible API.",
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": "string"
         },
         "env_http_headers": {
           "additionalProperties": {
             "type": "string"
           },
           "description": "Optional HTTP headers to include in requests to this provider where the (key, value) pairs are the header name and _environment variable_ whose value should be used. If the environment variable is not set, or the value is empty, the header will not be included in the request.",
-          "type": [
-            "object",
-            "null"
-          ]
+          "type": "object"
         },
         "env_key": {
           "description": "Environment variable that stores the user's API key for this provider.",
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": "string"
         },
         "env_key_instructions": {
           "description": "Optional instructions to help the user get a valid value for the variable and set it.",
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": "string"
         },
         "experimental_bearer_token": {
           "description": "Value to use with `Authorization: Bearer <token>` header. Use of this config is discouraged in favor of `env_key` for security reasons, but this may be necessary when using this programmatically.",
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": "string"
         },
         "http_headers": {
           "additionalProperties": {
             "type": "string"
           },
           "description": "Additional HTTP headers to include in requests to this provider where the (key, value) pairs are the header name and value.",
-          "type": [
-            "object",
-            "null"
-          ]
+          "type": "object"
         },
         "name": {
           "description": "Friendly display name.",
@@ -1132,19 +987,13 @@
             "type": "string"
           },
           "description": "Optional query parameters to append to the base URL.",
-          "type": [
-            "object",
-            "null"
-          ]
+          "type": "object"
         },
         "request_max_retries": {
           "description": "Maximum number of times to retry a failed HTTP request to this provider.",
           "format": "uint64",
-          "minimum": 0,
-          "type": [
-            "integer",
-            "null"
-          ]
+          "minimum": 0.0,
+          "type": "integer"
         },
         "requires_openai_auth": {
           "default": false,
@@ -1154,20 +1003,14 @@
         "stream_idle_timeout_ms": {
           "description": "Idle timeout (in milliseconds) to wait for activity on a streaming response before treating the connection as lost.",
           "format": "uint64",
-          "minimum": 0,
-          "type": [
-            "integer",
-            "null"
-          ]
+          "minimum": 0.0,
+          "type": "integer"
         },
         "stream_max_retries": {
           "description": "Number of times to retry reconnecting a dropped streaming response before failing.",
           "format": "uint64",
-          "minimum": 0,
-          "type": [
-            "integer",
-            "null"
-          ]
+          "minimum": 0.0,
+          "type": "integer"
         },
         "supports_websockets": {
           "default": false,
@@ -1177,11 +1020,8 @@
         "websocket_connect_timeout_ms": {
           "description": "Maximum time (in milliseconds) to wait for a websocket connection attempt before treating it as failed.",
           "format": "uint64",
-          "minimum": 0,
-          "type": [
-            "integer",
-            "null"
-          ]
+          "minimum": 0.0,
+          "type": "integer"
         },
         "wire_api": {
           "allOf": [
@@ -1198,6 +1038,24 @@
       ],
       "type": "object"
     },
+    "MultiAgentV2ConfigToml": {
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "hide_spawn_agent_metadata": {
+          "type": "boolean"
+        },
+        "usage_hint_enabled": {
+          "type": "boolean"
+        },
+        "usage_hint_text": {
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
     "NetworkDomainPermissionToml": {
       "enum": [
         "allow",
@@ -1206,9 +1064,6 @@
       "type": "string"
     },
     "NetworkDomainPermissionsToml": {
-      "additionalProperties": {
-        "$ref": "#/definitions/NetworkDomainPermissionToml"
-      },
       "type": "object"
     },
     "NetworkModeSchema": {
@@ -1222,88 +1077,40 @@
       "additionalProperties": false,
       "properties": {
         "allow_local_binding": {
-          "type": [
-            "boolean",
-            "null"
-          ]
+          "type": "boolean"
         },
         "allow_upstream_proxy": {
-          "type": [
-            "boolean",
-            "null"
-          ]
+          "type": "boolean"
         },
         "dangerously_allow_all_unix_sockets": {
-          "type": [
-            "boolean",
-            "null"
-          ]
+          "type": "boolean"
         },
         "dangerously_allow_non_loopback_proxy": {
-          "type": [
-            "boolean",
-            "null"
-          ]
+          "type": "boolean"
         },
         "domains": {
-          "anyOf": [
-            {
-              "$ref": "#/definitions/NetworkDomainPermissionsToml"
-            },
-            {
-              "type": "null"
-            }
-          ]
+          "$ref": "#/definitions/NetworkDomainPermissionsToml"
         },
         "enable_socks5": {
-          "type": [
-            "boolean",
-            "null"
-          ]
+          "type": "boolean"
         },
         "enable_socks5_udp": {
-          "type": [
-            "boolean",
-            "null"
-          ]
+          "type": "boolean"
         },
         "enabled": {
-          "type": [
-            "boolean",
-            "null"
-          ]
+          "type": "boolean"
         },
         "mode": {
-          "anyOf": [
-            {
-              "$ref": "#/definitions/NetworkModeSchema"
-            },
-            {
-              "type": "null"
-            }
-          ]
+          "$ref": "#/definitions/NetworkModeSchema"
         },
         "proxy_url": {
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": "string"
         },
         "socks_url": {
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": "string"
         },
         "unix_sockets": {
-          "anyOf": [
-            {
-              "$ref": "#/definitions/NetworkUnixSocketPermissionsToml"
-            },
-            {
-              "type": "null"
-            }
-          ]
+          "$ref": "#/definitions/NetworkUnixSocketPermissionsToml"
         }
       },
       "type": "object"
@@ -1316,9 +1123,6 @@
       "type": "string"
     },
     "NetworkUnixSocketPermissionsToml": {
-      "additionalProperties": {
-        "$ref": "#/definitions/NetworkUnixSocketPermissionToml"
-      },
       "type": "object"
     },
     "Notice": {
@@ -1326,38 +1130,23 @@
       "properties": {
         "hide_full_access_warning": {
           "description": "Tracks whether the user has acknowledged the full access warning prompt.",
-          "type": [
-            "boolean",
-            "null"
-          ]
+          "type": "boolean"
         },
         "hide_gpt-5.1-codex-max_migration_prompt": {
           "description": "Tracks whether the user has seen the gpt-5.1-codex-max migration prompt",
-          "type": [
-            "boolean",
-            "null"
-          ]
+          "type": "boolean"
         },
         "hide_gpt5_1_migration_prompt": {
           "description": "Tracks whether the user has seen the model migration prompt",
-          "type": [
-            "boolean",
-            "null"
-          ]
+          "type": "boolean"
         },
         "hide_rate_limit_model_nudge": {
           "description": "Tracks whether the user opted out of the rate limit model switch reminder.",
-          "type": [
-            "boolean",
-            "null"
-          ]
+          "type": "boolean"
         },
         "hide_world_writable_warning": {
           "description": "Tracks whether the user has acknowledged the Windows world-writable directories warning.",
-          "type": [
-            "boolean",
-            "null"
-          ]
+          "type": "boolean"
         },
         "model_migrations": {
           "additionalProperties": {
@@ -1369,6 +1158,24 @@
         }
       },
       "type": "object"
+    },
+    "NotificationCondition": {
+      "oneOf": [
+        {
+          "description": "Emit TUI notifications only while the terminal is unfocused.",
+          "enum": [
+            "unfocused"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Emit TUI notifications regardless of terminal focus.",
+          "enum": [
+            "always"
+          ],
+          "type": "string"
+        }
+      ]
     },
     "NotificationMethod": {
       "enum": [
@@ -1395,18 +1202,24 @@
       "description": "Determine where Codex should store and read MCP credentials.",
       "oneOf": [
         {
-          "const": "auto",
           "description": "`Keyring` when available; otherwise, `File`. Credentials stored in the keyring will only be readable by Codex unless the user explicitly grants access via OS-level keyring access.",
+          "enum": [
+            "auto"
+          ],
           "type": "string"
         },
         {
-          "const": "file",
           "description": "CODEX_HOME/.credentials.json This file will be readable to Codex and other applications running as the same user.",
+          "enum": [
+            "file"
+          ],
           "type": "string"
         },
         {
-          "const": "keyring",
           "description": "Keyring when available, otherwise fail.",
+          "enum": [
+            "keyring"
+          ],
           "type": "string"
         }
       ]
@@ -1417,47 +1230,32 @@
       "properties": {
         "environment": {
           "description": "Mark traces with environment (dev, staging, prod, test). Defaults to dev.",
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": "string"
         },
         "exporter": {
-          "anyOf": [
+          "allOf": [
             {
               "$ref": "#/definitions/OtelExporterKind"
-            },
-            {
-              "type": "null"
             }
           ],
           "description": "Optional log exporter"
         },
         "log_user_prompt": {
           "description": "Log user prompt in traces",
-          "type": [
-            "boolean",
-            "null"
-          ]
+          "type": "boolean"
         },
         "metrics_exporter": {
-          "anyOf": [
+          "allOf": [
             {
               "$ref": "#/definitions/OtelExporterKind"
-            },
-            {
-              "type": "null"
             }
           ],
           "description": "Optional metrics exporter"
         },
         "trace_exporter": {
-          "anyOf": [
+          "allOf": [
             {
               "$ref": "#/definitions/OtelExporterKind"
-            },
-            {
-              "type": "null"
             }
           ],
           "description": "Optional trace exporter"
@@ -1556,13 +1354,17 @@
     "OtelHttpProtocol": {
       "oneOf": [
         {
-          "const": "binary",
           "description": "Binary payload",
+          "enum": [
+            "binary"
+          ],
           "type": "string"
         },
         {
-          "const": "json",
           "description": "JSON payload",
+          "enum": [
+            "json"
+          ],
           "type": "string"
         }
       ]
@@ -1571,34 +1373,13 @@
       "additionalProperties": false,
       "properties": {
         "ca-certificate": {
-          "anyOf": [
-            {
-              "$ref": "#/definitions/AbsolutePathBuf"
-            },
-            {
-              "type": "null"
-            }
-          ]
+          "$ref": "#/definitions/AbsolutePathBuf"
         },
         "client-certificate": {
-          "anyOf": [
-            {
-              "$ref": "#/definitions/AbsolutePathBuf"
-            },
-            {
-              "type": "null"
-            }
-          ]
+          "$ref": "#/definitions/AbsolutePathBuf"
         },
         "client-private-key": {
-          "anyOf": [
-            {
-              "$ref": "#/definitions/AbsolutePathBuf"
-            },
-            {
-              "type": "null"
-            }
-          ]
+          "$ref": "#/definitions/AbsolutePathBuf"
         }
       },
       "type": "object"
@@ -1607,32 +1388,15 @@
       "additionalProperties": false,
       "properties": {
         "filesystem": {
-          "anyOf": [
-            {
-              "$ref": "#/definitions/FilesystemPermissionsToml"
-            },
-            {
-              "type": "null"
-            }
-          ]
+          "$ref": "#/definitions/FilesystemPermissionsToml"
         },
         "network": {
-          "anyOf": [
-            {
-              "$ref": "#/definitions/NetworkToml"
-            },
-            {
-              "type": "null"
-            }
-          ]
+          "$ref": "#/definitions/NetworkToml"
         }
       },
       "type": "object"
     },
     "PermissionsToml": {
-      "additionalProperties": {
-        "$ref": "#/definitions/PermissionProfileToml"
-      },
       "type": "object"
     },
     "Personality": {
@@ -1657,20 +1421,14 @@
       "additionalProperties": false,
       "properties": {
         "trust_level": {
-          "anyOf": [
-            {
-              "$ref": "#/definitions/TrustLevel"
-            },
-            {
-              "type": "null"
-            }
-          ]
+          "$ref": "#/definitions/TrustLevel"
         }
       },
       "type": "object"
     },
     "RawMcpServerConfig": {
       "additionalProperties": false,
+      "description": "Raw MCP config shape used for deserialization and JSON Schema generation.\n\nKeep `TryFrom<RawMcpServerConfig> for McpServerConfig` exhaustively destructuring this struct so new TOML fields cannot be added here without updating the validation/mapping logic that produces [`McpServerConfig`].",
       "properties": {
         "args": {
           "default": null,
@@ -1680,22 +1438,13 @@
           "type": "array"
         },
         "bearer_token": {
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": "string"
         },
         "bearer_token_env_var": {
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": "string"
         },
         "command": {
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": "string"
         },
         "cwd": {
           "default": null,
@@ -1707,10 +1456,6 @@
             "type": "string"
           },
           "type": "array"
-        },
-        "enable_elicitation": {
-          "default": null,
-          "type": "boolean"
         },
         "enabled": {
           "default": null,
@@ -1748,10 +1493,7 @@
           "additionalProperties": {
             "type": "string"
           },
-          "type": [
-            "object",
-            "null"
-          ]
+          "type": "object"
         },
         "name": {
           "default": null,
@@ -1759,18 +1501,8 @@
           "type": "string"
         },
         "oauth_resource": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "read_only": {
           "default": null,
-          "type": "boolean"
-        },
-        "require_approval_for_mutating": {
-          "default": null,
-          "type": "boolean"
+          "type": "string"
         },
         "required": {
           "default": null,
@@ -1786,7 +1518,7 @@
         "startup_timeout_ms": {
           "default": null,
           "format": "uint64",
-          "minimum": 0,
+          "minimum": 0.0,
           "type": "integer"
         },
         "startup_timeout_sec": {
@@ -1794,7 +1526,7 @@
           "format": "double",
           "type": "number"
         },
-        "strict_tool_classification": {
+        "supports_parallel_tool_calls": {
           "default": null,
           "type": "boolean"
         },
@@ -1811,10 +1543,7 @@
           "type": "object"
         },
         "url": {
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": "string"
         }
       },
       "type": "object"
@@ -1823,16 +1552,10 @@
       "additionalProperties": false,
       "properties": {
         "microphone": {
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": "string"
         },
         "speaker": {
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": "string"
         }
       },
       "type": "object"
@@ -1847,28 +1570,51 @@
     "RealtimeToml": {
       "additionalProperties": false,
       "properties": {
+        "transport": {
+          "$ref": "#/definitions/RealtimeTransport"
+        },
         "type": {
-          "anyOf": [
-            {
-              "$ref": "#/definitions/RealtimeWsMode"
-            },
-            {
-              "type": "null"
-            }
-          ]
+          "$ref": "#/definitions/RealtimeWsMode"
         },
         "version": {
-          "anyOf": [
-            {
-              "$ref": "#/definitions/RealtimeConversationVersion"
-            },
-            {
-              "type": "null"
-            }
-          ]
+          "$ref": "#/definitions/RealtimeConversationVersion"
+        },
+        "voice": {
+          "$ref": "#/definitions/RealtimeVoice"
         }
       },
       "type": "object"
+    },
+    "RealtimeTransport": {
+      "enum": [
+        "webrtc",
+        "websocket"
+      ],
+      "type": "string"
+    },
+    "RealtimeVoice": {
+      "enum": [
+        "alloy",
+        "arbor",
+        "ash",
+        "ballad",
+        "breeze",
+        "cedar",
+        "coral",
+        "cove",
+        "echo",
+        "ember",
+        "juniper",
+        "maple",
+        "marin",
+        "sage",
+        "shimmer",
+        "sol",
+        "spruce",
+        "vale",
+        "verse"
+      ],
+      "type": "string"
     },
     "RealtimeWsMode": {
       "enum": [
@@ -1901,8 +1647,10 @@
           "type": "string"
         },
         {
-          "const": "none",
           "description": "Option to disable reasoning summaries.",
+          "enum": [
+            "none"
+          ],
           "type": "string"
         }
       ]
@@ -1950,18 +1698,24 @@
     "ShellEnvironmentPolicyInherit": {
       "oneOf": [
         {
-          "const": "core",
           "description": "\"Core\" environment variables for the platform. On UNIX, this would include HOME, LOGNAME, PATH, SHELL, and USER, among others.",
+          "enum": [
+            "core"
+          ],
           "type": "string"
         },
         {
-          "const": "all",
           "description": "Inherits the full environment from the parent process.",
+          "enum": [
+            "all"
+          ],
           "type": "string"
         },
         {
-          "const": "none",
           "description": "Do not inherit any environment variables from the parent process.",
+          "enum": [
+            "none"
+          ],
           "type": "string"
         }
       ]
@@ -1975,51 +1729,29 @@
           "items": {
             "type": "string"
           },
-          "type": [
-            "array",
-            "null"
-          ]
+          "type": "array"
         },
         "experimental_use_profile": {
-          "type": [
-            "boolean",
-            "null"
-          ]
+          "type": "boolean"
         },
         "ignore_default_excludes": {
-          "type": [
-            "boolean",
-            "null"
-          ]
+          "type": "boolean"
         },
         "include_only": {
           "description": "List of regular expressions.",
           "items": {
             "type": "string"
           },
-          "type": [
-            "array",
-            "null"
-          ]
+          "type": "array"
         },
         "inherit": {
-          "anyOf": [
-            {
-              "$ref": "#/definitions/ShellEnvironmentPolicyInherit"
-            },
-            {
-              "type": "null"
-            }
-          ]
+          "$ref": "#/definitions/ShellEnvironmentPolicyInherit"
         },
         "set": {
           "additionalProperties": {
             "type": "string"
           },
-          "type": [
-            "object",
-            "null"
-          ]
+          "type": "object"
         }
       },
       "type": "object"
@@ -2032,18 +1764,12 @@
         },
         "name": {
           "description": "Name-based selector.",
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": "string"
         },
         "path": {
-          "anyOf": [
+          "allOf": [
             {
               "$ref": "#/definitions/AbsolutePathBuf"
-            },
-            {
-              "type": "null"
             }
           ],
           "description": "Path-based selector."
@@ -2058,14 +1784,7 @@
       "additionalProperties": false,
       "properties": {
         "bundled": {
-          "anyOf": [
-            {
-              "$ref": "#/definitions/BundledSkillsConfig"
-            },
-            {
-              "type": "null"
-            }
-          ]
+          "$ref": "#/definitions/BundledSkillsConfig"
         },
         "config": {
           "items": {
@@ -2100,8 +1819,8 @@
         }
       },
       "required": [
-        "type",
-        "id"
+        "id",
+        "type"
       ],
       "type": "object"
     },
@@ -2150,16 +1869,11 @@
             }
           ],
           "default": "auto",
-          "description": "Controls whether the TUI uses the terminal's alternate screen buffer. - `auto` (default): Disable alternate screen in Zellij, enable elsewhere. - `always`: Always use alternate screen (original behavior). - `never`: Never use alternate screen (inline mode only, preserves scrollback). Using alternate screen provides a cleaner fullscreen experience but prevents scrollback in terminal multiplexers like Zellij that follow the xterm spec."
+          "description": "Controls whether the TUI uses the terminal's alternate screen buffer.\n\n- `auto` (default): Disable alternate screen in Zellij, enable elsewhere. - `always`: Always use alternate screen (original behavior). - `never`: Never use alternate screen (inline mode only, preserves scrollback).\n\nUsing alternate screen provides a cleaner fullscreen experience but prevents scrollback in terminal multiplexers like Zellij that follow the xterm spec."
         },
         "animations": {
           "default": true,
           "description": "Enable animations (welcome screen, shimmer effects, spinners). Defaults to `true`.",
-          "type": "boolean"
-        },
-        "double_esc_interrupt": {
-          "default": true,
-          "description": "Require `Esc Esc` (double-press) to interrupt a running turn. Defaults to `true` to avoid accidental interruptions on terminals that emit bare `Esc` for Alt/meta.",
           "type": "boolean"
         },
         "model_availability_nux": {
@@ -2171,6 +1885,15 @@
           "default": {},
           "description": "Startup tooltip availability NUX state persisted by the TUI."
         },
+        "notification_condition": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/NotificationCondition"
+            }
+          ],
+          "default": "unfocused",
+          "description": "Controls whether TUI notifications are delivered only when the terminal is unfocused or regardless of focus. Defaults to `unfocused`."
+        },
         "notification_method": {
           "allOf": [
             {
@@ -2178,7 +1901,7 @@
             }
           ],
           "default": "auto",
-          "description": "Notification method to use for unfocused terminal notifications. Defaults to `auto`."
+          "description": "Notification method to use for terminal notifications. Defaults to `auto`."
         },
         "notifications": {
           "allOf": [
@@ -2187,7 +1910,7 @@
             }
           ],
           "default": true,
-          "description": "Enable desktop notifications from the TUI when the terminal is unfocused. Defaults to `true`."
+          "description": "Enable desktop notifications from the TUI. Defaults to `true`."
         },
         "show_tooltips": {
           "default": true,
@@ -2196,7 +1919,7 @@
         },
         "status_line": {
           "default": null,
-          "description": "Ordered list of status line item identifiers. When set, the TUI renders the selected items as the status line. When unset, the TUI defaults to: `model-with-reasoning`, `context-remaining`, and `current-dir`.",
+          "description": "Ordered list of status line item identifiers.\n\nWhen set, the TUI renders the selected items as the status line. When unset, the TUI defaults to: `model-with-reasoning` and `current-dir`.",
           "items": {
             "type": "string"
           },
@@ -2204,7 +1927,7 @@
         },
         "terminal_title": {
           "default": null,
-          "description": "Ordered list of terminal title item identifiers. When set, the TUI renders the selected items into the terminal window/tab title. When unset, the TUI defaults to: `spinner` and `project`.",
+          "description": "Ordered list of terminal title item identifiers.\n\nWhen set, the TUI renders the selected items into the terminal window/tab title. When unset, the TUI defaults to: `spinner` and `project`.",
           "items": {
             "type": "string"
           },
@@ -2212,17 +1935,8 @@
         },
         "theme": {
           "default": null,
-          "description": "Syntax highlighting theme name (kebab-case). When set, overrides automatic light/dark theme detection. Use `/theme` in the TUI or see `$CODEX_HOME/themes` for custom themes.",
+          "description": "Syntax highlighting theme name (kebab-case).\n\nWhen set, overrides automatic light/dark theme detection. Use `/theme` in the TUI or see `$CODEX_HOME/themes` for custom themes.",
           "type": "string"
-        },
-        "weekly_limit_pacing_style": {
-          "allOf": [
-            {
-              "$ref": "#/definitions/WeeklyLimitPacingStyle"
-            }
-          ],
-          "default": "qualitative",
-          "description": "Controls how fresh weekly status-line pacing details are rendered. - `qualitative` (default): Show `(on pace)`, `(over N%)`, or `(under N%)`. - `ratio`: Show `{usage_remaining}%/{week_remaining}%`."
         }
       },
       "type": "object"
@@ -2239,8 +1953,10 @@
           "type": "string"
         },
         {
-          "const": "none",
           "description": "Option to disable the URI-based file opener.",
+          "enum": [
+            "none"
+          ],
           "type": "string"
         }
       ]
@@ -2266,28 +1982,16 @@
       "additionalProperties": false,
       "properties": {
         "city": {
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": "string"
         },
         "country": {
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": "string"
         },
         "region": {
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": "string"
         },
         "timezone": {
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": "string"
         }
       },
       "type": "object"
@@ -2307,40 +2011,16 @@
           "items": {
             "type": "string"
           },
-          "type": [
-            "array",
-            "null"
-          ]
+          "type": "array"
         },
         "context_size": {
-          "anyOf": [
-            {
-              "$ref": "#/definitions/WebSearchContextSize"
-            },
-            {
-              "type": "null"
-            }
-          ]
+          "$ref": "#/definitions/WebSearchContextSize"
         },
         "location": {
-          "anyOf": [
-            {
-              "$ref": "#/definitions/WebSearchLocation"
-            },
-            {
-              "type": "null"
-            }
-          ]
+          "$ref": "#/definitions/WebSearchLocation"
         }
       },
       "type": "object"
-    },
-    "WeeklyLimitPacingStyle": {
-      "enum": [
-        "qualitative",
-        "ratio"
-      ],
-      "type": "string"
     },
     "WindowsSandboxModeToml": {
       "enum": [
@@ -2353,21 +2033,11 @@
       "additionalProperties": false,
       "properties": {
         "sandbox": {
-          "anyOf": [
-            {
-              "$ref": "#/definitions/WindowsSandboxModeToml"
-            },
-            {
-              "type": "null"
-            }
-          ]
+          "$ref": "#/definitions/WindowsSandboxModeToml"
         },
         "sandbox_private_desktop": {
           "description": "Defaults to `true`. Set to `false` to launch the final sandboxed child process on `Winsta0\\\\Default` instead of a private desktop.",
-          "type": [
-            "boolean",
-            "null"
-          ]
+          "type": "boolean"
         }
       },
       "type": "object"
@@ -2376,8 +2046,10 @@
       "description": "Wire protocol that the provider speaks.",
       "oneOf": [
         {
-          "const": "responses",
           "description": "The Responses API exposed by OpenAI at `/v1/responses`.",
+          "enum": [
+            "responses"
+          ],
           "type": "string"
         }
       ]
@@ -2386,52 +2058,37 @@
   "description": "Base config deserialized from ~/.codex/config.toml.",
   "properties": {
     "agents": {
-      "anyOf": [
+      "allOf": [
         {
           "$ref": "#/definitions/AgentsToml"
-        },
-        {
-          "type": "null"
         }
       ],
       "description": "Agent-related settings (thread limits, etc.)."
     },
     "allow_login_shell": {
-      "description": "Whether the model may request a login shell for shell-based tools. Default to `true` If `true`, the model may request a login shell (`login = true`), and omitting `login` defaults to using a login shell. If `false`, the model can never use a login shell: `login = true` requests are rejected, and omitting `login` defaults to a non-login shell.",
-      "type": [
-        "boolean",
-        "null"
-      ]
+      "description": "Whether the model may request a login shell for shell-based tools. Default to `true`\n\nIf `true`, the model may request a login shell (`login = true`), and omitting `login` defaults to using a login shell. If `false`, the model can never use a login shell: `login = true` requests are rejected, and omitting `login` defaults to a non-login shell.",
+      "type": "boolean"
     },
     "analytics": {
-      "anyOf": [
+      "allOf": [
         {
           "$ref": "#/definitions/AnalyticsConfigToml"
-        },
-        {
-          "type": "null"
         }
       ],
       "description": "When `false`, disables analytics across Codex product surfaces in this machine. Defaults to `true`."
     },
     "approval_policy": {
-      "anyOf": [
+      "allOf": [
         {
           "$ref": "#/definitions/AskForApproval"
-        },
-        {
-          "type": "null"
         }
       ],
       "description": "Default approval policy for executing commands."
     },
     "approvals_reviewer": {
-      "anyOf": [
+      "allOf": [
         {
           "$ref": "#/definitions/ApprovalsReviewer"
-        },
-        {
-          "type": "null"
         }
       ],
       "description": "Configures who approval requests are routed to for review once they have been escalated. This does not disable separate safety checks such as ARC."
@@ -2457,25 +2114,16 @@
     "background_terminal_max_timeout": {
       "description": "Maximum poll window for background terminal output (`write_stdin`), in milliseconds. Default: `300000` (5 minutes).",
       "format": "uint64",
-      "minimum": 0,
-      "type": [
-        "integer",
-        "null"
-      ]
+      "minimum": 0.0,
+      "type": "integer"
     },
     "chatgpt_base_url": {
       "description": "Base URL for requests to ChatGPT (as opposed to the OpenAI API).",
-      "type": [
-        "string",
-        "null"
-      ]
+      "type": "string"
     },
     "check_for_update_on_startup": {
       "description": "When `true`, checks for Codex updates on startup and surfaces update prompts. Set to `false` only if your Codex updates are centrally managed. Defaults to `true`.",
-      "type": [
-        "boolean",
-        "null"
-      ]
+      "type": "boolean"
     },
     "cli_auth_credentials_store": {
       "allOf": [
@@ -2487,25 +2135,16 @@
       "description": "Preferred backend for storing CLI auth credentials. file (default): Use a file in the Codex home directory. keyring: Use an OS-specific keyring service. auto: Use the keyring if available, otherwise use a file."
     },
     "commit_attribution": {
-      "description": "Optional commit attribution text for commit message co-author trailers. Set to an empty string to disable automatic commit attribution.",
-      "type": [
-        "string",
-        "null"
-      ]
+      "description": "Optional commit attribution text for commit message co-author trailers.\n\nSet to an empty string to disable automatic commit attribution.",
+      "type": "string"
     },
     "compact_prompt": {
       "description": "Compact prompt used for history compaction.",
-      "type": [
-        "string",
-        "null"
-      ]
+      "type": "string"
     },
     "default_permissions": {
       "description": "Default named permissions profile to apply from the `[permissions]` table.",
-      "type": [
-        "string",
-        "null"
-      ]
+      "type": "string"
     },
     "developer_instructions": {
       "default": null,
@@ -2514,67 +2153,36 @@
     },
     "disable_paste_burst": {
       "description": "When true, disables burst-paste detection for typed input entirely. All characters are inserted as they are received, and no buffering or placeholder replacement will occur for fast keypress bursts.",
-      "type": [
-        "boolean",
-        "null"
-      ]
+      "type": "boolean"
     },
     "experimental_compact_prompt_file": {
-      "anyOf": [
-        {
-          "$ref": "#/definitions/AbsolutePathBuf"
-        },
-        {
-          "type": "null"
-        }
-      ]
+      "$ref": "#/definitions/AbsolutePathBuf"
     },
     "experimental_realtime_start_instructions": {
       "description": "Experimental / do not use. Replaces the built-in realtime start instructions inserted into developer messages when realtime becomes active.",
-      "type": [
-        "string",
-        "null"
-      ]
+      "type": "string"
     },
     "experimental_realtime_ws_backend_prompt": {
       "description": "Experimental / do not use. Overrides only the realtime conversation websocket transport instructions (the `Op::RealtimeConversation` `/ws` session.update instructions) without changing normal prompts.",
-      "type": [
-        "string",
-        "null"
-      ]
+      "type": "string"
     },
     "experimental_realtime_ws_base_url": {
       "description": "Experimental / do not use. Overrides only the realtime conversation websocket transport base URL (the `Op::RealtimeConversation` `/v1/realtime` connection) without changing normal provider HTTP requests.",
-      "type": [
-        "string",
-        "null"
-      ]
+      "type": "string"
     },
     "experimental_realtime_ws_model": {
       "description": "Experimental / do not use. Selects the realtime websocket model/snapshot used for the `Op::RealtimeConversation` connection.",
-      "type": [
-        "string",
-        "null"
-      ]
+      "type": "string"
     },
     "experimental_realtime_ws_startup_context": {
       "description": "Experimental / do not use. Replaces the synthesized realtime startup context appended to websocket session instructions. An empty string disables startup context injection entirely.",
-      "type": [
-        "string",
-        "null"
-      ]
+      "type": "string"
     },
     "experimental_use_freeform_apply_patch": {
-      "type": [
-        "boolean",
-        "null"
-      ]
+      "type": "boolean"
     },
     "experimental_use_unified_exec_tool": {
-      "type": [
-        "boolean",
-        "null"
-      ]
+      "type": "boolean"
     },
     "features": {
       "additionalProperties": false,
@@ -2672,7 +2280,7 @@
           "type": "boolean"
         },
         "multi_agent_v2": {
-          "type": "boolean"
+          "$ref": "#/definitions/FeatureToml_for_MultiAgentV2ConfigToml"
         },
         "personality": {
           "type": "boolean"
@@ -2734,6 +2342,9 @@
         "steer": {
           "type": "boolean"
         },
+        "telepathy": {
+          "type": "boolean"
+        },
         "tool_call_mcp_elicitation": {
           "type": "boolean"
         },
@@ -2750,6 +2361,9 @@
           "type": "boolean"
         },
         "unified_exec": {
+          "type": "boolean"
+        },
+        "use_agent_identity": {
           "type": "boolean"
         },
         "use_legacy_landlock": {
@@ -2771,23 +2385,17 @@
       "type": "object"
     },
     "feedback": {
-      "anyOf": [
+      "allOf": [
         {
           "$ref": "#/definitions/FeedbackConfigToml"
-        },
-        {
-          "type": "null"
         }
       ],
       "description": "When `false`, disables feedback collection across Codex product surfaces. Defaults to `true`."
     },
     "file_opener": {
-      "anyOf": [
+      "allOf": [
         {
           "$ref": "#/definitions/UriBasedFileOpener"
-        },
-        {
-          "type": "null"
         }
       ],
       "description": "Optional URI-based file opener. If set, citations to files in the model output will be hyperlinked using the specified URI scheme."
@@ -2817,10 +2425,7 @@
     },
     "hide_agent_reasoning": {
       "description": "When set to `true`, `AgentReasoning` events will be hidden from the UI/output. Defaults to `false`.",
-      "type": [
-        "boolean",
-        "null"
-      ]
+      "type": "boolean"
     },
     "history": {
       "allOf": [
@@ -2831,61 +2436,62 @@
       "default": null,
       "description": "Settings that govern if and what will be written to `~/.codex/history.jsonl`."
     },
+    "include_apps_instructions": {
+      "description": "Whether to inject the `<apps_instructions>` developer block.",
+      "type": "boolean"
+    },
+    "include_environment_context": {
+      "description": "Whether to inject the `<environment_context>` user block.",
+      "type": "boolean"
+    },
+    "include_permissions_instructions": {
+      "description": "Whether to inject the `<permissions instructions>` developer block.",
+      "type": "boolean"
+    },
     "instructions": {
       "description": "System instructions.",
-      "type": [
-        "string",
-        "null"
-      ]
+      "type": "string"
     },
     "js_repl_node_module_dirs": {
       "description": "Ordered list of directories to search for Node modules in `js_repl`.",
       "items": {
         "$ref": "#/definitions/AbsolutePathBuf"
       },
-      "type": [
-        "array",
-        "null"
-      ]
+      "type": "array"
     },
     "js_repl_node_path": {
-      "anyOf": [
+      "allOf": [
         {
           "$ref": "#/definitions/AbsolutePathBuf"
-        },
-        {
-          "type": "null"
         }
       ],
       "description": "Optional absolute path to the Node runtime used by `js_repl`."
     },
     "log_dir": {
-      "anyOf": [
+      "allOf": [
         {
           "$ref": "#/definitions/AbsolutePathBuf"
-        },
-        {
-          "type": "null"
         }
       ],
       "description": "Directory where Codex writes log files, for example `codex-tui.log`. Defaults to `$CODEX_HOME/log`."
     },
+    "marketplaces": {
+      "additionalProperties": {
+        "$ref": "#/definitions/MarketplaceConfig"
+      },
+      "default": {},
+      "description": "User-level marketplace entries keyed by marketplace name.",
+      "type": "object"
+    },
     "mcp_oauth_callback_port": {
       "description": "Optional fixed port for the local HTTP callback server used during MCP OAuth login. When unset, Codex will bind to an ephemeral port chosen by the OS.",
       "format": "uint16",
-      "maximum": 65535,
-      "minimum": 0,
-      "type": [
-        "integer",
-        "null"
-      ]
+      "minimum": 0.0,
+      "type": "integer"
     },
     "mcp_oauth_callback_url": {
       "description": "Optional redirect URI to use during MCP OAuth login. When set, this URI is used in the OAuth authorization request instead of the local listener address. The local callback listener still binds to 127.0.0.1 (using `mcp_oauth_callback_port` when provided).",
-      "type": [
-        "string",
-        "null"
-      ]
+      "type": "string"
     },
     "mcp_oauth_credentials_store": {
       "allOf": [
@@ -2905,38 +2511,26 @@
       "type": "object"
     },
     "memories": {
-      "anyOf": [
+      "allOf": [
         {
           "$ref": "#/definitions/MemoriesToml"
-        },
-        {
-          "type": "null"
         }
       ],
       "description": "Memories subsystem settings."
     },
     "model": {
       "description": "Optional override of model selection.",
-      "type": [
-        "string",
-        "null"
-      ]
+      "type": "string"
     },
     "model_auto_compact_token_limit": {
       "description": "Token usage threshold triggering auto-compaction of conversation history.",
       "format": "int64",
-      "type": [
-        "integer",
-        "null"
-      ]
+      "type": "integer"
     },
     "model_catalog_json": {
-      "anyOf": [
+      "allOf": [
         {
           "$ref": "#/definitions/AbsolutePathBuf"
-        },
-        {
-          "type": "null"
         }
       ],
       "description": "Optional path to a JSON model catalog (applied on startup only). Per-thread `config` overrides are accepted but do not reapply this (no-ops)."
@@ -2944,28 +2538,19 @@
     "model_context_window": {
       "description": "Size of the context window for the model, in tokens.",
       "format": "int64",
-      "type": [
-        "integer",
-        "null"
-      ]
+      "type": "integer"
     },
     "model_instructions_file": {
-      "anyOf": [
+      "allOf": [
         {
           "$ref": "#/definitions/AbsolutePathBuf"
-        },
-        {
-          "type": "null"
         }
       ],
       "description": "Optional path to a file containing model instructions that will override the built-in instructions for the selected model. Users are STRONGLY DISCOURAGED from using this field, as deviating from the instructions sanctioned by Codex will likely degrade model performance."
     },
     "model_provider": {
       "description": "Provider to use from the model_providers map.",
-      "type": [
-        "string",
-        "null"
-      ]
+      "type": "string"
     },
     "model_providers": {
       "additionalProperties": {
@@ -2976,53 +2561,30 @@
       "type": "object"
     },
     "model_reasoning_effort": {
-      "anyOf": [
-        {
-          "$ref": "#/definitions/ReasoningEffort"
-        },
-        {
-          "type": "null"
-        }
-      ]
+      "$ref": "#/definitions/ReasoningEffort"
     },
     "model_reasoning_summary": {
-      "anyOf": [
-        {
-          "$ref": "#/definitions/ReasoningSummary"
-        },
-        {
-          "type": "null"
-        }
-      ]
+      "$ref": "#/definitions/ReasoningSummary"
     },
     "model_supports_reasoning_summaries": {
       "description": "Override to force-enable reasoning summaries for the configured model.",
-      "type": [
-        "boolean",
-        "null"
-      ]
+      "type": "boolean"
     },
     "model_verbosity": {
-      "anyOf": [
+      "allOf": [
         {
           "$ref": "#/definitions/Verbosity"
-        },
-        {
-          "type": "null"
         }
       ],
       "description": "Optional verbosity control for GPT-5 models (Responses API `text.verbosity`)."
     },
     "notice": {
-      "anyOf": [
+      "allOf": [
         {
           "$ref": "#/definitions/Notice"
-        },
-        {
-          "type": "null"
         }
       ],
-      "description": "Collection of in-product notices (different from notifications) See [`crate::config::types::Notices`] for more details"
+      "description": "Collection of in-product notices (different from notifications) See [`crate::types::Notice`] for more details"
     },
     "notify": {
       "default": null,
@@ -3034,25 +2596,16 @@
     },
     "openai_base_url": {
       "description": "Base URL override for the built-in `openai` model provider.",
-      "type": [
-        "string",
-        "null"
-      ]
+      "type": "string"
     },
     "oss_provider": {
       "description": "Preferred OSS provider for local models, e.g. \"lmstudio\" or \"ollama\".",
-      "type": [
-        "string",
-        "null"
-      ]
+      "type": "string"
     },
     "otel": {
-      "anyOf": [
+      "allOf": [
         {
           "$ref": "#/definitions/OtelConfigToml"
-        },
-        {
-          "type": "null"
         }
       ],
       "description": "OTEL configuration."
@@ -3067,25 +2620,15 @@
       "description": "Named permissions profiles."
     },
     "personality": {
-      "anyOf": [
+      "allOf": [
         {
           "$ref": "#/definitions/Personality"
-        },
-        {
-          "type": "null"
         }
       ],
       "description": "Optionally specify a personality for the model"
     },
     "plan_mode_reasoning_effort": {
-      "anyOf": [
-        {
-          "$ref": "#/definitions/ReasoningEffort"
-        },
-        {
-          "type": "null"
-        }
-      ]
+      "$ref": "#/definitions/ReasoningEffort"
     },
     "plugins": {
       "additionalProperties": {
@@ -3097,10 +2640,7 @@
     },
     "profile": {
       "description": "Profile to use from the `profiles` map.",
-      "type": [
-        "string",
-        "null"
-      ]
+      "type": "string"
     },
     "profiles": {
       "additionalProperties": {
@@ -3115,19 +2655,13 @@
       "items": {
         "type": "string"
       },
-      "type": [
-        "array",
-        "null"
-      ]
+      "type": "array"
     },
     "project_doc_max_bytes": {
       "description": "Maximum number of bytes to include from an AGENTS.md project doc file.",
       "format": "uint",
-      "minimum": 0,
-      "type": [
-        "integer",
-        "null"
-      ]
+      "minimum": 0.0,
+      "type": "integer"
     },
     "project_root_markers": {
       "default": null,
@@ -3141,10 +2675,7 @@
       "additionalProperties": {
         "$ref": "#/definitions/ProjectConfig"
       },
-      "type": [
-        "object",
-        "null"
-      ]
+      "type": "object"
     },
     "realtime": {
       "allOf": [
@@ -3157,40 +2688,28 @@
     },
     "review_model": {
       "description": "Review model override used by the `/review` feature.",
-      "type": [
-        "string",
-        "null"
-      ]
+      "type": "string"
     },
     "sandbox_mode": {
-      "anyOf": [
+      "allOf": [
         {
           "$ref": "#/definitions/SandboxMode"
-        },
-        {
-          "type": "null"
         }
       ],
       "description": "Sandbox mode to use."
     },
     "sandbox_workspace_write": {
-      "anyOf": [
+      "allOf": [
         {
           "$ref": "#/definitions/SandboxWorkspaceWrite"
-        },
-        {
-          "type": "null"
         }
       ],
       "description": "Sandbox configuration to apply if `sandbox` is `WorkspaceWrite`."
     },
     "service_tier": {
-      "anyOf": [
+      "allOf": [
         {
           "$ref": "#/definitions/ServiceTier"
-        },
-        {
-          "type": "null"
         }
       ],
       "description": "Optional explicit service tier preference for new turns (`fast` or `flex`)."
@@ -3212,89 +2731,62 @@
     },
     "show_raw_agent_reasoning": {
       "description": "When set to `true`, `AgentReasoningRawContentEvent` events will be shown in the UI/output. Defaults to `false`.",
-      "type": [
-        "boolean",
-        "null"
-      ]
+      "type": "boolean"
     },
     "skills": {
-      "anyOf": [
+      "allOf": [
         {
           "$ref": "#/definitions/SkillsConfig"
-        },
-        {
-          "type": "null"
         }
       ],
       "description": "User-level skill config entries keyed by SKILL.md path."
     },
     "sqlite_home": {
-      "anyOf": [
+      "allOf": [
         {
           "$ref": "#/definitions/AbsolutePathBuf"
-        },
-        {
-          "type": "null"
         }
       ],
       "description": "Directory where Codex stores the SQLite state DB. Defaults to `$CODEX_SQLITE_HOME` when set. Otherwise uses `$CODEX_HOME`."
     },
     "suppress_unstable_features_warning": {
       "description": "Suppress warnings about unstable (under development) features.",
-      "type": [
-        "boolean",
-        "null"
-      ]
+      "type": "boolean"
     },
     "tool_output_token_limit": {
       "description": "Token budget applied when storing tool/function outputs in the context manager.",
       "format": "uint",
-      "minimum": 0,
-      "type": [
-        "integer",
-        "null"
-      ]
+      "minimum": 0.0,
+      "type": "integer"
     },
     "tool_suggest": {
-      "anyOf": [
+      "allOf": [
         {
           "$ref": "#/definitions/ToolSuggestConfig"
-        },
-        {
-          "type": "null"
         }
       ],
       "description": "Additional discoverable tools that can be suggested for installation."
     },
     "tools": {
-      "anyOf": [
+      "allOf": [
         {
           "$ref": "#/definitions/ToolsToml"
-        },
-        {
-          "type": "null"
         }
       ],
       "description": "Nested tools section for feature toggles"
     },
     "tui": {
-      "anyOf": [
+      "allOf": [
         {
           "$ref": "#/definitions/Tui"
-        },
-        {
-          "type": "null"
         }
       ],
       "description": "Collection of settings that are specific to the TUI."
     },
     "web_search": {
-      "anyOf": [
+      "allOf": [
         {
           "$ref": "#/definitions/WebSearchMode"
-        },
-        {
-          "type": "null"
         }
       ],
       "description": "Controls the web search tool mode: disabled, cached, or live."
@@ -3310,18 +2802,12 @@
     },
     "windows_wsl_setup_acknowledged": {
       "description": "Tracks whether the Windows onboarding screen has been acknowledged.",
-      "type": [
-        "boolean",
-        "null"
-      ]
+      "type": "boolean"
     },
     "zsh_path": {
-      "anyOf": [
+      "allOf": [
         {
           "$ref": "#/definitions/AbsolutePathBuf"
-        },
-        {
-          "type": "null"
         }
       ],
       "description": "Optional absolute path to patched zsh used by zsh-exec-bridge-backed shell execution."
