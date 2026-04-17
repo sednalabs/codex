@@ -4,7 +4,7 @@
 </p>
 </br>
 Codex Sedna keeps close to the upstream Codex experience while shipping Sedna-owned releases, downstream CI policy, and fork-specific operational behavior.
-</br>Use <a href="https://github.com/SednaLabs/codex/releases">SednaLabs/codex releases</a> for supported binaries, and see <a href="./docs/downstream.md">downstream notes</a> plus <a href="./docs/sedna-release.md">Sedna release policy</a> for fork-specific workflow details.
+</br>Use <a href="https://github.com/sednalabs/codex/releases">sednalabs/codex releases</a> for supported binaries, and see <a href="./docs/downstream.md">downstream notes</a> plus <a href="./docs/sedna-release.md">Sedna release policy</a> for fork-specific workflow details.
 </br>If you are looking for the upstream OpenAI distribution, IDE integrations, or Codex Web, use the official <a href="https://developers.openai.com/codex">Codex docs</a> and <a href="https://chatgpt.com/codex">chatgpt.com/codex</a>.</p>
 
 ---
@@ -19,10 +19,10 @@ This repository publishes the Codex Sedna fork maintained by SednaLabs, not a li
 
 ### Installing and running Codex Sedna
 
-The supported Sedna distribution path is the latest GitHub Release from `SednaLabs/codex`.
+The supported Sedna distribution path is the latest GitHub Release from `sednalabs/codex`.
 
 <details open>
-<summary>Download a binary from the <a href="https://github.com/SednaLabs/codex/releases">GitHub Releases page</a>.</summary>
+<summary>Download a binary from the <a href="https://github.com/sednalabs/codex/releases">GitHub Releases page</a>.</summary>
 
 Each GitHub Release currently contains one supported downstream CLI archive:
 
@@ -41,7 +41,7 @@ The upstream `npm install -g @openai/codex` and `brew install --cask codex` path
 
 ### Using Codex with your ChatGPT plan
 
-Run `codex` and select **Sign in with ChatGPT**. We recommend signing into your ChatGPT account to use Codex as part of your Plus, Pro, Team, Edu, or Enterprise plan. [Learn more about what's included in your ChatGPT plan](https://help.openai.com/en/articles/11369540-codex-in-chatgpt).
+Run `codex` and select **Sign in with ChatGPT**. We recommend signing into your ChatGPT account to use Codex as part of your Plus, Pro, Business, Edu, or Enterprise plan. [Learn more about what's included in your ChatGPT plan](https://help.openai.com/en/articles/11369540-codex-in-chatgpt).
 
 You can also use Codex with an API key, but this requires [additional setup](https://developers.openai.com/codex/auth#sign-in-with-an-api-key).
 

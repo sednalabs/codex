@@ -28,7 +28,7 @@ use codex_app_server_protocol::ServerNotification;
 use codex_app_server_protocol::ServerRequest;
 use codex_app_server_protocol::TurnCompletedNotification;
 use codex_app_server_protocol::TurnStatus;
-use codex_core::auth::AuthCredentialsStoreMode;
+use codex_config::types::AuthCredentialsStoreMode;
 use codex_login::login_with_api_key;
 use codex_protocol::account::PlanType as AccountPlanType;
 use core_test_support::responses;
@@ -45,7 +45,9 @@ use wiremock::ResponseTemplate;
 use wiremock::matchers::method;
 use wiremock::matchers::path;
 
-const DEFAULT_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+// Account tests spin up fresh app-server processes repeatedly, which can take
+// longer on slower Bazel macOS runners once the suite is already warm.
+const DEFAULT_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
 const LOGIN_ISSUER_ENV_VAR: &str = "CODEX_APP_SERVER_LOGIN_ISSUER";
 
 // Helper to create a minimal config.toml for the app server

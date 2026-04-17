@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use codex_core::config::types::ApprovalsReviewer;
+use codex_config::types::ApprovalsReviewer;
 use codex_protocol::approvals::ElicitationAction;
 use codex_protocol::config_types::CollaborationMode;
 use codex_protocol::config_types::Personality;
@@ -121,17 +121,9 @@ impl AppCommand {
         Self(Op::RealtimeConversationStart(params))
     }
 
-    #[cfg_attr(
-        any(target_os = "linux", not(feature = "voice-input")),
-        allow(dead_code)
-    )]
+    #[cfg_attr(target_os = "linux", allow(dead_code))]
     pub(crate) fn realtime_conversation_audio(params: ConversationAudioParams) -> Self {
         Self(Op::RealtimeConversationAudio(params))
-    }
-
-    #[allow(dead_code)]
-    pub(crate) fn realtime_conversation_text(params: ConversationTextParams) -> Self {
-        Self(Op::RealtimeConversationText(params))
     }
 
     pub(crate) fn realtime_conversation_close() -> Self {
@@ -266,16 +258,6 @@ impl AppCommand {
 
     pub(crate) fn review(review_request: ReviewRequest) -> Self {
         Self(Op::Review { review_request })
-    }
-
-    #[allow(dead_code)]
-    pub(crate) fn kind(&self) -> &'static str {
-        self.0.kind()
-    }
-
-    #[allow(dead_code)]
-    pub(crate) fn as_core(&self) -> &Op {
-        &self.0
     }
 
     pub(crate) fn into_core(self) -> Op {

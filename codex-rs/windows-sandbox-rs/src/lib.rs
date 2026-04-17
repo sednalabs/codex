@@ -34,7 +34,7 @@ mod conpty;
 
 #[cfg(target_os = "windows")]
 #[path = "elevated/ipc_framed.rs"]
-pub mod ipc_framed;
+pub(crate) mod ipc_framed;
 
 #[cfg(target_os = "windows")]
 #[path = "setup_orchestrator.rs"]
@@ -87,6 +87,30 @@ pub use hide_users::hide_newly_created_users;
 pub use identity::require_logon_sandbox_creds;
 #[cfg(target_os = "windows")]
 pub use identity::sandbox_setup_is_complete;
+#[cfg(target_os = "windows")]
+pub use ipc_framed::ErrorPayload;
+#[cfg(target_os = "windows")]
+pub use ipc_framed::ExitPayload;
+#[cfg(target_os = "windows")]
+pub use ipc_framed::FramedMessage;
+#[cfg(target_os = "windows")]
+pub use ipc_framed::Message;
+#[cfg(target_os = "windows")]
+pub use ipc_framed::OutputPayload;
+#[cfg(target_os = "windows")]
+pub use ipc_framed::OutputStream;
+#[cfg(target_os = "windows")]
+pub use ipc_framed::SpawnReady;
+#[cfg(target_os = "windows")]
+pub use ipc_framed::SpawnRequest;
+#[cfg(target_os = "windows")]
+pub use ipc_framed::decode_bytes;
+#[cfg(target_os = "windows")]
+pub use ipc_framed::encode_bytes;
+#[cfg(target_os = "windows")]
+pub use ipc_framed::read_frame;
+#[cfg(target_os = "windows")]
+pub use ipc_framed::write_frame;
 #[cfg(target_os = "windows")]
 pub use logging::LOG_FILE_NAME;
 #[cfg(target_os = "windows")]
@@ -167,10 +191,6 @@ pub use winutil::string_from_sid_bytes;
 pub use winutil::to_wide;
 #[cfg(target_os = "windows")]
 pub use workspace_acl::is_command_cwd_root;
-#[cfg(target_os = "windows")]
-pub use workspace_acl::protect_workspace_agents_dir;
-#[cfg(target_os = "windows")]
-pub use workspace_acl::protect_workspace_codex_dir;
 
 #[cfg(not(target_os = "windows"))]
 pub use stub::CaptureResult;
@@ -204,8 +224,6 @@ mod windows_impl {
     use super::token::convert_string_sid_to_sid;
     use super::token::create_workspace_write_token_with_caps_from;
     use super::workspace_acl::is_command_cwd_root;
-    use super::workspace_acl::protect_workspace_agents_dir;
-    use super::workspace_acl::protect_workspace_codex_dir;
     use anyhow::Result;
     use std::collections::HashMap;
     use std::ffi::c_void;
@@ -417,8 +435,6 @@ mod windows_impl {
             allow_null_device(psid_generic);
             if let Some(psid) = psid_workspace {
                 allow_null_device(psid);
-                let _ = protect_workspace_codex_dir(&current_dir, psid);
-                let _ = protect_workspace_agents_dir(&current_dir, psid);
             }
         }
 
@@ -601,8 +617,6 @@ mod windows_impl {
             }
             allow_null_device(psid_generic);
             allow_null_device(psid_workspace);
-            let _ = protect_workspace_codex_dir(&current_dir, psid_workspace);
-            let _ = protect_workspace_agents_dir(&current_dir, psid_workspace);
         }
 
         Ok(())

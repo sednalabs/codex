@@ -1,8 +1,5 @@
 use crate::function_tool::FunctionCallError;
-use crate::is_safe_command::is_known_safe_command;
 use crate::maybe_emit_implicit_skill_invocation;
-use crate::protocol::EventMsg;
-use crate::protocol::TerminalInteractionEvent;
 use crate::sandboxing::SandboxPermissions;
 use crate::shell::Shell;
 use crate::shell::get_shell_by_model_provided_path;
@@ -21,23 +18,21 @@ use crate::tools::registry::PostToolUsePayload;
 use crate::tools::registry::PreToolUsePayload;
 use crate::tools::registry::ToolHandler;
 use crate::tools::registry::ToolKind;
-use crate::tools::spec::UnifiedExecShellMode;
 use crate::unified_exec::ExecCommandRequest;
-use crate::unified_exec::MIN_EMPTY_YIELD_TIME_MS;
-use crate::unified_exec::UNIFIED_EXEC_OUTPUT_MAX_BYTES;
 use crate::unified_exec::UnifiedExecContext;
 use crate::unified_exec::UnifiedExecProcessManager;
 use crate::unified_exec::WriteStdinRequest;
-use async_trait::async_trait;
 use codex_features::Feature;
 use codex_otel::SessionTelemetry;
-use codex_otel::metrics::names::TOOL_CALL_UNIFIED_EXEC_METRIC;
+use codex_otel::TOOL_CALL_UNIFIED_EXEC_METRIC;
 use codex_protocol::models::PermissionProfile;
-use codex_utils_output_truncation::approx_token_count;
+use codex_protocol::protocol::EventMsg;
+use codex_protocol::protocol::TerminalInteractionEvent;
+use codex_shell_command::is_safe_command::is_known_safe_command;
+use codex_tools::UnifiedExecShellMode;
 use serde::Deserialize;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::Instant;
 
 pub struct UnifiedExecHandler;
 
@@ -56,12 +51,6 @@ pub(crate) struct ExecCommandArgs {
     yield_time_ms: u64,
     #[serde(default)]
     max_output_tokens: Option<usize>,
-    #[serde(default)]
-    wait_until_terminal: bool,
-    #[serde(default)]
-    max_wait_ms: Option<u64>,
-    #[serde(default)]
-    heartbeat_interval_ms: Option<u64>,
     #[serde(default)]
     sandbox_permissions: SandboxPermissions,
     #[serde(default)]
@@ -82,12 +71,6 @@ struct WriteStdinArgs {
     yield_time_ms: u64,
     #[serde(default)]
     max_output_tokens: Option<usize>,
-    #[serde(default)]
-    wait_until_terminal: bool,
-    #[serde(default)]
-    max_wait_ms: Option<u64>,
-    #[serde(default)]
-    heartbeat_interval_ms: Option<u64>,
 }
 
 fn default_exec_yield_time_ms() -> u64 {
@@ -98,144 +81,10 @@ fn default_write_stdin_yield_time_ms() -> u64 {
     250
 }
 
-const DEFAULT_WAIT_HEARTBEAT_INTERVAL_MS: u64 = 30_000;
-
 fn default_tty() -> bool {
     false
 }
 
-fn resolve_wait_bounds(
-    manager: &UnifiedExecProcessManager,
-    max_wait_ms: Option<u64>,
-    heartbeat_interval_ms: Option<u64>,
-) -> (u64, u64) {
-    let configured_max_wait_ms = manager.max_write_stdin_yield_time_ms();
-    let effective_max_wait_ms = max_wait_ms
-        .unwrap_or(configured_max_wait_ms)
-        .clamp(MIN_EMPTY_YIELD_TIME_MS, configured_max_wait_ms);
-    let effective_heartbeat_interval_ms = heartbeat_interval_ms
-        .unwrap_or(DEFAULT_WAIT_HEARTBEAT_INTERVAL_MS)
-        .clamp(MIN_EMPTY_YIELD_TIME_MS, effective_max_wait_ms);
-
-    (effective_max_wait_ms, effective_heartbeat_interval_ms)
-}
-
-struct WaitForTerminalCompletionArgs {
-    process_id: i32,
-    max_output_tokens: Option<usize>,
-    max_wait_ms: u64,
-    heartbeat_interval_ms: u64,
-    initial_response: Option<ExecCommandToolOutput>,
-}
-
-async fn wait_for_terminal_completion(
-    manager: &UnifiedExecProcessManager,
-    session: &crate::codex::Session,
-    turn: &crate::codex::TurnContext,
-    args: WaitForTerminalCompletionArgs,
-) -> Result<ExecCommandToolOutput, FunctionCallError> {
-    let WaitForTerminalCompletionArgs {
-        process_id,
-        max_output_tokens,
-        max_wait_ms,
-        heartbeat_interval_ms,
-        initial_response,
-    } = args;
-    let wait_started_at = Instant::now();
-    let mut last_heartbeat_at = wait_started_at;
-    let mut collected = initial_response
-        .as_ref()
-        .map_or_else(Vec::new, |response| response.raw_output.clone());
-    if collected.len() > UNIFIED_EXEC_OUTPUT_MAX_BYTES {
-        let overflow = collected.len() - UNIFIED_EXEC_OUTPUT_MAX_BYTES;
-        collected.drain(..overflow);
-    }
-    let mut last_response = initial_response;
-    let mut timed_out = false;
-
-    loop {
-        let elapsed_ms = wait_started_at.elapsed().as_millis() as u64;
-        if elapsed_ms >= max_wait_ms {
-            timed_out = true;
-            break;
-        }
-
-        let remaining_ms = max_wait_ms.saturating_sub(elapsed_ms);
-        let poll_yield_ms = remaining_ms
-            .min(heartbeat_interval_ms)
-            .max(MIN_EMPTY_YIELD_TIME_MS);
-        let poll_response = manager
-            .write_stdin(WriteStdinRequest {
-                process_id,
-                input: "",
-                yield_time_ms: poll_yield_ms,
-                max_output_tokens,
-            })
-            .await
-            .map_err(|err| {
-                FunctionCallError::RespondToModel(format!("write_stdin failed: {err}"))
-            })?;
-
-        if !poll_response.raw_output.is_empty() {
-            collected.extend_from_slice(&poll_response.raw_output);
-            if collected.len() > UNIFIED_EXEC_OUTPUT_MAX_BYTES {
-                let overflow = collected.len() - UNIFIED_EXEC_OUTPUT_MAX_BYTES;
-                collected.drain(..overflow);
-            }
-        }
-
-        let still_running = poll_response.process_id.is_some() && poll_response.exit_code.is_none();
-        if still_running
-            && (last_heartbeat_at.elapsed().as_millis() as u64) >= heartbeat_interval_ms
-        {
-            let running_for_secs = wait_started_at.elapsed().as_secs();
-            session
-                .notify_background_event(
-                    turn,
-                    format!(
-                        "Process {process_id} still running after {running_for_secs}s (captured {} bytes).",
-                        collected.len()
-                    ),
-                )
-                .await;
-            last_heartbeat_at = Instant::now();
-        }
-
-        last_response = Some(poll_response);
-        if !still_running {
-            break;
-        }
-    }
-
-    let mut response = last_response.ok_or_else(|| {
-        FunctionCallError::RespondToModel(
-            "write_stdin failed: no process output captured while waiting".to_string(),
-        )
-    })?;
-
-    response.raw_output = collected;
-    response.max_output_tokens = max_output_tokens;
-    response.wall_time = wait_started_at.elapsed();
-
-    if timed_out && response.process_id.is_some() && response.exit_code.is_none() {
-        let waited_secs = response.wall_time.as_secs();
-        let timeout_note = format!(
-            "Wait timed out after {waited_secs}s; process is still running. Re-issue exec_command or write_stdin with wait_until_terminal=true to continue waiting."
-        );
-        let current_text = String::from_utf8_lossy(&response.raw_output).to_string();
-        if current_text.is_empty() {
-            response.raw_output = timeout_note.into_bytes();
-        } else {
-            response.raw_output = format!("{current_text}\n\n{timeout_note}").into_bytes();
-        }
-    }
-    let final_text = String::from_utf8_lossy(&response.raw_output).to_string();
-    response.original_token_count = Some(approx_token_count(&final_text));
-
-    Ok(response)
-}
-
-#[async_trait]
 impl ToolHandler for UnifiedExecHandler {
     type Output = ExecCommandToolOutput;
 
@@ -272,7 +121,9 @@ impl ToolHandler for UnifiedExecHandler {
     }
 
     fn pre_tool_use_payload(&self, invocation: &ToolInvocation) -> Option<PreToolUsePayload> {
-        if invocation.tool_name != "exec_command" {
+        if invocation.tool_name.namespace.is_some()
+            || invocation.tool_name.name.as_str() != "exec_command"
+        {
             return None;
         }
 
@@ -327,14 +178,20 @@ impl ToolHandler for UnifiedExecHandler {
             }
         };
 
+        let Some(environment) = turn.environment.as_ref() else {
+            return Err(FunctionCallError::RespondToModel(
+                "unified exec is unavailable in this session".to_string(),
+            ));
+        };
+        let fs = environment.get_filesystem();
+
         let manager: &UnifiedExecProcessManager = &session.services.unified_exec_manager;
         let context = UnifiedExecContext::new(session.clone(), turn.clone(), call_id.clone());
 
-        let response = match tool_name.as_str() {
+        let response = match tool_name.name.as_str() {
             "exec_command" => {
-                let cwd = resolve_workdir_base_path(&arguments, context.turn.cwd.as_path())?;
-                let args: ExecCommandArgs =
-                    parse_arguments_with_base_path(&arguments, cwd.as_path())?;
+                let cwd = resolve_workdir_base_path(&arguments, &context.turn.cwd)?;
+                let args: ExecCommandArgs = parse_arguments_with_base_path(&arguments, &cwd)?;
                 let workdir = context.turn.resolve_path(args.workdir.clone());
                 maybe_emit_implicit_skill_invocation(
                     session.as_ref(),
@@ -358,9 +215,6 @@ impl ToolHandler for UnifiedExecHandler {
                     tty,
                     yield_time_ms,
                     max_output_tokens,
-                    wait_until_terminal,
-                    max_wait_ms,
-                    heartbeat_interval_ms,
                     sandbox_permissions,
                     additional_permissions,
                     justification,
@@ -431,12 +285,12 @@ impl ToolHandler for UnifiedExecHandler {
                 if let Some(output) = intercept_apply_patch(
                     &command,
                     &cwd,
-                    Some(yield_time_ms),
+                    fs.as_ref(),
                     context.session.clone(),
                     context.turn.clone(),
                     Some(&tracker),
                     &context.call_id,
-                    tool_name.as_str(),
+                    &tool_name.name,
                 )
                 .await?
                 {
@@ -455,7 +309,7 @@ impl ToolHandler for UnifiedExecHandler {
                 }
 
                 emit_unified_exec_tty_metric(&turn.session_telemetry, tty);
-                let response = manager
+                manager
                     .exec_command(
                         ExecCommandRequest {
                             command,
@@ -480,70 +334,21 @@ impl ToolHandler for UnifiedExecHandler {
                         FunctionCallError::RespondToModel(format!(
                             "exec_command failed for `{command_for_display}`: {err:?}"
                         ))
-                    })?;
-
-                if wait_until_terminal {
-                    match response.process_id {
-                        Some(active_process_id) if response.exit_code.is_none() => {
-                            let (effective_max_wait_ms, effective_heartbeat_interval_ms) =
-                                resolve_wait_bounds(manager, max_wait_ms, heartbeat_interval_ms);
-                            wait_for_terminal_completion(
-                                manager,
-                                session.as_ref(),
-                                turn.as_ref(),
-                                WaitForTerminalCompletionArgs {
-                                    process_id: active_process_id,
-                                    max_output_tokens,
-                                    max_wait_ms: effective_max_wait_ms,
-                                    heartbeat_interval_ms: effective_heartbeat_interval_ms,
-                                    initial_response: Some(response),
-                                },
-                            )
-                            .await?
-                        }
-                        _ => response,
-                    }
-                } else {
-                    response
-                }
+                    })?
             }
             "write_stdin" => {
                 let args: WriteStdinArgs = parse_arguments(&arguments)?;
-                if args.wait_until_terminal && !args.chars.is_empty() {
-                    return Err(FunctionCallError::RespondToModel(
-                        "wait_until_terminal=true requires chars to be empty; send stdin in one call, then wait in a separate call.".to_string(),
-                    ));
-                }
-
-                let response = if args.wait_until_terminal {
-                    let (effective_max_wait_ms, effective_heartbeat_interval_ms) =
-                        resolve_wait_bounds(manager, args.max_wait_ms, args.heartbeat_interval_ms);
-                    wait_for_terminal_completion(
-                        manager,
-                        session.as_ref(),
-                        turn.as_ref(),
-                        WaitForTerminalCompletionArgs {
-                            process_id: args.session_id,
-                            max_output_tokens: args.max_output_tokens,
-                            max_wait_ms: effective_max_wait_ms,
-                            heartbeat_interval_ms: effective_heartbeat_interval_ms,
-                            initial_response: None,
-                        },
-                    )
-                    .await?
-                } else {
-                    manager
-                        .write_stdin(WriteStdinRequest {
-                            process_id: args.session_id,
-                            input: &args.chars,
-                            yield_time_ms: args.yield_time_ms,
-                            max_output_tokens: args.max_output_tokens,
-                        })
-                        .await
-                        .map_err(|err| {
-                            FunctionCallError::RespondToModel(format!("write_stdin failed: {err}"))
-                        })?
-                };
+                let response = manager
+                    .write_stdin(WriteStdinRequest {
+                        process_id: args.session_id,
+                        input: &args.chars,
+                        yield_time_ms: args.yield_time_ms,
+                        max_output_tokens: args.max_output_tokens,
+                    })
+                    .await
+                    .map_err(|err| {
+                        FunctionCallError::RespondToModel(format!("write_stdin failed: {err}"))
+                    })?;
 
                 let interaction = TerminalInteractionEvent {
                     call_id: response.event_call_id.clone(),

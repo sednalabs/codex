@@ -58,7 +58,7 @@ async fn experimental_mode_plan_is_ignored_on_startup() {
         .build()
         .await
         .expect("config");
-    let resolved_model = codex_core::test_support::get_model_offline(cfg.model.as_deref());
+    let resolved_model = crate::legacy_core::test_support::get_model_offline(cfg.model.as_deref());
     let session_telemetry = test_session_telemetry(&cfg, resolved_model.as_str());
     let init = ChatWidgetInit {
         config: cfg.clone(),
@@ -1612,6 +1612,7 @@ async fn model_picker_hides_show_in_picker_false_models_from_cache() {
             description: "medium".to_string(),
         }],
         supports_personality: false,
+        additional_speed_tiers: Vec::new(),
         is_default: false,
         upgrade: None,
         show_in_picker,
@@ -1651,6 +1652,7 @@ async fn model_picker_shows_upgradeable_legacy_models_from_cache() {
             description: "medium".to_string(),
         }],
         supports_personality: false,
+        additional_speed_tiers: Vec::new(),
         is_default: false,
         upgrade: upgrade_model.map(|target| codex_protocol::openai_models::ModelUpgrade {
             id: target.to_string(),
@@ -1780,6 +1782,7 @@ async fn single_reasoning_option_skips_selection() {
         default_reasoning_effort: ReasoningEffortConfig::High,
         supported_reasoning_efforts: single_effort,
         supports_personality: false,
+        additional_speed_tiers: Vec::new(),
         is_default: false,
         upgrade: None,
         show_in_picker: true,
@@ -1827,12 +1830,11 @@ async fn feedback_upload_consent_popup_snapshot() {
         chat.app_event_tx.clone(),
         crate::app_event::FeedbackCategory::Bug,
         chat.current_rollout_path.clone(),
-        &codex_feedback::feedback_diagnostics::FeedbackDiagnostics::new(vec![
-            codex_feedback::feedback_diagnostics::FeedbackDiagnostic {
-                headline: "OPENAI_BASE_URL is set and may affect connectivity.".to_string(),
-                details: vec!["OPENAI_BASE_URL = hello".to_string()],
-            },
-        ]),
+        &codex_feedback::FeedbackDiagnostics::new(vec![codex_feedback::FeedbackDiagnostic {
+            headline: "Proxy environment variables are set and may affect connectivity."
+                .to_string(),
+            details: vec!["HTTPS_PROXY = hello".to_string()],
+        }]),
     ));
 
     let popup = render_bottom_popup(&chat, /*width*/ 80);
@@ -1847,12 +1849,11 @@ async fn feedback_good_result_consent_popup_includes_connectivity_diagnostics_fi
         chat.app_event_tx.clone(),
         crate::app_event::FeedbackCategory::GoodResult,
         chat.current_rollout_path.clone(),
-        &codex_feedback::feedback_diagnostics::FeedbackDiagnostics::new(vec![
-            codex_feedback::feedback_diagnostics::FeedbackDiagnostic {
-                headline: "OPENAI_BASE_URL is set and may affect connectivity.".to_string(),
-                details: vec!["OPENAI_BASE_URL = hello".to_string()],
-            },
-        ]),
+        &codex_feedback::FeedbackDiagnostics::new(vec![codex_feedback::FeedbackDiagnostic {
+            headline: "Proxy environment variables are set and may affect connectivity."
+                .to_string(),
+            details: vec!["HTTPS_PROXY = hello".to_string()],
+        }]),
     ));
 
     let popup = render_bottom_popup(&chat, /*width*/ 80);

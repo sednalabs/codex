@@ -1,7 +1,7 @@
 use crate::app_event_sender::AppEventSender;
 use crate::audio_device::select_configured_input_device_and_config;
+use crate::legacy_core::config::Config;
 use base64::Engine;
-use codex_core::config::Config;
 use codex_protocol::protocol::ConversationAudioParams;
 use codex_protocol::protocol::RealtimeAudioFrame;
 use cpal::traits::DeviceTrait;

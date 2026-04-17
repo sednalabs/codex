@@ -2,14 +2,14 @@
 
 use codex_arg0::Arg0DispatchPaths;
 use codex_cloud_requirements::cloud_requirements_loader;
-use codex_core::AuthManager;
 use codex_core::config::Config;
 use codex_core::config::ConfigBuilder;
 use codex_core::config_loader::CloudRequirementsLoader;
 use codex_core::config_loader::ConfigLayerStackOrdering;
 use codex_core::config_loader::LoaderOverrides;
+use codex_features::Feature;
+use codex_login::AuthManager;
 use codex_utils_cli::CliConfigOverrides;
-use codex_utils_version::RELEASE_VERSION;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::io::ErrorKind;
@@ -33,18 +33,18 @@ use crate::transport::route_outgoing_envelope;
 use crate::transport::start_remote_control;
 use crate::transport::start_stdio_connection;
 use crate::transport::start_websocket_acceptor;
+use codex_analytics::AppServerRpcTransport;
 use codex_app_server_protocol::ConfigLayerSource;
 use codex_app_server_protocol::ConfigWarningNotification;
 use codex_app_server_protocol::JSONRPCMessage;
 use codex_app_server_protocol::TextPosition as AppTextPosition;
 use codex_app_server_protocol::TextRange as AppTextRange;
-use codex_core::AppServerRpcTransport;
 use codex_core::ExecPolicyError;
 use codex_core::check_execpolicy_for_warnings;
 use codex_core::config_loader::ConfigLoadError;
 use codex_core::config_loader::TextRange as CoreTextRange;
 use codex_exec_server::EnvironmentManager;
-use codex_features::Feature;
+use codex_exec_server::ExecServerRuntimePaths;
 use codex_feedback::CodexFeedback;
 use codex_protocol::protocol::SessionSource;
 use codex_state::log_db;
@@ -362,7 +362,12 @@ pub async fn run_main_with_transport(
     session_source: SessionSource,
     auth: AppServerWebsocketAuthSettings,
 ) -> IoResult<()> {
-    let environment_manager = Arc::new(EnvironmentManager::from_env());
+    let environment_manager = Arc::new(EnvironmentManager::from_env_with_runtime_paths(Some(
+        ExecServerRuntimePaths::from_optional_paths(
+            arg0_paths.codex_self_exe.clone(),
+            arg0_paths.codex_linux_sandbox_exe.clone(),
+        )?,
+    )));
     let (transport_event_tx, mut transport_event_rx) =
         mpsc::channel::<TransportEvent>(CHANNEL_CAPACITY);
     let (outgoing_tx, mut outgoing_rx) = mpsc::channel::<OutgoingEnvelope>(CHANNEL_CAPACITY);
@@ -401,15 +406,12 @@ pub async fn run_main_with_transport(
                 }
             }
 
-            let auth_manager = AuthManager::shared(
-                config.codex_home.clone(),
-                /*enable_codex_api_key_env*/ false,
-                config.cli_auth_credentials_store_mode,
-            );
+            let auth_manager =
+                AuthManager::shared_from_config(&config, /*enable_codex_api_key_env*/ false);
             cloud_requirements_loader(
                 auth_manager,
                 config.chatgpt_base_url,
-                config.codex_home.clone(),
+                config.codex_home.to_path_buf(),
             )
         }
         Err(err) => {
@@ -462,7 +464,9 @@ pub async fn run_main_with_transport(
             range: None,
         });
     }
-    if let Some(warning) = codex_core::config::system_bwrap_warning() {
+    if let Some(warning) =
+        codex_core::config::system_bwrap_warning(config.permissions.sandbox_policy.get())
+    {
         config_warnings.push(ConfigWarningNotification {
             summary: warning,
             details: None,
@@ -475,7 +479,7 @@ pub async fn run_main_with_transport(
 
     let otel = codex_core::otel_init::build_provider(
         &config,
-        RELEASE_VERSION,
+        env!("CARGO_PKG_VERSION"),
         Some("codex-app-server"),
         default_analytics_enabled,
     )
@@ -564,30 +568,28 @@ pub async fn run_main_with_transport(
         AppServerTransport::Off => {}
     }
 
-    let auth_manager = AuthManager::shared(
-        config.codex_home.clone(),
-        /*enable_codex_api_key_env*/ false,
-        config.cli_auth_credentials_store_mode,
-    );
+    let auth_manager =
+        AuthManager::shared_from_config(&config, /*enable_codex_api_key_env*/ false);
 
-    if config.features.enabled(Feature::RemoteControl) {
-        let accept_handle = start_remote_control(
-            config.chatgpt_base_url.clone(),
-            state_db.clone(),
-            auth_manager,
-            transport_event_tx.clone(),
-            transport_shutdown_token.clone(),
-            app_server_client_name_rx,
-        )
-        .await?;
-        transport_accept_handles.push(accept_handle);
-    }
-    if transport_accept_handles.is_empty() {
+    let remote_control_enabled = config.features.enabled(Feature::RemoteControl);
+    if transport_accept_handles.is_empty() && !remote_control_enabled {
         return Err(std::io::Error::new(
             ErrorKind::InvalidInput,
             "no transport configured; use --listen or enable remote control",
         ));
     }
+
+    let (remote_control_accept_handle, remote_control_handle) = start_remote_control(
+        config.chatgpt_base_url.clone(),
+        state_db.clone(),
+        auth_manager.clone(),
+        transport_event_tx.clone(),
+        transport_shutdown_token.clone(),
+        app_server_client_name_rx,
+        remote_control_enabled,
+    )
+    .await?;
+    transport_accept_handles.push(remote_control_accept_handle);
 
     let outbound_handle = tokio::spawn(async move {
         let mut outbound_connections = HashMap::<ConnectionId, OutboundConnectionState>::new();
@@ -647,9 +649,11 @@ pub async fn run_main_with_transport(
     let processor_handle = tokio::spawn({
         let outgoing_message_sender = Arc::new(OutgoingMessageSender::new(outgoing_tx));
         let outbound_control_tx = outbound_control_tx;
+        let auth_manager =
+            AuthManager::shared_from_config(&config, /*enable_codex_api_key_env*/ false);
         let cli_overrides: Vec<(String, TomlValue)> = cli_kv_overrides.clone();
         let loader_overrides = loader_overrides_for_config_api;
-        let mut processor = MessageProcessor::new(MessageProcessorArgs {
+        let processor = Arc::new(MessageProcessor::new(MessageProcessorArgs {
             outgoing: outgoing_message_sender,
             arg0_paths,
             config: Arc::new(config),
@@ -661,11 +665,12 @@ pub async fn run_main_with_transport(
             log_db,
             config_warnings,
             session_source,
-            enable_codex_api_key_env: false,
+            auth_manager,
             rpc_transport: analytics_rpc_transport(transport),
-        });
-        let mut thread_created_rx = processor.thread_created_receiver();
-        let mut running_turn_count_rx = processor.subscribe_running_assistant_turn_count();
+            remote_control_handle: Some(remote_control_handle),
+        }));
+        let mut thread_created_rx = processor.thread_created_receiver().await;
+        let mut running_turn_count_rx = processor.subscribe_running_assistant_turn_count().await;
         let mut connections = HashMap::<ConnectionId, ConnectionState>::new();
         let transport_shutdown_token = transport_shutdown_token.clone();
         async move {
@@ -765,23 +770,28 @@ pub async fn run_main_with_transport(
                                             warn!("dropping request from unknown connection: {connection_id:?}");
                                             continue;
                                         };
-                                        let was_initialized = connection_state.session.initialized;
+                                        let was_initialized =
+                                            connection_state.session.initialized();
                                         processor
                                             .process_request(
                                                 connection_id,
                                                 request,
                                                 transport,
-                                                &mut connection_state.session,
+                                                Arc::clone(&connection_state.session),
                                             )
                                             .await;
+                                        let opted_out_notification_methods_snapshot = connection_state
+                                            .session
+                                            .opted_out_notification_methods();
+                                        let experimental_api_enabled =
+                                            connection_state.session.experimental_api_enabled();
+                                        let is_initialized = connection_state.session.initialized();
                                         if let Ok(mut opted_out_notification_methods) = connection_state
                                             .outbound_opted_out_notification_methods
                                             .write()
                                         {
-                                            *opted_out_notification_methods = connection_state
-                                                .session
-                                                .opted_out_notification_methods
-                                                .clone();
+                                            *opted_out_notification_methods =
+                                                opted_out_notification_methods_snapshot;
                                         } else {
                                             warn!(
                                                 "failed to update outbound opted-out notifications"
@@ -790,10 +800,10 @@ pub async fn run_main_with_transport(
                                         connection_state
                                             .outbound_experimental_api_enabled
                                             .store(
-                                                connection_state.session.experimental_api_enabled,
+                                                experimental_api_enabled,
                                                 std::sync::atomic::Ordering::Release,
                                             );
-                                        if !was_initialized && connection_state.session.initialized {
+                                        if !was_initialized && is_initialized {
                                             processor
                                                 .send_initialize_notifications_to_connection(
                                                     connection_id,
@@ -833,12 +843,12 @@ pub async fn run_main_with_transport(
                     created = thread_created_rx.recv(), if listen_for_threads => {
                         match created {
                             Ok(thread_id) => {
-                                let initialized_connection_ids: Vec<ConnectionId> = connections
-                                    .iter()
-                                    .filter_map(|(connection_id, connection_state)| {
-                                        connection_state.session.initialized.then_some(*connection_id)
-                                    })
-                                    .collect();
+                                let mut initialized_connection_ids = Vec::new();
+                                for (connection_id, connection_state) in &connections {
+                                    if connection_state.session.initialized() {
+                                        initialized_connection_ids.push(*connection_id);
+                                    }
+                                }
                                 processor
                                     .try_attach_thread_listener(
                                         thread_id,

@@ -6,9 +6,6 @@
 
 use crate::codex::Session;
 use crate::codex::TurnContext;
-use crate::error::CodexErr;
-#[cfg(test)]
-use crate::protocol::SandboxPolicy;
 use crate::sandboxing::ExecOptions;
 use crate::sandboxing::SandboxPermissions;
 use crate::state::SessionServices;
@@ -16,24 +13,27 @@ use crate::tools::network_approval::NetworkApprovalSpec;
 use codex_network_proxy::NetworkProxy;
 use codex_protocol::approvals::ExecPolicyAmendment;
 use codex_protocol::approvals::NetworkApprovalContext;
+use codex_protocol::error::CodexErr;
 use codex_protocol::permissions::FileSystemSandboxKind;
 use codex_protocol::permissions::FileSystemSandboxPolicy;
 use codex_protocol::permissions::NetworkSandboxPolicy;
 use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::ReviewDecision;
+#[cfg(test)]
+use codex_protocol::protocol::SandboxPolicy;
 use codex_sandboxing::SandboxCommand;
 use codex_sandboxing::SandboxManager;
 use codex_sandboxing::SandboxTransformError;
 use codex_sandboxing::SandboxTransformRequest;
 use codex_sandboxing::SandboxType;
 use codex_sandboxing::SandboxablePreference;
+use codex_utils_absolute_path::AbsolutePathBuf;
 use futures::Future;
 use futures::future::BoxFuture;
 use serde::Serialize;
 use std::collections::HashMap;
 use std::fmt::Debug;
 use std::hash::Hash;
-use std::path::Path;
 use std::sync::Arc;
 
 #[derive(Clone, Default, Debug)]
@@ -120,6 +120,13 @@ pub(crate) struct ApprovalCtx<'a> {
     pub session: &'a Arc<Session>,
     pub turn: &'a Arc<TurnContext>,
     pub call_id: &'a str,
+    /// Guardian review lifecycle ID for this approval, when guardian is reviewing it.
+    ///
+    /// This is separate from `call_id`: `call_id` identifies the tool item under
+    /// review, while this ID identifies the review itself. Keeping both lets
+    /// denial handling, overrides, and app-server notifications refer to the
+    /// review without overloading the tool call ID as a review ID.
+    pub guardian_review_id: Option<String>,
     pub retry_reason: Option<String>,
     pub network_approval_context: Option<NetworkApprovalContext>,
 }
@@ -319,12 +326,12 @@ pub(crate) trait ToolRuntime<Req, Out>: Approvable<Req> + Sandboxable {
 
 pub(crate) struct SandboxAttempt<'a> {
     pub sandbox: SandboxType,
-    pub policy: &'a crate::protocol::SandboxPolicy,
+    pub policy: &'a codex_protocol::protocol::SandboxPolicy,
     pub file_system_policy: &'a FileSystemSandboxPolicy,
     pub network_policy: NetworkSandboxPolicy,
     pub enforce_managed_network: bool,
     pub(crate) manager: &'a SandboxManager,
-    pub(crate) sandbox_cwd: &'a Path,
+    pub(crate) sandbox_cwd: &'a AbsolutePathBuf,
     pub codex_linux_sandbox_exe: Option<&'a std::path::PathBuf>,
     pub use_legacy_landlock: bool,
     pub windows_sandbox_level: codex_protocol::config_types::WindowsSandboxLevel,
@@ -348,7 +355,9 @@ impl<'a> SandboxAttempt<'a> {
                 enforce_managed_network: self.enforce_managed_network,
                 network,
                 sandbox_policy_cwd: self.sandbox_cwd,
-                codex_linux_sandbox_exe: self.codex_linux_sandbox_exe,
+                codex_linux_sandbox_exe: self
+                    .codex_linux_sandbox_exe
+                    .map(std::path::PathBuf::as_path),
                 use_legacy_landlock: self.use_legacy_landlock,
                 windows_sandbox_level: self.windows_sandbox_level,
                 windows_sandbox_private_desktop: self.windows_sandbox_private_desktop,

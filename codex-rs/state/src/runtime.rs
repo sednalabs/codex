@@ -25,7 +25,9 @@ use crate::migrations::USAGE_MIGRATOR;
 use crate::model::AgentJobRow;
 use crate::model::ThreadRow;
 use crate::model::anchor_from_item;
+use crate::model::datetime_to_epoch_millis;
 use crate::model::datetime_to_epoch_seconds;
+use crate::model::epoch_millis_to_datetime;
 use crate::paths::file_modified_time_utc;
 use chrono::DateTime;
 use chrono::Utc;
@@ -49,6 +51,7 @@ use std::collections::BTreeSet;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::AtomicI64;
 use std::time::Duration;
 use tracing::warn;
 
@@ -81,6 +84,7 @@ pub struct StateRuntime {
     pool: Arc<sqlx::SqlitePool>,
     logs_pool: Arc<sqlx::SqlitePool>,
     usage_pool: Arc<sqlx::SqlitePool>,
+    thread_updated_at_millis: Arc<AtomicI64>,
 }
 
 impl StateRuntime {
@@ -134,12 +138,18 @@ impl StateRuntime {
                 return Err(err);
             }
         };
+        let thread_updated_at_millis: Option<i64> =
+            sqlx::query_scalar("SELECT MAX(threads.updated_at_ms) FROM threads")
+                .fetch_one(pool.as_ref())
+                .await?;
+        let thread_updated_at_millis = thread_updated_at_millis.unwrap_or(0);
         let runtime = Arc::new(Self {
             pool,
             logs_pool,
             usage_pool,
             codex_home,
             default_provider,
+            thread_updated_at_millis: Arc::new(AtomicI64::new(thread_updated_at_millis)),
         });
         runtime.run_logs_startup_maintenance().await?;
         Ok(runtime)

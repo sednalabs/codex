@@ -137,7 +137,7 @@ pub(crate) async fn backfill_sessions(
     runtime: &codex_state::StateRuntime,
     config: &impl RolloutConfigView,
 ) {
-    let metric_client = codex_otel::metrics::global();
+    let metric_client = codex_otel::global();
     let timer = metric_client
         .as_ref()
         .and_then(|otel| otel.start_timer(DB_METRIC_BACKFILL_DURATION_MS, &[]).ok());
@@ -371,7 +371,7 @@ fn backfill_watermark_for_path(codex_home: &Path, path: &Path) -> String {
 async fn file_modified_time_utc(path: &Path) -> Option<DateTime<Utc>> {
     let modified = tokio::fs::metadata(path).await.ok()?.modified().ok()?;
     let updated_at: DateTime<Utc> = modified.into();
-    updated_at.with_nanosecond(0)
+    Some(updated_at)
 }
 
 fn parse_timestamp_to_utc(ts: &str) -> Option<DateTime<Utc>> {
@@ -381,7 +381,7 @@ fn parse_timestamp_to_utc(ts: &str) -> Option<DateTime<Utc>> {
         return dt.with_nanosecond(0);
     }
     if let Ok(dt) = DateTime::parse_from_rfc3339(ts) {
-        return dt.with_timezone(&Utc).with_nanosecond(0);
+        return Some(dt.with_timezone(&Utc));
     }
     None
 }

@@ -33,6 +33,7 @@ async fn slash_compact_eagerly_queues_follow_up_before_turn_start() {
 async fn queued_plan_and_message_replay_after_compact_finishes() {
     let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(Some("gpt-5")).await;
     chat.thread_id = Some(ThreadId::new());
+    chat.set_feature_enabled(Feature::CollaborationModes, /*enabled*/ true);
 
     // Simulate an active turn and queue follow-ups in order: /compact, /plan,
     // then a plain message.
@@ -70,15 +71,29 @@ async fn queued_plan_and_message_replay_after_compact_finishes() {
     });
 
     match next_submit_op(&mut op_rx) {
-        Op::UserTurn { items, .. } => assert_eq!(
+        Op::UserTurn {
             items,
-            vec![UserInput::Text {
-                text: "queued after compact".to_string(),
-                text_elements: Vec::new(),
-            }]
-        ),
+            collaboration_mode,
+            ..
+        } => {
+            assert_eq!(
+                items,
+                vec![UserInput::Text {
+                    text: "queued after compact".to_string(),
+                    text_elements: Vec::new(),
+                }]
+            );
+            assert_matches!(
+                collaboration_mode,
+                Some(CollaborationMode {
+                    mode: ModeKind::Plan,
+                    ..
+                })
+            );
+        }
         other => panic!("expected queued follow-up Op::UserTurn, got {other:?}"),
     }
+    assert_eq!(chat.active_mode_kind(), ModeKind::Plan);
     assert!(
         chat.queued_user_messages.is_empty(),
         "expected queued message to be consumed after compact completion"
@@ -86,6 +101,106 @@ async fn queued_plan_and_message_replay_after_compact_finishes() {
     assert!(
         chat.queued_slash_commands.is_empty(),
         "expected queued slash commands to be consumed after compact completion"
+    );
+}
+
+#[tokio::test]
+async fn queued_plan_with_args_replay_submits_plan_mode_turn() {
+    let (mut chat, _rx, mut op_rx) = make_chatwidget_manual(Some("gpt-5")).await;
+    chat.thread_id = Some(ThreadId::new());
+    chat.set_feature_enabled(Feature::CollaborationModes, /*enabled*/ true);
+
+    chat.bottom_pane.set_task_running(/*running*/ true);
+    chat.bottom_pane.set_composer_text(
+        "/plan outline the work".to_string(),
+        Vec::new(),
+        Vec::new(),
+    );
+    chat.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+    chat.handle_codex_event(Event {
+        id: "turn-1".into(),
+        msg: EventMsg::TurnComplete(test_turn_complete_event(
+            "turn-1",
+            /*last_agent_message*/ None::<String>,
+        )),
+    });
+
+    match next_submit_op(&mut op_rx) {
+        Op::UserTurn {
+            items,
+            collaboration_mode,
+            ..
+        } => {
+            assert_eq!(
+                items,
+                vec![UserInput::Text {
+                    text: "outline the work".to_string(),
+                    text_elements: Vec::new(),
+                }]
+            );
+            assert_matches!(
+                collaboration_mode,
+                Some(CollaborationMode {
+                    mode: ModeKind::Plan,
+                    ..
+                })
+            );
+        }
+        other => panic!("expected queued inline /plan Op::UserTurn, got {other:?}"),
+    }
+    assert_eq!(chat.active_mode_kind(), ModeKind::Plan);
+}
+
+#[tokio::test]
+async fn queued_plan_replay_stops_follow_up_drain_for_inline_plan_turn() {
+    let (mut chat, _rx, mut op_rx) = make_chatwidget_manual(Some("gpt-5")).await;
+    chat.thread_id = Some(ThreadId::new());
+    chat.set_feature_enabled(Feature::CollaborationModes, /*enabled*/ true);
+
+    chat.bottom_pane.set_task_running(/*running*/ true);
+    chat.bottom_pane
+        .set_composer_text("/plan outline first".to_string(), Vec::new(), Vec::new());
+    chat.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    chat.bottom_pane
+        .set_composer_text("should stay queued".to_string(), Vec::new(), Vec::new());
+    chat.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+    chat.handle_codex_event(Event {
+        id: "turn-1".into(),
+        msg: EventMsg::TurnComplete(test_turn_complete_event(
+            "turn-1",
+            /*last_agent_message*/ None::<String>,
+        )),
+    });
+
+    match next_submit_op(&mut op_rx) {
+        Op::UserTurn {
+            items,
+            collaboration_mode,
+            ..
+        } => {
+            assert_eq!(
+                items,
+                vec![UserInput::Text {
+                    text: "outline first".to_string(),
+                    text_elements: Vec::new(),
+                }]
+            );
+            assert_matches!(
+                collaboration_mode,
+                Some(CollaborationMode {
+                    mode: ModeKind::Plan,
+                    ..
+                })
+            );
+        }
+        other => panic!("expected queued inline /plan Op::UserTurn, got {other:?}"),
+    }
+    assert_eq!(chat.active_mode_kind(), ModeKind::Plan);
+    assert_eq!(
+        chat.queued_user_message_texts(),
+        vec!["should stay queued".to_string()]
     );
 }
 
@@ -530,6 +645,7 @@ async fn slash_copy_uses_agent_message_item_when_turn_complete_omits_final_text(
             turn_id: "turn-1".to_string(),
             model_context_window: None,
             collaboration_mode_kind: ModeKind::Default,
+            started_at: None,
         }),
     });
     complete_assistant_message(
@@ -575,6 +691,7 @@ async fn slash_copy_does_not_return_stale_output_after_thread_rollback() {
             turn_id: "turn-1".to_string(),
             model_context_window: None,
             collaboration_mode_kind: ModeKind::Default,
+            started_at: None,
         }),
     });
     complete_assistant_message(
@@ -928,6 +1045,7 @@ async fn compact_queues_user_messages_snapshot() {
             turn_id: "turn-1".to_string(),
             model_context_window: None,
             collaboration_mode_kind: ModeKind::Default,
+            started_at: None,
         }),
     });
 

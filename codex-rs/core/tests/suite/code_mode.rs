@@ -483,6 +483,7 @@ async fn run_code_mode_turn_with_rmcp(
                 },
                 enabled: true,
                 required: false,
+                supports_parallel_tool_calls: false,
                 disabled_reason: None,
                 startup_timeout_sec: Some(Duration::from_secs(/*secs*/ 10)),
                 tool_timeout_sec: None,
@@ -502,6 +503,7 @@ async fn run_code_mode_turn_with_rmcp(
             .set(servers)
             .expect("test mcp servers should accept any configuration");
     });
+    builder = builder.with_model("test-gpt-5.1-codex");
     let test = builder.build(server).await?;
 
     responses::mount_sse_once(
@@ -2192,7 +2194,6 @@ async fn code_mode_can_use_view_image_result_with_image_helper() -> Result<()> {
         .with_model("gpt-5.3-codex")
         .with_config(move |config| {
             let _ = config.features.enable(Feature::CodeMode);
-            let _ = config.features.enable(Feature::ImageDetailOriginal);
         });
     let test = builder.build(&server).await?;
 
@@ -2619,7 +2620,7 @@ text(JSON.stringify(tool));
         "View a local image from the filesystem (only use if given a full filepath by the user, and the image isn't already attached to the thread context within <image ...> tags).",
         "view_image",
         "args",
-        &["path: string"],
+        &["detail?: string", "path: string"],
         &["detail: string | null", "image_url: string"],
     );
 
@@ -2678,10 +2679,10 @@ text(JSON.stringify(ALL_TOOLS));
         "args",
         &["env_var?: string", "message: string"],
         &[
-            "_meta?: unknown",
-            "content: Array<unknown>",
+            "_meta?: { [key: string]: unknown; }",
+            "content: Array<{ [key: string]: unknown; }>",
             "isError?: boolean",
-            "structuredContent?: unknown",
+            "structuredContent?: { echo: string; env: string | null; }",
         ],
     );
 

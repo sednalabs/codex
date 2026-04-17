@@ -30,7 +30,7 @@ git switch main
 If your `origin` remote still points at the personal namespace, update it:
 
 ```bash
-git remote set-url origin git@github.com:SednaLabs/codex.git
+git remote set-url origin git@github.com:sednalabs/codex.git
 ```
 
 ## Validation policy
@@ -171,6 +171,18 @@ Why:
 User-visible behavior:
 - Downstream safety fields remain available per server (`enable_elicitation`, `read_only`, `strict_tool_classification`, `require_approval_for_mutating`).
 - Upstream `oauth_resource` is also supported in the same server config entry.
+
+### MCP OAuth: best-effort fallback credential recovery and atomic writes
+
+Why:
+- Keep MCP OAuth fallback credentials from becoming a brittle single point of failure when the keyring is unavailable or the fallback file is left empty/corrupt.
+- Reduce auth churn during login and reconnect flows by treating the fallback file as best-effort recovery state instead of authoritative required state.
+- Avoid partially-written replacement files by writing and syncing a temp file before the final rename.
+
+User-visible behavior:
+- Empty fallback credential files are treated as absent instead of fatal.
+- If keyring loading fails and the fallback credential file is corrupt, downstream logs a warning and proceeds as though no cached OAuth credentials were available.
+- Fallback credential writes are atomic temp-file replacements with explicit syncs, which reduces the chance of leaving a half-written file behind after interruption or crash.
 
 ### App-server transport: raw-byte websocket auth secrets
 

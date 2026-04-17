@@ -1,5 +1,9 @@
 {
   "$defs": {
+    "AbsolutePathBuf": {
+      "description": "A path that is guaranteed to be absolute and normalized (though it is not\nguaranteed to be canonicalized or exist on the filesystem).\n\nIMPORTANT: When deserializing an `AbsolutePathBuf`, a base path must be set\nusing [AbsolutePathBufGuard::new]. If no base path is set, the\ndeserialization will fail unless the path being deserialized is already\nabsolute.",
+      "type": "string"
+    },
     "ByteRange": {
       "properties": {
         "end": {
@@ -217,7 +221,7 @@
               "type": "string"
             },
             "path": {
-              "type": "string"
+              "$ref": "#/$defs/AbsolutePathBuf"
             },
             "type": {
               "const": "read",
@@ -763,8 +767,8 @@
           "type": "integer"
         },
         "cwd": {
-          "description": "Working directory captured for the thread.",
-          "type": "string"
+          "$ref": "#/$defs/AbsolutePathBuf",
+          "description": "Working directory captured for the thread."
         },
         "ephemeral": {
           "description": "Whether the thread is ephemeral and should not be materialized on disk.",
@@ -1031,8 +1035,8 @@
               "type": "array"
             },
             "cwd": {
-              "description": "The command's working directory.",
-              "type": "string"
+              "$ref": "#/$defs/AbsolutePathBuf",
+              "description": "The command's working directory."
             },
             "durationMs": {
               "description": "The duration of the command execution in milliseconds.",
@@ -1342,7 +1346,7 @@
               "type": "string"
             },
             "path": {
-              "type": "string"
+              "$ref": "#/$defs/AbsolutePathBuf"
             },
             "type": {
               "const": "imageView",
@@ -1373,9 +1377,13 @@
               ]
             },
             "savedPath": {
-              "type": [
-                "string",
-                "null"
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/AbsolutePathBuf"
+                },
+                {
+                  "type": "null"
+                }
               ]
             },
             "status": {

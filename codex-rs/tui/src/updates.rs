@@ -1,12 +1,12 @@
 #![cfg(not(debug_assertions))]
 
+use crate::legacy_core::config::Config;
 use crate::update_action;
 use crate::update_action::UpdateAction;
 use chrono::DateTime;
 use chrono::Duration;
 use chrono::Utc;
-use codex_core::config::Config;
-use codex_core::default_client::create_client;
+use codex_login::default_client::create_client;
 use serde::Deserialize;
 use serde::Serialize;
 use std::path::Path;
@@ -18,7 +18,7 @@ use crate::version::latest_release_api_url;
 use semver::Version;
 
 pub fn get_upgrade_version(config: &Config) -> Option<String> {
-    if !config.check_for_update_on_startup {
+    if !config.check_for_update_on_startup || is_source_build_version(CODEX_CLI_VERSION) {
         return None;
     }
 
@@ -72,7 +72,7 @@ struct HomebrewCaskInfo {
 }
 
 fn version_filepath(config: &Config) -> PathBuf {
-    config.codex_home.join(VERSION_FILENAME)
+    config.codex_home.join(VERSION_FILENAME).into_path_buf()
 }
 
 fn read_version_info(version_file: &Path) -> anyhow::Result<VersionInfo> {
@@ -140,7 +140,7 @@ fn extract_version_from_latest_tag(latest_tag_name: &str) -> anyhow::Result<Stri
 /// Returns the latest version to show in a popup, if it should be shown.
 /// This respects the user's dismissal choice for the current latest version.
 pub fn get_upgrade_version_for_popup(config: &Config) -> Option<String> {
-    if !config.check_for_update_on_startup {
+    if !config.check_for_update_on_startup || is_source_build_version(CODEX_CLI_VERSION) {
         return None;
     }
 
@@ -174,6 +174,10 @@ pub async fn dismiss_version(config: &Config, version: &str) -> anyhow::Result<(
 
 fn parse_version(v: &str) -> Option<Version> {
     Version::parse(v.trim()).ok()
+}
+
+fn is_source_build_version(version: &str) -> bool {
+    parse_version(version) == Some(Version::new(0, 0, 0))
 }
 
 #[cfg(test)]

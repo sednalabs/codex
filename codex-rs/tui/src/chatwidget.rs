@@ -38,8 +38,6 @@ use std::sync::atomic::Ordering;
 use std::time::Duration;
 use std::time::Instant;
 
-use url::Url;
-
 use self::realtime::PendingSteerCompareKey;
 use crate::app_command::AppCommand;
 use crate::app_event::RealtimeAudioDeviceKind;
@@ -91,6 +89,7 @@ use codex_app_server_protocol::TurnCompletedNotification;
 use codex_app_server_protocol::TurnPlanStepStatus;
 use codex_app_server_protocol::TurnStatus;
 use codex_chatgpt::connectors;
+use codex_core::DEFAULT_PROJECT_DOC_FILENAME;
 use codex_core::config::Config;
 use codex_core::config::Constrained;
 use codex_core::config::ConstraintResult;
@@ -101,7 +100,6 @@ use codex_core::config::types::WindowsSandboxModeToml;
 use codex_core::config_loader::ConfigLayerStackOrdering;
 use codex_core::find_thread_name_by_id;
 use codex_core::plugins::PluginsManager;
-use codex_core::project_doc::DEFAULT_PROJECT_DOC_FILENAME;
 use codex_core::skills::model::SkillMetadata;
 #[cfg(target_os = "windows")]
 use codex_core::windows_sandbox::WindowsSandboxLevelExt;
@@ -118,6 +116,8 @@ use codex_otel::SessionTelemetry;
 use codex_protocol::ThreadId;
 use codex_protocol::account::PlanType;
 use codex_protocol::approvals::ElicitationRequestEvent;
+use codex_protocol::approvals::GuardianAssessmentAction;
+use codex_protocol::approvals::GuardianUserAuthorization;
 use codex_protocol::config_types::CollaborationMode;
 use codex_protocol::config_types::CollaborationModeMask;
 use codex_protocol::config_types::ModeKind;
@@ -317,8 +317,8 @@ use crate::bottom_pane::SelectionItem;
 use crate::bottom_pane::SelectionViewParams;
 use crate::bottom_pane::custom_prompt_view::CustomPromptView;
 use crate::bottom_pane::popup_consts::standard_popup_hint_line;
+use crate::clipboard_copy as clipboard_text;
 use crate::clipboard_paste::paste_image_to_temp_png;
-use crate::clipboard_text;
 use crate::collaboration_modes;
 use crate::diff_render::display_path_for;
 use crate::exec_cell::CommandOutput;
@@ -440,6 +440,10 @@ impl QueuedSlashCommand {
     }
 
     fn continues_follow_up_drain_after_replay(&self) -> bool {
+        matches!(self, QueuedSlashCommand::Command(SlashCommand::Plan))
+    }
+
+    fn requires_plan_mode_after_replay(&self) -> bool {
         matches!(
             self,
             QueuedSlashCommand::Command(SlashCommand::Plan)
@@ -911,7 +915,7 @@ pub(crate) struct ChatWidget {
     pending_collab_spawn_requests: HashMap<String, multi_agents::SpawnRequestSummary>,
     suppressed_exec_calls: HashSet<String>,
     skills_all: Vec<ProtocolSkillMetadata>,
-    skills_initial_state: Option<HashMap<PathBuf, bool>>,
+    skills_initial_state: Option<HashMap<AbsolutePathBuf, bool>>,
     last_unified_wait: Option<UnifiedExecWaitState>,
     unified_exec_wait_streak: Option<UnifiedExecWaitStreak>,
     turn_sleep_inhibitor: SleepInhibitor,
@@ -1057,6 +1061,8 @@ pub(crate) struct ChatWidget {
     current_rollout_path: Option<PathBuf>,
     // Current working directory (if known)
     current_cwd: Option<PathBuf>,
+    // Instruction source files loaded for the current session, supplied by app-server.
+    instruction_source_paths: Vec<AbsolutePathBuf>,
     // Runtime network proxy bind addresses from SessionConfigured.
     session_network_proxy: Option<codex_protocol::protocol::SessionNetworkProxyRuntime>,
     // Shared latch so we only warn once about invalid status-line item IDs.
@@ -1497,6 +1503,7 @@ fn app_server_request_id_to_mcp_request_id(
 
 fn exec_approval_request_from_params(
     params: CommandExecutionRequestApprovalParams,
+    fallback_cwd: &AbsolutePathBuf,
 ) -> ExecApprovalRequestEvent {
     ExecApprovalRequestEvent {
         call_id: params.item_id,
@@ -1505,7 +1512,7 @@ fn exec_approval_request_from_params(
             .as_deref()
             .map(split_command_string)
             .unwrap_or_default(),
-        cwd: params.cwd.unwrap_or_default(),
+        cwd: params.cwd.unwrap_or_else(|| fallback_cwd.clone()),
         reason: params.reason,
         network_approval_context: params
             .network_approval_context
@@ -2111,13 +2118,8 @@ impl ChatWidget {
         self.thread_name = event.thread_name.clone();
         self.forked_from = event.forked_from_id;
         self.current_rollout_path = event.rollout_path.clone();
-        self.current_cwd = Some(event.cwd.clone());
-        match AbsolutePathBuf::try_from(event.cwd.clone()) {
-            Ok(cwd) => self.config.cwd = cwd,
-            Err(err) => {
-                tracing::warn!(path = %event.cwd.display(), %err, "session cwd should be absolute");
-            }
-        }
+        self.current_cwd = Some(event.cwd.to_path_buf());
+        self.config.cwd = event.cwd.clone();
         self.config.model_provider_id = event.model_provider_id.clone();
         self.config.service_tier = event.service_tier;
         if let Err(err) = self
@@ -2181,10 +2183,7 @@ impl ChatWidget {
         if let Some(messages) = initial_messages {
             self.replay_initial_messages(messages);
         }
-        self.submit_op(AppCommand::list_skills(
-            Vec::new(),
-            /*force_reload*/ true,
-        ));
+        self.refresh_skills_for_current_cwd(/*force_reload*/ true);
         if self.connectors_enabled() {
             self.prefetch_connectors();
         }
@@ -2214,6 +2213,7 @@ impl ChatWidget {
     }
 
     pub(crate) fn handle_thread_session(&mut self, session: ThreadSessionState) {
+        self.instruction_source_paths = session.instruction_source_paths.clone();
         self.on_session_configured(thread_session_state_to_legacy_event(session));
     }
 
@@ -2288,6 +2288,7 @@ impl ChatWidget {
     ) {
         let view = crate::bottom_pane::FeedbackNoteView::new(
             category,
+            /*turn_id*/ None,
             self.app_event_tx.clone(),
             include_logs,
         );
@@ -2327,6 +2328,7 @@ impl ChatWidget {
         self.request_redraw();
     }
 
+    #[cfg(test)]
     fn on_agent_message(&mut self, message: String) {
         self.finalize_completed_assistant_message(Some(&message));
     }
@@ -3491,6 +3493,7 @@ impl ChatWidget {
     /// render the final approved/denied history cell when guardian returns a
     /// decision.
     fn on_guardian_assessment(&mut self, ev: GuardianAssessmentEvent) {
+        let action_json = serde_json::to_value(&ev.action).ok();
         // Guardian emits a compact JSON action payload; map the stable fields we
         // care about into a short footer/history summary without depending on
         // the full raw JSON shape in the rest of the widget.
@@ -3589,7 +3592,7 @@ impl ChatWidget {
         };
 
         if ev.status == GuardianAssessmentStatus::InProgress
-            && let Some(action) = ev.action.as_ref()
+            && let Some(action) = action_json.as_ref()
             && let Some(detail) = guardian_action_summary(action)
         {
             // In-progress assessments own the live footer state while the
@@ -3632,22 +3635,60 @@ impl ChatWidget {
         }
 
         if ev.status == GuardianAssessmentStatus::Approved {
-            let Some(action) = ev.action else {
-                return;
-            };
-
-            let cell = if let Some(command) = guardian_command(&action) {
+            let cell = if let Some(action) = action_json.as_ref()
+                && let Some(command) = guardian_command(action)
+            {
                 history_cell::new_approval_decision_cell(
                     command,
                     codex_protocol::protocol::ReviewDecision::Approved,
                     history_cell::ApprovalDecisionActor::Guardian,
                 )
-            } else if let Some(summary) = guardian_action_summary(&action) {
+            } else if let Some(action) = action_json.as_ref()
+                && let Some(summary) = guardian_action_summary(action)
+            {
                 history_cell::new_guardian_approved_action_request(summary)
             } else {
-                let summary = serde_json::to_string(&action)
+                let summary = serde_json::to_string(&ev.action)
                     .unwrap_or_else(|_| "<unrenderable guardian action>".to_string());
                 history_cell::new_guardian_approved_action_request(summary)
+            };
+
+            self.add_boxed_history(cell);
+            self.request_redraw();
+            return;
+        }
+
+        if ev.status == GuardianAssessmentStatus::TimedOut {
+            let cell = if let Some(action) = action_json.as_ref()
+                && let Some(command) = guardian_command(action)
+            {
+                history_cell::new_approval_decision_cell(
+                    command,
+                    codex_protocol::protocol::ReviewDecision::TimedOut,
+                    history_cell::ApprovalDecisionActor::Guardian,
+                )
+            } else {
+                match &ev.action {
+                    GuardianAssessmentAction::ApplyPatch { files, .. } => {
+                        let files = files
+                            .iter()
+                            .map(|path| path.display().to_string())
+                            .collect::<Vec<_>>();
+                        history_cell::new_guardian_timed_out_patch_request(files)
+                    }
+                    GuardianAssessmentAction::McpToolCall {
+                        server, tool_name, ..
+                    } => history_cell::new_guardian_timed_out_action_request(format!(
+                        "codex could call MCP tool {server}.{tool_name}"
+                    )),
+                    GuardianAssessmentAction::NetworkAccess { target, .. } => {
+                        history_cell::new_guardian_timed_out_action_request(format!(
+                            "codex could access {target}"
+                        ))
+                    }
+                    GuardianAssessmentAction::Command { .. } => unreachable!(),
+                    GuardianAssessmentAction::Execve { .. } => unreachable!(),
+                }
             };
 
             self.add_boxed_history(cell);
@@ -3658,65 +3699,55 @@ impl ChatWidget {
         if ev.status != GuardianAssessmentStatus::Denied {
             return;
         }
-        let Some(action) = ev.action else {
-            return;
-        };
-
-        let tool = action.get("tool").and_then(serde_json::Value::as_str);
-        let cell = if let Some(command) = guardian_command(&action) {
+        let tool = action_json
+            .as_ref()
+            .and_then(|action| action.get("tool").and_then(serde_json::Value::as_str));
+        let cell = if let Some(action) = action_json.as_ref()
+            && let Some(command) = guardian_command(action)
+        {
             history_cell::new_approval_decision_cell(
                 command,
                 codex_protocol::protocol::ReviewDecision::Denied,
                 history_cell::ApprovalDecisionActor::Guardian,
             )
         } else {
-            match tool {
-                Some("apply_patch") => {
-                    let files = action
-                        .get("files")
-                        .and_then(serde_json::Value::as_array)
-                        .map(|files| {
-                            files
-                                .iter()
-                                .filter_map(serde_json::Value::as_str)
-                                .map(ToOwned::to_owned)
-                                .collect::<Vec<_>>()
-                        })
-                        .unwrap_or_default();
-                    let change_count = action
-                        .get("change_count")
-                        .and_then(serde_json::Value::as_u64)
-                        .and_then(|count| usize::try_from(count).ok())
-                        .unwrap_or(files.len());
-                    history_cell::new_guardian_denied_patch_request(files, change_count)
+            match &ev.action {
+                codex_protocol::approvals::GuardianAssessmentAction::ApplyPatch {
+                    files, ..
+                } => {
+                    let files = files
+                        .iter()
+                        .map(|path| path.display().to_string())
+                        .collect();
+                    history_cell::new_guardian_denied_patch_request(files)
                 }
-                Some("mcp_tool_call") => {
-                    let server = action
-                        .get("server")
-                        .and_then(serde_json::Value::as_str)
-                        .unwrap_or("unknown server");
-                    let tool_name = action
-                        .get("tool_name")
-                        .and_then(serde_json::Value::as_str)
-                        .unwrap_or("unknown tool");
-                    history_cell::new_guardian_denied_action_request(format!(
-                        "codex to call MCP tool {server}.{tool_name}"
-                    ))
-                }
-                Some("network_access") => {
-                    let target = action
-                        .get("target")
-                        .and_then(serde_json::Value::as_str)
-                        .or_else(|| action.get("host").and_then(serde_json::Value::as_str))
-                        .unwrap_or("network target");
+                codex_protocol::approvals::GuardianAssessmentAction::McpToolCall {
+                    server,
+                    tool_name,
+                    ..
+                } => history_cell::new_guardian_denied_action_request(format!(
+                    "codex to call MCP tool {server}.{tool_name}"
+                )),
+                codex_protocol::approvals::GuardianAssessmentAction::NetworkAccess {
+                    target,
+                    host,
+                    ..
+                } => {
+                    let target = if target.is_empty() { host } else { target };
                     history_cell::new_guardian_denied_action_request(format!(
                         "codex to access {target}"
                     ))
                 }
                 _ => {
-                    let summary = serde_json::to_string(&action)
-                        .unwrap_or_else(|_| "<unrenderable guardian action>".to_string());
-                    history_cell::new_guardian_denied_action_request(summary)
+                    if let Some(action) = action_json.as_ref() {
+                        let summary = serde_json::to_string(action)
+                            .unwrap_or_else(|_| "<unrenderable guardian action>".to_string());
+                        history_cell::new_guardian_denied_action_request(summary)
+                    } else {
+                        history_cell::new_guardian_denied_action_request(
+                            "<unrenderable guardian action>".to_string(),
+                        )
+                    }
                 }
             }
         };
@@ -3865,15 +3896,10 @@ impl ChatWidget {
 
     fn on_image_generation_end(&mut self, event: ImageGenerationEndEvent) {
         self.flush_answer_stream_with_separator();
-        let saved_path = event.saved_path.map(|saved_path| {
-            Url::from_file_path(Path::new(&saved_path))
-                .map(|url| url.to_string())
-                .unwrap_or(saved_path)
-        });
         self.add_to_history(history_cell::new_image_generation_call(
             event.call_id,
             event.revised_prompt,
-            saved_path,
+            event.saved_path,
         ));
         self.request_redraw();
     }
@@ -4749,10 +4775,14 @@ impl ChatWidget {
 
     pub(crate) fn handle_request_user_input_now(&mut self, ev: RequestUserInputEvent) {
         self.flush_answer_stream_with_separator();
-        self.notify(Notification::UserInputRequested {
-            question_count: ev.questions.len(),
-            summary: Notification::user_input_request_summary(&ev.questions),
-        });
+        let question_count = ev.questions.len();
+        let summary = Notification::user_input_request_summary(&ev.questions);
+        let title = match (question_count, summary.as_deref()) {
+            (1, Some(summary)) => summary.to_string(),
+            (1, None) => "Question requested".to_string(),
+            (count, _) => format!("{count} questions requested"),
+        };
+        self.notify(Notification::PlanModePrompt { title });
         self.bottom_pane.push_user_input_request(ev);
         self.request_redraw();
     }
@@ -4885,14 +4915,6 @@ impl ChatWidget {
 
     pub(crate) fn new_with_app_event(common: ChatWidgetInit) -> Self {
         Self::new_with_op_target(common, CodexOpTarget::AppEvent)
-    }
-
-    #[allow(dead_code)]
-    pub(crate) fn new_with_op_sender(
-        common: ChatWidgetInit,
-        codex_op_tx: UnboundedSender<Op>,
-    ) -> Self {
-        Self::new_with_op_target(common, CodexOpTarget::Direct(codex_op_tx))
     }
 
     fn new_with_op_target(common: ChatWidgetInit, codex_op_target: CodexOpTarget) -> Self {
@@ -5047,6 +5069,7 @@ impl ChatWidget {
             feedback,
             current_rollout_path: None,
             current_cwd,
+            instruction_source_paths: Vec::new(),
             session_network_proxy: None,
             status_line_invalid_items_warned,
             terminal_title_invalid_items_warned,
@@ -5090,7 +5113,7 @@ impl ChatWidget {
             .set_queued_message_edit_binding(widget.queued_message_edit_binding);
         widget
             .bottom_pane
-            .set_esc_interrupt_requires_double_press(widget.config.tui_double_esc_interrupt);
+            .set_esc_interrupt_requires_double_press(/*requires_double_press*/ false);
         #[cfg(target_os = "windows")]
         widget.bottom_pane.set_windows_degraded_sandbox_active(
             codex_core::windows_sandbox::ELEVATED_SANDBOX_NUX_ENABLED
@@ -5435,15 +5458,7 @@ impl ChatWidget {
                 self.app_event_tx.send(AppEvent::ForkCurrentSession);
             }
             SlashCommand::Init => {
-                let init_target = match self.config.cwd.join(DEFAULT_PROJECT_DOC_FILENAME) {
-                    Ok(path) => path,
-                    Err(err) => {
-                        self.add_error_message(format!(
-                            "Failed to prepare {DEFAULT_PROJECT_DOC_FILENAME}: {err}",
-                        ));
-                        return;
-                    }
-                };
+                let init_target = self.config.cwd.join(DEFAULT_PROJECT_DOC_FILENAME);
                 if init_target.exists() {
                     let message = format!(
                         "{DEFAULT_PROJECT_DOC_FILENAME} already exists here. Skipping /init to avoid overwriting it."
@@ -5637,10 +5652,10 @@ impl ChatWidget {
                     return;
                 };
 
-                let copy_result = clipboard_text::copy_text_to_clipboard(text);
+                let copy_result = clipboard_text::copy_to_clipboard(text);
 
                 match copy_result {
-                    Ok(()) => {
+                    Ok(_) => {
                         let hint = self.agent_turn_running.then_some(
                             "Current turn is still running; copied the latest completed output (not the in-progress response)."
                                 .to_string(),
@@ -5667,8 +5682,11 @@ impl ChatWidget {
                     self.next_status_refresh_request_id =
                         self.next_status_refresh_request_id.wrapping_add(1);
                     self.add_status_output(/*refreshing_rate_limits*/ true, Some(request_id));
-                    self.app_event_tx
-                        .send(AppEvent::RefreshRateLimits { request_id });
+                    self.app_event_tx.send(AppEvent::RefreshRateLimits {
+                        origin: crate::app_event::RateLimitRefreshOrigin::StatusCommand {
+                            request_id,
+                        },
+                    });
                 } else {
                     self.add_status_output(
                         /*refreshing_rate_limits*/ false, /*request_id*/ None,
@@ -6033,6 +6051,13 @@ impl ChatWidget {
         }
     }
 
+    fn maybe_defer_user_message_for_realtime(
+        &mut self,
+        user_message: UserMessage,
+    ) -> Option<UserMessage> {
+        Some(user_message)
+    }
+
     fn queue_slash_command(&mut self, queued_command: QueuedSlashCommand, queue_front: bool) {
         let command_text = queued_command.display_text();
         let message = if queue_front {
@@ -6141,7 +6166,7 @@ impl ChatWidget {
             .map(|binding| binding.mention.clone())
             .collect();
         let mut skill_names_lower: HashSet<String> = HashSet::new();
-        let mut selected_skill_paths: HashSet<PathBuf> = HashSet::new();
+        let mut selected_skill_paths: HashSet<AbsolutePathBuf> = HashSet::new();
         let mut selected_plugin_ids: HashSet<String> = HashSet::new();
 
         if let Some(skills) = self.bottom_pane.skills() {
@@ -6163,7 +6188,7 @@ impl ChatWidget {
                 {
                     items.push(UserInput::Skill {
                         name: skill.name.clone(),
-                        path: skill.path_to_skills_md.clone(),
+                        path: skill.path_to_skills_md.to_path_buf(),
                     });
                 }
             }
@@ -6177,7 +6202,7 @@ impl ChatWidget {
                 }
                 items.push(UserInput::Skill {
                     name: skill.name.clone(),
-                    path: skill.path_to_skills_md.clone(),
+                    path: skill.path_to_skills_md.to_path_buf(),
                 });
             }
         }
@@ -6685,10 +6710,7 @@ impl ChatWidget {
                 });
             }
             ThreadItem::ImageView { id, path } => {
-                self.on_view_image_tool_call(ViewImageToolCallEvent {
-                    call_id: id,
-                    path: path.into(),
-                });
+                self.on_view_image_tool_call(ViewImageToolCallEvent { call_id: id, path });
             }
             ThreadItem::ImageGeneration {
                 id,
@@ -6714,7 +6736,7 @@ impl ChatWidget {
                 self.exit_review_mode_after_item();
             }
             ThreadItem::ContextCompaction { .. } => {
-                self.on_agent_message("Context compacted".to_owned());
+                self.add_info_message("Context compacted".to_string(), /*hint*/ None);
             }
             ThreadItem::HookPrompt { .. } => {}
             ThreadItem::CollabAgentToolCall {
@@ -6756,7 +6778,11 @@ impl ChatWidget {
         let id = request.id().to_string();
         match request {
             ServerRequest::CommandExecutionRequestApproval { params, .. } => {
-                self.on_exec_approval_request(id, exec_approval_request_from_params(params));
+                let fallback_cwd = self.config.cwd.clone();
+                self.on_exec_approval_request(
+                    id,
+                    exec_approval_request_from_params(params, &fallback_cwd),
+                );
             }
             ServerRequest::FileChangeRequestApproval { params, .. } => {
                 self.on_apply_patch_approval_request(
@@ -6919,10 +6945,7 @@ impl ChatWidget {
                 }
             }
             ServerNotification::SkillsChanged(_) => {
-                self.submit_op(AppCommand::list_skills(
-                    Vec::new(),
-                    /*force_reload*/ true,
-                ));
+                self.refresh_skills_for_current_cwd(/*force_reload*/ true);
             }
             ServerNotification::ModelRerouted(_) => {}
             ServerNotification::DeprecationNotice(notification) => {
@@ -6969,6 +6992,11 @@ impl ChatWidget {
                             version: notification.version,
                         },
                     );
+                }
+            }
+            ServerNotification::ThreadRealtimeSdp(notification) => {
+                if !from_replay {
+                    self.on_realtime_conversation_sdp(notification.sdp);
                 }
             }
             ServerNotification::ThreadRealtimeItemAdded(notification) => {
@@ -7029,7 +7057,8 @@ impl ChatWidget {
             | ServerNotification::ContextCompacted(_)
             | ServerNotification::FuzzyFileSearchSessionUpdated(_)
             | ServerNotification::FuzzyFileSearchSessionCompleted(_)
-            | ServerNotification::ThreadRealtimeTranscriptUpdated(_)
+            | ServerNotification::ThreadRealtimeTranscriptDelta(_)
+            | ServerNotification::ThreadRealtimeTranscriptDone(_)
             | ServerNotification::WindowsWorldWritableWarning(_)
             | ServerNotification::WindowsSandboxSetupCompleted(_)
             | ServerNotification::AccountLoginCompleted(_) => {}
@@ -7232,13 +7261,17 @@ impl ChatWidget {
 
     fn on_guardian_review_notification(
         &mut self,
-        id: String,
+        target_item_id: Option<String>,
         turn_id: String,
         review: codex_app_server_protocol::GuardianApprovalReview,
         action: codex_app_server_protocol::GuardianApprovalReviewAction,
     ) {
+        let id = target_item_id
+            .clone()
+            .unwrap_or_else(|| format!("guardian-review-{turn_id}"));
         self.on_guardian_assessment(GuardianAssessmentEvent {
             id,
+            target_item_id,
             turn_id,
             status: match review.status {
                 codex_app_server_protocol::GuardianApprovalReviewStatus::InProgress => {
@@ -7253,8 +7286,10 @@ impl ChatWidget {
                 codex_app_server_protocol::GuardianApprovalReviewStatus::Aborted => {
                     GuardianAssessmentStatus::Aborted
                 }
+                codex_app_server_protocol::GuardianApprovalReviewStatus::TimedOut => {
+                    GuardianAssessmentStatus::TimedOut
+                }
             },
-            risk_score: review.risk_score,
             risk_level: review.risk_level.map(|risk_level| match risk_level {
                 codex_app_server_protocol::GuardianRiskLevel::Low => {
                     codex_protocol::protocol::GuardianRiskLevel::Low
@@ -7265,9 +7300,27 @@ impl ChatWidget {
                 codex_app_server_protocol::GuardianRiskLevel::High => {
                     codex_protocol::protocol::GuardianRiskLevel::High
                 }
+                codex_app_server_protocol::GuardianRiskLevel::Critical => {
+                    codex_protocol::protocol::GuardianRiskLevel::Critical
+                }
+            }),
+            user_authorization: review.user_authorization.map(|level| match level {
+                codex_app_server_protocol::GuardianUserAuthorization::Unknown => {
+                    GuardianUserAuthorization::Unknown
+                }
+                codex_app_server_protocol::GuardianUserAuthorization::Low => {
+                    GuardianUserAuthorization::Low
+                }
+                codex_app_server_protocol::GuardianUserAuthorization::Medium => {
+                    GuardianUserAuthorization::Medium
+                }
+                codex_app_server_protocol::GuardianUserAuthorization::High => {
+                    GuardianUserAuthorization::High
+                }
             }),
             rationale: review.rationale,
-            action: serde_json::to_value(action).ok(),
+            decision_source: None,
+            action: action.into(),
         });
     }
 
@@ -7364,6 +7417,8 @@ impl ChatWidget {
                 self.on_agent_reasoning_final();
             }
             EventMsg::AgentReasoningSectionBreak(_) => self.on_reasoning_section_break(),
+            EventMsg::RealtimeConversationSdp(_) => {}
+            EventMsg::RealtimeConversationListVoicesResponse(_) => {}
             EventMsg::TurnStarted(event) => {
                 if !is_resume_initial_replay {
                     self.apply_turn_started_context_window(event.model_context_window);
@@ -7456,10 +7511,7 @@ impl ChatWidget {
             EventMsg::McpListToolsResponse(ev) => self.on_list_mcp_tools(ev),
             EventMsg::ListSkillsResponse(ev) => self.on_list_skills(ev),
             EventMsg::SkillsUpdateAvailable => {
-                self.submit_op(AppCommand::list_skills(
-                    Vec::new(),
-                    /*force_reload*/ true,
-                ));
+                self.refresh_skills_for_current_cwd(/*force_reload*/ true);
             }
             EventMsg::ShutdownComplete => self.on_shutdown_complete(),
             EventMsg::TurnDiff(TurnDiffEvent { unified_diff }) => self.on_turn_diff(unified_diff),
@@ -7487,7 +7539,7 @@ impl ChatWidget {
                 self.on_entered_review_mode(review_request, from_replay)
             }
             EventMsg::ExitedReviewMode(review) => self.on_exited_review_mode(review),
-            EventMsg::ContextCompacted(_) => self.on_agent_message("Context compacted".to_owned()),
+            EventMsg::ContextCompacted(_) => {}
             EventMsg::CollabAgentSpawnBegin(CollabAgentSpawnBeginEvent {
                 call_id,
                 model,
@@ -7727,7 +7779,7 @@ impl ChatWidget {
     }
 
     fn notify(&mut self, notification: Notification) {
-        if !notification.allowed_for(&self.config.tui_notifications) {
+        if !notification.allowed_for(&self.config.tui_notifications.notifications) {
             return;
         }
         if let Some(existing) = self.pending_notification.as_ref()
@@ -7916,10 +7968,16 @@ impl ChatWidget {
                 }
                 QueuedFollowUpInput::SlashCommand(queued_command) => match queued_command {
                     QueuedSlashCommand::Command(cmd) => {
-                        let should_continue = QueuedSlashCommand::Command(cmd)
-                            .continues_follow_up_drain_after_replay();
+                        let replayed_command = QueuedSlashCommand::Command(cmd);
+                        let should_continue =
+                            replayed_command.continues_follow_up_drain_after_replay();
                         self.dispatch_command(cmd);
                         self.refresh_pending_input_preview();
+                        if replayed_command.requires_plan_mode_after_replay()
+                            && self.active_mode_kind() != ModeKind::Plan
+                        {
+                            return;
+                        }
                         if !should_continue
                             || self.bottom_pane.is_task_running()
                             || !self.no_modal_or_popup_active()
@@ -7944,6 +8002,15 @@ impl ChatWidget {
                             mention_bindings: mention_bindings.clone(),
                         }
                         .continues_follow_up_drain_after_replay();
+                        let requires_plan_mode = QueuedSlashCommand::CommandWithArgs {
+                            cmd,
+                            args: args.clone(),
+                            text_elements: text_elements.clone(),
+                            local_images: local_images.clone(),
+                            remote_image_urls: remote_image_urls.clone(),
+                            mention_bindings: mention_bindings.clone(),
+                        }
+                        .requires_plan_mode_after_replay();
                         self.dispatch_prepared_inline_command(
                             cmd,
                             args,
@@ -7954,6 +8021,9 @@ impl ChatWidget {
                             /*drain_submission_state*/ false,
                         );
                         self.refresh_pending_input_preview();
+                        if requires_plan_mode && self.active_mode_kind() != ModeKind::Plan {
+                            return;
+                        }
                         if !should_continue
                             || self.bottom_pane.is_task_running()
                             || !self.no_modal_or_popup_active()
@@ -8212,7 +8282,7 @@ impl ChatWidget {
         let Some(pacing) = Self::status_line_weekly_pacing_snapshot(window, captured_at) else {
             return Some(base);
         };
-        match self.config.tui_weekly_limit_pacing_style {
+        match WeeklyLimitPacingStyle::default() {
             WeeklyLimitPacingStyle::Qualitative => {
                 Some(format!("{base} ({})", pacing.signal.label()))
             }
@@ -11245,6 +11315,14 @@ impl ChatWidget {
     pub(crate) fn clear_esc_backtrack_hint(&mut self) {
         self.bottom_pane.clear_esc_backtrack_hint();
     }
+
+    fn refresh_skills_for_current_cwd(&mut self, force_reload: bool) {
+        self.submit_op(AppCommand::list_skills(
+            vec![self.config.cwd.to_path_buf()],
+            force_reload,
+        ));
+    }
+
     /// Forward a command directly to codex.
     pub(crate) fn submit_op<T>(&mut self, op: T) -> bool
     where
@@ -11385,19 +11463,21 @@ impl ChatWidget {
             return;
         }
 
-        let plugins = PluginsManager::new(self.config.codex_home.clone())
-            .plugins_for_config(&self.config)
-            .capability_summaries()
-            .to_vec();
-        self.bottom_pane.set_plugin_mentions(Some(plugins));
+        self.app_event_tx.send(AppEvent::RefreshPluginMentions);
+    }
+
+    pub(crate) fn on_plugin_mentions_loaded(
+        &mut self,
+        plugins: Option<Vec<crate::legacy_core::plugins::PluginCapabilitySummary>>,
+    ) {
+        self.bottom_pane.set_plugin_mentions(plugins);
     }
 
     pub(crate) fn sync_runtime_config(&mut self, config: &Config) {
         self.config.features = config.features.clone();
         self.config.config_layer_stack = config.config_layer_stack.clone();
-        self.config.tui_double_esc_interrupt = config.tui_double_esc_interrupt;
         self.bottom_pane
-            .set_esc_interrupt_requires_double_press(config.tui_double_esc_interrupt);
+            .set_esc_interrupt_requires_double_press(/*requires_double_press*/ false);
     }
 
     pub(crate) fn open_review_popup(&mut self) {
@@ -11694,26 +11774,11 @@ impl Renderable for ChatWidget {
 
 #[derive(Debug)]
 enum Notification {
-    AgentTurnComplete {
-        response: String,
-    },
-    ExecApprovalRequested {
-        command: String,
-    },
-    EditApprovalRequested {
-        cwd: PathBuf,
-        changes: Vec<PathBuf>,
-    },
-    ElicitationRequested {
-        server_name: String,
-    },
-    PlanModePrompt {
-        title: String,
-    },
-    UserInputRequested {
-        question_count: usize,
-        summary: Option<String>,
-    },
+    AgentTurnComplete { response: String },
+    ExecApprovalRequested { command: String },
+    EditApprovalRequested { cwd: PathBuf, changes: Vec<PathBuf> },
+    ElicitationRequested { server_name: String },
+    PlanModePrompt { title: String },
 }
 
 impl Notification {
@@ -11746,14 +11811,6 @@ impl Notification {
             Notification::PlanModePrompt { title } => {
                 format!("Plan mode prompt: {title}")
             }
-            Notification::UserInputRequested {
-                question_count,
-                summary,
-            } => match (*question_count, summary.as_deref()) {
-                (1, Some(summary)) => format!("Question requested: {summary}"),
-                (1, None) => "Question requested".to_string(),
-                (count, _) => format!("Questions requested: {count}"),
-            },
         }
     }
 
@@ -11764,7 +11821,6 @@ impl Notification {
             | Notification::EditApprovalRequested { .. }
             | Notification::ElicitationRequested { .. } => "approval-requested",
             Notification::PlanModePrompt { .. } => "plan-mode-prompt",
-            Notification::UserInputRequested { .. } => "user-input-requested",
         }
     }
 
@@ -11774,8 +11830,7 @@ impl Notification {
             Notification::ExecApprovalRequested { .. }
             | Notification::EditApprovalRequested { .. }
             | Notification::ElicitationRequested { .. }
-            | Notification::PlanModePrompt { .. }
-            | Notification::UserInputRequested { .. } => 1,
+            | Notification::PlanModePrompt { .. } => 1,
         }
     }
 

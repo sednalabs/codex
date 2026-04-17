@@ -37,10 +37,11 @@ fn selection_for_attested_outputs(selected: Vec<Stage1Output>) -> Phase2InputSel
 
 fn config_for_memory_root(root: &Path) -> Arc<Config> {
     let mut config = test_config();
-    config.codex_home = root
-        .parent()
-        .expect("memory root should have a codex home parent")
-        .to_path_buf();
+    config.codex_home = codex_utils_absolute_path::AbsolutePathBuf::from_absolute_path(
+        root.parent()
+            .expect("memory root should have a codex home parent"),
+    )
+    .expect("codex home should be absolute");
     Arc::new(config)
 }
 
@@ -54,6 +55,8 @@ fn canonical_codex_home(temp_dir: &tempfile::TempDir) -> PathBuf {
 async fn consolidation_artifacts_ready_rejects_rollout_summary_drift_even_when_outputs_are_fresh() {
     let temp_dir = tempfile::tempdir().expect("temp dir");
     let codex_home = canonical_codex_home(&temp_dir);
+    let codex_home = codex_utils_absolute_path::AbsolutePathBuf::from_absolute_path(&codex_home)
+        .expect("codex home should be absolute");
     let root = memory_root(&codex_home);
     let config = config_for_memory_root(&root);
     let selection = selection_for_attested_outputs(Vec::new());
@@ -117,6 +120,8 @@ async fn consolidation_artifacts_ready_rejects_missing_attestation_after_db_requ
  {
     let temp_dir = tempfile::tempdir().expect("temp dir");
     let codex_home = canonical_codex_home(&temp_dir);
+    let codex_home = codex_utils_absolute_path::AbsolutePathBuf::from_absolute_path(&codex_home)
+        .expect("codex home should be absolute");
     let root = memory_root(&codex_home);
     let config = config_for_memory_root(&root);
     let state_db = codex_state::StateRuntime::init(
@@ -184,6 +189,8 @@ async fn consolidation_artifacts_ready_rejects_missing_attestation_after_db_requ
 async fn consolidation_artifacts_ready_rejects_missing_attestation_when_state_db_row_is_absent() {
     let temp_dir = tempfile::tempdir().expect("temp dir");
     let codex_home = canonical_codex_home(&temp_dir);
+    let codex_home = codex_utils_absolute_path::AbsolutePathBuf::from_absolute_path(&codex_home)
+        .expect("codex home should be absolute");
     let root = memory_root(&codex_home);
     let config = config_for_memory_root(&root);
     let state_db = codex_state::StateRuntime::init(

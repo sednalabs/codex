@@ -11,7 +11,7 @@ pub(super) async fn test_config() -> Config {
     let mut config =
         Config::load_default_with_cli_overrides_for_codex_home(codex_home.clone(), Vec::new())
             .expect("config");
-    config.codex_home = codex_home.clone();
+    config.codex_home = codex_home.abs();
     config.sqlite_home = codex_home.clone();
     config.log_dir = codex_home.join("log");
     config.cwd = PathBuf::from(test_path_display("/tmp/project")).abs();
@@ -136,6 +136,49 @@ pub(super) fn test_model_catalog(config: &Config) -> Arc<ModelCatalog> {
     ))
 }
 
+pub(super) fn active_hook_cell(chat: &ChatWidget) -> Option<&crate::history_cell::HookCell> {
+    chat.active_cell.as_ref().and_then(|cell| {
+        cell.as_any()
+            .downcast_ref::<crate::history_cell::HookCell>()
+    })
+}
+
+pub(super) fn active_hook_blob(chat: &ChatWidget) -> String {
+    active_hook_cell(chat)
+        .map(|cell| lines_to_single_string(&cell.transcript_lines(/*width*/ 80)))
+        .unwrap_or_else(|| "<empty>\n".to_string())
+}
+
+pub(super) fn reveal_running_hooks(chat: &mut ChatWidget) {
+    let Some(cell) = chat.active_cell.as_mut().and_then(|cell| {
+        cell.as_any_mut()
+            .downcast_mut::<crate::history_cell::HookCell>()
+    }) else {
+        panic!("expected an active hook cell");
+    };
+    cell.reveal_running_runs_now_for_test();
+}
+
+pub(super) fn reveal_running_hooks_after_delayed_redraw(chat: &mut ChatWidget) {
+    let Some(cell) = chat.active_cell.as_mut().and_then(|cell| {
+        cell.as_any_mut()
+            .downcast_mut::<crate::history_cell::HookCell>()
+    }) else {
+        panic!("expected an active hook cell");
+    };
+    cell.reveal_running_runs_after_delayed_redraw_for_test();
+}
+
+pub(super) fn expire_quiet_hook_linger(chat: &mut ChatWidget) {
+    let Some(cell) = chat.active_cell.as_mut().and_then(|cell| {
+        cell.as_any_mut()
+            .downcast_mut::<crate::history_cell::HookCell>()
+    }) else {
+        panic!("expected an active hook cell");
+    };
+    cell.expire_quiet_runs_now_for_test();
+}
+
 // --- Helpers for tests that need direct construction and event draining ---
 pub(super) async fn make_chatwidget_manual(
     model_override: Option<&str>,
@@ -216,6 +259,7 @@ pub(super) async fn make_chatwidget_manual(
         suppressed_exec_calls: HashSet::new(),
         skills_all: Vec::new(),
         skills_initial_state: None,
+        instruction_source_paths: Vec::new(),
         last_unified_wait: None,
         unified_exec_wait_streak: None,
         turn_sleep_inhibitor: SleepInhibitor::new(prevent_idle_sleep),
@@ -477,7 +521,7 @@ pub(super) fn begin_exec_with_source(
     let command = vec!["bash".to_string(), "-lc".to_string(), raw_cmd.to_string()];
     let parsed_cmd: Vec<ParsedCommand> =
         codex_shell_command::parse_command::parse_command(&command);
-    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let cwd = AbsolutePathBuf::current_dir().expect("current dir");
     let interaction_input = None;
     let event = ExecCommandBeginEvent {
         call_id: call_id.to_string(),
@@ -503,7 +547,7 @@ pub(super) fn begin_unified_exec_startup(
     raw_cmd: &str,
 ) -> ExecCommandBeginEvent {
     let command = vec!["bash".to_string(), "-lc".to_string(), raw_cmd.to_string()];
-    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let cwd = AbsolutePathBuf::current_dir().expect("current dir");
     let event = ExecCommandBeginEvent {
         call_id: call_id.to_string(),
         process_id: Some(process_id.to_string()),
@@ -918,7 +962,7 @@ pub(super) fn plugins_test_detail(
                 description: format!("{name} description"),
                 short_description: None,
                 interface: None,
-                path: PathBuf::from(format!("/skills/{name}/SKILL.md")),
+                path: plugins_test_absolute_path(&format!("skills/{name}/SKILL.md")),
                 enabled: true,
             })
             .collect(),
@@ -966,7 +1010,7 @@ pub(super) async fn assert_hook_events_snapshot(
                 handler_type: codex_protocol::protocol::HookHandlerType::Command,
                 execution_mode: codex_protocol::protocol::HookExecutionMode::Sync,
                 scope: codex_protocol::protocol::HookScope::Turn,
-                source_path: PathBuf::from("/tmp/hooks.json"),
+                source_path: PathBuf::from(test_path_display("/tmp/hooks.json")).abs(),
                 display_order: 0,
                 status: codex_protocol::protocol::HookRunStatus::Running,
                 status_message: Some(status_message.to_string()),
@@ -988,7 +1032,7 @@ pub(super) async fn assert_hook_events_snapshot(
                 handler_type: codex_protocol::protocol::HookHandlerType::Command,
                 execution_mode: codex_protocol::protocol::HookExecutionMode::Sync,
                 scope: codex_protocol::protocol::HookScope::Turn,
-                source_path: PathBuf::from("/tmp/hooks.json"),
+                source_path: PathBuf::from(test_path_display("/tmp/hooks.json")).abs(),
                 display_order: 0,
                 status: codex_protocol::protocol::HookRunStatus::Completed,
                 status_message: Some(status_message.to_string()),

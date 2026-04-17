@@ -2,16 +2,15 @@ use crate::agent::AgentStatus;
 use crate::codex::Session;
 use crate::codex::TurnContext;
 use crate::config::Config;
-use crate::error::CodexErr;
 use crate::function_tool::FunctionCallError;
-use crate::models_manager::manager::RefreshStrategy;
 use crate::tools::context::FunctionToolOutput;
 use crate::tools::context::ToolOutput;
 use crate::tools::context::ToolPayload;
-use crate::tools::handlers::request_user_input::request_user_input_unavailable_message;
 use codex_features::Feature;
+use codex_models_manager::manager::RefreshStrategy;
 use codex_protocol::AgentPath;
 use codex_protocol::ThreadId;
+use codex_protocol::error::CodexErr;
 use codex_protocol::models::BaseInstructions;
 use codex_protocol::models::ResponseInputItem;
 use codex_protocol::openai_models::ReasoningEffort;
@@ -25,6 +24,7 @@ use codex_protocol::request_user_input::RequestUserInputArgs;
 use codex_protocol::request_user_input::RequestUserInputQuestion;
 use codex_protocol::request_user_input::RequestUserInputQuestionOption;
 use codex_protocol::user_input::UserInput;
+use codex_tools::request_user_input_unavailable_message;
 use serde::Deserialize;
 use serde::Serialize;
 use serde_json::Value as JsonValue;
@@ -341,13 +341,28 @@ fn build_agent_shared_config(turn: &TurnContext) -> Result<Config, FunctionCallE
     let mut config = (*base_config).clone();
     config.model = Some(turn.model_info.slug.clone());
     config.model_provider = turn.provider.clone();
-    config.model_reasoning_effort = turn.reasoning_effort;
+    config.model_reasoning_effort = turn
+        .reasoning_effort
+        .or(turn.model_info.default_reasoning_level);
     config.model_reasoning_summary = Some(turn.reasoning_summary);
     config.developer_instructions = turn.developer_instructions.clone();
     config.compact_prompt = turn.compact_prompt.clone();
     apply_spawn_agent_runtime_overrides(&mut config, turn)?;
 
     Ok(config)
+}
+
+pub(crate) fn reject_full_fork_spawn_overrides(
+    agent_type: Option<&str>,
+    model: Option<&str>,
+    reasoning_effort: Option<ReasoningEffort>,
+) -> Result<(), FunctionCallError> {
+    if agent_type.is_some() || model.is_some() || reasoning_effort.is_some() {
+        return Err(FunctionCallError::RespondToModel(
+            "Full-history forked agents inherit the parent agent type, model, and reasoning effort; omit agent_type, model, and reasoning_effort, or spawn without fork_context/fork_turns=all.".to_string(),
+        ));
+    }
+    Ok(())
 }
 
 /// Copies runtime-only turn state onto a child config before it is handed to `AgentControl`.
@@ -408,7 +423,7 @@ pub(crate) async fn apply_requested_spawn_agent_model_overrides(
         let selected_model_info = session
             .services
             .models_manager
-            .get_model_info(&selected_model_name, config)
+            .get_model_info(&selected_model_name, &config.to_models_manager_config())
             .await;
 
         config.model = Some(selected_model_name.clone());

@@ -2,13 +2,12 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use codex_protocol::models::ShellCommandToolCallParams;
+use core_test_support::PathBufExt;
+use core_test_support::test_path_buf;
 use pretty_assertions::assert_eq;
 
 use crate::codex::make_session_and_context;
 use crate::exec_env::create_env;
-use crate::is_safe_command::is_known_safe_command;
-use crate::powershell::try_find_powershell_executable_blocking;
-use crate::powershell::try_find_pwsh_executable_blocking;
 use crate::sandboxing::SandboxPermissions;
 use crate::shell::Shell;
 use crate::shell::ShellType;
@@ -20,6 +19,9 @@ use crate::tools::handlers::ShellCommandHandler;
 use crate::tools::handlers::ShellHandler;
 use crate::tools::registry::ToolHandler;
 use crate::turn_diff_tracker::TurnDiffTracker;
+use codex_shell_command::is_safe_command::is_known_safe_command;
+use codex_shell_command::powershell::try_find_powershell_executable_blocking;
+use codex_shell_command::powershell::try_find_pwsh_executable_blocking;
 use serde_json::json;
 use tokio::sync::Mutex;
 use tokio::sync::watch;
@@ -113,7 +115,7 @@ async fn shell_command_handler_to_exec_params_uses_session_shell_and_turn_contex
 
     // ExecParams cannot derive Eq due to the CancellationToken field, so we manually compare the fields.
     assert_eq!(exec_params.command, expected_command);
-    assert_eq!(exec_params.cwd, expected_cwd);
+    assert_eq!(exec_params.cwd.as_path(), expected_cwd.as_path());
     assert_eq!(exec_params.env, expected_env);
     assert_eq!(exec_params.network, turn_context.network);
     assert_eq!(exec_params.expiration.timeout_ms(), timeout_ms);
@@ -125,8 +127,8 @@ async fn shell_command_handler_to_exec_params_uses_session_shell_and_turn_contex
 #[test]
 fn shell_command_handler_respects_explicit_login_flag() {
     let (_tx, shell_snapshot) = watch::channel(Some(Arc::new(ShellSnapshot {
-        path: PathBuf::from("/tmp/snapshot.sh"),
-        cwd: PathBuf::from("/tmp"),
+        path: test_path_buf("/tmp/snapshot.sh").abs(),
+        cwd: test_path_buf("/tmp").abs(),
     })));
     let shell = Shell {
         shell_type: ShellType::Bash,
@@ -225,8 +227,7 @@ async fn shell_pre_tool_use_payload_uses_joined_command() {
             turn: turn.into(),
             tracker: Arc::new(Mutex::new(TurnDiffTracker::new())),
             call_id: "call-41".to_string(),
-            tool_name: "shell".to_string(),
-            tool_namespace: None,
+            tool_name: codex_tools::ToolName::plain("shell"),
             payload,
         }),
         Some(crate::tools::registry::PreToolUsePayload {
@@ -251,8 +252,7 @@ async fn shell_command_pre_tool_use_payload_uses_raw_command() {
             turn: turn.into(),
             tracker: Arc::new(Mutex::new(TurnDiffTracker::new())),
             call_id: "call-42".to_string(),
-            tool_name: "shell_command".to_string(),
-            tool_namespace: None,
+            tool_name: codex_tools::ToolName::plain("shell_command"),
             payload,
         }),
         Some(crate::tools::registry::PreToolUsePayload {

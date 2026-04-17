@@ -1,5 +1,9 @@
 {
   "$defs": {
+    "AbsolutePathBuf": {
+      "description": "A path that is guaranteed to be absolute and normalized (though it is not\nguaranteed to be canonicalized or exist on the filesystem).\n\nIMPORTANT: When deserializing an `AbsolutePathBuf`, a base path must be set\nusing [AbsolutePathBufGuard::new]. If no base path is set, the\ndeserialization will fail unless the path being deserialized is already\nabsolute.",
+      "type": "string"
+    },
     "GuardianApprovalReview": {
       "description": "[UNSTABLE] Temporary guardian approval review payload used by\n`item/autoApprovalReview/*` notifications. This shape is expected to change\nsoon.",
       "properties": {
@@ -19,17 +23,18 @@
             }
           ]
         },
-        "riskScore": {
-          "format": "uint8",
-          "maximum": 255,
-          "minimum": 0,
-          "type": [
-            "integer",
-            "null"
-          ]
-        },
         "status": {
           "$ref": "#/$defs/GuardianApprovalReviewStatus"
+        },
+        "userAuthorization": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/GuardianUserAuthorization"
+            },
+            {
+              "type": "null"
+            }
+          ]
         }
       },
       "required": [
@@ -45,7 +50,7 @@
               "type": "string"
             },
             "cwd": {
-              "type": "string"
+              "$ref": "#/$defs/AbsolutePathBuf"
             },
             "source": {
               "$ref": "#/$defs/GuardianCommandSource"
@@ -74,7 +79,7 @@
               "type": "array"
             },
             "cwd": {
-              "type": "string"
+              "$ref": "#/$defs/AbsolutePathBuf"
             },
             "program": {
               "type": "string"
@@ -101,11 +106,11 @@
         {
           "properties": {
             "cwd": {
-              "type": "string"
+              "$ref": "#/$defs/AbsolutePathBuf"
             },
             "files": {
               "items": {
-                "type": "string"
+                "$ref": "#/$defs/AbsolutePathBuf"
               },
               "type": "array"
             },
@@ -195,22 +200,6 @@
           ],
           "title": "McpToolCallGuardianApprovalReviewAction",
           "type": "object"
-        },
-        {
-          "properties": {
-            "raw": true,
-            "type": {
-              "const": "unknown",
-              "title": "UnknownGuardianApprovalReviewActionType",
-              "type": "string"
-            }
-          },
-          "required": [
-            "type",
-            "raw"
-          ],
-          "title": "UnknownGuardianApprovalReviewAction",
-          "type": "object"
         }
       ]
     },
@@ -220,6 +209,7 @@
         "inProgress",
         "approved",
         "denied",
+        "timedOut",
         "aborted"
       ],
       "type": "string"
@@ -234,6 +224,17 @@
     "GuardianRiskLevel": {
       "description": "[UNSTABLE] Risk level assigned by guardian approval review.",
       "enum": [
+        "low",
+        "medium",
+        "high",
+        "critical"
+      ],
+      "type": "string"
+    },
+    "GuardianUserAuthorization": {
+      "description": "[UNSTABLE] Authorization level assigned by guardian approval review.",
+      "enum": [
+        "unknown",
         "low",
         "medium",
         "high"
@@ -259,8 +260,16 @@
     "review": {
       "$ref": "#/$defs/GuardianApprovalReview"
     },
-    "targetItemId": {
+    "reviewId": {
+      "description": "Stable identifier for this review.",
       "type": "string"
+    },
+    "targetItemId": {
+      "description": "Identifier for the reviewed item or tool call when one exists.\n\nIn most cases, one review maps to one target item. The exceptions are\n- execve reviews, where a single command may contain multiple execve\n  calls to review (only possible when using the shell_zsh_fork feature)\n- network policy reviews, where there is no target item\n\nA network call is triggered by a CommandExecution item, so having a\ntarget_item_id set to the CommandExecution item would be misleading\nbecause the review is about the network call, not the command execution.\nTherefore, target_item_id is set to None for network policy reviews.",
+      "type": [
+        "string",
+        "null"
+      ]
     },
     "threadId": {
       "type": "string"
@@ -272,7 +281,7 @@
   "required": [
     "threadId",
     "turnId",
-    "targetItemId",
+    "reviewId",
     "review",
     "action"
   ],

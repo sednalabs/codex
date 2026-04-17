@@ -1,10 +1,10 @@
 use super::*;
 use crate::codex::make_session_and_context;
 use crate::config::test_config;
-use crate::models_manager::collaboration_mode_presets::CollaborationModesConfig;
-use crate::models_manager::manager::RefreshStrategy;
 use crate::rollout::RolloutRecorder;
 use crate::tasks::interrupted_turn_history_marker;
+use codex_models_manager::collaboration_mode_presets::CollaborationModesConfig;
+use codex_models_manager::manager::RefreshStrategy;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::ReasoningItemReasoningSummary;
 use codex_protocol::models::ResponseItem;
@@ -13,6 +13,7 @@ use codex_protocol::protocol::AgentMessageEvent;
 use codex_protocol::protocol::ThreadRolledBackEvent;
 use codex_protocol::protocol::TurnStartedEvent;
 use codex_protocol::protocol::UserMessageEvent;
+use core_test_support::PathBufExt;
 use core_test_support::PathExt;
 use core_test_support::responses::mount_models_once;
 use pretty_assertions::assert_eq;
@@ -222,6 +223,7 @@ fn out_of_range_truncation_drops_pre_user_active_turn_prefix() {
         RolloutItem::ResponseItem(assistant_msg("a1")),
         RolloutItem::EventMsg(EventMsg::TurnStarted(TurnStartedEvent {
             turn_id: "turn-2".to_string(),
+            started_at: None,
             model_context_window: None,
             collaboration_mode_kind: Default::default(),
         })),
@@ -294,14 +296,14 @@ async fn ignores_session_prefix_messages_when_truncating() {
 async fn shutdown_all_threads_bounded_submits_shutdown_to_every_thread() {
     let temp_dir = tempdir().expect("tempdir");
     let mut config = test_config();
-    config.codex_home = temp_dir.path().join("codex-home");
+    config.codex_home = temp_dir.path().join("codex-home").abs();
     config.cwd = config.codex_home.abs();
     std::fs::create_dir_all(&config.codex_home).expect("create codex home");
 
     let manager = ThreadManager::with_models_provider_and_home_for_tests(
         CodexAuth::from_api_key("dummy"),
         config.model_provider.clone(),
-        config.codex_home.clone(),
+        config.codex_home.to_path_buf(),
         Arc::new(codex_exec_server::EnvironmentManager::new(
             /*exec_server_url*/ None,
         )),
@@ -336,7 +338,7 @@ async fn new_uses_configured_openai_provider_for_model_refresh() {
 
     let temp_dir = tempdir().expect("tempdir");
     let mut config = test_config();
-    config.codex_home = temp_dir.path().join("codex-home");
+    config.codex_home = temp_dir.path().join("codex-home").abs();
     config.cwd = config.codex_home.abs();
     std::fs::create_dir_all(&config.codex_home).expect("create codex home");
     config.model_catalog = None;
@@ -356,6 +358,7 @@ async fn new_uses_configured_openai_provider_for_model_refresh() {
         Arc::new(codex_exec_server::EnvironmentManager::new(
             /*exec_server_url*/ None,
         )),
+        /*analytics_events_client*/ None,
     );
 
     let _ = manager.list_models(RefreshStrategy::Online).await;
@@ -472,7 +475,7 @@ fn mixed_response_and_legacy_user_event_history_is_mid_turn() {
 async fn interrupted_fork_snapshot_does_not_synthesize_turn_id_for_legacy_history() {
     let temp_dir = tempdir().expect("tempdir");
     let mut config = test_config();
-    config.codex_home = temp_dir.path().join("codex-home");
+    config.codex_home = temp_dir.path().join("codex-home").abs();
     config.cwd = config.codex_home.abs();
     std::fs::create_dir_all(&config.codex_home).expect("create codex home");
 
@@ -486,6 +489,7 @@ async fn interrupted_fork_snapshot_does_not_synthesize_turn_id_for_legacy_histor
         Arc::new(codex_exec_server::EnvironmentManager::new(
             /*exec_server_url*/ None,
         )),
+        /*analytics_events_client*/ None,
     );
 
     let source = manager
@@ -572,7 +576,7 @@ async fn interrupted_fork_snapshot_does_not_synthesize_turn_id_for_legacy_histor
 async fn interrupted_fork_snapshot_preserves_explicit_turn_id() {
     let temp_dir = tempdir().expect("tempdir");
     let mut config = test_config();
-    config.codex_home = temp_dir.path().join("codex-home");
+    config.codex_home = temp_dir.path().join("codex-home").abs();
     config.cwd = config.codex_home.abs();
     std::fs::create_dir_all(&config.codex_home).expect("create codex home");
 
@@ -586,6 +590,7 @@ async fn interrupted_fork_snapshot_preserves_explicit_turn_id() {
         Arc::new(codex_exec_server::EnvironmentManager::new(
             /*exec_server_url*/ None,
         )),
+        /*analytics_events_client*/ None,
     );
 
     let source = manager
@@ -594,6 +599,7 @@ async fn interrupted_fork_snapshot_preserves_explicit_turn_id() {
             InitialHistory::Forked(vec![
                 RolloutItem::EventMsg(EventMsg::TurnStarted(TurnStartedEvent {
                     turn_id: "turn-explicit".to_string(),
+                    started_at: None,
                     model_context_window: None,
                     collaboration_mode_kind: Default::default(),
                 })),
@@ -661,7 +667,7 @@ async fn interrupted_fork_snapshot_preserves_explicit_turn_id() {
 async fn interrupted_fork_snapshot_uses_persisted_mid_turn_history_without_live_source() {
     let temp_dir = tempdir().expect("tempdir");
     let mut config = test_config();
-    config.codex_home = temp_dir.path().join("codex-home");
+    config.codex_home = temp_dir.path().join("codex-home").abs();
     config.cwd = config.codex_home.abs();
     std::fs::create_dir_all(&config.codex_home).expect("create codex home");
 
@@ -675,6 +681,7 @@ async fn interrupted_fork_snapshot_uses_persisted_mid_turn_history_without_live_
         Arc::new(codex_exec_server::EnvironmentManager::new(
             /*exec_server_url*/ None,
         )),
+        /*analytics_events_client*/ None,
     );
 
     let source = manager

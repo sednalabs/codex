@@ -52,8 +52,7 @@ fn root_write_policy_with_carveouts_still_uses_platform_sandbox() {
     let blocked = AbsolutePathBuf::resolve_path_against_base(
         "blocked",
         std::env::current_dir().expect("current dir"),
-    )
-    .expect("blocked path");
+    );
     let policy = FileSystemSandboxPolicy::restricted(vec![
         FileSystemSandboxEntry {
             path: FileSystemPath::Special {
@@ -131,7 +130,7 @@ fn normalize_additional_permissions_preserves_network() {
 
 #[cfg(unix)]
 #[test]
-fn normalize_additional_permissions_canonicalizes_symlinked_write_paths() {
+fn normalize_additional_permissions_preserves_symlinked_write_paths() {
     let temp_dir = TempDir::new().expect("create temp dir");
     let real_root = temp_dir.path().join("real");
     let link_root = temp_dir.path().join("link");
@@ -141,11 +140,6 @@ fn normalize_additional_permissions_canonicalizes_symlinked_write_paths() {
 
     let link_write_dir =
         AbsolutePathBuf::from_absolute_path(link_root.join("write")).expect("link write dir");
-    let expected_write_dir = AbsolutePathBuf::from_absolute_path(
-        write_dir.canonicalize().expect("canonicalize write dir"),
-    )
-    .expect("absolute canonical write dir");
-
     let permissions = normalize_additional_permissions(PermissionProfile {
         file_system: Some(FileSystemPermissions {
             read: Some(vec![]),
@@ -159,7 +153,10 @@ fn normalize_additional_permissions_canonicalizes_symlinked_write_paths() {
         permissions.file_system,
         Some(FileSystemPermissions {
             read: Some(vec![]),
-            write: Some(vec![expected_write_dir]),
+            write: Some(vec![
+                AbsolutePathBuf::from_absolute_path(link_root.join("write"))
+                    .expect("link write dir")
+            ]),
         })
     );
 }
@@ -317,8 +314,8 @@ fn merge_file_system_policy_with_additional_permissions_preserves_unreadable_roo
         canonicalize(temp_dir.path()).expect("canonicalize temp dir"),
     )
     .expect("absolute temp dir");
-    let allowed_path = cwd.join("allowed").expect("allowed path");
-    let denied_path = cwd.join("denied").expect("denied path");
+    let allowed_path = cwd.join("allowed");
+    let denied_path = cwd.join("denied");
     let merged_policy = merge_file_system_policy_with_additional_permissions(
         &FileSystemSandboxPolicy::restricted(vec![
             FileSystemSandboxEntry {
@@ -361,7 +358,7 @@ fn effective_file_system_sandbox_policy_returns_base_policy_without_additional_p
         canonicalize(temp_dir.path()).expect("canonicalize temp dir"),
     )
     .expect("absolute temp dir");
-    let denied_path = cwd.join("denied").expect("denied path");
+    let denied_path = cwd.join("denied");
     let base_policy = FileSystemSandboxPolicy::restricted(vec![
         FileSystemSandboxEntry {
             path: FileSystemPath::Special {
@@ -388,8 +385,8 @@ fn effective_file_system_sandbox_policy_merges_additional_write_roots() {
         canonicalize(temp_dir.path()).expect("canonicalize temp dir"),
     )
     .expect("absolute temp dir");
-    let allowed_path = cwd.join("allowed").expect("allowed path");
-    let denied_path = cwd.join("denied").expect("denied path");
+    let allowed_path = cwd.join("allowed");
+    let denied_path = cwd.join("denied");
     let base_policy = FileSystemSandboxPolicy::restricted(vec![
         FileSystemSandboxEntry {
             path: FileSystemPath::Special {

@@ -42,6 +42,7 @@ use codex_app_server_protocol::ThreadRealtimeAppendTextParams;
 use codex_app_server_protocol::ThreadRealtimeAppendTextResponse;
 use codex_app_server_protocol::ThreadRealtimeStartParams;
 use codex_app_server_protocol::ThreadRealtimeStartResponse;
+use codex_app_server_protocol::ThreadRealtimeStartTransport;
 use codex_app_server_protocol::ThreadRealtimeStopParams;
 use codex_app_server_protocol::ThreadRealtimeStopResponse;
 use codex_app_server_protocol::ThreadResumeParams;
@@ -74,6 +75,7 @@ use codex_protocol::openai_models::ReasoningEffortPreset;
 use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::ConversationAudioParams;
 use codex_protocol::protocol::ConversationStartParams;
+use codex_protocol::protocol::ConversationStartTransport;
 use codex_protocol::protocol::ConversationTextParams;
 use codex_protocol::protocol::CreditsSnapshot;
 use codex_protocol::protocol::RateLimitSnapshot;
@@ -82,6 +84,7 @@ use codex_protocol::protocol::ReviewRequest;
 use codex_protocol::protocol::ReviewTarget as CoreReviewTarget;
 use codex_protocol::protocol::SandboxPolicy;
 use codex_protocol::protocol::SessionNetworkProxyRuntime;
+use codex_utils_absolute_path::AbsolutePathBuf;
 use color_eyre::eyre::ContextCompat;
 use color_eyre::eyre::Result;
 use color_eyre::eyre::WrapErr;
@@ -104,6 +107,7 @@ pub(crate) struct AppServerBootstrap {
 pub(crate) struct AppServerSession {
     client: AppServerClient,
     next_request_id: i64,
+    remote_cwd_override: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -117,7 +121,8 @@ pub(crate) struct ThreadSessionState {
     pub(crate) approval_policy: AskForApproval,
     pub(crate) approvals_reviewer: codex_protocol::config_types::ApprovalsReviewer,
     pub(crate) sandbox_policy: SandboxPolicy,
-    pub(crate) cwd: PathBuf,
+    pub(crate) cwd: AbsolutePathBuf,
+    pub(crate) instruction_source_paths: Vec<AbsolutePathBuf>,
     pub(crate) reasoning_effort: Option<codex_protocol::openai_models::ReasoningEffort>,
     pub(crate) history_log_id: u64,
     pub(crate) history_entry_count: u64,
@@ -150,7 +155,17 @@ impl AppServerSession {
         Self {
             client,
             next_request_id: 1,
+            remote_cwd_override: None,
         }
+    }
+
+    pub(crate) fn with_remote_cwd_override(mut self, remote_cwd_override: Option<PathBuf>) -> Self {
+        self.remote_cwd_override = remote_cwd_override;
+        self
+    }
+
+    pub(crate) fn remote_cwd_override(&self) -> Option<&PathBuf> {
+        self.remote_cwd_override.as_ref()
     }
 
     pub(crate) fn is_remote(&self) -> bool {
@@ -417,6 +432,7 @@ impl AppServerSession {
                 params: TurnStartParams {
                     thread_id: thread_id.to_string(),
                     input: items.into_iter().map(Into::into).collect(),
+                    responsesapi_client_metadata: None,
                     cwd: Some(cwd),
                     approval_policy: Some(approval_policy.into()),
                     approvals_reviewer: Some(approvals_reviewer.into()),
@@ -454,6 +470,19 @@ impl AppServerSession {
         Ok(())
     }
 
+    pub(crate) async fn read_account(&mut self) -> Result<GetAccountResponse> {
+        let request_id = self.next_request_id();
+        self.client
+            .request_typed(ClientRequest::GetAccount {
+                request_id,
+                params: GetAccountParams {
+                    refresh_token: false,
+                },
+            })
+            .await
+            .wrap_err("account/read failed in TUI")
+    }
+
     pub(crate) async fn turn_steer(
         &mut self,
         thread_id: ThreadId,
@@ -467,6 +496,7 @@ impl AppServerSession {
                 params: TurnSteerParams {
                     thread_id: thread_id.to_string(),
                     input: items.into_iter().map(Into::into).collect(),
+                    responsesapi_client_metadata: None,
                     expected_turn_id: turn_id,
                 },
             })
@@ -639,8 +669,18 @@ impl AppServerSession {
                 request_id,
                 params: ThreadRealtimeStartParams {
                     thread_id: thread_id.to_string(),
+                    output_modality: params.output_modality,
                     prompt: params.prompt,
                     session_id: params.session_id,
+                    transport: params.transport.map(|transport| match transport {
+                        ConversationStartTransport::Websocket => {
+                            ThreadRealtimeStartTransport::Websocket
+                        }
+                        ConversationStartTransport::Webrtc { sdp } => {
+                            ThreadRealtimeStartTransport::Webrtc { sdp }
+                        }
+                    }),
+                    voice: params.voice,
                 },
             })
             .await
@@ -750,16 +790,6 @@ pub(crate) fn status_account_display_from_auth_mode(
     }
 }
 
-#[allow(dead_code)]
-pub(crate) fn feedback_audience_from_account_email(
-    account_email: Option<&str>,
-) -> FeedbackAudience {
-    match account_email {
-        Some(email) if email.ends_with("@openai.com") => FeedbackAudience::OpenAiEmployee,
-        Some(_) | None => FeedbackAudience::External,
-    }
-}
-
 fn model_preset_from_api_model(model: ApiModel) -> ModelPreset {
     let upgrade = model.upgrade.map(|upgrade_id| {
         let upgrade_info = model.upgrade_info.clone();
@@ -792,6 +822,7 @@ fn model_preset_from_api_model(model: ApiModel) -> ModelPreset {
             })
             .collect(),
         supports_personality: model.supports_personality,
+        additional_speed_tiers: Vec::new(),
         is_default: model.is_default,
         upgrade,
         show_in_picker: !model.hidden,
@@ -946,6 +977,7 @@ async fn thread_session_state_from_thread_start_response(
     thread_session_state_from_thread_response(
         &response.thread.id,
         response.thread.name.clone(),
+        /*forked_from_id*/ None,
         response.thread.path.clone(),
         response.model.clone(),
         response.model_provider.clone(),
@@ -954,6 +986,7 @@ async fn thread_session_state_from_thread_start_response(
         response.approvals_reviewer.to_core(),
         response.sandbox.to_core(),
         response.cwd.clone(),
+        response.instruction_sources.clone(),
         response.reasoning_effort,
         config,
     )
@@ -967,6 +1000,7 @@ async fn thread_session_state_from_thread_resume_response(
     thread_session_state_from_thread_response(
         &response.thread.id,
         response.thread.name.clone(),
+        /*forked_from_id*/ None,
         response.thread.path.clone(),
         response.model.clone(),
         response.model_provider.clone(),
@@ -975,6 +1009,7 @@ async fn thread_session_state_from_thread_resume_response(
         response.approvals_reviewer.to_core(),
         response.sandbox.to_core(),
         response.cwd.clone(),
+        response.instruction_sources.clone(),
         response.reasoning_effort,
         config,
     )
@@ -988,6 +1023,13 @@ async fn thread_session_state_from_thread_fork_response(
     thread_session_state_from_thread_response(
         &response.thread.id,
         response.thread.name.clone(),
+        response
+            .thread
+            .forked_from_id
+            .as_deref()
+            .map(ThreadId::from_string)
+            .transpose()
+            .map_err(|err| format!("forked_from_id is invalid: {err}"))?,
         response.thread.path.clone(),
         response.model.clone(),
         response.model_provider.clone(),
@@ -996,6 +1038,7 @@ async fn thread_session_state_from_thread_fork_response(
         response.approvals_reviewer.to_core(),
         response.sandbox.to_core(),
         response.cwd.clone(),
+        response.instruction_sources.clone(),
         response.reasoning_effort,
         config,
     )
@@ -1028,6 +1071,7 @@ fn review_target_to_app_server(
 async fn thread_session_state_from_thread_response(
     thread_id: &str,
     thread_name: Option<String>,
+    forked_from_id: Option<ThreadId>,
     rollout_path: Option<PathBuf>,
     model: String,
     model_provider_id: String,
@@ -1035,7 +1079,8 @@ async fn thread_session_state_from_thread_response(
     approval_policy: AskForApproval,
     approvals_reviewer: codex_protocol::config_types::ApprovalsReviewer,
     sandbox_policy: SandboxPolicy,
-    cwd: PathBuf,
+    cwd: AbsolutePathBuf,
+    instruction_source_paths: Vec<AbsolutePathBuf>,
     reasoning_effort: Option<codex_protocol::openai_models::ReasoningEffort>,
     config: &Config,
 ) -> Result<ThreadSessionState, String> {
@@ -1046,7 +1091,7 @@ async fn thread_session_state_from_thread_response(
 
     Ok(ThreadSessionState {
         thread_id,
-        forked_from_id: None,
+        forked_from_id,
         thread_name,
         model,
         model_provider_id,
@@ -1055,6 +1100,7 @@ async fn thread_session_state_from_thread_response(
         approvals_reviewer,
         sandbox_policy,
         cwd,
+        instruction_source_paths,
         reasoning_effort,
         history_log_id,
         history_entry_count,
@@ -1118,6 +1164,8 @@ mod tests {
     use codex_app_server_protocol::Turn;
     use codex_app_server_protocol::TurnStatus;
     use codex_core::config::ConfigBuilder;
+    use codex_utils_absolute_path::test_support::PathBufExt;
+    use codex_utils_absolute_path::test_support::test_path_buf;
     use pretty_assertions::assert_eq;
     use tempfile::TempDir;
 
@@ -1175,7 +1223,7 @@ mod tests {
                 updated_at: 2,
                 status: ThreadStatus::Idle,
                 path: None,
-                cwd: PathBuf::from("/tmp/project"),
+                cwd: test_path_buf("/tmp/project").abs(),
                 cli_version: "0.0.0".to_string(),
                 source: codex_protocol::protocol::SessionSource::Cli.into(),
                 agent_nickname: None,
@@ -1209,7 +1257,8 @@ mod tests {
             model: "gpt-5.4".to_string(),
             model_provider: "openai".to_string(),
             service_tier: None,
-            cwd: PathBuf::from("/tmp/project"),
+            cwd: test_path_buf("/tmp/project").abs(),
+            instruction_sources: vec![test_path_buf("/tmp/project/AGENTS.md").abs()],
             approval_policy: codex_protocol::protocol::AskForApproval::Never.into(),
             approvals_reviewer: codex_app_server_protocol::ApprovalsReviewer::User,
             sandbox: codex_protocol::protocol::SandboxPolicy::new_read_only_policy().into(),
@@ -1239,6 +1288,7 @@ mod tests {
         let session = thread_session_state_from_thread_response(
             &thread_id.to_string(),
             Some("restore".to_string()),
+            /*forked_from_id*/ None,
             /*rollout_path*/ None,
             "gpt-5.4".to_string(),
             "openai".to_string(),
@@ -1246,7 +1296,8 @@ mod tests {
             AskForApproval::Never,
             codex_protocol::config_types::ApprovalsReviewer::User,
             SandboxPolicy::new_read_only_policy(),
-            PathBuf::from("/tmp/project"),
+            test_path_buf("/tmp/project").abs(),
+            Vec::new(),
             /*reasoning_effort*/ None,
             &config,
         )
@@ -1257,6 +1308,34 @@ mod tests {
         assert_eq!(session.history_entry_count, 2);
     }
 
+    #[tokio::test]
+    async fn session_configured_preserves_fork_source_thread_id() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let config = build_config(&temp_dir).await;
+        let thread_id = ThreadId::new();
+        let forked_from_id = ThreadId::new();
+
+        let session = thread_session_state_from_thread_response(
+            &thread_id.to_string(),
+            Some(forked_from_id.to_string()),
+            Some(forked_from_id),
+            /*rollout_path*/ None,
+            "gpt-5.4".to_string(),
+            "openai".to_string(),
+            /*service_tier*/ None,
+            AskForApproval::Never,
+            codex_protocol::config_types::ApprovalsReviewer::User,
+            SandboxPolicy::new_read_only_policy(),
+            test_path_buf("/tmp/project").abs(),
+            Vec::new(),
+            /*reasoning_effort*/ None,
+            &config,
+        )
+        .await
+        .expect("session should map");
+
+        assert_eq!(session.forked_from_id, Some(forked_from_id));
+    }
     #[test]
     fn status_account_display_from_auth_mode_uses_remapped_plan_labels() {
         let business = status_account_display_from_auth_mode(

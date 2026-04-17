@@ -9,8 +9,8 @@ workspace = true
 
 [dependencies]
 anyhow = { workspace = true }
+codex-login = { workspace = true }
 codex-protocol = { workspace = true }
-codex-utils-version = { workspace = true }
 sentry = { version = "0.46" }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }

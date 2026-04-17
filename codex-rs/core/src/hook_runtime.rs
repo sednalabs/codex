@@ -16,6 +16,7 @@ use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::HookCompletedEvent;
 use codex_protocol::protocol::HookRunSummary;
+use codex_protocol::protocol::HookStartedEvent;
 use codex_protocol::user_input::UserInput;
 use serde_json::Value;
 
@@ -95,7 +96,7 @@ pub(crate) async fn run_pending_session_start_hooks(
 
     let request = codex_hooks::SessionStartRequest {
         session_id: sess.conversation_id,
-        cwd: turn_context.cwd.to_path_buf(),
+        cwd: turn_context.cwd.clone(),
         transcript_path: sess.hook_transcript_path().await,
         model: turn_context.model_info.slug.clone(),
         permission_mode: hook_permission_mode(turn_context),
@@ -123,7 +124,7 @@ pub(crate) async fn run_pre_tool_use_hooks(
     let request = PreToolUseRequest {
         session_id: sess.conversation_id,
         turn_id: turn_context.sub_id.clone(),
-        cwd: turn_context.cwd.to_path_buf(),
+        cwd: turn_context.cwd.clone(),
         transcript_path: sess.hook_transcript_path().await,
         model: turn_context.model_info.slug.clone(),
         permission_mode: hook_permission_mode(turn_context),
@@ -154,7 +155,7 @@ pub(crate) async fn run_post_tool_use_hooks(
     let request = PostToolUseRequest {
         session_id: sess.conversation_id,
         turn_id: turn_context.sub_id.clone(),
-        cwd: turn_context.cwd.to_path_buf(),
+        cwd: turn_context.cwd.clone(),
         transcript_path: sess.hook_transcript_path().await,
         model: turn_context.model_info.slug.clone(),
         permission_mode: hook_permission_mode(turn_context),
@@ -179,7 +180,7 @@ pub(crate) async fn run_user_prompt_submit_hooks(
     let request = UserPromptSubmitRequest {
         session_id: sess.conversation_id,
         turn_id: turn_context.sub_id.clone(),
-        cwd: turn_context.cwd.to_path_buf(),
+        cwd: turn_context.cwd.clone(),
         transcript_path: sess.hook_transcript_path().await,
         model: turn_context.model_info.slug.clone(),
         permission_mode: hook_permission_mode(turn_context),
@@ -306,7 +307,7 @@ async fn emit_hook_started_events(
     for run in preview_runs {
         sess.send_event(
             turn_context,
-            EventMsg::HookStarted(crate::protocol::HookStartedEvent {
+            EventMsg::HookStarted(HookStartedEvent {
                 turn_id: Some(turn_context.sub_id.clone()),
                 run,
             }),

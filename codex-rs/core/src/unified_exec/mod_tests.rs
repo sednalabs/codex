@@ -51,7 +51,7 @@ fn shell_env() -> HashMap<String, String> {
 fn test_exec_request(
     turn: &TurnContext,
     command: Vec<String>,
-    cwd: PathBuf,
+    cwd: AbsolutePathBuf,
     env: HashMap<String, String>,
 ) -> ExecRequest {
     let windows_sandbox_private_desktop = false;
@@ -87,7 +87,9 @@ async fn exec_command_with_tty(
 ) -> Result<ExecCommandToolOutput, UnifiedExecError> {
     let manager = &session.services.unified_exec_manager;
     let process_id = manager.allocate_process_id().await;
-    let cwd = workdir.unwrap_or_else(|| turn.cwd.clone().to_path_buf());
+    let cwd = workdir
+        .as_ref()
+        .map_or_else(|| turn.cwd.clone(), |workdir| turn.cwd.join(workdir));
     let command = vec!["bash".to_string(), "-lc".to_string(), cmd.to_string()];
     let request = test_exec_request(turn, command.clone(), cwd.clone(), shell_env());
 
@@ -98,7 +100,9 @@ async fn exec_command_with_tty(
                 &request,
                 tty,
                 Box::new(NoopSpawnLifecycle),
-                turn.environment.as_ref(),
+                turn.environment
+                    .as_deref()
+                    .expect("test turn has environment"),
             )
             .await?,
     );
@@ -367,15 +371,12 @@ async fn unified_exec_timeouts() -> anyhow::Result<()> {
 async fn unified_exec_pause_blocks_yield_timeout() -> anyhow::Result<()> {
     skip_if_sandbox!(Ok(()));
 
-    let pause_duration = Duration::from_secs(2);
-    let minimum_expected_block = pause_duration.saturating_sub(Duration::from_millis(150));
-
     let (session, turn) = test_session_and_turn().await;
     session.set_out_of_band_elicitation_pause_state(/*paused*/ true);
 
     let paused_session = Arc::clone(&session);
     tokio::spawn(async move {
-        tokio::time::sleep(pause_duration).await;
+        tokio::time::sleep(Duration::from_secs(2)).await;
         paused_session.set_out_of_band_elicitation_pause_state(/*paused*/ false);
     });
 
@@ -390,7 +391,7 @@ async fn unified_exec_pause_blocks_yield_timeout() -> anyhow::Result<()> {
     .await?;
 
     assert!(
-        started.elapsed() >= minimum_expected_block,
+        started.elapsed() >= Duration::from_secs(2),
         "pause should block the unified exec yield timeout"
     );
     assert!(
@@ -505,7 +506,7 @@ async fn completed_pipe_commands_preserve_exit_code() -> anyhow::Result<()> {
     let request = test_exec_request(
         &turn,
         vec!["bash".to_string(), "-lc".to_string(), "exit 17".to_string()],
-        PathBuf::from("/tmp"),
+        turn.cwd.clone(),
         shell_env(),
     );
 
@@ -547,7 +548,7 @@ async fn unified_exec_uses_remote_exec_server_when_configured() -> anyhow::Resul
     let request = test_exec_request(
         &turn,
         vec!["bash".to_string(), "-i".to_string()],
-        PathBuf::from("/tmp"),
+        remote_test_env.cwd().clone(),
         shell_env(),
     );
 
@@ -596,12 +597,12 @@ async fn remote_exec_server_rejects_inherited_fd_launches() -> anyhow::Result<()
 
     let remote_test_env = remote_test_env().await?;
     let (_, mut turn) = make_session_and_context().await;
-    turn.environment = Arc::new(remote_test_env.environment().clone());
+    turn.environment = Some(Arc::new(remote_test_env.environment().clone()));
 
     let request = test_exec_request(
         &turn,
         vec!["bash".to_string(), "-lc".to_string(), "echo ok".to_string()],
-        PathBuf::from("/tmp"),
+        turn.cwd.clone(),
         shell_env(),
     );
 
@@ -614,7 +615,9 @@ async fn remote_exec_server_rejects_inherited_fd_launches() -> anyhow::Result<()
             Box::new(TestSpawnLifecycle {
                 inherited_fds: vec![42],
             }),
-            turn.environment.as_ref(),
+            turn.environment
+                .as_deref()
+                .expect("remote turn has environment"),
         )
         .await
         .expect_err("expected inherited fd rejection");

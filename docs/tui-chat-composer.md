@@ -65,6 +65,14 @@ Up/Down recall is handled by `ChatComposerHistory` and merges two sources:
 This distinction keeps the on-disk history backward compatible and avoids persisting attachments,
 while still providing a richer recall experience for in-session edits.
 
+### Reverse history search (Ctrl+R)
+
+Ctrl+R enters an incremental reverse search mode without immediately previewing the latest history entry. While search is active, the footer line becomes the editable query field and the composer body is only a preview of the currently matched entry. `Enter` accepts the preview as a normal editable draft, and `Esc` or Ctrl+C restores the exact draft that existed before search started.
+
+The composer owns the search session because it controls draft snapshots, footer rendering, cursor placement, and preview highlighting. `ChatComposerHistory` owns traversal: it scans persistent and local entries in one offset space, skips duplicate prompt text within a search session, keeps boundary hits on the current match, and resumes scans after asynchronous persistent history responses.
+
+The search query and composer text intentionally remain separate. A no-match result restores the original draft while leaving the footer query open for more typing, and accepting a match clears the search session so highlight styling disappears from the now-editable composer text.
+
 ## Config gating for reuse
 
 `ChatComposer` now supports feature gating via `ChatComposerConfig`
@@ -125,7 +133,9 @@ preview includes both queued message drafts and queued slash commands. Front-que
 are inserted ahead of the existing queued message backlog so they run next after the active task,
 while `Tab`-queued drafts preserve the existing append-to-back FIFO behavior. `Alt+Up` recalls
 queued entries for editing from that list in strict reverse-chronological order across both entry
-types.
+types. If replay hits a mode-changing queued slash command such as `/plan`, that mode switch must
+take effect before any later queued message is autosent; otherwise the drain pauses and leaves the
+later drafts queued.
 
 The composer also treats the textarea kill buffer as separate editing state from the visible draft.
 After submit or slash-command dispatch clears the textarea, the most recent `Ctrl+K` payload is
