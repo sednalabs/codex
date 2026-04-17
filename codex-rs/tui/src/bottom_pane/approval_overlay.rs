@@ -20,6 +20,7 @@ use crate::render::highlight::highlight_bash_to_lines;
 use crate::render::renderable::ColumnRenderable;
 use crate::render::renderable::Renderable;
 use codex_features::Features;
+use codex_protocol::mcp::RequestId;
 use codex_protocol::protocol::ElicitationAction;
 #[cfg(test)]
 use codex_protocol::protocol::Op;
