@@ -215,19 +215,32 @@ jobs:
           # to diagnose environment-specific CI failures.
           parse_meta() {
             local field="$1"
-            python3 -c '
-import json, os, sys
-try:
-    meta = json.loads(os.environ["SELECTION_META"])
-    val = meta["'${field}'"]
-    if isinstance(val, (dict, list)):
-        print(json.dumps(val, separators=(",", ":")))
-    else:
-        print(val)
-except Exception as e:
-    sys.stderr.write(f"ERROR: Failed to parse {field}: {e}\n")
-    sys.exit(1)
-'
+            python3 - "$field" <<'PY'
+          import json
+          import os
+          import sys
+
+          field = sys.argv[1]
+          meta_raw = os.environ["SELECTION_META"]
+
+          try:
+              meta = json.loads(meta_raw)
+          except json.JSONDecodeError as exc:
+              sys.stderr.write(f"ERROR: Failed to parse SELECTION_META as JSON: {exc}\n")
+              sys.stderr.write(f"META: {meta_raw[:500]}\n")
+              raise SystemExit(1)
+
+          if field not in meta:
+              sys.stderr.write(f"ERROR: Key '{field}' not found in SELECTION_META\n")
+              sys.stderr.write(f"META: {meta_raw[:500]}\n")
+              raise SystemExit(1)
+
+          value = meta[field]
+          if isinstance(value, (dict, list)):
+              print(json.dumps(value, separators=(",", ":")))
+          else:
+              print(value)
+          PY
           }
 
           profile_intent="$(SELECTION_META="${selection_meta}" parse_meta "profile_intent")"
