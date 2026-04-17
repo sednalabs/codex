@@ -501,7 +501,6 @@ fn mcp_tool_call_begin_and_end_emit_item_events() {
                 result: Some(Box::new(McpToolCallResult {
                     content: Vec::new(),
                     structured_content: None,
-                    meta: None,
                 })),
                 error: None,
                 duration_ms: Some(1_000),
@@ -642,7 +641,6 @@ fn mcp_tool_call_defaults_arguments_and_preserves_structured_content() {
                         "text": "done",
                     })],
                     structured_content: Some(json!({ "status": "ok" })),
-                    meta: None,
                 })),
                 error: None,
                 duration_ms: Some(10),
