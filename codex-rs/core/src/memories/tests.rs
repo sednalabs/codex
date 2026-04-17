@@ -1329,7 +1329,7 @@ mod phase2 {
             .consolidation_model
             .as_deref()
             .unwrap_or("gpt-5.3-codex");
-        let prompt = build_consolidation_prompt(&root, &selection);
+        let prompt = build_consolidation_prompt(&root, &selection, &[]);
         let drifted_fingerprint = phase2::test_consolidator_contract_fingerprint(
             &config.model_provider_id,
             model,
