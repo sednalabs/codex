@@ -518,8 +518,7 @@ pub(crate) async fn apply_role_to_spawn_config(
         SpawnModelSelectionCarry::from_spawn_config(config, &role_config, &role_layer_toml);
     let preservation_policy = RolePreservationPolicy::from_config(config, &role_layer_toml);
     *config =
-        reload::build_next_config(config, role_name, role_layer_toml, &preservation_policy)
-            .await?;
+        reload::build_next_config(config, role_name, role_layer_toml, &preservation_policy).await?;
     role_reload_model_selection.apply_to_config(config);
 
     Ok(spawn_model_selection_carry)
