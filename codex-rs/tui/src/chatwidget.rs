@@ -39,6 +39,7 @@ use std::time::Duration;
 use std::time::Instant;
 
 use self::realtime::PendingSteerCompareKey;
+use crate::app::app_server_requests::ResolvedAppServerRequest;
 use crate::app_command::AppCommand;
 use crate::app_event::RealtimeAudioDeviceKind;
 use crate::app_server_session::ThreadSessionState;
@@ -49,6 +50,17 @@ use crate::bottom_pane::StatusLinePreviewData;
 use crate::bottom_pane::StatusLineSetupView;
 use crate::bottom_pane::TerminalTitleItem;
 use crate::bottom_pane::TerminalTitleSetupView;
+use crate::legacy_core::DEFAULT_AGENTS_MD_FILENAME;
+use crate::legacy_core::config::Config;
+use crate::legacy_core::config::Constrained;
+use crate::legacy_core::config::ConstraintResult;
+use crate::legacy_core::config::types::WeeklyLimitPacingStyle;
+use crate::legacy_core::config_loader::ConfigLayerStackOrdering;
+use crate::legacy_core::find_thread_name_by_id;
+use crate::legacy_core::plugins::PluginsManager;
+use crate::legacy_core::skills::model::SkillMetadata;
+#[cfg(target_os = "windows")]
+use crate::legacy_core::windows_sandbox::WindowsSandboxLevelExt;
 use crate::mention_codec::LinkedMention;
 use crate::mention_codec::encode_history_mentions;
 use crate::model_catalog::ModelCatalog;
@@ -64,7 +76,8 @@ use crate::terminal_title::SetTerminalTitleResult;
 use crate::terminal_title::clear_terminal_title;
 use crate::terminal_title::set_terminal_title;
 use crate::text_formatting::proper_join;
-use crate::version::CODEX_DISPLAY_VERSION;
+use crate::version::CODEX_CLI_VERSION;
+use codex_app_server_protocol::AppInfo;
 use codex_app_server_protocol::AppSummary;
 use codex_app_server_protocol::CodexErrorInfo as AppServerCodexErrorInfo;
 use codex_app_server_protocol::CollabAgentState as AppServerCollabAgentState;
@@ -75,6 +88,7 @@ use codex_app_server_protocol::CommandExecutionRequestApprovalParams;
 use codex_app_server_protocol::ConfigLayerSource;
 use codex_app_server_protocol::ErrorNotification;
 use codex_app_server_protocol::FileChangeRequestApprovalParams;
+use codex_app_server_protocol::GuardianApprovalReviewAction;
 use codex_app_server_protocol::ItemCompletedNotification;
 use codex_app_server_protocol::ItemStartedNotification;
 use codex_app_server_protocol::McpServerStartupState;
@@ -89,20 +103,9 @@ use codex_app_server_protocol::TurnCompletedNotification;
 use codex_app_server_protocol::TurnPlanStepStatus;
 use codex_app_server_protocol::TurnStatus;
 use codex_chatgpt::connectors;
-use codex_core::DEFAULT_PROJECT_DOC_FILENAME;
-use codex_core::config::Config;
-use codex_core::config::Constrained;
-use codex_core::config::ConstraintResult;
-use codex_core::config::types::ApprovalsReviewer;
-use codex_core::config::types::Notifications;
-use codex_core::config::types::WeeklyLimitPacingStyle;
-use codex_core::config::types::WindowsSandboxModeToml;
-use codex_core::config_loader::ConfigLayerStackOrdering;
-use codex_core::find_thread_name_by_id;
-use codex_core::plugins::PluginsManager;
-use codex_core::skills::model::SkillMetadata;
-#[cfg(target_os = "windows")]
-use codex_core::windows_sandbox::WindowsSandboxLevelExt;
+use codex_config::types::ApprovalsReviewer;
+use codex_config::types::Notifications;
+use codex_config::types::WindowsSandboxModeToml;
 use codex_features::FEATURES;
 use codex_features::Feature;
 #[cfg(test)]
@@ -111,6 +114,7 @@ use codex_git_utils::current_branch_name;
 use codex_git_utils::get_git_repo_root;
 use codex_git_utils::local_git_branches;
 use codex_git_utils::recent_commits;
+use codex_login::auth;
 use codex_otel::RuntimeMetricsSummary;
 use codex_otel::SessionTelemetry;
 use codex_protocol::ThreadId;
@@ -251,6 +255,11 @@ const MULTI_AGENT_ENABLE_TITLE: &str = "Enable subagents?";
 const MULTI_AGENT_ENABLE_YES: &str = "Yes, enable";
 const MULTI_AGENT_ENABLE_NO: &str = "Not now";
 const MULTI_AGENT_ENABLE_NOTICE: &str = "Subagents will be enabled in the next session.";
+const MEMORIES_DOC_URL: &str = "https://developers.openai.com/codex/memories";
+const MEMORIES_ENABLE_TITLE: &str = "Enable memories?";
+const MEMORIES_ENABLE_YES: &str = "Yes, enable";
+const MEMORIES_ENABLE_NO: &str = "Not now";
+const MEMORIES_ENABLE_NOTICE: &str = "Memories will be enabled in the next session.";
 const PLAN_MODE_REASONING_SCOPE_TITLE: &str = "Apply reasoning change";
 const PLAN_MODE_REASONING_SCOPE_PLAN_ONLY: &str = "Apply to Plan mode override";
 const PLAN_MODE_REASONING_SCOPE_ALL_MODES: &str = "Apply to global default and Plan mode override";
@@ -310,6 +319,7 @@ use crate::bottom_pane::ExperimentalFeaturesView;
 use crate::bottom_pane::InputResult;
 use crate::bottom_pane::LocalImageAttachment;
 use crate::bottom_pane::McpServerElicitationFormRequest;
+use crate::bottom_pane::MemoriesSettingsView;
 use crate::bottom_pane::MentionBinding;
 use crate::bottom_pane::QUIT_SHORTCUT_TIMEOUT;
 use crate::bottom_pane::SelectionAction;
@@ -1456,6 +1466,7 @@ fn hook_run_summary_from_notification(
         execution_mode: run.execution_mode.to_core(),
         scope: run.scope.to_core(),
         source_path: run.source_path,
+        source: run.source.to_core(),
         display_order: run.display_order,
         status: run.status.to_core(),
         status_message: run.status_message,
@@ -2302,6 +2313,16 @@ impl ChatWidget {
         self.request_redraw();
     }
 
+    pub(crate) fn dismiss_app_server_request(&mut self, request: &ResolvedAppServerRequest) {
+        // A remotely resolved request must not remain user-actionable. It may be
+        // materialized in the bottom pane or still deferred behind active streaming.
+        let removed_deferred = self.interrupts.remove_resolved_prompt(request);
+        let removed_visible = self.bottom_pane.dismiss_app_server_request(request);
+        if removed_deferred || removed_visible {
+            self.request_redraw();
+        }
+    }
+
     pub(crate) fn open_feedback_consent(&mut self, category: crate::app_event::FeedbackCategory) {
         let snapshot = self.feedback.snapshot(self.thread_id);
         let params = crate::bottom_pane::feedback_upload_consent_params(
@@ -2712,36 +2733,88 @@ impl ChatWidget {
         });
     }
 
-    pub(crate) fn open_subagent_quit_confirmation(&mut self) {
+    pub(crate) fn open_memories_popup(&mut self) {
+        if !self.config.features.enabled(Feature::MemoryTool) {
+            self.open_memories_enable_prompt();
+            return;
+        }
+
+        let view = MemoriesSettingsView::new(
+            self.config.memories.use_memories,
+            self.config.memories.generate_memories,
+            self.app_event_tx.clone(),
+        );
+        self.bottom_pane.show_view(Box::new(view));
+    }
+
+    pub(crate) fn open_memories_enable_prompt(&mut self) {
         let items = vec![
             SelectionItem {
-                name: "Yes, return to parent thread".to_string(),
+                name: MEMORIES_ENABLE_YES.to_string(),
                 description: Some(
-                    "Exit this subagent and switch back to the main thread".to_string(),
+                    "Save the setting now. You will need a new session to use it.".to_string(),
                 ),
                 actions: vec![Box::new(|tx| {
-                    tx.send(AppEvent::ConfirmSubagentExit);
+                    tx.send(AppEvent::UpdateFeatureFlags {
+                        updates: vec![(Feature::MemoryTool, true)],
+                    });
                 })],
                 dismiss_on_select: true,
                 ..Default::default()
             },
             SelectionItem {
-                name: "Cancel".to_string(),
-                description: Some("Keep chatting in this subagent".to_string()),
-                actions: vec![Box::new(|tx| {
-                    tx.send(AppEvent::CancelSubagentExit);
-                })],
+                name: MEMORIES_ENABLE_NO.to_string(),
+                description: Some("Keep memories disabled.".to_string()),
                 dismiss_on_select: true,
                 ..Default::default()
             },
         ];
 
         self.bottom_pane.show_selection_view(SelectionViewParams {
-            title: Some("Return to parent thread?".to_string()),
+            title: Some(MEMORIES_ENABLE_TITLE.to_string()),
+            subtitle: Some("Memories are currently disabled in your config.".to_string()),
+            footer_note: Some(Line::from(vec![
+                "Learn more: ".dim(),
+                MEMORIES_DOC_URL.cyan().underlined(),
+            ])),
             footer_hint: Some(standard_popup_hint_line()),
             items,
             ..Default::default()
         });
+    }
+
+    pub(crate) fn open_subagent_quit_confirmation(&mut self) {
+        let items = vec![
+            SelectionItem {
+                name: "Quit current subagent".to_string(),
+                description: Some(
+                    "Leave this subagent thread and continue shutting down.".to_string(),
+                ),
+                actions: vec![Box::new(|tx| tx.send(AppEvent::ConfirmSubagentExit))],
+                dismiss_on_select: true,
+                ..Default::default()
+            },
+            SelectionItem {
+                name: "Cancel".to_string(),
+                description: Some("Keep the current subagent thread open.".to_string()),
+                actions: vec![Box::new(|tx| tx.send(AppEvent::CancelSubagentExit))],
+                dismiss_on_select: true,
+                ..Default::default()
+            },
+        ];
+
+        self.bottom_pane.show_selection_view(SelectionViewParams {
+            title: Some("Quit current subagent?".to_string()),
+            subtitle: Some("You are viewing a non-primary thread. Quitting will return focus to the main thread and continue shutdown.".to_string()),
+            footer_hint: Some(standard_popup_hint_line()),
+            items,
+            ..Default::default()
+        });
+    }
+
+    pub(crate) fn set_memory_settings(&mut self, use_memories: bool, generate_memories: bool) {
+        self.config.memories.use_memories = use_memories;
+        self.config.memories.generate_memories = generate_memories;
     }
 
     pub(crate) fn set_token_info(&mut self, info: Option<TokenUsageInfo>) {
@@ -4884,6 +4957,7 @@ impl ChatWidget {
             invocation,
             duration,
             result,
+            ..
         } = ev;
 
         let extra_cell = match self
@@ -5116,7 +5190,7 @@ impl ChatWidget {
             .set_esc_interrupt_requires_double_press(/*requires_double_press*/ false);
         #[cfg(target_os = "windows")]
         widget.bottom_pane.set_windows_degraded_sandbox_active(
-            codex_core::windows_sandbox::ELEVATED_SANDBOX_NUX_ENABLED
+            crate::legacy_core::windows_sandbox::ELEVATED_SANDBOX_NUX_ENABLED
                 && matches!(
                     WindowsSandboxLevel::from_config(&widget.config),
                     WindowsSandboxLevel::RestrictedToken
@@ -5458,10 +5532,10 @@ impl ChatWidget {
                 self.app_event_tx.send(AppEvent::ForkCurrentSession);
             }
             SlashCommand::Init => {
-                let init_target = self.config.cwd.join(DEFAULT_PROJECT_DOC_FILENAME);
+                let init_target = self.config.cwd.join(DEFAULT_AGENTS_MD_FILENAME);
                 if init_target.exists() {
                     let message = format!(
-                        "{DEFAULT_PROJECT_DOC_FILENAME} already exists here. Skipping /init to avoid overwriting it."
+                        "{DEFAULT_AGENTS_MD_FILENAME} already exists here. Skipping /init to avoid overwriting it."
                     );
                     self.add_info_message(message, /*hint*/ None);
                     return;
@@ -5559,7 +5633,7 @@ impl ChatWidget {
                     let windows_degraded_sandbox_enabled =
                         matches!(windows_sandbox_level, WindowsSandboxLevel::RestrictedToken);
                     if !windows_degraded_sandbox_enabled
-                        || !codex_core::windows_sandbox::ELEVATED_SANDBOX_NUX_ENABLED
+                        || !crate::legacy_core::windows_sandbox::ELEVATED_SANDBOX_NUX_ENABLED
                     {
                         // This command should not be visible/recognized outside degraded mode,
                         // but guard anyway in case something dispatches it directly.
@@ -5614,13 +5688,16 @@ impl ChatWidget {
                 self.request_quit_without_confirmation();
             }
             SlashCommand::Logout => {
-                if let Err(e) = codex_core::auth::logout(
+                if let Err(e) = auth::logout(
                     &self.config.codex_home,
                     self.config.cli_auth_credentials_store_mode,
                 ) {
                     tracing::error!("failed to logout: {e}");
                 }
                 self.request_quit_without_confirmation();
+            }
+            SlashCommand::Memories => {
+                self.open_memories_popup();
             }
             // SlashCommand::Undo => {
             //     self.app_event_tx.send(AppEvent::CodexOp(Op::Undo));
@@ -5817,7 +5894,8 @@ impl ChatWidget {
             SlashCommand::Rename if !trimmed.is_empty() => {
                 self.session_telemetry
                     .counter("codex.thread.rename", /*inc*/ 1, &[]);
-                let Some(name) = codex_core::util::normalize_thread_name(&prepared_args) else {
+                let Some(name) = crate::legacy_core::util::normalize_thread_name(&prepared_args)
+                else {
                     self.add_error_message("Thread name cannot be empty.".to_string());
                     return;
                 };
@@ -5945,11 +6023,8 @@ impl ChatWidget {
 
     fn show_rename_prompt(&mut self) {
         let tx = self.app_event_tx.clone();
-        let has_name = self
-            .thread_name
-            .as_ref()
-            .is_some_and(|name| !name.is_empty());
-        let title = if has_name {
+        let existing_name = self.thread_name.as_deref().filter(|name| !name.is_empty());
+        let title = if existing_name.is_some() {
             "Rename thread"
         } else {
             "Name thread"
@@ -5958,9 +6033,10 @@ impl ChatWidget {
         let view = CustomPromptView::new(
             title.to_string(),
             "Type a name and press Enter".to_string(),
+            /*initial_text*/ existing_name.unwrap_or_default().to_string(),
             /*context_label*/ None,
             Box::new(move |name: String| {
-                let Some(name) = codex_core::util::normalize_thread_name(&name) else {
+                let Some(name) = crate::legacy_core::util::normalize_thread_name(&name) else {
                     tx.send(AppEvent::InsertHistoryCell(Box::new(
                         history_cell::new_error_event("Thread name cannot be empty.".to_string()),
                     )));
@@ -6254,7 +6330,7 @@ impl ChatWidget {
 
             let app_mentions = find_app_mentions(&mentions, apps, &skill_names_lower);
             for app in app_mentions {
-                let slug = codex_core::connectors::connector_mention_slug(&app);
+                let slug = codex_connectors::metadata::connector_mention_slug(&app);
                 if bound_names.contains(&slug) || !selected_app_ids.insert(app.id.clone()) {
                     continue;
                 }
@@ -6672,6 +6748,7 @@ impl ChatWidget {
                 server,
                 tool,
                 arguments,
+                mcp_app_resource_uri,
                 result,
                 error,
                 duration_ms,
@@ -6684,15 +6761,19 @@ impl ChatWidget {
                         tool,
                         arguments: Some(arguments),
                     },
+                    mcp_app_resource_uri,
                     duration: Duration::from_millis(duration_ms.unwrap_or_default().max(0) as u64),
                     result: match (result, error) {
                         (_, Some(error)) => Err(error.message),
-                        (Some(result), None) => Ok(codex_protocol::mcp::CallToolResult {
-                            content: result.content,
-                            structured_content: result.structured_content,
-                            is_error: Some(false),
-                            meta: None,
-                        }),
+                        (Some(result), None) => {
+                            let result = *result;
+                            Ok(codex_protocol::mcp::CallToolResult {
+                                content: result.content,
+                                structured_content: result.structured_content,
+                                is_error: Some(false),
+                                meta: None,
+                            })
+                        }
                         (None, None) => Err("MCP tool call completed without a result".to_string()),
                     },
                 });
@@ -7189,6 +7270,7 @@ impl ChatWidget {
                 server,
                 tool,
                 arguments,
+                mcp_app_resource_uri,
                 ..
             } => {
                 self.on_mcp_tool_call_begin(McpToolCallBeginEvent {
@@ -7198,6 +7280,7 @@ impl ChatWidget {
                         tool,
                         arguments: Some(arguments),
                     },
+                    mcp_app_resource_uri,
                 });
             }
             ThreadItem::WebSearch { id, .. } => {
@@ -7264,7 +7347,7 @@ impl ChatWidget {
         target_item_id: Option<String>,
         turn_id: String,
         review: codex_app_server_protocol::GuardianApprovalReview,
-        action: codex_app_server_protocol::GuardianApprovalReviewAction,
+        action: GuardianApprovalReviewAction,
     ) {
         let id = target_item_id
             .clone()
@@ -7382,6 +7465,7 @@ impl ChatWidget {
             | EventMsg::PlanDelta(_)
             | EventMsg::AgentReasoningDelta(_)
             | EventMsg::TerminalInteraction(_)
+            | EventMsg::PatchApplyUpdated(_)
             | EventMsg::ExecCommandOutputDelta(_) => {}
             _ => {
                 tracing::trace!("handle_codex_event: {:?}", msg);
@@ -7592,6 +7676,7 @@ impl ChatWidget {
             }
             EventMsg::ItemStarted(_)
             | EventMsg::AgentMessageContentDelta(_)
+            | EventMsg::PatchApplyUpdated(_)
             | EventMsg::ReasoningContentDelta(_)
             | EventMsg::ReasoningRawContentDelta(_)
             | EventMsg::DynamicToolCallRequest(_)
@@ -7692,9 +7777,9 @@ impl ChatWidget {
 
     #[cfg(test)]
     fn on_entered_review_mode(&mut self, review: ReviewRequest, from_replay: bool) {
-        let hint = review
-            .user_facing_hint
-            .unwrap_or_else(|| codex_core::review_prompts::user_facing_hint(&review.target));
+        let hint = review.user_facing_hint.unwrap_or_else(|| {
+            crate::legacy_core::review_prompts::user_facing_hint(&review.target)
+        });
         self.enter_review_mode_with_hint(hint, from_replay);
     }
 
@@ -8196,7 +8281,7 @@ impl ChatWidget {
     }
 
     fn open_theme_picker(&mut self) {
-        let codex_home = codex_core::config::find_codex_home().ok();
+        let codex_home = crate::legacy_core::config::find_codex_home().ok();
         let terminal_width = self
             .last_rendered_width
             .get()
@@ -8976,6 +9061,7 @@ impl ChatWidget {
                 is_default: preset.is_default,
                 actions,
                 dismiss_on_select: single_supported_effort,
+                dismiss_parent_on_child_accept: !single_supported_effort,
                 ..Default::default()
             });
         }
@@ -9383,9 +9469,10 @@ impl ChatWidget {
         #[cfg(not(target_os = "windows"))]
         let windows_degraded_sandbox_enabled = false;
 
-        let show_elevate_sandbox_hint = codex_core::windows_sandbox::ELEVATED_SANDBOX_NUX_ENABLED
-            && windows_degraded_sandbox_enabled
-            && presets.iter().any(|preset| preset.id == "auto");
+        let show_elevate_sandbox_hint =
+            crate::legacy_core::windows_sandbox::ELEVATED_SANDBOX_NUX_ENABLED
+                && windows_degraded_sandbox_enabled
+                && presets.iter().any(|preset| preset.id == "auto");
 
         let guardian_disabled_reason = |enabled: bool| {
             let mut next_features = self.config.features.get().clone();
@@ -9441,8 +9528,8 @@ impl ChatWidget {
                         == WindowsSandboxLevel::Disabled
                     {
                         let preset_clone = preset.clone();
-                        if codex_core::windows_sandbox::ELEVATED_SANDBOX_NUX_ENABLED
-                            && codex_core::windows_sandbox::sandbox_setup_is_complete(
+                        if crate::legacy_core::windows_sandbox::ELEVATED_SANDBOX_NUX_ENABLED
+                            && crate::legacy_core::windows_sandbox::sandbox_setup_is_complete(
                                 self.config.codex_home.as_path(),
                             )
                         {
@@ -9896,7 +9983,7 @@ impl ChatWidget {
 
     #[cfg(target_os = "windows")]
     pub(crate) fn open_windows_sandbox_enable_prompt(&mut self, preset: ApprovalPreset) {
-        if !codex_core::windows_sandbox::ELEVATED_SANDBOX_NUX_ENABLED {
+        if !crate::legacy_core::windows_sandbox::ELEVATED_SANDBOX_NUX_ENABLED {
             // Legacy flow (pre-NUX): explain the experimental sandbox and let the user enable it
             // directly (no elevation prompts).
             let mut header = ColumnRenderable::new();
@@ -10182,7 +10269,7 @@ impl ChatWidget {
         self.config.permissions.windows_sandbox_mode = mode;
         #[cfg(target_os = "windows")]
         self.bottom_pane.set_windows_degraded_sandbox_active(
-            codex_core::windows_sandbox::ELEVATED_SANDBOX_NUX_ENABLED
+            crate::legacy_core::windows_sandbox::ELEVATED_SANDBOX_NUX_ENABLED
                 && matches!(
                     WindowsSandboxLevel::from_config(&self.config),
                     WindowsSandboxLevel::RestrictedToken
@@ -10233,7 +10320,7 @@ impl ChatWidget {
             Feature::WindowsSandbox | Feature::WindowsSandboxElevated
         ) {
             self.bottom_pane.set_windows_degraded_sandbox_active(
-                codex_core::windows_sandbox::ELEVATED_SANDBOX_NUX_ENABLED
+                crate::legacy_core::windows_sandbox::ELEVATED_SANDBOX_NUX_ENABLED
                     && matches!(
                         WindowsSandboxLevel::from_config(&self.config),
                         WindowsSandboxLevel::RestrictedToken
@@ -10719,7 +10806,7 @@ impl ChatWidget {
         self.config.features.enabled(Feature::Apps) && self.has_chatgpt_account
     }
 
-    fn connectors_for_mentions(&self) -> Option<&[connectors::AppInfo]> {
+    fn connectors_for_mentions(&self) -> Option<&[AppInfo]> {
         if !self.connectors_enabled() {
             return None;
         }
@@ -10734,7 +10821,9 @@ impl ChatWidget {
         }
     }
 
-    fn plugins_for_mentions(&self) -> Option<&[codex_core::plugins::PluginCapabilitySummary]> {
+    fn plugins_for_mentions(
+        &self,
+    ) -> Option<&[crate::legacy_core::plugins::PluginCapabilitySummary]> {
         if !self.config.features.enabled(Feature::Plugins) {
             return None;
         }
@@ -10745,14 +10834,17 @@ impl ChatWidget {
     /// Build a placeholder header cell while the session is configuring.
     fn placeholder_session_header_cell(config: &Config) -> Box<dyn HistoryCell> {
         let placeholder_style = Style::default().add_modifier(Modifier::DIM | Modifier::ITALIC);
-        Box::new(history_cell::SessionHeaderHistoryCell::new_with_style(
-            DEFAULT_MODEL_DISPLAY_NAME.to_string(),
-            placeholder_style,
-            /*reasoning_effort*/ None,
-            /*show_fast_status*/ false,
-            config.cwd.to_path_buf(),
-            CODEX_DISPLAY_VERSION,
-        ))
+        Box::new(
+            history_cell::SessionHeaderHistoryCell::new_with_style(
+                DEFAULT_MODEL_DISPLAY_NAME.to_string(),
+                placeholder_style,
+                /*reasoning_effort*/ None,
+                /*show_fast_status*/ false,
+                config.cwd.to_path_buf(),
+                CODEX_CLI_VERSION,
+            )
+            .with_yolo_mode(history_cell::is_yolo_mode(config)),
+        )
     }
 
     /// Merge the real session info cell with any placeholder header to avoid double boxes.
@@ -10788,6 +10880,13 @@ impl ChatWidget {
         self.request_redraw();
     }
 
+    pub(crate) fn add_memories_enable_notice(&mut self) {
+        self.add_to_history(history_cell::new_warning_event(
+            MEMORIES_ENABLE_NOTICE.to_string(),
+        ));
+        self.request_redraw();
+    }
+
     pub(crate) fn add_plain_history_lines(&mut self, lines: Vec<Line<'static>>) {
         self.add_boxed_history(Box::new(PlainHistoryCell::new(lines)));
         self.request_redraw();
@@ -10804,7 +10903,7 @@ impl ChatWidget {
     }
 
     fn rename_confirmation_cell(name: &str, thread_id: Option<ThreadId>) -> PlainHistoryCell {
-        let resume_cmd = codex_core::util::resume_command(Some(name), thread_id)
+        let resume_cmd = crate::legacy_core::util::resume_command(Some(name), thread_id)
             .unwrap_or_else(|| format!("codex resume {name}"));
         let name = name.to_string();
         let line = vec![
@@ -10894,7 +10993,7 @@ impl ChatWidget {
         }
     }
 
-    fn open_connectors_popup(&mut self, connectors: &[connectors::AppInfo]) {
+    fn open_connectors_popup(&mut self, connectors: &[AppInfo]) {
         self.bottom_pane.show_selection_view(
             self.connectors_popup_params(connectors, /*selected_connector_id*/ None),
         );
@@ -10920,7 +11019,7 @@ impl ChatWidget {
 
     fn connectors_popup_params(
         &self,
-        connectors: &[connectors::AppInfo],
+        connectors: &[AppInfo],
         selected_connector_id: Option<&str>,
     ) -> SelectionViewParams {
         let total = connectors.len();
@@ -10943,7 +11042,7 @@ impl ChatWidget {
         });
         let mut items: Vec<SelectionItem> = Vec::with_capacity(connectors.len());
         for connector in connectors {
-            let connector_label = connectors::connector_display_label(connector);
+            let connector_label = codex_connectors::metadata::connector_display_label(connector);
             let connector_title = connector_label.clone();
             let link_description = Self::connector_description(connector);
             let description = Self::connector_brief_description(connector);
@@ -11017,7 +11116,7 @@ impl ChatWidget {
         }
     }
 
-    fn refresh_connectors_popup_if_open(&mut self, connectors: &[connectors::AppInfo]) {
+    fn refresh_connectors_popup_if_open(&mut self, connectors: &[AppInfo]) {
         let selected_connector_id =
             if let (Some(selected_index), ConnectorsCacheState::Ready(snapshot)) = (
                 self.bottom_pane
@@ -11045,7 +11144,7 @@ impl ChatWidget {
         ])
     }
 
-    fn connector_brief_description(connector: &connectors::AppInfo) -> String {
+    fn connector_brief_description(connector: &AppInfo) -> String {
         let status_label = Self::connector_status_label(connector);
         match Self::connector_description(connector) {
             Some(description) => format!("{status_label} · {description}"),
@@ -11053,7 +11152,7 @@ impl ChatWidget {
         }
     }
 
-    fn connector_status_label(connector: &connectors::AppInfo) -> &'static str {
+    fn connector_status_label(connector: &AppInfo) -> &'static str {
         if connector.is_accessible {
             if connector.is_enabled {
                 "Installed"
@@ -11065,7 +11164,7 @@ impl ChatWidget {
         }
     }
 
-    fn connector_description(connector: &connectors::AppInfo) -> Option<String> {
+    fn connector_description(connector: &AppInfo) -> Option<String> {
         connector
             .description
             .as_deref()
@@ -11476,8 +11575,8 @@ impl ChatWidget {
     pub(crate) fn sync_runtime_config(&mut self, config: &Config) {
         self.config.features = config.features.clone();
         self.config.config_layer_stack = config.config_layer_stack.clone();
-        self.bottom_pane
-            .set_esc_interrupt_requires_double_press(/*requires_double_press*/ false);
+        self.config.realtime = config.realtime.clone();
+        self.config.memories = config.memories.clone();
     }
 
     pub(crate) fn open_review_popup(&mut self) {
@@ -11493,6 +11592,7 @@ impl ChatWidget {
                 }
             })],
             dismiss_on_select: false,
+            dismiss_parent_on_child_accept: true,
             ..Default::default()
         });
 
@@ -11518,6 +11618,7 @@ impl ChatWidget {
                 }
             })],
             dismiss_on_select: false,
+            dismiss_parent_on_child_accept: true,
             ..Default::default()
         });
 
@@ -11527,6 +11628,7 @@ impl ChatWidget {
                 tx.send(AppEvent::OpenReviewCustomPrompt);
             })],
             dismiss_on_select: false,
+            dismiss_parent_on_child_accept: true,
             ..Default::default()
         });
 
@@ -11614,6 +11716,7 @@ impl ChatWidget {
         let view = CustomPromptView::new(
             "Custom review instructions".to_string(),
             "Type instructions and press Enter".to_string(),
+            /*initial_text*/ String::new(),
             /*context_label*/ None,
             Box::new(move |prompt: String| {
                 let trimmed = prompt.trim().to_string();

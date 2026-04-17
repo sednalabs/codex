@@ -49,6 +49,7 @@ use codex_app_server_protocol::ListMcpServerStatusParams;
 use codex_app_server_protocol::LoginAccountParams;
 use codex_app_server_protocol::MarketplaceAddParams;
 use codex_app_server_protocol::McpResourceReadParams;
+use codex_app_server_protocol::McpServerToolCallParams;
 use codex_app_server_protocol::MockExperimentalMethodParams;
 use codex_app_server_protocol::ModelListParams;
 use codex_app_server_protocol::PluginInstallParams;
@@ -85,7 +86,7 @@ use codex_app_server_protocol::TurnInterruptParams;
 use codex_app_server_protocol::TurnStartParams;
 use codex_app_server_protocol::TurnSteerParams;
 use codex_app_server_protocol::WindowsSandboxSetupStartParams;
-use codex_core::default_client::CODEX_INTERNAL_ORIGINATOR_OVERRIDE_ENV_VAR;
+use codex_login::default_client::CODEX_INTERNAL_ORIGINATOR_OVERRIDE_ENV_VAR;
 use tokio::process::Command;
 
 pub struct McpProcess {
@@ -504,6 +505,15 @@ impl McpProcess {
     ) -> anyhow::Result<i64> {
         let params = Some(serde_json::to_value(params)?);
         self.send_request("mcpServer/resource/read", params).await
+    }
+
+    /// Send an `mcpServer/tool/call` JSON-RPC request.
+    pub async fn send_mcp_server_tool_call_request(
+        &mut self,
+        params: McpServerToolCallParams,
+    ) -> anyhow::Result<i64> {
+        let params = Some(serde_json::to_value(params)?);
+        self.send_request("mcpServer/tool/call", params).await
     }
 
     /// Send a `skills/list` JSON-RPC request.

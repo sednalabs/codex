@@ -3,6 +3,9 @@ use crate::agent::status::is_final as is_final_agent_status;
 use crate::codex::Session;
 use crate::codex::emit_subagent_session_started;
 use crate::config::Config;
+use crate::memories::extensions::PendingExtensionResourceRemoval;
+use crate::memories::extensions::find_old_extension_resources;
+use crate::memories::extensions::remove_extension_resources;
 use crate::memories::memory_root;
 use crate::memories::metrics;
 use crate::memories::phase_two;
@@ -145,7 +148,12 @@ pub(super) async fn run(session: &Arc<Session>, config: Arc<Config>) {
         job::failed(session, db, &claim, "failed_prepare_artifacts").await;
         return;
     };
-    if raw_memories.is_empty() {
+    let pending_extension_resource_removals = find_old_extension_resources(&root).await;
+    let removed_extension_resources = pending_extension_resource_removals
+        .iter()
+        .map(|resource| resource.removed.clone())
+        .collect::<Vec<_>>();
+    if raw_memories.is_empty() && pending_extension_resource_removals.is_empty() {
         // We check only after sync of the file system.
         job::succeed(
             session,
@@ -160,7 +168,7 @@ pub(super) async fn run(session: &Arc<Session>, config: Arc<Config>) {
     }
 
     // 5. Spawn the agent
-    let prompt = agent::get_prompt(&config, &selection);
+    let prompt = agent::get_prompt(&config, &selection, &removed_extension_resources);
     let source = SessionSource::SubAgent(SubAgentSource::MemoryConsolidation);
     let artifacts_not_before = SystemTime::now();
     let allow_existing_artifacts_without_rewrite =
@@ -208,6 +216,7 @@ pub(super) async fn run(session: &Arc<Session>, config: Arc<Config>) {
         selection,
         new_watermark,
         raw_memories.clone(),
+        pending_extension_resource_removals,
         thread_id,
         root.to_path_buf(),
         artifacts_not_before,
@@ -310,15 +319,15 @@ mod job {
         completion_watermark: i64,
         selected_outputs: &[codex_state::Stage1Output],
         reason: &'static str,
-    ) {
+    ) -> bool {
         session.services.session_telemetry.counter(
             metrics::MEMORY_PHASE_TWO_JOBS,
             /*inc*/ 1,
             &[("status", reason)],
         );
-        let _ = db
-            .mark_global_phase2_job_succeeded(&claim.token, completion_watermark, selected_outputs)
-            .await;
+        db.mark_global_phase2_job_succeeded(&claim.token, completion_watermark, selected_outputs)
+            .await
+            .unwrap_or(false)
     }
 }
 
@@ -401,9 +410,10 @@ pub(in crate::memories) mod agent {
     pub(super) fn get_prompt(
         config: &Config,
         selection: &codex_state::Phase2InputSelection,
+        removed_extension_resources: &[crate::memories::extensions::RemovedExtensionResource],
     ) -> Vec<UserInput> {
         let root = memory_root(&config.codex_home);
-        let prompt = build_consolidation_prompt(&root, selection);
+        let prompt = build_consolidation_prompt(&root, selection, removed_extension_resources);
         vec![UserInput::Text {
             text: prompt,
             text_elements: vec![],
@@ -419,6 +429,7 @@ pub(in crate::memories) mod agent {
         selection: codex_state::Phase2InputSelection,
         new_watermark: i64,
         selected_outputs: Vec<codex_state::Stage1Output>,
+        pending_extension_resource_removals: Vec<PendingExtensionResourceRemoval>,
         thread_id: ThreadId,
         root: PathBuf,
         artifacts_not_before: SystemTime,
@@ -459,47 +470,17 @@ pub(in crate::memories) mod agent {
                 if let Some(token_usage) = agent_control.get_total_token_usage(thread_id).await {
                     emit_token_usage_metrics(&session, &token_usage);
                 }
-                if let Some(validated_artifacts) = validated_consolidation_artifact_state(
-                    root.as_path(),
-                    Some(db.as_ref()),
-                    artifacts_not_before,
-                    Some(prepared_input_artifact_tree_sha256.as_str()),
-                    allow_existing_artifacts_without_rewrite,
-                    &config,
-                    &selection,
+                if job::succeed(
+                    &session,
+                    &db,
+                    &claim,
+                    new_watermark,
+                    &selected_outputs,
+                    "succeeded",
                 )
                 .await
                 {
-                    if let Err(err) = write_consolidation_artifact_attestation(
-                        root.as_path(),
-                        Some(db.as_ref()),
-                        &config,
-                        &selection,
-                        &validated_artifacts,
-                    )
-                    .await
-                    {
-                        tracing::warn!(
-                            error = %err,
-                            "global memory consolidation agent {thread_id} completed but artifact attestation could not be recorded"
-                        );
-                        job::failed(&session, &db, &claim, "failed_record_artifacts").await;
-                    } else {
-                        job::succeed(
-                            &session,
-                            &db,
-                            &claim,
-                            new_watermark,
-                            &selected_outputs,
-                            "succeeded",
-                        )
-                        .await;
-                    }
-                } else {
-                    tracing::warn!(
-                        "global memory consolidation agent {thread_id} completed without refreshing non-empty MEMORY.md and memory_summary.md artifacts"
-                    );
-                    job::failed(&session, &db, &claim, "failed_missing_artifacts").await;
+                    remove_extension_resources(&pending_extension_resource_removals).await;
                 }
             } else {
                 job::failed(&session, &db, &claim, "failed_agent").await;
@@ -920,7 +901,7 @@ pub(in crate::memories) mod agent {
             .consolidation_model
             .as_deref()
             .unwrap_or(phase_two::MODEL);
-        let prompt = build_consolidation_prompt(root, selection);
+        let prompt = build_consolidation_prompt(root, selection, &[]);
         consolidator_contract_fingerprint(
             &config.model_provider_id,
             model,

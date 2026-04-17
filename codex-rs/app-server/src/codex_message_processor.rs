@@ -94,6 +94,7 @@ use codex_app_server_protocol::McpServerStatus;
 use codex_app_server_protocol::McpServerStatusDetail;
 use codex_app_server_protocol::McpServerToolCallParams;
 use codex_app_server_protocol::McpServerToolCallResponse;
+use codex_app_server_protocol::MemoryResetResponse;
 use codex_app_server_protocol::MockExperimentalMethodParams;
 use codex_app_server_protocol::MockExperimentalMethodResponse;
 use codex_app_server_protocol::ModelListParams;
@@ -187,6 +188,7 @@ use codex_app_server_protocol::ThreadUnsubscribeStatus;
 use codex_app_server_protocol::Turn;
 use codex_app_server_protocol::TurnError;
 use codex_app_server_protocol::TurnInterruptParams;
+use codex_app_server_protocol::TurnInterruptResponse;
 use codex_app_server_protocol::TurnStartParams;
 use codex_app_server_protocol::TurnStartResponse;
 use codex_app_server_protocol::TurnStatus;
@@ -205,7 +207,6 @@ use codex_cloud_requirements::cloud_requirements_loader;
 use codex_core::AuthManager;
 use codex_core::CodexAuth;
 use codex_core::CodexThread;
-use codex_core::Cursor as RolloutCursor;
 use codex_core::ForkSnapshot;
 use codex_core::NewThread;
 use codex_core::RolloutRecorder;
@@ -213,9 +214,7 @@ use codex_core::SessionMeta;
 use codex_core::SteerInputError;
 use codex_core::ThreadConfigSnapshot;
 use codex_core::ThreadManager;
-use codex_core::ThreadSortKey as CoreThreadSortKey;
-use codex_core::auth::CLIENT_ID;
-use codex_core::auth::login_with_api_key;
+use codex_core::clear_memory_roots_contents;
 use codex_core::config::Config;
 use codex_core::config::ConfigOverrides;
 use codex_core::config::NetworkProxyAuditMetadata;
@@ -228,9 +227,6 @@ use codex_core::config_loader::CloudRequirementsLoader;
 use codex_core::config_loader::LoaderOverrides;
 use codex_core::config_loader::load_config_layers_state;
 use codex_core::config_loader::project_trust_key;
-use codex_core::default_client::set_default_client_residency_requirement;
-use codex_core::error::CodexErr;
-use codex_core::error::Result as CodexResult;
 use codex_core::exec::ExecCapturePolicy;
 use codex_core::exec::ExecExpiration;
 use codex_core::exec::ExecParams;
@@ -239,22 +235,16 @@ use codex_core::find_archived_thread_path_by_id_str;
 use codex_core::find_thread_name_by_id;
 use codex_core::find_thread_names_by_ids;
 use codex_core::find_thread_path_by_id_str;
-use codex_core::parse_cursor;
 use codex_core::path_utils;
 use codex_core::plugins::MarketplaceAddError;
-use codex_core::plugins::MarketplaceError;
-use codex_core::plugins::MarketplacePluginSource;
 use codex_core::plugins::OPENAI_CURATED_MARKETPLACE_NAME;
 use codex_core::plugins::PluginInstallError as CorePluginInstallError;
 use codex_core::plugins::PluginInstallRequest;
 use codex_core::plugins::PluginReadRequest;
 use codex_core::plugins::PluginUninstallError as CorePluginUninstallError;
 use codex_core::plugins::add_marketplace as add_marketplace_to_codex_home;
-use codex_core::plugins::load_plugin_apps;
-use codex_core::plugins::load_plugin_mcp_servers;
 use codex_core::read_head_for_summary;
 use codex_core::read_session_meta_line;
-use codex_core::rollout_date_parts;
 use codex_core::sandboxing::SandboxPermissions;
 use codex_core::state_db::StateDbHandle;
 use codex_core::state_db::get_state_db;
@@ -262,6 +252,11 @@ use codex_core::state_db::reconcile_rollout;
 use codex_core::windows_sandbox::WindowsSandboxLevelExt;
 use codex_core::windows_sandbox::WindowsSandboxSetupMode as CoreWindowsSandboxSetupMode;
 use codex_core::windows_sandbox::WindowsSandboxSetupRequest;
+use codex_core_plugins::loader::load_plugin_apps;
+use codex_core_plugins::loader::load_plugin_mcp_servers;
+use codex_core_plugins::manifest::PluginManifestInterface;
+use codex_core_plugins::marketplace::MarketplaceError;
+use codex_core_plugins::marketplace::MarketplacePluginSource;
 use codex_exec_server::LOCAL_FS;
 use codex_features::FEATURES;
 use codex_features::Feature;
@@ -270,10 +265,13 @@ use codex_feedback::CodexFeedback;
 use codex_feedback::FeedbackUploadOptions;
 use codex_git_utils::git_diff_to_remote;
 use codex_git_utils::resolve_root_git_project_for_trust;
+use codex_login::CLIENT_ID;
 use codex_login::ServerOptions as LoginServerOptions;
 use codex_login::ShutdownHandle;
 use codex_login::auth::login_with_chatgpt_auth_tokens;
 use codex_login::complete_device_code_login;
+use codex_login::default_client::set_default_client_residency_requirement;
+use codex_login::login_with_api_key;
 use codex_login::request_device_code;
 use codex_login::run_login_server;
 use codex_mcp::McpSnapshotDetail;
@@ -290,6 +288,8 @@ use codex_protocol::config_types::Personality;
 use codex_protocol::config_types::TrustLevel;
 use codex_protocol::config_types::WindowsSandboxLevel;
 use codex_protocol::dynamic_tools::DynamicToolSpec as CoreDynamicToolSpec;
+use codex_protocol::error::CodexErr;
+use codex_protocol::error::Result as CodexResult;
 use codex_protocol::items::TurnItem;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::AgentStatus;
@@ -320,6 +320,14 @@ use codex_state::StateRuntime;
 use codex_state::ThreadMetadata;
 use codex_state::ThreadMetadataBuilder;
 use codex_state::log_db::LogDbLayer;
+use codex_thread_store::ArchiveThreadParams as StoreArchiveThreadParams;
+use codex_thread_store::ListThreadsParams as StoreListThreadsParams;
+use codex_thread_store::LocalThreadStore;
+use codex_thread_store::ReadThreadParams as StoreReadThreadParams;
+use codex_thread_store::StoredThread;
+use codex_thread_store::ThreadSortKey as StoreThreadSortKey;
+use codex_thread_store::ThreadStore;
+use codex_thread_store::ThreadStoreError;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use codex_utils_json_to_toml::json_to_toml;
 use codex_utils_pty::DEFAULT_OUTPUT_BYTES_CAP;
@@ -328,9 +336,6 @@ use rmcp::model::ResourceContents;
 use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::collections::HashSet;
-use std::ffi::OsStr;
-use std::fs::FileTimes;
-use std::fs::OpenOptions;
 use std::io::Error as IoError;
 use std::path::Path;
 use std::path::PathBuf;
@@ -340,7 +345,6 @@ use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 use std::time::Instant;
-use std::time::SystemTime;
 use tokio::sync::Mutex;
 use tokio::sync::broadcast;
 use tokio::sync::oneshot;
@@ -360,12 +364,17 @@ use codex_app_server_protocol::ServerRequest;
 mod apps_list_helpers;
 mod plugin_app_helpers;
 mod plugin_mcp_oauth;
+mod token_usage_replay;
 
 use crate::filters::compute_source_filters;
 use crate::filters::source_kind_matches;
 use crate::thread_state::ThreadListenerCommand;
 use crate::thread_state::ThreadState;
 use crate::thread_state::ThreadStateManager;
+use token_usage_replay::latest_token_usage_turn_id_for_thread_path;
+use token_usage_replay::latest_token_usage_turn_id_from_rollout_items;
+use token_usage_replay::latest_token_usage_turn_id_from_rollout_path;
+use token_usage_replay::send_thread_token_usage_update_to_connection;
 
 const THREAD_LIST_DEFAULT_LIMIT: usize = 25;
 const THREAD_LIST_MAX_LIMIT: usize = 100;
@@ -430,6 +439,11 @@ enum ThreadShutdownResult {
     TimedOut,
 }
 
+enum ThreadReadViewError {
+    InvalidRequest(String),
+    Internal(String),
+}
+
 impl Drop for ActiveLogin {
     fn drop(&mut self) {
         self.cancel();
@@ -444,6 +458,7 @@ pub(crate) struct CodexMessageProcessor {
     analytics_events_client: AnalyticsEventsClient,
     arg0_paths: Arg0DispatchPaths,
     config: Arc<Config>,
+    thread_store: LocalThreadStore,
     cli_overrides: Arc<RwLock<Vec<(String, TomlValue)>>>,
     runtime_feature_enablement: Arc<RwLock<BTreeMap<String, bool>>>,
     cloud_requirements: Arc<RwLock<CloudRequirementsLoader>>,
@@ -613,17 +628,9 @@ pub(crate) struct CodexMessageProcessorArgs {
 
 impl CodexMessageProcessor {
     async fn instruction_sources_from_config(config: &Config) -> Vec<AbsolutePathBuf> {
-        let mut paths: Vec<AbsolutePathBuf> =
-            config.user_instructions_path.iter().cloned().collect();
-        match codex_core::discover_project_doc_paths(config, LOCAL_FS.as_ref()).await {
-            Ok(project_doc_paths) => {
-                paths.extend(project_doc_paths);
-            }
-            Err(err) => {
-                tracing::warn!(error = %err, "failed to discover project docs for thread response");
-            }
-        }
-        paths
+        codex_core::AgentsMdManager::new(config)
+            .instruction_sources(LOCAL_FS.as_ref())
+            .await
     }
 
     pub(crate) fn clear_plugin_related_caches(&self) {
@@ -726,6 +733,7 @@ impl CodexMessageProcessor {
             outgoing: outgoing.clone(),
             analytics_events_client,
             arg0_paths,
+            thread_store: LocalThreadStore::new(codex_rollout::RolloutConfig::from_view(&config)),
             config,
             cli_overrides,
             runtime_feature_enablement,
@@ -929,6 +937,10 @@ impl CodexMessageProcessor {
             }
             ClientRequest::ThreadMemoryModeSet { request_id, params } => {
                 self.thread_memory_mode_set(to_connection_request_id(request_id), params)
+                    .await;
+            }
+            ClientRequest::MemoryReset { request_id, params } => {
+                self.memory_reset(to_connection_request_id(request_id), params)
                     .await;
             }
             ClientRequest::ThreadUnarchive { request_id, params } => {
@@ -2454,8 +2466,9 @@ impl CodexMessageProcessor {
                         | codex_protocol::protocol::SandboxPolicy::ExternalSandbox { .. }
                 ))
         {
-            let trust_target = resolve_root_git_project_for_trust(config.cwd.as_path())
-                .unwrap_or_else(|| config.cwd.to_path_buf());
+            let trust_target = resolve_root_git_project_for_trust(LOCAL_FS.as_ref(), &config.cwd)
+                .await
+                .unwrap_or_else(|| config.cwd.clone());
             let cli_overrides_with_trust;
             let cli_overrides_for_reload = if let Err(err) =
                 codex_core::config::set_project_trust_level(
@@ -2710,12 +2723,7 @@ impl CodexMessageProcessor {
         }
     }
 
-    async fn thread_archive(
-        &mut self,
-        request_id: ConnectionRequestId,
-        params: ThreadArchiveParams,
-    ) {
-        // TODO(jif) mostly rewrite this using sqlite after phase 1
+    async fn thread_archive(&self, request_id: ConnectionRequestId, params: ThreadArchiveParams) {
         let thread_id = match ThreadId::from_string(&params.thread_id) {
             Ok(id) => id,
             Err(err) => {
@@ -2729,32 +2737,28 @@ impl CodexMessageProcessor {
             }
         };
 
-        let rollout_path =
-            match find_thread_path_by_id_str(&self.config.codex_home, &thread_id.to_string()).await
-            {
-                Ok(Some(p)) => p,
-                Ok(None) => {
-                    let error = JSONRPCErrorError {
-                        code: INVALID_REQUEST_ERROR_CODE,
-                        message: format!("no rollout found for thread id {thread_id}"),
-                        data: None,
-                    };
-                    self.outgoing.send_error(request_id, error).await;
-                    return;
-                }
-                Err(err) => {
-                    let error = JSONRPCErrorError {
-                        code: INVALID_REQUEST_ERROR_CODE,
-                        message: format!("failed to locate thread id {thread_id}: {err}"),
-                        data: None,
-                    };
-                    self.outgoing.send_error(request_id, error).await;
-                    return;
-                }
-            };
-
         let thread_id_str = thread_id.to_string();
-        match self.archive_thread_common(thread_id, &rollout_path).await {
+        if let Err(err) = self
+            .thread_store
+            .read_thread(StoreReadThreadParams {
+                thread_id,
+                include_archived: false,
+                include_history: false,
+            })
+            .await
+        {
+            self.outgoing
+                .send_error(request_id, thread_store_archive_error("archive", err))
+                .await;
+            return;
+        }
+        self.prepare_thread_for_archive(thread_id).await;
+
+        match self
+            .thread_store
+            .archive_thread(StoreArchiveThreadParams { thread_id })
+            .await
+        {
             Ok(()) => {
                 let response = ThreadArchiveResponse {};
                 self.outgoing.send_response(request_id, response).await;
@@ -2766,7 +2770,9 @@ impl CodexMessageProcessor {
                     .await;
             }
             Err(err) => {
-                self.outgoing.send_error(request_id, err).await;
+                self.outgoing
+                    .send_error(request_id, thread_store_archive_error("archive", err))
+                    .await;
             }
         }
     }
@@ -3029,6 +3035,50 @@ impl CodexMessageProcessor {
 
         self.outgoing
             .send_response(request_id, ThreadMemoryModeSetResponse {})
+            .await;
+    }
+
+    async fn memory_reset(&self, request_id: ConnectionRequestId, _params: Option<()>) {
+        let state_db = match StateRuntime::init(
+            self.config.sqlite_home.clone(),
+            self.config.model_provider_id.clone(),
+        )
+        .await
+        {
+            Ok(state_db) => state_db,
+            Err(err) => {
+                self.send_internal_error(
+                    request_id,
+                    format!("failed to open state db for memory reset: {err}"),
+                )
+                .await;
+                return;
+            }
+        };
+
+        if let Err(err) = state_db.clear_memory_data().await {
+            self.send_internal_error(
+                request_id,
+                format!("failed to clear memory rows in state db: {err}"),
+            )
+            .await;
+            return;
+        }
+
+        if let Err(err) = clear_memory_roots_contents(&self.config.codex_home).await {
+            self.send_internal_error(
+                request_id,
+                format!(
+                    "failed to clear memory directories under {}: {err}",
+                    self.config.codex_home.display()
+                ),
+            )
+            .await;
+            return;
+        }
+
+        self.outgoing
+            .send_response(request_id, MemoryResetResponse {})
             .await;
     }
 
@@ -3335,7 +3385,6 @@ impl CodexMessageProcessor {
         request_id: ConnectionRequestId,
         params: ThreadUnarchiveParams,
     ) {
-        // TODO(jif) mostly rewrite this using sqlite after phase 1
         let thread_id = match ThreadId::from_string(&params.thread_id) {
             Ok(id) => id,
             Err(err) => {
@@ -3349,152 +3398,21 @@ impl CodexMessageProcessor {
             }
         };
 
-        let archived_path = match find_archived_thread_path_by_id_str(
-            &self.config.codex_home,
-            &thread_id.to_string(),
-        )
-        .await
-        {
-            Ok(Some(path)) => path,
-            Ok(None) => {
-                let error = JSONRPCErrorError {
-                    code: INVALID_REQUEST_ERROR_CODE,
-                    message: format!("no archived rollout found for thread id {thread_id}"),
-                    data: None,
-                };
-                self.outgoing.send_error(request_id, error).await;
-                return;
-            }
-            Err(err) => {
-                let error = JSONRPCErrorError {
-                    code: INVALID_REQUEST_ERROR_CODE,
-                    message: format!("failed to locate archived thread id {thread_id}: {err}"),
-                    data: None,
-                };
-                self.outgoing.send_error(request_id, error).await;
-                return;
-            }
-        };
-
-        let rollout_path_display = archived_path.display().to_string();
         let fallback_provider = self.config.model_provider_id.clone();
-        let state_db_ctx = get_state_db(&self.config).await;
-        let archived_folder = self
-            .config
-            .codex_home
-            .join(codex_core::ARCHIVED_SESSIONS_SUBDIR);
-
-        let result: Result<Thread, JSONRPCErrorError> = async {
-            let canonical_archived_dir = tokio::fs::canonicalize(&archived_folder).await.map_err(
-                |err| JSONRPCErrorError {
-                    code: INTERNAL_ERROR_CODE,
-                    message: format!(
-                        "failed to unarchive thread: unable to resolve archived directory: {err}"
-                    ),
-                    data: None,
-                },
-            )?;
-            let canonical_rollout_path = tokio::fs::canonicalize(&archived_path).await;
-            let canonical_rollout_path = if let Ok(path) = canonical_rollout_path
-                && path.starts_with(&canonical_archived_dir)
-            {
-                path
-            } else {
-                return Err(JSONRPCErrorError {
-                    code: INVALID_REQUEST_ERROR_CODE,
-                    message: format!(
-                        "rollout path `{rollout_path_display}` must be in archived directory"
-                    ),
-                    data: None,
-                });
-            };
-
-            let required_suffix = format!("{thread_id}.jsonl");
-            let Some(file_name) = canonical_rollout_path.file_name().map(OsStr::to_owned) else {
-                return Err(JSONRPCErrorError {
-                    code: INVALID_REQUEST_ERROR_CODE,
-                    message: format!("rollout path `{rollout_path_display}` missing file name"),
-                    data: None,
-                });
-            };
-            if !file_name
-                .to_string_lossy()
-                .ends_with(required_suffix.as_str())
-            {
-                return Err(JSONRPCErrorError {
-                    code: INVALID_REQUEST_ERROR_CODE,
-                    message: format!(
-                        "rollout path `{rollout_path_display}` does not match thread id {thread_id}"
-                    ),
-                    data: None,
-                });
-            }
-
-            let Some((year, month, day)) = rollout_date_parts(&file_name) else {
-                return Err(JSONRPCErrorError {
-                    code: INVALID_REQUEST_ERROR_CODE,
-                    message: format!(
-                        "rollout path `{rollout_path_display}` missing filename timestamp"
-                    ),
-                    data: None,
-                });
-            };
-
-            let sessions_folder = self.config.codex_home.join(codex_core::SESSIONS_SUBDIR);
-            let dest_dir = sessions_folder.join(year).join(month).join(day);
-            let restored_path = dest_dir.join(&file_name);
-            tokio::fs::create_dir_all(&dest_dir)
-                .await
-                .map_err(|err| JSONRPCErrorError {
-                    code: INTERNAL_ERROR_CODE,
-                    message: format!("failed to unarchive thread: {err}"),
-                    data: None,
-                })?;
-            tokio::fs::rename(&canonical_rollout_path, &restored_path)
-                .await
-                .map_err(|err| JSONRPCErrorError {
-                    code: INTERNAL_ERROR_CODE,
-                    message: format!("failed to unarchive thread: {err}"),
-                    data: None,
-                })?;
-            tokio::task::spawn_blocking({
-                let restored_path = restored_path.clone();
-                move || -> std::io::Result<()> {
-                    let times = FileTimes::new().set_modified(SystemTime::now());
-                    OpenOptions::new()
-                        .append(true)
-                        .open(&restored_path)?
-                        .set_times(times)?;
-                    Ok(())
-                }
-            })
+        let result = self
+            .thread_store
+            .unarchive_thread(StoreArchiveThreadParams { thread_id })
             .await
-            .map_err(|err| JSONRPCErrorError {
-                code: INTERNAL_ERROR_CODE,
-                message: format!("failed to update unarchived thread timestamp: {err}"),
-                data: None,
-            })?
-            .map_err(|err| JSONRPCErrorError {
-                code: INTERNAL_ERROR_CODE,
-                message: format!("failed to update unarchived thread timestamp: {err}"),
-                data: None,
-            })?;
-            if let Some(ctx) = state_db_ctx {
-                let _ = ctx
-                    .mark_unarchived(thread_id, restored_path.as_path())
-                    .await;
-            }
-            let summary =
-                read_summary_from_rollout(restored_path.as_path(), fallback_provider.as_str())
-                    .await
-                    .map_err(|err| JSONRPCErrorError {
+            .map_err(|err| thread_store_archive_error("unarchive", err))
+            .and_then(|stored_thread| {
+                summary_from_stored_thread(stored_thread, fallback_provider.as_str())
+                    .map(|summary| summary_to_thread(summary, &self.config.cwd))
+                    .ok_or_else(|| JSONRPCErrorError {
                         code: INTERNAL_ERROR_CODE,
-                        message: format!("failed to read unarchived thread: {err}"),
+                        message: format!("failed to read unarchived thread {thread_id}"),
                         data: None,
-                    })?;
-            Ok(summary_to_thread(summary, &self.config.cwd))
-        }
-        .await;
+                    })
+            });
 
         match result {
             Ok(mut thread) => {
@@ -3717,15 +3635,15 @@ impl CodexMessageProcessor {
             .map(|value| value as usize)
             .unwrap_or(THREAD_LIST_DEFAULT_LIMIT)
             .clamp(1, THREAD_LIST_MAX_LIMIT);
-        let core_sort_key = match sort_key.unwrap_or(ThreadSortKey::CreatedAt) {
-            ThreadSortKey::CreatedAt => CoreThreadSortKey::CreatedAt,
-            ThreadSortKey::UpdatedAt => CoreThreadSortKey::UpdatedAt,
+        let store_sort_key = match sort_key.unwrap_or(ThreadSortKey::CreatedAt) {
+            ThreadSortKey::CreatedAt => StoreThreadSortKey::CreatedAt,
+            ThreadSortKey::UpdatedAt => StoreThreadSortKey::UpdatedAt,
         };
         let (summaries, next_cursor) = match self
             .list_threads_common(
                 requested_page_size,
                 cursor,
-                core_sort_key,
+                store_sort_key,
                 ThreadListFilters {
                     model_providers,
                     source_kinds,
@@ -3856,134 +3774,49 @@ impl CodexMessageProcessor {
             }
         };
 
-        let loaded_thread = self.thread_manager.get_thread(thread_uuid).await.ok();
-        let loaded_thread_state_db = loaded_thread.as_ref().and_then(|thread| thread.state_db());
-        let db_summary = if let Some(state_db_ctx) = loaded_thread_state_db.as_ref() {
-            read_summary_from_state_db_context_by_thread_id(Some(state_db_ctx), thread_uuid).await
-        } else {
-            read_summary_from_state_db_by_thread_id(&self.config, thread_uuid).await
-        };
-        let mut rollout_path = db_summary.as_ref().map(|summary| summary.path.clone());
-        if rollout_path.is_none() || include_turns {
-            rollout_path =
-                match find_thread_path_by_id_str(&self.config.codex_home, &thread_uuid.to_string())
-                    .await
-                {
-                    Ok(Some(path)) => Some(path),
-                    Ok(None) => {
-                        if include_turns {
-                            None
-                        } else {
-                            rollout_path
-                        }
-                    }
-                    Err(err) => {
-                        self.send_invalid_request_error(
-                            request_id,
-                            format!("failed to locate thread id {thread_uuid}: {err}"),
-                        )
-                        .await;
-                        return;
-                    }
-                };
-        }
-
-        if include_turns && rollout_path.is_none() && db_summary.is_some() {
-            self.send_internal_error(
-                request_id,
-                format!("failed to locate rollout for thread {thread_uuid}"),
-            )
-            .await;
-            return;
-        }
-
-        let mut thread = if let Some(summary) = db_summary {
-            summary_to_thread(summary, &self.config.cwd)
-        } else if let Some(rollout_path) = rollout_path.as_ref() {
-            let fallback_provider = self.config.model_provider_id.as_str();
-            match read_summary_from_rollout(rollout_path, fallback_provider).await {
-                Ok(summary) => summary_to_thread(summary, &self.config.cwd),
-                Err(err) => {
-                    self.send_internal_error(
-                        request_id,
-                        format!(
-                            "failed to load rollout `{}` for thread {thread_uuid}: {err}",
-                            rollout_path.display()
-                        ),
-                    )
-                    .await;
-                    return;
-                }
-            }
-        } else {
-            let Some(thread) = loaded_thread.as_ref() else {
-                self.send_invalid_request_error(
-                    request_id,
-                    format!("thread not loaded: {thread_uuid}"),
-                )
-                .await;
-                return;
-            };
-            let config_snapshot = thread.config_snapshot().await;
-            let loaded_rollout_path = thread.rollout_path();
-            if include_turns && loaded_rollout_path.is_none() {
-                self.send_invalid_request_error(
-                    request_id,
-                    "ephemeral threads do not support includeTurns".to_string(),
-                )
-                .await;
+        let thread = match self.read_thread_view(thread_uuid, include_turns).await {
+            Ok(thread) => thread,
+            Err(ThreadReadViewError::InvalidRequest(message)) => {
+                self.send_invalid_request_error(request_id, message).await;
                 return;
             }
-            if include_turns {
-                rollout_path = loaded_rollout_path.clone();
+            Err(ThreadReadViewError::Internal(message)) => {
+                self.send_internal_error(request_id, message).await;
+                return;
             }
-            build_thread_from_snapshot(thread_uuid, &config_snapshot, loaded_rollout_path)
         };
-        if thread.forked_from_id.is_none()
-            && let Some(rollout_path) = rollout_path.as_ref()
+        let response = ThreadReadResponse { thread };
+        self.outgoing.send_response(request_id, response).await;
+    }
+
+    /// Builds the API view for `thread/read` from persisted metadata plus optional live state.
+    async fn read_thread_view(
+        &self,
+        thread_id: ThreadId,
+        include_turns: bool,
+    ) -> Result<Thread, ThreadReadViewError> {
+        let loaded_thread = self.load_live_thread_for_read(thread_id).await;
+        let mut thread = if let Some(thread) = self
+            .load_persisted_thread_for_read(thread_id, include_turns, loaded_thread.as_ref())
+            .await?
         {
-            thread.forked_from_id = forked_from_id_from_rollout(rollout_path).await;
-        }
-        self.attach_thread_name(thread_uuid, &mut thread).await;
-
-        if include_turns && let Some(rollout_path) = rollout_path.as_ref() {
-            match read_rollout_items_from_rollout(rollout_path).await {
-                Ok(items) => {
-                    thread.turns = build_turns_from_rollout_items(&items);
-                }
-                Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
-                    self.send_invalid_request_error(
-                        request_id,
-                        format!(
-                            "thread {thread_uuid} is not materialized yet; includeTurns is unavailable before first user message"
-                        ),
-                    )
-                    .await;
-                    return;
-                }
-                Err(err) => {
-                    self.send_internal_error(
-                        request_id,
-                        format!(
-                            "failed to load rollout `{}` for thread {thread_uuid}: {err}",
-                            rollout_path.display()
-                        ),
-                    )
-                    .await;
-                    return;
-                }
-            }
-        }
-
-        let active_turn = if loaded_thread.is_some() {
-            let thread_state = self.thread_state_manager.thread_state(thread_uuid).await;
-            let state = thread_state.lock().await;
-            state.active_turn_snapshot()
+            thread
+        } else if let Some(thread) = self
+            .load_live_thread_view(thread_id, include_turns, loaded_thread.as_ref())
+            .await?
+        {
+            thread
         } else {
-            None
+            return Err(ThreadReadViewError::InvalidRequest(format!(
+                "thread not loaded: {thread_id}"
+            )));
         };
 
-        let has_live_in_progress_turn = if let Some(loaded_thread) = loaded_thread.as_ref() {
+        let active_turn = {
+            let state = self.thread_state_manager.thread_state(thread_id).await;
+            state.lock().await.active_turn_snapshot()
+        };
+        let has_live_in_progress_turn = if let Some(loaded_thread) = loaded_thread {
             matches!(loaded_thread.agent_status().await, AgentStatus::Running)
                 || active_turn
                     .as_ref()
@@ -4002,13 +3835,151 @@ impl CodexMessageProcessor {
             thread_status,
             has_live_in_progress_turn,
         );
-        app_server_hooks().augment_thread_read(
+        Ok(thread)
+    }
+
+    async fn load_live_thread_for_read(&self, thread_id: ThreadId) -> Option<Arc<CodexThread>> {
+        self.thread_manager.get_thread(thread_id).await.ok()
+    }
+
+    async fn load_persisted_thread_for_read(
+        &self,
+        thread_id: ThreadId,
+        include_turns: bool,
+        loaded_thread: Option<&Arc<CodexThread>>,
+    ) -> Result<Option<Thread>, ThreadReadViewError> {
+        let loaded_thread_state_db = loaded_thread.and_then(|thread| thread.state_db());
+        let db_summary = if let Some(state_db_ctx) = loaded_thread_state_db.as_ref() {
+            read_summary_from_state_db_context_by_thread_id(Some(state_db_ctx), thread_id).await
+        } else {
+            read_summary_from_state_db_by_thread_id(&self.config, thread_id).await
+        };
+        let mut rollout_path = db_summary.as_ref().map(|summary| summary.path.clone());
+        if rollout_path.is_none() || include_turns {
+            rollout_path =
+                match find_thread_path_by_id_str(&self.config.codex_home, &thread_id.to_string())
+                    .await
+                {
+                    Ok(Some(path)) => Some(path),
+                    Ok(None) => {
+                        if include_turns {
+                            None
+                        } else {
+                            rollout_path
+                        }
+                    }
+                    Err(err) => {
+                        return Err(ThreadReadViewError::InvalidRequest(format!(
+                            "failed to locate thread id {thread_id}: {err}"
+                        )));
+                    }
+                };
+        }
+
+        if include_turns && rollout_path.is_none() && db_summary.is_some() {
+            return Err(ThreadReadViewError::Internal(format!(
+                "failed to locate rollout for thread {thread_id}"
+            )));
+        }
+
+        if let Some(summary) = db_summary {
+            let mut thread = summary_to_thread(summary, &self.config.cwd);
+            self.apply_thread_read_rollout_fields(
+                thread_id,
+                &mut thread,
+                rollout_path.as_deref(),
+                include_turns,
+            )
+            .await?;
+            return Ok(Some(thread));
+        }
+
+        let Some(rollout_path) = rollout_path else {
+            return Ok(None);
+        };
+        let fallback_provider = self.config.model_provider_id.as_str();
+        match read_summary_from_rollout(&rollout_path, fallback_provider).await {
+            Ok(summary) => {
+                let mut thread = summary_to_thread(summary, &self.config.cwd);
+                self.apply_thread_read_rollout_fields(
+                    thread_id,
+                    &mut thread,
+                    Some(rollout_path.as_path()),
+                    include_turns,
+                )
+                .await?;
+                Ok(Some(thread))
+            }
+            Err(err) => Err(ThreadReadViewError::Internal(format!(
+                "failed to load rollout `{}` for thread {thread_id}: {err}",
+                rollout_path.display()
+            ))),
+        }
+    }
+
+    async fn load_live_thread_view(
+        &self,
+        thread_id: ThreadId,
+        include_turns: bool,
+        loaded_thread: Option<&Arc<CodexThread>>,
+    ) -> Result<Option<Thread>, ThreadReadViewError> {
+        let Some(thread) = loaded_thread else {
+            return Ok(None);
+        };
+        let config_snapshot = thread.config_snapshot().await;
+        let loaded_rollout_path = thread.rollout_path();
+        if include_turns && loaded_rollout_path.is_none() {
+            return Err(ThreadReadViewError::InvalidRequest(
+                "ephemeral threads do not support includeTurns".to_string(),
+            ));
+        }
+
+        let mut thread =
+            build_thread_from_snapshot(thread_id, &config_snapshot, loaded_rollout_path.clone());
+        self.apply_thread_read_rollout_fields(
+            thread_id,
             &mut thread,
-            active_turn.as_ref(),
-            has_live_in_progress_turn,
-        );
-        let response = ThreadReadResponse { thread };
-        self.outgoing.send_response(request_id, response).await;
+            loaded_rollout_path.as_deref(),
+            include_turns,
+        )
+        .await?;
+        Ok(Some(thread))
+    }
+
+    async fn apply_thread_read_rollout_fields(
+        &self,
+        thread_id: ThreadId,
+        thread: &mut Thread,
+        rollout_path: Option<&Path>,
+        include_turns: bool,
+    ) -> Result<(), ThreadReadViewError> {
+        if thread.forked_from_id.is_none()
+            && let Some(rollout_path) = rollout_path
+        {
+            thread.forked_from_id = forked_from_id_from_rollout(rollout_path).await;
+        }
+        self.attach_thread_name(thread_id, thread).await;
+
+        if include_turns && let Some(rollout_path) = rollout_path {
+            match read_rollout_items_from_rollout(rollout_path).await {
+                Ok(items) => {
+                    thread.turns = build_turns_from_rollout_items(&items);
+                }
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                    return Err(ThreadReadViewError::InvalidRequest(format!(
+                        "thread {thread_id} is not materialized yet; includeTurns is unavailable before first user message"
+                    )));
+                }
+                Err(err) => {
+                    return Err(ThreadReadViewError::Internal(format!(
+                        "failed to load rollout `{}` for thread {thread_id}: {err}",
+                        rollout_path.display()
+                    )));
+                }
+            }
+        }
+
+        Ok(())
     }
 
     pub(crate) fn thread_created_receiver(&self) -> broadcast::Receiver<ThreadId> {
@@ -4198,7 +4169,7 @@ impl CodexMessageProcessor {
         {
             Ok(NewThread {
                 thread_id,
-                thread,
+                thread: codex_thread,
                 session_configured,
             }) => {
                 let SessionConfiguredEvent { rollout_path, .. } = session_configured;
@@ -4227,7 +4198,7 @@ impl CodexMessageProcessor {
                 let mut thread = match self
                     .load_thread_from_resume_source_or_send_internal(
                         thread_id,
-                        thread.as_ref(),
+                        codex_thread.as_ref(),
                         &response_history,
                         rollout_path.as_path(),
                         fallback_model_provider.as_str(),
@@ -4279,7 +4250,25 @@ impl CodexMessageProcessor {
                     );
                 }
 
+                let connection_id = request_id.connection_id;
+                let token_usage_thread = response.thread.clone();
+                let token_usage_turn_id = latest_token_usage_turn_id_from_rollout_items(
+                    &response_history.get_rollout_items(),
+                    &token_usage_thread,
+                );
                 self.outgoing.send_response(request_id, response).await;
+                // The client needs restored usage before it starts another turn.
+                // Sending after the response preserves JSON-RPC request ordering while
+                // still filling the status line before the next turn lifecycle begins.
+                send_thread_token_usage_update_to_connection(
+                    &self.outgoing,
+                    connection_id,
+                    thread_id,
+                    &token_usage_thread,
+                    codex_thread.as_ref(),
+                    token_usage_turn_id,
+                )
+                .await;
             }
             Err(err) => {
                 let error = JSONRPCErrorError {
@@ -4916,7 +4905,31 @@ impl CodexMessageProcessor {
             );
         }
 
+        let connection_id = request_id.connection_id;
+        let token_usage_thread = response.thread.clone();
+        let token_usage_turn_id = if let Some(turn_id) =
+            latest_token_usage_turn_id_for_thread_path(&token_usage_thread).await
+        {
+            Some(turn_id)
+        } else {
+            latest_token_usage_turn_id_from_rollout_path(
+                rollout_path.as_path(),
+                &token_usage_thread,
+            )
+            .await
+        };
         self.outgoing.send_response(request_id, response).await;
+        // Mirror the resume contract for forks: the new thread is usable as soon
+        // as the response arrives, so restored usage must follow immediately.
+        send_thread_token_usage_update_to_connection(
+            &self.outgoing,
+            connection_id,
+            thread_id,
+            &token_usage_thread,
+            forked_thread.as_ref(),
+            token_usage_turn_id,
+        )
+        .await;
 
         let notif = ThreadStartedNotification { thread };
         self.outgoing
@@ -4994,7 +5007,7 @@ impl CodexMessageProcessor {
         &self,
         requested_page_size: usize,
         cursor: Option<String>,
-        sort_key: CoreThreadSortKey,
+        sort_key: StoreThreadSortKey,
         filters: ThreadListFilters,
     ) -> Result<(Vec<ConversationSummary>, Option<String>), JSONRPCErrorError> {
         let ThreadListFilters {
@@ -5004,16 +5017,7 @@ impl CodexMessageProcessor {
             cwd,
             search_term,
         } = filters;
-        let mut cursor_obj: Option<RolloutCursor> = match cursor.as_ref() {
-            Some(cursor_str) => {
-                Some(parse_cursor(cursor_str).ok_or_else(|| JSONRPCErrorError {
-                    code: INVALID_REQUEST_ERROR_CODE,
-                    message: format!("invalid cursor: {cursor_str}"),
-                    data: None,
-                })?)
-            }
-            None => None,
-        };
+        let mut cursor_obj = cursor;
         let mut last_cursor = cursor_obj.clone();
         let mut remaining = requested_page_size;
         let mut items = Vec::with_capacity(requested_page_size);
@@ -5032,54 +5036,26 @@ impl CodexMessageProcessor {
         let fallback_provider = self.config.model_provider_id.clone();
         let (allowed_sources_vec, source_kind_filter) = compute_source_filters(source_kinds);
         let allowed_sources = allowed_sources_vec.as_slice();
-        let state_db_ctx = get_state_db(&self.config).await;
 
         while remaining > 0 {
             let page_size = remaining.min(THREAD_LIST_MAX_LIMIT);
-            let page = if archived {
-                RolloutRecorder::list_archived_threads(
-                    &self.config,
+            let page = self
+                .thread_store
+                .list_threads(StoreListThreadsParams {
                     page_size,
-                    cursor_obj.as_ref(),
+                    cursor: cursor_obj.clone(),
                     sort_key,
-                    allowed_sources,
-                    model_provider_filter.as_deref(),
-                    fallback_provider.as_str(),
-                    search_term.as_deref(),
-                )
+                    allowed_sources: allowed_sources.to_vec(),
+                    model_providers: model_provider_filter.clone(),
+                    archived,
+                    search_term: search_term.clone(),
+                })
                 .await
-                .map_err(|err| JSONRPCErrorError {
-                    code: INTERNAL_ERROR_CODE,
-                    message: format!("failed to list threads: {err}"),
-                    data: None,
-                })?
-            } else {
-                RolloutRecorder::list_threads(
-                    &self.config,
-                    page_size,
-                    cursor_obj.as_ref(),
-                    sort_key,
-                    allowed_sources,
-                    model_provider_filter.as_deref(),
-                    fallback_provider.as_str(),
-                    search_term.as_deref(),
-                )
-                .await
-                .map_err(|err| JSONRPCErrorError {
-                    code: INTERNAL_ERROR_CODE,
-                    message: format!("failed to list threads: {err}"),
-                    data: None,
-                })?
-            };
+                .map_err(thread_store_list_error)?;
 
             let mut filtered = Vec::with_capacity(page.items.len());
             for it in page.items {
-                let Some(summary) = summary_from_thread_list_item(
-                    it,
-                    fallback_provider.as_str(),
-                    state_db_ctx.as_ref(),
-                )
-                .await
+                let Some(summary) = summary_from_stored_thread(it, fallback_provider.as_str())
                 else {
                     continue;
                 };
@@ -5099,12 +5075,8 @@ impl CodexMessageProcessor {
             items.extend(filtered);
             remaining = requested_page_size.saturating_sub(items.len());
 
-            // Encode RolloutCursor into the JSON-RPC string form returned to clients.
             let next_cursor_value = page.next_cursor.clone();
-            next_cursor = next_cursor_value
-                .as_ref()
-                .and_then(|cursor| serde_json::to_value(cursor).ok())
-                .and_then(|value| value.as_str().map(str::to_owned));
+            next_cursor = next_cursor_value.clone();
             if remaining == 0 {
                 break;
             }
@@ -5861,76 +5833,10 @@ impl CodexMessageProcessor {
             .await;
     }
 
-    async fn archive_thread_common(
-        &mut self,
-        thread_id: ThreadId,
-        rollout_path: &Path,
-    ) -> Result<(), JSONRPCErrorError> {
-        // Verify rollout_path is under sessions dir.
-        let rollout_folder = self.config.codex_home.join(codex_core::SESSIONS_SUBDIR);
-
-        let canonical_sessions_dir = match tokio::fs::canonicalize(&rollout_folder).await {
-            Ok(path) => path,
-            Err(err) => {
-                return Err(JSONRPCErrorError {
-                    code: INTERNAL_ERROR_CODE,
-                    message: format!(
-                        "failed to archive thread: unable to resolve sessions directory: {err}"
-                    ),
-                    data: None,
-                });
-            }
-        };
-        let canonical_rollout_path = tokio::fs::canonicalize(rollout_path).await;
-        let canonical_rollout_path = if let Ok(path) = canonical_rollout_path
-            && path.starts_with(&canonical_sessions_dir)
-        {
-            path
-        } else {
-            return Err(JSONRPCErrorError {
-                code: INVALID_REQUEST_ERROR_CODE,
-                message: format!(
-                    "rollout path `{}` must be in sessions directory",
-                    rollout_path.display()
-                ),
-                data: None,
-            });
-        };
-
-        // Verify file name matches thread id.
-        let required_suffix = format!("{thread_id}.jsonl");
-        let Some(file_name) = canonical_rollout_path.file_name().map(OsStr::to_owned) else {
-            return Err(JSONRPCErrorError {
-                code: INVALID_REQUEST_ERROR_CODE,
-                message: format!(
-                    "rollout path `{}` missing file name",
-                    rollout_path.display()
-                ),
-                data: None,
-            });
-        };
-        if !file_name
-            .to_string_lossy()
-            .ends_with(required_suffix.as_str())
-        {
-            return Err(JSONRPCErrorError {
-                code: INVALID_REQUEST_ERROR_CODE,
-                message: format!(
-                    "rollout path `{}` does not match thread id {thread_id}",
-                    rollout_path.display()
-                ),
-                data: None,
-            });
-        }
-
-        let mut state_db_ctx = None;
-
+    async fn prepare_thread_for_archive(&self, thread_id: ThreadId) {
         // If the thread is active, request shutdown and wait briefly.
         let removed_conversation = self.thread_manager.remove_thread(&thread_id).await;
         if let Some(conversation) = removed_conversation {
-            if let Some(ctx) = conversation.state_db() {
-                state_db_ctx = Some(ctx);
-            }
             info!("thread {thread_id} was active; shutting down");
             match Self::wait_for_thread_shutdown(&conversation).await {
                 ThreadShutdownResult::Complete => {}
@@ -5945,34 +5851,6 @@ impl CodexMessageProcessor {
             }
         }
         self.finalize_thread_teardown(thread_id).await;
-
-        if state_db_ctx.is_none() {
-            state_db_ctx = get_state_db(&self.config).await;
-        }
-
-        // Move the rollout file to archived.
-        let result: std::io::Result<()> = async move {
-            let archive_folder = self
-                .config
-                .codex_home
-                .join(codex_core::ARCHIVED_SESSIONS_SUBDIR);
-            tokio::fs::create_dir_all(&archive_folder).await?;
-            let archived_path = archive_folder.join(&file_name);
-            tokio::fs::rename(&canonical_rollout_path, &archived_path).await?;
-            if let Some(ctx) = state_db_ctx {
-                let _ = ctx
-                    .mark_archived(thread_id, archived_path.as_path(), Utc::now())
-                    .await;
-            }
-            Ok(())
-        }
-        .await;
-
-        result.map_err(|err| JSONRPCErrorError {
-            code: INTERNAL_ERROR_CODE,
-            message: format!("failed to archive thread: {err}"),
-            data: None,
-        })
     }
 
     async fn apps_list(&self, request_id: ConnectionRequestId, params: AppsListParams) {
@@ -6295,6 +6173,7 @@ impl CodexMessageProcessor {
                 }
             };
             let config_layer_stack = match load_config_layers_state(
+                LOCAL_FS.as_ref(),
                 &self.config.codex_home,
                 Some(cwd_abs.clone()),
                 &cli_overrides,
@@ -6357,6 +6236,7 @@ impl CodexMessageProcessor {
             force_remote_sync,
         } = params;
         let roots = cwds.unwrap_or_default();
+        plugins_manager.maybe_start_non_curated_plugin_cache_refresh(&roots);
 
         let mut config = match self.load_latest_config(/*fallback_cwd*/ None).await {
             Ok(config) => config,
@@ -7745,9 +7625,12 @@ impl CodexMessageProcessor {
         params: TurnInterruptParams,
     ) {
         let TurnInterruptParams { thread_id, turn_id } = params;
-        self.outgoing
-            .record_request_turn_id(&request_id, &turn_id)
-            .await;
+        let is_startup_interrupt = turn_id.is_empty();
+        if !is_startup_interrupt {
+            self.outgoing
+                .record_request_turn_id(&request_id, &turn_id)
+                .await;
+        }
 
         let (thread_uuid, thread) = match self.load_thread(&thread_id).await {
             Ok(v) => v,
@@ -7757,21 +7640,48 @@ impl CodexMessageProcessor {
             }
         };
 
-        let request = request_id.clone();
-
-        // Record the pending interrupt so we can reply when TurnAborted arrives.
-        {
+        // Record turn interrupts so we can reply when TurnAborted arrives. Startup
+        // interrupts do not have a turn and are acknowledged after submission.
+        if !is_startup_interrupt {
             let thread_state = self.thread_state_manager.thread_state(thread_uuid).await;
             let mut thread_state = thread_state.lock().await;
             thread_state
                 .pending_interrupts
-                .push((request, ApiVersion::V2));
+                .push((request_id.clone(), ApiVersion::V2));
         }
 
-        // Submit the interrupt; we'll respond upon TurnAborted.
-        let _ = self
+        // Submit the interrupt. Turn interrupts respond upon TurnAborted; startup
+        // interrupts respond here because startup cancellation has no turn event.
+        let submit_result = self
             .submit_core_op(&request_id, thread.as_ref(), Op::Interrupt)
             .await;
+        match submit_result {
+            Ok(_) if is_startup_interrupt => {
+                self.outgoing
+                    .send_response(request_id, TurnInterruptResponse {})
+                    .await;
+            }
+            Ok(_) => {}
+            Err(err) => {
+                if !is_startup_interrupt {
+                    let thread_state = self.thread_state_manager.thread_state(thread_uuid).await;
+                    let mut thread_state = thread_state.lock().await;
+                    thread_state
+                        .pending_interrupts
+                        .retain(|(pending_request_id, _)| pending_request_id != &request_id);
+                }
+                let interrupt_target = if is_startup_interrupt {
+                    "startup"
+                } else {
+                    "turn"
+                };
+                self.send_internal_error(
+                    request_id,
+                    format!("failed to interrupt {interrupt_target}: {err}"),
+                )
+                .await;
+            }
+        }
     }
 
     async fn ensure_conversation_listener(
@@ -8597,7 +8507,24 @@ async fn handle_pending_thread_resume_request(
         sandbox: sandbox_policy.into(),
         reasoning_effort,
     };
+    let token_usage_thread = response.thread.clone();
+    let token_usage_turn_id = latest_token_usage_turn_id_from_rollout_path(
+        pending.rollout_path.as_path(),
+        &token_usage_thread,
+    )
+    .await;
     outgoing.send_response(request_id, response).await;
+    // Rejoining a loaded thread has the same UI contract as a cold resume, but
+    // uses the live conversation state instead of reconstructing a new session.
+    send_thread_token_usage_update_to_connection(
+        outgoing,
+        connection_id,
+        conversation_id,
+        &token_usage_thread,
+        conversation.as_ref(),
+        token_usage_turn_id,
+    )
+    .await;
     outgoing
         .replay_requests_to_connection_for_thread(connection_id, conversation_id)
         .await;
@@ -8958,9 +8885,7 @@ fn plugin_skills_to_info(
         .collect()
 }
 
-fn plugin_interface_to_info(
-    interface: codex_core::plugins::PluginManifestInterface,
-) -> PluginInterface {
+fn plugin_interface_to_info(interface: PluginManifestInterface) -> PluginInterface {
     PluginInterface {
         display_name: interface.display_name,
         short_description: interface.short_description,
@@ -9227,67 +9152,126 @@ async fn read_summary_from_state_db_context_by_thread_id(
     Some(summary_from_thread_metadata(&metadata))
 }
 
-async fn summary_from_thread_list_item(
-    it: codex_core::ThreadItem,
-    fallback_provider: &str,
-    state_db_ctx: Option<&StateDbHandle>,
-) -> Option<ConversationSummary> {
-    if let Some(thread_id) = it.thread_id {
-        let timestamp = it.created_at.clone();
-        let updated_at = it.updated_at.clone().or_else(|| timestamp.clone());
-        let model_provider = it
-            .model_provider
-            .clone()
-            .unwrap_or_else(|| fallback_provider.to_string());
-        let cwd = it.cwd?;
-        let cli_version = it.cli_version.unwrap_or_default();
-        let source = with_thread_spawn_agent_metadata(
-            it.source
-                .unwrap_or(codex_protocol::protocol::SessionSource::Unknown),
-            it.agent_nickname.clone(),
-            it.agent_role.clone(),
-        );
-        return Some(ConversationSummary {
-            conversation_id: thread_id,
-            path: it.path,
-            preview: it.first_user_message.unwrap_or_default(),
-            timestamp,
-            updated_at,
-            model_provider,
-            cwd,
-            cli_version,
-            source,
-            git_info: if it.git_sha.is_none()
-                && it.git_branch.is_none()
-                && it.git_origin_url.is_none()
-            {
-                None
-            } else {
-                Some(ConversationGitInfo {
-                    sha: it.git_sha,
-                    branch: it.git_branch,
-                    origin_url: it.git_origin_url,
-                })
-            },
-        });
+async fn title_from_state_db(config: &Config, thread_id: ThreadId) -> Option<String> {
+    if let Some(state_db_ctx) = open_state_db_for_direct_thread_lookup(config).await
+        && let Some(metadata) = state_db_ctx.get_thread(thread_id).await.ok().flatten()
+        && let Some(title) = distinct_title(&metadata)
+    {
+        return Some(title);
     }
-    if let Some(thread_id) = thread_id_from_rollout_path(it.path.as_path()) {
-        return read_summary_from_state_db_context_by_thread_id(state_db_ctx, thread_id).await;
-    }
-    None
+    find_thread_name_by_id(&config.codex_home, &thread_id)
+        .await
+        .ok()
+        .flatten()
 }
 
-fn thread_id_from_rollout_path(path: &Path) -> Option<ThreadId> {
-    let file_name = path.file_name()?.to_str()?;
-    let stem = file_name.strip_suffix(".jsonl")?;
-    if stem.len() < 37 {
-        return None;
+async fn thread_titles_by_ids(
+    config: &Config,
+    thread_ids: &HashSet<ThreadId>,
+) -> HashMap<ThreadId, String> {
+    let mut names = HashMap::with_capacity(thread_ids.len());
+    if let Some(state_db_ctx) = open_state_db_for_direct_thread_lookup(config).await {
+        for &thread_id in thread_ids {
+            let Ok(Some(metadata)) = state_db_ctx.get_thread(thread_id).await else {
+                continue;
+            };
+            if let Some(title) = distinct_title(&metadata) {
+                names.insert(thread_id, title);
+            }
+        }
     }
-    let uuid_start = stem.len().saturating_sub(36);
-    if !stem[..uuid_start].ends_with('-') {
-        return None;
+    if names.len() < thread_ids.len()
+        && let Ok(legacy_names) = find_thread_names_by_ids(&config.codex_home, thread_ids).await
+    {
+        for (thread_id, title) in legacy_names {
+            names.entry(thread_id).or_insert(title);
+        }
     }
-    ThreadId::from_string(&stem[uuid_start..]).ok()
+    names
+}
+
+fn non_empty_title(metadata: &ThreadMetadata) -> Option<String> {
+    let title = metadata.title.trim();
+    (!title.is_empty()).then(|| title.to_string())
+}
+
+fn distinct_title(metadata: &ThreadMetadata) -> Option<String> {
+    let title = non_empty_title(metadata)?;
+    if metadata.first_user_message.as_deref().map(str::trim) == Some(title.as_str()) {
+        None
+    } else {
+        Some(title)
+    }
+}
+
+fn set_thread_name_from_title(thread: &mut Thread, title: String) {
+    if title.trim().is_empty() || thread.preview.trim() == title.trim() {
+        return;
+    }
+    thread.name = Some(title);
+}
+
+fn thread_store_list_error(err: ThreadStoreError) -> JSONRPCErrorError {
+    match err {
+        ThreadStoreError::InvalidRequest { message } => JSONRPCErrorError {
+            code: INVALID_REQUEST_ERROR_CODE,
+            message,
+            data: None,
+        },
+        err => JSONRPCErrorError {
+            code: INTERNAL_ERROR_CODE,
+            message: format!("failed to list threads: {err}"),
+            data: None,
+        },
+    }
+}
+
+fn thread_store_archive_error(operation: &str, err: ThreadStoreError) -> JSONRPCErrorError {
+    match err {
+        ThreadStoreError::InvalidRequest { message } => JSONRPCErrorError {
+            code: INVALID_REQUEST_ERROR_CODE,
+            message,
+            data: None,
+        },
+        err => JSONRPCErrorError {
+            code: INTERNAL_ERROR_CODE,
+            message: format!("failed to {operation} thread: {err}"),
+            data: None,
+        },
+    }
+}
+
+fn summary_from_stored_thread(
+    thread: StoredThread,
+    fallback_provider: &str,
+) -> Option<ConversationSummary> {
+    let path = thread.rollout_path?;
+    let source = with_thread_spawn_agent_metadata(
+        thread.source,
+        thread.agent_nickname.clone(),
+        thread.agent_role.clone(),
+    );
+    let git_info = thread.git_info.map(|git| ConversationGitInfo {
+        sha: git.commit_hash.map(|sha| sha.0),
+        branch: git.branch,
+        origin_url: git.repository_url,
+    });
+    Some(ConversationSummary {
+        conversation_id: thread.thread_id,
+        path,
+        preview: thread.first_user_message.unwrap_or(thread.preview),
+        timestamp: Some(thread.created_at.to_rfc3339_opts(SecondsFormat::Secs, true)),
+        updated_at: Some(thread.updated_at.to_rfc3339_opts(SecondsFormat::Secs, true)),
+        model_provider: if thread.model_provider.is_empty() {
+            fallback_provider.to_string()
+        } else {
+            thread.model_provider
+        },
+        cwd: thread.cwd,
+        cli_version: thread.cli_version,
+        source,
+        git_info,
+    })
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -10053,13 +10037,14 @@ mod tests {
         );
     }
 
-    #[test]
-    fn apply_explicit_instruction_null_overrides_to_config_clears_inherited_instructions() {
+    #[tokio::test]
+    async fn apply_explicit_instruction_null_overrides_to_config_clears_inherited_instructions() {
         let codex_home = tempfile::TempDir::new().expect("create temp codex home");
         let mut config = Config::load_default_with_cli_overrides_for_codex_home(
             codex_home.path().to_path_buf(),
             Vec::new(),
         )
+        .await
         .expect("load default config");
         config.base_instructions = Some("keep base".to_string());
         config.developer_instructions = Some("keep developer".to_string());

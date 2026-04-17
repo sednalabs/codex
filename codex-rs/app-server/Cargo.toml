@@ -33,6 +33,7 @@ codex-arg0 = { workspace = true }
 codex-analytics = { workspace = true }
 codex-cloud-requirements = { workspace = true }
 codex-core = { workspace = true }
+codex-core-plugins = { workspace = true }
 codex-exec-server = { workspace = true }
 codex-features = { workspace = true }
 codex-git-utils = { workspace = true }
@@ -55,6 +56,7 @@ codex-rmcp-client = { workspace = true }
 codex-rollout = { workspace = true }
 codex-sandboxing = { workspace = true }
 codex-state = { workspace = true }
+codex-thread-store = { workspace = true }
 codex-tools = { workspace = true }
 codex-utils-absolute-path = { workspace = true }
 codex-utils-json-to-toml = { workspace = true }

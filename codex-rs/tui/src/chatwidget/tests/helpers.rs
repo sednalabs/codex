@@ -10,6 +10,7 @@ pub(super) async fn test_config() -> Config {
         .keep();
     let mut config =
         Config::load_default_with_cli_overrides_for_codex_home(codex_home.clone(), Vec::new())
+            .await
             .expect("config");
     config.codex_home = codex_home.abs();
     config.sqlite_home = codex_home.clone();
@@ -109,7 +110,7 @@ pub(super) fn snapshot(percent: f64) -> RateLimitSnapshot {
 }
 
 pub(super) fn test_session_telemetry(config: &Config, model: &str) -> SessionTelemetry {
-    let model_info = codex_core::test_support::construct_model_info_offline(model, config);
+    let model_info = crate::legacy_core::test_support::construct_model_info_offline(model, config);
     SessionTelemetry::new(
         ThreadId::new(),
         model,
@@ -131,7 +132,7 @@ pub(super) fn test_model_catalog(config: &Config) -> Arc<ModelCatalog> {
             .enabled(Feature::DefaultModeRequestUserInput),
     };
     Arc::new(ModelCatalog::new(
-        codex_core::test_support::all_model_presets().clone(),
+        crate::legacy_core::test_support::all_model_presets().clone(),
         collaboration_modes_config,
     ))
 }
@@ -191,9 +192,9 @@ pub(super) async fn make_chatwidget_manual(
     let app_event_tx = AppEventSender::new(tx_raw);
     let (op_tx, op_rx) = unbounded_channel::<Op>();
     let mut cfg = test_config().await;
-    let resolved_model = model_override
-        .map(str::to_owned)
-        .unwrap_or_else(|| codex_core::test_support::get_model_offline(cfg.model.as_deref()));
+    let resolved_model = model_override.map(str::to_owned).unwrap_or_else(|| {
+        crate::legacy_core::test_support::get_model_offline(cfg.model.as_deref())
+    });
     if let Some(model) = model_override {
         cfg.model = Some(model.to_string());
     }
@@ -387,6 +388,19 @@ pub(super) fn assert_no_submit_op(op_rx: &mut tokio::sync::mpsc::UnboundedReceiv
             "unexpected submit op: {op:?}"
         );
     }
+}
+
+pub(super) fn submit_composer_text(chat: &mut ChatWidget, text: &str) {
+    chat.bottom_pane
+        .set_composer_text(text.to_string(), Vec::new(), Vec::new());
+    chat.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+}
+
+pub(super) fn recall_latest_after_clearing(chat: &mut ChatWidget) -> String {
+    chat.bottom_pane
+        .set_composer_text(String::new(), Vec::new(), Vec::new());
+    chat.handle_key_event(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
+    chat.bottom_pane.composer_text()
 }
 
 pub(crate) fn set_chatgpt_auth(chat: &mut ChatWidget) {
@@ -1011,6 +1025,7 @@ pub(super) async fn assert_hook_events_snapshot(
                 execution_mode: codex_protocol::protocol::HookExecutionMode::Sync,
                 scope: codex_protocol::protocol::HookScope::Turn,
                 source_path: PathBuf::from(test_path_display("/tmp/hooks.json")).abs(),
+                source: codex_protocol::protocol::HookSource::User,
                 display_order: 0,
                 status: codex_protocol::protocol::HookRunStatus::Running,
                 status_message: Some(status_message.to_string()),
@@ -1033,6 +1048,7 @@ pub(super) async fn assert_hook_events_snapshot(
                 execution_mode: codex_protocol::protocol::HookExecutionMode::Sync,
                 scope: codex_protocol::protocol::HookScope::Turn,
                 source_path: PathBuf::from(test_path_display("/tmp/hooks.json")).abs(),
+                source: codex_protocol::protocol::HookSource::User,
                 display_order: 0,
                 status: codex_protocol::protocol::HookRunStatus::Completed,
                 status_message: Some(status_message.to_string()),

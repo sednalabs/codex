@@ -35,8 +35,8 @@ fn selection_for_attested_outputs(selected: Vec<Stage1Output>) -> Phase2InputSel
     }
 }
 
-fn config_for_memory_root(root: &Path) -> Arc<Config> {
-    let mut config = test_config();
+async fn config_for_memory_root(root: &Path) -> Arc<Config> {
+    let mut config = test_config().await;
     config.codex_home = codex_utils_absolute_path::AbsolutePathBuf::from_absolute_path(
         root.parent()
             .expect("memory root should have a codex home parent"),
@@ -58,7 +58,7 @@ async fn consolidation_artifacts_ready_rejects_rollout_summary_drift_even_when_o
     let codex_home = codex_utils_absolute_path::AbsolutePathBuf::from_absolute_path(&codex_home)
         .expect("codex home should be absolute");
     let root = memory_root(&codex_home);
-    let config = config_for_memory_root(&root);
+    let config = config_for_memory_root(&root).await;
     let selection = selection_for_attested_outputs(Vec::new());
     let memory_index_path = root.join("MEMORY.md");
     let memory_summary_path = root.join("memory_summary.md");
@@ -123,7 +123,7 @@ async fn consolidation_artifacts_ready_rejects_missing_attestation_after_db_requ
     let codex_home = codex_utils_absolute_path::AbsolutePathBuf::from_absolute_path(&codex_home)
         .expect("codex home should be absolute");
     let root = memory_root(&codex_home);
-    let config = config_for_memory_root(&root);
+    let config = config_for_memory_root(&root).await;
     let state_db = codex_state::StateRuntime::init(
         temp_dir.path().join("sqlite-home"),
         config.model_provider_id.clone(),
@@ -192,7 +192,7 @@ async fn consolidation_artifacts_ready_rejects_missing_attestation_when_state_db
     let codex_home = codex_utils_absolute_path::AbsolutePathBuf::from_absolute_path(&codex_home)
         .expect("codex home should be absolute");
     let root = memory_root(&codex_home);
-    let config = config_for_memory_root(&root);
+    let config = config_for_memory_root(&root).await;
     let state_db = codex_state::StateRuntime::init(
         temp_dir.path().join("sqlite-home"),
         config.model_provider_id.clone(),

@@ -20,6 +20,7 @@ use crate::config_loader::ConfigLayerStack;
 use crate::config_loader::ConfigLayerStackOrdering;
 use crate::config_loader::resolve_relative_paths_in_config_toml;
 use codex_app_server_protocol::ConfigLayerSource;
+use codex_exec_server::LOCAL_FS;
 use codex_model_provider_info::ModelProviderInfo;
 use codex_protocol::config_types::ReasoningSummary;
 use codex_protocol::config_types::Verbosity;
@@ -311,7 +312,7 @@ impl SpawnModelSelectionCarry {
 mod reload {
     use super::*;
 
-    pub(super) fn build_next_config(
+    pub(super) async fn build_next_config(
         config: &Config,
         role_name: &str,
         role_layer_toml: TomlValue,
@@ -330,11 +331,13 @@ mod reload {
         }
 
         let mut next_config = Config::load_config_with_layer_stack(
+            LOCAL_FS.as_ref(),
             merged_config,
             reload_overrides(config, preservation_policy),
             config.codex_home.clone(),
             config_layer_stack,
         )
+        .await
         .map_err(|err| {
             format!("failed to apply merged config for agent type '{role_name}': {err}")
         })?;
@@ -488,7 +491,8 @@ pub(crate) async fn apply_role_to_config(
     let role_reload_model_selection =
         SpawnModelSelectionCarry::from_role_reload(config, &role_config, &role_layer_toml);
     let preservation_policy = RolePreservationPolicy::from_config(config, &role_layer_toml);
-    *config = reload::build_next_config(config, role_name, role_layer_toml, &preservation_policy)?;
+    *config =
+        reload::build_next_config(config, role_name, role_layer_toml, &preservation_policy).await?;
     role_reload_model_selection.apply_to_config(config);
 
     Ok(())
@@ -513,7 +517,8 @@ pub(crate) async fn apply_role_to_spawn_config(
     let spawn_model_selection_carry =
         SpawnModelSelectionCarry::from_spawn_config(config, &role_config, &role_layer_toml);
     let preservation_policy = RolePreservationPolicy::from_config(config, &role_layer_toml);
-    *config = reload::build_next_config(config, role_name, role_layer_toml, &preservation_policy)?;
+    *config =
+        reload::build_next_config(config, role_name, role_layer_toml, &preservation_policy).await?;
     role_reload_model_selection.apply_to_config(config);
 
     Ok(spawn_model_selection_carry)
