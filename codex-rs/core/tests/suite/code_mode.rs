@@ -2924,12 +2924,7 @@ text(JSON.stringify(ALL_TOOLS));
         "mcp__rmcp__echo",
         "args",
         &["env_var?: string", "message: string"],
-        &[
-            "_meta?: { [key: string]: unknown; }",
-            "content: Array<{ [key: string]: unknown; }>",
-            "isError?: boolean",
-            "structuredContent?: { echo: string; env: string | null; }",
-        ],
+        &["CallToolResult<{ echo: string; env: string | null; }>"],
     );
 
     Ok(())
