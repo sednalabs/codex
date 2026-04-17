@@ -1903,12 +1903,7 @@ fn code_mode_augments_mcp_tool_descriptions_with_namespaced_sample() {
         "mcp__sample__echo",
         "args",
         &["message: string;"],
-        &[
-            "_meta?: { [key: string]: unknown; };",
-            "content: Array<{ [key: string]: unknown; }>;",
-            "isError?: boolean;",
-            "structuredContent?: unknown;",
-        ],
+        &["CallToolResult"],
     );
 }
 
@@ -1996,12 +1991,7 @@ fn code_mode_preserves_nullable_and_literal_mcp_input_shapes() {
             "response_length?: \"short\" | \"medium\" | \"long\";",
             "tagged_list?: Array<{ kind: \"tagged\"; scope: \"one\" | \"two\"; variant: \"alpha\" | \"beta\"; }> | null;",
         ],
-        &[
-            "_meta?: { [key: string]: unknown; };",
-            "content: Array<{ [key: string]: unknown; }>;",
-            "isError?: boolean;",
-            "structuredContent?: unknown;",
-        ],
+        &["CallToolResult"],
     );
 }
 
@@ -2305,12 +2295,7 @@ fn code_mode_augments_mcp_tool_descriptions_with_structured_output_sample() {
         "mcp__sample__echo",
         "args",
         &["message: string;"],
-        &[
-            "_meta?: { [key: string]: unknown; };",
-            "content: Array<{ [key: string]: unknown; }>;",
-            "isError?: boolean;",
-            "structuredContent?: { echo: string; env: string | null; };",
-        ],
+        &["CallToolResult<{ echo: string; env: string | null; }>"],
     );
 }
 

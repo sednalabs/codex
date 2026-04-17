@@ -8222,11 +8222,7 @@
             "$ref": "#/definitions/v2/HookScope"
           },
           "source": {
-            "allOf": [
-              {
-                "$ref": "#/definitions/v2/HookSource"
-              }
-            ],
+            "$ref": "#/definitions/v2/HookSource",
             "default": "unknown"
           },
           "sourcePath": {

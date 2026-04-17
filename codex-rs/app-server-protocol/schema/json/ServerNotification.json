@@ -1637,11 +1637,7 @@
           "$ref": "#/$defs/HookScope"
         },
         "source": {
-          "allOf": [
-            {
-              "$ref": "#/definitions/HookSource"
-            }
-          ],
+          "$ref": "#/$defs/HookSource",
           "default": "unknown"
         },
         "sourcePath": {
