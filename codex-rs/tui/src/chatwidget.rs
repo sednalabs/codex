@@ -2783,6 +2783,35 @@ impl ChatWidget {
         });
     }
 
+    pub(crate) fn open_subagent_quit_confirmation(&mut self) {
+        let items = vec![
+            SelectionItem {
+                name: "Quit current subagent".to_string(),
+                description: Some(
+                    "Leave this subagent thread and continue shutting down.".to_string(),
+                ),
+                actions: vec![Box::new(|tx| tx.send(AppEvent::ConfirmSubagentExit))],
+                dismiss_on_select: true,
+                ..Default::default()
+            },
+            SelectionItem {
+                name: "Cancel".to_string(),
+                description: Some("Keep the current subagent thread open.".to_string()),
+                actions: vec![Box::new(|tx| tx.send(AppEvent::CancelSubagentExit))],
+                dismiss_on_select: true,
+                ..Default::default()
+            },
+        ];
+
+        self.bottom_pane.show_selection_view(SelectionViewParams {
+            title: Some("Quit current subagent?".to_string()),
+            subtitle: Some("You are viewing a non-primary thread. Quitting will return focus to the main thread and continue shutdown.".to_string()),
+            footer_hint: Some(standard_popup_hint_line()),
+            items,
+            ..Default::default()
+        });
+    }
+
     pub(crate) fn set_memory_settings(&mut self, use_memories: bool, generate_memories: bool) {
         self.config.memories.use_memories = use_memories;
         self.config.memories.generate_memories = generate_memories;
@@ -5666,6 +5695,9 @@ impl ChatWidget {
                     tracing::error!("failed to logout: {e}");
                 }
                 self.request_quit_without_confirmation();
+            }
+            SlashCommand::Memories => {
+                self.open_memories_popup();
             }
             // SlashCommand::Undo => {
             //     self.app_event_tx.send(AppEvent::CodexOp(Op::Undo));

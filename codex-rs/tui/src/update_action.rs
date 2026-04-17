@@ -36,16 +36,16 @@ impl UpdateAction {
     /// Returns the list of command-line arguments for invoking the update.
     pub fn command_args(self) -> (&'static str, Vec<&'static str>) {
         match self {
-            UpdateAction::NpmGlobalLatest => ("npm", &["install", "-g", "@openai/codex"]),
-            UpdateAction::BunGlobalLatest => ("bun", &["install", "-g", "@openai/codex"]),
-            UpdateAction::BrewUpgrade => ("brew", &["upgrade", "--cask", "codex"]),
+            UpdateAction::NpmGlobalLatest => ("npm", vec!["install", "-g", "@openai/codex"]),
+            UpdateAction::BunGlobalLatest => ("bun", vec!["install", "-g", "@openai/codex"]),
+            UpdateAction::BrewUpgrade => ("brew", vec!["upgrade", "--cask", "codex"]),
             UpdateAction::StandaloneUnix => (
                 "sh",
-                &["-c", "curl -fsSL https://chatgpt.com/codex/install.sh | sh"],
+                vec!["-c", "curl -fsSL https://chatgpt.com/codex/install.sh | sh"],
             ),
             UpdateAction::StandaloneWindows => (
                 "powershell",
-                &["-c", "irm https://chatgpt.com/codex/install.ps1|iex"],
+                vec!["-c", "irm https://chatgpt.com/codex/install.ps1|iex"],
             ),
         }
     }
@@ -113,14 +113,14 @@ mod tests {
             UpdateAction::StandaloneUnix.command_args(),
             (
                 "sh",
-                &["-c", "curl -fsSL https://chatgpt.com/codex/install.sh | sh"][..],
+                vec!["-c", "curl -fsSL https://chatgpt.com/codex/install.sh | sh"],
             )
         );
         assert_eq!(
             UpdateAction::StandaloneWindows.command_args(),
             (
                 "powershell",
-                &["-c", "irm https://chatgpt.com/codex/install.ps1|iex"][..],
+                vec!["-c", "irm https://chatgpt.com/codex/install.ps1|iex"],
             )
         );
     }
