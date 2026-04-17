@@ -14,7 +14,7 @@ use crate::update_action::UpdateAction;
 use crate::updates;
 use crate::version::CODEX_DISPLAY_VERSION;
 use crate::version::latest_release_notes_url;
-use codex_core::config::Config;
+use crate::legacy_core::config::Config;
 use color_eyre::Result;
 use crossterm::event::KeyCode;
 use crossterm::event::KeyEvent;
