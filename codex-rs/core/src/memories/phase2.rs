@@ -141,6 +141,13 @@ pub(super) async fn run(session: &Arc<Session>, config: Arc<Config>) {
         job::failed(session, db, &claim, "failed_rebuild_raw_memories").await;
         return;
     }
+    let Some(prepared_input_artifact_tree_sha256) =
+        agent::prepared_input_artifact_tree_sha256(&root)
+    else {
+        tracing::error!("failed to fingerprint prepared immutable inputs for global consolidation");
+        job::failed(session, db, &claim, "failed_prepare_artifacts").await;
+        return;
+    };
     let pending_extension_resource_removals = find_old_extension_resources(&root).await;
     let removed_extension_resources = pending_extension_resource_removals
         .iter()
