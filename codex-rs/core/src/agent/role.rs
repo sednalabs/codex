@@ -20,10 +20,8 @@ use crate::config_loader::ConfigLayerStack;
 use crate::config_loader::ConfigLayerStackOrdering;
 use crate::config_loader::resolve_relative_paths_in_config_toml;
 use codex_app_server_protocol::ConfigLayerSource;
-use codex_model_provider_info::ModelProviderInfo;
-use codex_protocol::config_types::ReasoningSummary;
-use codex_protocol::config_types::Verbosity;
-use codex_protocol::openai_models::ReasoningEffort;
+use codex_config::config_toml::ConfigToml;
+use codex_exec_server::LOCAL_FS;
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use std::path::Path;
@@ -42,9 +40,33 @@ struct RoleActiveProfileFieldUpdates {
     model_verbosity: bool,
 }
 
-struct RoleLayerConfig {
-    role_config: ConfigToml,
-    role_layer_toml: TomlValue,
+async fn apply_role_to_config_inner(
+    config: &mut Config,
+    role_name: &str,
+    role: &AgentRoleConfig,
+) -> anyhow::Result<()> {
+    let is_built_in = !config.agent_roles.contains_key(role_name);
+    let Some(config_file) = role.config_file.as_ref() else {
+        return Ok(());
+    };
+    let role_layer_toml = load_role_layer_toml(config, config_file, is_built_in, role_name).await?;
+    if role_layer_toml
+        .as_table()
+        .is_some_and(toml::map::Map::is_empty)
+    {
+        return Ok(());
+    }
+    let (preserve_current_profile, preserve_current_provider) =
+        preservation_policy(config, &role_layer_toml);
+
+    *config = reload::build_next_config(
+        config,
+        role_layer_toml,
+        preserve_current_profile,
+        preserve_current_provider,
+    )
+    .await?;
+    Ok(())
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -311,7 +333,7 @@ impl SpawnModelSelectionCarry {
 mod reload {
     use super::*;
 
-    pub(super) fn build_next_config(
+    pub(super) async fn build_next_config(
         config: &Config,
         role_name: &str,
         role_layer_toml: TomlValue,
@@ -330,15 +352,14 @@ mod reload {
         }
 
         let mut next_config = Config::load_config_with_layer_stack(
+            LOCAL_FS.as_ref(),
             merged_config,
             reload_overrides(config, preservation_policy),
             config.codex_home.clone(),
             config_layer_stack,
         )
-        .map_err(|err| {
-            format!("failed to apply merged config for agent type '{role_name}': {err}")
-        })?;
-        if preservation_policy.preserve_current_profile {
+        .await?;
+        if preserve_current_profile {
             next_config.active_profile = config.active_profile.clone();
         }
         Ok(next_config)

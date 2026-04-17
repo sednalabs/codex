@@ -1,3 +1,7 @@
+use std::collections::HashMap;
+use std::path::PathBuf;
+
+use crate::app::app_server_requests::ResolvedAppServerRequest;
 use crate::app_event::AppEvent;
 use crate::app_event_sender::AppEventSender;
 use crate::bottom_pane::BottomPaneView;
@@ -39,6 +43,92 @@ use ratatui::text::Span;
 use ratatui::widgets::Paragraph;
 use ratatui::widgets::Wrap;
 
+/// Request coming from the agent that needs user approval.
+#[derive(Clone, Debug)]
+pub(crate) enum ApprovalRequest {
+    Exec {
+        thread_id: ThreadId,
+        thread_label: Option<String>,
+        id: String,
+        command: Vec<String>,
+        reason: Option<String>,
+        available_decisions: Vec<ReviewDecision>,
+        network_approval_context: Option<NetworkApprovalContext>,
+        additional_permissions: Option<PermissionProfile>,
+    },
+    Permissions {
+        thread_id: ThreadId,
+        thread_label: Option<String>,
+        call_id: String,
+        reason: Option<String>,
+        permissions: RequestPermissionProfile,
+    },
+    ApplyPatch {
+        thread_id: ThreadId,
+        thread_label: Option<String>,
+        id: String,
+        reason: Option<String>,
+        cwd: AbsolutePathBuf,
+        changes: HashMap<PathBuf, FileChange>,
+    },
+    McpElicitation {
+        thread_id: ThreadId,
+        thread_label: Option<String>,
+        server_name: String,
+        request_id: RequestId,
+        message: String,
+    },
+}
+
+impl ApprovalRequest {
+    fn thread_id(&self) -> ThreadId {
+        match self {
+            ApprovalRequest::Exec { thread_id, .. }
+            | ApprovalRequest::Permissions { thread_id, .. }
+            | ApprovalRequest::ApplyPatch { thread_id, .. }
+            | ApprovalRequest::McpElicitation { thread_id, .. } => *thread_id,
+        }
+    }
+
+    fn thread_label(&self) -> Option<&str> {
+        match self {
+            ApprovalRequest::Exec { thread_label, .. }
+            | ApprovalRequest::Permissions { thread_label, .. }
+            | ApprovalRequest::ApplyPatch { thread_label, .. }
+            | ApprovalRequest::McpElicitation { thread_label, .. } => thread_label.as_deref(),
+        }
+    }
+
+    fn matches_resolved_request(&self, request: &ResolvedAppServerRequest) -> bool {
+        match (self, request) {
+            (
+                ApprovalRequest::Exec { id, .. },
+                ResolvedAppServerRequest::ExecApproval { id: resolved_id },
+            ) => id == resolved_id,
+            (
+                ApprovalRequest::Permissions { call_id, .. },
+                ResolvedAppServerRequest::PermissionsApproval { id },
+            ) => call_id == id,
+            (
+                ApprovalRequest::ApplyPatch { id, .. },
+                ResolvedAppServerRequest::FileChangeApproval { id: resolved_id },
+            ) => id == resolved_id,
+            (
+                ApprovalRequest::McpElicitation {
+                    server_name,
+                    request_id,
+                    ..
+                },
+                ResolvedAppServerRequest::McpElicitation {
+                    server_name: resolved_server_name,
+                    request_id: resolved_request_id,
+                },
+            ) => server_name == resolved_server_name && request_id == resolved_request_id,
+            _ => false,
+        }
+    }
+}
+
 /// Modal overlay asking the user to approve or deny one or more requests.
 pub(crate) struct ApprovalOverlay {
     current_request: Option<ApprovalRequest>,
@@ -69,6 +159,23 @@ impl ApprovalOverlay {
 
     pub fn enqueue_request(&mut self, req: ApprovalRequest) {
         self.queue.push(req);
+    }
+
+    fn dismiss_resolved_request(&mut self, request: &ResolvedAppServerRequest) -> bool {
+        let queue_len = self.queue.len();
+        self.queue
+            .retain(|queued_request| !queued_request.matches_resolved_request(request));
+        if self
+            .current_request
+            .as_ref()
+            .is_some_and(|current_request| current_request.matches_resolved_request(request))
+        {
+            self.current_complete = true;
+            self.advance_queue();
+            return true;
+        }
+
+        self.queue.len() != queue_len
     }
 
     fn set_current(&mut self, request: ApprovalRequest) {
@@ -371,6 +478,10 @@ impl BottomPaneView for ApprovalOverlay {
         self.enqueue_request(request);
         None
     }
+
+    fn dismiss_app_server_request(&mut self, request: &ResolvedAppServerRequest) -> bool {
+        self.dismiss_resolved_request(request)
+    }
 }
 
 impl Renderable for ApprovalOverlay {
@@ -643,6 +754,27 @@ mod tests {
             }
         }
         assert!(saw_op, "expected approval decision to emit an op");
+    }
+
+    #[test]
+    fn resolved_request_dismisses_overlay_without_emitting_abort() {
+        let (tx, mut rx) = unbounded_channel::<AppEvent>();
+        let tx = AppEventSender::new(tx);
+        let mut view = ApprovalOverlay::new(make_exec_request(), tx, Features::with_defaults());
+
+        assert!(
+            view.dismiss_app_server_request(&ResolvedAppServerRequest::ExecApproval {
+                id: "test".to_string(),
+            })
+        );
+        assert!(
+            view.is_complete(),
+            "resolved request should close the overlay"
+        );
+        assert!(
+            rx.try_recv().is_err(),
+            "dismissing a stale request should not emit an approval op"
+        );
     }
 
     #[test]

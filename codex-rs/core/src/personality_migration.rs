@@ -1,14 +1,11 @@
 use crate::config::ConfigToml;
 use crate::config::edit::ConfigEditsBuilder;
-use crate::rollout::ARCHIVED_SESSIONS_SUBDIR;
-use crate::rollout::SESSIONS_SUBDIR;
-use crate::rollout::list::ThreadSortKey;
-use crate::state_db;
+use codex_config::config_toml::ConfigToml;
 use codex_protocol::config_types::Personality;
-use codex_protocol::protocol::EventMsg;
-use codex_protocol::protocol::RolloutItem;
-use codex_protocol::protocol::RolloutLine;
-use codex_protocol::protocol::SessionSource;
+use codex_thread_store::ListThreadsParams;
+use codex_thread_store::LocalThreadStore;
+use codex_thread_store::ThreadSortKey;
+use codex_thread_store::ThreadStore;
 use std::io;
 use std::path::Path;
 use tokio::fs::OpenOptions;
@@ -65,100 +62,33 @@ pub async fn maybe_migrate_personality(
 }
 
 async fn has_recorded_sessions(codex_home: &Path, default_provider: &str) -> io::Result<bool> {
-    let allowed_sources: &[SessionSource] = &[];
+    let store = LocalThreadStore::new(codex_rollout::RolloutConfig {
+        codex_home: codex_home.to_path_buf(),
+        sqlite_home: codex_home.to_path_buf(),
+        cwd: codex_home.to_path_buf(),
+        model_provider_id: default_provider.to_string(),
+        generate_memories: false,
+    });
+    if has_threads(&store, /*archived*/ false).await? {
+        return Ok(true);
+    }
+    has_threads(&store, /*archived*/ true).await
+}
 
-    if let Some(state_db_ctx) = state_db::open_if_present(codex_home, default_provider).await
-        && let Some(ids) = state_db::list_thread_ids_db(
-            Some(state_db_ctx.as_ref()),
-            codex_home,
-            /*page_size*/ 1,
-            /*cursor*/ None,
-            ThreadSortKey::CreatedAt,
-            allowed_sources,
-            /*model_providers*/ None,
-            /*archived_only*/ false,
-            "personality_migration",
-        )
+async fn has_threads(store: &LocalThreadStore, archived: bool) -> io::Result<bool> {
+    store
+        .list_threads(ListThreadsParams {
+            page_size: 1,
+            cursor: None,
+            sort_key: ThreadSortKey::CreatedAt,
+            allowed_sources: Vec::new(),
+            model_providers: None,
+            archived,
+            search_term: None,
+        })
         .await
-        && !ids.is_empty()
-    {
-        return Ok(true);
-    }
-
-    if rollout_tree_has_user_session(&codex_home.join(SESSIONS_SUBDIR)).await? {
-        return Ok(true);
-    }
-
-    rollout_tree_has_user_session(&codex_home.join(ARCHIVED_SESSIONS_SUBDIR)).await
-}
-
-async fn rollout_tree_has_user_session(root: &Path) -> io::Result<bool> {
-    let mut to_visit = vec![root.to_path_buf()];
-
-    while let Some(dir) = to_visit.pop() {
-        let mut entries = match tokio::fs::read_dir(&dir).await {
-            Ok(entries) => entries,
-            Err(err) if err.kind() == io::ErrorKind::NotFound => continue,
-            Err(err) => return Err(err),
-        };
-
-        while let Some(entry) = entries.next_entry().await? {
-            let file_type = entry.file_type().await?;
-            let path = entry.path();
-
-            if file_type.is_dir() {
-                to_visit.push(path);
-                continue;
-            }
-            if !file_type.is_file() {
-                continue;
-            }
-
-            let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
-                continue;
-            };
-            if !name.starts_with("rollout-") || !name.ends_with(".jsonl") {
-                continue;
-            }
-
-            if rollout_file_has_user_session(&path).await? {
-                return Ok(true);
-            }
-        }
-    }
-
-    Ok(false)
-}
-
-async fn rollout_file_has_user_session(path: &Path) -> io::Result<bool> {
-    let file = tokio::fs::File::open(path).await?;
-    let reader = tokio::io::BufReader::new(file);
-    let mut lines = reader.lines();
-    let mut saw_session_meta = false;
-    let mut saw_user_event = false;
-
-    while let Some(line) = lines.next_line().await? {
-        let trimmed = line.trim();
-        if trimmed.is_empty() {
-            continue;
-        }
-
-        let Ok(rollout_line) = serde_json::from_str::<RolloutLine>(trimmed) else {
-            continue;
-        };
-
-        match rollout_line.item {
-            RolloutItem::SessionMeta(_) => saw_session_meta = true,
-            RolloutItem::EventMsg(EventMsg::UserMessage(_)) => saw_user_event = true,
-            _ => {}
-        }
-
-        if saw_session_meta && saw_user_event {
-            return Ok(true);
-        }
-    }
-
-    Ok(false)
+        .map(|page| !page.items.is_empty())
+        .map_err(io::Error::other)
 }
 
 async fn create_marker(marker_path: &Path) -> io::Result<()> {
