@@ -18,6 +18,8 @@ mod marketplace_add;
 mod mcp_resource;
 mod mcp_server_elicitation;
 mod mcp_server_status;
+mod mcp_tool;
+mod memory_reset;
 mod model_list;
 mod output_schema;
 mod plan_item;

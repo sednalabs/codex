@@ -5,6 +5,7 @@ use super::enroll::update_persisted_remote_control_enrollment;
 use super::protocol::ClientEnvelope;
 use super::protocol::ClientEvent;
 use super::protocol::ClientId;
+use super::protocol::StreamId;
 use super::protocol::normalize_remote_control_url;
 use super::websocket::REMOTE_CONTROL_PROTOCOL_VERSION;
 use super::*;
@@ -96,6 +97,7 @@ fn remote_control_auth_dot_json(account_id: Option<&str>) -> AuthDotJson {
             account_id: account_id.map(str::to_string),
         }),
         last_refresh: Some(chrono::Utc::now()),
+        agent_identity: None,
     }
 }
 
@@ -165,7 +167,7 @@ async fn remote_control_transport_manages_virtual_clients_and_routes_messages() 
         json!({
             "type": "pong",
             "client_id": "client-1",
-            "seq_id": 0,
+            "seq_id": 1,
             "status": "unknown",
         })
     );
@@ -371,7 +373,7 @@ async fn remote_control_transport_manages_virtual_clients_and_routes_messages() 
         json!({
             "type": "pong",
             "client_id": "client-1",
-            "seq_id": 3,
+            "seq_id": 1,
             "status": "unknown",
         })
     );
@@ -452,6 +454,121 @@ async fn remote_control_transport_reconnects_after_disconnect() {
         TransportEvent::ConnectionOpened { .. } => {}
         other => panic!("expected connection open after reconnect, got {other:?}"),
     }
+
+    shutdown_token.cancel();
+    let _ = remote_task.await;
+}
+
+#[tokio::test]
+async fn remote_control_start_allows_remote_control_invalid_url_when_disabled() {
+    let (transport_event_tx, _transport_event_rx) =
+        mpsc::channel::<TransportEvent>(CHANNEL_CAPACITY);
+    let shutdown_token = CancellationToken::new();
+    let (remote_task, _remote_handle) = start_remote_control(
+        "https://internal.example.com/backend-api/".to_string(),
+        /*state_db*/ None,
+        remote_control_auth_manager(),
+        transport_event_tx,
+        shutdown_token.clone(),
+        /*app_server_client_name_rx*/ None,
+        /*initial_enabled*/ false,
+    )
+    .await
+    .expect("disabled remote control should not validate the URL at startup");
+
+    shutdown_token.cancel();
+    timeout(Duration::from_secs(1), remote_task)
+        .await
+        .expect("remote control task should stop")
+        .expect("remote control task should join");
+}
+
+#[tokio::test]
+async fn remote_control_start_allows_missing_auth_when_enabled() {
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("listener should bind");
+    let remote_control_url = remote_control_url_for_listener(&listener);
+    let codex_home = TempDir::new().expect("temp dir should create");
+    let auth_manager = AuthManager::shared(
+        codex_home.path().to_path_buf(),
+        /*enable_codex_api_key_env*/ false,
+        AuthCredentialsStoreMode::File,
+    );
+    let (transport_event_tx, _transport_event_rx) =
+        mpsc::channel::<TransportEvent>(CHANNEL_CAPACITY);
+    let shutdown_token = CancellationToken::new();
+    let (remote_task, _remote_handle) = start_remote_control(
+        remote_control_url,
+        /*state_db*/ None,
+        auth_manager,
+        transport_event_tx,
+        shutdown_token.clone(),
+        /*app_server_client_name_rx*/ None,
+        /*initial_enabled*/ true,
+    )
+    .await
+    .expect("remote control should start before ChatGPT auth is available");
+
+    timeout(Duration::from_millis(100), listener.accept())
+        .await
+        .expect_err("remote control should wait for auth before connecting");
+
+    shutdown_token.cancel();
+    timeout(Duration::from_secs(1), remote_task)
+        .await
+        .expect("remote control task should stop")
+        .expect("remote control task should join");
+}
+
+#[tokio::test]
+async fn remote_control_handle_set_enabled_stops_and_restarts_connections() {
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("listener should bind");
+    let remote_control_url = remote_control_url_for_listener(&listener);
+    let codex_home = TempDir::new().expect("temp dir should create");
+    let (transport_event_tx, _transport_event_rx) =
+        mpsc::channel::<TransportEvent>(CHANNEL_CAPACITY);
+    let shutdown_token = CancellationToken::new();
+    let (remote_task, remote_handle) = start_remote_control(
+        remote_control_url,
+        Some(remote_control_state_runtime(&codex_home).await),
+        remote_control_auth_manager(),
+        transport_event_tx,
+        shutdown_token.clone(),
+        /*app_server_client_name_rx*/ None,
+        /*initial_enabled*/ true,
+    )
+    .await
+    .expect("remote control should start");
+
+    let enroll_request = accept_http_request(&listener).await;
+    assert_eq!(
+        enroll_request.request_line,
+        "POST /backend-api/wham/remote/control/server/enroll HTTP/1.1"
+    );
+    respond_with_json(
+        enroll_request.stream,
+        json!({ "server_id": "srv_e_test", "environment_id": "env_test" }),
+    )
+    .await;
+    let mut first_websocket = accept_remote_control_connection(&listener).await;
+
+    remote_handle.set_enabled(/*enabled*/ false);
+    timeout(Duration::from_secs(1), first_websocket.next())
+        .await
+        .expect("disabling remote control should close the websocket");
+    timeout(Duration::from_millis(100), listener.accept())
+        .await
+        .expect_err("disabled remote control should not reconnect");
+
+    remote_handle.set_enabled(/*enabled*/ true);
+    let mut second_websocket = accept_remote_control_connection(&listener).await;
+    second_websocket
+        .close(None)
+        .await
+        .expect("second websocket should close");
 
     shutdown_token.cancel();
     let _ = remote_task.await;
@@ -543,12 +660,13 @@ async fn remote_control_transport_clears_outgoing_buffer_when_backend_acks() {
         ))
         .await
         .expect("remote writer should accept outgoing message");
+    let (server_event, stream_id) = read_server_event_with_stream_id(&mut first_websocket).await;
     assert_eq!(
-        read_server_event(&mut first_websocket).await,
+        server_event,
         json!({
             "type": "server_message",
             "client_id": "client-1",
-            "seq_id": 0,
+            "seq_id": 1,
             "message": {
                 "method": "configWarning",
                 "params": {
@@ -564,8 +682,8 @@ async fn remote_control_transport_clears_outgoing_buffer_when_backend_acks() {
         ClientEnvelope {
             event: ClientEvent::Ack,
             client_id: client_id.clone(),
-            stream_id: None,
-            seq_id: Some(0),
+            stream_id: Some(stream_id),
+            seq_id: Some(1),
             cursor: None,
         },
     )
@@ -779,7 +897,7 @@ async fn remote_control_http_mode_enrolls_before_connecting() {
         json!({
             "type": "server_message",
             "client_id": backend_client_id.0.clone(),
-            "seq_id": 0,
+            "seq_id": 1,
             "message": {
                 "id": 11,
                 "result": {
@@ -807,7 +925,7 @@ async fn remote_control_http_mode_enrolls_before_connecting() {
         json!({
             "type": "server_message",
             "client_id": backend_client_id.0.clone(),
-            "seq_id": 1,
+            "seq_id": 2,
             "message": {
                 "method": "configWarning",
                 "params": {
@@ -1281,6 +1399,12 @@ async fn send_client_event(
 }
 
 async fn read_server_event(websocket: &mut WebSocketStream<TcpStream>) -> serde_json::Value {
+    read_server_event_with_stream_id(websocket).await.0
+}
+
+async fn read_server_event_with_stream_id(
+    websocket: &mut WebSocketStream<TcpStream>,
+) -> (serde_json::Value, StreamId) {
     loop {
         let frame = timeout(Duration::from_secs(5), websocket.next())
             .await
@@ -1291,13 +1415,15 @@ async fn read_server_event(websocket: &mut WebSocketStream<TcpStream>) -> serde_
             tungstenite::Message::Text(text) => {
                 let mut event: serde_json::Value =
                     serde_json::from_str(text.as_ref()).expect("server event should deserialize");
-                if let Some(stream_id) = event
+                let stream_id = event
                     .as_object_mut()
                     .and_then(|event| event.remove("stream_id"))
-                {
-                    assert!(stream_id.is_string(), "stream_id should be a string");
-                }
-                return event;
+                    .expect("stream_id should be present");
+                let stream_id = stream_id
+                    .as_str()
+                    .expect("stream_id should be a string")
+                    .to_string();
+                return (event, StreamId(stream_id));
             }
             tungstenite::Message::Ping(payload) => {
                 websocket

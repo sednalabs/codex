@@ -5,6 +5,7 @@
 // the TUI or the tracing stack).
 #![deny(clippy::print_stdout, clippy::print_stderr)]
 
+mod agent_identity;
 mod apply_patch;
 mod apps;
 mod arc_monitor;
@@ -54,11 +55,10 @@ mod mcp_tool_exposure;
 mod network_policy_decision;
 pub(crate) mod network_proxy_loader;
 mod original_image_detail;
-pub use codex_mcp::MCP_SANDBOX_STATE_CAPABILITY;
-pub use codex_mcp::MCP_SANDBOX_STATE_METHOD;
 pub use codex_mcp::SandboxState;
 mod mcp_tool_call;
 mod memories;
+pub use memories::clear_memory_roots_contents;
 pub(crate) mod mention_syntax;
 pub mod message_history;
 pub(crate) mod utils;
@@ -99,9 +99,7 @@ pub(crate) use skills::build_skill_injections;
 pub(crate) use skills::build_skill_name_counts;
 pub(crate) use skills::collect_env_var_dependencies;
 pub(crate) use skills::collect_explicit_skill_mentions;
-pub(crate) use skills::config_rules;
 pub(crate) use skills::injection;
-pub(crate) use skills::loader;
 pub(crate) use skills::manager;
 pub(crate) use skills::maybe_emit_implicit_skill_invocation;
 pub(crate) use skills::render_skills_section;
@@ -141,24 +139,13 @@ pub type ConversationManager = ThreadManager;
 pub type NewConversation = NewThread;
 #[deprecated(note = "use CodexThread")]
 pub type CodexConversation = CodexThread;
-// Re-export common auth types for workspace consumers
+// Re-export common auth types for workspace consumers.
 pub use auth::AuthManager;
 pub use auth::CodexAuth;
-pub use codex_analytics::AnalyticsEventsClient;
-pub use codex_analytics::AppServerRpcTransport;
-/// Compatibility surface for crates that still import `codex_core::default_client`.
-pub mod default_client {
-    pub use codex_login::default_client::*;
-}
-/// Compatibility surface for crates that still import `codex_core::error`.
-pub mod error {
-    pub use codex_protocol::error::*;
-}
-pub(crate) mod project_doc;
-pub use project_doc::DEFAULT_PROJECT_DOC_FILENAME;
-pub use project_doc::LOCAL_PROJECT_DOC_FILENAME;
-pub use project_doc::discover_project_doc_paths;
-pub use project_doc::read_project_docs;
+pub(crate) mod agents_md;
+pub use agents_md::AgentsMdManager;
+pub use agents_md::DEFAULT_AGENTS_MD_FILENAME;
+pub use agents_md::LOCAL_AGENTS_MD_FILENAME;
 mod rollout;
 pub(crate) mod safety;
 mod session_rollout_init_error;
@@ -174,6 +161,7 @@ mod tools;
 pub(crate) mod turn_diff_tracker;
 mod turn_metadata;
 mod turn_timing;
+mod unavailable_tool;
 pub use rollout::ARCHIVED_SESSIONS_SUBDIR;
 pub use rollout::Cursor;
 pub use rollout::EventPersistenceMode;

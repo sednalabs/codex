@@ -1,15 +1,15 @@
 #![cfg(target_os = "linux")]
 #![allow(clippy::unwrap_used)]
 use codex_core::config::types::ShellEnvironmentPolicy;
-use codex_core::error::CodexErr;
-use codex_core::error::Result;
-use codex_core::error::SandboxErr;
 use codex_core::exec::ExecCapturePolicy;
 use codex_core::exec::ExecParams;
 use codex_core::exec::process_exec_tool_call;
 use codex_core::exec_env::create_env;
 use codex_core::sandboxing::SandboxPermissions;
 use codex_protocol::config_types::WindowsSandboxLevel;
+use codex_protocol::error::CodexErr;
+use codex_protocol::error::Result;
+use codex_protocol::error::SandboxErr;
 use codex_protocol::exec_output::ExecToolCallOutput;
 use codex_protocol::permissions::FileSystemAccessMode;
 use codex_protocol::permissions::FileSystemPath;
@@ -82,7 +82,7 @@ async fn run_cmd_output(
         Err(CodexErr::Sandbox(SandboxErr::Denied { output, .. }))
             if is_bwrap_unavailable_output(&output) =>
         {
-            run_cmd_result_with_writable_roots(
+            let output: ExecToolCallOutput = run_cmd_result_with_writable_roots(
                 cmd,
                 writable_roots,
                 timeout_ms,
@@ -90,7 +90,8 @@ async fn run_cmd_output(
                 /*network_access*/ false,
             )
             .await
-            .expect("sandboxed command should execute with legacy Landlock fallback")
+            .expect("sandboxed command should execute with legacy Landlock fallback");
+            output
         }
         Err(err) => panic!("sandboxed command should execute: {err:?}"),
     }
@@ -240,7 +241,7 @@ async fn test_dev_null_write() {
         return;
     }
 
-    let output = run_cmd_result_with_writable_roots(
+    let output: ExecToolCallOutput = run_cmd_result_with_writable_roots(
         &["bash", "-lc", "echo blah > /dev/null"],
         &[],
         // We have seen timeouts when running this test in CI on GitHub,
@@ -262,7 +263,7 @@ async fn bwrap_populates_minimal_dev_nodes() {
         return;
     }
 
-    let output = run_cmd_result_with_writable_roots(
+    let output: ExecToolCallOutput = run_cmd_result_with_writable_roots(
         &[
             "bash",
             "-lc",
@@ -300,7 +301,7 @@ async fn bwrap_preserves_writable_dev_shm_bind_mount() {
     let target_path = target_file.path().to_path_buf();
     std::fs::write(&target_path, "host-before").expect("seed /dev/shm file");
 
-    let output = run_cmd_result_with_writable_roots(
+    let output: ExecToolCallOutput = run_cmd_result_with_writable_roots(
         &[
             "bash",
             "-lc",
@@ -351,7 +352,7 @@ async fn sandbox_ignores_missing_writable_roots_under_bwrap() {
     let missing_root = tempdir.path().join("missing");
     std::fs::create_dir(&existing_root).expect("create existing root");
 
-    let output = run_cmd_result_with_writable_roots(
+    let output: ExecToolCallOutput = run_cmd_result_with_writable_roots(
         &["bash", "-lc", "printf sandbox-ok"],
         &[existing_root, missing_root],
         LONG_TIMEOUT_MS,
@@ -693,7 +694,7 @@ async fn sandbox_reenables_writable_subpaths_under_unreadable_parents() {
             access: FileSystemAccessMode::Write,
         },
     ]);
-    let output = run_cmd_result_with_policies(
+    let output: ExecToolCallOutput = run_cmd_result_with_policies(
         &[
             "bash",
             "-lc",

@@ -1,4 +1,8 @@
 use crate::bottom_pane::FeedbackAudience;
+#[cfg(test)]
+use crate::legacy_core::append_message_history_entry;
+use crate::legacy_core::config::Config;
+use crate::legacy_core::message_history_metadata;
 use crate::status::StatusAccountDisplay;
 use crate::status::plan_type_display_name;
 use codex_app_server_client::AppServerClient;
@@ -14,6 +18,7 @@ use codex_app_server_protocol::GetAccountParams;
 use codex_app_server_protocol::GetAccountRateLimitsResponse;
 use codex_app_server_protocol::GetAccountResponse;
 use codex_app_server_protocol::JSONRPCErrorError;
+use codex_app_server_protocol::MemoryResetResponse;
 use codex_app_server_protocol::Model as ApiModel;
 use codex_app_server_protocol::ModelListParams;
 use codex_app_server_protocol::ModelListResponse;
@@ -34,6 +39,9 @@ use codex_app_server_protocol::ThreadListParams;
 use codex_app_server_protocol::ThreadListResponse;
 use codex_app_server_protocol::ThreadLoadedListParams;
 use codex_app_server_protocol::ThreadLoadedListResponse;
+use codex_app_server_protocol::ThreadMemoryMode;
+use codex_app_server_protocol::ThreadMemoryModeSetParams;
+use codex_app_server_protocol::ThreadMemoryModeSetResponse;
 use codex_app_server_protocol::ThreadReadParams;
 use codex_app_server_protocol::ThreadReadResponse;
 use codex_app_server_protocol::ThreadRealtimeAppendAudioParams;
@@ -64,8 +72,6 @@ use codex_app_server_protocol::TurnStartParams;
 use codex_app_server_protocol::TurnStartResponse;
 use codex_app_server_protocol::TurnSteerParams;
 use codex_app_server_protocol::TurnSteerResponse;
-use codex_core::config::Config;
-use codex_core::message_history;
 use codex_otel::TelemetryAuthMode;
 use codex_protocol::ThreadId;
 use codex_protocol::openai_models::ModelAvailabilityNux;
@@ -295,6 +301,20 @@ impl AppServerSession {
         })
     }
 
+    /// Fetches the current account info without refreshing the auth token.
+    pub(crate) async fn read_account(&mut self) -> Result<GetAccountResponse> {
+        let account_request_id = self.next_request_id();
+        self.client
+            .request_typed(ClientRequest::GetAccount {
+                request_id: account_request_id,
+                params: GetAccountParams {
+                    refresh_token: false,
+                },
+            })
+            .await
+            .wrap_err("account/read failed during TUI bootstrap")
+    }
+
     pub(crate) async fn next_event(&mut self) -> Option<AppServerEvent> {
         self.client.next_event().await
     }
@@ -470,17 +490,8 @@ impl AppServerSession {
         Ok(())
     }
 
-    pub(crate) async fn read_account(&mut self) -> Result<GetAccountResponse> {
-        let request_id = self.next_request_id();
-        self.client
-            .request_typed(ClientRequest::GetAccount {
-                request_id,
-                params: GetAccountParams {
-                    refresh_token: false,
-                },
-            })
-            .await
-            .wrap_err("account/read failed in TUI")
+    pub(crate) async fn startup_interrupt(&mut self, thread_id: ThreadId) -> Result<()> {
+        self.turn_interrupt(thread_id, String::new()).await
     }
 
     pub(crate) async fn turn_steer(
@@ -520,6 +531,39 @@ impl AppServerSession {
             })
             .await
             .wrap_err("thread/name/set failed in TUI")?;
+        Ok(())
+    }
+
+    pub(crate) async fn thread_memory_mode_set(
+        &mut self,
+        thread_id: ThreadId,
+        mode: ThreadMemoryMode,
+    ) -> Result<()> {
+        let request_id = self.next_request_id();
+        let _: ThreadMemoryModeSetResponse = self
+            .client
+            .request_typed(ClientRequest::ThreadMemoryModeSet {
+                request_id,
+                params: ThreadMemoryModeSetParams {
+                    thread_id: thread_id.to_string(),
+                    mode,
+                },
+            })
+            .await
+            .wrap_err("thread/memoryMode/set failed in TUI")?;
+        Ok(())
+    }
+
+    pub(crate) async fn memory_reset(&mut self) -> Result<()> {
+        let request_id = self.next_request_id();
+        let _: MemoryResetResponse = self
+            .client
+            .request_typed(ClientRequest::MemoryReset {
+                request_id,
+                params: None,
+            })
+            .await
+            .wrap_err("memory/reset failed in TUI")?;
         Ok(())
     }
 
@@ -1086,7 +1130,7 @@ async fn thread_session_state_from_thread_response(
 ) -> Result<ThreadSessionState, String> {
     let thread_id = ThreadId::from_string(thread_id)
         .map_err(|err| format!("thread id `{thread_id}` is invalid: {err}"))?;
-    let (history_log_id, history_entry_count) = message_history::history_metadata(config).await;
+    let (history_log_id, history_entry_count) = message_history_metadata(config).await;
     let history_entry_count = u64::try_from(history_entry_count).unwrap_or(u64::MAX);
 
     Ok(ThreadSessionState {
@@ -1160,10 +1204,10 @@ fn app_server_credits_snapshot_to_core(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::legacy_core::config::ConfigBuilder;
     use codex_app_server_protocol::ThreadStatus;
     use codex_app_server_protocol::Turn;
     use codex_app_server_protocol::TurnStatus;
-    use codex_core::config::ConfigBuilder;
     use codex_utils_absolute_path::test_support::PathBufExt;
     use codex_utils_absolute_path::test_support::test_path_buf;
     use pretty_assertions::assert_eq;
@@ -1278,10 +1322,10 @@ mod tests {
         let config = build_config(&temp_dir).await;
         let thread_id = ThreadId::new();
 
-        message_history::append_entry("older", &thread_id, &config)
+        append_message_history_entry("older", &thread_id, &config)
             .await
             .expect("history append should succeed");
-        message_history::append_entry("newer", &thread_id, &config)
+        append_message_history_entry("newer", &thread_id, &config)
             .await
             .expect("history append should succeed");
 

@@ -4,6 +4,7 @@ use crate::AuthManager;
 use crate::RolloutRecorder;
 use crate::SkillsManager;
 use crate::agent::AgentControl;
+use crate::agent_identity::AgentIdentityManager;
 use crate::client::ModelClient;
 use crate::config::StartedNetworkProxy;
 use crate::exec_policy::ExecPolicyManager;
@@ -24,6 +25,7 @@ use codex_models_manager::manager::ModelsManager;
 use codex_otel::SessionTelemetry;
 use codex_protocol::protocol::Event;
 use codex_state::UsageLogger;
+use codex_thread_store::LocalThreadStore;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use tokio::sync::Mutex;
@@ -43,6 +45,7 @@ pub(crate) struct SessionServices {
     pub(crate) hooks: Hooks,
     pub(crate) rollout: Mutex<Option<RolloutRecorder>>,
     pub(crate) user_shell: Arc<crate::shell::Shell>,
+    pub(crate) agent_identity_manager: Arc<AgentIdentityManager>,
     pub(crate) shell_snapshot_tx: watch::Sender<Option<Arc<crate::shell_snapshot::ShellSnapshot>>>,
     pub(crate) show_raw_agent_reasoning: bool,
     pub(crate) exec_policy: Arc<ExecPolicyManager>,
@@ -59,6 +62,7 @@ pub(crate) struct SessionServices {
     pub(crate) network_proxy: Option<StartedNetworkProxy>,
     pub(crate) network_approval: Arc<NetworkApprovalService>,
     pub(crate) state_db: Option<StateDbHandle>,
+    pub(crate) thread_store: LocalThreadStore,
     /// Session-scoped model client shared across turns.
     pub(crate) model_client: ModelClient,
     pub(crate) code_mode_service: CodeModeService,

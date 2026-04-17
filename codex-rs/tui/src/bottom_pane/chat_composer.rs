@@ -198,12 +198,11 @@ use crate::bottom_pane::textarea::TextAreaState;
 use crate::clipboard_paste::normalize_pasted_path;
 use crate::clipboard_paste::pasted_image_format;
 use crate::history_cell;
+use crate::legacy_core::plugins::PluginCapabilitySummary;
+use crate::legacy_core::skills::model::SkillMetadata;
 use crate::tui::FrameRequester;
 use crate::ui_consts::LIVE_PREFIX_COLS;
-use codex_chatgpt::connectors;
-use codex_chatgpt::connectors::AppInfo;
-use codex_core::plugins::PluginCapabilitySummary;
-use codex_core::skills::model::SkillMetadata;
+use codex_app_server_protocol::AppInfo;
 use codex_file_search::FileMatch;
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -3316,9 +3315,9 @@ impl ChatComposer {
                 if !connector.is_accessible || !connector.is_enabled {
                     continue;
                 }
-                let display_name = connectors::connector_display_label(connector);
+                let display_name = codex_connectors::metadata::connector_display_label(connector);
                 let description = Some(Self::connector_brief_description(connector));
-                let slug = codex_core::connectors::connector_mention_slug(connector);
+                let slug = codex_connectors::metadata::connector_mention_slug(connector);
                 let search_terms = vec![display_name.clone(), connector.id.clone(), slug.clone()];
                 let connector_id = connector.id.as_str();
                 mentions.push(MentionItem {
@@ -4862,7 +4861,7 @@ mod tests {
             name: "google-calendar:availability".to_string(),
             description: "Find availability and plan event changes".to_string(),
             short_description: None,
-            interface: Some(codex_core::skills::model::SkillInterface {
+            interface: Some(crate::legacy_core::skills::model::SkillInterface {
                 display_name: Some("Google Calendar".to_string()),
                 short_description: None,
                 icon_small: None,
@@ -4884,7 +4883,7 @@ mod tests {
             ),
             has_skills: true,
             mcp_server_names: vec!["google-calendar".to_string()],
-            app_connector_ids: vec![codex_core::plugins::AppConnectorId(
+            app_connector_ids: vec![crate::legacy_core::plugins::AppConnectorId(
                 "google_calendar".to_string(),
             )],
         }]));
@@ -4936,7 +4935,7 @@ mod tests {
                     ),
                     has_skills: true,
                     mcp_server_names: vec!["sample".to_string()],
-                    app_connector_ids: vec![codex_core::plugins::AppConnectorId(
+                    app_connector_ids: vec![crate::legacy_core::plugins::AppConnectorId(
                         "calendar".to_string(),
                     )],
                 }]));
@@ -4957,7 +4956,7 @@ mod tests {
                     name: "google-calendar-skill".to_string(),
                     description: "Find availability and plan event changes".to_string(),
                     short_description: None,
-                    interface: Some(codex_core::skills::model::SkillInterface {
+                    interface: Some(crate::legacy_core::skills::model::SkillInterface {
                         display_name: Some("Google Calendar".to_string()),
                         short_description: None,
                         icon_small: None,

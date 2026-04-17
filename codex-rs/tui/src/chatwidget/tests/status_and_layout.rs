@@ -116,7 +116,7 @@ async fn helpers_are_available_and_do_not_panic() {
     let (tx_raw, _rx) = unbounded_channel::<AppEvent>();
     let tx = AppEventSender::new(tx_raw);
     let cfg = test_config().await;
-    let resolved_model = codex_core::test_support::get_model_offline(cfg.model.as_deref());
+    let resolved_model = crate::legacy_core::test_support::get_model_offline(cfg.model.as_deref());
     let session_telemetry = test_session_telemetry(&cfg, resolved_model.as_str());
     let init = ChatWidgetInit {
         config: cfg.clone(),
@@ -902,24 +902,6 @@ async fn status_line_legacy_context_usage_renders_context_used_percent() {
 }
 
 #[tokio::test]
-async fn status_line_context_remaining_percent_renders_labeled_percent() {
-    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
-    chat.thread_id = Some(ThreadId::new());
-    chat.config.tui_status_line = Some(vec!["context-remaining-percent".to_string()]);
-
-    chat.refresh_status_line();
-
-    assert_eq!(
-        status_line_text(&chat),
-        Some("Context 100% left".to_string())
-    );
-    assert!(
-        drain_insert_history(&mut rx).is_empty(),
-        "context-remaining-percent should remain a valid status line item"
-    );
-}
-
-#[tokio::test]
 async fn status_line_branch_state_resets_when_git_branch_disabled() {
     let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
     chat.status_line_branch = Some("main".to_string());
@@ -1137,69 +1119,7 @@ async fn status_line_model_with_reasoning_fast_footer_snapshot() {
 }
 
 #[tokio::test]
-async fn status_line_combined_token_items_use_session_totals() {
-    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
-    chat.config.tui_status_line = Some(vec![
-        "used-tokens".to_string(),
-        "combined-used-tokens".to_string(),
-        "combined-input-tokens".to_string(),
-        "combined-output-tokens".to_string(),
-    ]);
-    chat.set_token_info(Some(TokenUsageInfo {
-        total_token_usage: TokenUsage {
-            input_tokens: 900,
-            cached_input_tokens: 100,
-            output_tokens: 300,
-            total_tokens: 1_300,
-            ..TokenUsage::default()
-        },
-        last_token_usage: TokenUsage::default(),
-        model_context_window: Some(1_000_000),
-    }));
-    chat.set_session_total_token_usage(TokenUsage {
-        input_tokens: 2_400,
-        cached_input_tokens: 600,
-        output_tokens: 900,
-        total_tokens: 3_900,
-        ..TokenUsage::default()
-    });
-
-    assert_eq!(
-        status_line_text(&chat),
-        Some("1.3K used · 3.9K session used · 2.4K session in · 900 session out".to_string())
-    );
-}
-
-#[tokio::test]
-async fn status_line_combined_used_tokens_footer_snapshot() {
-    use ratatui::Terminal;
-    use ratatui::backend::TestBackend;
-
-    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
-    chat.show_welcome_banner = false;
-    chat.config.tui_status_line = Some(vec!["combined-used-tokens".to_string()]);
-    chat.set_session_total_token_usage(TokenUsage {
-        input_tokens: 2_400,
-        cached_input_tokens: 600,
-        output_tokens: 900,
-        total_tokens: 3_900,
-        ..TokenUsage::default()
-    });
-
-    let width = 80;
-    let height = chat.desired_height(width);
-    let mut terminal = Terminal::new(TestBackend::new(width, height)).expect("create terminal");
-    terminal
-        .draw(|f| chat.render(f.area(), f.buffer_mut()))
-        .expect("draw combined-used-tokens footer");
-    assert_chatwidget_snapshot!(
-        "status_line_combined_used_tokens_footer",
-        normalized_backend_snapshot(terminal.backend())
-    );
-}
-
-#[tokio::test]
-async fn status_line_model_with_reasoning_context_remaining_percent_footer_snapshot() {
+async fn status_line_model_with_reasoning_context_remaining_footer_snapshot() {
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
 
@@ -1210,7 +1130,7 @@ async fn status_line_model_with_reasoning_context_remaining_percent_footer_snaps
     chat.config.cwd = test_project_path().abs();
     chat.config.tui_status_line = Some(vec![
         "model-with-reasoning".to_string(),
-        "context-remaining-percent".to_string(),
+        "context-remaining".to_string(),
         "current-dir".to_string(),
     ]);
     chat.set_reasoning_effort(Some(ReasoningEffortConfig::XHigh));
@@ -1227,7 +1147,7 @@ async fn status_line_model_with_reasoning_context_remaining_percent_footer_snaps
         .draw(|f| chat.render(f.area(), f.buffer_mut()))
         .expect("draw model-with-reasoning footer");
     assert_chatwidget_snapshot!(
-        "status_line_model_with_reasoning_context_remaining_percent_footer",
+        "status_line_model_with_reasoning_context_remaining_footer",
         normalized_backend_snapshot(terminal.backend())
     );
 }
@@ -1440,6 +1360,7 @@ async fn user_prompt_submit_app_server_hook_notifications_render_snapshot() {
                 execution_mode: AppServerHookExecutionMode::Sync,
                 scope: AppServerHookScope::Turn,
                 source_path: PathBuf::from(test_path_display("/tmp/hooks.json")).abs(),
+                source: codex_app_server_protocol::HookSource::User,
                 display_order: 0,
                 status: AppServerHookRunStatus::Running,
                 status_message: Some("checking go-workflow input policy".to_string()),
@@ -1462,6 +1383,7 @@ async fn user_prompt_submit_app_server_hook_notifications_render_snapshot() {
                 execution_mode: AppServerHookExecutionMode::Sync,
                 scope: AppServerHookScope::Turn,
                 source_path: PathBuf::from(test_path_display("/tmp/hooks.json")).abs(),
+                source: codex_app_server_protocol::HookSource::User,
                 display_order: 0,
                 status: AppServerHookRunStatus::Stopped,
                 status_message: Some("checking go-workflow input policy".to_string()),
@@ -1531,6 +1453,7 @@ async fn completed_hook_with_no_entries_stays_out_of_history() {
                 execution_mode: codex_protocol::protocol::HookExecutionMode::Sync,
                 scope: codex_protocol::protocol::HookScope::Turn,
                 source_path: PathBuf::from(test_path_display("/tmp/hooks.json")).abs(),
+                source: codex_protocol::protocol::HookSource::User,
                 display_order: 0,
                 status: codex_protocol::protocol::HookRunStatus::Running,
                 status_message: None,
@@ -1556,6 +1479,7 @@ async fn completed_hook_with_no_entries_stays_out_of_history() {
                 execution_mode: codex_protocol::protocol::HookExecutionMode::Sync,
                 scope: codex_protocol::protocol::HookScope::Turn,
                 source_path: PathBuf::from(test_path_display("/tmp/hooks.json")).abs(),
+                source: codex_protocol::protocol::HookSource::User,
                 display_order: 0,
                 status: codex_protocol::protocol::HookRunStatus::Completed,
                 status_message: None,
@@ -2029,6 +1953,7 @@ fn hook_run_summary(
         execution_mode: codex_protocol::protocol::HookExecutionMode::Sync,
         scope: codex_protocol::protocol::HookScope::Turn,
         source_path: PathBuf::from(test_path_display("/tmp/hooks.json")).abs(),
+        source: codex_protocol::protocol::HookSource::User,
         display_order: 0,
         status,
         status_message: status_message.map(str::to_string),
