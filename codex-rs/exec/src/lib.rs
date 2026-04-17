@@ -109,8 +109,8 @@ use uuid::Uuid;
 use crate::cli::Command as ExecCommand;
 use crate::event_processor::CodexStatus;
 use crate::event_processor::EventProcessor;
-use codex_core::default_client::set_default_client_residency_requirement;
-use codex_core::default_client::set_default_originator;
+use codex_login::default_client::set_default_client_residency_requirement;
+use codex_login::default_client::set_default_originator;
 
 const DEFAULT_ANALYTICS_ENABLED: bool = true;
 
@@ -441,6 +441,10 @@ pub async fn run_main(cli: Cli, arg0_paths: Arg0DispatchPaths) -> anyhow::Result
             range: None,
         })
         .collect();
+    let local_runtime_paths = ExecServerRuntimePaths::from_optional_paths(
+        arg0_paths.codex_self_exe.clone(),
+        arg0_paths.codex_linux_sandbox_exe.clone(),
+    )?;
     let in_process_start_args = InProcessClientStartArgs {
         arg0_paths,
         config: std::sync::Arc::new(config.clone()),
