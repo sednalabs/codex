@@ -402,8 +402,47 @@ jobs:
           path: ${{ inputs.artifact_path }}
           retention-days: 3
 
+      - name: Check post-lane disk headroom
+        if: ${{ always() && !cancelled() && runner.os == 'Linux' && inputs.setup_class != 'light' }}
+        id: disk_guard
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          workspace_path="${GITHUB_WORKSPACE}"
+          save_floor_bytes=$((8 * 1024 * 1024 * 1024))
+          available_bytes="$(df --block-size=1 --output=avail "${workspace_path}" | tail -n 1 | tr -d '[:space:]')"
+
+          {
+            echo "available_bytes=${available_bytes}"
+            if [[ "${available_bytes}" -lt "${save_floor_bytes}" ]]; then
+              echo "skip_cache_save=true"
+            else
+              echo "skip_cache_save=false"
+            fi
+          } >> "$GITHUB_OUTPUT"
+
+          {
+            echo "### Runner disk before cache-save steps"
+            echo
+            echo "- Available disk: $(numfmt --to=iec "${available_bytes}")"
+            if [[ "${available_bytes}" -lt "${save_floor_bytes}" ]]; then
+              echo "- Cache save decision: \`skip\`"
+            else
+              echo "- Cache save decision: \`allow\`"
+            fi
+            echo
+            echo '```text'
+            df -h "${workspace_path}" /
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if [[ "${available_bytes}" -lt "${save_floor_bytes}" ]]; then
+            echo "::warning title=Skipping cache save on low disk::Available disk is $(numfmt --to=iec "${available_bytes}") before cache archival; skipping cache save steps to avoid runner exhaustion."
+          fi
+
       - name: Save cargo home cache
-        if: ${{ always() && !cancelled() && inputs.setup_class != 'light' && steps.cache_cargo_home_restore.outputs.cache-hit != 'true' }}
+        if: ${{ always() && !cancelled() && inputs.setup_class != 'light' && steps.cache_cargo_home_restore.outputs.cache-hit != 'true' && steps.disk_guard.outputs.skip_cache_save != 'true' }}
         continue-on-error: true
         uses: actions/cache/save@v5
         with:
@@ -416,7 +455,7 @@ jobs:
           key: cargo-home-linux-rust-${{ steps.lockhash.outputs.hash }}-${{ steps.lockhash.outputs.toolchain_hash }}
 
       - name: Save sccache cache (fallback)
-        if: ${{ always() && !cancelled() && inputs.setup_class != 'light' && env.SCCACHE_GHA_ENABLED != 'true' }}
+        if: ${{ always() && !cancelled() && inputs.setup_class != 'light' && env.SCCACHE_GHA_ENABLED != 'true' && steps.disk_guard.outputs.skip_cache_save != 'true' }}
         continue-on-error: true
         uses: actions/cache/save@v5
         with:
