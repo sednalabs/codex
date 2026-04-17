@@ -7,6 +7,7 @@ use crate::memories::raw_memories_file;
 use crate::memories::rollout_summaries_dir;
 use chrono::TimeZone;
 use chrono::Utc;
+use codex_config::types::DEFAULT_MEMORIES_MAX_RAW_MEMORIES_FOR_CONSOLIDATION;
 use codex_protocol::ThreadId;
 use codex_state::Stage1Output;
 use codex_utils_absolute_path::AbsolutePathBuf;
@@ -480,8 +481,8 @@ mod phase2 {
         }
     }
 
-    fn config_for_memory_root(root: &std::path::Path) -> Arc<Config> {
-        let mut config = test_config();
+    async fn config_for_memory_root(root: &std::path::Path) -> Arc<Config> {
+        let mut config = test_config().await;
         config.codex_home = codex_utils_absolute_path::AbsolutePathBuf::from_absolute_path(
             root.parent()
                 .expect("memory root should have a codex home parent"),
@@ -644,7 +645,7 @@ mod phase2 {
         let temp_dir = tempfile::tempdir().expect("temp dir");
         let codex_home = temp_dir.path().join("codex-home");
         let root = create_and_canonicalize_memory_root(&codex_home).await;
-        let config = config_for_memory_root(&root);
+        let config = config_for_memory_root(&root).await;
         let selection = selection_for_attested_outputs(Vec::new());
         let memory_index_path = root.join("MEMORY.md");
         let memory_summary_path = root.join("memory_summary.md");
@@ -719,7 +720,7 @@ mod phase2 {
         let temp_dir = tempfile::tempdir().expect("temp dir");
         let codex_home = temp_dir.path().join("codex-home");
         let root = create_and_canonicalize_memory_root(&codex_home).await;
-        let config = config_for_memory_root(&root);
+        let config = config_for_memory_root(&root).await;
         let memory_index_path = root.join("MEMORY.md");
         let memory_summary_path = root.join("memory_summary.md");
 
@@ -761,7 +762,7 @@ mod phase2 {
         let temp_dir = tempfile::tempdir().expect("temp dir");
         let codex_home = temp_dir.path().join("codex-home");
         let root = create_and_canonicalize_memory_root(&codex_home).await;
-        let config = config_for_memory_root(&root);
+        let config = config_for_memory_root(&root).await;
         let selection = selection_for_attested_outputs(Vec::new());
         let memory_index_path = root.join("MEMORY.md");
         let memory_summary_path = root.join("memory_summary.md");
@@ -792,7 +793,7 @@ mod phase2 {
         let temp_dir = tempfile::tempdir().expect("temp dir");
         let codex_home = temp_dir.path().join("codex-home");
         let root = create_and_canonicalize_memory_root(&codex_home).await;
-        let config = config_for_memory_root(&root);
+        let config = config_for_memory_root(&root).await;
         let memory_index_path = root.join("MEMORY.md");
         let memory_summary_path = root.join("memory_summary.md");
 
@@ -829,7 +830,7 @@ mod phase2 {
         let temp_dir = tempfile::tempdir().expect("temp dir");
         let codex_home = temp_dir.path().join("codex-home");
         let root = create_and_canonicalize_memory_root(&codex_home).await;
-        let config = config_for_memory_root(&root);
+        let config = config_for_memory_root(&root).await;
         let memory_index_path = root.join("MEMORY.md");
         let memory_summary_path = root.join("memory_summary.md");
 
@@ -871,7 +872,7 @@ mod phase2 {
         let temp_dir = tempfile::tempdir().expect("temp dir");
         let codex_home = temp_dir.path().join("codex-home");
         let root = create_and_canonicalize_memory_root(&codex_home).await;
-        let config = config_for_memory_root(&root);
+        let config = config_for_memory_root(&root).await;
         let memory_index_path = root.join("MEMORY.md");
         let memory_summary_path = root.join("memory_summary.md");
 
@@ -928,7 +929,7 @@ mod phase2 {
             /*source_updated_at*/ 200,
         )];
         let selection = selection_for_attested_outputs(selected_outputs.clone());
-        let config = config_for_memory_root(&root);
+        let config = config_for_memory_root(&root).await;
 
         tokio::fs::write(&memory_index_path, "memory index\n")
             .await
@@ -966,7 +967,7 @@ mod phase2 {
         let temp_dir = tempfile::tempdir().expect("temp dir");
         let codex_home = temp_dir.path().join("codex-home");
         let root = create_and_canonicalize_memory_root(&codex_home).await;
-        let config = config_for_memory_root(&root);
+        let config = config_for_memory_root(&root).await;
         let selection = selection_for_attested_outputs(vec![stage1_output_with_source_updated_at(
             /*source_updated_at*/ 200,
         )]);
@@ -1016,7 +1017,7 @@ mod phase2 {
         let codex_home = temp_dir.path().join("codex-home");
         let root = create_and_canonicalize_memory_root(&codex_home).await;
 
-        let config = config_for_memory_root(&root);
+        let config = config_for_memory_root(&root).await;
         let selection = selection_for_attested_outputs(Vec::new());
         let memory_index_path = root.join("MEMORY.md");
         let memory_summary_path = root.join("memory_summary.md");
@@ -1072,7 +1073,7 @@ mod phase2 {
         let codex_home = temp_dir.path().join("codex-home");
         let root = create_and_canonicalize_memory_root(&codex_home).await;
 
-        let config = config_for_memory_root(&root);
+        let config = config_for_memory_root(&root).await;
         let selection = selection_for_attested_outputs(Vec::new());
         let memory_index_path = root.join("MEMORY.md");
         let memory_summary_path = root.join("memory_summary.md");
@@ -1136,8 +1137,8 @@ mod phase2 {
         let codex_home_b = temp_dir.path().join("codex-home-b");
         let root_a = create_and_canonicalize_memory_root(&codex_home_a).await;
         let root_b = create_and_canonicalize_memory_root(&codex_home_b).await;
-        let config_a = config_for_memory_root(&root_a);
-        let config_b = config_for_memory_root(&root_b);
+        let config_a = config_for_memory_root(&root_a).await;
+        let config_b = config_for_memory_root(&root_b).await;
         let selected_outputs = vec![stage1_output_with_source_updated_at(
             /*source_updated_at*/ 200,
         )];
@@ -1189,7 +1190,7 @@ mod phase2 {
         let temp_dir = tempfile::tempdir().expect("temp dir");
         let codex_home = temp_dir.path().join("codex-home");
         let root = create_and_canonicalize_memory_root(&codex_home).await;
-        let config = config_for_memory_root(&root);
+        let config = config_for_memory_root(&root).await;
         let mut drifted_config = (*config).clone();
         drifted_config.model_provider_id = "different-provider".to_string();
         let drifted_config = Arc::new(drifted_config);
@@ -1231,7 +1232,7 @@ mod phase2 {
         let temp_dir = tempfile::tempdir().expect("temp dir");
         let codex_home = temp_dir.path().join("codex-home");
         let root = create_and_canonicalize_memory_root(&codex_home).await;
-        let config = config_for_memory_root(&root);
+        let config = config_for_memory_root(&root).await;
         let mut drifted_config = (*config).clone();
         drifted_config.memories.consolidation_model = Some("other-model".to_string());
         let drifted_config = Arc::new(drifted_config);
@@ -1272,7 +1273,7 @@ mod phase2 {
         let temp_dir = tempfile::tempdir().expect("temp dir");
         let codex_home = temp_dir.path().join("codex-home");
         let root = create_and_canonicalize_memory_root(&codex_home).await;
-        let config = config_for_memory_root(&root);
+        let config = config_for_memory_root(&root).await;
         let selected_output = stage1_output_with_source_updated_at(/*source_updated_at*/ 200);
         let selection = selection_for_attested_outputs(vec![selected_output.clone()]);
         let prompt_drift_selection = Phase2InputSelection {
@@ -1319,7 +1320,7 @@ mod phase2 {
         let temp_dir = tempfile::tempdir().expect("temp dir");
         let codex_home = temp_dir.path().join("codex-home");
         let root = create_and_canonicalize_memory_root(&codex_home).await;
-        let config = config_for_memory_root(&root);
+        let config = config_for_memory_root(&root).await;
         let selection = selection_for_attested_outputs(vec![stage1_output_with_source_updated_at(
             /*source_updated_at*/ 200,
         )]);
@@ -1371,7 +1372,7 @@ mod phase2 {
         let temp_dir = tempfile::tempdir().expect("temp dir");
         let codex_home = temp_dir.path().join("codex-home");
         let root = create_and_canonicalize_memory_root(&codex_home).await;
-        let config = config_for_memory_root(&root);
+        let config = config_for_memory_root(&root).await;
         let selection = selection_for_attested_outputs(vec![stage1_output_with_source_updated_at(
             /*source_updated_at*/ 200,
         )]);
@@ -1413,7 +1414,7 @@ mod phase2 {
         let temp_dir = tempfile::tempdir().expect("temp dir");
         let codex_home = temp_dir.path().join("codex-home");
         let root = create_and_canonicalize_memory_root(&codex_home).await;
-        let config = config_for_memory_root(&root);
+        let config = config_for_memory_root(&root).await;
         let selection = selection_for_attested_outputs(vec![stage1_output_with_source_updated_at(
             /*source_updated_at*/ 200,
         )]);
@@ -1459,7 +1460,7 @@ mod phase2 {
         let temp_dir = tempfile::tempdir().expect("temp dir");
         let codex_home = temp_dir.path().join("codex-home");
         let root = create_and_canonicalize_memory_root(&codex_home).await;
-        let config = config_for_memory_root(&root);
+        let config = config_for_memory_root(&root).await;
         let selection = selection_for_attested_outputs(vec![stage1_output_with_source_updated_at(
             /*source_updated_at*/ 200,
         )]);
@@ -1518,7 +1519,7 @@ mod phase2 {
         let temp_dir = tempfile::tempdir().expect("temp dir");
         let codex_home = temp_dir.path().join("codex-home");
         let root = create_and_canonicalize_memory_root(&codex_home).await;
-        let config = config_for_memory_root(&root);
+        let config = config_for_memory_root(&root).await;
         let selection = selection_for_attested_outputs(vec![stage1_output_with_source_updated_at(
             /*source_updated_at*/ 200,
         )]);
@@ -1667,14 +1668,14 @@ mod phase2 {
         pretty_assertions::assert_eq!(thread_ids.len(), 0);
     }
 
-    #[test]
-    fn consolidation_agent_config_keeps_split_sandbox_policies_in_sync() {
+    #[tokio::test]
+    async fn consolidation_agent_config_keeps_split_sandbox_policies_in_sync() {
         let temp_dir = tempfile::tempdir().expect("temp dir");
         let canonical_temp_dir =
             std::fs::canonicalize(temp_dir.path()).expect("canonical temp dir");
         let codex_home =
             AbsolutePathBuf::from_absolute_path(&canonical_temp_dir).expect("canonical codex home");
-        let mut config = test_config();
+        let mut config = test_config().await;
         config.codex_home = codex_home;
         config.cwd =
             AbsolutePathBuf::from_absolute_path(&canonical_temp_dir).expect("workspace path");
@@ -1729,8 +1730,8 @@ mod phase2 {
     }
 
     #[cfg(unix)]
-    #[test]
-    fn consolidation_agent_config_rejects_symlinked_codex_home() {
+    #[tokio::test]
+    async fn consolidation_agent_config_rejects_symlinked_codex_home() {
         let temp_dir = tempfile::tempdir().expect("temp dir");
         let real_codex_home = temp_dir.path().join("real-codex-home");
         let workspace = temp_dir.path().join("workspace");
@@ -1740,7 +1741,7 @@ mod phase2 {
         std::os::unix::fs::symlink(&real_codex_home, &linked_codex_home)
             .expect("symlink codex home");
 
-        let mut config = test_config();
+        let mut config = test_config().await;
         config.codex_home =
             AbsolutePathBuf::from_absolute_path(&linked_codex_home).expect("linked codex home");
         config.cwd = AbsolutePathBuf::from_absolute_path(workspace).expect("workspace path");
@@ -1752,8 +1753,8 @@ mod phase2 {
     }
 
     #[cfg(unix)]
-    #[test]
-    fn consolidation_agent_config_allows_symlinked_ancestor_above_real_codex_home() {
+    #[tokio::test]
+    async fn consolidation_agent_config_allows_symlinked_ancestor_above_real_codex_home() {
         let temp_dir = tempfile::tempdir().expect("temp dir");
         let real_parent = temp_dir.path().join("real-parent");
         let real_codex_home = real_parent.join("codex-home");
@@ -1763,7 +1764,7 @@ mod phase2 {
         let linked_parent = temp_dir.path().join("linked-parent");
         std::os::unix::fs::symlink(&real_parent, &linked_parent).expect("symlink parent ancestor");
 
-        let mut config = test_config();
+        let mut config = test_config().await;
         config.codex_home = AbsolutePathBuf::from_absolute_path(linked_parent.join("codex-home"))
             .expect("linked parent codex home");
         config.cwd = AbsolutePathBuf::from_absolute_path(workspace).expect("workspace path");

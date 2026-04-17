@@ -13,6 +13,7 @@ use codex_config::types::AppsConfigToml;
 use codex_config::types::McpServerConfig;
 use codex_config::types::McpServerToolConfig;
 use codex_model_provider::create_model_provider;
+use codex_protocol::approvals::GuardianAssessmentDecisionSource;
 use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::SandboxPolicy;
 use core_test_support::PathExt;
