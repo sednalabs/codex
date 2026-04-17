@@ -109,7 +109,6 @@ fn sample_thread_with_source(
         forked_from_id: None,
         preview: "first prompt".to_string(),
         ephemeral,
-        forked_from_id: None,
         model_provider: "openai".to_string(),
         created_at: 1,
         updated_at: 2,

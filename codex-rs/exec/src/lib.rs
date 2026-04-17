@@ -1679,6 +1679,8 @@ mod tests {
     use super::*;
     use codex_otel::set_parent_from_w3c_trace_context;
     use codex_protocol::config_types::ApprovalsReviewer;
+    use codex_utils_absolute_path::test_support::PathBufExt;
+    use codex_utils_absolute_path::test_support::test_path_buf;
     use opentelemetry::trace::TraceContextExt;
     use opentelemetry::trace::TraceId;
     use opentelemetry::trace::TracerProvider as _;
@@ -1927,7 +1929,7 @@ mod tests {
             updated_at: 0,
             status: codex_app_server_protocol::ThreadStatus::Idle,
             path: None,
-            cwd: PathBuf::from("/tmp/project"),
+            cwd: test_path_buf("/tmp/project").abs(),
             cli_version: "0.0.0-test".to_string(),
             source: codex_app_server_protocol::SessionSource::Exec,
             agent_nickname: None,
@@ -2052,7 +2054,7 @@ mod tests {
                 updated_at: 0,
                 status: codex_app_server_protocol::ThreadStatus::Idle,
                 path: Some(PathBuf::from("/tmp/rollout.jsonl")),
-                cwd: PathBuf::from("/tmp"),
+                cwd: test_path_buf("/tmp").abs(),
                 cli_version: "0.0.0".to_string(),
                 source: codex_app_server_protocol::SessionSource::Cli,
                 agent_nickname: None,
@@ -2065,7 +2067,8 @@ mod tests {
             model: "gpt-5.4".to_string(),
             model_provider: "openai".to_string(),
             service_tier: None,
-            cwd: PathBuf::from("/tmp"),
+            cwd: test_path_buf("/tmp").abs(),
+            instruction_sources: Vec::new(),
             approval_policy: codex_app_server_protocol::AskForApproval::OnRequest,
             approvals_reviewer: codex_app_server_protocol::ApprovalsReviewer::GuardianSubagent,
             sandbox: codex_app_server_protocol::SandboxPolicy::WorkspaceWrite {

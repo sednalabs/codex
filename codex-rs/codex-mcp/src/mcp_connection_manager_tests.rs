@@ -1,6 +1,7 @@
 use super::*;
 use codex_protocol::protocol::GranularApprovalConfig;
 use codex_protocol::protocol::McpAuthStatus;
+use codex_protocol::protocol::SandboxPolicy;
 use rmcp::model::JsonObject;
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -9,12 +10,13 @@ use tempfile::tempdir;
 fn create_test_tool(server_name: &str, tool_name: &str) -> ToolInfo {
     ToolInfo {
         server_name: server_name.to_string(),
-        tool_name: tool_name.to_string(),
-        tool_namespace: if server_name == CODEX_APPS_MCP_SERVER_NAME {
+        callable_name: tool_name.to_string(),
+        callable_namespace: if server_name == CODEX_APPS_MCP_SERVER_NAME {
             format!("mcp__{server_name}__")
         } else {
             server_name.to_string()
         },
+        server_instructions: None,
         tool: Tool {
             name: tool_name.to_string().into(),
             title: None,
@@ -58,6 +60,10 @@ fn create_codex_apps_tools_cache_context(
             is_workspace_account: false,
         },
     }
+}
+
+fn test_sandbox_policy() -> Constrained<SandboxPolicy> {
+    Constrained::allow_any(SandboxPolicy::new_read_only_policy())
 }
 
 #[test]
@@ -171,7 +177,7 @@ fn test_qualify_tools_sanitizes_invalid_characters() {
 
     // The key is sanitized for OpenAI, but we keep original parts for the actual MCP call.
     assert_eq!(tool.server_name, "server.one");
-    assert_eq!(tool.tool_name, "tool.two-three");
+    assert_eq!(tool.callable_name, "tool.two-three");
 
     assert!(
         qualified_name
@@ -245,7 +251,7 @@ fn filter_tools_applies_per_server_filters() {
 
     assert_eq!(filtered.len(), 1);
     assert_eq!(filtered[0].server_name, "server1");
-    assert_eq!(filtered[0].tool_name, "tool_a");
+    assert_eq!(filtered[0].callable_name, "tool_a");
 }
 
 #[test]
@@ -262,12 +268,12 @@ fn codex_apps_tools_cache_is_overwritten_by_last_write() {
     write_cached_codex_apps_tools(&cache_context, &tools_gateway_1);
     let cached_gateway_1 =
         read_cached_codex_apps_tools(&cache_context).expect("cache entry exists for first write");
-    assert_eq!(cached_gateway_1[0].tool_name, "one");
+    assert_eq!(cached_gateway_1[0].callable_name, "one");
 
     write_cached_codex_apps_tools(&cache_context, &tools_gateway_2);
     let cached_gateway_2 =
         read_cached_codex_apps_tools(&cache_context).expect("cache entry exists for second write");
-    assert_eq!(cached_gateway_2[0].tool_name, "two");
+    assert_eq!(cached_gateway_2[0].callable_name, "two");
 }
 
 #[test]
@@ -294,8 +300,8 @@ fn codex_apps_tools_cache_is_scoped_per_user() {
     let read_user_2 =
         read_cached_codex_apps_tools(&cache_context_user_2).expect("cache entry for user two");
 
-    assert_eq!(read_user_1[0].tool_name, "one");
-    assert_eq!(read_user_2[0].tool_name, "two");
+    assert_eq!(read_user_1[0].callable_name, "one");
+    assert_eq!(read_user_2[0].callable_name, "two");
     assert_ne!(
         cache_context_user_1.cache_path(),
         cache_context_user_2.cache_path(),
@@ -330,7 +336,7 @@ fn codex_apps_tools_cache_filters_disallowed_connectors() {
     let cached = read_cached_codex_apps_tools(&cache_context).expect("cache entry exists for user");
 
     assert_eq!(cached.len(), 1);
-    assert_eq!(cached[0].tool_name, "allowed_tool");
+    assert_eq!(cached[0].callable_name, "allowed_tool");
     assert_eq!(cached[0].connector_id.as_deref(), Some("calendar"));
 }
 
@@ -395,7 +401,7 @@ fn startup_cached_codex_apps_tools_loads_from_disk_cache() {
 
     assert_eq!(startup_tools.len(), 1);
     assert_eq!(startup_tools[0].server_name, CODEX_APPS_MCP_SERVER_NAME);
-    assert_eq!(startup_tools[0].tool_name, "calendar_search");
+    assert_eq!(startup_tools[0].callable_name, "calendar_search");
 }
 
 #[tokio::test]
@@ -408,7 +414,8 @@ async fn list_all_tools_uses_startup_snapshot_while_client_is_pending() {
         .boxed()
         .shared();
     let approval_policy = Constrained::allow_any(AskForApproval::OnFailure);
-    let mut manager = McpConnectionManager::new_uninitialized(&approval_policy);
+    let sandbox_policy = test_sandbox_policy();
+    let mut manager = McpConnectionManager::new_uninitialized(&approval_policy, &sandbox_policy);
     manager.clients.insert(
         CODEX_APPS_MCP_SERVER_NAME.to_string(),
         AsyncManagedClient {
@@ -424,7 +431,7 @@ async fn list_all_tools_uses_startup_snapshot_while_client_is_pending() {
         .get("mcp__codex_apps__calendar_create_event")
         .expect("tool from startup cache");
     assert_eq!(tool.server_name, CODEX_APPS_MCP_SERVER_NAME);
-    assert_eq!(tool.tool_name, "calendar_create_event");
+    assert_eq!(tool.callable_name, "calendar_create_event");
 }
 
 #[tokio::test]
@@ -433,7 +440,8 @@ async fn list_all_tools_blocks_while_client_is_pending_without_startup_snapshot(
         .boxed()
         .shared();
     let approval_policy = Constrained::allow_any(AskForApproval::OnFailure);
-    let mut manager = McpConnectionManager::new_uninitialized(&approval_policy);
+    let sandbox_policy = test_sandbox_policy();
+    let mut manager = McpConnectionManager::new_uninitialized(&approval_policy, &sandbox_policy);
     manager.clients.insert(
         CODEX_APPS_MCP_SERVER_NAME.to_string(),
         AsyncManagedClient {
@@ -455,7 +463,8 @@ async fn list_all_tools_does_not_block_when_startup_snapshot_cache_hit_is_empty(
         .boxed()
         .shared();
     let approval_policy = Constrained::allow_any(AskForApproval::OnFailure);
-    let mut manager = McpConnectionManager::new_uninitialized(&approval_policy);
+    let sandbox_policy = test_sandbox_policy();
+    let mut manager = McpConnectionManager::new_uninitialized(&approval_policy, &sandbox_policy);
     manager.clients.insert(
         CODEX_APPS_MCP_SERVER_NAME.to_string(),
         AsyncManagedClient {
@@ -486,7 +495,8 @@ async fn list_all_tools_uses_startup_snapshot_when_client_startup_fails() {
     .boxed()
     .shared();
     let approval_policy = Constrained::allow_any(AskForApproval::OnFailure);
-    let mut manager = McpConnectionManager::new_uninitialized(&approval_policy);
+    let sandbox_policy = test_sandbox_policy();
+    let mut manager = McpConnectionManager::new_uninitialized(&approval_policy, &sandbox_policy);
     let startup_complete = Arc::new(std::sync::atomic::AtomicBool::new(true));
     manager.clients.insert(
         CODEX_APPS_MCP_SERVER_NAME.to_string(),
@@ -503,7 +513,7 @@ async fn list_all_tools_uses_startup_snapshot_when_client_startup_fails() {
         .get("mcp__codex_apps__calendar_create_event")
         .expect("tool from startup cache");
     assert_eq!(tool.server_name, CODEX_APPS_MCP_SERVER_NAME);
-    assert_eq!(tool.tool_name, "calendar_create_event");
+    assert_eq!(tool.callable_name, "calendar_create_event");
 }
 
 #[test]

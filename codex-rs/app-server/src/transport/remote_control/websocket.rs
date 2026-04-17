@@ -1188,7 +1188,7 @@ mod tests {
             async move {
                 RemoteControlWebsocket::new(
                     remote_control_url,
-                    remote_control_target,
+                    Some(remote_control_target),
                     /*state_db*/ None,
                     remote_control_auth_manager(),
                     transport_event_tx,
