@@ -56,7 +56,7 @@ def derive_summary_family(lane: dict) -> str:
 
 
 def derive_setup_class(lane: dict) -> str:
-    groups = set(lane.get("groups", []))
+    groups = set(lane.get("groups") or [])
     lane_id = str(lane.get("lane_id") or "")
     lane_sets = set(lane.get("lane_sets", []))
 
@@ -185,7 +185,7 @@ def lane_payload(spec: dict, *, lane_phase: str) -> dict:
         "lane_id": spec["lane_id"],
         "lane_phase": lane_phase,
         "run_command": spec["run_command"],
-        "groups": spec["groups"],
+        "groups": spec.get("groups") or [],
         "install_nextest": bool(spec.get("install_nextest", False)),
         "status_class": spec["status_class"],
         "frontier_default": bool(spec.get("frontier_default", False)),
@@ -484,7 +484,7 @@ def lab_plan(args: argparse.Namespace) -> None:
             "all" if args.lane_set == "all" else args.lane_set,
             lane_phase="downstream_lanes",
         )
-        groups = {group for spec in selected for group in spec["groups"]}
+        groups = {group for spec in selected for group in (spec.get("groups") or [])}
         has_smoke_gate, smoke_gate_kind = determine_smoke_gate(groups)
         smoke_matrix = select_smoke_matrix(catalog, smoke_gate_kind) if has_smoke_gate else []
         run_smoke_gate = bool(selected) and bool(smoke_matrix)
@@ -591,7 +591,7 @@ def heavy_plan(args: argparse.Namespace) -> None:
             elif not parse_bool(args.run_all_lanes):
                 if spec.get("explicit_only"):
                     continue
-                if not active_groups.intersection(spec["groups"]):
+                if not active_groups.intersection(spec.get("groups") or []):
                     continue
             if lane_id in seen:
                 continue
@@ -603,7 +603,7 @@ def heavy_plan(args: argparse.Namespace) -> None:
             smoke_gate_kind = ""
             run_smoke_gate = False
         else:
-            groups = {group for spec in selected for group in spec["groups"]}
+            groups = {group for spec in selected for group in (spec.get("groups") or [])}
             has_smoke_gate, smoke_gate_kind = determine_smoke_gate(groups)
             smoke_matrix = (
                 select_smoke_matrix(catalog, smoke_gate_kind) if has_smoke_gate else []
