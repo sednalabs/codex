@@ -214,7 +214,6 @@ use codex_core::SessionMeta;
 use codex_core::SteerInputError;
 use codex_core::ThreadConfigSnapshot;
 use codex_core::ThreadManager;
-use codex_core::append_thread_name;
 use codex_core::clear_memory_roots_contents;
 use codex_core::config::Config;
 use codex_core::config::ConfigOverrides;
@@ -10038,13 +10037,14 @@ mod tests {
         );
     }
 
-    #[test]
-    fn apply_explicit_instruction_null_overrides_to_config_clears_inherited_instructions() {
+    #[tokio::test]
+    async fn apply_explicit_instruction_null_overrides_to_config_clears_inherited_instructions() {
         let codex_home = tempfile::TempDir::new().expect("create temp codex home");
         let mut config = Config::load_default_with_cli_overrides_for_codex_home(
             codex_home.path().to_path_buf(),
             Vec::new(),
         )
+        .await
         .expect("load default config");
         config.base_instructions = Some("keep base".to_string());
         config.developer_instructions = Some("keep developer".to_string());
