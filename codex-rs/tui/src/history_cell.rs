@@ -38,6 +38,7 @@ use crate::text_formatting::truncate_text;
 use crate::tooltips;
 use crate::ui_consts::LIVE_PREFIX_COLS;
 use crate::update_action::UpdateAction;
+use crate::version::CODEX_CLI_VERSION;
 use crate::version::CODEX_DISPLAY_VERSION;
 use crate::version::installation_options_url;
 use crate::version::latest_release_notes_url;

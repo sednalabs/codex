@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 
+use crate::app::app_server_requests::ResolvedAppServerRequest;
 use crate::exec_command::strip_bash_lc_and_escape;
 use crate::key_hint;
 use crate::key_hint::KeyBinding;
@@ -68,6 +69,35 @@ impl ApprovalRequest {
             | ApprovalRequest::Permissions { thread_label, .. }
             | ApprovalRequest::ApplyPatch { thread_label, .. }
             | ApprovalRequest::McpElicitation { thread_label, .. } => thread_label.as_deref(),
+        }
+    }
+
+    pub(crate) fn matches_resolved_request(&self, request: &ResolvedAppServerRequest) -> bool {
+        match (self, request) {
+            (
+                ApprovalRequest::Exec { id, .. },
+                ResolvedAppServerRequest::ExecApproval { id: resolved_id },
+            ) => id == resolved_id,
+            (
+                ApprovalRequest::Permissions { call_id, .. },
+                ResolvedAppServerRequest::PermissionsApproval { id },
+            ) => call_id == id,
+            (
+                ApprovalRequest::ApplyPatch { id, .. },
+                ResolvedAppServerRequest::FileChangeApproval { id: resolved_id },
+            ) => id == resolved_id,
+            (
+                ApprovalRequest::McpElicitation {
+                    server_name,
+                    request_id,
+                    ..
+                },
+                ResolvedAppServerRequest::McpElicitation {
+                    server_name: resolved_server_name,
+                    request_id: resolved_request_id,
+                },
+            ) => server_name == resolved_server_name && request_id == resolved_request_id,
+            _ => false,
         }
     }
 }
