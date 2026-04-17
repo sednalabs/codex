@@ -4861,7 +4861,7 @@ mod tests {
             name: "google-calendar:availability".to_string(),
             description: "Find availability and plan event changes".to_string(),
             short_description: None,
-            interface: Some(codex_core::skills::model::SkillInterface {
+            interface: Some(crate::legacy_core::skills::model::SkillInterface {
                 display_name: Some("Google Calendar".to_string()),
                 short_description: None,
                 icon_small: None,
@@ -4883,7 +4883,7 @@ mod tests {
             ),
             has_skills: true,
             mcp_server_names: vec!["google-calendar".to_string()],
-            app_connector_ids: vec![codex_core::plugins::AppConnectorId(
+            app_connector_ids: vec![crate::legacy_core::plugins::AppConnectorId(
                 "google_calendar".to_string(),
             )],
         }]));
@@ -4935,7 +4935,7 @@ mod tests {
                     ),
                     has_skills: true,
                     mcp_server_names: vec!["sample".to_string()],
-                    app_connector_ids: vec![codex_core::plugins::AppConnectorId(
+                    app_connector_ids: vec![crate::legacy_core::plugins::AppConnectorId(
                         "calendar".to_string(),
                     )],
                 }]));
@@ -4956,7 +4956,7 @@ mod tests {
                     name: "google-calendar-skill".to_string(),
                     description: "Find availability and plan event changes".to_string(),
                     short_description: None,
-                    interface: Some(codex_core::skills::model::SkillInterface {
+                    interface: Some(crate::legacy_core::skills::model::SkillInterface {
                         display_name: Some("Google Calendar".to_string()),
                         short_description: None,
                         icon_small: None,
