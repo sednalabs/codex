@@ -98,6 +98,8 @@ pub fn create_fake_rollout_with_token_usage(
             model_context_window: Some(200_000),
         }),
         rate_limits: None,
+        provider: None,
+        model_used: None,
     }))?;
     let file_path = rollout_path(codex_home, filename_ts, &thread_id);
     let line = json!({
