@@ -7,6 +7,7 @@ use crate::FreeformTool;
 use crate::FreeformToolFormat;
 use crate::JsonSchema;
 use crate::ResponsesApiTool;
+use crate::ToolName;
 use crate::ToolSpec;
 use pretty_assertions::assert_eq;
 use serde_json::json;
@@ -386,23 +387,12 @@ fn tool_spec_to_code_mode_tool_definition_returns_augmented_nested_tools() {
         },
     });
 
-    let definition = tool_spec_to_code_mode_tool_definition(&spec)
-        .expect("tool should be converted to code-mode tool definition");
-    assert_eq!(definition.name, "apply_patch");
-    assert_eq!(definition.all_tools_name, None);
-    assert_eq!(definition.all_tools_module, None);
-    assert_eq!(definition.kind, codex_code_mode::CodeModeToolKind::Freeform);
-    assert_eq!(definition.input_schema, None);
-    assert_eq!(definition.output_schema, None);
-    assert_code_mode_description(
-        &definition.description,
-        "Apply a patch",
-        "apply_patch",
-        "input",
-        &["string"],
-        &["unknown"],
-    );
-}
+    assert_eq!(
+        tool_spec_to_code_mode_tool_definition(&spec),
+        Some(codex_code_mode::ToolDefinition {
+            name: "apply_patch".to_string(),
+            tool_name: ToolName::plain("apply_patch"),
+            description: r#"Apply a patch
 
 #[test]
 fn tool_spec_to_code_mode_tool_definition_preserves_mcp_module_metadata() {
@@ -533,21 +523,29 @@ fn create_wait_tool_matches_expected_spec() {
 
 #[test]
 fn create_code_mode_tool_matches_expected_spec() {
-    let enabled_tools = vec![update_plan_definition()];
-    let namespace_descriptions = empty_namespace_descriptions();
+    let enabled_tools = vec![codex_code_mode::ToolDefinition {
+        name: "update_plan".to_string(),
+        tool_name: ToolName::plain("update_plan"),
+        description: "Update the plan".to_string(),
+        kind: codex_code_mode::CodeModeToolKind::Function,
+        input_schema: None,
+        output_schema: None,
+    }];
 
     assert_eq!(
         create_code_mode_tool(
             &enabled_tools,
-            &namespace_descriptions,
-            /*code_mode_only_enabled*/ true
+            &BTreeMap::new(),
+            /*code_mode_only*/ true,
+            /*deferred_tools_available*/ false,
         ),
         ToolSpec::Freeform(FreeformTool {
             name: codex_code_mode::PUBLIC_TOOL_NAME.to_string(),
             description: codex_code_mode::build_exec_tool_description(
                 &enabled_tools,
-                &namespace_descriptions,
-                /*code_mode_only*/ true
+                &BTreeMap::new(),
+                /*code_mode_only*/ true,
+                /*deferred_tools_available*/ false
             ),
             format: FreeformToolFormat {
                 r#type: "grammar".to_string(),

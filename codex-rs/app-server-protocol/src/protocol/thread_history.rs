@@ -124,6 +124,20 @@ impl ThreadHistoryBuilder {
             .or_else(|| self.turns.last().cloned())
     }
 
+    /// Returns the index of the active turn snapshot within the finished turn list.
+    ///
+    /// When a turn is still open, this is the index it will occupy after
+    /// `finish`. When no turn is open, it is the index of the last finished turn.
+    pub fn active_turn_position(&self) -> Option<usize> {
+        if self.current_turn.is_some() {
+            Some(self.turns.len())
+        } else if self.turns.is_empty() {
+            None
+        } else {
+            Some(self.turns.len() - 1)
+        }
+    }
+
     pub fn has_active_turn(&self) -> bool {
         self.current_turn.is_some()
     }
@@ -503,6 +517,7 @@ impl ThreadHistoryBuilder {
                 .arguments
                 .clone()
                 .unwrap_or(serde_json::Value::Null),
+            mcp_app_resource_uri: payload.mcp_app_resource_uri.clone(),
             result: None,
             error: None,
             duration_ms: None,
@@ -519,10 +534,11 @@ impl ThreadHistoryBuilder {
         let duration_ms = i64::try_from(payload.duration.as_millis()).ok();
         let (result, error) = match &payload.result {
             Ok(value) => (
-                Some(McpToolCallResult {
+                Some(Box::new(McpToolCallResult {
                     content: value.content.clone(),
                     structured_content: value.structured_content.clone(),
-                }),
+                    meta: value.meta.clone(),
+                })),
                 None,
             ),
             Err(message) => (
@@ -542,6 +558,7 @@ impl ThreadHistoryBuilder {
                 .arguments
                 .clone()
                 .unwrap_or(serde_json::Value::Null),
+            mcp_app_resource_uri: payload.mcp_app_resource_uri.clone(),
             result,
             error,
             duration_ms,
@@ -1805,6 +1822,7 @@ mod tests {
                     tool: "lookup".into(),
                     arguments: Some(serde_json::json!({"id":"123"})),
                 },
+                mcp_app_resource_uri: None,
                 duration: Duration::from_millis(8),
                 result: Err("boom".into()),
             }),
@@ -1853,10 +1871,74 @@ mod tests {
                 tool: "lookup".into(),
                 status: McpToolCallStatus::Failed,
                 arguments: serde_json::json!({"id":"123"}),
+                mcp_app_resource_uri: None,
                 result: None,
                 error: Some(McpToolCallError {
                     message: "boom".into(),
                 }),
+                duration_ms: Some(8),
+            }
+        );
+    }
+
+    #[test]
+    fn reconstructs_mcp_tool_result_meta_from_persisted_completion_events() {
+        let events = vec![
+            EventMsg::TurnStarted(TurnStartedEvent {
+                turn_id: "turn-1".into(),
+                started_at: None,
+                model_context_window: None,
+                collaboration_mode_kind: Default::default(),
+            }),
+            EventMsg::McpToolCallEnd(McpToolCallEndEvent {
+                call_id: "mcp-1".into(),
+                invocation: McpInvocation {
+                    server: "docs".into(),
+                    tool: "lookup".into(),
+                    arguments: Some(serde_json::json!({"id":"123"})),
+                },
+                mcp_app_resource_uri: Some("ui://widget/lookup.html".into()),
+                duration: Duration::from_millis(8),
+                result: Ok(CallToolResult {
+                    content: vec![serde_json::json!({
+                        "type": "text",
+                        "text": "result"
+                    })],
+                    structured_content: Some(serde_json::json!({"id":"123"})),
+                    is_error: Some(false),
+                    meta: Some(serde_json::json!({
+                        "ui/resourceUri": "ui://widget/lookup.html"
+                    })),
+                }),
+            }),
+        ];
+
+        let items = events
+            .into_iter()
+            .map(RolloutItem::EventMsg)
+            .collect::<Vec<_>>();
+        let turns = build_turns_from_rollout_items(&items);
+        assert_eq!(turns.len(), 1);
+        assert_eq!(
+            turns[0].items[0],
+            ThreadItem::McpToolCall {
+                id: "mcp-1".into(),
+                server: "docs".into(),
+                tool: "lookup".into(),
+                status: McpToolCallStatus::Completed,
+                arguments: serde_json::json!({"id":"123"}),
+                mcp_app_resource_uri: Some("ui://widget/lookup.html".into()),
+                result: Some(Box::new(McpToolCallResult {
+                    content: vec![serde_json::json!({
+                        "type": "text",
+                        "text": "result"
+                    })],
+                    structured_content: Some(serde_json::json!({"id":"123"})),
+                    meta: Some(serde_json::json!({
+                        "ui/resourceUri": "ui://widget/lookup.html"
+                    })),
+                })),
+                error: None,
                 duration_ms: Some(8),
             }
         );
