@@ -76,7 +76,9 @@ GitHub Actions lane naming (`.github/workflows/sedna-heavy-tests.yml`):
 
 - `rust-ci.yml` is the default PR fail-fast workflow.
   - It runs on `pull_request`, scheduled hygiene sweeps, and manual dispatch.
-  - `CI results (required)` is the single required gate.
+  - `Rust CI lane planner (informational)` explains lane selection and should
+    not be treated as a merge gate.
+  - `Rust CI required gate` is the single required merge gate.
   - Tiny mapped initial PRs and already-green follow-up pushes may reuse
     incremental targeted validation instead of rerunning the full `rust-ci`
     bundle.

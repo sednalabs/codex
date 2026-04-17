@@ -16,7 +16,7 @@ on:
 
 jobs:
   matrix_plan:
-    name: Resolve platform scope
+    name: Rust CI lane planner (informational)
     runs-on: ubuntu-24.04
     outputs:
       argument_comment_lint_matrix: ${{ steps.plan.outputs.argument_comment_lint_matrix }}
