@@ -22,7 +22,7 @@ permissions:
 
 jobs:
   matrix_plan:
-    name: Resolve platform scope
+    name: Rust CI lane planner (informational)
     runs-on: ubuntu-24.04
     outputs:
       argument_comment_lint_matrix: ${{ steps.plan.outputs.argument_comment_lint_matrix }}
@@ -115,7 +115,7 @@ jobs:
               });
               const ok = data.check_runs.some(
                 (run) =>
-                  run.name === "CI results (required)" &&
+                  run.name === "Rust CI required gate" &&
                   run.conclusion === "success",
               );
               core.setOutput("previous_green_required", ok ? "true" : "false");
@@ -318,7 +318,7 @@ jobs:
 
   # --- Gatherer job that you mark as the ONLY required status -----------------
   results:
-    name: CI results (required)
+    name: Rust CI required gate
     needs:
       [
         changed,
