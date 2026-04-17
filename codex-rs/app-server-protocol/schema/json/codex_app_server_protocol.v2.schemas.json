@@ -4938,11 +4938,7 @@
           "$ref": "#/definitions/HookScope"
         },
         "source": {
-          "allOf": [
-            {
-              "$ref": "#/definitions/HookSource"
-            }
-          ],
+          "$ref": "#/definitions/HookSource",
           "default": "unknown"
         },
         "sourcePath": {
