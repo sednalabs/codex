@@ -256,7 +256,7 @@ pub fn create_inspect_agent_tree_tool() -> ToolSpec {
         (
             "agent_roots".to_string(),
             JsonSchema::array(
-                JsonSchema::string(None),
+                JsonSchema::string(/*description*/ None),
                 Some(
                     "Optional task-path roots to keep in the returned tree. Matching rows include the named agent and its descendants."
                         .to_string(),

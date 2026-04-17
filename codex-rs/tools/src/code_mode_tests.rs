@@ -297,7 +297,10 @@ fn augment_tool_spec_for_code_mode_augments_function_tools() {
         strict: false,
         defer_loading: Some(true),
         parameters: JsonSchema::object(
-            BTreeMap::from([("order_id".to_string(), JsonSchema::string(None))]),
+            BTreeMap::from([(
+                "order_id".to_string(),
+                JsonSchema::string(/*description*/ None),
+            )]),
             Some(vec!["order_id".to_string()]),
             Some(AdditionalProperties::Boolean(false)),
         ),
@@ -319,7 +322,10 @@ fn augment_tool_spec_for_code_mode_augments_function_tools() {
     assert_eq!(
         tool.parameters,
         JsonSchema::object(
-            BTreeMap::from([("order_id".to_string(), JsonSchema::string(None))]),
+            BTreeMap::from([(
+                "order_id".to_string(),
+                JsonSchema::string(/*description*/ None),
+            )]),
             Some(vec!["order_id".to_string()]),
             Some(AdditionalProperties::Boolean(false)),
         )
@@ -406,7 +412,10 @@ fn tool_spec_to_code_mode_tool_definition_preserves_mcp_module_metadata() {
         strict: false,
         defer_loading: None,
         parameters: JsonSchema::object(
-            BTreeMap::from([("message".to_string(), JsonSchema::string(None))]),
+            BTreeMap::from([(
+                "message".to_string(),
+                JsonSchema::string(/*description*/ None),
+            )]),
             Some(vec!["message".to_string()]),
             Some(AdditionalProperties::Boolean(false)),
         ),
@@ -465,7 +474,11 @@ fn tool_spec_to_code_mode_tool_definition_skips_unsupported_variants() {
         tool_spec_to_code_mode_tool_definition(&ToolSpec::ToolSearch {
             execution: "sync".to_string(),
             description: "Search".to_string(),
-            parameters: JsonSchema::object(BTreeMap::new(), None, None),
+            parameters: JsonSchema::object(
+                BTreeMap::new(),
+                /*required*/ None,
+                /*additional_properties*/ None,
+            ),
         }),
         None
     );

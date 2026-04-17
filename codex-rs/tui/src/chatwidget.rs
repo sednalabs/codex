@@ -5113,7 +5113,7 @@ impl ChatWidget {
             .set_queued_message_edit_binding(widget.queued_message_edit_binding);
         widget
             .bottom_pane
-            .set_esc_interrupt_requires_double_press(false);
+            .set_esc_interrupt_requires_double_press(/*requires_double_press*/ false);
         #[cfg(target_os = "windows")]
         widget.bottom_pane.set_windows_degraded_sandbox_active(
             codex_core::windows_sandbox::ELEVATED_SANDBOX_NUX_ENABLED
@@ -11477,7 +11477,7 @@ impl ChatWidget {
         self.config.features = config.features.clone();
         self.config.config_layer_stack = config.config_layer_stack.clone();
         self.bottom_pane
-            .set_esc_interrupt_requires_double_press(false);
+            .set_esc_interrupt_requires_double_press(/*requires_double_press*/ false);
     }
 
     pub(crate) fn open_review_popup(&mut self) {

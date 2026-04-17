@@ -977,7 +977,7 @@ async fn thread_session_state_from_thread_start_response(
     thread_session_state_from_thread_response(
         &response.thread.id,
         response.thread.name.clone(),
-        None,
+        /*forked_from_id*/ None,
         response.thread.path.clone(),
         response.model.clone(),
         response.model_provider.clone(),
@@ -1000,7 +1000,7 @@ async fn thread_session_state_from_thread_resume_response(
     thread_session_state_from_thread_response(
         &response.thread.id,
         response.thread.name.clone(),
-        None,
+        /*forked_from_id*/ None,
         response.thread.path.clone(),
         response.model.clone(),
         response.model_provider.clone(),
@@ -1288,7 +1288,7 @@ mod tests {
         let session = thread_session_state_from_thread_response(
             &thread_id.to_string(),
             Some("restore".to_string()),
-            None,
+            /*forked_from_id*/ None,
             /*rollout_path*/ None,
             "gpt-5.4".to_string(),
             "openai".to_string(),
