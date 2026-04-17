@@ -51,10 +51,10 @@ use crate::bottom_pane::StatusLineSetupView;
 use crate::bottom_pane::TerminalTitleItem;
 use crate::bottom_pane::TerminalTitleSetupView;
 use crate::legacy_core::DEFAULT_AGENTS_MD_FILENAME;
-use crate::legacy_core::DEFAULT_PROJECT_DOC_FILENAME;
 use crate::legacy_core::config::Config;
 use crate::legacy_core::config::Constrained;
 use crate::legacy_core::config::ConstraintResult;
+use crate::legacy_core::config::types::WeeklyLimitPacingStyle;
 use crate::legacy_core::config_loader::ConfigLayerStackOrdering;
 use crate::legacy_core::find_thread_name_by_id;
 use crate::legacy_core::plugins::PluginsManager;
@@ -114,6 +114,7 @@ use codex_git_utils::current_branch_name;
 use codex_git_utils::get_git_repo_root;
 use codex_git_utils::local_git_branches;
 use codex_git_utils::recent_commits;
+use codex_login::auth;
 use codex_otel::RuntimeMetricsSummary;
 use codex_otel::SessionTelemetry;
 use codex_protocol::ThreadId;
@@ -127,7 +128,6 @@ use codex_protocol::config_types::ModeKind;
 use codex_protocol::config_types::Personality;
 use codex_protocol::config_types::ServiceTier;
 use codex_protocol::config_types::Settings;
-use codex_protocol::config_types::WeeklyLimitPacingStyle;
 #[cfg(target_os = "windows")]
 use codex_protocol::config_types::WindowsSandboxLevel;
 use codex_protocol::items::AgentMessageContent;
@@ -5503,10 +5503,10 @@ impl ChatWidget {
                 self.app_event_tx.send(AppEvent::ForkCurrentSession);
             }
             SlashCommand::Init => {
-                let init_target = self.config.cwd.join(DEFAULT_PROJECT_DOC_FILENAME);
+                let init_target = self.config.cwd.join(DEFAULT_AGENTS_MD_FILENAME);
                 if init_target.exists() {
                     let message = format!(
-                        "{DEFAULT_PROJECT_DOC_FILENAME} already exists here. Skipping /init to avoid overwriting it."
+                        "{DEFAULT_AGENTS_MD_FILENAME} already exists here. Skipping /init to avoid overwriting it."
                     );
                     self.add_info_message(message, /*hint*/ None);
                     return;
@@ -5659,7 +5659,7 @@ impl ChatWidget {
                 self.request_quit_without_confirmation();
             }
             SlashCommand::Logout => {
-                if let Err(e) = crate::legacy_core::auth::logout(
+                if let Err(e) = auth::logout(
                     &self.config.codex_home,
                     self.config.cli_auth_credentials_store_mode,
                 ) {

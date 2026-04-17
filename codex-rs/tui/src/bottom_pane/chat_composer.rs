@@ -198,6 +198,8 @@ use crate::bottom_pane::textarea::TextAreaState;
 use crate::clipboard_paste::normalize_pasted_path;
 use crate::clipboard_paste::pasted_image_format;
 use crate::history_cell;
+use crate::legacy_core::plugins::PluginCapabilitySummary;
+use crate::legacy_core::skills::model::SkillMetadata;
 use crate::tui::FrameRequester;
 use crate::ui_consts::LIVE_PREFIX_COLS;
 use codex_app_server_protocol::AppInfo;
