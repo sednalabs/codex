@@ -1521,7 +1521,6 @@ dependencies = [
  "codex-core",
  "codex-exec-server",
  "codex-feedback",
- "codex-mcp",
  "codex-protocol",
  "codex-utils-rustls-provider",
  "futures",
