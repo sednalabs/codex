@@ -40,7 +40,7 @@ on:
   workflow_dispatch:
     inputs:
       ref:
-        description: Branch, tag, or commit to validate
+        description: Branch or tag to validate; this value is passed directly to actions/checkout for the validation-target checkout, so SHA pinning belongs in the dispatch/watch layer instead
         required: false
         type: string
       profile:
@@ -172,6 +172,9 @@ jobs:
         uses: actions/checkout@v6
         with:
           fetch-depth: 0
+          # This input is consumed by actions/checkout as a branch-or-tag selector.
+          # If you need exact-SHA pinning for workflow_dispatch, pin the host run via
+          # the dispatcher/watcher layer and pass the branch name here so checkout resolves.
           ref: ${{ inputs.ref || github.sha }}
           path: validation-target
 
