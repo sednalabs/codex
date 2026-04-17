@@ -2646,7 +2646,7 @@ impl Session {
         let event = EventMsg::TokenCount(TokenCountEvent {
             info,
             rate_limits,
-            provider: Some(turn_context.provider.name.clone()),
+            provider: Some(turn_context.config.model_provider_id.clone()),
             model_used: Some(turn_context.model_info.slug.clone()),
         });
         self.send_event(turn_context, event).await;

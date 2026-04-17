@@ -337,7 +337,10 @@ mod reload {
             config.codex_home.clone(),
             config_layer_stack,
         )
-        .await?;
+        .await
+        .map_err(|err| {
+            format!("failed to apply merged config for agent type '{role_name}': {err}")
+        })?;
         if preservation_policy.preserve_current_profile {
             next_config.active_profile = config.active_profile.clone();
         }
@@ -488,7 +491,8 @@ pub(crate) async fn apply_role_to_config(
     let role_reload_model_selection =
         SpawnModelSelectionCarry::from_role_reload(config, &role_config, &role_layer_toml);
     let preservation_policy = RolePreservationPolicy::from_config(config, &role_layer_toml);
-    *config = reload::build_next_config(config, role_name, role_layer_toml, &preservation_policy)?;
+    *config =
+        reload::build_next_config(config, role_name, role_layer_toml, &preservation_policy).await?;
     role_reload_model_selection.apply_to_config(config);
 
     Ok(())
@@ -513,7 +517,9 @@ pub(crate) async fn apply_role_to_spawn_config(
     let spawn_model_selection_carry =
         SpawnModelSelectionCarry::from_spawn_config(config, &role_config, &role_layer_toml);
     let preservation_policy = RolePreservationPolicy::from_config(config, &role_layer_toml);
-    *config = reload::build_next_config(config, role_name, role_layer_toml, &preservation_policy)?;
+    *config =
+        reload::build_next_config(config, role_name, role_layer_toml, &preservation_policy)
+            .await?;
     role_reload_model_selection.apply_to_config(config);
 
     Ok(spawn_model_selection_carry)
