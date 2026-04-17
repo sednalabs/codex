@@ -6763,7 +6763,10 @@ mod tests {
     use tempfile::tempdir;
     use tokio::time;
 
-    fn ignore_same_thread_resume(app: &mut App, target: &crate::resume_picker::SessionTarget) -> bool {
+    fn ignore_same_thread_resume(
+        app: &mut App,
+        target: &crate::resume_picker::SessionTarget,
+    ) -> bool {
         if app.active_thread_id == Some(target.thread_id) {
             app.chat_widget.add_info_message(
                 format!("Already viewing {}.", target.display_label()),
@@ -6976,10 +6979,13 @@ mod tests {
         app.activate_thread_channel(thread_id).await;
         while app_event_rx.try_recv().is_ok() {}
 
-        let ignored = ignore_same_thread_resume(&mut app, &crate::resume_picker::SessionTarget {
-            path: Some(test_path_buf("/tmp/project")),
-            thread_id,
-        });
+        let ignored = ignore_same_thread_resume(
+            &mut app,
+            &crate::resume_picker::SessionTarget {
+                path: Some(test_path_buf("/tmp/project")),
+                thread_id,
+            },
+        );
 
         assert!(ignored);
         let cell = match app_event_rx.try_recv() {
@@ -7000,10 +7006,13 @@ mod tests {
         let session = test_thread_session(thread_id, test_path_buf("/tmp/project"));
         app.chat_widget.handle_thread_session(session);
 
-        let ignored = ignore_same_thread_resume(&mut app, &crate::resume_picker::SessionTarget {
-            path: Some(test_path_buf("/tmp/project")),
-            thread_id,
-        });
+        let ignored = ignore_same_thread_resume(
+            &mut app,
+            &crate::resume_picker::SessionTarget {
+                path: Some(test_path_buf("/tmp/project")),
+                thread_id,
+            },
+        );
 
         assert!(!ignored);
         assert!(app.transcript_cells.is_empty());
