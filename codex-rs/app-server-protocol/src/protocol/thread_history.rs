@@ -67,6 +67,8 @@ use crate::protocol::v2::PatchApplyStatus;
 #[cfg(test)]
 use crate::protocol::v2::PatchChangeKind;
 #[cfg(test)]
+use codex_protocol::mcp::CallToolResult;
+#[cfg(test)]
 use codex_protocol::protocol::ExecCommandStatus as CoreExecCommandStatus;
 #[cfg(test)]
 use codex_protocol::protocol::PatchApplyStatus as CorePatchApplyStatus;
@@ -537,7 +539,6 @@ impl ThreadHistoryBuilder {
                 Some(Box::new(McpToolCallResult {
                     content: value.content.clone(),
                     structured_content: value.structured_content.clone(),
-                    meta: value.meta.clone(),
                 })),
                 None,
             ),
@@ -1934,9 +1935,6 @@ mod tests {
                         "text": "result"
                     })],
                     structured_content: Some(serde_json::json!({"id":"123"})),
-                    meta: Some(serde_json::json!({
-                        "ui/resourceUri": "ui://widget/lookup.html"
-                    })),
                 })),
                 error: None,
                 duration_ms: Some(8),

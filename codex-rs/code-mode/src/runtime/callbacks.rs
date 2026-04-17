@@ -50,7 +50,7 @@ pub(super) fn tool_callback(
         let Some(tool_name) = state
             .enabled_tools
             .get(tool_index)
-            .map(|tool| tool.tool_name.clone())
+            .map(|tool| tool.call_name.clone())
         else {
             throw_type_error(scope, "tool callback data is out of range");
             return;

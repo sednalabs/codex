@@ -148,6 +148,7 @@ fn empty_namespace_descriptions() -> BTreeMap<String, codex_code_mode::ToolNames
 fn update_plan_definition() -> codex_code_mode::ToolDefinition {
     codex_code_mode::ToolDefinition {
         name: "update_plan".to_string(),
+        tool_name: ToolName::plain("update_plan"),
         all_tools_name: None,
         all_tools_module: None,
         description: "Update the plan".to_string(),
@@ -387,12 +388,24 @@ fn tool_spec_to_code_mode_tool_definition_returns_augmented_nested_tools() {
         },
     });
 
-    assert_eq!(
-        tool_spec_to_code_mode_tool_definition(&spec),
-        Some(codex_code_mode::ToolDefinition {
-            name: "apply_patch".to_string(),
-            tool_name: ToolName::plain("apply_patch"),
-            description: r#"Apply a patch
+    let definition = tool_spec_to_code_mode_tool_definition(&spec)
+        .expect("tool should be converted to code-mode tool definition");
+    assert_eq!(definition.name, "apply_patch");
+    assert_eq!(definition.tool_name, ToolName::plain("apply_patch"));
+    assert_eq!(definition.all_tools_name, None);
+    assert_eq!(definition.all_tools_module, None);
+    assert_eq!(definition.kind, codex_code_mode::CodeModeToolKind::Freeform);
+    assert_eq!(definition.input_schema, None);
+    assert_eq!(definition.output_schema, None);
+    assert_code_mode_description(
+        &definition.description,
+        "Apply a patch",
+        "apply_patch",
+        "input",
+        &["string"],
+        &["unknown"],
+    );
+}
 
 #[test]
 fn tool_spec_to_code_mode_tool_definition_preserves_mcp_module_metadata() {
@@ -421,6 +434,7 @@ fn tool_spec_to_code_mode_tool_definition_preserves_mcp_module_metadata() {
     let definition = tool_spec_to_code_mode_tool_definition(&spec)
         .expect("tool should be converted to code-mode tool definition");
     assert_eq!(definition.name, "mcp__rmcp__echo");
+    assert_eq!(definition.tool_name, ToolName::plain("mcp__rmcp__echo"));
     assert_eq!(definition.all_tools_name, Some("echo".to_string()));
     assert_eq!(
         definition.all_tools_module,
@@ -526,6 +540,8 @@ fn create_code_mode_tool_matches_expected_spec() {
     let enabled_tools = vec![codex_code_mode::ToolDefinition {
         name: "update_plan".to_string(),
         tool_name: ToolName::plain("update_plan"),
+        all_tools_name: None,
+        all_tools_module: None,
         description: "Update the plan".to_string(),
         kind: codex_code_mode::CodeModeToolKind::Function,
         input_schema: None,
