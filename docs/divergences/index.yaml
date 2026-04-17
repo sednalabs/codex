@@ -409,7 +409,7 @@
     {
       "id": "code-mode-declaration-formatting",
       "title": "Code-mode declaration formatting",
-      "status": "live",
+      "status": "upstream-equivalent",
       "category": "core-protocol",
       "surface": [
         "code-mode declaration",
@@ -480,7 +480,10 @@
         ".github/actions/",
         ".github/scripts/",
         ".github/validation-lanes.json",
-        ".github/workflows/"
+        ".github/workflows/",
+        "scripts/dispatch-frontier-max-wave.sh",
+        "scripts/dispatch-validation-lab-snapshot.sh",
+        "scripts/start-codex-exec.sh"
       ],
       "behavior": "Downstream runs bespoke validation lanes, Sedna sync/heavy workflows, and tooling scripts so the CI surface can keep pace with the fork.",
       "upstream_equivalent": false,
@@ -540,7 +543,7 @@
         "codex-rs/tui/tests/",
         "codex-rs/tui/src/snapshots/"
       ],
-      "behavior": "Downstream’s TUI layers enforce the queue, usage, and session-state surfaces that are unique to this fork.",
+      "behavior": "Downstream\u2019s TUI layers enforce the queue, usage, and session-state surfaces that are unique to this fork.",
       "upstream_equivalent": false,
       "introduced_in": {
         "carry_commit": null,
@@ -552,7 +555,7 @@
         "multi-agent interaction integration tests"
       ],
       "owner": "downstream",
-      "notes": "Keeps the fork’s interactive surfaces deterministic."
+      "notes": "Keeps the fork\u2019s interactive surfaces deterministic."
     },
     {
       "id": "codex-core-and-ops-extensions",
@@ -600,7 +603,18 @@
         "codex-rs/state/",
         "codex-rs/terminal-detection/",
         "codex-rs/tools/",
-        "codex-rs/windows-sandbox-rs/"
+        "codex-rs/windows-sandbox-rs/",
+        "codex-rs/apply-patch/",
+        "codex-rs/connectors/",
+        "codex-rs/core-plugins/",
+        "codex-rs/debug-client/",
+        "codex-rs/git-utils/",
+        "codex-rs/hooks/",
+        "codex-rs/install-context/",
+        "codex-rs/model-provider/",
+        "codex-rs/plugin/",
+        "codex-rs/thread-store/",
+        "codex-rs/tui/Cargo.toml"
       ],
       "behavior": "Telemetry, CLI, config, and MCP extensions keep downstream tooling aligned with fork-specific policies and usage telemetry.",
       "upstream_equivalent": false,
@@ -633,7 +647,9 @@
         "shell-tool-mcp/tests/",
         "shell-tool-mcp/patches/",
         "shell-tool-mcp/tsconfig.json",
-        "shell-tool-mcp/tsup.config.ts"
+        "shell-tool-mcp/tsup.config.ts",
+        "shell-tool-mcp/.gitignore",
+        "shell-tool-mcp/jest.config.cjs"
       ],
       "behavior": "Downstream publishes a shell helper package that standardizes shell selection, platform detection, and exec wrappers for MCP tooling.",
       "upstream_equivalent": false,
@@ -651,7 +667,7 @@
     {
       "id": "downstream-documents-and-guides",
       "title": "Downstream documents and guides",
-      "status": "live",
+      "status": "upstream-equivalent",
       "category": "docs-only",
       "surface_type": "operator-facing",
       "surface": [
@@ -698,9 +714,17 @@
         "scripts/list-bazel-clippy-targets.sh",
         "patches/",
         "sdk/typescript/src/events.ts",
-        "sdk/typescript/tests/exec.test.ts"
+        "sdk/typescript/tests/exec.test.ts",
+        "announcement_tip.toml",
+        "codex-rs/.cargo/",
+        "codex-rs/.config/",
+        "codex-rs/Cargo.toml",
+        "codex-rs/Cargo.lock",
+        "codex-rs/deny.toml",
+        "tools/argument-comment-lint/Cargo.lock",
+        "codex-rs/skills/src/assets/samples/skill-creator/scripts/init_skill.py"
       ],
-      "behavior": "Downstream keeps patched build, packaging, and install scripts along with configuration files tailored to the fork’s CI and release policy.",
+      "behavior": "Downstream keeps patched build, packaging, and install scripts along with configuration files tailored to the fork\u2019s CI and release policy.",
       "upstream_equivalent": false,
       "introduced_in": {
         "carry_commit": null,

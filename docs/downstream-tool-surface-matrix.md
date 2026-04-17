@@ -7,14 +7,14 @@ It intentionally excludes session-only developer wrappers such as
 `multi_tool_use.parallel`; those are runtime conveniences, not fork
 divergences.
 
-Last reviewed: `2026-03-21`
+Last reviewed: `2026-04-17`
 
 Review baseline:
 
-- `upstream/main`: `e5f4d1fef59a3309339394575052c7cc1fff0996`
-- `carry/main`: `5d474e652d91c7f371a28ad2069cc51a1c5b9ee8`
+- `upstream/main`: `fe7c959e90d46abb8311e4a0b369e6cb32bf337e`
+- `main` (`origin/main`): `88b12a0e145af4533b58cf1a8b67369795eb7786`
 
-| Surface | `upstream/main` | `carry/main` | Live divergence? | Guardrails |
+| Surface | `upstream/main` | `main` | Live divergence? | Guardrails |
 | --- | --- | --- | --- | --- |
 | `exec_command` | PTY execution plus `cmd`, `workdir`, `shell`, `tty`, `yield_time_ms`, `max_output_tokens`, `login`, and approval parameters | Upstream fields plus `wait_until_terminal`, `max_wait_ms`, and `heartbeat_interval_ms` | yes | `exec_command_wait_until_terminal_returns_exit_metadata`; `exec_command_tool_exposes_blocking_wait_parameters` |
 | `write_stdin` | `session_id`, `chars`, `yield_time_ms`, `max_output_tokens` | Upstream fields plus `wait_until_terminal`, `max_wait_ms`, and `heartbeat_interval_ms`; empty `chars` can be used with `wait_until_terminal` | yes | `write_stdin_tool_exposes_blocking_wait_parameters` |
@@ -28,7 +28,7 @@ Review baseline:
 
 Notes:
 
-- `carry/main` keeps the higher-signal operator surfaces where the tool contract
+- `main` keeps the higher-signal operator surfaces where the tool contract
   absorbs waiting or inventory inspection instead of forcing transcript polling.
 - The `spawn_agent` divergence is narrower than the historical carry commit
   titles suggest: upstream already absorbed the base override capability, while

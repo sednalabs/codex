@@ -35,13 +35,13 @@ Keep the existing docs, but narrow their responsibilities:
 - `docs/downstream-regression-matrix.md`
   - generated guardrail view of divergence-to-test-lane mapping
 
-Add one future canonical registry:
+Use the canonical registry:
 
 - `docs/divergences/index.yaml`
 
 ## What Should Be Generated
 
-- `carry/main` vs `upstream/main` counts and current SHAs
+- `main` vs `upstream/main` counts and current SHAs
 - current live divergence list
 - changed-file inventory per divergence
 - upstream-equivalent carry matches
@@ -128,9 +128,9 @@ If a divergence does not fit one of those, the taxonomy needs tightening.
 
 The registry should be reconciled against live git state:
 
-- `git rev-list --left-right --count upstream/main...carry/main`
-- `git diff upstream/main...carry/main --name-only`
-- `git log --left-right --cherry-pick --oneline upstream/main...carry/main`
+- `git rev-list --left-right --count upstream/main...main`
+- `git diff upstream/main...main --name-only`
+- `git log --left-right --cherry-pick --oneline upstream/main...main`
 
 Where useful, generator code can also read local helper preset metadata,
 but the tracked docs should not depend on a committed preset file being present
@@ -151,7 +151,7 @@ The `sedna-sync-upstream` job fast-forwards `origin/upstream-main`, which contai
 
 ## Phased Adoption
 
-Phase 1:
+Phase 1 (implemented):
 
 - keep the current manual docs current
 - use `docs/downstream-tool-surface-matrix.md` for high-signal field-level
@@ -159,15 +159,15 @@ Phase 1:
 - use `scripts/downstream-divergence-audit.py` and `docs/divergences/index.yaml`
   for the authoritative audit path
 
-Phase 2:
+Phase 2 (implemented):
 
-- introduce `docs/divergences/index.yaml`
-- make it the canonical divergence registry
+- `docs/divergences/index.yaml` is the canonical divergence registry
 
-Phase 3:
+Phase 3 (in progress):
 
 - generate `docs/carry-divergence-ledger.md`
 - generate `docs/downstream-regression-matrix.md`
 - add CI drift checks
 
-Until phase 2 lands, the current manual docs remain canonical.
+Manual docs remain the narrative layer; the registry plus audit runner are the
+authoritative live-state ledger.
