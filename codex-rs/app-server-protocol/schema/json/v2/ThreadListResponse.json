@@ -1842,6 +1842,13 @@
   },
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "properties": {
+    "backwardsCursor": {
+      "description": "Opaque cursor to pass as `cursor` when reversing `sortDirection`.\nThis is only populated when the page contains at least one thread.\nUse it with the opposite `sortDirection`; for timestamp sorts it anchors\nat the start of the page timestamp so same-second updates are not skipped.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
     "data": {
       "items": {
         "$ref": "#/$defs/Thread"

@@ -234,6 +234,7 @@ async fn rate_limit_snapshot_keeps_prior_credits_when_missing_from_headers() {
             balance: Some("17.5".to_string()),
         }),
         plan_type: None,
+        rate_limit_reached_type: None,
     }));
     let initial_balance = chat
         .rate_limit_snapshots_by_limit_id
@@ -253,6 +254,7 @@ async fn rate_limit_snapshot_keeps_prior_credits_when_missing_from_headers() {
         secondary: None,
         credits: None,
         plan_type: None,
+        rate_limit_reached_type: None,
     }));
 
     let display = chat
@@ -291,6 +293,7 @@ async fn rate_limit_snapshot_updates_and_retains_plan_type() {
         }),
         credits: None,
         plan_type: Some(PlanType::Plus),
+        rate_limit_reached_type: None,
     }));
     assert_eq!(chat.plan_type, Some(PlanType::Plus));
 
@@ -309,6 +312,7 @@ async fn rate_limit_snapshot_updates_and_retains_plan_type() {
         }),
         credits: None,
         plan_type: Some(PlanType::Pro),
+        rate_limit_reached_type: None,
     }));
     assert_eq!(chat.plan_type, Some(PlanType::Pro));
 
@@ -327,6 +331,7 @@ async fn rate_limit_snapshot_updates_and_retains_plan_type() {
         }),
         credits: None,
         plan_type: None,
+        rate_limit_reached_type: None,
     }));
     assert_eq!(chat.plan_type, Some(PlanType::Pro));
 }
@@ -350,6 +355,7 @@ async fn rate_limit_snapshots_keep_separate_entries_per_limit_id() {
             balance: Some("5.00".to_string()),
         }),
         plan_type: Some(PlanType::Pro),
+        rate_limit_reached_type: None,
     }));
 
     chat.on_rate_limit_snapshot(Some(RateLimitSnapshot {
@@ -363,6 +369,7 @@ async fn rate_limit_snapshots_keep_separate_entries_per_limit_id() {
         secondary: None,
         credits: None,
         plan_type: Some(PlanType::Pro),
+        rate_limit_reached_type: None,
     }));
 
     let codex = chat
@@ -415,6 +422,7 @@ async fn rate_limit_switch_prompt_skips_non_codex_limit() {
         secondary: None,
         credits: None,
         plan_type: None,
+        rate_limit_reached_type: None,
     }));
 
     assert!(matches!(

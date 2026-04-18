@@ -36,14 +36,15 @@ Accept any of the following:
 4. If `diagnose_ci_failure` is present, inspect failed run logs and classify the failure.
 5. If the failure is likely caused by the current branch, patch code locally, commit, and push.
 6. If `process_review_comment` is present, inspect surfaced review items and decide whether to address them.
-7. If a review item is actionable and correct, patch code locally, commit, and push.
-8. If the failure is likely flaky/unrelated and `retry_failed_checks` is present, rerun failed jobs with `--retry-failed-now`.
-9. If both actionable review feedback and `retry_failed_checks` are present, prioritize review feedback first; a new commit will retrigger CI, so avoid rerunning flaky checks on the old SHA unless you intentionally defer the review change.
-10. On every loop, verify mergeability / merge-conflict status (for example via `gh pr view`) in addition to CI and review state.
-11. After any push or rerun action, immediately return to step 1 and continue polling on the updated SHA/state.
-12. If you had been using a watcher mode before pausing to patch/commit/push, relaunch the same monitoring mode yourself in the same turn immediately after the push (do not wait for the user to re-invoke the skill).
-13. Repeat polling until the PR is green + review-clean + mergeable, `stop_pr_closed` appears, or a user-help-required blocker is reached.
-14. Maintain terminal/session ownership: while babysitting is active, keep consuming watcher output in the same turn; do not leave a detached watcher process running and then end the turn as if monitoring were complete. When the lane is using a blocking terminal wait, prefer `--watch-until-action` so the process exits on actionable or terminal state instead of streaming forever.
+7. If a review item is actionable and correct, patch code locally, commit, push, and then mark the associated review thread/comment as resolved once the fix is on GitHub.
+8. If a review item from another author is non-actionable, already addressed, or not valid, post one reply on the comment/thread explaining that decision (for example answering the question or explaining why no change is needed). Prefix the GitHub reply body with `[codex]` so it is clear the response is automated. If the watcher later surfaces your own reply, treat that self-authored item as already handled and do not reply again.
+9. If the failure is likely flaky/unrelated and `retry_failed_checks` is present, rerun failed jobs with `--retry-failed-now`.
+10. If both actionable review feedback and `retry_failed_checks` are present, prioritize review feedback first; a new commit will retrigger CI, so avoid rerunning flaky checks on the old SHA unless you intentionally defer the review change.
+11. On every loop, look for newly surfaced review feedback before acting on CI failures or mergeability state, then verify mergeability / merge-conflict status (for example via `gh pr view`) alongside CI.
+12. After any push or rerun action, immediately return to step 1 and continue polling on the updated SHA/state.
+13. If you had been using `--watch` or `--watch-until-action` before pausing to patch/commit/push, relaunch that same monitoring mode yourself in the same turn immediately after the push (do not wait for the user to re-invoke the skill).
+14. Repeat polling until the watcher reaches a terminal stop condition such as `stop_ready_to_merge`, `stop_pr_closed`, or a user-help-required blocker. A green + review-clean + mergeable PR is only a stopping point when the chosen watcher mode treats it as actionable.
+15. Maintain terminal/session ownership: while babysitting is active, keep consuming watcher output in the same turn; do not leave a detached watcher process running and then end the turn as if monitoring were complete. When the lane is using a blocking terminal wait, prefer `--watch-until-action` so the process exits on actionable or terminal state instead of streaming forever.
 
 ## Commands
 
@@ -116,7 +117,7 @@ When you agree with a comment and it is actionable:
 4. Resume watching on the new SHA immediately (do not stop after reporting the push).
 5. If monitoring was running in `--watch` or `--watch-until-action` mode, restart that watcher mode immediately after the push in the same turn; do not wait for the user to ask again.
 
-If you disagree or the comment is non-actionable/already addressed, record it as handled by continuing the watcher loop (the script de-duplicates surfaced items via state after surfacing them).
+If you disagree or the comment is non-actionable/already addressed, reply once directly on the GitHub comment/thread so the reviewer gets an explicit answer, then continue the watcher loop. Prefix any GitHub reply to a code review comment/thread with `[codex]` so it is clear the response is automated and not from the human user. If the watcher later surfaces your own reply because the authenticated operator is treated as a trusted review author, treat that self-authored item as already handled and do not reply again.
 If a code review comment/thread is already marked as resolved in GitHub, treat it as non-actionable and safely ignore it unless new unresolved follow-up feedback appears.
 `--watch-until-action` should verify the live unresolved-thread state before stopping on review feedback: open unresolved review threads remain actionable, but stale already-resolved review history should not trigger `action_required`.
 If the operator knows a particular unresolved thread should be ignored for this babysitting run, pass `--ignore-review-thread <thread-url-or-id>` and keep that ignore list stable across restarts of the same watcher lane.
