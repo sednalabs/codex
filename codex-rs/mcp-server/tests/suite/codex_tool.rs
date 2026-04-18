@@ -37,7 +37,7 @@ const DEFAULT_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs
 /// elicitation request to the MCP and that sending the approval runs the
 /// command, as expected.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn test_shell_command_approval_triggers_elicitation() {
+async fn shell_command_approval_emits_task_complete_before_tool_response() {
     if env::var(CODEX_SANDBOX_NETWORK_DISABLED_ENV_VAR).is_ok() {
         println!(
             "Skipping test because it cannot execute when network is disabled in a Codex sandbox."

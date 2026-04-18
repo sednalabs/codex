@@ -180,6 +180,14 @@
       "frontier_lane_sets": ["subagents", "core-carry"]
     },
     {
+      "lane_id": "codex.blocking-waits-targeted",
+      "run_command": "just --justfile ../justfile blocking-waits-targeted",
+      "groups": ["core", "ui_protocol"],
+      "lane_sets": ["all", "subagents", "ui-protocol", "core-carry"],
+      "frontier_default": true,
+      "frontier_lane_sets": ["subagents", "ui-protocol", "core-carry"]
+    },
+    {
       "lane_id": "codex.core-subagent-model-pinning-targeted",
       "run_command": "just --justfile ../justfile core-subagent-model-pinning-targeted",
       "groups": ["core"],
@@ -404,6 +412,34 @@
         "codex-rs/tools/src/spawn_agent.rs",
         "docs/downstream-regression-matrix.md",
         "justfile"
+      ]
+    },
+    {
+      "route_id": "blocking-waits",
+      "lane_ids": ["codex.blocking-waits-targeted"],
+      "allowed_paths": [
+        "codex-rs/core/tests/suite/unified_exec.rs",
+        "codex-rs/core/src/tools/handlers/unified_exec.rs",
+        "codex-rs/core/src/tools/handlers/multi_agents/wait.rs",
+        "codex-rs/core/src/tools/handlers/multi_agents_tests.rs",
+        "codex-rs/tools/src/local_tool_tests.rs",
+        "codex-rs/app-server/tests/common/responses.rs",
+        "codex-rs/app-server/tests/suite/v2/turn_start.rs",
+        "codex-rs/mcp-server/tests/suite/codex_tool.rs",
+        "docs/downstream-regression-matrix.md",
+        "docs/downstream-divergence-tracking.md",
+        "docs/divergences/index.yaml",
+        "justfile"
+      ],
+      "required_any_paths": [
+        "codex-rs/core/tests/suite/unified_exec.rs",
+        "codex-rs/core/src/tools/handlers/unified_exec.rs",
+        "codex-rs/core/src/tools/handlers/multi_agents/wait.rs",
+        "codex-rs/core/src/tools/handlers/multi_agents_tests.rs",
+        "codex-rs/tools/src/local_tool_tests.rs",
+        "codex-rs/app-server/tests/common/responses.rs",
+        "codex-rs/app-server/tests/suite/v2/turn_start.rs",
+        "codex-rs/mcp-server/tests/suite/codex_tool.rs"
       ]
     },
     {
