@@ -184,6 +184,7 @@
       "run_command": "just --justfile ../justfile blocking-waits-targeted",
       "groups": ["core", "ui_protocol"],
       "lane_sets": ["all", "subagents", "ui-protocol", "core-carry"],
+      "install_nextest": true,
       "frontier_default": true,
       "frontier_lane_sets": ["subagents", "ui-protocol", "core-carry"]
     },

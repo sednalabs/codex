@@ -502,10 +502,10 @@ class ValidationPlanScriptTests(unittest.TestCase):
         self.assertIn("codex.spawn-agent-description-model-surface-targeted", selected_lane_ids)
         self.assertNotIn("codex.tui-agent-picker-model-surface-targeted", selected_lane_ids)
         self.assertEqual(payload["selected_light_lane_count"], 5)
-        self.assertEqual(payload["selected_rust_lane_count"], 23)
-        self.assertEqual(payload["selected_heavy_lane_count"], 6)
-        self.assertEqual(payload["rust_max_parallel"], "23")
-        self.assertEqual(payload["heavy_max_parallel"], "6")
+        self.assertEqual(payload["selected_rust_lane_count"], 22)
+        self.assertEqual(payload["selected_heavy_lane_count"], 7)
+        self.assertEqual(payload["rust_max_parallel"], "22")
+        self.assertEqual(payload["heavy_max_parallel"], "7")
 
     def test_validation_lab_frontier_all_can_include_explicit_only_lanes(self) -> None:
         payload = run_script(
@@ -527,10 +527,10 @@ class ValidationPlanScriptTests(unittest.TestCase):
         self.assertIn("codex.tui-agent-picker-model-surface-targeted", selected_lane_ids)
         self.assertIn("downstream-ledger-seam", selected_lane_ids)
         self.assertEqual(payload["selected_light_lane_count"], 5)
-        self.assertEqual(payload["selected_rust_lane_count"], 25)
-        self.assertEqual(payload["selected_heavy_lane_count"], 6)
-        self.assertEqual(payload["rust_max_parallel"], "25")
-        self.assertEqual(payload["heavy_max_parallel"], "6")
+        self.assertEqual(payload["selected_rust_lane_count"], 24)
+        self.assertEqual(payload["selected_heavy_lane_count"], 7)
+        self.assertEqual(payload["rust_max_parallel"], "24")
+        self.assertEqual(payload["heavy_max_parallel"], "7")
 
     def test_validation_lab_frontier_all_excludes_smoke_gate_lanes_by_metadata(self) -> None:
         catalog = {
@@ -594,8 +594,8 @@ class ValidationPlanScriptTests(unittest.TestCase):
         self.assertEqual(payload["matrix_fail_fast"], "false")
         self.assertEqual(payload["continue_after_smoke_failure"], "true")
         self.assertEqual(payload["light_max_parallel"], "5")
-        self.assertEqual(payload["rust_max_parallel"], "25")
-        self.assertEqual(payload["heavy_max_parallel"], "11")
+        self.assertEqual(payload["rust_max_parallel"], "24")
+        self.assertEqual(payload["heavy_max_parallel"], "12")
         planned_lane_ids = [lane["lane_id"] for lane in payload["planned_matrix"]["include"]]
         selected_lane_ids = payload["selected_lane_ids"]
         self.assertEqual(
