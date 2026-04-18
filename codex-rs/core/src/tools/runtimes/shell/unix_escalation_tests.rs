@@ -26,7 +26,7 @@ use codex_protocol::permissions::FileSystemSpecialPath;
 use codex_protocol::permissions::NetworkSandboxPolicy;
 use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::GranularApprovalConfig;
-use codex_protocol::protocol::GuardianCommandSource;
+use codex_protocol::approvals::GuardianCommandSource;
 use codex_protocol::protocol::ReadOnlyAccess;
 use codex_protocol::protocol::SandboxPolicy;
 use codex_sandboxing::SandboxType;

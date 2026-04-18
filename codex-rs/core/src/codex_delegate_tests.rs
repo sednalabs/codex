@@ -114,7 +114,7 @@ async fn forward_events_forwards_token_count() {
     let (tx_events, rx_events) = bounded(1);
     let (tx_sub, _rx_sub) = bounded(SUBMISSION_CHANNEL_CAPACITY);
     let (_agent_status_tx, agent_status) = watch::channel(AgentStatus::PendingInit);
-    let (session, ctx, _rx_evt) = crate::codex::make_session_and_context_with_rx().await;
+    let (session, ctx, _rx_evt) = crate::session::tests::make_session_and_context_with_rx().await;
     let codex = Arc::new(Codex {
         tx_sub,
         rx_event: rx_events,
