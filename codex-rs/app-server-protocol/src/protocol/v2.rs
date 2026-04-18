@@ -6689,6 +6689,16 @@ pub struct DeprecationNoticeNotification {
     pub details: Option<String>,
 }
 
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct WarningNotification {
+    /// Optional thread target when the warning applies to a specific thread.
+    pub thread_id: Option<String>,
+    /// Concise warning message for the user.
+    pub message: String,
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export_to = "v2/")]

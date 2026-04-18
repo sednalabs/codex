@@ -4314,6 +4314,7 @@ impl CodexMessageProcessor {
                 thread_id,
                 thread: codex_thread,
                 session_configured,
+                ..
             }) => {
                 let SessionConfiguredEvent { rollout_path, .. } = session_configured;
                 let Some(rollout_path) = rollout_path else {
