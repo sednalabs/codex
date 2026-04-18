@@ -1,7 +1,7 @@
 use super::*;
 use crate::agent::agent_resolver::resolve_agent_targets;
 use crate::agent::status::is_final;
-use crate::codex::Session;
+use crate::session::session::Session;
 use codex_protocol::ThreadId;
 use codex_protocol::error::CodexErr;
 use codex_protocol::protocol::CollabAgentRef;

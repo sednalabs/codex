@@ -1035,7 +1035,8 @@ async fn responses_websocket_usage_limit_error_emits_rate_limit_event() {
                     "resets_at": null
                 },
                 "credits": null,
-                "plan_type": null
+                "plan_type": null,
+                "rate_limit_reached_type": null
             }
         })
     );

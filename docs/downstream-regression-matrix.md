@@ -38,6 +38,12 @@ Focused targeted lanes for iterative work on the current carry seams:
 - `codex.core-subagent-notification-contract-targeted`
 - `codex.core-subagent-notification-visibility-targeted`
 - `codex.core-multi-agent-orchestration-targeted`
+- `codex.blocking-waits-targeted`
+- `codex.custom-prompts-targeted`
+- `codex.mcp-safety-targeted`
+- `codex.agent-workflow-sanity`
+- `codex.shell-tool-mcp-ci`
+- `codex.build-policy-sanity`
 - `codex.core-subagent-spawn-approval-targeted`
 - `codex.core-persisted-subagent-descendants-targeted`
 - `codex.code-mode-declaration-targeted`
@@ -145,9 +151,14 @@ GitHub Actions lane naming (`.github/workflows/sedna-heavy-tests.yml`):
 | Sub-agent inventory + blocking join surface | `codex.core-multi-agent-orchestration-targeted` | `multi_agent_v2_list_agents_returns_completed_status_and_last_task_message`; `multi_agent_v2_wait_agent_honors_return_when_all`; `spawn_wait_and_list_agents_tool_descriptions_have_guidance_updates` |
 | Persisted sub-agent descendant status across close + rollout resume | `codex.core-persisted-subagent-descendants-targeted` | `thread_spawn_edges_track_directional_status` |
 | Code-mode declaration formatting + namespaced tool metadata | `codex.code-mode-declaration-targeted` | `augment_tool_spec_for_code_mode_*`; `tool_spec_to_code_mode_tool_definition_*`; `code_mode_declaration_normalization_is_layout_tolerant_and_semantically_strict`; `code_mode_exports_all_tools_metadata_for_builtin_tools`; `code_mode_exports_all_tools_metadata_for_namespaced_mcp_tools` |
-| Unified-exec blocking wait semantics | `core-carry-core-smoke` | `exec_command_wait_until_terminal_returns_exit_metadata`; `exec_command_tool_exposes_blocking_wait_parameters`; `write_stdin_tool_exposes_blocking_wait_parameters` |
-| Turn-complete compaction count metadata | `codex.app-server-protocol-test` | `preserves_compaction_only_turn`; broader `TurnCompleteEvent` shape coverage in `codex-core`, `codex-exec`, and `codex-tui` tests keeps `compaction_events_in_turn` wired through downstream consumers |
-| App-server rollout cwd portability across thread list/read/resume summary surfaces | `codex.app-server-thread-cwd-targeted` | `get_conversation_summary_by_*`; `thread_list_*`; `thread_read_returns_summary_without_turns`; `thread_resume_returns_rollout_history` |
+| Blocking waits across unified exec, agent joins, app-server command execution, and MCP task completion | `core-carry-core-smoke`; `codex.blocking-waits-targeted` | `exec_command_reports_chunk_and_exit_metadata`; `write_stdin_returns_exit_metadata_and_clears_session`; `multi_agent_v2_wait_agent_honors_return_when_all`; `command_execution_completion_precedes_turn_completion_and_preserves_process_id`; `shell_command_approval_emits_task_complete_before_tool_response`; `exec_command_tool_matches_expected_spec`; `write_stdin_tool_matches_expected_spec` |
+| Custom prompt discovery and review prompt flow | `codex.custom-prompts-targeted` | `custom_prompts::tests::*`; `review_popup_custom_prompt_action_sends_event`; `custom_prompt_submit_sends_review_op`; `custom_prompt_enter_empty_does_not_send`; `review_custom_prompt_escape_navigates_back_then_dismisses` |
+| MCP server safety policy extensions and OAuth fallback hardening | `codex.mcp-safety-targeted` | `blocking_replace_mcp_servers_round_trips`; `blocking_replace_mcp_servers_serializes_tool_approval_overrides`; `write_value_supports_custom_mcp_server_default_tool_approval_mode`; `load_oauth_tokens_ignores_empty_fallback_file`; `load_oauth_tokens_auto_ignores_corrupt_fallback_when_keyring_errors` |
+| Agent-workflow helpers for PR babysitting, workflow dispatch/watch loops, and subagent tail inspection | `codex.agent-workflow-sanity` | `python3 -m py_compile` over `gh_pr_watch.py`, `gh_workflow_run_watch.py`, `gh_dispatch_and_watch.py`, and `inspect_subagent_tail.py`; `test_gh_workflow_run_watch.py`; `test_gh_dispatch_and_watch.py`; `inspect_subagent_tail.py --help` |
+| Shell tool MCP helper package CI and packaging sanity | `codex.shell-tool-mcp-ci` | `pnpm --filter @openai/codex-shell-tool-mcp run format`; `pnpm --filter @openai/codex-shell-tool-mcp test`; `pnpm --filter @openai/codex-shell-tool-mcp run build` |
+| Build/config policy scripts and workspace guardrails | `codex.build-policy-sanity` | `bash -n scripts/install/install.sh`; `verify_bazel_clippy_lints.py`; `verify_cargo_workspace_manifests.py`; `py_compile` for `stage_npm_packages.py` and the policy verifier scripts |
+| Turn-complete compaction count metadata | `codex.app-server-protocol-test`; `codex.app-server-thread-cwd-targeted`; `codex.blocking-waits-targeted` | `preserves_compaction_only_turn`; broader `TurnCompleteEvent` shape coverage in `codex-core`, `codex-exec`, and `codex-tui` tests keeps `compaction_events_in_turn` wired through downstream consumers |
+| App-server rollout cwd portability across thread list/read/resume summary surfaces | `codex.app-server-protocol-test`; `codex.app-server-thread-cwd-targeted`; `codex.blocking-waits-targeted` | `get_conversation_summary_by_*`; `thread_list_*`; `thread_read_returns_summary_without_turns`; `thread_resume_returns_rollout_history`; `command_execution_completion_precedes_turn_completion_and_preserves_process_id` |
 | TUI queued slash recall + replay ordering | `core-carry-ui-smoke` | `slash_approvals_enter_queues_while_task_running_and_replays_on_completion`; `alt_up_restores_most_recent_queued_slash_command` |
 | TUI queued follow-up front-insert semantics keep “run next” drafts ahead of append-queued drafts and preserve footer hints/snapshots | `codex.tui-front-queue-submit-targeted` | `ctrl_shift_q_queues_front_when_task_running`; `front_queued_follow_up_runs_before_back_queued_follow_up`; `replayed_turn_complete_submits_restored_front_queued_follow_up_first`; `footer_snapshots`; `footer_collapse_snapshots` |
 | Per-thread approval/sandbox/reviewer overrides survive thread switches (`codex-tui`) | `codex.tui-thread-session-policy-targeted` | `store_active_thread_receiver_persists_per_thread_policy_overrides` |

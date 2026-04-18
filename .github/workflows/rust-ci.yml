@@ -190,6 +190,7 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
       - uses: dtolnay/rust-toolchain@a0b273b48ed29de4470960879e8381ff45632f26 # 1.93.0
         with:
+          toolchain: nightly-2025-09-18
           components: rustfmt
       - name: cargo fmt
         run: cargo fmt -- --config imports_granularity=Item --check
