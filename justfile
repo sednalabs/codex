@@ -190,7 +190,7 @@ blocking-waits-targeted:
 # Focused custom-prompt discovery and review-flow slice.
 custom-prompts-targeted:
     cargo test -p codex-core custom_prompts::tests:: --lib -- --test-threads=1
-    cargo test -p codex-core resolve_review_request_custom_target_ --lib -- --test-threads=1
+    cargo test -p codex-core review_prompts::tests:: --lib -- --test-threads=1
     cargo test -p codex-tui chatwidget::tests::review_mode::review_popup_custom_prompt_action_sends_event --lib -- --exact --test-threads=1
     cargo test -p codex-tui chatwidget::tests::review_mode::custom_prompt_submit_sends_review_op --lib -- --exact --test-threads=1
     cargo test -p codex-tui chatwidget::tests::review_mode::custom_prompt_enter_empty_does_not_send --lib -- --exact --test-threads=1
