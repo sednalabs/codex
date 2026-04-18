@@ -28,6 +28,8 @@ use crate::cwd_prompt::CwdPromptAction;
 use crate::diff_render::DiffSummary;
 use crate::exec_command::split_command_string;
 use crate::exec_command::strip_bash_lc_and_escape;
+use crate::external_agent_config_migration_startup::ExternalAgentConfigMigrationStartupOutcome;
+use crate::external_agent_config_migration_startup::handle_external_agent_config_migration_prompt_if_needed;
 use crate::external_editor;
 use crate::file_search::FileSearchManager;
 use crate::history_cell;
@@ -3861,6 +3863,7 @@ impl App {
         session_selection: SessionSelection,
         feedback: codex_feedback::CodexFeedback,
         is_first_run: bool,
+        entered_trust_nux: bool,
         should_prompt_windows_sandbox_nux_at_startup: bool,
         remote_app_server_url: Option<String>,
         remote_app_server_auth_token: Option<String>,
@@ -3878,6 +3881,38 @@ impl App {
 
         let harness_overrides =
             normalize_harness_overrides_for_cwd(harness_overrides, &config.cwd)?;
+        let external_agent_config_migration_outcome =
+            handle_external_agent_config_migration_prompt_if_needed(
+                tui,
+                &mut app_server,
+                &mut config,
+                &cli_kv_overrides,
+                &harness_overrides,
+                entered_trust_nux,
+            )
+            .await?;
+        let external_agent_config_migration_message = match external_agent_config_migration_outcome
+        {
+            ExternalAgentConfigMigrationStartupOutcome::Continue { success_message } => {
+                success_message
+            }
+            ExternalAgentConfigMigrationStartupOutcome::ExitRequested => {
+                app_server
+                    .shutdown()
+                    .await
+                    .inspect_err(|err| {
+                        tracing::warn!("app-server shutdown failed: {err}");
+                    })
+                    .ok();
+                return Ok(AppExitInfo {
+                    token_usage: TokenUsage::default(),
+                    thread_id: None,
+                    thread_name: None,
+                    update_action: None,
+                    exit_reason: ExitReason::UserRequested,
+                });
+            }
+        };
         let bootstrap = app_server.bootstrap(&config).await?;
         let mut model = bootstrap.default_model;
         let available_models = bootstrap.available_models;
@@ -4048,6 +4083,9 @@ impl App {
                 (ChatWidget::new_with_app_event(init), Some(forked))
             }
         };
+        if let Some(message) = external_agent_config_migration_message {
+            chat_widget.add_info_message(message, /*hint*/ None);
+        }
 
         chat_widget
             .maybe_prompt_windows_sandbox_enable(should_prompt_windows_sandbox_nux_at_startup);
