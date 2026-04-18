@@ -279,6 +279,7 @@ pub(super) async fn make_chatwidget_manual(
         mcp_startup_pending_next_round_saw_starting: false,
         connectors_cache: ConnectorsCacheState::default(),
         connectors_partial_snapshot: None,
+        clipboard_lease: None,
         plugin_install_apps_needing_auth: Vec::new(),
         plugin_install_auth_flow: None,
         plugins_active_tab_id: None,

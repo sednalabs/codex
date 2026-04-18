@@ -827,7 +827,6 @@ async fn status_snapshot_uses_default_reasoning_when_config_empty() {
         &model_slug,
         /*collaboration_mode*/ None,
         /*reasoning_effort_override*/ Some(Some(ReasoningEffort::Medium)),
-        "<none>".to_string(),
         /*refreshing_rate_limits*/ false,
     );
     let mut rendered_lines = render_lines(&composite.display_lines(/*width*/ 80));

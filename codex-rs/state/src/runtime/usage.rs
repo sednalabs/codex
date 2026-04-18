@@ -633,6 +633,7 @@ mod tests {
             }),
             secondary: None,
             credits: None,
+            rate_limit_reached_type: None,
             plan_type: None,
         });
         Event {
