@@ -261,12 +261,18 @@ live divergence.
 
 ### Custom Prompt Discovery And Review Prompt Flow
 
-- Downstream restores first-party custom prompt discovery from
-  `$CODEX_HOME/prompts`, including optional frontmatter metadata for slash-popup
+- Downstream restores a file-backed custom prompt catalogue under
+  `$CODEX_HOME/prompts`, including optional frontmatter metadata for prompt
   descriptions and argument hints.
-- The TUI review flow also keeps the downstream custom-prompt entry point, so
-  users can open a dedicated custom prompt view from the review popup and
-  submit ad hoc review text without losing the standard review interaction.
+- Downstream also preserves the live ad hoc custom-review prompt entry point in
+  the TUI review flow, so users can still open the dedicated custom prompt
+  view from the review popup and submit review text without losing the standard
+  review interaction.
+- Today the runtime wiring is clearest for the ad hoc `ReviewTarget::Custom`
+  review path. The separate file-backed prompt catalogue remains a carried
+  downstream surface, but it should not be described as fully reconnected to a
+  user-facing picker until that runtime wiring is verified or intentionally
+  restored.
 - Primary files:
   - `codex-rs/core/src/custom_prompts.rs`
   - `codex-rs/core/src/custom_prompts_tests.rs`
