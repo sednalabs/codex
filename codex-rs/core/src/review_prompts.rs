@@ -40,7 +40,12 @@ pub fn resolve_review_request(
     request: ReviewRequest,
     cwd: &AbsolutePathBuf,
 ) -> anyhow::Result<ResolvedReviewRequest> {
-    let target = request.target;
+    let target = match request.target {
+        ReviewTarget::Custom { instructions } => ReviewTarget::Custom {
+            instructions: instructions.trim().to_string(),
+        },
+        other => other,
+    };
     let prompt = review_prompt(&target, cwd)?;
     let user_facing_hint = request
         .user_facing_hint
@@ -180,6 +185,56 @@ mod tests {
             )
             .expect("commit prompt should render"),
             "Review the code changes introduced by commit deadbeef (\"Fix bug\"). Provide prioritized, actionable findings."
+        );
+    }
+
+    #[test]
+    fn resolve_review_request_custom_target_trims_prompt_and_hint() {
+        let resolved = resolve_review_request(
+            ReviewRequest {
+                target: ReviewTarget::Custom {
+                    instructions: "  please audit dependencies  ".to_string(),
+                },
+                user_facing_hint: None,
+            },
+            &AbsolutePathBuf::current_dir().expect("cwd"),
+        )
+        .expect("custom review request should resolve");
+
+        assert_eq!(
+            resolved,
+            ResolvedReviewRequest {
+                target: ReviewTarget::Custom {
+                    instructions: "please audit dependencies".to_string(),
+                },
+                prompt: "please audit dependencies".to_string(),
+                user_facing_hint: "please audit dependencies".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn resolve_review_request_custom_target_preserves_explicit_hint_while_trimming_instructions() {
+        let resolved = resolve_review_request(
+            ReviewRequest {
+                target: ReviewTarget::Custom {
+                    instructions: "  please audit dependencies  ".to_string(),
+                },
+                user_facing_hint: Some("custom review label".to_string()),
+            },
+            &AbsolutePathBuf::current_dir().expect("cwd"),
+        )
+        .expect("custom review request should resolve");
+
+        assert_eq!(
+            resolved,
+            ResolvedReviewRequest {
+                target: ReviewTarget::Custom {
+                    instructions: "please audit dependencies".to_string(),
+                },
+                prompt: "please audit dependencies".to_string(),
+                user_facing_hint: "custom review label".to_string(),
+            }
         );
     }
 }
