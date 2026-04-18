@@ -40,6 +40,7 @@ on:
           - codex.tui-agent-picker-tree-targeted
           - codex.tui-agent-usage-totals-targeted
           - codex.core-multi-agent-orchestration-targeted
+          - codex.blocking-waits-targeted
           - codex.core-subagent-model-pinning-targeted
           - codex.core-subagent-spawn-approval-targeted
           - codex.core-persisted-subagent-descendants-targeted
