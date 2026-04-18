@@ -599,6 +599,7 @@
         ".codex/skills/babysit-gh-workflow-run/**",
         ".codex/skills/sedna/subagent-session-tail/**",
         ".codex/skills/sedna/codex-orchestrator/**",
+        ".codex/skills/sedna/sidecar-review-loop/**",
         "docs/downstream-regression-matrix.md",
         "docs/divergences/index.yaml",
         "justfile"
@@ -607,7 +608,8 @@
         ".codex/skills/babysit-pr/**",
         ".codex/skills/babysit-gh-workflow-run/**",
         ".codex/skills/sedna/subagent-session-tail/**",
-        ".codex/skills/sedna/codex-orchestrator/**"
+        ".codex/skills/sedna/codex-orchestrator/**",
+        ".codex/skills/sedna/sidecar-review-loop/**"
       ]
     },
     {
@@ -651,6 +653,12 @@
         "codex-rs/Cargo.lock",
         "codex-rs/deny.toml",
         "patches/**",
+        "sdk/typescript/**",
+        "announcement_tip.toml",
+        "codex-rs/.cargo/**",
+        "codex-rs/.config/**",
+        "tools/argument-comment-lint/Cargo.lock",
+        "codex-rs/skills/src/assets/samples/skill-creator/scripts/init_skill.py",
         "docs/divergences/index.yaml",
         "docs/downstream-regression-matrix.md",
         "justfile"
@@ -668,7 +676,13 @@
         "codex-rs/Cargo.toml",
         "codex-rs/Cargo.lock",
         "codex-rs/deny.toml",
-        "patches/**"
+        "patches/**",
+        "sdk/typescript/**",
+        "announcement_tip.toml",
+        "codex-rs/.cargo/**",
+        "codex-rs/.config/**",
+        "tools/argument-comment-lint/Cargo.lock",
+        "codex-rs/skills/src/assets/samples/skill-creator/scripts/init_skill.py"
       ]
     },
     {
