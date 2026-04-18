@@ -2745,7 +2745,8 @@ async fn turn_start_file_change_approval_decline_v2() -> Result<()> {
 
 #[tokio::test]
 #[cfg_attr(windows, ignore = "process id reporting differs on Windows")]
-async fn command_execution_notifications_include_process_id() -> Result<()> {
+async fn command_execution_completion_precedes_turn_completion_and_preserves_process_id()
+-> Result<()> {
     skip_if_no_network!(Ok(()));
 
     let responses = vec![
@@ -2794,7 +2795,7 @@ async fn command_execution_notifications_include_process_id() -> Result<()> {
         mcp.read_stream_until_response_message(RequestId::Integer(turn_id)),
     )
     .await??;
-    let TurnStartResponse { turn: _turn } = to_response::<TurnStartResponse>(turn_resp)?;
+    let TurnStartResponse { turn } = to_response::<TurnStartResponse>(turn_resp)?;
 
     let started_command = timeout(DEFAULT_READ_TIMEOUT, async {
         loop {
@@ -2826,23 +2827,45 @@ async fn command_execution_notifications_include_process_id() -> Result<()> {
     assert_eq!(status, CommandExecutionStatus::InProgress);
     let started_process_id = started_process_id.expect("process id should be present");
 
-    let completed_command = timeout(DEFAULT_READ_TIMEOUT, async {
-        loop {
-            let notif = mcp
-                .read_stream_until_notification_message("item/completed")
-                .await?;
-            let completed: ItemCompletedNotification = serde_json::from_value(
-                notif
-                    .params
-                    .clone()
-                    .expect("item/completed should include params"),
-            )?;
-            if let ThreadItem::CommandExecution { .. } = completed.item {
-                return Ok::<ThreadItem, anyhow::Error>(completed.item);
+    let mut completed_command: Option<ThreadItem> = None;
+    loop {
+        let message = timeout(DEFAULT_READ_TIMEOUT, mcp.read_next_message()).await??;
+        let JSONRPCMessage::Notification(notification) = message else {
+            continue;
+        };
+
+        match notification.method.as_str() {
+            "item/completed" => {
+                let completed: ItemCompletedNotification = serde_json::from_value(
+                    notification
+                        .params
+                        .clone()
+                        .expect("item/completed should include params"),
+                )?;
+                if let ThreadItem::CommandExecution { .. } = completed.item {
+                    completed_command = Some(completed.item);
+                }
             }
+            "turn/completed" => {
+                let turn_completed: TurnCompletedNotification = serde_json::from_value(
+                    notification
+                        .params
+                        .clone()
+                        .expect("turn/completed should include params"),
+                )?;
+                assert_eq!(turn_completed.thread_id, thread.id);
+                assert_eq!(turn_completed.turn.id, turn.id);
+                assert!(
+                    completed_command.is_some(),
+                    "turn/completed arrived before command execution item/completed"
+                );
+                break;
+            }
+            _ => {}
         }
-    })
-    .await??;
+    }
+
+    let completed_command = completed_command.expect("expected command execution completion item");
     let ThreadItem::CommandExecution {
         id: completed_id,
         process_id: completed_process_id,
@@ -2870,12 +2893,6 @@ async fn command_execution_notifications_include_process_id() -> Result<()> {
         completed_process_id.as_deref(),
         Some(started_process_id.as_str())
     );
-
-    timeout(
-        DEFAULT_READ_TIMEOUT,
-        mcp.read_stream_until_notification_message("turn/completed"),
-    )
-    .await??;
 
     Ok(())
 }
