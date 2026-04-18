@@ -180,6 +180,31 @@
       "frontier_lane_sets": ["subagents", "core-carry"]
     },
     {
+      "lane_id": "codex.blocking-waits-targeted",
+      "run_command": "just --justfile ../justfile blocking-waits-targeted",
+      "groups": ["core", "ui_protocol"],
+      "lane_sets": ["all", "subagents", "ui-protocol", "core-carry"],
+      "install_nextest": true,
+      "frontier_default": true,
+      "frontier_lane_sets": ["subagents", "ui-protocol", "core-carry"]
+    },
+    {
+      "lane_id": "codex.custom-prompts-targeted",
+      "run_command": "just --justfile ../justfile custom-prompts-targeted",
+      "groups": ["ui_protocol"],
+      "lane_sets": ["all", "ui-protocol", "core-carry"],
+      "frontier_default": true,
+      "frontier_lane_sets": ["ui-protocol", "core-carry"]
+    },
+    {
+      "lane_id": "codex.mcp-safety-targeted",
+      "run_command": "just --justfile ../justfile mcp-safety-targeted",
+      "groups": ["core"],
+      "lane_sets": ["all", "core-carry"],
+      "frontier_default": true,
+      "frontier_lane_sets": ["core-carry"]
+    },
+    {
       "lane_id": "codex.core-subagent-model-pinning-targeted",
       "run_command": "just --justfile ../justfile core-subagent-model-pinning-targeted",
       "groups": ["core"],
@@ -251,6 +276,27 @@
       "lane_sets": ["all", "ui-protocol"],
       "frontier_default": true,
       "frontier_lane_sets": ["ui-protocol"]
+    },
+    {
+      "lane_id": "codex.agent-workflow-sanity",
+      "run_command": "just --justfile ../justfile agent-workflow-sanity",
+      "groups": ["workflow"],
+      "lane_sets": ["all"],
+      "frontier_default": false
+    },
+    {
+      "lane_id": "codex.shell-tool-mcp-ci",
+      "run_command": "just --justfile ../justfile shell-tool-mcp-ci",
+      "groups": ["workflow"],
+      "lane_sets": ["all"],
+      "frontier_default": false
+    },
+    {
+      "lane_id": "codex.build-policy-sanity",
+      "run_command": "just --justfile ../justfile build-policy-sanity",
+      "groups": ["workflow"],
+      "lane_sets": ["all"],
+      "frontier_default": false
     },
     {
       "lane_id": "codex.workflow-ci-sanity",
@@ -407,6 +453,81 @@
       ]
     },
     {
+      "route_id": "blocking-waits",
+      "lane_ids": ["codex.blocking-waits-targeted"],
+      "allowed_paths": [
+        "codex-rs/core/tests/suite/unified_exec.rs",
+        "codex-rs/core/src/tools/handlers/unified_exec.rs",
+        "codex-rs/core/src/tools/handlers/multi_agents/wait.rs",
+        "codex-rs/core/src/tools/handlers/multi_agents_tests.rs",
+        "codex-rs/tools/src/local_tool_tests.rs",
+        "codex-rs/app-server/tests/common/responses.rs",
+        "codex-rs/app-server/tests/suite/v2/turn_start.rs",
+        "codex-rs/mcp-server/tests/suite/codex_tool.rs",
+        "docs/downstream-regression-matrix.md",
+        "docs/downstream-divergence-tracking.md",
+        "docs/divergences/index.yaml",
+        "justfile"
+      ],
+      "required_any_paths": [
+        "codex-rs/core/tests/suite/unified_exec.rs",
+        "codex-rs/core/src/tools/handlers/unified_exec.rs",
+        "codex-rs/core/src/tools/handlers/multi_agents/wait.rs",
+        "codex-rs/core/src/tools/handlers/multi_agents_tests.rs",
+        "codex-rs/tools/src/local_tool_tests.rs",
+        "codex-rs/app-server/tests/common/responses.rs",
+        "codex-rs/app-server/tests/suite/v2/turn_start.rs",
+        "codex-rs/mcp-server/tests/suite/codex_tool.rs"
+      ]
+    },
+    {
+      "route_id": "custom-prompts",
+      "lane_ids": ["codex.custom-prompts-targeted"],
+      "allowed_paths": [
+        "codex-rs/core/src/custom_prompts.rs",
+        "codex-rs/core/src/custom_prompts_tests.rs",
+        "codex-rs/core/src/lib.rs",
+        "codex-rs/protocol/src/custom_prompts.rs",
+        "codex-rs/protocol/src/lib.rs",
+        "codex-rs/tui/src/app.rs",
+        "codex-rs/tui/src/app_event.rs",
+        "codex-rs/tui/src/bottom_pane/custom_prompt_view.rs",
+        "codex-rs/tui/src/chatwidget.rs",
+        "codex-rs/tui/src/chatwidget/tests/review_mode.rs",
+        "docs/downstream-regression-matrix.md",
+        "docs/divergences/index.yaml",
+        "justfile"
+      ],
+      "required_any_paths": [
+        "codex-rs/core/src/custom_prompts.rs",
+        "codex-rs/core/src/custom_prompts_tests.rs",
+        "codex-rs/protocol/src/custom_prompts.rs",
+        "codex-rs/tui/src/bottom_pane/custom_prompt_view.rs",
+        "codex-rs/tui/src/chatwidget/tests/review_mode.rs"
+      ]
+    },
+    {
+      "route_id": "mcp-safety",
+      "lane_ids": ["codex.mcp-safety-targeted"],
+      "allowed_paths": [
+        "codex-rs/core/src/config/edit.rs",
+        "codex-rs/core/src/config/edit_tests.rs",
+        "codex-rs/core/src/config/service_tests.rs",
+        "codex-rs/core/src/config/types.rs",
+        "codex-rs/rmcp-client/src/oauth.rs",
+        "docs/downstream-regression-matrix.md",
+        "docs/divergences/index.yaml",
+        "justfile"
+      ],
+      "required_any_paths": [
+        "codex-rs/core/src/config/edit.rs",
+        "codex-rs/core/src/config/edit_tests.rs",
+        "codex-rs/core/src/config/service_tests.rs",
+        "codex-rs/core/src/config/types.rs",
+        "codex-rs/rmcp-client/src/oauth.rs"
+      ]
+    },
+    {
       "route_id": "subagent-spawn-tool-surface",
       "lane_ids": [
         "codex.spawn-agent-tool-model-surface-targeted",
@@ -453,18 +574,116 @@
     },
     {
       "route_id": "app-server-thread-cwd",
-      "lane_ids": ["codex.app-server-thread-cwd-targeted"],
+      "lane_ids": [
+        "codex.app-server-protocol-test",
+        "codex.app-server-thread-cwd-targeted",
+        "codex.blocking-waits-targeted"
+      ],
       "allowed_paths": [
-        "codex-rs/app-server/**",
-        "codex-rs/app-server-protocol/**",
+        "codex-rs/app-server/src/**",
+        "codex-rs/app-server-protocol/src/**",
         "codex-rs/tui/src/app_server_session.rs",
         "docs/downstream-regression-matrix.md",
         "justfile"
       ],
       "required_any_paths": [
-        "codex-rs/app-server/**",
-        "codex-rs/app-server-protocol/**",
+        "codex-rs/app-server/src/**",
+        "codex-rs/app-server-protocol/src/**",
         "codex-rs/tui/src/app_server_session.rs"
+      ]
+    },
+    {
+      "route_id": "agent-workflow",
+      "lane_ids": ["codex.agent-workflow-sanity"],
+      "allowed_paths": [
+        ".codex/skills/babysit-pr/**",
+        ".codex/skills/babysit-gh-workflow-run/**",
+        ".codex/skills/sedna/subagent-session-tail/**",
+        ".codex/skills/sedna/codex-orchestrator/**",
+        ".codex/skills/sedna/sidecar-review-loop/**",
+        "docs/downstream-regression-matrix.md",
+        "docs/divergences/index.yaml",
+        "justfile"
+      ],
+      "required_any_paths": [
+        ".codex/skills/babysit-pr/**",
+        ".codex/skills/babysit-gh-workflow-run/**",
+        ".codex/skills/sedna/subagent-session-tail/**",
+        ".codex/skills/sedna/codex-orchestrator/**",
+        ".codex/skills/sedna/sidecar-review-loop/**"
+      ]
+    },
+    {
+      "route_id": "shell-tool-mcp",
+      "lane_ids": ["codex.shell-tool-mcp-ci"],
+      "allowed_paths": [
+        "shell-tool-mcp/**",
+        ".github/workflows/shell-tool-mcp-ci.yml",
+        ".github/workflows/shell-tool-mcp.yml",
+        "pnpm-lock.yaml",
+        "pnpm-workspace.yaml",
+        "docs/downstream-regression-matrix.md",
+        "docs/divergences/index.yaml",
+        "justfile"
+      ],
+      "required_any_paths": [
+        "shell-tool-mcp/**",
+        ".github/workflows/shell-tool-mcp-ci.yml",
+        ".github/workflows/shell-tool-mcp.yml",
+        "pnpm-lock.yaml",
+        "pnpm-workspace.yaml"
+      ]
+    },
+    {
+      "route_id": "build-policy",
+      "lane_ids": ["codex.build-policy-sanity"],
+      "allowed_paths": [
+        ".bazelrc",
+        "MODULE.bazel",
+        "MODULE.bazel.lock",
+        ".gitignore",
+        "pnpm-lock.yaml",
+        "pnpm-workspace.yaml",
+        "scripts/install/install.sh",
+        "scripts/install/install.ps1",
+        "scripts/stage_npm_packages.py",
+        "scripts/list-bazel-clippy-targets.sh",
+        ".github/scripts/verify_bazel_clippy_lints.py",
+        ".github/scripts/verify_cargo_workspace_manifests.py",
+        "codex-rs/Cargo.toml",
+        "codex-rs/Cargo.lock",
+        "codex-rs/deny.toml",
+        "patches/**",
+        "sdk/typescript/**",
+        "announcement_tip.toml",
+        "codex-rs/.cargo/**",
+        "codex-rs/.config/**",
+        "tools/argument-comment-lint/Cargo.lock",
+        "codex-rs/skills/src/assets/samples/skill-creator/scripts/init_skill.py",
+        "docs/divergences/index.yaml",
+        "docs/downstream-regression-matrix.md",
+        "justfile"
+      ],
+      "required_any_paths": [
+        ".bazelrc",
+        "MODULE.bazel",
+        "MODULE.bazel.lock",
+        "scripts/install/install.sh",
+        "scripts/install/install.ps1",
+        "scripts/stage_npm_packages.py",
+        "scripts/list-bazel-clippy-targets.sh",
+        ".github/scripts/verify_bazel_clippy_lints.py",
+        ".github/scripts/verify_cargo_workspace_manifests.py",
+        "codex-rs/Cargo.toml",
+        "codex-rs/Cargo.lock",
+        "codex-rs/deny.toml",
+        "patches/**",
+        "sdk/typescript/**",
+        "announcement_tip.toml",
+        "codex-rs/.cargo/**",
+        "codex-rs/.config/**",
+        "tools/argument-comment-lint/Cargo.lock",
+        "codex-rs/skills/src/assets/samples/skill-creator/scripts/init_skill.py"
       ]
     },
     {

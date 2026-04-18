@@ -1,7 +1,5 @@
 use crate::agent::AgentStatus;
 use crate::agent::status::is_final as is_final_agent_status;
-use crate::codex::Session;
-use crate::codex::emit_subagent_session_started;
 use crate::config::Config;
 use crate::memories::extensions::PendingExtensionResourceRemoval;
 use crate::memories::extensions::find_old_extension_resources;
@@ -13,12 +11,14 @@ use crate::memories::prompts::build_consolidation_prompt;
 use crate::memories::storage::rebuild_raw_memories_file_from_memories;
 use crate::memories::storage::rollout_summary_file_stem;
 use crate::memories::storage::sync_rollout_summaries_from_memories;
+use crate::session::emit_subagent_session_started;
+use crate::session::session::Session;
 use codex_config::Constrained;
 use codex_features::Feature;
 use codex_protocol::ThreadId;
+use codex_protocol::permissions::FileSystemSandboxPolicy;
+use codex_protocol::permissions::NetworkSandboxPolicy;
 use codex_protocol::protocol::AskForApproval;
-use codex_protocol::protocol::FileSystemSandboxPolicy;
-use codex_protocol::protocol::NetworkSandboxPolicy;
 use codex_protocol::protocol::SandboxPolicy;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::SubAgentSource;
@@ -345,19 +345,11 @@ pub(in crate::memories) mod agent {
         }
         let mut agent_config = config.as_ref().clone();
 
-        let absolute_root = match AbsolutePathBuf::from_absolute_path(root.clone()) {
-            Ok(root) => root,
-            Err(err) => {
-                warn!(
-                    "memory phase-2 consolidation could not set cwd from memory root {}: {err}",
-                    root.display()
-                );
-                return None;
-            }
-        };
-        agent_config.cwd = absolute_root;
+        agent_config.cwd = root.clone();
         // Consolidation threads must never feed back into phase-1 memory generation.
+        agent_config.ephemeral = true;
         agent_config.memories.generate_memories = false;
+        agent_config.memories.use_memories = false;
         // Approval policy
         agent_config.permissions.approval_policy = Constrained::allow_only(AskForApproval::Never);
         // Consolidation runs as an internal sub-agent and must not recursively delegate.
@@ -366,14 +358,7 @@ pub(in crate::memories) mod agent {
         let _ = agent_config.features.disable(Feature::MemoryTool);
 
         // Sandbox policy
-        let mut writable_roots = Vec::new();
-        match AbsolutePathBuf::from_absolute_path(agent_config.cwd.clone()) {
-            Ok(memory_root) => writable_roots.push(memory_root),
-            Err(err) => warn!(
-                "memory phase-2 consolidation could not add memory root writable root {}: {err}",
-                agent_config.cwd.display()
-            ),
-        }
+        let writable_roots = vec![root];
         // The consolidation agent only needs local memory-root write access and no network.
         let consolidation_sandbox_policy = SandboxPolicy::WorkspaceWrite {
             writable_roots,
@@ -382,18 +367,21 @@ pub(in crate::memories) mod agent {
             exclude_tmpdir_env_var: true,
             exclude_slash_tmp: true,
         };
-        let file_system_sandbox_policy = FileSystemSandboxPolicy::from_legacy_sandbox_policy(
-            &consolidation_sandbox_policy,
-            &agent_config.cwd,
-        );
-        let network_sandbox_policy = NetworkSandboxPolicy::from(&consolidation_sandbox_policy);
+        let consolidation_file_system_sandbox_policy =
+            FileSystemSandboxPolicy::from_legacy_sandbox_policy(
+                &consolidation_sandbox_policy,
+                agent_config.cwd.as_path(),
+            );
+        let consolidation_network_sandbox_policy =
+            NetworkSandboxPolicy::from(&consolidation_sandbox_policy);
         agent_config
             .permissions
             .sandbox_policy
             .set(consolidation_sandbox_policy)
             .ok()?;
-        agent_config.permissions.file_system_sandbox_policy = file_system_sandbox_policy;
-        agent_config.permissions.network_sandbox_policy = network_sandbox_policy;
+        agent_config.permissions.file_system_sandbox_policy =
+            consolidation_file_system_sandbox_policy;
+        agent_config.permissions.network_sandbox_policy = consolidation_network_sandbox_policy;
 
         agent_config.model = Some(
             config

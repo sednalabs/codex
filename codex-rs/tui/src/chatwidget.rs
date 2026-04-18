@@ -247,10 +247,6 @@ use tracing::debug;
 use tracing::warn;
 
 const DEFAULT_MODEL_DISPLAY_NAME: &str = "loading";
-const PLAN_IMPLEMENTATION_TITLE: &str = "Implement this plan?";
-const PLAN_IMPLEMENTATION_YES: &str = "Yes, implement this plan";
-const PLAN_IMPLEMENTATION_NO: &str = "No, stay in Plan mode";
-const PLAN_IMPLEMENTATION_CODING_MESSAGE: &str = "Implement the plan.";
 const MULTI_AGENT_ENABLE_TITLE: &str = "Enable subagents?";
 const MULTI_AGENT_ENABLE_YES: &str = "Yes, enable";
 const MULTI_AGENT_ENABLE_NO: &str = "Not now";
@@ -370,6 +366,8 @@ use self::skills::find_app_mentions;
 use self::skills::find_skill_mentions_with_tool_mentions;
 mod plugins;
 use self::plugins::PluginsCacheState;
+mod plan_implementation;
+use self::plan_implementation::PLAN_IMPLEMENTATION_TITLE;
 mod realtime;
 use self::realtime::RealtimeConversationUiState;
 use self::realtime::RenderedUserMessageEvent;
@@ -920,6 +918,27 @@ pub(crate) struct ChatWidget {
     // Final-answer agent message observed during the active turn. App-server turn completion
     // notifications do not repeat this payload, so we promote it when the turn completes.
     pending_turn_copyable_output: Option<String>,
+    /// Holds the platform clipboard lease so copied text remains available while supported.
+    clipboard_lease: Option<crate::clipboard_copy::ClipboardLease>,
+    /// Raw markdown of the most recently completed agent response.
+    ///
+    /// This cache is intentionally best-effort: if the user rolls back the
+    /// thread and then copies before a replacement response arrives, `/copy`
+    /// may still return the response from before the rollback. Keeping this as
+    /// a single cache avoids coupling copy state to the backtrack transcript.
+    last_agent_markdown: Option<String>,
+    /// Raw markdown of the most recently completed proposed plan.
+    ///
+    /// This is cached only for the approval popup. It is reset at the start of each new task so the
+    /// fresh-context action cannot accidentally submit an older plan after a later turn begins.
+    latest_proposed_plan_markdown: Option<String>,
+    /// Whether this turn already produced a copyable response.
+    ///
+    /// `TurnComplete.last_agent_message` is a fallback source: use it only when no earlier
+    /// agent/plan/review item recorded copyable markdown for the turn. This gives item-level
+    /// sources precedence and avoids duplicating the same final answer when both event shapes are
+    /// emitted.
+    saw_copy_source_this_turn: bool,
     running_commands: HashMap<String, RunningCommand>,
     collab_agent_metadata: HashMap<ThreadId, CollabAgentMetadata>,
     pending_collab_spawn_requests: HashMap<String, multi_agents::SpawnRequestSummary>,
@@ -960,6 +979,7 @@ pub(crate) struct ChatWidget {
     plugins_fetch_state: PluginListFetchState,
     plugin_install_apps_needing_auth: Vec<AppSummary>,
     plugin_install_auth_flow: Option<PluginInstallAuthFlowState>,
+    plugins_active_tab_id: Option<String>,
     // Queue of interruptive UI events deferred during an active write cycle
     interrupts: InterruptManager,
     // Accumulates the current reasoning block text to extract a header
@@ -1976,6 +1996,14 @@ impl ChatWidget {
         }
     }
 
+    fn record_agent_markdown(&mut self, message: &str) {
+        if message.trim().is_empty() {
+            return;
+        }
+        self.last_agent_markdown = Some(message.to_string());
+        self.saw_copy_source_this_turn = true;
+    }
+
     /// Convenience wrapper around [`Self::set_status`];
     /// updates the status indicator header and clears any existing details.
     fn set_status_header(&mut self, header: String) {
@@ -2395,6 +2423,8 @@ impl ChatWidget {
         };
         if !plan_text.trim().is_empty() {
             self.last_copyable_output = Some(plan_text.clone());
+            self.record_agent_markdown(&plan_text);
+            self.latest_proposed_plan_markdown = Some(plan_text.clone());
         }
         // Plan commit ticks can hide the status row; remember whether we streamed plan output so
         // completion can restore it once stream queues are idle.
@@ -2471,8 +2501,10 @@ impl ChatWidget {
         self.agent_turn_running = true;
         self.turn_sleep_inhibitor
             .set_turn_running(/*turn_running*/ true);
+        self.saw_copy_source_this_turn = false;
         self.saw_plan_update_this_turn = false;
         self.saw_plan_item_this_turn = false;
+        self.latest_proposed_plan_markdown = None;
         self.last_plan_progress = None;
         self.plan_delta_buffer.clear();
         self.plan_item_active = false;
@@ -2598,48 +2630,12 @@ impl ChatWidget {
 
     fn open_plan_implementation_prompt(&mut self) {
         let default_mask = collaboration_modes::default_mode_mask(self.model_catalog.as_ref());
-        let (implement_actions, implement_disabled_reason) = match default_mask {
-            Some(mask) => {
-                let user_text = PLAN_IMPLEMENTATION_CODING_MESSAGE.to_string();
-                let actions: Vec<SelectionAction> = vec![Box::new(move |tx| {
-                    tx.send(AppEvent::SubmitUserMessageWithMode {
-                        text: user_text.clone(),
-                        collaboration_mode: mask.clone(),
-                    });
-                })];
-                (actions, None)
-            }
-            None => (Vec::new(), Some("Default mode unavailable".to_string())),
-        };
-        let items = vec![
-            SelectionItem {
-                name: PLAN_IMPLEMENTATION_YES.to_string(),
-                description: Some("Switch to Default and start coding.".to_string()),
-                selected_description: None,
-                is_current: false,
-                actions: implement_actions,
-                disabled_reason: implement_disabled_reason,
-                dismiss_on_select: true,
-                ..Default::default()
-            },
-            SelectionItem {
-                name: PLAN_IMPLEMENTATION_NO.to_string(),
-                description: Some("Continue planning with the model.".to_string()),
-                selected_description: None,
-                is_current: false,
-                actions: Vec::new(),
-                dismiss_on_select: true,
-                ..Default::default()
-            },
-        ];
 
-        self.bottom_pane.show_selection_view(SelectionViewParams {
-            title: Some(PLAN_IMPLEMENTATION_TITLE.to_string()),
-            subtitle: None,
-            footer_hint: Some(standard_popup_hint_line()),
-            items,
-            ..Default::default()
-        });
+        self.bottom_pane
+            .show_selection_view(plan_implementation::selection_view_params(
+                default_mask,
+                self.latest_proposed_plan_markdown.as_deref(),
+            ));
         self.notify(Notification::PlanModePrompt {
             title: PLAN_IMPLEMENTATION_TITLE.to_string(),
         });
@@ -5093,6 +5089,10 @@ impl ChatWidget {
             agent_turn_running: false,
             mcp_startup_status: None,
             pending_turn_copyable_output: None,
+            clipboard_lease: None,
+            last_agent_markdown: None,
+            latest_proposed_plan_markdown: None,
+            saw_copy_source_this_turn: false,
             mcp_startup_expected_servers: None,
             mcp_startup_ignore_updates_until_next_start: false,
             mcp_startup_allow_terminal_only_next_round: false,
@@ -5106,6 +5106,7 @@ impl ChatWidget {
             plugins_fetch_state: PluginListFetchState::default(),
             plugin_install_apps_needing_auth: Vec::new(),
             plugin_install_auth_flow: None,
+            plugins_active_tab_id: None,
             interrupts: InterruptManager::new(),
             reasoning_buffer: String::new(),
             full_reasoning_buffer: String::new(),
@@ -7134,6 +7135,7 @@ impl ChatWidget {
             | ServerNotification::McpToolCallProgress(_)
             | ServerNotification::McpServerOauthLoginCompleted(_)
             | ServerNotification::AppListUpdated(_)
+            | ServerNotification::ExternalAgentConfigImportCompleted(_)
             | ServerNotification::FsChanged(_)
             | ServerNotification::ContextCompacted(_)
             | ServerNotification::FuzzyFileSearchSessionUpdated(_)
@@ -8195,7 +8197,22 @@ impl ChatWidget {
             &self.session_total_token_usage
         };
         let collaboration_mode = self.collaboration_mode_label();
-        let reasoning_effort_override = Some(self.effective_reasoning_effort());
+        let model = self.current_model().to_string();
+        let model_default_reasoning_effort =
+            self.model_catalog
+                .try_list_models()
+                .ok()
+                .and_then(|models| {
+                    models
+                        .into_iter()
+                        .find(|preset| preset.model == model)
+                        .map(|preset| preset.default_reasoning_effort)
+                });
+        let reasoning_effort_override = Some(
+            self.effective_reasoning_effort()
+                .or(self.config.model_reasoning_effort)
+                .or(model_default_reasoning_effort),
+        );
         let rate_limit_snapshots: Vec<RateLimitSnapshotDisplay> = self
             .rate_limit_snapshots_by_limit_id
             .values()
@@ -9598,9 +9615,9 @@ impl ChatWidget {
 
                 if guardian_approval_enabled {
                     items.push(SelectionItem {
-                        name: "Guardian Approvals".to_string(),
+                        name: "Auto-review".to_string(),
                         description: Some(
-                            "Same workspace-write permissions as Default, but eligible `on-request` approvals are routed through the guardian reviewer subagent."
+                            "Same workspace-write permissions as Default, but eligible `on-request` approvals are routed through the auto-reviewer subagent."
                                 .to_string(),
                         ),
                         is_current: current_review_policy == ApprovalsReviewer::GuardianSubagent
@@ -9612,7 +9629,7 @@ impl ChatWidget {
                         actions: Self::approval_preset_actions(
                             preset.approval,
                             preset.sandbox.clone(),
-                            "Guardian Approvals".to_string(),
+                            "Auto-review".to_string(),
                             ApprovalsReviewer::GuardianSubagent,
                         ),
                         dismiss_on_select: true,
@@ -12023,6 +12040,7 @@ fn extract_first_bold(s: &str) -> Option<String> {
 fn hook_event_label(event_name: codex_protocol::protocol::HookEventName) -> &'static str {
     match event_name {
         codex_protocol::protocol::HookEventName::PreToolUse => "PreToolUse",
+        codex_protocol::protocol::HookEventName::PermissionRequest => "PermissionRequest",
         codex_protocol::protocol::HookEventName::PostToolUse => "PostToolUse",
         codex_protocol::protocol::HookEventName::SessionStart => "SessionStart",
         codex_protocol::protocol::HookEventName::UserPromptSubmit => "UserPromptSubmit",

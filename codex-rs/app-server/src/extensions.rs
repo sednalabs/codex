@@ -351,7 +351,6 @@ mod tests {
         let mut list_response = PluginListResponse {
             marketplaces: vec![],
             marketplace_load_errors: vec![],
-            remote_sync_error: None,
             featured_plugin_ids: vec!["plugin.one".into()],
         };
         let mut plugin = PluginDetail {

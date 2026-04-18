@@ -79,11 +79,14 @@ files:
   - codex-rs/core/src/tools/handlers/unified_exec.rs
 guardrail_lane: core-carry-core-smoke
 tests:
-  - exec_command_wait_until_terminal_returns_exit_metadata
-  - write_stdin_tool_exposes_blocking_wait_parameters
+  - exec_command_reports_chunk_and_exit_metadata
+  - write_stdin_returns_exit_metadata_and_clears_session
+  - multi_agent_v2_wait_agent_honors_return_when_all
+  - command_execution_completion_precedes_turn_completion_and_preserves_process_id
+  - shell_command_approval_emits_task_complete_before_tool_response
 owner: downstream
 notes: |
-  Tool-layer wait semantics, not transcript polling.
+  Tool-layer wait semantics and blocking completion ordering, not transcript polling.
 ```
 
 Keep the schema small:

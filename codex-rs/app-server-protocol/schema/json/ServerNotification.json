@@ -379,7 +379,7 @@
       ]
     },
     "AutoReviewDecisionSource": {
-      "description": "[UNSTABLE] Source that produced a terminal guardian approval review decision.",
+      "description": "[UNSTABLE] Source that produced a terminal approval auto-review decision.",
       "enum": [
         "agent"
       ],
@@ -999,6 +999,9 @@
       ],
       "type": "object"
     },
+    "ExternalAgentConfigImportCompletedNotification": {
+      "type": "object"
+    },
     "FileChangeOutputDeltaNotification": {
       "properties": {
         "delta": {
@@ -1263,7 +1266,7 @@
       "type": "object"
     },
     "GuardianApprovalReview": {
-      "description": "[UNSTABLE] Temporary guardian approval review payload used by\n`item/autoApprovalReview/*` notifications. This shape is expected to change\nsoon.",
+      "description": "[UNSTABLE] Temporary approval auto-review payload used by\n`item/autoApprovalReview/*` notifications. This shape is expected to change\nsoon.",
       "properties": {
         "rationale": {
           "type": [
@@ -1462,7 +1465,7 @@
       ]
     },
     "GuardianApprovalReviewStatus": {
-      "description": "[UNSTABLE] Lifecycle state for a guardian approval review.",
+      "description": "[UNSTABLE] Lifecycle state for an approval auto-review.",
       "enum": [
         "inProgress",
         "approved",
@@ -1480,7 +1483,7 @@
       "type": "string"
     },
     "GuardianRiskLevel": {
-      "description": "[UNSTABLE] Risk level assigned by guardian approval review.",
+      "description": "[UNSTABLE] Risk level assigned by approval auto-review.",
       "enum": [
         "low",
         "medium",
@@ -1490,7 +1493,7 @@
       "type": "string"
     },
     "GuardianUserAuthorization": {
-      "description": "[UNSTABLE] Authorization level assigned by guardian approval review.",
+      "description": "[UNSTABLE] Authorization level assigned by approval auto-review.",
       "enum": [
         "unknown",
         "low",
@@ -1523,6 +1526,7 @@
     "HookEventName": {
       "enum": [
         "preToolUse",
+        "permissionRequest",
         "postToolUse",
         "sessionStart",
         "userPromptSubmit",
@@ -2225,6 +2229,16 @@
       ],
       "type": "string"
     },
+    "RateLimitReachedType": {
+      "enum": [
+        "rate_limit_reached",
+        "workspace_owner_credits_depleted",
+        "workspace_member_credits_depleted",
+        "workspace_owner_usage_limit_reached",
+        "workspace_member_usage_limit_reached"
+      ],
+      "type": "string"
+    },
     "RateLimitSnapshot": {
       "properties": {
         "credits": {
@@ -2263,6 +2277,16 @@
           "anyOf": [
             {
               "$ref": "#/$defs/RateLimitWindow"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "rateLimitReachedType": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RateLimitReachedType"
             },
             {
               "type": "null"
@@ -5414,6 +5438,24 @@
         "params"
       ],
       "title": "App/list/updatedNotification",
+      "type": "object"
+    },
+    {
+      "properties": {
+        "method": {
+          "const": "externalAgentConfig/import/completed",
+          "title": "ExternalAgentConfig/import/completedNotificationMethod",
+          "type": "string"
+        },
+        "params": {
+          "$ref": "#/$defs/ExternalAgentConfigImportCompletedNotification"
+        }
+      },
+      "required": [
+        "method",
+        "params"
+      ],
+      "title": "ExternalAgentConfig/import/completedNotification",
       "type": "object"
     },
     {
