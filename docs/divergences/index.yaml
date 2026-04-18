@@ -394,6 +394,7 @@
       "files": [
         "codex-rs/core/src/custom_prompts.rs",
         "codex-rs/core/src/custom_prompts_tests.rs",
+        "codex-rs/core/src/review_prompts.rs",
         "codex-rs/protocol/src/custom_prompts.rs",
         "codex-rs/core/src/lib.rs",
         "codex-rs/protocol/src/lib.rs",
@@ -410,6 +411,8 @@
       "guardrail_lane": "codex.custom-prompts-targeted",
       "tests": [
         "custom_prompts::tests::*",
+        "resolve_review_request_custom_target_trims_prompt_and_hint",
+        "resolve_review_request_custom_target_preserves_explicit_hint_while_trimming_instructions",
         "review_popup_custom_prompt_action_sends_event",
         "custom_prompt_submit_sends_review_op",
         "custom_prompt_enter_empty_does_not_send",

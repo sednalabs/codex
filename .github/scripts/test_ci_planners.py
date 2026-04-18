@@ -207,6 +207,16 @@ class RouteSelectionTests(unittest.TestCase):
             ],
         )
 
+    def test_custom_prompt_review_prompt_core_path_stays_targeted(self) -> None:
+        lanes = RESOLVE_VALIDATION_PLAN.select_followup_lanes(
+            ["codex-rs/core/src/review_prompts.rs"],
+            self.routes,
+        )
+        self.assertEqual(
+            lanes,
+            ["codex.custom-prompts-targeted"],
+        )
+
     def test_heavy_workflow_dispatch_options_cover_catalog_lanes(self) -> None:
         workflow_options = parse_workflow_dispatch_lane_options(
             REPO_ROOT / ".github/workflows/sedna-heavy-tests.yml"
