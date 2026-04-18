@@ -286,9 +286,11 @@
         "carry_commit": null,
         "upstream_commit": null
       },
-      "guardrail_lane": "core-runtime-surface-smoke",
+      "guardrail_lane": "codex.mcp-safety-targeted",
       "tests": [
-        "config safety controls round-trip"
+        "blocking_replace_mcp_servers_round_trips",
+        "blocking_replace_mcp_servers_serializes_tool_approval_overrides",
+        "write_value_supports_custom_mcp_server_default_tool_approval_mode"
       ],
       "owner": "downstream",
       "notes": "Preserves the downstream mutability guardrails."
@@ -311,7 +313,7 @@
         "carry_commit": null,
         "upstream_commit": null
       },
-      "guardrail_lane": "ops-mcp-safety",
+      "guardrail_lane": "codex.mcp-safety-targeted",
       "tests": [
         "load_oauth_tokens_ignores_empty_fallback_file",
         "load_oauth_tokens_auto_ignores_corrupt_fallback_when_keyring_errors"
@@ -405,10 +407,13 @@
         "carry_commit": null,
         "upstream_commit": null
       },
-      "guardrail_lane": "codex.tui-agent-picker-targeted",
+      "guardrail_lane": "codex.custom-prompts-targeted",
       "tests": [
-        "custom_prompt_discovery round trips",
-        "review prompt flow render snapshot"
+        "custom_prompts::tests::*",
+        "review_popup_custom_prompt_action_sends_event",
+        "custom_prompt_submit_sends_review_op",
+        "custom_prompt_enter_empty_does_not_send",
+        "review_custom_prompt_escape_navigates_back_then_dismisses"
       ],
       "owner": "downstream",
       "notes": "Keeps the custom prompt pipeline discoverable from the UI."
@@ -452,10 +457,10 @@
       "files": [
         ".codex/skills/babysit-pr/agents/openai.yaml",
         ".codex/skills/babysit-pr/scripts/gh_pr_watch.py",
-        ".codex/skills/private/codex-orchestrator/agents/openai.yaml",
-        ".codex/skills/private/sidecar-review-loop/agents/openai.yaml",
-        ".codex/skills/private/subagent-session-tail/agents/openai.yaml",
-        ".codex/skills/private/subagent-session-tail/scripts/inspect_subagent_tail.py",
+        ".codex/skills/sedna/codex-orchestrator/agents/openai.yaml",
+        ".codex/skills/sedna/sidecar-review-loop/agents/openai.yaml",
+        ".codex/skills/sedna/subagent-session-tail/agents/openai.yaml",
+        ".codex/skills/sedna/subagent-session-tail/scripts/inspect_subagent_tail.py",
         ".codex/skills/"
       ],
       "behavior": "Downstream publishes tailored skill templates and helpers that orchestrate babysitting, sidecar review loops, and subagent session tails.",
@@ -464,10 +469,12 @@
         "carry_commit": null,
         "upstream_commit": null
       },
-      "guardrail_lane": "ops-agent-workflow",
+      "guardrail_lane": "codex.agent-workflow-sanity",
       "tests": [
-        "babysit-pr skill telemetry review",
-        "subagent session tail integration smoke"
+        "py_compile of gh_pr_watch.py, gh_workflow_run_watch.py, gh_dispatch_and_watch.py, and inspect_subagent_tail.py",
+        "test_gh_workflow_run_watch.py",
+        "test_gh_dispatch_and_watch.py",
+        "inspect_subagent_tail.py --help"
       ],
       "owner": "downstream",
       "notes": "Keeps the downstream agent orchestration surface explicit and discoverable."
@@ -498,7 +505,7 @@
         "carry_commit": null,
         "upstream_commit": null
       },
-      "guardrail_lane": "github-ci-offload",
+      "guardrail_lane": "codex.workflow-ci-sanity",
       "tests": [
         "validation-lab and Sedna job orchestration smoke",
         "workflow sync job exports expected metadata"
@@ -521,19 +528,22 @@
         "codex-rs/app-server-protocol/",
         "codex-rs/app-server-client/"
       ],
-      "behavior": "Downstream now tracks upstream on the core app-server contract and replay surfaces, while preserving a narrow set of fork-specific behaviors: blocking unified-exec waits, MCP safety controls, raw-byte websocket secrets, non-blocking output delta delivery, fs/watch tuning, runtime-context overlay, and startup/plugin-sync follow-up.",
+      "behavior": "Downstream now tracks upstream on the core app-server contract and replay surfaces, while preserving a narrow app-server-specific carry around protocol event history, rollout cwd portability, and thread list/read/resume summary surfaces. Neighboring carries such as blocking waits, MCP safety, and startup/plugin-sync follow-up are tracked separately.",
       "upstream_equivalent": false,
       "introduced_in": {
         "carry_commit": null,
         "upstream_commit": null
       },
-      "guardrail_lane": "core-carry-runtime-smoke",
+      "guardrail_lane": "codex.app-server-thread-cwd-targeted",
       "tests": [
-        "app-server integration suite",
-        "protocol schema validation"
+        "preserves_compaction_only_turn",
+        "get_conversation_summary_by_*",
+        "thread_list_*",
+        "thread_read_returns_summary_without_turns",
+        "thread_resume_returns_rollout_history"
       ],
       "owner": "downstream",
-      "notes": "The old remote-control omission story was stale. The current app-server divergence is narrower: upstream-faithful protocol/runtime parity plus intentional downstream carry, with B.2 extracting policy/lifecycle seams into codex-rs/app-server/src/extensions.rs."
+      "notes": "The old remote-control omission story was stale. The current app-server divergence is narrower: upstream-faithful protocol/runtime parity plus intentional downstream carry, with B.2 extracting policy/lifecycle seams into codex-rs/app-server/src/extensions.rs. Follow-up route selection for app-server paths now bundles the protocol, thread-surface, and blocking-waits lanes instead of a stale single-lane placeholder."
     },
     {
       "id": "codex-tui-session-surfaces",
@@ -629,11 +639,14 @@
         "carry_commit": null,
         "upstream_commit": null
       },
-      "guardrail_lane": "ops-mcp-safety",
+      "guardrail_lane": "core-runtime-surface-smoke",
       "tests": [
-        "analytics instrumentation smoke",
-        "config edit round trip",
-        "mcp policy validation suite"
+        "stdio_server_round_trip",
+        "code_mode_exports_all_tools_metadata_for_namespaced_mcp_tools",
+        "plugin_mcp_tools_are_listed",
+        "mcp_tool_call_output_exceeds_limit_truncated_for_model",
+        "usage_limit_error_emits_rate_limit_event",
+        "responses_websocket_usage_limit_error_emits_rate_limit_event"
       ],
       "owner": "downstream",
       "notes": "Covers the wide cross-section of runtime tooling that stays downstream-only."
@@ -664,9 +677,11 @@
         "carry_commit": null,
         "upstream_commit": null
       },
-      "guardrail_lane": "shell-tool-mcp-ci",
+      "guardrail_lane": "codex.shell-tool-mcp-ci",
       "tests": [
-        "shell-tool selection integration smoke"
+        "pnpm --filter @openai/codex-shell-tool-mcp run format",
+        "pnpm --filter @openai/codex-shell-tool-mcp test",
+        "pnpm --filter @openai/codex-shell-tool-mcp run build"
       ],
       "owner": "downstream",
       "notes": "Documents the additional npm project that feeds MCP workflows. Upstream has removed shell-tool-mcp, so treat this divergence as under audit until we decide whether the helper is still needed."
@@ -691,7 +706,7 @@
         "carry_commit": null,
         "upstream_commit": null
       },
-      "guardrail_lane": "branch-policy-ci-hardening",
+      "guardrail_lane": "codex.downstream-docs-check",
       "tests": [
         "documentation audit smoke"
       ],
@@ -737,10 +752,12 @@
         "carry_commit": null,
         "upstream_commit": null
       },
-      "guardrail_lane": "branch-policy-ci-hardening",
+      "guardrail_lane": "codex.build-policy-sanity",
       "tests": [
-        "install script smoke",
-        "Bazel clippy target discovery"
+        "bash -n scripts/install/install.sh",
+        "verify_bazel_clippy_lints.py",
+        "verify_cargo_workspace_manifests.py",
+        "py_compile of stage_npm_packages.py and policy verifier scripts"
       ],
       "owner": "downstream",
       "notes": "Captures downstream platform/patch artifacts that the audit should treat as deliberate."

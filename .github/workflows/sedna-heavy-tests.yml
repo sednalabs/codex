@@ -41,6 +41,8 @@ on:
           - codex.tui-agent-usage-totals-targeted
           - codex.core-multi-agent-orchestration-targeted
           - codex.blocking-waits-targeted
+          - codex.custom-prompts-targeted
+          - codex.mcp-safety-targeted
           - codex.core-subagent-model-pinning-targeted
           - codex.core-subagent-spawn-approval-targeted
           - codex.core-persisted-subagent-descendants-targeted
@@ -50,6 +52,9 @@ on:
           - codex.code-mode-declaration-targeted
           - codex.app-server-protocol-test
           - codex.app-server-thread-cwd-targeted
+          - codex.agent-workflow-sanity
+          - codex.shell-tool-mcp-ci
+          - codex.build-policy-sanity
           - codex.workflow-ci-sanity
           - codex.downstream-docs-check
           - codex.release-linux-build-smoke
