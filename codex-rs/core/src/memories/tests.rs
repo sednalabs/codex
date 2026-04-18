@@ -425,8 +425,6 @@ mod phase2 {
     use crate::CodexAuth;
     use crate::ThreadManager;
     use crate::agent::AgentControl;
-    use crate::codex::Session;
-    use crate::codex::make_session_and_context;
     use crate::config::Config;
     use crate::config::test_config;
     use crate::memories::memory_root;
@@ -434,13 +432,17 @@ mod phase2 {
     use crate::memories::prompts::build_consolidation_prompt;
     use crate::memories::raw_memories_file;
     use crate::memories::rollout_summaries_dir;
+    use crate::session::session::Session;
+    use crate::session::tests::make_session_and_context;
     use chrono::Duration as ChronoDuration;
     use chrono::Utc;
     use codex_config::Constrained;
+    use codex_features::Feature;
+    use codex_login::CodexAuth;
     use codex_protocol::ThreadId;
+    use codex_protocol::permissions::FileSystemSandboxPolicy;
+    use codex_protocol::permissions::NetworkSandboxPolicy;
     use codex_protocol::protocol::AskForApproval;
-    use codex_protocol::protocol::FileSystemSandboxPolicy;
-    use codex_protocol::protocol::NetworkSandboxPolicy;
     use codex_protocol::protocol::Op;
     use codex_protocol::protocol::SandboxPolicy;
     use codex_protocol::protocol::SessionSource;
@@ -453,7 +455,6 @@ mod phase2 {
 
     use std::path::PathBuf;
     use std::sync::Arc;
-    use std::time::Duration;
     use tempfile::TempDir;
 
     fn stage1_output_with_source_updated_at(source_updated_at: i64) -> Stage1Output {
@@ -517,6 +518,8 @@ mod phase2 {
                 codex_utils_absolute_path::AbsolutePathBuf::from_absolute_path(codex_home.path())
                     .expect("codex home is absolute");
             config.cwd = config.codex_home.clone();
+            config.permissions.file_system_sandbox_policy = FileSystemSandboxPolicy::unrestricted();
+            config.permissions.network_sandbox_policy = NetworkSandboxPolicy::Enabled;
             let config = Arc::new(config);
 
             let state_db = codex_state::StateRuntime::init(
@@ -1831,23 +1834,75 @@ mod phase2 {
             .expect("get consolidation thread");
         let config_snapshot = subagent.config_snapshot().await;
         pretty_assertions::assert_eq!(config_snapshot.approval_policy, AskForApproval::Never);
+        assert!(config_snapshot.ephemeral);
         pretty_assertions::assert_eq!(
             config_snapshot.cwd.as_path(),
             memory_root(&harness.config.codex_home).as_path()
         );
-        match config_snapshot.sandbox_policy {
-            SandboxPolicy::WorkspaceWrite { writable_roots, .. } => {
-                let expected_root =
-                    AbsolutePathBuf::from_absolute_path(memory_root(&harness.config.codex_home))
-                        .expect("absolute expected memory root");
+        match &config_snapshot.sandbox_policy {
+            SandboxPolicy::WorkspaceWrite {
+                writable_roots,
+                network_access,
+                ..
+            } => {
+                assert!(!*network_access);
                 pretty_assertions::assert_eq!(
-                    writable_roots,
-                    vec![expected_root],
-                    "consolidation subagent should only need the memory root as a writable root"
+                    writable_roots.as_slice(),
+                    [
+                        AbsolutePathBuf::from_absolute_path(memory_root(
+                            &harness.config.codex_home
+                        ))
+                        .expect("absolute expected memory root")
+                    ],
+                    "consolidation subagent should only be able to write the memory root"
                 );
             }
             other => panic!("unexpected sandbox policy: {other:?}"),
         }
+        let turn_context = subagent.codex.session.new_default_turn().await;
+        pretty_assertions::assert_eq!(
+            turn_context.file_system_sandbox_policy,
+            FileSystemSandboxPolicy::from_legacy_sandbox_policy(
+                &config_snapshot.sandbox_policy,
+                config_snapshot.cwd.as_path(),
+            ),
+            "consolidation subagent split filesystem policy should match the memory-root legacy policy"
+        );
+        assert!(
+            turn_context
+                .file_system_sandbox_policy
+                .can_write_path_with_cwd(
+                    memory_root(&harness.config.codex_home).as_path(),
+                    config_snapshot.cwd.as_path(),
+                ),
+            "consolidation subagent should be able to write the memory root"
+        );
+        assert!(
+            !turn_context
+                .file_system_sandbox_policy
+                .can_write_path_with_cwd(
+                    harness.config.codex_home.join("config.toml").as_path(),
+                    config_snapshot.cwd.as_path(),
+                ),
+            "consolidation subagent should not inherit codex_home write access"
+        );
+        pretty_assertions::assert_eq!(
+            turn_context.network_sandbox_policy,
+            NetworkSandboxPolicy::Restricted,
+            "consolidation subagent split network policy should preserve no-network sandboxing"
+        );
+        assert!(
+            !turn_context.features.enabled(Feature::MemoryTool),
+            "consolidation subagent should have the memories feature disabled"
+        );
+        assert!(
+            !turn_context.config.memories.generate_memories,
+            "consolidation subagent should not generate memories"
+        );
+        assert!(
+            !turn_context.config.memories.use_memories,
+            "consolidation subagent should not read memories"
+        );
         subagent.codex.session.ensure_rollout_materialized().await;
         subagent.codex.session.flush_rollout().await;
         let rollout_path = subagent

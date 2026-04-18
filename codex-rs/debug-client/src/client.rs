@@ -179,6 +179,7 @@ impl AppServerClient {
                 cursor,
                 limit: None,
                 sort_key: None,
+                sort_direction: None,
                 model_providers: None,
                 source_kinds: None,
                 archived: None,

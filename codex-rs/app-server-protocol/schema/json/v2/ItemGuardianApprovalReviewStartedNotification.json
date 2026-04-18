@@ -5,7 +5,7 @@
       "type": "string"
     },
     "GuardianApprovalReview": {
-      "description": "[UNSTABLE] Temporary guardian approval review payload used by\n`item/autoApprovalReview/*` notifications. This shape is expected to change\nsoon.",
+      "description": "[UNSTABLE] Temporary approval auto-review payload used by\n`item/autoApprovalReview/*` notifications. This shape is expected to change\nsoon.",
       "properties": {
         "rationale": {
           "type": [
@@ -204,7 +204,7 @@
       ]
     },
     "GuardianApprovalReviewStatus": {
-      "description": "[UNSTABLE] Lifecycle state for a guardian approval review.",
+      "description": "[UNSTABLE] Lifecycle state for an approval auto-review.",
       "enum": [
         "inProgress",
         "approved",
@@ -222,7 +222,7 @@
       "type": "string"
     },
     "GuardianRiskLevel": {
-      "description": "[UNSTABLE] Risk level assigned by guardian approval review.",
+      "description": "[UNSTABLE] Risk level assigned by approval auto-review.",
       "enum": [
         "low",
         "medium",
@@ -232,7 +232,7 @@
       "type": "string"
     },
     "GuardianUserAuthorization": {
-      "description": "[UNSTABLE] Authorization level assigned by guardian approval review.",
+      "description": "[UNSTABLE] Authorization level assigned by approval auto-review.",
       "enum": [
         "unknown",
         "low",
