@@ -2591,6 +2591,96 @@ async fn multi_agent_v2_wait_agent_accepts_timeout_only_argument() {
 }
 
 #[tokio::test]
+async fn multi_agent_v2_wait_agent_honors_return_when_all() {
+    let (mut session, mut turn) = make_session_and_context().await;
+    let manager = thread_manager();
+    let root = manager
+        .start_thread((*turn.config).clone())
+        .await
+        .expect("root thread should start");
+    session.services.agent_control = manager.agent_control();
+    session.conversation_id = root.thread_id;
+    let mut config = (*turn.config).clone();
+    config
+        .features
+        .enable(Feature::MultiAgentV2)
+        .expect("test config should allow feature update");
+    turn.config = Arc::new(config);
+    let config = turn.config.as_ref().clone();
+    let thread_a = manager
+        .start_thread(config.clone())
+        .await
+        .expect("thread a should start");
+    let thread_b = manager
+        .start_thread(config)
+        .await
+        .expect("thread b should start");
+    let agent_a_id = thread_a.thread_id;
+    let agent_b_id = thread_b.thread_id;
+    let mut status_rx_a = manager
+        .agent_control()
+        .subscribe_status(agent_a_id)
+        .await
+        .expect("thread a subscribe should succeed");
+
+    let wait_task = tokio::spawn({
+        let session = Arc::new(session);
+        let turn = Arc::new(turn);
+        async move {
+            WaitAgentHandlerV2
+                .handle(invocation(
+                    session,
+                    turn,
+                    "wait_agent",
+                    function_payload(json!({
+                        "targets": [agent_a_id.to_string(), agent_b_id.to_string()],
+                        "timeout_ms": 1000,
+                        "return_when": "all"
+                    })),
+                ))
+                .await
+        }
+    });
+    tokio::task::yield_now().await;
+
+    let _ = thread_a
+        .thread
+        .submit(Op::Shutdown {})
+        .await
+        .expect("thread a shutdown should submit");
+    let _ = timeout(Duration::from_secs(1), status_rx_a.changed())
+        .await
+        .expect("thread a final status should arrive");
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert!(
+        !wait_task.is_finished(),
+        "wait_agent should keep waiting until all targets are final"
+    );
+
+    let _ = thread_b
+        .thread
+        .submit(Op::Shutdown {})
+        .await
+        .expect("thread b shutdown should submit");
+
+    let output = wait_task
+        .await
+        .expect("wait task should join")
+        .expect("wait_agent should succeed");
+    let (content, success) = expect_text_output(output);
+    let result: crate::tools::handlers::multi_agents_v2::wait::WaitAgentResult =
+        serde_json::from_str(&content).expect("wait_agent result should be json");
+    assert_eq!(
+        result,
+        crate::tools::handlers::multi_agents_v2::wait::WaitAgentResult {
+            message: "Wait completed.".to_string(),
+            timed_out: false,
+        }
+    );
+    assert_eq!(success, None);
+}
+
+#[tokio::test]
 async fn wait_agent_returns_not_found_for_missing_agents() {
     let (mut session, turn) = make_session_and_context().await;
     let manager = thread_manager();
