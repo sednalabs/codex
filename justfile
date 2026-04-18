@@ -58,7 +58,7 @@ core-compile-smoke:
 # Carry-only downstream behavior smoke checks (core-only seam).
 core-carry-core-smoke:
     CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo nextest run -p codex-core --no-fail-fast --test all -- suite::subagent_notifications::spawn_agent_requested_model_and_reasoning_override_inherited_settings_without_role suite::subagent_notifications::spawn_agent_role_overrides_requested_model_and_reasoning_settings suite::code_mode::code_mode_exports_all_tools_metadata_for_builtin_tools suite::code_mode::code_mode_exports_all_tools_metadata_for_namespaced_mcp_tools suite::unified_exec::exec_command_reports_chunk_and_exit_metadata suite::unified_exec::write_stdin_returns_exit_metadata_and_clears_session --exact
-    CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo nextest run -j 1 -p codex-core --lib -- multi_agent_v2_wait_agent_honors_return_when_all --exact
+    CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo test -p codex-core multi_agent_v2_wait_agent_honors_return_when_all --lib -- --exact --test-threads=1
 
 # Carry-only downstream behavior smoke checks (TUI/UI seam).
 core-carry-ui-smoke:
@@ -183,7 +183,7 @@ core-multi-agent-orchestration-targeted:
 blocking-waits-targeted:
     CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo nextest run -j 1 -p codex-core --test all -- suite::unified_exec::exec_command_reports_chunk_and_exit_metadata --exact
     CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo nextest run -j 1 -p codex-core --test all -- suite::unified_exec::write_stdin_returns_exit_metadata_and_clears_session --exact
-    CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo nextest run -j 1 -p codex-core --lib -- multi_agent_v2_wait_agent_honors_return_when_all --exact
+    CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo test -p codex-core multi_agent_v2_wait_agent_honors_return_when_all --lib -- --exact --test-threads=1
     cargo nextest run -j 1 -p codex-app-server --test all -- suite::v2::turn_start::command_execution_completion_precedes_turn_completion_and_preserves_process_id --exact
     cargo nextest run -j 1 -p codex-mcp-server --test all -- suite::codex_tool::shell_command_approval_emits_task_complete_before_tool_response --exact
 
