@@ -146,7 +146,7 @@ impl ToolOrchestrator {
                     retry_reason: reason,
                     network_approval_context: None,
                 };
-                let decision = Self::request_approval(
+                let (decision, rejection_message) = Self::request_approval(
                     tool,
                     req,
                     tool_ctx.call_id.as_str(),
@@ -159,7 +159,9 @@ impl ToolOrchestrator {
 
                 match decision {
                     ReviewDecision::Denied | ReviewDecision::Abort => {
-                        let reason = if let Some(review_id) = guardian_review_id.as_deref() {
+                        let reason = if let Some(message) = rejection_message {
+                            message
+                        } else if let Some(review_id) = guardian_review_id.as_deref() {
                             guardian_rejection_message(tool_ctx.session.as_ref(), review_id).await
                         } else {
                             "rejected by user".to_string()
@@ -303,7 +305,7 @@ impl ToolOrchestrator {
                     };
 
                     let permission_request_run_id = format!("{}:retry", tool_ctx.call_id);
-                    let decision = Self::request_approval(
+                    let (decision, rejection_message) = Self::request_approval(
                         tool,
                         req,
                         &permission_request_run_id,
@@ -316,7 +318,9 @@ impl ToolOrchestrator {
 
                     match decision {
                         ReviewDecision::Denied | ReviewDecision::Abort => {
-                            let reason = if let Some(review_id) = guardian_review_id.as_deref() {
+                            let reason = if let Some(message) = rejection_message {
+                                message
+                            } else if let Some(review_id) = guardian_review_id.as_deref() {
                                 guardian_rejection_message(tool_ctx.session.as_ref(), review_id)
                                     .await
                             } else {
@@ -387,7 +391,7 @@ impl ToolOrchestrator {
         tool_ctx: &ToolCtx,
         use_guardian: bool,
         otel: &codex_otel::SessionTelemetry,
-    ) -> Result<ReviewDecision, ToolError>
+    ) -> Result<(ReviewDecision, Option<String>), ToolError>
     where
         T: ToolRuntime<Rq, Out>,
     {
@@ -408,7 +412,7 @@ impl ToolOrchestrator {
                         &decision,
                         ToolDecisionSource::Config,
                     );
-                    return Ok(decision);
+                    return Ok((decision, None));
                 }
                 Some(PermissionRequestDecision::Deny { message }) => {
                     let decision = ReviewDecision::Denied;
@@ -418,7 +422,7 @@ impl ToolOrchestrator {
                         &decision,
                         ToolDecisionSource::Config,
                     );
-                    return Err(ToolError::Rejected(message));
+                    return Ok((decision, Some(message)));
                 }
                 None => {}
             }
@@ -436,7 +440,7 @@ impl ToolOrchestrator {
             &decision,
             otel_source,
         );
-        Ok(decision)
+        Ok((decision, None))
     }
 }
 
