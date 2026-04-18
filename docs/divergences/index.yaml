@@ -457,6 +457,7 @@
       "files": [
         ".codex/skills/babysit-pr/agents/openai.yaml",
         ".codex/skills/babysit-pr/scripts/gh_pr_watch.py",
+        ".codex/skills/babysit-gh-workflow-run/",
         ".codex/skills/sedna/codex-orchestrator/agents/openai.yaml",
         ".codex/skills/sedna/sidecar-review-loop/agents/openai.yaml",
         ".codex/skills/sedna/subagent-session-tail/agents/openai.yaml",
