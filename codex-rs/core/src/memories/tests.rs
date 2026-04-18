@@ -422,7 +422,6 @@ task_outcome: success
 }
 
 mod phase2 {
-    use crate::CodexAuth;
     use crate::ThreadManager;
     use crate::agent::AgentControl;
     use crate::config::Config;
@@ -455,6 +454,7 @@ mod phase2 {
 
     use std::path::PathBuf;
     use std::sync::Arc;
+    use std::time::Duration;
     use tempfile::TempDir;
 
     fn stage1_output_with_source_updated_at(source_updated_at: i64) -> Stage1Output {
