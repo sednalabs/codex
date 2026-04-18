@@ -187,6 +187,22 @@ blocking-waits-targeted:
     cargo nextest run -j 1 -p codex-app-server --test all -- suite::v2::turn_start::command_execution_completion_precedes_turn_completion_and_preserves_process_id --exact
     cargo nextest run -j 1 -p codex-mcp-server --test all -- suite::codex_tool::shell_command_approval_emits_task_complete_before_tool_response --exact
 
+# Focused custom-prompt discovery and review-flow slice.
+custom-prompts-targeted:
+    cargo test -p codex-core custom_prompts::tests:: --lib -- --test-threads=1
+    cargo test -p codex-tui chatwidget::tests::review_mode::review_popup_custom_prompt_action_sends_event --lib -- --exact --test-threads=1
+    cargo test -p codex-tui chatwidget::tests::review_mode::custom_prompt_submit_sends_review_op --lib -- --exact --test-threads=1
+    cargo test -p codex-tui chatwidget::tests::review_mode::custom_prompt_enter_empty_does_not_send --lib -- --exact --test-threads=1
+    cargo test -p codex-tui chatwidget::tests::review_mode::review_custom_prompt_escape_navigates_back_then_dismisses --lib -- --exact --test-threads=1
+
+# Focused downstream MCP safety slice for config mutability and OAuth fallback
+# hardening.
+mcp-safety-targeted:
+    cargo test -p codex-core config::edit_tests::blocking_replace_mcp_servers_round_trips --lib -- --exact --test-threads=1
+    cargo test -p codex-core config::edit_tests::blocking_replace_mcp_servers_serializes_tool_approval_overrides --lib -- --exact --test-threads=1
+    cargo test -p codex-core config::service_tests::write_value_supports_custom_mcp_server_default_tool_approval_mode --lib -- --exact --test-threads=1
+    cargo test -p codex-rmcp-client load_oauth_tokens_ --lib -- --test-threads=1
+
 # Focused model-pinning slice for exact spawn-agent model slug preservation.
 core-subagent-model-pinning-targeted:
     CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo test -p codex-core spawn_agent_preserves_exact_model_slug_override_through_role_layering --lib -- --exact --test-threads=1
@@ -217,6 +233,31 @@ app-server-thread-cwd-targeted:
     cargo test --locked -p codex-app-server --test all suite::v2::thread_fork::thread_fork_honors_explicit_null_thread_instructions -- --exact --test-threads=1
     cargo test --locked -p codex-app-server --test all suite::v2::turn_start::turn_start_honors_explicit_null_thread_instructions -- --exact --test-threads=1
     cargo test --locked -p codex-app-server --test all suite::v2::turn_start::turn_start_emits_spawn_agent_item_with_requested_model_metadata_when_role_layering_is_present_v2 -- --exact --test-threads=1
+
+# Focused downstream agent-workflow helper sanity slice.
+[no-cd]
+agent-workflow-sanity:
+    cd "{{justfile_directory()}}" && python3 -m py_compile .codex/skills/babysit-pr/scripts/gh_pr_watch.py .codex/skills/babysit-gh-workflow-run/scripts/gh_workflow_run_watch.py .codex/skills/babysit-gh-workflow-run/scripts/gh_dispatch_and_watch.py .codex/skills/sedna/subagent-session-tail/scripts/inspect_subagent_tail.py
+    cd "{{justfile_directory()}}" && python3 .codex/skills/babysit-gh-workflow-run/tests/test_gh_workflow_run_watch.py
+    cd "{{justfile_directory()}}" && python3 .codex/skills/babysit-gh-workflow-run/tests/test_gh_dispatch_and_watch.py
+    cd "{{justfile_directory()}}" && python3 .codex/skills/sedna/subagent-session-tail/scripts/inspect_subagent_tail.py --help >/dev/null
+
+# Focused shell-tool-mcp package sanity slice.
+[no-cd]
+shell-tool-mcp-ci:
+    cd "{{justfile_directory()}}" && corepack enable
+    cd "{{justfile_directory()}}" && pnpm install --frozen-lockfile
+    cd "{{justfile_directory()}}" && pnpm --filter @openai/codex-shell-tool-mcp run format
+    cd "{{justfile_directory()}}" && pnpm --filter @openai/codex-shell-tool-mcp test
+    cd "{{justfile_directory()}}" && pnpm --filter @openai/codex-shell-tool-mcp run build
+
+# Focused build/config policy sanity slice for install and workspace checks.
+[no-cd]
+build-policy-sanity:
+    cd "{{justfile_directory()}}" && bash -n scripts/install/install.sh
+    cd "{{justfile_directory()}}" && python3 -m py_compile scripts/stage_npm_packages.py .github/scripts/verify_bazel_clippy_lints.py .github/scripts/verify_cargo_workspace_manifests.py
+    cd "{{justfile_directory()}}" && python3 .github/scripts/verify_bazel_clippy_lints.py
+    cd "{{justfile_directory()}}" && python3 .github/scripts/verify_cargo_workspace_manifests.py
 
 # Focused code-mode declaration rendering and metadata slice.
 code-mode-declaration-targeted:

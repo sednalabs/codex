@@ -193,6 +193,20 @@ class RouteSelectionTests(unittest.TestCase):
             ],
         )
 
+    def test_app_server_followup_route_picks_full_carry_bundle(self) -> None:
+        lanes = RESOLVE_VALIDATION_PLAN.select_followup_lanes(
+            ["codex-rs/app-server/src/router.rs"],
+            self.routes,
+        )
+        self.assertEqual(
+            lanes,
+            [
+                "codex.app-server-protocol-test",
+                "codex.app-server-thread-cwd-targeted",
+                "codex.blocking-waits-targeted",
+            ],
+        )
+
     def test_heavy_workflow_dispatch_options_cover_catalog_lanes(self) -> None:
         workflow_options = parse_workflow_dispatch_lane_options(
             REPO_ROOT / ".github/workflows/sedna-heavy-tests.yml"
@@ -487,10 +501,10 @@ class ValidationPlanScriptTests(unittest.TestCase):
         self.assertIn("codex.tui-config-refresh-session-targeted", selected_lane_ids)
         self.assertIn("codex.spawn-agent-description-model-surface-targeted", selected_lane_ids)
         self.assertNotIn("codex.tui-agent-picker-model-surface-targeted", selected_lane_ids)
-        self.assertEqual(payload["selected_light_lane_count"], 2)
-        self.assertEqual(payload["selected_rust_lane_count"], 21)
+        self.assertEqual(payload["selected_light_lane_count"], 5)
+        self.assertEqual(payload["selected_rust_lane_count"], 23)
         self.assertEqual(payload["selected_heavy_lane_count"], 6)
-        self.assertEqual(payload["rust_max_parallel"], "21")
+        self.assertEqual(payload["rust_max_parallel"], "23")
         self.assertEqual(payload["heavy_max_parallel"], "6")
 
     def test_validation_lab_frontier_all_can_include_explicit_only_lanes(self) -> None:
@@ -512,10 +526,10 @@ class ValidationPlanScriptTests(unittest.TestCase):
         selected_lane_ids = [lane["lane_id"] for lane in payload["selected_matrix"]["include"]]
         self.assertIn("codex.tui-agent-picker-model-surface-targeted", selected_lane_ids)
         self.assertIn("downstream-ledger-seam", selected_lane_ids)
-        self.assertEqual(payload["selected_light_lane_count"], 2)
-        self.assertEqual(payload["selected_rust_lane_count"], 23)
+        self.assertEqual(payload["selected_light_lane_count"], 5)
+        self.assertEqual(payload["selected_rust_lane_count"], 25)
         self.assertEqual(payload["selected_heavy_lane_count"], 6)
-        self.assertEqual(payload["rust_max_parallel"], "23")
+        self.assertEqual(payload["rust_max_parallel"], "25")
         self.assertEqual(payload["heavy_max_parallel"], "6")
 
     def test_validation_lab_frontier_all_excludes_smoke_gate_lanes_by_metadata(self) -> None:
@@ -579,8 +593,8 @@ class ValidationPlanScriptTests(unittest.TestCase):
 
         self.assertEqual(payload["matrix_fail_fast"], "false")
         self.assertEqual(payload["continue_after_smoke_failure"], "true")
-        self.assertEqual(payload["light_max_parallel"], "2")
-        self.assertEqual(payload["rust_max_parallel"], "23")
+        self.assertEqual(payload["light_max_parallel"], "5")
+        self.assertEqual(payload["rust_max_parallel"], "25")
         self.assertEqual(payload["heavy_max_parallel"], "11")
         planned_lane_ids = [lane["lane_id"] for lane in payload["planned_matrix"]["include"]]
         selected_lane_ids = payload["selected_lane_ids"]
