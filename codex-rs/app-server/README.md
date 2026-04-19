@@ -1336,6 +1336,15 @@ To enable or disable a skill by name:
 }
 ```
 
+For manual config when a repository ships a stale repo-local skill that should
+defer to your home-installed canonical copy, you can prefer the user skill by
+name:
+
+```toml
+[skills]
+prefer_user_skill_names = ["babysit-pr"]
+```
+
 ## Apps
 
 Use `app/list` to fetch available apps (connectors). Each entry includes metadata like the app `id`, display `name`, `installUrl`, `branding`, `appMetadata`, `labels`, whether it is currently accessible, and whether it is enabled in config.
