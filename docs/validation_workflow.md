@@ -69,7 +69,9 @@ Use the smallest validator that can answer the current question.
 
 For Linux release readiness, prefer `validation-lab` `profile=targeted` with
 `lane_set=release` when the question is narrow `--locked` release-build drift.
-Use artifact mode only when you also need a disposable preview package.
+That lane currently resolves to `sedna.release-linux-smoke`, which is a
+preflight check only; it does not publish a GitHub Release. Use artifact mode
+only when you also need a disposable preview package.
 
 ## Fan-out and concurrency
 
