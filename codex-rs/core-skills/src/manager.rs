@@ -3,6 +3,7 @@ use std::collections::HashSet;
 use std::sync::Arc;
 use std::sync::RwLock;
 
+use codex_app_server_protocol::ConfigLayerSource;
 use codex_config::ConfigLayerStack;
 use codex_exec_server::ExecutorFileSystem;
 use codex_protocol::protocol::Product;
@@ -93,12 +94,15 @@ impl SkillsManager {
     ) -> SkillLoadOutcome {
         let roots = self.skill_roots_for_config(input, fs).await;
         let skill_config_rules = skill_config_rules_from_stack(&input.config_layer_stack);
-        let cache_key = config_skills_cache_key(&roots, &skill_config_rules);
+        let cache_key =
+            config_skills_cache_key(&roots, &skill_config_rules, &input.config_layer_stack);
         if let Some(outcome) = self.cached_outcome_for_config(&cache_key) {
             return outcome;
         }
 
-        let outcome = self.build_skill_outcome(roots, &skill_config_rules).await;
+        let outcome = self
+            .build_skill_outcome(roots, &skill_config_rules, &input.config_layer_stack)
+            .await;
         let mut cache = self
             .cache_by_config
             .write()
@@ -172,7 +176,9 @@ impl SkillsManager {
             );
         }
         let skill_config_rules = skill_config_rules_from_stack(&input.config_layer_stack);
-        let outcome = self.build_skill_outcome(roots, &skill_config_rules).await;
+        let outcome = self
+            .build_skill_outcome(roots, &skill_config_rules, &input.config_layer_stack)
+            .await;
         if use_cwd_cache {
             let mut cache = self
                 .cache_by_cwd
@@ -187,13 +193,14 @@ impl SkillsManager {
         &self,
         roots: Vec<SkillRoot>,
         skill_config_rules: &SkillConfigRules,
+        config_layer_stack: &ConfigLayerStack,
     ) -> SkillLoadOutcome {
         let outcome = crate::filter_skill_load_outcome_for_product(
             load_skills_from_roots(roots).await,
             self.restriction_product,
         );
         let disabled_paths = resolve_disabled_skill_paths(&outcome.skills, skill_config_rules);
-        finalize_skill_outcome(outcome, disabled_paths)
+        finalize_skill_outcome(outcome, disabled_paths, config_layer_stack)
     }
 
     pub fn clear_cache(&self) {
@@ -241,6 +248,7 @@ impl SkillsManager {
 struct ConfigSkillsCacheKey {
     roots: Vec<(AbsolutePathBuf, u8)>,
     skill_config_rules: SkillConfigRules,
+    preferred_user_skill_names: Vec<String>,
 }
 
 pub fn bundled_skills_enabled_from_stack(
@@ -268,7 +276,14 @@ pub fn bundled_skills_enabled_from_stack(
 fn config_skills_cache_key(
     roots: &[SkillRoot],
     skill_config_rules: &SkillConfigRules,
+    config_layer_stack: &ConfigLayerStack,
 ) -> ConfigSkillsCacheKey {
+    let mut preferred_user_skill_names: Vec<String> =
+        preferred_user_skill_names_from_stack(config_layer_stack)
+            .into_iter()
+            .collect();
+    preferred_user_skill_names.sort_unstable();
+
     ConfigSkillsCacheKey {
         roots: roots
             .iter()
@@ -283,13 +298,92 @@ fn config_skills_cache_key(
             })
             .collect(),
         skill_config_rules: skill_config_rules.clone(),
+        preferred_user_skill_names,
     }
+}
+
+fn preferred_user_skill_names_from_stack(config_layer_stack: &ConfigLayerStack) -> HashSet<String> {
+    let mut preferred_names = HashSet::new();
+    for layer in config_layer_stack.get_layers(
+        codex_config::ConfigLayerStackOrdering::LowestPrecedenceFirst,
+        /*include_disabled*/ true,
+    ) {
+        if !matches!(
+            layer.name,
+            ConfigLayerSource::User { .. } | ConfigLayerSource::SessionFlags
+        ) {
+            continue;
+        }
+
+        let Some(skills_value) = layer
+            .config
+            .as_table()
+            .and_then(|table| table.get("skills"))
+        else {
+            continue;
+        };
+
+        let skills: SkillsConfig = match skills_value.clone().try_into() {
+            Ok(skills) => skills,
+            Err(err) => {
+                warn!("invalid skills config: {err}");
+                continue;
+            }
+        };
+
+        preferred_names.extend(
+            skills
+                .prefer_user_skill_names
+                .into_iter()
+                .map(|name| name.trim().to_ascii_lowercase())
+                .filter(|name| !name.is_empty()),
+        );
+    }
+
+    preferred_names
+}
+
+fn repo_disabled_paths_for_preferred_user_skill_names(
+    skills: &[crate::SkillMetadata],
+    disabled_paths: &HashSet<AbsolutePathBuf>,
+    preferred_user_skill_names: &HashSet<String>,
+) -> HashSet<AbsolutePathBuf> {
+    if preferred_user_skill_names.is_empty() {
+        return HashSet::new();
+    }
+
+    let available_user_names: HashSet<String> = skills
+        .iter()
+        .filter(|skill| {
+            skill.scope == SkillScope::User && !disabled_paths.contains(&skill.path_to_skills_md)
+        })
+        .map(|skill| skill.name.to_ascii_lowercase())
+        .collect();
+
+    skills
+        .iter()
+        .filter(|skill| {
+            skill.scope == SkillScope::Repo
+                && !disabled_paths.contains(&skill.path_to_skills_md)
+                && preferred_user_skill_names.contains(&skill.name.to_ascii_lowercase())
+                && available_user_names.contains(&skill.name.to_ascii_lowercase())
+        })
+        .map(|skill| skill.path_to_skills_md.clone())
+        .collect()
 }
 
 fn finalize_skill_outcome(
     mut outcome: SkillLoadOutcome,
     disabled_paths: HashSet<AbsolutePathBuf>,
+    config_layer_stack: &ConfigLayerStack,
 ) -> SkillLoadOutcome {
+    let preferred_user_skill_names = preferred_user_skill_names_from_stack(config_layer_stack);
+    let mut disabled_paths = disabled_paths;
+    disabled_paths.extend(repo_disabled_paths_for_preferred_user_skill_names(
+        &outcome.skills,
+        &disabled_paths,
+        &preferred_user_skill_names,
+    ));
     outcome.disabled_paths = disabled_paths;
     let (by_scripts_dir, by_doc_path) =
         build_implicit_skill_path_indexes(outcome.allowed_skills_for_implicit_invocation());
