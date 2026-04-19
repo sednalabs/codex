@@ -323,13 +323,19 @@ fn preferred_user_skill_names_from_stack(config_layer_stack: &ConfigLayerStack) 
             continue;
         };
 
-        let skills: SkillsConfig = match skills_value.clone().try_into() {
-            Ok(skills) => skills,
-            Err(err) => {
-                warn!("invalid skills config: {err}");
-                continue;
-            }
-        };
+        let preferred_names_value = skills_value
+            .get("prefer_user_skill_names")
+            .and_then(|v| v.as_array());
+
+        if let Some(names) = preferred_names_value {
+            preferred_names.extend(
+                names
+                    .iter()
+                    .filter_map(|v| v.as_str())
+                    .map(|name| name.trim().to_ascii_lowercase())
+                    .filter(|name| !name.is_empty()),
+            );
+        }
 
         preferred_names.extend(
             skills
