@@ -1830,6 +1830,12 @@
             "$ref": "#/definitions/SkillConfig"
           },
           "type": "array"
+        },
+        "prefer_user_skill_names": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
         }
       },
       "type": "object"
