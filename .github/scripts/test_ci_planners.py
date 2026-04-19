@@ -207,6 +207,13 @@ class RouteSelectionTests(unittest.TestCase):
             ],
         )
 
+    def test_review_prompt_core_path_stays_out_of_custom_prompt_shortcut(self) -> None:
+        lanes = RESOLVE_VALIDATION_PLAN.select_followup_lanes(
+            ["codex-rs/core/src/review_prompts.rs"],
+            self.routes,
+        )
+        self.assertEqual(lanes, [])
+
     def test_heavy_workflow_dispatch_options_cover_catalog_lanes(self) -> None:
         workflow_options = parse_workflow_dispatch_lane_options(
             REPO_ROOT / ".github/workflows/sedna-heavy-tests.yml"
@@ -877,6 +884,19 @@ class RustCiModeScriptTests(unittest.TestCase):
         self.assertEqual(outputs["run_general"], "true")
         self.assertEqual(outputs["run_cargo_shear"], "true")
         self.assertEqual(outputs["run_argument_comment_lint_prebuilt"], "true")
+
+    def test_review_prompts_pr_falls_back_to_full_validation(self) -> None:
+        outputs = self.run_rust_ci_mode(
+            event_action="opened",
+            head_files={"codex-rs/core/src/review_prompts.rs": "fn review_prompt() {}\n"},
+        )
+
+        self.assertEqual(outputs["validation_mode"], "full")
+        self.assertEqual(outputs["codex"], "true")
+        self.assertEqual(outputs["run_general"], "true")
+        self.assertEqual(outputs["run_cargo_shear"], "true")
+        self.assertEqual(outputs["run_incremental_validation"], "false")
+        self.assertEqual(outputs["incremental_lanes"], "")
 
 
 class HelperScriptTests(unittest.TestCase):

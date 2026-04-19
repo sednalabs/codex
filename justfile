@@ -32,6 +32,14 @@ app-server-test-client *args:
 fmt:
     cargo fmt -- --config imports_granularity=Item 2>/dev/null
 
+core-websocket-targeted:
+    set -euo pipefail; \
+    export CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}"; \
+    cargo test -p codex-core --test all suite::agent_websocket -- --exact --test-threads=1; \
+    cargo test -p codex-core --test all suite::client_websockets -- --exact --test-threads=1; \
+    cargo test -p codex-core --test all suite::websocket_fallback -- --exact --test-threads=1; \
+    cargo test -p codex-core --test all suite::turn_state::websocket_turn_state_persists_within_turn_and_resets_after -- --exact --test-threads=1
+
 fix *args:
     cargo clippy --fix --tests --allow-dirty "$@"
 
