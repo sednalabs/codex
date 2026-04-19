@@ -1054,6 +1054,8 @@ pub(crate) struct ChatWidget {
     is_review_mode: bool,
     // Snapshot of token usage to restore after review mode exits.
     pre_review_token_info: Option<Option<TokenUsageInfo>>,
+    // Defer restoration until the next turn starts so review completion can show review usage.
+    pending_pre_review_token_restore: bool,
     // Whether the next streamed assistant content should be preceded by a final message separator.
     //
     // This is set whenever we insert a visible history cell that conceptually belongs to a turn.
@@ -2498,6 +2500,7 @@ impl ChatWidget {
     // Raw reasoning uses the same flow as summarized reasoning
 
     fn on_task_started(&mut self) {
+        self.maybe_restore_pre_review_token_info_after_review_turn();
         self.agent_turn_running = true;
         self.turn_sleep_inhibitor
             .set_turn_running(/*turn_running*/ true);
@@ -2886,6 +2889,13 @@ impl ChatWidget {
                     self.token_info = None;
                 }
             }
+        }
+    }
+
+    fn maybe_restore_pre_review_token_info_after_review_turn(&mut self) {
+        if self.pending_pre_review_token_restore {
+            self.pending_pre_review_token_restore = false;
+            self.restore_pre_review_token_info();
         }
     }
 
@@ -5136,6 +5146,7 @@ impl ChatWidget {
             quit_shortcut_key: None,
             is_review_mode: false,
             pre_review_token_info: None,
+            pending_pre_review_token_restore: false,
             needs_final_message_separator: false,
             had_work_activity: false,
             last_separator_elapsed_secs: None,
@@ -7756,6 +7767,7 @@ impl ChatWidget {
         if self.pre_review_token_info.is_none() {
             self.pre_review_token_info = Some(self.token_info.clone());
         }
+        self.pending_pre_review_token_restore = false;
         if !from_replay && !self.bottom_pane.is_task_running() {
             self.bottom_pane.set_task_running(/*running*/ true);
         }
@@ -7770,7 +7782,7 @@ impl ChatWidget {
         self.flush_interrupt_queue();
         self.flush_active_cell();
         self.is_review_mode = false;
-        self.restore_pre_review_token_info();
+        self.pending_pre_review_token_restore = self.pre_review_token_info.is_some();
         self.add_to_history(history_cell::new_review_status_line(
             "<< Code review finished >>".to_string(),
         ));
