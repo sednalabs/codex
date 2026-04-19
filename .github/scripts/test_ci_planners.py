@@ -888,6 +888,19 @@ class RustCiModeScriptTests(unittest.TestCase):
         self.assertEqual(outputs["run_cargo_shear"], "true")
         self.assertEqual(outputs["run_argument_comment_lint_prebuilt"], "true")
 
+    def test_review_prompts_pr_routes_to_custom_prompt_targeted_validation(self) -> None:
+        outputs = self.run_rust_ci_mode(
+            event_action="opened",
+            head_files={"codex-rs/core/src/review_prompts.rs": "fn review_prompt() {}\n"},
+        )
+
+        self.assertEqual(outputs["validation_mode"], "light_initial")
+        self.assertEqual(outputs["codex"], "true")
+        self.assertEqual(outputs["run_general"], "false")
+        self.assertEqual(outputs["run_cargo_shear"], "false")
+        self.assertEqual(outputs["run_incremental_validation"], "true")
+        self.assertEqual(outputs["incremental_lanes"], "codex.custom-prompts-targeted")
+
 
 class HelperScriptTests(unittest.TestCase):
     def test_build_results_tolerates_selected_lane_missing_from_matrix(self) -> None:
