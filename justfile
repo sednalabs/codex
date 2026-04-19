@@ -345,7 +345,7 @@ downstream-divergence-audit:
     cd "{{justfile_directory()}}" && python3 scripts/downstream-divergence-audit.py --repo . --downstream-remote origin --downstream-branch main --mirror-remote origin --mirror-branch upstream-main --upstream-remote upstream --upstream-branch main --registry-path docs/divergences/index.yaml --output-dir target/downstream-divergence-audit --format both --code-only --enforce-registry
 
 # Early non-publishing Linux release-build smoke coverage.
-release-linux-build-smoke:
+sedna-release-linux-smoke:
     CODEX_RELEASE_VERSION="${CODEX_RELEASE_VERSION:-0.0.0-sedna.smoke}" cargo build --locked --target x86_64-unknown-linux-gnu --release --bin codex --bin codex-responses-api-proxy
 
 # Fast smoke checks for fragile codex-core integration buckets.
