@@ -33,7 +33,11 @@ use std::collections::HashSet;
 use std::fs;
 use std::path::Path;
 use std::process::Command;
+use std::process::Output;
+use std::process::Stdio;
 use std::sync::Arc;
+use std::time::Duration;
+use std::time::Instant;
 use tempfile::TempDir;
 use tracing::warn;
 
@@ -42,6 +46,7 @@ const DEFAULT_MCP_CONFIG_FILE: &str = ".mcp.json";
 const DEFAULT_APP_CONFIG_FILE: &str = ".app.json";
 const OPENAI_CURATED_MARKETPLACE_NAME: &str = "openai-curated";
 const CONFIG_TOML_FILE: &str = "config.toml";
+const GIT_COMMAND_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum NonCuratedCacheRefreshMode {
@@ -924,6 +929,7 @@ fn clone_git_plugin_source(
                 "--filter=blob:none",
                 "--sparse",
                 "--no-checkout",
+                "--",
                 url,
                 destination.to_string_lossy().as_ref(),
             ],
@@ -941,7 +947,7 @@ fn clone_git_plugin_source(
         )?;
     } else {
         run_git(
-            &["clone", url, destination.to_string_lossy().as_ref()],
+            &["clone", "--", url, destination.to_string_lossy().as_ref()],
             /*cwd*/ None,
         )?;
     }
@@ -956,14 +962,17 @@ fn clone_git_plugin_source(
 fn run_git(args: &[&str], cwd: Option<&Path>) -> Result<(), String> {
     let mut command = Command::new("git");
     command.args(args);
+    command.env("GIT_OPTIONAL_LOCKS", "0");
     command.env("GIT_TERMINAL_PROMPT", "0");
     if let Some(cwd) = cwd {
         command.current_dir(cwd);
     }
 
-    let output = command
-        .output()
-        .map_err(|err| format!("failed to run git {}: {err}", args.join(" ")))?;
+    let output = run_git_command_with_timeout(
+        &mut command,
+        &format!("git {}", args.join(" ")),
+        GIT_COMMAND_TIMEOUT,
+    )?;
     if output.status.success() {
         return Ok(());
     }
@@ -975,6 +984,49 @@ fn run_git(args: &[&str], cwd: Option<&Path>) -> Result<(), String> {
         String::from_utf8_lossy(&output.stdout).trim(),
         String::from_utf8_lossy(&output.stderr).trim()
     ))
+}
+
+fn run_git_command_with_timeout(
+    command: &mut Command,
+    context: &str,
+    timeout: Duration,
+) -> Result<Output, String> {
+    let mut child = command
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|err| format!("failed to run {context}: {err}"))?;
+    let start = Instant::now();
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => {
+                return child
+                    .wait_with_output()
+                    .map_err(|err| format!("failed to wait for {context}: {err}"));
+            }
+            Ok(None) => {}
+            Err(err) => return Err(format!("failed to poll {context}: {err}")),
+        }
+
+        if start.elapsed() >= timeout {
+            let _ = child.kill();
+            let output = child
+                .wait_with_output()
+                .map_err(|err| format!("failed to wait for {context} after timeout: {err}"))?;
+            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+            return if stderr.is_empty() {
+                Err(format!("{context} timed out after {}s", timeout.as_secs()))
+            } else {
+                Err(format!(
+                    "{context} timed out after {}s: {stderr}",
+                    timeout.as_secs()
+                ))
+            };
+        }
+
+        std::thread::sleep(Duration::from_millis(100));
+    }
 }
 
 #[cfg(test)]
