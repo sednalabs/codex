@@ -28,6 +28,9 @@ pub struct SkillsConfig {
     pub bundled: Option<BundledSkillsConfig>,
 
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub prefer_user_skill_names: Vec<String>,
+
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub config: Vec<SkillConfig>,
 }
 
