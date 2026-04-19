@@ -620,6 +620,42 @@ fn disabled_paths_for_skills_allows_session_flags_to_override_user_layer() {
     );
 }
 
+#[test]
+fn preferred_user_skill_names_from_stack_collects_user_and_session_layers() {
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    let user_file = AbsolutePathBuf::try_from(tempdir.path().join("config.toml"))
+        .expect("user config path should be absolute");
+    let user_layer = ConfigLayerEntry::new(
+        ConfigLayerSource::User { file: user_file },
+        toml::from_str(
+            r#"[skills]
+prefer_user_skill_names = ["babysit-pr"]
+"#,
+        )
+        .expect("user layer toml"),
+    );
+    let session_layer = ConfigLayerEntry::new(
+        ConfigLayerSource::SessionFlags,
+        toml::from_str(
+            r#"[skills]
+prefer_user_skill_names = ["ops-work-items"]
+"#,
+        )
+        .expect("session layer toml"),
+    );
+    let stack = ConfigLayerStack::new(
+        vec![user_layer, session_layer],
+        Default::default(),
+        ConfigRequirementsToml::default(),
+    )
+    .expect("valid config layer stack");
+
+    assert_eq!(
+        preferred_user_skill_names_from_stack(&stack),
+        HashSet::from(["babysit-pr".to_string(), "ops-work-items".to_string()])
+    );
+}
+
 #[cfg_attr(windows, ignore)]
 #[test]
 fn disabled_paths_for_skills_allows_session_flags_to_disable_user_enabled_skill() {
@@ -714,6 +750,66 @@ fn disabled_paths_for_skills_allows_name_selector_to_override_path_selector() {
     assert_eq!(
         resolve_disabled_skill_paths(&[skill], &skill_config_rules),
         HashSet::new()
+    );
+}
+
+#[test]
+fn finalize_skill_outcome_disables_repo_skill_when_user_preference_is_configured() {
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    let user_file = AbsolutePathBuf::try_from(tempdir.path().join("config.toml"))
+        .expect("user config path should be absolute");
+    let user_layer = ConfigLayerEntry::new(
+        ConfigLayerSource::User { file: user_file },
+        toml::from_str(
+            r#"[skills]
+prefer_user_skill_names = ["babysit-pr"]
+"#,
+        )
+        .expect("user layer toml"),
+    );
+    let stack = ConfigLayerStack::new(
+        vec![user_layer],
+        Default::default(),
+        ConfigRequirementsToml::default(),
+    )
+    .expect("valid config layer stack");
+    let repo_skill_path = tempdir
+        .path()
+        .join("repo/.codex/skills/babysit-pr/SKILL.md");
+    let user_skill_path = tempdir
+        .path()
+        .join("home/.codex/skills/babysit-pr/SKILL.md");
+    let outcome = SkillLoadOutcome {
+        skills: vec![
+            SkillMetadata {
+                name: "babysit-pr".to_string(),
+                description: "repo copy".to_string(),
+                short_description: None,
+                interface: None,
+                dependencies: None,
+                policy: None,
+                path_to_skills_md: repo_skill_path.abs(),
+                scope: SkillScope::Repo,
+            },
+            SkillMetadata {
+                name: "babysit-pr".to_string(),
+                description: "user copy".to_string(),
+                short_description: None,
+                interface: None,
+                dependencies: None,
+                policy: None,
+                path_to_skills_md: user_skill_path.abs(),
+                scope: SkillScope::User,
+            },
+        ],
+        ..Default::default()
+    };
+
+    let finalized = finalize_skill_outcome(outcome, HashSet::new(), &stack);
+
+    assert_eq!(
+        finalized.disabled_paths,
+        HashSet::from([repo_skill_path.abs()])
     );
 }
 

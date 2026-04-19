@@ -308,6 +308,27 @@ enabled = false
         cfg.skills,
         Some(SkillsConfig {
             bundled: Some(BundledSkillsConfig { enabled: false }),
+            prefer_user_skill_names: Vec::new(),
+            config: Vec::new(),
+        })
+    );
+}
+
+#[test]
+fn parses_prefer_user_skill_names() {
+    let cfg: ConfigToml = toml::from_str(
+        r#"
+[skills]
+prefer_user_skill_names = ["babysit-pr"]
+"#,
+    )
+    .expect("TOML deserialization should succeed");
+
+    assert_eq!(
+        cfg.skills,
+        Some(SkillsConfig {
+            bundled: None,
+            prefer_user_skill_names: vec!["babysit-pr".to_string()],
             config: Vec::new(),
         })
     );
