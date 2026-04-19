@@ -394,6 +394,7 @@
       "files": [
         "codex-rs/core/src/custom_prompts.rs",
         "codex-rs/core/src/custom_prompts_tests.rs",
+        "codex-rs/core/src/review_prompts.rs",
         "codex-rs/protocol/src/custom_prompts.rs",
         "codex-rs/core/src/lib.rs",
         "codex-rs/protocol/src/lib.rs",
@@ -401,7 +402,7 @@
         "codex-rs/tui/src/app_event.rs",
         "codex-rs/tui/src/bottom_pane/custom_prompt_view.rs"
       ],
-      "behavior": "Custom prompt discovery and review prompt routing stay consistent across core, protocol, and TUI surfaces.",
+      "behavior": "The downstream fork keeps the restored file-backed custom prompt catalogue in core/protocol and preserves the ad hoc custom-review prompt flow across core and TUI surfaces.",
       "upstream_equivalent": false,
       "introduced_in": {
         "carry_commit": null,
@@ -410,13 +411,14 @@
       "guardrail_lane": "codex.custom-prompts-targeted",
       "tests": [
         "custom_prompts::tests::*",
+        "review_prompts::tests::*",
         "review_popup_custom_prompt_action_sends_event",
         "custom_prompt_submit_sends_review_op",
         "custom_prompt_enter_empty_does_not_send",
         "review_custom_prompt_escape_navigates_back_then_dismisses"
       ],
       "owner": "downstream",
-      "notes": "Keeps the custom prompt pipeline discoverable from the UI."
+      "notes": "The carried file-backed prompt catalogue remains documented in core/protocol, while the targeted lane also guards the live ad hoc custom-review prompt path."
     },
     {
       "id": "code-mode-declaration-formatting",
