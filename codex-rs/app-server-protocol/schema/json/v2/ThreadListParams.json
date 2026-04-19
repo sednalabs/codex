@@ -1,5 +1,12 @@
 {
   "$defs": {
+    "SortDirection": {
+      "enum": [
+        "asc",
+        "desc"
+      ],
+      "type": "string"
+    },
     "ThreadSortKey": {
       "enum": [
         "created_at",
@@ -71,6 +78,17 @@
         "string",
         "null"
       ]
+    },
+    "sortDirection": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/SortDirection"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Optional sort direction; defaults to descending (newest first)."
     },
     "sortKey": {
       "anyOf": [

@@ -229,7 +229,7 @@ persistence = "none"
 
     let memories = r#"
 [memories]
-no_memories_if_mcp_or_web_search = true
+disable_on_external_context = true
 generate_memories = false
 use_memories = false
 max_raw_memories_for_consolidation = 512
@@ -244,7 +244,7 @@ consolidation_model = "gpt-5"
         toml::from_str::<ConfigToml>(memories).expect("TOML deserialization should succeed");
     assert_eq!(
         Some(MemoriesToml {
-            no_memories_if_mcp_or_web_search: Some(true),
+            disable_on_external_context: Some(true),
             generate_memories: Some(false),
             use_memories: Some(false),
             max_raw_memories_for_consolidation: Some(512),
@@ -268,7 +268,7 @@ consolidation_model = "gpt-5"
     assert_eq!(
         config.memories,
         MemoriesConfig {
-            no_memories_if_mcp_or_web_search: true,
+            disable_on_external_context: true,
             generate_memories: false,
             use_memories: false,
             max_raw_memories_for_consolidation: 512,
@@ -279,6 +279,18 @@ consolidation_model = "gpt-5"
             extract_model: Some("gpt-5-mini".to_string()),
             consolidation_model: Some("gpt-5".to_string()),
         }
+    );
+
+    let legacy_memories_cfg =
+        toml::from_str::<ConfigToml>("[memories]\nno_memories_if_mcp_or_web_search = true\n")
+            .expect("legacy memories TOML should deserialize");
+    assert!(
+        MemoriesConfig::from(
+            legacy_memories_cfg
+                .memories
+                .expect("legacy memories config")
+        )
+        .disable_on_external_context
     );
 }
 
@@ -296,6 +308,27 @@ enabled = false
         cfg.skills,
         Some(SkillsConfig {
             bundled: Some(BundledSkillsConfig { enabled: false }),
+            prefer_user_skill_names: Vec::new(),
+            config: Vec::new(),
+        })
+    );
+}
+
+#[test]
+fn parses_prefer_user_skill_names() {
+    let cfg: ConfigToml = toml::from_str(
+        r#"
+[skills]
+prefer_user_skill_names = ["babysit-pr"]
+"#,
+    )
+    .expect("TOML deserialization should succeed");
+
+    assert_eq!(
+        cfg.skills,
+        Some(SkillsConfig {
+            bundled: None,
+            prefer_user_skill_names: vec!["babysit-pr".to_string()],
             config: Vec::new(),
         })
     );
@@ -5370,6 +5403,7 @@ async fn test_requirements_web_search_mode_allowlist_does_not_warn_when_unset() 
         rules: None,
         enforce_residency: None,
         network: None,
+        permissions: None,
         guardian_policy_config: None,
     };
     let requirement_source = crate::config_loader::RequirementSource::Unknown;
@@ -6013,6 +6047,7 @@ async fn explicit_sandbox_mode_falls_back_when_disallowed_by_requirements() -> s
         rules: None,
         enforce_residency: None,
         network: None,
+        permissions: None,
         guardian_policy_config: None,
     };
 

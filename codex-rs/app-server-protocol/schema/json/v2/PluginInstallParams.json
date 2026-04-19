@@ -7,19 +7,27 @@
   },
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "properties": {
-    "forceRemoteSync": {
-      "description": "When true, apply the remote plugin change before the local install flow.",
-      "type": "boolean"
-    },
     "marketplacePath": {
-      "$ref": "#/$defs/AbsolutePathBuf"
+      "anyOf": [
+        {
+          "$ref": "#/$defs/AbsolutePathBuf"
+        },
+        {
+          "type": "null"
+        }
+      ]
     },
     "pluginName": {
       "type": "string"
+    },
+    "remoteMarketplaceName": {
+      "type": [
+        "string",
+        "null"
+      ]
     }
   },
   "required": [
-    "marketplacePath",
     "pluginName"
   ],
   "title": "PluginInstallParams",

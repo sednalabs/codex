@@ -1,5 +1,6 @@
 use super::*;
 
+use super::tests::make_session_and_context;
 use crate::protocol::CompactedItem;
 use crate::protocol::InitialHistory;
 use crate::protocol::ResumedHistory;

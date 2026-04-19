@@ -1999,9 +1999,12 @@ async fn complete_file_change_item(
     outgoing: &ThreadScopedOutgoingMessageSender,
     thread_state: &Arc<Mutex<ThreadState>>,
 ) {
-    let mut state = thread_state.lock().await;
-    state.turn_summary.file_change_started.remove(&item_id);
-    drop(state);
+    thread_state
+        .lock()
+        .await
+        .turn_summary
+        .file_change_started
+        .remove(&item_id);
 
     let notification = ItemCompletedNotification {
         thread_id: conversation_id.to_string(),
@@ -2070,12 +2073,12 @@ async fn complete_command_execution_item(
     outgoing: &ThreadScopedOutgoingMessageSender,
     thread_state: &Arc<Mutex<ThreadState>>,
 ) {
-    let mut state = thread_state.lock().await;
-    let should_emit = state
+    let should_emit = thread_state
+        .lock()
+        .await
         .turn_summary
         .command_execution_started
         .remove(&item_id);
-    drop(state);
     if !should_emit {
         return;
     }
@@ -4085,6 +4088,7 @@ mod tests {
                 balance: Some("5".to_string()),
             }),
             plan_type: None,
+            rate_limit_reached_type: None,
         };
 
         handle_token_count_event(
