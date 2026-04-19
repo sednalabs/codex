@@ -292,7 +292,7 @@ async fn live_agent_message_renders_during_review_mode() {
     assert!(lines_to_single_string(&inserted[0]).contains("Review progress update"));
 }
 
-/// Exiting review restores the pre-review context window indicator.
+/// Exiting review keeps review usage visible, then restores pre-review usage on next turn start.
 #[tokio::test]
 async fn review_restores_context_window_indicator() {
     let (mut chat, mut rx, _ops) = make_chatwidget_manual(/*model_override*/ None).await;
@@ -338,8 +338,21 @@ async fn review_restores_context_window_indicator() {
     });
     let _ = drain_insert_history(&mut rx);
 
-    assert_eq!(chat.bottom_pane.context_window_percent(), Some(30));
+    // Keep the review-turn token usage visible at review completion.
+    assert_eq!(chat.bottom_pane.context_window_percent(), Some(97));
     assert!(!chat.is_review_mode);
+
+    chat.handle_codex_event(Event {
+        id: "turn-start-after-review".into(),
+        msg: EventMsg::TurnStarted(TurnStartedEvent {
+            turn_id: "turn-2".to_string(),
+            model_context_window: Some(context_window),
+            collaboration_mode_kind: ModeKind::Default,
+        }),
+    });
+
+    // Restore the pre-review indicator when the next turn starts.
+    assert_eq!(chat.bottom_pane.context_window_percent(), Some(30));
 }
 
 #[tokio::test]
