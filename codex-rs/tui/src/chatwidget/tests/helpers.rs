@@ -315,6 +315,7 @@ pub(super) async fn make_chatwidget_manual(
         quit_shortcut_key: None,
         is_review_mode: false,
         pre_review_token_info: None,
+        pending_pre_review_token_restore: false,
         needs_final_message_separator: false,
         had_work_activity: false,
         saw_plan_update_this_turn: false,
