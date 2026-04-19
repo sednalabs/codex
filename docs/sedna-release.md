@@ -55,6 +55,9 @@ Current workflow characteristics:
 - `validation-lab` `profile=targeted` with `lane_set=release` is the preferred early Linux
   release-build smoke path when the question is dependency or lockfile drift under
   `cargo build --locked`
+- the concrete preflight lane is `sedna.release-linux-smoke`; keep that path separate from
+  official release publication so operators can prove a ref is releasable without mutating
+  GitHub Releases
 - `sedna-branch-build` produces disposable preview binaries only when manually dispatched
 - `sedna-heavy-tests` runs expensive remote validation without using the local development machine as the
   build factory
@@ -72,6 +75,8 @@ Current workflow characteristics:
 - When the question is "will the Linux release binary set still build with `--locked`?", prefer
   `validation-lab` `profile=targeted` with `lane_set=release` before escalating to artifact mode
   or `sedna-release`
+- When the question is "publish an official release on GitHub Releases," skip `validation-lab`
+  publication entirely and use `sedna-release`
 - Preview builds are intentionally opt-in rather than every-commit defaults
 - GitHub-hosted branch builds remain useful when the actual question is preview artifact
   buildability
