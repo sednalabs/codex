@@ -2500,6 +2500,7 @@ impl ChatWidget {
     // Raw reasoning uses the same flow as summarized reasoning
 
     fn on_task_started(&mut self) {
+        self.maybe_restore_pre_review_token_info_after_review_turn();
         self.agent_turn_running = true;
         self.turn_sleep_inhibitor
             .set_turn_running(/*turn_running*/ true);
@@ -7517,7 +7518,6 @@ impl ChatWidget {
             EventMsg::RealtimeConversationListVoicesResponse(_) => {}
             EventMsg::TurnStarted(event) => {
                 if !is_resume_initial_replay {
-                    self.maybe_restore_pre_review_token_info_after_review_turn();
                     self.apply_turn_started_context_window(event.model_context_window);
                     self.on_task_started();
                 }
