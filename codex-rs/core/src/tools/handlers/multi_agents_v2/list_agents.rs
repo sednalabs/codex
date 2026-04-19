@@ -39,7 +39,6 @@ impl ToolHandler for Handler {
 }
 
 #[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
 struct ListAgentsArgs {
     path_prefix: Option<String>,
 }
