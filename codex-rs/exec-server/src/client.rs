@@ -68,9 +68,11 @@ use crate::protocol::WriteResponse;
 use crate::rpc::RpcCallError;
 use crate::rpc::RpcClient;
 use crate::rpc::RpcClientEvent;
+use tracing::warn;
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const INITIALIZE_TIMEOUT: Duration = Duration::from_secs(10);
+const ORDERED_EVENT_GAP_TIMEOUT: Duration = Duration::from_secs(30);
 const PROCESS_EVENT_CHANNEL_CAPACITY: usize = 256;
 const PROCESS_EVENT_RETAINED_BYTES: usize = 1024 * 1024;
 
@@ -120,6 +122,7 @@ struct OrderedSessionEvents {
     // different tasks and can reach the client out of order. Keep future events
     // here until all lower sequence numbers have been published.
     pending: BTreeMap<u64, ExecProcessEvent>,
+    pending_since: Option<std::time::Instant>,
 }
 
 #[derive(Clone)]
@@ -507,6 +510,7 @@ impl SessionState {
         };
 
         let mut ready = Vec::new();
+        let mut forced_gap_flush = None;
         {
             let mut ordered_events = self
                 .ordered_events
@@ -519,6 +523,9 @@ impl SessionState {
             }
 
             ordered_events.pending.entry(seq).or_insert(event);
+            ordered_events
+                .pending_since
+                .get_or_insert_with(std::time::Instant::now);
             loop {
                 let next_seq = ordered_events.last_published_seq + 1;
                 let Some(event) = ordered_events.pending.remove(&next_seq) else {
@@ -527,6 +534,34 @@ impl SessionState {
                 ordered_events.last_published_seq += 1;
                 ready.push(event);
             }
+
+            if ordered_events.pending.is_empty() {
+                ordered_events.pending_since = None;
+            } else if ordered_events
+                .pending_since
+                .is_some_and(|since| since.elapsed() >= ORDERED_EVENT_GAP_TIMEOUT)
+            {
+                let missing_seq = ordered_events.last_published_seq + 1;
+                let pending_count = ordered_events.pending.len();
+                let pending = std::mem::take(&mut ordered_events.pending);
+                ordered_events.last_published_seq = pending
+                    .keys()
+                    .next_back()
+                    .copied()
+                    .unwrap_or(ordered_events.last_published_seq);
+                ordered_events.pending_since = None;
+                ready.extend(pending.into_values());
+                forced_gap_flush = Some((missing_seq, pending_count));
+            }
+        }
+
+        if let Some((missing_seq, pending_count)) = forced_gap_flush {
+            warn!(
+                missing_seq,
+                pending_count,
+                timeout_secs = ORDERED_EVENT_GAP_TIMEOUT.as_secs(),
+                "exec-server event ordering stalled; forcing delivery of buffered events"
+            );
         }
 
         let mut published_closed = false;
