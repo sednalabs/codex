@@ -1,7 +1,9 @@
 use crate::agent::AgentStatus;
 use crate::agent::status::is_final as is_final_agent_status;
-use crate::codex::Session;
 use crate::config::Config;
+use crate::memories::extensions::PendingExtensionResourceRemoval;
+use crate::memories::extensions::find_old_extension_resources;
+use crate::memories::extensions::remove_extension_resources;
 use crate::memories::memory_root;
 use crate::memories::metrics;
 use crate::memories::phase_two;
@@ -9,12 +11,14 @@ use crate::memories::prompts::build_consolidation_prompt;
 use crate::memories::storage::rebuild_raw_memories_file_from_memories;
 use crate::memories::storage::rollout_summary_file_stem;
 use crate::memories::storage::sync_rollout_summaries_from_memories;
+use crate::session::emit_subagent_session_started;
+use crate::session::session::Session;
 use codex_config::Constrained;
 use codex_features::Feature;
 use codex_protocol::ThreadId;
+use codex_protocol::permissions::FileSystemSandboxPolicy;
+use codex_protocol::permissions::NetworkSandboxPolicy;
 use codex_protocol::protocol::AskForApproval;
-use codex_protocol::protocol::FileSystemSandboxPolicy;
-use codex_protocol::protocol::NetworkSandboxPolicy;
 use codex_protocol::protocol::SandboxPolicy;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::SubAgentSource;
@@ -56,7 +60,6 @@ const CONSOLIDATION_ARTIFACT_ATTESTATION_SCHEMA_VERSION: u32 = 4;
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 struct ConsolidationArtifactAttestation {
     schema_version: u32,
-    artifacts_freshly_rewritten: bool,
     selection_fingerprint: String,
     consolidator_fingerprint: String,
     memory_sha256: String,
@@ -114,7 +117,7 @@ pub(super) async fn run(session: &Arc<Session>, config: Arc<Config>) {
             return;
         }
     };
-    let raw_memories = selection.selected.to_vec();
+    let raw_memories = selection.selected.clone();
     let artifact_memories = artifact_memories_for_phase2(&selection);
     let new_watermark = get_watermark(claim.watermark, &raw_memories);
 
@@ -145,7 +148,12 @@ pub(super) async fn run(session: &Arc<Session>, config: Arc<Config>) {
         job::failed(session, db, &claim, "failed_prepare_artifacts").await;
         return;
     };
-    if raw_memories.is_empty() {
+    let pending_extension_resource_removals = find_old_extension_resources(&root).await;
+    let removed_extension_resources = pending_extension_resource_removals
+        .iter()
+        .map(|resource| resource.removed.clone())
+        .collect::<Vec<_>>();
+    if raw_memories.is_empty() && pending_extension_resource_removals.is_empty() {
         // We check only after sync of the file system.
         job::succeed(
             session,
@@ -160,7 +168,7 @@ pub(super) async fn run(session: &Arc<Session>, config: Arc<Config>) {
     }
 
     // 5. Spawn the agent
-    let prompt = agent::get_prompt(&config, &selection);
+    let prompt = agent::get_prompt(&config, &selection, &removed_extension_resources);
     let source = SessionSource::SubAgent(SubAgentSource::MemoryConsolidation);
     let artifacts_not_before = SystemTime::now();
     let allow_existing_artifacts_without_rewrite =
@@ -168,7 +176,7 @@ pub(super) async fn run(session: &Arc<Session>, config: Arc<Config>) {
     let thread_id = match session
         .services
         .agent_control
-        .spawn_agent(agent_config, prompt, Some(source))
+        .spawn_agent(agent_config, prompt.into(), Some(source))
         .await
     {
         Ok(thread_id) => thread_id,
@@ -179,6 +187,27 @@ pub(super) async fn run(session: &Arc<Session>, config: Arc<Config>) {
         }
     };
 
+    if let Some(thread_config) = session
+        .services
+        .agent_control
+        .get_agent_config_snapshot(thread_id)
+        .await
+    {
+        if session.enabled(Feature::GeneralAnalytics) {
+            let client_metadata = session.app_server_client_metadata().await;
+            emit_subagent_session_started(
+                &session.services.analytics_events_client,
+                client_metadata,
+                thread_id,
+                /*parent_thread_id*/ None,
+                thread_config,
+                SubAgentSource::MemoryConsolidation,
+            );
+        }
+    } else {
+        warn!("failed to load memory consolidation thread config for analytics: {thread_id}");
+    }
+
     // 6. Spawn the agent handler.
     agent::handle(
         session,
@@ -187,8 +216,9 @@ pub(super) async fn run(session: &Arc<Session>, config: Arc<Config>) {
         selection,
         new_watermark,
         raw_memories.clone(),
+        pending_extension_resource_removals,
         thread_id,
-        root,
+        root.to_path_buf(),
         artifacts_not_before,
         allow_existing_artifacts_without_rewrite,
         prepared_input_artifact_tree_sha256,
@@ -289,15 +319,15 @@ mod job {
         completion_watermark: i64,
         selected_outputs: &[codex_state::Stage1Output],
         reason: &'static str,
-    ) {
+    ) -> bool {
         session.services.session_telemetry.counter(
             metrics::MEMORY_PHASE_TWO_JOBS,
             /*inc*/ 1,
             &[("status", reason)],
         );
-        let _ = db
-            .mark_global_phase2_job_succeeded(&claim.token, completion_watermark, selected_outputs)
-            .await;
+        db.mark_global_phase2_job_succeeded(&claim.token, completion_watermark, selected_outputs)
+            .await
+            .unwrap_or(false)
     }
 }
 
@@ -315,19 +345,11 @@ pub(in crate::memories) mod agent {
         }
         let mut agent_config = config.as_ref().clone();
 
-        let absolute_root = match AbsolutePathBuf::from_absolute_path(root.clone()) {
-            Ok(root) => root,
-            Err(err) => {
-                warn!(
-                    "memory phase-2 consolidation could not set cwd from memory root {}: {err}",
-                    root.display()
-                );
-                return None;
-            }
-        };
-        agent_config.cwd = absolute_root.into();
+        agent_config.cwd = root.clone();
         // Consolidation threads must never feed back into phase-1 memory generation.
+        agent_config.ephemeral = true;
         agent_config.memories.generate_memories = false;
+        agent_config.memories.use_memories = false;
         // Approval policy
         agent_config.permissions.approval_policy = Constrained::allow_only(AskForApproval::Never);
         // Consolidation runs as an internal sub-agent and must not recursively delegate.
@@ -336,14 +358,7 @@ pub(in crate::memories) mod agent {
         let _ = agent_config.features.disable(Feature::MemoryTool);
 
         // Sandbox policy
-        let mut writable_roots = Vec::new();
-        match AbsolutePathBuf::from_absolute_path(agent_config.cwd.clone()) {
-            Ok(memory_root) => writable_roots.push(memory_root),
-            Err(err) => warn!(
-                "memory phase-2 consolidation could not add memory root writable root {}: {err}",
-                agent_config.cwd.display()
-            ),
-        }
+        let writable_roots = vec![root];
         // The consolidation agent only needs local memory-root write access and no network.
         let consolidation_sandbox_policy = SandboxPolicy::WorkspaceWrite {
             writable_roots,
@@ -352,18 +367,21 @@ pub(in crate::memories) mod agent {
             exclude_tmpdir_env_var: true,
             exclude_slash_tmp: true,
         };
-        let file_system_sandbox_policy = FileSystemSandboxPolicy::from_legacy_sandbox_policy(
-            &consolidation_sandbox_policy,
-            &agent_config.cwd,
-        );
-        let network_sandbox_policy = NetworkSandboxPolicy::from(&consolidation_sandbox_policy);
+        let consolidation_file_system_sandbox_policy =
+            FileSystemSandboxPolicy::from_legacy_sandbox_policy(
+                &consolidation_sandbox_policy,
+                agent_config.cwd.as_path(),
+            );
+        let consolidation_network_sandbox_policy =
+            NetworkSandboxPolicy::from(&consolidation_sandbox_policy);
         agent_config
             .permissions
             .sandbox_policy
             .set(consolidation_sandbox_policy)
             .ok()?;
-        agent_config.permissions.file_system_sandbox_policy = file_system_sandbox_policy;
-        agent_config.permissions.network_sandbox_policy = network_sandbox_policy;
+        agent_config.permissions.file_system_sandbox_policy =
+            consolidation_file_system_sandbox_policy;
+        agent_config.permissions.network_sandbox_policy = consolidation_network_sandbox_policy;
 
         agent_config.model = Some(
             config
@@ -380,9 +398,10 @@ pub(in crate::memories) mod agent {
     pub(super) fn get_prompt(
         config: &Config,
         selection: &codex_state::Phase2InputSelection,
+        removed_extension_resources: &[crate::memories::extensions::RemovedExtensionResource],
     ) -> Vec<UserInput> {
         let root = memory_root(&config.codex_home);
-        let prompt = build_consolidation_prompt(&root, selection);
+        let prompt = build_consolidation_prompt(&root, selection, removed_extension_resources);
         vec![UserInput::Text {
             text: prompt,
             text_elements: vec![],
@@ -390,6 +409,7 @@ pub(in crate::memories) mod agent {
     }
 
     /// Handle the agent while it is running.
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn handle(
         session: &Arc<Session>,
         claim: Claim,
@@ -397,6 +417,7 @@ pub(in crate::memories) mod agent {
         selection: codex_state::Phase2InputSelection,
         new_watermark: i64,
         selected_outputs: Vec<codex_state::Stage1Output>,
+        pending_extension_resource_removals: Vec<PendingExtensionResourceRemoval>,
         thread_id: ThreadId,
         root: PathBuf,
         artifacts_not_before: SystemTime,
@@ -437,47 +458,17 @@ pub(in crate::memories) mod agent {
                 if let Some(token_usage) = agent_control.get_total_token_usage(thread_id).await {
                     emit_token_usage_metrics(&session, &token_usage);
                 }
-                if let Some(validated_artifacts) = validated_consolidation_artifact_state(
-                    root.as_path(),
-                    Some(db.as_ref()),
-                    artifacts_not_before,
-                    Some(prepared_input_artifact_tree_sha256.as_str()),
-                    allow_existing_artifacts_without_rewrite,
-                    &config,
-                    &selection,
+                if job::succeed(
+                    &session,
+                    &db,
+                    &claim,
+                    new_watermark,
+                    &selected_outputs,
+                    "succeeded",
                 )
                 .await
                 {
-                    if let Err(err) = write_consolidation_artifact_attestation(
-                        root.as_path(),
-                        Some(db.as_ref()),
-                        &config,
-                        &selection,
-                        &validated_artifacts,
-                    )
-                    .await
-                    {
-                        tracing::warn!(
-                            error = %err,
-                            "global memory consolidation agent {thread_id} completed but artifact attestation could not be recorded"
-                        );
-                        job::failed(&session, &db, &claim, "failed_record_artifacts").await;
-                    } else {
-                        job::succeed(
-                            &session,
-                            &db,
-                            &claim,
-                            new_watermark,
-                            &selected_outputs,
-                            "succeeded",
-                        )
-                        .await;
-                    }
-                } else {
-                    tracing::warn!(
-                        "global memory consolidation agent {thread_id} completed without refreshing non-empty MEMORY.md and memory_summary.md artifacts"
-                    );
-                    job::failed(&session, &db, &claim, "failed_missing_artifacts").await;
+                    remove_extension_resources(&pending_extension_resource_removals).await;
                 }
             } else {
                 job::failed(&session, &db, &claim, "failed_agent").await;
@@ -512,7 +503,7 @@ pub(in crate::memories) mod agent {
                 .flatten();
         validated_consolidation_artifact_state(
             root,
-            None,
+            /*state_db*/ None,
             not_before,
             expected_prepared_input_artifact_tree_sha256.as_deref(),
             allow_existing_artifacts_without_rewrite,
@@ -535,7 +526,7 @@ pub(in crate::memories) mod agent {
         consolidation_artifacts_ready_with_state_db_and_expected_prepared_input_tree(
             root,
             config,
-            None,
+            /*state_db*/ None,
             not_before,
             expected_prepared_input_artifact_tree_sha256,
             allow_existing_artifacts_without_rewrite,
@@ -586,7 +577,6 @@ pub(in crate::memories) mod agent {
         memory_summary_sha256: String,
         prepared_input_artifact_tree_sha256: String,
         artifact_tree_sha256: String,
-        artifacts_freshly_rewritten: bool,
     }
 
     async fn validated_consolidation_artifact_state(
@@ -598,14 +588,13 @@ pub(in crate::memories) mod agent {
         config: &Config,
         selection: &codex_state::Phase2InputSelection,
     ) -> Option<ConsolidationArtifactState> {
-        let mut current = current_consolidation_artifact_state(root).await?;
+        let current = current_consolidation_artifact_state(root).await?;
         let prepared_input_tree_matches = expected_prepared_input_artifact_tree_sha256
             .is_some_and(|expected| current.prepared_input_artifact_tree_sha256 == expected);
         if current.memory_modified >= not_before
             && current.memory_summary_modified >= not_before
             && prepared_input_tree_matches
         {
-            current.artifacts_freshly_rewritten = true;
             return Some(current);
         }
         if !allow_existing_artifacts_without_rewrite {
@@ -644,30 +633,32 @@ pub(in crate::memories) mod agent {
             Ok(None) => {
                 if attestation_required {
                     None
-                } else if state_db.is_some() {
-                    None
                 } else {
-                    let root = root.to_path_buf();
-                    match tokio::task::spawn_blocking(move || {
-                        attestation_support_initialized(&root)
-                    })
-                    .await
-                    {
-                        Ok(Ok(false)) => prepared_input_tree_matches.then_some(current),
-                        Ok(Ok(true)) => None,
-                        Ok(Err(err)) => {
-                            tracing::warn!(
-                                error = %err,
-                                "failed to read global memory consolidation artifact attestation support state"
-                            );
-                            None
-                        }
-                        Err(err) => {
-                            tracing::warn!(
-                                error = %err,
-                                "failed to join global memory consolidation attestation support task"
-                            );
-                            None
+                    if state_db.is_some() {
+                        None
+                    } else {
+                        let root = root.to_path_buf();
+                        match tokio::task::spawn_blocking(move || {
+                            attestation_support_initialized(&root)
+                        })
+                        .await
+                        {
+                            Ok(Ok(false)) => prepared_input_tree_matches.then_some(current),
+                            Ok(Ok(true)) => None,
+                            Ok(Err(err)) => {
+                                tracing::warn!(
+                                    error = %err,
+                                    "failed to read global memory consolidation artifact attestation support state"
+                                );
+                                None
+                            }
+                            Err(err) => {
+                                tracing::warn!(
+                                    error = %err,
+                                    "failed to join global memory consolidation attestation support task"
+                                );
+                                None
+                            }
                         }
                     }
                 }
@@ -699,7 +690,6 @@ pub(in crate::memories) mod agent {
                     root.as_path(),
                 )?,
                 artifact_tree_sha256: artifact_tree_sha256(root.as_path())?,
-                artifacts_freshly_rewritten: false,
             })
         })
         .await
@@ -746,7 +736,6 @@ pub(in crate::memories) mod agent {
     ) -> std::io::Result<()> {
         let attestation = ConsolidationArtifactAttestation {
             schema_version: CONSOLIDATION_ARTIFACT_ATTESTATION_SCHEMA_VERSION,
-            artifacts_freshly_rewritten: artifacts.artifacts_freshly_rewritten,
             selection_fingerprint: selection_fingerprint(&selection.selected),
             consolidator_fingerprint: consolidator_fingerprint(config, root, selection),
             memory_sha256: artifacts.memory_sha256.clone(),
@@ -790,7 +779,7 @@ pub(in crate::memories) mod agent {
         selection: &codex_state::Phase2InputSelection,
     ) -> std::io::Result<()> {
         write_current_consolidation_artifact_attestation_with_state_db(
-            config, root, selection, None,
+            config, root, selection, /*state_db*/ None,
         )
         .await
     }
@@ -820,7 +809,6 @@ pub(in crate::memories) mod agent {
             .ok_or_else(|| std::io::Error::other("missing non-empty consolidation artifacts"))?;
         let attestation = ConsolidationArtifactAttestation {
             schema_version: CONSOLIDATION_ARTIFACT_ATTESTATION_SCHEMA_VERSION,
-            artifacts_freshly_rewritten: artifacts.artifacts_freshly_rewritten,
             selection_fingerprint: selection_fingerprint(&selection.selected),
             consolidator_fingerprint,
             memory_sha256: artifacts.memory_sha256,
@@ -879,7 +867,10 @@ pub(in crate::memories) mod agent {
                 rollout_slug: output.rollout_slug.as_deref(),
             })
             .collect::<Vec<_>>();
-        let bytes = serde_json::to_vec(&refs).expect("serialize phase-2 selection refs");
+        let bytes = match serde_json::to_vec(&refs) {
+            Ok(bytes) => bytes,
+            Err(err) => panic!("serialize phase-2 selection refs: {err}"),
+        };
         sha256_hex(&bytes)
     }
 
@@ -898,7 +889,7 @@ pub(in crate::memories) mod agent {
             .consolidation_model
             .as_deref()
             .unwrap_or(phase_two::MODEL);
-        let prompt = build_consolidation_prompt(root, selection);
+        let prompt = build_consolidation_prompt(root, selection, &[]);
         consolidator_contract_fingerprint(
             &config.model_provider_id,
             model,
@@ -929,10 +920,10 @@ pub(in crate::memories) mod agent {
         }
 
         let sandbox_policy = SandboxPolicy::WorkspaceWrite {
-            writable_roots: vec![
-                AbsolutePathBuf::from_absolute_path(root.to_path_buf())
-                    .expect("memory root should be absolute"),
-            ],
+            writable_roots: vec![match AbsolutePathBuf::from_absolute_path(root) {
+                Ok(path) => path,
+                Err(err) => panic!("memory root should be absolute: {err}"),
+            }],
             read_only_access: Default::default(),
             network_access: false,
             exclude_tmpdir_env_var: true,
@@ -952,8 +943,10 @@ pub(in crate::memories) mod agent {
             file_system_sandbox_policy,
             network_sandbox_policy,
         };
-        let bytes =
-            serde_json::to_vec(&fingerprint).expect("serialize phase-2 consolidator fingerprint");
+        let bytes = match serde_json::to_vec(&fingerprint) {
+            Ok(bytes) => bytes,
+            Err(err) => panic!("serialize phase-2 consolidator fingerprint: {err}"),
+        };
         sha256_hex(&bytes)
     }
 
@@ -998,7 +991,7 @@ pub(in crate::memories) mod agent {
         consolidation_artifact_attestation_support_path(root)
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     pub(super) fn test_memory_root_attestation_key(root: &Path) -> String {
         memory_root_attestation_key(root)
     }
@@ -1026,9 +1019,10 @@ pub(in crate::memories) mod agent {
         let codex_home = root
             .parent()
             .ok_or_else(|| std::io::Error::other("memory root is missing codex_home parent"))?;
-        for ancestor in codex_home.ancestors() {
-            validate_non_redirecting_path_component(ancestor)?;
-        }
+        // Reject redirecting path components we directly control, but tolerate
+        // system-level ancestor aliases such as macOS tempdirs where `/var`
+        // commonly resolves through the system-managed `/private` symlink.
+        validate_non_redirecting_path_component(codex_home)?;
         match std::fs::symlink_metadata(root) {
             Ok(metadata) => validate_non_redirecting_metadata(root, &metadata),
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
@@ -1145,12 +1139,12 @@ pub(in crate::memories) mod agent {
 
             path.as_os_str()
                 .encode_wide()
-                .flat_map(|unit| unit.to_le_bytes())
+                .flat_map(u16::to_le_bytes)
                 .collect()
         }
         #[cfg(all(not(unix), not(windows)))]
         {
-            path.to_string_lossy().into_owned().into_bytes()
+            path.to_string_lossy().as_bytes().to_vec()
         }
     }
 
@@ -1188,7 +1182,7 @@ pub(in crate::memories) mod agent {
             if metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
                 return Err(std::io::Error::other("path is a reparse point"));
             }
-            if metadata.number_of_links() > 1 {
+            if file_has_multiple_hard_links(&file)? {
                 return Err(std::io::Error::other("path has multiple hard links"));
             }
             if !metadata.is_file() {
@@ -1242,7 +1236,7 @@ pub(in crate::memories) mod agent {
             if metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
                 return Err(std::io::Error::other("path is a reparse point"));
             }
-            if metadata.number_of_links() > 1 {
+            if file_has_multiple_hard_links(&file)? {
                 return Err(std::io::Error::other("path has multiple hard links"));
             }
             if !metadata.is_file() {
@@ -1258,6 +1252,23 @@ pub(in crate::memories) mod agent {
                 "secure file writing is not implemented for this platform; this is required for memory consolidation attestation"
             );
         }
+    }
+
+    #[cfg(windows)]
+    fn file_has_multiple_hard_links(file: &std::fs::File) -> std::io::Result<bool> {
+        use std::os::windows::io::AsRawHandle;
+        use windows_sys::Win32::Storage::FileSystem::BY_HANDLE_FILE_INFORMATION;
+        use windows_sys::Win32::Storage::FileSystem::GetFileInformationByHandle;
+
+        let mut file_information = std::mem::MaybeUninit::<BY_HANDLE_FILE_INFORMATION>::zeroed();
+        let ok = unsafe {
+            GetFileInformationByHandle(file.as_raw_handle().cast(), file_information.as_mut_ptr())
+        };
+        if ok == 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        let file_information = unsafe { file_information.assume_init() };
+        Ok(file_information.nNumberOfLinks > 1)
     }
 
     async fn loop_agent(
@@ -1412,7 +1423,7 @@ pub(crate) fn test_consolidation_artifact_attestation_support_path(root: &Path) 
     agent::test_consolidation_artifact_attestation_support_path(root)
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 pub(crate) fn test_memory_root_attestation_key(root: &Path) -> String {
     agent::test_memory_root_attestation_key(root)
 }

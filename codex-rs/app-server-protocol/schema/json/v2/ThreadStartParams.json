@@ -1,8 +1,7 @@
 {
-  "$schema": "http://json-schema.org/draft-07/schema#",
-  "definitions": {
+  "$defs": {
     "ApprovalsReviewer": {
-      "description": "Configures who approval requests are routed to for review. Examples include sandbox escapes, blocked network access, MCP approval prompts, and ARC escalations. Defaults to `user`. `guardian_subagent` uses a carefully prompted subagent to gather relevant context and apply a risk-based decision framework before approving or denying the request.",
+      "description": "Configures who approval requests are routed to for review. Examples\ninclude sandbox escapes, blocked network access, MCP approval prompts, and\nARC escalations. Defaults to `user`. `guardian_subagent` uses a carefully\nprompted subagent to gather relevant context and apply a risk-based\ndecision framework before approving or denying the request.",
       "enum": [
         "user",
         "guardian_subagent"
@@ -44,9 +43,9 @@
                 }
               },
               "required": [
-                "mcp_elicitations",
+                "sandbox_approval",
                 "rules",
-                "sandbox_approval"
+                "mcp_elicitations"
               ],
               "type": "object"
             }
@@ -73,9 +72,9 @@
         }
       },
       "required": [
+        "name",
         "description",
-        "inputSchema",
-        "name"
+        "inputSchema"
       ],
       "type": "object"
     },
@@ -101,13 +100,21 @@
         "flex"
       ],
       "type": "string"
+    },
+    "ThreadStartSource": {
+      "enum": [
+        "startup",
+        "clear"
+      ],
+      "type": "string"
     }
   },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
   "properties": {
     "approvalPolicy": {
       "anyOf": [
         {
-          "$ref": "#/definitions/AskForApproval"
+          "$ref": "#/$defs/AskForApproval"
         },
         {
           "type": "null"
@@ -117,13 +124,13 @@
     "approvalsReviewer": {
       "anyOf": [
         {
-          "$ref": "#/definitions/ApprovalsReviewer"
+          "$ref": "#/$defs/ApprovalsReviewer"
         },
         {
           "type": "null"
         }
       ],
-      "description": "Override where approval requests are routed for review on this thread and subsequent turns."
+      "description": "Override where approval requests are routed for review on this thread\nand subsequent turns."
     },
     "baseInstructions": {
       "type": [
@@ -171,7 +178,7 @@
     "personality": {
       "anyOf": [
         {
-          "$ref": "#/definitions/Personality"
+          "$ref": "#/$defs/Personality"
         },
         {
           "type": "null"
@@ -181,7 +188,7 @@
     "sandbox": {
       "anyOf": [
         {
-          "$ref": "#/definitions/SandboxMode"
+          "$ref": "#/$defs/SandboxMode"
         },
         {
           "type": "null"
@@ -197,14 +204,17 @@
     "serviceTier": {
       "anyOf": [
         {
-          "anyOf": [
-            {
-              "$ref": "#/definitions/ServiceTier"
-            },
-            {
-              "type": "null"
-            }
-          ]
+          "$ref": "#/$defs/ServiceTier"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "sessionStartSource": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ThreadStartSource"
         },
         {
           "type": "null"

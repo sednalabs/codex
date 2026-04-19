@@ -137,12 +137,10 @@ ON CONFLICT(thread_id) DO UPDATE SET
 
     fn parent_thread_from_source(source: &SessionSource) -> Option<ThreadId> {
         match source {
-            SessionSource::SubAgent(sub) => match sub {
-                codex_protocol::protocol::SubAgentSource::ThreadSpawn {
-                    parent_thread_id, ..
-                } => Some(*parent_thread_id),
-                _ => None,
-            },
+            SessionSource::SubAgent(codex_protocol::protocol::SubAgentSource::ThreadSpawn {
+                parent_thread_id,
+                ..
+            }) => Some(*parent_thread_id),
             _ => None,
         }
     }
@@ -237,20 +235,20 @@ ON CONFLICT(thread_id) DO UPDATE SET
         token_count: &TokenCountEvent,
         turn_id: Option<&str>,
     ) -> anyhow::Result<()> {
-        let last_usage = token_count
+        let Some(usage) = token_count
             .info
             .as_ref()
-            .map(|info| info.last_token_usage.clone());
-        if last_usage.is_none() {
+            .map(|info| info.last_token_usage.clone())
+        else {
             return Ok(());
-        }
-        let usage = last_usage.unwrap();
+        };
         let turn_snapshot = turn_id.and_then(|id| self.turn_snapshots.get(id)).cloned();
         let requested_model = turn_snapshot
             .as_ref()
             .and_then(|snapshot| snapshot.requested_model.clone())
             .or_else(|| token_count.model_used.clone());
         let provider = token_count.provider.clone();
+        let spawn_request_id = self.lookup_spawn_request_id().await?;
         let provider_call_id = Uuid::new_v4().to_string();
         let started_at = Utc::now();
         let status = if token_count.info.is_some() {
@@ -264,6 +262,7 @@ ON CONFLICT(thread_id) DO UPDATE SET
             provider_call_id,
             thread_id,
             turn_id,
+            spawn_request_id,
             provider,
             requested_model,
             actual_model_used,
@@ -274,11 +273,12 @@ ON CONFLICT(thread_id) DO UPDATE SET
             output_tokens,
             total_tokens,
             status
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"#,
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"#,
         )
         .bind(provider_call_id.clone())
         .bind(self.thread_id.to_string())
         .bind(turn_id.map(str::to_string))
+        .bind(spawn_request_id)
         .bind(provider.clone())
         .bind(requested_model.clone())
         .bind(token_count.model_used.clone())
@@ -304,15 +304,28 @@ ON CONFLICT(thread_id) DO UPDATE SET
         Ok(())
     }
 
+    async fn lookup_spawn_request_id(&self) -> anyhow::Result<Option<String>> {
+        sqlx::query_scalar::<_, String>(
+            r#"SELECT spawn_request_id
+            FROM usage_spawn_requests
+            WHERE child_thread_id = ?
+            ORDER BY rowid DESC
+            LIMIT 1"#,
+        )
+        .bind(self.thread_id.to_string())
+        .fetch_optional(self.pool.as_ref())
+        .await
+        .map_err(Into::into)
+    }
+
     async fn insert_quota_snapshot(
         &self,
         turn_id: Option<&str>,
         snapshot: &RateLimitSnapshot,
     ) -> anyhow::Result<()> {
-        if snapshot.primary.is_none() {
+        let Some(primary) = snapshot.primary.as_ref() else {
             return Ok(());
-        }
-        let primary = snapshot.primary.as_ref().unwrap();
+        };
         let used = primary.used_percent;
         let remaining = (100.0 - used).max(0.0);
         let plan = snapshot.plan_type.as_ref().map(|plan| format!("{plan:?}"));
@@ -545,6 +558,12 @@ mod tests {
         status: Option<String>,
     }
 
+    #[derive(Debug, PartialEq, Eq, sqlx::FromRow)]
+    struct ProviderCallRowWithSpawn {
+        spawn_request_id: Option<String>,
+        provider: Option<String>,
+    }
+
     #[derive(Debug, PartialEq, sqlx::FromRow)]
     struct QuotaSnapshotRow {
         quota_source: Option<String>,
@@ -614,6 +633,7 @@ mod tests {
             }),
             secondary: None,
             credits: None,
+            rate_limit_reached_type: None,
             plan_type: None,
         });
         Event {
@@ -642,9 +662,9 @@ mod tests {
             runtime.clone(),
             thread_id,
             SessionSource::Cli,
-            None,
-            None,
-            None,
+            /*forked_from_id*/ None,
+            /*agent_nickname*/ None,
+            /*agent_role*/ None,
         )
         .await?;
 
@@ -655,7 +675,7 @@ mod tests {
             Some("requested-provider".into()),
         );
 
-        let token_event = token_count_event(turn_id, true);
+        let token_event = token_count_event(turn_id, /*include_rate_limit*/ true);
         logger.record_event(&token_event).await;
 
         let pool_arc = runtime.usage_pool();
@@ -726,9 +746,9 @@ WHERE thread_id = ?
             runtime.clone(),
             thread_id,
             SessionSource::Cli,
-            None,
-            None,
-            None,
+            /*forked_from_id*/ None,
+            /*agent_nickname*/ None,
+            /*agent_role*/ None,
         )
         .await?;
 
@@ -739,7 +759,9 @@ WHERE thread_id = ?
             Some("requested-provider".to_string()),
         );
         logger
-            .record_event(&token_count_event(turn_id, false))
+            .record_event(&token_count_event(
+                turn_id, /*include_rate_limit*/ false,
+            ))
             .await;
         logger
             .record_event(&Event {
@@ -752,7 +774,9 @@ WHERE thread_id = ?
             })
             .await;
         logger
-            .record_event(&token_count_event(turn_id, false))
+            .record_event(&token_count_event(
+                turn_id, /*include_rate_limit*/ false,
+            ))
             .await;
 
         let pool_arc = runtime.usage_pool();
@@ -813,9 +837,9 @@ ORDER BY rowid
             runtime.clone(),
             thread_id,
             SessionSource::Cli,
-            None,
-            None,
-            None,
+            /*forked_from_id*/ None,
+            /*agent_nickname*/ None,
+            /*agent_role*/ None,
         )
         .await?;
 
@@ -831,6 +855,7 @@ ORDER BY rowid
             msg: EventMsg::McpToolCallBegin(McpToolCallBeginEvent {
                 call_id: tool_call_id.to_string(),
                 invocation: tool_invocation.clone(),
+                mcp_app_resource_uri: None,
             }),
         };
         logger.record_event(&tool_begin).await;
@@ -840,6 +865,7 @@ ORDER BY rowid
             msg: EventMsg::McpToolCallEnd(McpToolCallEndEvent {
                 call_id: tool_call_id.to_string(),
                 invocation: tool_invocation,
+                mcp_app_resource_uri: None,
                 duration: Duration::from_millis(42),
                 result: Ok(CallToolResult {
                     content: vec![],
@@ -889,15 +915,17 @@ WHERE tool_call_id = ?
             runtime.clone(),
             thread_id,
             SessionSource::Cli,
-            None,
-            None,
-            None,
+            /*forked_from_id*/ None,
+            /*agent_nickname*/ None,
+            /*agent_role*/ None,
         )
         .await?;
 
         let turn_id = "turn-spawn";
         logger
-            .record_event(&token_count_event(turn_id, false))
+            .record_event(&token_count_event(
+                turn_id, /*include_rate_limit*/ false,
+            ))
             .await;
 
         let spawn_call = "spawn-call";
@@ -1005,6 +1033,137 @@ WHERE child_thread_id = ?
     }
 
     #[tokio::test]
+    async fn usage_logger_records_spawn_request_id_on_child_provider_calls() -> Result<()> {
+        let (runtime, _tmp_dir) = init_runtime().await?;
+        let parent_thread_id = ThreadId::new();
+        let mut parent_logger = UsageLogger::try_new(
+            runtime.clone(),
+            parent_thread_id,
+            SessionSource::Cli,
+            /*forked_from_id*/ None,
+            /*agent_nickname*/ None,
+            /*agent_role*/ None,
+        )
+        .await?;
+
+        let spawn_call_id = "spawn-provider-link";
+        let child_thread_id = ThreadId::new();
+        parent_logger
+            .record_event(&Event {
+                id: "turn-spawn-provider".to_string(),
+                msg: EventMsg::CollabAgentSpawnBegin(CollabAgentSpawnBeginEvent {
+                    call_id: spawn_call_id.to_string(),
+                    sender_thread_id: parent_thread_id,
+                    prompt: String::new(),
+                    model: "spawn-model".to_string(),
+                    reasoning_effort: ReasoningEffortConfig::default(),
+                }),
+            })
+            .await;
+        parent_logger
+            .record_event(&Event {
+                id: "turn-spawn-provider".to_string(),
+                msg: EventMsg::CollabAgentSpawnEnd(CollabAgentSpawnEndEvent {
+                    call_id: spawn_call_id.to_string(),
+                    sender_thread_id: parent_thread_id,
+                    new_thread_id: Some(child_thread_id),
+                    new_agent_nickname: Some("child".to_string()),
+                    new_agent_role: Some("explorer".to_string()),
+                    prompt: String::new(),
+                    model: "spawn-model".to_string(),
+                    reasoning_effort: ReasoningEffortConfig::default(),
+                    status: AgentStatus::Completed(None),
+                }),
+            })
+            .await;
+
+        let child_source = SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+            parent_thread_id,
+            depth: 1,
+            agent_nickname: Some("child".to_string()),
+            agent_role: Some("explorer".to_string()),
+            agent_path: None,
+        });
+        let mut child_logger = UsageLogger::try_new(
+            runtime.clone(),
+            child_thread_id,
+            child_source,
+            /*forked_from_id*/ None,
+            Some("child".to_string()),
+            Some("explorer".to_string()),
+        )
+        .await?;
+        let child_turn_id = "turn-child-token";
+        child_logger
+            .record_event(&token_count_event(
+                child_turn_id,
+                /*include_rate_limit*/ false,
+            ))
+            .await;
+
+        let pool_arc = runtime.usage_pool();
+        let pool: &SqlitePool = pool_arc.as_ref();
+        let child_provider_row: ProviderCallRowWithSpawn = sqlx::query_as(
+            r#"
+SELECT
+  spawn_request_id,
+  provider
+FROM usage_provider_calls
+WHERE thread_id = ?
+"#,
+        )
+        .bind(child_thread_id.to_string())
+        .fetch_one(pool)
+        .await?;
+        assert_eq!(
+            child_provider_row,
+            ProviderCallRowWithSpawn {
+                spawn_request_id: Some(spawn_call_id.to_string()),
+                provider: Some("test-provider".to_string()),
+            }
+        );
+
+        let top_level_thread_id = ThreadId::new();
+        let mut top_level_logger = UsageLogger::try_new(
+            runtime.clone(),
+            top_level_thread_id,
+            SessionSource::Cli,
+            /*forked_from_id*/ None,
+            /*agent_nickname*/ None,
+            /*agent_role*/ None,
+        )
+        .await?;
+        let top_level_turn_id = "turn-top";
+        top_level_logger
+            .record_event(&token_count_event(
+                top_level_turn_id,
+                /*include_rate_limit*/ false,
+            ))
+            .await;
+        let top_level_provider_row: ProviderCallRowWithSpawn = sqlx::query_as(
+            r#"
+SELECT
+  spawn_request_id,
+  provider
+FROM usage_provider_calls
+WHERE thread_id = ?
+"#,
+        )
+        .bind(top_level_thread_id.to_string())
+        .fetch_one(pool)
+        .await?;
+        assert_eq!(
+            top_level_provider_row,
+            ProviderCallRowWithSpawn {
+                spawn_request_id: None,
+                provider: Some("test-provider".to_string()),
+            }
+        );
+
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn usage_logger_resolves_root_thread_from_parent_or_fork() -> Result<()> {
         let (runtime, _tmp_dir) = init_runtime().await?;
         let parent_thread_id = ThreadId::new();
@@ -1012,7 +1171,7 @@ WHERE child_thread_id = ?
             runtime.clone(),
             parent_thread_id,
             SessionSource::Cli,
-            None,
+            /*forked_from_id*/ None,
             Some("Parent".to_string()),
             Some("default".to_string()),
         )
@@ -1030,7 +1189,7 @@ WHERE child_thread_id = ?
             runtime.clone(),
             child_thread_id,
             child_source.clone(),
-            None,
+            /*forked_from_id*/ None,
             Some("Copernicus".to_string()),
             Some("explorer".to_string()),
         )
@@ -1042,8 +1201,8 @@ WHERE child_thread_id = ?
             fork_thread_id,
             SessionSource::Cli,
             Some(parent_thread_id),
-            None,
-            None,
+            /*agent_nickname*/ None,
+            /*agent_role*/ None,
         )
         .await?;
 
@@ -1123,7 +1282,7 @@ WHERE thread_id = ?
                 runtime.clone(),
                 root_thread_id,
                 SessionSource::Cli,
-                None,
+                /*forked_from_id*/ None,
                 Some("Root".to_string()),
                 Some("default".to_string()),
             )
@@ -1138,7 +1297,7 @@ WHERE thread_id = ?
                     agent_role: Some("explorer".to_string()),
                     agent_path: None,
                 }),
-                None,
+                /*forked_from_id*/ None,
                 Some("Parent".to_string()),
                 Some("explorer".to_string()),
             )
@@ -1158,7 +1317,7 @@ WHERE thread_id = ?
                 agent_role: Some("worker".to_string()),
                 agent_path: None,
             }),
-            None,
+            /*forked_from_id*/ None,
             Some("Child".to_string()),
             Some("worker".to_string()),
         )
@@ -1254,9 +1413,9 @@ WHERE thread_id = ?
             runtime.clone(),
             parent_thread_id,
             SessionSource::Cli,
-            None,
-            None,
-            None,
+            /*forked_from_id*/ None,
+            /*agent_nickname*/ None,
+            /*agent_role*/ None,
         )
         .await?;
 
@@ -1309,7 +1468,7 @@ WHERE thread_id = ?
             runtime.clone(),
             child_thread_id,
             child_source.clone(),
-            None,
+            /*forked_from_id*/ None,
             Some("Copernicus".to_string()),
             Some("explorer".to_string()),
         )

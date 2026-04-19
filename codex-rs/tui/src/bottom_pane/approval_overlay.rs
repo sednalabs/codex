@@ -1,10 +1,14 @@
-use std::collections::HashMap;
-use std::path::PathBuf;
-
+use crate::app::app_server_requests::ResolvedAppServerRequest;
 use crate::app_event::AppEvent;
 use crate::app_event_sender::AppEventSender;
 use crate::bottom_pane::BottomPaneView;
 use crate::bottom_pane::CancellationEvent;
+use crate::bottom_pane::approval_state::ApprovalDecision;
+use crate::bottom_pane::approval_state::ApprovalOption;
+use crate::bottom_pane::approval_state::ApprovalRequest;
+use crate::bottom_pane::approval_state::build_approval_options;
+use crate::bottom_pane::approval_state::format_additional_permissions_rule;
+use crate::bottom_pane::approval_state::format_requested_permissions_rule;
 use crate::bottom_pane::list_selection_view::ListSelectionView;
 use crate::bottom_pane::list_selection_view::SelectionItem;
 use crate::bottom_pane::list_selection_view::SelectionViewParams;
@@ -12,25 +16,18 @@ use crate::diff_render::DiffSummary;
 use crate::exec_command::strip_bash_lc_and_escape;
 use crate::history_cell;
 use crate::key_hint;
-use crate::key_hint::KeyBinding;
 use crate::render::highlight::highlight_bash_to_lines;
 use crate::render::renderable::ColumnRenderable;
 use crate::render::renderable::Renderable;
 use codex_features::Features;
-use codex_protocol::ThreadId;
 use codex_protocol::mcp::RequestId;
-use codex_protocol::models::MacOsAutomationPermission;
-use codex_protocol::models::MacOsContactsPermission;
-use codex_protocol::models::MacOsPreferencesPermission;
-use codex_protocol::models::PermissionProfile;
 use codex_protocol::protocol::ElicitationAction;
-use codex_protocol::protocol::FileChange;
-use codex_protocol::protocol::NetworkApprovalContext;
-use codex_protocol::protocol::NetworkPolicyRuleAction;
+#[cfg(test)]
 use codex_protocol::protocol::Op;
 use codex_protocol::protocol::ReviewDecision;
 use codex_protocol::request_permissions::PermissionGrantScope;
 use codex_protocol::request_permissions::RequestPermissionProfile;
+use codex_utils_absolute_path::AbsolutePathBuf;
 use crossterm::event::KeyCode;
 use crossterm::event::KeyEvent;
 use crossterm::event::KeyEventKind;
@@ -42,63 +39,6 @@ use ratatui::text::Line;
 use ratatui::text::Span;
 use ratatui::widgets::Paragraph;
 use ratatui::widgets::Wrap;
-
-/// Request coming from the agent that needs user approval.
-#[derive(Clone, Debug)]
-pub(crate) enum ApprovalRequest {
-    Exec {
-        thread_id: ThreadId,
-        thread_label: Option<String>,
-        id: String,
-        command: Vec<String>,
-        reason: Option<String>,
-        available_decisions: Vec<ReviewDecision>,
-        network_approval_context: Option<NetworkApprovalContext>,
-        additional_permissions: Option<PermissionProfile>,
-    },
-    Permissions {
-        thread_id: ThreadId,
-        thread_label: Option<String>,
-        call_id: String,
-        reason: Option<String>,
-        permissions: RequestPermissionProfile,
-    },
-    ApplyPatch {
-        thread_id: ThreadId,
-        thread_label: Option<String>,
-        id: String,
-        reason: Option<String>,
-        cwd: PathBuf,
-        changes: HashMap<PathBuf, FileChange>,
-    },
-    McpElicitation {
-        thread_id: ThreadId,
-        thread_label: Option<String>,
-        server_name: String,
-        request_id: RequestId,
-        message: String,
-    },
-}
-
-impl ApprovalRequest {
-    fn thread_id(&self) -> ThreadId {
-        match self {
-            ApprovalRequest::Exec { thread_id, .. }
-            | ApprovalRequest::Permissions { thread_id, .. }
-            | ApprovalRequest::ApplyPatch { thread_id, .. }
-            | ApprovalRequest::McpElicitation { thread_id, .. } => *thread_id,
-        }
-    }
-
-    fn thread_label(&self) -> Option<&str> {
-        match self {
-            ApprovalRequest::Exec { thread_label, .. }
-            | ApprovalRequest::Permissions { thread_label, .. }
-            | ApprovalRequest::ApplyPatch { thread_label, .. }
-            | ApprovalRequest::McpElicitation { thread_label, .. } => thread_label.as_deref(),
-        }
-    }
-}
 
 /// Modal overlay asking the user to approve or deny one or more requests.
 pub(crate) struct ApprovalOverlay {
@@ -132,6 +72,23 @@ impl ApprovalOverlay {
         self.queue.push(req);
     }
 
+    fn dismiss_resolved_request(&mut self, request: &ResolvedAppServerRequest) -> bool {
+        let queue_len = self.queue.len();
+        self.queue
+            .retain(|queued_request| !queued_request.matches_resolved_request(request));
+        if self
+            .current_request
+            .as_ref()
+            .is_some_and(|current_request| current_request.matches_resolved_request(request))
+        {
+            self.current_complete = true;
+            self.advance_queue();
+            return true;
+        }
+
+        self.queue.len() != queue_len
+    }
+
     fn set_current(&mut self, request: ApprovalRequest) {
         self.current_complete = false;
         let header = build_header(&request);
@@ -146,41 +103,7 @@ impl ApprovalOverlay {
         header: Box<dyn Renderable>,
         _features: &Features,
     ) -> (Vec<ApprovalOption>, SelectionViewParams) {
-        let (options, title) = match request {
-            ApprovalRequest::Exec {
-                available_decisions,
-                network_approval_context,
-                additional_permissions,
-                ..
-            } => (
-                exec_options(
-                    available_decisions,
-                    network_approval_context.as_ref(),
-                    additional_permissions.as_ref(),
-                ),
-                network_approval_context.as_ref().map_or_else(
-                    || "Would you like to run the following command?".to_string(),
-                    |network_approval_context| {
-                        format!(
-                            "Do you want to approve network access to \"{}\"?",
-                            network_approval_context.host
-                        )
-                    },
-                ),
-            ),
-            ApprovalRequest::Permissions { .. } => (
-                permissions_options(),
-                "Would you like to grant these permissions?".to_string(),
-            ),
-            ApprovalRequest::ApplyPatch { .. } => (
-                patch_options(),
-                "Would you like to make the following edits?".to_string(),
-            ),
-            ApprovalRequest::McpElicitation { server_name, .. } => (
-                elicitation_options(),
-                format!("{server_name} needs your approval."),
-            ),
-        };
+        let (options, title) = build_approval_options(request);
 
         let header = Box::new(ColumnRenderable::with([
             Line::from(title.bold()).into(),
@@ -264,14 +187,8 @@ impl ApprovalOverlay {
             self.app_event_tx.send(AppEvent::InsertHistoryCell(cell));
         }
         let thread_id = request.thread_id();
-        self.app_event_tx.send(AppEvent::SubmitThreadOp {
-            thread_id,
-            op: Op::ExecApproval {
-                id: id.to_string(),
-                turn_id: None,
-                decision,
-            },
-        });
+        self.app_event_tx
+            .exec_approval(thread_id, id.to_string(), decision);
     }
 
     fn handle_permissions_decision(
@@ -285,7 +202,9 @@ impl ApprovalOverlay {
         };
         let granted_permissions = match decision {
             ReviewDecision::Approved | ReviewDecision::ApprovedForSession => permissions.clone(),
-            ReviewDecision::Denied | ReviewDecision::Abort => Default::default(),
+            ReviewDecision::Denied | ReviewDecision::TimedOut | ReviewDecision::Abort => {
+                Default::default()
+            }
             ReviewDecision::ApprovedExecpolicyAmendment { .. }
             | ReviewDecision::NetworkPolicyAmendment { .. } => Default::default(),
         };
@@ -307,16 +226,14 @@ impl ApprovalOverlay {
             )));
         }
         let thread_id = request.thread_id();
-        self.app_event_tx.send(AppEvent::SubmitThreadOp {
+        self.app_event_tx.request_permissions_response(
             thread_id,
-            op: Op::RequestPermissionsResponse {
-                id: call_id.to_string(),
-                response: codex_protocol::request_permissions::RequestPermissionsResponse {
-                    permissions: granted_permissions,
-                    scope,
-                },
+            call_id.to_string(),
+            codex_protocol::request_permissions::RequestPermissionsResponse {
+                permissions: granted_permissions,
+                scope,
             },
-        });
+        );
     }
 
     fn handle_patch_decision(&self, id: &str, decision: ReviewDecision) {
@@ -327,13 +244,8 @@ impl ApprovalOverlay {
         else {
             return;
         };
-        self.app_event_tx.send(AppEvent::SubmitThreadOp {
-            thread_id,
-            op: Op::PatchApproval {
-                id: id.to_string(),
-                decision,
-            },
-        });
+        self.app_event_tx
+            .patch_approval(thread_id, id.to_string(), decision);
     }
 
     fn handle_elicitation_decision(
@@ -349,16 +261,14 @@ impl ApprovalOverlay {
         else {
             return;
         };
-        self.app_event_tx.send(AppEvent::SubmitThreadOp {
+        self.app_event_tx.resolve_elicitation(
             thread_id,
-            op: Op::ResolveElicitation {
-                server_name: server_name.to_string(),
-                request_id: request_id.clone(),
-                decision,
-                content: None,
-                meta: None,
-            },
-        });
+            server_name.to_string(),
+            request_id.clone(),
+            decision,
+            /*content*/ None,
+            /*meta*/ None,
+        );
     }
 
     fn advance_queue(&mut self) {
@@ -478,6 +388,10 @@ impl BottomPaneView for ApprovalOverlay {
     ) -> Option<ApprovalRequest> {
         self.enqueue_request(request);
         None
+    }
+
+    fn dismiss_app_server_request(&mut self, request: &ResolvedAppServerRequest) -> bool {
+        self.dismiss_resolved_request(request)
     }
 }
 
@@ -607,7 +521,14 @@ fn build_header(request: &ApprovalRequest) -> Box<dyn Renderable> {
                 ));
                 header.push(Box::new(Line::from("")));
             }
-            header.push(DiffSummary::new(changes.clone(), cwd.clone()).into());
+            header.push(
+                DiffSummary::new(
+                    changes.clone(),
+                    AbsolutePathBuf::from_absolute_path(cwd.as_path())
+                        .expect("approval cwd should be absolute"),
+                )
+                .into(),
+            );
             Box::new(ColumnRenderable::with(header))
         }
         ApprovalRequest::McpElicitation {
@@ -635,284 +556,21 @@ fn build_header(request: &ApprovalRequest) -> Box<dyn Renderable> {
     }
 }
 
-#[derive(Clone)]
-enum ApprovalDecision {
-    Review(ReviewDecision),
-    McpElicitation(ElicitationAction),
-}
-
-#[derive(Clone)]
-struct ApprovalOption {
-    label: String,
-    decision: ApprovalDecision,
-    display_shortcut: Option<KeyBinding>,
-    additional_shortcuts: Vec<KeyBinding>,
-}
-
-impl ApprovalOption {
-    fn shortcuts(&self) -> impl Iterator<Item = KeyBinding> + '_ {
-        self.display_shortcut
-            .into_iter()
-            .chain(self.additional_shortcuts.iter().copied())
-    }
-}
-
-fn exec_options(
-    available_decisions: &[ReviewDecision],
-    network_approval_context: Option<&NetworkApprovalContext>,
-    additional_permissions: Option<&PermissionProfile>,
-) -> Vec<ApprovalOption> {
-    available_decisions
-        .iter()
-        .filter_map(|decision| match decision {
-            ReviewDecision::Approved => Some(ApprovalOption {
-                label: if network_approval_context.is_some() {
-                    "Yes, just this once".to_string()
-                } else {
-                    "Yes, proceed".to_string()
-                },
-                decision: ApprovalDecision::Review(ReviewDecision::Approved),
-                display_shortcut: None,
-                additional_shortcuts: vec![key_hint::plain(KeyCode::Char('y'))],
-            }),
-            ReviewDecision::ApprovedExecpolicyAmendment {
-                proposed_execpolicy_amendment,
-            } => {
-                let rendered_prefix =
-                    strip_bash_lc_and_escape(proposed_execpolicy_amendment.command());
-                if rendered_prefix.contains('\n') || rendered_prefix.contains('\r') {
-                    return None;
-                }
-
-                Some(ApprovalOption {
-                    label: format!(
-                        "Yes, and don't ask again for commands that start with `{rendered_prefix}`"
-                    ),
-                    decision: ApprovalDecision::Review(
-                        ReviewDecision::ApprovedExecpolicyAmendment {
-                            proposed_execpolicy_amendment: proposed_execpolicy_amendment.clone(),
-                        },
-                    ),
-                    display_shortcut: None,
-                    additional_shortcuts: vec![key_hint::plain(KeyCode::Char('p'))],
-                })
-            }
-            ReviewDecision::ApprovedForSession => Some(ApprovalOption {
-                label: if network_approval_context.is_some() {
-                    "Yes, and allow this host for this conversation".to_string()
-                } else if additional_permissions.is_some() {
-                    "Yes, and allow these permissions for this session".to_string()
-                } else {
-                    "Yes, and don't ask again for this command in this session".to_string()
-                },
-                decision: ApprovalDecision::Review(ReviewDecision::ApprovedForSession),
-                display_shortcut: None,
-                additional_shortcuts: vec![key_hint::plain(KeyCode::Char('a'))],
-            }),
-            ReviewDecision::NetworkPolicyAmendment {
-                network_policy_amendment,
-            } => {
-                let (label, shortcut) = match network_policy_amendment.action {
-                    NetworkPolicyRuleAction::Allow => (
-                        "Yes, and allow this host in the future".to_string(),
-                        KeyCode::Char('p'),
-                    ),
-                    NetworkPolicyRuleAction::Deny => (
-                        "No, and block this host in the future".to_string(),
-                        KeyCode::Char('d'),
-                    ),
-                };
-                Some(ApprovalOption {
-                    label,
-                    decision: ApprovalDecision::Review(ReviewDecision::NetworkPolicyAmendment {
-                        network_policy_amendment: network_policy_amendment.clone(),
-                    }),
-                    display_shortcut: None,
-                    additional_shortcuts: vec![key_hint::plain(shortcut)],
-                })
-            }
-            ReviewDecision::Denied => Some(ApprovalOption {
-                label: "No, continue without running it".to_string(),
-                decision: ApprovalDecision::Review(ReviewDecision::Denied),
-                display_shortcut: None,
-                additional_shortcuts: vec![key_hint::plain(KeyCode::Char('d'))],
-            }),
-            ReviewDecision::Abort => Some(ApprovalOption {
-                label: "No, and tell Codex what to do differently".to_string(),
-                decision: ApprovalDecision::Review(ReviewDecision::Abort),
-                display_shortcut: Some(key_hint::plain(KeyCode::Esc)),
-                additional_shortcuts: vec![key_hint::plain(KeyCode::Char('n'))],
-            }),
-        })
-        .collect()
-}
-
-pub(crate) fn format_additional_permissions_rule(
-    additional_permissions: &PermissionProfile,
-) -> Option<String> {
-    let mut parts = Vec::new();
-    if additional_permissions
-        .network
-        .as_ref()
-        .and_then(|network| network.enabled)
-        .unwrap_or(false)
-    {
-        parts.push("network".to_string());
-    }
-    if let Some(file_system) = additional_permissions.file_system.as_ref() {
-        if let Some(read) = file_system.read.as_ref() {
-            let reads = read
-                .iter()
-                .map(|path| format!("`{}`", path.display()))
-                .collect::<Vec<_>>()
-                .join(", ");
-            parts.push(format!("read {reads}"));
-        }
-        if let Some(write) = file_system.write.as_ref() {
-            let writes = write
-                .iter()
-                .map(|path| format!("`{}`", path.display()))
-                .collect::<Vec<_>>()
-                .join(", ");
-            parts.push(format!("write {writes}"));
-        }
-    }
-    if let Some(macos) = additional_permissions.macos.as_ref() {
-        if !matches!(
-            macos.macos_preferences,
-            MacOsPreferencesPermission::ReadOnly
-        ) {
-            let value = match macos.macos_preferences {
-                MacOsPreferencesPermission::ReadOnly => "readonly",
-                MacOsPreferencesPermission::ReadWrite => "readwrite",
-                MacOsPreferencesPermission::None => "none",
-            };
-            parts.push(format!("macOS preferences {value}"));
-        }
-        match &macos.macos_automation {
-            MacOsAutomationPermission::All => {
-                parts.push("macOS automation all".to_string());
-            }
-            MacOsAutomationPermission::BundleIds(bundle_ids) => {
-                if !bundle_ids.is_empty() {
-                    parts.push(format!("macOS automation {}", bundle_ids.join(", ")));
-                }
-            }
-            MacOsAutomationPermission::None => {}
-        }
-        if macos.macos_accessibility {
-            parts.push("macOS accessibility".to_string());
-        }
-        if macos.macos_calendar {
-            parts.push("macOS calendar".to_string());
-        }
-        if macos.macos_reminders {
-            parts.push("macOS reminders".to_string());
-        }
-        if !matches!(macos.macos_contacts, MacOsContactsPermission::None) {
-            let value = match macos.macos_contacts {
-                MacOsContactsPermission::None => "none",
-                MacOsContactsPermission::ReadOnly => "readonly",
-                MacOsContactsPermission::ReadWrite => "readwrite",
-            };
-            parts.push(format!("macOS contacts {value}"));
-        }
-    }
-
-    if parts.is_empty() {
-        None
-    } else {
-        Some(parts.join("; "))
-    }
-}
-
-pub(crate) fn format_requested_permissions_rule(
-    permissions: &RequestPermissionProfile,
-) -> Option<String> {
-    format_additional_permissions_rule(&permissions.clone().into())
-}
-
-fn patch_options() -> Vec<ApprovalOption> {
-    vec![
-        ApprovalOption {
-            label: "Yes, proceed".to_string(),
-            decision: ApprovalDecision::Review(ReviewDecision::Approved),
-            display_shortcut: None,
-            additional_shortcuts: vec![key_hint::plain(KeyCode::Char('y'))],
-        },
-        ApprovalOption {
-            label: "Yes, and don't ask again for these files".to_string(),
-            decision: ApprovalDecision::Review(ReviewDecision::ApprovedForSession),
-            display_shortcut: None,
-            additional_shortcuts: vec![key_hint::plain(KeyCode::Char('a'))],
-        },
-        ApprovalOption {
-            label: "No, and tell Codex what to do differently".to_string(),
-            decision: ApprovalDecision::Review(ReviewDecision::Abort),
-            display_shortcut: Some(key_hint::plain(KeyCode::Esc)),
-            additional_shortcuts: vec![key_hint::plain(KeyCode::Char('n'))],
-        },
-    ]
-}
-
-fn permissions_options() -> Vec<ApprovalOption> {
-    vec![
-        ApprovalOption {
-            label: "Yes, grant these permissions".to_string(),
-            decision: ApprovalDecision::Review(ReviewDecision::Approved),
-            display_shortcut: None,
-            additional_shortcuts: vec![key_hint::plain(KeyCode::Char('y'))],
-        },
-        ApprovalOption {
-            label: "Yes, grant these permissions for this session".to_string(),
-            decision: ApprovalDecision::Review(ReviewDecision::ApprovedForSession),
-            display_shortcut: None,
-            additional_shortcuts: vec![key_hint::plain(KeyCode::Char('a'))],
-        },
-        ApprovalOption {
-            label: "No, continue without permissions".to_string(),
-            decision: ApprovalDecision::Review(ReviewDecision::Denied),
-            display_shortcut: None,
-            additional_shortcuts: vec![key_hint::plain(KeyCode::Char('n'))],
-        },
-    ]
-}
-
-fn elicitation_options() -> Vec<ApprovalOption> {
-    vec![
-        ApprovalOption {
-            label: "Yes, provide the requested info".to_string(),
-            decision: ApprovalDecision::McpElicitation(ElicitationAction::Accept),
-            display_shortcut: None,
-            additional_shortcuts: vec![key_hint::plain(KeyCode::Char('y'))],
-        },
-        ApprovalOption {
-            label: "No, but continue without it".to_string(),
-            decision: ApprovalDecision::McpElicitation(ElicitationAction::Decline),
-            display_shortcut: None,
-            additional_shortcuts: vec![key_hint::plain(KeyCode::Char('n'))],
-        },
-        ApprovalOption {
-            label: "Cancel this request".to_string(),
-            decision: ApprovalDecision::McpElicitation(ElicitationAction::Cancel),
-            display_shortcut: Some(key_hint::plain(KeyCode::Esc)),
-            additional_shortcuts: vec![key_hint::plain(KeyCode::Char('c'))],
-        },
-    ]
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::app_event::AppEvent;
+    use crate::bottom_pane::approval_state::exec_options;
+    use crate::bottom_pane::approval_state::permissions_options;
+    use codex_protocol::ThreadId;
     use codex_protocol::models::FileSystemPermissions;
-    use codex_protocol::models::MacOsAutomationPermission;
-    use codex_protocol::models::MacOsPreferencesPermission;
-    use codex_protocol::models::MacOsSeatbeltProfileExtensions;
     use codex_protocol::models::NetworkPermissions;
+    use codex_protocol::models::PermissionProfile;
     use codex_protocol::protocol::ExecPolicyAmendment;
+    use codex_protocol::protocol::NetworkApprovalContext;
     use codex_protocol::protocol::NetworkApprovalProtocol;
     use codex_protocol::protocol::NetworkPolicyAmendment;
+    use codex_protocol::protocol::NetworkPolicyRuleAction;
     use codex_utils_absolute_path::AbsolutePathBuf;
     use insta::assert_snapshot;
     use pretty_assertions::assert_eq;
@@ -1010,6 +668,27 @@ mod tests {
     }
 
     #[test]
+    fn resolved_request_dismisses_overlay_without_emitting_abort() {
+        let (tx, mut rx) = unbounded_channel::<AppEvent>();
+        let tx = AppEventSender::new(tx);
+        let mut view = ApprovalOverlay::new(make_exec_request(), tx, Features::with_defaults());
+
+        assert!(
+            view.dismiss_app_server_request(&ResolvedAppServerRequest::ExecApproval {
+                id: "test".to_string(),
+            })
+        );
+        assert!(
+            view.is_complete(),
+            "resolved request should close the overlay"
+        );
+        assert!(
+            rx.try_recv().is_err(),
+            "dismissing a stale request should not emit an approval op"
+        );
+    }
+
+    #[test]
     fn o_opens_source_thread_for_cross_thread_approval() {
         let (tx, mut rx) = unbounded_channel::<AppEvent>();
         let tx = AppEventSender::new(tx);
@@ -1059,7 +738,7 @@ mod tests {
 
         assert_snapshot!(
             "approval_overlay_cross_thread_prompt",
-            render_overlay_lines(&view, 80)
+            render_overlay_lines(&view, /*width*/ 80)
         );
     }
 
@@ -1171,8 +850,11 @@ mod tests {
         };
 
         let view = ApprovalOverlay::new(exec_request, tx, Features::with_defaults());
-        let mut buf = Buffer::empty(Rect::new(0, 0, 80, view.desired_height(80)));
-        view.render(Rect::new(0, 0, 80, view.desired_height(80)), &mut buf);
+        let mut buf = Buffer::empty(Rect::new(0, 0, 80, view.desired_height(/*width*/ 80)));
+        view.render(
+            Rect::new(0, 0, 80, view.desired_height(/*width*/ 80)),
+            &mut buf,
+        );
 
         let rendered: Vec<String> = (0..buf.area.height)
             .map(|row| {
@@ -1208,7 +890,7 @@ mod tests {
                 ReviewDecision::Abort,
             ],
             Some(&network_context),
-            None,
+            /*additional_permissions*/ None,
         );
 
         let labels: Vec<String> = options.into_iter().map(|option| option.label).collect();
@@ -1231,8 +913,8 @@ mod tests {
                 ReviewDecision::ApprovedForSession,
                 ReviewDecision::Abort,
             ],
-            None,
-            None,
+            /*network_approval_context*/ None,
+            /*additional_permissions*/ None,
         );
 
         let labels: Vec<String> = options.into_iter().map(|option| option.label).collect();
@@ -1257,7 +939,7 @@ mod tests {
         };
         let options = exec_options(
             &[ReviewDecision::Approved, ReviewDecision::Abort],
-            None,
+            /*network_approval_context*/ None,
             Some(&additional_permissions),
         );
 
@@ -1334,13 +1016,15 @@ mod tests {
                     read: Some(vec![absolute_path("/tmp/readme.txt")]),
                     write: Some(vec![absolute_path("/tmp/out.txt")]),
                 }),
-                ..Default::default()
             }),
         };
 
         let view = ApprovalOverlay::new(exec_request, tx, Features::with_defaults());
-        let mut buf = Buffer::empty(Rect::new(0, 0, 120, view.desired_height(120)));
-        view.render(Rect::new(0, 0, 120, view.desired_height(120)), &mut buf);
+        let mut buf = Buffer::empty(Rect::new(0, 0, 120, view.desired_height(/*width*/ 120)));
+        view.render(
+            Rect::new(0, 0, 120, view.desired_height(/*width*/ 120)),
+            &mut buf,
+        );
 
         let rendered: Vec<String> = (0..buf.area.height)
             .map(|row| {
@@ -1382,14 +1066,13 @@ mod tests {
                     read: Some(vec![absolute_path("/tmp/readme.txt")]),
                     write: Some(vec![absolute_path("/tmp/out.txt")]),
                 }),
-                ..Default::default()
             }),
         };
 
         let view = ApprovalOverlay::new(exec_request, tx, Features::with_defaults());
         assert_snapshot!(
             "approval_overlay_additional_permissions_prompt",
-            normalize_snapshot_paths(render_overlay_lines(&view, 120))
+            normalize_snapshot_paths(render_overlay_lines(&view, /*width*/ 120))
         );
     }
 
@@ -1400,43 +1083,7 @@ mod tests {
         let view = ApprovalOverlay::new(make_permissions_request(), tx, Features::with_defaults());
         assert_snapshot!(
             "approval_overlay_permissions_prompt",
-            normalize_snapshot_paths(render_overlay_lines(&view, 120))
-        );
-    }
-
-    #[test]
-    fn additional_permissions_macos_prompt_snapshot() {
-        let (tx, _rx) = unbounded_channel::<AppEvent>();
-        let tx = AppEventSender::new(tx);
-        let exec_request = ApprovalRequest::Exec {
-            thread_id: ThreadId::new(),
-            thread_label: None,
-            id: "test".into(),
-            command: vec!["osascript".into(), "-e".into(), "tell application".into()],
-            reason: Some("need macOS automation".into()),
-            available_decisions: vec![ReviewDecision::Approved, ReviewDecision::Abort],
-            network_approval_context: None,
-            additional_permissions: Some(PermissionProfile {
-                macos: Some(MacOsSeatbeltProfileExtensions {
-                    macos_preferences: MacOsPreferencesPermission::ReadWrite,
-                    macos_automation: MacOsAutomationPermission::BundleIds(vec![
-                        "com.apple.Calendar".to_string(),
-                        "com.apple.Notes".to_string(),
-                    ]),
-                    macos_launch_services: false,
-                    macos_accessibility: true,
-                    macos_calendar: true,
-                    macos_reminders: true,
-                    macos_contacts: MacOsContactsPermission::None,
-                }),
-                ..Default::default()
-            }),
-        };
-
-        let view = ApprovalOverlay::new(exec_request, tx, Features::with_defaults());
-        assert_snapshot!(
-            "approval_overlay_additional_permissions_macos_prompt",
-            render_overlay_lines(&view, 120)
+            normalize_snapshot_paths(render_overlay_lines(&view, /*width*/ 120))
         );
     }
 
@@ -1469,8 +1116,11 @@ mod tests {
         };
 
         let view = ApprovalOverlay::new(exec_request, tx, Features::with_defaults());
-        let mut buf = Buffer::empty(Rect::new(0, 0, 100, view.desired_height(100)));
-        view.render(Rect::new(0, 0, 100, view.desired_height(100)), &mut buf);
+        let mut buf = Buffer::empty(Rect::new(0, 0, 100, view.desired_height(/*width*/ 100)));
+        view.render(
+            Rect::new(0, 0, 100, view.desired_height(/*width*/ 100)),
+            &mut buf,
+        );
         assert_snapshot!("network_exec_prompt", format!("{buf:?}"));
 
         let rendered: Vec<String> = (0..buf.area.height)
@@ -1509,7 +1159,7 @@ mod tests {
             ReviewDecision::Approved,
             history_cell::ApprovalDecisionActor::User,
         );
-        let lines = cell.display_lines(28);
+        let lines = cell.display_lines(/*width*/ 28);
         let rendered: Vec<String> = lines
             .iter()
             .map(|line| {

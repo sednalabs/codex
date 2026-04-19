@@ -14,6 +14,34 @@ on:
         required: false
         type: string
         default: ""
+      lane_phase:
+        required: false
+        type: string
+        default: downstream_lanes
+      status_class:
+        required: false
+        type: string
+        default: active
+      frontier_default:
+        required: false
+        type: boolean
+        default: false
+      setup_class:
+        required: false
+        type: string
+        default: rust
+      frontier_role:
+        required: false
+        type: string
+        default: sentinel
+      summary_family:
+        required: false
+        type: string
+        default: validation-lane
+      cost_class:
+        required: false
+        type: string
+        default: medium
       run_command:
         required: true
         type: string
@@ -42,6 +70,9 @@ jobs:
     name: ${{ inputs.summary_title }}
     runs-on: ubuntu-24.04
     timeout-minutes: 90
+    env:
+      CARGO_INCREMENTAL: "0"
+      SCCACHE_CACHE_SIZE: 10G
     defaults:
       run:
         working-directory: codex-rs
@@ -51,12 +82,70 @@ jobs:
           fetch-depth: 0
           ref: ${{ inputs.checkout_ref != '' && inputs.checkout_ref || github.sha }}
 
+      - name: Check out workflow helpers
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 1
+          ref: ${{ github.sha }}
+          path: .workflow-src
+
+      - name: Reclaim runner disk headroom
+        if: ${{ runner.os == 'Linux' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          workspace_path="${GITHUB_WORKSPACE}"
+          soft_threshold_bytes=$((12 * 1024 * 1024 * 1024))
+          hard_threshold_bytes=$((6 * 1024 * 1024 * 1024))
+
+          available_bytes() {
+            df --block-size=1 --output=avail "${workspace_path}" | tail -n 1 | tr -d '[:space:]'
+          }
+
+          append_disk_snapshot() {
+            local heading="$1"
+            {
+              echo "### ${heading}"
+              echo
+              echo '```text'
+              df -h "${workspace_path}" /
+              echo
+              du -sh /usr/local/lib/android 2>/dev/null || true
+              du -sh /usr/share/dotnet 2>/dev/null || true
+              du -sh /opt/ghc 2>/dev/null || true
+              du -sh /usr/local/share/boost 2>/dev/null || true
+              du -sh /opt/hostedtoolcache/CodeQL 2>/dev/null || true
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+          }
+
+          before_bytes="$(available_bytes)"
+          append_disk_snapshot "Runner disk before cleanup"
+
+          if [[ "${before_bytes}" -lt "${soft_threshold_bytes}" ]]; then
+            echo "::warning title=Low runner disk before lane setup::Available disk is $(numfmt --to=iec "${before_bytes}") before dependency setup; reclaiming headroom."
+            sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/share/boost /opt/hostedtoolcache/CodeQL || true
+            sudo apt-get clean || true
+            sudo rm -rf /var/lib/apt/lists/* || true
+          fi
+
+          after_bytes="$(available_bytes)"
+          append_disk_snapshot "Runner disk after cleanup"
+
+          if [[ "${after_bytes}" -lt "${hard_threshold_bytes}" ]]; then
+            echo "::error title=Insufficient runner disk::Available disk after cleanup is $(numfmt --to=iec "${after_bytes}"), below the 6 GiB safety floor for validation lanes."
+            exit 1
+          fi
+
       - name: Set up Node.js for js_repl tests
+        if: ${{ inputs.setup_class != 'light' }}
         uses: actions/setup-node@v6
         with:
           node-version-file: codex-rs/node-version.txt
 
       - name: Install Linux build dependencies
+        if: ${{ inputs.setup_class != 'light' }}
         shell: bash
         run: |
           set -euo pipefail
@@ -67,22 +156,81 @@ jobs:
         uses: facebook/install-dotslash@v2
 
       - uses: dtolnay/rust-toolchain@1.93.0
+        if: ${{ inputs.setup_class != 'light' }}
         with:
           targets: x86_64-unknown-linux-gnu
 
-      - uses: taiki-e/install-action@44c6d64aa62cd779e873306675c7a58e86d6d532 # v2
-        if: ${{ inputs.install_nextest }}
+      - name: Compute lockfile hash
+        if: ${{ inputs.setup_class != 'light' }}
+        id: lockhash
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "hash=$(sha256sum Cargo.lock | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+          echo "toolchain_hash=$(sha256sum rust-toolchain.toml | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+
+      - name: Restore cargo home cache
+        if: ${{ inputs.setup_class != 'light' }}
+        id: cache_cargo_home_restore
+        uses: actions/cache/restore@v5
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/.rusty_v8/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+          key: cargo-home-linux-rust-${{ steps.lockhash.outputs.hash }}-${{ steps.lockhash.outputs.toolchain_hash }}
+
+      - name: Install sccache
+        if: ${{ inputs.setup_class != 'light' }}
+        uses: taiki-e/install-action@58e862542551f667fa44c8a2a4a1d64ad477c96a # v2
+        with:
+          tool: sccache
+
+      - name: Configure sccache backend
+        if: ${{ inputs.setup_class != 'light' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -n "${ACTIONS_CACHE_URL:-}" && -n "${ACTIONS_RUNTIME_TOKEN:-}" ]]; then
+            echo "SCCACHE_GHA_ENABLED=true" >> "$GITHUB_ENV"
+            echo "Using sccache GitHub backend"
+          else
+            echo "SCCACHE_GHA_ENABLED=false" >> "$GITHUB_ENV"
+            echo "SCCACHE_DIR=${{ github.workspace }}/.sccache" >> "$GITHUB_ENV"
+            echo "Using sccache local disk + actions/cache fallback"
+          fi
+
+      - name: Enable sccache wrapper
+        if: ${{ inputs.setup_class != 'light' }}
+        shell: bash
+        run: echo "RUSTC_WRAPPER=sccache" >> "$GITHUB_ENV"
+
+      - name: Restore sccache cache (fallback)
+        if: ${{ inputs.setup_class != 'light' && env.SCCACHE_GHA_ENABLED != 'true' }}
+        id: cache_sccache_restore
+        uses: actions/cache/restore@v5
+        with:
+          path: ${{ github.workspace }}/.sccache/
+          key: sccache-linux-rust-${{ steps.lockhash.outputs.hash }}-${{ steps.lockhash.outputs.toolchain_hash }}-${{ github.run_id }}
+          restore-keys: |
+            sccache-linux-rust-${{ steps.lockhash.outputs.hash }}-${{ steps.lockhash.outputs.toolchain_hash }}-
+            sccache-linux-rust-${{ steps.lockhash.outputs.hash }}-
+
+      - uses: taiki-e/install-action@58e862542551f667fa44c8a2a4a1d64ad477c96a # v2
+        if: ${{ inputs.setup_class != 'light' && inputs.install_nextest }}
         with:
           tool: nextest
           version: 0.9.103
 
       - name: Install just
-        uses: taiki-e/install-action@44c6d64aa62cd779e873306675c7a58e86d6d532 # v2
+        uses: taiki-e/install-action@58e862542551f667fa44c8a2a4a1d64ad477c96a # v2
         with:
           tool: just
 
       - name: Enable unprivileged user namespaces (Linux)
-        if: ${{ inputs.install_nextest }}
+        if: ${{ inputs.setup_class != 'light' && inputs.install_nextest }}
         shell: bash
         run: |
           sudo sysctl -w kernel.unprivileged_userns_clone=1
@@ -100,8 +248,7 @@ jobs:
           set -euo pipefail
           command_file="${RUNNER_TEMP}/sedna-lane-command.sh"
           log_file="${RUNNER_TEMP}/sedna-lane.log"
-          echo "command_file=${command_file}" >> "$GITHUB_OUTPUT"
-          echo "log_file=${log_file}" >> "$GITHUB_OUTPUT"
+          started_at_ms="$(date +%s%3N)"
           export CODEX_RELEASE_REPOSITORY='${{ github.repository }}'
           export CODEX_RELEASE_TAG_PREFIX='v'
           if [[ -n '${{ inputs.release_version }}' ]]; then
@@ -109,11 +256,44 @@ jobs:
           fi
           printf '%s\n' 'set -euo pipefail' > "${command_file}"
           printf '%s\n' "${LANE_COMMAND}" >> "${command_file}"
+          : > "${log_file}"
+          attempt=1
+          max_attempts=2
           set +e
-          bash "${command_file}" 2>&1 | tee "${log_file}"
-          exit_code=${PIPESTATUS[0]}
+          while true; do
+            if [[ "${attempt}" -gt 1 ]]; then
+              printf '\n=== retry attempt %s/%s ===\n' "${attempt}" "${max_attempts}" | tee -a "${log_file}"
+            fi
+            bash "${command_file}" 2>&1 | tee -a "${log_file}"
+            exit_code=${PIPESTATUS[0]}
+            if [[ "${exit_code}" -eq 0 ]]; then
+              break
+            fi
+            if [[ "${attempt}" -ge "${max_attempts}" ]]; then
+              break
+            fi
+            if grep -q 'rusty_v8' "${log_file}" && grep -q 'HTTP Error 502' "${log_file}"; then
+              echo "::warning title=Retrying flaky rusty_v8 download::${{ inputs.summary_title }} hit HTTP 502 while downloading rusty_v8; retrying once." | tee -a "${log_file}"
+              attempt=$((attempt + 1))
+              sleep 5
+              continue
+            fi
+            break
+          done
           set -e
-          echo "exit_code=${exit_code}" >> "$GITHUB_OUTPUT"
+          finished_at_ms="$(date +%s%3N)"
+          duration_ms="$((finished_at_ms - started_at_ms))"
+          if [[ "${duration_ms}" -lt 0 ]]; then
+            duration_ms=0
+          fi
+          {
+            echo "command_file=${command_file}"
+            echo "log_file=${log_file}"
+            echo "started_at_ms=${started_at_ms}"
+            echo "finished_at_ms=${finished_at_ms}"
+            echo "duration_ms=${duration_ms}"
+            echo "exit_code=${exit_code}"
+          } >> "$GITHUB_OUTPUT"
           exit "${exit_code}"
 
       - name: Summarize lane failure output
@@ -154,6 +334,66 @@ jobs:
         shell: bash
         run: exit 1
 
+      - name: Prepare lane summary artifact
+        if: ${{ always() }}
+        id: lane_summary
+        shell: bash
+        env:
+          LANE_COMMAND: ${{ inputs.run_command }}
+          SUMMARY_TITLE: ${{ inputs.summary_title }}
+          LANE_ID: ${{ inputs.lane_id != '' && inputs.lane_id || inputs.summary_title }}
+          ARTIFACT_NAME: ${{ inputs.artifact_name }}
+          LANE_PHASE: ${{ inputs.lane_phase }}
+          STATUS_CLASS: ${{ inputs.status_class }}
+          FRONTIER_DEFAULT: ${{ inputs.frontier_default && 'true' || 'false' }}
+          SETUP_CLASS: ${{ inputs.setup_class }}
+          FRONTIER_ROLE: ${{ inputs.frontier_role }}
+          SUMMARY_FAMILY: ${{ inputs.summary_family }}
+          COST_CLASS: ${{ inputs.cost_class }}
+          RUN_OUTCOME: ${{ steps.run_lane.outcome }}
+          EXIT_CODE: ${{ steps.run_lane.outputs.exit_code }}
+          LOG_FILE: ${{ steps.run_lane.outputs.log_file }}
+          STARTED_AT_MS: ${{ steps.run_lane.outputs.started_at_ms }}
+          FINISHED_AT_MS: ${{ steps.run_lane.outputs.finished_at_ms }}
+          DURATION_MS: ${{ steps.run_lane.outputs.duration_ms }}
+        run: |
+          set -euo pipefail
+          lane_slug="$(printf '%s' "${LANE_ID}" | tr '[:upper:]' '[:lower:]' | tr -cs '[:alnum:]' '-' | sed 's/^-//;s/-$//' | cut -c1-48)"
+          if [[ -z "${lane_slug}" ]]; then
+            lane_slug="validation-lane"
+          fi
+          summary_file="${RUNNER_TEMP}/validation-lane-summary-${lane_slug}.json"
+          python3 ../.workflow-src/.github/scripts/write_lane_summary.py \
+            --lane-id "${LANE_ID}" \
+            --lane-phase "${LANE_PHASE}" \
+            --summary-title "${SUMMARY_TITLE}" \
+            --run-command "${LANE_COMMAND}" \
+            --status-class "${STATUS_CLASS}" \
+            --frontier-default "${FRONTIER_DEFAULT}" \
+            --setup-class "${SETUP_CLASS}" \
+            --frontier-role "${FRONTIER_ROLE}" \
+            --summary-family "${SUMMARY_FAMILY}" \
+            --cost-class "${COST_CLASS}" \
+            --outcome "${RUN_OUTCOME}" \
+            --exit-code "${EXIT_CODE}" \
+            --log-file "${LOG_FILE}" \
+            --started-at-ms "${STARTED_AT_MS}" \
+            --finished-at-ms "${FINISHED_AT_MS}" \
+            --duration-ms "${DURATION_MS}" \
+            --artifact-name "${ARTIFACT_NAME}" \
+            --output "${summary_file}"
+          echo "lane_slug=${lane_slug}" >> "$GITHUB_OUTPUT"
+          echo "summary_file=${summary_file}" >> "$GITHUB_OUTPUT"
+
+      - name: Upload lane summary artifact
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: validation-lane-summary-${{ steps.lane_summary.outputs.lane_slug }}
+          path: ${{ steps.lane_summary.outputs.summary_file }}
+          overwrite: true
+          retention-days: 3
+
       - name: Upload workflow artifacts
         if: ${{ inputs.artifact_name != '' && inputs.artifact_path != '' }}
         uses: actions/upload-artifact@v7
@@ -161,3 +401,81 @@ jobs:
           name: ${{ inputs.artifact_name }}
           path: ${{ inputs.artifact_path }}
           retention-days: 3
+
+      - name: Check post-lane disk headroom
+        if: ${{ always() && !cancelled() && runner.os == 'Linux' && inputs.setup_class != 'light' }}
+        id: disk_guard
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          workspace_path="${GITHUB_WORKSPACE}"
+          save_floor_bytes=$((8 * 1024 * 1024 * 1024))
+          available_bytes="$(df --block-size=1 --output=avail "${workspace_path}" | tail -n 1 | tr -d '[:space:]')"
+
+          {
+            echo "available_bytes=${available_bytes}"
+            if [[ "${available_bytes}" -lt "${save_floor_bytes}" ]]; then
+              echo "skip_cache_save=true"
+            else
+              echo "skip_cache_save=false"
+            fi
+          } >> "$GITHUB_OUTPUT"
+
+          {
+            echo "### Runner disk before cache-save steps"
+            echo
+            echo "- Available disk: $(numfmt --to=iec "${available_bytes}")"
+            if [[ "${available_bytes}" -lt "${save_floor_bytes}" ]]; then
+              echo "- Cache save decision: \`skip\`"
+            else
+              echo "- Cache save decision: \`allow\`"
+            fi
+            echo
+            echo '```text'
+            df -h "${workspace_path}" /
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if [[ "${available_bytes}" -lt "${save_floor_bytes}" ]]; then
+            echo "::warning title=Skipping cache save on low disk::Available disk is $(numfmt --to=iec "${available_bytes}") before cache archival; skipping cache save steps to avoid runner exhaustion."
+          fi
+
+      - name: Save cargo home cache
+        if: ${{ always() && !cancelled() && inputs.setup_class != 'light' && steps.cache_cargo_home_restore.outputs.cache-hit != 'true' && steps.disk_guard.outputs.skip_cache_save != 'true' }}
+        continue-on-error: true
+        uses: actions/cache/save@v5
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/.rusty_v8/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+          key: cargo-home-linux-rust-${{ steps.lockhash.outputs.hash }}-${{ steps.lockhash.outputs.toolchain_hash }}
+
+      - name: Save sccache cache (fallback)
+        if: ${{ always() && !cancelled() && inputs.setup_class != 'light' && env.SCCACHE_GHA_ENABLED != 'true' && steps.disk_guard.outputs.skip_cache_save != 'true' }}
+        continue-on-error: true
+        uses: actions/cache/save@v5
+        with:
+          path: ${{ github.workspace }}/.sccache/
+          key: sccache-linux-rust-${{ steps.lockhash.outputs.hash }}-${{ steps.lockhash.outputs.toolchain_hash }}-${{ github.run_id }}
+
+      - name: sccache stats
+        if: ${{ always() && inputs.setup_class != 'light' }}
+        continue-on-error: true
+        shell: bash
+        run: sccache --show-stats || true
+
+      - name: sccache summary
+        if: ${{ always() && inputs.setup_class != 'light' }}
+        shell: bash
+        run: |
+          {
+            echo "### sccache stats";
+            echo;
+            echo '```';
+            sccache --show-stats || true;
+            echo '```';
+          } >> "$GITHUB_STEP_SUMMARY"

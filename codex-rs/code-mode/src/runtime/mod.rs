@@ -1,6 +1,7 @@
 mod callbacks;
 mod globals;
 mod module_loader;
+mod timers;
 mod value;
 
 use std::collections::HashMap;
@@ -8,6 +9,7 @@ use std::sync::OnceLock;
 use std::sync::mpsc as std_mpsc;
 use std::thread;
 
+use codex_protocol::ToolName;
 use serde_json::Value as JsonValue;
 use tokio::sync::mpsc;
 
@@ -61,7 +63,7 @@ pub(crate) enum TurnMessage {
     ToolCall {
         cell_id: String,
         id: String,
-        name: String,
+        name: ToolName,
         input: Option<JsonValue>,
     },
     Notify {
@@ -75,6 +77,7 @@ pub(crate) enum TurnMessage {
 pub(crate) enum RuntimeCommand {
     ToolResponse { id: String, result: JsonValue },
     ToolError { id: String, error_text: String },
+    TimeoutFired { id: u64 },
     Terminate,
 }
 
@@ -85,7 +88,7 @@ pub(crate) enum RuntimeEvent {
     YieldRequested,
     ToolCall {
         id: String,
-        name: String,
+        name: ToolName,
         input: Option<JsonValue>,
     },
     Notify {
@@ -102,7 +105,10 @@ pub(crate) fn spawn_runtime(
     request: ExecuteRequest,
     event_tx: mpsc::UnboundedSender<RuntimeEvent>,
 ) -> Result<(std_mpsc::Sender<RuntimeCommand>, v8::IsolateHandle), String> {
+    initialize_v8()?;
+
     let (command_tx, command_rx) = std_mpsc::channel();
+    let runtime_command_tx = command_tx.clone();
     let (isolate_handle_tx, isolate_handle_rx) = std_mpsc::sync_channel(1);
     let enabled_tools = request
         .enabled_tools
@@ -117,7 +123,13 @@ pub(crate) fn spawn_runtime(
     };
 
     thread::spawn(move || {
-        run_runtime(config, event_tx, command_rx, isolate_handle_tx);
+        run_runtime(
+            config,
+            event_tx,
+            command_rx,
+            isolate_handle_tx,
+            runtime_command_tx,
+        );
     });
 
     let isolate_handle = isolate_handle_rx
@@ -137,10 +149,13 @@ struct RuntimeConfig {
 pub(super) struct RuntimeState {
     event_tx: mpsc::UnboundedSender<RuntimeEvent>,
     pending_tool_calls: HashMap<String, v8::Global<v8::PromiseResolver>>,
+    pending_timeouts: HashMap<u64, timers::ScheduledTimeout>,
     stored_values: HashMap<String, JsonValue>,
     enabled_tools: Vec<EnabledToolMetadata>,
     next_tool_call_id: u64,
+    next_timeout_id: u64,
     tool_call_id: String,
+    runtime_command_tx: std_mpsc::Sender<RuntimeCommand>,
     exit_requested: bool,
 }
 
@@ -152,15 +167,20 @@ pub(super) enum CompletionState {
     },
 }
 
-fn initialize_v8() {
-    static PLATFORM: OnceLock<v8::SharedRef<v8::Platform>> = OnceLock::new();
+fn initialize_v8() -> Result<(), String> {
+    static PLATFORM: OnceLock<Result<v8::SharedRef<v8::Platform>, String>> = OnceLock::new();
 
-    let _ = PLATFORM.get_or_init(|| {
+    match PLATFORM.get_or_init(|| {
+        v8::icu::set_common_data_77(deno_core_icudata::ICU_DATA)
+            .map_err(|error_code| format!("failed to initialize ICU data: {error_code}"))?;
         let platform = v8::new_default_platform(0, false).make_shared();
         v8::V8::initialize_platform(platform.clone());
         v8::V8::initialize();
-        platform
-    });
+        Ok(platform)
+    }) {
+        Ok(_) => Ok(()),
+        Err(error_text) => Err(error_text.clone()),
+    }
 }
 
 fn run_runtime(
@@ -168,9 +188,8 @@ fn run_runtime(
     event_tx: mpsc::UnboundedSender<RuntimeEvent>,
     command_rx: std_mpsc::Receiver<RuntimeCommand>,
     isolate_handle_tx: std_mpsc::SyncSender<v8::IsolateHandle>,
+    runtime_command_tx: std_mpsc::Sender<RuntimeCommand>,
 ) {
-    initialize_v8();
-
     let isolate = &mut v8::Isolate::new(v8::CreateParams::default());
     let isolate_handle = isolate.thread_safe_handle();
     if isolate_handle_tx.send(isolate_handle).is_err() {
@@ -185,10 +204,13 @@ fn run_runtime(
     scope.set_slot(RuntimeState {
         event_tx: event_tx.clone(),
         pending_tool_calls: HashMap::new(),
+        pending_timeouts: HashMap::new(),
         stored_values: config.stored_values,
         enabled_tools: config.enabled_tools,
         next_tool_call_id: 1,
+        next_timeout_id: 1,
         tool_call_id: config.tool_call_id,
+        runtime_command_tx,
         exit_requested: false,
     });
 
@@ -223,6 +245,7 @@ fn run_runtime(
         let Ok(command) = command_rx.recv() else {
             break;
         };
+
         match command {
             RuntimeCommand::Terminate => break,
             RuntimeCommand::ToolResponse { id, result } => {
@@ -237,6 +260,12 @@ fn run_runtime(
                 if let Err(runtime_error) =
                     module_loader::resolve_tool_response(scope, &id, Err(error_text))
                 {
+                    capture_scope_send_error(scope, &event_tx, Some(runtime_error));
+                    return;
+                }
+            }
+            RuntimeCommand::TimeoutFired { id } => {
+                if let Err(runtime_error) = timers::invoke_timeout_callback(scope, id) {
                     capture_scope_send_error(scope, &event_tx, Some(runtime_error));
                     return;
                 }

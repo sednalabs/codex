@@ -1,6 +1,6 @@
-use crate::codex::Session;
-use crate::codex::TurnContext;
 use crate::function_tool::FunctionCallError;
+use crate::session::session::Session;
+use crate::session::turn_context::TurnContext;
 use codex_protocol::ThreadId;
 use std::sync::Arc;
 
@@ -21,14 +21,14 @@ pub(crate) async fn resolve_agent_target(
         .resolve_agent_reference(session.conversation_id, &turn.session_source, target)
         .await
         .map_err(|err| match err {
-            crate::error::CodexErr::UnsupportedOperation(message) => {
+            codex_protocol::error::CodexErr::UnsupportedOperation(message) => {
                 FunctionCallError::RespondToModel(message)
             }
             other => FunctionCallError::RespondToModel(other.to_string()),
         })
 }
 
-/// Resolves multiple tool-facing agent targets to thread ids.
+/// Resolves a non-empty list of tool-facing agent targets to thread ids.
 pub(crate) async fn resolve_agent_targets(
     session: &Arc<Session>,
     turn: &Arc<TurnContext>,
@@ -40,11 +40,12 @@ pub(crate) async fn resolve_agent_targets(
         ));
     }
 
-    let mut resolved = Vec::with_capacity(targets.len());
-    for target in &targets {
-        resolved.push(resolve_agent_target(session, turn, target).await?);
+    let mut thread_ids = Vec::with_capacity(targets.len());
+    for target in targets {
+        thread_ids.push(resolve_agent_target(session, turn, &target).await?);
     }
-    Ok(resolved)
+
+    Ok(thread_ids)
 }
 
 fn register_session_root(session: &Arc<Session>, turn: &Arc<TurnContext>) {

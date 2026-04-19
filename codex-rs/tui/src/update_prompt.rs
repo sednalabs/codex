@@ -2,6 +2,7 @@
 
 use crate::history_cell::padded_emoji;
 use crate::key_hint;
+use crate::legacy_core::config::Config;
 use crate::render::Insets;
 use crate::render::renderable::ColumnRenderable;
 use crate::render::renderable::Renderable;
@@ -12,9 +13,8 @@ use crate::tui::Tui;
 use crate::tui::TuiEvent;
 use crate::update_action::UpdateAction;
 use crate::updates;
-use crate::version::CODEX_CLI_VERSION;
+use crate::version::CODEX_DISPLAY_VERSION;
 use crate::version::latest_release_notes_url;
-use codex_core::config::Config;
 use color_eyre::Result;
 use crossterm::event::KeyCode;
 use crossterm::event::KeyEvent;
@@ -110,7 +110,7 @@ impl UpdatePromptScreen {
         Self {
             request_frame,
             latest_version,
-            current_version: CODEX_CLI_VERSION.to_string(),
+            current_version: CODEX_DISPLAY_VERSION.to_string(),
             update_action,
             highlighted: UpdateSelection::UpdateNow,
             selection: None,

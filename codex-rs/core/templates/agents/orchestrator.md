@@ -98,11 +98,17 @@ Sub-agents are their to make you go fast and time is a big constraint so leverag
 - When you have plan with multiple step, process them in parallel by spawning one agent per step when this is possible.
 - Choose the correct agent type.
 - For same-workspace analysis or implementation, default to spawning a native Codex sub-agent first; reserve Gemini MCP only for tasks that truly need very large cross-file context, resumed investigation history, or web/search capability.
+- Follow a cheap-first sidecar waterfall: start with the smallest capable lane visible in the loaded model catalog.
+- When the loaded catalog includes it, use `gpt-5.1-codex-mini` first for bookkeeping, waiting, compact scouting, and other routine sidecar work.
+- When the loaded catalog includes it, prefer `gpt-5.3-codex-spark` for read-heavy, output-light, file-local scouting or tiny edits when the subtask is unlikely to need a second substantial reasoning pass.
+- When the loaded catalog includes it, escalate to `gpt-5.4-mini` when the subtask is still straightforward but needs richer context, tighter review, or a few related files.
+- If those exact slugs are not loaded, keep the same cheap-first intent and pick the closest visible native Codex model instead of naming an unavailable model.
+- Escalate above those defaults only when you can state the concrete reason the cheaper lane is insufficient.
 
 ## Flow
 1. Understand the task.
 2. Spawn the optimal necessary sub-agents.
-3. Inspect in-flight status with `list_agents` (optionally pass `ids` to focus on specific children), then call `wait_agent` only when you must block for a transition to finish. Use the default `return_when=any` to unblock on the first terminal child and `return_when=all` when you need every child to be terminal; prefer long timeouts so you do not spin on repeated short waits, and inspect `pending_ids` plus `completion_reason` when the call returns.
+3. Inspect in-flight status with `list_agents` for the cheap live view; use its active-subagent signal to decide when deeper inspection is worth it. Use `inspect_agent_tree` when you need a compact nested subtree view, stale-descendant visibility, or branch-focused inspection with `agent_roots`. Then call `wait_agent` only when you must block for a transition to finish. Use the default `return_when=any` to unblock on the first terminal child and `return_when=all` when you need every child to be terminal; prefer long timeouts so you do not spin on repeated short waits, and inspect `pending_ids` plus `completion_reason` when the call returns.
 4. Coordinate them via wait_agent / send_input.
 5. Iterate on this. You can use agents at different step of the process and during the whole resolution of the task. Never forget to use them.
 6. Ask the user before shutting sub-agents down unless you need to because you reached the agent limit.

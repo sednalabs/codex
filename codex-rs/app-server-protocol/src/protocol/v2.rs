@@ -7,8 +7,11 @@ use crate::protocol::common::AuthMode;
 use codex_experimental_api_macros::ExperimentalApi;
 use codex_protocol::account::PlanType;
 use codex_protocol::approvals::ElicitationRequest as CoreElicitationRequest;
-use codex_protocol::approvals::ExecApprovalRequestSkillMetadata as CoreExecApprovalRequestSkillMetadata;
 use codex_protocol::approvals::ExecPolicyAmendment as CoreExecPolicyAmendment;
+use codex_protocol::approvals::GuardianAssessmentAction as CoreGuardianAssessmentAction;
+use codex_protocol::approvals::GuardianAssessmentDecisionSource as CoreGuardianAssessmentDecisionSource;
+use codex_protocol::approvals::GuardianCommandSource as CoreGuardianCommandSource;
+use codex_protocol::approvals::GuardianUserAuthorization as CoreGuardianUserAuthorization;
 use codex_protocol::approvals::NetworkApprovalContext as CoreNetworkApprovalContext;
 use codex_protocol::approvals::NetworkApprovalProtocol as CoreNetworkApprovalProtocol;
 use codex_protocol::approvals::NetworkPolicyAmendment as CoreNetworkPolicyAmendment;
@@ -27,16 +30,14 @@ use codex_protocol::config_types::WebSearchMode;
 use codex_protocol::config_types::WebSearchToolConfig;
 use codex_protocol::items::AgentMessageContent as CoreAgentMessageContent;
 use codex_protocol::items::TurnItem as CoreTurnItem;
+use codex_protocol::mcp::CallToolResult as CoreMcpCallToolResult;
 use codex_protocol::mcp::Resource as McpResource;
+pub use codex_protocol::mcp::ResourceContent as McpResourceContent;
 use codex_protocol::mcp::ResourceTemplate as McpResourceTemplate;
 use codex_protocol::mcp::Tool as McpTool;
 use codex_protocol::memory_citation::MemoryCitation as CoreMemoryCitation;
 use codex_protocol::memory_citation::MemoryCitationEntry as CoreMemoryCitationEntry;
 use codex_protocol::models::FileSystemPermissions as CoreFileSystemPermissions;
-use codex_protocol::models::MacOsAutomationPermission as CoreMacOsAutomationPermission;
-use codex_protocol::models::MacOsContactsPermission as CoreMacOsContactsPermission;
-use codex_protocol::models::MacOsPreferencesPermission as CoreMacOsPreferencesPermission;
-use codex_protocol::models::MacOsSeatbeltProfileExtensions as CoreMacOsSeatbeltProfileExtensions;
 use codex_protocol::models::MessagePhase;
 use codex_protocol::models::NetworkPermissions as CoreNetworkPermissions;
 use codex_protocol::models::PermissionProfile as CorePermissionProfile;
@@ -64,18 +65,23 @@ use codex_protocol::protocol::HookOutputEntryKind as CoreHookOutputEntryKind;
 use codex_protocol::protocol::HookRunStatus as CoreHookRunStatus;
 use codex_protocol::protocol::HookRunSummary as CoreHookRunSummary;
 use codex_protocol::protocol::HookScope as CoreHookScope;
+use codex_protocol::protocol::HookSource as CoreHookSource;
 use codex_protocol::protocol::ModelRerouteReason as CoreModelRerouteReason;
 use codex_protocol::protocol::NetworkAccess as CoreNetworkAccess;
+use codex_protocol::protocol::NonSteerableTurnKind as CoreNonSteerableTurnKind;
 use codex_protocol::protocol::PatchApplyStatus as CorePatchApplyStatus;
+use codex_protocol::protocol::RateLimitReachedType as CoreRateLimitReachedType;
 use codex_protocol::protocol::RateLimitSnapshot as CoreRateLimitSnapshot;
 use codex_protocol::protocol::RateLimitWindow as CoreRateLimitWindow;
 use codex_protocol::protocol::ReadOnlyAccess as CoreReadOnlyAccess;
 use codex_protocol::protocol::RealtimeAudioFrame as CoreRealtimeAudioFrame;
 use codex_protocol::protocol::RealtimeConversationVersion;
+use codex_protocol::protocol::RealtimeOutputModality;
+use codex_protocol::protocol::RealtimeVoice;
+use codex_protocol::protocol::RealtimeVoicesList;
 use codex_protocol::protocol::ReviewDecision as CoreReviewDecision;
 use codex_protocol::protocol::SessionSource as CoreSessionSource;
 use codex_protocol::protocol::SkillDependencies as CoreSkillDependencies;
-use codex_protocol::protocol::SkillErrorInfo as CoreSkillErrorInfo;
 use codex_protocol::protocol::SkillInterface as CoreSkillInterface;
 use codex_protocol::protocol::SkillMetadata as CoreSkillMetadata;
 use codex_protocol::protocol::SkillScope as CoreSkillScope;
@@ -128,6 +134,14 @@ macro_rules! v2_enum_from_core {
     };
 }
 
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub enum NonSteerableTurnKind {
+    Review,
+    Compact,
+}
+
 /// This translation layer make sure that we expose codex error code in camel case.
 ///
 /// When an upstream HTTP status is available (for example, from the Responses API or a provider),
@@ -167,6 +181,13 @@ pub enum CodexErrorInfo {
         #[ts(rename = "httpStatusCode")]
         http_status_code: Option<u16>,
     },
+    /// Returned when `turn/start` or `turn/steer` is submitted while the current active turn
+    /// cannot accept same-turn steering, for example `/review` or manual `/compact`.
+    ActiveTurnNotSteerable {
+        #[serde(rename = "turnKind")]
+        #[ts(rename = "turnKind")]
+        turn_kind: NonSteerableTurnKind,
+    },
     Other,
 }
 
@@ -193,7 +214,21 @@ impl From<CoreCodexErrorInfo> for CodexErrorInfo {
             CoreCodexErrorInfo::ResponseTooManyFailedAttempts { http_status_code } => {
                 CodexErrorInfo::ResponseTooManyFailedAttempts { http_status_code }
             }
+            CoreCodexErrorInfo::ActiveTurnNotSteerable { turn_kind } => {
+                CodexErrorInfo::ActiveTurnNotSteerable {
+                    turn_kind: turn_kind.into(),
+                }
+            }
             CoreCodexErrorInfo::Other => CodexErrorInfo::Other,
+        }
+    }
+}
+
+impl From<CoreNonSteerableTurnKind> for NonSteerableTurnKind {
+    fn from(value: CoreNonSteerableTurnKind) -> Self {
+        match value {
+            CoreNonSteerableTurnKind::Review => Self::Review,
+            CoreNonSteerableTurnKind::Compact => Self::Compact,
         }
     }
 }
@@ -347,7 +382,7 @@ v2_enum_from_core!(
 
 v2_enum_from_core!(
     pub enum HookEventName from CoreHookEventName {
-        SessionStart, UserPromptSubmit, Stop
+        PreToolUse, PermissionRequest, PostToolUse, SessionStart, UserPromptSubmit, Stop
     }
 );
 
@@ -370,6 +405,23 @@ v2_enum_from_core!(
 );
 
 v2_enum_from_core!(
+    pub enum HookSource from CoreHookSource {
+        System,
+        User,
+        Project,
+        Mdm,
+        SessionFlags,
+        LegacyManagedConfigFile,
+        LegacyManagedConfigMdm,
+        Unknown,
+    }
+);
+
+fn default_hook_source() -> HookSource {
+    HookSource::Unknown
+}
+
+v2_enum_from_core!(
     pub enum HookRunStatus from CoreHookRunStatus {
         Running, Completed, Failed, Blocked, Stopped
     }
@@ -380,6 +432,14 @@ v2_enum_from_core!(
         Warning, Stop, Feedback, Context, Error
     }
 );
+
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(rename_all = "camelCase", export_to = "v2/")]
+pub enum ThreadStartSource {
+    Startup,
+    Clear,
+}
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
 #[serde(rename_all = "camelCase")]
@@ -407,7 +467,9 @@ pub struct HookRunSummary {
     pub handler_type: HookHandlerType,
     pub execution_mode: HookExecutionMode,
     pub scope: HookScope,
-    pub source_path: PathBuf,
+    pub source_path: AbsolutePathBuf,
+    #[serde(default = "default_hook_source")]
+    pub source: HookSource,
     pub display_order: i64,
     pub status: HookRunStatus,
     pub status_message: Option<String>,
@@ -426,6 +488,7 @@ impl From<CoreHookRunSummary> for HookRunSummary {
             execution_mode: value.execution_mode.into(),
             scope: value.scope.into(),
             source_path: value.source_path,
+            source: value.source.into(),
             display_order: value.display_order,
             status: value.status.into(),
             status_message: value.status_message,
@@ -823,6 +886,8 @@ pub struct ConfigReadResponse {
 pub struct ConfigRequirements {
     #[experimental(nested)]
     pub allowed_approval_policies: Option<Vec<AskForApproval>>,
+    #[experimental("configRequirements/read.allowedApprovalsReviewers")]
+    pub allowed_approvals_reviewers: Option<Vec<ApprovalsReviewer>>,
     pub allowed_sandbox_modes: Option<Vec<SandboxMode>>,
     pub allowed_web_search_modes: Option<Vec<WebSearchMode>>,
     pub feature_requirements: Option<BTreeMap<String, bool>>,
@@ -841,10 +906,36 @@ pub struct NetworkRequirements {
     pub allow_upstream_proxy: Option<bool>,
     pub dangerously_allow_non_loopback_proxy: Option<bool>,
     pub dangerously_allow_all_unix_sockets: Option<bool>,
+    /// Canonical network permission map for `experimental_network`.
+    pub domains: Option<BTreeMap<String, NetworkDomainPermission>>,
+    /// When true, only managed allowlist entries are respected while managed
+    /// network enforcement is active.
+    pub managed_allowed_domains_only: Option<bool>,
+    /// Legacy compatibility view derived from `domains`.
     pub allowed_domains: Option<Vec<String>>,
+    /// Legacy compatibility view derived from `domains`.
     pub denied_domains: Option<Vec<String>>,
+    /// Canonical unix socket permission map for `experimental_network`.
+    pub unix_sockets: Option<BTreeMap<String, NetworkUnixSocketPermission>>,
+    /// Legacy compatibility view derived from `unix_sockets`.
     pub allow_unix_sockets: Option<Vec<String>>,
     pub allow_local_binding: Option<bool>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "lowercase")]
+#[ts(export_to = "v2/")]
+pub enum NetworkDomainPermission {
+    Allow,
+    Deny,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "lowercase")]
+#[ts(export_to = "v2/")]
+pub enum NetworkUnixSocketPermission {
+    Allow,
+    None,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
@@ -875,9 +966,31 @@ pub enum ExternalAgentConfigMigrationItemType {
     #[serde(rename = "SKILLS")]
     #[ts(rename = "SKILLS")]
     Skills,
+    #[serde(rename = "PLUGINS")]
+    #[ts(rename = "PLUGINS")]
+    Plugins,
     #[serde(rename = "MCP_SERVER_CONFIG")]
     #[ts(rename = "MCP_SERVER_CONFIG")]
     McpServerConfig,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct PluginsMigration {
+    #[serde(rename = "marketplaceName")]
+    #[ts(rename = "marketplaceName")]
+    pub marketplace_name: String,
+    #[serde(rename = "pluginNames")]
+    #[ts(rename = "pluginNames")]
+    pub plugin_names: Vec<String>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct MigrationDetails {
+    pub plugins: Vec<PluginsMigration>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
@@ -888,6 +1001,7 @@ pub struct ExternalAgentConfigMigrationItem {
     pub description: String,
     /// Null or empty means home-scoped migration; non-empty means repo-scoped migration.
     pub cwd: Option<PathBuf>,
+    pub details: Option<MigrationDetails>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
@@ -920,6 +1034,11 @@ pub struct ExternalAgentConfigImportParams {
 #[serde(rename_all = "camelCase")]
 #[ts(export_to = "v2/")]
 pub struct ExternalAgentConfigImportResponse {}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ExternalAgentConfigImportCompletedNotification {}
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
 #[serde(rename_all = "camelCase")]
@@ -999,7 +1118,7 @@ impl From<CoreReviewDecision> for CommandExecutionApprovalDecision {
                 network_policy_amendment: network_policy_amendment.into(),
             },
             CoreReviewDecision::Abort => Self::Cancel,
-            CoreReviewDecision::Denied => Self::Decline,
+            CoreReviewDecision::Denied | CoreReviewDecision::TimedOut => Self::Decline,
         }
     }
 }
@@ -1052,47 +1171,6 @@ impl From<AdditionalFileSystemPermissions> for CoreFileSystemPermissions {
         Self {
             read: value.read,
             write: value.write,
-        }
-    }
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
-#[serde(rename_all = "camelCase")]
-#[ts(export_to = "v2/")]
-pub struct AdditionalMacOsPermissions {
-    pub preferences: CoreMacOsPreferencesPermission,
-    pub automations: CoreMacOsAutomationPermission,
-    pub launch_services: bool,
-    pub accessibility: bool,
-    pub calendar: bool,
-    pub reminders: bool,
-    pub contacts: CoreMacOsContactsPermission,
-}
-
-impl From<CoreMacOsSeatbeltProfileExtensions> for AdditionalMacOsPermissions {
-    fn from(value: CoreMacOsSeatbeltProfileExtensions) -> Self {
-        Self {
-            preferences: value.macos_preferences,
-            automations: value.macos_automation,
-            launch_services: value.macos_launch_services,
-            accessibility: value.macos_accessibility,
-            calendar: value.macos_calendar,
-            reminders: value.macos_reminders,
-            contacts: value.macos_contacts,
-        }
-    }
-}
-
-impl From<AdditionalMacOsPermissions> for CoreMacOsSeatbeltProfileExtensions {
-    fn from(value: AdditionalMacOsPermissions) -> Self {
-        Self {
-            macos_preferences: value.preferences,
-            macos_automation: value.automations,
-            macos_launch_services: value.launch_services,
-            macos_accessibility: value.accessibility,
-            macos_calendar: value.calendar,
-            macos_reminders: value.reminders,
-            macos_contacts: value.contacts,
         }
     }
 }
@@ -1153,7 +1231,6 @@ impl From<RequestPermissionProfile> for CoreRequestPermissionProfile {
 pub struct AdditionalPermissionProfile {
     pub network: Option<AdditionalNetworkPermissions>,
     pub file_system: Option<AdditionalFileSystemPermissions>,
-    pub macos: Option<AdditionalMacOsPermissions>,
 }
 
 impl From<CorePermissionProfile> for AdditionalPermissionProfile {
@@ -1161,7 +1238,6 @@ impl From<CorePermissionProfile> for AdditionalPermissionProfile {
         Self {
             network: value.network.map(AdditionalNetworkPermissions::from),
             file_system: value.file_system.map(AdditionalFileSystemPermissions::from),
-            macos: value.macos.map(AdditionalMacOsPermissions::from),
         }
     }
 }
@@ -1171,7 +1247,6 @@ impl From<AdditionalPermissionProfile> for CorePermissionProfile {
         Self {
             network: value.network.map(CoreNetworkPermissions::from),
             file_system: value.file_system.map(CoreFileSystemPermissions::from),
-            macos: value.macos.map(CoreMacOsSeatbeltProfileExtensions::from),
         }
     }
 }
@@ -1193,7 +1268,6 @@ impl From<GrantedPermissionProfile> for CorePermissionProfile {
         Self {
             network: value.network.map(CoreNetworkPermissions::from),
             file_system: value.file_system.map(CoreFileSystemPermissions::from),
-            macos: None,
         }
     }
 }
@@ -1441,7 +1515,7 @@ pub enum CommandAction {
     Read {
         command: String,
         name: String,
-        path: PathBuf,
+        path: AbsolutePathBuf,
     },
     ListFiles {
         command: String,
@@ -1519,7 +1593,11 @@ impl CommandAction {
                 command: cmd,
                 name,
                 path,
-            } => CoreParsedCommand::Read { cmd, name, path },
+            } => CoreParsedCommand::Read {
+                cmd,
+                name,
+                path: path.into_path_buf(),
+            },
             CommandAction::ListFiles { command: cmd, path } => {
                 CoreParsedCommand::ListFiles { cmd, path }
             }
@@ -1533,13 +1611,13 @@ impl CommandAction {
     }
 }
 
-impl From<CoreParsedCommand> for CommandAction {
-    fn from(value: CoreParsedCommand) -> Self {
+impl CommandAction {
+    pub fn from_core_with_cwd(value: CoreParsedCommand, cwd: &AbsolutePathBuf) -> Self {
         match value {
             CoreParsedCommand::Read { cmd, name, path } => CommandAction::Read {
                 command: cmd,
                 name,
-                path,
+                path: cwd.join(path),
             },
             CoreParsedCommand::ListFiles { cmd, path } => {
                 CommandAction::ListFiles { command: cmd, path }
@@ -1583,6 +1661,9 @@ pub enum LoginAccountParams {
     #[serde(rename = "chatgpt")]
     #[ts(rename = "chatgpt")]
     Chatgpt,
+    #[serde(rename = "chatgptDeviceCode")]
+    #[ts(rename = "chatgptDeviceCode")]
+    ChatgptDeviceCode,
     /// [UNSTABLE] FOR OPENAI INTERNAL USE ONLY - DO NOT USE.
     /// The access token must contain the same scopes that Codex-managed ChatGPT auth tokens have.
     #[experimental("account/login/start.chatgptAuthTokens")]
@@ -1619,6 +1700,17 @@ pub enum LoginAccountResponse {
         login_id: String,
         /// URL the client should open in a browser to initiate the OAuth flow.
         auth_url: String,
+    },
+    #[serde(rename = "chatgptDeviceCode", rename_all = "camelCase")]
+    #[ts(rename = "chatgptDeviceCode", rename_all = "camelCase")]
+    ChatgptDeviceCode {
+        // Use plain String for identifiers to avoid TS/JSON Schema quirks around uuid-specific types.
+        // Convert to/from UUIDs at the application layer as needed.
+        login_id: String,
+        /// URL the client should open in a browser to complete device code authorization.
+        verification_url: String,
+        /// One-time code the user must enter after signing in.
+        user_code: String,
     },
     #[serde(rename = "chatgptAuthTokens", rename_all = "camelCase")]
     #[ts(rename = "chatgptAuthTokens", rename_all = "camelCase")]
@@ -1765,6 +1857,8 @@ pub struct Model {
     pub input_modalities: Vec<InputModality>,
     #[serde(default)]
     pub supports_personality: bool,
+    #[serde(default)]
+    pub additional_speed_tiers: Vec<String>,
     // Only one model should be marked as default.
     pub is_default: bool,
 }
@@ -1896,6 +1990,25 @@ pub struct ExperimentalFeatureListResponse {
     pub next_cursor: Option<String>,
 }
 
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, Default, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ExperimentalFeatureEnablementSetParams {
+    /// Process-wide runtime feature enablement keyed by canonical feature name.
+    ///
+    /// Only named features are updated. Omitted features are left unchanged.
+    /// Send an empty map for a no-op.
+    pub enablement: std::collections::BTreeMap<String, bool>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ExperimentalFeatureEnablementSetResponse {
+    /// Feature enablement entries updated by this request.
+    pub enablement: std::collections::BTreeMap<String, bool>,
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export_to = "v2/")]
@@ -1906,6 +2019,18 @@ pub struct ListMcpServerStatusParams {
     /// Optional page size; defaults to a server-defined value.
     #[ts(optional = nullable)]
     pub limit: Option<u32>,
+    /// Controls how much MCP inventory data to fetch for each server.
+    /// Defaults to `Full` when omitted.
+    #[ts(optional = nullable)]
+    pub detail: Option<McpServerStatusDetail>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(rename_all = "camelCase", export_to = "v2/")]
+pub enum McpServerStatusDetail {
+    Full,
+    ToolsAndAuthOnly,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
@@ -1927,6 +2052,64 @@ pub struct ListMcpServerStatusResponse {
     /// Opaque cursor to pass to the next call to continue after the last item.
     /// If None, there are no more items to return.
     pub next_cursor: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct McpResourceReadParams {
+    pub thread_id: String,
+    pub server: String,
+    pub uri: String,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct McpResourceReadResponse {
+    pub contents: Vec<McpResourceContent>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct McpServerToolCallParams {
+    pub thread_id: String,
+    pub server: String,
+    pub tool: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub arguments: Option<JsonValue>,
+    #[serde(rename = "_meta", default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub meta: Option<JsonValue>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct McpServerToolCallResponse {
+    pub content: Vec<JsonValue>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub structured_content: Option<JsonValue>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub is_error: Option<bool>,
+    #[serde(rename = "_meta", default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub meta: Option<JsonValue>,
+}
+
+impl From<CoreMcpCallToolResult> for McpServerToolCallResponse {
+    fn from(result: CoreMcpCallToolResult) -> Self {
+        Self {
+            content: result.content,
+            structured_content: result.structured_content,
+            is_error: result.is_error,
+            meta: result.meta,
+        }
+    }
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default, JsonSchema, TS)]
@@ -2111,6 +2294,8 @@ pub struct FeedbackUploadParams {
     pub include_logs: bool,
     #[ts(optional = nullable)]
     pub extra_log_files: Option<Vec<PathBuf>>,
+    #[ts(optional = nullable)]
+    pub tags: Option<BTreeMap<String, String>>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
@@ -2187,10 +2372,12 @@ pub struct FsGetMetadataParams {
 #[serde(rename_all = "camelCase")]
 #[ts(export_to = "v2/")]
 pub struct FsGetMetadataResponse {
-    /// Whether the path currently resolves to a directory.
+    /// Whether the path resolves to a directory.
     pub is_directory: bool,
-    /// Whether the path currently resolves to a regular file.
+    /// Whether the path resolves to a regular file.
     pub is_file: bool,
+    /// Whether the path itself is a symbolic link.
+    pub is_symlink: bool,
     /// File creation time in Unix milliseconds when available, otherwise `0`.
     #[ts(type = "number")]
     pub created_at_ms: i64,
@@ -2270,6 +2457,54 @@ pub struct FsCopyParams {
 #[serde(rename_all = "camelCase")]
 #[ts(export_to = "v2/")]
 pub struct FsCopyResponse {}
+
+/// Start filesystem watch notifications for an absolute path.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct FsWatchParams {
+    /// Connection-scoped watch identifier used for `fs/unwatch` and `fs/changed`.
+    pub watch_id: String,
+    /// Absolute file or directory path to watch.
+    pub path: AbsolutePathBuf,
+}
+
+/// Created watch handle returned by `fs/watch`.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct FsWatchResponse {
+    /// Connection-scoped watch identifier used for `fs/unwatch` and `fs/changed`.
+    pub watch_id: String,
+    /// Canonicalized path associated with the watch.
+    pub path: AbsolutePathBuf,
+}
+
+/// Stop filesystem watch notifications for a prior `fs/watch`.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct FsUnwatchParams {
+    /// Watch identifier returned by `fs/watch`.
+    pub watch_id: String,
+}
+
+/// Successful response for `fs/unwatch`.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct FsUnwatchResponse {}
+
+/// Filesystem watch notification emitted for `fs/watch` subscribers.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct FsChangedNotification {
+    /// Watch identifier returned by `fs/watch`.
+    pub watch_id: String,
+    /// File or directory paths associated with this event.
+    pub changed_paths: Vec<AbsolutePathBuf>,
+}
 
 /// PTY size in character cells for `command/exec` PTY sessions.
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, JsonSchema, TS)]
@@ -2484,14 +2719,28 @@ pub struct ThreadStartParams {
     pub config: Option<HashMap<String, JsonValue>>,
     #[ts(optional = nullable)]
     pub service_name: Option<String>,
+    #[serde(
+        default,
+        deserialize_with = "super::serde_helpers::deserialize_double_option",
+        serialize_with = "super::serde_helpers::serialize_double_option",
+        skip_serializing_if = "Option::is_none"
+    )]
     #[ts(optional = nullable)]
-    pub base_instructions: Option<String>,
+    pub base_instructions: Option<Option<String>>,
+    #[serde(
+        default,
+        deserialize_with = "super::serde_helpers::deserialize_double_option",
+        serialize_with = "super::serde_helpers::serialize_double_option",
+        skip_serializing_if = "Option::is_none"
+    )]
     #[ts(optional = nullable)]
-    pub developer_instructions: Option<String>,
+    pub developer_instructions: Option<Option<String>>,
     #[ts(optional = nullable)]
     pub personality: Option<Personality>,
     #[ts(optional = nullable)]
     pub ephemeral: Option<bool>,
+    #[ts(optional = nullable)]
+    pub session_start_source: Option<ThreadStartSource>,
     #[experimental("thread/start.dynamicTools")]
     #[ts(optional = nullable)]
     pub dynamic_tools: Option<Vec<DynamicToolSpec>>,
@@ -2537,7 +2786,10 @@ pub struct ThreadStartResponse {
     pub model: String,
     pub model_provider: String,
     pub service_tier: Option<ServiceTier>,
-    pub cwd: PathBuf,
+    pub cwd: AbsolutePathBuf,
+    /// Instruction source files currently loaded for this thread.
+    #[serde(default)]
+    pub instruction_sources: Vec<AbsolutePathBuf>,
     #[experimental(nested)]
     pub approval_policy: AskForApproval,
     /// Reviewer currently used for approval requests on this thread.
@@ -2602,10 +2854,22 @@ pub struct ThreadResumeParams {
     pub sandbox: Option<SandboxMode>,
     #[ts(optional = nullable)]
     pub config: Option<HashMap<String, serde_json::Value>>,
+    #[serde(
+        default,
+        deserialize_with = "super::serde_helpers::deserialize_double_option",
+        serialize_with = "super::serde_helpers::serialize_double_option",
+        skip_serializing_if = "Option::is_none"
+    )]
     #[ts(optional = nullable)]
-    pub base_instructions: Option<String>,
+    pub base_instructions: Option<Option<String>>,
+    #[serde(
+        default,
+        deserialize_with = "super::serde_helpers::deserialize_double_option",
+        serialize_with = "super::serde_helpers::serialize_double_option",
+        skip_serializing_if = "Option::is_none"
+    )]
     #[ts(optional = nullable)]
-    pub developer_instructions: Option<String>,
+    pub developer_instructions: Option<Option<String>>,
     #[ts(optional = nullable)]
     pub personality: Option<Personality>,
     /// If true, persist additional rollout EventMsg variants required to
@@ -2623,7 +2887,10 @@ pub struct ThreadResumeResponse {
     pub model: String,
     pub model_provider: String,
     pub service_tier: Option<ServiceTier>,
-    pub cwd: PathBuf,
+    pub cwd: AbsolutePathBuf,
+    /// Instruction source files currently loaded for this thread.
+    #[serde(default)]
+    pub instruction_sources: Vec<AbsolutePathBuf>,
     #[experimental(nested)]
     pub approval_policy: AskForApproval,
     /// Reviewer currently used for approval requests on this thread.
@@ -2679,10 +2946,22 @@ pub struct ThreadForkParams {
     pub sandbox: Option<SandboxMode>,
     #[ts(optional = nullable)]
     pub config: Option<HashMap<String, serde_json::Value>>,
+    #[serde(
+        default,
+        deserialize_with = "super::serde_helpers::deserialize_double_option",
+        serialize_with = "super::serde_helpers::serialize_double_option",
+        skip_serializing_if = "Option::is_none"
+    )]
     #[ts(optional = nullable)]
-    pub base_instructions: Option<String>,
+    pub base_instructions: Option<Option<String>>,
+    #[serde(
+        default,
+        deserialize_with = "super::serde_helpers::deserialize_double_option",
+        serialize_with = "super::serde_helpers::serialize_double_option",
+        skip_serializing_if = "Option::is_none"
+    )]
     #[ts(optional = nullable)]
-    pub developer_instructions: Option<String>,
+    pub developer_instructions: Option<Option<String>>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub ephemeral: bool,
     /// If true, persist additional rollout EventMsg variants required to
@@ -2700,7 +2979,10 @@ pub struct ThreadForkResponse {
     pub model: String,
     pub model_provider: String,
     pub service_tier: Option<ServiceTier>,
-    pub cwd: PathBuf,
+    pub cwd: AbsolutePathBuf,
+    /// Instruction source files currently loaded for this thread.
+    #[serde(default)]
+    pub instruction_sources: Vec<AbsolutePathBuf>,
     #[experimental(nested)]
     pub approval_policy: AskForApproval,
     /// Reviewer currently used for approval requests on this thread.
@@ -2859,6 +3141,48 @@ pub struct ThreadMetadataUpdateResponse {
     pub thread: Thread,
 }
 
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "lowercase")]
+#[ts(rename_all = "lowercase")]
+pub enum ThreadMemoryMode {
+    Enabled,
+    Disabled,
+}
+
+impl ThreadMemoryMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Enabled => "enabled",
+            Self::Disabled => "disabled",
+        }
+    }
+
+    pub fn to_core(self) -> codex_protocol::protocol::ThreadMemoryMode {
+        match self {
+            Self::Enabled => codex_protocol::protocol::ThreadMemoryMode::Enabled,
+            Self::Disabled => codex_protocol::protocol::ThreadMemoryMode::Disabled,
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ThreadMemoryModeSetParams {
+    pub thread_id: String,
+    pub mode: ThreadMemoryMode,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ThreadMemoryModeSetResponse {}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct MemoryResetResponse {}
+
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export_to = "v2/")]
@@ -2944,6 +3268,9 @@ pub struct ThreadListParams {
     /// Optional sort key; defaults to created_at.
     #[ts(optional = nullable)]
     pub sort_key: Option<ThreadSortKey>,
+    /// Optional sort direction; defaults to descending (newest first).
+    #[ts(optional = nullable)]
+    pub sort_direction: Option<SortDirection>,
     /// Optional provider filter; when set, only sessions recorded under these
     /// providers are returned. When present but empty, includes all providers.
     #[ts(optional = nullable)]
@@ -2991,6 +3318,14 @@ pub enum ThreadSortKey {
     UpdatedAt,
 }
 
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export_to = "v2/")]
+pub enum SortDirection {
+    Asc,
+    Desc,
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export_to = "v2/")]
@@ -2999,6 +3334,11 @@ pub struct ThreadListResponse {
     /// Opaque cursor to pass to the next call to continue after the last item.
     /// if None, there are no more items to return.
     pub next_cursor: Option<String>,
+    /// Opaque cursor to pass as `cursor` when reversing `sortDirection`.
+    /// This is only populated when the page contains at least one thread.
+    /// Use it with the opposite `sortDirection`; for timestamp sorts it anchors
+    /// at the start of the page timestamp so same-second updates are not skipped.
+    pub backwards_cursor: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default, JsonSchema, TS)]
@@ -3067,6 +3407,37 @@ pub struct ThreadReadResponse {
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export_to = "v2/")]
+pub struct ThreadTurnsListParams {
+    pub thread_id: String,
+    /// Opaque cursor to pass to the next call to continue after the last turn.
+    #[ts(optional = nullable)]
+    pub cursor: Option<String>,
+    /// Optional turn page size.
+    #[ts(optional = nullable)]
+    pub limit: Option<u32>,
+    /// Optional turn pagination direction; defaults to descending.
+    #[ts(optional = nullable)]
+    pub sort_direction: Option<SortDirection>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ThreadTurnsListResponse {
+    pub data: Vec<Turn>,
+    /// Opaque cursor to pass to the next call to continue after the last turn.
+    /// if None, there are no more turns to return.
+    pub next_cursor: Option<String>,
+    /// Opaque cursor to pass as `cursor` when reversing `sortDirection`.
+    /// This is only populated when the page contains at least one turn.
+    /// Use it with the opposite `sortDirection` to include the anchor turn again
+    /// and catch updates to that turn.
+    pub backwards_cursor: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
 pub struct SkillsListParams {
     /// When empty, defaults to the current session working directory.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -3100,15 +3471,31 @@ pub struct SkillsListResponse {
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export_to = "v2/")]
+pub struct MarketplaceAddParams {
+    pub source: String,
+    #[ts(optional = nullable)]
+    pub ref_name: Option<String>,
+    #[ts(optional = nullable)]
+    pub sparse_paths: Option<Vec<String>>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct MarketplaceAddResponse {
+    pub marketplace_name: String,
+    pub installed_root: AbsolutePathBuf,
+    pub already_added: bool,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
 pub struct PluginListParams {
     /// Optional working directories used to discover repo marketplaces. When omitted,
     /// only home-scoped marketplaces and the official curated marketplace are considered.
     #[ts(optional = nullable)]
     pub cwds: Option<Vec<AbsolutePathBuf>>,
-    /// When true, reconcile the official curated marketplace against the remote plugin state
-    /// before listing marketplaces.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub force_remote_sync: bool,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
@@ -3116,7 +3503,8 @@ pub struct PluginListParams {
 #[ts(export_to = "v2/")]
 pub struct PluginListResponse {
     pub marketplaces: Vec<PluginMarketplaceEntry>,
-    pub remote_sync_error: Option<String>,
+    #[serde(default)]
+    pub marketplace_load_errors: Vec<MarketplaceLoadErrorInfo>,
     #[serde(default)]
     pub featured_plugin_ids: Vec<String>,
 }
@@ -3124,8 +3512,19 @@ pub struct PluginListResponse {
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export_to = "v2/")]
-pub struct PluginReadParams {
+pub struct MarketplaceLoadErrorInfo {
     pub marketplace_path: AbsolutePathBuf,
+    pub message: String,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct PluginReadParams {
+    #[ts(optional = nullable)]
+    pub marketplace_path: Option<AbsolutePathBuf>,
+    #[ts(optional = nullable)]
+    pub remote_marketplace_name: Option<String>,
     pub plugin_name: String,
 }
 
@@ -3163,7 +3562,7 @@ pub struct SkillMetadata {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub dependencies: Option<SkillDependencies>,
-    pub path: PathBuf,
+    pub path: AbsolutePathBuf,
     pub scope: SkillScope,
     pub enabled: bool,
 }
@@ -3177,9 +3576,9 @@ pub struct SkillInterface {
     #[ts(optional)]
     pub short_description: Option<String>,
     #[ts(optional)]
-    pub icon_small: Option<PathBuf>,
+    pub icon_small: Option<AbsolutePathBuf>,
     #[ts(optional)]
-    pub icon_large: Option<PathBuf>,
+    pub icon_large: Option<AbsolutePathBuf>,
     #[ts(optional)]
     pub brand_color: Option<String>,
     #[ts(optional)]
@@ -3237,7 +3636,9 @@ pub struct SkillsListEntry {
 #[ts(export_to = "v2/")]
 pub struct PluginMarketplaceEntry {
     pub name: String,
-    pub path: AbsolutePathBuf,
+    /// Local marketplace file path when the marketplace is backed by a local file.
+    /// Remote-only catalog marketplaces do not have a local path.
+    pub path: Option<AbsolutePathBuf>,
     pub interface: Option<MarketplaceInterface>,
     pub plugins: Vec<PluginSummary>,
 }
@@ -3309,7 +3710,8 @@ pub struct SkillSummary {
     pub description: String,
     pub short_description: Option<String>,
     pub interface: Option<SkillInterface>,
-    pub path: PathBuf,
+    pub path: AbsolutePathBuf,
+    pub enabled: bool,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
@@ -3329,9 +3731,18 @@ pub struct PluginInterface {
     /// 128 characters per entry.
     pub default_prompt: Option<Vec<String>>,
     pub brand_color: Option<String>,
+    /// Local composer icon path, resolved from the installed plugin package.
     pub composer_icon: Option<AbsolutePathBuf>,
+    /// Remote composer icon URL from the plugin catalog.
+    pub composer_icon_url: Option<String>,
+    /// Local logo path, resolved from the installed plugin package.
     pub logo: Option<AbsolutePathBuf>,
+    /// Remote logo URL from the plugin catalog.
+    pub logo_url: Option<String>,
+    /// Local screenshot paths, resolved from the installed plugin package.
     pub screenshots: Vec<AbsolutePathBuf>,
+    /// Remote screenshot URLs from the plugin catalog.
+    pub screenshot_urls: Vec<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
@@ -3342,13 +3753,29 @@ pub enum PluginSource {
     #[serde(rename_all = "camelCase")]
     #[ts(rename_all = "camelCase")]
     Local { path: AbsolutePathBuf },
+    #[serde(rename_all = "camelCase")]
+    #[ts(rename_all = "camelCase")]
+    Git {
+        url: String,
+        path: Option<String>,
+        ref_name: Option<String>,
+        sha: Option<String>,
+    },
+    /// The plugin is available in the remote catalog. Download metadata is
+    /// kept server-side and is not exposed through the app-server API.
+    Remote,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export_to = "v2/")]
 pub struct SkillsConfigWriteParams {
-    pub path: PathBuf,
+    /// Path-based selector.
+    #[ts(optional = nullable)]
+    pub path: Option<AbsolutePathBuf>,
+    /// Name-based selector.
+    #[ts(optional = nullable)]
+    pub name: Option<String>,
     pub enabled: bool,
 }
 
@@ -3363,11 +3790,11 @@ pub struct SkillsConfigWriteResponse {
 #[serde(rename_all = "camelCase")]
 #[ts(export_to = "v2/")]
 pub struct PluginInstallParams {
-    pub marketplace_path: AbsolutePathBuf,
+    #[ts(optional = nullable)]
+    pub marketplace_path: Option<AbsolutePathBuf>,
+    #[ts(optional = nullable)]
+    pub remote_marketplace_name: Option<String>,
     pub plugin_name: String,
-    /// When true, apply the remote plugin change before the local install flow.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub force_remote_sync: bool,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
@@ -3383,9 +3810,6 @@ pub struct PluginInstallResponse {
 #[ts(export_to = "v2/")]
 pub struct PluginUninstallParams {
     pub plugin_id: String,
-    /// When true, apply the remote plugin change before the local uninstall flow.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub force_remote_sync: bool,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
@@ -3404,14 +3828,6 @@ impl From<CoreSkillMetadata> for SkillMetadata {
             path: value.path,
             scope: value.scope.into(),
             enabled: true,
-        }
-    }
-}
-
-impl From<CoreExecApprovalRequestSkillMetadata> for CommandExecutionRequestApprovalSkillMetadata {
-    fn from(value: CoreExecApprovalRequestSkillMetadata) -> Self {
-        Self {
-            path_to_skills_md: value.path_to_skills_md,
         }
     }
 }
@@ -3465,20 +3881,13 @@ impl From<CoreSkillScope> for SkillScope {
     }
 }
 
-impl From<CoreSkillErrorInfo> for SkillErrorInfo {
-    fn from(value: CoreSkillErrorInfo) -> Self {
-        Self {
-            path: value.path,
-            message: value.message,
-        }
-    }
-}
-
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export_to = "v2/")]
 pub struct Thread {
     pub id: String,
+    /// Source thread id when this thread was created by forking another thread.
+    pub forked_from_id: Option<String>,
     /// Usually the first user message in the thread, if available.
     pub preview: String,
     /// Whether the thread is ephemeral and should not be materialized on disk.
@@ -3496,7 +3905,7 @@ pub struct Thread {
     /// [UNSTABLE] Path to the thread on disk.
     pub path: Option<PathBuf>,
     /// Working directory captured for the thread.
-    pub cwd: PathBuf,
+    pub cwd: AbsolutePathBuf,
     /// Version of the CLI that created the thread.
     pub cli_version: String,
     /// Origin of the thread (CLI, VSCode, codex exec, codex app-server, etc.).
@@ -3594,6 +4003,15 @@ pub struct Turn {
     pub status: TurnStatus,
     /// Only populated when the Turn's status is failed.
     pub error: Option<TurnError>,
+    /// Unix timestamp (in seconds) when the turn started.
+    #[ts(type = "number | null")]
+    pub started_at: Option<i64>,
+    /// Unix timestamp (in seconds) when the turn completed.
+    #[ts(type = "number | null")]
+    pub completed_at: Option<i64>,
+    /// Duration between turn start and completion in milliseconds, if known.
+    #[ts(type = "number | null")]
+    pub duration_ms: Option<i64>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
@@ -3708,14 +4126,37 @@ impl From<ThreadRealtimeAudioChunk> for CoreRealtimeAudioFrame {
 }
 
 /// EXPERIMENTAL - start a thread-scoped realtime session.
-#[derive(Serialize, Deserialize, Debug, Default, Clone, PartialEq, JsonSchema, TS)]
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export_to = "v2/")]
 pub struct ThreadRealtimeStartParams {
     pub thread_id: String,
-    pub prompt: String,
+    /// Selects text or audio output for the realtime session. Transport and voice stay
+    /// independent so clients can choose how they connect separately from what the model emits.
+    pub output_modality: RealtimeOutputModality,
+    #[serde(
+        default,
+        deserialize_with = "super::serde_helpers::deserialize_double_option",
+        serialize_with = "super::serde_helpers::serialize_double_option",
+        skip_serializing_if = "Option::is_none"
+    )]
+    #[ts(optional = nullable)]
+    pub prompt: Option<Option<String>>,
     #[ts(optional = nullable)]
     pub session_id: Option<String>,
+    #[ts(optional = nullable)]
+    pub transport: Option<ThreadRealtimeStartTransport>,
+    #[ts(optional = nullable)]
+    pub voice: Option<RealtimeVoice>,
+}
+
+/// EXPERIMENTAL - transport used by thread realtime.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(tag = "type", rename_all = "camelCase")]
+#[ts(export_to = "v2/", tag = "type")]
+pub enum ThreadRealtimeStartTransport {
+    Websocket,
+    Webrtc { sdp: String },
 }
 
 /// EXPERIMENTAL - response for starting thread realtime.
@@ -3768,6 +4209,20 @@ pub struct ThreadRealtimeStopParams {
 #[ts(export_to = "v2/")]
 pub struct ThreadRealtimeStopResponse {}
 
+/// EXPERIMENTAL - list voices supported by thread realtime.
+#[derive(Serialize, Deserialize, Debug, Default, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ThreadRealtimeListVoicesParams {}
+
+/// EXPERIMENTAL - response for listing supported realtime voices.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ThreadRealtimeListVoicesResponse {
+    pub voices: RealtimeVoicesList,
+}
+
 /// EXPERIMENTAL - emitted when thread realtime startup is accepted.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
 #[serde(rename_all = "camelCase")]
@@ -3792,9 +4247,22 @@ pub struct ThreadRealtimeItemAddedNotification {
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export_to = "v2/")]
-pub struct ThreadRealtimeTranscriptUpdatedNotification {
+pub struct ThreadRealtimeTranscriptDeltaNotification {
     pub thread_id: String,
     pub role: String,
+    /// Live transcript delta from the realtime event.
+    pub delta: String,
+}
+
+/// EXPERIMENTAL - final transcript text emitted when realtime completes
+/// a transcript part.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ThreadRealtimeTranscriptDoneNotification {
+    pub thread_id: String,
+    pub role: String,
+    /// Final complete text for the transcript part.
     pub text: String,
 }
 
@@ -3805,6 +4273,15 @@ pub struct ThreadRealtimeTranscriptUpdatedNotification {
 pub struct ThreadRealtimeOutputAudioDeltaNotification {
     pub thread_id: String,
     pub audio: ThreadRealtimeAudioChunk,
+}
+
+/// EXPERIMENTAL - emitted with the remote SDP for a WebRTC realtime session.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ThreadRealtimeSdpNotification {
+    pub thread_id: String,
+    pub sdp: String,
 }
 
 /// EXPERIMENTAL - emitted when thread realtime encounters an error.
@@ -3844,6 +4321,10 @@ pub enum TurnStatus {
 pub struct TurnStartParams {
     pub thread_id: String,
     pub input: Vec<UserInput>,
+    /// Optional turn-scoped Responses API client metadata.
+    #[experimental("turn/start.responsesapiClientMetadata")]
+    #[ts(optional = nullable)]
+    pub responsesapi_client_metadata: Option<HashMap<String, String>>,
     /// Override the working directory for this turn and subsequent turns.
     #[ts(optional = nullable)]
     pub cwd: Option<PathBuf>,
@@ -3954,12 +4435,32 @@ pub struct TurnStartResponse {
     pub turn: Turn,
 }
 
-#[derive(Serialize, Deserialize, Debug, Default, Clone, PartialEq, JsonSchema, TS)]
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ThreadInjectItemsParams {
+    pub thread_id: String,
+    /// Raw Responses API items to append to the thread's model-visible history.
+    pub items: Vec<JsonValue>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ThreadInjectItemsResponse {}
+
+#[derive(
+    Serialize, Deserialize, Debug, Default, Clone, PartialEq, JsonSchema, TS, ExperimentalApi,
+)]
 #[serde(rename_all = "camelCase")]
 #[ts(export_to = "v2/")]
 pub struct TurnSteerParams {
     pub thread_id: String,
     pub input: Vec<UserInput>,
+    /// Optional turn-scoped Responses API client metadata.
+    #[experimental("turn/steer.responsesapiClientMetadata")]
+    #[ts(optional = nullable)]
+    pub responsesapi_client_metadata: Option<HashMap<String, String>>,
     /// Required active turn id precondition. The request fails when it does not
     /// match the currently active turn.
     pub expected_turn_id: String,
@@ -4175,7 +4676,7 @@ pub enum ThreadItem {
         /// The command to be executed.
         command: String,
         /// The command's working directory.
-        cwd: PathBuf,
+        cwd: AbsolutePathBuf,
         /// Identifier for the underlying PTY process (when available).
         process_id: Option<String>,
         #[serde(default)]
@@ -4208,7 +4709,10 @@ pub enum ThreadItem {
         tool: String,
         status: McpToolCallStatus,
         arguments: JsonValue,
-        result: Option<McpToolCallResult>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        mcp_app_resource_uri: Option<String>,
+        result: Option<Box<McpToolCallResult>>,
         error: Option<McpToolCallError>,
         /// The duration of the MCP tool call in milliseconds.
         #[ts(type = "number | null")]
@@ -4261,7 +4765,7 @@ pub enum ThreadItem {
     },
     #[serde(rename_all = "camelCase")]
     #[ts(rename_all = "camelCase")]
-    ImageView { id: String, path: String },
+    ImageView { id: String, path: AbsolutePathBuf },
     #[serde(rename_all = "camelCase")]
     #[ts(rename_all = "camelCase")]
     ImageGeneration {
@@ -4271,7 +4775,7 @@ pub enum ThreadItem {
         result: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         #[ts(optional)]
-        saved_path: Option<String>,
+        saved_path: Option<AbsolutePathBuf>,
     },
     #[serde(rename_all = "camelCase")]
     #[ts(rename_all = "camelCase")]
@@ -4318,22 +4822,40 @@ impl ThreadItem {
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, JsonSchema, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export_to = "v2/")]
-/// [UNSTABLE] Lifecycle state for a guardian approval review.
+/// [UNSTABLE] Lifecycle state for an approval auto-review.
 pub enum GuardianApprovalReviewStatus {
     InProgress,
     Approved,
     Denied,
+    TimedOut,
     Aborted,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+/// [UNSTABLE] Source that produced a terminal approval auto-review decision.
+pub enum AutoReviewDecisionSource {
+    Agent,
+}
+
+impl From<CoreGuardianAssessmentDecisionSource> for AutoReviewDecisionSource {
+    fn from(value: CoreGuardianAssessmentDecisionSource) -> Self {
+        match value {
+            CoreGuardianAssessmentDecisionSource::Agent => Self::Agent,
+        }
+    }
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, JsonSchema, TS)]
 #[serde(rename_all = "lowercase")]
 #[ts(export_to = "v2/")]
-/// [UNSTABLE] Risk level assigned by guardian approval review.
+/// [UNSTABLE] Risk level assigned by approval auto-review.
 pub enum GuardianRiskLevel {
     Low,
     Medium,
     High,
+    Critical,
 }
 
 impl From<CoreGuardianRiskLevel> for GuardianRiskLevel {
@@ -4342,11 +4864,34 @@ impl From<CoreGuardianRiskLevel> for GuardianRiskLevel {
             CoreGuardianRiskLevel::Low => Self::Low,
             CoreGuardianRiskLevel::Medium => Self::Medium,
             CoreGuardianRiskLevel::High => Self::High,
+            CoreGuardianRiskLevel::Critical => Self::Critical,
         }
     }
 }
 
-/// [UNSTABLE] Temporary guardian approval review payload used by
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "lowercase")]
+#[ts(export_to = "v2/")]
+/// [UNSTABLE] Authorization level assigned by approval auto-review.
+pub enum GuardianUserAuthorization {
+    Unknown,
+    Low,
+    Medium,
+    High,
+}
+
+impl From<CoreGuardianUserAuthorization> for GuardianUserAuthorization {
+    fn from(value: CoreGuardianUserAuthorization) -> Self {
+        match value {
+            CoreGuardianUserAuthorization::Unknown => Self::Unknown,
+            CoreGuardianUserAuthorization::Low => Self::Low,
+            CoreGuardianUserAuthorization::Medium => Self::Medium,
+            CoreGuardianUserAuthorization::High => Self::High,
+        }
+    }
+}
+
+/// [UNSTABLE] Temporary approval auto-review payload used by
 /// `item/autoApprovalReview/*` notifications. This shape is expected to change
 /// soon.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
@@ -4354,12 +4899,237 @@ impl From<CoreGuardianRiskLevel> for GuardianRiskLevel {
 #[ts(export_to = "v2/")]
 pub struct GuardianApprovalReview {
     pub status: GuardianApprovalReviewStatus,
-    #[serde(alias = "risk_score")]
-    #[ts(type = "number | null")]
-    pub risk_score: Option<u8>,
-    #[serde(alias = "risk_level")]
     pub risk_level: Option<GuardianRiskLevel>,
+    pub user_authorization: Option<GuardianUserAuthorization>,
     pub rationale: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub enum GuardianCommandSource {
+    Shell,
+    UnifiedExec,
+}
+
+impl From<CoreGuardianCommandSource> for GuardianCommandSource {
+    fn from(value: CoreGuardianCommandSource) -> Self {
+        match value {
+            CoreGuardianCommandSource::Shell => Self::Shell,
+            CoreGuardianCommandSource::UnifiedExec => Self::UnifiedExec,
+        }
+    }
+}
+
+impl From<GuardianCommandSource> for CoreGuardianCommandSource {
+    fn from(value: GuardianCommandSource) -> Self {
+        match value {
+            GuardianCommandSource::Shell => Self::Shell,
+            GuardianCommandSource::UnifiedExec => Self::UnifiedExec,
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct GuardianCommandReviewAction {
+    pub source: GuardianCommandSource,
+    pub command: String,
+    pub cwd: AbsolutePathBuf,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct GuardianExecveReviewAction {
+    pub source: GuardianCommandSource,
+    pub program: String,
+    pub argv: Vec<String>,
+    pub cwd: AbsolutePathBuf,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct GuardianApplyPatchReviewAction {
+    pub cwd: AbsolutePathBuf,
+    pub files: Vec<AbsolutePathBuf>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct GuardianNetworkAccessReviewAction {
+    pub target: String,
+    pub host: String,
+    pub protocol: NetworkApprovalProtocol,
+    pub port: u16,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct GuardianMcpToolCallReviewAction {
+    pub server: String,
+    pub tool_name: String,
+    pub connector_id: Option<String>,
+    pub connector_name: Option<String>,
+    pub tool_title: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(tag = "type", rename_all = "camelCase")]
+#[ts(tag = "type", rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub enum GuardianApprovalReviewAction {
+    #[serde(rename_all = "camelCase")]
+    #[ts(rename_all = "camelCase")]
+    Command {
+        source: GuardianCommandSource,
+        command: String,
+        cwd: AbsolutePathBuf,
+    },
+    #[serde(rename_all = "camelCase")]
+    #[ts(rename_all = "camelCase")]
+    Execve {
+        source: GuardianCommandSource,
+        program: String,
+        argv: Vec<String>,
+        cwd: AbsolutePathBuf,
+    },
+    #[serde(rename_all = "camelCase")]
+    #[ts(rename_all = "camelCase")]
+    ApplyPatch {
+        cwd: AbsolutePathBuf,
+        files: Vec<AbsolutePathBuf>,
+    },
+    #[serde(rename_all = "camelCase")]
+    #[ts(rename_all = "camelCase")]
+    NetworkAccess {
+        target: String,
+        host: String,
+        protocol: NetworkApprovalProtocol,
+        port: u16,
+    },
+    #[serde(rename_all = "camelCase")]
+    #[ts(rename_all = "camelCase")]
+    McpToolCall {
+        server: String,
+        tool_name: String,
+        connector_id: Option<String>,
+        connector_name: Option<String>,
+        tool_title: Option<String>,
+    },
+}
+
+impl From<CoreGuardianAssessmentAction> for GuardianApprovalReviewAction {
+    fn from(value: CoreGuardianAssessmentAction) -> Self {
+        match value {
+            CoreGuardianAssessmentAction::Command {
+                source,
+                command,
+                cwd,
+            } => Self::Command {
+                source: source.into(),
+                command,
+                cwd,
+            },
+            CoreGuardianAssessmentAction::Execve {
+                source,
+                program,
+                argv,
+                cwd,
+            } => Self::Execve {
+                source: source.into(),
+                program,
+                argv,
+                cwd,
+            },
+            CoreGuardianAssessmentAction::ApplyPatch { cwd, files } => {
+                Self::ApplyPatch { cwd, files }
+            }
+            CoreGuardianAssessmentAction::NetworkAccess {
+                target,
+                host,
+                protocol,
+                port,
+            } => Self::NetworkAccess {
+                target,
+                host,
+                protocol: protocol.into(),
+                port,
+            },
+            CoreGuardianAssessmentAction::McpToolCall {
+                server,
+                tool_name,
+                connector_id,
+                connector_name,
+                tool_title,
+            } => Self::McpToolCall {
+                server,
+                tool_name,
+                connector_id,
+                connector_name,
+                tool_title,
+            },
+        }
+    }
+}
+
+impl From<GuardianApprovalReviewAction> for CoreGuardianAssessmentAction {
+    fn from(value: GuardianApprovalReviewAction) -> Self {
+        match value {
+            GuardianApprovalReviewAction::Command {
+                source,
+                command,
+                cwd,
+            } => Self::Command {
+                source: source.into(),
+                command,
+                cwd,
+            },
+            GuardianApprovalReviewAction::Execve {
+                source,
+                program,
+                argv,
+                cwd,
+            } => Self::Execve {
+                source: source.into(),
+                program,
+                argv,
+                cwd,
+            },
+            GuardianApprovalReviewAction::ApplyPatch { cwd, files } => {
+                Self::ApplyPatch { cwd, files }
+            }
+            GuardianApprovalReviewAction::NetworkAccess {
+                target,
+                host,
+                protocol,
+                port,
+            } => Self::NetworkAccess {
+                target,
+                host,
+                protocol: protocol.to_core(),
+                port,
+            },
+            GuardianApprovalReviewAction::McpToolCall {
+                server,
+                tool_name,
+                connector_id,
+                connector_name,
+                tool_title,
+            } => Self::McpToolCall {
+                server,
+                tool_name,
+                connector_id,
+                connector_name,
+                tool_title,
+            },
+        }
+    }
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
@@ -4840,9 +5610,22 @@ pub struct ItemStartedNotification {
 pub struct ItemGuardianApprovalReviewStartedNotification {
     pub thread_id: String,
     pub turn_id: String,
-    pub target_item_id: String,
+    /// Stable identifier for this review.
+    pub review_id: String,
+    /// Identifier for the reviewed item or tool call when one exists.
+    ///
+    /// In most cases, one review maps to one target item. The exceptions are
+    /// - execve reviews, where a single command may contain multiple execve
+    ///   calls to review (only possible when using the shell_zsh_fork feature)
+    /// - network policy reviews, where there is no target item
+    ///
+    /// A network call is triggered by a CommandExecution item, so having a
+    /// target_item_id set to the CommandExecution item would be misleading
+    /// because the review is about the network call, not the command execution.
+    /// Therefore, target_item_id is set to None for network policy reviews.
+    pub target_item_id: Option<String>,
     pub review: GuardianApprovalReview,
-    pub action: Option<JsonValue>,
+    pub action: GuardianApprovalReviewAction,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
@@ -4857,9 +5640,23 @@ pub struct ItemGuardianApprovalReviewStartedNotification {
 pub struct ItemGuardianApprovalReviewCompletedNotification {
     pub thread_id: String,
     pub turn_id: String,
-    pub target_item_id: String,
+    /// Stable identifier for this review.
+    pub review_id: String,
+    /// Identifier for the reviewed item or tool call when one exists.
+    ///
+    /// In most cases, one review maps to one target item. The exceptions are
+    /// - execve reviews, where a single command may contain multiple execve
+    ///   calls to review (only possible when using the shell_zsh_fork feature)
+    /// - network policy reviews, where there is no target item
+    ///
+    /// A network call is triggered by a CommandExecution item, so having a
+    /// target_item_id set to the CommandExecution item would be misleading
+    /// because the review is about the network call, not the command execution.
+    /// Therefore, target_item_id is set to None for network policy reviews.
+    pub target_item_id: Option<String>,
+    pub decision_source: AutoReviewDecisionSource,
     pub review: GuardianApprovalReview,
-    pub action: Option<JsonValue>,
+    pub action: GuardianApprovalReviewAction,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
@@ -5121,7 +5918,7 @@ pub struct CommandExecutionRequestApprovalParams {
     /// The command's working directory.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional = nullable)]
-    pub cwd: Option<PathBuf>,
+    pub cwd: Option<AbsolutePathBuf>,
     /// Best-effort parsed command actions for friendly display.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional = nullable)]
@@ -5131,11 +5928,6 @@ pub struct CommandExecutionRequestApprovalParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional = nullable)]
     pub additional_permissions: Option<AdditionalPermissionProfile>,
-    /// Optional skill metadata when the approval was triggered by a skill script.
-    #[experimental("item/commandExecution/requestApproval.skillMetadata")]
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional = nullable)]
-    pub skill_metadata: Option<CommandExecutionRequestApprovalSkillMetadata>,
     /// Optional proposed execpolicy amendment to allow similar commands without prompting.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional = nullable)]
@@ -5157,15 +5949,7 @@ impl CommandExecutionRequestApprovalParams {
         // We need a generic outbound compatibility design for stripping or
         // otherwise handling experimental server->client payloads.
         self.additional_permissions = None;
-        self.skill_metadata = None;
     }
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
-#[serde(rename_all = "camelCase")]
-#[ts(export_to = "v2/")]
-pub struct CommandExecutionRequestApprovalSkillMetadata {
-    pub path_to_skills_md: PathBuf,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
@@ -5803,6 +6587,7 @@ pub struct RateLimitSnapshot {
     pub secondary: Option<RateLimitWindow>,
     pub credits: Option<CreditsSnapshot>,
     pub plan_type: Option<PlanType>,
+    pub rate_limit_reached_type: Option<RateLimitReachedType>,
 }
 
 impl From<CoreRateLimitSnapshot> for RateLimitSnapshot {
@@ -5814,6 +6599,60 @@ impl From<CoreRateLimitSnapshot> for RateLimitSnapshot {
             secondary: value.secondary.map(RateLimitWindow::from),
             credits: value.credits.map(CreditsSnapshot::from),
             plan_type: value.plan_type,
+            rate_limit_reached_type: value
+                .rate_limit_reached_type
+                .map(RateLimitReachedType::from),
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export_to = "v2/", rename_all = "snake_case")]
+pub enum RateLimitReachedType {
+    RateLimitReached,
+    WorkspaceOwnerCreditsDepleted,
+    WorkspaceMemberCreditsDepleted,
+    WorkspaceOwnerUsageLimitReached,
+    WorkspaceMemberUsageLimitReached,
+}
+
+impl From<CoreRateLimitReachedType> for RateLimitReachedType {
+    fn from(value: CoreRateLimitReachedType) -> Self {
+        match value {
+            CoreRateLimitReachedType::RateLimitReached => Self::RateLimitReached,
+            CoreRateLimitReachedType::WorkspaceOwnerCreditsDepleted => {
+                Self::WorkspaceOwnerCreditsDepleted
+            }
+            CoreRateLimitReachedType::WorkspaceMemberCreditsDepleted => {
+                Self::WorkspaceMemberCreditsDepleted
+            }
+            CoreRateLimitReachedType::WorkspaceOwnerUsageLimitReached => {
+                Self::WorkspaceOwnerUsageLimitReached
+            }
+            CoreRateLimitReachedType::WorkspaceMemberUsageLimitReached => {
+                Self::WorkspaceMemberUsageLimitReached
+            }
+        }
+    }
+}
+
+impl From<RateLimitReachedType> for CoreRateLimitReachedType {
+    fn from(value: RateLimitReachedType) -> Self {
+        match value {
+            RateLimitReachedType::RateLimitReached => Self::RateLimitReached,
+            RateLimitReachedType::WorkspaceOwnerCreditsDepleted => {
+                Self::WorkspaceOwnerCreditsDepleted
+            }
+            RateLimitReachedType::WorkspaceMemberCreditsDepleted => {
+                Self::WorkspaceMemberCreditsDepleted
+            }
+            RateLimitReachedType::WorkspaceOwnerUsageLimitReached => {
+                Self::WorkspaceOwnerUsageLimitReached
+            }
+            RateLimitReachedType::WorkspaceMemberUsageLimitReached => {
+                Self::WorkspaceMemberUsageLimitReached
+            }
         }
     }
 }
@@ -5939,22 +6778,20 @@ mod tests {
     use codex_protocol::protocol::NetworkAccess as CoreNetworkAccess;
     use codex_protocol::protocol::ReadOnlyAccess as CoreReadOnlyAccess;
     use codex_protocol::user_input::UserInput as CoreUserInput;
+    use codex_utils_absolute_path::test_support::PathBufExt;
+    use codex_utils_absolute_path::test_support::test_path_buf;
     use pretty_assertions::assert_eq;
     use serde_json::json;
     use std::path::PathBuf;
 
     fn absolute_path_string(path: &str) -> String {
-        let trimmed = path.trim_start_matches('/');
-        if cfg!(windows) {
-            format!(r"C:\{}", trimmed.replace('/', "\\"))
-        } else {
-            format!("/{trimmed}")
-        }
+        let path = format!("/{}", path.trim_start_matches('/'));
+        test_path_buf(&path).display().to_string()
     }
 
     fn absolute_path(path: &str) -> AbsolutePathBuf {
-        AbsolutePathBuf::from_absolute_path(absolute_path_string(path))
-            .expect("path must be absolute")
+        let path = format!("/{}", path.trim_start_matches('/'));
+        test_path_buf(&path).abs()
     }
 
     fn test_absolute_path() -> AbsolutePathBuf {
@@ -5973,13 +6810,46 @@ mod tests {
     }
 
     #[test]
+    fn external_agent_config_plugins_details_round_trip() {
+        let item: ExternalAgentConfigMigrationItem = serde_json::from_value(json!({
+            "itemType": "PLUGINS",
+            "description": "Install supported plugins from Claude settings",
+            "cwd": absolute_path_string("repo"),
+            "details": {
+                "plugins": [
+                    {
+                        "marketplaceName": "team-marketplace",
+                        "pluginNames": ["asana"]
+                    }
+                ]
+            }
+        }))
+        .expect("plugins migration item should deserialize");
+
+        assert_eq!(
+            item,
+            ExternalAgentConfigMigrationItem {
+                item_type: ExternalAgentConfigMigrationItemType::Plugins,
+                description: "Install supported plugins from Claude settings".to_string(),
+                cwd: Some(PathBuf::from(absolute_path_string("repo"))),
+                details: Some(MigrationDetails {
+                    plugins: vec![PluginsMigration {
+                        marketplace_name: "team-marketplace".to_string(),
+                        plugin_names: vec!["asana".to_string()],
+                    }],
+                }),
+            }
+        );
+    }
+
+    #[test]
     fn command_execution_request_approval_rejects_relative_additional_permission_paths() {
         let err = serde_json::from_value::<CommandExecutionRequestApprovalParams>(json!({
             "threadId": "thr_123",
             "turnId": "turn_123",
             "itemId": "call_123",
             "command": "cat file",
-            "cwd": "/tmp",
+            "cwd": absolute_path_string("tmp"),
             "commandActions": null,
             "reason": null,
             "networkApprovalContext": null,
@@ -5988,10 +6858,8 @@ mod tests {
                 "fileSystem": {
                     "read": ["relative/path"],
                     "write": null
-                },
-                "macos": null
+                }
             },
-            "skillMetadata": null,
             "proposedExecpolicyAmendment": null,
             "proposedNetworkPolicyAmendments": null,
             "availableDecisions": null
@@ -6001,121 +6869,6 @@ mod tests {
             err.to_string()
                 .contains("AbsolutePathBuf deserialized without a base path"),
             "unexpected error: {err}"
-        );
-    }
-
-    #[test]
-    fn command_execution_request_approval_accepts_macos_automation_bundle_ids_object() {
-        let params = serde_json::from_value::<CommandExecutionRequestApprovalParams>(json!({
-            "threadId": "thr_123",
-            "turnId": "turn_123",
-            "itemId": "call_123",
-            "command": "cat file",
-            "cwd": "/tmp",
-            "commandActions": null,
-            "reason": null,
-            "networkApprovalContext": null,
-            "additionalPermissions": {
-                "network": null,
-                "fileSystem": null,
-                "macos": {
-                    "preferences": "read_only",
-                    "automations": {
-                        "bundle_ids": ["com.apple.Notes"]
-                    },
-                    "launchServices": false,
-                    "accessibility": false,
-                    "calendar": false,
-                    "reminders": false,
-                    "contacts": "read_only"
-                }
-            },
-            "skillMetadata": null,
-            "proposedExecpolicyAmendment": null,
-            "proposedNetworkPolicyAmendments": null,
-            "availableDecisions": null
-        }))
-        .expect("bundle_ids object should deserialize");
-
-        assert_eq!(
-            params
-                .additional_permissions
-                .and_then(|permissions| permissions.macos)
-                .map(|macos| (macos.automations, macos.launch_services, macos.contacts)),
-            Some((
-                CoreMacOsAutomationPermission::BundleIds(vec!["com.apple.Notes".to_string(),]),
-                false,
-                CoreMacOsContactsPermission::ReadOnly,
-            ))
-        );
-    }
-
-    #[test]
-    fn command_execution_request_approval_accepts_macos_reminders_permission() {
-        let params = serde_json::from_value::<CommandExecutionRequestApprovalParams>(json!({
-            "threadId": "thr_123",
-            "turnId": "turn_123",
-            "itemId": "call_123",
-            "command": "cat file",
-            "cwd": "/tmp",
-            "commandActions": null,
-            "reason": null,
-            "networkApprovalContext": null,
-            "additionalPermissions": {
-                "network": null,
-                "fileSystem": null,
-                "macos": {
-                    "preferences": "read_only",
-                    "automations": "none",
-                    "launchServices": false,
-                    "accessibility": false,
-                    "calendar": false,
-                    "reminders": true,
-                    "contacts": "none"
-                }
-            },
-            "skillMetadata": null,
-            "proposedExecpolicyAmendment": null,
-            "proposedNetworkPolicyAmendments": null,
-            "availableDecisions": null
-        }))
-        .expect("reminders permission should deserialize");
-
-        assert_eq!(
-            params
-                .additional_permissions
-                .and_then(|permissions| permissions.macos)
-                .map(|macos| macos.reminders),
-            Some(true)
-        );
-    }
-
-    #[test]
-    fn command_execution_request_approval_accepts_skill_metadata() {
-        let params = serde_json::from_value::<CommandExecutionRequestApprovalParams>(json!({
-            "threadId": "thr_123",
-            "turnId": "turn_123",
-            "itemId": "call_123",
-            "command": "cat file",
-            "cwd": "/tmp",
-            "commandActions": null,
-            "reason": null,
-            "networkApprovalContext": null,
-            "additionalPermissions": null,
-            "skillMetadata": {
-                "pathToSkillsMd": "/tmp/SKILLS.md"
-            },
-            "proposedExecpolicyAmendment": null,
-            "proposedNetworkPolicyAmendments": null,
-            "availableDecisions": null
-        }))
-        .expect("skill metadata should deserialize");
-
-        assert_eq!(
-            params.skill_metadata,
-            Some(CommandExecutionRequestApprovalSkillMetadata {
-                path_to_skills_md: PathBuf::from("/tmp/SKILLS.md"),
-            })
         );
     }
 
@@ -6276,7 +7029,6 @@ mod tests {
                             .expect("path must be absolute"),
                     ]),
                 }),
-                macos: None,
             }
         );
     }
@@ -6296,6 +7048,7 @@ mod tests {
         let response = FsGetMetadataResponse {
             is_directory: false,
             is_file: true,
+            is_symlink: false,
             created_at_ms: 123,
             modified_at_ms: 456,
         };
@@ -6306,6 +7059,7 @@ mod tests {
             json!({
                 "isDirectory": false,
                 "isFile": true,
+                "isSymlink": false,
                 "createdAtMs": 123,
                 "modifiedAtMs": 456,
             })
@@ -6451,6 +7205,33 @@ mod tests {
         let decoded = serde_json::from_value::<ThreadShellCommandResponse>(value)
             .expect("deserialize thread/shellCommand response");
         assert_eq!(decoded, response);
+    }
+
+    #[test]
+    fn fs_changed_notification_round_trips() {
+        let notification = FsChangedNotification {
+            watch_id: "0195ec6b-1d6f-7c2e-8c7a-56f2c4a8b9d1".to_string(),
+            changed_paths: vec![
+                absolute_path("tmp/repo/.git/HEAD"),
+                absolute_path("tmp/repo/.git/FETCH_HEAD"),
+            ],
+        };
+
+        let value = serde_json::to_value(&notification).expect("serialize fs/changed notification");
+        assert_eq!(
+            value,
+            json!({
+                "watchId": "0195ec6b-1d6f-7c2e-8c7a-56f2c4a8b9d1",
+                "changedPaths": [
+                    absolute_path_string("tmp/repo/.git/HEAD"),
+                    absolute_path_string("tmp/repo/.git/FETCH_HEAD"),
+                ],
+            })
+        );
+
+        let decoded = serde_json::from_value::<FsChangedNotification>(value)
+            .expect("deserialize fs/changed notification");
+        assert_eq!(decoded, notification);
     }
 
     #[test]
@@ -7101,6 +7882,7 @@ mod tests {
                     request_permissions: false,
                     mcp_elicitations: false,
                 }]),
+                allowed_approvals_reviewers: None,
                 allowed_sandbox_modes: None,
                 allowed_web_search_modes: None,
                 feature_requirements: None,
@@ -7501,31 +8283,11 @@ mod tests {
     }
 
     #[test]
-    fn automatic_approval_review_deserializes_legacy_snake_case_risk_fields() {
-        let review: GuardianApprovalReview = serde_json::from_value(json!({
-            "status": "denied",
-            "risk_score": 91,
-            "risk_level": "high",
-            "rationale": "too risky"
-        }))
-        .expect("legacy snake_case automatic review should deserialize");
-        assert_eq!(
-            review,
-            GuardianApprovalReview {
-                status: GuardianApprovalReviewStatus::Denied,
-                risk_score: Some(91),
-                risk_level: Some(GuardianRiskLevel::High),
-                rationale: Some("too risky".to_string()),
-            }
-        );
-    }
-
-    #[test]
     fn automatic_approval_review_deserializes_aborted_status() {
         let review: GuardianApprovalReview = serde_json::from_value(json!({
             "status": "aborted",
-            "riskScore": null,
             "riskLevel": null,
+            "userAuthorization": null,
             "rationale": null
         }))
         .expect("aborted automatic review should deserialize");
@@ -7533,10 +8295,123 @@ mod tests {
             review,
             GuardianApprovalReview {
                 status: GuardianApprovalReviewStatus::Aborted,
-                risk_score: None,
                 risk_level: None,
+                user_authorization: None,
                 rationale: None,
             }
+        );
+    }
+
+    #[test]
+    fn guardian_approval_review_action_round_trips_command_shape() {
+        let value = json!({
+            "type": "command",
+            "source": "shell",
+            "command": "rm -rf /tmp/example.sqlite",
+            "cwd": absolute_path_string("tmp"),
+        });
+        let action: GuardianApprovalReviewAction =
+            serde_json::from_value(value.clone()).expect("guardian review action");
+
+        assert_eq!(
+            action,
+            GuardianApprovalReviewAction::Command {
+                source: GuardianCommandSource::Shell,
+                command: "rm -rf /tmp/example.sqlite".to_string(),
+                cwd: absolute_path("tmp"),
+            }
+        );
+        assert_eq!(
+            serde_json::to_value(&action).expect("serialize guardian review action"),
+            value
+        );
+    }
+
+    #[test]
+    fn network_requirements_deserializes_legacy_fields() {
+        let requirements: NetworkRequirements = serde_json::from_value(json!({
+            "allowedDomains": ["api.openai.com"],
+            "deniedDomains": ["blocked.example.com"],
+            "allowUnixSockets": ["/tmp/proxy.sock"]
+        }))
+        .expect("legacy network requirements should deserialize");
+
+        assert_eq!(
+            requirements,
+            NetworkRequirements {
+                enabled: None,
+                http_port: None,
+                socks_port: None,
+                allow_upstream_proxy: None,
+                dangerously_allow_non_loopback_proxy: None,
+                dangerously_allow_all_unix_sockets: None,
+                domains: None,
+                managed_allowed_domains_only: None,
+                allowed_domains: Some(vec!["api.openai.com".to_string()]),
+                denied_domains: Some(vec!["blocked.example.com".to_string()]),
+                unix_sockets: None,
+                allow_unix_sockets: Some(vec!["/tmp/proxy.sock".to_string()]),
+                allow_local_binding: None,
+            }
+        );
+    }
+
+    #[test]
+    fn network_requirements_serializes_canonical_and_legacy_fields() {
+        let requirements = NetworkRequirements {
+            enabled: Some(true),
+            http_port: Some(8080),
+            socks_port: Some(1080),
+            allow_upstream_proxy: Some(false),
+            dangerously_allow_non_loopback_proxy: Some(false),
+            dangerously_allow_all_unix_sockets: Some(true),
+            domains: Some(BTreeMap::from([
+                ("api.openai.com".to_string(), NetworkDomainPermission::Allow),
+                (
+                    "blocked.example.com".to_string(),
+                    NetworkDomainPermission::Deny,
+                ),
+            ])),
+            managed_allowed_domains_only: Some(true),
+            allowed_domains: Some(vec!["api.openai.com".to_string()]),
+            denied_domains: Some(vec!["blocked.example.com".to_string()]),
+            unix_sockets: Some(BTreeMap::from([
+                (
+                    "/tmp/proxy.sock".to_string(),
+                    NetworkUnixSocketPermission::Allow,
+                ),
+                (
+                    "/tmp/ignored.sock".to_string(),
+                    NetworkUnixSocketPermission::None,
+                ),
+            ])),
+            allow_unix_sockets: Some(vec!["/tmp/proxy.sock".to_string()]),
+            allow_local_binding: Some(true),
+        };
+
+        assert_eq!(
+            serde_json::to_value(requirements).expect("network requirements should serialize"),
+            json!({
+                "enabled": true,
+                "httpPort": 8080,
+                "socksPort": 1080,
+                "allowUpstreamProxy": false,
+                "dangerouslyAllowNonLoopbackProxy": false,
+                "dangerouslyAllowAllUnixSockets": true,
+                "domains": {
+                    "api.openai.com": "allow",
+                    "blocked.example.com": "deny"
+                },
+                "managedAllowedDomainsOnly": true,
+                "allowedDomains": ["api.openai.com"],
+                "deniedDomains": ["blocked.example.com"],
+                "unixSockets": {
+                    "/tmp/ignored.sock": "none",
+                    "/tmp/proxy.sock": "allow"
+                },
+                "allowUnixSockets": ["/tmp/proxy.sock"],
+                "allowLocalBinding": true
+            })
         );
     }
 
@@ -7730,33 +8605,217 @@ mod tests {
     }
 
     #[test]
-    fn plugin_list_params_serialization_uses_force_remote_sync() {
+    fn plugin_source_serializes_local_git_and_remote_variants() {
+        let local_path = if cfg!(windows) {
+            r"C:\plugins\linear"
+        } else {
+            "/plugins/linear"
+        };
+        let local_path = AbsolutePathBuf::try_from(PathBuf::from(local_path)).unwrap();
+        let local_path_json = local_path.as_path().display().to_string();
+
         assert_eq!(
-            serde_json::to_value(PluginListParams {
-                cwds: None,
-                force_remote_sync: false,
-            })
-            .unwrap(),
+            serde_json::to_value(PluginSource::Local { path: local_path }).unwrap(),
             json!({
-                "cwds": null,
+                "type": "local",
+                "path": local_path_json,
             }),
         );
 
         assert_eq!(
-            serde_json::to_value(PluginListParams {
-                cwds: None,
-                force_remote_sync: true,
+            serde_json::to_value(PluginSource::Git {
+                url: "https://github.com/openai/example.git".to_string(),
+                path: Some("plugins/example".to_string()),
+                ref_name: Some("main".to_string()),
+                sha: Some("abc123".to_string()),
             })
             .unwrap(),
             json!({
-                "cwds": null,
-                "forceRemoteSync": true,
+                "type": "git",
+                "url": "https://github.com/openai/example.git",
+                "path": "plugins/example",
+                "refName": "main",
+                "sha": "abc123",
+            }),
+        );
+
+        assert_eq!(
+            serde_json::to_value(PluginSource::Remote).unwrap(),
+            json!({
+                "type": "remote",
             }),
         );
     }
 
     #[test]
-    fn plugin_install_params_serialization_uses_force_remote_sync() {
+    fn marketplace_add_params_serialization_uses_optional_ref_name_and_sparse_paths() {
+        assert_eq!(
+            serde_json::to_value(MarketplaceAddParams {
+                source: "owner/repo".to_string(),
+                ref_name: None,
+                sparse_paths: None,
+            })
+            .unwrap(),
+            json!({
+                "source": "owner/repo",
+                "refName": null,
+                "sparsePaths": null,
+            }),
+        );
+
+        assert_eq!(
+            serde_json::to_value(MarketplaceAddParams {
+                source: "owner/repo".to_string(),
+                ref_name: Some("main".to_string()),
+                sparse_paths: Some(vec!["plugins/foo".to_string()]),
+            })
+            .unwrap(),
+            json!({
+                "source": "owner/repo",
+                "refName": "main",
+                "sparsePaths": ["plugins/foo"],
+            }),
+        );
+    }
+
+    #[test]
+    fn plugin_marketplace_entry_serializes_remote_only_path_as_null() {
+        assert_eq!(
+            serde_json::to_value(PluginMarketplaceEntry {
+                name: "openai-curated".to_string(),
+                path: None,
+                interface: None,
+                plugins: Vec::new(),
+            })
+            .unwrap(),
+            json!({
+                "name": "openai-curated",
+                "path": null,
+                "interface": null,
+                "plugins": [],
+            }),
+        );
+    }
+
+    #[test]
+    fn plugin_interface_serializes_local_paths_and_remote_urls_separately() {
+        let composer_icon = if cfg!(windows) {
+            r"C:\plugins\linear\icon.png"
+        } else {
+            "/plugins/linear/icon.png"
+        };
+        let composer_icon = AbsolutePathBuf::try_from(PathBuf::from(composer_icon)).unwrap();
+        let composer_icon_json = composer_icon.as_path().display().to_string();
+
+        let interface = PluginInterface {
+            display_name: Some("Linear".to_string()),
+            short_description: None,
+            long_description: None,
+            developer_name: None,
+            category: Some("Productivity".to_string()),
+            capabilities: Vec::new(),
+            website_url: None,
+            privacy_policy_url: None,
+            terms_of_service_url: None,
+            default_prompt: None,
+            brand_color: None,
+            composer_icon: Some(composer_icon),
+            composer_icon_url: Some("https://example.com/linear/icon.png".to_string()),
+            logo: None,
+            logo_url: Some("https://example.com/linear/logo.png".to_string()),
+            screenshots: Vec::new(),
+            screenshot_urls: vec!["https://example.com/linear/screenshot.png".to_string()],
+        };
+
+        assert_eq!(
+            serde_json::to_value(interface).unwrap(),
+            json!({
+                "displayName": "Linear",
+                "shortDescription": null,
+                "longDescription": null,
+                "developerName": null,
+                "category": "Productivity",
+                "capabilities": [],
+                "websiteUrl": null,
+                "privacyPolicyUrl": null,
+                "termsOfServiceUrl": null,
+                "defaultPrompt": null,
+                "brandColor": null,
+                "composerIcon": composer_icon_json,
+                "composerIconUrl": "https://example.com/linear/icon.png",
+                "logo": null,
+                "logoUrl": "https://example.com/linear/logo.png",
+                "screenshots": [],
+                "screenshotUrls": ["https://example.com/linear/screenshot.png"],
+            }),
+        );
+    }
+
+    #[test]
+    fn plugin_list_params_ignore_removed_force_remote_sync_field() {
+        assert_eq!(
+            serde_json::from_value::<PluginListParams>(json!({
+                "cwds": null,
+                "forceRemoteSync": true,
+            }))
+            .unwrap(),
+            PluginListParams { cwds: None },
+        );
+    }
+
+    #[test]
+    fn plugin_read_params_serialization_uses_install_source_fields() {
+        let marketplace_path = if cfg!(windows) {
+            r"C:\plugins\marketplace.json"
+        } else {
+            "/plugins/marketplace.json"
+        };
+        let marketplace_path = AbsolutePathBuf::try_from(PathBuf::from(marketplace_path)).unwrap();
+        let marketplace_path_json = marketplace_path.as_path().display().to_string();
+        assert_eq!(
+            serde_json::to_value(PluginReadParams {
+                marketplace_path: Some(marketplace_path.clone()),
+                remote_marketplace_name: None,
+                plugin_name: "gmail".to_string(),
+            })
+            .unwrap(),
+            json!({
+                "marketplacePath": marketplace_path_json,
+                "remoteMarketplaceName": null,
+                "pluginName": "gmail",
+            }),
+        );
+
+        assert_eq!(
+            serde_json::from_value::<PluginReadParams>(json!({
+                "marketplacePath": marketplace_path_json,
+                "pluginName": "gmail",
+                "forceRemoteSync": true,
+            }))
+            .unwrap(),
+            PluginReadParams {
+                marketplace_path: Some(marketplace_path),
+                remote_marketplace_name: None,
+                plugin_name: "gmail".to_string(),
+            },
+        );
+
+        assert_eq!(
+            serde_json::from_value::<PluginReadParams>(json!({
+                "remoteMarketplaceName": "openai-curated",
+                "pluginName": "gmail",
+            }))
+            .unwrap(),
+            PluginReadParams {
+                marketplace_path: None,
+                remote_marketplace_name: Some("openai-curated".to_string()),
+                plugin_name: "gmail".to_string(),
+            },
+        );
+    }
+
+    #[test]
+    fn plugin_install_params_serialization_omits_force_remote_sync() {
         let marketplace_path = if cfg!(windows) {
             r"C:\plugins\marketplace.json"
         } else {
@@ -7766,38 +8825,52 @@ mod tests {
         let marketplace_path_json = marketplace_path.as_path().display().to_string();
         assert_eq!(
             serde_json::to_value(PluginInstallParams {
-                marketplace_path: marketplace_path.clone(),
+                marketplace_path: Some(marketplace_path.clone()),
+                remote_marketplace_name: None,
                 plugin_name: "gmail".to_string(),
-                force_remote_sync: false,
             })
             .unwrap(),
             json!({
                 "marketplacePath": marketplace_path_json,
+                "remoteMarketplaceName": null,
                 "pluginName": "gmail",
             }),
         );
 
         assert_eq!(
-            serde_json::to_value(PluginInstallParams {
-                marketplace_path,
-                plugin_name: "gmail".to_string(),
-                force_remote_sync: true,
-            })
-            .unwrap(),
-            json!({
+            serde_json::from_value::<PluginInstallParams>(json!({
                 "marketplacePath": marketplace_path_json,
                 "pluginName": "gmail",
                 "forceRemoteSync": true,
-            }),
+            }))
+            .unwrap(),
+            PluginInstallParams {
+                marketplace_path: Some(marketplace_path),
+                remote_marketplace_name: None,
+                plugin_name: "gmail".to_string(),
+            },
+        );
+
+        assert_eq!(
+            serde_json::from_value::<PluginInstallParams>(json!({
+                "remoteMarketplaceName": "openai-curated",
+                "pluginName": "gmail",
+                "forceRemoteSync": true,
+            }))
+            .unwrap(),
+            PluginInstallParams {
+                marketplace_path: None,
+                remote_marketplace_name: Some("openai-curated".to_string()),
+                plugin_name: "gmail".to_string(),
+            },
         );
     }
 
     #[test]
-    fn plugin_uninstall_params_serialization_uses_force_remote_sync() {
+    fn plugin_uninstall_params_serialization_omits_force_remote_sync() {
         assert_eq!(
             serde_json::to_value(PluginUninstallParams {
                 plugin_id: "gmail@openai-curated".to_string(),
-                force_remote_sync: false,
             })
             .unwrap(),
             json!({
@@ -7806,15 +8879,14 @@ mod tests {
         );
 
         assert_eq!(
-            serde_json::to_value(PluginUninstallParams {
-                plugin_id: "gmail@openai-curated".to_string(),
-                force_remote_sync: true,
-            })
-            .unwrap(),
-            json!({
+            serde_json::from_value::<PluginUninstallParams>(json!({
                 "pluginId": "gmail@openai-curated",
                 "forceRemoteSync": true,
-            }),
+            }))
+            .unwrap(),
+            PluginUninstallParams {
+                plugin_id: "gmail@openai-curated".to_string(),
+            },
         );
     }
 
@@ -7829,6 +8901,22 @@ mod tests {
             json!({
                 "responseTooManyFailedAttempts": {
                     "httpStatusCode": 401
+                }
+            })
+        );
+    }
+
+    #[test]
+    fn codex_error_info_serializes_active_turn_not_steerable_turn_kind_in_camel_case() {
+        let value = CodexErrorInfo::ActiveTurnNotSteerable {
+            turn_kind: NonSteerableTurnKind::Review,
+        };
+
+        assert_eq!(
+            serde_json::to_value(value).unwrap(),
+            json!({
+                "activeTurnNotSteerable": {
+                    "turnKind": "review"
                 }
             })
         );
@@ -7958,6 +9046,79 @@ mod tests {
     }
 
     #[test]
+    fn thread_start_params_preserve_explicit_null_instructions() {
+        let params: ThreadStartParams = serde_json::from_value(json!({
+            "baseInstructions": null,
+            "developerInstructions": null,
+        }))
+        .expect("params should deserialize");
+        assert_eq!(params.base_instructions, Some(None));
+        assert_eq!(params.developer_instructions, Some(None));
+
+        let serialized = serde_json::to_value(&params).expect("params should serialize");
+        assert_eq!(
+            serialized.get("baseInstructions"),
+            Some(&serde_json::Value::Null)
+        );
+        assert_eq!(
+            serialized.get("developerInstructions"),
+            Some(&serde_json::Value::Null)
+        );
+
+        let serialized_without_override =
+            serde_json::to_value(ThreadStartParams::default()).expect("params should serialize");
+        assert_eq!(serialized_without_override.get("baseInstructions"), None);
+        assert_eq!(
+            serialized_without_override.get("developerInstructions"),
+            None
+        );
+    }
+
+    #[test]
+    fn thread_lifecycle_responses_default_missing_instruction_sources() {
+        let response = json!({
+            "thread": {
+                "id": "thread-id",
+                "forkedFromId": null,
+                "preview": "",
+                "ephemeral": false,
+                "modelProvider": "openai",
+                "createdAt": 1,
+                "updatedAt": 1,
+                "status": { "type": "idle" },
+                "path": null,
+                "cwd": absolute_path_string("tmp"),
+                "cliVersion": "0.0.0",
+                "source": "exec",
+                "agentNickname": null,
+                "agentRole": null,
+                "gitInfo": null,
+                "name": null,
+                "turns": []
+            },
+            "model": "gpt-5",
+            "modelProvider": "openai",
+            "serviceTier": null,
+            "cwd": absolute_path_string("tmp"),
+            "approvalPolicy": "on-failure",
+            "approvalsReviewer": "user",
+            "sandbox": { "type": "dangerFullAccess" },
+            "reasoningEffort": null
+        });
+
+        let start: ThreadStartResponse =
+            serde_json::from_value(response.clone()).expect("thread/start response");
+        let resume: ThreadResumeResponse =
+            serde_json::from_value(response.clone()).expect("thread/resume response");
+        let fork: ThreadForkResponse =
+            serde_json::from_value(response).expect("thread/fork response");
+
+        assert_eq!(start.instruction_sources, Vec::<AbsolutePathBuf>::new());
+        assert_eq!(resume.instruction_sources, Vec::<AbsolutePathBuf>::new());
+        assert_eq!(fork.instruction_sources, Vec::<AbsolutePathBuf>::new());
+    }
+
+    #[test]
     fn turn_start_params_preserve_explicit_null_service_tier() {
         let params: TurnStartParams = serde_json::from_value(json!({
             "threadId": "thread_123",
@@ -7976,6 +9137,7 @@ mod tests {
         let without_override = TurnStartParams {
             thread_id: "thread_123".to_string(),
             input: vec![],
+            responsesapi_client_metadata: None,
             cwd: None,
             approval_policy: None,
             approvals_reviewer: None,

@@ -23,7 +23,7 @@ use codex_app_server_protocol::PluginInstallPolicy;
 use codex_app_server_protocol::PluginReadParams;
 use codex_app_server_protocol::PluginReadResponse;
 use codex_app_server_protocol::RequestId;
-use codex_core::auth::AuthCredentialsStoreMode;
+use codex_config::types::AuthCredentialsStoreMode;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use pretty_assertions::assert_eq;
 use rmcp::handler::server::ServerHandler;
@@ -44,6 +44,96 @@ use tokio::task::JoinHandle;
 use tokio::time::timeout;
 
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(10);
+
+#[tokio::test]
+async fn plugin_read_rejects_missing_read_source() -> Result<()> {
+    let codex_home = TempDir::new()?;
+    let mut mcp = McpProcess::new(codex_home.path()).await?;
+    timeout(DEFAULT_TIMEOUT, mcp.initialize()).await??;
+
+    let request_id = mcp
+        .send_plugin_read_request(PluginReadParams {
+            marketplace_path: None,
+            remote_marketplace_name: None,
+            plugin_name: "sample-plugin".to_string(),
+        })
+        .await?;
+
+    let err = timeout(
+        DEFAULT_TIMEOUT,
+        mcp.read_stream_until_error_message(RequestId::Integer(request_id)),
+    )
+    .await??;
+
+    assert_eq!(err.error.code, -32600);
+    assert!(
+        err.error
+            .message
+            .contains("requires exactly one of marketplacePath or remoteMarketplaceName")
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn plugin_read_rejects_multiple_read_sources() -> Result<()> {
+    let codex_home = TempDir::new()?;
+    let mut mcp = McpProcess::new(codex_home.path()).await?;
+    timeout(DEFAULT_TIMEOUT, mcp.initialize()).await??;
+
+    let request_id = mcp
+        .send_plugin_read_request(PluginReadParams {
+            marketplace_path: Some(AbsolutePathBuf::try_from(
+                codex_home.path().join("marketplace.json"),
+            )?),
+            remote_marketplace_name: Some("openai-curated".to_string()),
+            plugin_name: "sample-plugin".to_string(),
+        })
+        .await?;
+
+    let err = timeout(
+        DEFAULT_TIMEOUT,
+        mcp.read_stream_until_error_message(RequestId::Integer(request_id)),
+    )
+    .await??;
+
+    assert_eq!(err.error.code, -32600);
+    assert!(
+        err.error
+            .message
+            .contains("requires exactly one of marketplacePath or remoteMarketplaceName")
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn plugin_read_rejects_remote_marketplace_until_remote_read_is_supported() -> Result<()> {
+    let codex_home = TempDir::new()?;
+    let mut mcp = McpProcess::new(codex_home.path()).await?;
+    timeout(DEFAULT_TIMEOUT, mcp.initialize()).await??;
+
+    let request_id = mcp
+        .send_plugin_read_request(PluginReadParams {
+            marketplace_path: None,
+            remote_marketplace_name: Some("openai-curated".to_string()),
+            plugin_name: "sample-plugin".to_string(),
+        })
+        .await?;
+
+    let err = timeout(
+        DEFAULT_TIMEOUT,
+        mcp.read_stream_until_error_message(RequestId::Integer(request_id)),
+    )
+    .await??;
+
+    assert_eq!(err.error.code, -32600);
+    assert!(
+        err.error
+            .message
+            .contains("remote plugin read is not supported yet")
+    );
+    assert!(err.error.message.contains("openai-curated"));
+    Ok(())
+}
 
 #[tokio::test]
 async fn plugin_read_returns_plugin_details_with_bundle_contents() -> Result<()> {
@@ -162,6 +252,10 @@ description: Visible only for ChatGPT
         r#"[features]
 plugins = true
 
+[[skills.config]]
+name = "demo-plugin:thread-summarizer"
+enabled = false
+
 [plugins."demo-plugin@codex-curated"]
 enabled = true
 "#,
@@ -175,7 +269,8 @@ enabled = true
         AbsolutePathBuf::try_from(repo_root.path().join(".agents/plugins/marketplace.json"))?;
     let request_id = mcp
         .send_plugin_read_request(PluginReadParams {
-            marketplace_path: marketplace_path.clone(),
+            marketplace_path: Some(marketplace_path.clone()),
+            remote_marketplace_name: None,
             plugin_name: "demo-plugin".to_string(),
         })
         .await?;
@@ -244,6 +339,7 @@ enabled = true
         response.plugin.skills[0].description,
         "Summarize email threads"
     );
+    assert!(!response.plugin.skills[0].enabled);
     assert_eq!(response.plugin.apps.len(), 1);
     assert_eq!(response.plugin.apps[0].id, "gmail");
     assert_eq!(response.plugin.apps[0].name, "gmail");
@@ -321,7 +417,8 @@ async fn plugin_read_returns_app_needs_auth() -> Result<()> {
 
     let request_id = mcp
         .send_plugin_read_request(PluginReadParams {
-            marketplace_path,
+            marketplace_path: Some(marketplace_path),
+            remote_marketplace_name: None,
             plugin_name: "sample-plugin".to_string(),
         })
         .await?;
@@ -387,9 +484,10 @@ async fn plugin_read_accepts_legacy_string_default_prompt() -> Result<()> {
 
     let request_id = mcp
         .send_plugin_read_request(PluginReadParams {
-            marketplace_path: AbsolutePathBuf::try_from(
+            marketplace_path: Some(AbsolutePathBuf::try_from(
                 repo_root.path().join(".agents/plugins/marketplace.json"),
-            )?,
+            )?),
+            remote_marketplace_name: None,
             plugin_name: "demo-plugin".to_string(),
         })
         .await?;
@@ -441,9 +539,10 @@ async fn plugin_read_returns_invalid_request_when_plugin_is_missing() -> Result<
 
     let request_id = mcp
         .send_plugin_read_request(PluginReadParams {
-            marketplace_path: AbsolutePathBuf::try_from(
+            marketplace_path: Some(AbsolutePathBuf::try_from(
                 repo_root.path().join(".agents/plugins/marketplace.json"),
-            )?,
+            )?),
+            remote_marketplace_name: None,
             plugin_name: "missing-plugin".to_string(),
         })
         .await?;
@@ -493,9 +592,10 @@ async fn plugin_read_returns_invalid_request_when_plugin_manifest_is_missing() -
 
     let request_id = mcp
         .send_plugin_read_request(PluginReadParams {
-            marketplace_path: AbsolutePathBuf::try_from(
+            marketplace_path: Some(AbsolutePathBuf::try_from(
                 repo_root.path().join(".agents/plugins/marketplace.json"),
-            )?,
+            )?),
+            remote_marketplace_name: None,
             plugin_name: "demo-plugin".to_string(),
         })
         .await?;
@@ -507,11 +607,7 @@ async fn plugin_read_returns_invalid_request_when_plugin_manifest_is_missing() -
     .await??;
 
     assert_eq!(err.error.code, -32600);
-    assert!(
-        err.error
-            .message
-            .contains("missing or invalid .codex-plugin/plugin.json")
-    );
+    assert!(err.error.message.contains("missing or invalid plugin.json"));
     Ok(())
 }
 

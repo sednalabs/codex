@@ -1,3 +1,4 @@
+#![allow(clippy::expect_used)]
 use std::io::BufRead;
 use std::io::BufReader;
 use std::io::Write;
@@ -32,6 +33,7 @@ use codex_app_server_protocol::ThreadStartParams;
 use codex_app_server_protocol::ThreadStartResponse;
 use codex_app_server_protocol::TurnStartParams;
 use codex_app_server_protocol::UserInput;
+use codex_utils_version::RELEASE_VERSION;
 use serde::Serialize;
 
 use crate::output::Output;
@@ -98,7 +100,7 @@ impl AppServerClient {
                 client_info: ClientInfo {
                     name: "debug-client".to_string(),
                     title: Some("Debug Client".to_string()),
-                    version: env!("CARGO_PKG_VERSION").to_string(),
+                    version: RELEASE_VERSION.to_string(),
                 },
                 capabilities: Some(InitializeCapabilities {
                     experimental_api: true,
@@ -177,6 +179,7 @@ impl AppServerClient {
                 cursor,
                 limit: None,
                 sort_key: None,
+                sort_direction: None,
                 model_providers: None,
                 source_kinds: None,
                 archived: None,
@@ -298,8 +301,8 @@ impl AppServerClient {
             }
 
             let line = buffer.trim_end_matches(['\n', '\r']);
-            if !line.is_empty() && !self.filtered_output {
-                let _ = output.server_line(line);
+            if !line.is_empty() {
+                let _ = output.server_json_line(line, self.filtered_output);
             }
 
             let message = match serde_json::from_str::<JSONRPCMessage>(line) {

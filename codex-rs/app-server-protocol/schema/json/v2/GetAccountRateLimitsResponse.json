@@ -1,6 +1,5 @@
 {
-  "$schema": "http://json-schema.org/draft-07/schema#",
-  "definitions": {
+  "$defs": {
     "CreditsSnapshot": {
       "properties": {
         "balance": {
@@ -28,11 +27,24 @@
         "go",
         "plus",
         "pro",
+        "prolite",
         "team",
+        "self_serve_business_usage_based",
         "business",
+        "enterprise_cbp_usage_based",
         "enterprise",
         "edu",
         "unknown"
+      ],
+      "type": "string"
+    },
+    "RateLimitReachedType": {
+      "enum": [
+        "rate_limit_reached",
+        "workspace_owner_credits_depleted",
+        "workspace_member_credits_depleted",
+        "workspace_owner_usage_limit_reached",
+        "workspace_member_usage_limit_reached"
       ],
       "type": "string"
     },
@@ -41,7 +53,7 @@
         "credits": {
           "anyOf": [
             {
-              "$ref": "#/definitions/CreditsSnapshot"
+              "$ref": "#/$defs/CreditsSnapshot"
             },
             {
               "type": "null"
@@ -63,7 +75,7 @@
         "planType": {
           "anyOf": [
             {
-              "$ref": "#/definitions/PlanType"
+              "$ref": "#/$defs/PlanType"
             },
             {
               "type": "null"
@@ -73,7 +85,17 @@
         "primary": {
           "anyOf": [
             {
-              "$ref": "#/definitions/RateLimitWindow"
+              "$ref": "#/$defs/RateLimitWindow"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "rateLimitReachedType": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RateLimitReachedType"
             },
             {
               "type": "null"
@@ -83,7 +105,7 @@
         "secondary": {
           "anyOf": [
             {
-              "$ref": "#/definitions/RateLimitWindow"
+              "$ref": "#/$defs/RateLimitWindow"
             },
             {
               "type": "null"
@@ -120,18 +142,15 @@
       "type": "object"
     }
   },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
   "properties": {
     "rateLimits": {
-      "allOf": [
-        {
-          "$ref": "#/definitions/RateLimitSnapshot"
-        }
-      ],
+      "$ref": "#/$defs/RateLimitSnapshot",
       "description": "Backward-compatible single-bucket view; mirrors the historical payload."
     },
     "rateLimitsByLimitId": {
       "additionalProperties": {
-        "$ref": "#/definitions/RateLimitSnapshot"
+        "$ref": "#/$defs/RateLimitSnapshot"
       },
       "description": "Multi-bucket view keyed by metered `limit_id` (for example, `codex`).",
       "type": [

@@ -5,6 +5,7 @@ use crate::ServerRequest;
 use crate::export::GENERATED_TS_HEADER;
 use crate::export::filter_experimental_ts_tree;
 use crate::export::generate_index_ts_tree;
+use crate::export::trim_trailing_line_whitespace;
 use crate::protocol::common::visit_client_response_types;
 use crate::protocol::common::visit_server_response_types;
 use anyhow::Context;
@@ -68,6 +69,9 @@ pub fn generate_typescript_schema_fixture_subtree_for_tests() -> Result<BTreeMap
 
     filter_experimental_ts_tree(&mut files)?;
     generate_index_ts_tree(&mut files);
+    for content in files.values_mut() {
+        *content = trim_trailing_line_whitespace(content);
+    }
 
     Ok(files
         .into_iter()
@@ -103,6 +107,7 @@ pub fn write_schema_fixtures_with_options(
             ..crate::GenerateTsOptions::default()
         },
     )?;
+    normalize_typescript_fixture_tree(&typescript_out_dir)?;
     crate::generate_json_with_experimental(&json_out_dir, options.experimental_api)?;
 
     Ok(())
@@ -129,20 +134,63 @@ fn read_file_bytes(path: &Path) -> Result<Vec<u8>> {
         return Ok(normalized);
     }
     if path.extension().is_some_and(|ext| ext == "ts") {
-        // Windows checkouts (and some generators) may produce CRLF; normalize so the
-        // fixture test is platform-independent.
         let text = String::from_utf8(bytes)
             .with_context(|| format!("expected UTF-8 TypeScript in {}", path.display()))?;
-        let text = text.replace("\r\n", "\n").replace('\r', "\n");
-        // Fixture comparisons care about schema content, not whether the generator
-        // re-prepended the standard banner to every TypeScript file.
-        let text = text
-            .strip_prefix(GENERATED_TS_HEADER)
-            .unwrap_or(&text)
-            .to_string();
+        let text = normalize_typescript_fixture_text(text, /*strip_header*/ true);
         return Ok(text.into_bytes());
     }
     Ok(bytes)
+}
+
+fn normalize_typescript_fixture_text(text: String, strip_header: bool) -> String {
+    // Keep fixture comparisons platform-independent and ignore trailing whitespace churn
+    // from generators or prettier differences.
+    let text = text.replace("\r\n", "\n").replace('\r', "\n");
+    let text = if strip_header {
+        text.strip_prefix(GENERATED_TS_HEADER)
+            .unwrap_or(&text)
+            .to_string()
+    } else {
+        text
+    };
+    let has_trailing_newline = text.ends_with('\n');
+    let mut normalized = text
+        .split_terminator('\n')
+        .map(|line| line.trim_end_matches([' ', '\t']))
+        .collect::<Vec<_>>()
+        .join("\n");
+    if has_trailing_newline {
+        normalized.push('\n');
+    }
+    normalized
+}
+
+fn normalize_typescript_fixture_tree(root: &Path) -> Result<()> {
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        for entry in std::fs::read_dir(&dir)
+            .with_context(|| format!("failed to read dir {}", dir.display()))?
+        {
+            let entry =
+                entry.with_context(|| format!("failed to read dir entry in {}", dir.display()))?;
+            let path = entry.path();
+            let metadata = std::fs::metadata(&path)
+                .with_context(|| format!("failed to stat {}", path.display()))?;
+            if metadata.is_dir() {
+                stack.push(path);
+                continue;
+            }
+            if path.extension() != Some(std::ffi::OsStr::new("ts")) || !metadata.is_file() {
+                continue;
+            }
+            let text = std::fs::read_to_string(&path)
+                .with_context(|| format!("expected UTF-8 TypeScript in {}", path.display()))?;
+            let normalized = normalize_typescript_fixture_text(text, /*strip_header*/ false);
+            std::fs::write(&path, normalized)
+                .with_context(|| format!("failed to rewrite {}", path.display()))?;
+        }
+    }
+    Ok(())
 }
 
 fn canonicalize_json(value: &Value) -> Value {
@@ -278,7 +326,7 @@ fn collect_typescript_fixture_file<T: TS + 'static + ?Sized>(
     let output_path = normalize_relative_fixture_path(&output_path);
     files.insert(
         output_path,
-        contents.replace("\r\n", "\n").replace('\r', "\n"),
+        normalize_typescript_fixture_text(contents, /*strip_header*/ false),
     );
 
     let mut visitor = TypeScriptFixtureCollector {

@@ -1,6 +1,10 @@
 use base64::Engine;
+use chrono::DateTime;
+use chrono::Utc;
+use codex_protocol::auth::PlanType;
 use serde::Deserialize;
 use serde::Serialize;
+use serde::de::DeserializeOwned;
 use thiserror::Error;
 
 #[derive(Deserialize, Serialize, Clone, Debug, PartialEq, Default)]
@@ -32,13 +36,22 @@ pub struct IdTokenInfo {
     pub chatgpt_user_id: Option<String>,
     /// Organization/workspace identifier associated with the token, if present.
     pub chatgpt_account_id: Option<String>,
+    /// Whether the selected ChatGPT workspace must route through the FedRAMP edge.
+    pub chatgpt_account_is_fedramp: bool,
     pub raw_jwt: String,
 }
 
 impl IdTokenInfo {
     pub fn get_chatgpt_plan_type(&self) -> Option<String> {
         self.chatgpt_plan_type.as_ref().map(|t| match t {
-            PlanType::Known(plan) => format!("{plan:?}"),
+            PlanType::Known(plan) => plan.display_name().to_string(),
+            PlanType::Unknown(s) => s.clone(),
+        })
+    }
+
+    pub fn get_chatgpt_plan_type_raw(&self) -> Option<String> {
+        self.chatgpt_plan_type.as_ref().map(|t| match t {
+            PlanType::Known(plan) => plan.raw_value().to_string(),
             PlanType::Unknown(s) => s.clone(),
         })
     }
@@ -46,47 +59,13 @@ impl IdTokenInfo {
     pub fn is_workspace_account(&self) -> bool {
         matches!(
             self.chatgpt_plan_type,
-            Some(PlanType::Known(
-                KnownPlan::Team | KnownPlan::Business | KnownPlan::Enterprise | KnownPlan::Edu
-            ))
+            Some(PlanType::Known(plan)) if plan.is_workspace_account()
         )
     }
-}
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(untagged)]
-pub enum PlanType {
-    Known(KnownPlan),
-    Unknown(String),
-}
-
-impl PlanType {
-    pub fn from_raw_value(raw: &str) -> Self {
-        match raw.to_ascii_lowercase().as_str() {
-            "free" => Self::Known(KnownPlan::Free),
-            "go" => Self::Known(KnownPlan::Go),
-            "plus" => Self::Known(KnownPlan::Plus),
-            "pro" => Self::Known(KnownPlan::Pro),
-            "team" => Self::Known(KnownPlan::Team),
-            "business" => Self::Known(KnownPlan::Business),
-            "enterprise" => Self::Known(KnownPlan::Enterprise),
-            "education" | "edu" => Self::Known(KnownPlan::Edu),
-            _ => Self::Unknown(raw.to_string()),
-        }
+    pub fn is_fedramp_account(&self) -> bool {
+        self.chatgpt_account_is_fedramp
     }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum KnownPlan {
-    Free,
-    Go,
-    Plus,
-    Pro,
-    Team,
-    Business,
-    Enterprise,
-    Edu,
 }
 
 #[derive(Deserialize)]
@@ -115,6 +94,14 @@ struct AuthClaims {
     user_id: Option<String>,
     #[serde(default)]
     chatgpt_account_id: Option<String>,
+    #[serde(default)]
+    chatgpt_account_is_fedramp: bool,
+}
+
+#[derive(Deserialize)]
+struct StandardJwtClaims {
+    #[serde(default)]
+    exp: Option<i64>,
 }
 
 #[derive(Debug, Error)]
@@ -127,7 +114,7 @@ pub enum IdTokenInfoError {
     Json(#[from] serde_json::Error),
 }
 
-pub fn parse_chatgpt_jwt_claims(jwt: &str) -> Result<IdTokenInfo, IdTokenInfoError> {
+fn decode_jwt_payload<T: DeserializeOwned>(jwt: &str) -> Result<T, IdTokenInfoError> {
     // JWT format: header.payload.signature
     let mut parts = jwt.split('.');
     let (_header_b64, payload_b64, _sig_b64) = match (parts.next(), parts.next(), parts.next()) {
@@ -136,7 +123,19 @@ pub fn parse_chatgpt_jwt_claims(jwt: &str) -> Result<IdTokenInfo, IdTokenInfoErr
     };
 
     let payload_bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(payload_b64)?;
-    let claims: IdClaims = serde_json::from_slice(&payload_bytes)?;
+    let claims = serde_json::from_slice(&payload_bytes)?;
+    Ok(claims)
+}
+
+pub fn parse_jwt_expiration(jwt: &str) -> Result<Option<DateTime<Utc>>, IdTokenInfoError> {
+    let claims: StandardJwtClaims = decode_jwt_payload(jwt)?;
+    Ok(claims
+        .exp
+        .and_then(|exp| DateTime::<Utc>::from_timestamp(exp, 0)))
+}
+
+pub fn parse_chatgpt_jwt_claims(jwt: &str) -> Result<IdTokenInfo, IdTokenInfoError> {
+    let claims: IdClaims = decode_jwt_payload(jwt)?;
     let email = claims
         .email
         .or_else(|| claims.profile.and_then(|profile| profile.email));
@@ -148,6 +147,7 @@ pub fn parse_chatgpt_jwt_claims(jwt: &str) -> Result<IdTokenInfo, IdTokenInfoErr
             chatgpt_plan_type: auth.chatgpt_plan_type,
             chatgpt_user_id: auth.chatgpt_user_id.or(auth.user_id),
             chatgpt_account_id: auth.chatgpt_account_id,
+            chatgpt_account_is_fedramp: auth.chatgpt_account_is_fedramp,
         }),
         None => Ok(IdTokenInfo {
             email,
@@ -155,6 +155,7 @@ pub fn parse_chatgpt_jwt_claims(jwt: &str) -> Result<IdTokenInfo, IdTokenInfoErr
             chatgpt_plan_type: None,
             chatgpt_user_id: None,
             chatgpt_account_id: None,
+            chatgpt_account_is_fedramp: false,
         }),
     }
 }

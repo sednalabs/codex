@@ -4,6 +4,7 @@ use codex_core::config::AgentRoleConfig;
 use codex_features::Feature;
 use codex_protocol::ThreadId;
 use codex_protocol::openai_models::ReasoningEffort;
+use codex_protocol::protocol::EventMsg;
 use core_test_support::responses::ResponsesRequest;
 use core_test_support::responses::ev_assistant_message;
 use core_test_support::responses::ev_completed;
@@ -20,6 +21,8 @@ use core_test_support::test_codex::test_codex;
 use pretty_assertions::assert_eq;
 use serde_json::json;
 use std::time::Duration;
+use tokio::sync::broadcast::Receiver;
+use tokio::sync::broadcast::error::RecvError;
 use tokio::time::Instant;
 use tokio::time::sleep;
 use wiremock::MockServer;
@@ -33,6 +36,7 @@ const CHILD_PROMPT: &str = "child: do work";
 const INHERITED_MODEL: &str = "gpt-5.2-codex";
 const INHERITED_REASONING_EFFORT: ReasoningEffort = ReasoningEffort::XHigh;
 const REQUESTED_MODEL: &str = "gpt-5.1";
+const REQUESTED_EXACT_MODEL: &str = "gpt-5.1-codex-mini";
 const REQUESTED_REASONING_EFFORT: ReasoningEffort = ReasoningEffort::Low;
 const ROLE_MODEL: &str = "gpt-5.1-codex-max";
 const ROLE_REASONING_EFFORT: ReasoningEffort = ReasoningEffort::High;
@@ -55,6 +59,13 @@ fn body_contains(req: &wiremock::Request, text: &str) -> bool {
     bytes
         .and_then(|body| String::from_utf8(body).ok())
         .is_some_and(|body| body.contains(text))
+}
+
+fn request_uses_model(req: &wiremock::Request, model: &str) -> bool {
+    req.body_json::<serde_json::Value>()
+        .ok()
+        .and_then(|body| body["model"].as_str().map(str::to_owned))
+        .is_some_and(|request_model| request_model == model)
 }
 
 fn has_subagent_notification(req: &ResponsesRequest) -> bool {
@@ -101,20 +112,19 @@ fn role_block(description: &str, role_name: &str) -> Option<String> {
     Some(block.join("\n"))
 }
 
-async fn wait_for_spawned_thread_id(test: &TestCodex) -> Result<String> {
-    let deadline = Instant::now() + Duration::from_secs(2);
-    loop {
-        let ids = test.thread_manager.list_thread_ids().await;
-        if let Some(spawned_id) = ids
-            .iter()
-            .find(|id| **id != test.session_configured.session_id)
-        {
-            return Ok(spawned_id.to_string());
+async fn wait_for_spawned_thread_id_from_receiver(
+    receiver: &mut Receiver<ThreadId>,
+    timeout: Duration,
+) -> Result<String> {
+    match tokio::time::timeout(timeout, receiver.recv()).await {
+        Ok(Ok(thread_id)) => Ok(thread_id.to_string()),
+        Ok(Err(RecvError::Lagged(skipped))) => {
+            anyhow::bail!("missed spawned thread notification ({skipped} messages dropped)")
         }
-        if Instant::now() >= deadline {
-            anyhow::bail!("timed out waiting for spawned thread id");
+        Ok(Err(RecvError::Closed)) => {
+            anyhow::bail!("thread creation notification channel closed")
         }
-        sleep(Duration::from_millis(10)).await;
+        Err(_) => anyhow::bail!("timed out waiting for spawned thread id"),
     }
 }
 
@@ -134,6 +144,66 @@ async fn wait_for_requests(
     }
 }
 
+async fn wait_for_spawned_thread_turn_start(
+    test: &TestCodex,
+    spawned_id: &str,
+    timeout: Duration,
+) -> Result<()> {
+    let thread_id = ThreadId::from_string(spawned_id)?;
+    let child_thread = test.thread_manager.get_thread(thread_id).await?;
+    let deadline = Instant::now() + timeout;
+    loop {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            anyhow::bail!("timed out waiting for spawned child thread to start its turn");
+        }
+
+        let event = match tokio::time::timeout(remaining, child_thread.next_event()).await {
+            Ok(Ok(event)) => event,
+            Ok(Err(err)) => return Err(err.into()),
+            Err(_) => anyhow::bail!("timed out waiting for spawned child thread to start its turn"),
+        };
+
+        match event.msg {
+            EventMsg::McpStartupUpdate(_)
+            | EventMsg::McpStartupComplete(_)
+            | EventMsg::SessionConfigured(_) => continue,
+            EventMsg::Error(err) => {
+                anyhow::bail!(
+                    "spawned child failed before starting its turn: {}",
+                    err.message
+                )
+            }
+            _ => return Ok(()),
+        }
+    }
+}
+
+async fn wait_for_request_body_with_model(
+    server: &MockServer,
+    model: &str,
+    timeout: Duration,
+) -> Result<serde_json::Value> {
+    let deadline = Instant::now() + timeout;
+    loop {
+        if let Some(body) = server
+            .received_requests()
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|request| request.body_json::<serde_json::Value>().ok())
+            .find(|body| body["model"].as_str() == Some(model))
+        {
+            return Ok(body);
+        }
+
+        if Instant::now() >= deadline {
+            anyhow::bail!("timed out waiting for request body with model {model}");
+        }
+        sleep(Duration::from_millis(10)).await;
+    }
+}
+
 async fn setup_turn_one_with_spawned_child(
     server: &MockServer,
     child_response_delay: Option<Duration>,
@@ -144,7 +214,7 @@ async fn setup_turn_one_with_spawned_child(
             "message": CHILD_PROMPT,
         }),
         child_response_delay,
-        true,
+        /*wait_for_parent_notification*/ true,
         |builder| builder,
     )
     .await
@@ -218,6 +288,7 @@ async fn setup_turn_one_with_custom_spawned_child(
         config.model_reasoning_effort = Some(INHERITED_REASONING_EFFORT);
     }));
     let test = builder.build(server).await?;
+    let mut thread_created_rx = test.thread_manager.subscribe_thread_created();
     test.submit_turn(TURN_1_PROMPT).await?;
     if child_response_delay.is_none() && wait_for_parent_notification {
         let _ = wait_for_requests(&child_request_log).await?;
@@ -241,7 +312,9 @@ async fn setup_turn_one_with_custom_spawned_child(
             sleep(Duration::from_millis(10)).await;
         }
     }
-    let spawned_id = wait_for_spawned_thread_id(&test).await?;
+    let spawned_id =
+        wait_for_spawned_thread_id_from_receiver(&mut thread_created_rx, Duration::from_secs(2))
+            .await?;
 
     Ok((test, spawned_id))
 }
@@ -253,9 +326,14 @@ async fn spawn_child_and_capture_snapshot(
         core_test_support::test_codex::TestCodexBuilder,
     ) -> core_test_support::test_codex::TestCodexBuilder,
 ) -> Result<ThreadConfigSnapshot> {
-    let (test, spawned_id) =
-        setup_turn_one_with_custom_spawned_child(server, spawn_args, None, false, configure_test)
-            .await?;
+    let (test, spawned_id) = setup_turn_one_with_custom_spawned_child(
+        server,
+        spawn_args,
+        /*child_response_delay*/ None,
+        /*wait_for_parent_notification*/ false,
+        configure_test,
+    )
+    .await?;
     let thread_id = ThreadId::from_string(&spawned_id)?;
     Ok(test
         .thread_manager
@@ -270,7 +348,8 @@ async fn subagent_notification_is_included_without_wait() -> Result<()> {
     skip_if_no_network!(Ok(()));
 
     let server = start_mock_server().await;
-    let (test, _spawned_id) = setup_turn_one_with_spawned_child(&server, None).await?;
+    let (test, _spawned_id) =
+        setup_turn_one_with_spawned_child(&server, /*child_response_delay*/ None).await?;
 
     let turn2 = mount_sse_once_match(
         &server,
@@ -433,7 +512,8 @@ async fn spawn_agent_requested_model_and_reasoning_override_inherited_settings_w
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn spawn_agent_role_overrides_requested_model_and_reasoning_settings() -> Result<()> {
+async fn spawn_agent_preserves_requested_model_and_reasoning_settings_through_role_layering()
+-> Result<()> {
     skip_if_no_network!(Ok(()));
 
     let server = start_mock_server().await;
@@ -459,7 +539,7 @@ async fn spawn_agent_role_overrides_requested_model_and_reasoning_settings() -> 
                     "custom".to_string(),
                     AgentRoleConfig {
                         description: Some("Custom role".to_string()),
-                        config_file: Some(role_path),
+                        config_file: Some(role_path.to_path_buf()),
                         nickname_candidates: None,
                     },
                 );
@@ -468,8 +548,96 @@ async fn spawn_agent_role_overrides_requested_model_and_reasoning_settings() -> 
     )
     .await?;
 
-    assert_eq!(child_snapshot.model, ROLE_MODEL);
-    assert_eq!(child_snapshot.reasoning_effort, Some(ROLE_REASONING_EFFORT));
+    assert_eq!(child_snapshot.model, REQUESTED_MODEL);
+    assert_eq!(
+        child_snapshot.reasoning_effort,
+        Some(REQUESTED_REASONING_EFFORT)
+    );
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn spawn_agent_preserves_exact_requested_model_slug_through_role_layering() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let server = start_mock_server().await;
+    let spawn_args = serde_json::to_string(&json!({
+        "message": CHILD_PROMPT,
+        "agent_type": "custom",
+        "model": REQUESTED_EXACT_MODEL,
+    }))?;
+
+    mount_sse_once_match(
+        &server,
+        |req: &wiremock::Request| body_contains(req, TURN_1_PROMPT),
+        sse(vec![
+            ev_response_created("resp-turn1-1"),
+            ev_function_call(SPAWN_CALL_ID, "spawn_agent", &spawn_args),
+            ev_completed("resp-turn1-1"),
+        ]),
+    )
+    .await;
+
+    let _child_request_log = mount_sse_once_match(
+        &server,
+        |req: &wiremock::Request| request_uses_model(req, REQUESTED_EXACT_MODEL),
+        sse(vec![
+            ev_response_created("resp-child-1"),
+            ev_assistant_message("msg-child-1", "child done"),
+            ev_completed("resp-child-1"),
+        ]),
+    )
+    .await;
+
+    let _turn1_followup = mount_sse_once_match(
+        &server,
+        |req: &wiremock::Request| body_contains(req, SPAWN_CALL_ID),
+        sse(vec![
+            ev_response_created("resp-turn1-2"),
+            ev_assistant_message("msg-turn1-2", "parent done"),
+            ev_completed("resp-turn1-2"),
+        ]),
+    )
+    .await;
+
+    let mut builder = test_codex().with_config(|config| {
+        config
+            .features
+            .enable(Feature::Collab)
+            .expect("test config should allow feature update");
+        config.model = Some(INHERITED_MODEL.to_string());
+        config.model_reasoning_effort = Some(INHERITED_REASONING_EFFORT);
+    });
+    builder = builder.with_config(|config| {
+        let role_path = config.codex_home.join("custom-role.toml");
+        std::fs::write(
+            &role_path,
+            format!(
+                "model = \"{ROLE_MODEL}\"\nmodel_reasoning_effort = \"{ROLE_REASONING_EFFORT}\"\n",
+            ),
+        )
+        .expect("write role config");
+        config.agent_roles.insert(
+            "custom".to_string(),
+            AgentRoleConfig {
+                description: Some("Custom role".to_string()),
+                config_file: Some(role_path.to_path_buf()),
+                nickname_candidates: None,
+            },
+        );
+    });
+    let test = builder.build(&server).await?;
+    let mut thread_created_rx = test.thread_manager.subscribe_thread_created();
+    test.submit_turn(TURN_1_PROMPT).await?;
+    let spawned_id =
+        wait_for_spawned_thread_id_from_receiver(&mut thread_created_rx, Duration::from_secs(2))
+            .await?;
+    wait_for_spawned_thread_turn_start(&test, &spawned_id, Duration::from_secs(5)).await?;
+    let child_body =
+        wait_for_request_body_with_model(&server, REQUESTED_EXACT_MODEL, Duration::from_secs(5))
+            .await?;
+    assert_eq!(child_body["model"].as_str(), Some(REQUESTED_EXACT_MODEL));
 
     Ok(())
 }
@@ -507,7 +675,7 @@ async fn spawn_agent_tool_description_mentions_role_locked_settings() -> Result<
             "custom".to_string(),
             AgentRoleConfig {
                 description: Some("Custom role".to_string()),
-                config_file: Some(role_path),
+                config_file: Some(role_path.to_path_buf()),
                 nickname_candidates: None,
             },
         );

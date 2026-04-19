@@ -8,13 +8,13 @@ live divergence.
 
 ## Audit Baseline
 
-- Audited on: `2026-03-21`
-- `upstream/main`: `e5f4d1fef59a3309339394575052c7cc1fff0996`
-- historical downstream branch name `carry/main`: `5d474e652d91c7f371a28ad2069cc51a1c5b9ee8`
-- historical mirror branch name `main`: `e5f4d1fef59a3309339394575052c7cc1fff0996`
-- historical `carry/main` vs `upstream/main`: `175` ahead, `0` behind
-- Carry-only commits at audit time: `133` non-merge, `42` merge
-- Exact-subject upstream matches found during audit: `41`
+- Audited on: `2026-04-17`
+- `upstream/main`: `fe7c959e90d46abb8311e4a0b369e6cb32bf337e`
+- downstream branch `main` (`origin/main`): `88b12a0e145af4533b58cf1a8b67369795eb7786`
+- mirror branch `upstream-main` (`origin/upstream-main`): `fe7c959e90d46abb8311e4a0b369e6cb32bf337e`
+- `main` vs `upstream/main`: `624` ahead, `103` behind
+- Downstream-only commits at audit time: `554` non-merge, `70` merge
+- Patch-equivalent downstream commits in symmetric diff: `0`
 
 ## Audit Rules
 
@@ -28,34 +28,44 @@ live divergence.
 
 ## Current Live Divergences
 
-### Fork Workflow And Operator Policy
+### Fork Workflow And Validation Policy
 
 - `main` is now the default PR and integration branch, while `upstream-main`
   is the exact upstream mirror.
 - Downstream sync policy is merge-based, not rebase-based.
-- Shared-host validation and release flows may use local build-helper presets
-  where operators have them configured, but those presets are not a tracked
-  repository contract.
+- Helper-backed local validation and release flows may be used when configured,
+  but those presets are not a tracked repository contract.
 - Divergence regression ownership is tracked in
-  [`downstream-regression-matrix.md`](/home/grant/mmm/codex/docs/downstream-regression-matrix.md).
+  [`downstream-regression-matrix.md`](downstream-regression-matrix.md).
 - Field-level native tool-surface deltas are summarized in
-  [`downstream-tool-surface-matrix.md`](/home/grant/mmm/codex/docs/downstream-tool-surface-matrix.md).
+  [`downstream-tool-surface-matrix.md`](downstream-tool-surface-matrix.md).
 - Future registry-plus-generation maintenance direction is captured in
-  [`downstream-divergence-tracking.md`](/home/grant/mmm/codex/docs/downstream-divergence-tracking.md).
-- Downstream operator workflows prefer MCP tool surfaces with blocking wait
+  [`downstream-divergence-tracking.md`](downstream-divergence-tracking.md).
+- Downstream guidance prefers MCP tool surfaces with blocking wait
   semantics over transcript-driven polling when the tool contract supports it.
 - Primary files:
   - `docs/contributing.md`
   - `docs/downstream.md`
 
-### External Usage Ledger Ownership
+### First-Party Usage Ledger Ownership
 
-- Downstream usage-ledger workflow is intentionally externalized to
-  `agent-usage-ledger`.
+- Downstream keeps usage-ledger ownership in this repo.
 - Billing-turn canonicalization and historical AUD reporting remain downstream
-  requirements, but the shared ledger implementation no longer lives in this
-  repo.
+  requirements, and the canonical local ledger implementation lives in
+  `usage.sqlite` rather than an external sibling repository.
+- `codex-rs/state/src/runtime/usage.rs` and
+  `codex-rs/state/usage_migrations/0001_usage_tables.sql` do not currently
+  have upstream counterparts, so future sync passes should treat them as
+  downstream-owned behavior to preserve rather than as stale carry to delete.
+- Usage-ledger ownership stays here: any upstream-native reimplementation must
+  reproduce the downstream per-turn ledger, provider/token metadata, and
+  billing-turn reporting semantics before the canonical source of truth can
+  move out of this repository.
 - Primary files:
+  - `codex-rs/core/src/codex.rs`
+  - `codex-rs/state/src/runtime.rs`
+  - `codex-rs/state/src/runtime/usage.rs`
+  - `codex-rs/state/usage_migrations/0001_usage_tables.sql`
   - `docs/downstream.md`
 
 ### Usage Event Logging And Metadata Capture
@@ -81,12 +91,33 @@ live divergence.
   - `codex-rs/state/usage_migrations/0001_usage_tables.sql`
   - `codex-rs/state/Cargo.toml`
 
-### CLI Git Metadata And Rebuild Triggers
+### Phase-2 Memory Attestation And Prepared-Input Fingerprinting
 
-- CLI builds embed `git describe` metadata.
-- CLI builds rerun when git state changes, including shared worktree git state.
+- Downstream phase-2 memory consolidation remains fail-closed once attestation
+  support has been initialized for a memory root.
+- Consolidated memory artifacts are fingerprinted against the prepared immutable
+  input tree and the effective consolidator contract, then recorded in
+  attestation sidecars plus runtime state so unchanged selections can safely
+  reuse existing outputs while drifted or tampered artifacts are rejected.
+- This is an intentional downstream carry, not derivative test churn: losing
+  the attestation runtime while keeping the attestation tests is a regression.
 - Primary files:
-  - `codex-rs/cli/build.rs`
+  - `codex-rs/core/src/memories/phase2.rs`
+  - `codex-rs/core/src/memories/phase2_attestation_tests.rs`
+  - `codex-rs/core/src/memories/tests.rs`
+  - `codex-rs/state/src/runtime/phase2_attestation.rs`
+  - `codex-rs/state/migrations/0024_phase2_attestation_roots.sql`
+  - `docs/memories.md`
+
+### Release Metadata And Rebuild Triggers
+
+- Release builds embed canonical release identity plus compact provenance
+  metadata.
+- Version metadata rebuilds when git state changes, including shared worktree
+  git state.
+- Primary files:
+  - `codex-rs/utils/version/build.rs`
+  - `codex-rs/utils/version/src/lib.rs`
   - `codex-rs/cli/src/main.rs`
 
 ### Sub-agent orchestration override preservation, inventory metadata, and wait joins
@@ -94,11 +125,22 @@ live divergence.
 - Upstream already supports explicit `spawn_agent(model=..., reasoning_effort=...)` child overrides; the live carry divergence is preserving those requests across role reload unless the role explicitly locks the fields.
 - Keep downstream itineraries that explicitly call `spawn_agent(model=..., reasoning_effort=...)` aligned with the requested model/economy, even when a role is applied.
 - Roles still control locked models when they explicitly set `model`, `model_provider`, `model_reasoning_effort`, or `model_verbosity`, so downstream policy remains defendable.
-- Carry also preserves the requested `model_reasoning_summary`, so the summary the child asked for survives role reload unless a role or active profile explicitly locks it, and active-profile overrides that set these fields retain precedence per `core/src/agent/role.rs`.
+- Carry also preserves the requested `model_reasoning_summary`, so the summary the child asked for survives role reload unless a role or active profile explicitly locks it, and active-profile overrides that set these fields retain precedence across the split role/spawn path.
+- `core/src/agent/role.rs` is now back on the upstream-native layered reload shape with resolved active-profile materialization; the remaining downstream delta is the deliberate sticky spawn-time override policy for model, reasoning effort, reasoning summary, and verbosity when the role does not own those fields.
+- The live tool-contract schema in `codex-rs/core/src/tools/spec.rs` and the
+  regression suite in `codex-rs/core/src/tools/handlers/multi_agents_tests.rs`
+  are already back on upstream-native shape; the remaining carry is
+  concentrated in role application, descendant inventory, spawn result
+  metadata, wait summaries, and `agent/control.rs`.
 - Spawn-agent result and direct-child inventory reporting expose `role`, `status`, `identity_source`, `effective_model`, `effective_reasoning_effort`, and `effective_model_provider_id` after role application, so the surviving setting is visible.
-- `list_agents` is a first-class inventory tool on `carry/main`: it defaults to direct-child visibility and can optionally surface persisted subtree rows via `include_descendants=true`, including `spawn_edge_status` for open/closed descendant edges even when the descendants are no longer live.
-- `wait_agent` adds `return_when=any|all` plus `requested_ids`, `pending_ids`, and `completion_reason` so downstream joins happen on explicit tool contracts rather than transcript polling.
+- `list_agents` is a first-class inventory tool on `carry/main`: the live handler is already on the upstream `multi_agents_v2` path, and the stale downstream `multi_agents/list_agents.rs` copy was dead carry rather than active behavior.
+- The remaining inventory divergence is therefore not a separate handler path; it is the extra descendant and persisted edge-status plumbing available from `agent/control.rs`, which still needs to be re-homed onto the upstream-native v2 inventory shape rather than dropped.
+- Downstream policy is to preserve the intent of the live carry while keeping the tree as close to upstream as possible; we explicitly carry the always-on, cheap live `list_agents` surface (including `has_active_subagents`/`active_subagent_count` and nested visibility/status metadata) to keep nested-agent live visibility intact, pair it with a richer, potentially stale `inspect_agent_tree` surface for deeper inventory sweeps, and welcome upstream-native reimplementation whenever it preserves these behaviors with less divergence.
+- `inspect_agent_tree` now surfaces the richer tree inspection contract: it can toggle `live` vs `stale` descendant visibility, focus on selected `agent_roots`, and returns compact depth/row-limited tree rows so downstream observability stays explicit without replaying bulky historical snapshots.
+- `wait_agent` adds `return_when=any|all` plus `requested_ids`, `pending_ids`, `completion_reason`, and `timed_out` so downstream joins happen on explicit tool contracts rather than transcript polling.
+- The built-in downstream awaiter profile also raises its default background timeout and prefers longer blocking waits plus `list_agents` snapshots over repeated short polling from the model layer.
 - Primary files:
+  - `codex-rs/core/src/agent/builtins/awaiter.toml`
   - `codex-rs/core/src/agent/role.rs`
   - `codex-rs/core/src/tools/handlers/multi_agents/list_agents.rs`
   - `codex-rs/core/src/tools/handlers/multi_agents/spawn.rs`
@@ -126,13 +168,16 @@ live divergence.
 - Timeout notes are appended to returned `raw_output`.
 - The downstream intent is to absorb long-running shell waits in the tool layer
   instead of spending model turns on repeated short-poll status checks.
-- In local downstream operator workflows, this composes with existing blocking
-  coordination primitives such as `wait_agent` and build-helper `*_and_wait`
+- In local downstream workflows, this composes with existing blocking
+  coordination primitives such as `wait_agent` and helper-backed `*_and_wait`
   calls so joins happen on state transitions rather than transcript churn.
 - This blocking MCP tool pattern was carried downstream before task support was
   fully operational.
 - `TurnCompleteEvent` carries `compaction_events_in_turn`.
 - Token-count events also carry provider and model context in downstream flow.
+- Sub-agent delegate forwarding should continue to surface `TokenCount` events
+  back to the parent session; preserve this behavior even when re-homing the
+  delegate code onto newer upstream structure.
 - Primary files:
   - `codex-rs/core/src/tools/handlers/unified_exec.rs`
   - `codex-rs/protocol/src/protocol.rs`
@@ -184,8 +229,16 @@ live divergence.
   - `docs/downstream.md`
   - `docs/downstream-regression-matrix.md`
 
-### TUI Queue, Interrupt, And Weekly-Pacing Behavior
+### TUI Session-State, Queue, Interrupt, And Usage Surfaces
 
+- Per-thread approval/sandbox/reviewer overrides survive thread switches.
+- Active-thread session state survives config refresh and fresh-session clones
+  keep policy mutability before new-thread and fork flows.
+- `/agent` picker rows expose per-thread used-token totals from cached thread
+  usage without requiring a broader context-window plumbing pass.
+- Combined session token totals remain visible across `/status` and
+  footer/status-line surfaces without overwriting the active thread's own usage
+  totals.
 - Unavailable slash commands queue and replay after the current task instead of
   being rejected immediately.
 - Interrupt handling defaults to double-`Esc` confirmation and preserves queued
@@ -194,15 +247,46 @@ live divergence.
   render styles.
 - Primary files:
   - `codex-rs/tui/src/app.rs`
+  - `codex-rs/tui/src/multi_agents.rs`
   - `codex-rs/tui/src/bottom_pane/chat_composer.rs`
+  - `codex-rs/tui/src/bottom_pane/status_line_setup.rs`
+  - `codex-rs/tui/src/chatwidget.rs`
+  - `codex-rs/tui/src/chatwidget/status_surfaces.rs`
+  - `codex-rs/tui/src/status/card.rs`
   - `codex-rs/tui/src/status/rate_limits.rs`
   - `docs/config.md`
   - `docs/tui-weekly-usage-pacing-status-line.md`
   - `docs/downstream.md`
+  - `docs/downstream-regression-matrix.md`
+
+### Custom Prompt Discovery And Review Prompt Flow
+
+- Downstream restores a file-backed custom prompt catalogue under
+  `$CODEX_HOME/prompts`, including optional frontmatter metadata for prompt
+  descriptions and argument hints.
+- Downstream also preserves the live ad hoc custom-review prompt entry point in
+  the TUI review flow, so users can still open the dedicated custom prompt
+  view from the review popup and submit review text without losing the standard
+  review interaction.
+- Today the runtime wiring is clearest for the ad hoc `ReviewTarget::Custom`
+  review path. The separate file-backed prompt catalogue remains a carried
+  downstream surface, but it should not be described as fully reconnected to a
+  user-facing picker until that runtime wiring is verified or intentionally
+  restored.
+- Primary files:
+  - `codex-rs/core/src/custom_prompts.rs`
+  - `codex-rs/core/src/custom_prompts_tests.rs`
+  - `codex-rs/protocol/src/custom_prompts.rs`
+  - `codex-rs/core/src/lib.rs`
+  - `codex-rs/protocol/src/lib.rs`
+  - `codex-rs/tui/src/app.rs`
+  - `codex-rs/tui/src/app_event.rs`
+  - `codex-rs/tui/src/bottom_pane/custom_prompt_view.rs`
+  - `codex-rs/tui/src/chatwidget.rs`
 
 ### Code-Mode Declaration Formatting
 
-- `carry/main` still emits imported tool declarations of the form:
+- `main` still emits imported tool declarations of the form:
   `import { tools } from "..."; declare function ...`
 - `upstream/main` still emits the older inline
   `declare const tools: { ... }` example.
@@ -216,8 +300,8 @@ live divergence.
   - `39` carry-only merge commits are sync history, not independent downstream
     behaviors.
 - Merge-repair and promotion-fix history:
-  - examples include `Fix carry/main core regressions after upstream sync`,
-    `Fix carry/main promotion follow-ups`, and
+  - examples include `Fix main core regressions after upstream sync`,
+    `Fix main promotion follow-ups`, and
     `Fix hybrid merge API drift in core/tui tests`
 - Generated and derivative churn:
   - schema outputs under `codex-rs/app-server-protocol/schema/`

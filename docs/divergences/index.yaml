@@ -1,0 +1,769 @@
+{
+  "version": 1,
+  "divergences": [
+    {
+      "id": "branch-policy-sync-plumbing",
+      "title": "Branch policy sync plumbing and audit runner",
+      "status": "live",
+      "category": "branch-policy",
+      "surface": [
+        "sedna-sync-upstream workflow",
+        "downstream divergence audit script",
+        "just wrapper"
+      ],
+      "files": [
+        ".github/workflows/sedna-sync-upstream.yml",
+        "scripts/downstream-divergence-audit.py",
+        "justfile"
+      ],
+      "behavior": "CI fast-forwards the upstream mirror, exports the synced SHA, and runs the authoritative downstream audit.",
+      "upstream_equivalent": false,
+      "introduced_in": {
+        "carry_commit": null,
+        "upstream_commit": null
+      },
+      "guardrail_lane": "sedna-sync-upstream",
+      "tests": [
+        "workflow sync job exports synced_upstream_main_sha",
+        "workflow audit job runs after mirror sync"
+      ],
+      "owner": "downstream",
+      "notes": "Tracks the audit plumbing itself so the new enforcement path remains intentional."
+    },
+    {
+      "id": "first-party-usage-ledger-ownership",
+      "title": "First-party usage ledger ownership",
+      "status": "live",
+      "category": "usage-ledger",
+      "surface": [
+        "usage.sqlite ownership",
+        "ledger runtime"
+      ],
+      "files": [
+        "codex-rs/core/src/codex.rs",
+        "codex-rs/state/src/runtime.rs",
+        "codex-rs/state/src/runtime/usage.rs",
+        "codex-rs/state/usage_migrations/0001_usage_tables.sql"
+      ],
+      "behavior": "Downstream keeps local billing-turn and provider/token ledger ownership in this repo.",
+      "upstream_equivalent": false,
+      "introduced_in": {
+        "carry_commit": null,
+        "upstream_commit": null
+      },
+      "guardrail_lane": "core-ledger-smoke",
+      "tests": [
+        "usage_logger_* focused table-contract tests"
+      ],
+      "owner": "downstream",
+      "notes": "Keeps the canonical local usage ledger with the downstream fork."
+    },
+    {
+      "id": "usage-event-logging-and-metadata-capture",
+      "title": "Usage event logging and metadata capture",
+      "status": "live",
+      "category": "usage-ledger",
+      "surface": [
+        "usage event log",
+        "spawn and quota metadata"
+      ],
+      "files": [
+        "codex-rs/core/src/codex.rs",
+        "codex-rs/core/src/state/service.rs",
+        "codex-rs/protocol/src/protocol.rs",
+        "codex-rs/state/src/lib.rs",
+        "codex-rs/state/src/migrations.rs",
+        "codex-rs/state/src/runtime.rs",
+        "codex-rs/state/src/runtime/usage.rs",
+        "codex-rs/state/usage_migrations/0001_usage_tables.sql"
+      ],
+      "behavior": "Sessions record per-thread usage, provider, tool, and spawn metadata for downstream audit workflows.",
+      "upstream_equivalent": false,
+      "introduced_in": {
+        "carry_commit": null,
+        "upstream_commit": null
+      },
+      "guardrail_lane": "core-ledger-smoke",
+      "tests": [
+        "usage_logger_* focused table-contract tests"
+      ],
+      "owner": "downstream",
+      "notes": "Extends the ledger with event-level auditing data."
+    },
+    {
+      "id": "phase2-memory-attestation-and-fingerprinting",
+      "title": "Phase-2 memory attestation and prepared-input fingerprinting",
+      "status": "live",
+      "category": "core-protocol",
+      "surface": [
+        "phase-2 attestation",
+        "prepared-input fingerprinting"
+      ],
+      "files": [
+        "codex-rs/core/src/memories/phase2.rs",
+        "codex-rs/core/src/memories/phase2_attestation_tests.rs",
+        "codex-rs/core/src/memories/tests.rs",
+        "codex-rs/state/src/runtime/phase2_attestation.rs",
+        "codex-rs/state/migrations/0024_phase2_attestation_roots.sql"
+      ],
+      "behavior": "Downstream requires phase-2 attestation roots and fingerprints before consolidation can complete.",
+      "upstream_equivalent": false,
+      "introduced_in": {
+        "carry_commit": null,
+        "upstream_commit": null
+      },
+      "guardrail_lane": "codex.core-attestation-targeted",
+      "tests": [
+        "consolidation_artifacts_ready_rejects_*",
+        "global_phase2_attestation_requirement_is_root_scoped"
+      ],
+      "owner": "downstream",
+      "notes": "Keeps the attestation gate coupled to the downstream state runtime."
+    },
+    {
+      "id": "cli-git-metadata-and-rebuild-triggers",
+      "title": "CLI git metadata and rebuild triggers",
+      "status": "live",
+      "category": "build-validation",
+      "surface": [
+        "git metadata",
+        "build script rebuild triggers"
+      ],
+      "files": [
+        "codex-rs/cli/build.rs",
+        "codex-rs/cli/src/main.rs"
+      ],
+      "behavior": "CLI rebuilds when git metadata changes so downstream versions stay accurate.",
+      "upstream_equivalent": false,
+      "introduced_in": {
+        "carry_commit": null,
+        "upstream_commit": null
+      },
+      "guardrail_lane": "core-compile-smoke",
+      "tests": [
+        "build script rebuild smoke"
+      ],
+      "owner": "downstream",
+      "notes": "Keeps version stamping tied to live git state."
+    },
+    {
+      "id": "subagent-orchestration-override-preservation",
+      "title": "Sub-agent orchestration override preservation",
+      "status": "live",
+      "category": "subagents",
+      "surface": [
+        "spawn overrides",
+        "agent inventory",
+        "blocking waits"
+      ],
+      "files": [
+        "codex-rs/core/src/agent/builtins/awaiter.toml",
+        "codex-rs/core/src/agent/role.rs",
+        "codex-rs/core/src/tools/handlers/multi_agents/list_agents.rs",
+        "codex-rs/core/src/tools/handlers/multi_agents/spawn.rs",
+        "codex-rs/core/src/tools/handlers/multi_agents/wait.rs",
+        "codex-rs/core/src/tools/handlers/multi_agents_tests.rs",
+        "codex-rs/core/src/tools/spec.rs"
+      ],
+      "behavior": "Downstream preserves explicit spawn overrides and richer agent inventory plus wait semantics.",
+      "upstream_equivalent": false,
+      "introduced_in": {
+        "carry_commit": null,
+        "upstream_commit": null
+      },
+      "guardrail_lane": "codex.core-subagent-surface-targeted",
+      "tests": [
+        "spawn_agent_preserves_exact_requested_model_slug_through_role_layering",
+        "multi_agent_v2_list_agents_returns_completed_status_and_last_task_message",
+        "multi_agent_v2_wait_agent_honors_return_when_all"
+      ],
+      "owner": "downstream",
+      "notes": "Keeps the spawned agent contract explicit and reviewable."
+    },
+    {
+      "id": "dead-cwd-absolute-path-handling",
+      "title": "Dead-cwd absolute path handling",
+      "status": "live",
+      "category": "core-protocol",
+      "surface": [
+        "absolute paths after cwd disappears"
+      ],
+      "files": [
+        "codex-rs/utils/absolute-path/src/lib.rs",
+        "codex-rs/utils/absolute-path/tests/dead_cwd.rs"
+      ],
+      "behavior": "Absolute path resolution no longer depends on the process cwd when it is already absolute.",
+      "upstream_equivalent": false,
+      "introduced_in": {
+        "carry_commit": null,
+        "upstream_commit": null
+      },
+      "guardrail_lane": "core-runtime-surface-smoke",
+      "tests": [
+        "dead_cwd absolute-path regression"
+      ],
+      "owner": "downstream",
+      "notes": "Preserves path resolution after the cwd goes away."
+    },
+    {
+      "id": "blocking-unified-exec-waits",
+      "title": "Blocking unified-exec waits and compaction-aware turn completion",
+      "status": "live",
+      "category": "core-protocol",
+      "surface": [
+        "exec_command blocking waits",
+        "write_stdin blocking waits",
+        "wait_agent blocking joins",
+        "app-server command execution completion ordering",
+        "MCP task completion ordering",
+        "turn completion metadata"
+      ],
+      "files": [
+        "codex-rs/core/src/tools/handlers/unified_exec.rs",
+        "codex-rs/protocol/src/protocol.rs",
+        "codex-rs/core/src/codex.rs"
+      ],
+      "behavior": "Unified exec tools support blocking wait semantics and downstream turn-completion metadata.",
+      "upstream_equivalent": false,
+      "introduced_in": {
+        "carry_commit": null,
+        "upstream_commit": null
+      },
+      "guardrail_lane": "codex.blocking-waits-targeted",
+      "tests": [
+        "exec_command_reports_chunk_and_exit_metadata",
+        "write_stdin_returns_exit_metadata_and_clears_session",
+        "multi_agent_v2_wait_agent_honors_return_when_all",
+        "command_execution_completion_precedes_turn_completion_and_preserves_process_id",
+        "shell_command_approval_emits_task_complete_before_tool_response",
+        "write_stdin_tool_matches_expected_spec"
+      ],
+      "owner": "downstream",
+      "notes": "Lets long-running shell work and helper-backed coordination block on real terminal state instead of transcript polling."
+    },
+    {
+      "id": "review-and-history-accounting-alignment",
+      "title": "Review and history accounting alignment",
+      "status": "live",
+      "category": "core-protocol",
+      "surface": [
+        "review accounting",
+        "history token summaries"
+      ],
+      "files": [
+        "codex-rs/protocol/src/protocol.rs",
+        "codex-rs/core/src/codex.rs"
+      ],
+      "behavior": "Review and history token summaries stay aligned with live runtime state instead of stale defaults.",
+      "upstream_equivalent": false,
+      "introduced_in": {
+        "carry_commit": null,
+        "upstream_commit": null
+      },
+      "guardrail_lane": "core-ledger-smoke",
+      "tests": [
+        "review history accounting snapshot"
+      ],
+      "owner": "downstream",
+      "notes": "Keeps review-mode accounting deterministic."
+    },
+    {
+      "id": "mcp-server-safety-policy-extensions",
+      "title": "MCP server safety policy extensions",
+      "status": "live",
+      "category": "config",
+      "surface": [
+        "server safety controls",
+        "oauth resource support"
+      ],
+      "files": [
+        "codex-rs/core/src/config/types.rs",
+        "codex-rs/core/src/config/edit.rs"
+      ],
+      "behavior": "Downstream retains explicit safety controls while supporting upstream OAuth resource configuration.",
+      "upstream_equivalent": false,
+      "introduced_in": {
+        "carry_commit": null,
+        "upstream_commit": null
+      },
+      "guardrail_lane": "codex.mcp-safety-targeted",
+      "tests": [
+        "blocking_replace_mcp_servers_round_trips",
+        "blocking_replace_mcp_servers_serializes_tool_approval_overrides",
+        "write_value_supports_custom_mcp_server_default_tool_approval_mode"
+      ],
+      "owner": "downstream",
+      "notes": "Preserves the downstream mutability guardrails."
+    },
+    {
+      "id": "mcp-oauth-fallback-file-hardening",
+      "title": "MCP OAuth fallback file hardening",
+      "status": "live",
+      "category": "mcp",
+      "surface": [
+        "oauth fallback credentials file",
+        "best-effort fallback recovery"
+      ],
+      "files": [
+        "codex-rs/rmcp-client/src/oauth.rs"
+      ],
+      "behavior": "Downstream treats MCP OAuth fallback credentials files as best-effort state: empty or corrupt files no longer abort auth loading, and writes replace the fallback file atomically.",
+      "upstream_equivalent": false,
+      "introduced_in": {
+        "carry_commit": null,
+        "upstream_commit": null
+      },
+      "guardrail_lane": "codex.mcp-safety-targeted",
+      "tests": [
+        "load_oauth_tokens_ignores_empty_fallback_file",
+        "load_oauth_tokens_auto_ignores_corrupt_fallback_when_keyring_errors"
+      ],
+      "owner": "downstream",
+      "notes": "Keeps broken or partially-written fallback credential files from turning into hard auth failures during MCP login and reconnect flows."
+    },
+    {
+      "id": "startup-plugin-sync-bounded-wait",
+      "title": "Startup plugin sync bounded wait and completion re-arm",
+      "status": "live",
+      "category": "build-validation",
+      "surface": [
+        "startup sync wait",
+        "completion re-arm"
+      ],
+      "files": [
+        "codex-rs/core/src/plugins/startup_sync.rs",
+        "codex-rs/core/src/plugins/startup_sync_tests.rs"
+      ],
+      "behavior": "Startup plugin sync waits only as long as the race window requires and re-arms after curated-repo completion.",
+      "upstream_equivalent": false,
+      "introduced_in": {
+        "carry_commit": null,
+        "upstream_commit": null
+      },
+      "guardrail_lane": "codex.core-startup-sync-targeted",
+      "tests": [
+        "startup_remote_plugin_sync_waits_for_late_prerequisites",
+        "startup_remote_plugin_sync_rearms_after_curated_repo_completion_signal_uses_latest_config_and_auth_snapshot"
+      ],
+      "owner": "downstream",
+      "notes": "Keeps startup sync single-flight and bounded."
+    },
+    {
+      "id": "tui-session-state-and-usage-surfaces",
+      "title": "TUI session-state, queue, interrupt, and usage surfaces",
+      "status": "live",
+      "category": "tui",
+      "surface": [
+        "thread session continuity",
+        "queued turn handling",
+        "usage summaries"
+      ],
+      "files": [
+        "codex-rs/tui/src/app.rs",
+        "codex-rs/tui/src/multi_agents.rs",
+        "codex-rs/tui/src/bottom_pane/chat_composer.rs",
+        "codex-rs/tui/src/bottom_pane/status_line_setup.rs",
+        "codex-rs/tui/src/chatwidget.rs",
+        "codex-rs/tui/src/chatwidget/status_surfaces.rs",
+        "codex-rs/tui/src/status/card.rs",
+        "codex-rs/tui/src/status/rate_limits.rs"
+      ],
+      "behavior": "Per-thread session state and queued interaction semantics stay stable across the TUI surfaces.",
+      "upstream_equivalent": false,
+      "introduced_in": {
+        "carry_commit": null,
+        "upstream_commit": null
+      },
+      "guardrail_lane": "codex.tui-agent-usage-totals-targeted",
+      "tests": [
+        "sync_session_tree_token_usage_updates_combined_status_line_items",
+        "status_snapshot_distinguishes_session_and_thread_token_usage"
+      ],
+      "owner": "downstream",
+      "notes": "Keeps queued interaction, usage totals, and thread policy aligned."
+    },
+    {
+      "id": "custom-prompt-discovery-and-review-flow",
+      "title": "Custom prompt discovery and review prompt flow",
+      "status": "live",
+      "category": "tui",
+      "surface": [
+        "custom prompts",
+        "review prompt flow"
+      ],
+      "files": [
+        "codex-rs/core/src/custom_prompts.rs",
+        "codex-rs/core/src/custom_prompts_tests.rs",
+        "codex-rs/core/src/review_prompts.rs",
+        "codex-rs/protocol/src/custom_prompts.rs",
+        "codex-rs/core/src/lib.rs",
+        "codex-rs/protocol/src/lib.rs",
+        "codex-rs/tui/src/app.rs",
+        "codex-rs/tui/src/app_event.rs",
+        "codex-rs/tui/src/bottom_pane/custom_prompt_view.rs"
+      ],
+      "behavior": "The downstream fork keeps the restored file-backed custom prompt catalogue in core/protocol and preserves the ad hoc custom-review prompt flow across core and TUI surfaces.",
+      "upstream_equivalent": false,
+      "introduced_in": {
+        "carry_commit": null,
+        "upstream_commit": null
+      },
+      "guardrail_lane": "codex.custom-prompts-targeted",
+      "tests": [
+        "custom_prompts::tests::*",
+        "review_prompts::tests::*",
+        "review_popup_custom_prompt_action_sends_event",
+        "custom_prompt_submit_sends_review_op",
+        "custom_prompt_enter_empty_does_not_send",
+        "review_custom_prompt_escape_navigates_back_then_dismisses"
+      ],
+      "owner": "downstream",
+      "notes": "The carried file-backed prompt catalogue remains documented in core/protocol, while the targeted lane also guards the live ad hoc custom-review prompt path."
+    },
+    {
+      "id": "code-mode-declaration-formatting",
+      "title": "Code-mode declaration formatting",
+      "status": "upstream-equivalent",
+      "category": "core-protocol",
+      "surface": [
+        "code-mode declaration",
+        "tool metadata formatting"
+      ],
+      "files": [
+        "codex-rs/core/src/tools/code_mode_description.rs"
+      ],
+      "behavior": "Code-mode declarations keep their downstream formatting and metadata shape.",
+      "upstream_equivalent": false,
+      "introduced_in": {
+        "carry_commit": null,
+        "upstream_commit": null
+      },
+      "guardrail_lane": "core-compile-smoke",
+      "tests": [
+        "code mode declaration formatting"
+      ],
+      "owner": "downstream",
+      "notes": "Keeps code-mode declarations namespaced and legible."
+    },
+    {
+      "id": "agent-orchestration-skills",
+      "title": "Agent orchestration skills and sidecar templates",
+      "status": "live",
+      "category": "mcp",
+      "surface_type": "agent-facing",
+      "surface": [
+        "babysit-pr babysitter skill",
+        "codex-orchestrator skill template",
+        "sidecar-review-loop and subagent-session-tail helpers"
+      ],
+      "files": [
+        ".codex/skills/babysit-pr/agents/openai.yaml",
+        ".codex/skills/babysit-pr/scripts/gh_pr_watch.py",
+        ".codex/skills/babysit-gh-workflow-run/",
+        ".codex/skills/sedna/codex-orchestrator/agents/openai.yaml",
+        ".codex/skills/sedna/sidecar-review-loop/agents/openai.yaml",
+        ".codex/skills/sedna/subagent-session-tail/agents/openai.yaml",
+        ".codex/skills/sedna/subagent-session-tail/scripts/inspect_subagent_tail.py",
+        ".codex/skills/"
+      ],
+      "behavior": "Downstream publishes tailored skill templates and helpers that orchestrate babysitting, sidecar review loops, and subagent session tails.",
+      "upstream_equivalent": false,
+      "introduced_in": {
+        "carry_commit": null,
+        "upstream_commit": null
+      },
+      "guardrail_lane": "codex.agent-workflow-sanity",
+      "tests": [
+        "py_compile of gh_pr_watch.py, gh_workflow_run_watch.py, gh_dispatch_and_watch.py, and inspect_subagent_tail.py",
+        "test_gh_workflow_run_watch.py",
+        "test_gh_dispatch_and_watch.py",
+        "inspect_subagent_tail.py --help"
+      ],
+      "owner": "downstream",
+      "notes": "Keeps the downstream agent orchestration surface explicit and discoverable."
+    },
+    {
+      "id": "ci-workflow-automation",
+      "title": "CI/workflow automation and validation lanes",
+      "status": "live",
+      "category": "build-validation",
+      "surface_type": "operator-facing",
+      "surface": [
+        "validation lanes",
+        "Sedna sync and heavy test workflows",
+        "GitHub scripts and lane metadata"
+      ],
+      "files": [
+        ".github/actions/",
+        ".github/scripts/",
+        ".github/validation-lanes.json",
+        ".github/workflows/",
+        "scripts/dispatch-frontier-max-wave.sh",
+        "scripts/dispatch-validation-lab-snapshot.sh",
+        "scripts/start-codex-exec.sh"
+      ],
+      "behavior": "Downstream runs bespoke validation lanes, Sedna sync/heavy workflows, and tooling scripts so the CI surface can keep pace with the fork.",
+      "upstream_equivalent": false,
+      "introduced_in": {
+        "carry_commit": null,
+        "upstream_commit": null
+      },
+      "guardrail_lane": "codex.workflow-ci-sanity",
+      "tests": [
+        "validation-lab and Sedna job orchestration smoke",
+        "workflow sync job exports expected metadata"
+      ],
+      "owner": "downstream",
+      "notes": "Documents the downstream CI expansion that exercises extra lanes and housekeeping scripts. The sedna-sync-upstream job uses SEDNA_SYNC_UPSTREAM_PUSH_TOKEN (a PAT or machine-account token granted both contents:write and workflow:write) because the mirror updates workflow files."
+    },
+    {
+      "id": "codex-app-server-suite",
+      "title": "App-server/protocol runtime maintenance",
+      "status": "live",
+      "category": "core-protocol",
+      "surface_type": "agent-facing",
+      "surface": [
+        "app-server protocol surfaces",
+        "message processor and transport changes"
+      ],
+      "files": [
+        "codex-rs/app-server/",
+        "codex-rs/app-server-protocol/",
+        "codex-rs/app-server-client/"
+      ],
+      "behavior": "Downstream now tracks upstream on the core app-server contract and replay surfaces, while preserving a narrow app-server-specific carry around protocol event history, rollout cwd portability, and thread list/read/resume summary surfaces. Neighboring carries such as blocking waits, MCP safety, and startup/plugin-sync follow-up are tracked separately.",
+      "upstream_equivalent": false,
+      "introduced_in": {
+        "carry_commit": null,
+        "upstream_commit": null
+      },
+      "guardrail_lane": "codex.app-server-thread-cwd-targeted",
+      "tests": [
+        "preserves_compaction_only_turn",
+        "get_conversation_summary_by_*",
+        "thread_list_*",
+        "thread_read_returns_summary_without_turns",
+        "thread_resume_returns_rollout_history"
+      ],
+      "owner": "downstream",
+      "notes": "The old remote-control omission story was stale. The current app-server divergence is narrower: upstream-faithful protocol/runtime parity plus intentional downstream carry, with B.2 extracting policy/lifecycle seams into codex-rs/app-server/src/extensions.rs. Follow-up route selection for app-server paths now bundles the protocol, thread-surface, and blocking-waits lanes instead of a stale single-lane placeholder."
+    },
+    {
+      "id": "codex-tui-session-surfaces",
+      "title": "TUI session-state, queue, and usage surfaces",
+      "status": "live",
+      "category": "tui",
+      "surface_type": "agent-facing",
+      "surface": [
+        "multi-agent TUI state",
+        "usage & status line surfaces"
+      ],
+      "files": [
+        "codex-rs/tui/src/",
+        "codex-rs/tui/tests/",
+        "codex-rs/tui/src/snapshots/"
+      ],
+      "behavior": "Downstream\u2019s TUI layers enforce the queue, usage, and session-state surfaces that are unique to this fork.",
+      "upstream_equivalent": false,
+      "introduced_in": {
+        "carry_commit": null,
+        "upstream_commit": null
+      },
+      "guardrail_lane": "codex.tui-agent-usage-totals-targeted",
+      "tests": [
+        "TUI snapshot suites",
+        "multi-agent interaction integration tests"
+      ],
+      "owner": "downstream",
+      "notes": "Keeps the fork\u2019s interactive surfaces deterministic."
+    },
+    {
+      "id": "codex-core-and-ops-extensions",
+      "title": "Core/CLI/analytics and MCP tooling extensions",
+      "status": "live",
+      "category": "mcp",
+      "surface_type": "both",
+      "surface": [
+        "analytics, CLI, cloud, code-mode, config, and MCP extensions"
+      ],
+      "files": [
+        "codex-rs/analytics/",
+        "codex-rs/backend-client/",
+        "codex-rs/chatgpt/",
+        "codex-rs/cli/",
+        "codex-rs/cloud-requirements/",
+        "codex-rs/cloud-tasks/",
+        "codex-rs/code-mode/",
+        "codex-rs/config/",
+        "codex-rs/core/",
+        "codex-rs/codex-api/",
+        "codex-rs/codex-mcp/",
+        "codex-rs/utils/",
+        "codex-cli/",
+        "codex-rs/exec/",
+        "codex-rs/exec-server/",
+        "codex-rs/features/",
+        "codex-rs/feedback/",
+        "codex-rs/linux-sandbox/",
+        "codex-rs/lmstudio/",
+        "codex-rs/login/",
+        "codex-rs/mcp-server/",
+        "codex-rs/model-provider-info/",
+        "codex-rs/models-manager/",
+        "codex-rs/ollama/",
+        "codex-rs/otel/",
+        "codex-rs/process-hardening/",
+        "codex-rs/protocol/",
+        "codex-rs/response-debug-context/",
+        "codex-rs/responses-api-proxy/",
+        "codex-rs/rmcp-client/",
+        "codex-rs/rollout/",
+        "codex-rs/rust-toolchain.toml",
+        "codex-rs/sandboxing/",
+        "codex-rs/state/",
+        "codex-rs/terminal-detection/",
+        "codex-rs/tools/",
+        "codex-rs/windows-sandbox-rs/",
+        "codex-rs/apply-patch/",
+        "codex-rs/connectors/",
+        "codex-rs/core-plugins/",
+        "codex-rs/debug-client/",
+        "codex-rs/git-utils/",
+        "codex-rs/hooks/",
+        "codex-rs/install-context/",
+        "codex-rs/model-provider/",
+        "codex-rs/plugin/",
+        "codex-rs/thread-store/",
+        "codex-rs/tui/Cargo.toml"
+      ],
+      "behavior": "Telemetry, CLI, config, and MCP extensions keep downstream tooling aligned with fork-specific policies and usage telemetry.",
+      "upstream_equivalent": false,
+      "introduced_in": {
+        "carry_commit": null,
+        "upstream_commit": null
+      },
+      "guardrail_lane": "core-runtime-surface-smoke",
+      "tests": [
+        "stdio_server_round_trip",
+        "code_mode_exports_all_tools_metadata_for_namespaced_mcp_tools",
+        "plugin_mcp_tools_are_listed",
+        "mcp_tool_call_output_exceeds_limit_truncated_for_model",
+        "usage_limit_error_emits_rate_limit_event",
+        "responses_websocket_usage_limit_error_emits_rate_limit_event"
+      ],
+      "owner": "downstream",
+      "notes": "Covers the wide cross-section of runtime tooling that stays downstream-only."
+    },
+    {
+      "id": "shell-tool-mcp-project",
+      "title": "Shell tool MCP helper project",
+      "status": "live",
+      "category": "mcp",
+      "surface_type": "operator-facing",
+      "surface": [
+        "shell selection helpers",
+        "platform detection shims"
+      ],
+      "files": [
+        "shell-tool-mcp/package.json",
+        "shell-tool-mcp/src/",
+        "shell-tool-mcp/tests/",
+        "shell-tool-mcp/patches/",
+        "shell-tool-mcp/tsconfig.json",
+        "shell-tool-mcp/tsup.config.ts",
+        "shell-tool-mcp/.gitignore",
+        "shell-tool-mcp/jest.config.cjs"
+      ],
+      "behavior": "Downstream publishes a shell helper package that standardizes shell selection, platform detection, and exec wrappers for MCP tooling.",
+      "upstream_equivalent": false,
+      "introduced_in": {
+        "carry_commit": null,
+        "upstream_commit": null
+      },
+      "guardrail_lane": "codex.shell-tool-mcp-ci",
+      "tests": [
+        "pnpm --filter @openai/codex-shell-tool-mcp run format",
+        "pnpm --filter @openai/codex-shell-tool-mcp test",
+        "pnpm --filter @openai/codex-shell-tool-mcp run build"
+      ],
+      "owner": "downstream",
+      "notes": "Documents the additional npm project that feeds MCP workflows. Upstream has removed shell-tool-mcp, so treat this divergence as under audit until we decide whether the helper is still needed."
+    },
+    {
+      "id": "downstream-documents-and-guides",
+      "title": "Downstream documents and guides",
+      "status": "upstream-equivalent",
+      "category": "docs-only",
+      "surface_type": "operator-facing",
+      "surface": [
+        "downstream policy narrative",
+        "operator guidance documents",
+        "divergence tracking guides"
+      ],
+      "files": [
+        "docs/"
+      ],
+      "behavior": "Downstream maintains documentation, policies, and divergence guides that sit beside the upstream code.",
+      "upstream_equivalent": false,
+      "introduced_in": {
+        "carry_commit": null,
+        "upstream_commit": null
+      },
+      "guardrail_lane": "codex.downstream-docs-check",
+      "tests": [
+        "documentation audit smoke"
+      ],
+      "owner": "downstream",
+      "notes": "Covers all downstream docs (carry policies, how-tos, matrices) so they are treated as intentional content."
+    },
+    {
+      "id": "downstream-build-config-and-patches",
+      "title": "Build/config artifacts and approved patches",
+      "status": "live",
+      "category": "branch-policy",
+      "surface_type": "operator-facing",
+      "surface": [
+        "Bazel/npm configs",
+        "downstream install scripts and patches"
+      ],
+      "files": [
+        ".bazelrc",
+        "MODULE.bazel",
+        "MODULE.bazel.lock",
+        ".gitignore",
+        "pnpm-lock.yaml",
+        "pnpm-workspace.yaml",
+        "scripts/install/install.sh",
+        "scripts/install/install.ps1",
+        "scripts/stage_npm_packages.py",
+        "scripts/list-bazel-clippy-targets.sh",
+        "patches/",
+        "sdk/typescript/src/events.ts",
+        "sdk/typescript/tests/exec.test.ts",
+        "announcement_tip.toml",
+        "codex-rs/.cargo/",
+        "codex-rs/.config/",
+        "codex-rs/Cargo.toml",
+        "codex-rs/Cargo.lock",
+        "codex-rs/deny.toml",
+        "tools/argument-comment-lint/Cargo.lock",
+        "codex-rs/skills/src/assets/samples/skill-creator/scripts/init_skill.py"
+      ],
+      "behavior": "Downstream keeps patched build, packaging, and install scripts along with configuration files tailored to the fork\u2019s CI and release policy.",
+      "upstream_equivalent": false,
+      "introduced_in": {
+        "carry_commit": null,
+        "upstream_commit": null
+      },
+      "guardrail_lane": "codex.build-policy-sanity",
+      "tests": [
+        "bash -n scripts/install/install.sh",
+        "verify_bazel_clippy_lints.py",
+        "verify_cargo_workspace_manifests.py",
+        "py_compile of stage_npm_packages.py and policy verifier scripts"
+      ],
+      "owner": "downstream",
+      "notes": "Captures downstream platform/patch artifacts that the audit should treat as deliberate."
+    }
+  ]
+}

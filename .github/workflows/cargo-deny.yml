@@ -2,11 +2,18 @@ name: cargo-deny
 
 on:
   pull_request:
+    paths-ignore:
+      - 'docs/**'
+      - '**/*.md'
   merge_group:
   push:
     branches:
       - main
       - upstream-main
+
+concurrency:
+  group: concurrency-group::${{ github.workflow }}::${{ github.event.pull_request.number > 0 && format('pr-{0}', github.event.pull_request.number) || github.ref_name }}${{ (github.ref_name == 'main' || github.ref_name == 'upstream-main') && format('::{0}', github.run_id) || '' }}
+  cancel-in-progress: ${{ github.ref_name != 'main' && github.ref_name != 'upstream-main' }}
 
 jobs:
   cargo-deny:
@@ -16,13 +23,13 @@ jobs:
         working-directory: ./codex-rs
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7 # stable
 
       - name: Run cargo-deny
-        uses: EmbarkStudios/cargo-deny-action@v2
+        uses: EmbarkStudios/cargo-deny-action@82eb9f621fbc699dd0918f3ea06864c14cc84246 # v2
         with:
           rust-version: stable
           manifest-path: ./codex-rs/Cargo.toml

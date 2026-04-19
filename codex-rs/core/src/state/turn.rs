@@ -1,5 +1,6 @@
 //! Turn-scoped state and active turn metadata scaffolding.
 
+use codex_sandboxing::policy_transforms::merge_permission_profiles;
 use indexmap::IndexMap;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -16,17 +17,37 @@ use codex_rmcp_client::ElicitationResponse;
 use rmcp::model::RequestId;
 use tokio::sync::oneshot;
 
-use crate::codex::TurnContext;
-use crate::protocol::ReviewDecision;
-use crate::protocol::TokenUsage;
-use crate::sandboxing::merge_permission_profiles;
-use crate::tasks::SessionTask;
+use crate::session::turn_context::TurnContext;
+use crate::tasks::AnySessionTask;
 use codex_protocol::models::PermissionProfile;
+use codex_protocol::protocol::ReviewDecision;
+use codex_protocol::protocol::TokenUsage;
 
 /// Metadata about the currently running turn.
 pub(crate) struct ActiveTurn {
     pub(crate) tasks: IndexMap<String, RunningTask>,
     pub(crate) turn_state: Arc<Mutex<TurnState>>,
+}
+
+/// Whether mailbox deliveries should still be folded into the current turn.
+///
+/// State machine:
+/// - A turn starts in `CurrentTurn`, so queued child mail can join the next
+///   model request for that turn.
+/// - After user-visible terminal output is recorded, we switch to `NextTurn`
+///   to leave late child mail queued instead of extending an already shown
+///   answer.
+/// - If the same task later gets explicit same-turn work again (a steered user
+///   prompt or a tool call after an untagged preamble), we reopen `CurrentTurn`
+///   so that pending child mail is drained into that follow-up request.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) enum MailboxDeliveryPhase {
+    /// Incoming mailbox messages can still be consumed by the current turn.
+    #[default]
+    CurrentTurn,
+    /// The current turn already emitted visible final answer text; mailbox
+    /// messages should remain queued for a later turn.
+    NextTurn,
 }
 
 impl Default for ActiveTurn {
@@ -48,7 +69,7 @@ pub(crate) enum TaskKind {
 pub(crate) struct RunningTask {
     pub(crate) done: Arc<Notify>,
     pub(crate) kind: TaskKind,
-    pub(crate) task: Arc<dyn SessionTask>,
+    pub(crate) task: Arc<dyn AnySessionTask>,
     pub(crate) cancellation_token: CancellationToken,
     pub(crate) handle: Arc<AbortOnDropHandle<()>>,
     pub(crate) turn_context: Arc<TurnContext>,
@@ -81,6 +102,7 @@ pub(crate) struct TurnState {
     pending_elicitations: HashMap<(String, RequestId), oneshot::Sender<ElicitationResponse>>,
     pending_dynamic_tools: HashMap<String, oneshot::Sender<DynamicToolResponse>>,
     pending_input: Vec<ResponseInputItem>,
+    mailbox_delivery_phase: MailboxDeliveryPhase,
     granted_permissions: Option<PermissionProfile>,
     compaction_events_in_turn: u32,
     pub(crate) tool_calls: u64,
@@ -201,6 +223,18 @@ impl TurnState {
 
     pub(crate) fn has_pending_input(&self) -> bool {
         !self.pending_input.is_empty()
+    }
+
+    pub(crate) fn accept_mailbox_delivery_for_current_turn(&mut self) {
+        self.set_mailbox_delivery_phase(MailboxDeliveryPhase::CurrentTurn);
+    }
+
+    pub(crate) fn accepts_mailbox_delivery_for_current_turn(&self) -> bool {
+        self.mailbox_delivery_phase == MailboxDeliveryPhase::CurrentTurn
+    }
+
+    pub(crate) fn set_mailbox_delivery_phase(&mut self, phase: MailboxDeliveryPhase) {
+        self.mailbox_delivery_phase = phase;
     }
 
     pub(crate) fn record_granted_permissions(&mut self, permissions: PermissionProfile) {

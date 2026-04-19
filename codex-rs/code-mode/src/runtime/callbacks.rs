@@ -3,6 +3,7 @@ use crate::response::FunctionCallOutputContentItem;
 use super::EXIT_SENTINEL;
 use super::RuntimeEvent;
 use super::RuntimeState;
+use super::timers;
 use super::value::json_to_v8;
 use super::value::normalize_output_image;
 use super::value::serialize_output_text;
@@ -14,7 +15,13 @@ pub(super) fn tool_callback(
     args: v8::FunctionCallbackArguments,
     mut retval: v8::ReturnValue<v8::Value>,
 ) {
-    let tool_name = args.data().to_rust_string_lossy(scope);
+    let tool_index = match args.data().to_rust_string_lossy(scope).parse::<usize>() {
+        Ok(tool_index) => tool_index,
+        Err(_) => {
+            throw_type_error(scope, "invalid tool callback data");
+            return;
+        }
+    };
     let input = if args.length() == 0 {
         Ok(None)
     } else {
@@ -35,6 +42,22 @@ pub(super) fn tool_callback(
     let promise = resolver.get_promise(scope);
 
     let resolver = v8::Global::new(scope, resolver);
+    let tool_name = {
+        let Some(state) = scope.get_slot::<RuntimeState>() else {
+            throw_type_error(scope, "runtime state unavailable");
+            return;
+        };
+        let Some(tool_name) = state
+            .enabled_tools
+            .get(tool_index)
+            .map(|tool| tool.call_name.clone())
+        else {
+            throw_type_error(scope, "tool callback data is out of range");
+            return;
+        };
+        tool_name
+    };
+
     let Some(state) = scope.get_slot_mut::<RuntimeState>() else {
         throw_type_error(scope, "runtime state unavailable");
         return;
@@ -86,7 +109,20 @@ pub(super) fn image_callback(
     } else {
         args.get(0)
     };
-    let image_item = match normalize_output_image(scope, value) {
+    let detail_override = if args.length() < 2 {
+        None
+    } else {
+        let detail = args.get(1);
+        if detail.is_string() {
+            Some(detail.to_rust_string_lossy(scope))
+        } else if detail.is_null() || detail.is_undefined() {
+            None
+        } else {
+            throw_type_error(scope, "image detail must be a string when provided");
+            return;
+        }
+    };
+    let image_item = match normalize_output_image(scope, value, detail_override) {
         Ok(image_item) => image_item,
         Err(()) => return,
     };
@@ -182,6 +218,35 @@ pub(super) fn notify_callback(
             text,
         });
     }
+    retval.set(v8::undefined(scope).into());
+}
+
+pub(super) fn set_timeout_callback(
+    scope: &mut v8::PinScope<'_, '_>,
+    args: v8::FunctionCallbackArguments,
+    mut retval: v8::ReturnValue<v8::Value>,
+) {
+    let timeout_id = match timers::schedule_timeout(scope, args) {
+        Ok(timeout_id) => timeout_id,
+        Err(error_text) => {
+            throw_type_error(scope, &error_text);
+            return;
+        }
+    };
+
+    retval.set(v8::Number::new(scope, timeout_id as f64).into());
+}
+
+pub(super) fn clear_timeout_callback(
+    scope: &mut v8::PinScope<'_, '_>,
+    args: v8::FunctionCallbackArguments,
+    mut retval: v8::ReturnValue<v8::Value>,
+) {
+    if let Err(error_text) = timers::clear_timeout(scope, args) {
+        throw_type_error(scope, &error_text);
+        return;
+    }
+
     retval.set(v8::undefined(scope).into());
 }
 

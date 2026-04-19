@@ -3,13 +3,16 @@
 This note records the next-step maintenance model for downstream divergence
 tracking.
 
-It is a design note, not an implemented generator contract yet.
+Phase 1 is now implemented as the CI-backed `scripts/downstream-divergence-audit.py`
+runner plus the checked-in `docs/divergences/index.yaml` registry. The later
+generation phases below remain the forward path for ledger and regression
+projection.
 
 ## Why This Exists
 
 The current downstream docs are doing three jobs at once:
 
-- stable fork policy and operator guidance
+- stable fork policy and workflow guidance
 - live divergence inventory
 - historical upstream-equivalent carry history
 
@@ -32,13 +35,13 @@ Keep the existing docs, but narrow their responsibilities:
 - `docs/downstream-regression-matrix.md`
   - generated guardrail view of divergence-to-test-lane mapping
 
-Add one future canonical registry:
+Use the canonical registry:
 
 - `docs/divergences/index.yaml`
 
 ## What Should Be Generated
 
-- `carry/main` vs `upstream/main` counts and current SHAs
+- `main` vs `upstream/main` counts and current SHAs
 - current live divergence list
 - changed-file inventory per divergence
 - upstream-equivalent carry matches
@@ -48,7 +51,7 @@ Add one future canonical registry:
 ## What Should Stay Manual
 
 - branch policy
-- operator guidance
+- workflow guidance
 - narrative rationale for why a divergence exists
 - taxonomy choices
 - the decision that a change is a real divergence rather than derivative churn
@@ -74,13 +77,16 @@ introduced_in:
 files:
   - codex-rs/core/src/tools/spec.rs
   - codex-rs/core/src/tools/handlers/unified_exec.rs
-guardrail_lane: core-carry-smoke
+guardrail_lane: core-carry-core-smoke
 tests:
-  - exec_command_wait_until_terminal_returns_exit_metadata
-  - write_stdin_tool_exposes_blocking_wait_parameters
+  - exec_command_reports_chunk_and_exit_metadata
+  - write_stdin_returns_exit_metadata_and_clears_session
+  - multi_agent_v2_wait_agent_honors_return_when_all
+  - command_execution_completion_precedes_turn_completion_and_preserves_process_id
+  - shell_command_approval_emits_task_complete_before_tool_response
 owner: downstream
 notes: |
-  Tool-layer wait semantics, not transcript polling.
+  Tool-layer wait semantics and blocking completion ordering, not transcript polling.
 ```
 
 Keep the schema small:
@@ -91,6 +97,7 @@ Keep the schema small:
 - `category`
 - `behavior`
 - `surface`
+- `surface_type`
 - `files`
 - `introduced_in`
 - `upstream_equivalent`
@@ -98,6 +105,10 @@ Keep the schema small:
 - `tests`
 - `owner`
 - `notes`
+
+Paths can point at directories (terminate with `/` to capture every child) or use glob-friendly tokens (`*`, `?`, `[]`). The audit matches these specs against the live diff so you can cover a directory such as `.github/workflows/` without listing each workflow individually.
+
+The optional `surface_type` string (for example `agent-facing`, `operator-facing`, or `both`) signals how a divergence presents itself. The downstream audit renders that value in the registry reconciliation table and the code-path surface column to show whether a change touches agent-facing or operator-facing surfaces.
 
 ## Suggested Taxonomy
 
@@ -120,11 +131,11 @@ If a divergence does not fit one of those, the taxonomy needs tightening.
 
 The registry should be reconciled against live git state:
 
-- `git rev-list --left-right --count upstream/main...carry/main`
-- `git diff upstream/main...carry/main --name-only`
-- `git log --left-right --cherry-pick --oneline upstream/main...carry/main`
+- `git rev-list --left-right --count upstream/main...main`
+- `git diff upstream/main...main --name-only`
+- `git log --left-right --cherry-pick --oneline upstream/main...main`
 
-Where useful, generator code can also read local build-helper preset metadata,
+Where useful, generator code can also read local helper preset metadata,
 but the tracked docs should not depend on a committed preset file being present
 in the repository.
 
@@ -137,23 +148,29 @@ in the repository.
 5. Keep historical upstream-equivalent items in the registry with
    `status: upstream-equivalent` instead of deleting them.
 
+## Workflow write permission secret
+
+The `sedna-sync-upstream` job fast-forwards `origin/upstream-main`, which contains workflow definitions and scripts. GitHub's `GITHUB_TOKEN` lacks the `workflow: write` scope needed to modify workflow files, so the job depends on the `SEDNA_SYNC_UPSTREAM_PUSH_TOKEN` secret. This should hold a PAT or machine-account token with `repo` write access plus `workflow: write`, stored only in this repository's secrets and rotated per policy. The secret is only used by the sync job when pushing the mirrored ref.
+
 ## Phased Adoption
 
-Phase 1:
+Phase 1 (implemented):
 
 - keep the current manual docs current
 - use `docs/downstream-tool-surface-matrix.md` for high-signal field-level
   comparison
+- use `scripts/downstream-divergence-audit.py` and `docs/divergences/index.yaml`
+  for the authoritative audit path
 
-Phase 2:
+Phase 2 (implemented):
 
-- introduce `docs/divergences/index.yaml`
-- make it the canonical divergence registry
+- `docs/divergences/index.yaml` is the canonical divergence registry
 
-Phase 3:
+Phase 3 (in progress):
 
 - generate `docs/carry-divergence-ledger.md`
 - generate `docs/downstream-regression-matrix.md`
 - add CI drift checks
 
-Until phase 2 lands, the current manual docs remain canonical.
+Manual docs remain the narrative layer; the registry plus audit runner are the
+authoritative live-state ledger.

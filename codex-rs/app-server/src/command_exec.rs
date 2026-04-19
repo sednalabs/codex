@@ -18,13 +18,13 @@ use codex_app_server_protocol::CommandExecWriteParams;
 use codex_app_server_protocol::CommandExecWriteResponse;
 use codex_app_server_protocol::JSONRPCErrorError;
 use codex_app_server_protocol::ServerNotification;
-use codex_core::bytes_to_string_smart;
 use codex_core::config::StartedNetworkProxy;
 use codex_core::exec::DEFAULT_EXEC_COMMAND_TIMEOUT_MS;
 use codex_core::exec::ExecExpiration;
 use codex_core::exec::IO_DRAIN_TIMEOUT_MS;
-use codex_core::exec::SandboxType;
 use codex_core::sandboxing::ExecRequest;
+use codex_protocol::exec_output::bytes_to_string_smart;
+use codex_sandboxing::SandboxType;
 use codex_utils_pty::DEFAULT_OUTPUT_BYTES_CAP;
 use codex_utils_pty::ProcessHandle;
 use codex_utils_pty::SpawnedProcess;
@@ -37,11 +37,14 @@ use tokio::sync::watch;
 use crate::error_code::INTERNAL_ERROR_CODE;
 use crate::error_code::INVALID_PARAMS_ERROR_CODE;
 use crate::error_code::INVALID_REQUEST_ERROR_CODE;
+use crate::extensions::NotificationDispatchKind;
+use crate::extensions::dispatch_notification_to_connection;
 use crate::outgoing_message::ConnectionId;
 use crate::outgoing_message::ConnectionRequestId;
 use crate::outgoing_message::OutgoingMessageSender;
 
 const EXEC_TIMEOUT_EXIT_CODE: i32 = 124;
+const OUTPUT_CHUNK_SIZE_HINT: usize = 64 * 1024;
 
 #[derive(Clone)]
 pub(crate) struct CommandExecManager {
@@ -577,13 +580,19 @@ fn spawn_process_output(params: SpawnProcessOutputParams) -> tokio::task::JoinHa
         let mut buffer: Vec<u8> = Vec::new();
         let mut observed_num_bytes = 0usize;
         loop {
-            let chunk = tokio::select! {
+            let mut chunk = tokio::select! {
                 chunk = output_rx.recv() => match chunk {
                     Some(chunk) => chunk,
                     None => break,
                 },
                 _ = stdio_timeout_rx.wait_for(|&v| v) => break,
             };
+            // Individual chunks are at most 8KiB, so overshooting a bit is acceptable.
+            while chunk.len() < OUTPUT_CHUNK_SIZE_HINT
+                && let Ok(next_chunk) = output_rx.try_recv()
+            {
+                chunk.extend_from_slice(&next_chunk);
+            }
             let capped_chunk = match output_bytes_cap {
                 Some(output_bytes_cap) => {
                     let capped_chunk_len = output_bytes_cap
@@ -596,19 +605,20 @@ fn spawn_process_output(params: SpawnProcessOutputParams) -> tokio::task::JoinHa
             };
             let cap_reached = Some(observed_num_bytes) == output_bytes_cap;
             if let (true, Some(process_id)) = (stream_output, process_id.as_ref()) {
-                outgoing
-                    .send_server_notification_to_connections(
-                        &[connection_id],
-                        ServerNotification::CommandExecOutputDelta(
-                            CommandExecOutputDeltaNotification {
-                                process_id: process_id.clone(),
-                                stream,
-                                delta_base64: STANDARD.encode(capped_chunk),
-                                cap_reached,
-                            },
-                        ),
-                    )
-                    .await;
+                dispatch_notification_to_connection(
+                    outgoing.as_ref(),
+                    connection_id,
+                    NotificationDispatchKind::CommandExecOutputDelta,
+                    ServerNotification::CommandExecOutputDelta(
+                        CommandExecOutputDeltaNotification {
+                            process_id: process_id.clone(),
+                            stream,
+                            delta_base64: STANDARD.encode(capped_chunk),
+                            cap_reached,
+                        },
+                    ),
+                )
+                .await;
             } else if !stream_output {
                 buffer.extend_from_slice(capped_chunk);
             }
@@ -708,6 +718,7 @@ mod tests {
     use codex_protocol::permissions::NetworkSandboxPolicy;
     use codex_protocol::protocol::ReadOnlyAccess;
     use codex_protocol::protocol::SandboxPolicy;
+    use codex_utils_absolute_path::AbsolutePathBuf;
     use pretty_assertions::assert_eq;
     #[cfg(not(target_os = "windows"))]
     use tokio::time::Duration;
@@ -727,23 +738,21 @@ mod tests {
             access: ReadOnlyAccess::FullAccess,
             network_access: false,
         };
-        ExecRequest {
-            command: vec!["cmd".to_string()],
-            cwd: PathBuf::from("."),
-            env: HashMap::new(),
-            network: None,
-            expiration: ExecExpiration::DefaultTimeout,
-            capture_policy: codex_core::exec::ExecCapturePolicy::ShellTool,
-            sandbox: SandboxType::WindowsRestrictedToken,
-            windows_sandbox_level: WindowsSandboxLevel::Disabled,
-            windows_sandbox_private_desktop: false,
-            sandbox_permissions: codex_core::sandboxing::SandboxPermissions::UseDefault,
-            sandbox_policy: sandbox_policy.clone(),
-            file_system_sandbox_policy: FileSystemSandboxPolicy::from(&sandbox_policy),
-            network_sandbox_policy: NetworkSandboxPolicy::from(&sandbox_policy),
-            justification: None,
-            arg0: None,
-        }
+        ExecRequest::new(
+            vec!["cmd".to_string()],
+            AbsolutePathBuf::current_dir().expect("current dir"),
+            HashMap::new(),
+            /*network*/ None,
+            ExecExpiration::DefaultTimeout,
+            codex_core::exec::ExecCapturePolicy::ShellTool,
+            SandboxType::WindowsRestrictedToken,
+            WindowsSandboxLevel::Disabled,
+            /*windows_sandbox_private_desktop*/ false,
+            sandbox_policy.clone(),
+            FileSystemSandboxPolicy::from(&sandbox_policy),
+            NetworkSandboxPolicy::from(&sandbox_policy),
+            /*arg0*/ None,
+        )
     }
 
     #[tokio::test]
@@ -809,6 +818,7 @@ mod tests {
         let OutgoingEnvelope::ToConnection {
             connection_id,
             message,
+            ..
         } = envelope
         else {
             panic!("expected connection-scoped outgoing message");
@@ -840,23 +850,21 @@ mod tests {
                 outgoing: Arc::new(OutgoingMessageSender::new(tx)),
                 request_id: request_id.clone(),
                 process_id: Some("proc-100".to_string()),
-                exec_request: ExecRequest {
-                    command: vec!["sh".to_string(), "-lc".to_string(), "sleep 30".to_string()],
-                    cwd: PathBuf::from("."),
-                    env: HashMap::new(),
-                    network: None,
-                    expiration: ExecExpiration::Cancellation(CancellationToken::new()),
-                    capture_policy: codex_core::exec::ExecCapturePolicy::ShellTool,
-                    sandbox: SandboxType::None,
-                    windows_sandbox_level: WindowsSandboxLevel::Disabled,
-                    windows_sandbox_private_desktop: false,
-                    sandbox_permissions: codex_core::sandboxing::SandboxPermissions::UseDefault,
-                    sandbox_policy: sandbox_policy.clone(),
-                    file_system_sandbox_policy: FileSystemSandboxPolicy::from(&sandbox_policy),
-                    network_sandbox_policy: NetworkSandboxPolicy::from(&sandbox_policy),
-                    justification: None,
-                    arg0: None,
-                },
+                exec_request: ExecRequest::new(
+                    vec!["sh".to_string(), "-lc".to_string(), "sleep 30".to_string()],
+                    AbsolutePathBuf::current_dir().expect("current dir"),
+                    HashMap::new(),
+                    /*network*/ None,
+                    ExecExpiration::Cancellation(CancellationToken::new()),
+                    codex_core::exec::ExecCapturePolicy::ShellTool,
+                    SandboxType::None,
+                    WindowsSandboxLevel::Disabled,
+                    /*windows_sandbox_private_desktop*/ false,
+                    sandbox_policy.clone(),
+                    FileSystemSandboxPolicy::from(&sandbox_policy),
+                    NetworkSandboxPolicy::from(&sandbox_policy),
+                    /*arg0*/ None,
+                ),
                 started_network_proxy: None,
                 tty: false,
                 stream_stdin: false,
@@ -891,6 +899,7 @@ mod tests {
         let OutgoingEnvelope::ToConnection {
             connection_id,
             message,
+            ..
         } = envelope
         else {
             panic!("expected connection-scoped outgoing message");
@@ -1014,5 +1023,184 @@ mod tests {
 
         assert_eq!(err.code, INVALID_REQUEST_ERROR_CODE);
         assert_eq!(err.message, "command/exec \"proc-13\" is no longer running");
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    #[tokio::test]
+    async fn streamed_command_output_does_not_wait_for_transport_write_completion() {
+        let (tx, rx) = mpsc::channel(2);
+        let (response_tx, response_rx) = tokio::sync::oneshot::channel::<CommandExecResponse>();
+        let sandbox_policy = SandboxPolicy::ReadOnly {
+            access: ReadOnlyAccess::FullAccess,
+            network_access: false,
+        };
+        tokio::spawn({
+            let mut write_complete_sentinels = Vec::<tokio::sync::oneshot::Sender<()>>::new();
+            let mut rx = rx;
+            let response_tx = response_tx;
+            async move {
+                while let Some(OutgoingEnvelope::ToConnection {
+                    message: notification,
+                    write_complete_tx,
+                    ..
+                }) = rx.recv().await
+                {
+                    if let OutgoingMessage::Response(response) = notification {
+                        let response: CommandExecResponse = serde_json::from_value(response.result)
+                            .expect("deserialize command/exec response");
+                        let _ = response_tx.send(response);
+                        break;
+                    }
+                    if let Some(write_complete_tx) = write_complete_tx {
+                        write_complete_sentinels.push(write_complete_tx);
+                    }
+                }
+            }
+        });
+
+        let manager = CommandExecManager::default();
+        manager
+            .start(StartCommandExecParams {
+                outgoing: Arc::new(OutgoingMessageSender::new(tx)),
+                request_id: ConnectionRequestId {
+                    connection_id: ConnectionId(14),
+                    request_id: codex_app_server_protocol::RequestId::Integer(14),
+                },
+                process_id: Some("proc-14".to_string()),
+                exec_request: ExecRequest::new(
+                    vec![
+                        "sh".to_string(),
+                        "-c".to_string(),
+                        "printf 'streaming-output'".to_string(),
+                    ],
+                    AbsolutePathBuf::try_from(PathBuf::from(".")).unwrap(),
+                    HashMap::new(),
+                    /*network*/ None,
+                    ExecExpiration::DefaultTimeout,
+                    codex_core::exec::ExecCapturePolicy::ShellTool,
+                    SandboxType::None,
+                    WindowsSandboxLevel::Disabled,
+                    /*windows_sandbox_private_desktop*/ false,
+                    sandbox_policy.clone(),
+                    FileSystemSandboxPolicy::from(&sandbox_policy),
+                    NetworkSandboxPolicy::from(&sandbox_policy),
+                    /*arg0*/ None,
+                ),
+                started_network_proxy: None,
+                tty: false,
+                stream_stdin: false,
+                stream_stdout_stderr: true,
+                output_bytes_cap: None,
+                size: None,
+            })
+            .await
+            .expect("streaming command/exec should start");
+
+        let response = timeout(Duration::from_secs(2), response_rx)
+            .await
+            .expect("timed out waiting for command completion")
+            .expect("response channel should not be closed");
+
+        assert_eq!(response.exit_code, 0);
+        assert_eq!(response.stdout, "");
+        assert_eq!(response.stderr, "");
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    #[tokio::test]
+    async fn streamed_output_delta_delivery_waits_for_queue_capacity_instead_of_dropping_chunks() {
+        let (tx, mut rx) = mpsc::channel(1);
+        let outgoing = Arc::new(OutgoingMessageSender::new(tx));
+        let (output_tx, output_rx) = mpsc::channel(4);
+        let (_stdio_timeout_tx, stdio_timeout_rx) = watch::channel(false);
+
+        let handle = spawn_process_output(SpawnProcessOutputParams {
+            connection_id: ConnectionId(21),
+            process_id: Some("proc-21".to_string()),
+            output_rx,
+            stdio_timeout_rx,
+            outgoing,
+            stream: CommandExecOutputStream::Stdout,
+            stream_output: true,
+            output_bytes_cap: None,
+        });
+
+        let first_chunk = vec![b'a'; OUTPUT_CHUNK_SIZE_HINT];
+        let second_chunk = b"b".to_vec();
+        output_tx
+            .send(first_chunk.clone())
+            .await
+            .expect("first chunk should queue");
+        output_tx
+            .send(second_chunk.clone())
+            .await
+            .expect("second chunk should queue");
+        drop(output_tx);
+
+        let first_envelope = timeout(Duration::from_secs(1), rx.recv())
+            .await
+            .expect("should receive first output delta")
+            .expect("channel should remain open");
+        let OutgoingEnvelope::ToConnection {
+            connection_id,
+            message,
+            ..
+        } = first_envelope
+        else {
+            panic!("expected connection-scoped output delta");
+        };
+        assert_eq!(connection_id, ConnectionId(21));
+        let OutgoingMessage::AppServerNotification(ServerNotification::CommandExecOutputDelta(
+            notification,
+        )) = message
+        else {
+            panic!("expected command/exec output delta notification");
+        };
+        assert_eq!(notification.process_id, "proc-21");
+        assert_eq!(notification.stream, CommandExecOutputStream::Stdout);
+        assert_eq!(
+            STANDARD
+                .decode(notification.delta_base64)
+                .expect("delta should be valid base64"),
+            first_chunk
+        );
+        assert!(!notification.cap_reached);
+
+        let second_envelope = timeout(Duration::from_secs(1), rx.recv())
+            .await
+            .expect("should receive second output delta")
+            .expect("channel should remain open");
+        let OutgoingEnvelope::ToConnection {
+            connection_id,
+            message,
+            ..
+        } = second_envelope
+        else {
+            panic!("expected connection-scoped output delta");
+        };
+        assert_eq!(connection_id, ConnectionId(21));
+        let OutgoingMessage::AppServerNotification(ServerNotification::CommandExecOutputDelta(
+            notification,
+        )) = message
+        else {
+            panic!("expected command/exec output delta notification");
+        };
+        assert_eq!(notification.process_id, "proc-21");
+        assert_eq!(notification.stream, CommandExecOutputStream::Stdout);
+        assert_eq!(
+            STANDARD
+                .decode(notification.delta_base64)
+                .expect("delta should be valid base64"),
+            second_chunk
+        );
+        assert!(!notification.cap_reached);
+
+        assert_eq!(
+            timeout(Duration::from_secs(1), handle)
+                .await
+                .expect("output task should finish")
+                .expect("output task should not panic"),
+            ""
+        );
     }
 }

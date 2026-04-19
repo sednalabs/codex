@@ -14,6 +14,7 @@ use codex_protocol::protocol::Op;
 use codex_protocol::user_input::ByteRange;
 use codex_protocol::user_input::TextElement;
 use codex_protocol::user_input::UserInput;
+use codex_utils_absolute_path::AbsolutePathBuf;
 use core_test_support::responses::ev_assistant_message;
 use core_test_support::responses::ev_completed;
 use core_test_support::responses::ev_image_generation_call;
@@ -86,6 +87,7 @@ async fn user_message_item_is_emitted() -> anyhow::Result<()> {
         .submit(Op::UserInput {
             items: vec![expected_input.clone()],
             final_output_json_schema: None,
+            responsesapi_client_metadata: None,
         })
         .await?;
 
@@ -142,6 +144,7 @@ async fn assistant_message_item_is_emitted() -> anyhow::Result<()> {
                 text_elements: Vec::new(),
             }],
             final_output_json_schema: None,
+            responsesapi_client_metadata: None,
         })
         .await?;
 
@@ -200,6 +203,7 @@ async fn reasoning_item_is_emitted() -> anyhow::Result<()> {
                 text_elements: Vec::new(),
             }],
             final_output_json_schema: None,
+            responsesapi_client_metadata: None,
         })
         .await?;
 
@@ -259,6 +263,7 @@ async fn web_search_item_is_emitted() -> anyhow::Result<()> {
                 text_elements: Vec::new(),
             }],
             final_output_json_schema: None,
+            responsesapi_client_metadata: None,
         })
         .await?;
 
@@ -323,6 +328,7 @@ async fn image_generation_call_event_is_emitted() -> anyhow::Result<()> {
                 text_elements: Vec::new(),
             }],
             final_output_json_schema: None,
+            responsesapi_client_metadata: None,
         })
         .await?;
 
@@ -343,8 +349,8 @@ async fn image_generation_call_event_is_emitted() -> anyhow::Result<()> {
     assert_eq!(end.revised_prompt, Some("A tiny blue square".to_string()));
     assert_eq!(end.result, "Zm9v");
     assert_eq!(
-        end.saved_path,
-        Some(expected_saved_path.to_string_lossy().into_owned())
+        end.saved_path.as_ref().map(AbsolutePathBuf::as_path),
+        Some(expected_saved_path.as_path())
     );
     assert_eq!(std::fs::read(&expected_saved_path)?, b"foo");
     let _ = std::fs::remove_file(&expected_saved_path);
@@ -385,6 +391,7 @@ async fn image_generation_call_event_is_emitted_when_image_save_fails() -> anyho
                 text_elements: Vec::new(),
             }],
             final_output_json_schema: None,
+            responsesapi_client_metadata: None,
         })
         .await?;
 
@@ -438,6 +445,7 @@ async fn agent_message_content_delta_has_item_metadata() -> anyhow::Result<()> {
                 text_elements: Vec::new(),
             }],
             final_output_json_schema: None,
+            responsesapi_client_metadata: None,
         })
         .await?;
 
@@ -522,6 +530,7 @@ async fn plan_mode_emits_plan_item_from_proposed_plan_block() -> anyhow::Result<
             final_output_json_schema: None,
             cwd: std::env::current_dir()?,
             approval_policy: codex_protocol::protocol::AskForApproval::Never,
+            approvals_reviewer: None,
             sandbox_policy: codex_protocol::protocol::SandboxPolicy::DangerFullAccess,
             model: session_configured.model.clone(),
             effort: None,
@@ -598,6 +607,7 @@ async fn plan_mode_strips_plan_from_agent_messages() -> anyhow::Result<()> {
             final_output_json_schema: None,
             cwd: std::env::current_dir()?,
             approval_policy: codex_protocol::protocol::AskForApproval::Never,
+            approvals_reviewer: None,
             sandbox_policy: codex_protocol::protocol::SandboxPolicy::DangerFullAccess,
             model: session_configured.model.clone(),
             effort: None,
@@ -706,6 +716,7 @@ async fn plan_mode_streaming_citations_are_stripped_across_added_deltas_and_done
             final_output_json_schema: None,
             cwd: std::env::current_dir()?,
             approval_policy: codex_protocol::protocol::AskForApproval::Never,
+            approvals_reviewer: None,
             sandbox_policy: codex_protocol::protocol::SandboxPolicy::DangerFullAccess,
             model: session_configured.model.clone(),
             effort: None,
@@ -892,6 +903,7 @@ async fn plan_mode_streaming_proposed_plan_tag_split_across_added_and_delta_is_p
             final_output_json_schema: None,
             cwd: std::env::current_dir()?,
             approval_policy: codex_protocol::protocol::AskForApproval::Never,
+            approvals_reviewer: None,
             sandbox_policy: codex_protocol::protocol::SandboxPolicy::DangerFullAccess,
             model: session_configured.model.clone(),
             effort: None,
@@ -1005,6 +1017,7 @@ async fn plan_mode_handles_missing_plan_close_tag() -> anyhow::Result<()> {
             final_output_json_schema: None,
             cwd: std::env::current_dir()?,
             approval_policy: codex_protocol::protocol::AskForApproval::Never,
+            approvals_reviewer: None,
             sandbox_policy: codex_protocol::protocol::SandboxPolicy::DangerFullAccess,
             model: session_configured.model.clone(),
             effort: None,
@@ -1080,6 +1093,7 @@ async fn reasoning_content_delta_has_item_metadata() -> anyhow::Result<()> {
                 text_elements: Vec::new(),
             }],
             final_output_json_schema: None,
+            responsesapi_client_metadata: None,
         })
         .await?;
 
@@ -1139,6 +1153,7 @@ async fn reasoning_raw_content_delta_respects_flag() -> anyhow::Result<()> {
                 text_elements: Vec::new(),
             }],
             final_output_json_schema: None,
+            responsesapi_client_metadata: None,
         })
         .await?;
 

@@ -1,9 +1,11 @@
 use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::fs;
+use std::sync::OnceLock;
 
 use anyhow::Context;
 use anyhow::Result;
+use codex_exec_server::CreateDirectoryOptions;
 use codex_features::Feature;
 use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::EventMsg;
@@ -32,10 +34,12 @@ use core_test_support::wait_for_event;
 use core_test_support::wait_for_event_match;
 use core_test_support::wait_for_event_with_timeout;
 use pretty_assertions::assert_eq;
+use regex_lite::Regex;
 use serde_json::Value;
 use serde_json::json;
 use tokio::time::Duration;
-use which::which;
+
+const UNIFIED_EXEC_LAGGED_OUTPUT_TIMEOUT: Duration = Duration::from_secs(30);
 
 fn extract_output_text(item: &Value) -> Option<&str> {
     item.get("output").and_then(|value| match value {
@@ -57,49 +61,65 @@ struct ParsedUnifiedExecOutput {
 
 #[allow(clippy::expect_used)]
 fn parse_unified_exec_output(raw: &str) -> Result<ParsedUnifiedExecOutput> {
-    let cleaned = raw.replace("\r\n", "\n");
-    let (metadata, output) = cleaned
-        .rsplit_once("\nOutput:")
+    static OUTPUT_REGEX: OnceLock<Regex> = OnceLock::new();
+    let regex = OUTPUT_REGEX.get_or_init(|| {
+        Regex::new(concat!(
+            r#"(?s)^(?:Total output lines: \d+\n\n)?"#,
+            r#"(?:Chunk ID: (?P<chunk_id>[^\n]+)\n)?"#,
+            r#"Wall time: (?P<wall_time>-?\d+(?:\.\d+)?) seconds\n"#,
+            r#"(?:Process exited with code (?P<exit_code>-?\d+)\n)?"#,
+            r#"(?:Process running with session ID (?P<process_id>-?\d+)\n)?"#,
+            r#"(?:Original token count: (?P<original_token_count>\d+)\n)?"#,
+            r#"Output:\n?(?P<output>.*)$"#,
+        ))
+        .expect("valid unified exec output regex")
+    });
+
+    let cleaned = raw.trim_matches('\r');
+    let captures = regex
+        .captures(cleaned)
         .ok_or_else(|| anyhow::anyhow!("missing Output section in unified exec output {raw}"))?;
-    let output = output.strip_prefix('\n').unwrap_or(output);
 
-    let mut chunk_id = None;
-    let mut wall_time_seconds = None;
-    let mut process_id = None;
-    let mut exit_code = None;
-    let mut original_token_count = None;
+    let chunk_id = captures
+        .name("chunk_id")
+        .map(|value| value.as_str().to_string());
 
-    for line in metadata.lines() {
-        if let Some(value) = line.strip_prefix("Chunk ID: ") {
-            chunk_id = Some(value.to_string());
-        } else if let Some(value) = line.strip_prefix("Wall time: ") {
-            let value = value.strip_suffix(" seconds").ok_or_else(|| {
-                anyhow::anyhow!("invalid wall time line in unified exec output: {line}")
-            })?;
-            wall_time_seconds = Some(
-                value
-                    .parse::<f64>()
-                    .context("failed to parse wall time seconds")?,
-            );
-        } else if let Some(value) = line.strip_prefix("Process exited with code ") {
-            exit_code = Some(
-                value
-                    .parse::<i32>()
-                    .context("failed to parse exit code from unified exec output")?,
-            );
-        } else if let Some(value) = line.strip_prefix("Process running with session ID ") {
-            process_id = Some(value.to_string());
-        } else if let Some(value) = line.strip_prefix("Original token count: ") {
-            original_token_count = Some(
-                value
-                    .parse::<usize>()
-                    .context("failed to parse original token count from unified exec output")?,
-            );
-        }
-    }
+    let wall_time_seconds = captures
+        .name("wall_time")
+        .expect("wall_time group present")
+        .as_str()
+        .parse::<f64>()
+        .context("failed to parse wall time seconds")?;
 
-    let wall_time_seconds = wall_time_seconds
-        .ok_or_else(|| anyhow::anyhow!("missing wall time in unified exec output {raw}"))?;
+    let exit_code = captures
+        .name("exit_code")
+        .map(|value| {
+            value
+                .as_str()
+                .parse::<i32>()
+                .context("failed to parse exit code from unified exec output")
+        })
+        .transpose()?;
+
+    let process_id = captures
+        .name("process_id")
+        .map(|value| value.as_str().to_string());
+
+    let original_token_count = captures
+        .name("original_token_count")
+        .map(|value| {
+            value
+                .as_str()
+                .parse::<usize>()
+                .context("failed to parse original token count from unified exec output")
+        })
+        .transpose()?;
+
+    let output = captures
+        .name("output")
+        .expect("output group present")
+        .as_str()
+        .to_string();
 
     Ok(ParsedUnifiedExecOutput {
         chunk_id,
@@ -107,7 +127,7 @@ fn parse_unified_exec_output(raw: &str) -> Result<ParsedUnifiedExecOutput> {
         process_id,
         exit_code,
         original_token_count,
-        output: output.to_string(),
+        output,
     })
 }
 
@@ -135,6 +155,51 @@ fn collect_tool_outputs(bodies: &[Value]) -> Result<HashMap<String, ParsedUnifie
         }
     }
     Ok(outputs)
+}
+
+async fn submit_unified_exec_turn(
+    test: &TestCodex,
+    prompt: &str,
+    sandbox_policy: SandboxPolicy,
+) -> Result<()> {
+    let session_model = test.session_configured.model.clone();
+
+    test.codex
+        .submit(Op::UserTurn {
+            items: vec![UserInput::Text {
+                text: prompt.into(),
+                text_elements: Vec::new(),
+            }],
+            final_output_json_schema: None,
+            cwd: test.config.cwd.to_path_buf(),
+            approval_policy: AskForApproval::Never,
+            approvals_reviewer: None,
+            sandbox_policy,
+            model: session_model,
+            effort: None,
+            summary: None,
+            service_tier: None,
+            collaboration_mode: None,
+            personality: None,
+        })
+        .await?;
+
+    Ok(())
+}
+
+async fn create_workspace_directory(
+    test: &TestCodex,
+    rel_path: impl AsRef<std::path::Path>,
+) -> Result<std::path::PathBuf> {
+    let abs_path = test.config.cwd.join(rel_path.as_ref());
+    test.fs()
+        .create_directory(
+            &abs_path,
+            CreateDirectoryOptions { recursive: true },
+            /*sandbox*/ None,
+        )
+        .await?;
+    Ok(abs_path.into_path_buf())
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -192,6 +257,7 @@ async fn unified_exec_intercepts_apply_patch_exec_command() -> Result<()> {
             final_output_json_schema: None,
             cwd,
             approval_policy: AskForApproval::Never,
+            approvals_reviewer: None,
             sandbox_policy: SandboxPolicy::DangerFullAccess,
             model: session_model,
             effort: None,
@@ -286,12 +352,8 @@ async fn unified_exec_emits_exec_command_begin_event() -> Result<()> {
             .enable(Feature::UnifiedExec)
             .expect("test config should allow feature update");
     });
-    let TestCodex {
-        codex,
-        cwd,
-        session_configured,
-        ..
-    } = builder.build(&server).await?;
+    let test = builder.build_remote_aware(&server).await?;
+    let cwd = test.config.cwd.to_path_buf();
 
     let call_id = "uexec-begin-event";
     let args = json!({
@@ -314,28 +376,9 @@ async fn unified_exec_emits_exec_command_begin_event() -> Result<()> {
     ];
     mount_sse_sequence(&server, responses).await;
 
-    let session_model = session_configured.model.clone();
+    submit_unified_exec_turn(&test, "emit begin event", SandboxPolicy::DangerFullAccess).await?;
 
-    codex
-        .submit(Op::UserTurn {
-            items: vec![UserInput::Text {
-                text: "emit begin event".into(),
-                text_elements: Vec::new(),
-            }],
-            final_output_json_schema: None,
-            cwd: cwd.path().to_path_buf(),
-            approval_policy: AskForApproval::Never,
-            sandbox_policy: SandboxPolicy::DangerFullAccess,
-            model: session_model,
-            effort: None,
-            summary: None,
-            service_tier: None,
-            collaboration_mode: None,
-            personality: None,
-        })
-        .await?;
-
-    let begin_event = wait_for_event_match(&codex, |msg| match msg {
+    let begin_event = wait_for_event_match(&test.codex, |msg| match msg {
         EventMsg::ExecCommandBegin(event) if event.call_id == call_id => Some(event.clone()),
         _ => None,
     })
@@ -343,9 +386,12 @@ async fn unified_exec_emits_exec_command_begin_event() -> Result<()> {
 
     assert_command(&begin_event.command, "-lc", "/bin/echo hello unified exec");
 
-    assert_eq!(begin_event.cwd, cwd.path());
+    assert_eq!(begin_event.cwd.as_path(), cwd.as_path());
 
-    wait_for_event(&codex, |event| matches!(event, EventMsg::TurnComplete(_))).await;
+    wait_for_event(&test.codex, |event| {
+        matches!(event, EventMsg::TurnComplete(_))
+    })
+    .await;
 
     Ok(())
 }
@@ -365,15 +411,10 @@ async fn unified_exec_resolves_relative_workdir() -> Result<()> {
             .enable(Feature::UnifiedExec)
             .expect("test config should allow feature update");
     });
-    let TestCodex {
-        codex,
-        cwd,
-        session_configured,
-        ..
-    } = builder.build(&server).await?;
+    let test = builder.build_remote_aware(&server).await?;
 
     let workdir_rel = std::path::PathBuf::from("uexec_relative_workdir");
-    std::fs::create_dir_all(cwd.path().join(&workdir_rel))?;
+    let workdir = create_workspace_directory(&test, &workdir_rel).await?;
 
     let call_id = "uexec-workdir-relative";
     let args = json!({
@@ -396,40 +437,29 @@ async fn unified_exec_resolves_relative_workdir() -> Result<()> {
     ];
     mount_sse_sequence(&server, responses).await;
 
-    let session_model = session_configured.model.clone();
+    submit_unified_exec_turn(
+        &test,
+        "run relative workdir test",
+        SandboxPolicy::DangerFullAccess,
+    )
+    .await?;
 
-    codex
-        .submit(Op::UserTurn {
-            items: vec![UserInput::Text {
-                text: "run relative workdir test".into(),
-                text_elements: Vec::new(),
-            }],
-            final_output_json_schema: None,
-            cwd: cwd.path().to_path_buf(),
-            approval_policy: AskForApproval::Never,
-            sandbox_policy: SandboxPolicy::DangerFullAccess,
-            model: session_model,
-            effort: None,
-            summary: None,
-            service_tier: None,
-            collaboration_mode: None,
-            personality: None,
-        })
-        .await?;
-
-    let begin_event = wait_for_event_match(&codex, |msg| match msg {
+    let begin_event = wait_for_event_match(&test.codex, |msg| match msg {
         EventMsg::ExecCommandBegin(event) if event.call_id == call_id => Some(event.clone()),
         _ => None,
     })
     .await;
 
     assert_eq!(
-        begin_event.cwd,
-        cwd.path().join(workdir_rel),
+        begin_event.cwd.as_path(),
+        workdir.as_path(),
         "exec_command cwd should resolve relative workdir against turn cwd",
     );
 
-    wait_for_event(&codex, |event| matches!(event, EventMsg::TurnComplete(_))).await;
+    wait_for_event(&test.codex, |event| {
+        matches!(event, EventMsg::TurnComplete(_))
+    })
+    .await;
 
     Ok(())
 }
@@ -450,15 +480,9 @@ async fn unified_exec_respects_workdir_override() -> Result<()> {
             .enable(Feature::UnifiedExec)
             .expect("test config should allow feature update");
     });
-    let TestCodex {
-        codex,
-        cwd,
-        session_configured,
-        ..
-    } = builder.build(&server).await?;
+    let test = builder.build_remote_aware(&server).await?;
 
-    let workdir = cwd.path().join("uexec_workdir_test");
-    std::fs::create_dir_all(&workdir)?;
+    let workdir = create_workspace_directory(&test, "uexec_workdir_test").await?;
 
     let call_id = "uexec-workdir";
     let args = json!({
@@ -481,39 +505,24 @@ async fn unified_exec_respects_workdir_override() -> Result<()> {
     ];
     let request_log = mount_sse_sequence(&server, responses).await;
 
-    let session_model = session_configured.model.clone();
+    submit_unified_exec_turn(&test, "run workdir test", SandboxPolicy::DangerFullAccess).await?;
 
-    codex
-        .submit(Op::UserTurn {
-            items: vec![UserInput::Text {
-                text: "run workdir test".into(),
-                text_elements: Vec::new(),
-            }],
-            final_output_json_schema: None,
-            cwd: cwd.path().to_path_buf(),
-            approval_policy: AskForApproval::Never,
-            sandbox_policy: SandboxPolicy::DangerFullAccess,
-            model: session_model,
-            effort: None,
-            summary: None,
-            service_tier: None,
-            collaboration_mode: None,
-            personality: None,
-        })
-        .await?;
-
-    let begin_event = wait_for_event_match(&codex, |msg| match msg {
+    let begin_event = wait_for_event_match(&test.codex, |msg| match msg {
         EventMsg::ExecCommandBegin(event) if event.call_id == call_id => Some(event.clone()),
         _ => None,
     })
     .await;
 
     assert_eq!(
-        begin_event.cwd, workdir,
+        begin_event.cwd.as_path(),
+        workdir.as_path(),
         "exec_command cwd should reflect the requested workdir override"
     );
 
-    wait_for_event(&codex, |event| matches!(event, EventMsg::TurnComplete(_))).await;
+    wait_for_event(&test.codex, |event| {
+        matches!(event, EventMsg::TurnComplete(_))
+    })
+    .await;
 
     let requests = request_log.requests();
     assert!(!requests.is_empty(), "expected at least one POST request");
@@ -536,12 +545,7 @@ async fn unified_exec_emits_exec_command_end_event() -> Result<()> {
             .enable(Feature::UnifiedExec)
             .expect("test config should allow feature update");
     });
-    let TestCodex {
-        codex,
-        cwd,
-        session_configured,
-        ..
-    } = builder.build(&server).await?;
+    let test = builder.build_remote_aware(&server).await?;
 
     let call_id = "uexec-end-event";
     let args = json!({
@@ -578,28 +582,9 @@ async fn unified_exec_emits_exec_command_end_event() -> Result<()> {
     ];
     mount_sse_sequence(&server, responses).await;
 
-    let session_model = session_configured.model.clone();
+    submit_unified_exec_turn(&test, "emit end event", SandboxPolicy::DangerFullAccess).await?;
 
-    codex
-        .submit(Op::UserTurn {
-            items: vec![UserInput::Text {
-                text: "emit end event".into(),
-                text_elements: Vec::new(),
-            }],
-            final_output_json_schema: None,
-            cwd: cwd.path().to_path_buf(),
-            approval_policy: AskForApproval::Never,
-            sandbox_policy: SandboxPolicy::DangerFullAccess,
-            model: session_model,
-            effort: None,
-            summary: None,
-            service_tier: None,
-            collaboration_mode: None,
-            personality: None,
-        })
-        .await?;
-
-    let end_event = wait_for_event_match(&codex, |msg| match msg {
+    let end_event = wait_for_event_match(&test.codex, |msg| match msg {
         EventMsg::ExecCommandEnd(ev) if ev.call_id == call_id => Some(ev.clone()),
         _ => None,
     })
@@ -611,7 +596,10 @@ async fn unified_exec_emits_exec_command_end_event() -> Result<()> {
         "expected aggregated output to contain marker"
     );
 
-    wait_for_event(&codex, |event| matches!(event, EventMsg::TurnComplete(_))).await;
+    wait_for_event(&test.codex, |event| {
+        matches!(event, EventMsg::TurnComplete(_))
+    })
+    .await;
     Ok(())
 }
 
@@ -630,12 +618,7 @@ async fn unified_exec_emits_output_delta_for_exec_command() -> Result<()> {
             .enable(Feature::UnifiedExec)
             .expect("test config should allow feature update");
     });
-    let TestCodex {
-        codex,
-        cwd,
-        session_configured,
-        ..
-    } = builder.build(&server).await?;
+    let test = builder.build_remote_aware(&server).await?;
 
     let call_id = "uexec-delta-1";
     let args = json!({
@@ -657,28 +640,9 @@ async fn unified_exec_emits_output_delta_for_exec_command() -> Result<()> {
     ];
     mount_sse_sequence(&server, responses).await;
 
-    let session_model = session_configured.model.clone();
+    submit_unified_exec_turn(&test, "emit delta", SandboxPolicy::DangerFullAccess).await?;
 
-    codex
-        .submit(Op::UserTurn {
-            items: vec![UserInput::Text {
-                text: "emit delta".into(),
-                text_elements: Vec::new(),
-            }],
-            final_output_json_schema: None,
-            cwd: cwd.path().to_path_buf(),
-            approval_policy: AskForApproval::Never,
-            sandbox_policy: SandboxPolicy::DangerFullAccess,
-            model: session_model,
-            effort: None,
-            summary: None,
-            service_tier: None,
-            collaboration_mode: None,
-            personality: None,
-        })
-        .await?;
-
-    let event = wait_for_event_match(&codex, |msg| match msg {
+    let event = wait_for_event_match(&test.codex, |msg| match msg {
         EventMsg::ExecCommandEnd(ev) if ev.call_id == call_id => Some(ev.clone()),
         _ => None,
     })
@@ -690,7 +654,10 @@ async fn unified_exec_emits_output_delta_for_exec_command() -> Result<()> {
         "delta chunk missing expected text: {text:?}",
     );
 
-    wait_for_event(&codex, |event| matches!(event, EventMsg::TurnComplete(_))).await;
+    wait_for_event(&test.codex, |event| {
+        matches!(event, EventMsg::TurnComplete(_))
+    })
+    .await;
     Ok(())
 }
 
@@ -709,12 +676,7 @@ async fn unified_exec_full_lifecycle_with_background_end_event() -> Result<()> {
             .enable(Feature::UnifiedExec)
             .expect("test config should allow feature update");
     });
-    let TestCodex {
-        codex,
-        cwd,
-        session_configured,
-        ..
-    } = builder.build(&server).await?;
+    let test = builder.build_remote_aware(&server).await?;
 
     let call_id = "uexec-full-lifecycle";
     // This timing force the long-standing PTY
@@ -737,33 +699,19 @@ async fn unified_exec_full_lifecycle_with_background_end_event() -> Result<()> {
     ];
     mount_sse_sequence(&server, responses).await;
 
-    let session_model = session_configured.model.clone();
-
-    codex
-        .submit(Op::UserTurn {
-            items: vec![UserInput::Text {
-                text: "exercise full unified exec lifecycle".into(),
-                text_elements: Vec::new(),
-            }],
-            final_output_json_schema: None,
-            cwd: cwd.path().to_path_buf(),
-            approval_policy: AskForApproval::Never,
-            sandbox_policy: SandboxPolicy::DangerFullAccess,
-            model: session_model,
-            effort: None,
-            summary: None,
-            service_tier: None,
-            collaboration_mode: None,
-            personality: None,
-        })
-        .await?;
+    submit_unified_exec_turn(
+        &test,
+        "exercise full unified exec lifecycle",
+        SandboxPolicy::DangerFullAccess,
+    )
+    .await?;
 
     let mut begin_event = None;
     let mut end_event = None;
     let mut task_completed = false;
 
     loop {
-        let msg = wait_for_event(&codex, |_| true).await;
+        let msg = wait_for_event(&test.codex, |_| true).await;
         match msg {
             EventMsg::ExecCommandBegin(ev) if ev.call_id == call_id => begin_event = Some(ev),
             EventMsg::ExecCommandEnd(ev) if ev.call_id == call_id => {
@@ -823,12 +771,7 @@ async fn unified_exec_emits_terminal_interaction_for_write_stdin() -> Result<()>
             .enable(Feature::UnifiedExec)
             .expect("test config should allow feature update");
     });
-    let TestCodex {
-        codex,
-        cwd,
-        session_configured,
-        ..
-    } = builder.build(&server).await?;
+    let test = builder.build_remote_aware(&server).await?;
 
     let open_call_id = "uexec-open";
     let open_args = json!({
@@ -871,31 +814,12 @@ async fn unified_exec_emits_terminal_interaction_for_write_stdin() -> Result<()>
     ];
     mount_sse_sequence(&server, responses).await;
 
-    let session_model = session_configured.model.clone();
-
-    codex
-        .submit(Op::UserTurn {
-            items: vec![UserInput::Text {
-                text: "stdin delta".into(),
-                text_elements: Vec::new(),
-            }],
-            final_output_json_schema: None,
-            cwd: cwd.path().to_path_buf(),
-            approval_policy: AskForApproval::Never,
-            sandbox_policy: SandboxPolicy::DangerFullAccess,
-            model: session_model,
-            effort: None,
-            summary: None,
-            service_tier: None,
-            collaboration_mode: None,
-            personality: None,
-        })
-        .await?;
+    submit_unified_exec_turn(&test, "stdin delta", SandboxPolicy::DangerFullAccess).await?;
 
     let mut terminal_interaction = None;
 
     loop {
-        let msg = wait_for_event(&codex, |_| true).await;
+        let msg = wait_for_event(&test.codex, |_| true).await;
         match msg {
             EventMsg::TerminalInteraction(ev) if ev.call_id == open_call_id => {
                 terminal_interaction = Some(ev);
@@ -930,12 +854,7 @@ async fn unified_exec_terminal_interaction_captures_delayed_output() -> Result<(
             .enable(Feature::UnifiedExec)
             .expect("test config should allow feature update");
     });
-    let TestCodex {
-        codex,
-        cwd,
-        session_configured,
-        ..
-    } = builder.build(&server).await?;
+    let test = builder.build_remote_aware(&server).await?;
 
     let open_call_id = "uexec-delayed-open";
     let open_args = json!({
@@ -1012,26 +931,12 @@ async fn unified_exec_terminal_interaction_captures_delayed_output() -> Result<(
     ];
     mount_sse_sequence(&server, responses).await;
 
-    let session_model = session_configured.model.clone();
-
-    codex
-        .submit(Op::UserTurn {
-            items: vec![UserInput::Text {
-                text: "delayed terminal interaction output".into(),
-                text_elements: Vec::new(),
-            }],
-            final_output_json_schema: None,
-            cwd: cwd.path().to_path_buf(),
-            approval_policy: AskForApproval::Never,
-            sandbox_policy: SandboxPolicy::DangerFullAccess,
-            model: session_model,
-            effort: None,
-            summary: None,
-            service_tier: None,
-            collaboration_mode: None,
-            personality: None,
-        })
-        .await?;
+    submit_unified_exec_turn(
+        &test,
+        "delayed terminal interaction output",
+        SandboxPolicy::DangerFullAccess,
+    )
+    .await?;
 
     let mut begin_event = None;
     let mut end_event = None;
@@ -1041,7 +946,7 @@ async fn unified_exec_terminal_interaction_captures_delayed_output() -> Result<(
 
     // Consume all events for this turn so we can assert on each stage.
     loop {
-        let msg = wait_for_event(&codex, |_| true).await;
+        let msg = wait_for_event(&test.codex, |_| true).await;
         match msg {
             EventMsg::ExecCommandBegin(ev) if ev.call_id == open_call_id => {
                 begin_event = Some(ev);
@@ -1128,12 +1033,7 @@ async fn unified_exec_emits_one_begin_and_one_end_event() -> Result<()> {
             .enable(Feature::UnifiedExec)
             .expect("test config should allow feature update");
     });
-    let TestCodex {
-        codex,
-        cwd,
-        session_configured,
-        ..
-    } = builder.build(&server).await?;
+    let test = builder.build_remote_aware(&server).await?;
 
     let open_call_id = "uexec-open-session";
     let open_args = json!({
@@ -1176,36 +1076,32 @@ async fn unified_exec_emits_one_begin_and_one_end_event() -> Result<()> {
     ];
     mount_sse_sequence(&server, responses).await;
 
-    let session_model = session_configured.model.clone();
-
-    codex
-        .submit(Op::UserTurn {
-            items: vec![UserInput::Text {
-                text: "check poll event behavior".into(),
-                text_elements: Vec::new(),
-            }],
-            final_output_json_schema: None,
-            cwd: cwd.path().to_path_buf(),
-            approval_policy: AskForApproval::Never,
-            sandbox_policy: SandboxPolicy::DangerFullAccess,
-            model: session_model,
-            effort: None,
-            summary: None,
-            service_tier: None,
-            collaboration_mode: None,
-            personality: None,
-        })
-        .await?;
+    submit_unified_exec_turn(
+        &test,
+        "check poll event behavior",
+        SandboxPolicy::DangerFullAccess,
+    )
+    .await?;
 
     let mut begin_events = Vec::new();
     let mut end_events = Vec::new();
+    let mut task_completed = false;
     loop {
-        let event_msg = wait_for_event(&codex, |_| true).await;
+        let event_msg = wait_for_event(&test.codex, |_| true).await;
         match event_msg {
-            EventMsg::ExecCommandBegin(event) => begin_events.push(event),
-            EventMsg::ExecCommandEnd(event) => end_events.push(event),
-            EventMsg::TurnComplete(_) => break,
+            EventMsg::ExecCommandBegin(event) if event.call_id == open_call_id => {
+                begin_events.push(event);
+            }
+            EventMsg::ExecCommandEnd(event) if event.call_id == open_call_id => {
+                end_events.push(event);
+            }
+            EventMsg::TurnComplete(_) => {
+                task_completed = true;
+            }
             _ => {}
+        }
+        if task_completed && !end_events.is_empty() {
+            break;
         }
     }
 
@@ -1251,12 +1147,7 @@ async fn exec_command_reports_chunk_and_exit_metadata() -> Result<()> {
             .enable(Feature::UnifiedExec)
             .expect("test config should allow feature update");
     });
-    let TestCodex {
-        codex,
-        cwd,
-        session_configured,
-        ..
-    } = builder.build(&server).await?;
+    let test = builder.build_remote_aware(&server).await?;
 
     let call_id = "uexec-metadata";
     let args = serde_json::json!({
@@ -1278,28 +1169,12 @@ async fn exec_command_reports_chunk_and_exit_metadata() -> Result<()> {
     ];
     let request_log = mount_sse_sequence(&server, responses).await;
 
-    let session_model = session_configured.model.clone();
+    submit_unified_exec_turn(&test, "run metadata test", SandboxPolicy::DangerFullAccess).await?;
 
-    codex
-        .submit(Op::UserTurn {
-            items: vec![UserInput::Text {
-                text: "run metadata test".into(),
-                text_elements: Vec::new(),
-            }],
-            final_output_json_schema: None,
-            cwd: cwd.path().to_path_buf(),
-            approval_policy: AskForApproval::Never,
-            sandbox_policy: SandboxPolicy::DangerFullAccess,
-            model: session_model,
-            effort: None,
-            summary: None,
-            service_tier: None,
-            collaboration_mode: None,
-            personality: None,
-        })
-        .await?;
-
-    wait_for_event(&codex, |event| matches!(event, EventMsg::TurnComplete(_))).await;
+    wait_for_event(&test.codex, |event| {
+        matches!(event, EventMsg::TurnComplete(_))
+    })
+    .await;
 
     let requests = request_log.requests();
     assert!(!requests.is_empty(), "expected at least one POST request");
@@ -1357,14 +1232,6 @@ async fn unified_exec_defaults_to_pipe() -> Result<()> {
     skip_if_sandbox!(Ok(()));
     skip_if_windows!(Ok(()));
 
-    let python = match which("python").or_else(|_| which("python3")) {
-        Ok(path) => path,
-        Err(_) => {
-            eprintln!("python not found in PATH, skipping tty default test.");
-            return Ok(());
-        }
-    };
-
     let server = start_mock_server().await;
 
     let mut builder = test_codex().with_config(|config| {
@@ -1373,16 +1240,11 @@ async fn unified_exec_defaults_to_pipe() -> Result<()> {
             .enable(Feature::UnifiedExec)
             .expect("test config should allow feature update");
     });
-    let TestCodex {
-        codex,
-        cwd,
-        session_configured,
-        ..
-    } = builder.build(&server).await?;
+    let test = builder.build_remote_aware(&server).await?;
 
     let call_id = "uexec-default-pipe";
     let args = serde_json::json!({
-        "cmd": format!("{} -c \"import sys; print(sys.stdin.isatty())\"", python.display()),
+        "cmd": "python3 -c \"import sys; print(sys.stdin.isatty())\"",
         "yield_time_ms": 1500,
     });
 
@@ -1400,28 +1262,17 @@ async fn unified_exec_defaults_to_pipe() -> Result<()> {
     ];
     let request_log = mount_sse_sequence(&server, responses).await;
 
-    let session_model = session_configured.model.clone();
+    submit_unified_exec_turn(
+        &test,
+        "check default pipe mode",
+        SandboxPolicy::DangerFullAccess,
+    )
+    .await?;
 
-    codex
-        .submit(Op::UserTurn {
-            items: vec![UserInput::Text {
-                text: "check default pipe mode".into(),
-                text_elements: Vec::new(),
-            }],
-            final_output_json_schema: None,
-            cwd: cwd.path().to_path_buf(),
-            approval_policy: AskForApproval::Never,
-            sandbox_policy: SandboxPolicy::DangerFullAccess,
-            model: session_model,
-            effort: None,
-            summary: None,
-            service_tier: None,
-            collaboration_mode: None,
-            personality: None,
-        })
-        .await?;
-
-    wait_for_event(&codex, |event| matches!(event, EventMsg::TurnComplete(_))).await;
+    wait_for_event(&test.codex, |event| {
+        matches!(event, EventMsg::TurnComplete(_))
+    })
+    .await;
 
     let requests = request_log.requests();
     assert!(!requests.is_empty(), "expected at least one POST request");
@@ -1450,14 +1301,6 @@ async fn unified_exec_can_enable_tty() -> Result<()> {
     skip_if_sandbox!(Ok(()));
     skip_if_windows!(Ok(()));
 
-    let python = match which("python").or_else(|_| which("python3")) {
-        Ok(path) => path,
-        Err(_) => {
-            eprintln!("python not found in PATH, skipping tty enable test.");
-            return Ok(());
-        }
-    };
-
     let server = start_mock_server().await;
 
     let mut builder = test_codex().with_config(|config| {
@@ -1466,16 +1309,11 @@ async fn unified_exec_can_enable_tty() -> Result<()> {
             .enable(Feature::UnifiedExec)
             .expect("test config should allow feature update");
     });
-    let TestCodex {
-        codex,
-        cwd,
-        session_configured,
-        ..
-    } = builder.build(&server).await?;
+    let test = builder.build_remote_aware(&server).await?;
 
     let call_id = "uexec-tty-enabled";
     let args = serde_json::json!({
-        "cmd": format!("{} -c \"import sys; print(sys.stdin.isatty())\"", python.display()),
+        "cmd": "python3 -c \"import sys; print(sys.stdin.isatty())\"",
         "yield_time_ms": 1500,
         "tty": true,
     });
@@ -1494,28 +1332,12 @@ async fn unified_exec_can_enable_tty() -> Result<()> {
     ];
     let request_log = mount_sse_sequence(&server, responses).await;
 
-    let session_model = session_configured.model.clone();
+    submit_unified_exec_turn(&test, "check tty enabled", SandboxPolicy::DangerFullAccess).await?;
 
-    codex
-        .submit(Op::UserTurn {
-            items: vec![UserInput::Text {
-                text: "check tty enabled".into(),
-                text_elements: Vec::new(),
-            }],
-            final_output_json_schema: None,
-            cwd: cwd.path().to_path_buf(),
-            approval_policy: AskForApproval::Never,
-            sandbox_policy: SandboxPolicy::DangerFullAccess,
-            model: session_model,
-            effort: None,
-            summary: None,
-            service_tier: None,
-            collaboration_mode: None,
-            personality: None,
-        })
-        .await?;
-
-    wait_for_event(&codex, |event| matches!(event, EventMsg::TurnComplete(_))).await;
+    wait_for_event(&test.codex, |event| {
+        matches!(event, EventMsg::TurnComplete(_))
+    })
+    .await;
 
     let requests = request_log.requests();
     assert!(!requests.is_empty(), "expected at least one POST request");
@@ -1553,12 +1375,7 @@ async fn unified_exec_respects_early_exit_notifications() -> Result<()> {
             .enable(Feature::UnifiedExec)
             .expect("test config should allow feature update");
     });
-    let TestCodex {
-        codex,
-        cwd,
-        session_configured,
-        ..
-    } = builder.build(&server).await?;
+    let test = builder.build_remote_aware(&server).await?;
 
     let call_id = "uexec-early-exit";
     let args = serde_json::json!({
@@ -1579,28 +1396,17 @@ async fn unified_exec_respects_early_exit_notifications() -> Result<()> {
     ];
     let request_log = mount_sse_sequence(&server, responses).await;
 
-    let session_model = session_configured.model.clone();
+    submit_unified_exec_turn(
+        &test,
+        "watch early exit timing",
+        SandboxPolicy::DangerFullAccess,
+    )
+    .await?;
 
-    codex
-        .submit(Op::UserTurn {
-            items: vec![UserInput::Text {
-                text: "watch early exit timing".into(),
-                text_elements: Vec::new(),
-            }],
-            final_output_json_schema: None,
-            cwd: cwd.path().to_path_buf(),
-            approval_policy: AskForApproval::Never,
-            sandbox_policy: SandboxPolicy::DangerFullAccess,
-            model: session_model,
-            effort: None,
-            summary: None,
-            service_tier: None,
-            collaboration_mode: None,
-            personality: None,
-        })
-        .await?;
-
-    wait_for_event(&codex, |event| matches!(event, EventMsg::TurnComplete(_))).await;
+    wait_for_event(&test.codex, |event| {
+        matches!(event, EventMsg::TurnComplete(_))
+    })
+    .await;
 
     let requests = request_log.requests();
     assert!(!requests.is_empty(), "expected at least one POST request");
@@ -1652,12 +1458,7 @@ async fn write_stdin_returns_exit_metadata_and_clears_session() -> Result<()> {
             .enable(Feature::UnifiedExec)
             .expect("test config should allow feature update");
     });
-    let TestCodex {
-        codex,
-        cwd,
-        session_configured,
-        ..
-    } = builder.build(&server).await?;
+    let test = builder.build_remote_aware(&server).await?;
 
     let start_call_id = "uexec-cat-start";
     let send_call_id = "uexec-cat-send";
@@ -1714,28 +1515,17 @@ async fn write_stdin_returns_exit_metadata_and_clears_session() -> Result<()> {
     ];
     let request_log = mount_sse_sequence(&server, responses).await;
 
-    let session_model = session_configured.model.clone();
+    submit_unified_exec_turn(
+        &test,
+        "test write_stdin exit behavior",
+        SandboxPolicy::DangerFullAccess,
+    )
+    .await?;
 
-    codex
-        .submit(Op::UserTurn {
-            items: vec![UserInput::Text {
-                text: "test write_stdin exit behavior".into(),
-                text_elements: Vec::new(),
-            }],
-            final_output_json_schema: None,
-            cwd: cwd.path().to_path_buf(),
-            approval_policy: AskForApproval::Never,
-            sandbox_policy: SandboxPolicy::DangerFullAccess,
-            model: session_model,
-            effort: None,
-            summary: None,
-            service_tier: None,
-            collaboration_mode: None,
-            personality: None,
-        })
-        .await?;
-
-    wait_for_event(&codex, |event| matches!(event, EventMsg::TurnComplete(_))).await;
+    wait_for_event(&test.codex, |event| {
+        matches!(event, EventMsg::TurnComplete(_))
+    })
+    .await;
 
     let requests = request_log.requests();
     assert!(!requests.is_empty(), "expected at least one POST request");
@@ -1822,12 +1612,7 @@ async fn unified_exec_emits_end_event_when_session_dies_via_stdin() -> Result<()
             .enable(Feature::UnifiedExec)
             .expect("test config should allow feature update");
     });
-    let TestCodex {
-        codex,
-        cwd,
-        session_configured,
-        ..
-    } = builder.build(&server).await?;
+    let test = builder.build_remote_aware(&server).await?;
 
     let start_call_id = "uexec-end-on-exit-start";
     let start_args = serde_json::json!({
@@ -1886,29 +1671,10 @@ async fn unified_exec_emits_end_event_when_session_dies_via_stdin() -> Result<()
     ];
     mount_sse_sequence(&server, responses).await;
 
-    let session_model = session_configured.model.clone();
-
-    codex
-        .submit(Op::UserTurn {
-            items: vec![UserInput::Text {
-                text: "end on exit".into(),
-                text_elements: Vec::new(),
-            }],
-            final_output_json_schema: None,
-            cwd: cwd.path().to_path_buf(),
-            approval_policy: AskForApproval::Never,
-            sandbox_policy: SandboxPolicy::DangerFullAccess,
-            model: session_model,
-            effort: None,
-            summary: None,
-            service_tier: None,
-            collaboration_mode: None,
-            personality: None,
-        })
-        .await?;
+    submit_unified_exec_turn(&test, "end on exit", SandboxPolicy::DangerFullAccess).await?;
 
     // We expect the ExecCommandEnd event to match the initial exec_command call_id.
-    let end_event = wait_for_event_match(&codex, |msg| match msg {
+    let end_event = wait_for_event_match(&test.codex, |msg| match msg {
         EventMsg::ExecCommandEnd(ev) if ev.call_id == start_call_id => Some(ev.clone()),
         _ => None,
     })
@@ -1916,7 +1682,10 @@ async fn unified_exec_emits_end_event_when_session_dies_via_stdin() -> Result<()
 
     assert_eq!(end_event.exit_code, 0);
 
-    wait_for_event(&codex, |event| matches!(event, EventMsg::TurnComplete(_))).await;
+    wait_for_event(&test.codex, |event| {
+        matches!(event, EventMsg::TurnComplete(_))
+    })
+    .await;
     Ok(())
 }
 
@@ -1978,6 +1747,7 @@ async fn unified_exec_keeps_long_running_session_after_turn_end() -> Result<()> 
             final_output_json_schema: None,
             cwd: cwd.path().to_path_buf(),
             approval_policy: AskForApproval::Never,
+            approvals_reviewer: None,
             sandbox_policy: SandboxPolicy::DangerFullAccess,
             model: session_model,
             effort: None,
@@ -2070,6 +1840,7 @@ async fn unified_exec_interrupt_preserves_long_running_session() -> Result<()> {
             final_output_json_schema: None,
             cwd: cwd.path().to_path_buf(),
             approval_policy: AskForApproval::Never,
+            approvals_reviewer: None,
             sandbox_policy: SandboxPolicy::DangerFullAccess,
             model: session_model,
             effort: None,
@@ -2120,12 +1891,7 @@ async fn unified_exec_reuses_session_via_stdin() -> Result<()> {
             .enable(Feature::UnifiedExec)
             .expect("test config should allow feature update");
     });
-    let TestCodex {
-        codex,
-        cwd,
-        session_configured,
-        ..
-    } = builder.build(&server).await?;
+    let test = builder.build_remote_aware(&server).await?;
 
     let first_call_id = "uexec-start";
     let first_args = serde_json::json!({
@@ -2167,28 +1933,12 @@ async fn unified_exec_reuses_session_via_stdin() -> Result<()> {
     ];
     let request_log = mount_sse_sequence(&server, responses).await;
 
-    let session_model = session_configured.model.clone();
+    submit_unified_exec_turn(&test, "run unified exec", SandboxPolicy::DangerFullAccess).await?;
 
-    codex
-        .submit(Op::UserTurn {
-            items: vec![UserInput::Text {
-                text: "run unified exec".into(),
-                text_elements: Vec::new(),
-            }],
-            final_output_json_schema: None,
-            cwd: cwd.path().to_path_buf(),
-            approval_policy: AskForApproval::Never,
-            sandbox_policy: SandboxPolicy::DangerFullAccess,
-            model: session_model,
-            effort: None,
-            summary: None,
-            service_tier: None,
-            collaboration_mode: None,
-            personality: None,
-        })
-        .await?;
-
-    wait_for_event(&codex, |event| matches!(event, EventMsg::TurnComplete(_))).await;
+    wait_for_event(&test.codex, |event| {
+        matches!(event, EventMsg::TurnComplete(_))
+    })
+    .await;
 
     let requests = request_log.requests();
     assert!(!requests.is_empty(), "expected at least one POST request");
@@ -2240,12 +1990,7 @@ async fn unified_exec_streams_after_lagged_output() -> Result<()> {
             .enable(Feature::UnifiedExec)
             .expect("test config should allow feature update");
     });
-    let TestCodex {
-        codex,
-        cwd,
-        session_configured,
-        ..
-    } = builder.build(&server).await?;
+    let test = builder.build_remote_aware(&server).await?;
 
     let script = r#"python3 - <<'PY'
 import sys
@@ -2306,31 +2051,18 @@ PY
     ];
     let request_log = mount_sse_sequence(&server, responses).await;
 
-    let session_model = session_configured.model.clone();
-
-    codex
-        .submit(Op::UserTurn {
-            items: vec![UserInput::Text {
-                text: "exercise lag handling".into(),
-                text_elements: Vec::new(),
-            }],
-            final_output_json_schema: None,
-            cwd: cwd.path().to_path_buf(),
-            approval_policy: AskForApproval::Never,
-            sandbox_policy: SandboxPolicy::DangerFullAccess,
-            model: session_model,
-            effort: None,
-            summary: None,
-            service_tier: None,
-            collaboration_mode: None,
-            personality: None,
-        })
-        .await?;
-    // This is a worst case scenario for the truncate logic.
+    submit_unified_exec_turn(
+        &test,
+        "exercise lag handling",
+        SandboxPolicy::DangerFullAccess,
+    )
+    .await?;
+    // This is a worst case scenario for the truncate logic, and CI can spend a
+    // while draining the lagged tail before the follow-up tool call completes.
     wait_for_event_with_timeout(
-        &codex,
+        &test.codex,
         |event| matches!(event, EventMsg::TurnComplete(_)),
-        Duration::from_secs(10),
+        UNIFIED_EXEC_LAGGED_OUTPUT_TIMEOUT,
     )
     .await;
 
@@ -2365,95 +2097,6 @@ PY
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn exec_command_wait_until_terminal_returns_exit_metadata() -> Result<()> {
-    skip_if_no_network!(Ok(()));
-    skip_if_sandbox!(Ok(()));
-    skip_if_windows!(Ok(()));
-
-    let server = start_mock_server().await;
-
-    let mut builder = test_codex().with_config(|config| {
-        config
-            .features
-            .enable(Feature::UnifiedExec)
-            .expect("test config should allow feature update");
-    });
-    let TestCodex {
-        codex,
-        cwd,
-        session_configured,
-        ..
-    } = builder.build(&server).await?;
-
-    let call_id = "uexec-wait-until-terminal";
-    let args = serde_json::json!({
-        "cmd": "sleep 0.2; echo ready",
-        "yield_time_ms": 10,
-        "wait_until_terminal": true,
-        "max_wait_ms": 1500,
-        "heartbeat_interval_ms": 100,
-    });
-
-    let responses = vec![
-        sse(vec![
-            ev_response_created("resp-1"),
-            ev_function_call(call_id, "exec_command", &serde_json::to_string(&args)?),
-            ev_completed("resp-1"),
-        ]),
-        sse(vec![
-            ev_assistant_message("msg-1", "done"),
-            ev_completed("resp-2"),
-        ]),
-    ];
-    let request_log = mount_sse_sequence(&server, responses).await;
-
-    let session_model = session_configured.model.clone();
-
-    codex
-        .submit(Op::UserTurn {
-            items: vec![UserInput::Text {
-                text: "wait for command completion".into(),
-                text_elements: Vec::new(),
-            }],
-            final_output_json_schema: None,
-            cwd: cwd.path().to_path_buf(),
-            approval_policy: AskForApproval::Never,
-            sandbox_policy: SandboxPolicy::DangerFullAccess,
-            model: session_model,
-            effort: None,
-            summary: None,
-            service_tier: None,
-            collaboration_mode: None,
-            personality: None,
-        })
-        .await?;
-
-    wait_for_event(&codex, |event| matches!(event, EventMsg::TurnComplete(_))).await;
-
-    let requests = request_log.requests();
-    assert!(!requests.is_empty(), "expected at least one POST request");
-    let bodies = requests
-        .into_iter()
-        .map(|request| request.body_json())
-        .collect::<Vec<_>>();
-
-    let outputs = collect_tool_outputs(&bodies)?;
-
-    let output = outputs
-        .get(call_id)
-        .expect("missing wait-until-terminal output");
-    assert!(output.process_id.is_none());
-    assert_eq!(output.exit_code, Some(0));
-    assert!(
-        output.output.contains("ready"),
-        "expected ready output, got {:?}",
-        output.output
-    );
-
-    Ok(())
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn unified_exec_timeout_and_followup_poll() -> Result<()> {
     skip_if_no_network!(Ok(()));
     skip_if_sandbox!(Ok(()));
@@ -2467,12 +2110,7 @@ async fn unified_exec_timeout_and_followup_poll() -> Result<()> {
             .enable(Feature::UnifiedExec)
             .expect("test config should allow feature update");
     });
-    let TestCodex {
-        codex,
-        cwd,
-        session_configured,
-        ..
-    } = builder.build(&server).await?;
+    let test = builder.build_remote_aware(&server).await?;
 
     let first_call_id = "uexec-timeout";
     let first_args = serde_json::json!({
@@ -2513,29 +2151,10 @@ async fn unified_exec_timeout_and_followup_poll() -> Result<()> {
     ];
     let request_log = mount_sse_sequence(&server, responses).await;
 
-    let session_model = session_configured.model.clone();
-
-    codex
-        .submit(Op::UserTurn {
-            items: vec![UserInput::Text {
-                text: "check timeout".into(),
-                text_elements: Vec::new(),
-            }],
-            final_output_json_schema: None,
-            cwd: cwd.path().to_path_buf(),
-            approval_policy: AskForApproval::Never,
-            sandbox_policy: SandboxPolicy::DangerFullAccess,
-            model: session_model,
-            effort: None,
-            summary: None,
-            service_tier: None,
-            collaboration_mode: None,
-            personality: None,
-        })
-        .await?;
+    submit_unified_exec_turn(&test, "check timeout", SandboxPolicy::DangerFullAccess).await?;
 
     loop {
-        let event = codex.next_event().await.expect("event");
+        let event = test.codex.next_event().await.expect("event");
         if matches!(event.msg, EventMsg::TurnComplete(_)) {
             break;
         }
@@ -2580,12 +2199,7 @@ async fn unified_exec_formats_large_output_summary() -> Result<()> {
             .enable(Feature::UnifiedExec)
             .expect("test config should allow feature update");
     });
-    let TestCodex {
-        codex,
-        cwd,
-        session_configured,
-        ..
-    } = builder.build(&server).await?;
+    let test = builder.build_remote_aware(&server).await?;
 
     let script = r#"python3 - <<'PY'
 import sys
@@ -2613,28 +2227,17 @@ PY
     ];
     let request_log = mount_sse_sequence(&server, responses).await;
 
-    let session_model = session_configured.model.clone();
+    submit_unified_exec_turn(
+        &test,
+        "summarize large output",
+        SandboxPolicy::DangerFullAccess,
+    )
+    .await?;
 
-    codex
-        .submit(Op::UserTurn {
-            items: vec![UserInput::Text {
-                text: "summarize large output".into(),
-                text_elements: Vec::new(),
-            }],
-            final_output_json_schema: None,
-            cwd: cwd.path().to_path_buf(),
-            approval_policy: AskForApproval::Never,
-            sandbox_policy: SandboxPolicy::DangerFullAccess,
-            model: session_model,
-            effort: None,
-            summary: None,
-            service_tier: None,
-            collaboration_mode: None,
-            personality: None,
-        })
-        .await?;
-
-    wait_for_event(&codex, |event| matches!(event, EventMsg::TurnComplete(_))).await;
+    wait_for_event(&test.codex, |event| {
+        matches!(event, EventMsg::TurnComplete(_))
+    })
+    .await;
 
     let requests = request_log.requests();
     assert!(!requests.is_empty(), "expected at least one POST request");
@@ -2647,22 +2250,8 @@ PY
     let large_output = outputs.get(call_id).expect("missing large output summary");
 
     let output_text = large_output.output.replace("\r\n", "\n");
-    assert!(
-        output_text.starts_with("Total output lines: "),
-        "expected large output summary header, got {output_text:?}"
-    );
-    assert!(
-        output_text.contains("…") && output_text.contains("tokens truncated"),
-        "expected truncation marker in large output summary, got {output_text:?}"
-    );
-    assert!(
-        output_text.contains("token token \ntoken token \ntoken token \n"),
-        "expected preserved output prefix in large output summary, got {output_text:?}"
-    );
-    assert!(
-        output_text.ends_with("token token ") || output_text.ends_with("token token \n"),
-        "expected preserved output suffix in large output summary, got {output_text:?}"
-    );
+    let truncated_pattern = r"(?s)^Total output lines: \d+\n\n(token token \n){5,}.*…\d+ tokens truncated….*(token token \n){5,}$";
+    assert_regex_match(truncated_pattern, &output_text);
 
     let original_tokens = large_output
         .original_token_count
@@ -2723,6 +2312,7 @@ async fn unified_exec_runs_under_sandbox() -> Result<()> {
             final_output_json_schema: None,
             cwd: cwd.path().to_path_buf(),
             approval_policy: AskForApproval::Never,
+            approvals_reviewer: None,
             // Important!
             sandbox_policy: SandboxPolicy::new_read_only_policy(),
             model: session_model,
@@ -2746,7 +2336,134 @@ async fn unified_exec_runs_under_sandbox() -> Result<()> {
     let outputs = collect_tool_outputs(&bodies)?;
     let output = outputs.get(call_id).expect("missing output");
 
-    assert_eq!(output.output.trim_end_matches(['\r', '\n']), "hello");
+    assert_regex_match("hello[\r\n]+", &output.output);
+
+    Ok(())
+}
+
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn unified_exec_enforces_glob_deny_read_policy() -> Result<()> {
+    use codex_config::Constrained;
+    use codex_protocol::permissions::FileSystemAccessMode;
+    use codex_protocol::permissions::FileSystemPath;
+    use codex_protocol::permissions::FileSystemSandboxEntry;
+    use codex_protocol::permissions::FileSystemSandboxPolicy;
+
+    skip_if_no_network!(Ok(()));
+    skip_if_sandbox!(Ok(()));
+
+    let server = start_mock_server().await;
+    let read_only_policy = SandboxPolicy::new_read_only_policy();
+    let read_only_policy_for_config = read_only_policy.clone();
+    let mut builder = test_codex().with_config(move |config| {
+        config
+            .features
+            .enable(Feature::UnifiedExec)
+            .expect("test config should allow feature update");
+        config.permissions.sandbox_policy = Constrained::allow_any(read_only_policy_for_config);
+        let mut file_system_sandbox_policy = FileSystemSandboxPolicy::default();
+        file_system_sandbox_policy
+            .entries
+            .push(FileSystemSandboxEntry {
+                path: FileSystemPath::GlobPattern {
+                    pattern: format!("{}/**/*.env", config.cwd.as_path().display()),
+                },
+                access: FileSystemAccessMode::None,
+            });
+        config.permissions.file_system_sandbox_policy = file_system_sandbox_policy;
+    });
+    let TestCodex {
+        codex,
+        cwd,
+        session_configured,
+        ..
+    } = builder.build(&server).await?;
+
+    let fixture_dir = cwd.path().join("glob-deny-read");
+    fs::create_dir_all(&fixture_dir).context("create glob deny-read fixture directory")?;
+    let denied_path = fixture_dir.join("secret.env");
+    let allowed_path = fixture_dir.join("notes.txt");
+    let secret = "unified exec glob deny-read secret";
+    let allowed = "unified exec glob deny-read allowed";
+    fs::write(&denied_path, format!("{secret}\n")).context("write denied fixture")?;
+    fs::write(&allowed_path, format!("{allowed}\n")).context("write allowed fixture")?;
+
+    let call_id = "uexec-glob-deny-read";
+    let cmd = format!(
+        "read_status=0; cat {denied_path:?} || read_status=$?; cat {allowed_path:?}; exit $read_status"
+    );
+    let args = serde_json::json!({
+        "cmd": cmd,
+        "yield_time_ms": 5_000,
+    });
+
+    let responses = vec![
+        sse(vec![
+            ev_response_created("resp-1"),
+            ev_function_call(call_id, "exec_command", &serde_json::to_string(&args)?),
+            ev_completed("resp-1"),
+        ]),
+        sse(vec![
+            ev_assistant_message("msg-1", "done"),
+            ev_completed("resp-2"),
+        ]),
+    ];
+    let request_log = mount_sse_sequence(&server, responses).await;
+
+    let session_model = session_configured.model.clone();
+    codex
+        .submit(Op::UserTurn {
+            items: vec![UserInput::Text {
+                text: "read the fixture files".into(),
+                text_elements: Vec::new(),
+            }],
+            final_output_json_schema: None,
+            cwd: cwd.path().to_path_buf(),
+            approval_policy: AskForApproval::Never,
+            approvals_reviewer: None,
+            sandbox_policy: read_only_policy,
+            model: session_model,
+            effort: None,
+            summary: None,
+            service_tier: None,
+            collaboration_mode: None,
+            personality: None,
+        })
+        .await?;
+
+    wait_for_event(&codex, |event| matches!(event, EventMsg::TurnComplete(_))).await;
+
+    let requests = request_log.requests();
+    assert!(!requests.is_empty(), "expected at least one POST request");
+    let bodies = requests
+        .into_iter()
+        .map(|request| request.body_json())
+        .collect::<Vec<_>>();
+
+    let outputs = collect_tool_outputs(&bodies)?;
+    let output = outputs.get(call_id).expect("missing output");
+
+    assert!(
+        output.exit_code.is_some_and(|code| code != 0),
+        "glob deny-read should surface a non-zero exit code: {output:?}"
+    );
+    assert!(
+        output.output.contains(allowed),
+        "expected allowed file contents in unified exec output: {output:?}"
+    );
+    assert!(
+        !output.output.contains(secret),
+        "denied file contents leaked into unified exec output: {output:?}"
+    );
+    let output_lower = output.output.to_lowercase();
+    let has_denial = output_lower.contains("permission denied")
+        || output_lower.contains("operation not permitted")
+        || output_lower.contains("read-only file system");
+    assert!(
+        has_denial,
+        "expected sandbox denial details in unified exec output: {output:?}"
+    );
 
     Ok(())
 }
@@ -2832,6 +2549,7 @@ async fn unified_exec_python_prompt_under_seatbelt() -> Result<()> {
             final_output_json_schema: None,
             cwd: cwd.path().to_path_buf(),
             approval_policy: AskForApproval::Never,
+            approvals_reviewer: None,
             sandbox_policy: SandboxPolicy::new_read_only_policy(),
             model: session_model,
             effort: None,
@@ -2895,12 +2613,7 @@ async fn unified_exec_runs_on_all_platforms() -> Result<()> {
             .enable(Feature::UnifiedExec)
             .expect("test config should allow feature update");
     });
-    let TestCodex {
-        codex,
-        cwd,
-        session_configured,
-        ..
-    } = builder.build(&server).await?;
+    let test = builder.build_remote_aware(&server).await?;
 
     let call_id = "uexec";
     let args = serde_json::json!({
@@ -2920,28 +2633,17 @@ async fn unified_exec_runs_on_all_platforms() -> Result<()> {
     ];
     let request_log = mount_sse_sequence(&server, responses).await;
 
-    let session_model = session_configured.model.clone();
+    submit_unified_exec_turn(
+        &test,
+        "summarize large output",
+        SandboxPolicy::DangerFullAccess,
+    )
+    .await?;
 
-    codex
-        .submit(Op::UserTurn {
-            items: vec![UserInput::Text {
-                text: "summarize large output".into(),
-                text_elements: Vec::new(),
-            }],
-            final_output_json_schema: None,
-            cwd: cwd.path().to_path_buf(),
-            approval_policy: AskForApproval::Never,
-            sandbox_policy: SandboxPolicy::DangerFullAccess,
-            model: session_model,
-            effort: None,
-            summary: None,
-            service_tier: None,
-            collaboration_mode: None,
-            personality: None,
-        })
-        .await?;
-
-    wait_for_event(&codex, |event| matches!(event, EventMsg::TurnComplete(_))).await;
+    wait_for_event(&test.codex, |event| {
+        matches!(event, EventMsg::TurnComplete(_))
+    })
+    .await;
 
     let requests = request_log.requests();
     assert!(!requests.is_empty(), "expected at least one POST request");
@@ -2975,12 +2677,7 @@ async fn unified_exec_prunes_exited_sessions_first() -> Result<()> {
             .enable(Feature::UnifiedExec)
             .expect("test config should allow feature update");
     });
-    let TestCodex {
-        codex,
-        cwd,
-        session_configured,
-        ..
-    } = builder.build(&server).await?;
+    let test = builder.build_remote_aware(&server).await?;
 
     const MAX_SESSIONS_FOR_TEST: i32 = 64;
     const FILLER_SESSIONS: i32 = MAX_SESSIONS_FOR_TEST - 1;
@@ -3059,28 +2756,12 @@ async fn unified_exec_prunes_exited_sessions_first() -> Result<()> {
     let response_mock =
         mount_sse_sequence(&server, vec![first_response, completion_response]).await;
 
-    let session_model = session_configured.model.clone();
+    submit_unified_exec_turn(&test, "fill session cache", SandboxPolicy::DangerFullAccess).await?;
 
-    codex
-        .submit(Op::UserTurn {
-            items: vec![UserInput::Text {
-                text: "fill session cache".into(),
-                text_elements: Vec::new(),
-            }],
-            final_output_json_schema: None,
-            cwd: cwd.path().to_path_buf(),
-            approval_policy: AskForApproval::Never,
-            sandbox_policy: SandboxPolicy::DangerFullAccess,
-            model: session_model,
-            effort: None,
-            summary: None,
-            service_tier: None,
-            collaboration_mode: None,
-            personality: None,
-        })
-        .await?;
-
-    wait_for_event(&codex, |event| matches!(event, EventMsg::TurnComplete(_))).await;
+    wait_for_event(&test.codex, |event| {
+        matches!(event, EventMsg::TurnComplete(_))
+    })
+    .await;
 
     let requests = response_mock.requests();
     assert!(

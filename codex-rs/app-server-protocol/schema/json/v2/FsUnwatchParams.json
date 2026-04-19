@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "Stop filesystem watch notifications for a prior `fs/watch`.",
+  "properties": {
+    "watchId": {
+      "description": "Watch identifier returned by `fs/watch`.",
+      "type": "string"
+    }
+  },
+  "required": [
+    "watchId"
+  ],
+  "title": "FsUnwatchParams",
+  "type": "object"
+}

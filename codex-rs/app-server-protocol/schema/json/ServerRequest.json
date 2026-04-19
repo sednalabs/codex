@@ -1,15 +1,14 @@
 {
-  "$schema": "http://json-schema.org/draft-07/schema#",
-  "definitions": {
+  "$defs": {
     "AbsolutePathBuf": {
-      "description": "A path that is guaranteed to be absolute and normalized (though it is not guaranteed to be canonicalized or exist on the filesystem).\n\nIMPORTANT: When deserializing an `AbsolutePathBuf`, a base path must be set using [AbsolutePathBufGuard::new]. If no base path is set, the deserialization will fail unless the path being deserialized is already absolute.",
+      "description": "A path that is guaranteed to be absolute and normalized (though it is not\nguaranteed to be canonicalized or exist on the filesystem).\n\nIMPORTANT: When deserializing an `AbsolutePathBuf`, a base path must be set\nusing [AbsolutePathBufGuard::new]. If no base path is set, the\ndeserialization will fail unless the path being deserialized is already\nabsolute.",
       "type": "string"
     },
     "AdditionalFileSystemPermissions": {
       "properties": {
         "read": {
           "items": {
-            "$ref": "#/definitions/AbsolutePathBuf"
+            "$ref": "#/$defs/AbsolutePathBuf"
           },
           "type": [
             "array",
@@ -18,7 +17,7 @@
         },
         "write": {
           "items": {
-            "$ref": "#/definitions/AbsolutePathBuf"
+            "$ref": "#/$defs/AbsolutePathBuf"
           },
           "type": [
             "array",
@@ -26,41 +25,6 @@
           ]
         }
       },
-      "type": "object"
-    },
-    "AdditionalMacOsPermissions": {
-      "properties": {
-        "accessibility": {
-          "type": "boolean"
-        },
-        "automations": {
-          "$ref": "#/definitions/MacOsAutomationPermission"
-        },
-        "calendar": {
-          "type": "boolean"
-        },
-        "contacts": {
-          "$ref": "#/definitions/MacOsContactsPermission"
-        },
-        "launchServices": {
-          "type": "boolean"
-        },
-        "preferences": {
-          "$ref": "#/definitions/MacOsPreferencesPermission"
-        },
-        "reminders": {
-          "type": "boolean"
-        }
-      },
-      "required": [
-        "accessibility",
-        "automations",
-        "calendar",
-        "contacts",
-        "launchServices",
-        "preferences",
-        "reminders"
-      ],
       "type": "object"
     },
     "AdditionalNetworkPermissions": {
@@ -79,17 +43,7 @@
         "fileSystem": {
           "anyOf": [
             {
-              "$ref": "#/definitions/AdditionalFileSystemPermissions"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
-        "macos": {
-          "anyOf": [
-            {
-              "$ref": "#/definitions/AdditionalMacOsPermissions"
+              "$ref": "#/$defs/AdditionalFileSystemPermissions"
             },
             {
               "type": "null"
@@ -99,7 +53,7 @@
         "network": {
           "anyOf": [
             {
-              "$ref": "#/definitions/AdditionalNetworkPermissions"
+              "$ref": "#/$defs/AdditionalNetworkPermissions"
             },
             {
               "type": "null"
@@ -112,20 +66,20 @@
     "ApplyPatchApprovalParams": {
       "properties": {
         "callId": {
-          "description": "Use to correlate this with [codex_protocol::protocol::PatchApplyBeginEvent] and [codex_protocol::protocol::PatchApplyEndEvent].",
+          "description": "Use to correlate this with [codex_protocol::protocol::PatchApplyBeginEvent]\nand [codex_protocol::protocol::PatchApplyEndEvent].",
           "type": "string"
         },
         "conversationId": {
-          "$ref": "#/definitions/ThreadId"
+          "$ref": "#/$defs/ThreadId"
         },
         "fileChanges": {
           "additionalProperties": {
-            "$ref": "#/definitions/FileChange"
+            "$ref": "#/$defs/FileChange"
           },
           "type": "object"
         },
         "grantRoot": {
-          "description": "When set, the agent is asking the user to allow writes under this root for the remainder of the session (unclear if this is honored today).",
+          "description": "When set, the agent is asking the user to allow writes under this root\nfor the remainder of the session (unclear if this is honored today).",
           "type": [
             "string",
             "null"
@@ -140,8 +94,8 @@
         }
       },
       "required": [
-        "callId",
         "conversationId",
+        "callId",
         "fileChanges"
       ],
       "type": "object"
@@ -149,14 +103,14 @@
     "ChatgptAuthTokensRefreshParams": {
       "properties": {
         "previousAccountId": {
-          "description": "Workspace/account identifier that Codex was previously using.\n\nClients that manage multiple accounts/workspaces can use this as a hint to refresh the token for the correct workspace.\n\nThis may be `null` when the prior auth state did not include a workspace identifier (`chatgpt_account_id`).",
+          "description": "Workspace/account identifier that Codex was previously using.\n\nClients that manage multiple accounts/workspaces can use this as a hint\nto refresh the token for the correct workspace.\n\nThis may be `null` when the prior auth state did not include a workspace\nidentifier (`chatgpt_account_id`).",
           "type": [
             "string",
             "null"
           ]
         },
         "reason": {
-          "$ref": "#/definitions/ChatgptAuthTokensRefreshReason"
+          "$ref": "#/$defs/ChatgptAuthTokensRefreshReason"
         }
       },
       "required": [
@@ -167,10 +121,8 @@
     "ChatgptAuthTokensRefreshReason": {
       "oneOf": [
         {
+          "const": "unauthorized",
           "description": "Codex attempted a backend request and received `401 Unauthorized`.",
-          "enum": [
-            "unauthorized"
-          ],
           "type": "string"
         }
       ]
@@ -186,21 +138,19 @@
               "type": "string"
             },
             "path": {
-              "type": "string"
+              "$ref": "#/$defs/AbsolutePathBuf"
             },
             "type": {
-              "enum": [
-                "read"
-              ],
+              "const": "read",
               "title": "ReadCommandActionType",
               "type": "string"
             }
           },
           "required": [
+            "type",
             "command",
             "name",
-            "path",
-            "type"
+            "path"
           ],
           "title": "ReadCommandAction",
           "type": "object"
@@ -217,16 +167,14 @@
               ]
             },
             "type": {
-              "enum": [
-                "listFiles"
-              ],
+              "const": "listFiles",
               "title": "ListFilesCommandActionType",
               "type": "string"
             }
           },
           "required": [
-            "command",
-            "type"
+            "type",
+            "command"
           ],
           "title": "ListFilesCommandAction",
           "type": "object"
@@ -249,16 +197,14 @@
               ]
             },
             "type": {
-              "enum": [
-                "search"
-              ],
+              "const": "search",
               "title": "SearchCommandActionType",
               "type": "string"
             }
           },
           "required": [
-            "command",
-            "type"
+            "type",
+            "command"
           ],
           "title": "SearchCommandAction",
           "type": "object"
@@ -269,16 +215,14 @@
               "type": "string"
             },
             "type": {
-              "enum": [
-                "unknown"
-              ],
+              "const": "unknown",
               "title": "UnknownCommandActionType",
               "type": "string"
             }
           },
           "required": [
-            "command",
-            "type"
+            "type",
+            "command"
           ],
           "title": "UnknownCommandAction",
           "type": "object"
@@ -288,22 +232,18 @@
     "CommandExecutionApprovalDecision": {
       "oneOf": [
         {
+          "const": "accept",
           "description": "User approved the command.",
-          "enum": [
-            "accept"
-          ],
           "type": "string"
         },
         {
-          "description": "User approved the command and future prompts in the same session-scoped approval cache should run without prompting.",
-          "enum": [
-            "acceptForSession"
-          ],
+          "const": "acceptForSession",
+          "description": "User approved the command and future prompts in the same session-scoped\napproval cache should run without prompting.",
           "type": "string"
         },
         {
           "additionalProperties": false,
-          "description": "User approved the command, and wants to apply the proposed execpolicy amendment so future matching commands can run without prompting.",
+          "description": "User approved the command, and wants to apply the proposed execpolicy amendment so future\nmatching commands can run without prompting.",
           "properties": {
             "acceptWithExecpolicyAmendment": {
               "properties": {
@@ -333,7 +273,7 @@
             "applyNetworkPolicyAmendment": {
               "properties": {
                 "network_policy_amendment": {
-                  "$ref": "#/definitions/NetworkPolicyAmendment"
+                  "$ref": "#/$defs/NetworkPolicyAmendment"
                 }
               },
               "required": [
@@ -349,27 +289,44 @@
           "type": "object"
         },
         {
+          "const": "decline",
           "description": "User denied the command. The agent will continue the turn.",
-          "enum": [
-            "decline"
-          ],
           "type": "string"
         },
         {
+          "const": "cancel",
           "description": "User denied the command. The turn will also be immediately interrupted.",
-          "enum": [
-            "cancel"
-          ],
           "type": "string"
         }
       ]
     },
     "CommandExecutionRequestApprovalParams": {
       "properties": {
+        "additionalPermissions": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AdditionalPermissionProfile"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Optional additional permissions requested for this command."
+        },
         "approvalId": {
-          "description": "Unique identifier for this specific approval callback.\n\nFor regular shell/unified_exec approvals, this is null.\n\nFor zsh-exec-bridge subcommand approvals, multiple callbacks can belong to one parent `itemId`, so `approvalId` is a distinct opaque callback id (a UUID) used to disambiguate routing.",
+          "description": "Unique identifier for this specific approval callback.\n\nFor regular shell/unified_exec approvals, this is null.\n\nFor zsh-exec-bridge subcommand approvals, multiple callbacks can belong to\none parent `itemId`, so `approvalId` is a distinct opaque callback id\n(a UUID) used to disambiguate routing.",
           "type": [
             "string",
+            "null"
+          ]
+        },
+        "availableDecisions": {
+          "description": "Ordered list of decisions the client may present for this prompt.",
+          "items": {
+            "$ref": "#/$defs/CommandExecutionApprovalDecision"
+          },
+          "type": [
+            "array",
             "null"
           ]
         },
@@ -383,7 +340,7 @@
         "commandActions": {
           "description": "Best-effort parsed command actions for friendly display.",
           "items": {
-            "$ref": "#/definitions/CommandAction"
+            "$ref": "#/$defs/CommandAction"
           },
           "type": [
             "array",
@@ -391,11 +348,15 @@
           ]
         },
         "cwd": {
-          "description": "The command's working directory.",
-          "type": [
-            "string",
-            "null"
-          ]
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AbsolutePathBuf"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The command's working directory."
         },
         "itemId": {
           "type": "string"
@@ -403,7 +364,7 @@
         "networkApprovalContext": {
           "anyOf": [
             {
-              "$ref": "#/definitions/NetworkApprovalContext"
+              "$ref": "#/$defs/NetworkApprovalContext"
             },
             {
               "type": "null"
@@ -424,7 +385,7 @@
         "proposedNetworkPolicyAmendments": {
           "description": "Optional proposed network policy amendments (allow/deny host) for future requests.",
           "items": {
-            "$ref": "#/definitions/NetworkPolicyAmendment"
+            "$ref": "#/$defs/NetworkPolicyAmendment"
           },
           "type": [
             "array",
@@ -446,20 +407,9 @@
         }
       },
       "required": [
-        "itemId",
         "threadId",
-        "turnId"
-      ],
-      "type": "object"
-    },
-    "CommandExecutionRequestApprovalSkillMetadata": {
-      "properties": {
-        "pathToSkillsMd": {
-          "type": "string"
-        }
-      },
-      "required": [
-        "pathToSkillsMd"
+        "turnId",
+        "itemId"
       ],
       "type": "object"
     },
@@ -480,11 +430,11 @@
         }
       },
       "required": [
-        "arguments",
-        "callId",
         "threadId",
+        "turnId",
+        "callId",
         "tool",
-        "turnId"
+        "arguments"
       ],
       "type": "object"
     },
@@ -498,7 +448,7 @@
           ]
         },
         "callId": {
-          "description": "Use to correlate this with [codex_protocol::protocol::ExecCommandBeginEvent] and [codex_protocol::protocol::ExecCommandEndEvent].",
+          "description": "Use to correlate this with [codex_protocol::protocol::ExecCommandBeginEvent]\nand [codex_protocol::protocol::ExecCommandEndEvent].",
           "type": "string"
         },
         "command": {
@@ -508,14 +458,14 @@
           "type": "array"
         },
         "conversationId": {
-          "$ref": "#/definitions/ThreadId"
+          "$ref": "#/$defs/ThreadId"
         },
         "cwd": {
           "type": "string"
         },
         "parsedCmd": {
           "items": {
-            "$ref": "#/definitions/ParsedCommand"
+            "$ref": "#/$defs/ParsedCommand"
           },
           "type": "array"
         },
@@ -527,9 +477,9 @@
         }
       },
       "required": [
+        "conversationId",
         "callId",
         "command",
-        "conversationId",
         "cwd",
         "parsedCmd"
       ],
@@ -543,16 +493,14 @@
               "type": "string"
             },
             "type": {
-              "enum": [
-                "add"
-              ],
+              "const": "add",
               "title": "AddFileChangeType",
               "type": "string"
             }
           },
           "required": [
-            "content",
-            "type"
+            "type",
+            "content"
           ],
           "title": "AddFileChange",
           "type": "object"
@@ -563,16 +511,14 @@
               "type": "string"
             },
             "type": {
-              "enum": [
-                "delete"
-              ],
+              "const": "delete",
               "title": "DeleteFileChangeType",
               "type": "string"
             }
           },
           "required": [
-            "content",
-            "type"
+            "type",
+            "content"
           ],
           "title": "DeleteFileChange",
           "type": "object"
@@ -586,9 +532,7 @@
               ]
             },
             "type": {
-              "enum": [
-                "update"
-              ],
+              "const": "update",
               "title": "UpdateFileChangeType",
               "type": "string"
             },
@@ -608,7 +552,7 @@
     "FileChangeRequestApprovalParams": {
       "properties": {
         "grantRoot": {
-          "description": "[UNSTABLE] When set, the agent is asking the user to allow writes under this root for the remainder of the session (unclear if this is honored today).",
+          "description": "[UNSTABLE] When set, the agent is asking the user to allow writes under this root\nfor the remainder of the session (unclear if this is honored today).",
           "type": [
             "string",
             "null"
@@ -632,54 +576,11 @@
         }
       },
       "required": [
-        "itemId",
         "threadId",
-        "turnId"
+        "turnId",
+        "itemId"
       ],
       "type": "object"
-    },
-    "MacOsAutomationPermission": {
-      "oneOf": [
-        {
-          "enum": [
-            "none",
-            "all"
-          ],
-          "type": "string"
-        },
-        {
-          "additionalProperties": false,
-          "properties": {
-            "bundle_ids": {
-              "items": {
-                "type": "string"
-              },
-              "type": "array"
-            }
-          },
-          "required": [
-            "bundle_ids"
-          ],
-          "title": "BundleIdsMacOsAutomationPermission",
-          "type": "object"
-        }
-      ]
-    },
-    "MacOsContactsPermission": {
-      "enum": [
-        "none",
-        "read_only",
-        "read_write"
-      ],
-      "type": "string"
-    },
-    "MacOsPreferencesPermission": {
-      "enum": [
-        "none",
-        "read_only",
-        "read_write"
-      ],
-      "type": "string"
     },
     "McpElicitationArrayType": {
       "enum": [
@@ -709,7 +610,7 @@
           ]
         },
         "type": {
-          "$ref": "#/definitions/McpElicitationBooleanType"
+          "$ref": "#/$defs/McpElicitationBooleanType"
         }
       },
       "required": [
@@ -742,13 +643,13 @@
     "McpElicitationEnumSchema": {
       "anyOf": [
         {
-          "$ref": "#/definitions/McpElicitationSingleSelectEnumSchema"
+          "$ref": "#/$defs/McpElicitationSingleSelectEnumSchema"
         },
         {
-          "$ref": "#/definitions/McpElicitationMultiSelectEnumSchema"
+          "$ref": "#/$defs/McpElicitationMultiSelectEnumSchema"
         },
         {
-          "$ref": "#/definitions/McpElicitationLegacyTitledEnumSchema"
+          "$ref": "#/$defs/McpElicitationLegacyTitledEnumSchema"
         }
       ]
     },
@@ -789,22 +690,22 @@
           ]
         },
         "type": {
-          "$ref": "#/definitions/McpElicitationStringType"
+          "$ref": "#/$defs/McpElicitationStringType"
         }
       },
       "required": [
-        "enum",
-        "type"
+        "type",
+        "enum"
       ],
       "type": "object"
     },
     "McpElicitationMultiSelectEnumSchema": {
       "anyOf": [
         {
-          "$ref": "#/definitions/McpElicitationUntitledMultiSelectEnumSchema"
+          "$ref": "#/$defs/McpElicitationUntitledMultiSelectEnumSchema"
         },
         {
-          "$ref": "#/definitions/McpElicitationTitledMultiSelectEnumSchema"
+          "$ref": "#/$defs/McpElicitationTitledMultiSelectEnumSchema"
         }
       ]
     },
@@ -845,7 +746,7 @@
           ]
         },
         "type": {
-          "$ref": "#/definitions/McpElicitationNumberType"
+          "$ref": "#/$defs/McpElicitationNumberType"
         }
       },
       "required": [
@@ -869,22 +770,22 @@
     "McpElicitationPrimitiveSchema": {
       "anyOf": [
         {
-          "$ref": "#/definitions/McpElicitationEnumSchema"
+          "$ref": "#/$defs/McpElicitationEnumSchema"
         },
         {
-          "$ref": "#/definitions/McpElicitationStringSchema"
+          "$ref": "#/$defs/McpElicitationStringSchema"
         },
         {
-          "$ref": "#/definitions/McpElicitationNumberSchema"
+          "$ref": "#/$defs/McpElicitationNumberSchema"
         },
         {
-          "$ref": "#/definitions/McpElicitationBooleanSchema"
+          "$ref": "#/$defs/McpElicitationBooleanSchema"
         }
       ]
     },
     "McpElicitationSchema": {
       "additionalProperties": false,
-      "description": "Typed form schema for MCP `elicitation/create` requests.\n\nThis matches the `requestedSchema` shape from the MCP 2025-11-25 `ElicitRequestFormParams` schema.",
+      "description": "Typed form schema for MCP `elicitation/create` requests.\n\nThis matches the `requestedSchema` shape from the MCP 2025-11-25\n`ElicitRequestFormParams` schema.",
       "properties": {
         "$schema": {
           "type": [
@@ -894,7 +795,7 @@
         },
         "properties": {
           "additionalProperties": {
-            "$ref": "#/definitions/McpElicitationPrimitiveSchema"
+            "$ref": "#/$defs/McpElicitationPrimitiveSchema"
           },
           "type": "object"
         },
@@ -908,22 +809,22 @@
           ]
         },
         "type": {
-          "$ref": "#/definitions/McpElicitationObjectType"
+          "$ref": "#/$defs/McpElicitationObjectType"
         }
       },
       "required": [
-        "properties",
-        "type"
+        "type",
+        "properties"
       ],
       "type": "object"
     },
     "McpElicitationSingleSelectEnumSchema": {
       "anyOf": [
         {
-          "$ref": "#/definitions/McpElicitationUntitledSingleSelectEnumSchema"
+          "$ref": "#/$defs/McpElicitationUntitledSingleSelectEnumSchema"
         },
         {
-          "$ref": "#/definitions/McpElicitationTitledSingleSelectEnumSchema"
+          "$ref": "#/$defs/McpElicitationTitledSingleSelectEnumSchema"
         }
       ]
     },
@@ -954,7 +855,7 @@
         "format": {
           "anyOf": [
             {
-              "$ref": "#/definitions/McpElicitationStringFormat"
+              "$ref": "#/$defs/McpElicitationStringFormat"
             },
             {
               "type": "null"
@@ -963,7 +864,7 @@
         },
         "maxLength": {
           "format": "uint32",
-          "minimum": 0.0,
+          "minimum": 0,
           "type": [
             "integer",
             "null"
@@ -971,7 +872,7 @@
         },
         "minLength": {
           "format": "uint32",
-          "minimum": 0.0,
+          "minimum": 0,
           "type": [
             "integer",
             "null"
@@ -984,7 +885,7 @@
           ]
         },
         "type": {
-          "$ref": "#/definitions/McpElicitationStringType"
+          "$ref": "#/$defs/McpElicitationStringType"
         }
       },
       "required": [
@@ -1003,7 +904,7 @@
       "properties": {
         "anyOf": {
           "items": {
-            "$ref": "#/definitions/McpElicitationConstOption"
+            "$ref": "#/$defs/McpElicitationConstOption"
           },
           "type": "array"
         }
@@ -1032,11 +933,11 @@
           ]
         },
         "items": {
-          "$ref": "#/definitions/McpElicitationTitledEnumItems"
+          "$ref": "#/$defs/McpElicitationTitledEnumItems"
         },
         "maxItems": {
           "format": "uint64",
-          "minimum": 0.0,
+          "minimum": 0,
           "type": [
             "integer",
             "null"
@@ -1044,7 +945,7 @@
         },
         "minItems": {
           "format": "uint64",
-          "minimum": 0.0,
+          "minimum": 0,
           "type": [
             "integer",
             "null"
@@ -1057,12 +958,12 @@
           ]
         },
         "type": {
-          "$ref": "#/definitions/McpElicitationArrayType"
+          "$ref": "#/$defs/McpElicitationArrayType"
         }
       },
       "required": [
-        "items",
-        "type"
+        "type",
+        "items"
       ],
       "type": "object"
     },
@@ -1083,7 +984,7 @@
         },
         "oneOf": {
           "items": {
-            "$ref": "#/definitions/McpElicitationConstOption"
+            "$ref": "#/$defs/McpElicitationConstOption"
           },
           "type": "array"
         },
@@ -1094,12 +995,12 @@
           ]
         },
         "type": {
-          "$ref": "#/definitions/McpElicitationStringType"
+          "$ref": "#/$defs/McpElicitationStringType"
         }
       },
       "required": [
-        "oneOf",
-        "type"
+        "type",
+        "oneOf"
       ],
       "type": "object"
     },
@@ -1113,12 +1014,12 @@
           "type": "array"
         },
         "type": {
-          "$ref": "#/definitions/McpElicitationStringType"
+          "$ref": "#/$defs/McpElicitationStringType"
         }
       },
       "required": [
-        "enum",
-        "type"
+        "type",
+        "enum"
       ],
       "type": "object"
     },
@@ -1141,11 +1042,11 @@
           ]
         },
         "items": {
-          "$ref": "#/definitions/McpElicitationUntitledEnumItems"
+          "$ref": "#/$defs/McpElicitationUntitledEnumItems"
         },
         "maxItems": {
           "format": "uint64",
-          "minimum": 0.0,
+          "minimum": 0,
           "type": [
             "integer",
             "null"
@@ -1153,7 +1054,7 @@
         },
         "minItems": {
           "format": "uint64",
-          "minimum": 0.0,
+          "minimum": 0,
           "type": [
             "integer",
             "null"
@@ -1166,12 +1067,12 @@
           ]
         },
         "type": {
-          "$ref": "#/definitions/McpElicitationArrayType"
+          "$ref": "#/$defs/McpElicitationArrayType"
         }
       },
       "required": [
-        "items",
-        "type"
+        "type",
+        "items"
       ],
       "type": "object"
     },
@@ -1203,12 +1104,12 @@
           ]
         },
         "type": {
-          "$ref": "#/definitions/McpElicitationStringType"
+          "$ref": "#/$defs/McpElicitationStringType"
         }
       },
       "required": [
-        "enum",
-        "type"
+        "type",
+        "enum"
       ],
       "type": "object"
     },
@@ -1221,18 +1122,16 @@
               "type": "string"
             },
             "mode": {
-              "enum": [
-                "form"
-              ],
+              "const": "form",
               "type": "string"
             },
             "requestedSchema": {
-              "$ref": "#/definitions/McpElicitationSchema"
+              "$ref": "#/$defs/McpElicitationSchema"
             }
           },
           "required": [
-            "message",
             "mode",
+            "message",
             "requestedSchema"
           ],
           "type": "object"
@@ -1247,9 +1146,7 @@
               "type": "string"
             },
             "mode": {
-              "enum": [
-                "url"
-              ],
+              "const": "url",
               "type": "string"
             },
             "url": {
@@ -1257,10 +1154,10 @@
             }
           },
           "required": [
-            "elicitationId",
-            "message",
             "mode",
-            "url"
+            "message",
+            "url",
+            "elicitationId"
           ],
           "type": "object"
         }
@@ -1273,7 +1170,7 @@
           "type": "string"
         },
         "turnId": {
-          "description": "Active Codex turn when this elicitation was observed, if app-server could correlate one.\n\nThis is nullable because MCP models elicitation as a standalone server-to-client request identified by the MCP server request id. It may be triggered during a turn, but turn context is app-server correlation rather than part of the protocol identity of the elicitation itself.",
+          "description": "Active Codex turn when this elicitation was observed, if app-server could correlate one.\n\nThis is nullable because MCP models elicitation as a standalone server-to-client request\nidentified by the MCP server request id. It may be triggered during a turn, but turn\ncontext is app-server correlation rather than part of the protocol identity of the\nelicitation itself.",
           "type": [
             "string",
             "null"
@@ -1281,8 +1178,8 @@
         }
       },
       "required": [
-        "serverName",
-        "threadId"
+        "threadId",
+        "serverName"
       ],
       "type": "object"
     },
@@ -1292,7 +1189,7 @@
           "type": "string"
         },
         "protocol": {
-          "$ref": "#/definitions/NetworkApprovalProtocol"
+          "$ref": "#/$defs/NetworkApprovalProtocol"
         }
       },
       "required": [
@@ -1313,15 +1210,15 @@
     "NetworkPolicyAmendment": {
       "properties": {
         "action": {
-          "$ref": "#/definitions/NetworkPolicyRuleAction"
+          "$ref": "#/$defs/NetworkPolicyRuleAction"
         },
         "host": {
           "type": "string"
         }
       },
       "required": [
-        "action",
-        "host"
+        "host",
+        "action"
       ],
       "type": "object"
     },
@@ -1343,22 +1240,20 @@
               "type": "string"
             },
             "path": {
-              "description": "(Best effort) Path to the file being read by the command. When possible, this is an absolute path, though when relative, it should be resolved against the `cwd`` that will be used to run the command to derive the absolute path.",
+              "description": "(Best effort) Path to the file being read by the command. When\npossible, this is an absolute path, though when relative, it should\nbe resolved against the `cwd`` that will be used to run the command\nto derive the absolute path.",
               "type": "string"
             },
             "type": {
-              "enum": [
-                "read"
-              ],
+              "const": "read",
               "title": "ReadParsedCommandType",
               "type": "string"
             }
           },
           "required": [
+            "type",
             "cmd",
             "name",
-            "path",
-            "type"
+            "path"
           ],
           "title": "ReadParsedCommand",
           "type": "object"
@@ -1375,16 +1270,14 @@
               ]
             },
             "type": {
-              "enum": [
-                "list_files"
-              ],
+              "const": "list_files",
               "title": "ListFilesParsedCommandType",
               "type": "string"
             }
           },
           "required": [
-            "cmd",
-            "type"
+            "type",
+            "cmd"
           ],
           "title": "ListFilesParsedCommand",
           "type": "object"
@@ -1407,16 +1300,14 @@
               ]
             },
             "type": {
-              "enum": [
-                "search"
-              ],
+              "const": "search",
               "title": "SearchParsedCommandType",
               "type": "string"
             }
           },
           "required": [
-            "cmd",
-            "type"
+            "type",
+            "cmd"
           ],
           "title": "SearchParsedCommand",
           "type": "object"
@@ -1427,16 +1318,14 @@
               "type": "string"
             },
             "type": {
-              "enum": [
-                "unknown"
-              ],
+              "const": "unknown",
               "title": "UnknownParsedCommandType",
               "type": "string"
             }
           },
           "required": [
-            "cmd",
-            "type"
+            "type",
+            "cmd"
           ],
           "title": "UnknownParsedCommand",
           "type": "object"
@@ -1449,7 +1338,7 @@
           "type": "string"
         },
         "permissions": {
-          "$ref": "#/definitions/RequestPermissionProfile"
+          "$ref": "#/$defs/RequestPermissionProfile"
         },
         "reason": {
           "type": [
@@ -1465,10 +1354,10 @@
         }
       },
       "required": [
-        "itemId",
-        "permissions",
         "threadId",
-        "turnId"
+        "turnId",
+        "itemId",
+        "permissions"
       ],
       "type": "object"
     },
@@ -1489,7 +1378,7 @@
         "fileSystem": {
           "anyOf": [
             {
-              "$ref": "#/definitions/AdditionalFileSystemPermissions"
+              "$ref": "#/$defs/AdditionalFileSystemPermissions"
             },
             {
               "type": "null"
@@ -1499,7 +1388,7 @@
         "network": {
           "anyOf": [
             {
-              "$ref": "#/definitions/AdditionalNetworkPermissions"
+              "$ref": "#/$defs/AdditionalNetworkPermissions"
             },
             {
               "type": "null"
@@ -1523,8 +1412,8 @@
         }
       },
       "required": [
-        "description",
-        "label"
+        "label",
+        "description"
       ],
       "type": "object"
     },
@@ -1536,7 +1425,7 @@
         },
         "questions": {
           "items": {
-            "$ref": "#/definitions/ToolRequestUserInputQuestion"
+            "$ref": "#/$defs/ToolRequestUserInputQuestion"
           },
           "type": "array"
         },
@@ -1548,10 +1437,10 @@
         }
       },
       "required": [
-        "itemId",
-        "questions",
         "threadId",
-        "turnId"
+        "turnId",
+        "itemId",
+        "questions"
       ],
       "type": "object"
     },
@@ -1574,7 +1463,7 @@
         },
         "options": {
           "items": {
-            "$ref": "#/definitions/ToolRequestUserInputOption"
+            "$ref": "#/$defs/ToolRequestUserInputOption"
           },
           "type": [
             "array",
@@ -1586,60 +1475,57 @@
         }
       },
       "required": [
-        "header",
         "id",
+        "header",
         "question"
       ],
       "type": "object"
     }
   },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
   "description": "Request initiated from the server and sent to the client.",
   "oneOf": [
     {
-      "description": "NEW APIs Sent when approval is requested for a specific command execution. This request is used for Turns started via turn/start.",
+      "description": "NEW APIs\nSent when approval is requested for a specific command execution.\nThis request is used for Turns started via turn/start.",
       "properties": {
         "id": {
-          "$ref": "#/definitions/RequestId"
+          "$ref": "#/$defs/RequestId"
         },
         "method": {
-          "enum": [
-            "item/commandExecution/requestApproval"
-          ],
+          "const": "item/commandExecution/requestApproval",
           "title": "Item/commandExecution/requestApprovalRequestMethod",
           "type": "string"
         },
         "params": {
-          "$ref": "#/definitions/CommandExecutionRequestApprovalParams"
+          "$ref": "#/$defs/CommandExecutionRequestApprovalParams"
         }
       },
       "required": [
-        "id",
         "method",
+        "id",
         "params"
       ],
       "title": "Item/commandExecution/requestApprovalRequest",
       "type": "object"
     },
     {
-      "description": "Sent when approval is requested for a specific file change. This request is used for Turns started via turn/start.",
+      "description": "Sent when approval is requested for a specific file change.\nThis request is used for Turns started via turn/start.",
       "properties": {
         "id": {
-          "$ref": "#/definitions/RequestId"
+          "$ref": "#/$defs/RequestId"
         },
         "method": {
-          "enum": [
-            "item/fileChange/requestApproval"
-          ],
+          "const": "item/fileChange/requestApproval",
           "title": "Item/fileChange/requestApprovalRequestMethod",
           "type": "string"
         },
         "params": {
-          "$ref": "#/definitions/FileChangeRequestApprovalParams"
+          "$ref": "#/$defs/FileChangeRequestApprovalParams"
         }
       },
       "required": [
-        "id",
         "method",
+        "id",
         "params"
       ],
       "title": "Item/fileChange/requestApprovalRequest",
@@ -1649,22 +1535,20 @@
       "description": "EXPERIMENTAL - Request input from the user for a tool call.",
       "properties": {
         "id": {
-          "$ref": "#/definitions/RequestId"
+          "$ref": "#/$defs/RequestId"
         },
         "method": {
-          "enum": [
-            "item/tool/requestUserInput"
-          ],
+          "const": "item/tool/requestUserInput",
           "title": "Item/tool/requestUserInputRequestMethod",
           "type": "string"
         },
         "params": {
-          "$ref": "#/definitions/ToolRequestUserInputParams"
+          "$ref": "#/$defs/ToolRequestUserInputParams"
         }
       },
       "required": [
-        "id",
         "method",
+        "id",
         "params"
       ],
       "title": "Item/tool/requestUserInputRequest",
@@ -1674,22 +1558,20 @@
       "description": "Request input for an MCP server elicitation.",
       "properties": {
         "id": {
-          "$ref": "#/definitions/RequestId"
+          "$ref": "#/$defs/RequestId"
         },
         "method": {
-          "enum": [
-            "mcpServer/elicitation/request"
-          ],
+          "const": "mcpServer/elicitation/request",
           "title": "McpServer/elicitation/requestRequestMethod",
           "type": "string"
         },
         "params": {
-          "$ref": "#/definitions/McpServerElicitationRequestParams"
+          "$ref": "#/$defs/McpServerElicitationRequestParams"
         }
       },
       "required": [
-        "id",
         "method",
+        "id",
         "params"
       ],
       "title": "McpServer/elicitation/requestRequest",
@@ -1699,22 +1581,20 @@
       "description": "Request approval for additional permissions from the user.",
       "properties": {
         "id": {
-          "$ref": "#/definitions/RequestId"
+          "$ref": "#/$defs/RequestId"
         },
         "method": {
-          "enum": [
-            "item/permissions/requestApproval"
-          ],
+          "const": "item/permissions/requestApproval",
           "title": "Item/permissions/requestApprovalRequestMethod",
           "type": "string"
         },
         "params": {
-          "$ref": "#/definitions/PermissionsRequestApprovalParams"
+          "$ref": "#/$defs/PermissionsRequestApprovalParams"
         }
       },
       "required": [
-        "id",
         "method",
+        "id",
         "params"
       ],
       "title": "Item/permissions/requestApprovalRequest",
@@ -1724,22 +1604,20 @@
       "description": "Execute a dynamic tool call on the client.",
       "properties": {
         "id": {
-          "$ref": "#/definitions/RequestId"
+          "$ref": "#/$defs/RequestId"
         },
         "method": {
-          "enum": [
-            "item/tool/call"
-          ],
+          "const": "item/tool/call",
           "title": "Item/tool/callRequestMethod",
           "type": "string"
         },
         "params": {
-          "$ref": "#/definitions/DynamicToolCallParams"
+          "$ref": "#/$defs/DynamicToolCallParams"
         }
       },
       "required": [
-        "id",
         "method",
+        "id",
         "params"
       ],
       "title": "Item/tool/callRequest",
@@ -1748,72 +1626,66 @@
     {
       "properties": {
         "id": {
-          "$ref": "#/definitions/RequestId"
+          "$ref": "#/$defs/RequestId"
         },
         "method": {
-          "enum": [
-            "account/chatgptAuthTokens/refresh"
-          ],
+          "const": "account/chatgptAuthTokens/refresh",
           "title": "Account/chatgptAuthTokens/refreshRequestMethod",
           "type": "string"
         },
         "params": {
-          "$ref": "#/definitions/ChatgptAuthTokensRefreshParams"
+          "$ref": "#/$defs/ChatgptAuthTokensRefreshParams"
         }
       },
       "required": [
-        "id",
         "method",
+        "id",
         "params"
       ],
       "title": "Account/chatgptAuthTokens/refreshRequest",
       "type": "object"
     },
     {
-      "description": "DEPRECATED APIs below Request to approve a patch. This request is used for Turns started via the legacy APIs (i.e. SendUserTurn, SendUserMessage).",
+      "description": "DEPRECATED APIs below\nRequest to approve a patch.\nThis request is used for Turns started via the legacy APIs (i.e. SendUserTurn, SendUserMessage).",
       "properties": {
         "id": {
-          "$ref": "#/definitions/RequestId"
+          "$ref": "#/$defs/RequestId"
         },
         "method": {
-          "enum": [
-            "applyPatchApproval"
-          ],
+          "const": "applyPatchApproval",
           "title": "ApplyPatchApprovalRequestMethod",
           "type": "string"
         },
         "params": {
-          "$ref": "#/definitions/ApplyPatchApprovalParams"
+          "$ref": "#/$defs/ApplyPatchApprovalParams"
         }
       },
       "required": [
-        "id",
         "method",
+        "id",
         "params"
       ],
       "title": "ApplyPatchApprovalRequest",
       "type": "object"
     },
     {
-      "description": "Request to exec a command. This request is used for Turns started via the legacy APIs (i.e. SendUserTurn, SendUserMessage).",
+      "description": "Request to exec a command.\nThis request is used for Turns started via the legacy APIs (i.e. SendUserTurn, SendUserMessage).",
       "properties": {
         "id": {
-          "$ref": "#/definitions/RequestId"
+          "$ref": "#/$defs/RequestId"
         },
         "method": {
-          "enum": [
-            "execCommandApproval"
-          ],
+          "const": "execCommandApproval",
           "title": "ExecCommandApprovalRequestMethod",
           "type": "string"
         },
         "params": {
-          "$ref": "#/definitions/ExecCommandApprovalParams"
+          "$ref": "#/$defs/ExecCommandApprovalParams"
         }
       },
       "required": [
-        "id",
         "method",
+        "id",
         "params"
       ],
       "title": "ExecCommandApprovalRequest",

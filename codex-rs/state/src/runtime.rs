@@ -25,7 +25,9 @@ use crate::migrations::USAGE_MIGRATOR;
 use crate::model::AgentJobRow;
 use crate::model::ThreadRow;
 use crate::model::anchor_from_item;
+use crate::model::datetime_to_epoch_millis;
 use crate::model::datetime_to_epoch_seconds;
+use crate::model::epoch_millis_to_datetime;
 use crate::paths::file_modified_time_utc;
 use chrono::DateTime;
 use chrono::Utc;
@@ -49,6 +51,7 @@ use std::collections::BTreeSet;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::AtomicI64;
 use std::time::Duration;
 use tracing::warn;
 
@@ -57,10 +60,14 @@ mod backfill;
 mod logs;
 mod memories;
 mod phase2_attestation;
+mod remote_control;
 #[cfg(test)]
 mod test_support;
 mod threads;
 pub mod usage;
+
+pub use remote_control::RemoteControlEnrollmentRecord;
+pub use threads::ThreadFilterOptions;
 
 // "Partition" is the retained-log-content bucket we cap at 10 MiB:
 // - one bucket per non-null thread_id
@@ -78,6 +85,7 @@ pub struct StateRuntime {
     pool: Arc<sqlx::SqlitePool>,
     logs_pool: Arc<sqlx::SqlitePool>,
     usage_pool: Arc<sqlx::SqlitePool>,
+    thread_updated_at_millis: Arc<AtomicI64>,
 }
 
 impl StateRuntime {
@@ -123,6 +131,7 @@ impl StateRuntime {
                 return Err(err);
             }
         };
+        ensure_incremental_auto_vacuum(logs_pool.as_ref()).await?;
         let usage_pool = match open_sqlite(&usage_path, &USAGE_MIGRATOR).await {
             Ok(db) => Arc::new(db),
             Err(err) => {
@@ -130,13 +139,20 @@ impl StateRuntime {
                 return Err(err);
             }
         };
+        let thread_updated_at_millis: Option<i64> =
+            sqlx::query_scalar("SELECT MAX(threads.updated_at_ms) FROM threads")
+                .fetch_one(pool.as_ref())
+                .await?;
+        let thread_updated_at_millis = thread_updated_at_millis.unwrap_or(0);
         let runtime = Arc::new(Self {
             pool,
             logs_pool,
             usage_pool,
             codex_home,
             default_provider,
+            thread_updated_at_millis: Arc::new(AtomicI64::new(thread_updated_at_millis)),
         });
+        runtime.run_logs_startup_maintenance().await?;
         Ok(runtime)
     }
 
@@ -164,6 +180,22 @@ async fn open_sqlite(path: &Path, migrator: &'static Migrator) -> anyhow::Result
         .await?;
     migrator.run(&pool).await?;
     Ok(pool)
+}
+
+async fn ensure_incremental_auto_vacuum(pool: &SqlitePool) -> anyhow::Result<()> {
+    let mut conn = pool.acquire().await?;
+    let auto_vacuum = sqlx::query_scalar::<_, i64>("PRAGMA auto_vacuum")
+        .fetch_one(&mut *conn)
+        .await?;
+    if auto_vacuum == 2 {
+        return Ok(());
+    }
+
+    sqlx::query("PRAGMA auto_vacuum = INCREMENTAL")
+        .execute(&mut *conn)
+        .await?;
+    sqlx::query("VACUUM").execute(&mut *conn).await?;
+    Ok(())
 }
 
 fn db_filename(base_name: &str, version: u32) -> String {
@@ -210,6 +242,7 @@ async fn remove_legacy_db_files(
             return;
         }
     };
+    let mut legacy_paths = Vec::new();
     while let Ok(Some(entry)) = entries.next_entry().await {
         if !entry
             .file_type()
@@ -225,7 +258,14 @@ async fn remove_legacy_db_files(
             continue;
         }
 
-        let legacy_path = entry.path();
+        legacy_paths.push(entry.path());
+    }
+
+    // On Windows, SQLite can keep the main database file undeletable until the
+    // matching `-wal` / `-shm` sidecars are removed. Remove the longest
+    // sidecar-style paths first so the main file is attempted last.
+    legacy_paths.sort_by_key(|path| std::cmp::Reverse(path.as_os_str().len()));
+    for legacy_path in legacy_paths {
         if let Err(err) = tokio::fs::remove_file(&legacy_path).await {
             warn!(
                 "failed to remove legacy {db_label} db file {}: {err}",
@@ -272,6 +312,25 @@ mod tests {
     use crate::USAGE_DB_FILENAME;
     use crate::USAGE_DB_VERSION;
     use pretty_assertions::assert_eq;
+    use std::io;
+    use std::path::Path;
+    use std::time::Duration;
+
+    async fn remove_dir_all_with_retry(path: &Path) -> io::Result<()> {
+        let mut last_err = None;
+        for attempt in 0..5 {
+            match tokio::fs::remove_dir_all(path).await {
+                Ok(()) => return Ok(()),
+                Err(err) if attempt < 4 => {
+                    last_err = Some(err);
+                    tokio::time::sleep(Duration::from_millis(25 * (attempt + 1) as u64)).await;
+                }
+                Err(err) => return Err(err),
+            }
+        }
+
+        Err(last_err.unwrap_or_else(|| io::Error::other("cleanup retry loop exhausted")))
+    }
 
     #[tokio::test]
     async fn init_removes_legacy_logs_and_usage_db_files() {
@@ -386,7 +445,7 @@ mod tests {
         );
 
         drop(runtime);
-        tokio::fs::remove_dir_all(codex_home)
+        remove_dir_all_with_retry(&codex_home)
             .await
             .expect("failed to clean up temp directory");
     }

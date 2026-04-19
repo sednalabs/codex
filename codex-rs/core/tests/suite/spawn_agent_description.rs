@@ -2,13 +2,14 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use anyhow::Result;
-use codex_core::CodexAuth;
-use codex_core::models_manager::manager::ModelsManager;
-use codex_core::models_manager::manager::RefreshStrategy;
 use codex_features::Feature;
+use codex_login::CodexAuth;
+use codex_models_manager::manager::ModelsManager;
+use codex_models_manager::manager::RefreshStrategy;
 use codex_protocol::config_types::ReasoningSummary;
 use codex_protocol::openai_models::ConfigShellToolType;
 use codex_protocol::openai_models::ModelInfo;
+use codex_protocol::openai_models::ModelInfoUpgrade;
 use codex_protocol::openai_models::ModelVisibility;
 use codex_protocol::openai_models::ModelsResponse;
 use codex_protocol::openai_models::ReasoningEffort;
@@ -71,6 +72,7 @@ fn test_model_info(
         used_fallback_model_metadata: false,
         supports_search_tool: false,
         priority: 1,
+        additional_speed_tiers: Vec::new(),
         upgrade: None,
         base_instructions: "base instructions".to_string(),
         model_messages: None,
@@ -81,7 +83,7 @@ fn test_model_info(
         availability_nux: None,
         apply_patch_tool_type: None,
         web_search_tool_type: Default::default(),
-        truncation_policy: TruncationPolicyConfig::bytes(10_000),
+        truncation_policy: TruncationPolicyConfig::bytes(/*limit*/ 10_000),
         supports_parallel_tool_calls: false,
         supports_image_detail_original: false,
         context_window: Some(272_000),
@@ -89,6 +91,30 @@ fn test_model_info(
         effective_context_window_percent: 95,
         experimental_supported_tools: Vec::new(),
     }
+}
+
+fn test_model_info_with_upgrade(
+    slug: &str,
+    display_name: &str,
+    description: &str,
+    visibility: ModelVisibility,
+    default_reasoning_level: ReasoningEffort,
+    supported_reasoning_levels: Vec<ReasoningEffortPreset>,
+    upgrade_model: &str,
+) -> ModelInfo {
+    let mut model = test_model_info(
+        slug,
+        display_name,
+        description,
+        visibility,
+        default_reasoning_level,
+        supported_reasoning_levels,
+    );
+    model.upgrade = Some(ModelInfoUpgrade {
+        model: upgrade_model.to_string(),
+        migration_markdown: String::new(),
+    });
+    model
 }
 
 async fn wait_for_model_available(manager: &Arc<ModelsManager>, slug: &str) {
@@ -140,6 +166,24 @@ async fn spawn_agent_description_lists_visible_models_and_reasoning_efforts() ->
                         description: "Not visible".to_string(),
                     }],
                 ),
+                test_model_info_with_upgrade(
+                    "gpt-5.1-codex-mini",
+                    "gpt-5.1-codex-mini",
+                    "Optimized for Codex. Cheaper, faster, but less capable.",
+                    ModelVisibility::Hide,
+                    ReasoningEffort::Medium,
+                    vec![
+                        ReasoningEffortPreset {
+                            effort: ReasoningEffort::Low,
+                            description: "Fast responses".to_string(),
+                        },
+                        ReasoningEffortPreset {
+                            effort: ReasoningEffort::Medium,
+                            description: "Balanced default".to_string(),
+                        },
+                    ],
+                    "gpt-5.4",
+                ),
             ],
         },
     )
@@ -186,6 +230,12 @@ async fn spawn_agent_description_lists_visible_models_and_reasoning_efforts() ->
     );
     assert!(
         description.contains(
+            "- gpt-5.1-codex-mini (`gpt-5.1-codex-mini`): Optimized for Codex. Cheaper, faster, but less capable."
+        ),
+        "expected upgradeable legacy model in spawn_agent description: {description:?}"
+    );
+    assert!(
+        description.contains(
             "Only use `spawn_agent` if and only if the user explicitly asks for sub-agents, delegation, or parallel agent work."
         ),
         "expected explicit authorization rule in spawn_agent description: {description:?}"
@@ -222,6 +272,10 @@ async fn spawn_wait_and_list_agents_tool_descriptions_have_guidance_updates() ->
             config
                 .features
                 .enable(Feature::Collab)
+                .expect("test config should allow feature update");
+            config
+                .features
+                .enable(Feature::MultiAgentV2)
                 .expect("test config should allow feature update");
         });
     mount_models_once(
@@ -263,6 +317,29 @@ async fn spawn_wait_and_list_agents_tool_descriptions_have_guidance_updates() ->
         "expected spawn guidance to mention list_agents: {spawn_description:?}"
     );
     assert!(
+        spawn_description.contains("smallest capable lane visible in the loaded model catalog"),
+        "expected spawn guidance to mention loaded-catalog-aware model selection: {spawn_description:?}"
+    );
+    assert!(
+        spawn_description
+            .contains("When the loaded catalog includes it, use `gpt-5.1-codex-mini` first"),
+        "expected spawn guidance to gate the mini default on catalog availability: {spawn_description:?}"
+    );
+    assert!(
+        spawn_description
+            .contains("When the loaded catalog includes it, prefer `gpt-5.3-codex-spark`"),
+        "expected spawn guidance to mention the Spark scouting tier: {spawn_description:?}"
+    );
+    assert!(
+        spawn_description
+            .contains("When the loaded catalog includes it, escalate to `gpt-5.4-mini`"),
+        "expected spawn guidance to mention the 5.4-mini escalation tier: {spawn_description:?}"
+    );
+    assert!(
+        spawn_description.contains("pick the closest visible native Codex model"),
+        "expected spawn guidance to mention the unavailable-model fallback: {spawn_description:?}"
+    );
+    assert!(
         wait_description.contains("blocking coordination while awaiting sub-agent completion"),
         "expected wait_agent guidance for blocking waits: {wait_description:?}"
     );
@@ -279,7 +356,7 @@ async fn spawn_wait_and_list_agents_tool_descriptions_have_guidance_updates() ->
         "expected wait_agent return_when all guidance: {wait_description:?}"
     );
     assert!(
-        list_description.contains("snapshot"),
+        list_description.contains("live agents"),
         "expected list_agents guidance content: {list_description:?}"
     );
 

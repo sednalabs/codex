@@ -21,6 +21,23 @@ Branch tracking should remain:
 - `main` tracks `origin/main`.
 - `upstream-main` tracks `origin/upstream-main`.
 
+## Upstream Integration Philosophy
+
+- Prefer upstream behavior by default. When syncing `main` with `upstream-main`, treat downstream carry as a cost that must justify itself.
+- The ideal downstream state is: minimal fork-specific behavior in hot core files, with as much downstream customization as possible moved behind explicit extension seams or plugin-like layers.
+- When an integration or conflict forces a choice, prefer:
+  1. taking upstream unchanged,
+  2. re-expressing downstream behavior behind an existing seam or a new narrow internal seam,
+  3. only then carrying a direct fork patch in a hot upstream file.
+- If downstream behavior can be dropped temporarily and re-implemented more cleanly behind an extension point with lower long-term maintenance cost, prefer that over preserving a messy carry patch.
+- Favor internal extensibility over repeated fork edits:
+  - app-server behavior should prefer hook-style seams such as `extensions.rs`
+  - plugin/app augmentation should prefer narrow extension boundaries over processor-file carry
+  - TUI carry should be extracted into small dedicated modules before adding more logic to `app.rs`, `chatwidget.rs`, or other high-churn orchestration files
+- Treat work that reduces future upstream-sync pain as first-class engineering value, even when the immediate feature could be patched faster in place.
+- Do not invent broad dynamic plugin systems during conflict resolution unless explicitly requested. Prefer small, static, upstream-shaped seams that let downstream behavior plug in without changing public contracts.
+- Preserve important downstream product behavior intentionally. For this fork, do not casually drop realtime, voice, or realtime-text behavior during sync just to make merges easier.
+
 In the codex-rs folder where the rust code lives:
 
 - Crate names are prefixed with `codex-`. For example, the `core` folder's crate is named `codex-core`
@@ -40,7 +57,9 @@ In the codex-rs folder where the rust code lives:
 - When possible, make `match` statements exhaustive and avoid wildcard arms.
 - When writing tests, prefer comparing the equality of entire objects over fields one by one.
 - When making a change that adds or changes an API, ensure that the documentation in the `docs/` folder is up to date if applicable.
+- Prefer private modules and explicitly exported public crate API.
 - If you change `ConfigToml` or nested config types, run `just write-config-schema` to update `codex-rs/core/config.schema.json`.
+- When working with MCP tool calls, prefer using `codex-rs/codex-mcp/src/mcp_connection_manager.rs` to handle mutation of tools and tool calls. Aim to minimize the footprint of changes and leverage existing abstractions rather than plumbing code through multiple levels of function calls.
 - If you change Rust dependencies (`Cargo.toml` or `Cargo.lock`), run `just bazel-lock-update` from the
   repo root to refresh `MODULE.bazel.lock`, and include that lockfile update in the same change.
 - After dependency changes, run `just bazel-lock-check` from the repo root so lockfile drift is caught
@@ -61,10 +80,13 @@ In the codex-rs folder where the rust code lives:
     `codex-rs/tui/src/bottom_pane/mod.rs`, and similarly central orchestration modules.
   - When extracting code from a large module, move the related tests and module/type docs toward
     the new implementation so the invariants stay close to the code that owns them.
+  - Avoid adding new standalone methods to `codex-rs/tui/src/chatwidget.rs` unless the change is
+    trivial; prefer new modules/files and keep `chatwidget.rs` focused on orchestration.
+- When running Rust commands (e.g. `just fix` or `cargo test`) be patient with the command and never try to kill them using the PID. Rust lock can make the execution slow, this is expected.
 
 Run `just fmt` (in `codex-rs` directory) automatically after you have finished making Rust code changes; do not ask for approval to run it. Additionally, use this validation ladder:
 
-1. Run the smallest relevant local check first. Prefer Build Helper presets or project-scoped tests over workspace-wide `cargo` commands on this shared machine.
+1. Run the smallest relevant local check first. Prefer configured helper presets or project-scoped tests over workspace-wide `cargo` commands.
 2. If you changed Rust behavior in a specific crate, run the narrowest crate-level validation that covers it.
 3. Heavy validation, release-mode builds, workspace-wide tests, and expensive `nextest` sweeps should go to GitHub Actions after the branch is committed and pushed unless the user explicitly asks for a local run.
 4. If any changes were made in common, core, or protocol and you still need a complete local test suite, ask the user before running it.
@@ -84,11 +106,15 @@ Also run `just argument-comment-lint` to ensure the codebase is clean of comment
 
 ## CI Offload Policy
 
-- Treat GitHub Actions as the default factory for branch binaries, heavy Rust tests, and official releases.
-- Local Build Helper remains the preferred narrow local lane for smoke checks, formatting, and targeted validation.
-- Do not run routine direct terminal `cargo build` or `cargo test` commands for expensive shared-host validation when the same work can be offloaded to GitHub CI.
+- Treat GitHub Actions as the default factory for remote seam validation, preview binaries, heavy Rust tests, and official releases.
+- Use `validation-lab.yml` as the default remote-first validation surface for scratch refs, integration refs, and other non-PR exploratory work.
+- Prefer `profile=targeted` for one active seam and `profile=frontier` for bounded next-blocker harvesting once there is a recent trusted baseline.
+- Downstream support is currently limited to Linux `x86_64`. Public release artifacts, heavyweight checkpoint workflows, and routine remote validation should target Linux `x86_64` only unless the user explicitly asks to revive another platform and the supporting docs/workflows are updated in the same change.
+- Configured helper presets remain a good narrow local lane for smoke checks, formatting, and targeted validation.
+- Do not run routine direct terminal `cargo build` or `cargo test` commands for expensive local validation when the same work can be offloaded to GitHub CI.
 - Heavy remote CI only starts after the relevant work is committed and pushed.
-- Branch artifacts are disposable and non-release. Only the protected Sedna release workflow produces public release artifacts.
+- Preview/build workflows are buildability checkpoints, not every-commit branch defaults.
+- Preview artifacts are disposable and non-release. Only the protected Sedna release workflow produces public release artifacts.
 
 ## TUI style conventions
 

@@ -1,12 +1,14 @@
 use super::*;
+use crate::SkillsManager;
 use crate::config::CONFIG_TOML_FILE;
 use crate::config::ConfigBuilder;
 use crate::config_loader::ConfigLayerStackOrdering;
 use crate::plugins::PluginsManager;
-use crate::skills::SkillsManager;
+use crate::skills_load_input_from_config;
 use codex_protocol::config_types::ReasoningSummary;
 use codex_protocol::config_types::Verbosity;
 use codex_protocol::openai_models::ReasoningEffort;
+use codex_utils_absolute_path::test_support::PathExt;
 use pretty_assertions::assert_eq;
 use std::fs;
 use std::path::PathBuf;
@@ -39,7 +41,10 @@ async fn write_role_config(home: &TempDir, name: &str, contents: &str) -> PathBu
 fn session_flags_layer_count(config: &Config) -> usize {
     config
         .config_layer_stack
-        .get_layers(ConfigLayerStackOrdering::LowestPrecedenceFirst, true)
+        .get_layers(
+            ConfigLayerStackOrdering::LowestPrecedenceFirst,
+            /*include_disabled*/ true,
+        )
         .into_iter()
         .filter(|layer| layer.name == ConfigLayerSource::SessionFlags)
         .count()
@@ -50,7 +55,7 @@ async fn apply_role_defaults_to_default_and_leaves_config_unchanged() {
     let (_home, mut config) = test_config_with_cli_overrides(Vec::new()).await;
     let before = config.clone();
 
-    apply_role_to_config(&mut config, None)
+    apply_role_to_config(&mut config, /*role_name*/ None)
         .await
         .expect("default role should apply");
 
@@ -69,18 +74,60 @@ async fn apply_role_returns_error_for_unknown_role() {
 }
 
 #[tokio::test]
-#[ignore = "No role requiring it for now"]
-async fn apply_explorer_role_sets_model_and_adds_session_flags_layer() {
+async fn apply_explorer_role_preserves_model_settings_and_adds_session_flags_layer() {
     let (_home, mut config) = test_config_with_cli_overrides(Vec::new()).await;
     let before_layers = session_flags_layer_count(&config);
+    config.model = Some("gpt-5.4".to_string());
+    config.model_reasoning_effort = Some(ReasoningEffort::High);
 
     apply_role_to_config(&mut config, Some("explorer"))
         .await
         .expect("explorer role should apply");
 
-    assert_eq!(config.model.as_deref(), Some("gpt-5.1-codex-mini"));
-    assert_eq!(config.model_reasoning_effort, Some(ReasoningEffort::Medium));
+    assert_eq!(config.model.as_deref(), Some("gpt-5.4"));
+    assert_eq!(config.model_reasoning_effort, Some(ReasoningEffort::High));
     assert_eq!(session_flags_layer_count(&config), before_layers + 1);
+}
+
+#[tokio::test]
+async fn apply_explorer_role_preserves_current_provider() {
+    let home = TempDir::new().expect("create temp dir");
+    tokio::fs::write(
+        home.path().join(CONFIG_TOML_FILE),
+        r#"
+[model_providers.base-provider]
+name = "Base Provider"
+base_url = "https://base.example.com/v1"
+env_key = "BASE_PROVIDER_API_KEY"
+wire_api = "responses"
+
+[profiles.base-profile]
+model_provider = "base-provider"
+"#,
+    )
+    .await
+    .expect("write config.toml");
+    let mut config = ConfigBuilder::default()
+        .codex_home(home.path().to_path_buf())
+        .harness_overrides(ConfigOverrides {
+            config_profile: Some("base-profile".to_string()),
+            ..Default::default()
+        })
+        .fallback_cwd(Some(home.path().to_path_buf()))
+        .build()
+        .await
+        .expect("load config");
+    config.model_provider.base_url = Some("https://runtime.example.com/v1".to_string());
+
+    apply_role_to_config(&mut config, Some("explorer"))
+        .await
+        .expect("explorer role should apply");
+
+    assert_eq!(config.model_provider_id, "base-provider");
+    assert_eq!(
+        config.model_provider.base_url.as_deref(),
+        Some("https://runtime.example.com/v1")
+    );
 }
 
 #[tokio::test]
@@ -99,7 +146,10 @@ async fn apply_role_returns_unavailable_for_missing_user_role_file() {
         .await
         .expect_err("missing role file should fail");
 
-    assert_eq!(err, AGENT_TYPE_UNAVAILABLE_ERROR);
+    assert!(
+        err.contains("failed to read config for agent type 'custom'"),
+        "unexpected error: {err}"
+    );
 }
 
 #[tokio::test]
@@ -119,7 +169,10 @@ async fn apply_role_returns_unavailable_for_invalid_user_role_toml() {
         .await
         .expect_err("invalid role file should fail");
 
-    assert_eq!(err, AGENT_TYPE_UNAVAILABLE_ERROR);
+    assert!(
+        err.contains("failed to parse config for agent type 'custom'"),
+        "unexpected error: {err}"
+    );
 }
 
 #[tokio::test]
@@ -489,7 +542,7 @@ model_reasoning_effort = "high"
 }
 
 #[tokio::test]
-async fn apply_role_preserves_current_model_settings_when_role_does_not_own_them() {
+async fn apply_role_to_spawn_config_preserves_current_model_settings_when_role_does_not_own_them() {
     let home = TempDir::new().expect("create temp dir");
     tokio::fs::write(
         home.path().join(CONFIG_TOML_FILE),
@@ -517,6 +570,7 @@ model_verbosity = "high"
     config.model_reasoning_effort = Some(ReasoningEffort::Low);
     config.model_reasoning_summary = Some(ReasoningSummary::None);
     config.model_verbosity = Some(Verbosity::Low);
+    config.model_provider.base_url = Some("https://runtime.example.com/v1".to_string());
     let role_path = write_role_config(
         &home,
         "preserve-current-model.toml",
@@ -532,19 +586,24 @@ model_verbosity = "high"
         },
     );
 
-    apply_role_to_config(&mut config, Some("custom"))
+    let spawn_model_selection_carry = apply_role_to_spawn_config(&mut config, Some("custom"))
         .await
         .expect("custom role should apply");
+    spawn_model_selection_carry.apply_to_config(&mut config);
 
     assert_eq!(config.active_profile.as_deref(), Some("base-profile"));
     assert_eq!(config.model.as_deref(), Some("gpt-5.1-codex-mini"));
     assert_eq!(config.model_reasoning_effort, Some(ReasoningEffort::Low));
     assert_eq!(config.model_reasoning_summary, Some(ReasoningSummary::None));
     assert_eq!(config.model_verbosity, Some(Verbosity::Low));
+    assert_eq!(
+        config.model_provider.base_url.as_deref(),
+        Some("https://runtime.example.com/v1")
+    );
 }
 
 #[tokio::test]
-async fn apply_role_top_level_model_settings_override_inherited_active_profile() {
+async fn apply_role_to_spawn_config_keeps_role_owned_model_settings_authoritative() {
     let home = TempDir::new().expect("create temp dir");
     tokio::fs::write(
         home.path().join(CONFIG_TOML_FILE),
@@ -589,9 +648,10 @@ model_verbosity = "low"
         },
     );
 
-    apply_role_to_config(&mut config, Some("custom"))
+    let spawn_model_selection_carry = apply_role_to_spawn_config(&mut config, Some("custom"))
         .await
         .expect("custom role should apply");
+    spawn_model_selection_carry.apply_to_config(&mut config);
 
     assert_eq!(config.active_profile.as_deref(), Some("base-profile"));
     assert_eq!(config.model.as_deref(), Some("gpt-5.1-codex-mini"));
@@ -640,7 +700,10 @@ writable_roots = ["./sandbox-root"]
 
     let role_layer = config
         .config_layer_stack
-        .get_layers(ConfigLayerStackOrdering::LowestPrecedenceFirst, true)
+        .get_layers(
+            ConfigLayerStackOrdering::LowestPrecedenceFirst,
+            /*include_disabled*/ true,
+        )
         .into_iter()
         .rfind(|layer| layer.name == ConfigLayerSource::SessionFlags)
         .expect("expected a session flags layer");
@@ -741,8 +804,17 @@ enabled = false
         .expect("custom role should apply");
 
     let plugins_manager = Arc::new(PluginsManager::new(home.path().to_path_buf()));
-    let skills_manager = SkillsManager::new(home.path().to_path_buf(), plugins_manager, true);
-    let outcome = skills_manager.skills_for_config(&config);
+    let skills_manager =
+        SkillsManager::new(home.path().abs(), /*bundled_skills_enabled*/ true);
+    let plugin_outcome = plugins_manager.plugins_for_config(&config).await;
+    let effective_skill_roots = plugin_outcome.effective_skill_roots();
+    let skills_input = skills_load_input_from_config(&config, effective_skill_roots);
+    let outcome = skills_manager
+        .skills_for_config(
+            &skills_input,
+            Some(Arc::clone(&codex_exec_server::LOCAL_FS)),
+        )
+        .await;
     let skill = outcome
         .skills
         .iter()
@@ -842,6 +914,31 @@ fn spawn_tool_spec_marks_role_locked_reasoning_effort_only() {
     assert!(spec.contains(
             "Review carefully.\n- This role's reasoning effort is set to `medium` and cannot be changed."
         ));
+}
+
+#[test]
+fn built_in_wait_roles_are_exposed_and_have_embedded_configs() {
+    let built_in_roles = built_in::configs();
+    assert!(built_in_roles.contains_key("awaiter"));
+    assert!(built_in_roles.contains_key("terminal-babysitter"));
+
+    let spec = spawn_tool_spec::build(&BTreeMap::new());
+    assert!(spec.contains("awaiter: {"));
+    assert!(spec.contains("terminal-babysitter: {"));
+    assert!(spec.contains("Use `awaiter` for a pure delegated wait"));
+    assert!(spec.contains("Use `terminal-babysitter` for monitored waits"));
+
+    assert!(built_in::config_file_contents(Path::new("explorer.toml")).is_some());
+    assert!(built_in::config_file_contents(Path::new("awaiter.toml")).is_some());
+    assert!(built_in::config_file_contents(Path::new("terminal-babysitter.toml")).is_some());
+}
+
+#[test]
+fn spawn_tool_spec_does_not_mark_built_in_explorer_with_locked_settings() {
+    let spec = spawn_tool_spec::build(&BTreeMap::new());
+
+    assert!(spec.contains("Explorers are fast and authoritative."));
+    assert!(!spec.contains("This role's reasoning effort is set to `medium`"));
 }
 
 #[test]

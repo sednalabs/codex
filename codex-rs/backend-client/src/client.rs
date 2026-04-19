@@ -1,14 +1,16 @@
 use crate::types::CodeTaskDetailsResponse;
 use crate::types::ConfigFileResponse;
 use crate::types::PaginatedListTaskListItem;
+use crate::types::RateLimitReachedKind as BackendRateLimitReachedKind;
 use crate::types::RateLimitStatusPayload;
 use crate::types::TurnAttemptsSiblingTurnsResponse;
 use anyhow::Result;
 use codex_client::build_reqwest_client_with_custom_ca;
-use codex_core::auth::CodexAuth;
-use codex_core::default_client::get_codex_user_agent;
+use codex_login::CodexAuth;
+use codex_login::default_client::get_codex_user_agent;
 use codex_protocol::account::PlanType as AccountPlanType;
 use codex_protocol::protocol::CreditsSnapshot;
+use codex_protocol::protocol::RateLimitReachedType;
 use codex_protocol::protocol::RateLimitSnapshot;
 use codex_protocol::protocol::RateLimitWindow;
 use reqwest::StatusCode;
@@ -104,6 +106,7 @@ pub struct Client {
     bearer_token: Option<String>,
     user_agent: Option<HeaderValue>,
     chatgpt_account_id: Option<String>,
+    chatgpt_account_is_fedramp: bool,
     path_style: PathStyle,
 }
 
@@ -129,6 +132,7 @@ impl Client {
             bearer_token: None,
             user_agent: None,
             chatgpt_account_id: None,
+            chatgpt_account_is_fedramp: false,
             path_style,
         })
     }
@@ -140,6 +144,9 @@ impl Client {
             .with_bearer_token(token);
         if let Some(account_id) = auth.get_account_id() {
             client = client.with_chatgpt_account_id(account_id);
+        }
+        if auth.is_fedramp_account() {
+            client = client.with_fedramp_routing_header();
         }
         Ok(client)
     }
@@ -158,6 +165,11 @@ impl Client {
 
     pub fn with_chatgpt_account_id(mut self, account_id: impl Into<String>) -> Self {
         self.chatgpt_account_id = Some(account_id.into());
+        self
+    }
+
+    pub fn with_fedramp_routing_header(mut self) -> Self {
+        self.chatgpt_account_is_fedramp = true;
         self
     }
 
@@ -184,6 +196,11 @@ impl Client {
             && let Ok(hv) = HeaderValue::from_str(acc)
         {
             h.insert(name, hv);
+        }
+        if self.chatgpt_account_is_fedramp
+            && let Ok(name) = HeaderName::from_bytes(b"X-OpenAI-Fedramp")
+        {
+            h.insert(name, HeaderValue::from_static("true"));
         }
         h
     }
@@ -397,12 +414,17 @@ impl Client {
         payload: RateLimitStatusPayload,
     ) -> Vec<RateLimitSnapshot> {
         let plan_type = Some(Self::map_plan_type(payload.plan_type));
+        let rate_limit_reached_type = payload
+            .rate_limit_reached_type
+            .flatten()
+            .and_then(|details| Self::map_rate_limit_reached_type(details.kind));
         let mut snapshots = vec![Self::make_rate_limit_snapshot(
             Some("codex".to_string()),
             /*limit_name*/ None,
             payload.rate_limit.flatten().map(|details| *details),
             payload.credits.flatten().map(|details| *details),
             plan_type,
+            rate_limit_reached_type,
         )];
         if let Some(additional) = payload.additional_rate_limits.flatten() {
             snapshots.extend(additional.into_iter().map(|details| {
@@ -412,6 +434,7 @@ impl Client {
                     details.rate_limit.flatten().map(|rate_limit| *rate_limit),
                     /*credits*/ None,
                     plan_type,
+                    /*rate_limit_reached_type*/ None,
                 )
             }));
         }
@@ -424,6 +447,7 @@ impl Client {
         rate_limit: Option<crate::types::RateLimitStatusDetails>,
         credits: Option<crate::types::CreditStatusDetails>,
         plan_type: Option<AccountPlanType>,
+        rate_limit_reached_type: Option<RateLimitReachedType>,
     ) -> RateLimitSnapshot {
         let (primary, secondary) = match rate_limit {
             Some(details) => (
@@ -439,6 +463,30 @@ impl Client {
             secondary,
             credits: Self::map_credits(credits),
             plan_type,
+            rate_limit_reached_type,
+        }
+    }
+
+    fn map_rate_limit_reached_type(
+        kind: BackendRateLimitReachedKind,
+    ) -> Option<RateLimitReachedType> {
+        match kind {
+            BackendRateLimitReachedKind::RateLimitReached => {
+                Some(RateLimitReachedType::RateLimitReached)
+            }
+            BackendRateLimitReachedKind::WorkspaceOwnerCreditsDepleted => {
+                Some(RateLimitReachedType::WorkspaceOwnerCreditsDepleted)
+            }
+            BackendRateLimitReachedKind::WorkspaceMemberCreditsDepleted => {
+                Some(RateLimitReachedType::WorkspaceMemberCreditsDepleted)
+            }
+            BackendRateLimitReachedKind::WorkspaceOwnerUsageLimitReached => {
+                Some(RateLimitReachedType::WorkspaceOwnerUsageLimitReached)
+            }
+            BackendRateLimitReachedKind::WorkspaceMemberUsageLimitReached => {
+                Some(RateLimitReachedType::WorkspaceMemberUsageLimitReached)
+            }
+            BackendRateLimitReachedKind::Unknown => None,
         }
     }
 
@@ -473,14 +521,22 @@ impl Client {
             crate::types::PlanType::Go => AccountPlanType::Go,
             crate::types::PlanType::Plus => AccountPlanType::Plus,
             crate::types::PlanType::Pro => AccountPlanType::Pro,
+            crate::types::PlanType::ProLite => AccountPlanType::ProLite,
             crate::types::PlanType::Team => AccountPlanType::Team,
+            crate::types::PlanType::SelfServeBusinessUsageBased => {
+                AccountPlanType::SelfServeBusinessUsageBased
+            }
             crate::types::PlanType::Business => AccountPlanType::Business,
+            crate::types::PlanType::EnterpriseCbpUsageBased => {
+                AccountPlanType::EnterpriseCbpUsageBased
+            }
             crate::types::PlanType::Enterprise => AccountPlanType::Enterprise,
             crate::types::PlanType::Edu | crate::types::PlanType::Education => AccountPlanType::Edu,
             crate::types::PlanType::Guest
             | crate::types::PlanType::FreeWorkspace
             | crate::types::PlanType::Quorum
-            | crate::types::PlanType::K12 => AccountPlanType::Unknown,
+            | crate::types::PlanType::K12
+            | crate::types::PlanType::Unknown => AccountPlanType::Unknown,
         }
     }
 
@@ -497,7 +553,22 @@ impl Client {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use codex_backend_openapi_models::models::AdditionalRateLimitDetails;
+    use codex_backend_openapi_models::models::RateLimitReachedKind;
+    use codex_backend_openapi_models::models::RateLimitReachedType as BackendRateLimitReachedType;
     use pretty_assertions::assert_eq;
+
+    #[test]
+    fn map_plan_type_supports_usage_based_business_variants() {
+        assert_eq!(
+            Client::map_plan_type(crate::types::PlanType::SelfServeBusinessUsageBased),
+            AccountPlanType::SelfServeBusinessUsageBased
+        );
+        assert_eq!(
+            Client::map_plan_type(crate::types::PlanType::EnterpriseCbpUsageBased),
+            AccountPlanType::EnterpriseCbpUsageBased
+        );
+    }
 
     #[test]
     fn usage_payload_maps_primary_and_additional_rate_limits() {
@@ -518,7 +589,7 @@ mod tests {
                 }))),
                 ..Default::default()
             }))),
-            additional_rate_limits: Some(Some(vec![crate::types::AdditionalRateLimitDetails {
+            additional_rate_limits: Some(Some(vec![AdditionalRateLimitDetails {
                 limit_name: "codex_other".to_string(),
                 metered_feature: "codex_other".to_string(),
                 rate_limit: Some(Some(Box::new(crate::types::RateLimitStatusDetails {
@@ -538,6 +609,9 @@ mod tests {
                 balance: Some(Some("9.99".to_string())),
                 ..Default::default()
             }))),
+            rate_limit_reached_type: Some(Some(BackendRateLimitReachedType {
+                kind: RateLimitReachedKind::WorkspaceMemberCreditsDepleted,
+            })),
         };
 
         let snapshots = Client::rate_limit_snapshots_from_payload(payload);
@@ -562,6 +636,10 @@ mod tests {
             })
         );
         assert_eq!(snapshots[0].plan_type, Some(AccountPlanType::Pro));
+        assert_eq!(
+            snapshots[0].rate_limit_reached_type,
+            Some(RateLimitReachedType::WorkspaceMemberCreditsDepleted)
+        );
 
         assert_eq!(snapshots[1].limit_id.as_deref(), Some("codex_other"));
         assert_eq!(snapshots[1].limit_name.as_deref(), Some("codex_other"));
@@ -571,6 +649,7 @@ mod tests {
         );
         assert_eq!(snapshots[1].credits, None);
         assert_eq!(snapshots[1].plan_type, Some(AccountPlanType::Pro));
+        assert_eq!(snapshots[1].rate_limit_reached_type, None);
     }
 
     #[test]
@@ -578,12 +657,13 @@ mod tests {
         let payload = RateLimitStatusPayload {
             plan_type: crate::types::PlanType::Plus,
             rate_limit: None,
-            additional_rate_limits: Some(Some(vec![crate::types::AdditionalRateLimitDetails {
+            additional_rate_limits: Some(Some(vec![AdditionalRateLimitDetails {
                 limit_name: "codex_other".to_string(),
                 metered_feature: "codex_other".to_string(),
                 rate_limit: None,
             }])),
             credits: None,
+            rate_limit_reached_type: None,
         };
 
         let snapshots = Client::rate_limit_snapshots_from_payload(payload);
@@ -609,6 +689,7 @@ mod tests {
                 secondary: None,
                 credits: None,
                 plan_type: Some(AccountPlanType::Pro),
+                rate_limit_reached_type: None,
             },
             RateLimitSnapshot {
                 limit_id: Some("codex".to_string()),
@@ -621,6 +702,7 @@ mod tests {
                 secondary: None,
                 credits: None,
                 plan_type: Some(AccountPlanType::Pro),
+                rate_limit_reached_type: None,
             },
         ];
 
@@ -630,5 +712,59 @@ mod tests {
             .cloned()
             .unwrap_or_else(|| snapshots[0].clone());
         assert_eq!(preferred.limit_id.as_deref(), Some("codex"));
+    }
+
+    #[test]
+    fn usage_payload_maps_every_rate_limit_reached_type() {
+        let cases = [
+            (
+                RateLimitReachedKind::RateLimitReached,
+                Some(RateLimitReachedType::RateLimitReached),
+            ),
+            (
+                RateLimitReachedKind::WorkspaceOwnerCreditsDepleted,
+                Some(RateLimitReachedType::WorkspaceOwnerCreditsDepleted),
+            ),
+            (
+                RateLimitReachedKind::WorkspaceMemberCreditsDepleted,
+                Some(RateLimitReachedType::WorkspaceMemberCreditsDepleted),
+            ),
+            (
+                RateLimitReachedKind::WorkspaceOwnerUsageLimitReached,
+                Some(RateLimitReachedType::WorkspaceOwnerUsageLimitReached),
+            ),
+            (
+                RateLimitReachedKind::WorkspaceMemberUsageLimitReached,
+                Some(RateLimitReachedType::WorkspaceMemberUsageLimitReached),
+            ),
+            (RateLimitReachedKind::Unknown, None),
+        ];
+
+        for (kind, expected) in cases {
+            let payload = RateLimitStatusPayload {
+                plan_type: crate::types::PlanType::Plus,
+                rate_limit: None,
+                credits: None,
+                additional_rate_limits: None,
+                rate_limit_reached_type: Some(Some(BackendRateLimitReachedType { kind })),
+            };
+
+            let snapshots = Client::rate_limit_snapshots_from_payload(payload);
+            assert_eq!(snapshots[0].rate_limit_reached_type, expected);
+        }
+    }
+
+    #[test]
+    fn usage_payload_preserves_absent_rate_limit_reached_type() {
+        let payload = RateLimitStatusPayload {
+            plan_type: crate::types::PlanType::Plus,
+            rate_limit: None,
+            credits: None,
+            additional_rate_limits: None,
+            rate_limit_reached_type: None,
+        };
+
+        let snapshots = Client::rate_limit_snapshots_from_payload(payload);
+        assert_eq!(snapshots[0].rate_limit_reached_type, None);
     }
 }

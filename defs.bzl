@@ -13,6 +13,36 @@ PLATFORMS = [
     "windows_arm64",
 ]
 
+# Match Cargo's Windows linker behavior so Bazel-built binaries and tests use
+# the same stack reserve on both Windows ABIs and resolve UCRT imports on MSVC.
+WINDOWS_RUSTC_LINK_FLAGS = select({
+    "@rules_rs//rs/experimental/platforms/constraints:windows_gnullvm": [
+        "-C",
+        "link-arg=-Wl,--stack,8388608",
+    ],
+    "@rules_rs//rs/experimental/platforms/constraints:windows_msvc": [
+        "-C",
+        "link-arg=/STACK:8388608",
+        "-C",
+        "link-arg=/NODEFAULTLIB:libucrt.lib",
+        "-C",
+        "link-arg=ucrt.lib",
+    ],
+    "//conditions:default": [],
+})
+
+# libwebrtc uses Objective-C categories from native archives. Any Bazel-linked
+# macOS binary/test that can pull it in must keep category symbols alive.
+MACOS_WEBRTC_RUSTC_LINK_FLAGS = select({
+    "@platforms//os:macos": [
+        "-C",
+        "link-arg=-ObjC",
+        "-C",
+        "link-arg=-lc++",
+    ],
+    "//conditions:default": [],
+})
+
 def multiplatform_binaries(name, platforms = PLATFORMS):
     for platform in platforms:
         platform_data(
@@ -45,6 +75,9 @@ def _workspace_root_test_impl(ctx):
     )
 
     runfiles = ctx.runfiles(files = [test_bin, workspace_root_marker]).merge(ctx.attr.test_bin[DefaultInfo].default_runfiles)
+    for data_dep in ctx.attr.data:
+        runfiles = runfiles.merge(ctx.runfiles(files = data_dep[DefaultInfo].files.to_list()))
+        runfiles = runfiles.merge(data_dep[DefaultInfo].default_runfiles)
 
     return [
         DefaultInfo(
@@ -61,6 +94,9 @@ workspace_root_test = rule(
     implementation = _workspace_root_test_impl,
     test = True,
     attrs = {
+        "data": attr.label_list(
+            allow_files = True,
+        ),
         "env": attr.string_dict(),
         "test_bin": attr.label(
             cfg = "target",
@@ -101,8 +137,12 @@ def codex_rust_crate(
         rustc_env = {},
         deps_extra = [],
         integration_compile_data_extra = [],
+        integration_test_args = [],
+        integration_test_timeout = None,
         test_data_extra = [],
+        test_shard_counts = {},
         test_tags = [],
+        unit_test_timeout = None,
         extra_binaries = []):
     """Defines a Rust crate with library, binaries, and tests wired for Bazel + Cargo parity.
 
@@ -131,9 +171,19 @@ def codex_rust_crate(
         deps_extra: Extra normal deps beyond @crates resolution.
             Typically only needed when features add additional deps.
         integration_compile_data_extra: Extra compile_data for integration tests.
+        integration_test_args: Optional args for integration test binaries.
+        integration_test_timeout: Optional Bazel timeout for integration test
+            targets generated from `tests/*.rs`.
         test_data_extra: Extra runtime data for tests.
+        test_shard_counts: Mapping from generated test target name to Bazel
+            shard count. Matching tests use native Bazel sharding on the
+            original test label, while rules_rust assigns each Rust test case
+            to a stable bucket by hashing the test name. Matching tests are
+            also marked flaky, which gives them Bazel's default three attempts.
         test_tags: Tags applied to unit + integration test targets.
             Typically used to disable the sandbox, but see https://bazel.build/reference/be/common-definitions#common.tags
+        unit_test_timeout: Optional Bazel timeout for the unit-test target
+            generated from `src/**/*.rs`.
         extra_binaries: Additional binary labels to surface as test data and
             `CARGO_BIN_EXE_*` environment variables. These are only needed for binaries from a different crate.
     """
@@ -145,9 +195,28 @@ def codex_rust_crate(
         "INSTA_SNAPSHOT_PATH": "src",
     }
 
+    native.filegroup(
+        name = "package-files",
+        srcs = native.glob(
+            ["**"],
+            exclude = [
+                "**/BUILD.bazel",
+                "BUILD.bazel",
+                "target/**",
+            ],
+            allow_empty = True,
+        ),
+        visibility = ["//visibility:public"],
+    )
+
     rustc_env = {
         "BAZEL_PACKAGE": native.package_name(),
     } | rustc_env
+
+    manifest_relpath = native.package_name()
+    if manifest_relpath.startswith("codex-rs/"):
+        manifest_relpath = manifest_relpath[len("codex-rs/"):]
+    manifest_path = manifest_relpath + "/Cargo.toml"
 
     binaries = DEP_DATA.get(native.package_name())["binaries"]
 
@@ -183,30 +252,48 @@ def codex_rust_crate(
             visibility = ["//visibility:public"],
         )
 
+        unit_test_name = name + "-unit-tests"
         unit_test_binary = name + "-unit-tests-bin"
+        unit_test_shard_count = _test_shard_count(test_shard_counts, unit_test_name)
+        unit_test_binary_kwargs = {}
+        if unit_test_shard_count:
+            unit_test_binary_kwargs["experimental_enable_sharding"] = True
+
         rust_test(
             name = unit_test_binary,
             crate = name,
             deps = all_crate_deps(normal = True, normal_dev = True) + maybe_deps + deps_extra,
+            # Unit tests also compile to standalone Windows executables, so
+            # keep their stack reserve aligned with binaries and integration
+            # tests under gnullvm.
             # Bazel has emitted both `codex-rs/<crate>/...` and
             # `../codex-rs/<crate>/...` paths for `file!()`. Strip either
             # prefix so the workspace-root launcher sees Cargo-like metadata
             # such as `tui/src/...`.
-            rustc_flags = rustc_flags_extra + [
+            rustc_flags = rustc_flags_extra + WINDOWS_RUSTC_LINK_FLAGS + [
                 "--remap-path-prefix=../codex-rs=",
                 "--remap-path-prefix=codex-rs=",
             ],
             rustc_env = rustc_env,
             data = test_data_extra,
             tags = test_tags + ["manual"],
+            **unit_test_binary_kwargs
         )
 
+        unit_test_kwargs = {}
+        if unit_test_timeout:
+            unit_test_kwargs["timeout"] = unit_test_timeout
+        if unit_test_shard_count:
+            unit_test_kwargs["shard_count"] = unit_test_shard_count
+            unit_test_kwargs["flaky"] = True
+
         workspace_root_test(
-            name = name + "-unit-tests",
+            name = unit_test_name,
             env = test_env,
             test_bin = ":" + unit_test_binary,
             workspace_root_marker = "//codex-rs/utils/cargo-bin:repo_root.marker",
             tags = test_tags,
+            **unit_test_kwargs
         )
 
         maybe_deps += [name]
@@ -224,7 +311,7 @@ def codex_rust_crate(
             crate_root = main,
             deps = all_crate_deps() + maybe_deps + deps_extra,
             edition = crate_edition,
-            rustc_flags = rustc_flags_extra,
+            rustc_flags = rustc_flags_extra + WINDOWS_RUSTC_LINK_FLAGS,
             srcs = native.glob(["src/**/*.rs"]),
             visibility = ["//visibility:public"],
         )
@@ -234,12 +321,26 @@ def codex_rust_crate(
         binary = Label(binary_label).name
         cargo_env["CARGO_BIN_EXE_" + binary] = "$(rlocationpath %s)" % binary_label
 
+    integration_test_kwargs = {}
+    if integration_test_args:
+        integration_test_kwargs["args"] = integration_test_args
+    if integration_test_timeout:
+        integration_test_kwargs["timeout"] = integration_test_timeout
+
     for test in native.glob(["tests/*.rs"], allow_empty = True):
         test_file_stem = test.removeprefix("tests/").removesuffix(".rs")
         test_crate_name = test_file_stem.replace("-", "_")
         test_name = name + "-" + test_file_stem.replace("/", "-")
         if not test_name.endswith("-test"):
             test_name += "-test"
+
+        test_kwargs = {}
+        test_kwargs.update(integration_test_kwargs)
+        test_shard_count = _test_shard_count(test_shard_counts, test_name)
+        if test_shard_count:
+            test_kwargs["experimental_enable_sharding"] = True
+            test_kwargs["shard_count"] = test_shard_count
+            test_kwargs["flaky"] = True
 
         rust_test(
             name = test_name,
@@ -252,7 +353,7 @@ def codex_rust_crate(
             # Bazel has emitted both `codex-rs/<crate>/...` and
             # `../codex-rs/<crate>/...` paths for `file!()`. Strip either
             # prefix so Insta records Cargo-like metadata such as `core/tests/...`.
-            rustc_flags = rustc_flags_extra + [
+            rustc_flags = rustc_flags_extra + WINDOWS_RUSTC_LINK_FLAGS + [
                 "--remap-path-prefix=../codex-rs=",
                 "--remap-path-prefix=codex-rs=",
             ],
@@ -262,4 +363,15 @@ def codex_rust_crate(
             # execute from the repo root and can misplace integration snapshots.
             env = cargo_env,
             tags = test_tags,
+            **test_kwargs
         )
+
+def _test_shard_count(test_shard_counts, test_name):
+    shard_count = test_shard_counts.get(test_name)
+    if shard_count == None:
+        return None
+
+    if shard_count < 1:
+        fail("test_shard_counts[{}] must be a positive integer".format(test_name))
+
+    return shard_count

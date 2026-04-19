@@ -1,6 +1,6 @@
 # Codex CLI (Rust Implementation)
 
-We provide Codex CLI as a standalone, native executable to ensure a zero-dependency install.
+We provide Codex CLI as a standalone executable to ensure a zero-dependency install.
 
 ## Installing Codex
 
@@ -11,7 +11,7 @@ npm i -g @openai/codex
 codex
 ```
 
-You can also install via Homebrew (`brew install --cask codex`) or download a platform-specific release directly from this repository's [GitHub Releases](https://github.com/SednaLabs/codex/releases).
+You can also install via Homebrew (`brew install --cask codex`) or download a platform-specific release directly from this repository's [GitHub Releases](https://github.com/sednalabs/codex/releases).
 
 ## Documentation quickstart
 
@@ -58,7 +58,7 @@ You can enable notifications by configuring a script that is run whenever the ag
 
 ### `codex exec` to run Codex programmatically/non-interactively
 
-To run Codex non-interactively, run `codex exec PROMPT` (you can also pass the prompt via `stdin`) and Codex will work on your task until it decides that it is done and exits. Output is printed to the terminal directly. You can set the `RUST_LOG` environment variable to see more about what's going on.
+To run Codex non-interactively, run `codex exec PROMPT` (you can also pass the prompt via `stdin`) and Codex will work on your task until it decides that it is done and exits. If you provide both a prompt argument and piped stdin, Codex appends stdin as a `<stdin>` block after the prompt so patterns like `echo "my output" | codex exec "Summarize this concisely"` work naturally. Output is printed to the terminal directly. You can set the `RUST_LOG` environment variable to see more about what's going on.
 Use `codex exec --ephemeral ...` to run without persisting session rollout files to disk.
 
 ### Experimenting with the Codex Sandbox

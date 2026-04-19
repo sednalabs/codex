@@ -10,7 +10,8 @@ use codex_utils_json_to_toml::json_to_toml;
 use rmcp::model::JsonObject;
 use rmcp::model::Tool;
 use schemars::JsonSchema;
-use schemars::r#gen::SchemaSettings;
+use schemars::Schema;
+use schemars::generate::SchemaSettings;
 use serde::Deserialize;
 use serde::Serialize;
 use std::collections::HashMap;
@@ -111,7 +112,6 @@ pub(crate) fn create_tool_for_codex_tool_call_param() -> Tool {
     let schema = SchemaSettings::draft2019_09()
         .with(|s| {
             s.inline_subschemas = true;
-            s.option_add_null_type = false;
         })
         .into_generator()
         .into_root_schema_for::<CodexToolCallParam>();
@@ -176,6 +176,7 @@ impl CodexToolCallParam {
             cwd: cwd.map(PathBuf::from),
             approval_policy: approval_policy.map(Into::into),
             sandbox_mode: sandbox.map(Into::into),
+            codex_self_exe: arg0_paths.codex_self_exe.clone(),
             codex_linux_sandbox_exe: arg0_paths.codex_linux_sandbox_exe.clone(),
             main_execve_wrapper_exe: arg0_paths.main_execve_wrapper_exe.clone(),
             base_instructions,
@@ -235,7 +236,6 @@ pub(crate) fn create_tool_for_codex_tool_call_reply_param() -> Tool {
     let schema = SchemaSettings::draft2019_09()
         .with(|s| {
             s.inline_subschemas = true;
-            s.option_add_null_type = false;
         })
         .into_generator()
         .into_root_schema_for::<CodexToolCallReplyParam>();
@@ -257,12 +257,10 @@ pub(crate) fn create_tool_for_codex_tool_call_reply_param() -> Tool {
     }
 }
 
-fn create_tool_input_schema(
-    schema: schemars::schema::RootSchema,
-    panic_message: &str,
-) -> Arc<JsonObject> {
+fn create_tool_input_schema(schema: Schema, panic_message: &str) -> Arc<JsonObject> {
     #[expect(clippy::expect_used)]
-    let schema_value = serde_json::to_value(&schema).expect(panic_message);
+    let mut schema_value = serde_json::to_value(&schema).expect(panic_message);
+    normalize_legacy_option_schema(&mut schema_value);
     let mut schema_object = match schema_value {
         serde_json::Value::Object(object) => object,
         _ => panic!("tool schema should serialize to a JSON object"),
@@ -281,10 +279,177 @@ fn create_tool_input_schema(
     Arc::new(input_schema)
 }
 
+fn normalize_legacy_option_schema(value: &mut serde_json::Value) {
+    match value {
+        serde_json::Value::Array(items) => {
+            for item in items {
+                normalize_legacy_option_schema(item);
+            }
+        }
+        serde_json::Value::Object(map) => {
+            for child in map.values_mut() {
+                normalize_legacy_option_schema(child);
+            }
+
+            let default_is_null = map.get("default").is_some_and(serde_json::Value::is_null);
+            if !default_is_null {
+                return;
+            }
+
+            if let Some(serde_json::Value::Array(types)) = map.get_mut("type") {
+                types.retain(|ty| ty != "null");
+                if types.len() == 1
+                    && let Some(single_type) = types.pop()
+                {
+                    map.insert("type".to_string(), single_type);
+                }
+            }
+
+            let Some(any_of) = map.remove("anyOf") else {
+                return;
+            };
+            let serde_json::Value::Array(variants) = any_of else {
+                map.insert("anyOf".to_string(), any_of);
+                return;
+            };
+
+            let mut non_null_variants = Vec::new();
+            let mut removed_null_variant = false;
+            for variant in variants {
+                if is_null_schema_value(&variant) {
+                    removed_null_variant = true;
+                } else {
+                    non_null_variants.push(variant);
+                }
+            }
+
+            if removed_null_variant && !non_null_variants.is_empty() {
+                map.insert(
+                    "allOf".to_string(),
+                    serde_json::Value::Array(non_null_variants),
+                );
+            } else {
+                map.insert(
+                    "anyOf".to_string(),
+                    serde_json::Value::Array(non_null_variants),
+                );
+            }
+        }
+        _ => {}
+    }
+}
+
+fn is_null_schema_value(value: &serde_json::Value) -> bool {
+    match value {
+        serde_json::Value::Object(map) => match map.get("type") {
+            Some(serde_json::Value::String(kind)) => kind == "null",
+            Some(serde_json::Value::Array(types)) => {
+                !types.is_empty() && types.iter().all(|ty| ty == "null")
+            }
+            _ => map.get("const").is_some_and(serde_json::Value::is_null),
+        },
+        _ => false,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use pretty_assertions::assert_eq;
+    use std::collections::BTreeSet;
+
+    fn field<'a>(value: &'a serde_json::Value, key: &str) -> &'a serde_json::Value {
+        value
+            .get(key)
+            .unwrap_or_else(|| panic!("missing field {key:?} in {value:#?}"))
+    }
+
+    fn object_field<'a>(
+        value: &'a serde_json::Value,
+        key: &str,
+    ) -> &'a serde_json::Map<String, serde_json::Value> {
+        field(value, key)
+            .as_object()
+            .unwrap_or_else(|| panic!("field {key:?} is not an object in {value:#?}"))
+    }
+
+    fn string_field<'a>(value: &'a serde_json::Value, key: &str) -> &'a str {
+        field(value, key)
+            .as_str()
+            .unwrap_or_else(|| panic!("field {key:?} is not a string in {value:#?}"))
+    }
+
+    fn required_set(value: &serde_json::Value, key: &str) -> BTreeSet<String> {
+        field(value, key)
+            .as_array()
+            .unwrap_or_else(|| panic!("field {key:?} is not an array in {value:#?}"))
+            .iter()
+            .map(|entry| {
+                entry
+                    .as_str()
+                    .unwrap_or_else(|| panic!("required entry is not a string in {value:#?}"))
+                    .to_string()
+            })
+            .collect()
+    }
+
+    fn type_set(schema: &serde_json::Value) -> BTreeSet<String> {
+        match field(schema, "type") {
+            serde_json::Value::String(kind) => BTreeSet::from([kind.clone()]),
+            serde_json::Value::Array(kinds) => kinds
+                .iter()
+                .map(|entry| {
+                    entry
+                        .as_str()
+                        .unwrap_or_else(|| panic!("type entry is not a string in {schema:#?}"))
+                        .to_string()
+                })
+                .collect(),
+            other => panic!("unexpected type field {other:#?} in {schema:#?}"),
+        }
+    }
+
+    fn enum_set(schema: &serde_json::Value) -> BTreeSet<String> {
+        field(schema, "enum")
+            .as_array()
+            .unwrap_or_else(|| panic!("enum is not an array in {schema:#?}"))
+            .iter()
+            .map(|entry| match entry {
+                serde_json::Value::String(value) => value.clone(),
+                serde_json::Value::Null => "null".to_string(),
+                other => panic!("unexpected enum entry {other:#?} in {schema:#?}"),
+            })
+            .collect()
+    }
+
+    fn normalized_whitespace(text: &str) -> String {
+        text.split_whitespace().collect::<Vec<_>>().join(" ")
+    }
+
+    fn assert_tool_output_schema(output_schema: &serde_json::Value) {
+        assert_eq!(
+            required_set(output_schema, "required"),
+            BTreeSet::from(["content".to_string(), "threadId".to_string()])
+        );
+
+        let properties = object_field(output_schema, "properties");
+        assert_eq!(
+            properties.keys().cloned().collect::<BTreeSet<_>>(),
+            BTreeSet::from(["content".to_string(), "threadId".to_string()])
+        );
+        assert_eq!(
+            type_set(&properties["content"]),
+            BTreeSet::from(["string".to_string()])
+        );
+        assert_eq!(
+            type_set(&properties["threadId"]),
+            BTreeSet::from(["string".to_string()])
+        );
+        assert_eq!(
+            type_set(output_schema),
+            BTreeSet::from(["object".to_string()])
+        );
+    }
 
     /// We include a test to verify the exact JSON schema as "executable
     /// documentation" for the schema. When can track changes to this test as a
@@ -301,133 +466,166 @@ mod tests {
     fn verify_codex_tool_json_schema() {
         let tool = create_tool_for_codex_tool_call_param();
         let tool_json = serde_json::to_value(&tool).expect("tool serializes");
-        let expected_tool_json = serde_json::json!({
-          "description": "Run a Codex session. Accepts configuration parameters matching the Codex Config struct.",
-          "inputSchema": {
-            "properties": {
-              "approval-policy": {
-                "description": "Approval policy for shell commands generated by the model: `untrusted`, `on-failure`, `on-request`, `never`.",
-                "enum": [
-                  "untrusted",
-                  "on-failure",
-                  "on-request",
-                  "never"
-                ],
-                "type": "string"
-              },
-              "base-instructions": {
-                "description": "The set of instructions to use instead of the default ones.",
-                "type": "string"
-              },
-              "compact-prompt": {
-                "description": "Prompt used when compacting the conversation.",
-                "type": "string"
-              },
-              "config": {
-                "additionalProperties": true,
-                "description": "Individual config settings that will override what is in CODEX_HOME/config.toml.",
-                "type": "object"
-              },
-              "cwd": {
-                "description": "Working directory for the session. If relative, it is resolved against the server process's current working directory.",
-                "type": "string"
-              },
-              "developer-instructions": {
-                "description": "Developer instructions that should be injected as a developer role message.",
-                "type": "string"
-              },
-              "model": {
-                "description": "Optional override for the model name (e.g. 'gpt-5.2', 'gpt-5.2-codex').",
-                "type": "string"
-              },
-              "profile": {
-                "description": "Configuration profile from config.toml to specify default options.",
-                "type": "string"
-              },
-              "prompt": {
-                "description": "The *initial user prompt* to start the Codex conversation.",
-                "type": "string"
-              },
-              "sandbox": {
-                "description": "Sandbox mode: `read-only`, `workspace-write`, or `danger-full-access`.",
-                "enum": [
-                  "read-only",
-                  "workspace-write",
-                  "danger-full-access"
-                ],
-                "type": "string"
-              }
-            },
-            "required": [
-              "prompt"
-            ],
-            "type": "object"
-          },
-          "name": "codex",
-          "outputSchema": {
-            "properties": {
-              "content": {
-                "type": "string"
-              },
-              "threadId": {
-                "type": "string"
-              }
-            },
-            "required": [
-              "threadId",
-              "content"
-            ],
-            "type": "object"
-          },
-          "title": "Codex"
-        });
-        assert_eq!(expected_tool_json, tool_json);
+
+        assert_eq!(string_field(&tool_json, "name"), "codex");
+        assert_eq!(string_field(&tool_json, "title"), "Codex");
+        assert_eq!(
+            string_field(&tool_json, "description"),
+            "Run a Codex session. Accepts configuration parameters matching the Codex Config struct."
+        );
+
+        let input_schema = field(&tool_json, "inputSchema");
+        assert_eq!(
+            required_set(input_schema, "required"),
+            BTreeSet::from(["prompt".to_string()])
+        );
+        assert_eq!(
+            type_set(input_schema),
+            BTreeSet::from(["object".to_string()])
+        );
+
+        let properties = object_field(input_schema, "properties");
+        assert_eq!(
+            properties.keys().cloned().collect::<BTreeSet<_>>(),
+            BTreeSet::from([
+                "approval-policy".to_string(),
+                "base-instructions".to_string(),
+                "compact-prompt".to_string(),
+                "config".to_string(),
+                "cwd".to_string(),
+                "developer-instructions".to_string(),
+                "model".to_string(),
+                "profile".to_string(),
+                "prompt".to_string(),
+                "sandbox".to_string(),
+            ])
+        );
+
+        assert_eq!(
+            type_set(&properties["prompt"]),
+            BTreeSet::from(["string".to_string()])
+        );
+        assert_eq!(
+            normalized_whitespace(string_field(&properties["prompt"], "description")),
+            "The *initial user prompt* to start the Codex conversation."
+        );
+
+        for key in [
+            "model",
+            "profile",
+            "cwd",
+            "base-instructions",
+            "developer-instructions",
+            "compact-prompt",
+        ] {
+            assert_eq!(
+                type_set(&properties[key]),
+                BTreeSet::from(["null".to_string(), "string".to_string()]),
+                "unexpected type for {key}"
+            );
+        }
+
+        assert_eq!(
+            type_set(&properties["config"]),
+            BTreeSet::from(["null".to_string(), "object".to_string()])
+        );
+        assert_eq!(
+            field(&properties["config"], "additionalProperties"),
+            &serde_json::Value::Bool(true)
+        );
+
+        assert_eq!(
+            type_set(&properties["approval-policy"]),
+            BTreeSet::from(["null".to_string(), "string".to_string()])
+        );
+        assert_eq!(
+            enum_set(&properties["approval-policy"]),
+            BTreeSet::from([
+                "never".to_string(),
+                "null".to_string(),
+                "on-failure".to_string(),
+                "on-request".to_string(),
+                "untrusted".to_string(),
+            ])
+        );
+        assert_eq!(
+            normalized_whitespace(string_field(&properties["approval-policy"], "description")),
+            "Approval policy for shell commands generated by the model: `untrusted`, `on-failure`, `on-request`, `never`."
+        );
+
+        assert_eq!(
+            type_set(&properties["sandbox"]),
+            BTreeSet::from(["null".to_string(), "string".to_string()])
+        );
+        assert_eq!(
+            enum_set(&properties["sandbox"]),
+            BTreeSet::from([
+                "danger-full-access".to_string(),
+                "null".to_string(),
+                "read-only".to_string(),
+                "workspace-write".to_string(),
+            ])
+        );
+
+        assert_tool_output_schema(field(&tool_json, "outputSchema"));
     }
 
     #[test]
     fn verify_codex_tool_reply_json_schema() {
         let tool = create_tool_for_codex_tool_call_reply_param();
         let tool_json = serde_json::to_value(&tool).expect("tool serializes");
-        let expected_tool_json = serde_json::json!({
-          "description": "Continue a Codex conversation by providing the thread id and prompt.",
-          "inputSchema": {
-            "properties": {
-              "conversationId": {
-                "description": "DEPRECATED: use threadId instead.",
-                "type": "string"
-              },
-              "prompt": {
-                "description": "The *next user prompt* to continue the Codex conversation.",
-                "type": "string"
-              },
-              "threadId": {
-                "description": "The thread id for this Codex session. This field is required, but we keep it optional here for backward compatibility for clients that still use conversationId.",
-                "type": "string"
-              }
-            },
-            "required": [
-              "prompt",
-            ],
-            "type": "object",
-          },
-          "name": "codex-reply",
-          "outputSchema": {
-            "properties": {
-              "content": {
-                "type": "string"
-              },
-              "threadId": {
-                "type": "string"
-              }
-            },
-            "required": [
-              "threadId",
-              "content"
-            ],
-            "type": "object"
-          },
-          "title": "Codex Reply",
-        });
-        assert_eq!(expected_tool_json, tool_json);
+
+        assert_eq!(string_field(&tool_json, "name"), "codex-reply");
+        assert_eq!(string_field(&tool_json, "title"), "Codex Reply");
+        assert_eq!(
+            string_field(&tool_json, "description"),
+            "Continue a Codex conversation by providing the thread id and prompt."
+        );
+
+        let input_schema = field(&tool_json, "inputSchema");
+        assert_eq!(
+            required_set(input_schema, "required"),
+            BTreeSet::from(["prompt".to_string()])
+        );
+        assert_eq!(
+            type_set(input_schema),
+            BTreeSet::from(["object".to_string()])
+        );
+
+        let properties = object_field(input_schema, "properties");
+        assert_eq!(
+            properties.keys().cloned().collect::<BTreeSet<_>>(),
+            BTreeSet::from([
+                "conversationId".to_string(),
+                "prompt".to_string(),
+                "threadId".to_string(),
+            ])
+        );
+
+        assert_eq!(
+            type_set(&properties["prompt"]),
+            BTreeSet::from(["string".to_string()])
+        );
+        assert_eq!(
+            normalized_whitespace(string_field(&properties["prompt"], "description")),
+            "The *next user prompt* to continue the Codex conversation."
+        );
+
+        for key in ["conversationId", "threadId"] {
+            assert_eq!(
+                type_set(&properties[key]),
+                BTreeSet::from(["null".to_string(), "string".to_string()])
+            );
+        }
+        assert_eq!(
+            normalized_whitespace(string_field(&properties["conversationId"], "description")),
+            "DEPRECATED: use threadId instead."
+        );
+        assert_eq!(
+            normalized_whitespace(string_field(&properties["threadId"], "description")),
+            "The thread id for this Codex session. This field is required, but we keep it optional here for backward compatibility for clients that still use conversationId."
+        );
+
+        assert_tool_output_schema(field(&tool_json, "outputSchema"));
     }
 }

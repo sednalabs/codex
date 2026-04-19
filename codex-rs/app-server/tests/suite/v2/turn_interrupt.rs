@@ -3,6 +3,7 @@
 use anyhow::Result;
 use app_test_support::McpProcess;
 use app_test_support::create_mock_responses_server_sequence;
+use app_test_support::create_mock_responses_server_sequence_unchecked;
 use app_test_support::create_shell_command_sse_response;
 use app_test_support::to_response;
 use codex_app_server_protocol::JSONRPCNotification;
@@ -43,14 +44,15 @@ async fn turn_interrupt_aborts_running_turn() -> Result<()> {
     std::fs::create_dir(&working_directory)?;
 
     // Mock server: long-running shell command then (after abort) nothing else needed.
-    let server = create_mock_responses_server_sequence(vec![create_shell_command_sse_response(
-        shell_command.clone(),
-        Some(&working_directory),
-        Some(10_000),
-        "call_sleep",
-    )?])
-    .await;
-    create_config_toml(&codex_home, &server.uri(), "never")?;
+    let server =
+        create_mock_responses_server_sequence_unchecked(vec![create_shell_command_sse_response(
+            shell_command.clone(),
+            Some(&working_directory),
+            Some(10_000),
+            "call_sleep",
+        )?])
+        .await;
+    create_config_toml(&codex_home, &server.uri(), "never", "workspace-write")?;
 
     let mut mcp = McpProcess::new(&codex_home).await?;
     timeout(DEFAULT_READ_TIMEOUT, mcp.initialize()).await??;
@@ -87,6 +89,7 @@ async fn turn_interrupt_aborts_running_turn() -> Result<()> {
     )
     .await??;
     let TurnStartResponse { turn } = to_response::<TurnStartResponse>(turn_resp)?;
+    let turn_id = turn.id.clone();
 
     // Give the command a brief moment to start.
     tokio::time::sleep(std::time::Duration::from_secs(1)).await;
@@ -96,7 +99,7 @@ async fn turn_interrupt_aborts_running_turn() -> Result<()> {
     let interrupt_id = mcp
         .send_turn_interrupt_request(TurnInterruptParams {
             thread_id: thread_id.clone(),
-            turn_id: turn.id,
+            turn_id: turn_id.clone(),
         })
         .await?;
     let interrupt_resp: JSONRPCResponse = timeout(
@@ -131,7 +134,11 @@ async fn turn_interrupt_resolves_pending_command_approval_request() -> Result<()
         "Start-Sleep -Seconds 10".to_string(),
     ];
     #[cfg(not(target_os = "windows"))]
-    let shell_command = vec!["sleep".to_string(), "10".to_string()];
+    let shell_command = vec![
+        "python3".to_string(),
+        "-c".to_string(),
+        "import time; time.sleep(10)".to_string(),
+    ];
 
     let tmp = TempDir::new()?;
     let codex_home = tmp.path().join("codex_home");
@@ -146,7 +153,7 @@ async fn turn_interrupt_resolves_pending_command_approval_request() -> Result<()
         "call_sleep_approval",
     )?])
     .await;
-    create_config_toml(&codex_home, &server.uri(), "untrusted")?;
+    create_config_toml(&codex_home, &server.uri(), "untrusted", "read-only")?;
 
     let mut mcp = McpProcess::new(&codex_home).await?;
     timeout(DEFAULT_READ_TIMEOUT, mcp.initialize()).await??;
@@ -168,10 +175,11 @@ async fn turn_interrupt_resolves_pending_command_approval_request() -> Result<()
         .send_turn_start_request(TurnStartParams {
             thread_id: thread.id.clone(),
             input: vec![V2UserInput::Text {
-                text: "run sleep".to_string(),
+                text: "run python".to_string(),
                 text_elements: Vec::new(),
             }],
             cwd: Some(working_directory),
+            approval_policy: Some(codex_app_server_protocol::AskForApproval::UnlessTrusted),
             ..Default::default()
         })
         .await?;
@@ -242,6 +250,7 @@ fn create_config_toml(
     codex_home: &std::path::Path,
     server_uri: &str,
     approval_policy: &str,
+    sandbox_mode: &str,
 ) -> std::io::Result<()> {
     let config_toml = codex_home.join("config.toml");
     std::fs::write(
@@ -250,7 +259,8 @@ fn create_config_toml(
             r#"
 model = "mock-model"
 approval_policy = "{approval_policy}"
-sandbox_mode = "danger-full-access"
+approvals_reviewer = "user"
+sandbox_mode = "{sandbox_mode}"
 
 model_provider = "mock_provider"
 

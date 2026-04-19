@@ -1,35 +1,20 @@
 use super::*;
+use crate::tools::sandboxing::SandboxAttempt;
+use codex_protocol::config_types::WindowsSandboxLevel;
+use codex_protocol::models::FileSystemPermissions;
+use codex_protocol::models::PermissionProfile;
+use codex_protocol::permissions::FileSystemAccessMode;
+use codex_protocol::permissions::FileSystemPath;
+use codex_protocol::permissions::FileSystemSandboxEntry;
+use codex_protocol::permissions::FileSystemSandboxPolicy;
+use codex_protocol::permissions::NetworkSandboxPolicy;
 use codex_protocol::protocol::GranularApprovalConfig;
+use codex_protocol::protocol::SandboxPolicy;
+use codex_sandboxing::SandboxManager;
+use codex_sandboxing::SandboxType;
+use core_test_support::PathBufExt;
 use pretty_assertions::assert_eq;
 use std::collections::HashMap;
-use std::path::Path;
-use std::path::PathBuf;
-
-fn sample_request(codex_exe: Option<PathBuf>) -> ApplyPatchRequest {
-    let path = std::env::temp_dir().join("guardian-apply-patch-test.txt");
-    let action = ApplyPatchAction::new_add_for_test(&path, "hello".to_string());
-    ApplyPatchRequest {
-        action,
-        file_paths: vec![
-            AbsolutePathBuf::from_absolute_path(&path).expect("temp path should be absolute"),
-        ],
-        changes: HashMap::from([(
-            path,
-            FileChange::Add {
-                content: "hello".to_string(),
-            },
-        )]),
-        exec_approval_requirement: ExecApprovalRequirement::NeedsApproval {
-            reason: None,
-            proposed_execpolicy_amendment: None,
-        },
-        sandbox_permissions: SandboxPermissions::UseDefault,
-        additional_permissions: None,
-        permissions_preapproved: false,
-        timeout_ms: None,
-        codex_exe,
-    }
-}
 
 #[test]
 fn wants_no_sandbox_approval_granular_respects_sandbox_flag() {
@@ -57,9 +42,28 @@ fn wants_no_sandbox_approval_granular_respects_sandbox_flag() {
 
 #[test]
 fn guardian_review_request_includes_patch_context() {
-    let request = sample_request(None);
-    let expected_cwd = request.action.cwd.clone();
-    let expected_patch = request.action.patch.clone();
+    let path = std::env::temp_dir()
+        .join("guardian-apply-patch-test.txt")
+        .abs();
+    let action = ApplyPatchAction::new_add_for_test(&path, "hello".to_string());
+    let expected_cwd = action.cwd.clone();
+    let expected_patch = action.patch.clone();
+    let request = ApplyPatchRequest {
+        action,
+        file_paths: vec![path.clone()],
+        changes: HashMap::from([(
+            path.to_path_buf(),
+            FileChange::Add {
+                content: "hello".to_string(),
+            },
+        )]),
+        exec_approval_requirement: ExecApprovalRequirement::NeedsApproval {
+            reason: None,
+            proposed_execpolicy_amendment: None,
+        },
+        additional_permissions: None,
+        permissions_preapproved: false,
+    };
 
     let guardian_request = ApplyPatchRuntime::build_guardian_review_request(&request, "call-1");
 
@@ -69,86 +73,150 @@ fn guardian_review_request_includes_patch_context() {
             id: "call-1".to_string(),
             cwd: expected_cwd,
             files: request.file_paths,
-            change_count: 1usize,
             patch: expected_patch,
         }
     );
 }
 
 #[test]
-fn build_command_spec_prefers_explicit_codex_exe() {
-    let explicit_exe = std::env::temp_dir().join("codex-apply-patch-explicit");
-    let request = sample_request(Some(explicit_exe.clone()));
+fn file_system_sandbox_context_uses_active_attempt() {
+    let path = std::env::temp_dir()
+        .join("apply-patch-runtime-attempt.txt")
+        .abs();
+    let additional_permissions = PermissionProfile {
+        network: None,
+        file_system: Some(FileSystemPermissions {
+            read: Some(vec![path.clone()]),
+            write: Some(Vec::new()),
+        }),
+    };
+    let req = ApplyPatchRequest {
+        action: ApplyPatchAction::new_add_for_test(&path, "hello".to_string()),
+        file_paths: vec![path.clone()],
+        changes: HashMap::new(),
+        exec_approval_requirement: ExecApprovalRequirement::Skip {
+            bypass_sandbox: false,
+            proposed_execpolicy_amendment: None,
+        },
+        additional_permissions: Some(additional_permissions.clone()),
+        permissions_preapproved: false,
+    };
+    let sandbox_policy = SandboxPolicy::new_read_only_policy();
+    let mut file_system_policy =
+        FileSystemSandboxPolicy::from_legacy_sandbox_policy(&sandbox_policy, path.as_path());
+    file_system_policy.entries.push(FileSystemSandboxEntry {
+        path: FileSystemPath::Path { path: path.clone() },
+        access: FileSystemAccessMode::None,
+    });
+    let manager = SandboxManager::new();
+    let attempt = SandboxAttempt {
+        sandbox: SandboxType::MacosSeatbelt,
+        policy: &sandbox_policy,
+        file_system_policy: &file_system_policy,
+        network_policy: NetworkSandboxPolicy::Restricted,
+        enforce_managed_network: false,
+        manager: &manager,
+        sandbox_cwd: &path,
+        codex_linux_sandbox_exe: None,
+        use_legacy_landlock: true,
+        windows_sandbox_level: WindowsSandboxLevel::RestrictedToken,
+        windows_sandbox_private_desktop: true,
+    };
 
-    let launch = ApplyPatchRuntime::build_command_spec(&request, Path::new("/unused"))
-        .expect("explicit exe should build a command spec");
+    let sandbox = ApplyPatchRuntime::file_system_sandbox_context_for_attempt(&req, &attempt)
+        .expect("sandbox context");
 
-    assert_eq!(launch.executable, explicit_exe);
+    assert_eq!(sandbox.sandbox_policy, sandbox_policy);
+    assert_eq!(sandbox.sandbox_policy_cwd, Some(path.clone()));
     assert_eq!(
-        launch.launch_mode,
-        ApplyPatchLaunchMode::ConfiguredCodexLinuxSandboxExe
+        sandbox.file_system_sandbox_policy,
+        Some(file_system_policy.clone())
     );
-    assert_eq!(launch.spec.program, launch.executable.to_string_lossy());
-    assert_eq!(launch.spec.cwd, request.action.cwd);
+    assert_eq!(sandbox.additional_permissions, Some(additional_permissions));
+    assert_eq!(
+        sandbox.windows_sandbox_level,
+        WindowsSandboxLevel::RestrictedToken
+    );
+    assert_eq!(sandbox.windows_sandbox_private_desktop, true);
+    assert_eq!(sandbox.use_legacy_landlock, true);
 }
 
 #[test]
-fn build_command_spec_uses_apply_patch_alias_for_linux_sandbox_helper_path() {
-    let sandbox_exe = PathBuf::from("/tmp/codex-linux-sandbox");
-    let request = sample_request(Some(sandbox_exe));
+fn file_system_sandbox_context_omits_legacy_equivalent_policy() {
+    let path = std::env::temp_dir()
+        .join("apply-patch-runtime-legacy-equivalent.txt")
+        .abs();
+    let req = ApplyPatchRequest {
+        action: ApplyPatchAction::new_add_for_test(&path, "hello".to_string()),
+        file_paths: vec![path.clone()],
+        changes: HashMap::new(),
+        exec_approval_requirement: ExecApprovalRequirement::Skip {
+            bypass_sandbox: false,
+            proposed_execpolicy_amendment: None,
+        },
+        additional_permissions: None,
+        permissions_preapproved: false,
+    };
+    let sandbox_policy = SandboxPolicy::new_read_only_policy();
+    let file_system_policy =
+        FileSystemSandboxPolicy::from_legacy_sandbox_policy(&sandbox_policy, path.as_path());
+    let manager = SandboxManager::new();
+    let attempt = SandboxAttempt {
+        sandbox: SandboxType::MacosSeatbelt,
+        policy: &sandbox_policy,
+        file_system_policy: &file_system_policy,
+        network_policy: NetworkSandboxPolicy::Restricted,
+        enforce_managed_network: false,
+        manager: &manager,
+        sandbox_cwd: &path,
+        codex_linux_sandbox_exe: None,
+        use_legacy_landlock: true,
+        windows_sandbox_level: WindowsSandboxLevel::RestrictedToken,
+        windows_sandbox_private_desktop: true,
+    };
 
-    let launch = ApplyPatchRuntime::build_command_spec(&request, Path::new("/unused"))
-        .expect("linux sandbox helper path should build a command spec");
+    let sandbox = ApplyPatchRuntime::file_system_sandbox_context_for_attempt(&req, &attempt)
+        .expect("sandbox context");
+
+    assert_eq!(sandbox.sandbox_policy_cwd, Some(path));
+    assert_eq!(sandbox.file_system_sandbox_policy, None);
+}
+
+#[test]
+fn no_sandbox_attempt_has_no_file_system_context() {
+    let path = std::env::temp_dir()
+        .join("apply-patch-runtime-none.txt")
+        .abs();
+    let req = ApplyPatchRequest {
+        action: ApplyPatchAction::new_add_for_test(&path, "hello".to_string()),
+        file_paths: vec![path.clone()],
+        changes: HashMap::new(),
+        exec_approval_requirement: ExecApprovalRequirement::Skip {
+            bypass_sandbox: false,
+            proposed_execpolicy_amendment: None,
+        },
+        additional_permissions: None,
+        permissions_preapproved: false,
+    };
+    let sandbox_policy = SandboxPolicy::DangerFullAccess;
+    let file_system_policy = FileSystemSandboxPolicy::from(&sandbox_policy);
+    let manager = SandboxManager::new();
+    let attempt = SandboxAttempt {
+        sandbox: SandboxType::None,
+        policy: &sandbox_policy,
+        file_system_policy: &file_system_policy,
+        network_policy: NetworkSandboxPolicy::Enabled,
+        enforce_managed_network: false,
+        manager: &manager,
+        sandbox_cwd: &path,
+        codex_linux_sandbox_exe: None,
+        use_legacy_landlock: false,
+        windows_sandbox_level: WindowsSandboxLevel::Disabled,
+        windows_sandbox_private_desktop: false,
+    };
 
     assert_eq!(
-        launch.launch_mode,
-        ApplyPatchLaunchMode::ConfiguredCodexLinuxSandboxExeViaApplyPatchAlias
+        ApplyPatchRuntime::file_system_sandbox_context_for_attempt(&req, &attempt),
+        None
     );
-    assert!(
-        Path::new(&launch.spec.program)
-            .file_name()
-            .and_then(|name| name.to_str())
-            .is_some_and(|name| name == "apply_patch"),
-        "expected apply_patch executable path, got {}",
-        launch.spec.program
-    );
-    assert_eq!(launch.spec.args, vec![request.action.patch]);
-}
-
-#[test]
-fn launch_diagnostics_report_launch_mode_and_path_existence() {
-    let request = sample_request(None);
-    let missing_exe = request.action.cwd.join("missing-codex-apply-patch-helper");
-
-    let diagnostics = ApplyPatchRuntime::launch_diagnostics(
-        &request,
-        &missing_exe,
-        ApplyPatchLaunchMode::CurrentExeFallback,
-    );
-
-    assert!(diagnostics.contains("launch mode: current_exe fallback"));
-    assert!(diagnostics.contains(&format!("executable: {}", missing_exe.display())));
-    assert!(diagnostics.contains("executable_exists: false"));
-    assert!(diagnostics.contains(&format!("cwd: {}", request.action.cwd.display())));
-    assert!(diagnostics.contains("cwd_exists: true"));
-    assert!(diagnostics.contains("files: 1"));
-}
-
-#[cfg(target_os = "linux")]
-#[test]
-fn recover_deleted_current_exe_path_strips_linux_deleted_suffix() {
-    use std::ffi::OsString;
-    use std::os::unix::ffi::OsStringExt;
-
-    let temp = tempfile::tempdir().expect("tempdir");
-    let live_exe = temp.path().join("codex");
-    std::fs::write(&live_exe, "stub").expect("write stub exe");
-
-    let mut raw = live_exe.as_os_str().as_encoded_bytes().to_vec();
-    raw.extend_from_slice(b" (deleted)");
-    let deleted_path = PathBuf::from(OsString::from_vec(raw));
-
-    let recovered = ApplyPatchRuntime::recover_deleted_current_exe_path(&deleted_path);
-
-    assert_eq!(recovered, Some(live_exe));
 }

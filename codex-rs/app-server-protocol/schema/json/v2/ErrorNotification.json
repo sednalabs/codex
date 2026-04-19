@@ -1,8 +1,7 @@
 {
-  "$schema": "http://json-schema.org/draft-07/schema#",
-  "definitions": {
+  "$defs": {
     "CodexErrorInfo": {
-      "description": "This translation layer make sure that we expose codex error code in camel case.\n\nWhen an upstream HTTP status is available (for example, from the Responses API or a provider), it is forwarded in `httpStatusCode` on the relevant `codexErrorInfo` variant.",
+      "description": "This translation layer make sure that we expose codex error code in camel case.\n\nWhen an upstream HTTP status is available (for example, from the Responses API or a provider),\nit is forwarded in `httpStatusCode` on the relevant `codexErrorInfo` variant.",
       "oneOf": [
         {
           "enum": [
@@ -25,7 +24,8 @@
               "properties": {
                 "httpStatusCode": {
                   "format": "uint16",
-                  "minimum": 0.0,
+                  "maximum": 65535,
+                  "minimum": 0,
                   "type": [
                     "integer",
                     "null"
@@ -49,7 +49,8 @@
               "properties": {
                 "httpStatusCode": {
                   "format": "uint16",
-                  "minimum": 0.0,
+                  "maximum": 65535,
+                  "minimum": 0,
                   "type": [
                     "integer",
                     "null"
@@ -73,7 +74,8 @@
               "properties": {
                 "httpStatusCode": {
                   "format": "uint16",
-                  "minimum": 0.0,
+                  "maximum": 65535,
+                  "minimum": 0,
                   "type": [
                     "integer",
                     "null"
@@ -97,7 +99,8 @@
               "properties": {
                 "httpStatusCode": {
                   "format": "uint16",
-                  "minimum": 0.0,
+                  "maximum": 65535,
+                  "minimum": 0,
                   "type": [
                     "integer",
                     "null"
@@ -112,8 +115,37 @@
           ],
           "title": "ResponseTooManyFailedAttemptsCodexErrorInfo",
           "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Returned when `turn/start` or `turn/steer` is submitted while the current active turn\ncannot accept same-turn steering, for example `/review` or manual `/compact`.",
+          "properties": {
+            "activeTurnNotSteerable": {
+              "properties": {
+                "turnKind": {
+                  "$ref": "#/$defs/NonSteerableTurnKind"
+                }
+              },
+              "required": [
+                "turnKind"
+              ],
+              "type": "object"
+            }
+          },
+          "required": [
+            "activeTurnNotSteerable"
+          ],
+          "title": "ActiveTurnNotSteerableCodexErrorInfo",
+          "type": "object"
         }
       ]
+    },
+    "NonSteerableTurnKind": {
+      "enum": [
+        "review",
+        "compact"
+      ],
+      "type": "string"
     },
     "TurnError": {
       "properties": {
@@ -127,7 +159,7 @@
         "codexErrorInfo": {
           "anyOf": [
             {
-              "$ref": "#/definitions/CodexErrorInfo"
+              "$ref": "#/$defs/CodexErrorInfo"
             },
             {
               "type": "null"
@@ -144,9 +176,10 @@
       "type": "object"
     }
   },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
   "properties": {
     "error": {
-      "$ref": "#/definitions/TurnError"
+      "$ref": "#/$defs/TurnError"
     },
     "threadId": {
       "type": "string"
@@ -160,9 +193,9 @@
   },
   "required": [
     "error",
+    "willRetry",
     "threadId",
-    "turnId",
-    "willRetry"
+    "turnId"
   ],
   "title": "ErrorNotification",
   "type": "object"

@@ -93,6 +93,7 @@ pub fn parse_rate_limit_for_limit(
         secondary,
         credits,
         plan_type: None,
+        rate_limit_reached_type: None,
     })
 }
 
@@ -156,6 +157,7 @@ pub fn parse_rate_limit_event(payload: &str) -> Option<RateLimitSnapshot> {
         secondary,
         credits,
         plan_type: event.plan_type,
+        rate_limit_reached_type: None,
     })
 }
 
@@ -277,7 +279,7 @@ mod tests {
             HeaderValue::from_static("1704069000"),
         );
 
-        let snapshot = parse_rate_limit_for_limit(&headers, None).expect("snapshot");
+        let snapshot = parse_rate_limit_for_limit(&headers, /*limit_id*/ None).expect("snapshot");
         assert_eq!(snapshot.limit_id.as_deref(), Some("codex"));
         assert_eq!(snapshot.limit_name, None);
         let primary = snapshot.primary.expect("primary");

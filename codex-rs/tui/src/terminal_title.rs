@@ -23,8 +23,14 @@ use std::io::stdout;
 use crossterm::Command;
 use ratatui::crossterm::execute;
 
+/// Practical upper bound on title length, measured in Rust `char`s.
+///
+/// Most terminals silently truncate titles beyond a few hundred characters.
+/// 240 leaves headroom for the OSC framing bytes while keeping titles
+/// readable in tab bars and window managers.
 const MAX_TERMINAL_TITLE_CHARS: usize = 240;
 
+/// Outcome of a [`set_terminal_title`] call.
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub(crate) enum SetTerminalTitleResult {
     /// A sanitized title was written, or stdout is not a terminal so no write was needed.
@@ -78,9 +84,10 @@ struct SetWindowTitle(String);
 
 impl Command for SetWindowTitle {
     fn write_ansi(&self, f: &mut impl fmt::Write) -> fmt::Result {
-        // xterm/ctlseqs documents OSC 0/2 title sequences with ST (ESC \) termination.
-        // Most terminals also accept BEL for compatibility, but ST is the canonical form.
-        write!(f, "\x1b]0;{}\x1b\\", self.0)
+        // Match crossterm's SetTitle command and terminate OSC 0 with BEL.
+        // Some terminal title integrations expose the ST terminator in process
+        // decorations even though they otherwise accept the title update.
+        write!(f, "\x1b]0;{}\x07", self.0)
     }
 
     #[cfg(windows)]
@@ -108,6 +115,8 @@ fn sanitize_terminal_title(title: &str) -> String {
 
     for ch in title.chars() {
         if ch.is_whitespace() {
+            // Only set pending if we've already written content; this
+            // strips leading whitespace without an extra trim pass.
             pending_space = !sanitized.is_empty();
             continue;
         }
@@ -116,10 +125,13 @@ fn sanitize_terminal_title(title: &str) -> String {
             continue;
         }
 
-        if pending_space && chars_written < MAX_TERMINAL_TITLE_CHARS {
-            sanitized.push(' ');
-            chars_written += 1;
-            pending_space = false;
+        if pending_space {
+            let remaining = MAX_TERMINAL_TITLE_CHARS.saturating_sub(chars_written);
+            if remaining > 1 {
+                sanitized.push(' ');
+                chars_written += 1;
+                pending_space = false;
+            }
         }
 
         if chars_written >= MAX_TERMINAL_TITLE_CHARS {
@@ -195,11 +207,19 @@ mod tests {
     }
 
     #[test]
-    fn writes_osc_title_with_string_terminator() {
+    fn truncation_prefers_visible_char_over_pending_space() {
+        let input = format!("{} b", "a".repeat(MAX_TERMINAL_TITLE_CHARS - 1));
+        let sanitized = sanitize_terminal_title(&input);
+        assert_eq!(sanitized.len(), MAX_TERMINAL_TITLE_CHARS);
+        assert_eq!(sanitized.chars().last(), Some('b'));
+    }
+
+    #[test]
+    fn writes_osc_title_with_bel_terminator() {
         let mut out = String::new();
         SetWindowTitle("hello".to_string())
             .write_ansi(&mut out)
             .expect("encode terminal title");
-        assert_eq!(out, "\x1b]0;hello\x1b\\");
+        assert_eq!(out, "\x1b]0;hello\x07");
     }
 }

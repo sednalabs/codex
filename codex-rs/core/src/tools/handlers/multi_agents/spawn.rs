@@ -1,16 +1,16 @@
 use super::*;
 use crate::agent::control::SUBAGENT_IDENTITY_SOURCE_THREAD_CONFIG_SNAPSHOT;
+use crate::agent::control::SpawnAgentForkMode;
 use crate::agent::control::SpawnAgentOptions;
 use crate::agent::control::SubAgentInventoryInfo;
-use crate::agent::role::DEFAULT_ROLE_NAME;
-use crate::agent::role::apply_role_to_config;
-
+use crate::agent::control::render_input_preview;
 use crate::agent::exceeds_thread_spawn_depth_limit;
 use crate::agent::next_thread_spawn_depth;
+use crate::agent::role::DEFAULT_ROLE_NAME;
+use crate::agent::role::apply_role_to_spawn_config;
 
 pub(crate) struct Handler;
 
-#[async_trait]
 impl ToolHandler for Handler {
     type Output = SpawnAgentResult;
 
@@ -32,13 +32,15 @@ impl ToolHandler for Handler {
         } = invocation;
         let arguments = function_arguments(payload)?;
         let args: SpawnAgentArgs = parse_arguments(&arguments)?;
+        let requested_model = args.model.clone();
+        let requested_reasoning_effort = args.reasoning_effort;
         let role_name = args
             .agent_type
             .as_deref()
             .map(str::trim)
             .filter(|role| !role.is_empty());
         let input_items = parse_collab_input(args.message, args.items)?;
-        let prompt = input_preview(&input_items);
+        let prompt = render_input_preview(&input_items);
         let session_source = turn.session_source.clone();
         let child_depth = next_thread_spawn_depth(&session_source);
         let requested_task_name = args.task_name.clone();
@@ -48,6 +50,16 @@ impl ToolHandler for Handler {
                 "Agent depth limit reached. Solve the task yourself.".to_string(),
             ));
         }
+        require_spawn_agent_approval_if_requested(
+            &session,
+            turn.as_ref(),
+            args.spawn_approval,
+            &call_id,
+            role_name,
+            args.model.as_deref(),
+            &prompt,
+        )
+        .await?;
         session
             .send_event(
                 &turn,
@@ -63,25 +75,59 @@ impl ToolHandler for Handler {
             .await;
         let mut config =
             build_agent_spawn_config(&session.get_base_instructions().await, turn.as_ref())?;
-        apply_requested_spawn_agent_model_overrides(
-            &session,
-            turn.as_ref(),
-            &mut config,
-            args.model.as_deref(),
-            args.reasoning_effort,
-        )
-        .await?;
-        let pre_role_reasoning_effort = config.model_reasoning_effort;
-        apply_role_to_config(&mut config, role_name)
-            .await
-            .map_err(FunctionCallError::RespondToModel)?;
-        normalize_spawn_agent_model_reasoning_after_role(
-            &session,
-            &mut config,
-            pre_role_reasoning_effort,
-            args.reasoning_effort.is_some(),
-        )
-        .await?;
+        if args.fork_context {
+            reject_full_fork_spawn_overrides(
+                role_name,
+                args.model.as_deref(),
+                args.reasoning_effort,
+            )?;
+        } else {
+            let pre_role_reasoning_effort = config.model_reasoning_effort;
+            let spawn_model_selection_carry = apply_role_to_spawn_config(&mut config, role_name)
+                .await
+                .map_err(FunctionCallError::RespondToModel)?;
+            spawn_model_selection_carry.apply_to_config(&mut config);
+            apply_requested_spawn_agent_model_overrides(
+                &session,
+                turn.as_ref(),
+                &mut config,
+                args.model.as_deref(),
+                args.reasoning_effort,
+            )
+            .await?;
+            if let Some(model) = config.model.clone() {
+                let model_info = session
+                    .services
+                    .models_manager
+                    .get_model_info(&model, &config.to_models_manager_config())
+                    .await;
+
+                match config.model_reasoning_effort {
+                    Some(reasoning_effort) => {
+                        if !model_info
+                            .supported_reasoning_levels
+                            .iter()
+                            .any(|preset| preset.effort == reasoning_effort)
+                        {
+                            let role_changed_reasoning_effort =
+                                config.model_reasoning_effort != pre_role_reasoning_effort;
+                            if args.reasoning_effort.is_some() || role_changed_reasoning_effort {
+                                validate_spawn_agent_reasoning_effort(
+                                    &model,
+                                    &model_info.supported_reasoning_levels,
+                                    reasoning_effort,
+                                )?;
+                            }
+
+                            config.model_reasoning_effort = model_info.default_reasoning_level;
+                        }
+                    }
+                    None => {
+                        config.model_reasoning_effort = model_info.default_reasoning_level;
+                    }
+                }
+            }
+        }
         apply_spawn_agent_runtime_overrides(&mut config, turn.as_ref())?;
         apply_spawn_agent_overrides(&mut config, child_depth);
 
@@ -100,15 +146,12 @@ impl ToolHandler for Handler {
                 )?),
                 SpawnAgentOptions {
                     fork_parent_spawn_call_id: args.fork_context.then(|| call_id.clone()),
+                    fork_mode: args.fork_context.then_some(SpawnAgentForkMode::FullHistory),
                 },
             )
             .await
             .map_err(collab_spawn_error);
         let spawned_thread_id = result.as_ref().ok().map(|agent| agent.thread_id);
-        let task_name = result
-            .as_ref()
-            .ok()
-            .and_then(|agent| agent.metadata.agent_path.as_ref().map(ToString::to_string));
         let new_agent = match spawned_thread_id {
             Some(thread_id) => {
                 if let Some(agent) = session
@@ -125,7 +168,6 @@ impl ToolHandler for Handler {
                     .await
                 {
                     SubAgentInventoryInfo {
-                        thread_id,
                         nickname: snapshot.session_source.get_nickname(),
                         role: snapshot.session_source.get_agent_role(),
                         status: session.services.agent_control.get_status(thread_id).await,
@@ -137,7 +179,6 @@ impl ToolHandler for Handler {
                     }
                 } else {
                     SubAgentInventoryInfo {
-                        thread_id,
                         nickname: None,
                         role: None,
                         status: session.services.agent_control.get_status(thread_id).await,
@@ -150,7 +191,6 @@ impl ToolHandler for Handler {
                 }
             }
             None => SubAgentInventoryInfo {
-                thread_id: session.conversation_id,
                 nickname: None,
                 role: None,
                 status: AgentStatus::NotFound,
@@ -189,14 +229,20 @@ impl ToolHandler for Handler {
             /*inc*/ 1,
             &[("role", role_tag)],
         );
+        let requested_model_honored_flag = requested_model_honored(
+            requested_model.as_deref(),
+            new_agent.effective_model.as_deref(),
+        );
 
         Ok(SpawnAgentResult {
-            agent_id: task_name.is_none().then(|| new_thread_id.to_string()),
-            task_name,
+            agent_id: new_thread_id.to_string(),
             nickname,
             role,
             status,
+            requested_model,
+            requested_reasoning_effort,
             effective_model: new_agent.effective_model,
+            requested_model_honored: requested_model_honored_flag,
             effective_reasoning_effort: new_agent.effective_reasoning_effort,
             effective_model_provider_id: new_agent.effective_model_provider_id,
             identity_source: new_agent.identity_source,
@@ -213,17 +259,21 @@ struct SpawnAgentArgs {
     model: Option<String>,
     reasoning_effort: Option<ReasoningEffort>,
     #[serde(default)]
+    spawn_approval: SpawnAgentApproval,
+    #[serde(default)]
     fork_context: bool,
 }
 
 #[derive(Debug, Serialize)]
 pub(crate) struct SpawnAgentResult {
-    agent_id: Option<String>,
-    task_name: Option<String>,
+    agent_id: String,
     nickname: Option<String>,
     role: Option<String>,
     status: AgentStatus,
+    requested_model: Option<String>,
+    requested_reasoning_effort: Option<ReasoningEffort>,
     effective_model: Option<String>,
+    requested_model_honored: Option<bool>,
     effective_reasoning_effort: Option<ReasoningEffort>,
     effective_model_provider_id: String,
     identity_source: String,

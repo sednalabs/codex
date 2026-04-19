@@ -3,6 +3,7 @@ use crate::config_requirements::ConfigRequirementsToml;
 
 use super::fingerprint::record_origins;
 use super::fingerprint::version_for_toml;
+use super::key_aliases::normalized_with_key_aliases;
 use super::merge::merge_toml_values;
 use codex_app_server_protocol::ConfigLayer;
 use codex_app_server_protocol::ConfigLayerMetadata;
@@ -21,6 +22,31 @@ pub struct LoaderOverrides {
     #[cfg(target_os = "macos")]
     pub managed_preferences_base64: Option<String>,
     pub macos_managed_config_requirements_base64: Option<String>,
+}
+
+impl LoaderOverrides {
+    /// Returns overrides that ignore host-managed configuration.
+    ///
+    /// This is intended for tests that should load only repo-controlled config fixtures.
+    pub fn without_managed_config_for_tests() -> Self {
+        Self::with_managed_config_path_for_tests(
+            std::env::temp_dir()
+                .join("codex-config-tests")
+                .join("managed_config.toml"),
+        )
+    }
+
+    /// Returns overrides with host MDM disabled and managed config loaded from `managed_config_path`.
+    ///
+    /// This is intended for tests that supply an explicit managed config fixture.
+    pub fn with_managed_config_path_for_tests(managed_config_path: PathBuf) -> Self {
+        Self {
+            managed_config_path: Some(managed_config_path),
+            #[cfg(target_os = "macos")]
+            managed_preferences_base64: Some(String::new()),
+            macos_managed_config_requirements_base64: Some(String::new()),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -237,7 +263,8 @@ impl ConfigLayerStack {
             ConfigLayerStackOrdering::LowestPrecedenceFirst,
             /*include_disabled*/ false,
         ) {
-            record_origins(&layer.config, &layer.metadata(), &mut path, &mut origins);
+            let config = normalized_with_key_aliases(&layer.config, &[]);
+            record_origins(&config, &layer.metadata(), &mut path, &mut origins);
         }
 
         origins
@@ -329,3 +356,7 @@ fn verify_layer_ordering(layers: &[ConfigLayerEntry]) -> std::io::Result<Option<
 
     Ok(user_layer_index)
 }
+
+#[cfg(test)]
+#[path = "state_tests.rs"]
+mod tests;

@@ -38,6 +38,7 @@ use rmcp::model::ResourceTemplate;
 use rmcp::model::ServerCapabilities;
 use rmcp::model::ServerInfo;
 use rmcp::model::Tool;
+use rmcp::model::ToolAnnotations;
 use rmcp::transport::StreamableHttpServerConfig;
 use rmcp::transport::StreamableHttpService;
 use rmcp::transport::streamable_http_server::session::local::LocalSessionManager;
@@ -84,11 +85,30 @@ impl TestToolServer {
         }))
         .expect("echo tool schema should deserialize");
 
-        Tool::new(
+        let mut tool = Tool::new(
             Cow::Borrowed("echo"),
             Cow::Borrowed("Echo back the provided message and include environment data."),
             Arc::new(schema),
-        )
+        );
+        #[expect(clippy::expect_used)]
+        let output_schema: JsonObject = serde_json::from_value(json!({
+            "type": "object",
+            "properties": {
+                "echo": { "type": "string" },
+                "env": {
+                    "anyOf": [
+                        { "type": "string" },
+                        { "type": "null" }
+                    ]
+                }
+            },
+            "required": ["echo", "env"],
+            "additionalProperties": false
+        }))
+        .expect("echo tool output schema should deserialize");
+        tool.output_schema = Some(Arc::new(output_schema));
+        tool.annotations = Some(ToolAnnotations::new().read_only(true));
+        tool
     }
 
     fn memo_resource() -> Resource {
@@ -398,22 +418,23 @@ async fn fail_session_post_when_armed(
         return next.run(request).await;
     }
 
-    let mut armed_failure = state.armed_failure.lock().await;
-    if let Some(failure) = armed_failure.as_mut()
-        && failure.remaining > 0
     {
-        failure.remaining -= 1;
-        let status = failure.status;
-        if failure.remaining == 0 {
-            *armed_failure = None;
+        let mut armed_failure = state.armed_failure.lock().await;
+        if let Some(failure) = armed_failure.as_mut()
+            && failure.remaining > 0
+        {
+            failure.remaining -= 1;
+            let status = failure.status;
+            if failure.remaining == 0 {
+                *armed_failure = None;
+            }
+            let mut response = Response::new(Body::from(format!(
+                "forced session failure with status {status}"
+            )));
+            *response.status_mut() = status;
+            return response;
         }
-        let mut response = Response::new(Body::from(format!(
-            "forced session failure with status {status}"
-        )));
-        *response.status_mut() = status;
-        return response;
     }
 
-    drop(armed_failure);
     next.run(request).await
 }

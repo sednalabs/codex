@@ -1,8 +1,10 @@
 use super::RuntimeState;
+use super::callbacks::clear_timeout_callback;
 use super::callbacks::exit_callback;
 use super::callbacks::image_callback;
 use super::callbacks::load_callback;
 use super::callbacks::notify_callback;
+use super::callbacks::set_timeout_callback;
 use super::callbacks::store_callback;
 use super::callbacks::text_callback;
 use super::callbacks::tool_callback;
@@ -18,6 +20,8 @@ pub(super) fn install_globals(scope: &mut v8::PinScope<'_, '_>) -> Result<(), St
 
     let tools = build_tools_object(scope)?;
     let all_tools = build_all_tools_value(scope)?;
+    let clear_timeout = helper_function(scope, "clearTimeout", clear_timeout_callback)?;
+    let set_timeout = helper_function(scope, "setTimeout", set_timeout_callback)?;
     let text = helper_function(scope, "text", text_callback)?;
     let image = helper_function(scope, "image", image_callback)?;
     let store = helper_function(scope, "store", store_callback)?;
@@ -28,6 +32,8 @@ pub(super) fn install_globals(scope: &mut v8::PinScope<'_, '_>) -> Result<(), St
 
     set_global(scope, global, "tools", tools.into())?;
     set_global(scope, global, "ALL_TOOLS", all_tools)?;
+    set_global(scope, global, "clearTimeout", clear_timeout.into())?;
+    set_global(scope, global, "setTimeout", set_timeout.into())?;
     set_global(scope, global, "text", text.into())?;
     set_global(scope, global, "image", image.into())?;
     set_global(scope, global, "store", store.into())?;
@@ -47,10 +53,10 @@ fn build_tools_object<'s>(
         .map(|state| state.enabled_tools.clone())
         .unwrap_or_default();
 
-    for tool in enabled_tools {
+    for (tool_index, tool) in enabled_tools.iter().enumerate() {
         let name = v8::String::new(scope, &tool.global_name)
             .ok_or_else(|| "failed to allocate tool name".to_string())?;
-        let function = tool_function(scope, &tool.tool_name)?;
+        let function = tool_function(scope, tool_index)?;
         tools.set(scope, name.into(), function.into());
     }
     Ok(tools)
@@ -66,18 +72,27 @@ fn build_all_tools_value<'s>(
     let array = v8::Array::new(scope, enabled_tools.len() as i32);
     let name_key = v8::String::new(scope, "name")
         .ok_or_else(|| "failed to allocate ALL_TOOLS name key".to_string())?;
+    let module_key = v8::String::new(scope, "module")
+        .ok_or_else(|| "failed to allocate ALL_TOOLS module key".to_string())?;
     let description_key = v8::String::new(scope, "description")
         .ok_or_else(|| "failed to allocate ALL_TOOLS description key".to_string())?;
 
     for (index, tool) in enabled_tools.iter().enumerate() {
         let item = v8::Object::new(scope);
-        let name = v8::String::new(scope, &tool.global_name)
+        let name = v8::String::new(scope, &tool.tool_name)
             .ok_or_else(|| "failed to allocate ALL_TOOLS name".to_string())?;
         let description = v8::String::new(scope, &tool.description)
             .ok_or_else(|| "failed to allocate ALL_TOOLS description".to_string())?;
 
         if item.set(scope, name_key.into(), name.into()) != Some(true) {
             return Err("failed to set ALL_TOOLS name".to_string());
+        }
+        if let Some(module) = &tool.module {
+            let module = v8::String::new(scope, module)
+                .ok_or_else(|| "failed to allocate ALL_TOOLS module".to_string())?;
+            if item.set(scope, module_key.into(), module.into()) != Some(true) {
+                return Err("failed to set ALL_TOOLS module".to_string());
+            }
         }
         if item.set(scope, description_key.into(), description.into()) != Some(true) {
             return Err("failed to set ALL_TOOLS description".to_string());
@@ -110,9 +125,9 @@ where
 
 fn tool_function<'s>(
     scope: &mut v8::PinScope<'s, '_>,
-    tool_name: &str,
+    tool_index: usize,
 ) -> Result<v8::Local<'s, v8::Function>, String> {
-    let data = v8::String::new(scope, tool_name)
+    let data = v8::String::new(scope, &tool_index.to_string())
         .ok_or_else(|| "failed to allocate tool callback data".to_string())?;
     let template = v8::FunctionTemplate::builder(tool_callback)
         .data(data.into())

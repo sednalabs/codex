@@ -6,10 +6,14 @@
 
 use crate::history_cell::PlainHistoryCell;
 use crate::render::line_utils::prefix_lines;
+use crate::status::format_tokens_compact;
 use crate::text_formatting::truncate_text;
+use chrono::Utc;
 use codex_protocol::ThreadId;
+use codex_protocol::config_types::ApprovalsReviewer;
 use codex_protocol::openai_models::ReasoningEffort as ReasoningEffortConfig;
 use codex_protocol::protocol::AgentStatus;
+use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::CollabAgentInteractionEndEvent;
 use codex_protocol::protocol::CollabAgentRef;
 use codex_protocol::protocol::CollabAgentSpawnEndEvent;
@@ -20,6 +24,8 @@ use codex_protocol::protocol::CollabResumeEndEvent;
 use codex_protocol::protocol::CollabWaitingBeginEvent;
 use codex_protocol::protocol::CollabWaitingCompletionReason;
 use codex_protocol::protocol::CollabWaitingEndEvent;
+use codex_protocol::protocol::SandboxPolicy;
+use codex_protocol::protocol::TokenUsage;
 use crossterm::event::KeyCode;
 use crossterm::event::KeyEvent;
 #[cfg(target_os = "macos")]
@@ -35,15 +41,23 @@ use std::collections::HashSet;
 const COLLAB_PROMPT_PREVIEW_GRAPHEMES: usize = 160;
 const COLLAB_AGENT_ERROR_PREVIEW_GRAPHEMES: usize = 160;
 const COLLAB_AGENT_RESPONSE_PREVIEW_GRAPHEMES: usize = 240;
+const AGENT_PICKER_TASK_PREVIEW_GRAPHEMES: usize = 48;
+pub(crate) const SUBAGENT_LABEL: &str = "Subagent";
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct AgentPickerThreadEntry {
     /// Human-friendly nickname shown in picker rows and footer labels.
     pub(crate) agent_nickname: Option<String>,
     /// Agent type shown in brackets when present, for example `worker`.
     pub(crate) agent_role: Option<String>,
+    /// Canonical agent path for thread-spawned subagents, when available.
+    pub(crate) agent_path: Option<String>,
     /// Whether the thread has emitted a close event and should render dimmed.
     pub(crate) is_closed: bool,
+    /// Unix timestamp (seconds) when the thread was created, if known.
+    pub(crate) created_at: Option<i64>,
+    /// Unix timestamp (seconds) when the thread was last updated, if known.
+    pub(crate) updated_at: Option<i64>,
 }
 
 #[derive(Clone, Copy)]
@@ -57,6 +71,18 @@ struct AgentLabel<'a> {
 pub(crate) struct SpawnRequestSummary {
     pub(crate) model: String,
     pub(crate) reasoning_effort: ReasoningEffortConfig,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct AgentPickerThreadUsage {
+    pub(crate) token_usage: TokenUsage,
+    pub(crate) model_context_window: Option<i64>,
+    pub(crate) model: Option<String>,
+    pub(crate) reasoning_effort: Option<ReasoningEffortConfig>,
+    pub(crate) task_name: Option<String>,
+    pub(crate) approval_policy: Option<AskForApproval>,
+    pub(crate) approvals_reviewer: Option<ApprovalsReviewer>,
+    pub(crate) sandbox_policy: Option<SandboxPolicy>,
 }
 
 pub(crate) fn agent_picker_status_dot_spans(is_closed: bool) -> Vec<Span<'static>> {
@@ -82,11 +108,133 @@ pub(crate) fn format_agent_picker_item_name(
         .filter(|nickname| !nickname.is_empty());
     let agent_role = agent_role.map(str::trim).filter(|role| !role.is_empty());
     match (agent_nickname, agent_role) {
-        (Some(agent_nickname), Some(agent_role)) => format!("{agent_nickname} [{agent_role}]"),
-        (Some(agent_nickname), None) => agent_nickname.to_string(),
-        (None, Some(agent_role)) => format!("[{agent_role}]"),
-        (None, None) => "Agent".to_string(),
+        (Some(agent_nickname), Some(agent_role)) => {
+            format!("{SUBAGENT_LABEL}: {agent_nickname} [{agent_role}]")
+        }
+        (Some(agent_nickname), None) => format!("{SUBAGENT_LABEL}: {agent_nickname}"),
+        (None, Some(agent_role)) => format!("{SUBAGENT_LABEL} [{agent_role}]"),
+        (None, None) => SUBAGENT_LABEL.to_string(),
     }
+}
+
+pub(crate) fn format_agent_picker_item_description(
+    thread_id: ThreadId,
+    entry: &AgentPickerThreadEntry,
+    usage: &AgentPickerThreadUsage,
+) -> String {
+    format_agent_picker_item_description_at(thread_id, entry, usage, Utc::now().timestamp())
+}
+
+fn format_agent_picker_item_description_at(
+    thread_id: ThreadId,
+    entry: &AgentPickerThreadEntry,
+    usage: &AgentPickerThreadUsage,
+    now_ts: i64,
+) -> String {
+    let uuid = thread_id.to_string();
+    let mut parts: Vec<String> = Vec::new();
+
+    let model = usage
+        .model
+        .as_deref()
+        .map(str::trim)
+        .filter(|model| !model.is_empty());
+    if model.is_some() || usage.reasoning_effort.is_some() {
+        let mut model_parts = Vec::new();
+        if let Some(model) = model {
+            model_parts.push(model.to_string());
+        }
+        if let Some(reasoning_effort) = usage.reasoning_effort {
+            model_parts.push(reasoning_effort.to_string());
+        }
+        parts.push(model_parts.join(" "));
+    }
+
+    if let Some(task_name) = usage
+        .task_name
+        .as_deref()
+        .map(str::trim)
+        .filter(|task_name| !task_name.is_empty())
+    {
+        let task_preview = truncate_text(task_name, AGENT_PICKER_TASK_PREVIEW_GRAPHEMES);
+        if !task_preview.is_empty() {
+            parts.push(format!("task: {task_preview}"));
+        }
+    }
+
+    parts.push(uuid);
+    if usage.token_usage.total_tokens > 0 {
+        parts.push(format!(
+            "{} used",
+            format_tokens_compact(usage.token_usage.total_tokens)
+        ));
+        if let Some(context_window) = usage.model_context_window {
+            parts.push(format!(
+                "{}% left",
+                usage
+                    .token_usage
+                    .percent_of_context_window_remaining(context_window)
+            ));
+        }
+    }
+    if let Some(age) = format_agent_picker_age(entry.updated_at, entry.created_at, now_ts) {
+        parts.push(age);
+    }
+    parts.join(" • ")
+}
+
+pub(crate) fn format_agent_picker_item_selected_description(
+    thread_id: ThreadId,
+    entry: &AgentPickerThreadEntry,
+    usage: &AgentPickerThreadUsage,
+) -> String {
+    let mut description = format_agent_picker_item_description(thread_id, entry, usage);
+    if let Some(policy_details) = format_agent_picker_policy_details(
+        usage.approval_policy,
+        usage.approvals_reviewer,
+        usage.sandbox_policy.as_ref(),
+    ) {
+        description.push_str(" • ");
+        description.push_str(&policy_details);
+    }
+    description
+}
+
+fn format_agent_picker_policy_details(
+    approval_policy: Option<AskForApproval>,
+    approvals_reviewer: Option<ApprovalsReviewer>,
+    sandbox_policy: Option<&SandboxPolicy>,
+) -> Option<String> {
+    let mut parts = Vec::new();
+    if let Some(approval_policy) = approval_policy {
+        parts.push(format!("approval: {approval_policy}"));
+    }
+    if let Some(sandbox_policy) = sandbox_policy {
+        parts.push(format!("sandbox: {sandbox_policy}"));
+    }
+    if let Some(approvals_reviewer) = approvals_reviewer {
+        parts.push(format!("reviewer: {approvals_reviewer}"));
+    }
+    (!parts.is_empty()).then(|| parts.join(" • "))
+}
+
+fn format_agent_picker_age(
+    updated_at: Option<i64>,
+    created_at: Option<i64>,
+    now_ts: i64,
+) -> Option<String> {
+    let timestamp = updated_at.or(created_at)?;
+    let age_secs = now_ts.saturating_sub(timestamp).max(0);
+    let label = if age_secs < 60 {
+        format!("{age_secs}s ago")
+    } else if age_secs < 60 * 60 {
+        format!("{}m ago", age_secs / 60)
+    } else if age_secs < 60 * 60 * 24 {
+        format!("{}h ago", age_secs / (60 * 60))
+    } else {
+        format!("{}d ago", age_secs / (60 * 60 * 24))
+    };
+    Some(label)
 }
 
 pub(crate) fn previous_agent_shortcut() -> crate::key_hint::KeyBinding {
@@ -290,6 +438,7 @@ pub(crate) fn waiting_end(ev: CollabWaitingEndEvent) -> PlainHistoryCell {
     };
     let mut details = wait_complete_lines(&statuses, &agent_statuses);
     if is_timed_out && !pending_thread_ids.is_empty() {
+        #[allow(clippy::disallowed_methods)]
         details.push(Line::from(vec![
             Span::from("Pending: ").yellow(),
             Span::from(format_thread_id_list(&pending_thread_ids)),
@@ -301,7 +450,7 @@ pub(crate) fn waiting_end(ev: CollabWaitingEndEvent) -> PlainHistoryCell {
 pub(crate) fn close_end(ev: CollabCloseEndEvent) -> PlainHistoryCell {
     let CollabCloseEndEvent {
         call_id: _,
-        sender_thread_id: _,
+        sender_thread_id,
         receiver_thread_id,
         receiver_agent_nickname,
         receiver_agent_role,
@@ -318,7 +467,10 @@ pub(crate) fn close_end(ev: CollabCloseEndEvent) -> PlainHistoryCell {
             },
             /*spawn_request*/ None,
         ),
-        Vec::new(),
+        vec![
+            resume_target_line("Resume subagent: ", receiver_thread_id),
+            resume_target_line("Return to parent: ", sender_thread_id),
+        ],
     )
 }
 
@@ -369,6 +521,7 @@ pub(crate) fn resume_end(ev: CollabResumeEndEvent) -> PlainHistoryCell {
     )
 }
 
+#[cfg_attr(debug_assertions, allow(dead_code))]
 pub(crate) fn subagent_notification(agent_id: &str, status: &AgentStatus) -> PlainHistoryCell {
     let mut spans = vec![Span::from("Subagent update ").bold()];
     if let Ok(thread_id) = ThreadId::from_string(agent_id) {
@@ -481,6 +634,13 @@ fn prompt_line(prompt: &str) -> Option<Line<'static>> {
     }
 }
 
+fn resume_target_line(label: &'static str, thread_id: ThreadId) -> Line<'static> {
+    Line::from(vec![
+        Span::from(label).dim(),
+        Span::from(thread_id.to_string()).cyan(),
+    ])
+}
+
 fn format_thread_id_list(ids: &[ThreadId]) -> String {
     if ids.is_empty() {
         return "none".to_string();
@@ -588,12 +748,12 @@ fn status_summary_line(status: &AgentStatus) -> Line<'static> {
     status_summary_spans(status).into()
 }
 
-// Allow `.yellow()`
-#[allow(clippy::disallowed_methods)]
 fn status_summary_spans(status: &AgentStatus) -> Vec<Span<'static>> {
     match status {
         AgentStatus::PendingInit => vec![Span::from("Pending init").cyan()],
         AgentStatus::Running => vec![Span::from("Running").cyan().bold()],
+        // Allow `.yellow()`
+        #[allow(clippy::disallowed_methods)]
         AgentStatus::Interrupted => vec![Span::from("Interrupted").yellow()],
         AgentStatus::Completed(message) => {
             let mut spans = vec![Span::from("Completed").green()];
@@ -638,6 +798,189 @@ mod tests {
     use pretty_assertions::assert_eq;
     use ratatui::style::Color;
     use ratatui::style::Modifier;
+
+    #[test]
+    fn picker_description_falls_back_to_thread_id_without_usage() {
+        let thread_id =
+            ThreadId::from_string("00000000-0000-0000-0000-000000000111").expect("valid thread");
+
+        assert_eq!(
+            format_agent_picker_item_description(
+                thread_id,
+                &AgentPickerThreadEntry::default(),
+                &AgentPickerThreadUsage::default(),
+            ),
+            "00000000-0000-0000-0000-000000000111"
+        );
+    }
+
+    #[test]
+    fn picker_description_includes_compact_token_usage_when_present() {
+        let thread_id =
+            ThreadId::from_string("00000000-0000-0000-0000-000000000112").expect("valid thread");
+        let usage = TokenUsage {
+            input_tokens: 9_800,
+            cached_input_tokens: 300,
+            output_tokens: 2_200,
+            total_tokens: 12_300,
+            ..Default::default()
+        };
+        assert_eq!(
+            format_agent_picker_item_description(
+                thread_id,
+                &AgentPickerThreadEntry::default(),
+                &AgentPickerThreadUsage {
+                    token_usage: usage,
+                    ..AgentPickerThreadUsage::default()
+                },
+            ),
+            "00000000-0000-0000-0000-000000000112 • 12.3K used"
+        );
+    }
+
+    #[test]
+    fn picker_description_includes_remaining_context_when_known() {
+        let thread_id =
+            ThreadId::from_string("00000000-0000-0000-0000-000000000113").expect("valid thread");
+        let usage = TokenUsage {
+            total_tokens: 12_300,
+            ..Default::default()
+        };
+
+        assert_eq!(
+            format_agent_picker_item_description_at(
+                thread_id,
+                &AgentPickerThreadEntry::default(),
+                &AgentPickerThreadUsage {
+                    token_usage: usage,
+                    model_context_window: Some(24_000),
+                    ..AgentPickerThreadUsage::default()
+                },
+                /*now_ts*/ 1_000,
+            ),
+            "00000000-0000-0000-0000-000000000113 • 12.3K used • 98% left"
+        );
+    }
+
+    #[test]
+    fn picker_description_includes_compact_age_when_known() {
+        let thread_id =
+            ThreadId::from_string("00000000-0000-0000-0000-000000000113").expect("valid thread");
+        let usage = TokenUsage {
+            total_tokens: 12_300,
+            ..Default::default()
+        };
+
+        let snapshot = [
+            format_agent_picker_item_description_at(
+                thread_id,
+                &AgentPickerThreadEntry {
+                    created_at: Some(900),
+                    updated_at: Some(958),
+                    ..AgentPickerThreadEntry::default()
+                },
+                &AgentPickerThreadUsage {
+                    token_usage: usage.clone(),
+                    ..AgentPickerThreadUsage::default()
+                },
+                /*now_ts*/ 1_000,
+            ),
+            format_agent_picker_item_description_at(
+                thread_id,
+                &AgentPickerThreadEntry {
+                    created_at: Some(300),
+                    updated_at: Some(400),
+                    ..AgentPickerThreadEntry::default()
+                },
+                &AgentPickerThreadUsage {
+                    token_usage: usage,
+                    ..AgentPickerThreadUsage::default()
+                },
+                /*now_ts*/ 1_000,
+            ),
+            format_agent_picker_item_description_at(
+                thread_id,
+                &AgentPickerThreadEntry {
+                    created_at: Some(1_000 - 3 * 60 * 60),
+                    ..AgentPickerThreadEntry::default()
+                },
+                &AgentPickerThreadUsage::default(),
+                /*now_ts*/ 1_000,
+            ),
+        ]
+        .join("\n");
+
+        assert_snapshot!("agent_picker_item_description_age", snapshot);
+    }
+
+    #[test]
+    fn picker_description_includes_model_effort_and_task_when_available() {
+        let thread_id =
+            ThreadId::from_string("00000000-0000-0000-0000-000000000114").expect("valid thread");
+        let usage = TokenUsage {
+            total_tokens: 120,
+            ..Default::default()
+        };
+
+        assert_eq!(
+            format_agent_picker_item_description(
+                thread_id,
+                &AgentPickerThreadEntry::default(),
+                &AgentPickerThreadUsage {
+                    token_usage: usage,
+                    model: Some("gpt-5.4-mini".to_string()),
+                    reasoning_effort: Some(ReasoningEffortConfig::Medium),
+                    task_name: Some("Investigate /agent picker metadata display".to_string()),
+                    ..AgentPickerThreadUsage::default()
+                },
+            ),
+            "gpt-5.4-mini medium • task: Investigate /agent picker metadata display • 00000000-0000-0000-0000-000000000114 • 120 used"
+        );
+    }
+
+    #[test]
+    fn picker_description_omits_blank_metadata_fields() {
+        let thread_id =
+            ThreadId::from_string("00000000-0000-0000-0000-000000000115").expect("valid thread");
+
+        assert_eq!(
+            format_agent_picker_item_description(
+                thread_id,
+                &AgentPickerThreadEntry::default(),
+                &AgentPickerThreadUsage {
+                    model: Some("   ".to_string()),
+                    task_name: Some("   ".to_string()),
+                    ..AgentPickerThreadUsage::default()
+                },
+            ),
+            "00000000-0000-0000-0000-000000000115"
+        );
+    }
+
+    #[test]
+    fn picker_selected_description_includes_permission_details_when_available() {
+        let thread_id = ThreadId::from_string("00000000-0000-0000-0000-000000000114").unwrap();
+        let description = format_agent_picker_item_selected_description(
+            thread_id,
+            &AgentPickerThreadEntry::default(),
+            &AgentPickerThreadUsage {
+                token_usage: TokenUsage {
+                    input_tokens: 100,
+                    output_tokens: 20,
+                    total_tokens: 120,
+                    ..Default::default()
+                },
+                model: Some("gpt-5.4-mini".to_string()),
+                reasoning_effort: Some(ReasoningEffortConfig::Medium),
+                task_name: Some("Investigate /agent picker metadata display".to_string()),
+                approval_policy: Some(AskForApproval::OnRequest),
+                approvals_reviewer: Some(ApprovalsReviewer::GuardianSubagent),
+                sandbox_policy: Some(SandboxPolicy::new_workspace_write_policy()),
+                ..AgentPickerThreadUsage::default()
+            },
+        );
+        assert_snapshot!("agent_picker_item_selected_description", description);
+    }
 
     #[test]
     fn collab_events_snapshot() {
@@ -781,6 +1124,33 @@ mod tests {
     }
 
     #[test]
+    fn collab_close_end_includes_resume_targets() {
+        let sender_thread_id = ThreadId::from_string("00000000-0000-0000-0000-000000000001")
+            .expect("valid sender thread id");
+        let receiver_thread_id = ThreadId::from_string("00000000-0000-0000-0000-000000000002")
+            .expect("valid receiver thread id");
+
+        let close = close_end(CollabCloseEndEvent {
+            call_id: "call-close".to_string(),
+            sender_thread_id,
+            receiver_thread_id,
+            receiver_agent_nickname: Some("Robie".to_string()),
+            receiver_agent_role: Some("explorer".to_string()),
+            status: AgentStatus::Completed(Some("39916800".to_string())),
+        });
+        let rendered = cell_to_text(&close);
+
+        assert!(
+            rendered.contains("Resume subagent: 00000000-0000-0000-0000-000000000002"),
+            "expected rendered close message to include subagent resume target, got: {rendered}"
+        );
+        assert!(
+            rendered.contains("Return to parent: 00000000-0000-0000-0000-000000000001"),
+            "expected rendered close message to include parent resume target, got: {rendered}"
+        );
+    }
+
+    #[test]
     fn collab_wait_partial_timeout_snapshot() {
         let sender_thread_id = ThreadId::from_string("00000000-0000-0000-0000-000000000001")
             .expect("valid sender thread id");
@@ -841,27 +1211,27 @@ mod tests {
     fn agent_shortcut_matches_option_arrow_word_motion_fallbacks_only_when_allowed() {
         assert!(previous_agent_shortcut_matches(
             KeyEvent::new(KeyCode::Left, KeyModifiers::ALT),
-            false,
+            /*allow_word_motion_fallback*/ false,
         ));
         assert!(next_agent_shortcut_matches(
             KeyEvent::new(KeyCode::Right, KeyModifiers::ALT),
-            false,
+            /*allow_word_motion_fallback*/ false,
         ));
         assert!(previous_agent_shortcut_matches(
             KeyEvent::new(KeyCode::Char('b'), KeyModifiers::ALT),
-            true,
+            /*allow_word_motion_fallback*/ true,
         ));
         assert!(next_agent_shortcut_matches(
             KeyEvent::new(KeyCode::Char('f'), KeyModifiers::ALT),
-            true,
+            /*allow_word_motion_fallback*/ true,
         ));
         assert!(!previous_agent_shortcut_matches(
             KeyEvent::new(KeyCode::Char('b'), KeyModifiers::ALT),
-            false,
+            /*allow_word_motion_fallback*/ false,
         ));
         assert!(!next_agent_shortcut_matches(
             KeyEvent::new(KeyCode::Char('f'), KeyModifiers::ALT),
-            false,
+            /*allow_word_motion_fallback*/ false,
         ));
     }
 
@@ -870,19 +1240,19 @@ mod tests {
     fn agent_shortcut_matches_option_arrows_only() {
         assert!(previous_agent_shortcut_matches(
             KeyEvent::new(KeyCode::Left, crossterm::event::KeyModifiers::ALT,),
-            false
+            /*allow_word_motion_fallback*/ false
         ));
         assert!(next_agent_shortcut_matches(
             KeyEvent::new(KeyCode::Right, crossterm::event::KeyModifiers::ALT,),
-            false
+            /*allow_word_motion_fallback*/ false
         ));
         assert!(!previous_agent_shortcut_matches(
             KeyEvent::new(KeyCode::Char('b'), crossterm::event::KeyModifiers::ALT,),
-            false
+            /*allow_word_motion_fallback*/ false
         ));
         assert!(!next_agent_shortcut_matches(
             KeyEvent::new(KeyCode::Char('f'), crossterm::event::KeyModifiers::ALT,),
-            false
+            /*allow_word_motion_fallback*/ false
         ));
     }
 
@@ -910,7 +1280,7 @@ mod tests {
             }),
         );
 
-        let lines = cell.display_lines(200);
+        let lines = cell.display_lines(/*width*/ 200);
         let title = &lines[0];
         assert_eq!(title.spans[2].content.as_ref(), "Robie");
         assert_eq!(title.spans[2].style.fg, Some(Color::Cyan));
@@ -942,7 +1312,7 @@ mod tests {
     }
 
     fn cell_to_text(cell: &PlainHistoryCell) -> String {
-        cell.display_lines(200)
+        cell.display_lines(/*width*/ 200)
             .iter()
             .map(line_to_text)
             .collect::<Vec<_>>()

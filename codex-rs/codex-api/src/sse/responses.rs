@@ -167,6 +167,8 @@ pub struct ResponsesStreamEvent {
     headers: Option<Value>,
     response: Option<Value>,
     item: Option<Value>,
+    item_id: Option<String>,
+    call_id: Option<String>,
     delta: Option<String>,
     summary_index: Option<i64>,
     content_index: Option<i64>,
@@ -248,6 +250,17 @@ pub fn process_responses_event(
         "response.output_text.delta" => {
             if let Some(delta) = event.delta {
                 return Ok(Some(ResponseEvent::OutputTextDelta(delta)));
+            }
+        }
+        "response.custom_tool_call_input.delta" => {
+            if let (Some(delta), Some(item_id)) =
+                (event.delta, event.item_id.clone().or(event.call_id.clone()))
+            {
+                return Ok(Some(ResponseEvent::ToolCallInputDelta {
+                    item_id,
+                    call_id: event.call_id,
+                    delta,
+                }));
             }
         }
         "response.reasoning_summary_text.delta" => {
@@ -515,7 +528,12 @@ mod tests {
         let stream =
             ReaderStream::new(reader).map_err(|err| TransportError::Network(err.to_string()));
         let (tx, mut rx) = mpsc::channel::<Result<ResponseEvent, ApiError>>(16);
-        tokio::spawn(process_sse(Box::pin(stream), tx, idle_timeout(), None));
+        tokio::spawn(process_sse(
+            Box::pin(stream),
+            tx,
+            idle_timeout(),
+            /*telemetry*/ None,
+        ));
 
         let mut events = Vec::new();
         while let Some(ev) = rx.recv().await {
@@ -541,7 +559,12 @@ mod tests {
         let (tx, mut rx) = mpsc::channel::<Result<ResponseEvent, ApiError>>(8);
         let stream = ReaderStream::new(std::io::Cursor::new(body))
             .map_err(|err| TransportError::Network(err.to_string()));
-        tokio::spawn(process_sse(Box::pin(stream), tx, idle_timeout(), None));
+        tokio::spawn(process_sse(
+            Box::pin(stream),
+            tx,
+            idle_timeout(),
+            /*telemetry*/ None,
+        ));
 
         let mut out = Vec::new();
         while let Some(ev) = rx.recv().await {
@@ -683,6 +706,38 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn parses_tool_call_input_deltas() {
+        let events = run_sse(vec![
+            json!({
+                "type": "response.custom_tool_call_input.delta",
+                "item_id": "ctc_1",
+                "call_id": "call_1",
+                "delta": "*** Begin",
+            }),
+            json!({
+                "type": "response.function_call_arguments.delta",
+                "item_id": "fc_1",
+                "delta": "{\"input\":\"",
+            }),
+            json!({
+                "type": "response.completed",
+                "response": { "id": "resp1" }
+            }),
+        ])
+        .await;
+
+        assert_matches!(
+            &events[0],
+            ResponseEvent::ToolCallInputDelta {
+                item_id,
+                call_id: Some(call_id),
+                delta,
+            } if item_id == "ctc_1" && call_id == "call_1" && delta == "*** Begin"
+        );
+        assert_matches!(&events[1], ResponseEvent::Completed { .. });
+    }
+
+    #[tokio::test]
     async fn emits_completed_without_stream_end() {
         let completed = json!({
             "type": "response.completed",
@@ -695,7 +750,12 @@ mod tests {
         let stream: ByteStream = Box::pin(stream);
 
         let (tx, mut rx) = mpsc::channel::<Result<ResponseEvent, ApiError>>(8);
-        tokio::spawn(process_sse(stream, tx, idle_timeout(), None));
+        tokio::spawn(process_sse(
+            stream,
+            tx,
+            idle_timeout(),
+            /*telemetry*/ None,
+        ));
 
         let events = tokio::time::timeout(Duration::from_millis(1000), async {
             let mut events = Vec::new();
@@ -894,7 +954,12 @@ mod tests {
             bytes: Box::pin(bytes),
         };
 
-        let mut stream = spawn_response_stream(stream_response, idle_timeout(), None, None);
+        let mut stream = spawn_response_stream(
+            stream_response,
+            idle_timeout(),
+            /*telemetry*/ None,
+            /*turn_state*/ None,
+        );
         let event = stream
             .rx_event
             .recv()

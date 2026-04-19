@@ -1,0 +1,654 @@
+name: validation-lab
+run-name: >-
+  validation-lab [${{ inputs.profile }}/${{ inputs.lane_set }}]
+  target=${{ inputs.ref || github.ref_name }}
+  host=${{ github.ref_name }}
+
+on:
+  workflow_call:
+    inputs:
+      ref:
+        required: false
+        type: string
+      profile:
+        required: true
+        type: string
+      lane_set:
+        required: true
+        type: string
+      lanes:
+        required: false
+        type: string
+      artifact_build:
+        required: false
+        type: boolean
+        default: false
+      include_explicit_lanes:
+        required: false
+        type: boolean
+        default: false
+      supersession_mode:
+        required: false
+        type: string
+        default: auto
+      supersession_key:
+        required: false
+        type: string
+      notes:
+        required: false
+        type: string
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Branch or tag to validate; this value is passed directly to actions/checkout for the validation-target checkout, so SHA pinning belongs in the dispatch/watch layer instead
+        required: false
+        type: string
+      profile:
+        description: Validation depth/profile
+        required: true
+        type: choice
+        options:
+          - smoke
+          - targeted
+          - frontier
+          - broad
+          - full
+          - artifact
+        default: smoke
+      lane_set:
+        description: Named downstream lane family
+        required: true
+        type: choice
+        options:
+          - all
+          - core-carry
+          - release
+          - subagents
+          - startup-sync
+          - ledger
+          - ui-protocol
+          - docs
+          - attestation
+        default: all
+      lanes:
+        description: Optional comma-separated explicit lane IDs
+        required: false
+        type: string
+      artifact_build:
+        description: Also build and upload a disposable preview artifact
+        required: false
+        type: boolean
+        default: false
+      include_explicit_lanes:
+        description: Include explicit-only seams in the selected validation set
+        required: false
+        type: boolean
+        default: false
+      supersession_mode:
+        description: Whether newer same-question runs should supersede this run
+        required: true
+        type: choice
+        options:
+          - auto
+          - compare
+          - milestone
+          - retain
+        default: auto
+      supersession_key:
+        description: Optional retention label for compare/milestone/retain runs
+        required: false
+        type: string
+      notes:
+        description: Optional operator notes for this lab run
+        required: false
+        type: string
+
+concurrency:
+  group: >-
+    ${{
+      inputs.supersession_mode == 'auto' &&
+      format(
+        'validation-lab::auto::{0}::{1}::{2}::{3}::{4}::{5}',
+        inputs.ref || github.ref_name,
+        inputs.profile,
+        inputs.lane_set,
+        inputs.lanes || 'default',
+        inputs.artifact_build && 'artifact' || 'no-artifact',
+        inputs.include_explicit_lanes && 'explicit' || 'default'
+      ) ||
+      format(
+        'validation-lab::retained::{0}::{1}::{2}',
+        inputs.supersession_mode,
+        inputs.supersession_key || 'no-key',
+        github.run_id
+      )
+    }}
+  cancel-in-progress: ${{ inputs.supersession_mode == 'auto' }}
+
+permissions:
+  contents: read
+
+jobs:
+  metadata:
+    name: Resolve lab checkout ref and lane selection
+    runs-on: ubuntu-24.04
+    outputs:
+      host_ref: ${{ steps.meta.outputs.host_ref }}
+      checkout_ref: ${{ steps.meta.outputs.checkout_ref }}
+      display_ref: ${{ steps.meta.outputs.display_ref }}
+      head_sha: ${{ steps.meta.outputs.head_sha }}
+      profile_intent: ${{ steps.meta.outputs.profile_intent }}
+      profile_notes: ${{ steps.meta.outputs.profile_notes }}
+      lane_summary: ${{ steps.meta.outputs.lane_summary }}
+      selected_matrix: ${{ steps.meta.outputs.selected_matrix }}
+      planned_matrix: ${{ steps.meta.outputs.planned_matrix }}
+      selected_lane_ids: ${{ steps.meta.outputs.selected_lane_ids }}
+      smoke_matrix: ${{ steps.meta.outputs.smoke_matrix }}
+      run_selected_lanes: ${{ steps.meta.outputs.run_selected_lanes }}
+      run_smoke_gate: ${{ steps.meta.outputs.run_smoke_gate }}
+      smoke_gate_kind: ${{ steps.meta.outputs.smoke_gate_kind }}
+      run_artifact: ${{ steps.meta.outputs.run_artifact }}
+      matrix_fail_fast: ${{ steps.meta.outputs.matrix_fail_fast }}
+      matrix_max_parallel: ${{ steps.meta.outputs.matrix_max_parallel }}
+      selected_setup_classes: ${{ steps.meta.outputs.selected_setup_classes }}
+      selected_light_matrix: ${{ steps.meta.outputs.selected_light_matrix }}
+      selected_rust_matrix: ${{ steps.meta.outputs.selected_rust_matrix }}
+      selected_heavy_matrix: ${{ steps.meta.outputs.selected_heavy_matrix }}
+      selected_light_lane_count: ${{ steps.meta.outputs.selected_light_lane_count }}
+      selected_rust_lane_count: ${{ steps.meta.outputs.selected_rust_lane_count }}
+      selected_heavy_lane_count: ${{ steps.meta.outputs.selected_heavy_lane_count }}
+      light_max_parallel: ${{ steps.meta.outputs.light_max_parallel }}
+      rust_max_parallel: ${{ steps.meta.outputs.rust_max_parallel }}
+      heavy_max_parallel: ${{ steps.meta.outputs.heavy_max_parallel }}
+      preview_version: ${{ steps.meta.outputs.preview_version }}
+      artifact_name: ${{ steps.meta.outputs.artifact_name }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 1
+          ref: ${{ github.sha }}
+
+      - name: Check out validation target
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          # This input is consumed by actions/checkout as a branch-or-tag selector.
+          # If you need exact-SHA pinning for workflow_dispatch, pin the host run via
+          # the dispatcher/watcher layer and pass the branch name here so checkout resolves.
+          ref: ${{ inputs.ref || github.sha }}
+          path: validation-target
+
+      - name: Compute validation-lab plan
+        id: meta
+        shell: bash
+        env:
+          LAB_PROFILE: ${{ inputs.profile }}
+          LAB_LANE_SET: ${{ inputs.lane_set }}
+          LAB_LANES: ${{ inputs.lanes }}
+          LAB_ARTIFACT_BUILD: ${{ inputs.artifact_build }}
+          LAB_INCLUDE_EXPLICIT_LANES: ${{ inputs.include_explicit_lanes }}
+        run: |
+          set -euo pipefail
+
+          host_ref='${{ github.ref_name }}'
+          checkout_ref='${{ inputs.ref || github.sha }}'
+          display_ref='${{ inputs.ref || github.ref_name }}'
+          target_checkout="${GITHUB_WORKSPACE}/validation-target"
+          catalog_path="${target_checkout}/.github/validation-lanes.json"
+          catalog_args=()
+          if [[ -f "${catalog_path}" ]]; then
+            catalog_args+=(--catalog-path "${catalog_path}")
+          fi
+          head_sha="$(git -C "${target_checkout}" rev-parse HEAD)"
+          short_sha="$(git -C "${target_checkout}" rev-parse --short=8 HEAD)"
+          latest_tag="$(git -C "${target_checkout}" tag --merged HEAD --list 'v*-sedna.*' --sort=-version:refname | head -n 1)"
+          if [[ -n "${latest_tag}" ]]; then
+            base_version="${latest_tag#v}"
+          else
+            base_version="0.0.0-sedna.0"
+          fi
+
+          display_slug="$(printf '%s' "${display_ref}" | tr '/:@ ' '-' | tr -cd '[:alnum:]._-' | cut -c1-48)"
+          preview_version="${base_version}-ci.${GITHUB_RUN_NUMBER}+g${short_sha}"
+
+          selection_meta="$(python3 .github/scripts/resolve_validation_plan.py lab --profile "${LAB_PROFILE}" --lane-set "${LAB_LANE_SET}" --lanes "${LAB_LANES}" --artifact-build "${LAB_ARTIFACT_BUILD}" --include-explicit-lanes "${LAB_INCLUDE_EXPLICIT_LANES}" "${catalog_args[@]}")"
+
+          # Helper function for robustly parsing the validation plan metadata.
+          # We include explicit error reporting for missing fields or malformed JSON
+          # to diagnose environment-specific CI failures.
+          parse_meta() {
+            local field="$1"
+            python3 - "$field" <<'PY'
+          import json
+          import os
+          import sys
+
+          field = sys.argv[1]
+          meta_raw = os.environ["SELECTION_META"]
+
+          try:
+              meta = json.loads(meta_raw)
+          except json.JSONDecodeError as exc:
+              sys.stderr.write(f"ERROR: Failed to parse SELECTION_META as JSON: {exc}\n")
+              sys.stderr.write(f"META: {meta_raw[:500]}\n")
+              raise SystemExit(1)
+
+          if field not in meta:
+              sys.stderr.write(f"ERROR: Key '{field}' not found in SELECTION_META\n")
+              sys.stderr.write(f"META: {meta_raw[:500]}\n")
+              raise SystemExit(1)
+
+          value = meta[field]
+          if isinstance(value, (dict, list)):
+              print(json.dumps(value, separators=(",", ":")))
+          else:
+              print(value)
+          PY
+          }
+
+          profile_intent="$(SELECTION_META="${selection_meta}" parse_meta "profile_intent")"
+          profile_notes="$(SELECTION_META="${selection_meta}" parse_meta "profile_notes")"
+          lane_summary="$(SELECTION_META="${selection_meta}" parse_meta "lane_summary")"
+          run_selected_lanes="$(SELECTION_META="${selection_meta}" parse_meta "run_selected_lanes")"
+          run_smoke_gate="$(SELECTION_META="${selection_meta}" parse_meta "run_smoke_gate")"
+          smoke_gate_kind="$(SELECTION_META="${selection_meta}" parse_meta "smoke_gate_kind")"
+          smoke_matrix="$(SELECTION_META="${selection_meta}" parse_meta "smoke_matrix")"
+          selected_matrix="$(SELECTION_META="${selection_meta}" parse_meta "selected_matrix")"
+          planned_matrix="$(SELECTION_META="${selection_meta}" parse_meta "planned_matrix")"
+          selected_lane_ids="$(SELECTION_META="${selection_meta}" parse_meta "selected_lane_ids")"
+          run_artifact="$(SELECTION_META="${selection_meta}" parse_meta "run_artifact")"
+          matrix_fail_fast="$(SELECTION_META="${selection_meta}" parse_meta "matrix_fail_fast")"
+          matrix_max_parallel="$(SELECTION_META="${selection_meta}" parse_meta "matrix_max_parallel")"
+          selected_setup_classes="$(SELECTION_META="${selection_meta}" parse_meta "selected_setup_classes")"
+          selected_light_matrix="$(SELECTION_META="${selection_meta}" parse_meta "selected_light_matrix")"
+          selected_rust_matrix="$(SELECTION_META="${selection_meta}" parse_meta "selected_rust_matrix")"
+          selected_heavy_matrix="$(SELECTION_META="${selection_meta}" parse_meta "selected_heavy_matrix")"
+          selected_light_lane_count="$(SELECTION_META="${selection_meta}" parse_meta "selected_light_lane_count")"
+          selected_rust_lane_count="$(SELECTION_META="${selection_meta}" parse_meta "selected_rust_lane_count")"
+          selected_heavy_lane_count="$(SELECTION_META="${selection_meta}" parse_meta "selected_heavy_lane_count")"
+          light_max_parallel="$(SELECTION_META="${selection_meta}" parse_meta "light_max_parallel")"
+          rust_max_parallel="$(SELECTION_META="${selection_meta}" parse_meta "rust_max_parallel")"
+          heavy_max_parallel="$(SELECTION_META="${selection_meta}" parse_meta "heavy_max_parallel")"
+
+          {
+            echo "host_ref=${host_ref}"
+            echo "checkout_ref=${checkout_ref}"
+            echo "display_ref=${display_ref}"
+            echo "head_sha=${head_sha}"
+            echo "profile_intent=${profile_intent}"
+            echo "profile_notes=${profile_notes}"
+            echo "lane_summary=${lane_summary}"
+            echo "run_selected_lanes=${run_selected_lanes}"
+            echo "run_smoke_gate=${run_smoke_gate}"
+            echo "smoke_gate_kind=${smoke_gate_kind}"
+            echo "smoke_matrix=${smoke_matrix}"
+            echo "selected_matrix=${selected_matrix}"
+            echo "planned_matrix=${planned_matrix}"
+            echo "selected_lane_ids=${selected_lane_ids}"
+            echo "run_artifact=${run_artifact}"
+            echo "matrix_fail_fast=${matrix_fail_fast}"
+            echo "matrix_max_parallel=${matrix_max_parallel}"
+            echo "selected_setup_classes=${selected_setup_classes}"
+            echo "selected_light_matrix=${selected_light_matrix}"
+            echo "selected_rust_matrix=${selected_rust_matrix}"
+            echo "selected_heavy_matrix=${selected_heavy_matrix}"
+            echo "selected_light_lane_count=${selected_light_lane_count}"
+            echo "selected_rust_lane_count=${selected_rust_lane_count}"
+            echo "selected_heavy_lane_count=${selected_heavy_lane_count}"
+            echo "light_max_parallel=${light_max_parallel}"
+            echo "rust_max_parallel=${rust_max_parallel}"
+            echo "heavy_max_parallel=${heavy_max_parallel}"
+            echo "preview_version=${preview_version}"
+            echo "artifact_name=sedna-validation-${display_slug}-${short_sha}"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Summarize validation plan
+        shell: bash
+        env:
+          LAB_NOTES: ${{ inputs.notes }}
+        run: |
+          {
+            echo "### Validation lab"
+            echo
+            echo "- Host workflow ref: \`${{ steps.meta.outputs.host_ref }}\`"
+            echo "- Validated target ref: \`${{ steps.meta.outputs.display_ref }}\`"
+            echo "- Head SHA: \`${{ steps.meta.outputs.head_sha }}\`"
+            echo "- Profile: \`${{ inputs.profile }}\`"
+            echo "- Profile intent: \`${{ steps.meta.outputs.profile_intent }}\`"
+            echo "- Lane set: \`${{ inputs.lane_set }}\`"
+            echo "- Selection summary: \`${{ steps.meta.outputs.lane_summary }}\`"
+            echo "- Explicit lanes: \`${{ inputs.lanes || 'none' }}\`"
+            echo "- Include explicit-only lanes: \`${{ inputs.include_explicit_lanes && 'true' || 'false' }}\`"
+            echo "- Setup classes: \`${{ steps.meta.outputs.selected_setup_classes || '[]' }}\`"
+            echo "- Artifact build: \`${{ inputs.artifact_build && 'true' || 'false' }}\`"
+            echo "- Supersession mode: \`${{ inputs.supersession_mode }}\`"
+            echo "- Supersession key: \`${{ inputs.supersession_key || 'none' }}\`"
+            echo "- Profile notes: ${{ steps.meta.outputs.profile_notes }}"
+            if [[ -n "${LAB_NOTES}" ]]; then
+              echo "- Notes supplied: \`true\`"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  smoke_gate:
+    name: Validation-lab smoke gate
+    needs: metadata
+    if: ${{ needs.metadata.outputs.run_smoke_gate == 'true' }}
+    strategy:
+      fail-fast: true
+      # Keep validation-lab fast enough to harvest broad checkpoint signal while
+      # still leaving plenty of headroom under the org's 60-runner ceiling.
+      max-parallel: 5
+      matrix: ${{ fromJson(needs.metadata.outputs.smoke_matrix) }}
+    uses: ./.github/workflows/_sedna-linux-rust.yml
+    with:
+      checkout_ref: ${{ needs.metadata.outputs.checkout_ref }}
+      lane_id: ${{ matrix.lane_id }}
+      lane_phase: smoke_gate
+      summary_title: ${{ matrix.lane_id }}
+      status_class: ${{ matrix.status_class }}
+      frontier_default: ${{ matrix.frontier_default }}
+      setup_class: ${{ matrix.setup_class }}
+      frontier_role: ${{ matrix.frontier_role }}
+      summary_family: ${{ matrix.summary_family }}
+      cost_class: ${{ matrix.cost_class }}
+      run_command: ${{ matrix.run_command }}
+      install_nextest: ${{ matrix.install_nextest }}
+
+  light_lanes:
+    needs:
+      - metadata
+    if: >-
+      ${{
+        always() &&
+        fromJson(needs.metadata.outputs.selected_light_lane_count) > 0
+      }}
+    strategy:
+      fail-fast: ${{ fromJson(needs.metadata.outputs.matrix_fail_fast) }}
+      max-parallel: ${{ fromJson(needs.metadata.outputs.light_max_parallel) }}
+      matrix: ${{ fromJson(needs.metadata.outputs.selected_light_matrix) }}
+    uses: ./.github/workflows/_sedna-linux-rust.yml
+    with:
+      checkout_ref: ${{ needs.metadata.outputs.checkout_ref }}
+      lane_id: ${{ matrix.lane_id }}
+      lane_phase: downstream_lanes
+      summary_title: ${{ matrix.lane_id }}
+      status_class: ${{ matrix.status_class }}
+      frontier_default: ${{ matrix.frontier_default }}
+      setup_class: ${{ matrix.setup_class }}
+      frontier_role: ${{ matrix.frontier_role }}
+      summary_family: ${{ matrix.summary_family }}
+      cost_class: ${{ matrix.cost_class }}
+      run_command: ${{ matrix.run_command }}
+      install_nextest: ${{ matrix.install_nextest }}
+
+  rust_lanes:
+    needs:
+      - metadata
+    if: >-
+      ${{
+        always() &&
+        fromJson(needs.metadata.outputs.selected_rust_lane_count) > 0
+      }}
+    strategy:
+      fail-fast: ${{ fromJson(needs.metadata.outputs.matrix_fail_fast) }}
+      max-parallel: ${{ fromJson(needs.metadata.outputs.rust_max_parallel) }}
+      matrix: ${{ fromJson(needs.metadata.outputs.selected_rust_matrix) }}
+    uses: ./.github/workflows/_sedna-linux-rust.yml
+    with:
+      checkout_ref: ${{ needs.metadata.outputs.checkout_ref }}
+      lane_id: ${{ matrix.lane_id }}
+      lane_phase: downstream_lanes
+      summary_title: ${{ matrix.lane_id }}
+      status_class: ${{ matrix.status_class }}
+      frontier_default: ${{ matrix.frontier_default }}
+      setup_class: ${{ matrix.setup_class }}
+      frontier_role: ${{ matrix.frontier_role }}
+      summary_family: ${{ matrix.summary_family }}
+      cost_class: ${{ matrix.cost_class }}
+      run_command: ${{ matrix.run_command }}
+      install_nextest: ${{ matrix.install_nextest }}
+
+  heavy_lanes:
+    needs:
+      - metadata
+    if: >-
+      ${{
+        always() &&
+        fromJson(needs.metadata.outputs.selected_heavy_lane_count) > 0
+      }}
+    strategy:
+      fail-fast: ${{ fromJson(needs.metadata.outputs.matrix_fail_fast) }}
+      max-parallel: ${{ fromJson(needs.metadata.outputs.heavy_max_parallel) }}
+      matrix: ${{ fromJson(needs.metadata.outputs.selected_heavy_matrix) }}
+    uses: ./.github/workflows/_sedna-linux-rust.yml
+    with:
+      checkout_ref: ${{ needs.metadata.outputs.checkout_ref }}
+      lane_id: ${{ matrix.lane_id }}
+      lane_phase: downstream_lanes
+      summary_title: ${{ matrix.lane_id }}
+      status_class: ${{ matrix.status_class }}
+      frontier_default: ${{ matrix.frontier_default }}
+      setup_class: ${{ matrix.setup_class }}
+      frontier_role: ${{ matrix.frontier_role }}
+      summary_family: ${{ matrix.summary_family }}
+      cost_class: ${{ matrix.cost_class }}
+      run_command: ${{ matrix.run_command }}
+      install_nextest: ${{ matrix.install_nextest }}
+
+  artifact:
+    needs:
+      - metadata
+      - smoke_gate
+      - light_lanes
+      - rust_lanes
+      - heavy_lanes
+    if: >-
+      ${{
+        always() &&
+        needs.metadata.outputs.run_artifact == 'true' &&
+        (needs.smoke_gate.result == 'success' || needs.smoke_gate.result == 'skipped') &&
+        (needs.light_lanes.result == 'success' || needs.light_lanes.result == 'skipped') &&
+        (needs.rust_lanes.result == 'success' || needs.rust_lanes.result == 'skipped') &&
+        (needs.heavy_lanes.result == 'success' || needs.heavy_lanes.result == 'skipped')
+      }}
+    uses: ./.github/workflows/_sedna-linux-rust.yml
+    with:
+      checkout_ref: ${{ needs.metadata.outputs.checkout_ref }}
+      lane_phase: artifact_build
+      summary_title: Validation lab artifact build
+      release_version: ${{ needs.metadata.outputs.preview_version }}
+      artifact_name: ${{ needs.metadata.outputs.artifact_name }}
+      artifact_path: dist/*
+      run_command: |
+        mkdir -p ../dist
+        cargo build --locked --target x86_64-unknown-linux-gnu --release --bin codex --bin codex-responses-api-proxy
+
+        stage_dir="${RUNNER_TEMP}/sedna-validation/x86_64-unknown-linux-gnu"
+        file_version="${CODEX_RELEASE_VERSION//+/__}"
+        archive_base="codex-sedna-validation-${file_version}-x86_64-unknown-linux-gnu"
+
+        rm -rf "${stage_dir}"
+        mkdir -p "${stage_dir}"
+
+        install -Dm 0755 "target/x86_64-unknown-linux-gnu/release/codex" "${stage_dir}/codex"
+        install -Dm 0755 "target/x86_64-unknown-linux-gnu/release/codex-responses-api-proxy" "${stage_dir}/codex-responses-api-proxy"
+
+        tar -C "${stage_dir}" -czf "../dist/${archive_base}.tar.gz" .
+
+        cat > "../dist/${archive_base}.json" <<EOF
+        {
+          "repository": "${GITHUB_REPOSITORY}",
+          "commit": "$(git rev-parse HEAD)",
+          "ref": "${{ needs.metadata.outputs.display_ref }}",
+          "previewVersion": "${CODEX_RELEASE_VERSION}",
+          "workflow": "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}",
+          "source": "validation-lab"
+        }
+        EOF
+
+  summary:
+    name: Validation-lab summary
+    needs:
+      - metadata
+      - smoke_gate
+      - light_lanes
+      - rust_lanes
+      - heavy_lanes
+      - artifact
+    if: ${{ always() }}
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 1
+          ref: ${{ github.sha }}
+
+      - name: Download lane summary artifacts
+        continue-on-error: true
+        uses: actions/download-artifact@v8
+        with:
+          pattern: validation-lane-summary-*
+          path: ${{ runner.temp }}/validation-lane-summaries
+          merge-multiple: true
+
+      - name: Build validation summary artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+          summary_file="${RUNNER_TEMP}/validation-summary.json"
+          python3 .github/scripts/aggregate_validation_summary.py \
+            --repo "${GITHUB_REPOSITORY}" \
+            --host-ref "${{ needs.metadata.outputs.host_ref }}" \
+            --display-ref "${{ needs.metadata.outputs.display_ref }}" \
+            --checkout-ref "${{ needs.metadata.outputs.checkout_ref }}" \
+            --head-sha "${{ needs.metadata.outputs.head_sha }}" \
+            --profile "${{ inputs.profile }}" \
+            --lane-set "${{ inputs.lane_set }}" \
+            --profile-intent "${{ needs.metadata.outputs.profile_intent }}" \
+            --profile-notes "${{ needs.metadata.outputs.profile_notes }}" \
+            --lane-summary "${{ needs.metadata.outputs.lane_summary }}" \
+            --planned-matrix-json '${{ needs.metadata.outputs.planned_matrix }}' \
+            --selected-lane-ids-json '${{ needs.metadata.outputs.selected_lane_ids }}' \
+            --explicit-lanes "${{ inputs.lanes }}" \
+            --supersession-mode "${{ inputs.supersession_mode }}" \
+            --supersession-key "${{ inputs.supersession_key }}" \
+            --notes-supplied "${{ inputs.notes != '' && 'true' || 'false' }}" \
+            --run-id "${GITHUB_RUN_ID}" \
+            --run-attempt "${GITHUB_RUN_ATTEMPT}" \
+            --run-url "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" \
+            --run-selected-lanes "${{ needs.metadata.outputs.run_selected_lanes }}" \
+            --run-smoke-gate "${{ needs.metadata.outputs.run_smoke_gate }}" \
+            --smoke-gate-kind "${{ needs.metadata.outputs.smoke_gate_kind }}" \
+            --smoke-gate-result "${{ needs.smoke_gate.result || 'skipped' }}" \
+            --light-result "${{ needs.light_lanes.result || 'skipped' }}" \
+            --rust-result "${{ needs.rust_lanes.result || 'skipped' }}" \
+            --heavy-result "${{ needs.heavy_lanes.result || 'skipped' }}" \
+            --run-artifact "${{ needs.metadata.outputs.run_artifact }}" \
+            --artifact-result "${{ needs.artifact.result || 'skipped' }}" \
+            --lane-summary-dir "${RUNNER_TEMP}/validation-lane-summaries" \
+            --output "${summary_file}"
+          echo "SUMMARY_FILE=${summary_file}" >> "$GITHUB_ENV"
+
+      - name: Upload validation summary artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: validation-summary
+          path: ${{ env.SUMMARY_FILE }}
+          overwrite: true
+          retention-days: 3
+
+      - name: Append validation summary
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY' "${SUMMARY_FILE}" >> "$GITHUB_STEP_SUMMARY"
+          import json
+          import sys
+          from pathlib import Path
+
+          payload = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+          summary = payload["summary"]
+          first_failure = summary.get("first_failure")
+          primary_blockers = summary.get("primary_blockers") or []
+          secondary_findings = summary.get("secondary_findings") or []
+          setup_rows = summary.get("setup_classes") or []
+
+          print("### Validation summary")
+          print()
+          print(f"- Overall conclusion: `{summary['overall_conclusion']}`")
+          print(f"- Host workflow ref: `{payload['ref']['host_ref']}`")
+          print(f"- Validated target ref: `{payload['ref']['display_ref']}`")
+          print(f"- Head SHA: `{payload['ref']['head_sha']}`")
+          print(f"- Profile: `{payload['selection']['profile']}`")
+          if payload['selection'].get('profile_intent'):
+              print(f"- Profile intent: `{payload['selection']['profile_intent']}`")
+          print(f"- Lane set: `{payload['selection']['lane_set']}`")
+          if payload['selection'].get('lane_summary'):
+              print(f"- Selection summary: `{payload['selection']['lane_summary']}`")
+          if payload['selection'].get('profile_notes'):
+              print(f"- Profile notes: {payload['selection']['profile_notes']}")
+          print(f"- Supersession mode: `{payload['selection']['supersession']['mode']}`")
+          if payload['selection']['supersession'].get('key'):
+              print(f"- Supersession key: `{payload['selection']['supersession']['key']}`")
+          print(f"- Lane count: `{summary['lane_count']}`")
+          print(f"- Total recorded lane runtime (ms): `{summary.get('total_duration_ms', 0)}`")
+          print(f"- Failed lanes: `{summary['failed_lane_count']}`")
+          print(f"- Primary blocker families: `{len(primary_blockers)}`")
+          print(f"- Additional failing lanes: `{len(secondary_findings)}`")
+          if setup_rows:
+              print(f"- Setup classes exercised: `{len(setup_rows)}`")
+          if first_failure:
+              print(f"- First surfaced blocker: `{first_failure['lane_id']}`")
+              if first_failure.get('signal'):
+                  print(f"- First blocker signal: `{first_failure['signal']}`")
+          else:
+              print("- First surfaced blocker: `none`")
+          if setup_rows:
+              print("- Setup class results:")
+              for row in setup_rows:
+                  print(
+                      f"  - `{row['setup_class']}`: job `{row['job_result']}`, "
+                      f"`{row['selected_lane_count']}` lanes, `{row['started_lane_count']}` started"
+                  )
+          phase_runtime = summary.get("phase_runtime_ms") or {}
+          if phase_runtime:
+              print("- Phase runtime totals (ms):")
+              for phase, duration_ms in phase_runtime.items():
+                  print(f"  - `{phase}`: `{duration_ms}`")
+          top_slowest = summary.get("top_slowest_lanes") or []
+          if top_slowest:
+              print(f"- Top slow lanes (up to {len(top_slowest)}):")
+              for lane in top_slowest:
+                  lane_id = lane.get("lane_id") or "unknown"
+                  lane_phase = lane.get("lane_phase") or "unknown"
+                  duration_ms = lane.get("duration_ms")
+                  print(f"  - `{lane_id}` (`{lane_phase}`): `{duration_ms}` ms")
+          candidates = summary.get("candidate_next_slices") or []
+          if candidates:
+              print(f"- Frontier blocker count: `{len(candidates)}`")
+              for candidate in candidates[:20]:
+                  lane_id = candidate.get("lane_id") or "unknown"
+                  signal = candidate.get("signal") or ""
+                  if signal:
+                      print(f"  - `{lane_id}`: `{signal}`")
+                  else:
+                      print(f"  - `{lane_id}`")
+          if primary_blockers:
+              print("- Primary blockers:")
+              for item in primary_blockers[:20]:
+                  signal = item.get("signal") or ""
+                  if signal:
+                      print(f"  - `{item['lane_id']}`: `{signal}`")
+                  else:
+                      print(f"  - `{item['lane_id']}`")
+          if secondary_findings:
+              print("- Secondary findings:")
+              for item in secondary_findings[:20]:
+                  signal = item.get("signal") or ""
+                  if signal:
+                      print(f"  - `{item['lane_id']}`: `{signal}`")
+                  else:
+                      print(f"  - `{item['lane_id']}`")
+          PY

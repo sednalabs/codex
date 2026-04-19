@@ -1,13 +1,9 @@
 name: sedna-branch-build
+run-name: >-
+  sedna-branch-build
+  [target=${{ inputs.ref || github.ref_name }}]
 
 on:
-  push:
-    branches-ignore:
-      - main
-      - upstream-main
-    paths-ignore:
-      - "**/*.md"
-      - "docs/**"
   workflow_dispatch:
     inputs:
       ref:
@@ -58,10 +54,12 @@ jobs:
           branch_slug="$(printf '%s' "${branch_name}" | tr '/:@ ' '-' | tr -cd '[:alnum:]._-' | cut -c1-48)"
           preview_version="${base_version}-ci.${GITHUB_RUN_NUMBER}+g${short_sha}"
 
-          echo "checkout_ref=${checkout_ref}" >> "$GITHUB_OUTPUT"
-          echo "display_ref=${branch_name}" >> "$GITHUB_OUTPUT"
-          echo "preview_version=${preview_version}" >> "$GITHUB_OUTPUT"
-          echo "artifact_name=sedna-branch-${branch_slug}-${short_sha}" >> "$GITHUB_OUTPUT"
+          {
+            echo "checkout_ref=${checkout_ref}"
+            echo "display_ref=${branch_name}"
+            echo "preview_version=${preview_version}"
+            echo "artifact_name=sedna-branch-${branch_slug}-${short_sha}"
+          } >> "$GITHUB_OUTPUT"
 
   build:
     needs: metadata

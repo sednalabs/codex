@@ -39,10 +39,10 @@ jobs:
       v8_version: ${{ steps.v8_version.outputs.version }}
 
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
       - name: Set up Python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6
         with:
           python-version: "3.12"
 
@@ -73,13 +73,13 @@ jobs:
             target: aarch64-unknown-linux-musl
 
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
       - name: Set up Bazel
-        uses: bazelbuild/setup-bazelisk@v3
+        uses: bazelbuild/setup-bazelisk@b39c379c82683a5f25d34f0d062761f62693e0b2 # v3
 
       - name: Set up Python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6
         with:
           python-version: "3.12"
 
@@ -99,29 +99,37 @@ jobs:
             "@llvm//runtimes/libcxx:libcxxabi.static"
           )
 
+          commit_sha="$(git rev-parse HEAD)"
+
           bazel_args=(
             build
             "--platforms=@llvm//platforms:${PLATFORM}"
             "${pair_target}"
             "${extra_targets[@]}"
-            --build_metadata=COMMIT_SHA=$(git rev-parse HEAD)
+            --build_metadata=COMMIT_SHA="${commit_sha}"
           )
 
           if [[ -n "${BUILDBUDDY_API_KEY:-}" ]]; then
-            echo "BuildBuddy API key is available; using remote Bazel configuration."
-            bazel \
-              --noexperimental_remote_repo_contents_cache \
-              --bazelrc=.github/workflows/v8-ci.bazelrc \
-              "${bazel_args[@]}" \
+            bazel_config_args=(
+              --config=ci-v8
               "--remote_header=x-buildbuddy-api-key=${BUILDBUDDY_API_KEY}"
+            )
           else
-            echo "BuildBuddy API key is not available; using local Bazel configuration."
-            bazel \
-              --noexperimental_remote_repo_contents_cache \
-              "${bazel_args[@]}" \
-              --remote_cache= \
+            bazel_config_args=(
+              --config=ci
+              --build_metadata=TAG_workflow=v8
+              --build_metadata=TAG_os=linux
+              --remote_cache=
               --remote_executor=
+              --bes_backend=
+              --bes_results_url=
+            )
           fi
+
+          bazel \
+            --noexperimental_remote_repo_contents_cache \
+            "${bazel_args[@]}" \
+            "${bazel_config_args[@]}"
 
       - name: Stage release pair
         env:
@@ -137,7 +145,7 @@ jobs:
             --output-dir "dist/${TARGET}"
 
       - name: Upload staged musl artifacts
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: v8-canary-${{ needs.metadata.outputs.v8_version }}-${{ matrix.target }}
           path: dist/${{ matrix.target }}/*
