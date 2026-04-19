@@ -315,8 +315,8 @@
       "smoke_gate_kinds": ["workflow_docs"]
     },
     {
-      "lane_id": "codex.release-linux-build-smoke",
-      "run_command": "just --justfile ../justfile release-linux-build-smoke",
+      "lane_id": "sedna.release-linux-smoke",
+      "run_command": "just --justfile ../justfile sedna-release-linux-smoke",
       "groups": ["core"],
       "lane_sets": ["release"],
       "frontier_default": false,
