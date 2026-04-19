@@ -336,14 +336,6 @@ fn preferred_user_skill_names_from_stack(config_layer_stack: &ConfigLayerStack) 
                     .filter(|name| !name.is_empty()),
             );
         }
-
-        preferred_names.extend(
-            skills
-                .prefer_user_skill_names
-                .into_iter()
-                .map(|name| name.trim().to_ascii_lowercase())
-                .filter(|name| !name.is_empty()),
-        );
     }
 
     preferred_names
