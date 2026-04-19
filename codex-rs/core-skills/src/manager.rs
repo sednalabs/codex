@@ -306,7 +306,7 @@ fn preferred_user_skill_names_from_stack(config_layer_stack: &ConfigLayerStack) 
     let mut preferred_names = HashSet::new();
     for layer in config_layer_stack.get_layers(
         codex_config::ConfigLayerStackOrdering::LowestPrecedenceFirst,
-        /*include_disabled*/ true,
+        /*include_disabled*/ false,
     ) {
         if !matches!(
             layer.name,
