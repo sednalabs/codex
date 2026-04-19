@@ -148,8 +148,7 @@ async fn steer_rejection_queues_review_follow_up_before_existing_queued_messages
             turn_id: "turn-1".to_string(),
             model_context_window: None,
             collaboration_mode_kind: ModeKind::Default,
-            started_at: 2,
-            started_at: None,
+            started_at: Some(2),
         }),
     });
     chat.handle_codex_event(Event {
@@ -349,7 +348,7 @@ async fn review_restores_context_window_indicator() {
             turn_id: "turn-2".to_string(),
             model_context_window: Some(context_window),
             collaboration_mode_kind: ModeKind::Default,
-            started_at: 2,
+            started_at: Some(2),
         }),
     });
 
