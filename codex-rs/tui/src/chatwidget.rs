@@ -2081,14 +2081,20 @@ impl ChatWidget {
     }
 
     // --- Small event handlers ---
+    #[cfg(test)]
     fn on_session_configured(&mut self, event: codex_protocol::protocol::SessionConfiguredEvent) {
-        self.on_session_configured_with_display(event, SessionConfiguredDisplay::Normal);
+        self.on_session_configured_with_display_and_fork_parent_title(
+            event,
+            SessionConfiguredDisplay::Normal,
+            /*fork_parent_title*/ None,
+        );
     }
 
-    fn on_session_configured_with_display(
+    fn on_session_configured_with_display_and_fork_parent_title(
         &mut self,
         event: codex_protocol::protocol::SessionConfiguredEvent,
         display: SessionConfiguredDisplay,
+        fork_parent_title: Option<String>,
     ) {
         self.last_agent_markdown = None;
         self.agent_turn_markdowns.clear();
@@ -2190,7 +2196,7 @@ impl ChatWidget {
         if display == SessionConfiguredDisplay::Normal
             && let Some(forked_from_id) = forked_from_id
         {
-            self.emit_forked_thread_event(forked_from_id);
+            self.emit_forked_thread_event(forked_from_id, fork_parent_title);
         }
         if !self.suppress_session_configured_redraw {
             self.request_redraw();
@@ -2209,33 +2215,59 @@ impl ChatWidget {
 
     pub(crate) fn handle_thread_session(&mut self, session: ThreadSessionState) {
         self.instruction_source_paths = session.instruction_source_paths.clone();
-        self.on_session_configured(thread_session_state_to_legacy_event(session));
+        let fork_parent_title = session.fork_parent_title.clone();
+        self.on_session_configured_with_display_and_fork_parent_title(
+            thread_session_state_to_legacy_event(session),
+            SessionConfiguredDisplay::Normal,
+            fork_parent_title,
+        );
     }
 
     pub(crate) fn handle_thread_session_quiet(&mut self, session: ThreadSessionState) {
         self.instruction_source_paths = session.instruction_source_paths.clone();
-        self.on_session_configured_with_display(
+        self.on_session_configured_with_display_and_fork_parent_title(
             thread_session_state_to_legacy_event(session),
             SessionConfiguredDisplay::Quiet,
+            /*fork_parent_title*/ None,
         );
     }
 
     pub(crate) fn handle_side_thread_session(&mut self, session: ThreadSessionState) {
         self.instruction_source_paths = session.instruction_source_paths.clone();
-        self.on_session_configured_with_display(
+        let fork_parent_title = session.fork_parent_title.clone();
+        self.on_session_configured_with_display_and_fork_parent_title(
             thread_session_state_to_legacy_event(session),
             SessionConfiguredDisplay::SideConversation,
+            fork_parent_title,
         );
     }
 
-    fn emit_forked_thread_event(&mut self, forked_from_id: ThreadId) {
+    fn emit_forked_thread_event(
+        &mut self,
+        forked_from_id: ThreadId,
+        fork_parent_title: Option<String>,
+    ) {
         let forked_from_id_text = forked_from_id.to_string();
-        let line: Line<'static> = vec![
-            "• ".dim(),
-            "Thread forked from ".into(),
-            forked_from_id_text.cyan(),
-        ]
-        .into();
+        let line: Line<'static> = if let Some(name) = fork_parent_title
+            && !name.trim().is_empty()
+        {
+            vec![
+                "• ".dim(),
+                "Thread forked from ".into(),
+                name.cyan(),
+                " (".into(),
+                forked_from_id_text.cyan(),
+                ")".into(),
+            ]
+            .into()
+        } else {
+            vec![
+                "• ".dim(),
+                "Thread forked from ".into(),
+                forked_from_id_text.cyan(),
+            ]
+            .into()
+        };
         self.app_event_tx.send(AppEvent::InsertHistoryCell(Box::new(
             PlainHistoryCell::new(vec![line]),
         )));
