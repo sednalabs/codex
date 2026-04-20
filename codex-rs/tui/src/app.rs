@@ -4850,10 +4850,19 @@ impl App {
                 // Leaving alt-screen may blank the inline viewport; force a redraw either way.
                 tui.frame_requester().schedule_frame();
             }
-            AppEvent::ResumeSessionByIdOrName(target) => {
-                self.chat_widget.add_error_message(format!(
-                    "Direct /resume targeting is not wired on this integration branch yet: {target}"
-                ));
+            AppEvent::ResumeSessionByIdOrName(id_or_name) => {
+                match crate::lookup_session_target_with_app_server(app_server, &id_or_name).await? {
+                    Some(target_session) => {
+                        return self
+                            .resume_target_session(tui, app_server, target_session)
+                            .await;
+                    }
+                    None => {
+                        self.chat_widget.add_error_message(format!(
+                            "No saved chat found matching '{id_or_name}'."
+                        ));
+                    }
+                }
             }
             AppEvent::RealtimeWebrtcOfferCreated { result } => {
                 self.chat_widget.on_realtime_webrtc_offer_created(result);
