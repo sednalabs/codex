@@ -619,6 +619,11 @@ impl Session {
                 config.analytics_enabled,
             )
         });
+        let agent_identity_manager = Arc::new(AgentIdentityManager::new(
+            config.as_ref(),
+            Arc::clone(&auth_manager),
+            session_configuration.session_source.clone(),
+        ));
         let services = SessionServices {
             // Initialize the MCP connection manager with an uninitialized
             // instance. It will be replaced with one created via
@@ -641,11 +646,7 @@ impl Session {
             hooks,
             rollout: Mutex::new(rollout_recorder),
             user_shell: Arc::new(default_shell),
-            agent_identity_manager: Arc::new(AgentIdentityManager::new(
-                config.as_ref(),
-                Arc::clone(&auth_manager),
-                session_configuration.session_source.clone(),
-            )),
+            agent_identity_manager: Arc::clone(&agent_identity_manager),
             shell_snapshot_tx,
             show_raw_agent_reasoning: config.show_raw_agent_reasoning,
             exec_policy,
