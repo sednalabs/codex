@@ -1,4 +1,4 @@
-use crate::endpoint::realtime_websocket::methods_common::conversation_handoff_append_message;
+use crate::endpoint::realtime_websocket::methods_common::conversation_function_call_output_message;
 use crate::endpoint::realtime_websocket::methods_common::conversation_item_create_message;
 use crate::endpoint::realtime_websocket::methods_common::normalized_session_mode;
 use crate::endpoint::realtime_websocket::methods_common::session_update_session;
@@ -230,13 +230,13 @@ impl RealtimeWebsocketConnection {
         self.writer.send_conversation_item_create(text).await
     }
 
-    pub async fn send_conversation_handoff_append(
+    pub async fn send_conversation_function_call_output(
         &self,
-        handoff_id: String,
+        call_id: String,
         output_text: String,
     ) -> Result<(), ApiError> {
         self.writer
-            .send_conversation_handoff_append(handoff_id, output_text)
+            .send_conversation_function_call_output(call_id, output_text)
             .await
     }
 
@@ -290,14 +290,14 @@ impl RealtimeWebsocketWriter {
             .await
     }
 
-    pub async fn send_conversation_handoff_append(
+    pub async fn send_conversation_function_call_output(
         &self,
-        handoff_id: String,
+        call_id: String,
         output_text: String,
     ) -> Result<(), ApiError> {
-        self.send_json(&conversation_handoff_append_message(
+        self.send_json(&conversation_function_call_output_message(
             self.event_parser,
-            handoff_id,
+            call_id,
             output_text,
         ))
         .await
@@ -471,6 +471,7 @@ impl RealtimeWebsocketEvents {
             | RealtimeEvent::ResponseCancelled(_)
             | RealtimeEvent::ResponseDone(_)
             | RealtimeEvent::ConversationItemDone { .. }
+            | RealtimeEvent::NoopRequested(_)
             | RealtimeEvent::ConversationItemAdded(_)
             | RealtimeEvent::Error(_) => {}
         }
@@ -825,6 +826,7 @@ mod tests {
     use crate::endpoint::realtime_websocket::protocol::RealtimeTranscriptEntry;
     use codex_protocol::protocol::RealtimeHandoffRequested;
     use codex_protocol::protocol::RealtimeInputAudioSpeechStarted;
+    use codex_protocol::protocol::RealtimeNoopRequested;
     use codex_protocol::protocol::RealtimeResponseCancelled;
     use codex_protocol::protocol::RealtimeResponseCreated;
     use codex_protocol::protocol::RealtimeResponseDone;
@@ -1086,6 +1088,29 @@ mod tests {
                 item_id: "item_123".to_string(),
                 input_transcript: "delegate this".to_string(),
                 active_transcript: Vec::new(),
+            }))
+        );
+    }
+
+    #[test]
+    fn parse_realtime_v2_noop_tool_call_event() {
+        let payload = json!({
+            "type": "conversation.item.done",
+            "item": {
+                "id": "item_silent",
+                "type": "function_call",
+                "name": "remain_silent",
+                "call_id": "call_silent",
+                "arguments": "{}"
+            }
+        })
+        .to_string();
+
+        assert_eq!(
+            parse_realtime_event(payload.as_str(), RealtimeEventParser::RealtimeV2),
+            Some(RealtimeEvent::NoopRequested(RealtimeNoopRequested {
+                call_id: "call_silent".to_string(),
+                item_id: "item_silent".to_string(),
             }))
         );
     }
@@ -1689,7 +1714,7 @@ mod tests {
             .await
             .expect("send item");
         connection
-            .send_conversation_handoff_append(
+            .send_conversation_function_call_output(
                 "handoff_1".to_string(),
                 "hello from background agent".to_string(),
             )
@@ -1851,6 +1876,18 @@ mod tests {
                 json!(["prompt"])
             );
             assert_eq!(
+                first_json["session"]["tools"][1]["type"],
+                Value::String("function".to_string())
+            );
+            assert_eq!(
+                first_json["session"]["tools"][1]["name"],
+                Value::String("remain_silent".to_string())
+            );
+            assert_eq!(
+                first_json["session"]["tools"][1]["parameters"]["properties"],
+                json!({})
+            );
+            assert_eq!(
                 first_json["session"]["tool_choice"],
                 Value::String("auto".to_string())
             );
@@ -1961,7 +1998,10 @@ mod tests {
             .await
             .expect("send text item");
         connection
-            .send_conversation_handoff_append("call_1".to_string(), "delegated result".to_string())
+            .send_conversation_function_call_output(
+                "call_1".to_string(),
+                "delegated result".to_string(),
+            )
             .await
             .expect("send handoff output");
 
