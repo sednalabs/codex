@@ -88,6 +88,14 @@
       "frontier_lane_sets": ["ui-protocol"]
     },
     {
+      "lane_id": "codex.dynamic-tool-registration-targeted",
+      "run_command": "just --justfile ../justfile dynamic-tool-registration-targeted",
+      "groups": ["ui_protocol"],
+      "lane_sets": ["all", "ui-protocol"],
+      "frontier_default": true,
+      "frontier_lane_sets": ["ui-protocol"]
+    },
+    {
       "lane_id": "codex.tui-esc-interrupt-targeted",
       "run_command": "just --justfile ../justfile tui-esc-interrupt-targeted",
       "groups": ["ui_protocol"],
