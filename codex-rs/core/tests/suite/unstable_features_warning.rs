@@ -46,6 +46,7 @@ async fn emits_warning_when_unstable_features_enabled_via_config() {
             config,
             InitialHistory::New,
             auth_manager,
+            Vec::new(),
             /*persist_extended_history*/ false,
             /*parent_trace*/ None,
         )
@@ -93,6 +94,7 @@ async fn suppresses_warning_when_configured() {
             config,
             InitialHistory::New,
             auth_manager,
+            Vec::new(),
             /*persist_extended_history*/ false,
             /*parent_trace*/ None,
         )

@@ -850,6 +850,7 @@ async fn resume_conversation(
         config.clone(),
         path,
         auth_manager,
+        Vec::new(),
         /*parent_trace*/ None,
     ))
     .await
@@ -868,6 +869,7 @@ async fn fork_thread(
         nth_user_message,
         config.clone(),
         path,
+        Vec::new(),
         /*persist_extended_history*/ false,
         /*parent_trace*/ None,
     ))

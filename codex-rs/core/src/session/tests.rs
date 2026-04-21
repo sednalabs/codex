@@ -1384,6 +1384,7 @@ async fn fork_startup_context_then_first_turn_diff_snapshot() -> anyhow::Result<
             usize::MAX,
             fork_config,
             rollout_path,
+            Vec::new(),
             /*persist_extended_history*/ false,
             /*parent_trace*/ None,
         )

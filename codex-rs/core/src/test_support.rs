@@ -92,6 +92,7 @@ pub async fn resume_thread_from_rollout_with_user_shell_override(
             config,
             rollout_path,
             auth_manager,
+            Vec::new(),
             user_shell_override,
         )
         .await

@@ -477,6 +477,7 @@ async fn resume_and_fork_append_permissions_messages() -> Result<()> {
             ForkSnapshot::Interrupted,
             fork_config,
             rollout_path,
+            Vec::new(),
             /*persist_extended_history*/ false,
             /*parent_trace*/ None,
         )

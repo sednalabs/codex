@@ -520,6 +520,7 @@ impl ThreadManager {
         config: Config,
         rollout_path: PathBuf,
         auth_manager: Arc<AuthManager>,
+        dynamic_tools: Vec<codex_protocol::dynamic_tools::DynamicToolSpec>,
         parent_trace: Option<W3cTraceContext>,
     ) -> CodexResult<NewThread> {
         let initial_history = RolloutRecorder::get_rollout_history(&rollout_path).await?;
@@ -527,6 +528,7 @@ impl ThreadManager {
             config,
             initial_history,
             auth_manager,
+            dynamic_tools,
             /*persist_extended_history*/ false,
             parent_trace,
         ))
@@ -538,6 +540,7 @@ impl ThreadManager {
         config: Config,
         initial_history: InitialHistory,
         auth_manager: Arc<AuthManager>,
+        dynamic_tools: Vec<codex_protocol::dynamic_tools::DynamicToolSpec>,
         persist_extended_history: bool,
         parent_trace: Option<W3cTraceContext>,
     ) -> CodexResult<NewThread> {
@@ -546,7 +549,7 @@ impl ThreadManager {
             initial_history,
             auth_manager,
             self.agent_control(),
-            Vec::new(),
+            dynamic_tools,
             persist_extended_history,
             /*metrics_service_name*/ None,
             parent_trace,
@@ -579,6 +582,7 @@ impl ThreadManager {
         config: Config,
         rollout_path: PathBuf,
         auth_manager: Arc<AuthManager>,
+        dynamic_tools: Vec<codex_protocol::dynamic_tools::DynamicToolSpec>,
         user_shell_override: crate::shell::Shell,
     ) -> CodexResult<NewThread> {
         let initial_history = RolloutRecorder::get_rollout_history(&rollout_path).await?;
@@ -587,7 +591,7 @@ impl ThreadManager {
             initial_history,
             auth_manager,
             self.agent_control(),
-            Vec::new(),
+            dynamic_tools,
             /*persist_extended_history*/ false,
             /*metrics_service_name*/ None,
             /*parent_trace*/ None,
@@ -663,6 +667,7 @@ impl ThreadManager {
         snapshot: S,
         config: Config,
         path: PathBuf,
+        dynamic_tools: Vec<codex_protocol::dynamic_tools::DynamicToolSpec>,
         persist_extended_history: bool,
         parent_trace: Option<W3cTraceContext>,
     ) -> CodexResult<NewThread>
@@ -695,7 +700,7 @@ impl ThreadManager {
             history,
             Arc::clone(&self.state.auth_manager),
             self.agent_control(),
-            Vec::new(),
+            dynamic_tools,
             persist_extended_history,
             /*metrics_service_name*/ None,
             parent_trace,
@@ -812,6 +817,7 @@ impl ThreadManagerState {
         rollout_path: PathBuf,
         agent_control: AgentControl,
         session_source: SessionSource,
+        dynamic_tools: Vec<codex_protocol::dynamic_tools::DynamicToolSpec>,
         inherited_shell_snapshot: Option<Arc<ShellSnapshot>>,
         inherited_exec_policy: Option<Arc<crate::exec_policy::ExecPolicyManager>>,
     ) -> CodexResult<NewThread> {
@@ -822,7 +828,7 @@ impl ThreadManagerState {
             Arc::clone(&self.auth_manager),
             agent_control,
             session_source,
-            Vec::new(),
+            dynamic_tools,
             /*persist_extended_history*/ false,
             /*metrics_service_name*/ None,
             inherited_shell_snapshot,
@@ -840,6 +846,7 @@ impl ThreadManagerState {
         initial_history: InitialHistory,
         agent_control: AgentControl,
         session_source: SessionSource,
+        dynamic_tools: Vec<codex_protocol::dynamic_tools::DynamicToolSpec>,
         persist_extended_history: bool,
         inherited_shell_snapshot: Option<Arc<ShellSnapshot>>,
         inherited_exec_policy: Option<Arc<crate::exec_policy::ExecPolicyManager>>,
@@ -850,7 +857,7 @@ impl ThreadManagerState {
             Arc::clone(&self.auth_manager),
             agent_control,
             session_source,
-            Vec::new(),
+            dynamic_tools,
             persist_extended_history,
             /*metrics_service_name*/ None,
             inherited_shell_snapshot,

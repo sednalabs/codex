@@ -457,6 +457,7 @@ impl AgentControl {
                 InitialHistory::Forked(forked_rollout_items),
                 self.clone(),
                 session_source,
+                Vec::new(),
                 /*persist_extended_history*/ false,
                 inherited_shell_snapshot,
                 inherited_exec_policy,
@@ -607,6 +608,7 @@ impl AgentControl {
                 rollout_path,
                 self.clone(),
                 session_source,
+                Vec::new(),
                 inherited_shell_snapshot,
                 inherited_exec_policy,
             )

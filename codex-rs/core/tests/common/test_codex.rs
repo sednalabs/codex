@@ -421,6 +421,7 @@ impl TestCodexBuilder {
                     config.clone(),
                     path,
                     auth_manager,
+                    Vec::new(),
                     /*parent_trace*/ None,
                 ))
                 .await?

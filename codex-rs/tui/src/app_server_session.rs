@@ -346,6 +346,7 @@ impl AppServerSession {
         config: Config,
         thread_id: ThreadId,
     ) -> Result<AppServerStartedThread> {
+        let dynamic_tools = dynamic_tool_host::load_dynamic_tool_specs(&config).await;
         let request_id = self.next_request_id();
         let response: ThreadResumeResponse = self
             .client
@@ -355,6 +356,7 @@ impl AppServerSession {
                     config.clone(),
                     thread_id,
                     self.thread_params_mode(),
+                    dynamic_tools,
                 ),
             })
             .await
@@ -372,6 +374,7 @@ impl AppServerSession {
         config: Config,
         thread_id: ThreadId,
     ) -> Result<AppServerStartedThread> {
+        let dynamic_tools = dynamic_tool_host::load_dynamic_tool_specs(&config).await;
         let request_id = self.next_request_id();
         let response: ThreadForkResponse = self
             .client
@@ -381,6 +384,7 @@ impl AppServerSession {
                     config.clone(),
                     thread_id,
                     self.thread_params_mode(),
+                    dynamic_tools,
                 ),
             })
             .await
@@ -992,6 +996,7 @@ fn thread_resume_params_from_config(
     config: Config,
     thread_id: ThreadId,
     thread_params_mode: ThreadParamsMode,
+    dynamic_tools: Vec<DynamicToolSpec>,
 ) -> ThreadResumeParams {
     ThreadResumeParams {
         thread_id: thread_id.to_string(),
@@ -1002,6 +1007,7 @@ fn thread_resume_params_from_config(
         approvals_reviewer: approvals_reviewer_override_from_config(&config),
         sandbox: sandbox_mode_from_policy(config.permissions.sandbox_policy.get().clone()),
         config: config_request_overrides_from_config(&config),
+        dynamic_tools: (!dynamic_tools.is_empty()).then_some(dynamic_tools),
         persist_extended_history: true,
         ..ThreadResumeParams::default()
     }
@@ -1011,6 +1017,7 @@ fn thread_fork_params_from_config(
     config: Config,
     thread_id: ThreadId,
     thread_params_mode: ThreadParamsMode,
+    dynamic_tools: Vec<DynamicToolSpec>,
 ) -> ThreadForkParams {
     ThreadForkParams {
         thread_id: thread_id.to_string(),
@@ -1021,6 +1028,7 @@ fn thread_fork_params_from_config(
         approvals_reviewer: approvals_reviewer_override_from_config(&config),
         sandbox: sandbox_mode_from_policy(config.permissions.sandbox_policy.get().clone()),
         config: config_request_overrides_from_config(&config),
+        dynamic_tools: (!dynamic_tools.is_empty()).then_some(dynamic_tools),
         ephemeral: config.ephemeral,
         persist_extended_history: true,
         ..ThreadForkParams::default()
@@ -1282,6 +1290,20 @@ mod tests {
             .expect("config should build")
     }
 
+    fn test_dynamic_tool(name: &str) -> DynamicToolSpec {
+        DynamicToolSpec {
+            namespace: Some("codex_app".to_string()),
+            name: name.to_string(),
+            description: format!("{name} description"),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {},
+                "additionalProperties": false,
+            }),
+            defer_loading: false,
+        }
+    }
+
     #[tokio::test]
     async fn thread_start_params_include_cwd_for_embedded_sessions() {
         let temp_dir = tempfile::tempdir().expect("tempdir");
@@ -1299,11 +1321,22 @@ mod tests {
         let temp_dir = tempfile::tempdir().expect("tempdir");
         let config = build_config(&temp_dir).await;
         let thread_id = ThreadId::new();
+        let resume_tools = vec![test_dynamic_tool("android_observe")];
+        let fork_tools = vec![test_dynamic_tool("android_step")];
 
         let start = thread_start_params_from_config(&config, ThreadParamsMode::Remote, Vec::new());
-        let resume =
-            thread_resume_params_from_config(config.clone(), thread_id, ThreadParamsMode::Remote);
-        let fork = thread_fork_params_from_config(config, thread_id, ThreadParamsMode::Remote);
+        let resume = thread_resume_params_from_config(
+            config.clone(),
+            thread_id,
+            ThreadParamsMode::Remote,
+            resume_tools.clone(),
+        );
+        let fork = thread_fork_params_from_config(
+            config,
+            thread_id,
+            ThreadParamsMode::Remote,
+            fork_tools.clone(),
+        );
 
         assert_eq!(start.cwd, None);
         assert_eq!(resume.cwd, None);
@@ -1311,6 +1344,8 @@ mod tests {
         assert_eq!(start.model_provider, None);
         assert_eq!(resume.model_provider, None);
         assert_eq!(fork.model_provider, None);
+        assert_eq!(resume.dynamic_tools, Some(resume_tools));
+        assert_eq!(fork.dynamic_tools, Some(fork_tools));
     }
 
     #[tokio::test]

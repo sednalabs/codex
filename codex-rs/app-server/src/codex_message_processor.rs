@@ -2540,32 +2540,15 @@ impl CodexMessageProcessor {
         }
 
         let instruction_sources = Self::instruction_sources_from_config(&config).await;
-        let dynamic_tools = dynamic_tools.unwrap_or_default();
-        let core_dynamic_tools = if dynamic_tools.is_empty() {
-            Vec::new()
-        } else {
-            if let Err(message) = validate_dynamic_tools(&dynamic_tools) {
-                let error = JSONRPCErrorError {
-                    code: INVALID_REQUEST_ERROR_CODE,
-                    message,
-                    data: None,
-                };
+        let core_dynamic_tools = match convert_dynamic_tools(dynamic_tools.unwrap_or_default()) {
+            Ok(core_dynamic_tools) => core_dynamic_tools,
+            Err(error) => {
                 listener_task_context
                     .outgoing
                     .send_error(request_id, error)
                     .await;
                 return;
             }
-            dynamic_tools
-                .into_iter()
-                .map(|tool| CoreDynamicToolSpec {
-                    namespace: tool.namespace,
-                    name: tool.name,
-                    description: tool.description,
-                    input_schema: tool.input_schema,
-                    defer_loading: tool.defer_loading,
-                })
-                .collect()
         };
         let core_dynamic_tool_count = core_dynamic_tools.len();
 
@@ -4219,6 +4202,7 @@ impl CodexMessageProcessor {
             base_instructions,
             developer_instructions,
             personality,
+            dynamic_tools,
             persist_extended_history,
         } = params;
 
@@ -4291,6 +4275,13 @@ impl CodexMessageProcessor {
 
         let fallback_model_provider = config.model_provider_id.clone();
         let response_history = thread_history.clone();
+        let core_dynamic_tools = match convert_dynamic_tools(dynamic_tools.unwrap_or_default()) {
+            Ok(core_dynamic_tools) => core_dynamic_tools,
+            Err(error) => {
+                self.outgoing.send_error(request_id, error).await;
+                return;
+            }
+        };
 
         match self
             .thread_manager
@@ -4298,6 +4289,7 @@ impl CodexMessageProcessor {
                 config,
                 thread_history,
                 self.auth_manager.clone(),
+                core_dynamic_tools,
                 persist_extended_history,
                 self.request_trace_context(&request_id).await,
             )
@@ -4765,6 +4757,7 @@ impl CodexMessageProcessor {
             config: cli_overrides,
             base_instructions,
             developer_instructions,
+            dynamic_tools,
             ephemeral,
             persist_extended_history,
         } = params;
@@ -4879,6 +4872,13 @@ impl CodexMessageProcessor {
         };
 
         let fallback_model_provider = config.model_provider_id.clone();
+        let core_dynamic_tools = match convert_dynamic_tools(dynamic_tools.unwrap_or_default()) {
+            Ok(core_dynamic_tools) => core_dynamic_tools,
+            Err(error) => {
+                self.outgoing.send_error(request_id, error).await;
+                return;
+            }
+        };
 
         let NewThread {
             thread_id,
@@ -4891,6 +4891,7 @@ impl CodexMessageProcessor {
                 ForkSnapshot::Interrupted,
                 config,
                 rollout_path.clone(),
+                core_dynamic_tools,
                 persist_extended_history,
                 self.request_trace_context(&request_id).await,
             )
@@ -7628,6 +7629,7 @@ impl CodexMessageProcessor {
                 ForkSnapshot::Interrupted,
                 config,
                 rollout_path,
+                Vec::new(),
                 /*persist_extended_history*/ false,
                 self.request_trace_context(request_id).await,
             )
@@ -9171,6 +9173,29 @@ fn validate_dynamic_tools(tools: &[ApiDynamicToolSpec]) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+fn convert_dynamic_tools(
+    tools: Vec<ApiDynamicToolSpec>,
+) -> Result<Vec<CoreDynamicToolSpec>, JSONRPCErrorError> {
+    if tools.is_empty() {
+        return Ok(Vec::new());
+    }
+    validate_dynamic_tools(&tools).map_err(|message| JSONRPCErrorError {
+        code: INVALID_REQUEST_ERROR_CODE,
+        message,
+        data: None,
+    })?;
+    Ok(tools
+        .into_iter()
+        .map(|tool| CoreDynamicToolSpec {
+            namespace: tool.namespace,
+            name: tool.name,
+            description: tool.description,
+            input_schema: tool.input_schema,
+            defer_loading: tool.defer_loading,
+        })
+        .collect())
 }
 
 fn replace_cloud_requirements_loader(

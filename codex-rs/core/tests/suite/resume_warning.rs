@@ -105,6 +105,7 @@ async fn emits_warning_when_resumed_model_differs() {
             config,
             initial_history,
             auth_manager,
+            Vec::new(),
             /*persist_extended_history*/ false,
             /*parent_trace*/ None,
         )
