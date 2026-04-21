@@ -10,7 +10,6 @@ use crate::legacy_core::Cursor;
 use crate::legacy_core::INTERACTIVE_SESSION_SOURCES;
 use crate::legacy_core::RolloutRecorder;
 use crate::legacy_core::ThreadItem;
-use crate::legacy_core::ThreadSortKey;
 use crate::legacy_core::ThreadsPage;
 use crate::legacy_core::config::Config;
 use crate::legacy_core::find_thread_names_by_ids;

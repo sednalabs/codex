@@ -245,6 +245,13 @@ use tokio::sync::mpsc::UnboundedSender;
 use tracing::debug;
 use tracing::warn;
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum SessionConfiguredDisplay {
+    Normal,
+    Quiet,
+    SideConversation,
+}
+
 const DEFAULT_MODEL_DISPLAY_NAME: &str = "loading";
 const MULTI_AGENT_ENABLE_TITLE: &str = "Enable subagents?";
 const MULTI_AGENT_ENABLE_YES: &str = "Yes, enable";
