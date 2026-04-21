@@ -41,6 +41,7 @@ git remote set-url origin git@github.com:sednalabs/codex.git
 - PR and merge-group workflows are promotion surfaces rather than the default inner-loop validator
 - helper-backed local runs are optional convenience infrastructure when available, not the tracked repository default
 - heavy Rust tests, release-mode builds, and preview binaries should be offloaded to GitHub Actions after commit and push
+- when validating exact local state that is not yet on a clean remote branch, prefer the disposable snapshot-ref dispatch path (`validation/snapshot-*` + `validation-lab` input `ref`) documented in `docs/github-ci-offload.md`
 - branch artifacts are disposable and retain for 3 days
 - official releases are published only from the protected Sedna release workflow
 - the authoritative divergence audit lives in `scripts/downstream-divergence-audit.py` and writes artifacts under `target/downstream-divergence-audit/`

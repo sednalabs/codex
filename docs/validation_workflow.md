@@ -73,6 +73,23 @@ That lane currently resolves to `sedna.release-linux-smoke`, which is a
 preflight check only; it does not publish a GitHub Release. Use artifact mode
 only when you also need a disposable preview package.
 
+## Snapshot refs for exact-tree remote proof
+
+When the tree you need to validate is not yet available as a clean remote ref
+(for example, dirty worktree state, detached HEAD, or scratch history), use a
+disposable snapshot ref and validate that exact snapshot remotely.
+
+Preferred pattern:
+
+1. Create/push a disposable `validation/snapshot-*` ref from the exact local
+   tree.
+2. Dispatch `validation-lab.yml` from downstream `main`.
+3. Pass the snapshot branch name via workflow input `ref`.
+
+For the concrete command helper and dispatch examples, use
+[`github-ci-offload.md`](github-ci-offload.md) (`validation-lab` dispatch rule
+and snapshot helper section).
+
 ## Fan-out and concurrency
 
 Use matrix fan-out when several lanes answer the same seam question.
