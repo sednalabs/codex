@@ -308,9 +308,6 @@ jobs:
           {
             echo "### Validation lab"
             echo
-            echo "- Host workflow ref: \`${{ steps.meta.outputs.host_ref }}\`"
-            echo "- Validated target ref: \`${{ steps.meta.outputs.display_ref }}\`"
-            echo "- Head SHA: \`${{ steps.meta.outputs.head_sha }}\`"
             echo "- Profile: \`${{ inputs.profile }}\`"
             echo "- Profile intent: \`${{ steps.meta.outputs.profile_intent }}\`"
             echo "- Lane set: \`${{ inputs.lane_set }}\`"
@@ -475,11 +472,7 @@ jobs:
 
         cat > "../dist/${archive_base}.json" <<EOF
         {
-          "repository": "${GITHUB_REPOSITORY}",
-          "commit": "$(git rev-parse HEAD)",
-          "ref": "${{ needs.metadata.outputs.display_ref }}",
           "previewVersion": "${CODEX_RELEASE_VERSION}",
-          "workflow": "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}",
           "source": "validation-lab"
         }
         EOF
@@ -576,9 +569,6 @@ jobs:
           print("### Validation summary")
           print()
           print(f"- Overall conclusion: `{summary['overall_conclusion']}`")
-          print(f"- Host workflow ref: `{payload['ref']['host_ref']}`")
-          print(f"- Validated target ref: `{payload['ref']['display_ref']}`")
-          print(f"- Head SHA: `{payload['ref']['head_sha']}`")
           print(f"- Profile: `{payload['selection']['profile']}`")
           if payload['selection'].get('profile_intent'):
               print(f"- Profile intent: `{payload['selection']['profile_intent']}`")

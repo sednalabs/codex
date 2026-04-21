@@ -129,6 +129,8 @@ That summary should identify:
 - enough structured failure context to route debugging without embedding raw
   commands, planner payload fragments, or bulky log excerpts in the public
   summary surface
+- avoid restating exact refs, commit SHAs, or workflow URLs in the public
+  summary payload when GitHub already provides that run context separately
 
 Watchers and follow-up tooling should prefer this structured summary over raw
 log scraping when it is available.
