@@ -742,12 +742,12 @@ async fn unified_exec_tools_include_wait_until_terminal_contract_fields() {
 
         for (field, expected_schema) in &expected_fields {
             assert!(
-                properties.contains_key(field),
+                properties.contains_key(*field),
                 "{tool_name} is missing required wait contract field `{field}`"
             );
             assert_eq!(
                 properties
-                    .get(field)
+                    .get(*field)
                     .unwrap_or_else(|| panic!("{tool_name} missing `{field}`")),
                 expected_schema,
                 "{tool_name}.{field} schema drifted from the published wait contract"
