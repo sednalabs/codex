@@ -507,7 +507,7 @@ class ValidationPlanScriptTests(unittest.TestCase):
         selected_lane_ids = [lane["lane_id"] for lane in payload["selected_matrix"]["include"]]
         self.assertIn("codex.downstream-docs-check", selected_lane_ids)
         self.assertIn("codex.workflow-ci-sanity", selected_lane_ids)
-        self.assertIn("codex.release-linux-build-smoke", selected_lane_ids)
+        self.assertIn("sedna.release-linux-smoke", selected_lane_ids)
         self.assertIn("codex.tui-config-refresh-session-targeted", selected_lane_ids)
         self.assertIn("codex.spawn-agent-description-model-surface-targeted", selected_lane_ids)
         self.assertNotIn("codex.tui-agent-picker-model-surface-targeted", selected_lane_ids)
