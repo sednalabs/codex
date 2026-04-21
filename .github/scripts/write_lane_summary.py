@@ -9,6 +9,8 @@ import re
 from pathlib import Path
 
 ERROR_RE = re.compile(r"(^error:|^thread '.*' panicked|\bFAILED\b|failures:|error\[|panic\b)")
+PATH_RE = re.compile(r"(/home/\S+|/Users/\S+)")
+WHITESPACE_RE = re.compile(r"\s+")
 
 
 def parse_args() -> argparse.Namespace:
@@ -42,11 +44,11 @@ def read_lines(path: Path) -> list[str]:
 
 def primary_signal(error_lines: list[str], tail_lines: list[str]) -> str:
     if error_lines:
-        return error_lines[0].strip()
+        return sanitize_line(error_lines[0])
     for line in reversed(tail_lines):
         stripped = line.strip()
         if stripped:
-            return stripped
+            return sanitize_line(stripped)
     return ""
 
 
@@ -77,6 +79,12 @@ def parse_bool(raw: str) -> bool:
     return raw.strip().lower() in {"1", "true", "yes", "on"}
 
 
+def sanitize_line(raw: str) -> str:
+    compact = WHITESPACE_RE.sub(" ", raw.strip())
+    compact = PATH_RE.sub("<redacted-path>", compact)
+    return compact[:240]
+
+
 def main() -> None:
     args = parse_args()
     log_path = Path(args.log_file) if args.log_file else None
@@ -88,7 +96,6 @@ def main() -> None:
         "lane_id": args.lane_id,
         "lane_phase": args.lane_phase or "downstream_lanes",
         "summary_title": args.summary_title,
-        "run_command": args.run_command,
         "status_class": args.status_class or "active",
         "frontier_default": parse_bool(args.frontier_default),
         "setup_class": args.setup_class or "rust",
@@ -102,8 +109,6 @@ def main() -> None:
         "duration_ms": parse_u64(args.duration_ms),
         "log_available": bool(lines),
         "primary_signal": primary_signal(error_lines, tail_lines),
-        "error_lines": error_lines,
-        "tail_excerpt": tail_lines,
         "artifact_name": args.artifact_name or "",
     }
 

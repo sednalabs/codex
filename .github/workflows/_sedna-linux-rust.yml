@@ -299,35 +299,20 @@ jobs:
       - name: Summarize lane failure output
         if: ${{ steps.run_lane.outcome == 'failure' }}
         shell: bash
-        env:
-          LANE_COMMAND: ${{ inputs.run_command }}
         run: |
           set -euo pipefail
           lane='${{ inputs.lane_id != '' && inputs.lane_id || inputs.summary_title }}'
           exit_code='${{ steps.run_lane.outputs.exit_code }}'
-          log_file='${{ steps.run_lane.outputs.log_file }}'
 
           {
             echo "### Downstream lane failed: ${lane}"
             echo
             echo "- Exit code: ${exit_code}"
-            echo "- Command:"
-            echo '```bash'
-            printf '%s\n' "${LANE_COMMAND}"
-            echo '```'
-            echo
-            echo "#### Tail (last 120 lines)"
-            echo '```text'
-            tail -n 120 "${log_file}" || true
-            echo '```'
-            echo
-            echo "#### Error-like lines"
-            echo '```text'
-            grep -En -m 60 "(^error:|^thread '.*' panicked|\\bFAILED\\b|failures:|error\\[|panic\\b)" "${log_file}" || true
-            echo '```'
+            echo "- Public summary policy: raw commands and raw log excerpts are omitted."
+            echo "- Next step: inspect the job log directly when deeper runner context is required."
           } >> "$GITHUB_STEP_SUMMARY"
 
-          echo "::error title=Downstream lane failed::${lane} failed (exit ${exit_code}). See step summary for command, tail, and error lines."
+          echo "::error title=Downstream lane failed::${lane} failed (exit ${exit_code}). Public summary omits raw commands and log excerpts; inspect the job log for detailed runner context."
 
       - name: Verify requested command passed
         if: ${{ steps.run_lane.outcome == 'failure' }}
