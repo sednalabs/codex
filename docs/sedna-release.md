@@ -5,7 +5,7 @@ from upstream OpenAI releases.
 
 ### Public topology
 
-- Public repository owner: `SednaLabs`
+- Public repository owner: `sednalabs`
 - Public default branch: `main`
 - Exact-upstream mirror branch: `upstream-main`
 
