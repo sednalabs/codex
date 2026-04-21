@@ -102,12 +102,12 @@ tui-thread-session-policy-targeted:
 # Focused native dynamic-tool registration slice across protocol, TUI, and
 # app-server resume/fork paths.
 dynamic-tool-registration-targeted:
-    cargo test --locked -p codex-app-server-protocol client_request_thread_resume_dynamic_tools_is_marked_experimental -- --exact --test-threads=1
-    cargo test --locked -p codex-app-server-protocol client_request_thread_fork_dynamic_tools_is_marked_experimental -- --exact --test-threads=1
-    cargo test --locked -p codex-tui thread_lifecycle_params_omit_local_overrides_for_remote_sessions --lib -- --exact --test-threads=1
-    cargo test --locked -p codex-app-server --test all suite::v2::dynamic_tools::thread_start_injects_dynamic_tools_into_model_requests -- --exact --test-threads=1
-    cargo test --locked -p codex-app-server --test all suite::v2::dynamic_tools::thread_resume_injects_dynamic_tools_into_model_requests -- --exact --test-threads=1
-    cargo test --locked -p codex-app-server --test all suite::v2::dynamic_tools::thread_fork_injects_dynamic_tools_into_model_requests -- --exact --test-threads=1
+    cargo test --locked --profile ci-test -p codex-app-server-protocol client_request_thread_resume_dynamic_tools_is_marked_experimental -- --exact --test-threads=1
+    cargo test --locked --profile ci-test -p codex-app-server-protocol client_request_thread_fork_dynamic_tools_is_marked_experimental -- --exact --test-threads=1
+    cargo test --locked --profile ci-test -p codex-tui thread_lifecycle_params_omit_local_overrides_for_remote_sessions --lib -- --exact --test-threads=1
+    cargo test --locked --profile ci-test -p codex-app-server --test dynamic_tools thread_start_injects_dynamic_tools_into_model_requests -- --exact --test-threads=1
+    cargo test --locked --profile ci-test -p codex-app-server --test dynamic_tools thread_resume_injects_dynamic_tools_into_model_requests -- --exact --test-threads=1
+    cargo test --locked --profile ci-test -p codex-app-server --test dynamic_tools thread_fork_injects_dynamic_tools_into_model_requests -- --exact --test-threads=1
 
 # Focused TUI config-refresh session-state persistence slice.
 tui-config-refresh-session-targeted:
