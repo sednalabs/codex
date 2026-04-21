@@ -2540,7 +2540,10 @@ impl CodexMessageProcessor {
         }
 
         let instruction_sources = Self::instruction_sources_from_config(&config).await;
-        let core_dynamic_tools = match convert_dynamic_tools(dynamic_tools.unwrap_or_default()) {
+        let response_dynamic_tools = dynamic_tools.filter(|tools| !tools.is_empty());
+        let core_dynamic_tools = match convert_dynamic_tools(
+            response_dynamic_tools.clone().unwrap_or_default(),
+        ) {
             Ok(core_dynamic_tools) => core_dynamic_tools,
             Err(error) => {
                 listener_task_context
@@ -2637,7 +2640,7 @@ impl CodexMessageProcessor {
                     model_provider: config_snapshot.model_provider_id,
                     service_tier: config_snapshot.service_tier,
                     cwd: config_snapshot.cwd,
-                    dynamic_tools: (!dynamic_tools.is_empty()).then_some(dynamic_tools),
+                    dynamic_tools: response_dynamic_tools,
                     instruction_sources,
                     approval_policy: config_snapshot.approval_policy.into(),
                     approvals_reviewer: config_snapshot.approvals_reviewer.into(),
@@ -4276,7 +4279,10 @@ impl CodexMessageProcessor {
 
         let fallback_model_provider = config.model_provider_id.clone();
         let response_history = thread_history.clone();
-        let core_dynamic_tools = match convert_dynamic_tools(dynamic_tools.unwrap_or_default()) {
+        let response_dynamic_tools = dynamic_tools.filter(|tools| !tools.is_empty());
+        let core_dynamic_tools = match convert_dynamic_tools(
+            response_dynamic_tools.clone().unwrap_or_default(),
+        ) {
             Ok(core_dynamic_tools) => core_dynamic_tools,
             Err(error) => {
                 self.outgoing.send_error(request_id, error).await;
@@ -4363,7 +4369,7 @@ impl CodexMessageProcessor {
                     model_provider: session_configured.model_provider_id,
                     service_tier: session_configured.service_tier,
                     cwd: session_configured.cwd,
-                    dynamic_tools: (!dynamic_tools.is_empty()).then_some(dynamic_tools),
+                    dynamic_tools: response_dynamic_tools,
                     instruction_sources: Vec::new(),
                     approval_policy: session_configured.approval_policy.into(),
                     approvals_reviewer: session_configured.approvals_reviewer.into(),
@@ -4874,7 +4880,10 @@ impl CodexMessageProcessor {
         };
 
         let fallback_model_provider = config.model_provider_id.clone();
-        let core_dynamic_tools = match convert_dynamic_tools(dynamic_tools.unwrap_or_default()) {
+        let response_dynamic_tools = dynamic_tools.filter(|tools| !tools.is_empty());
+        let core_dynamic_tools = match convert_dynamic_tools(
+            response_dynamic_tools.clone().unwrap_or_default(),
+        ) {
             Ok(core_dynamic_tools) => core_dynamic_tools,
             Err(error) => {
                 self.outgoing.send_error(request_id, error).await;
@@ -5028,7 +5037,7 @@ impl CodexMessageProcessor {
             model_provider: session_configured.model_provider_id,
             service_tier: session_configured.service_tier,
             cwd: session_configured.cwd,
-            dynamic_tools: (!dynamic_tools.is_empty()).then_some(dynamic_tools),
+            dynamic_tools: response_dynamic_tools,
             instruction_sources: Vec::new(),
             approval_policy: session_configured.approval_policy.into(),
             approvals_reviewer: session_configured.approvals_reviewer.into(),
