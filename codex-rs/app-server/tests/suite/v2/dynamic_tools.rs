@@ -233,6 +233,127 @@ async fn thread_resume_injects_dynamic_tools_into_model_requests() -> Result<()>
 }
 
 #[tokio::test]
+async fn thread_resume_replaces_loaded_thread_when_dynamic_tools_are_requested() -> Result<()> {
+    let responses = vec![
+        create_final_assistant_message_sse_response("Seeded")?,
+        create_final_assistant_message_sse_response("Done")?,
+    ];
+    let server = create_mock_responses_server_sequence_unchecked(responses).await;
+
+    let codex_home = TempDir::new()?;
+    create_config_toml(codex_home.path(), &server.uri())?;
+
+    let mut mcp = McpProcess::new(codex_home.path()).await?;
+    timeout(DEFAULT_READ_TIMEOUT, mcp.initialize()).await??;
+
+    let input_schema = json!({
+        "type": "object",
+        "properties": {
+            "scope": { "type": "string" }
+        },
+        "required": ["scope"],
+        "additionalProperties": false,
+    });
+    let dynamic_tool = DynamicToolSpec {
+        namespace: Some("codex_app".to_string()),
+        name: "android_observe".to_string(),
+        description: "Observe Android state".to_string(),
+        input_schema: input_schema.clone(),
+        defer_loading: false,
+    };
+
+    let thread_req = mcp
+        .send_thread_start_request(ThreadStartParams::default())
+        .await?;
+    let thread_resp: JSONRPCResponse = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(thread_req)),
+    )
+    .await??;
+    let ThreadStartResponse { thread, .. } = to_response::<ThreadStartResponse>(thread_resp)?;
+
+    let seed_turn_req = mcp
+        .send_turn_start_request(TurnStartParams {
+            thread_id: thread.id.clone(),
+            input: vec![V2UserInput::Text {
+                text: "Seed rollout storage".to_string(),
+                text_elements: Vec::new(),
+            }],
+            ..Default::default()
+        })
+        .await?;
+    let seed_turn_resp: JSONRPCResponse = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(seed_turn_req)),
+    )
+    .await??;
+    let _seed_turn: TurnStartResponse = to_response::<TurnStartResponse>(seed_turn_resp)?;
+
+    timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_notification_message("turn/completed"),
+    )
+    .await??;
+
+    let resume_req = mcp
+        .send_thread_resume_request(ThreadResumeParams {
+            thread_id: thread.id.clone(),
+            dynamic_tools: Some(vec![dynamic_tool.clone()]),
+            ..Default::default()
+        })
+        .await?;
+    let resume_resp: JSONRPCResponse = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(resume_req)),
+    )
+    .await??;
+    let ThreadResumeResponse {
+        thread,
+        dynamic_tools,
+        ..
+    } = to_response::<ThreadResumeResponse>(resume_resp)?;
+    assert_eq!(dynamic_tools, Some(vec![dynamic_tool.clone()]));
+
+    let turn_req = mcp
+        .send_turn_start_request(TurnStartParams {
+            thread_id: thread.id,
+            input: vec![V2UserInput::Text {
+                text: "Observe now".to_string(),
+                text_elements: Vec::new(),
+            }],
+            ..Default::default()
+        })
+        .await?;
+    let turn_resp: JSONRPCResponse = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(turn_req)),
+    )
+    .await??;
+    let _turn: TurnStartResponse = to_response::<TurnStartResponse>(turn_resp)?;
+
+    timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_notification_message("turn/completed"),
+    )
+    .await??;
+
+    let bodies = responses_bodies(&server).await?;
+    let body = bodies
+        .last()
+        .context("expected a resumed turn responses request after replacing the loaded thread")?;
+    let tool = find_dynamic_tool(body, &dynamic_tool)
+        .context("expected resumed dynamic tool to be injected into request")?;
+
+    assert_eq!(
+        tool.get("description"),
+        Some(&Value::String(dynamic_tool.description.clone()))
+    );
+    assert_eq!(tool.get("parameters"), Some(&input_schema));
+
+    Ok(())
+}
+
+#[tokio::test]
 async fn thread_fork_injects_dynamic_tools_into_model_requests() -> Result<()> {
     let responses = vec![
         create_final_assistant_message_sse_response("Seeded")?,
@@ -873,12 +994,9 @@ fn find_dynamic_tool<'a>(body: &'a Value, tool: &DynamicToolSpec) -> Option<&'a 
             .then(|| candidate.get("tools").and_then(Value::as_array))
             .flatten()
             .and_then(|namespaced_tools| {
-                namespaced_tools
-                    .iter()
-                    .find(|namespaced_tool| {
-                        namespaced_tool.get("name").and_then(Value::as_str)
-                            == Some(tool.name.as_str())
-                    })
+                namespaced_tools.iter().find(|namespaced_tool| {
+                    namespaced_tool.get("name").and_then(Value::as_str) == Some(tool.name.as_str())
+                })
             })
         }),
         None => tools.iter().find(|candidate| {

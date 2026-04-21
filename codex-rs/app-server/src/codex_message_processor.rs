@@ -2541,18 +2541,17 @@ impl CodexMessageProcessor {
 
         let instruction_sources = Self::instruction_sources_from_config(&config).await;
         let response_dynamic_tools = dynamic_tools.filter(|tools| !tools.is_empty());
-        let core_dynamic_tools = match convert_dynamic_tools(
-            response_dynamic_tools.clone().unwrap_or_default(),
-        ) {
-            Ok(core_dynamic_tools) => core_dynamic_tools,
-            Err(error) => {
-                listener_task_context
-                    .outgoing
-                    .send_error(request_id, error)
-                    .await;
-                return;
-            }
-        };
+        let core_dynamic_tools =
+            match convert_dynamic_tools(response_dynamic_tools.clone().unwrap_or_default()) {
+                Ok(core_dynamic_tools) => core_dynamic_tools,
+                Err(error) => {
+                    listener_task_context
+                        .outgoing
+                        .send_error(request_id, error)
+                        .await;
+                    return;
+                }
+            };
         let core_dynamic_tool_count = core_dynamic_tools.len();
 
         match listener_task_context
@@ -4184,6 +4183,20 @@ impl CodexMessageProcessor {
             return;
         }
 
+        if params
+            .dynamic_tools
+            .as_ref()
+            .is_some_and(|tools| !tools.is_empty())
+            && self
+                .prepare_loaded_thread_for_dynamic_tool_resume(
+                    request_id.clone(),
+                    params.thread_id.as_str(),
+                )
+                .await
+        {
+            return;
+        }
+
         if self
             .resume_running_thread(request_id.clone(), &params)
             .await
@@ -4280,15 +4293,14 @@ impl CodexMessageProcessor {
         let fallback_model_provider = config.model_provider_id.clone();
         let response_history = thread_history.clone();
         let response_dynamic_tools = dynamic_tools.filter(|tools| !tools.is_empty());
-        let core_dynamic_tools = match convert_dynamic_tools(
-            response_dynamic_tools.clone().unwrap_or_default(),
-        ) {
-            Ok(core_dynamic_tools) => core_dynamic_tools,
-            Err(error) => {
-                self.outgoing.send_error(request_id, error).await;
-                return;
-            }
-        };
+        let core_dynamic_tools =
+            match convert_dynamic_tools(response_dynamic_tools.clone().unwrap_or_default()) {
+                Ok(core_dynamic_tools) => core_dynamic_tools,
+                Err(error) => {
+                    self.outgoing.send_error(request_id, error).await;
+                    return;
+                }
+            };
 
         match self
             .thread_manager
@@ -4612,6 +4624,81 @@ impl CodexMessageProcessor {
         false
     }
 
+    async fn prepare_loaded_thread_for_dynamic_tool_resume(
+        &mut self,
+        request_id: ConnectionRequestId,
+        thread_id: &str,
+    ) -> bool {
+        let Ok(existing_thread_id) = ThreadId::from_string(thread_id) else {
+            return false;
+        };
+        let Ok(existing_thread) = self.thread_manager.get_thread(existing_thread_id).await else {
+            return false;
+        };
+
+        if matches!(existing_thread.agent_status().await, AgentStatus::Running) {
+            self.send_invalid_request_error(
+                request_id,
+                format!(
+                    "cannot resume loaded thread {existing_thread_id} with dynamic tools while a turn is running; retry after the thread is idle or after app-server restart"
+                ),
+            )
+            .await;
+            return true;
+        }
+
+        {
+            let mut pending_thread_unloads = self.pending_thread_unloads.lock().await;
+            if pending_thread_unloads.contains(&existing_thread_id) {
+                self.send_invalid_request_error(
+                    request_id,
+                    format!(
+                        "thread {existing_thread_id} is closing; retry thread/resume after the thread is closed"
+                    ),
+                )
+                .await;
+                return true;
+            }
+            pending_thread_unloads.insert(existing_thread_id);
+        }
+
+        match Self::wait_for_thread_shutdown(&existing_thread).await {
+            ThreadShutdownResult::Complete => {
+                self.thread_manager.remove_thread(&existing_thread_id).await;
+                self.finalize_thread_teardown(existing_thread_id).await;
+                false
+            }
+            ThreadShutdownResult::SubmitFailed => {
+                self.pending_thread_unloads
+                    .lock()
+                    .await
+                    .remove(&existing_thread_id);
+                self.send_invalid_request_error(
+                    request_id,
+                    format!(
+                        "failed to prepare loaded thread {existing_thread_id} for dynamic-tool resume; retry after app-server restart"
+                    ),
+                )
+                .await;
+                true
+            }
+            ThreadShutdownResult::TimedOut => {
+                self.pending_thread_unloads
+                    .lock()
+                    .await
+                    .remove(&existing_thread_id);
+                self.send_invalid_request_error(
+                    request_id,
+                    format!(
+                        "timed out waiting for loaded thread {existing_thread_id} to close before dynamic-tool resume; retry after the thread is closed or app-server restart"
+                    ),
+                )
+                .await;
+                true
+            }
+        }
+    }
+
     async fn resume_thread_from_history(
         &self,
         request_id: ConnectionRequestId,
@@ -4881,15 +4968,14 @@ impl CodexMessageProcessor {
 
         let fallback_model_provider = config.model_provider_id.clone();
         let response_dynamic_tools = dynamic_tools.filter(|tools| !tools.is_empty());
-        let core_dynamic_tools = match convert_dynamic_tools(
-            response_dynamic_tools.clone().unwrap_or_default(),
-        ) {
-            Ok(core_dynamic_tools) => core_dynamic_tools,
-            Err(error) => {
-                self.outgoing.send_error(request_id, error).await;
-                return;
-            }
-        };
+        let core_dynamic_tools =
+            match convert_dynamic_tools(response_dynamic_tools.clone().unwrap_or_default()) {
+                Ok(core_dynamic_tools) => core_dynamic_tools,
+                Err(error) => {
+                    self.outgoing.send_error(request_id, error).await;
+                    return;
+                }
+            };
 
         let NewThread {
             thread_id,
