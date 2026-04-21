@@ -1,8 +1,7 @@
 name: validation-lab
 run-name: >-
-  validation-lab [${{ inputs.profile }}/${{ inputs.lane_set }}]
-  target=${{ inputs.ref || github.ref_name }}
-  host=${{ github.ref_name }}
+  validation-lab
+  [${{ inputs.profile }}/${{ inputs.lane_set != '' && inputs.lane_set || 'custom' }}]
 
 on:
   workflow_call:
@@ -32,9 +31,6 @@ on:
         type: string
         default: auto
       supersession_key:
-        required: false
-        type: string
-      notes:
         required: false
         type: string
   workflow_dispatch:
@@ -96,10 +92,6 @@ on:
         default: auto
       supersession_key:
         description: Optional retention label for compare/milestone/retain runs
-        required: false
-        type: string
-      notes:
-        description: Optional operator notes for this lab run
         required: false
         type: string
 
@@ -303,7 +295,6 @@ jobs:
       - name: Summarize validation plan
         shell: bash
         env:
-          LAB_NOTES: ${{ inputs.notes }}
         run: |
           {
             echo "### Validation lab"
@@ -312,16 +303,13 @@ jobs:
             echo "- Profile intent: \`${{ steps.meta.outputs.profile_intent }}\`"
             echo "- Lane set: \`${{ inputs.lane_set }}\`"
             echo "- Selection summary: \`${{ steps.meta.outputs.lane_summary }}\`"
-            echo "- Explicit lanes: \`${{ inputs.lanes || 'none' }}\`"
+            echo "- Explicit lanes supplied: \`${{ inputs.lanes != '' && 'true' || 'false' }}\`"
             echo "- Include explicit-only lanes: \`${{ inputs.include_explicit_lanes && 'true' || 'false' }}\`"
             echo "- Setup classes: \`${{ steps.meta.outputs.selected_setup_classes || '[]' }}\`"
             echo "- Artifact build: \`${{ inputs.artifact_build && 'true' || 'false' }}\`"
             echo "- Supersession mode: \`${{ inputs.supersession_mode }}\`"
             echo "- Supersession key: \`${{ inputs.supersession_key || 'none' }}\`"
             echo "- Profile notes: ${{ steps.meta.outputs.profile_notes }}"
-            if [[ -n "${LAB_NOTES}" ]]; then
-              echo "- Notes supplied: \`true\`"
-            fi
           } >> "$GITHUB_STEP_SUMMARY"
 
   smoke_gate:
@@ -525,7 +513,7 @@ jobs:
             --explicit-lanes "${{ inputs.lanes }}" \
             --supersession-mode "${{ inputs.supersession_mode }}" \
             --supersession-key "${{ inputs.supersession_key }}" \
-            --notes-supplied "${{ inputs.notes != '' && 'true' || 'false' }}" \
+            --notes-supplied "false" \
             --run-id "${GITHUB_RUN_ID}" \
             --run-attempt "${GITHUB_RUN_ATTEMPT}" \
             --run-url "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" \

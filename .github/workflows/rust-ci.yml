@@ -163,7 +163,6 @@ jobs:
       lanes: ${{ needs.changed.outputs.incremental_lanes }}
       artifact_build: false
       supersession_mode: auto
-      notes: rust-ci incremental follow-up validation
 
   planner_fixtures:
     name: Planner fixtures
