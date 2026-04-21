@@ -126,6 +126,9 @@ That summary should identify:
 - secondary findings for remaining cancelled or missing depth lanes
 - the key failure signal, if available
 - whether smoke gate, targeted lanes, or artifact build ran
+- enough structured failure context to route debugging without embedding raw
+  commands, planner payload fragments, or bulky log excerpts in the public
+  summary surface
 
 Watchers and follow-up tooling should prefer this structured summary over raw
 log scraping when it is available.

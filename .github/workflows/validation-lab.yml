@@ -230,12 +230,10 @@ jobs:
               meta = json.loads(meta_raw)
           except json.JSONDecodeError as exc:
               sys.stderr.write(f"ERROR: Failed to parse SELECTION_META as JSON: {exc}\n")
-              sys.stderr.write(f"META: {meta_raw[:500]}\n")
               raise SystemExit(1)
 
           if field not in meta:
               sys.stderr.write(f"ERROR: Key '{field}' not found in SELECTION_META\n")
-              sys.stderr.write(f"META: {meta_raw[:500]}\n")
               raise SystemExit(1)
 
           value = meta[field]
