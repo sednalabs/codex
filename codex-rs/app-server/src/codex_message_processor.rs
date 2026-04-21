@@ -6577,6 +6577,7 @@ impl CodexMessageProcessor {
             }
         };
         let cli_overrides = self.current_cli_overrides();
+        let host_name = codex_config::host_name();
         let mut data = Vec::new();
         for cwd in cwds {
             let extra_roots = extra_roots_by_cwd
@@ -6605,6 +6606,7 @@ impl CodexMessageProcessor {
                 LoaderOverrides::default(),
                 CloudRequirementsLoader::default(),
                 self.thread_config_loader.as_ref(),
+                host_name.as_deref(),
             )
             .await
             {
