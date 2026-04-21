@@ -541,12 +541,6 @@ def main() -> None:
 
     payload = {
         "repo": args.repo,
-        "ref": {
-            "host_ref": args.host_ref,
-            "display_ref": args.display_ref,
-            "checkout_ref": args.checkout_ref,
-            "head_sha": args.head_sha,
-        },
         "selection": {
             "profile": args.profile,
             "profile_intent": args.profile_intent or "",

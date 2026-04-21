@@ -656,9 +656,6 @@ jobs:
           print("### Sedna heavy-tests summary")
           print()
           print(f"- Overall conclusion: `{summary['overall_conclusion']}`")
-          print(f"- Host workflow ref: `{payload['ref']['host_ref']}`")
-          print(f"- Validated target ref: `{payload['ref']['display_ref']}`")
-          print(f"- Checkout ref: `{payload['ref']['checkout_ref']}`")
           print(f"- Profile: `{payload['selection']['profile']}`")
           print(f"- Lane set: `{payload['selection']['lane_set']}`")
           if payload['selection'].get('lane_summary'):
