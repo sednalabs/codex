@@ -294,7 +294,6 @@ jobs:
 
       - name: Summarize validation plan
         shell: bash
-        env:
         run: |
           {
             echo "### Validation lab"
