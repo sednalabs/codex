@@ -964,6 +964,11 @@ impl BottomPane {
         self.pending_thread_approvals.threads()
     }
 
+    #[cfg(test)]
+    pub(crate) fn pending_input_preview_queued_messages(&self) -> &[String] {
+        &self.pending_input_preview.queued_messages
+    }
+
     /// Update the unified-exec process set and refresh whichever summary surface is active.
     ///
     /// The summary may be displayed inline in the status row or as a dedicated

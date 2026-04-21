@@ -227,7 +227,8 @@ Why:
 
 User-visible behavior:
 - Queued slash commands and queued message drafts are shown in one queue preview.
-- `Alt+Up` recalls queued items in strict reverse-chronological order across both entry types.
+- `Alt+Up` dequeues the newest queued item back into the composer in strict reverse-chronological order across both entry types.
+- Recalled items disappear from the queued preview until they are re-queued or re-submitted.
 - `/status` remains immediate (not queued).
 - Unavailable non-inline slash commands replay after the current task completes instead of being blocked.
 

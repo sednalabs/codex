@@ -7977,6 +7977,8 @@ impl ChatWidget {
     }
 
     fn pop_latest_queued_follow_up_for_edit(&mut self) -> Option<UserMessage> {
+        self.ensure_queued_follow_up_insert_order_for_edit();
+
         while let Some(kind) = self.queued_follow_up_insert_order.pop_back() {
             match kind {
                 QueuedFollowUpKind::UserMessageBack => {
@@ -8015,6 +8017,20 @@ impl ChatWidget {
         self.queued_slash_commands
             .pop_back()
             .map(QueuedSlashCommand::into_user_message_for_edit)
+    }
+
+    fn ensure_queued_follow_up_insert_order_for_edit(&mut self) {
+        if !self.queued_follow_up_insert_order.is_empty() || self.queued_follow_up_order.is_empty()
+        {
+            return;
+        }
+
+        // Older restored thread-input state can carry execution-order metadata
+        // without the reverse-chronological insert-order list Alt+Up depends on.
+        // Fall back to the run-order view so dequeue-for-edit removes the item
+        // from the visible queued list instead of recalling it while the stale
+        // preview still claims it is queued.
+        self.queued_follow_up_insert_order = self.queued_follow_up_order.clone();
     }
 
     fn consume_follow_up_run_order(&mut self, kind: QueuedFollowUpKind) {
@@ -11424,6 +11440,13 @@ impl ChatWidget {
                     .map(|message| message.text.clone()),
             )
             .collect()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn pending_input_preview_queued_messages(&self) -> Vec<String> {
+        self.bottom_pane
+            .pending_input_preview_queued_messages()
+            .to_vec()
     }
 
     #[cfg(test)]
