@@ -18,7 +18,9 @@ use crate::tools::registry::PostToolUsePayload;
 use crate::tools::registry::PreToolUsePayload;
 use crate::tools::registry::ToolHandler;
 use crate::tools::registry::ToolKind;
+use crate::unified_exec::DEFAULT_MAX_BACKGROUND_TERMINAL_TIMEOUT_MS;
 use crate::unified_exec::ExecCommandRequest;
+use crate::unified_exec::MIN_YIELD_TIME_MS;
 use crate::unified_exec::UnifiedExecContext;
 use crate::unified_exec::UnifiedExecError;
 use crate::unified_exec::UnifiedExecProcessManager;
@@ -36,6 +38,8 @@ use codex_utils_output_truncation::approx_token_count;
 use serde::Deserialize;
 use std::path::PathBuf;
 use std::sync::Arc;
+use tokio::time::Duration;
+use tokio::time::Instant;
 
 pub struct UnifiedExecHandler;
 
@@ -54,6 +58,12 @@ pub(crate) struct ExecCommandArgs {
     yield_time_ms: u64,
     #[serde(default)]
     max_output_tokens: Option<usize>,
+    #[serde(default)]
+    wait_until_terminal: bool,
+    #[serde(default)]
+    max_wait_ms: Option<u64>,
+    #[serde(default)]
+    heartbeat_interval_ms: Option<u64>,
     #[serde(default)]
     sandbox_permissions: SandboxPermissions,
     #[serde(default)]
@@ -74,6 +84,12 @@ struct WriteStdinArgs {
     yield_time_ms: u64,
     #[serde(default)]
     max_output_tokens: Option<usize>,
+    #[serde(default)]
+    wait_until_terminal: bool,
+    #[serde(default)]
+    max_wait_ms: Option<u64>,
+    #[serde(default)]
+    heartbeat_interval_ms: Option<u64>,
 }
 
 fn default_exec_yield_time_ms() -> u64 {
@@ -86,6 +102,67 @@ fn default_write_stdin_yield_time_ms() -> u64 {
 
 fn default_tty() -> bool {
     false
+}
+
+fn default_wait_budget_ms() -> u64 {
+    DEFAULT_MAX_BACKGROUND_TERMINAL_TIMEOUT_MS
+}
+
+fn resolve_wait_budget(max_wait_ms: Option<u64>) -> Duration {
+    Duration::from_millis(max_wait_ms.unwrap_or_else(default_wait_budget_ms))
+}
+
+fn resolve_heartbeat_ms(heartbeat_interval_ms: Option<u64>, fallback_ms: u64) -> u64 {
+    heartbeat_interval_ms
+        .unwrap_or(fallback_ms)
+        .max(MIN_YIELD_TIME_MS)
+}
+
+async fn complete_terminal_wait(
+    manager: &UnifiedExecProcessManager,
+    initial_response: ExecCommandToolOutput,
+    max_wait_ms: Option<u64>,
+    heartbeat_interval_ms: Option<u64>,
+    fallback_yield_time_ms: u64,
+) -> Result<ExecCommandToolOutput, UnifiedExecError> {
+    let Some(process_id) = initial_response.process_id else {
+        return Ok(initial_response);
+    };
+
+    let started = Instant::now();
+    let deadline = started + resolve_wait_budget(max_wait_ms);
+    let heartbeat_ms = resolve_heartbeat_ms(heartbeat_interval_ms, fallback_yield_time_ms);
+    let max_output_tokens = initial_response.max_output_tokens;
+    let mut response = initial_response;
+    let mut raw_output = std::mem::take(&mut response.raw_output);
+    let mut wall_time = response.wall_time;
+
+    while let Some(process_id) = response.process_id {
+        let now = Instant::now();
+        if now >= deadline {
+            break;
+        }
+
+        let remaining_ms = deadline
+            .saturating_duration_since(now)
+            .as_millis()
+            .min(u128::from(u64::MAX)) as u64;
+        let yield_time_ms = heartbeat_ms.min(remaining_ms);
+        response = manager
+            .write_stdin(WriteStdinRequest {
+                process_id,
+                input: "",
+                yield_time_ms,
+                max_output_tokens,
+            })
+            .await?;
+        wall_time += response.wall_time;
+        raw_output.extend_from_slice(&response.raw_output);
+    }
+
+    response.wall_time = wall_time;
+    response.raw_output = raw_output;
+    Ok(response)
 }
 
 impl ToolHandler for UnifiedExecHandler {
@@ -218,6 +295,9 @@ impl ToolHandler for UnifiedExecHandler {
                     tty,
                     yield_time_ms,
                     max_output_tokens,
+                    wait_until_terminal,
+                    max_wait_ms,
+                    heartbeat_interval_ms,
                     sandbox_permissions,
                     additional_permissions,
                     justification,
@@ -313,7 +393,7 @@ impl ToolHandler for UnifiedExecHandler {
 
                 emit_unified_exec_tty_metric(&turn.session_telemetry, tty);
                 let session_command = command.clone();
-                match manager
+                let response = match manager
                     .exec_command(
                         ExecCommandRequest {
                             command,
@@ -359,10 +439,34 @@ impl ToolHandler for UnifiedExecHandler {
                             "exec_command failed for `{command_for_display}`: {err:?}"
                         )));
                     }
+                };
+
+                if wait_until_terminal {
+                    complete_terminal_wait(
+                        manager,
+                        response,
+                        max_wait_ms,
+                        heartbeat_interval_ms,
+                        yield_time_ms,
+                    )
+                    .await
+                    .map_err(|err| {
+                        FunctionCallError::RespondToModel(format!(
+                            "exec_command failed for `{command_for_display}`: {err:?}"
+                        ))
+                    })?
+                } else {
+                    response
                 }
             }
             "write_stdin" => {
                 let args: WriteStdinArgs = parse_arguments(&arguments)?;
+                if args.wait_until_terminal && !args.chars.is_empty() {
+                    return Err(FunctionCallError::RespondToModel(
+                        "wait_until_terminal=true requires chars to be empty".to_string(),
+                    ));
+                }
+
                 let response = manager
                     .write_stdin(WriteStdinRequest {
                         process_id: args.session_id,
@@ -374,6 +478,22 @@ impl ToolHandler for UnifiedExecHandler {
                     .map_err(|err| {
                         FunctionCallError::RespondToModel(format!("write_stdin failed: {err}"))
                     })?;
+
+                let response = if args.wait_until_terminal {
+                    complete_terminal_wait(
+                        manager,
+                        response,
+                        args.max_wait_ms,
+                        args.heartbeat_interval_ms,
+                        args.yield_time_ms,
+                    )
+                    .await
+                    .map_err(|err| {
+                        FunctionCallError::RespondToModel(format!("write_stdin failed: {err}"))
+                    })?
+                } else {
+                    response
+                };
 
                 let interaction = TerminalInteractionEvent {
                     call_id: response.event_call_id.clone(),
