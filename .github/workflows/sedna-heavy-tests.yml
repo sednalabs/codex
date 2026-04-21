@@ -57,7 +57,7 @@ on:
           - codex.build-policy-sanity
           - codex.workflow-ci-sanity
           - codex.downstream-docs-check
-          - codex.release-linux-build-smoke
+          - sedna.release-linux-smoke
           - downstream-ledger-seam
         default: all
   pull_request:
