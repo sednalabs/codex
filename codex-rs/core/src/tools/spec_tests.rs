@@ -717,15 +717,50 @@ async fn unified_exec_tools_include_wait_until_terminal_contract_fields() {
         let Some(properties) = function.parameters.properties.as_ref() else {
             panic!("{tool_name} should expose object properties");
         };
-        for field in [
-            "wait_until_terminal",
-            "max_wait_ms",
-            "heartbeat_interval_ms",
-        ] {
+        let expected_fields = [
+            (
+                "wait_until_terminal",
+                JsonSchema::boolean(Some(
+                    "When true, block until the process exits or max_wait_ms elapses.".to_string(),
+                )),
+            ),
+            (
+                "max_wait_ms",
+                JsonSchema::number(Some(
+                    "Maximum total wait window for wait_until_terminal, in milliseconds."
+                        .to_string(),
+                )),
+            ),
+            (
+                "heartbeat_interval_ms",
+                JsonSchema::number(Some(
+                    "Heartbeat cadence while wait_until_terminal is active, in milliseconds."
+                        .to_string(),
+                )),
+            ),
+        ];
+
+        for (field, expected_schema) in &expected_fields {
             assert!(
                 properties.contains_key(field),
                 "{tool_name} is missing required wait contract field `{field}`"
             );
+            assert_eq!(
+                properties
+                    .get(field)
+                    .unwrap_or_else(|| panic!("{tool_name} missing `{field}`")),
+                expected_schema,
+                "{tool_name}.{field} schema drifted from the published wait contract"
+            );
+        }
+
+        if let Some(required_fields) = function.parameters.required.as_ref() {
+            for (field, _) in &expected_fields {
+                assert!(
+                    !required_fields.iter().any(|required| required == field),
+                    "{tool_name}.{field} should stay optional"
+                );
+            }
         }
     }
 }
