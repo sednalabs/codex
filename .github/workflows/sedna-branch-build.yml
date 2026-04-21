@@ -10,6 +10,10 @@ on:
         description: Branch, tag, or commit to build
         required: false
         type: string
+      preview_base_version:
+        description: Optional Sedna preview base version, for example 0.122.0-sedna.2
+        required: false
+        type: string
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event_name == 'workflow_dispatch' && inputs.ref || github.ref_name }}
@@ -40,11 +44,16 @@ jobs:
           set -euo pipefail
           checkout_ref='${{ github.event_name == 'workflow_dispatch' && inputs.ref || github.sha }}'
           short_sha="$(git rev-parse --short=8 HEAD)"
-          latest_tag="$(git tag --merged HEAD --list 'v*-sedna.*' --sort=-version:refname | head -n 1)"
-          if [[ -n "${latest_tag}" ]]; then
-            base_version="${latest_tag#v}"
+          requested_preview_base='${{ inputs.preview_base_version }}'
+          if [[ -n "${requested_preview_base}" ]]; then
+            base_version="${requested_preview_base}"
           else
-            base_version="0.0.0-sedna.0"
+            latest_tag="$(git tag --merged HEAD --list 'v*-sedna.*' --sort=-version:refname | head -n 1)"
+            if [[ -n "${latest_tag}" ]]; then
+              base_version="${latest_tag#v}"
+            else
+              base_version="0.0.0-sedna.0"
+            fi
           fi
 
           branch_name='${{ github.ref_name }}'
