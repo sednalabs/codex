@@ -120,7 +120,7 @@ async fn thread_start_injects_dynamic_tools_into_model_requests() -> Result<()> 
     let body = bodies
         .first()
         .context("expected at least one responses request")?;
-    let tool = find_tool(body, &dynamic_tool.name)
+    let tool = find_dynamic_tool(body, &dynamic_tool)
         .context("expected dynamic tool to be injected into request")?;
 
     assert_eq!(
@@ -210,7 +210,7 @@ async fn thread_resume_injects_dynamic_tools_into_model_requests() -> Result<()>
     let body = bodies
         .last()
         .context("expected a resumed turn responses request")?;
-    let tool = find_tool(body, &dynamic_tool.name)
+    let tool = find_dynamic_tool(body, &dynamic_tool)
         .context("expected resumed dynamic tool to be injected into request")?;
 
     assert_eq!(
@@ -326,7 +326,7 @@ async fn thread_fork_injects_dynamic_tools_into_model_requests() -> Result<()> {
     let body = bodies
         .last()
         .context("expected a forked turn responses request")?;
-    let tool = find_tool(body, &dynamic_tool.name)
+    let tool = find_dynamic_tool(body, &dynamic_tool)
         .context("expected forked dynamic tool to be injected into request")?;
 
     assert_eq!(
@@ -404,7 +404,7 @@ async fn thread_start_keeps_hidden_dynamic_tools_out_of_model_requests() -> Resu
     assert!(
         bodies
             .iter()
-            .all(|body| find_tool(body, &dynamic_tool.name).is_none()),
+            .all(|body| find_dynamic_tool(body, &dynamic_tool).is_none()),
         "hidden dynamic tool should not be sent to the model"
     );
 
@@ -849,14 +849,27 @@ async fn responses_bodies(server: &MockServer) -> Result<Vec<Value>> {
         .collect()
 }
 
-fn find_tool<'a>(body: &'a Value, name: &str) -> Option<&'a Value> {
-    body.get("tools")
-        .and_then(Value::as_array)
-        .and_then(|tools| {
-            tools
-                .iter()
-                .find(|tool| tool.get("name").and_then(Value::as_str) == Some(name))
-        })
+fn find_dynamic_tool<'a>(body: &'a Value, tool: &DynamicToolSpec) -> Option<&'a Value> {
+    let tools = body.get("tools").and_then(Value::as_array)?;
+    match tool.namespace.as_deref() {
+        Some(namespace) => tools.iter().find_map(|candidate| {
+            (candidate.get("type").and_then(Value::as_str) == Some("namespace")
+                && candidate.get("name").and_then(Value::as_str) == Some(namespace))
+            .then(|| candidate.get("tools").and_then(Value::as_array))
+            .flatten()
+            .and_then(|namespaced_tools| {
+                namespaced_tools
+                    .iter()
+                    .find(|namespaced_tool| {
+                        namespaced_tool.get("name").and_then(Value::as_str)
+                            == Some(tool.name.as_str())
+                    })
+            })
+        }),
+        None => tools.iter().find(|candidate| {
+            candidate.get("name").and_then(Value::as_str) == Some(tool.name.as_str())
+        }),
+    }
 }
 
 fn function_call_output_payload(body: &Value, call_id: &str) -> Option<FunctionCallOutputPayload> {
