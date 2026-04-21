@@ -547,7 +547,8 @@ def main() -> None:
             "profile_notes": args.profile_notes or "",
             "lane_set": args.lane_set,
             "lane_summary": args.lane_summary or "",
-            "explicit_lanes": explicit_lanes,
+            "explicit_lanes_supplied": bool(explicit_lanes),
+            "explicit_lane_count": len(explicit_lanes),
             "notes_supplied": parse_bool(args.notes_supplied),
             "baseline_required": args.profile == "frontier",
             "supersession": {

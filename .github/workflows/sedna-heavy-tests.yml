@@ -1,9 +1,10 @@
 name: sedna-heavy-tests
 run-name: >-
   sedna-heavy-tests
-  ${{ github.event_name == 'workflow_dispatch' && inputs.ref && format(' [target={0}]', inputs.ref) ||
+  ${{ github.event_name == 'workflow_dispatch' && ' [manual]' ||
       github.event_name == 'pull_request' && format(' [pr={0}]', github.event.pull_request.number) ||
-      format(' [ref={0}]', github.ref_name) }}
+      github.event_name == 'merge_group' && ' [merge-group]' ||
+      ' [branch]' }}
 
 on:
   workflow_dispatch:

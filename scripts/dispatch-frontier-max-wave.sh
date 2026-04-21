@@ -28,7 +28,6 @@ Options:
   --platform-scope <scope>     rust-ci platform scope (default: full-cross-platform)
   --heavy-lane <lane>          sedna-heavy-tests lane (default: all)
   --include-explicit-lanes     Include explicit-only validation-lab seams (default: true)
-  --notes-prefix <text>        Prefix for validation-lab notes (default: max-frontier)
   --dry-run                    Print commands without executing them
   -h, --help                   Show this help
 
@@ -44,7 +43,6 @@ host_ref="main"
 platform_scope="full-cross-platform"
 heavy_lane="all"
 include_explicit_lanes="true"
-notes_prefix="max-frontier"
 dry_run="false"
 
 while [[ $# -gt 0 ]]; do
@@ -71,10 +69,6 @@ while [[ $# -gt 0 ]]; do
       ;;
     --include-explicit-lanes)
       include_explicit_lanes="${2:-true}"
-      shift 2
-      ;;
-    --notes-prefix)
-      notes_prefix="$2"
       shift 2
       ;;
     --dry-run)
@@ -104,17 +98,17 @@ dispatches=(
   "gh workflow run rust-ci-full.yml --repo ${repo} --ref ${ref} -f platform_scope=${platform_scope}"
   "gh workflow run sedna-branch-build.yml --repo ${repo} --ref ${host_ref} -f ref=${ref}"
   "gh workflow run sedna-heavy-tests.yml --repo ${repo} --ref ${ref} -f ref=${ref} -f lane=${heavy_lane}"
-  "gh workflow run validation-lab.yml --repo ${repo} --ref ${host_ref} -f ref=${ref} -f profile=full -f lane_set=all -f artifact_build=true -f supersession_mode=compare -f notes=${notes_prefix}-full-checkpoint"
-  "gh workflow run validation-lab.yml --repo ${repo} --ref ${host_ref} -f ref=${ref} -f profile=broad -f lane_set=all -f artifact_build=false -f include_explicit_lanes=${include_explicit_lanes} -f supersession_mode=compare -f notes=${notes_prefix}-broad-checkpoint"
-  "gh workflow run validation-lab.yml --repo ${repo} --ref ${host_ref} -f ref=${ref} -f profile=frontier -f lane_set=all -f artifact_build=false -f include_explicit_lanes=${include_explicit_lanes} -f supersession_mode=compare -f notes=${notes_prefix}-all"
-  "gh workflow run validation-lab.yml --repo ${repo} --ref ${host_ref} -f ref=${ref} -f profile=frontier -f lane_set=core-carry -f artifact_build=false -f include_explicit_lanes=${include_explicit_lanes} -f supersession_mode=compare -f notes=${notes_prefix}-core-carry"
-  "gh workflow run validation-lab.yml --repo ${repo} --ref ${host_ref} -f ref=${ref} -f profile=frontier -f lane_set=startup-sync -f artifact_build=false -f include_explicit_lanes=${include_explicit_lanes} -f supersession_mode=compare -f notes=${notes_prefix}-startup-sync"
-  "gh workflow run validation-lab.yml --repo ${repo} --ref ${host_ref} -f ref=${ref} -f profile=frontier -f lane_set=subagents -f artifact_build=false -f include_explicit_lanes=${include_explicit_lanes} -f supersession_mode=compare -f notes=${notes_prefix}-subagents"
-  "gh workflow run validation-lab.yml --repo ${repo} --ref ${host_ref} -f ref=${ref} -f profile=frontier -f lane_set=ui-protocol -f artifact_build=false -f include_explicit_lanes=${include_explicit_lanes} -f supersession_mode=compare -f notes=${notes_prefix}-ui-protocol"
-  "gh workflow run validation-lab.yml --repo ${repo} --ref ${host_ref} -f ref=${ref} -f profile=frontier -f lane_set=ledger -f artifact_build=false -f include_explicit_lanes=${include_explicit_lanes} -f supersession_mode=compare -f notes=${notes_prefix}-ledger"
-  "gh workflow run validation-lab.yml --repo ${repo} --ref ${host_ref} -f ref=${ref} -f profile=frontier -f lane_set=attestation -f artifact_build=false -f include_explicit_lanes=${include_explicit_lanes} -f supersession_mode=compare -f notes=${notes_prefix}-attestation"
-  "gh workflow run validation-lab.yml --repo ${repo} --ref ${host_ref} -f ref=${ref} -f profile=frontier -f lane_set=docs -f artifact_build=false -f include_explicit_lanes=${include_explicit_lanes} -f supersession_mode=compare -f notes=${notes_prefix}-docs"
-  "gh workflow run validation-lab.yml --repo ${repo} --ref ${host_ref} -f ref=${ref} -f profile=frontier -f lane_set=release -f artifact_build=false -f include_explicit_lanes=${include_explicit_lanes} -f supersession_mode=compare -f notes=${notes_prefix}-release"
+  "gh workflow run validation-lab.yml --repo ${repo} --ref ${host_ref} -f ref=${ref} -f profile=full -f lane_set=all -f artifact_build=true -f supersession_mode=compare"
+  "gh workflow run validation-lab.yml --repo ${repo} --ref ${host_ref} -f ref=${ref} -f profile=broad -f lane_set=all -f artifact_build=false -f include_explicit_lanes=${include_explicit_lanes} -f supersession_mode=compare"
+  "gh workflow run validation-lab.yml --repo ${repo} --ref ${host_ref} -f ref=${ref} -f profile=frontier -f lane_set=all -f artifact_build=false -f include_explicit_lanes=${include_explicit_lanes} -f supersession_mode=compare"
+  "gh workflow run validation-lab.yml --repo ${repo} --ref ${host_ref} -f ref=${ref} -f profile=frontier -f lane_set=core-carry -f artifact_build=false -f include_explicit_lanes=${include_explicit_lanes} -f supersession_mode=compare"
+  "gh workflow run validation-lab.yml --repo ${repo} --ref ${host_ref} -f ref=${ref} -f profile=frontier -f lane_set=startup-sync -f artifact_build=false -f include_explicit_lanes=${include_explicit_lanes} -f supersession_mode=compare"
+  "gh workflow run validation-lab.yml --repo ${repo} --ref ${host_ref} -f ref=${ref} -f profile=frontier -f lane_set=subagents -f artifact_build=false -f include_explicit_lanes=${include_explicit_lanes} -f supersession_mode=compare"
+  "gh workflow run validation-lab.yml --repo ${repo} --ref ${host_ref} -f ref=${ref} -f profile=frontier -f lane_set=ui-protocol -f artifact_build=false -f include_explicit_lanes=${include_explicit_lanes} -f supersession_mode=compare"
+  "gh workflow run validation-lab.yml --repo ${repo} --ref ${host_ref} -f ref=${ref} -f profile=frontier -f lane_set=ledger -f artifact_build=false -f include_explicit_lanes=${include_explicit_lanes} -f supersession_mode=compare"
+  "gh workflow run validation-lab.yml --repo ${repo} --ref ${host_ref} -f ref=${ref} -f profile=frontier -f lane_set=attestation -f artifact_build=false -f include_explicit_lanes=${include_explicit_lanes} -f supersession_mode=compare"
+  "gh workflow run validation-lab.yml --repo ${repo} --ref ${host_ref} -f ref=${ref} -f profile=frontier -f lane_set=docs -f artifact_build=false -f include_explicit_lanes=${include_explicit_lanes} -f supersession_mode=compare"
+  "gh workflow run validation-lab.yml --repo ${repo} --ref ${host_ref} -f ref=${ref} -f profile=frontier -f lane_set=release -f artifact_build=false -f include_explicit_lanes=${include_explicit_lanes} -f supersession_mode=compare"
 )
 
 printf 'Validated ref: %s\n' "$ref"
