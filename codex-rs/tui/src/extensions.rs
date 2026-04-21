@@ -1,7 +1,5 @@
-use crate::exec_command::split_command_string;
 use crate::legacy_core::config::Config;
-
-const CODEX_DYNAMIC_TOOL_COMMAND_ENV_VAR: &str = "CODEX_DYNAMIC_TOOL_COMMAND";
+use codex_app_server_client::dynamic_tool_host_command_from_env;
 
 /// Internal TUI extension seam.
 ///
@@ -40,11 +38,7 @@ static SEDNA_TUI_HOOKS: SednaTuiHooks = SednaTuiHooks;
 
 impl TuiHooks for SednaTuiHooks {
     fn dynamic_tool_command(&self, _config: &Config) -> Option<DynamicToolCommandConfig> {
-        let command = std::env::var(CODEX_DYNAMIC_TOOL_COMMAND_ENV_VAR).ok()?;
-        let command = split_command_string(command.trim());
-        if command.is_empty() || command.first().is_some_and(String::is_empty) {
-            return None;
-        }
+        let command = dynamic_tool_host_command_from_env()?;
         Some(DynamicToolCommandConfig { command })
     }
 }

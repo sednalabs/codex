@@ -23,7 +23,8 @@ codex-utils-rustls-provider = { workspace = true }
 futures = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-tokio = { workspace = true, features = ["sync", "time", "rt"] }
+shlex = { workspace = true }
+tokio = { workspace = true, features = ["io-util", "process", "sync", "time", "rt"] }
 tokio-tungstenite = { workspace = true }
 toml = { workspace = true }
 tracing = { workspace = true }

@@ -19,8 +19,15 @@ use codex_app_server_client::ExecServerRuntimePaths;
 use codex_app_server_client::InProcessAppServerClient;
 use codex_app_server_client::InProcessClientStartArgs;
 use codex_app_server_client::InProcessServerEvent;
+use codex_app_server_client::dynamic_tool_host_command_from_env;
+use codex_app_server_client::execute_dynamic_tool_call_for_command;
+use codex_app_server_client::failed_dynamic_tool_response;
+use codex_app_server_client::load_dynamic_tool_specs_for_command;
 use codex_app_server_protocol::ClientRequest;
 use codex_app_server_protocol::ConfigWarningNotification;
+use codex_app_server_protocol::DynamicToolCallParams;
+use codex_app_server_protocol::DynamicToolCallResponse;
+use codex_app_server_protocol::DynamicToolSpec;
 use codex_app_server_protocol::JSONRPCErrorError;
 use codex_app_server_protocol::McpServerElicitationAction;
 use codex_app_server_protocol::McpServerElicitationRequestResponse;
@@ -532,6 +539,8 @@ async fn run_exec_session(args: ExecRunArgs) -> anyhow::Result<()> {
     let default_approval_policy = config.permissions.approval_policy.value();
     let default_sandbox_policy = config.permissions.sandbox_policy.get();
     let default_effort = config.model_reasoning_effort;
+    let dynamic_tool_command = dynamic_tool_host_command_from_env();
+    let dynamic_tools = load_dynamic_tool_specs_for_exec(dynamic_tool_command.as_deref()).await;
 
     // When --yolo (dangerously_bypass_approvals_and_sandbox) is set, also skip the git repo check
     // since the user is explicitly running in an externally sandboxed environment.
@@ -573,7 +582,7 @@ async fn run_exec_session(args: ExecRunArgs) -> anyhow::Result<()> {
                     &client,
                     ClientRequest::ThreadStart {
                         request_id: request_ids.next(),
-                        params: thread_start_params_from_config(&config),
+                        params: thread_start_params_from_config(&config, dynamic_tools.clone()),
                     },
                     "thread/start",
                 )
@@ -588,7 +597,7 @@ async fn run_exec_session(args: ExecRunArgs) -> anyhow::Result<()> {
                 &client,
                 ClientRequest::ThreadStart {
                     request_id: request_ids.next(),
-                    params: thread_start_params_from_config(&config),
+                    params: thread_start_params_from_config(&config, dynamic_tools.clone()),
                 },
                 "thread/start",
             )
@@ -788,7 +797,13 @@ async fn run_exec_session(args: ExecRunArgs) -> anyhow::Result<()> {
 
         match server_event {
             InProcessServerEvent::ServerRequest(request) => {
-                handle_server_request(&client, request, &mut error_seen).await;
+                handle_server_request(
+                    &client,
+                    dynamic_tool_command.as_deref(),
+                    request,
+                    &mut error_seen,
+                )
+                .await;
             }
             InProcessServerEvent::ServerNotification(mut notification) => {
                 if let ServerNotification::Error(payload) = &notification {
@@ -871,7 +886,10 @@ fn sandbox_mode_from_policy(
     }
 }
 
-fn thread_start_params_from_config(config: &Config) -> ThreadStartParams {
+fn thread_start_params_from_config(
+    config: &Config,
+    dynamic_tools: Vec<DynamicToolSpec>,
+) -> ThreadStartParams {
     ThreadStartParams {
         model: config.model.clone(),
         model_provider: Some(config.model_provider_id.clone()),
@@ -880,6 +898,7 @@ fn thread_start_params_from_config(config: &Config) -> ThreadStartParams {
         approvals_reviewer: approvals_reviewer_override_from_config(config),
         sandbox: sandbox_mode_from_policy(config.permissions.sandbox_policy.get()),
         config: config_request_overrides_from_config(config),
+        dynamic_tools: (!dynamic_tools.is_empty()).then_some(dynamic_tools),
         ephemeral: Some(config.ephemeral),
         ..ThreadStartParams::default()
     }
@@ -1345,6 +1364,7 @@ fn server_request_method_name(request: &ServerRequest) -> String {
 
 async fn handle_server_request(
     client: &InProcessAppServerClient,
+    dynamic_tool_command: Option<&[String]>,
     request: ServerRequest,
     error_seen: &mut bool,
 ) {
@@ -1404,16 +1424,16 @@ async fn handle_server_request(
             .await
         }
         ServerRequest::DynamicToolCall { request_id, params } => {
-            reject_server_request(
-                client,
-                request_id,
-                &method,
-                format!(
-                    "dynamic tool calls are not supported in exec mode for thread `{}`",
-                    params.thread_id
-                ),
-            )
-            .await
+            match serde_json::to_value(
+                execute_dynamic_tool_call_for_exec(dynamic_tool_command, &params).await,
+            ) {
+                Ok(result) => resolve_server_request(client, request_id, result, &method).await,
+                Err(err) => {
+                    let reason = format!("failed to serialize dynamic tool response: {err}");
+                    warn!(request_id = ?request_id, "{reason}");
+                    reject_server_request(client, request_id, &method, reason).await
+                }
+            }
         }
         ServerRequest::ChatgptAuthTokensRefresh { request_id, .. } => {
             reject_server_request(
@@ -1465,6 +1485,43 @@ async fn handle_server_request(
     if let Err(err) = handle_result {
         *error_seen = true;
         warn!("{err}");
+    }
+}
+
+async fn load_dynamic_tool_specs_for_exec(
+    dynamic_tool_command: Option<&[String]>,
+) -> Vec<DynamicToolSpec> {
+    let Some(command) = dynamic_tool_command else {
+        return Vec::new();
+    };
+
+    match load_dynamic_tool_specs_for_command(command).await {
+        Ok(specs) => specs,
+        Err(err) => {
+            warn!("failed to load dynamic tool specs: {err}");
+            Vec::new()
+        }
+    }
+}
+
+async fn execute_dynamic_tool_call_for_exec(
+    dynamic_tool_command: Option<&[String]>,
+    params: &DynamicToolCallParams,
+) -> DynamicToolCallResponse {
+    let Some(command) = dynamic_tool_command else {
+        return failed_dynamic_tool_response("dynamic tool host is unavailable");
+    };
+
+    match execute_dynamic_tool_call_for_command(command, params).await {
+        Ok(response) => response,
+        Err(err) => {
+            warn!(
+                tool = %params.tool,
+                call_id = %params.call_id,
+                "dynamic tool call failed: {err}"
+            );
+            failed_dynamic_tool_response(format!("Dynamic tool `{}` failed: {err}", params.tool))
+        }
     }
 }
 
@@ -1686,6 +1743,8 @@ fn build_review_request(args: &ReviewArgs) -> anyhow::Result<ReviewRequest> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use codex_app_server_protocol::DynamicToolCallOutputContentItem;
+    use codex_app_server_protocol::DynamicToolImageDetail;
     use codex_otel::set_parent_from_w3c_trace_context;
     use codex_protocol::config_types::ApprovalsReviewer;
     use codex_utils_absolute_path::test_support::PathBufExt;
@@ -1702,6 +1761,16 @@ mod tests {
         let provider = SdkTracerProvider::builder().build();
         let tracer = provider.tracer("codex-exec-tests");
         tracing_subscriber::registry().with(tracing_opentelemetry::layer().with_tracer(tracer))
+    }
+
+    #[cfg(unix)]
+    fn shell_command(script: &str) -> Vec<String> {
+        vec![
+            "sh".to_string(),
+            "-c".to_string(),
+            script.to_string(),
+            "dynamic-tool-host.sh".to_string(),
+        ]
     }
 
     #[test]
@@ -2020,7 +2089,7 @@ mod tests {
             .await
             .expect("build config with manual-only review policy");
 
-        let params = thread_start_params_from_config(&config);
+        let params = thread_start_params_from_config(&config, Vec::new());
 
         assert_eq!(
             params.approvals_reviewer,
@@ -2043,11 +2112,93 @@ mod tests {
             .await
             .expect("build config with guardian review policy");
 
-        let params = thread_start_params_from_config(&config);
+        let params = thread_start_params_from_config(&config, Vec::new());
 
         assert_eq!(
             params.approvals_reviewer,
             Some(codex_app_server_protocol::ApprovalsReviewer::GuardianSubagent)
+        );
+    }
+
+    #[tokio::test]
+    async fn thread_start_params_include_dynamic_tools() {
+        let codex_home = tempdir().expect("create temp codex home");
+        let cwd = tempdir().expect("create temp cwd");
+        let config = ConfigBuilder::default()
+            .codex_home(codex_home.path().to_path_buf())
+            .fallback_cwd(Some(cwd.path().to_path_buf()))
+            .build()
+            .await
+            .expect("build default config");
+        let dynamic_tools = vec![DynamicToolSpec {
+            name: "android_observe".to_string(),
+            description: "Observe the live Android screen".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "prompt": { "type": "string" }
+                }
+            }),
+            defer_loading: false,
+        }];
+
+        let params = thread_start_params_from_config(&config, dynamic_tools.clone());
+
+        assert_eq!(params.dynamic_tools, Some(dynamic_tools));
+    }
+
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn exec_dynamic_tool_calls_use_shared_command_host() {
+        let command = shell_command(
+            r#"
+set -eu
+case "$1" in
+  specs)
+    echo '[]'
+    ;;
+  call)
+    cat >/dev/null
+    cat <<'EOF'
+{"contentItems":[{"type":"inputText","text":"Observed via exec."},{"type":"inputImage","imageUrl":"data:image/png;base64,AAA","detail":"original"}],"success":true}
+EOF
+    ;;
+  *)
+    echo "unexpected mode" >&2
+    exit 1
+    ;;
+esac
+"#,
+        );
+
+        let response = execute_dynamic_tool_call_for_exec(
+            Some(command.as_slice()),
+            &DynamicToolCallParams {
+                thread_id: "thread-1".to_string(),
+                turn_id: "turn-1".to_string(),
+                call_id: "call-1".to_string(),
+                tool: "android_observe".to_string(),
+                arguments: serde_json::json!({
+                    "prompt": "Summarize the current screen."
+                }),
+            },
+        )
+        .await;
+
+        assert_eq!(
+            response,
+            DynamicToolCallResponse {
+                content_items: vec![
+                    DynamicToolCallOutputContentItem::InputText {
+                        text: "Observed via exec.".to_string(),
+                    },
+                    DynamicToolCallOutputContentItem::InputImage {
+                        image_url: "data:image/png;base64,AAA".to_string(),
+                        detail: Some(DynamicToolImageDetail::Original),
+                    },
+                ],
+                success: true,
+            }
         );
     }
 
