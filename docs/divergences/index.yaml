@@ -236,7 +236,11 @@
         "multi_agent_v2_wait_agent_honors_return_when_all",
         "command_execution_completion_precedes_turn_completion_and_preserves_process_id",
         "shell_command_approval_emits_task_complete_before_tool_response",
-        "write_stdin_tool_matches_expected_spec"
+        "exec_command_tool_matches_expected_spec",
+        "write_stdin_tool_matches_expected_spec",
+        "unified_exec_tools_include_wait_until_terminal_contract_fields",
+        "exec_command_args_reject_invalid_wait_until_terminal_type",
+        "write_stdin_wait_until_terminal_requires_empty_chars"
       ],
       "owner": "downstream",
       "notes": "Lets long-running shell work and helper-backed coordination block on real terminal state instead of transcript polling."
