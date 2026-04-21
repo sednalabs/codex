@@ -2172,9 +2172,6 @@ impl ChatWidget {
         fork_parent_title: Option<String>,
     ) {
         self.last_agent_markdown = None;
-        self.agent_turn_markdowns.clear();
-        self.visible_user_turn_count = 0;
-        self.copy_history_evicted_by_rollback = false;
         self.saw_copy_source_this_turn = false;
         self.bottom_pane
             .set_history_metadata(event.history_log_id, event.history_entry_count);
