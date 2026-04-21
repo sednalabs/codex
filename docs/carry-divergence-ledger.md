@@ -8,13 +8,13 @@ live divergence.
 
 ## Audit Baseline
 
-- Audited on: `2026-04-17`
-- `upstream/main`: `fe7c959e90d46abb8311e4a0b369e6cb32bf337e`
-- downstream branch `main` (`origin/main`): `88b12a0e145af4533b58cf1a8b67369795eb7786`
+- Audited on: `2026-04-22`
+- `upstream/main`: `be75785504ff152fa6333e380a2d50642f42fba0`
+- downstream branch `main` (`origin/main`): `406c894a5f14e2a74e13ef364fd44d5a089f417a`
 - mirror branch `upstream-main` (`origin/upstream-main`): `fe7c959e90d46abb8311e4a0b369e6cb32bf337e`
-- `main` vs `upstream/main`: `624` ahead, `103` behind
-- Downstream-only commits at audit time: `554` non-merge, `70` merge
-- Patch-equivalent downstream commits in symmetric diff: `0`
+- `main` vs `upstream/main`: `706` ahead, `126` behind
+- Mirror vs `upstream/main`: `0` ahead, `166` behind (`stale_ff_only`)
+- Downstream-only commits at audit time: `621` unique, `1` patch-equivalent
 
 ## Audit Rules
 
@@ -165,6 +165,9 @@ live divergence.
   `wait_until_terminal`, `max_wait_ms`, and `heartbeat_interval_ms`.
 - `write_stdin` still requires an empty `chars` payload when
   `wait_until_terminal=true`.
+- Spec and regression guardrails also cover the surfaced wait fields, reject
+  invalid `wait_until_terminal` types, and enforce the empty-`chars`
+  requirement for blocking `write_stdin`.
 - Timeout notes are appended to returned `raw_output`.
 - The downstream intent is to absorb long-running shell waits in the tool layer
   instead of spending model turns on repeated short-poll status checks.
