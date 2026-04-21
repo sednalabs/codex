@@ -38,6 +38,7 @@ use codex_protocol::mcp::Tool as McpTool;
 use codex_protocol::memory_citation::MemoryCitation as CoreMemoryCitation;
 use codex_protocol::memory_citation::MemoryCitationEntry as CoreMemoryCitationEntry;
 use codex_protocol::models::FileSystemPermissions as CoreFileSystemPermissions;
+use codex_protocol::models::ImageDetail as CoreImageDetail;
 use codex_protocol::models::MessagePhase;
 use codex_protocol::models::NetworkPermissions as CoreNetworkPermissions;
 use codex_protocol::models::PermissionProfile as CorePermissionProfile;
@@ -6470,6 +6471,15 @@ pub struct PermissionsRequestApprovalParams {
 }
 
 v2_enum_from_core!(
+    pub enum DynamicToolImageDetail from CoreImageDetail {
+        Auto,
+        Low,
+        High,
+        Original
+    }
+);
+
+v2_enum_from_core!(
     #[derive(Default)]
     pub enum PermissionGrantScope from CorePermissionGrantScope {
         #[default]
@@ -6503,7 +6513,12 @@ pub enum DynamicToolCallOutputContentItem {
     #[serde(rename_all = "camelCase")]
     InputText { text: String },
     #[serde(rename_all = "camelCase")]
-    InputImage { image_url: String },
+    InputImage {
+        image_url: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        detail: Option<DynamicToolImageDetail>,
+    },
 }
 
 impl From<DynamicToolCallOutputContentItem>
@@ -6512,8 +6527,11 @@ impl From<DynamicToolCallOutputContentItem>
     fn from(item: DynamicToolCallOutputContentItem) -> Self {
         match item {
             DynamicToolCallOutputContentItem::InputText { text } => Self::InputText { text },
-            DynamicToolCallOutputContentItem::InputImage { image_url } => {
-                Self::InputImage { image_url }
+            DynamicToolCallOutputContentItem::InputImage { image_url, detail } => {
+                Self::InputImage {
+                    image_url,
+                    detail: detail.map(DynamicToolImageDetail::to_core),
+                }
             }
         }
     }
@@ -8955,6 +8973,7 @@ mod tests {
                 },
                 DynamicToolCallOutputContentItem::InputImage {
                     image_url: "data:image/png;base64,AAA".to_string(),
+                    detail: Some(DynamicToolImageDetail::Original),
                 },
             ],
             success: true,
@@ -8971,7 +8990,8 @@ mod tests {
                     },
                     {
                         "type": "inputImage",
-                        "imageUrl": "data:image/png;base64,AAA"
+                        "imageUrl": "data:image/png;base64,AAA",
+                        "detail": "original"
                     }
                 ],
                 "success": true,

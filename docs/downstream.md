@@ -46,6 +46,17 @@ git remote set-url origin git@github.com:sednalabs/codex.git
 - the authoritative divergence audit lives in `scripts/downstream-divergence-audit.py` and writes artifacts under `target/downstream-divergence-audit/`
 - the intended-divergence registry lives at `docs/divergences/index.yaml`
 
+### Native Android harness direction
+
+Why:
+- Keep the model-callable native path aligned with the app-server-mediated client/tool loop instead of older runner-side client loops.
+- Treat Android-specific behavior as provider-backed dynamic tools behind the client, so the same model-facing contract can drive native interactions.
+
+User-visible behavior:
+- The TUI/client owns the model-callable dynamic-tool round trip through app-server.
+- Android-specific actions sit behind provider-backed dynamic tools rather than a standalone runner-side OpenAI client.
+- Slash commands and `thread/inject_items` remain useful supporting surfaces, but they are not the primary native interaction loop.
+
 ## Divergence Summary
 
 This section tracks intentional downstream behavior differences from

@@ -240,6 +240,35 @@ impl App {
         app_server_client: &AppServerSession,
         request: ServerRequest,
     ) {
+        if let ServerRequest::DynamicToolCall { request_id, params } = &request {
+            let response = crate::dynamic_tool_host::execute_dynamic_tool_call(
+                self.chat_widget.config_ref(),
+                params,
+            )
+            .await;
+            match serde_json::to_value(response) {
+                Ok(result) => {
+                    if let Err(err) = app_server_client
+                        .resolve_server_request(request_id.clone(), result)
+                        .await
+                    {
+                        tracing::warn!("failed to resolve dynamic tool call: {err}");
+                    }
+                }
+                Err(err) => {
+                    let reason = format!("failed to serialize dynamic tool response: {err}");
+                    tracing::warn!(request_id = ?request_id, "{reason}");
+                    if let Err(reject_err) = self
+                        .reject_app_server_request(app_server_client, request_id.clone(), reason)
+                        .await
+                    {
+                        tracing::warn!("{reject_err}");
+                    }
+                }
+            }
+            return;
+        }
+
         if let Some(unsupported) = self
             .pending_app_server_requests
             .note_server_request(&request)

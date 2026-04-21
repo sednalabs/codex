@@ -614,7 +614,7 @@ Invoke a plugin by including a UI mention token such as `@sample` in the text in
 
 ### Example: Inject raw history items
 
-Use `thread/inject_items` to append prebuilt Responses API items to a loaded thread’s prompt history without starting a user turn. These items are persisted to the rollout and included in subsequent model requests.
+Use `thread/inject_items` to append prebuilt Responses API items to a loaded thread’s prompt history without starting a user turn. These items are persisted to the rollout and included in subsequent model requests. This is a history-seeding helper, not the primary model-callable loop for native client/tool interactions.
 
 ```json
 { "method": "thread/inject_items", "id": 36, "params": {
@@ -1186,7 +1186,7 @@ If the session approval policy uses `Granular` with `request_permissions: false`
 
 ### Dynamic tool calls (experimental)
 
-`dynamicTools` on `thread/start` and the corresponding `item/tool/call` request/response flow are experimental APIs. To enable them, set `initialize.params.capabilities.experimentalApi = true`.
+`dynamicTools` on `thread/start` and the corresponding `item/tool/call` request/response flow are experimental APIs. To enable them, set `initialize.params.capabilities.experimentalApi = true`. This is the model-callable native path for app-server-mediated clients such as the TUI/client; Android-specific behavior can sit behind provider-backed dynamic tools rather than a standalone runner-side OpenAI client.
 
 Each dynamic tool may set `deferLoading`. When omitted, it defaults to `false`. Set it to `true` to keep the tool registered and callable by runtime features such as `js_repl`, while excluding it from the model-facing tool list sent on ordinary turns. When `tool_search` is available, deferred dynamic tools are searchable and can be exposed by a matching search result.
 

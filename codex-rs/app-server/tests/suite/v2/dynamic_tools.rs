@@ -8,6 +8,7 @@ use codex_app_server_protocol::DynamicToolCallOutputContentItem;
 use codex_app_server_protocol::DynamicToolCallParams;
 use codex_app_server_protocol::DynamicToolCallResponse;
 use codex_app_server_protocol::DynamicToolCallStatus;
+use codex_app_server_protocol::DynamicToolImageDetail;
 use codex_app_server_protocol::DynamicToolSpec;
 use codex_app_server_protocol::ItemCompletedNotification;
 use codex_app_server_protocol::ItemStartedNotification;
@@ -465,6 +466,7 @@ async fn dynamic_tool_call_round_trip_sends_content_items_to_model() -> Result<(
         },
         DynamicToolCallOutputContentItem::InputImage {
             image_url: "data:image/png;base64,AAA".to_string(),
+            detail: Some(DynamicToolImageDetail::Original),
         },
     ];
     let content_items = response_content_items
@@ -474,10 +476,10 @@ async fn dynamic_tool_call_round_trip_sends_content_items_to_model() -> Result<(
             DynamicToolCallOutputContentItem::InputText { text } => {
                 FunctionCallOutputContentItem::InputText { text }
             }
-            DynamicToolCallOutputContentItem::InputImage { image_url } => {
+            DynamicToolCallOutputContentItem::InputImage { image_url, detail } => {
                 FunctionCallOutputContentItem::InputImage {
                     image_url,
-                    detail: None,
+                    detail: detail.map(DynamicToolImageDetail::to_core),
                 }
             }
         })
@@ -510,6 +512,7 @@ async fn dynamic_tool_call_round_trip_sends_content_items_to_model() -> Result<(
             },
             DynamicToolCallOutputContentItem::InputImage {
                 image_url: "data:image/png;base64,AAA".to_string(),
+                detail: Some(DynamicToolImageDetail::Original),
             },
         ])
     );
@@ -535,7 +538,8 @@ async fn dynamic_tool_call_round_trip_sends_content_items_to_model() -> Result<(
             },
             {
                 "type": "input_image",
-                "image_url": "data:image/png;base64,AAA"
+                "image_url": "data:image/png;base64,AAA",
+                "detail": "original"
             }
         ])
     );
