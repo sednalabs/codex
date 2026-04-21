@@ -1399,6 +1399,7 @@ mod tests {
             model_provider: "openai".to_string(),
             service_tier: None,
             cwd: test_path_buf("/tmp/project").abs(),
+            dynamic_tools: None,
             instruction_sources: vec![test_path_buf("/tmp/project/AGENTS.md").abs()],
             approval_policy: codex_protocol::protocol::AskForApproval::Never.into(),
             approvals_reviewer: codex_app_server_protocol::ApprovalsReviewer::User,

@@ -2793,6 +2793,9 @@ pub struct ThreadStartResponse {
     pub model_provider: String,
     pub service_tier: Option<ServiceTier>,
     pub cwd: AbsolutePathBuf,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[experimental("thread/start.dynamicTools")]
+    pub dynamic_tools: Option<Vec<DynamicToolSpec>>,
     /// Instruction source files currently loaded for this thread.
     #[serde(default)]
     pub instruction_sources: Vec<AbsolutePathBuf>,
@@ -2897,6 +2900,9 @@ pub struct ThreadResumeResponse {
     pub model_provider: String,
     pub service_tier: Option<ServiceTier>,
     pub cwd: AbsolutePathBuf,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[experimental("thread/resume.dynamicTools")]
+    pub dynamic_tools: Option<Vec<DynamicToolSpec>>,
     /// Instruction source files currently loaded for this thread.
     #[serde(default)]
     pub instruction_sources: Vec<AbsolutePathBuf>,
@@ -2992,6 +2998,9 @@ pub struct ThreadForkResponse {
     pub model_provider: String,
     pub service_tier: Option<ServiceTier>,
     pub cwd: AbsolutePathBuf,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[experimental("thread/fork.dynamicTools")]
+    pub dynamic_tools: Option<Vec<DynamicToolSpec>>,
     /// Instruction source files currently loaded for this thread.
     #[serde(default)]
     pub instruction_sources: Vec<AbsolutePathBuf>,

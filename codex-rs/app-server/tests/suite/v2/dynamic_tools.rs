@@ -89,7 +89,12 @@ async fn thread_start_injects_dynamic_tools_into_model_requests() -> Result<()> 
         mcp.read_stream_until_response_message(RequestId::Integer(thread_req)),
     )
     .await??;
-    let ThreadStartResponse { thread, .. } = to_response::<ThreadStartResponse>(thread_resp)?;
+    let ThreadStartResponse {
+        thread,
+        dynamic_tools,
+        ..
+    } = to_response::<ThreadStartResponse>(thread_resp)?;
+    assert_eq!(dynamic_tools, Some(vec![dynamic_tool.clone()]));
 
     // Start a turn so a model request is issued.
     let turn_req = mcp
@@ -181,7 +186,12 @@ async fn thread_resume_injects_dynamic_tools_into_model_requests() -> Result<()>
         mcp.read_stream_until_response_message(RequestId::Integer(resume_req)),
     )
     .await??;
-    let ThreadResumeResponse { thread, .. } = to_response::<ThreadResumeResponse>(resume_resp)?;
+    let ThreadResumeResponse {
+        thread,
+        dynamic_tools,
+        ..
+    } = to_response::<ThreadResumeResponse>(resume_resp)?;
+    assert_eq!(dynamic_tools, Some(vec![dynamic_tool.clone()]));
 
     let turn_req = mcp
         .send_turn_start_request(TurnStartParams {
@@ -297,7 +307,12 @@ async fn thread_fork_injects_dynamic_tools_into_model_requests() -> Result<()> {
         mcp.read_stream_until_response_message(RequestId::Integer(fork_req)),
     )
     .await??;
-    let ThreadForkResponse { thread, .. } = to_response::<ThreadForkResponse>(fork_resp)?;
+    let ThreadForkResponse {
+        thread,
+        dynamic_tools,
+        ..
+    } = to_response::<ThreadForkResponse>(fork_resp)?;
+    assert_eq!(dynamic_tools, Some(vec![dynamic_tool.clone()]));
 
     let turn_req = mcp
         .send_turn_start_request(TurnStartParams {

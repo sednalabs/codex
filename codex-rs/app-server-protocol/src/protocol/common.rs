@@ -1433,6 +1433,7 @@ mod tests {
                 model_provider: "openai".to_string(),
                 service_tier: None,
                 cwd: absolute_path("/tmp"),
+                dynamic_tools: None,
                 instruction_sources: vec![absolute_path("/tmp/AGENTS.md")],
                 approval_policy: v2::AskForApproval::OnFailure,
                 approvals_reviewer: v2::ApprovalsReviewer::User,
