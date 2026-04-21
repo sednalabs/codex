@@ -1,4 +1,5 @@
 use super::*;
+use crate::function_tool::FunctionCallError;
 use crate::shell::default_user_shell;
 use crate::tools::handlers::parse_arguments_with_base_path;
 use crate::tools::handlers::resolve_workdir_base_path;
@@ -8,6 +9,7 @@ use codex_tools::UnifiedExecShellMode;
 use codex_tools::ZshForkConfig;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use core_test_support::PathExt;
+use core_test_support::skip_if_sandbox;
 use pretty_assertions::assert_eq;
 use std::fs;
 use std::sync::Arc;
@@ -20,6 +22,41 @@ use crate::tools::context::ToolPayload;
 use crate::tools::registry::ToolHandler;
 use crate::turn_diff_tracker::TurnDiffTracker;
 use tokio::sync::Mutex;
+use tokio::time::Duration;
+use tokio::time::Instant;
+
+fn invocation(
+    session: Arc<crate::session::session::Session>,
+    turn: Arc<TurnContext>,
+    tool_name: &str,
+    payload: ToolPayload,
+) -> ToolInvocation {
+    ToolInvocation {
+        session,
+        turn,
+        tracker: Arc::new(Mutex::new(TurnDiffTracker::default())),
+        call_id: "call-unified-exec-test".to_string(),
+        tool_name: codex_tools::ToolName::plain(tool_name),
+        payload,
+    }
+}
+
+fn function_payload(args: serde_json::Value) -> ToolPayload {
+    ToolPayload::Function {
+        arguments: args.to_string(),
+    }
+}
+
+async fn run_unified_exec(
+    session: Arc<crate::session::session::Session>,
+    turn: Arc<TurnContext>,
+    tool_name: &str,
+    args: serde_json::Value,
+) -> Result<ExecCommandToolOutput, FunctionCallError> {
+    UnifiedExecHandler
+        .handle(invocation(session, turn, tool_name, function_payload(args)))
+        .await
+}
 
 #[test]
 fn test_get_command_uses_default_shell_when_unspecified() -> anyhow::Result<()> {
@@ -197,6 +234,164 @@ fn write_stdin_args_parse_execution_fields() -> anyhow::Result<()> {
     assert_eq!(args.chars, "echo hi\n");
     assert_eq!(args.yield_time_ms, 1234);
     assert_eq!(args.max_output_tokens, Some(250));
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn exec_command_wait_until_terminal_blocks_until_process_exits() -> anyhow::Result<()> {
+    skip_if_sandbox!(Ok(()));
+    if cfg!(windows) {
+        return Ok(());
+    }
+
+    let (session, turn) = make_session_and_context().await;
+    let session = Arc::new(session);
+    let turn = Arc::new(turn);
+
+    let started = Instant::now();
+    let output = run_unified_exec(
+        Arc::clone(&session),
+        Arc::clone(&turn),
+        "exec_command",
+        serde_json::json!({
+            "cmd": "sleep 1 && echo WAIT_UNTIL_TERMINAL_EXEC",
+            "yield_time_ms": 250,
+            "wait_until_terminal": true,
+            "max_wait_ms": 5_000,
+            "heartbeat_interval_ms": 100
+        }),
+    )
+    .await
+    .map_err(|err| anyhow::anyhow!("exec_command call failed: {err}"))?;
+
+    assert!(
+        started.elapsed() >= Duration::from_millis(900),
+        "wait_until_terminal should block close to command completion; got {:?}",
+        started.elapsed()
+    );
+    assert!(
+        output
+            .truncated_output()
+            .contains("WAIT_UNTIL_TERMINAL_EXEC"),
+        "terminal wait should include command output"
+    );
+    assert!(
+        output.process_id.is_none(),
+        "terminal wait should not leave a resumable session for one-shot command"
+    );
+    assert_eq!(output.exit_code, Some(0));
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn exec_command_wait_until_terminal_respects_max_wait_timeout() -> anyhow::Result<()> {
+    skip_if_sandbox!(Ok(()));
+    if cfg!(windows) {
+        return Ok(());
+    }
+
+    let (session, turn) = make_session_and_context().await;
+    let session = Arc::new(session);
+    let turn = Arc::new(turn);
+
+    let started = Instant::now();
+    let output = run_unified_exec(
+        Arc::clone(&session),
+        Arc::clone(&turn),
+        "exec_command",
+        serde_json::json!({
+            "cmd": "sleep 5 && echo WAIT_UNTIL_TERMINAL_TIMEOUT_TOO_LATE",
+            "yield_time_ms": 250,
+            "wait_until_terminal": true,
+            "max_wait_ms": 1_200,
+            "heartbeat_interval_ms": 100
+        }),
+    )
+    .await
+    .map_err(|err| anyhow::anyhow!("exec_command call failed: {err}"))?;
+
+    assert!(
+        started.elapsed() >= Duration::from_millis(1_000),
+        "wait_until_terminal should respect max_wait_ms before yielding; got {:?}",
+        started.elapsed()
+    );
+    assert!(
+        started.elapsed() < Duration::from_secs(4),
+        "max_wait_ms timeout should return before command completion; got {:?}",
+        started.elapsed()
+    );
+    assert!(
+        !output
+            .truncated_output()
+            .contains("WAIT_UNTIL_TERMINAL_TIMEOUT_TOO_LATE"),
+        "timed-out wait should not include output emitted after the wait window"
+    );
+    assert!(
+        output.process_id.is_some(),
+        "timed-out wait should keep a resumable session alive"
+    );
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn write_stdin_wait_until_terminal_blocks_until_exit() -> anyhow::Result<()> {
+    skip_if_sandbox!(Ok(()));
+    if cfg!(windows) {
+        return Ok(());
+    }
+
+    let (session, turn) = make_session_and_context().await;
+    let session = Arc::new(session);
+    let turn = Arc::new(turn);
+
+    let open_shell = run_unified_exec(
+        Arc::clone(&session),
+        Arc::clone(&turn),
+        "exec_command",
+        serde_json::json!({
+            "cmd": "bash -i",
+            "yield_time_ms": 2_500
+        }),
+    )
+    .await
+    .map_err(|err| anyhow::anyhow!("exec_command opening shell failed: {err}"))?;
+    let process_id = open_shell
+        .process_id
+        .expect("opening an interactive shell should return a session id");
+
+    let started = Instant::now();
+    let output = run_unified_exec(
+        Arc::clone(&session),
+        Arc::clone(&turn),
+        "write_stdin",
+        serde_json::json!({
+            "session_id": process_id,
+            "chars": "sleep 1 && echo WAIT_UNTIL_TERMINAL_WRITE && exit\n",
+            "yield_time_ms": 250,
+            "wait_until_terminal": true,
+            "max_wait_ms": 5_000,
+            "heartbeat_interval_ms": 100
+        }),
+    )
+    .await
+    .map_err(|err| anyhow::anyhow!("write_stdin call failed: {err}"))?;
+
+    assert!(
+        started.elapsed() >= Duration::from_millis(900),
+        "write_stdin wait_until_terminal should wait for command completion; got {:?}",
+        started.elapsed()
+    );
+    assert!(
+        output
+            .truncated_output()
+            .contains("WAIT_UNTIL_TERMINAL_WRITE"),
+        "waited write_stdin should include terminal output"
+    );
+    assert!(
+        output.process_id.is_none(),
+        "write_stdin wait_until_terminal should report terminal session as closed"
+    );
+    assert_eq!(output.exit_code, Some(0));
     Ok(())
 }
 

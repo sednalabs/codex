@@ -197,6 +197,17 @@ fn find_tool<'a>(tools: &'a [ConfiguredToolSpec], expected_name: &str) -> &'a Co
         .unwrap_or_else(|| panic!("expected tool {expected_name}"))
 }
 
+fn find_function_tool<'a>(
+    tools: &'a [ConfiguredToolSpec],
+    expected_name: &str,
+) -> &'a ResponsesApiTool {
+    let tool = find_tool(tools, expected_name);
+    let ToolSpec::Function(function) = &tool.spec else {
+        panic!("expected function tool {expected_name}");
+    };
+    function
+}
+
 fn find_namespace_function_tool<'a>(
     tools: &'a [ConfiguredToolSpec],
     expected_namespace: &str,
@@ -674,6 +685,49 @@ async fn test_build_specs_default_shell_present() {
         subset.push(shell_tool);
     }
     assert_contains_tool_names(&tools, &subset);
+}
+
+#[tokio::test]
+async fn unified_exec_tools_include_wait_until_terminal_contract_fields() {
+    let config = test_config().await;
+    let model_info = construct_model_info_offline("o3", &config);
+    let mut features = Features::with_defaults();
+    features.enable(Feature::UnifiedExec);
+
+    let tools_config = ToolsConfig::new(&ToolsConfigParams {
+        model_info: &model_info,
+        available_models: &Vec::new(),
+        features: &features,
+        image_generation_tool_auth_allowed: true,
+        web_search_mode: Some(WebSearchMode::Cached),
+        session_source: SessionSource::Cli,
+        sandbox_policy: &SandboxPolicy::DangerFullAccess,
+        windows_sandbox_level: WindowsSandboxLevel::Disabled,
+    });
+    let (tools, _) = build_specs(
+        &tools_config,
+        /*mcp_tools*/ None,
+        /*deferred_mcp_tools*/ None,
+        &[],
+    )
+    .build();
+
+    for tool_name in ["exec_command", "write_stdin"] {
+        let function = find_function_tool(&tools, tool_name);
+        let Some(properties) = function.parameters.properties.as_ref() else {
+            panic!("{tool_name} should expose object properties");
+        };
+        for field in [
+            "wait_until_terminal",
+            "max_wait_ms",
+            "heartbeat_interval_ms",
+        ] {
+            assert!(
+                properties.contains_key(field),
+                "{tool_name} is missing required wait contract field `{field}`"
+            );
+        }
+    }
 }
 
 #[tokio::test]
