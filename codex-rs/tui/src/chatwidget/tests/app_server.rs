@@ -401,6 +401,7 @@ async fn live_app_server_dynamic_tool_item_start_clears_compaction_status_header
             turn_id: "turn-1".to_string(),
             item: AppServerThreadItem::DynamicToolCall {
                 id: "dynamic-1".to_string(),
+                namespace: None,
                 tool: "browser.open".to_string(),
                 arguments: serde_json::json!({"url": "https://example.com"}),
                 status: DynamicToolCallStatus::InProgress,
