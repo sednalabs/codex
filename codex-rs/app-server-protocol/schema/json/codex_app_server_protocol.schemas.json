@@ -6933,6 +6933,16 @@
           },
           {
             "properties": {
+              "detail": {
+                "anyOf": [
+                  {
+                    "$ref": "#/definitions/v2/DynamicToolImageDetail"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
               "imageUrl": {
                 "type": "string"
               },
@@ -6956,6 +6966,15 @@
           "inProgress",
           "completed",
           "failed"
+        ],
+        "type": "string"
+      },
+      "DynamicToolImageDetail": {
+        "enum": [
+          "auto",
+          "low",
+          "high",
+          "original"
         ],
         "type": "string"
       },

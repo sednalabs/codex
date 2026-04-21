@@ -1,4 +1,5 @@
 use crate::bottom_pane::FeedbackAudience;
+use crate::dynamic_tool_host;
 #[cfg(test)]
 use crate::legacy_core::append_message_history_entry;
 use crate::legacy_core::config::Config;
@@ -14,6 +15,7 @@ use codex_app_server_protocol::AuthMode;
 use codex_app_server_protocol::ClientRequest;
 use codex_app_server_protocol::ConfigBatchWriteParams;
 use codex_app_server_protocol::ConfigWriteResponse;
+use codex_app_server_protocol::DynamicToolSpec;
 use codex_app_server_protocol::GetAccountParams;
 use codex_app_server_protocol::GetAccountRateLimitsResponse;
 use codex_app_server_protocol::GetAccountResponse;
@@ -322,12 +324,17 @@ impl AppServerSession {
     }
 
     pub(crate) async fn start_thread(&mut self, config: &Config) -> Result<AppServerStartedThread> {
+        let dynamic_tools = dynamic_tool_host::load_dynamic_tool_specs(config).await;
         let request_id = self.next_request_id();
         let response: ThreadStartResponse = self
             .client
             .request_typed(ClientRequest::ThreadStart {
                 request_id,
-                params: thread_start_params_from_config(config, self.thread_params_mode()),
+                params: thread_start_params_from_config(
+                    config,
+                    self.thread_params_mode(),
+                    dynamic_tools,
+                ),
             })
             .await
             .wrap_err("thread/start failed during TUI bootstrap")?;
@@ -964,6 +971,7 @@ fn sandbox_mode_from_policy(
 fn thread_start_params_from_config(
     config: &Config,
     thread_params_mode: ThreadParamsMode,
+    dynamic_tools: Vec<DynamicToolSpec>,
 ) -> ThreadStartParams {
     ThreadStartParams {
         model: config.model.clone(),
@@ -973,6 +981,7 @@ fn thread_start_params_from_config(
         approvals_reviewer: approvals_reviewer_override_from_config(config),
         sandbox: sandbox_mode_from_policy(config.permissions.sandbox_policy.get().clone()),
         config: config_request_overrides_from_config(config),
+        dynamic_tools: (!dynamic_tools.is_empty()).then_some(dynamic_tools),
         ephemeral: Some(config.ephemeral),
         persist_extended_history: true,
         ..ThreadStartParams::default()
@@ -1278,7 +1287,8 @@ mod tests {
         let temp_dir = tempfile::tempdir().expect("tempdir");
         let config = build_config(&temp_dir).await;
 
-        let params = thread_start_params_from_config(&config, ThreadParamsMode::Embedded);
+        let params =
+            thread_start_params_from_config(&config, ThreadParamsMode::Embedded, Vec::new());
 
         assert_eq!(params.cwd, Some(config.cwd.to_string_lossy().to_string()));
         assert_eq!(params.model_provider, Some(config.model_provider_id));
@@ -1290,7 +1300,7 @@ mod tests {
         let config = build_config(&temp_dir).await;
         let thread_id = ThreadId::new();
 
-        let start = thread_start_params_from_config(&config, ThreadParamsMode::Remote);
+        let start = thread_start_params_from_config(&config, ThreadParamsMode::Remote, Vec::new());
         let resume =
             thread_resume_params_from_config(config.clone(), thread_id, ThreadParamsMode::Remote);
         let fork = thread_fork_params_from_config(config, thread_id, ThreadParamsMode::Remote);

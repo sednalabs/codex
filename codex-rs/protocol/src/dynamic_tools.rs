@@ -5,6 +5,8 @@ use serde::Serialize;
 use serde_json::Value as JsonValue;
 use ts_rs::TS;
 
+use crate::models::ImageDetail;
+
 #[derive(Debug, Clone, Serialize, PartialEq, JsonSchema, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct DynamicToolSpec {
@@ -42,7 +44,12 @@ pub enum DynamicToolCallOutputContentItem {
     #[serde(rename_all = "camelCase")]
     InputText { text: String },
     #[serde(rename_all = "camelCase")]
-    InputImage { image_url: String },
+    InputImage {
+        image_url: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        detail: Option<ImageDetail>,
+    },
 }
 
 #[derive(Deserialize)]

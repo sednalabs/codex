@@ -22,6 +22,16 @@
         },
         {
           "properties": {
+            "detail": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/DynamicToolImageDetail"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
             "imageUrl": {
               "type": "string"
             },
@@ -39,6 +49,15 @@
           "type": "object"
         }
       ]
+    },
+    "DynamicToolImageDetail": {
+      "enum": [
+        "auto",
+        "low",
+        "high",
+        "original"
+      ],
+      "type": "string"
     }
   },
   "$schema": "https://json-schema.org/draft/2020-12/schema",

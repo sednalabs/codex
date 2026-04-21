@@ -950,6 +950,16 @@
         },
         {
           "properties": {
+            "detail": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/DynamicToolImageDetail"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
             "imageUrl": {
               "type": "string"
             },
@@ -973,6 +983,15 @@
         "inProgress",
         "completed",
         "failed"
+      ],
+      "type": "string"
+    },
+    "DynamicToolImageDetail": {
+      "enum": [
+        "auto",
+        "low",
+        "high",
+        "original"
       ],
       "type": "string"
     },
