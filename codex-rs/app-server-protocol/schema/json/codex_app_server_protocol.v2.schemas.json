@@ -3662,6 +3662,12 @@
         "inputSchema": true,
         "name": {
           "type": "string"
+        },
+        "namespace": {
+          "type": [
+            "string",
+            "null"
+          ]
         }
       },
       "required": [
@@ -10764,6 +10770,12 @@
             },
             "id": {
               "type": "string"
+            },
+            "namespace": {
+              "type": [
+                "string",
+                "null"
+              ]
             },
             "status": {
               "$ref": "#/definitions/DynamicToolCallStatus"

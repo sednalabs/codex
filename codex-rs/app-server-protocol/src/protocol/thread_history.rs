@@ -471,6 +471,7 @@ impl ThreadHistoryBuilder {
     ) {
         let item = ThreadItem::DynamicToolCall {
             id: payload.call_id.clone(),
+            namespace: payload.namespace.clone(),
             tool: payload.tool.clone(),
             arguments: payload.arguments.clone(),
             status: DynamicToolCallStatus::InProgress,
@@ -494,6 +495,7 @@ impl ThreadHistoryBuilder {
         let duration_ms = i64::try_from(payload.duration.as_millis()).ok();
         let item = ThreadItem::DynamicToolCall {
             id: payload.call_id.clone(),
+            namespace: payload.namespace.clone(),
             tool: payload.tool.clone(),
             arguments: payload.arguments.clone(),
             status,
@@ -1968,6 +1970,7 @@ mod tests {
                 codex_protocol::dynamic_tools::DynamicToolCallRequest {
                     call_id: "dyn-1".into(),
                     turn_id: "turn-1".into(),
+                    namespace: Some("codex_app".into()),
                     tool: "lookup_ticket".into(),
                     arguments: serde_json::json!({"id":"ABC-123"}),
                 },
@@ -1975,6 +1978,7 @@ mod tests {
             EventMsg::DynamicToolCallResponse(DynamicToolCallResponseEvent {
                 call_id: "dyn-1".into(),
                 turn_id: "turn-1".into(),
+                namespace: Some("codex_app".into()),
                 tool: "lookup_ticket".into(),
                 arguments: serde_json::json!({"id":"ABC-123"}),
                 content_items: vec![CoreDynamicToolCallOutputContentItem::InputText {
@@ -1997,6 +2001,7 @@ mod tests {
             turns[0].items[1],
             ThreadItem::DynamicToolCall {
                 id: "dyn-1".into(),
+                namespace: Some("codex_app".into()),
                 tool: "lookup_ticket".into(),
                 arguments: serde_json::json!({"id":"ABC-123"}),
                 status: DynamicToolCallStatus::Completed,

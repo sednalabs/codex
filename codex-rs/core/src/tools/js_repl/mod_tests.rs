@@ -1821,6 +1821,7 @@ async fn js_repl_emit_image_rejects_mixed_content() -> anyhow::Result<()> {
 
     let (session, turn, rx_event) =
         make_session_and_context_with_dynamic_tools_and_rx(vec![DynamicToolSpec {
+            namespace: None,
             name: "inline_image".to_string(),
             description: "Returns inline text and image content.".to_string(),
             input_schema: serde_json::json!({
@@ -1920,6 +1921,7 @@ async fn js_repl_dynamic_tool_response_preserves_js_line_separator_text() -> any
     ] {
         let (session, turn, rx_event) =
             make_session_and_context_with_dynamic_tools_and_rx(vec![DynamicToolSpec {
+                namespace: None,
                 name: tool_name.to_string(),
                 description: description.to_string(),
                 input_schema: serde_json::json!({
@@ -1995,6 +1997,7 @@ async fn js_repl_can_call_hidden_dynamic_tools() -> anyhow::Result<()> {
 
     let (session, turn, rx_event) =
         make_session_and_context_with_dynamic_tools_and_rx(vec![DynamicToolSpec {
+            namespace: Some("codex_app".to_string()),
             name: "hidden_dynamic_tool".to_string(),
             description: "A hidden dynamic tool.".to_string(),
             input_schema: serde_json::json!({
@@ -2014,7 +2017,7 @@ async fn js_repl_can_call_hidden_dynamic_tools() -> anyhow::Result<()> {
     let tracker = Arc::new(tokio::sync::Mutex::new(TurnDiffTracker::default()));
     let manager = turn.js_repl.manager().await?;
     let code = r#"
-const out = await codex.tool("hidden_dynamic_tool", { city: "Paris" });
+const out = await codex.tool("codex_app_hidden_dynamic_tool", { city: "Paris" });
 console.log(JSON.stringify(out));
 "#;
 
