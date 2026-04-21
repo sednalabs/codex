@@ -208,8 +208,8 @@ async fn thread_resume_injects_dynamic_tools_into_model_requests() -> Result<()>
 
     let bodies = responses_bodies(&server).await?;
     let body = bodies
-        .first()
-        .context("expected at least one responses request")?;
+        .last()
+        .context("expected a resumed turn responses request")?;
     let tool = find_tool(body, &dynamic_tool.name)
         .context("expected resumed dynamic tool to be injected into request")?;
 
