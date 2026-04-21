@@ -16,6 +16,7 @@ use std::sync::Arc;
 use tempfile::tempdir;
 
 use crate::session::tests::make_session_and_context;
+use crate::session::turn_context::TurnContext;
 use crate::tools::context::ExecCommandToolOutput;
 use crate::tools::context::ToolInvocation;
 use crate::tools::context::ToolPayload;
@@ -237,6 +238,96 @@ fn write_stdin_args_parse_execution_fields() -> anyhow::Result<()> {
     Ok(())
 }
 
+#[test]
+fn exec_command_args_reject_invalid_wait_until_terminal_type() {
+    let json = r#"{
+        "cmd": "echo hello",
+        "wait_until_terminal": "true"
+    }"#;
+
+    let err = parse_arguments::<ExecCommandArgs>(json)
+        .expect_err("wait_until_terminal must be parsed and typechecked");
+    assert!(
+        err.to_string().contains("wait_until_terminal"),
+        "parse error should mention wait_until_terminal, got: {err}"
+    );
+}
+
+#[test]
+fn exec_command_args_reject_invalid_max_wait_ms_type() {
+    let json = r#"{
+        "cmd": "echo hello",
+        "max_wait_ms": "1000"
+    }"#;
+
+    let err = parse_arguments::<ExecCommandArgs>(json)
+        .expect_err("max_wait_ms must be parsed and typechecked");
+    assert!(
+        err.to_string().contains("max_wait_ms"),
+        "parse error should mention max_wait_ms, got: {err}"
+    );
+}
+
+#[test]
+fn exec_command_args_reject_invalid_heartbeat_interval_ms_type() {
+    let json = r#"{
+        "cmd": "echo hello",
+        "heartbeat_interval_ms": "100"
+    }"#;
+
+    let err = parse_arguments::<ExecCommandArgs>(json)
+        .expect_err("heartbeat_interval_ms must be parsed and typechecked");
+    assert!(
+        err.to_string().contains("heartbeat_interval_ms"),
+        "parse error should mention heartbeat_interval_ms, got: {err}"
+    );
+}
+
+#[test]
+fn write_stdin_args_reject_invalid_wait_until_terminal_type() {
+    let json = r#"{
+        "session_id": 42,
+        "wait_until_terminal": "true"
+    }"#;
+
+    let err = parse_arguments::<WriteStdinArgs>(json)
+        .expect_err("wait_until_terminal must be parsed and typechecked");
+    assert!(
+        err.to_string().contains("wait_until_terminal"),
+        "parse error should mention wait_until_terminal, got: {err}"
+    );
+}
+
+#[test]
+fn write_stdin_args_reject_invalid_max_wait_ms_type() {
+    let json = r#"{
+        "session_id": 42,
+        "max_wait_ms": "1000"
+    }"#;
+
+    let err = parse_arguments::<WriteStdinArgs>(json)
+        .expect_err("max_wait_ms must be parsed and typechecked");
+    assert!(
+        err.to_string().contains("max_wait_ms"),
+        "parse error should mention max_wait_ms, got: {err}"
+    );
+}
+
+#[test]
+fn write_stdin_args_reject_invalid_heartbeat_interval_ms_type() {
+    let json = r#"{
+        "session_id": 42,
+        "heartbeat_interval_ms": "100"
+    }"#;
+
+    let err = parse_arguments::<WriteStdinArgs>(json)
+        .expect_err("heartbeat_interval_ms must be parsed and typechecked");
+    assert!(
+        err.to_string().contains("heartbeat_interval_ms"),
+        "parse error should mention heartbeat_interval_ms, got: {err}"
+    );
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn exec_command_wait_until_terminal_blocks_until_process_exits() -> anyhow::Result<()> {
     skip_if_sandbox!(Ok(()));
@@ -281,6 +372,35 @@ async fn exec_command_wait_until_terminal_blocks_until_process_exits() -> anyhow
     );
     assert_eq!(output.exit_code, Some(0));
     Ok(())
+}
+
+#[tokio::test]
+async fn write_stdin_wait_until_terminal_requires_empty_chars() {
+    let (session, turn) = make_session_and_context().await;
+    let session = Arc::new(session);
+    let turn = Arc::new(turn);
+
+    let err = run_unified_exec(
+        Arc::clone(&session),
+        Arc::clone(&turn),
+        "write_stdin",
+        serde_json::json!({
+            "session_id": 42,
+            "chars": "echo should fail\n",
+            "wait_until_terminal": true,
+            "max_wait_ms": 5_000
+        }),
+    )
+    .await
+    .expect_err("wait_until_terminal with non-empty chars should be rejected");
+
+    let FunctionCallError::RespondToModel(message) = err else {
+        panic!("expected model-visible contract error, got: {err:?}");
+    };
+    assert!(
+        message.contains("wait_until_terminal=true requires chars to be empty"),
+        "unexpected error message: {message}"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
