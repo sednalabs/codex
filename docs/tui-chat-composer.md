@@ -131,11 +131,14 @@ The same preparation path is reused for slash commands with arguments (for examp
 While a task is running, queued follow-up entries are shown above the composer in one list. That
 preview includes both queued message drafts and queued slash commands. Front-queued message drafts
 are inserted ahead of the existing queued message backlog so they run next after the active task,
-while `Tab`-queued drafts preserve the existing append-to-back FIFO behavior. `Alt+Up` recalls
-queued entries for editing from that list in strict reverse-chronological order across both entry
-types. If replay hits a mode-changing queued slash command such as `/plan`, that mode switch must
-take effect before any later queued message is autosent; otherwise the drain pauses and leaves the
-later drafts queued.
+while `Tab`-queued drafts preserve the existing append-to-back FIFO behavior. `Alt+Up` dequeues
+the newest queued entry from that list and restores it to the composer for editing in strict
+reverse-chronological order across both entry types. Once recalled, that item should disappear
+from the queued-list UI until it is re-queued or re-submitted. If replay hits a mode-changing
+queued slash command such as `/plan`, that mode switch must take effect before any later queued
+message is autosent; otherwise the drain pauses and leaves the later drafts queued.
+The queue footer keeps `Ctrl+Shift+Q` as the explicit "run next" path for fresh drafts, so users
+can still insert a new prompt at the front of the backlog without first dequeuing an older entry.
 
 The composer also treats the textarea kill buffer as separate editing state from the visible draft.
 After submit or slash-command dispatch clears the textarea, the most recent `Ctrl+K` payload is

@@ -4,9 +4,9 @@ expression: "render_snapshot(&pane, area)"
 ---
 • Working (0s • esc esc to interrupt)           
                                                 
-• Queued follow-up messages                     
+• Queued follow-up entries                     
   ↳ Queued follow-up question                   
-    ⌥ + ↑ edit last queued message              
+    ⌥ + ↑ dequeue last queued entry              
                                                 
 › Ask Codex to do anything                      
                                                 

@@ -6,12 +6,12 @@ expression: "format!(\"{buf:?}\")"
 Buffer {
     area: Rect { x: 0, y: 0, width: 40, height: 6 },
     content: [
-        "• Queued follow-up messages             ",
+        "• Queued follow-up entries             ",
         "  ↳ This is                             ",
         "    a message                           ",
         "    with many                           ",
         "    …                                   ",
-        "    ⌥ + ↑ edit last queued message      ",
+        "    ⌥ + ↑ dequeue last queued entry      ",
     ],
     styles: [
         x: 0, y: 0, fg: Reset, bg: Reset, underline: Reset, modifier: DIM,
