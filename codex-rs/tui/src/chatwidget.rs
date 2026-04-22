@@ -262,7 +262,7 @@ const PLAN_MODE_REASONING_SCOPE_ALL_MODES: &str = "Apply to global default and P
 const CONNECTORS_SELECTION_VIEW_ID: &str = "connectors-selection";
 const TUI_STUB_MESSAGE: &str = "Not available in TUI yet.";
 
-/// Choose the keybinding used to edit the most-recently queued message.
+/// Choose the keybinding used to dequeue the most-recently queued follow-up entry.
 ///
 /// Apple Terminal, Warp, and VSCode integrated terminals intercept or silently
 /// swallow Alt+Up, and tmux does not reliably pass that chord through. We fall

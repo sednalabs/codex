@@ -229,6 +229,7 @@ User-visible behavior:
 - Queued slash commands and queued message drafts are shown in one queue preview.
 - `Alt+Up` dequeues the newest queued item back into the composer in strict reverse-chronological order across both entry types.
 - Recalled items disappear from the queued preview until they are re-queued or re-submitted.
+- `Ctrl+Shift+Q` remains the explicit "run next" path for inserting a fresh draft at the front of the queue.
 - `/status` remains immediate (not queued).
 - Unavailable non-inline slash commands replay after the current task completes instead of being blocked.
 

@@ -137,6 +137,8 @@ reverse-chronological order across both entry types. Once recalled, that item sh
 from the queued-list UI until it is re-queued or re-submitted. If replay hits a mode-changing
 queued slash command such as `/plan`, that mode switch must take effect before any later queued
 message is autosent; otherwise the drain pauses and leaves the later drafts queued.
+The queue footer keeps `Ctrl+Shift+Q` as the explicit "run next" path for fresh drafts, so users
+can still insert a new prompt at the front of the backlog without first dequeuing an older entry.
 
 The composer also treats the textarea kill buffer as separate editing state from the visible draft.
 After submit or slash-command dispatch clears the textarea, the most recent `Ctrl+K` payload is
