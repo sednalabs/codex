@@ -1691,6 +1691,7 @@ fn search_tool_registers_for_deferred_dynamic_tools() {
             },
         }),
         defer_loading: true,
+        persist_on_resume: true,
     };
 
     let (tools, handlers) = build_specs(
