@@ -2,115 +2,351 @@
   "lanes": [
     {
       "lane_id": "core-compile-smoke",
-      "run_command": "just --justfile ../justfile core-compile-smoke",
-      "groups": ["core"],
-      "lane_sets": ["all", "core-carry"],
+      "groups": [
+        "core"
+      ],
+      "lane_sets": [
+        "all",
+        "core-carry"
+      ],
       "smoke_gate_only": true,
-      "smoke_gate_kinds": ["runtime"]
+      "smoke_gate_kinds": [
+        "runtime"
+      ],
+      "setup_class": "rust_integration",
+      "working_directory": ".",
+      "script_path": ".github/scripts/validation-lanes/run-just-recipe.sh",
+      "script_args": [
+        "core-compile-smoke"
+      ],
+      "needs_just": true,
+      "needs_node": false,
+      "needs_nextest": false,
+      "needs_linux_build_deps": true,
+      "needs_dotslash": true,
+      "needs_sccache": true
     },
     {
       "lane_id": "core-carry-core-smoke",
-      "run_command": "just --justfile ../justfile core-carry-core-smoke",
-      "groups": ["core"],
-      "lane_sets": ["all", "core-carry"],
-      "install_nextest": true,
+      "groups": [
+        "core"
+      ],
+      "lane_sets": [
+        "all",
+        "core-carry"
+      ],
       "smoke_gate_only": true,
-      "smoke_gate_kinds": ["runtime"]
+      "smoke_gate_kinds": [
+        "runtime"
+      ],
+      "setup_class": "rust_integration",
+      "working_directory": ".",
+      "script_path": ".github/scripts/validation-lanes/run-just-recipe.sh",
+      "script_args": [
+        "core-carry-core-smoke"
+      ],
+      "needs_just": true,
+      "needs_node": false,
+      "needs_nextest": false,
+      "needs_linux_build_deps": true,
+      "needs_dotslash": true,
+      "needs_sccache": true
     },
     {
       "lane_id": "core-carry-ui-smoke",
-      "run_command": "just --justfile ../justfile core-carry-ui-smoke",
-      "groups": ["ui_protocol"],
-      "lane_sets": ["all", "core-carry"],
-      "install_nextest": true,
+      "groups": [
+        "ui_protocol"
+      ],
+      "lane_sets": [
+        "all",
+        "core-carry"
+      ],
       "smoke_gate_only": true,
-      "smoke_gate_kinds": ["runtime"]
+      "smoke_gate_kinds": [
+        "runtime"
+      ],
+      "setup_class": "rust_integration",
+      "working_directory": ".",
+      "script_path": ".github/scripts/validation-lanes/run-just-recipe.sh",
+      "script_args": [
+        "core-carry-ui-smoke"
+      ],
+      "needs_just": true,
+      "needs_node": false,
+      "needs_nextest": false,
+      "needs_linux_build_deps": true,
+      "needs_dotslash": true,
+      "needs_sccache": true
     },
     {
       "lane_id": "core-ledger-smoke",
-      "run_command": "just --justfile ../justfile core-ledger-smoke",
-      "groups": ["core"],
-      "lane_sets": ["all", "ledger", "core-carry"],
-      "install_nextest": true,
+      "groups": [
+        "core"
+      ],
+      "lane_sets": [
+        "all",
+        "ledger",
+        "core-carry"
+      ],
       "smoke_gate_only": true,
-      "smoke_gate_kinds": ["runtime"]
+      "smoke_gate_kinds": [
+        "runtime"
+      ],
+      "setup_class": "rust_integration",
+      "working_directory": ".",
+      "script_path": ".github/scripts/validation-lanes/run-just-recipe.sh",
+      "script_args": [
+        "core-ledger-smoke"
+      ],
+      "needs_just": true,
+      "needs_node": false,
+      "needs_nextest": false,
+      "needs_linux_build_deps": true,
+      "needs_dotslash": true,
+      "needs_sccache": true
     },
     {
       "lane_id": "core-runtime-surface-smoke",
-      "run_command": "just --justfile ../justfile core-runtime-surface-smoke",
-      "groups": ["core"],
-      "lane_sets": ["all", "core-carry"],
-      "install_nextest": true,
+      "groups": [
+        "core"
+      ],
+      "lane_sets": [
+        "all",
+        "core-carry"
+      ],
       "smoke_gate_only": true,
-      "smoke_gate_kinds": ["runtime"]
+      "smoke_gate_kinds": [
+        "runtime"
+      ],
+      "setup_class": "rust_integration",
+      "working_directory": ".",
+      "script_path": ".github/scripts/validation-lanes/run-just-recipe.sh",
+      "script_args": [
+        "core-runtime-surface-smoke"
+      ],
+      "needs_just": true,
+      "needs_node": false,
+      "needs_nextest": false,
+      "needs_linux_build_deps": true,
+      "needs_dotslash": true,
+      "needs_sccache": true
     },
     {
       "lane_id": "codex.core-startup-sync-targeted",
-      "run_command": "just --justfile ../justfile core-startup-sync-targeted",
-      "groups": ["core"],
-      "lane_sets": ["all", "startup-sync", "core-carry"],
+      "groups": [
+        "core"
+      ],
+      "lane_sets": [
+        "all",
+        "startup-sync",
+        "core-carry"
+      ],
       "frontier_default": true,
-      "frontier_lane_sets": ["startup-sync"]
+      "frontier_lane_sets": [
+        "startup-sync"
+      ],
+      "setup_class": "rust_integration",
+      "working_directory": ".",
+      "script_path": ".github/scripts/validation-lanes/run-just-recipe.sh",
+      "script_args": [
+        "core-startup-sync-targeted"
+      ],
+      "needs_just": true,
+      "needs_node": false,
+      "needs_nextest": false,
+      "needs_linux_build_deps": true,
+      "needs_dotslash": true,
+      "needs_sccache": true
     },
     {
       "lane_id": "codex.core-subagent-surface-targeted",
-      "run_command": "just --justfile ../justfile core-subagent-surface-targeted",
-      "groups": ["core"],
-      "lane_sets": ["all", "subagents", "core-carry"],
-      "install_nextest": true,
+      "groups": [
+        "core"
+      ],
+      "lane_sets": [
+        "all",
+        "subagents",
+        "core-carry"
+      ],
       "frontier_default": true,
-      "frontier_lane_sets": ["subagents", "core-carry"]
+      "frontier_lane_sets": [
+        "subagents",
+        "core-carry"
+      ],
+      "setup_class": "rust_integration",
+      "working_directory": ".",
+      "script_path": ".github/scripts/validation-lanes/run-just-recipe.sh",
+      "script_args": [
+        "core-subagent-surface-targeted"
+      ],
+      "needs_just": true,
+      "needs_node": false,
+      "needs_nextest": false,
+      "needs_linux_build_deps": true,
+      "needs_dotslash": true,
+      "needs_sccache": true
     },
     {
       "lane_id": "codex.core-subagent-notification-contract-targeted",
-      "run_command": "just --justfile ../justfile core-subagent-notification-contract-targeted",
-      "groups": ["core"],
-      "lane_sets": ["all", "subagents", "core-carry"],
-      "install_nextest": true,
+      "groups": [
+        "core"
+      ],
+      "lane_sets": [
+        "all",
+        "subagents",
+        "core-carry"
+      ],
       "frontier_default": true,
-      "frontier_lane_sets": ["subagents", "core-carry"]
+      "frontier_lane_sets": [
+        "subagents",
+        "core-carry"
+      ],
+      "setup_class": "rust_integration",
+      "working_directory": ".",
+      "script_path": ".github/scripts/validation-lanes/run-just-recipe.sh",
+      "script_args": [
+        "core-subagent-notification-contract-targeted"
+      ],
+      "needs_just": true,
+      "needs_node": false,
+      "needs_nextest": false,
+      "needs_linux_build_deps": true,
+      "needs_dotslash": true,
+      "needs_sccache": true
     },
     {
       "lane_id": "codex.core-subagent-notification-visibility-targeted",
-      "run_command": "just --justfile ../justfile core-subagent-notification-visibility-targeted",
-      "groups": ["ui_protocol"],
-      "lane_sets": ["all", "subagents", "ui-protocol", "core-carry"],
+      "groups": [
+        "ui_protocol"
+      ],
+      "lane_sets": [
+        "all",
+        "subagents",
+        "ui-protocol",
+        "core-carry"
+      ],
       "frontier_default": true,
-      "frontier_lane_sets": ["subagents", "ui-protocol", "core-carry"]
+      "frontier_lane_sets": [
+        "subagents",
+        "ui-protocol",
+        "core-carry"
+      ],
+      "setup_class": "rust_minimal",
+      "working_directory": ".",
+      "script_path": ".github/scripts/validation-lanes/run-just-recipe.sh",
+      "script_args": [
+        "core-subagent-notification-visibility-targeted"
+      ],
+      "needs_just": true,
+      "needs_node": false,
+      "needs_nextest": false,
+      "needs_linux_build_deps": false,
+      "needs_dotslash": false,
+      "needs_sccache": false
     },
     {
       "lane_id": "codex.tui-thread-session-policy-targeted",
-      "run_command": "just --justfile ../justfile tui-thread-session-policy-targeted",
-      "groups": ["ui_protocol"],
-      "lane_sets": ["all", "ui-protocol"],
-      "install_nextest": true,
+      "groups": [
+        "ui_protocol"
+      ],
+      "lane_sets": [
+        "all",
+        "ui-protocol"
+      ],
       "frontier_default": true,
-      "frontier_lane_sets": ["ui-protocol"]
+      "frontier_lane_sets": [
+        "ui-protocol"
+      ],
+      "setup_class": "rust_minimal",
+      "working_directory": ".",
+      "script_path": ".github/scripts/validation-lanes/run-just-recipe.sh",
+      "script_args": [
+        "tui-thread-session-policy-targeted"
+      ],
+      "needs_just": true,
+      "needs_node": false,
+      "needs_nextest": false,
+      "needs_linux_build_deps": false,
+      "needs_dotslash": false,
+      "needs_sccache": false
     },
     {
       "lane_id": "codex.tui-esc-interrupt-targeted",
-      "run_command": "just --justfile ../justfile tui-esc-interrupt-targeted",
-      "groups": ["ui_protocol"],
-      "lane_sets": ["all", "ui-protocol"],
-      "install_nextest": true,
+      "groups": [
+        "ui_protocol"
+      ],
+      "lane_sets": [
+        "all",
+        "ui-protocol"
+      ],
       "frontier_default": true,
-      "frontier_lane_sets": ["ui-protocol"]
+      "frontier_lane_sets": [
+        "ui-protocol"
+      ],
+      "setup_class": "rust_minimal",
+      "working_directory": ".",
+      "script_path": ".github/scripts/validation-lanes/run-just-recipe.sh",
+      "script_args": [
+        "tui-esc-interrupt-targeted"
+      ],
+      "needs_just": true,
+      "needs_node": false,
+      "needs_nextest": false,
+      "needs_linux_build_deps": false,
+      "needs_dotslash": false,
+      "needs_sccache": false
     },
     {
       "lane_id": "codex.tui-front-queue-submit-targeted",
-      "run_command": "just --justfile ../justfile tui-front-queue-submit-targeted",
-      "groups": ["ui_protocol"],
-      "lane_sets": ["all", "ui-protocol"],
+      "groups": [
+        "ui_protocol"
+      ],
+      "lane_sets": [
+        "all",
+        "ui-protocol"
+      ],
       "frontier_default": true,
-      "frontier_lane_sets": ["ui-protocol"]
+      "frontier_lane_sets": [
+        "ui-protocol"
+      ],
+      "setup_class": "rust_minimal",
+      "working_directory": ".",
+      "script_path": ".github/scripts/validation-lanes/run-just-recipe.sh",
+      "script_args": [
+        "tui-front-queue-submit-targeted"
+      ],
+      "needs_just": true,
+      "needs_node": false,
+      "needs_nextest": false,
+      "needs_linux_build_deps": false,
+      "needs_dotslash": false,
+      "needs_sccache": false
     },
     {
       "lane_id": "codex.tui-transcript-viewport-targeted",
-      "run_command": "just --justfile ../justfile tui-transcript-viewport-targeted",
-      "groups": ["ui_protocol"],
-      "lane_sets": ["all", "ui-protocol"],
+      "groups": [
+        "ui_protocol"
+      ],
+      "lane_sets": [
+        "all",
+        "ui-protocol"
+      ],
       "frontier_default": true,
-      "frontier_lane_sets": ["ui-protocol"]
+      "frontier_lane_sets": [
+        "ui-protocol"
+      ],
+      "setup_class": "rust_minimal",
+      "working_directory": ".",
+      "script_path": ".github/scripts/validation-lanes/run-just-recipe.sh",
+      "script_args": [
+        "tui-transcript-viewport-targeted"
+      ],
+      "needs_just": true,
+      "needs_node": false,
+      "needs_nextest": false,
+      "needs_linux_build_deps": false,
+      "needs_dotslash": false,
+      "needs_sccache": false
     },
     {
       "lane_id": "codex.tui-brokered-tool-replay-targeted",
@@ -121,221 +357,714 @@
     },
     {
       "lane_id": "codex.tui-config-refresh-session-targeted",
-      "run_command": "just --justfile ../justfile tui-config-refresh-session-targeted",
-      "groups": ["ui_protocol"],
-      "lane_sets": ["all", "core-carry"]
+      "groups": [
+        "ui_protocol"
+      ],
+      "lane_sets": [
+        "all",
+        "core-carry"
+      ],
+      "setup_class": "rust_minimal",
+      "working_directory": ".",
+      "script_path": ".github/scripts/validation-lanes/run-just-recipe.sh",
+      "script_args": [
+        "tui-config-refresh-session-targeted"
+      ],
+      "needs_just": true,
+      "needs_node": false,
+      "needs_nextest": false,
+      "needs_linux_build_deps": false,
+      "needs_dotslash": false,
+      "needs_sccache": false
     },
     {
       "lane_id": "codex.tui-agent-picker-usage-targeted",
-      "run_command": "just --justfile ../justfile tui-agent-picker-usage-targeted",
-      "groups": ["ui_protocol"],
-      "lane_sets": ["all", "ui-protocol", "subagents"]
+      "groups": [
+        "ui_protocol"
+      ],
+      "lane_sets": [
+        "all",
+        "ui-protocol",
+        "subagents"
+      ],
+      "setup_class": "rust_minimal",
+      "working_directory": ".",
+      "script_path": ".github/scripts/validation-lanes/run-just-recipe.sh",
+      "script_args": [
+        "tui-agent-picker-usage-targeted"
+      ],
+      "needs_just": true,
+      "needs_node": false,
+      "needs_nextest": false,
+      "needs_linux_build_deps": false,
+      "needs_dotslash": false,
+      "needs_sccache": false
     },
     {
       "lane_id": "codex.tui-agent-picker-targeted",
-      "run_command": "just --justfile ../justfile tui-agent-picker-targeted",
-      "groups": ["ui_protocol"],
-      "lane_sets": ["all", "ui-protocol", "subagents"],
+      "groups": [
+        "ui_protocol"
+      ],
+      "lane_sets": [
+        "all",
+        "ui-protocol",
+        "subagents"
+      ],
       "frontier_default": true,
-      "frontier_lane_sets": ["ui-protocol", "subagents"]
+      "frontier_lane_sets": [
+        "ui-protocol",
+        "subagents"
+      ],
+      "setup_class": "rust_minimal",
+      "working_directory": ".",
+      "script_path": ".github/scripts/validation-lanes/run-just-recipe.sh",
+      "script_args": [
+        "tui-agent-picker-targeted"
+      ],
+      "needs_just": true,
+      "needs_node": false,
+      "needs_nextest": false,
+      "needs_linux_build_deps": false,
+      "needs_dotslash": false,
+      "needs_sccache": false
     },
     {
       "lane_id": "codex.tui-agent-picker-model-surface-targeted",
-      "run_command": "just --justfile ../justfile tui-agent-picker-model-surface-targeted",
-      "groups": ["ui_protocol"],
-      "lane_sets": ["all", "ui-protocol", "subagents"],
+      "groups": [
+        "ui_protocol"
+      ],
+      "lane_sets": [
+        "all",
+        "ui-protocol",
+        "subagents"
+      ],
       "explicit_only": true,
       "frontier_default": false,
-      "summary_family": "agent-picker-model-surface"
+      "summary_family": "agent-picker-model-surface",
+      "setup_class": "rust_minimal",
+      "working_directory": ".",
+      "script_path": ".github/scripts/validation-lanes/run-just-recipe.sh",
+      "script_args": [
+        "tui-agent-picker-model-surface-targeted"
+      ],
+      "needs_just": true,
+      "needs_node": false,
+      "needs_nextest": false,
+      "needs_linux_build_deps": false,
+      "needs_dotslash": false,
+      "needs_sccache": false
     },
     {
       "lane_id": "codex.spawn-agent-tool-model-surface-targeted",
-      "run_command": "just --justfile ../justfile spawn-agent-tool-model-surface-targeted",
-      "groups": ["ui_protocol"],
-      "lane_sets": ["all", "ui-protocol", "subagents"],
+      "groups": [
+        "ui_protocol"
+      ],
+      "lane_sets": [
+        "all",
+        "ui-protocol",
+        "subagents"
+      ],
       "frontier_default": false,
-      "summary_family": "agent-picker-model-surface"
+      "summary_family": "agent-picker-model-surface",
+      "setup_class": "rust_minimal",
+      "working_directory": ".",
+      "script_path": ".github/scripts/validation-lanes/run-just-recipe.sh",
+      "script_args": [
+        "spawn-agent-tool-model-surface-targeted"
+      ],
+      "needs_just": true,
+      "needs_node": false,
+      "needs_nextest": false,
+      "needs_linux_build_deps": false,
+      "needs_dotslash": false,
+      "needs_sccache": false
     },
     {
       "lane_id": "codex.spawn-agent-description-model-surface-targeted",
-      "run_command": "just --justfile ../justfile spawn-agent-description-model-surface-targeted",
-      "groups": ["ui_protocol"],
-      "lane_sets": ["all", "ui-protocol", "subagents"],
+      "groups": [
+        "ui_protocol"
+      ],
+      "lane_sets": [
+        "all",
+        "ui-protocol",
+        "subagents"
+      ],
       "frontier_default": false,
-      "summary_family": "agent-picker-model-surface"
+      "summary_family": "agent-picker-model-surface",
+      "setup_class": "rust_minimal",
+      "working_directory": ".",
+      "script_path": ".github/scripts/validation-lanes/run-just-recipe.sh",
+      "script_args": [
+        "spawn-agent-description-model-surface-targeted"
+      ],
+      "needs_just": true,
+      "needs_node": false,
+      "needs_nextest": false,
+      "needs_linux_build_deps": false,
+      "needs_dotslash": false,
+      "needs_sccache": false
     },
     {
       "lane_id": "codex.tui-agent-picker-tree-targeted",
-      "run_command": "just --justfile ../justfile tui-agent-picker-tree-targeted",
-      "groups": ["ui_protocol"],
-      "lane_sets": ["all", "ui-protocol", "subagents"],
+      "groups": [
+        "ui_protocol"
+      ],
+      "lane_sets": [
+        "all",
+        "ui-protocol",
+        "subagents"
+      ],
       "frontier_default": true,
-      "frontier_lane_sets": ["ui-protocol", "subagents"]
+      "frontier_lane_sets": [
+        "ui-protocol",
+        "subagents"
+      ],
+      "setup_class": "rust_minimal",
+      "working_directory": ".",
+      "script_path": ".github/scripts/validation-lanes/run-just-recipe.sh",
+      "script_args": [
+        "tui-agent-picker-tree-targeted"
+      ],
+      "needs_just": true,
+      "needs_node": false,
+      "needs_nextest": false,
+      "needs_linux_build_deps": false,
+      "needs_dotslash": false,
+      "needs_sccache": false
     },
     {
       "lane_id": "codex.tui-agent-usage-totals-targeted",
-      "run_command": "just --justfile ../justfile tui-agent-usage-totals-targeted",
-      "groups": ["ui_protocol"],
-      "lane_sets": ["all", "ui-protocol"]
+      "groups": [
+        "ui_protocol"
+      ],
+      "lane_sets": [
+        "all",
+        "ui-protocol"
+      ],
+      "setup_class": "rust_minimal",
+      "working_directory": ".",
+      "script_path": ".github/scripts/validation-lanes/run-just-recipe.sh",
+      "script_args": [
+        "tui-agent-usage-totals-targeted"
+      ],
+      "needs_just": true,
+      "needs_node": false,
+      "needs_nextest": false,
+      "needs_linux_build_deps": false,
+      "needs_dotslash": false,
+      "needs_sccache": false
     },
     {
       "lane_id": "codex.core-multi-agent-orchestration-targeted",
-      "run_command": "just --justfile ../justfile core-multi-agent-orchestration-targeted",
-      "groups": ["core"],
-      "lane_sets": ["all", "subagents", "core-carry"],
+      "groups": [
+        "core"
+      ],
+      "lane_sets": [
+        "all",
+        "subagents",
+        "core-carry"
+      ],
       "frontier_default": true,
-      "frontier_lane_sets": ["subagents", "core-carry"]
+      "frontier_lane_sets": [
+        "subagents",
+        "core-carry"
+      ],
+      "setup_class": "rust_integration",
+      "working_directory": ".",
+      "script_path": ".github/scripts/validation-lanes/run-just-recipe.sh",
+      "script_args": [
+        "core-multi-agent-orchestration-targeted"
+      ],
+      "needs_just": true,
+      "needs_node": false,
+      "needs_nextest": false,
+      "needs_linux_build_deps": true,
+      "needs_dotslash": true,
+      "needs_sccache": true
     },
     {
       "lane_id": "codex.blocking-waits-targeted",
-      "run_command": "just --justfile ../justfile blocking-waits-targeted",
-      "groups": ["core", "ui_protocol"],
-      "lane_sets": ["all", "subagents", "ui-protocol", "core-carry"],
-      "install_nextest": true,
+      "groups": [
+        "core",
+        "ui_protocol"
+      ],
+      "lane_sets": [
+        "all",
+        "subagents",
+        "ui-protocol",
+        "core-carry"
+      ],
       "frontier_default": true,
-      "frontier_lane_sets": ["subagents", "ui-protocol", "core-carry"]
+      "frontier_lane_sets": [
+        "subagents",
+        "ui-protocol",
+        "core-carry"
+      ],
+      "setup_class": "rust_integration",
+      "working_directory": ".",
+      "script_path": ".github/scripts/validation-lanes/run-just-recipe.sh",
+      "script_args": [
+        "blocking-waits-targeted"
+      ],
+      "needs_just": true,
+      "needs_node": false,
+      "needs_nextest": false,
+      "needs_linux_build_deps": true,
+      "needs_dotslash": true,
+      "needs_sccache": true
     },
     {
       "lane_id": "codex.custom-prompts-targeted",
-      "run_command": "just --justfile ../justfile custom-prompts-targeted",
-      "groups": ["ui_protocol"],
-      "lane_sets": ["all", "ui-protocol", "core-carry"],
+      "groups": [
+        "ui_protocol"
+      ],
+      "lane_sets": [
+        "all",
+        "ui-protocol",
+        "core-carry"
+      ],
       "frontier_default": true,
-      "frontier_lane_sets": ["ui-protocol", "core-carry"]
+      "frontier_lane_sets": [
+        "ui-protocol",
+        "core-carry"
+      ],
+      "setup_class": "rust_integration",
+      "working_directory": ".",
+      "script_path": ".github/scripts/validation-lanes/run-just-recipe.sh",
+      "script_args": [
+        "custom-prompts-targeted"
+      ],
+      "needs_just": true,
+      "needs_node": false,
+      "needs_nextest": false,
+      "needs_linux_build_deps": true,
+      "needs_dotslash": true,
+      "needs_sccache": true
     },
     {
       "lane_id": "codex.mcp-safety-targeted",
-      "run_command": "just --justfile ../justfile mcp-safety-targeted",
-      "groups": ["core"],
-      "lane_sets": ["all", "core-carry"],
+      "groups": [
+        "core"
+      ],
+      "lane_sets": [
+        "all",
+        "core-carry"
+      ],
       "frontier_default": true,
-      "frontier_lane_sets": ["core-carry"]
+      "frontier_lane_sets": [
+        "core-carry"
+      ],
+      "setup_class": "rust_integration",
+      "working_directory": ".",
+      "script_path": ".github/scripts/validation-lanes/run-just-recipe.sh",
+      "script_args": [
+        "mcp-safety-targeted"
+      ],
+      "needs_just": true,
+      "needs_node": false,
+      "needs_nextest": false,
+      "needs_linux_build_deps": true,
+      "needs_dotslash": true,
+      "needs_sccache": true
     },
     {
       "lane_id": "codex.core-subagent-model-pinning-targeted",
-      "run_command": "just --justfile ../justfile core-subagent-model-pinning-targeted",
-      "groups": ["core"],
-      "lane_sets": ["all", "subagents", "core-carry"],
+      "groups": [
+        "core"
+      ],
+      "lane_sets": [
+        "all",
+        "subagents",
+        "core-carry"
+      ],
       "frontier_default": true,
-      "frontier_lane_sets": ["subagents", "core-carry"]
+      "frontier_lane_sets": [
+        "subagents",
+        "core-carry"
+      ],
+      "setup_class": "rust_integration",
+      "working_directory": ".",
+      "script_path": ".github/scripts/validation-lanes/run-just-recipe.sh",
+      "script_args": [
+        "core-subagent-model-pinning-targeted"
+      ],
+      "needs_just": true,
+      "needs_node": false,
+      "needs_nextest": false,
+      "needs_linux_build_deps": true,
+      "needs_dotslash": true,
+      "needs_sccache": true
     },
     {
       "lane_id": "codex.core-subagent-spawn-approval-targeted",
-      "run_command": "just --justfile ../justfile core-subagent-spawn-approval-targeted",
-      "groups": ["core"],
-      "lane_sets": ["all", "subagents", "core-carry"],
+      "groups": [
+        "core"
+      ],
+      "lane_sets": [
+        "all",
+        "subagents",
+        "core-carry"
+      ],
       "frontier_default": true,
-      "frontier_lane_sets": ["subagents", "core-carry"]
+      "frontier_lane_sets": [
+        "subagents",
+        "core-carry"
+      ],
+      "setup_class": "rust_integration",
+      "working_directory": ".",
+      "script_path": ".github/scripts/validation-lanes/run-just-recipe.sh",
+      "script_args": [
+        "core-subagent-spawn-approval-targeted"
+      ],
+      "needs_just": true,
+      "needs_node": false,
+      "needs_nextest": false,
+      "needs_linux_build_deps": true,
+      "needs_dotslash": true,
+      "needs_sccache": true
     },
     {
       "lane_id": "codex.core-persisted-subagent-descendants-targeted",
-      "run_command": "just --justfile ../justfile core-persisted-subagent-descendants-targeted",
-      "groups": ["core"],
-      "lane_sets": ["all", "subagents", "core-carry"],
+      "groups": [
+        "core"
+      ],
+      "lane_sets": [
+        "all",
+        "subagents",
+        "core-carry"
+      ],
       "frontier_default": true,
-      "frontier_lane_sets": ["subagents", "core-carry"]
+      "frontier_lane_sets": [
+        "subagents",
+        "core-carry"
+      ],
+      "setup_class": "rust_minimal",
+      "working_directory": ".",
+      "script_path": ".github/scripts/validation-lanes/run-just-recipe.sh",
+      "script_args": [
+        "core-persisted-subagent-descendants-targeted"
+      ],
+      "needs_just": true,
+      "needs_node": false,
+      "needs_nextest": false,
+      "needs_linux_build_deps": false,
+      "needs_dotslash": false,
+      "needs_sccache": false
     },
     {
       "lane_id": "codex.core-context-serialization-targeted",
-      "run_command": "just --justfile ../justfile core-context-serialization-targeted",
-      "groups": ["core"],
-      "lane_sets": ["all", "core-carry"],
+      "groups": [
+        "core"
+      ],
+      "lane_sets": [
+        "all",
+        "core-carry"
+      ],
       "frontier_default": true,
-      "frontier_lane_sets": ["core-carry"]
+      "frontier_lane_sets": [
+        "core-carry"
+      ],
+      "setup_class": "rust_integration",
+      "working_directory": ".",
+      "script_path": ".github/scripts/validation-lanes/run-just-recipe.sh",
+      "script_args": [
+        "core-context-serialization-targeted"
+      ],
+      "needs_just": true,
+      "needs_node": false,
+      "needs_nextest": false,
+      "needs_linux_build_deps": true,
+      "needs_dotslash": true,
+      "needs_sccache": true
     },
     {
       "lane_id": "codex.core-attestation-targeted",
-      "run_command": "just --justfile ../justfile core-attestation-targeted",
-      "groups": ["attestation"],
-      "lane_sets": ["all", "attestation", "core-carry"],
+      "groups": [
+        "attestation"
+      ],
+      "lane_sets": [
+        "all",
+        "attestation",
+        "core-carry"
+      ],
       "frontier_default": true,
-      "frontier_lane_sets": ["attestation", "core-carry"]
+      "frontier_lane_sets": [
+        "attestation",
+        "core-carry"
+      ],
+      "setup_class": "rust_integration",
+      "working_directory": ".",
+      "script_path": ".github/scripts/validation-lanes/run-just-recipe.sh",
+      "script_args": [
+        "core-attestation-targeted"
+      ],
+      "needs_just": true,
+      "needs_node": false,
+      "needs_nextest": false,
+      "needs_linux_build_deps": true,
+      "needs_dotslash": true,
+      "needs_sccache": true
     },
     {
       "lane_id": "codex.state-spawn-lineage-contract-targeted",
-      "run_command": "just --justfile ../justfile core-state-spawn-lineage-contract-targeted",
-      "groups": ["core"],
-      "lane_sets": ["all", "ledger", "subagents", "core-carry"],
+      "groups": [
+        "core"
+      ],
+      "lane_sets": [
+        "all",
+        "ledger",
+        "subagents",
+        "core-carry"
+      ],
       "frontier_default": true,
-      "frontier_lane_sets": ["ledger", "subagents", "core-carry"]
+      "frontier_lane_sets": [
+        "ledger",
+        "subagents",
+        "core-carry"
+      ],
+      "setup_class": "rust_minimal",
+      "working_directory": ".",
+      "script_path": ".github/scripts/validation-lanes/run-just-recipe.sh",
+      "script_args": [
+        "core-state-spawn-lineage-contract-targeted"
+      ],
+      "needs_just": true,
+      "needs_node": false,
+      "needs_nextest": false,
+      "needs_linux_build_deps": false,
+      "needs_dotslash": false,
+      "needs_sccache": false
     },
     {
       "lane_id": "codex.code-mode-declaration-targeted",
-      "run_command": "just --justfile ../justfile code-mode-declaration-targeted",
-      "groups": ["core"],
-      "lane_sets": ["all", "core-carry"],
-      "install_nextest": true,
+      "groups": [
+        "core"
+      ],
+      "lane_sets": [
+        "all",
+        "core-carry"
+      ],
       "frontier_default": true,
-      "frontier_lane_sets": ["core-carry"]
+      "frontier_lane_sets": [
+        "core-carry"
+      ],
+      "setup_class": "rust_integration",
+      "working_directory": ".",
+      "script_path": ".github/scripts/validation-lanes/run-just-recipe.sh",
+      "script_args": [
+        "code-mode-declaration-targeted"
+      ],
+      "needs_just": true,
+      "needs_node": false,
+      "needs_nextest": false,
+      "needs_linux_build_deps": true,
+      "needs_dotslash": true,
+      "needs_sccache": true
     },
     {
       "lane_id": "codex.app-server-protocol-test",
-      "run_command": "cargo test --locked -p codex-app-server-protocol",
-      "groups": ["ui_protocol"],
-      "lane_sets": ["all", "ui-protocol"],
+      "groups": [
+        "ui_protocol"
+      ],
+      "lane_sets": [
+        "all",
+        "ui-protocol"
+      ],
       "frontier_default": true,
-      "frontier_lane_sets": ["ui-protocol"]
+      "frontier_lane_sets": [
+        "ui-protocol"
+      ],
+      "setup_class": "rust_minimal",
+      "working_directory": ".",
+      "script_path": ".github/scripts/validation-lanes/app-server-protocol-test.sh",
+      "script_args": [],
+      "needs_just": false,
+      "needs_node": false,
+      "needs_nextest": false,
+      "needs_linux_build_deps": false,
+      "needs_dotslash": false,
+      "needs_sccache": false
     },
     {
       "lane_id": "codex.app-server-thread-cwd-targeted",
-      "run_command": "just --justfile ../justfile app-server-thread-cwd-targeted",
-      "groups": ["ui_protocol"],
-      "lane_sets": ["all", "ui-protocol"],
+      "groups": [
+        "ui_protocol"
+      ],
+      "lane_sets": [
+        "all",
+        "ui-protocol"
+      ],
       "frontier_default": true,
-      "frontier_lane_sets": ["ui-protocol"]
+      "frontier_lane_sets": [
+        "ui-protocol"
+      ],
+      "setup_class": "rust_integration",
+      "working_directory": ".",
+      "script_path": ".github/scripts/validation-lanes/run-just-recipe.sh",
+      "script_args": [
+        "app-server-thread-cwd-targeted"
+      ],
+      "needs_just": true,
+      "needs_node": false,
+      "needs_nextest": false,
+      "needs_linux_build_deps": true,
+      "needs_dotslash": true,
+      "needs_sccache": true
     },
     {
       "lane_id": "codex.agent-workflow-sanity",
-      "run_command": "just --justfile ../justfile agent-workflow-sanity",
-      "groups": ["workflow"],
-      "lane_sets": ["all"],
-      "frontier_default": false
+      "groups": [
+        "workflow"
+      ],
+      "lane_sets": [
+        "all"
+      ],
+      "frontier_default": false,
+      "setup_class": "workflow",
+      "working_directory": ".",
+      "script_path": ".github/scripts/validation-lanes/agent-workflow-sanity.sh",
+      "script_args": [],
+      "needs_just": false,
+      "needs_node": false,
+      "needs_nextest": false,
+      "needs_linux_build_deps": false,
+      "needs_dotslash": false,
+      "needs_sccache": false
     },
     {
       "lane_id": "codex.shell-tool-mcp-ci",
-      "run_command": "just --justfile ../justfile shell-tool-mcp-ci",
-      "groups": ["workflow"],
-      "lane_sets": ["all"],
-      "frontier_default": false
+      "groups": [
+        "workflow"
+      ],
+      "lane_sets": [
+        "all"
+      ],
+      "frontier_default": false,
+      "setup_class": "node",
+      "working_directory": ".",
+      "script_path": ".github/scripts/validation-lanes/shell-tool-mcp-ci.sh",
+      "script_args": [],
+      "needs_just": false,
+      "needs_node": false,
+      "needs_nextest": false,
+      "needs_linux_build_deps": false,
+      "needs_dotslash": false,
+      "needs_sccache": false
     },
     {
       "lane_id": "codex.build-policy-sanity",
-      "run_command": "just --justfile ../justfile build-policy-sanity",
-      "groups": ["workflow"],
-      "lane_sets": ["all"],
-      "frontier_default": false
+      "groups": [
+        "workflow"
+      ],
+      "lane_sets": [
+        "all"
+      ],
+      "frontier_default": false,
+      "setup_class": "workflow",
+      "working_directory": ".",
+      "script_path": ".github/scripts/validation-lanes/build-policy-sanity.sh",
+      "script_args": [],
+      "needs_just": false,
+      "needs_node": false,
+      "needs_nextest": false,
+      "needs_linux_build_deps": false,
+      "needs_dotslash": false,
+      "needs_sccache": false
     },
     {
       "lane_id": "codex.workflow-ci-sanity",
-      "run_command": "just --justfile ../.workflow-src/justfile workflow-ci-sanity",
-      "groups": ["workflow"],
-      "lane_sets": ["all"],
-      "frontier_default": false
+      "groups": [
+        "workflow"
+      ],
+      "lane_sets": [
+        "all"
+      ],
+      "frontier_default": false,
+      "setup_class": "workflow",
+      "working_directory": ".",
+      "script_path": ".github/scripts/validation-lanes/workflow-ci-sanity.sh",
+      "script_args": [],
+      "needs_just": false,
+      "needs_node": false,
+      "needs_nextest": false,
+      "needs_linux_build_deps": false,
+      "needs_dotslash": false,
+      "needs_sccache": false
     },
     {
       "lane_id": "codex.downstream-docs-check",
-      "run_command": "just --justfile ../justfile downstream-docs-check",
-      "groups": ["workflow", "docs"],
-      "lane_sets": ["all", "docs"],
+      "groups": [
+        "workflow",
+        "docs"
+      ],
+      "lane_sets": [
+        "all",
+        "docs"
+      ],
       "frontier_default": false,
-      "frontier_lane_sets": ["docs"],
-      "smoke_gate_kinds": ["workflow_docs"]
+      "frontier_lane_sets": [
+        "docs"
+      ],
+      "smoke_gate_kinds": [
+        "workflow_docs"
+      ],
+      "setup_class": "workflow",
+      "working_directory": ".",
+      "script_path": ".github/scripts/validation-lanes/downstream-docs-check.sh",
+      "script_args": [],
+      "needs_just": false,
+      "needs_node": false,
+      "needs_nextest": false,
+      "needs_linux_build_deps": false,
+      "needs_dotslash": false,
+      "needs_sccache": false
     },
     {
       "lane_id": "sedna.release-linux-smoke",
-      "run_command": "just --justfile ../justfile sedna-release-linux-smoke",
-      "groups": ["core"],
-      "lane_sets": ["release"],
+      "groups": [
+        "core"
+      ],
+      "lane_sets": [
+        "release"
+      ],
       "frontier_default": false,
-      "frontier_lane_sets": ["release"]
+      "frontier_lane_sets": [
+        "release"
+      ],
+      "setup_class": "release",
+      "working_directory": ".",
+      "script_path": ".github/scripts/validation-lanes/release-linux-smoke.sh",
+      "script_args": [],
+      "needs_just": false,
+      "needs_node": false,
+      "needs_nextest": false,
+      "needs_linux_build_deps": true,
+      "needs_dotslash": true,
+      "needs_sccache": true
     },
     {
       "lane_id": "downstream-ledger-seam",
-      "run_command": "just --justfile ../justfile downstream-ledger-seam",
-      "groups": ["core", "ledger"],
-      "lane_sets": ["ledger"],
+      "groups": [
+        "core",
+        "ledger"
+      ],
+      "lane_sets": [
+        "ledger"
+      ],
       "explicit_only": true,
-      "status_class": "legacy"
+      "status_class": "legacy",
+      "setup_class": "rust_integration",
+      "working_directory": ".",
+      "script_path": ".github/scripts/validation-lanes/run-just-recipe.sh",
+      "script_args": [
+        "downstream-ledger-seam"
+      ],
+      "needs_just": true,
+      "needs_node": false,
+      "needs_nextest": false,
+      "needs_linux_build_deps": true,
+      "needs_dotslash": true,
+      "needs_sccache": true
     }
   ],
   "followup_routes": [
@@ -396,7 +1125,9 @@
     },
     {
       "route_id": "tui-agent-picker",
-      "lane_ids": ["codex.tui-agent-picker-targeted"],
+      "lane_ids": [
+        "codex.tui-agent-picker-targeted"
+      ],
       "allowed_paths": [
         "codex-rs/tui/src/snapshots/codex_tui__multi_agents__tests__agent_picker*.snap",
         "docs/downstream-regression-matrix.md",
@@ -431,7 +1162,9 @@
     },
     {
       "route_id": "tui-agent-picker-tree",
-      "lane_ids": ["codex.tui-agent-picker-tree-targeted"],
+      "lane_ids": [
+        "codex.tui-agent-picker-tree-targeted"
+      ],
       "allowed_paths": [
         "codex-rs/tui/src/app.rs",
         "codex-rs/tui/src/app/agent_navigation.rs",
@@ -447,7 +1180,9 @@
     },
     {
       "route_id": "core-subagent-model-pinning",
-      "lane_ids": ["codex.core-subagent-model-pinning-targeted"],
+      "lane_ids": [
+        "codex.core-subagent-model-pinning-targeted"
+      ],
       "allowed_paths": [
         "codex-rs/core/src/tools/handlers/multi_agents_common.rs",
         "codex-rs/core/src/tools/handlers/spawn.rs",
@@ -461,7 +1196,9 @@
     },
     {
       "route_id": "blocking-waits",
-      "lane_ids": ["codex.blocking-waits-targeted"],
+      "lane_ids": [
+        "codex.blocking-waits-targeted"
+      ],
       "allowed_paths": [
         "codex-rs/core/tests/suite/unified_exec.rs",
         "codex-rs/core/src/tools/handlers/unified_exec.rs",
@@ -489,7 +1226,9 @@
     },
     {
       "route_id": "custom-prompts",
-      "lane_ids": ["codex.custom-prompts-targeted"],
+      "lane_ids": [
+        "codex.custom-prompts-targeted"
+      ],
       "allowed_paths": [
         "codex-rs/core/src/custom_prompts.rs",
         "codex-rs/core/src/custom_prompts_tests.rs",
@@ -517,7 +1256,9 @@
     },
     {
       "route_id": "mcp-safety",
-      "lane_ids": ["codex.mcp-safety-targeted"],
+      "lane_ids": [
+        "codex.mcp-safety-targeted"
+      ],
       "allowed_paths": [
         "codex-rs/core/src/config/edit.rs",
         "codex-rs/core/src/config/edit_tests.rs",
@@ -565,7 +1306,9 @@
     },
     {
       "route_id": "core-subagent-spawn-approval",
-      "lane_ids": ["codex.core-subagent-spawn-approval-targeted"],
+      "lane_ids": [
+        "codex.core-subagent-spawn-approval-targeted"
+      ],
       "allowed_paths": [
         "codex-rs/core/src/tools/handlers/multi_agents_common.rs",
         "codex-rs/core/src/tools/handlers/multi_agents/spawn.rs",
@@ -628,7 +1371,9 @@
     },
     {
       "route_id": "agent-workflow",
-      "lane_ids": ["codex.agent-workflow-sanity"],
+      "lane_ids": [
+        "codex.agent-workflow-sanity"
+      ],
       "allowed_paths": [
         ".codex/skills/babysit-pr/**",
         ".codex/skills/babysit-gh-workflow-run/**",
@@ -649,7 +1394,9 @@
     },
     {
       "route_id": "shell-tool-mcp",
-      "lane_ids": ["codex.shell-tool-mcp-ci"],
+      "lane_ids": [
+        "codex.shell-tool-mcp-ci"
+      ],
       "allowed_paths": [
         "shell-tool-mcp/**",
         ".github/workflows/shell-tool-mcp-ci.yml",
@@ -670,7 +1417,9 @@
     },
     {
       "route_id": "build-policy",
-      "lane_ids": ["codex.build-policy-sanity"],
+      "lane_ids": [
+        "codex.build-policy-sanity"
+      ],
       "allowed_paths": [
         ".bazelrc",
         "MODULE.bazel",
@@ -722,7 +1471,9 @@
     },
     {
       "route_id": "downstream-docs",
-      "lane_ids": ["codex.downstream-docs-check"],
+      "lane_ids": [
+        "codex.downstream-docs-check"
+      ],
       "allowed_paths": [
         "docs/downstream.md",
         "docs/carry-divergence-ledger.md",

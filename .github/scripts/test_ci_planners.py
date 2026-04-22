@@ -244,16 +244,18 @@ class RouteSelectionTests(unittest.TestCase):
             ["all", *expected_lane_ids],
         )
 
-    def test_workflow_ci_sanity_lane_uses_host_checkout_justfile(self) -> None:
+    def test_workflow_ci_sanity_lane_uses_direct_script_contract(self) -> None:
         lane = next(
             lane
             for lane in self.catalog["lanes"]
             if lane["lane_id"] == "codex.workflow-ci-sanity"
         )
         self.assertEqual(
-            lane["run_command"],
-            "just --justfile ../.workflow-src/justfile workflow-ci-sanity",
+            lane["script_path"],
+            ".github/scripts/validation-lanes/workflow-ci-sanity.sh",
         )
+        self.assertEqual(lane["script_args"], [])
+        self.assertFalse(lane["needs_just"])
 
 
 class ValidationPlanScriptTests(unittest.TestCase):
@@ -273,9 +275,13 @@ class ValidationPlanScriptTests(unittest.TestCase):
 
         self.assertEqual(payload["run_selected_lanes"], "true")
         self.assertEqual(payload["run_smoke_gate"], "false")
-        self.assertEqual(payload["selected_light_lane_count"], 0)
-        self.assertGreater(payload["selected_rust_lane_count"], 0)
-        self.assertGreater(payload["selected_heavy_lane_count"], 0)
+        self.assertEqual(payload["selected_workflow_lane_count"], 0)
+        self.assertEqual(payload["selected_node_lane_count"], 0)
+        self.assertEqual(payload["selected_rust_minimal_lane_count"], 12)
+        self.assertEqual(payload["selected_rust_integration_lane_count"], 3)
+        self.assertEqual(payload["selected_release_lane_count"], 0)
+        self.assertIn("codex.app-server-protocol-test", payload["selected_lane_ids"])
+        self.assertIn("codex.blocking-waits-targeted", payload["selected_lane_ids"])
 
     def test_lab_full_all_tolerates_null_groups_entries(self) -> None:
         catalog_path = REPO_ROOT / ".github/validation-lanes.json"
@@ -302,6 +308,8 @@ class ValidationPlanScriptTests(unittest.TestCase):
         self.assertEqual(payload["run_selected_lanes"], "true")
         self.assertIn("planned_matrix", payload)
         self.assertIn("selected_matrix", payload)
+        self.assertIn("selected_workflow_matrix", payload)
+        self.assertIn("smoke_workflow_matrix", payload)
 
     def test_heavy_plan_splits_selected_lanes_by_setup_class(self) -> None:
         payload = run_script(
@@ -333,12 +341,19 @@ class ValidationPlanScriptTests(unittest.TestCase):
             ),
         )
 
-        self.assertGreater(payload["selected_light_lane_count"], 0)
-        self.assertGreater(payload["selected_rust_lane_count"], 0)
-        self.assertGreater(payload["selected_heavy_lane_count"], 0)
-        self.assertEqual(payload["light_max_parallel"], "8")
-        self.assertEqual(payload["rust_max_parallel"], "4")
-        self.assertEqual(payload["heavy_max_parallel"], "2")
+        self.assertEqual(payload["run_smoke_gate"], "true")
+        self.assertEqual(payload["smoke_gate_kind"], "runtime")
+        self.assertEqual(payload["selected_workflow_lane_count"], 1)
+        self.assertEqual(payload["selected_node_lane_count"], 0)
+        self.assertEqual(payload["selected_rust_minimal_lane_count"], 15)
+        self.assertEqual(payload["selected_rust_integration_lane_count"], 12)
+        self.assertEqual(payload["selected_release_lane_count"], 1)
+        self.assertEqual(payload["smoke_rust_integration_lane_count"], 5)
+        self.assertEqual(payload["workflow_max_parallel"], "8")
+        self.assertEqual(payload["node_max_parallel"], "4")
+        self.assertEqual(payload["rust_minimal_max_parallel"], "6")
+        self.assertEqual(payload["rust_integration_max_parallel"], "2")
+        self.assertEqual(payload["release_max_parallel"], "1")
 
     def test_heavy_plan_route_uses_bounded_shared_spawn_surface(self) -> None:
         payload = run_script(
@@ -403,13 +418,17 @@ class ValidationPlanScriptTests(unittest.TestCase):
 
         self.assertEqual(payload["run_smoke_gate"], "false")
         self.assertEqual(payload["smoke_gate_kind"], "")
-        self.assertEqual(payload["smoke_heavy_lane_count"], 0)
+        self.assertEqual(payload["smoke_rust_integration_lane_count"], 0)
+        self.assertEqual(payload["selected_workflow_lane_count"], 0)
+        self.assertEqual(payload["selected_node_lane_count"], 0)
+        self.assertEqual(payload["selected_rust_minimal_lane_count"], 1)
+        self.assertEqual(payload["selected_rust_integration_lane_count"], 0)
         self.assertEqual(
             [lane["lane_id"] for lane in payload["selected_matrix"]["include"]],
             ["codex.tui-agent-picker-model-surface-targeted"],
         )
 
-    def test_heavy_plan_route_keeps_workflow_ci_changes_on_light_lanes(self) -> None:
+    def test_heavy_plan_route_keeps_workflow_ci_changes_on_workflow_lanes(self) -> None:
         payload = run_script(
             SCRIPTS_DIR / "resolve_validation_plan.py",
             "heavy",
@@ -441,9 +460,11 @@ class ValidationPlanScriptTests(unittest.TestCase):
         )
 
         self.assertEqual(payload["run_smoke_gate"], "false")
-        self.assertEqual(payload["selected_light_lane_count"], 2)
-        self.assertEqual(payload["selected_rust_lane_count"], 0)
-        self.assertEqual(payload["selected_heavy_lane_count"], 0)
+        self.assertEqual(payload["selected_workflow_lane_count"], 2)
+        self.assertEqual(payload["selected_node_lane_count"], 0)
+        self.assertEqual(payload["selected_rust_minimal_lane_count"], 0)
+        self.assertEqual(payload["selected_rust_integration_lane_count"], 0)
+        self.assertEqual(payload["selected_release_lane_count"], 0)
         self.assertEqual(
             [lane["lane_id"] for lane in payload["selected_matrix"]["include"]],
             [
@@ -456,50 +477,32 @@ class ValidationPlanScriptTests(unittest.TestCase):
         payload = load_workflow_payload(REPO_ROOT / ".github/workflows/validation-lab.yml")
         jobs = payload.get("jobs") or {}
 
-        self.assertEqual((jobs.get("light_lanes") or {}).get("needs"), ["metadata"])
-        self.assertEqual((jobs.get("rust_lanes") or {}).get("needs"), ["metadata"])
-        self.assertEqual((jobs.get("heavy_lanes") or {}).get("needs"), ["metadata"])
+        self.assertEqual((jobs.get("workflow_lanes") or {}).get("needs"), ["metadata"])
+        self.assertEqual((jobs.get("node_lanes") or {}).get("needs"), ["metadata"])
+        self.assertEqual((jobs.get("rust_minimal_lanes") or {}).get("needs"), ["metadata"])
+        self.assertEqual((jobs.get("rust_integration_lanes") or {}).get("needs"), ["metadata"])
+        self.assertEqual((jobs.get("release_lanes") or {}).get("needs"), ["metadata"])
 
-    def test_heavy_plan_route_keeps_workflow_ci_changes_on_light_lanes(self) -> None:
-        payload = run_script(
-            SCRIPTS_DIR / "resolve_validation_plan.py",
-            "heavy",
-            "--event-name",
-            "pull_request",
-            "--requested-lane",
-            "",
-            "--run-all-lanes",
-            "false",
-            "--run-core-family",
-            "false",
-            "--run-attestation-family",
-            "false",
-            "--run-workflow-family",
-            "true",
-            "--run-ui-protocol-family",
-            "false",
-            "--run-docs-family",
-            "true",
-            "--changed-files-json",
-            json.dumps(
-                [
-                    ".github/workflows/validation-lab.yml",
-                    ".github/scripts/resolve_validation_plan.py",
-                    "docs/validation_workflow.md",
-                    "justfile",
-                ]
-            ),
-        )
+    def test_validation_lab_summary_waits_for_smoke_and_selected_fanout(self) -> None:
+        payload = load_workflow_payload(REPO_ROOT / ".github/workflows/validation-lab.yml")
+        jobs = payload.get("jobs") or {}
+        summary = jobs.get("summary") or {}
 
-        self.assertEqual(payload["run_smoke_gate"], "false")
-        self.assertEqual(payload["selected_light_lane_count"], 2)
-        self.assertEqual(payload["selected_rust_lane_count"], 0)
-        self.assertEqual(payload["selected_heavy_lane_count"], 0)
         self.assertEqual(
-            [lane["lane_id"] for lane in payload["selected_matrix"]["include"]],
+            summary.get("needs"),
             [
-                "codex.workflow-ci-sanity",
-                "codex.downstream-docs-check",
+                "metadata",
+                "smoke_workflow_lanes",
+                "smoke_node_lanes",
+                "smoke_rust_minimal_lanes",
+                "smoke_rust_integration_lanes",
+                "smoke_release_lanes",
+                "workflow_lanes",
+                "node_lanes",
+                "rust_minimal_lanes",
+                "rust_integration_lanes",
+                "release_lanes",
+                "artifact",
             ],
         )
 
@@ -524,11 +527,16 @@ class ValidationPlanScriptTests(unittest.TestCase):
         self.assertIn("codex.tui-config-refresh-session-targeted", selected_lane_ids)
         self.assertIn("codex.spawn-agent-description-model-surface-targeted", selected_lane_ids)
         self.assertNotIn("codex.tui-agent-picker-model-surface-targeted", selected_lane_ids)
-        self.assertEqual(payload["selected_light_lane_count"], 5)
-        self.assertEqual(payload["selected_rust_lane_count"], 22)
-        self.assertEqual(payload["selected_heavy_lane_count"], 7)
-        self.assertEqual(payload["rust_max_parallel"], "22")
-        self.assertEqual(payload["heavy_max_parallel"], "7")
+        self.assertEqual(payload["selected_workflow_lane_count"], 4)
+        self.assertEqual(payload["selected_node_lane_count"], 1)
+        self.assertEqual(payload["selected_rust_minimal_lane_count"], 15)
+        self.assertEqual(payload["selected_rust_integration_lane_count"], 13)
+        self.assertEqual(payload["selected_release_lane_count"], 1)
+        self.assertEqual(payload["workflow_max_parallel"], "4")
+        self.assertEqual(payload["node_max_parallel"], "1")
+        self.assertEqual(payload["rust_minimal_max_parallel"], "15")
+        self.assertEqual(payload["rust_integration_max_parallel"], "8")
+        self.assertEqual(payload["release_max_parallel"], "1")
 
     def test_validation_lab_frontier_all_can_include_explicit_only_lanes(self) -> None:
         payload = run_script(
@@ -549,36 +557,54 @@ class ValidationPlanScriptTests(unittest.TestCase):
         selected_lane_ids = [lane["lane_id"] for lane in payload["selected_matrix"]["include"]]
         self.assertIn("codex.tui-agent-picker-model-surface-targeted", selected_lane_ids)
         self.assertIn("downstream-ledger-seam", selected_lane_ids)
-        self.assertEqual(payload["selected_light_lane_count"], 5)
-        self.assertEqual(payload["selected_rust_lane_count"], 25)
-        self.assertEqual(payload["selected_heavy_lane_count"], 7)
-        self.assertEqual(payload["rust_max_parallel"], "25")
-        self.assertEqual(payload["heavy_max_parallel"], "7")
+        self.assertEqual(payload["selected_workflow_lane_count"], 4)
+        self.assertEqual(payload["selected_node_lane_count"], 1)
+        self.assertEqual(payload["selected_rust_minimal_lane_count"], 16)
+        self.assertEqual(payload["selected_rust_integration_lane_count"], 14)
+        self.assertEqual(payload["selected_release_lane_count"], 1)
+        self.assertEqual(payload["rust_minimal_max_parallel"], "16")
+        self.assertEqual(payload["rust_integration_max_parallel"], "8")
 
     def test_validation_lab_frontier_all_excludes_smoke_gate_lanes_by_metadata(self) -> None:
         catalog = {
             "lanes": [
                 {
                     "lane_id": "codex.synthetic-runtime-gate",
-                    "run_command": "echo synthetic-gate",
                     "groups": ["core"],
                     "status_class": "active",
-                    "setup_class": "heavy",
+                    "setup_class": "rust_integration",
                     "frontier_role": "sentinel",
                     "summary_family": "synthetic-gate",
                     "cost_class": "high",
+                    "working_directory": ".",
+                    "script_path": ".github/scripts/validation-lanes/run-just-recipe.sh",
+                    "script_args": ["synthetic-runtime-gate"],
+                    "needs_just": True,
+                    "needs_node": False,
+                    "needs_nextest": False,
+                    "needs_linux_build_deps": True,
+                    "needs_dotslash": True,
+                    "needs_sccache": True,
                     "smoke_gate_only": True,
                     "smoke_gate_kinds": ["runtime"],
                 },
                 {
                     "lane_id": "codex.synthetic-real-lane",
-                    "run_command": "echo synthetic-real-lane",
                     "groups": ["core"],
                     "status_class": "active",
-                    "setup_class": "rust",
+                    "setup_class": "rust_minimal",
                     "frontier_role": "sentinel",
                     "summary_family": "synthetic-real-lane",
                     "cost_class": "medium",
+                    "working_directory": ".",
+                    "script_path": ".github/scripts/validation-lanes/run-just-recipe.sh",
+                    "script_args": ["synthetic-real-lane"],
+                    "needs_just": True,
+                    "needs_node": False,
+                    "needs_nextest": False,
+                    "needs_linux_build_deps": False,
+                    "needs_dotslash": False,
+                    "needs_sccache": False,
                 },
             ]
         }
@@ -616,9 +642,11 @@ class ValidationPlanScriptTests(unittest.TestCase):
 
         self.assertEqual(payload["matrix_fail_fast"], "false")
         self.assertEqual(payload["continue_after_smoke_failure"], "true")
-        self.assertEqual(payload["light_max_parallel"], "5")
-        self.assertEqual(payload["rust_max_parallel"], "25")
-        self.assertEqual(payload["heavy_max_parallel"], "12")
+        self.assertEqual(payload["workflow_max_parallel"], "4")
+        self.assertEqual(payload["node_max_parallel"], "1")
+        self.assertEqual(payload["rust_minimal_max_parallel"], "16")
+        self.assertEqual(payload["rust_integration_max_parallel"], "8")
+        self.assertEqual(payload["release_max_parallel"], "1")
         planned_lane_ids = [lane["lane_id"] for lane in payload["planned_matrix"]["include"]]
         selected_lane_ids = payload["selected_lane_ids"]
         self.assertEqual(
@@ -651,14 +679,18 @@ class ValidationPlanScriptTests(unittest.TestCase):
             "${{ steps.meta.outputs.selected_lane_ids }}",
         )
         self.assertEqual(
-            ((jobs.get("smoke_light_lanes") or {}).get("strategy") or {}).get("fail-fast"),
+            ((jobs.get("smoke_rust_integration_lanes") or {}).get("strategy") or {}).get(
+                "fail-fast"
+            ),
             "${{ fromJson(needs.metadata.outputs.matrix_fail_fast) }}",
         )
         self.assertEqual(
-            ((jobs.get("rust_lanes") or {}).get("strategy") or {}).get("fail-fast"),
+            ((jobs.get("rust_integration_lanes") or {}).get("strategy") or {}).get(
+                "fail-fast"
+            ),
             "${{ fromJson(needs.metadata.outputs.matrix_fail_fast) }}",
         )
-        rust_if = (jobs.get("rust_lanes") or {}).get("if") or ""
+        rust_if = (jobs.get("rust_integration_lanes") or {}).get("if") or ""
         self.assertIn("needs.metadata.outputs.continue_after_smoke_failure == 'true'", rust_if)
 
     def test_sedna_heavy_pr_triggers_keep_ready_for_review(self) -> None:
@@ -706,12 +738,16 @@ class ValidationPlanScriptTests(unittest.TestCase):
             summary.get("needs"),
             [
                 "metadata",
-                "smoke_light_lanes",
-                "smoke_rust_lanes",
-                "smoke_heavy_lanes",
-                "light_lanes",
-                "rust_lanes",
-                "heavy_lanes",
+                "smoke_workflow_lanes",
+                "smoke_node_lanes",
+                "smoke_rust_minimal_lanes",
+                "smoke_rust_integration_lanes",
+                "smoke_release_lanes",
+                "workflow_lanes",
+                "node_lanes",
+                "rust_minimal_lanes",
+                "rust_integration_lanes",
+                "release_lanes",
             ],
         )
         summary_if = summary.get("if") or ""
@@ -732,6 +768,14 @@ class ValidationPlanScriptTests(unittest.TestCase):
         )
         self.assertIn(
             '--head-sha "${{ needs.metadata.outputs.checkout_sha }}"',
+            (steps[2] or {}).get("run") or "",
+        )
+        self.assertIn(
+            '--workflow-result "${WORKFLOW_RESULT}"',
+            (steps[2] or {}).get("run") or "",
+        )
+        self.assertIn(
+            '--rust-minimal-result "${RUST_MINIMAL_RESULT}"',
             (steps[2] or {}).get("run") or "",
         )
         self.assertEqual((steps[3] or {}).get("uses"), "actions/upload-artifact@v7")

@@ -109,28 +109,38 @@ jobs:
       dedupe_reason: ${{ steps.meta.outputs.dedupe_reason }}
       smoke_gate_kind: ${{ steps.meta.outputs.smoke_gate_kind }}
       smoke_matrix: ${{ steps.meta.outputs.smoke_matrix }}
-      smoke_light_matrix: ${{ steps.meta.outputs.smoke_light_matrix }}
-      smoke_rust_matrix: ${{ steps.meta.outputs.smoke_rust_matrix }}
-      smoke_heavy_matrix: ${{ steps.meta.outputs.smoke_heavy_matrix }}
-      smoke_light_lane_count: ${{ steps.meta.outputs.smoke_light_lane_count }}
-      smoke_rust_lane_count: ${{ steps.meta.outputs.smoke_rust_lane_count }}
-      smoke_heavy_lane_count: ${{ steps.meta.outputs.smoke_heavy_lane_count }}
+      smoke_workflow_matrix: ${{ steps.meta.outputs.smoke_workflow_matrix }}
+      smoke_node_matrix: ${{ steps.meta.outputs.smoke_node_matrix }}
+      smoke_rust_minimal_matrix: ${{ steps.meta.outputs.smoke_rust_minimal_matrix }}
+      smoke_rust_integration_matrix: ${{ steps.meta.outputs.smoke_rust_integration_matrix }}
+      smoke_release_matrix: ${{ steps.meta.outputs.smoke_release_matrix }}
+      smoke_workflow_lane_count: ${{ steps.meta.outputs.smoke_workflow_lane_count }}
+      smoke_node_lane_count: ${{ steps.meta.outputs.smoke_node_lane_count }}
+      smoke_rust_minimal_lane_count: ${{ steps.meta.outputs.smoke_rust_minimal_lane_count }}
+      smoke_rust_integration_lane_count: ${{ steps.meta.outputs.smoke_rust_integration_lane_count }}
+      smoke_release_lane_count: ${{ steps.meta.outputs.smoke_release_lane_count }}
       run_smoke_gate: ${{ steps.meta.outputs.run_smoke_gate }}
       run_selected_lanes: ${{ steps.meta.outputs.run_selected_lanes }}
       planned_matrix: ${{ steps.meta.outputs.planned_matrix }}
       selected_matrix: ${{ steps.meta.outputs.selected_matrix }}
-      selected_light_matrix: ${{ steps.meta.outputs.selected_light_matrix }}
-      selected_rust_matrix: ${{ steps.meta.outputs.selected_rust_matrix }}
-      selected_heavy_matrix: ${{ steps.meta.outputs.selected_heavy_matrix }}
+      selected_workflow_matrix: ${{ steps.meta.outputs.selected_workflow_matrix }}
+      selected_node_matrix: ${{ steps.meta.outputs.selected_node_matrix }}
+      selected_rust_minimal_matrix: ${{ steps.meta.outputs.selected_rust_minimal_matrix }}
+      selected_rust_integration_matrix: ${{ steps.meta.outputs.selected_rust_integration_matrix }}
+      selected_release_matrix: ${{ steps.meta.outputs.selected_release_matrix }}
       selected_lane_ids: ${{ steps.meta.outputs.selected_lane_ids }}
-      selected_light_lane_count: ${{ steps.meta.outputs.selected_light_lane_count }}
-      selected_rust_lane_count: ${{ steps.meta.outputs.selected_rust_lane_count }}
-      selected_heavy_lane_count: ${{ steps.meta.outputs.selected_heavy_lane_count }}
+      selected_workflow_lane_count: ${{ steps.meta.outputs.selected_workflow_lane_count }}
+      selected_node_lane_count: ${{ steps.meta.outputs.selected_node_lane_count }}
+      selected_rust_minimal_lane_count: ${{ steps.meta.outputs.selected_rust_minimal_lane_count }}
+      selected_rust_integration_lane_count: ${{ steps.meta.outputs.selected_rust_integration_lane_count }}
+      selected_release_lane_count: ${{ steps.meta.outputs.selected_release_lane_count }}
       matrix_fail_fast: ${{ steps.meta.outputs.matrix_fail_fast }}
       continue_after_smoke_failure: ${{ steps.meta.outputs.continue_after_smoke_failure }}
-      light_max_parallel: ${{ steps.meta.outputs.light_max_parallel }}
-      rust_max_parallel: ${{ steps.meta.outputs.rust_max_parallel }}
-      heavy_max_parallel: ${{ steps.meta.outputs.heavy_max_parallel }}
+      workflow_max_parallel: ${{ steps.meta.outputs.workflow_max_parallel }}
+      node_max_parallel: ${{ steps.meta.outputs.node_max_parallel }}
+      rust_minimal_max_parallel: ${{ steps.meta.outputs.rust_minimal_max_parallel }}
+      rust_integration_max_parallel: ${{ steps.meta.outputs.rust_integration_max_parallel }}
+      release_max_parallel: ${{ steps.meta.outputs.release_max_parallel }}
     steps:
       - uses: actions/checkout@v6
         with:
@@ -213,27 +223,57 @@ jobs:
 
           files_json="$(printf '%s\n' "${files[@]}" | jq -R . | jq -sc .)"
           selection_meta="$(python3 .github/scripts/resolve_validation_plan.py heavy --event-name '${{ github.event_name }}' --requested-lane '${{ inputs.lane }}' --run-all-lanes "${run_all_lanes}" --run-core-family "${run_core_family}" --run-attestation-family "${run_attestation_family}" --run-workflow-family "${run_workflow_family}" --run-ui-protocol-family "${run_ui_protocol_family}" --run-docs-family "${run_docs_family}" --changed-files-json "${files_json}")"
-          run_smoke_gate="$(SELECTION_META="${selection_meta}" python3 -c 'import json, os; print(json.loads(os.environ["SELECTION_META"])["run_smoke_gate"])')"
-          smoke_gate_kind="$(SELECTION_META="${selection_meta}" python3 -c 'import json, os; print(json.loads(os.environ["SELECTION_META"])["smoke_gate_kind"])')"
-          smoke_json="$(SELECTION_META="${selection_meta}" python3 -c 'import json, os; print(json.dumps(json.loads(os.environ["SELECTION_META"])["smoke_matrix"], separators=(",", ":")))')"
-          smoke_light_json="$(SELECTION_META="${selection_meta}" python3 -c 'import json, os; print(json.dumps(json.loads(os.environ["SELECTION_META"])["smoke_light_matrix"], separators=(",", ":")))')"
-          smoke_rust_json="$(SELECTION_META="${selection_meta}" python3 -c 'import json, os; print(json.dumps(json.loads(os.environ["SELECTION_META"])["smoke_rust_matrix"], separators=(",", ":")))')"
-          smoke_heavy_json="$(SELECTION_META="${selection_meta}" python3 -c 'import json, os; print(json.dumps(json.loads(os.environ["SELECTION_META"])["smoke_heavy_matrix"], separators=(",", ":")))')"
-          planned_json="$(SELECTION_META="${selection_meta}" python3 -c 'import json, os; print(json.dumps(json.loads(os.environ["SELECTION_META"])["planned_matrix"], separators=(",", ":")))')"
-          selected_json="$(SELECTION_META="${selection_meta}" python3 -c 'import json, os; print(json.dumps(json.loads(os.environ["SELECTION_META"])["selected_matrix"], separators=(",", ":")))')"
-          selected_light_json="$(SELECTION_META="${selection_meta}" python3 -c 'import json, os; print(json.dumps(json.loads(os.environ["SELECTION_META"])["selected_light_matrix"], separators=(",", ":")))')"
-          selected_rust_json="$(SELECTION_META="${selection_meta}" python3 -c 'import json, os; print(json.dumps(json.loads(os.environ["SELECTION_META"])["selected_rust_matrix"], separators=(",", ":")))')"
-          selected_heavy_json="$(SELECTION_META="${selection_meta}" python3 -c 'import json, os; print(json.dumps(json.loads(os.environ["SELECTION_META"])["selected_heavy_matrix"], separators=(",", ":")))')"
-          selected_lane_ids_json="$(SELECTION_META="${selection_meta}" python3 -c 'import json, os; print(json.dumps(json.loads(os.environ["SELECTION_META"])["selected_lane_ids"], separators=(",", ":")))')"
-          smoke_light_lane_count="$(SELECTION_META="${selection_meta}" python3 -c 'import json, os; print(json.loads(os.environ["SELECTION_META"])["smoke_light_lane_count"])')"
-          smoke_rust_lane_count="$(SELECTION_META="${selection_meta}" python3 -c 'import json, os; print(json.loads(os.environ["SELECTION_META"])["smoke_rust_lane_count"])')"
-          smoke_heavy_lane_count="$(SELECTION_META="${selection_meta}" python3 -c 'import json, os; print(json.loads(os.environ["SELECTION_META"])["smoke_heavy_lane_count"])')"
-          selected_light_lane_count="$(SELECTION_META="${selection_meta}" python3 -c 'import json, os; print(json.loads(os.environ["SELECTION_META"])["selected_light_lane_count"])')"
-          selected_rust_lane_count="$(SELECTION_META="${selection_meta}" python3 -c 'import json, os; print(json.loads(os.environ["SELECTION_META"])["selected_rust_lane_count"])')"
-          selected_heavy_lane_count="$(SELECTION_META="${selection_meta}" python3 -c 'import json, os; print(json.loads(os.environ["SELECTION_META"])["selected_heavy_lane_count"])')"
-          light_max_parallel="$(SELECTION_META="${selection_meta}" python3 -c 'import json, os; print(json.loads(os.environ["SELECTION_META"])["light_max_parallel"])')"
-          rust_max_parallel="$(SELECTION_META="${selection_meta}" python3 -c 'import json, os; print(json.loads(os.environ["SELECTION_META"])["rust_max_parallel"])')"
-          heavy_max_parallel="$(SELECTION_META="${selection_meta}" python3 -c 'import json, os; print(json.loads(os.environ["SELECTION_META"])["heavy_max_parallel"])')"
+
+          parse_meta() {
+            local field="$1"
+            python3 - "$field" <<'PY'
+          import json
+          import os
+          import sys
+
+          field = sys.argv[1]
+          meta = json.loads(os.environ["SELECTION_META"])
+          value = meta[field]
+          if isinstance(value, (dict, list)):
+              print(json.dumps(value, separators=(",", ":")))
+          else:
+              print(value)
+          PY
+          }
+
+          run_smoke_gate="$(SELECTION_META="${selection_meta}" parse_meta "run_smoke_gate")"
+          smoke_gate_kind="$(SELECTION_META="${selection_meta}" parse_meta "smoke_gate_kind")"
+          smoke_json="$(SELECTION_META="${selection_meta}" parse_meta "smoke_matrix")"
+          smoke_workflow_json="$(SELECTION_META="${selection_meta}" parse_meta "smoke_workflow_matrix")"
+          smoke_node_json="$(SELECTION_META="${selection_meta}" parse_meta "smoke_node_matrix")"
+          smoke_rust_minimal_json="$(SELECTION_META="${selection_meta}" parse_meta "smoke_rust_minimal_matrix")"
+          smoke_rust_integration_json="$(SELECTION_META="${selection_meta}" parse_meta "smoke_rust_integration_matrix")"
+          smoke_release_json="$(SELECTION_META="${selection_meta}" parse_meta "smoke_release_matrix")"
+          planned_json="$(SELECTION_META="${selection_meta}" parse_meta "planned_matrix")"
+          selected_json="$(SELECTION_META="${selection_meta}" parse_meta "selected_matrix")"
+          selected_workflow_json="$(SELECTION_META="${selection_meta}" parse_meta "selected_workflow_matrix")"
+          selected_node_json="$(SELECTION_META="${selection_meta}" parse_meta "selected_node_matrix")"
+          selected_rust_minimal_json="$(SELECTION_META="${selection_meta}" parse_meta "selected_rust_minimal_matrix")"
+          selected_rust_integration_json="$(SELECTION_META="${selection_meta}" parse_meta "selected_rust_integration_matrix")"
+          selected_release_json="$(SELECTION_META="${selection_meta}" parse_meta "selected_release_matrix")"
+          selected_lane_ids_json="$(SELECTION_META="${selection_meta}" parse_meta "selected_lane_ids")"
+          smoke_workflow_lane_count="$(SELECTION_META="${selection_meta}" parse_meta "smoke_workflow_lane_count")"
+          smoke_node_lane_count="$(SELECTION_META="${selection_meta}" parse_meta "smoke_node_lane_count")"
+          smoke_rust_minimal_lane_count="$(SELECTION_META="${selection_meta}" parse_meta "smoke_rust_minimal_lane_count")"
+          smoke_rust_integration_lane_count="$(SELECTION_META="${selection_meta}" parse_meta "smoke_rust_integration_lane_count")"
+          smoke_release_lane_count="$(SELECTION_META="${selection_meta}" parse_meta "smoke_release_lane_count")"
+          selected_workflow_lane_count="$(SELECTION_META="${selection_meta}" parse_meta "selected_workflow_lane_count")"
+          selected_node_lane_count="$(SELECTION_META="${selection_meta}" parse_meta "selected_node_lane_count")"
+          selected_rust_minimal_lane_count="$(SELECTION_META="${selection_meta}" parse_meta "selected_rust_minimal_lane_count")"
+          selected_rust_integration_lane_count="$(SELECTION_META="${selection_meta}" parse_meta "selected_rust_integration_lane_count")"
+          selected_release_lane_count="$(SELECTION_META="${selection_meta}" parse_meta "selected_release_lane_count")"
+          workflow_max_parallel="$(SELECTION_META="${selection_meta}" parse_meta "workflow_max_parallel")"
+          node_max_parallel="$(SELECTION_META="${selection_meta}" parse_meta "node_max_parallel")"
+          rust_minimal_max_parallel="$(SELECTION_META="${selection_meta}" parse_meta "rust_minimal_max_parallel")"
+          rust_integration_max_parallel="$(SELECTION_META="${selection_meta}" parse_meta "rust_integration_max_parallel")"
+          release_max_parallel="$(SELECTION_META="${selection_meta}" parse_meta "release_max_parallel")"
+          matrix_fail_fast="$(SELECTION_META="${selection_meta}" parse_meta "matrix_fail_fast")"
+          continue_after_smoke_failure="$(SELECTION_META="${selection_meta}" parse_meta "continue_after_smoke_failure")"
           planner_fingerprint="$(SELECTION_META="${selection_meta}" python3 -c 'import hashlib, json, os; payload = json.loads(os.environ["SELECTION_META"]); source = json.dumps({"requested_lane": "${{ inputs.lane }}", "run_smoke_gate": payload["run_smoke_gate"], "selected_lane_ids": payload["selected_lane_ids"]}, sort_keys=True, separators=(",", ":")); print(hashlib.sha256(source.encode("utf-8")).hexdigest()[:16])')"
           dedupe_reason=""
           run_selected_lanes="true"
@@ -260,21 +300,29 @@ jobs:
               run_selected_lanes="false"
               smoke_gate_kind=""
               smoke_json='{"include":[]}'
-              smoke_light_json='{"include":[]}'
-              smoke_rust_json='{"include":[]}'
-              smoke_heavy_json='{"include":[]}'
+              smoke_workflow_json='{"include":[]}'
+              smoke_node_json='{"include":[]}'
+              smoke_rust_minimal_json='{"include":[]}'
+              smoke_rust_integration_json='{"include":[]}'
+              smoke_release_json='{"include":[]}'
               planned_json='{"include":[]}'
               selected_json='{"include":[]}'
-              selected_light_json='{"include":[]}'
-              selected_rust_json='{"include":[]}'
-              selected_heavy_json='{"include":[]}'
+              selected_workflow_json='{"include":[]}'
+              selected_node_json='{"include":[]}'
+              selected_rust_minimal_json='{"include":[]}'
+              selected_rust_integration_json='{"include":[]}'
+              selected_release_json='{"include":[]}'
               selected_lane_ids_json='[]'
-              smoke_light_lane_count='0'
-              smoke_rust_lane_count='0'
-              smoke_heavy_lane_count='0'
-              selected_light_lane_count='0'
-              selected_rust_lane_count='0'
-              selected_heavy_lane_count='0'
+              smoke_workflow_lane_count='0'
+              smoke_node_lane_count='0'
+              smoke_rust_minimal_lane_count='0'
+              smoke_rust_integration_lane_count='0'
+              smoke_release_lane_count='0'
+              selected_workflow_lane_count='0'
+              selected_node_lane_count='0'
+              selected_rust_minimal_lane_count='0'
+              selected_rust_integration_lane_count='0'
+              selected_release_lane_count='0'
             fi
           fi
 
@@ -286,28 +334,38 @@ jobs:
             echo "dedupe_reason=${dedupe_reason}"
             echo "smoke_gate_kind=${smoke_gate_kind}"
             echo "smoke_matrix=${smoke_json}"
-            echo "smoke_light_matrix=${smoke_light_json}"
-            echo "smoke_rust_matrix=${smoke_rust_json}"
-            echo "smoke_heavy_matrix=${smoke_heavy_json}"
-            echo "smoke_light_lane_count=${smoke_light_lane_count}"
-            echo "smoke_rust_lane_count=${smoke_rust_lane_count}"
-            echo "smoke_heavy_lane_count=${smoke_heavy_lane_count}"
+            echo "smoke_workflow_matrix=${smoke_workflow_json}"
+            echo "smoke_node_matrix=${smoke_node_json}"
+            echo "smoke_rust_minimal_matrix=${smoke_rust_minimal_json}"
+            echo "smoke_rust_integration_matrix=${smoke_rust_integration_json}"
+            echo "smoke_release_matrix=${smoke_release_json}"
+            echo "smoke_workflow_lane_count=${smoke_workflow_lane_count}"
+            echo "smoke_node_lane_count=${smoke_node_lane_count}"
+            echo "smoke_rust_minimal_lane_count=${smoke_rust_minimal_lane_count}"
+            echo "smoke_rust_integration_lane_count=${smoke_rust_integration_lane_count}"
+            echo "smoke_release_lane_count=${smoke_release_lane_count}"
             echo "run_smoke_gate=${run_smoke_gate}"
-            echo "matrix_fail_fast=$(SELECTION_META="${selection_meta}" python3 -c 'import json, os; print(json.loads(os.environ["SELECTION_META"])["matrix_fail_fast"])')"
-            echo "continue_after_smoke_failure=$(SELECTION_META="${selection_meta}" python3 -c 'import json, os; print(json.loads(os.environ["SELECTION_META"])["continue_after_smoke_failure"])')"
+            echo "matrix_fail_fast=${matrix_fail_fast}"
+            echo "continue_after_smoke_failure=${continue_after_smoke_failure}"
             echo "run_selected_lanes=${run_selected_lanes}"
             echo "planned_matrix=${planned_json}"
             echo "selected_matrix=${selected_json}"
-            echo "selected_light_matrix=${selected_light_json}"
-            echo "selected_rust_matrix=${selected_rust_json}"
-            echo "selected_heavy_matrix=${selected_heavy_json}"
+            echo "selected_workflow_matrix=${selected_workflow_json}"
+            echo "selected_node_matrix=${selected_node_json}"
+            echo "selected_rust_minimal_matrix=${selected_rust_minimal_json}"
+            echo "selected_rust_integration_matrix=${selected_rust_integration_json}"
+            echo "selected_release_matrix=${selected_release_json}"
             echo "selected_lane_ids=${selected_lane_ids_json}"
-            echo "selected_light_lane_count=${selected_light_lane_count}"
-            echo "selected_rust_lane_count=${selected_rust_lane_count}"
-            echo "selected_heavy_lane_count=${selected_heavy_lane_count}"
-            echo "light_max_parallel=${light_max_parallel}"
-            echo "rust_max_parallel=${rust_max_parallel}"
-            echo "heavy_max_parallel=${heavy_max_parallel}"
+            echo "selected_workflow_lane_count=${selected_workflow_lane_count}"
+            echo "selected_node_lane_count=${selected_node_lane_count}"
+            echo "selected_rust_minimal_lane_count=${selected_rust_minimal_lane_count}"
+            echo "selected_rust_integration_lane_count=${selected_rust_integration_lane_count}"
+            echo "selected_release_lane_count=${selected_release_lane_count}"
+            echo "workflow_max_parallel=${workflow_max_parallel}"
+            echo "node_max_parallel=${node_max_parallel}"
+            echo "rust_minimal_max_parallel=${rust_minimal_max_parallel}"
+            echo "rust_integration_max_parallel=${rust_integration_max_parallel}"
+            echo "release_max_parallel=${release_max_parallel}"
           } >> "$GITHUB_OUTPUT"
 
           {
@@ -324,20 +382,21 @@ jobs:
             fi
           } >> "$GITHUB_STEP_SUMMARY"
 
-  smoke_light_lanes:
-    name: Heavy preflight smoke (light)
-    needs: metadata
+  smoke_workflow_lanes:
+    name: Heavy preflight smoke (workflow)
+    needs:
+      - metadata
     if: >-
       ${{
         needs.metadata.result == 'success' &&
         needs.metadata.outputs.run_smoke_gate == 'true' &&
-        fromJson(needs.metadata.outputs.smoke_light_lane_count) > 0
+        fromJson(needs.metadata.outputs.smoke_workflow_lane_count) > 0
       }}
     strategy:
       fail-fast: ${{ fromJson(needs.metadata.outputs.matrix_fail_fast) }}
-      max-parallel: ${{ fromJson(needs.metadata.outputs.light_max_parallel) }}
-      matrix: ${{ fromJson(needs.metadata.outputs.smoke_light_matrix) }}
-    uses: ./.github/workflows/_sedna-linux-rust.yml
+      max-parallel: ${{ fromJson(needs.metadata.outputs.workflow_max_parallel) }}
+      matrix: ${{ fromJson(needs.metadata.outputs.smoke_workflow_matrix) }}
+    uses: ./.github/workflows/_validation-lane-workflow.yml
     with:
       checkout_ref: ${{ needs.metadata.outputs.checkout_ref }}
       lane_id: ${{ matrix.lane_id }}
@@ -349,23 +408,31 @@ jobs:
       frontier_role: ${{ matrix.frontier_role }}
       summary_family: ${{ matrix.summary_family }}
       cost_class: ${{ matrix.cost_class }}
-      run_command: ${{ matrix.run_command }}
-      install_nextest: ${{ matrix.install_nextest }}
+      working_directory: ${{ matrix.working_directory }}
+      script_path: ${{ matrix.script_path }}
+      script_args_json: ${{ toJson(matrix.script_args) }}
+      needs_just: ${{ matrix.needs_just }}
+      needs_node: ${{ matrix.needs_node }}
+      needs_nextest: ${{ matrix.needs_nextest }}
+      needs_linux_build_deps: ${{ matrix.needs_linux_build_deps }}
+      needs_dotslash: ${{ matrix.needs_dotslash }}
+      needs_sccache: ${{ matrix.needs_sccache }}
 
-  smoke_rust_lanes:
-    name: Heavy preflight smoke (rust)
-    needs: metadata
+  smoke_node_lanes:
+    name: Heavy preflight smoke (node)
+    needs:
+      - metadata
     if: >-
       ${{
         needs.metadata.result == 'success' &&
         needs.metadata.outputs.run_smoke_gate == 'true' &&
-        fromJson(needs.metadata.outputs.smoke_rust_lane_count) > 0
+        fromJson(needs.metadata.outputs.smoke_node_lane_count) > 0
       }}
     strategy:
       fail-fast: ${{ fromJson(needs.metadata.outputs.matrix_fail_fast) }}
-      max-parallel: ${{ fromJson(needs.metadata.outputs.rust_max_parallel) }}
-      matrix: ${{ fromJson(needs.metadata.outputs.smoke_rust_matrix) }}
-    uses: ./.github/workflows/_sedna-linux-rust.yml
+      max-parallel: ${{ fromJson(needs.metadata.outputs.node_max_parallel) }}
+      matrix: ${{ fromJson(needs.metadata.outputs.smoke_node_matrix) }}
+    uses: ./.github/workflows/_validation-lane-node.yml
     with:
       checkout_ref: ${{ needs.metadata.outputs.checkout_ref }}
       lane_id: ${{ matrix.lane_id }}
@@ -377,23 +444,31 @@ jobs:
       frontier_role: ${{ matrix.frontier_role }}
       summary_family: ${{ matrix.summary_family }}
       cost_class: ${{ matrix.cost_class }}
-      run_command: ${{ matrix.run_command }}
-      install_nextest: ${{ matrix.install_nextest }}
+      working_directory: ${{ matrix.working_directory }}
+      script_path: ${{ matrix.script_path }}
+      script_args_json: ${{ toJson(matrix.script_args) }}
+      needs_just: ${{ matrix.needs_just }}
+      needs_node: ${{ matrix.needs_node }}
+      needs_nextest: ${{ matrix.needs_nextest }}
+      needs_linux_build_deps: ${{ matrix.needs_linux_build_deps }}
+      needs_dotslash: ${{ matrix.needs_dotslash }}
+      needs_sccache: ${{ matrix.needs_sccache }}
 
-  smoke_heavy_lanes:
-    name: Heavy preflight smoke (heavy)
-    needs: metadata
+  smoke_rust_minimal_lanes:
+    name: Heavy preflight smoke (rust minimal)
+    needs:
+      - metadata
     if: >-
       ${{
         needs.metadata.result == 'success' &&
         needs.metadata.outputs.run_smoke_gate == 'true' &&
-        fromJson(needs.metadata.outputs.smoke_heavy_lane_count) > 0
+        fromJson(needs.metadata.outputs.smoke_rust_minimal_lane_count) > 0
       }}
     strategy:
       fail-fast: ${{ fromJson(needs.metadata.outputs.matrix_fail_fast) }}
-      max-parallel: ${{ fromJson(needs.metadata.outputs.heavy_max_parallel) }}
-      matrix: ${{ fromJson(needs.metadata.outputs.smoke_heavy_matrix) }}
-    uses: ./.github/workflows/_sedna-linux-rust.yml
+      max-parallel: ${{ fromJson(needs.metadata.outputs.rust_minimal_max_parallel) }}
+      matrix: ${{ fromJson(needs.metadata.outputs.smoke_rust_minimal_matrix) }}
+    uses: ./.github/workflows/_validation-lane-rust-minimal.yml
     with:
       checkout_ref: ${{ needs.metadata.outputs.checkout_ref }}
       lane_id: ${{ matrix.lane_id }}
@@ -405,33 +480,116 @@ jobs:
       frontier_role: ${{ matrix.frontier_role }}
       summary_family: ${{ matrix.summary_family }}
       cost_class: ${{ matrix.cost_class }}
-      run_command: ${{ matrix.run_command }}
-      install_nextest: ${{ matrix.install_nextest }}
+      working_directory: ${{ matrix.working_directory }}
+      script_path: ${{ matrix.script_path }}
+      script_args_json: ${{ toJson(matrix.script_args) }}
+      needs_just: ${{ matrix.needs_just }}
+      needs_node: ${{ matrix.needs_node }}
+      needs_nextest: ${{ matrix.needs_nextest }}
+      needs_linux_build_deps: ${{ matrix.needs_linux_build_deps }}
+      needs_dotslash: ${{ matrix.needs_dotslash }}
+      needs_sccache: ${{ matrix.needs_sccache }}
 
-  light_lanes:
+  smoke_rust_integration_lanes:
+    name: Heavy preflight smoke (rust integration)
     needs:
       - metadata
-      - smoke_light_lanes
-      - smoke_rust_lanes
-      - smoke_heavy_lanes
+    if: >-
+      ${{
+        needs.metadata.result == 'success' &&
+        needs.metadata.outputs.run_smoke_gate == 'true' &&
+        fromJson(needs.metadata.outputs.smoke_rust_integration_lane_count) > 0
+      }}
+    strategy:
+      fail-fast: ${{ fromJson(needs.metadata.outputs.matrix_fail_fast) }}
+      max-parallel: ${{ fromJson(needs.metadata.outputs.rust_integration_max_parallel) }}
+      matrix: ${{ fromJson(needs.metadata.outputs.smoke_rust_integration_matrix) }}
+    uses: ./.github/workflows/_validation-lane-rust-integration.yml
+    with:
+      checkout_ref: ${{ needs.metadata.outputs.checkout_ref }}
+      lane_id: ${{ matrix.lane_id }}
+      lane_phase: smoke_gate
+      summary_title: ${{ matrix.lane_id }}
+      status_class: ${{ matrix.status_class }}
+      frontier_default: ${{ matrix.frontier_default }}
+      setup_class: ${{ matrix.setup_class }}
+      frontier_role: ${{ matrix.frontier_role }}
+      summary_family: ${{ matrix.summary_family }}
+      cost_class: ${{ matrix.cost_class }}
+      working_directory: ${{ matrix.working_directory }}
+      script_path: ${{ matrix.script_path }}
+      script_args_json: ${{ toJson(matrix.script_args) }}
+      needs_just: ${{ matrix.needs_just }}
+      needs_node: ${{ matrix.needs_node }}
+      needs_nextest: ${{ matrix.needs_nextest }}
+      needs_linux_build_deps: ${{ matrix.needs_linux_build_deps }}
+      needs_dotslash: ${{ matrix.needs_dotslash }}
+      needs_sccache: ${{ matrix.needs_sccache }}
+
+  smoke_release_lanes:
+    name: Heavy preflight smoke (release)
+    needs:
+      - metadata
+    if: >-
+      ${{
+        needs.metadata.result == 'success' &&
+        needs.metadata.outputs.run_smoke_gate == 'true' &&
+        fromJson(needs.metadata.outputs.smoke_release_lane_count) > 0
+      }}
+    strategy:
+      fail-fast: ${{ fromJson(needs.metadata.outputs.matrix_fail_fast) }}
+      max-parallel: ${{ fromJson(needs.metadata.outputs.release_max_parallel) }}
+      matrix: ${{ fromJson(needs.metadata.outputs.smoke_release_matrix) }}
+    uses: ./.github/workflows/_validation-lane-release.yml
+    with:
+      checkout_ref: ${{ needs.metadata.outputs.checkout_ref }}
+      lane_id: ${{ matrix.lane_id }}
+      lane_phase: smoke_gate
+      summary_title: ${{ matrix.lane_id }}
+      status_class: ${{ matrix.status_class }}
+      frontier_default: ${{ matrix.frontier_default }}
+      setup_class: ${{ matrix.setup_class }}
+      frontier_role: ${{ matrix.frontier_role }}
+      summary_family: ${{ matrix.summary_family }}
+      cost_class: ${{ matrix.cost_class }}
+      working_directory: ${{ matrix.working_directory }}
+      script_path: ${{ matrix.script_path }}
+      script_args_json: ${{ toJson(matrix.script_args) }}
+      needs_just: ${{ matrix.needs_just }}
+      needs_node: ${{ matrix.needs_node }}
+      needs_nextest: ${{ matrix.needs_nextest }}
+      needs_linux_build_deps: ${{ matrix.needs_linux_build_deps }}
+      needs_dotslash: ${{ matrix.needs_dotslash }}
+      needs_sccache: ${{ matrix.needs_sccache }}
+
+  workflow_lanes:
+    needs:
+      - metadata
+      - smoke_workflow_lanes
+      - smoke_node_lanes
+      - smoke_rust_minimal_lanes
+      - smoke_rust_integration_lanes
+      - smoke_release_lanes
     if: >-
       ${{
         always() &&
-        fromJson(needs.metadata.outputs.selected_light_lane_count) > 0 &&
         needs.metadata.result == 'success' &&
+        fromJson(needs.metadata.outputs.selected_workflow_lane_count) > 0 &&
         (
           needs.metadata.outputs.continue_after_smoke_failure == 'true' ||
-          (needs.smoke_light_lanes.result == 'success' || needs.smoke_light_lanes.result == 'skipped') &&
-          (needs.smoke_rust_lanes.result == 'success' || needs.smoke_rust_lanes.result == 'skipped') &&
-          (needs.smoke_heavy_lanes.result == 'success' || needs.smoke_heavy_lanes.result == 'skipped')
+          (needs.smoke_workflow_lanes.result == 'success' || needs.smoke_workflow_lanes.result == 'skipped') &&
+          (needs.smoke_node_lanes.result == 'success' || needs.smoke_node_lanes.result == 'skipped') &&
+          (needs.smoke_rust_minimal_lanes.result == 'success' || needs.smoke_rust_minimal_lanes.result == 'skipped') &&
+          (needs.smoke_rust_integration_lanes.result == 'success' || needs.smoke_rust_integration_lanes.result == 'skipped') &&
+          (needs.smoke_release_lanes.result == 'success' || needs.smoke_release_lanes.result == 'skipped')
         ) &&
         needs.metadata.outputs.run_selected_lanes == 'true'
       }}
     strategy:
       fail-fast: ${{ fromJson(needs.metadata.outputs.matrix_fail_fast) }}
-      max-parallel: ${{ fromJson(needs.metadata.outputs.light_max_parallel) }}
-      matrix: ${{ fromJson(needs.metadata.outputs.selected_light_matrix) }}
-    uses: ./.github/workflows/_sedna-linux-rust.yml
+      max-parallel: ${{ fromJson(needs.metadata.outputs.workflow_max_parallel) }}
+      matrix: ${{ fromJson(needs.metadata.outputs.selected_workflow_matrix) }}
+    uses: ./.github/workflows/_validation-lane-workflow.yml
     with:
       checkout_ref: ${{ needs.metadata.outputs.checkout_ref }}
       lane_id: ${{ matrix.lane_id }}
@@ -443,33 +601,44 @@ jobs:
       frontier_role: ${{ matrix.frontier_role }}
       summary_family: ${{ matrix.summary_family }}
       cost_class: ${{ matrix.cost_class }}
-      run_command: ${{ matrix.run_command }}
-      install_nextest: ${{ matrix.install_nextest }}
+      working_directory: ${{ matrix.working_directory }}
+      script_path: ${{ matrix.script_path }}
+      script_args_json: ${{ toJson(matrix.script_args) }}
+      needs_just: ${{ matrix.needs_just }}
+      needs_node: ${{ matrix.needs_node }}
+      needs_nextest: ${{ matrix.needs_nextest }}
+      needs_linux_build_deps: ${{ matrix.needs_linux_build_deps }}
+      needs_dotslash: ${{ matrix.needs_dotslash }}
+      needs_sccache: ${{ matrix.needs_sccache }}
 
-  rust_lanes:
+  node_lanes:
     needs:
       - metadata
-      - smoke_light_lanes
-      - smoke_rust_lanes
-      - smoke_heavy_lanes
+      - smoke_workflow_lanes
+      - smoke_node_lanes
+      - smoke_rust_minimal_lanes
+      - smoke_rust_integration_lanes
+      - smoke_release_lanes
     if: >-
       ${{
         always() &&
-        fromJson(needs.metadata.outputs.selected_rust_lane_count) > 0 &&
         needs.metadata.result == 'success' &&
+        fromJson(needs.metadata.outputs.selected_node_lane_count) > 0 &&
         (
           needs.metadata.outputs.continue_after_smoke_failure == 'true' ||
-          (needs.smoke_light_lanes.result == 'success' || needs.smoke_light_lanes.result == 'skipped') &&
-          (needs.smoke_rust_lanes.result == 'success' || needs.smoke_rust_lanes.result == 'skipped') &&
-          (needs.smoke_heavy_lanes.result == 'success' || needs.smoke_heavy_lanes.result == 'skipped')
+          (needs.smoke_workflow_lanes.result == 'success' || needs.smoke_workflow_lanes.result == 'skipped') &&
+          (needs.smoke_node_lanes.result == 'success' || needs.smoke_node_lanes.result == 'skipped') &&
+          (needs.smoke_rust_minimal_lanes.result == 'success' || needs.smoke_rust_minimal_lanes.result == 'skipped') &&
+          (needs.smoke_rust_integration_lanes.result == 'success' || needs.smoke_rust_integration_lanes.result == 'skipped') &&
+          (needs.smoke_release_lanes.result == 'success' || needs.smoke_release_lanes.result == 'skipped')
         ) &&
         needs.metadata.outputs.run_selected_lanes == 'true'
       }}
     strategy:
       fail-fast: ${{ fromJson(needs.metadata.outputs.matrix_fail_fast) }}
-      max-parallel: ${{ fromJson(needs.metadata.outputs.rust_max_parallel) }}
-      matrix: ${{ fromJson(needs.metadata.outputs.selected_rust_matrix) }}
-    uses: ./.github/workflows/_sedna-linux-rust.yml
+      max-parallel: ${{ fromJson(needs.metadata.outputs.node_max_parallel) }}
+      matrix: ${{ fromJson(needs.metadata.outputs.selected_node_matrix) }}
+    uses: ./.github/workflows/_validation-lane-node.yml
     with:
       checkout_ref: ${{ needs.metadata.outputs.checkout_ref }}
       lane_id: ${{ matrix.lane_id }}
@@ -481,33 +650,44 @@ jobs:
       frontier_role: ${{ matrix.frontier_role }}
       summary_family: ${{ matrix.summary_family }}
       cost_class: ${{ matrix.cost_class }}
-      run_command: ${{ matrix.run_command }}
-      install_nextest: ${{ matrix.install_nextest }}
+      working_directory: ${{ matrix.working_directory }}
+      script_path: ${{ matrix.script_path }}
+      script_args_json: ${{ toJson(matrix.script_args) }}
+      needs_just: ${{ matrix.needs_just }}
+      needs_node: ${{ matrix.needs_node }}
+      needs_nextest: ${{ matrix.needs_nextest }}
+      needs_linux_build_deps: ${{ matrix.needs_linux_build_deps }}
+      needs_dotslash: ${{ matrix.needs_dotslash }}
+      needs_sccache: ${{ matrix.needs_sccache }}
 
-  heavy_lanes:
+  rust_minimal_lanes:
     needs:
       - metadata
-      - smoke_light_lanes
-      - smoke_rust_lanes
-      - smoke_heavy_lanes
+      - smoke_workflow_lanes
+      - smoke_node_lanes
+      - smoke_rust_minimal_lanes
+      - smoke_rust_integration_lanes
+      - smoke_release_lanes
     if: >-
       ${{
         always() &&
-        fromJson(needs.metadata.outputs.selected_heavy_lane_count) > 0 &&
         needs.metadata.result == 'success' &&
+        fromJson(needs.metadata.outputs.selected_rust_minimal_lane_count) > 0 &&
         (
           needs.metadata.outputs.continue_after_smoke_failure == 'true' ||
-          (needs.smoke_light_lanes.result == 'success' || needs.smoke_light_lanes.result == 'skipped') &&
-          (needs.smoke_rust_lanes.result == 'success' || needs.smoke_rust_lanes.result == 'skipped') &&
-          (needs.smoke_heavy_lanes.result == 'success' || needs.smoke_heavy_lanes.result == 'skipped')
+          (needs.smoke_workflow_lanes.result == 'success' || needs.smoke_workflow_lanes.result == 'skipped') &&
+          (needs.smoke_node_lanes.result == 'success' || needs.smoke_node_lanes.result == 'skipped') &&
+          (needs.smoke_rust_minimal_lanes.result == 'success' || needs.smoke_rust_minimal_lanes.result == 'skipped') &&
+          (needs.smoke_rust_integration_lanes.result == 'success' || needs.smoke_rust_integration_lanes.result == 'skipped') &&
+          (needs.smoke_release_lanes.result == 'success' || needs.smoke_release_lanes.result == 'skipped')
         ) &&
         needs.metadata.outputs.run_selected_lanes == 'true'
       }}
     strategy:
       fail-fast: ${{ fromJson(needs.metadata.outputs.matrix_fail_fast) }}
-      max-parallel: ${{ fromJson(needs.metadata.outputs.heavy_max_parallel) }}
-      matrix: ${{ fromJson(needs.metadata.outputs.selected_heavy_matrix) }}
-    uses: ./.github/workflows/_sedna-linux-rust.yml
+      max-parallel: ${{ fromJson(needs.metadata.outputs.rust_minimal_max_parallel) }}
+      matrix: ${{ fromJson(needs.metadata.outputs.selected_rust_minimal_matrix) }}
+    uses: ./.github/workflows/_validation-lane-rust-minimal.yml
     with:
       checkout_ref: ${{ needs.metadata.outputs.checkout_ref }}
       lane_id: ${{ matrix.lane_id }}
@@ -519,19 +699,128 @@ jobs:
       frontier_role: ${{ matrix.frontier_role }}
       summary_family: ${{ matrix.summary_family }}
       cost_class: ${{ matrix.cost_class }}
-      run_command: ${{ matrix.run_command }}
-      install_nextest: ${{ matrix.install_nextest }}
+      working_directory: ${{ matrix.working_directory }}
+      script_path: ${{ matrix.script_path }}
+      script_args_json: ${{ toJson(matrix.script_args) }}
+      needs_just: ${{ matrix.needs_just }}
+      needs_node: ${{ matrix.needs_node }}
+      needs_nextest: ${{ matrix.needs_nextest }}
+      needs_linux_build_deps: ${{ matrix.needs_linux_build_deps }}
+      needs_dotslash: ${{ matrix.needs_dotslash }}
+      needs_sccache: ${{ matrix.needs_sccache }}
+
+  rust_integration_lanes:
+    needs:
+      - metadata
+      - smoke_workflow_lanes
+      - smoke_node_lanes
+      - smoke_rust_minimal_lanes
+      - smoke_rust_integration_lanes
+      - smoke_release_lanes
+    if: >-
+      ${{
+        always() &&
+        needs.metadata.result == 'success' &&
+        fromJson(needs.metadata.outputs.selected_rust_integration_lane_count) > 0 &&
+        (
+          needs.metadata.outputs.continue_after_smoke_failure == 'true' ||
+          (needs.smoke_workflow_lanes.result == 'success' || needs.smoke_workflow_lanes.result == 'skipped') &&
+          (needs.smoke_node_lanes.result == 'success' || needs.smoke_node_lanes.result == 'skipped') &&
+          (needs.smoke_rust_minimal_lanes.result == 'success' || needs.smoke_rust_minimal_lanes.result == 'skipped') &&
+          (needs.smoke_rust_integration_lanes.result == 'success' || needs.smoke_rust_integration_lanes.result == 'skipped') &&
+          (needs.smoke_release_lanes.result == 'success' || needs.smoke_release_lanes.result == 'skipped')
+        ) &&
+        needs.metadata.outputs.run_selected_lanes == 'true'
+      }}
+    strategy:
+      fail-fast: ${{ fromJson(needs.metadata.outputs.matrix_fail_fast) }}
+      max-parallel: ${{ fromJson(needs.metadata.outputs.rust_integration_max_parallel) }}
+      matrix: ${{ fromJson(needs.metadata.outputs.selected_rust_integration_matrix) }}
+    uses: ./.github/workflows/_validation-lane-rust-integration.yml
+    with:
+      checkout_ref: ${{ needs.metadata.outputs.checkout_ref }}
+      lane_id: ${{ matrix.lane_id }}
+      lane_phase: downstream_lanes
+      summary_title: ${{ matrix.lane_id }}
+      status_class: ${{ matrix.status_class }}
+      frontier_default: ${{ matrix.frontier_default }}
+      setup_class: ${{ matrix.setup_class }}
+      frontier_role: ${{ matrix.frontier_role }}
+      summary_family: ${{ matrix.summary_family }}
+      cost_class: ${{ matrix.cost_class }}
+      working_directory: ${{ matrix.working_directory }}
+      script_path: ${{ matrix.script_path }}
+      script_args_json: ${{ toJson(matrix.script_args) }}
+      needs_just: ${{ matrix.needs_just }}
+      needs_node: ${{ matrix.needs_node }}
+      needs_nextest: ${{ matrix.needs_nextest }}
+      needs_linux_build_deps: ${{ matrix.needs_linux_build_deps }}
+      needs_dotslash: ${{ matrix.needs_dotslash }}
+      needs_sccache: ${{ matrix.needs_sccache }}
+
+  release_lanes:
+    needs:
+      - metadata
+      - smoke_workflow_lanes
+      - smoke_node_lanes
+      - smoke_rust_minimal_lanes
+      - smoke_rust_integration_lanes
+      - smoke_release_lanes
+    if: >-
+      ${{
+        always() &&
+        needs.metadata.result == 'success' &&
+        fromJson(needs.metadata.outputs.selected_release_lane_count) > 0 &&
+        (
+          needs.metadata.outputs.continue_after_smoke_failure == 'true' ||
+          (needs.smoke_workflow_lanes.result == 'success' || needs.smoke_workflow_lanes.result == 'skipped') &&
+          (needs.smoke_node_lanes.result == 'success' || needs.smoke_node_lanes.result == 'skipped') &&
+          (needs.smoke_rust_minimal_lanes.result == 'success' || needs.smoke_rust_minimal_lanes.result == 'skipped') &&
+          (needs.smoke_rust_integration_lanes.result == 'success' || needs.smoke_rust_integration_lanes.result == 'skipped') &&
+          (needs.smoke_release_lanes.result == 'success' || needs.smoke_release_lanes.result == 'skipped')
+        ) &&
+        needs.metadata.outputs.run_selected_lanes == 'true'
+      }}
+    strategy:
+      fail-fast: ${{ fromJson(needs.metadata.outputs.matrix_fail_fast) }}
+      max-parallel: ${{ fromJson(needs.metadata.outputs.release_max_parallel) }}
+      matrix: ${{ fromJson(needs.metadata.outputs.selected_release_matrix) }}
+    uses: ./.github/workflows/_validation-lane-release.yml
+    with:
+      checkout_ref: ${{ needs.metadata.outputs.checkout_ref }}
+      lane_id: ${{ matrix.lane_id }}
+      lane_phase: downstream_lanes
+      summary_title: ${{ matrix.lane_id }}
+      status_class: ${{ matrix.status_class }}
+      frontier_default: ${{ matrix.frontier_default }}
+      setup_class: ${{ matrix.setup_class }}
+      frontier_role: ${{ matrix.frontier_role }}
+      summary_family: ${{ matrix.summary_family }}
+      cost_class: ${{ matrix.cost_class }}
+      working_directory: ${{ matrix.working_directory }}
+      script_path: ${{ matrix.script_path }}
+      script_args_json: ${{ toJson(matrix.script_args) }}
+      needs_just: ${{ matrix.needs_just }}
+      needs_node: ${{ matrix.needs_node }}
+      needs_nextest: ${{ matrix.needs_nextest }}
+      needs_linux_build_deps: ${{ matrix.needs_linux_build_deps }}
+      needs_dotslash: ${{ matrix.needs_dotslash }}
+      needs_sccache: ${{ matrix.needs_sccache }}
 
   summary:
     name: Sedna heavy-tests summary
     needs:
       - metadata
-      - smoke_light_lanes
-      - smoke_rust_lanes
-      - smoke_heavy_lanes
-      - light_lanes
-      - rust_lanes
-      - heavy_lanes
+      - smoke_workflow_lanes
+      - smoke_node_lanes
+      - smoke_rust_minimal_lanes
+      - smoke_rust_integration_lanes
+      - smoke_release_lanes
+      - workflow_lanes
+      - node_lanes
+      - rust_minimal_lanes
+      - rust_integration_lanes
+      - release_lanes
     if: >-
       ${{
         always() &&
@@ -558,12 +847,16 @@ jobs:
         shell: bash
         env:
           METADATA_RUN_SMOKE_GATE: ${{ needs.metadata.outputs.run_smoke_gate }}
-          SMOKE_LIGHT_RESULT: ${{ needs.smoke_light_lanes.result || 'skipped' }}
-          SMOKE_RUST_RESULT: ${{ needs.smoke_rust_lanes.result || 'skipped' }}
-          SMOKE_HEAVY_RESULT: ${{ needs.smoke_heavy_lanes.result || 'skipped' }}
-          LIGHT_RESULT: ${{ needs.light_lanes.result || 'skipped' }}
-          RUST_RESULT: ${{ needs.rust_lanes.result || 'skipped' }}
-          HEAVY_RESULT: ${{ needs.heavy_lanes.result || 'skipped' }}
+          SMOKE_WORKFLOW_RESULT: ${{ needs.smoke_workflow_lanes.result || 'skipped' }}
+          SMOKE_NODE_RESULT: ${{ needs.smoke_node_lanes.result || 'skipped' }}
+          SMOKE_RUST_MINIMAL_RESULT: ${{ needs.smoke_rust_minimal_lanes.result || 'skipped' }}
+          SMOKE_RUST_INTEGRATION_RESULT: ${{ needs.smoke_rust_integration_lanes.result || 'skipped' }}
+          SMOKE_RELEASE_RESULT: ${{ needs.smoke_release_lanes.result || 'skipped' }}
+          WORKFLOW_RESULT: ${{ needs.workflow_lanes.result || 'skipped' }}
+          NODE_RESULT: ${{ needs.node_lanes.result || 'skipped' }}
+          RUST_MINIMAL_RESULT: ${{ needs.rust_minimal_lanes.result || 'skipped' }}
+          RUST_INTEGRATION_RESULT: ${{ needs.rust_integration_lanes.result || 'skipped' }}
+          RELEASE_RESULT: ${{ needs.release_lanes.result || 'skipped' }}
           INPUT_LANE: ${{ inputs.lane }}
           RUN_SMOKE_GATE: ${{ needs.metadata.outputs.run_smoke_gate }}
           RUN_SELECTED_LANES: ${{ needs.metadata.outputs.run_selected_lanes }}
@@ -589,11 +882,11 @@ jobs:
           fi
           smoke_gate_result="skipped"
           if [[ "${METADATA_RUN_SMOKE_GATE}" == "true" ]]; then
-            if [[ "${SMOKE_LIGHT_RESULT}" == "failure" || "${SMOKE_RUST_RESULT}" == "failure" || "${SMOKE_HEAVY_RESULT}" == "failure" ]]; then
+            if [[ "${SMOKE_WORKFLOW_RESULT}" == "failure" || "${SMOKE_NODE_RESULT}" == "failure" || "${SMOKE_RUST_MINIMAL_RESULT}" == "failure" || "${SMOKE_RUST_INTEGRATION_RESULT}" == "failure" || "${SMOKE_RELEASE_RESULT}" == "failure" ]]; then
               smoke_gate_result="failure"
-            elif [[ "${SMOKE_LIGHT_RESULT}" == "cancelled" || "${SMOKE_RUST_RESULT}" == "cancelled" || "${SMOKE_HEAVY_RESULT}" == "cancelled" ]]; then
+            elif [[ "${SMOKE_WORKFLOW_RESULT}" == "cancelled" || "${SMOKE_NODE_RESULT}" == "cancelled" || "${SMOKE_RUST_MINIMAL_RESULT}" == "cancelled" || "${SMOKE_RUST_INTEGRATION_RESULT}" == "cancelled" || "${SMOKE_RELEASE_RESULT}" == "cancelled" ]]; then
               smoke_gate_result="cancelled"
-            elif [[ "${SMOKE_LIGHT_RESULT}" == "success" || "${SMOKE_RUST_RESULT}" == "success" || "${SMOKE_HEAVY_RESULT}" == "success" ]]; then
+            elif [[ "${SMOKE_WORKFLOW_RESULT}" == "success" || "${SMOKE_NODE_RESULT}" == "success" || "${SMOKE_RUST_MINIMAL_RESULT}" == "success" || "${SMOKE_RUST_INTEGRATION_RESULT}" == "success" || "${SMOKE_RELEASE_RESULT}" == "success" ]]; then
               smoke_gate_result="success"
             fi
           fi
@@ -621,9 +914,11 @@ jobs:
             --run-smoke-gate "${RUN_SMOKE_GATE}" \
             --smoke-gate-kind "${SMOKE_GATE_KIND}" \
             --smoke-gate-result "${smoke_gate_result}" \
-            --light-result "${LIGHT_RESULT}" \
-            --rust-result "${RUST_RESULT}" \
-            --heavy-result "${HEAVY_RESULT}" \
+            --workflow-result "${WORKFLOW_RESULT}" \
+            --node-result "${NODE_RESULT}" \
+            --rust-minimal-result "${RUST_MINIMAL_RESULT}" \
+            --rust-integration-result "${RUST_INTEGRATION_RESULT}" \
+            --release-result "${RELEASE_RESULT}" \
             --run-artifact "false" \
             --artifact-result "skipped" \
             --matrix-fail-fast "${MATRIX_FAIL_FAST}" \
