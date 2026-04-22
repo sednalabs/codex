@@ -1,0 +1,293 @@
+name: _validation-lane-node
+
+on:
+  workflow_call:
+    inputs:
+      checkout_ref:
+        required: false
+        type: string
+        default: ""
+      summary_title:
+        required: true
+        type: string
+      lane_id:
+        required: false
+        type: string
+        default: ""
+      lane_phase:
+        required: false
+        type: string
+        default: downstream_lanes
+      status_class:
+        required: false
+        type: string
+        default: active
+      frontier_default:
+        required: false
+        type: boolean
+        default: false
+      setup_class:
+        required: false
+        type: string
+        default: node
+      frontier_role:
+        required: false
+        type: string
+        default: sentinel
+      summary_family:
+        required: false
+        type: string
+        default: validation-lane
+      cost_class:
+        required: false
+        type: string
+        default: medium
+      working_directory:
+        required: false
+        type: string
+        default: .
+      script_path:
+        required: true
+        type: string
+      script_args_json:
+        required: false
+        type: string
+        default: "[]"
+      needs_just:
+        required: false
+        type: boolean
+        default: false
+      needs_node:
+        required: false
+        type: boolean
+        default: false
+      needs_nextest:
+        required: false
+        type: boolean
+        default: false
+      needs_linux_build_deps:
+        required: false
+        type: boolean
+        default: false
+      needs_dotslash:
+        required: false
+        type: boolean
+        default: false
+      needs_sccache:
+        required: false
+        type: boolean
+        default: false
+      artifact_name:
+        required: false
+        type: string
+        default: ""
+      artifact_path:
+        required: false
+        type: string
+        default: ""
+      release_version:
+        required: false
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+
+
+jobs:
+  run:
+    name: ${{ inputs.summary_title }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Record lane start
+        id: lane_timing
+        shell: bash
+        run: echo "job_started_at_ms=$(date +%s%3N)" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          ref: ${{ inputs.checkout_ref != '' && inputs.checkout_ref || github.sha }}
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version-file: codex-rs/node-version.txt
+
+      - uses: taiki-e/install-action@58e862542551f667fa44c8a2a4a1d64ad477c96a # v2
+        if: ${{ inputs.needs_just }}
+        with:
+          tool: just
+
+      - name: Mark setup complete
+        id: setup_complete
+        shell: bash
+        run: echo "setup_finished_at_ms=$(date +%s%3N)" >> "$GITHUB_OUTPUT"
+
+      - name: Run requested lane script
+        id: run_lane
+        shell: bash
+        continue-on-error: true
+        env:
+          WORKING_DIRECTORY: ${{ inputs.working_directory }}
+          SCRIPT_PATH: ${{ inputs.script_path }}
+          SCRIPT_ARGS_JSON: ${{ inputs.script_args_json }}
+        run: |
+          set -euo pipefail
+          log_file="${RUNNER_TEMP}/validation-lane.log"
+          started_at_ms="$(date +%s%3N)"
+          export CODEX_RELEASE_REPOSITORY='${{ github.repository }}'
+          export CODEX_RELEASE_TAG_PREFIX='v'
+          if [[ -n '${{ inputs.release_version }}' ]]; then
+            export CODEX_RELEASE_VERSION='${{ inputs.release_version }}'
+          fi
+          : > "${log_file}"
+          attempt=1
+          max_attempts=2
+          set +e
+          while true; do
+            if [[ "${attempt}" -gt 1 ]]; then
+              printf '\n=== retry attempt %s/%s ===\n' "${attempt}" "${max_attempts}" | tee -a "${log_file}"
+            fi
+            python3 .github/scripts/run_validation_lane.py \
+              --repo-root "${GITHUB_WORKSPACE}" \
+              --working-directory "${WORKING_DIRECTORY}" \
+              --script-path "${SCRIPT_PATH}" \
+              --script-args-json "${SCRIPT_ARGS_JSON}" 2>&1 | tee -a "${log_file}"
+            exit_code=${PIPESTATUS[0]}
+            if [[ "${exit_code}" -eq 0 ]]; then
+              break
+            fi
+            if [[ "${attempt}" -ge "${max_attempts}" ]]; then
+              break
+            fi
+            if grep -q 'rusty_v8' "${log_file}" && grep -q 'HTTP Error 502' "${log_file}"; then
+              echo "::warning title=Retrying flaky rusty_v8 download::${{ inputs.summary_title }} hit HTTP 502 while downloading rusty_v8; retrying once." | tee -a "${log_file}"
+              attempt=$((attempt + 1))
+              sleep 5
+              continue
+            fi
+            break
+          done
+          set -e
+          finished_at_ms="$(date +%s%3N)"
+          duration_ms="$((finished_at_ms - started_at_ms))"
+          if [[ "${duration_ms}" -lt 0 ]]; then
+            duration_ms=0
+          fi
+          {
+            echo "log_file=${log_file}"
+            echo "started_at_ms=${started_at_ms}"
+            echo "finished_at_ms=${finished_at_ms}"
+            echo "duration_ms=${duration_ms}"
+            echo "exit_code=${exit_code}"
+          } >> "$GITHUB_OUTPUT"
+          exit "${exit_code}"
+
+      - name: Summarize lane failure output
+        if: ${{ steps.run_lane.outcome == 'failure' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          lane='${{ inputs.lane_id != '' && inputs.lane_id || inputs.summary_title }}'
+          exit_code='${{ steps.run_lane.outputs.exit_code }}'
+
+          {
+            echo "### Downstream lane failed: ${lane}"
+            echo
+            echo "- Exit code: ${exit_code}"
+            echo "- Public summary policy: raw commands and raw log excerpts are omitted."
+            echo "- Next step: inspect the job log directly when deeper runner context is required."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          echo "::error title=Downstream lane failed::${lane} failed (exit ${exit_code}). Public summary omits raw commands and log excerpts; inspect the job log for detailed runner context."
+
+      - name: Verify requested command passed
+        if: ${{ steps.run_lane.outcome == 'failure' }}
+        shell: bash
+        run: exit 1
+
+      - name: Prepare lane summary artifact
+        if: ${{ always() }}
+        id: lane_summary
+        shell: bash
+        env:
+          SUMMARY_TITLE: ${{ inputs.summary_title }}
+          LANE_ID: ${{ inputs.lane_id != '' && inputs.lane_id || inputs.summary_title }}
+          ARTIFACT_NAME: ${{ inputs.artifact_name }}
+          LANE_PHASE: ${{ inputs.lane_phase }}
+          STATUS_CLASS: ${{ inputs.status_class }}
+          FRONTIER_DEFAULT: ${{ inputs.frontier_default && 'true' || 'false' }}
+          SETUP_CLASS: ${{ inputs.setup_class }}
+          FRONTIER_ROLE: ${{ inputs.frontier_role }}
+          SUMMARY_FAMILY: ${{ inputs.summary_family }}
+          COST_CLASS: ${{ inputs.cost_class }}
+          SCRIPT_PATH: ${{ inputs.script_path }}
+          SCRIPT_ARGS_JSON: ${{ inputs.script_args_json }}
+          RUN_OUTCOME: ${{ steps.run_lane.outcome }}
+          EXIT_CODE: ${{ steps.run_lane.outputs.exit_code }}
+          LOG_FILE: ${{ steps.run_lane.outputs.log_file }}
+          JOB_STARTED_AT_MS: ${{ steps.lane_timing.outputs.job_started_at_ms }}
+          SETUP_FINISHED_AT_MS: ${{ steps.setup_complete.outputs.setup_finished_at_ms }}
+          STARTED_AT_MS: ${{ steps.run_lane.outputs.started_at_ms }}
+          FINISHED_AT_MS: ${{ steps.run_lane.outputs.finished_at_ms }}
+          COMMAND_DURATION_MS: ${{ steps.run_lane.outputs.duration_ms }}
+        run: |
+          set -euo pipefail
+          lane_slug="$(printf '%s' "${LANE_ID}" | tr '[:upper:]' '[:lower:]' | tr -cs '[:alnum:]' '-' | sed 's/^-//;s/-$//' | cut -c1-48)"
+          if [[ -z "${lane_slug}" ]]; then
+            lane_slug="validation-lane"
+          fi
+          summary_file="${RUNNER_TEMP}/validation-lane-summary-${lane_slug}.json"
+          setup_duration_ms="$((SETUP_FINISHED_AT_MS - JOB_STARTED_AT_MS))"
+          if [[ "${setup_duration_ms}" -lt 0 ]]; then
+            setup_duration_ms=0
+          fi
+          total_duration_ms="$((FINISHED_AT_MS - JOB_STARTED_AT_MS))"
+          if [[ "${total_duration_ms}" -lt 0 ]]; then
+            total_duration_ms=0
+          fi
+          python3 .github/scripts/write_lane_summary.py \
+            --lane-id "${LANE_ID}" \
+            --lane-phase "${LANE_PHASE}" \
+            --summary-title "${SUMMARY_TITLE}" \
+            --script-path "${SCRIPT_PATH}" \
+            --script-args-json "${SCRIPT_ARGS_JSON}" \
+            --status-class "${STATUS_CLASS}" \
+            --frontier-default "${FRONTIER_DEFAULT}" \
+            --setup-class "${SETUP_CLASS}" \
+            --frontier-role "${FRONTIER_ROLE}" \
+            --summary-family "${SUMMARY_FAMILY}" \
+            --cost-class "${COST_CLASS}" \
+            --outcome "${RUN_OUTCOME}" \
+            --exit-code "${EXIT_CODE}" \
+            --log-file "${LOG_FILE}" \
+            --job-started-at-ms "${JOB_STARTED_AT_MS}" \
+            --setup-finished-at-ms "${SETUP_FINISHED_AT_MS}" \
+            --started-at-ms "${STARTED_AT_MS}" \
+            --finished-at-ms "${FINISHED_AT_MS}" \
+            --setup-duration-ms "${setup_duration_ms}" \
+            --command-duration-ms "${COMMAND_DURATION_MS}" \
+            --duration-ms "${total_duration_ms}" \
+            --artifact-name "${ARTIFACT_NAME}" \
+            --output "${summary_file}"
+          echo "lane_slug=${lane_slug}" >> "$GITHUB_OUTPUT"
+          echo "summary_file=${summary_file}" >> "$GITHUB_OUTPUT"
+
+      - name: Upload lane summary artifact
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: validation-lane-summary-${{ steps.lane_summary.outputs.lane_slug }}
+          path: ${{ steps.lane_summary.outputs.summary_file }}
+          overwrite: true
+          retention-days: 3
+
+      - name: Upload workflow artifacts
+        if: ${{ inputs.artifact_name != '' && inputs.artifact_path != '' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ inputs.artifact_name }}
+          path: ${{ inputs.artifact_path }}
+          retention-days: 3

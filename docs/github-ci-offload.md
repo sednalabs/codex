@@ -85,13 +85,14 @@ artifacts.
    - Default to `profile=smoke` or `profile=targeted`.
    - `profile=smoke` fans out the smoke bundle as parallel shards instead of
      running one serial smoke recipe on a single runner.
-   - The workflow summary now records the profile intent, profile notes, and a
+  - The workflow summary now records the profile intent, profile notes, and a
      compact lane-selection summary for operator handoff.
    - Reason: best signal per runner-minute without polluting PR surfaces.
    - `profile=frontier` now derives a curated blocker-harvest bundle from lane
-     metadata and runs it by setup class (`light`, `rust`, `heavy`) so cheap
-     workflow/docs seams can fan out harder without letting heavier Rust lanes
-     monopolize the same runner budget.
+     metadata and runs it by setup class (`workflow`, `node`, `rust_minimal`,
+     `rust_integration`, `release`) so cheap workflow/docs seams can fan out
+     harder without letting heavier Rust lanes monopolize the same runner
+     budget.
 3. `validation-lab` broad/full only when the question is broader.
    - Use `profile=broad` or `profile=full` only when multiple seams are moving or you need a
      deliberate soak.
@@ -151,6 +152,10 @@ What it does:
 This is the preferred low-friction path when the real question is "prove the
 exact local tree remotely" and the branch is not yet in public-PR shape.
 
+The target ref still needs to carry the current explicit lane schema and the
+lane helper scripts referenced by it. The lab planner no longer backfills the
+old implicit `run_command` contract for historical refs.
+
 ## Workflow replacement matrix
 
 | Workflow | Status | Sedna role |
@@ -187,19 +192,25 @@ exact local tree remotely" and the branch is not yet in public-PR shape.
 
 The important fields are:
 
+- `setup_class`: explicit execution bucket: `workflow`, `node`,
+  `rust_minimal`, `rust_integration`, or `release`
+- `working_directory`: repo-relative cwd for the lane script
+- `script_path`: repo-relative executable path used as the workflow truth
+- `script_args`: argv list for that script
+- `needs_just`, `needs_node`, `needs_nextest`, `needs_linux_build_deps`,
+  `needs_dotslash`, `needs_sccache`: explicit setup capabilities
 - `frontier_default`: whether the lane belongs in the default `lane_set=all`
   frontier harvest
 - `frontier_lane_sets`: named frontier families for non-`all` frontier runs
-- `setup_class`: runner-cost bucket used for split fanout and per-class
-  parallelism
 - `frontier_role`: whether the lane is a family sentinel or a deeper companion
 - `summary_family`: the family key used to collapse raw lane failures into one
   primary blocker per family
 - `cost_class`: a lightweight signal for relative runner cost
 
-When the requested validation target predates these fields, the host workflow
-derives them deterministically so dispatching `validation-lab` from downstream
-`main` can still validate older refs truthfully.
+`validation-lab` and `sedna-heavy-tests` both consume this explicit contract.
+The checked-in lane scripts are now the workflow source of truth; `just`
+remains a convenience layer that some scripts may call, not the planner's
+execution primitive.
 
 ## Summary artifact
 
@@ -208,6 +219,8 @@ The top-level `validation-summary` artifact is now family-aware.
 It records:
 
 - setup-class job results and started-lane counts
+- setup-versus-command timing totals so slow setup paths are visible at the
+  workflow summary layer
 - `primary_blockers`: one strongest active blocker per family, plus setup-class
   startup failures when no lanes in that class ever started
 - `secondary_findings`: the remaining cancelled or missing depth lanes

@@ -100,8 +100,9 @@ GitHub Actions lane naming (`.github/workflows/sedna-heavy-tests.yml`):
     `core-ledger-smoke`, `core-runtime-surface-smoke`) before the broader lane
     matrix fans out.
   - Both the smoke gate and the selected heavy lane fanout now split by
-    `setup_class` (`light`, `rust`, `heavy`) so cheap workflow/docs shards do
-    not queue behind heavier Rust runners.
+    `setup_class` (`workflow`, `node`, `rust_minimal`, `rust_integration`,
+    `release`) so cheap workflow/docs shards do not queue behind heavier Rust
+    runners.
   - The heavy matrix remains capped and fail-fast on PRs.
   - Changes to workflow wiring or the `justfile` run the smoke gate plus a small
     representative workflow-validation lane set instead of promoting the PR to
@@ -119,6 +120,9 @@ GitHub Actions lane naming (`.github/workflows/sedna-heavy-tests.yml`):
     non-PR seam validation.
   - Its workflow summary now records the selected profile intent, short profile
     notes, and a compact lane-selection summary for easier babysitting.
+  - It consumes the same explicit script-backed lane catalog as
+    `sedna-heavy-tests.yml`, so lane setup requirements are declared rather than
+    inferred from inline commands.
   - `profile=smoke` and `profile=targeted` are the default inner-loop remote
     validation tools.
   - `profile=frontier` is the bounded next-blocker harvest mode to use only
