@@ -475,14 +475,7 @@ async fn dynamic_tool_call_round_trip_sends_content_items_to_model() -> Result<(
     let content_items = response_content_items
         .clone()
         .into_iter()
-        .map(|item| match item {
-            DynamicToolCallOutputContentItem::InputText { text } => {
-                FunctionCallOutputContentItem::InputText { text }
-            }
-            DynamicToolCallOutputContentItem::InputImage { image_url, detail } => {
-                FunctionCallOutputContentItem::InputImage { image_url, detail }
-            }
-        })
+        .map(FunctionCallOutputContentItem::from)
         .collect::<Vec<FunctionCallOutputContentItem>>();
     let response = DynamicToolCallResponse {
         content_items: response_content_items,
