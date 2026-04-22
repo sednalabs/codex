@@ -2959,6 +2959,7 @@ async fn session_new_fails_when_zsh_fork_enabled_without_zsh_path() {
         AgentControl::default(),
         Arc::new(codex_exec_server::EnvironmentManager::default_for_tests()),
         /*analytics_events_client*/ None,
+        RolloutTraceRecorder::disabled(),
     )
     .await;
 
@@ -3081,6 +3082,7 @@ pub(crate) async fn make_session_and_context() -> (Session, TurnContext) {
             ..HooksConfig::default()
         }),
         rollout: Mutex::new(None),
+        rollout_trace: RolloutTraceRecorder::disabled(),
         user_shell: Arc::new(default_user_shell()),
         shell_snapshot_tx: watch::channel(None).0,
         show_raw_agent_reasoning: config.show_raw_agent_reasoning,
@@ -3274,6 +3276,7 @@ async fn make_session_with_config_and_rx(
         AgentControl::default(),
         Arc::new(codex_exec_server::EnvironmentManager::default_for_tests()),
         /*analytics_events_client*/ None,
+        RolloutTraceRecorder::disabled(),
     )
     .await?;
 
@@ -4299,6 +4302,7 @@ pub(crate) async fn make_session_and_context_with_dynamic_tools_and_rx(
             ..HooksConfig::default()
         }),
         rollout: Mutex::new(None),
+        rollout_trace: RolloutTraceRecorder::disabled(),
         user_shell: Arc::new(default_user_shell()),
         shell_snapshot_tx: watch::channel(None).0,
         show_raw_agent_reasoning: config.show_raw_agent_reasoning,
