@@ -1039,7 +1039,7 @@
       "needs_node": false,
       "needs_nextest": false,
       "needs_linux_build_deps": true,
-      "needs_dotslash": true,
+      "needs_dotslash": false,
       "needs_sccache": true
     },
     {
