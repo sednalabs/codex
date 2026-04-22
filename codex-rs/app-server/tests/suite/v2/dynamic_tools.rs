@@ -469,6 +469,7 @@ async fn dynamic_tool_call_round_trip_sends_content_items_to_model() -> Result<(
         },
         DynamicToolCallOutputContentItem::InputImage {
             image_url: "data:image/png;base64,AAA".to_string(),
+            detail: Some("original".to_string()),
         },
     ];
     let content_items = response_content_items
@@ -478,11 +479,8 @@ async fn dynamic_tool_call_round_trip_sends_content_items_to_model() -> Result<(
             DynamicToolCallOutputContentItem::InputText { text } => {
                 FunctionCallOutputContentItem::InputText { text }
             }
-            DynamicToolCallOutputContentItem::InputImage { image_url } => {
-                FunctionCallOutputContentItem::InputImage {
-                    image_url,
-                    detail: None,
-                }
+            DynamicToolCallOutputContentItem::InputImage { image_url, detail } => {
+                FunctionCallOutputContentItem::InputImage { image_url, detail }
             }
         })
         .collect::<Vec<FunctionCallOutputContentItem>>();
@@ -514,6 +512,7 @@ async fn dynamic_tool_call_round_trip_sends_content_items_to_model() -> Result<(
             },
             DynamicToolCallOutputContentItem::InputImage {
                 image_url: "data:image/png;base64,AAA".to_string(),
+                detail: Some("original".to_string()),
             },
         ])
     );

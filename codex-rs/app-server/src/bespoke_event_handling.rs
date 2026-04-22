@@ -983,9 +983,13 @@ pub(crate) async fn apply_bespoke_event_handling(
                                 CoreDynamicToolCallOutputContentItem::InputText { text } => {
                                     DynamicToolCallOutputContentItem::InputText { text }
                                 }
-                                CoreDynamicToolCallOutputContentItem::InputImage { image_url } => {
-                                    DynamicToolCallOutputContentItem::InputImage { image_url }
-                                }
+                                CoreDynamicToolCallOutputContentItem::InputImage {
+                                    image_url,
+                                    detail,
+                                } => DynamicToolCallOutputContentItem::InputImage {
+                                    image_url,
+                                    detail,
+                                },
                             })
                             .collect(),
                     ),
