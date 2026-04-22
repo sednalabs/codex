@@ -841,6 +841,38 @@ async fn alt_up_edits_most_recent_queued_message() {
 }
 
 #[tokio::test]
+async fn alt_up_restores_most_recent_queued_slash_command() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.queued_message_edit_binding = crate::key_hint::alt(KeyCode::Up);
+    chat.bottom_pane
+        .set_queued_message_edit_binding(crate::key_hint::alt(KeyCode::Up));
+
+    chat.bottom_pane.set_task_running(/*running*/ true);
+    chat.queue_slash_command(
+        QueuedSlashCommand::CommandWithArgs {
+            cmd: SlashCommand::Plan,
+            args: "outline the work".to_string(),
+            text_elements: Vec::new(),
+            local_images: Vec::new(),
+            remote_image_urls: Vec::new(),
+            mention_bindings: Vec::new(),
+        },
+        /*queue_front*/ false,
+    );
+
+    assert_eq!(
+        chat.pending_input_preview_queued_messages(),
+        vec!["/plan outline the work".to_string()]
+    );
+
+    chat.handle_key_event(KeyEvent::new(KeyCode::Up, KeyModifiers::ALT));
+
+    assert_eq!(chat.bottom_pane.composer_text(), "/plan outline the work");
+    assert!(chat.queued_slash_commands.is_empty());
+    assert!(chat.pending_input_preview_queued_messages().is_empty());
+}
+
+#[tokio::test]
 async fn alt_up_edits_run_next_draft_before_older_queued_items() {
     let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
     chat.queued_message_edit_binding = crate::key_hint::alt(KeyCode::Up);
@@ -925,6 +957,64 @@ async fn alt_up_keeps_follow_up_run_order_in_sync() {
     assert_eq!(
         chat.queued_follow_up_order.front(),
         Some(&QueuedFollowUpKind::UserMessageBack)
+    );
+}
+
+#[tokio::test]
+async fn alt_up_restored_state_with_missing_insert_order_preserves_front_back_recall_order() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.queued_message_edit_binding = crate::key_hint::alt(KeyCode::Up);
+    chat.bottom_pane
+        .set_queued_message_edit_binding(crate::key_hint::alt(KeyCode::Up));
+
+    chat.restore_thread_input_state(Some(ThreadInputState {
+        task_running: true,
+        queued_user_messages: VecDeque::from([
+            UserMessage::from("run next newest".to_string()),
+            UserMessage::from("older queued".to_string()),
+            UserMessage::from("run next older".to_string()),
+        ]),
+        queued_follow_up_order: VecDeque::from([
+            QueuedFollowUpKind::UserMessageFront,
+            QueuedFollowUpKind::UserMessageBack,
+            QueuedFollowUpKind::UserMessageFront,
+            QueuedFollowUpKind::UserMessageBack,
+        ]),
+        queued_follow_up_insert_order: VecDeque::new(),
+        ..default_thread_input_state(&chat)
+    }));
+
+    assert_eq!(
+        chat.pending_input_preview_queued_messages(),
+        vec![
+            "run next newest".to_string(),
+            "older queued".to_string(),
+            "run next older".to_string(),
+        ]
+    );
+
+    chat.handle_key_event(KeyEvent::new(KeyCode::Up, KeyModifiers::ALT));
+
+    assert_eq!(chat.bottom_pane.composer_text(), "run next newest");
+    assert_eq!(
+        chat.queued_user_message_texts(),
+        vec!["older queued".to_string(), "run next older".to_string()]
+    );
+    assert_eq!(
+        chat.pending_input_preview_queued_messages(),
+        vec!["older queued".to_string(), "run next older".to_string()]
+    );
+
+    chat.handle_key_event(KeyEvent::new(KeyCode::Up, KeyModifiers::ALT));
+
+    assert_eq!(chat.bottom_pane.composer_text(), "older queued");
+    assert_eq!(
+        chat.queued_user_message_texts(),
+        vec!["run next older".to_string()]
+    );
+    assert_eq!(
+        chat.pending_input_preview_queued_messages(),
+        vec!["run next older".to_string()]
     );
 }
 

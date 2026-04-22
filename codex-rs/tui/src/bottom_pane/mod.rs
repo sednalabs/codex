@@ -361,8 +361,8 @@ impl BottomPane {
         self.request_redraw();
     }
 
-    /// Update the key hint shown next to queued messages so it matches the
-    /// binding that `ChatWidget` actually listens for.
+    /// Update the key hint shown next to queued follow-up entries so it
+    /// matches the binding that `ChatWidget` actually listens for.
     pub(crate) fn set_queued_message_edit_binding(&mut self, binding: KeyBinding) {
         self.pending_input_preview.set_edit_binding(binding);
         self.request_redraw();
@@ -962,6 +962,11 @@ impl BottomPane {
     #[cfg(test)]
     pub(crate) fn pending_thread_approvals(&self) -> &[String] {
         self.pending_thread_approvals.threads()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn pending_input_preview_queued_messages(&self) -> &[String] {
+        &self.pending_input_preview.queued_messages
     }
 
     /// Update the unified-exec process set and refresh whichever summary surface is active.
