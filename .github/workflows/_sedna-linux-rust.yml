@@ -226,12 +226,19 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          if [[ -n "${ACTIONS_CACHE_URL:-}" && -n "${ACTIONS_RUNTIME_TOKEN:-}" ]]; then
-            echo "SCCACHE_GHA_ENABLED=true" >> "$GITHUB_ENV"
+          cache_url="${SCCACHE_GHA_CACHE_URL:-${ACTIONS_RESULTS_URL:-${ACTIONS_CACHE_URL:-}}}"
+          if [[ -n "${cache_url}" && -n "${ACTIONS_RUNTIME_TOKEN:-}" ]]; then
+            {
+              echo "ACTIONS_CACHE_SERVICE_V2=on"
+              echo "SCCACHE_GHA_ENABLED=true"
+              echo "SCCACHE_GHA_CACHE_URL=${cache_url}"
+            } >> "$GITHUB_ENV"
             echo "Using sccache GitHub backend"
           else
-            echo "SCCACHE_GHA_ENABLED=false" >> "$GITHUB_ENV"
-            echo "SCCACHE_DIR=${{ github.workspace }}/.sccache" >> "$GITHUB_ENV"
+            {
+              echo "SCCACHE_GHA_ENABLED=false"
+              echo "SCCACHE_DIR=${{ github.workspace }}/.sccache"
+            } >> "$GITHUB_ENV"
             echo "Using sccache local disk + actions/cache fallback"
           fi
 

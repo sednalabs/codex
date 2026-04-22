@@ -143,6 +143,11 @@ Every lane row in `.github/validation-lanes.json` is expected to define:
 - `needs_dotslash`
 - `needs_sccache`
 
+When `needs_sccache` is true, the Rust-oriented reusable workflows first try the
+native GitHub Actions cache backend expected by current `sccache` releases.
+They only fall back to a workspace-local `.sccache` archive when the runner does
+not expose the GitHub cache-service environment that backend needs.
+
 Execution is script-backed:
 
 - reusable workflows fan out by `setup_class`

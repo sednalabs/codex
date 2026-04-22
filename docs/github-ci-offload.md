@@ -224,6 +224,9 @@ The important fields are:
 - `script_args`: argv list for that script
 - `needs_just`, `needs_node`, `needs_nextest`, `needs_linux_build_deps`,
   `needs_dotslash`, `needs_sccache`: explicit setup capabilities
+- `needs_sccache` now prefers the GitHub-hosted `sccache` backend when the
+  runner exposes the current cache-service environment, and only falls back to
+  a local `.sccache` archive when that backend is unavailable
 - `frontier_default`: whether the lane belongs in the default `lane_set=all`
   frontier harvest
 - `frontier_lane_sets`: named frontier families for non-`all` frontier runs
