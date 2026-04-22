@@ -3781,7 +3781,7 @@ impl ChatWidget {
         if ev.status != GuardianAssessmentStatus::Denied {
             return;
         }
-        let tool = action_json
+        let _tool = action_json
             .as_ref()
             .and_then(|action| action.get("tool").and_then(serde_json::Value::as_str));
         let cell = if let Some(action) = action_json.as_ref()
@@ -6938,7 +6938,7 @@ impl ChatWidget {
             } => {
                 self.on_dynamic_tool_call_end(DynamicToolCallResponseEvent {
                     call_id: id,
-                    turn_id,
+                    turn_id: turn_id.clone(),
                     tool,
                     arguments,
                     content_items: content_items

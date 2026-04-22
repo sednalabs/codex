@@ -1800,14 +1800,16 @@ impl HistoryCell for DynamicToolCallCell {
             let detail_lines: Vec<Line<'static>> = detail_text
                 .split('\n')
                 .flat_map(|segment| {
+                    let styled_line = Line::from(segment.to_string().dim());
                     adaptive_wrap_line(
-                        &Line::from(segment.to_string().dim()),
+                        &styled_line,
                         RtOptions::new(detail_wrap_width)
                             .initial_indent("".into())
                             .subsequent_indent("    ".into()),
                     )
                     .into_iter()
                     .map(|line| line_to_static(&line))
+                    .collect::<Vec<_>>()
                 })
                 .collect();
 
@@ -3015,7 +3017,7 @@ fn format_mcp_invocation<'a>(invocation: McpInvocation) -> Line<'a> {
     invocation_spans.into()
 }
 
-fn format_dynamic_tool_invocation<'a>(tool: &str, arguments: &serde_json::Value) -> Line<'a> {
+fn format_dynamic_tool_invocation<'a>(tool: &'a str, arguments: &serde_json::Value) -> Line<'a> {
     let args_str = serde_json::to_string(arguments).unwrap_or_else(|_| arguments.to_string());
     vec![tool.cyan(), " ".into(), args_str.dim()].into()
 }
