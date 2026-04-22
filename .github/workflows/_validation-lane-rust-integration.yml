@@ -189,6 +189,7 @@ jobs:
           tool: sccache
 
       - name: Configure sccache backend
+        id: sccache_backend
         if: ${{ inputs.needs_sccache }}
         shell: bash
         run: |
@@ -200,12 +201,14 @@ jobs:
               echo "SCCACHE_GHA_ENABLED=true"
               echo "SCCACHE_GHA_CACHE_URL=${cache_url}"
             } >> "$GITHUB_ENV"
+            echo "backend=gha" >> "$GITHUB_OUTPUT"
             echo "Using sccache GitHub backend"
           else
             {
               echo "SCCACHE_GHA_ENABLED=false"
               echo "SCCACHE_DIR=${GITHUB_WORKSPACE}/.sccache"
             } >> "$GITHUB_ENV"
+            echo "backend=fallback" >> "$GITHUB_OUTPUT"
             echo "Using sccache local disk + actions/cache fallback"
           fi
 
@@ -215,7 +218,7 @@ jobs:
         run: echo "RUSTC_WRAPPER=sccache" >> "$GITHUB_ENV"
 
       - name: Restore sccache cache (fallback)
-        if: ${{ inputs.needs_sccache && env.SCCACHE_GHA_ENABLED != 'true' }}
+        if: ${{ inputs.needs_sccache && steps.sccache_backend.outputs.backend == 'fallback' }}
         uses: actions/cache/restore@v5
         with:
           path: ${{ github.workspace }}/.sccache/
@@ -447,7 +450,7 @@ jobs:
           key: cargo-home-linux-rust-${{ steps.lockhash.outputs.hash }}-${{ steps.lockhash.outputs.toolchain_hash }}
 
       - name: Save sccache cache (fallback)
-        if: ${{ always() && !cancelled() && inputs.needs_sccache && env.SCCACHE_GHA_ENABLED != 'true' && steps.disk_guard.outputs.skip_cache_save != 'true' }}
+        if: ${{ always() && !cancelled() && inputs.needs_sccache && steps.sccache_backend.outputs.backend == 'fallback' && steps.disk_guard.outputs.skip_cache_save != 'true' }}
         continue-on-error: true
         uses: actions/cache/save@v5
         with:
