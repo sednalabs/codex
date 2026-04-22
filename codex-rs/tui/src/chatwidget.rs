@@ -8027,10 +8027,26 @@ impl ChatWidget {
 
         // Older restored thread-input state can carry execution-order metadata
         // without the reverse-chronological insert-order list Alt+Up depends on.
-        // Fall back to the run-order view so dequeue-for-edit removes the item
-        // from the visible queued list instead of recalling it while the stale
-        // preview still claims it is queued.
-        self.queued_follow_up_insert_order = self.queued_follow_up_order.clone();
+        // Reconstruct insertion chronology by keeping append-queued entries in
+        // their original order and then the front-queued "run next" entries in
+        // their original order, so dequeue-for-edit still recalls the newest
+        // inserted item first.
+        let mut insert_order = VecDeque::with_capacity(self.queued_follow_up_order.len());
+        let mut front_insert_order = VecDeque::new();
+
+        for kind in self.queued_follow_up_order.iter().copied() {
+            match kind {
+                QueuedFollowUpKind::UserMessageBack | QueuedFollowUpKind::SlashCommandBack => {
+                    insert_order.push_back(kind);
+                }
+                QueuedFollowUpKind::UserMessageFront | QueuedFollowUpKind::SlashCommandFront => {
+                    front_insert_order.push_front(kind);
+                }
+            }
+        }
+
+        insert_order.extend(front_insert_order);
+        self.queued_follow_up_insert_order = insert_order;
     }
 
     fn consume_follow_up_run_order(&mut self, kind: QueuedFollowUpKind) {
