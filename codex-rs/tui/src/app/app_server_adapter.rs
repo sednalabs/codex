@@ -36,6 +36,8 @@ use codex_protocol::ThreadId;
 #[cfg(test)]
 use codex_protocol::config_types::ModeKind;
 #[cfg(test)]
+use codex_protocol::dynamic_tools::DynamicToolCallRequest;
+#[cfg(test)]
 use codex_protocol::items::AgentMessageContent;
 #[cfg(test)]
 use codex_protocol::items::AgentMessageItem;
@@ -59,6 +61,8 @@ use codex_protocol::protocol::AgentMessageDeltaEvent;
 use codex_protocol::protocol::AgentReasoningDeltaEvent;
 #[cfg(test)]
 use codex_protocol::protocol::AgentReasoningRawContentDeltaEvent;
+#[cfg(test)]
+use codex_protocol::protocol::DynamicToolCallResponseEvent;
 #[cfg(test)]
 use codex_protocol::protocol::ErrorEvent;
 #[cfg(test)]
@@ -549,16 +553,18 @@ fn server_notification_thread_events(
             let turn_id = notification.turn_id;
             Some((
                 thread_id,
-                command_execution_started_event(&turn_id, &notification.item).or_else(|| {
-                    Some(vec![Event {
-                        id: String::new(),
-                        msg: EventMsg::ItemStarted(ItemStartedEvent {
-                            thread_id,
-                            turn_id,
-                            item: thread_item_to_core(&notification.item)?,
-                        }),
-                    }])
-                })?,
+                command_execution_started_event(&turn_id, &notification.item)
+                    .or_else(|| dynamic_tool_started_event(&turn_id, &notification.item))
+                    .or_else(|| {
+                        Some(vec![Event {
+                            id: String::new(),
+                            msg: EventMsg::ItemStarted(ItemStartedEvent {
+                                thread_id,
+                                turn_id,
+                                item: thread_item_to_core(&notification.item)?,
+                            }),
+                        }])
+                    })?,
             ))
         }
         ServerNotification::ItemCompleted(notification) => {
@@ -566,16 +572,18 @@ fn server_notification_thread_events(
             let turn_id = notification.turn_id;
             Some((
                 thread_id,
-                command_execution_completed_event(&turn_id, &notification.item).or_else(|| {
-                    Some(vec![Event {
-                        id: String::new(),
-                        msg: EventMsg::ItemCompleted(ItemCompletedEvent {
-                            thread_id,
-                            turn_id,
-                            item: thread_item_to_core(&notification.item)?,
-                        }),
-                    }])
-                })?,
+                command_execution_completed_event(&turn_id, &notification.item)
+                    .or_else(|| dynamic_tool_completed_event(&turn_id, &notification.item))
+                    .or_else(|| {
+                        Some(vec![Event {
+                            id: String::new(),
+                            msg: EventMsg::ItemCompleted(ItemCompletedEvent {
+                                thread_id,
+                                turn_id,
+                                item: thread_item_to_core(&notification.item)?,
+                            }),
+                        }])
+                    })?,
             ))
         }
         ServerNotification::CommandExecutionOutputDelta(notification) => Some((
@@ -717,6 +725,10 @@ fn turn_snapshot_events(
     for item in &turn.items {
         if let Some(command_events) = command_execution_snapshot_events(&turn.id, item) {
             events.extend(command_events);
+            continue;
+        }
+        if let Some(dynamic_tool_events) = dynamic_tool_snapshot_events(&turn.id, item) {
+            events.extend(dynamic_tool_events);
             continue;
         }
 
@@ -1012,6 +1024,73 @@ fn command_execution_snapshot_events(turn_id: &str, item: &ThreadItem) -> Option
 }
 
 #[cfg(test)]
+fn dynamic_tool_started_event(turn_id: &str, item: &ThreadItem) -> Option<Vec<Event>> {
+    let ThreadItem::DynamicToolCall {
+        id,
+        tool,
+        arguments,
+        ..
+    } = item
+    else {
+        return None;
+    };
+
+    Some(vec![Event {
+        id: String::new(),
+        msg: EventMsg::DynamicToolCallRequest(DynamicToolCallRequest {
+            call_id: id.clone(),
+            turn_id: turn_id.to_string(),
+            tool: tool.clone(),
+            arguments: arguments.clone(),
+        }),
+    }])
+}
+
+#[cfg(test)]
+fn dynamic_tool_completed_event(turn_id: &str, item: &ThreadItem) -> Option<Vec<Event>> {
+    let ThreadItem::DynamicToolCall {
+        id,
+        tool,
+        arguments,
+        content_items,
+        success,
+        duration_ms,
+        ..
+    } = item
+    else {
+        return None;
+    };
+
+    Some(vec![Event {
+        id: String::new(),
+        msg: EventMsg::DynamicToolCallResponse(DynamicToolCallResponseEvent {
+            call_id: id.clone(),
+            turn_id: turn_id.to_string(),
+            tool: tool.clone(),
+            arguments: arguments.clone(),
+            content_items: content_items
+                .clone()
+                .unwrap_or_default()
+                .into_iter()
+                .map(Into::into)
+                .collect(),
+            success: success.unwrap_or(false),
+            error: None,
+            duration: Duration::from_millis(duration_ms.unwrap_or_default().max(0) as u64),
+        }),
+    }])
+}
+
+#[cfg(test)]
+fn dynamic_tool_snapshot_events(turn_id: &str, item: &ThreadItem) -> Option<Vec<Event>> {
+    let mut events = dynamic_tool_started_event(turn_id, item)?;
+    if let Some(end_events) = dynamic_tool_completed_event(turn_id, item) {
+        events.extend(end_events);
+    }
+    Some(events)
+}
+
+#[cfg(test)]
 fn app_server_web_search_action_to_core(
     action: codex_app_server_protocol::WebSearchAction,
 ) -> Option<codex_protocol::models::WebSearchAction> {
@@ -1123,6 +1202,47 @@ mod tests {
                 assert_eq!(*phase, Some(MessagePhase::FinalAnswer));
             }
             _ => panic!("expected bridged agent message item"),
+        }
+    }
+
+    #[test]
+    fn bridges_dynamic_tool_items_from_server_notifications() {
+        let (actual_thread_id, events) = server_notification_thread_events(
+            ServerNotification::ItemCompleted(ItemCompletedNotification {
+                item: ThreadItem::DynamicToolCall {
+                    id: "dyn-1".to_string(),
+                    tool: "android_observe".to_string(),
+                    arguments: serde_json::json!({"scope": "screen_and_ui"}),
+                    status: codex_app_server_protocol::DynamicToolCallStatus::Completed,
+                    content_items: Some(vec![
+                        codex_app_server_protocol::DynamicToolCallOutputContentItem::InputText {
+                            text: "screen summary".to_string(),
+                        },
+                    ]),
+                    success: Some(true),
+                    duration_ms: Some(42),
+                },
+                thread_id: "019cee8c-b993-7e33-88c0-014d4e62612d".to_string(),
+                turn_id: "019cee8c-b9b4-7f10-a1b0-38caa876a012".to_string(),
+            }),
+        )
+        .expect("notification should bridge");
+
+        assert_eq!(
+            actual_thread_id,
+            ThreadId::from_string("019cee8c-b993-7e33-88c0-014d4e62612d").expect("valid thread id")
+        );
+        let [event] = events.as_slice() else {
+            panic!("expected one bridged event");
+        };
+        match &event.msg {
+            EventMsg::DynamicToolCallResponse(ev) => {
+                assert_eq!(ev.tool, "android_observe");
+                assert_eq!(ev.arguments, serde_json::json!({"scope": "screen_and_ui"}));
+                assert!(ev.success);
+                assert_eq!(ev.content_items.len(), 1);
+            }
+            other => panic!("unexpected event: {other:?}"),
         }
     }
 

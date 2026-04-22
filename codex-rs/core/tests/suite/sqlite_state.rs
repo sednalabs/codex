@@ -111,6 +111,7 @@ async fn backfill_scans_existing_rollouts() -> Result<()> {
                 "properties": { "city": { "type": "string" } }
             }),
             defer_loading: true,
+            persist_on_resume: true,
         },
         DynamicToolSpec {
             name: "weather_lookup".to_string(),
@@ -121,6 +122,7 @@ async fn backfill_scans_existing_rollouts() -> Result<()> {
                 "properties": { "zip": { "type": "string" } }
             }),
             defer_loading: false,
+            persist_on_resume: true,
         },
     ];
     let dynamic_tools_for_hook = dynamic_tools.clone();

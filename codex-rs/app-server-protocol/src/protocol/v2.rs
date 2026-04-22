@@ -613,6 +613,11 @@ pub struct DynamicToolSpec {
     pub input_schema: JsonValue,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub defer_loading: bool,
+    #[serde(
+        default = "default_dynamic_tool_persist_on_resume",
+        skip_serializing_if = "is_true"
+    )]
+    pub persist_on_resume: bool,
 }
 
 #[derive(Deserialize)]
@@ -622,7 +627,16 @@ struct DynamicToolSpecDe {
     description: String,
     input_schema: JsonValue,
     defer_loading: Option<bool>,
+    persist_on_resume: Option<bool>,
     expose_to_context: Option<bool>,
+}
+
+const fn default_dynamic_tool_persist_on_resume() -> bool {
+    true
+}
+
+fn is_true(value: &bool) -> bool {
+    *value
 }
 
 impl<'de> Deserialize<'de> for DynamicToolSpec {
@@ -635,6 +649,7 @@ impl<'de> Deserialize<'de> for DynamicToolSpec {
             description,
             input_schema,
             defer_loading,
+            persist_on_resume,
             expose_to_context,
         } = DynamicToolSpecDe::deserialize(deserializer)?;
 
@@ -644,6 +659,8 @@ impl<'de> Deserialize<'de> for DynamicToolSpec {
             input_schema,
             defer_loading: defer_loading
                 .unwrap_or_else(|| expose_to_context.map(|visible| !visible).unwrap_or(false)),
+            persist_on_resume: persist_on_resume
+                .unwrap_or(default_dynamic_tool_persist_on_resume()),
         })
     }
 }
@@ -6503,7 +6520,11 @@ pub enum DynamicToolCallOutputContentItem {
     #[serde(rename_all = "camelCase")]
     InputText { text: String },
     #[serde(rename_all = "camelCase")]
-    InputImage { image_url: String },
+    InputImage {
+        image_url: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        detail: Option<String>,
+    },
 }
 
 impl From<DynamicToolCallOutputContentItem>
@@ -6512,8 +6533,8 @@ impl From<DynamicToolCallOutputContentItem>
     fn from(item: DynamicToolCallOutputContentItem) -> Self {
         match item {
             DynamicToolCallOutputContentItem::InputText { text } => Self::InputText { text },
-            DynamicToolCallOutputContentItem::InputImage { image_url } => {
-                Self::InputImage { image_url }
+            DynamicToolCallOutputContentItem::InputImage { image_url, detail } => {
+                Self::InputImage { image_url, detail }
             }
         }
     }
@@ -9007,6 +9028,7 @@ mod tests {
                     }
                 }),
                 defer_loading: true,
+                persist_on_resume: true,
             }
         );
     }

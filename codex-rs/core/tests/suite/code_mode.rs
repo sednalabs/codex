@@ -2955,6 +2955,7 @@ async fn code_mode_can_call_hidden_dynamic_tools() -> Result<()> {
                     "additionalProperties": false,
                 }),
                 defer_loading: true,
+                persist_on_resume: true,
             }],
             /*persist_extended_history*/ false,
         )
