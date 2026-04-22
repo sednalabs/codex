@@ -1717,6 +1717,98 @@ fn search_tool_registers_for_deferred_dynamic_tools() {
 }
 
 #[test]
+fn android_dynamic_tools_use_canonical_codex_tool_definitions() {
+    let model_info = model_info();
+    let features = Features::with_defaults();
+    let available_models = Vec::new();
+    let tools_config = ToolsConfig::new(&ToolsConfigParams {
+        model_info: &model_info,
+        available_models: &available_models,
+        features: &features,
+        image_generation_tool_auth_allowed: true,
+        web_search_mode: Some(WebSearchMode::Cached),
+        session_source: SessionSource::Cli,
+        sandbox_policy: &SandboxPolicy::DangerFullAccess,
+        windows_sandbox_level: WindowsSandboxLevel::Disabled,
+    });
+    let observe_tool = DynamicToolSpec {
+        name: "android_observe".to_string(),
+        description: "custom observe description".to_string(),
+        input_schema: json!({
+            "type": "object",
+            "properties": {
+                "ignored": { "type": "string" }
+            }
+        }),
+        defer_loading: false,
+        persist_on_resume: false,
+    };
+    let step_tool = DynamicToolSpec {
+        name: "android_step".to_string(),
+        description: "custom step description".to_string(),
+        input_schema: json!({
+            "type": "object",
+            "properties": {
+                "ignored": { "type": "string" }
+            }
+        }),
+        defer_loading: true,
+        persist_on_resume: false,
+    };
+
+    let (tools, handlers) = build_specs(
+        &tools_config,
+        /*mcp_tools*/ None,
+        /*deferred_mcp_tools*/ None,
+        &[observe_tool, step_tool],
+    );
+
+    let ToolSpec::Function(observe_spec) = &find_tool(&tools, "android_observe").spec else {
+        panic!("expected android_observe function tool");
+    };
+    assert_eq!(
+        observe_spec.description,
+        "Capture the current Android screen as a model-visible screenshot, optionally with a compact UI digest."
+    );
+    assert_eq!(observe_spec.defer_loading, None);
+    let observe_properties = observe_spec
+        .parameters
+        .properties
+        .as_ref()
+        .expect("observe properties");
+    assert!(observe_properties.contains_key("scope"));
+    assert!(observe_properties.contains_key("prompt"));
+    assert!(!observe_properties.contains_key("ignored"));
+
+    let ToolSpec::Function(step_spec) = &find_tool(&tools, "android_step").spec else {
+        panic!("expected android_step function tool");
+    };
+    assert_eq!(
+        step_spec.description,
+        "Perform one or more bounded Android actions, then return a fresh post-action screenshot, summary, and current view metadata."
+    );
+    assert_eq!(step_spec.defer_loading, Some(true));
+    let step_properties = step_spec
+        .parameters
+        .properties
+        .as_ref()
+        .expect("step properties");
+    assert!(step_properties.contains_key("actions"));
+    assert!(step_properties.contains_key("view"));
+    assert!(step_properties.contains_key("action"));
+    assert!(!step_properties.contains_key("ignored"));
+
+    assert!(handlers.contains(&ToolHandlerSpec {
+        name: ToolName::plain("android_observe"),
+        kind: ToolHandlerKind::DynamicTool,
+    }));
+    assert!(handlers.contains(&ToolHandlerSpec {
+        name: ToolName::plain("android_step"),
+        kind: ToolHandlerKind::DynamicTool,
+    }));
+}
+
+#[test]
 fn tool_suggest_is_not_registered_without_feature_flag() {
     let model_info = search_capable_model_info();
     let mut features = Features::with_defaults();

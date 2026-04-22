@@ -135,6 +135,7 @@ async fn thread_unsubscribe_during_turn_keeps_turn_running() -> Result<()> {
                     "additionalProperties": false,
                 }),
                 defer_loading: false,
+                persist_on_resume: true,
             }]),
             ..Default::default()
         })

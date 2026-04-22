@@ -759,6 +759,7 @@ async fn tool_search_returns_deferred_dynamic_tool_and_routes_follow_up_call() -
         description: tool_description.to_string(),
         input_schema: input_schema.clone(),
         defer_loading: true,
+        persist_on_resume: true,
     };
 
     let mut builder = test_codex().with_config(configure_search_capable_model);

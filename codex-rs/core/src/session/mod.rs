@@ -575,6 +575,9 @@ impl Codex {
             persisted_tools
                 .or_else(|| conversation_history.get_dynamic_tools())
                 .unwrap_or_default()
+                .into_iter()
+                .filter(should_restore_dynamic_tool_on_resume)
+                .collect()
         } else {
             dynamic_tools
         };
@@ -771,6 +774,12 @@ impl Codex {
     pub(crate) fn enabled(&self, feature: Feature) -> bool {
         self.session.enabled(feature)
     }
+}
+
+fn should_restore_dynamic_tool_on_resume(
+    tool: &codex_protocol::dynamic_tools::DynamicToolSpec,
+) -> bool {
+    tool.persist_on_resume
 }
 
 #[cfg(test)]

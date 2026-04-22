@@ -56,7 +56,7 @@ WHERE threads.id = ?
     ) -> anyhow::Result<Option<Vec<DynamicToolSpec>>> {
         let rows = sqlx::query(
             r#"
-SELECT name, description, input_schema, defer_loading
+SELECT name, description, input_schema, defer_loading, persist_on_resume
 FROM thread_dynamic_tools
 WHERE thread_id = ?
 ORDER BY position ASC
@@ -77,6 +77,7 @@ ORDER BY position ASC
                 description: row.try_get("description")?,
                 input_schema,
                 defer_loading: row.try_get("defer_loading")?,
+                persist_on_resume: row.try_get("persist_on_resume")?,
             });
         }
         Ok(Some(tools))
@@ -770,8 +771,9 @@ INSERT INTO thread_dynamic_tools (
     name,
     description,
     input_schema,
-    defer_loading
-) VALUES (?, ?, ?, ?, ?, ?)
+    defer_loading,
+    persist_on_resume
+) VALUES (?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(thread_id, position) DO NOTHING
                 "#,
             )
@@ -781,6 +783,7 @@ ON CONFLICT(thread_id, position) DO NOTHING
             .bind(tool.description.as_str())
             .bind(input_schema)
             .bind(tool.defer_loading)
+            .bind(tool.persist_on_resume)
             .execute(&mut *tx)
             .await?;
         }

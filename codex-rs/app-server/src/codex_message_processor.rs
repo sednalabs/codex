@@ -2563,6 +2563,7 @@ impl CodexMessageProcessor {
                     description: tool.description,
                     input_schema: tool.input_schema,
                     defer_loading: tool.defer_loading,
+                    persist_on_resume: tool.persist_on_resume,
                 })
                 .collect()
         };
@@ -10097,6 +10098,7 @@ mod tests {
             description: "test".to_string(),
             input_schema: json!({"type": "null"}),
             defer_loading: false,
+            persist_on_resume: true,
         }];
         let err = validate_dynamic_tools(&tools).expect_err("invalid schema");
         assert!(err.contains("my_tool"), "unexpected error: {err}");
@@ -10110,6 +10112,7 @@ mod tests {
             // Missing `type` is common; core sanitizes these to a supported schema.
             input_schema: json!({"properties": {}}),
             defer_loading: false,
+            persist_on_resume: true,
         }];
         validate_dynamic_tools(&tools).expect("valid schema");
     }
@@ -10128,6 +10131,7 @@ mod tests {
                 "additionalProperties": false
             }),
             defer_loading: false,
+            persist_on_resume: true,
         }];
         validate_dynamic_tools(&tools).expect("valid schema");
     }
