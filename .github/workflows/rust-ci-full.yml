@@ -284,6 +284,7 @@ jobs:
           version: 0.7.5
 
       - name: Configure sccache backend
+        id: sccache_backend
         if: ${{ env.USE_SCCACHE == 'true' }}
         shell: bash
         run: |
@@ -295,12 +296,14 @@ jobs:
               echo "SCCACHE_GHA_ENABLED=true"
               echo "SCCACHE_GHA_CACHE_URL=${cache_url}"
             } >> "$GITHUB_ENV"
+            echo "backend=gha" >> "$GITHUB_OUTPUT"
             echo "Using sccache GitHub backend"
           else
             {
               echo "SCCACHE_GHA_ENABLED=false"
               echo "SCCACHE_DIR=${{ github.workspace }}/.sccache"
             } >> "$GITHUB_ENV"
+            echo "backend=fallback" >> "$GITHUB_OUTPUT"
             echo "Using sccache local disk + actions/cache fallback"
           fi
 
@@ -310,7 +313,7 @@ jobs:
         run: echo "RUSTC_WRAPPER=sccache" >> "$GITHUB_ENV"
 
       - name: Restore sccache cache (fallback)
-        if: ${{ env.USE_SCCACHE == 'true' && env.SCCACHE_GHA_ENABLED != 'true' }}
+        if: ${{ env.USE_SCCACHE == 'true' && steps.sccache_backend.outputs.backend == 'fallback' }}
         id: cache_sccache_restore
         uses: actions/cache/restore@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5
         with:
@@ -469,7 +472,7 @@ jobs:
           key: cargo-home-${{ matrix.runner }}-${{ matrix.target }}-${{ matrix.profile }}-${{ steps.lockhash.outputs.hash }}-${{ steps.lockhash.outputs.toolchain_hash }}
 
       - name: Save sccache cache (fallback)
-        if: always() && !cancelled() && env.USE_SCCACHE == 'true' && env.SCCACHE_GHA_ENABLED != 'true'
+        if: always() && !cancelled() && env.USE_SCCACHE == 'true' && steps.sccache_backend.outputs.backend == 'fallback'
         continue-on-error: true
         uses: actions/cache/save@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5
         with:
@@ -584,6 +587,7 @@ jobs:
           version: 0.7.5
 
       - name: Configure sccache backend
+        id: sccache_backend
         if: ${{ env.USE_SCCACHE == 'true' }}
         shell: bash
         run: |
@@ -595,12 +599,14 @@ jobs:
               echo "SCCACHE_GHA_ENABLED=true"
               echo "SCCACHE_GHA_CACHE_URL=${cache_url}"
             } >> "$GITHUB_ENV"
+            echo "backend=gha" >> "$GITHUB_OUTPUT"
             echo "Using sccache GitHub backend"
           else
             {
               echo "SCCACHE_GHA_ENABLED=false"
               echo "SCCACHE_DIR=${{ github.workspace }}/.sccache"
             } >> "$GITHUB_ENV"
+            echo "backend=fallback" >> "$GITHUB_OUTPUT"
             echo "Using sccache local disk + actions/cache fallback"
           fi
 
@@ -610,7 +616,7 @@ jobs:
         run: echo "RUSTC_WRAPPER=sccache" >> "$GITHUB_ENV"
 
       - name: Restore sccache cache (fallback)
-        if: ${{ env.USE_SCCACHE == 'true' && env.SCCACHE_GHA_ENABLED != 'true' }}
+        if: ${{ env.USE_SCCACHE == 'true' && steps.sccache_backend.outputs.backend == 'fallback' }}
         id: cache_sccache_restore
         uses: actions/cache/restore@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5
         with:
@@ -674,7 +680,7 @@ jobs:
           key: cargo-home-${{ matrix.runner }}-${{ matrix.target }}-${{ matrix.profile }}-${{ steps.lockhash.outputs.hash }}-${{ steps.lockhash.outputs.toolchain_hash }}
 
       - name: Save sccache cache (fallback)
-        if: always() && !cancelled() && env.USE_SCCACHE == 'true' && env.SCCACHE_GHA_ENABLED != 'true'
+        if: always() && !cancelled() && env.USE_SCCACHE == 'true' && steps.sccache_backend.outputs.backend == 'fallback'
         continue-on-error: true
         uses: actions/cache/save@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5
         with:
