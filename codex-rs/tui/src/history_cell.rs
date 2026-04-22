@@ -3901,8 +3901,8 @@ mod tests {
                     detail: Some("original".to_string()),
                 },
             ],
-            true,
-            None,
+            /*success*/ true,
+            /*error*/ None,
         );
         let rendered = render_lines(&cell.transcript_lines(/*width*/ 80)).join("\n");
 
