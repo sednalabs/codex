@@ -8976,6 +8976,7 @@ mod tests {
                 },
                 DynamicToolCallOutputContentItem::InputImage {
                     image_url: "data:image/png;base64,AAA".to_string(),
+                    detail: None,
                 },
             ],
             success: true,

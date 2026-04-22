@@ -475,6 +475,7 @@ async fn dynamic_tool_call_round_trip_sends_content_items_to_model() -> Result<(
     let content_items = response_content_items
         .clone()
         .into_iter()
+        .map(codex_protocol::dynamic_tools::DynamicToolCallOutputContentItem::from)
         .map(FunctionCallOutputContentItem::from)
         .collect::<Vec<FunctionCallOutputContentItem>>();
     let response = DynamicToolCallResponse {
