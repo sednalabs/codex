@@ -292,7 +292,7 @@ fn view_schema(description: Option<String>) -> JsonSchema {
                 )),
             ),
         ]),
-        None,
+        /*required*/ None,
         Some(false.into()),
     );
     schema.description = description;
@@ -307,7 +307,7 @@ fn string_enum(values: &[&str], description: &str) -> JsonSchema {
 }
 
 fn permissive_object(description: Option<String>) -> JsonSchema {
-    let mut schema = JsonSchema::object(BTreeMap::new(), None, Some(true.into()));
+    let mut schema = JsonSchema::object(BTreeMap::new(), /*required*/ None, Some(true.into()));
     schema.description = description;
     schema
 }
