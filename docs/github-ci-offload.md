@@ -61,6 +61,8 @@ artifacts.
      the exact-route path stays trustworthy.
 7. Use `validation-lab` `profile=targeted` with `lane_set=release` when the question is Linux
    release-build dependency or lockfile readiness under `--locked`.
+   - `sedna.release-linux-smoke` is a plain locked release build preflight: it keeps
+     Linux build deps and `sccache`, but not DotSlash or release-publish steps.
 8. Use `sedna-heavy-tests` only when the change needs labeled PR heavy validation, merge-group
    heavy validation, or a named heavy lane.
 9. Use `rust-ci-full` only for scheduled/manual broad Cargo-native checkpoints,
