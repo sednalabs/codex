@@ -16,6 +16,47 @@ use tokio::time::Instant;
 
 pub(crate) struct Handler;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WakeSource {
+    TargetCompletion,
+    Mailbox,
+    Timeout,
+}
+
+impl WakeSource {
+    fn completion_reason(self) -> CollabWaitingCompletionReason {
+        match self {
+            WakeSource::TargetCompletion => CollabWaitingCompletionReason::Terminal,
+            WakeSource::Mailbox => CollabWaitingCompletionReason::Mailbox,
+            WakeSource::Timeout => CollabWaitingCompletionReason::Timeout,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct CompletionRule {
+    return_when: ReturnWhen,
+}
+
+impl CompletionRule {
+    fn new(return_when: ReturnWhen) -> Self {
+        Self { return_when }
+    }
+
+    fn is_satisfied(
+        self,
+        statuses: &HashMap<ThreadId, AgentStatus>,
+        receiver_thread_ids: &[ThreadId],
+    ) -> bool {
+        match self.return_when {
+            ReturnWhen::Any => !statuses.is_empty(),
+            ReturnWhen::All => receiver_thread_ids
+                .iter()
+                .all(|id| statuses.get(id).is_some_and(is_final)),
+        }
+    }
+}
+
 impl ToolHandler for Handler {
     type Output = WaitAgentResult;
 
@@ -107,23 +148,29 @@ impl ToolHandler for Handler {
             }
         }
 
-        let completion_reason =
-            if has_return_condition(&final_statuses, &receiver_thread_ids, args.return_when) {
-                CollabWaitingCompletionReason::Terminal
-            } else if session.has_pending_mailbox_items().await {
-                CollabWaitingCompletionReason::Mailbox
-            } else {
-                wait_for_completion_or_mailbox(
-                    session.clone(),
-                    &mut mailbox_seq_rx,
-                    status_rxs,
-                    &receiver_thread_ids,
-                    args.return_when,
-                    &mut final_statuses,
-                    Instant::now() + Duration::from_millis(timeout_ms as u64),
-                )
-                .await
-            };
+        let completion_rule = CompletionRule::new(args.return_when);
+        let wake_source = if let Some(wake_source) = ready_wake_source(
+            session.as_ref(),
+            completion_rule,
+            &final_statuses,
+            &receiver_thread_ids,
+        )
+        .await
+        {
+            wake_source
+        } else {
+            wait_for_wake_source(
+                session.clone(),
+                &mut mailbox_seq_rx,
+                status_rxs,
+                &receiver_thread_ids,
+                completion_rule,
+                &mut final_statuses,
+                Instant::now() + Duration::from_millis(timeout_ms as u64),
+            )
+            .await
+        };
+        let completion_reason = wake_source.completion_reason();
 
         let pending_thread_ids = receiver_thread_ids
             .iter()
@@ -209,16 +256,18 @@ pub(crate) struct WaitAgentResult {
     pub(crate) timed_out: bool,
 }
 
-fn has_return_condition(
-    statuses: &HashMap<ThreadId, AgentStatus>,
+async fn ready_wake_source(
+    session: &Session,
+    completion_rule: CompletionRule,
+    final_statuses: &HashMap<ThreadId, AgentStatus>,
     receiver_thread_ids: &[ThreadId],
-    return_when: ReturnWhen,
-) -> bool {
-    match return_when {
-        ReturnWhen::Any => !statuses.is_empty(),
-        ReturnWhen::All => receiver_thread_ids
-            .iter()
-            .all(|id| statuses.get(id).is_some_and(is_final)),
+) -> Option<WakeSource> {
+    if completion_rule.is_satisfied(final_statuses, receiver_thread_ids) {
+        Some(WakeSource::TargetCompletion)
+    } else if session.has_pending_mailbox_items().await {
+        Some(WakeSource::Mailbox)
+    } else {
+        None
     }
 }
 
@@ -296,15 +345,15 @@ async fn wait_for_final_status(
     }
 }
 
-async fn wait_for_completion_or_mailbox(
+async fn wait_for_wake_source(
     session: std::sync::Arc<Session>,
     mailbox_seq_rx: &mut tokio::sync::watch::Receiver<u64>,
     status_rxs: Vec<(ThreadId, Receiver<AgentStatus>)>,
     receiver_thread_ids: &[ThreadId],
-    return_when: ReturnWhen,
+    completion_rule: CompletionRule,
     final_statuses: &mut HashMap<ThreadId, AgentStatus>,
     deadline: Instant,
-) -> CollabWaitingCompletionReason {
+) -> WakeSource {
     let mut futures = FuturesUnordered::new();
     for (id, rx) in status_rxs {
         let session = session.clone();
@@ -312,8 +361,8 @@ async fn wait_for_completion_or_mailbox(
     }
 
     loop {
-        if has_return_condition(final_statuses, receiver_thread_ids, return_when) {
-            return CollabWaitingCompletionReason::Terminal;
+        if completion_rule.is_satisfied(final_statuses, receiver_thread_ids) {
+            return WakeSource::TargetCompletion;
         }
 
         let sleep = tokio::time::sleep_until(deadline);
@@ -331,11 +380,11 @@ async fn wait_for_completion_or_mailbox(
             }
             mailbox_changed = mailbox_seq_rx.changed() => {
                 if mailbox_changed.is_ok() {
-                    return CollabWaitingCompletionReason::Mailbox;
+                    return WakeSource::Mailbox;
                 }
             }
             _ = &mut sleep => {
-                return CollabWaitingCompletionReason::Timeout;
+                return WakeSource::Timeout;
             }
         }
     }
@@ -344,6 +393,38 @@ async fn wait_for_completion_or_mailbox(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn wake_source_maps_to_public_completion_reason() {
+        assert_eq!(
+            WakeSource::TargetCompletion.completion_reason(),
+            CollabWaitingCompletionReason::Terminal
+        );
+        assert_eq!(
+            WakeSource::Mailbox.completion_reason(),
+            CollabWaitingCompletionReason::Mailbox
+        );
+        assert_eq!(
+            WakeSource::Timeout.completion_reason(),
+            CollabWaitingCompletionReason::Timeout
+        );
+    }
+
+    #[test]
+    fn completion_rule_distinguishes_any_from_all() {
+        let finished_id = ThreadId::new();
+        let running_id = ThreadId::new();
+        let receiver_thread_ids = vec![finished_id, running_id];
+        let statuses = HashMap::from([(
+            finished_id,
+            AgentStatus::Completed(Some("done".to_string())),
+        )]);
+
+        assert!(CompletionRule::new(ReturnWhen::Any).is_satisfied(&statuses, &receiver_thread_ids));
+        assert!(
+            !CompletionRule::new(ReturnWhen::All).is_satisfied(&statuses, &receiver_thread_ids)
+        );
+    }
 
     #[test]
     fn merge_wait_end_statuses_includes_pending_targets() {
