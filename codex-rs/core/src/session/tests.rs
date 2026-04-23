@@ -239,6 +239,7 @@ fn skill_message(text: &str) -> ResponseItem {
 #[test]
 fn environment_scoped_dynamic_tools_do_not_restore_without_revalidation() {
     let environment_tool = DynamicToolSpec {
+        namespace: None,
         name: "android_observe".to_string(),
         description: "observe Android screen".to_string(),
         input_schema: json!({"type":"object"}),
@@ -252,6 +253,7 @@ fn environment_scoped_dynamic_tools_do_not_restore_without_revalidation() {
         }),
     };
     let thread_tool = DynamicToolSpec {
+        namespace: None,
         name: "thread_scoped_helper".to_string(),
         description: "thread scoped helper".to_string(),
         input_schema: json!({"type":"object"}),
@@ -265,6 +267,7 @@ fn environment_scoped_dynamic_tools_do_not_restore_without_revalidation() {
         }),
     };
     let non_persistent_tool = DynamicToolSpec {
+        namespace: None,
         name: "ephemeral_helper".to_string(),
         description: "ephemeral helper".to_string(),
         input_schema: json!({"type":"object"}),
@@ -3226,6 +3229,8 @@ pub(crate) async fn make_session_and_context() -> (Session, TurnContext) {
         code_mode_service: crate::tools::code_mode::CodeModeService::new(
             config.js_repl_node_path.clone(),
         ),
+        usage_logger: None,
+        environment: Some(Arc::clone(&environment)),
         environment_manager: Arc::new(codex_exec_server::EnvironmentManager::default_for_tests()),
     };
     let js_repl = Arc::new(JsReplHandle::with_node_path(
@@ -4538,6 +4543,8 @@ pub(crate) async fn make_session_and_context_with_dynamic_tools_and_rx(
         code_mode_service: crate::tools::code_mode::CodeModeService::new(
             config.js_repl_node_path.clone(),
         ),
+        usage_logger: None,
+        environment: Some(Arc::clone(&environment)),
         environment_manager: Arc::new(codex_exec_server::EnvironmentManager::default_for_tests()),
     };
     let js_repl = Arc::new(JsReplHandle::with_node_path(
