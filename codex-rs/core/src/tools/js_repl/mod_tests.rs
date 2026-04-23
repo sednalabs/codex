@@ -1829,6 +1829,8 @@ async fn js_repl_emit_image_rejects_mixed_content() -> anyhow::Result<()> {
                 "additionalProperties": false
             }),
             defer_loading: false,
+            persist_on_resume: true,
+            capability: None,
         }])
         .await;
     if !turn
@@ -1864,6 +1866,7 @@ await codex.emitImage(out);
                                 },
                                 DynamicToolCallOutputContentItem::InputImage {
                                     image_url: image_url.to_string(),
+                                    detail: Some("original".to_string()),
                                 },
                             ],
                             success: true,
@@ -1928,6 +1931,8 @@ async fn js_repl_dynamic_tool_response_preserves_js_line_separator_text() -> any
                     "additionalProperties": false
                 }),
                 defer_loading: false,
+                persist_on_resume: true,
+                capability: None,
             }])
             .await;
 
@@ -2006,6 +2011,8 @@ async fn js_repl_can_call_hidden_dynamic_tools() -> anyhow::Result<()> {
                 "additionalProperties": false
             }),
             defer_loading: true,
+            persist_on_resume: true,
+            capability: None,
         }])
         .await;
 

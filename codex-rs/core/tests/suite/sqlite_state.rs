@@ -3,6 +3,7 @@ use codex_config::types::McpServerConfig;
 use codex_config::types::McpServerTransportConfig;
 use codex_features::Feature;
 use codex_protocol::ThreadId;
+use codex_protocol::dynamic_tools::DynamicToolCapability;
 use codex_protocol::dynamic_tools::DynamicToolSpec;
 use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::EventMsg;
@@ -111,6 +112,13 @@ async fn backfill_scans_existing_rollouts() -> Result<()> {
                 "properties": { "city": { "type": "string" } }
             }),
             defer_loading: true,
+            persist_on_resume: true,
+            capability: Some(DynamicToolCapability {
+                family: Some("android".to_string()),
+                capability_scope: Some("environment".to_string()),
+                mutation_class: Some("read_only".to_string()),
+                lease_mode: Some("shared_read".to_string()),
+            }),
         },
         DynamicToolSpec {
             name: "weather_lookup".to_string(),
@@ -121,6 +129,8 @@ async fn backfill_scans_existing_rollouts() -> Result<()> {
                 "properties": { "zip": { "type": "string" } }
             }),
             defer_loading: false,
+            persist_on_resume: true,
+            capability: None,
         },
     ];
     let dynamic_tools_for_hook = dynamic_tools.clone();

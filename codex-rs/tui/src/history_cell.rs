@@ -54,6 +54,7 @@ use codex_mcp::qualified_mcp_tool_name_prefix;
 use codex_otel::RuntimeMetricsSummary;
 use codex_protocol::account::PlanType;
 use codex_protocol::config_types::ServiceTier;
+use codex_protocol::dynamic_tools::DynamicToolCallOutputContentItem;
 #[cfg(test)]
 use codex_protocol::mcp::Resource;
 #[cfg(test)]
@@ -1693,6 +1694,153 @@ pub(crate) fn new_active_mcp_tool_call(
     McpToolCallCell::new(call_id, invocation, animations_enabled)
 }
 
+#[derive(Debug)]
+pub(crate) struct DynamicToolCallCell {
+    call_id: String,
+    tool: String,
+    arguments: serde_json::Value,
+    start_time: Instant,
+    duration: Option<Duration>,
+    content_items: Option<Vec<DynamicToolCallOutputContentItem>>,
+    success: Option<bool>,
+    error: Option<String>,
+    animations_enabled: bool,
+}
+
+impl DynamicToolCallCell {
+    pub(crate) fn new(
+        call_id: String,
+        tool: String,
+        arguments: serde_json::Value,
+        animations_enabled: bool,
+    ) -> Self {
+        Self {
+            call_id,
+            tool,
+            arguments,
+            start_time: Instant::now(),
+            duration: None,
+            content_items: None,
+            success: None,
+            error: None,
+            animations_enabled,
+        }
+    }
+
+    pub(crate) fn call_id(&self) -> &str {
+        &self.call_id
+    }
+
+    pub(crate) fn complete(
+        &mut self,
+        duration: Duration,
+        content_items: Vec<DynamicToolCallOutputContentItem>,
+        success: bool,
+        error: Option<String>,
+    ) {
+        self.duration = Some(duration);
+        self.content_items = Some(content_items);
+        self.success = Some(success);
+        self.error = error;
+    }
+
+    pub(crate) fn mark_failed(&mut self) {
+        self.duration = Some(self.start_time.elapsed());
+        self.success = Some(false);
+        self.error = Some("interrupted".to_string());
+    }
+}
+
+impl HistoryCell for DynamicToolCallCell {
+    fn display_lines(&self, width: u16) -> Vec<Line<'static>> {
+        let mut lines: Vec<Line<'static>> = Vec::new();
+        let bullet = match self.success {
+            Some(true) => "•".green().bold(),
+            Some(false) => "•".red().bold(),
+            None => spinner(Some(self.start_time), self.animations_enabled),
+        };
+        let header_text = if self.success.is_some() {
+            "Called"
+        } else {
+            "Calling"
+        };
+        let invocation_line =
+            line_to_static(&format_dynamic_tool_invocation(&self.tool, &self.arguments));
+        let mut compact_spans = vec![bullet.clone(), " ".into(), header_text.bold(), " ".into()];
+        let mut compact_header = Line::from(compact_spans.clone());
+        let reserved = compact_header.width();
+        let inline_invocation =
+            invocation_line.width() <= (width as usize).saturating_sub(reserved);
+
+        if inline_invocation {
+            compact_header.extend(invocation_line.spans.clone());
+            lines.push(compact_header);
+        } else {
+            compact_spans.pop();
+            lines.push(Line::from(compact_spans));
+
+            let opts = RtOptions::new((width as usize).saturating_sub(4))
+                .initial_indent("".into())
+                .subsequent_indent("    ".into());
+            let wrapped = adaptive_wrap_line(&invocation_line, opts);
+            let body_lines: Vec<Line<'static>> = wrapped.iter().map(line_to_static).collect();
+            lines.extend(prefix_lines(body_lines, "  └ ".dim(), "    ".into()));
+        }
+
+        let detail_wrap_width = (width as usize).saturating_sub(4).max(1);
+        let preview = match (&self.error, &self.content_items) {
+            (Some(error), _) => Some(format!("Error: {error}")),
+            (None, Some(content_items)) => dynamic_tool_preview(content_items),
+            (None, None) => None,
+        };
+
+        if let Some(preview) = preview {
+            let detail_text =
+                format_and_truncate_tool_result(&preview, TOOL_CALL_MAX_LINES, detail_wrap_width);
+            let detail_lines: Vec<Line<'static>> = detail_text
+                .split('\n')
+                .flat_map(|segment| {
+                    let styled_line = Line::from(segment.to_string().dim());
+                    adaptive_wrap_line(
+                        &styled_line,
+                        RtOptions::new(detail_wrap_width)
+                            .initial_indent("".into())
+                            .subsequent_indent("    ".into()),
+                    )
+                    .into_iter()
+                    .map(|line| line_to_static(&line))
+                    .collect::<Vec<_>>()
+                })
+                .collect();
+
+            let initial_prefix: Span<'static> = if inline_invocation {
+                "  └ ".dim()
+            } else {
+                "    ".into()
+            };
+            lines.extend(prefix_lines(detail_lines, initial_prefix, "    ".into()));
+        }
+
+        lines
+    }
+
+    fn transcript_animation_tick(&self) -> Option<u64> {
+        if !self.animations_enabled || self.success.is_some() {
+            return None;
+        }
+        Some((self.start_time.elapsed().as_millis() / 50) as u64)
+    }
+}
+
+pub(crate) fn new_active_dynamic_tool_call(
+    call_id: String,
+    tool: String,
+    arguments: serde_json::Value,
+    animations_enabled: bool,
+) -> DynamicToolCallCell {
+    DynamicToolCallCell::new(call_id, tool, arguments, animations_enabled)
+}
+
 fn web_search_header(completed: bool) -> &'static str {
     if completed {
         "Searched"
@@ -2869,6 +3017,45 @@ fn format_mcp_invocation<'a>(invocation: McpInvocation) -> Line<'a> {
     invocation_spans.into()
 }
 
+fn format_dynamic_tool_invocation<'a>(tool: &'a str, arguments: &serde_json::Value) -> Line<'a> {
+    let args_str = serde_json::to_string(arguments).unwrap_or_else(|_| arguments.to_string());
+    vec![tool.cyan(), " ".into(), args_str.dim()].into()
+}
+
+fn dynamic_tool_preview(content_items: &[DynamicToolCallOutputContentItem]) -> Option<String> {
+    let mut text_parts: Vec<&str> = Vec::new();
+    let mut image_count = 0usize;
+    for item in content_items {
+        match item {
+            DynamicToolCallOutputContentItem::InputText { text } => {
+                if !text.trim().is_empty() {
+                    text_parts.push(text.as_str());
+                }
+            }
+            DynamicToolCallOutputContentItem::InputImage { .. } => {
+                image_count += 1;
+            }
+        }
+    }
+
+    let mut preview = text_parts.join("\n");
+    if image_count > 0 {
+        let image_summary = if image_count == 1 {
+            "<1 image output>".to_string()
+        } else {
+            format!("<{image_count} image outputs>")
+        };
+        if preview.is_empty() {
+            preview = image_summary;
+        } else {
+            preview.push('\n');
+            preview.push_str(&image_summary);
+        }
+    }
+
+    (!preview.is_empty()).then_some(preview)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3691,6 +3878,37 @@ mod tests {
         let rendered = render_lines(&cell.display_lines(/*width*/ 80)).join("\n");
 
         insta::assert_snapshot!(rendered);
+    }
+
+    #[test]
+    fn active_dynamic_tool_call_renders_exact_arguments_and_preview() {
+        let mut cell = new_active_dynamic_tool_call(
+            "call-1".into(),
+            "android_observe".into(),
+            json!({
+                "scope": "screen_and_ui",
+            }),
+            /*animations_enabled*/ false,
+        );
+        cell.complete(
+            Duration::from_millis(42),
+            vec![
+                DynamicToolCallOutputContentItem::InputText {
+                    text: "screen summary".to_string(),
+                },
+                DynamicToolCallOutputContentItem::InputImage {
+                    image_url: "data:image/png;base64,AAA".to_string(),
+                    detail: Some("original".to_string()),
+                },
+            ],
+            /*success*/ true,
+            /*error*/ None,
+        );
+        let rendered = render_lines(&cell.transcript_lines(/*width*/ 80)).join("\n");
+
+        assert!(rendered.contains(r#"android_observe {"scope":"screen_and_ui"}"#));
+        assert!(rendered.contains("screen summary"));
+        assert!(rendered.contains("<1 image output>"));
     }
 
     #[test]

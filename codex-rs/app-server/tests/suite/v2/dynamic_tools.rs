@@ -67,6 +67,8 @@ async fn thread_start_injects_dynamic_tools_into_model_requests() -> Result<()> 
         description: "Demo dynamic tool".to_string(),
         input_schema: input_schema.clone(),
         defer_loading: false,
+        persist_on_resume: true,
+        capability: None,
     };
 
     // Thread start injects dynamic tools into the thread's tool registry.
@@ -147,6 +149,8 @@ async fn thread_start_keeps_hidden_dynamic_tools_out_of_model_requests() -> Resu
             "additionalProperties": false,
         }),
         defer_loading: true,
+        persist_on_resume: true,
+        capability: None,
     };
 
     let thread_req = mcp
@@ -233,6 +237,8 @@ async fn dynamic_tool_call_round_trip_sends_text_content_items_to_model() -> Res
             "additionalProperties": false,
         }),
         defer_loading: false,
+        persist_on_resume: true,
+        capability: None,
     };
 
     let thread_req = mcp
@@ -402,6 +408,8 @@ async fn dynamic_tool_call_round_trip_sends_content_items_to_model() -> Result<(
             "additionalProperties": false,
         }),
         defer_loading: false,
+        persist_on_resume: true,
+        capability: None,
     };
 
     let thread_req = mcp
@@ -465,23 +473,18 @@ async fn dynamic_tool_call_round_trip_sends_content_items_to_model() -> Result<(
         },
         DynamicToolCallOutputContentItem::InputImage {
             image_url: "data:image/png;base64,AAA".to_string(),
+            detail: Some("original".to_string()),
         },
     ];
-    let content_items = response_content_items
-        .clone()
-        .into_iter()
-        .map(|item| match item {
-            DynamicToolCallOutputContentItem::InputText { text } => {
-                FunctionCallOutputContentItem::InputText { text }
-            }
-            DynamicToolCallOutputContentItem::InputImage { image_url } => {
-                FunctionCallOutputContentItem::InputImage {
-                    image_url,
-                    detail: None,
-                }
-            }
-        })
-        .collect::<Vec<FunctionCallOutputContentItem>>();
+    let expected_model_content_items = vec![
+        FunctionCallOutputContentItem::InputText {
+            text: "dynamic-ok".to_string(),
+        },
+        FunctionCallOutputContentItem::InputImage {
+            image_url: "data:image/png;base64,AAA".to_string(),
+            detail: None,
+        },
+    ];
     let response = DynamicToolCallResponse {
         content_items: response_content_items,
         success: true,
@@ -510,6 +513,7 @@ async fn dynamic_tool_call_round_trip_sends_content_items_to_model() -> Result<(
             },
             DynamicToolCallOutputContentItem::InputImage {
                 image_url: "data:image/png;base64,AAA".to_string(),
+                detail: Some("original".to_string()),
             },
         ])
     );
@@ -546,12 +550,12 @@ async fn dynamic_tool_call_round_trip_sends_content_items_to_model() -> Result<(
         .context("expected function_call_output in follow-up request")?;
     assert_eq!(
         payload.body,
-        FunctionCallOutputBody::ContentItems(content_items.clone())
+        FunctionCallOutputBody::ContentItems(expected_model_content_items.clone())
     );
     assert_eq!(payload.success, None);
     assert_eq!(
         serde_json::to_string(&payload)?,
-        serde_json::to_string(&content_items)?
+        serde_json::to_string(&expected_model_content_items)?
     );
 
     Ok(())

@@ -62,6 +62,8 @@ use codex_otel::TelemetryAuthMode;
 use codex_protocol::config_types::CollaborationMode;
 use codex_protocol::config_types::ModeKind;
 use codex_protocol::config_types::Settings;
+use codex_protocol::dynamic_tools::DynamicToolCapability;
+use codex_protocol::dynamic_tools::DynamicToolSpec;
 use codex_protocol::models::BaseInstructions;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::DeveloperInstructions;
@@ -161,6 +163,54 @@ fn skill_message(text: &str) -> ResponseItem {
         end_turn: None,
         phase: None,
     }
+}
+
+#[test]
+fn environment_scoped_dynamic_tools_do_not_restore_without_revalidation() {
+    let environment_tool = DynamicToolSpec {
+        name: "android_observe".to_string(),
+        description: "observe Android screen".to_string(),
+        input_schema: json!({"type":"object"}),
+        defer_loading: false,
+        persist_on_resume: true,
+        capability: Some(DynamicToolCapability {
+            family: Some("android".to_string()),
+            capability_scope: Some("environment".to_string()),
+            mutation_class: Some("read_only".to_string()),
+            lease_mode: Some("shared_read".to_string()),
+        }),
+    };
+    let thread_tool = DynamicToolSpec {
+        name: "thread_scoped_helper".to_string(),
+        description: "thread scoped helper".to_string(),
+        input_schema: json!({"type":"object"}),
+        defer_loading: false,
+        persist_on_resume: true,
+        capability: Some(DynamicToolCapability {
+            family: Some("helper".to_string()),
+            capability_scope: Some("thread".to_string()),
+            mutation_class: Some("mutating".to_string()),
+            lease_mode: Some("none".to_string()),
+        }),
+    };
+    let non_persistent_tool = DynamicToolSpec {
+        name: "ephemeral_helper".to_string(),
+        description: "ephemeral helper".to_string(),
+        input_schema: json!({"type":"object"}),
+        defer_loading: false,
+        persist_on_resume: false,
+        capability: None,
+    };
+
+    assert_eq!(
+        should_restore_dynamic_tool_on_resume(&environment_tool),
+        false
+    );
+    assert_eq!(should_restore_dynamic_tool_on_resume(&thread_tool), true);
+    assert_eq!(
+        should_restore_dynamic_tool_on_resume(&non_persistent_tool),
+        false
+    );
 }
 
 #[tokio::test]

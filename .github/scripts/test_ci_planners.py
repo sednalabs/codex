@@ -207,6 +207,19 @@ class RouteSelectionTests(unittest.TestCase):
             ],
         )
 
+    def test_brokered_tool_replay_route_stays_tight(self) -> None:
+        lanes = RESOLVE_VALIDATION_PLAN.select_followup_lanes(
+            ["codex-rs/tui/src/app/app_server_adapter.rs"],
+            self.routes,
+        )
+        self.assertEqual(
+            lanes,
+            [
+                "codex.app-server-protocol-test",
+                "codex.tui-brokered-tool-replay-targeted",
+            ],
+        )
+
     def test_custom_prompt_review_prompt_core_path_stays_targeted(self) -> None:
         lanes = RESOLVE_VALIDATION_PLAN.select_followup_lanes(
             ["codex-rs/core/src/review_prompts.rs"],
@@ -537,9 +550,9 @@ class ValidationPlanScriptTests(unittest.TestCase):
         self.assertIn("codex.tui-agent-picker-model-surface-targeted", selected_lane_ids)
         self.assertIn("downstream-ledger-seam", selected_lane_ids)
         self.assertEqual(payload["selected_light_lane_count"], 5)
-        self.assertEqual(payload["selected_rust_lane_count"], 24)
+        self.assertEqual(payload["selected_rust_lane_count"], 25)
         self.assertEqual(payload["selected_heavy_lane_count"], 7)
-        self.assertEqual(payload["rust_max_parallel"], "24")
+        self.assertEqual(payload["rust_max_parallel"], "25")
         self.assertEqual(payload["heavy_max_parallel"], "7")
 
     def test_validation_lab_frontier_all_excludes_smoke_gate_lanes_by_metadata(self) -> None:
@@ -604,7 +617,7 @@ class ValidationPlanScriptTests(unittest.TestCase):
         self.assertEqual(payload["matrix_fail_fast"], "false")
         self.assertEqual(payload["continue_after_smoke_failure"], "true")
         self.assertEqual(payload["light_max_parallel"], "5")
-        self.assertEqual(payload["rust_max_parallel"], "24")
+        self.assertEqual(payload["rust_max_parallel"], "25")
         self.assertEqual(payload["heavy_max_parallel"], "12")
         planned_lane_ids = [lane["lane_id"] for lane in payload["planned_matrix"]["include"]]
         selected_lane_ids = payload["selected_lane_ids"]

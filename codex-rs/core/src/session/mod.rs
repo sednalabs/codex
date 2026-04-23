@@ -575,6 +575,9 @@ impl Codex {
             persisted_tools
                 .or_else(|| conversation_history.get_dynamic_tools())
                 .unwrap_or_default()
+                .into_iter()
+                .filter(should_restore_dynamic_tool_on_resume)
+                .collect()
         } else {
             dynamic_tools
         };
@@ -773,6 +776,18 @@ impl Codex {
     }
 }
 
+fn should_restore_dynamic_tool_on_resume(
+    tool: &codex_protocol::dynamic_tools::DynamicToolSpec,
+) -> bool {
+    tool.persist_on_resume
+        && !matches!(
+            tool.capability
+                .as_ref()
+                .and_then(|capability| capability.capability_scope.as_deref()),
+            Some("environment")
+        )
+}
+
 #[cfg(test)]
 pub(crate) fn completed_session_loop_termination() -> SessionLoopTermination {
     futures::future::ready(()).boxed().shared()
@@ -818,6 +833,19 @@ impl Session {
                 .app_server_client_version
                 .clone(),
         }
+    }
+
+    pub(crate) async fn dynamic_tool_by_name(
+        &self,
+        tool_name: &str,
+    ) -> Option<codex_protocol::dynamic_tools::DynamicToolSpec> {
+        let state = self.state.lock().await;
+        state
+            .session_configuration
+            .dynamic_tools
+            .iter()
+            .find(|tool| tool.name == tool_name)
+            .cloned()
     }
 
     fn managed_network_proxy_active_for_sandbox_policy(sandbox_policy: &SandboxPolicy) -> bool {

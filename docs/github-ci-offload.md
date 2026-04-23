@@ -85,9 +85,15 @@ artifacts.
    - Default to `profile=smoke` or `profile=targeted`.
    - `profile=smoke` fans out the smoke bundle as parallel shards instead of
      running one serial smoke recipe on a single runner.
+   - Once a broader `lane_set` run identifies the failing seam, prefer the
+     narrowest follow-up rerun that can answer the next question:
+     use explicit `lanes=` or the smallest named `lane_set` instead of
+     repeating the whole family.
    - The workflow summary now records the profile intent, profile notes, and a
      compact lane-selection summary for operator handoff.
-   - Reason: best signal per runner-minute without polluting PR surfaces.
+   - Reason: best signal per runner-minute without polluting PR surfaces, and
+     lower unnecessary compute, carbon, and wait time once the blocker is
+     already known.
    - `profile=frontier` now derives a curated blocker-harvest bundle from lane
      metadata and runs it by setup class (`light`, `rust`, `heavy`) so cheap
      workflow/docs seams can fan out harder without letting heavier Rust lanes
@@ -123,6 +129,23 @@ gh workflow run validation-lab.yml \
   -f lane_set=ui-protocol
 ```
 
+When the first targeted run has already told you which exact seams are red,
+prefer rerunning only those seams:
+
+```bash
+gh workflow run validation-lab.yml \
+  --repo sednalabs/codex \
+  --ref main \
+  -f ref=<branch-under-test> \
+  -f profile=targeted \
+  -f lanes=codex.blocking-waits-targeted,codex.app-server-protocol-test
+```
+
+That narrow rerun is the recommended blocker-fix loop. The point of
+`validation-lab` is not just remote proof; it is also to let us answer the
+next question with the smallest credible hosted slice instead of burning
+runner minutes and human wait time on already-known green lanes.
+
 Do not assume `gh workflow run validation-lab --ref <feature-branch> ...` will work. Some downstream
 branches intentionally do not carry the latest workflow file, so GitHub may resolve the workflow on
 that branch first and return a misleading missing-`workflow_dispatch` error.
@@ -150,6 +173,8 @@ What it does:
 
 This is the preferred low-friction path when the real question is "prove the
 exact local tree remotely" and the branch is not yet in public-PR shape.
+Pair it with explicit `--lanes` whenever the blocker is already known so the
+snapshot rerun stays as small and cheap as possible.
 
 ## Workflow replacement matrix
 

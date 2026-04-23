@@ -107,6 +107,18 @@ Do not widen every iteration into a broad or full run.
 Get one seam green first, use `frontier` to harvest nearby blockers when the
 baseline is trustworthy, and only then widen deliberately.
 
+For blocker-fix iteration, prefer getting narrower over rerunning the whole
+family. A good loop is:
+
+1. run the smallest reasonable named `lane_set` once to discover the blocker
+2. once the failing seam is known, rerun only that seam or that small handful
+   of seams with explicit `lanes=...`
+3. widen again only if the fix changes the question
+
+This is an intentional `validation-lab` use case, not a workaround. It reduces
+runner-minutes, wait time, and unnecessary compute while preserving hosted,
+attributable proof.
+
 ## Remote measurement and summaries
 
 `validation-lab` is expected to produce a compact workflow-level

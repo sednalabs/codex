@@ -32,6 +32,7 @@ on:
           - codex.tui-esc-interrupt-targeted
           - codex.tui-front-queue-submit-targeted
           - codex.tui-transcript-viewport-targeted
+          - codex.tui-brokered-tool-replay-targeted
           - codex.tui-config-refresh-session-targeted
           - codex.tui-agent-picker-usage-targeted
           - codex.tui-agent-picker-targeted
