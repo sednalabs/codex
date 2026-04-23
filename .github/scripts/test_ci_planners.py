@@ -69,7 +69,7 @@ def load_workflow_payload(workflow_path: Path) -> dict:
     return payload if isinstance(payload, dict) else {}
 
 
-def just_recipes_with_nextest(justfile_path: Path) -> set[str]:
+def just_recipe_bodies(justfile_path: Path) -> dict[str, list[str]]:
     recipes: dict[str, list[str]] = {}
     current: str | None = None
     current_body: list[str] = []
@@ -83,6 +83,11 @@ def just_recipes_with_nextest(justfile_path: Path) -> set[str]:
             current_body.append(line)
     if current is not None:
         recipes[current] = current_body
+    return recipes
+
+
+def just_recipes_with_nextest(justfile_path: Path) -> set[str]:
+    recipes = just_recipe_bodies(justfile_path)
     return {name for name, body in recipes.items() if any("cargo nextest" in line for line in body)}
 
 
@@ -533,6 +538,42 @@ class ValidationPlanScriptTests(unittest.TestCase):
             script_args = lane.get("script_args") or []
             recipe = script_args[0] if script_args else ""
             if recipe in nextest_recipes and not lane.get("needs_nextest"):
+                missing.append(str(lane.get("lane_id")))
+
+        self.assertEqual(missing, [])
+
+    def test_run_just_recipe_lanes_declare_linux_build_deps_when_recipe_compiles_linux_sandbox(
+        self,
+    ) -> None:
+        catalog = RESOLVE_VALIDATION_PLAN.load_catalog()
+        recipe_bodies = just_recipe_bodies(REPO_ROOT / "justfile")
+        direct_linux_build_deps_recipes = {
+            name
+            for name, body in recipe_bodies.items()
+            if any(
+                command in line
+                for line in body
+                for command in ("cargo test", "cargo nextest", "cargo check", "cargo build")
+            )
+            and any("codex-core" in line or "codex-tui" in line for line in body)
+        }
+        nested_linux_build_deps_recipes = {
+            name
+            for name, body in recipe_bodies.items()
+            if any("just --justfile ../justfile" in line for line in body)
+            and any(
+                any(subrecipe in line for subrecipe in direct_linux_build_deps_recipes)
+                for line in body
+            )
+        }
+        linux_build_deps_recipes = direct_linux_build_deps_recipes | nested_linux_build_deps_recipes
+        missing: list[str] = []
+        for lane in catalog["lanes"]:
+            if lane.get("script_path") != ".github/scripts/validation-lanes/run-just-recipe.sh":
+                continue
+            script_args = lane.get("script_args") or []
+            recipe = script_args[0] if script_args else ""
+            if recipe in linux_build_deps_recipes and not lane.get("needs_linux_build_deps"):
                 missing.append(str(lane.get("lane_id")))
 
         self.assertEqual(missing, [])

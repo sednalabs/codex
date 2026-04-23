@@ -118,6 +118,14 @@ jobs:
         with:
           node-version-file: codex-rs/node-version.txt
 
+      - name: Install Linux build dependencies
+        if: ${{ inputs.needs_linux_build_deps }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update -y
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends pkg-config libcap-dev
+
       - uses: dtolnay/rust-toolchain@1.93.0
         with:
           targets: x86_64-unknown-linux-gnu
