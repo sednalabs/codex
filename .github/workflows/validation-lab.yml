@@ -376,6 +376,7 @@ jobs:
     uses: ./.github/workflows/_validation-lane-workflow.yml
     with:
       checkout_ref: ${{ needs.metadata.outputs.checkout_ref }}
+      checkout_fetch_depth: ${{ matrix.checkout_fetch_depth }}
       lane_id: ${{ matrix.lane_id }}
       lane_phase: smoke_gate
       summary_title: ${{ matrix.lane_id }}
@@ -412,6 +413,7 @@ jobs:
     uses: ./.github/workflows/_validation-lane-node.yml
     with:
       checkout_ref: ${{ needs.metadata.outputs.checkout_ref }}
+      checkout_fetch_depth: ${{ matrix.checkout_fetch_depth }}
       lane_id: ${{ matrix.lane_id }}
       lane_phase: smoke_gate
       summary_title: ${{ matrix.lane_id }}
@@ -448,6 +450,7 @@ jobs:
     uses: ./.github/workflows/_validation-lane-rust-minimal.yml
     with:
       checkout_ref: ${{ needs.metadata.outputs.checkout_ref }}
+      checkout_fetch_depth: ${{ matrix.checkout_fetch_depth }}
       lane_id: ${{ matrix.lane_id }}
       lane_phase: smoke_gate
       summary_title: ${{ matrix.lane_id }}
@@ -466,6 +469,7 @@ jobs:
       needs_linux_build_deps: ${{ matrix.needs_linux_build_deps }}
       needs_dotslash: ${{ matrix.needs_dotslash }}
       needs_sccache: ${{ matrix.needs_sccache }}
+      cache_policy: ${{ inputs.supersession_mode != 'auto' && 'write-fallback' || 'restore-only' }}
 
   smoke_rust_integration_lanes:
     name: Validation-lab smoke gate (rust integration)
@@ -484,6 +488,7 @@ jobs:
     uses: ./.github/workflows/_validation-lane-rust-integration.yml
     with:
       checkout_ref: ${{ needs.metadata.outputs.checkout_ref }}
+      checkout_fetch_depth: ${{ matrix.checkout_fetch_depth }}
       lane_id: ${{ matrix.lane_id }}
       lane_phase: smoke_gate
       summary_title: ${{ matrix.lane_id }}
@@ -521,6 +526,7 @@ jobs:
     uses: ./.github/workflows/_validation-lane-release.yml
     with:
       checkout_ref: ${{ needs.metadata.outputs.checkout_ref }}
+      checkout_fetch_depth: ${{ matrix.checkout_fetch_depth }}
       lane_id: ${{ matrix.lane_id }}
       lane_phase: smoke_gate
       summary_title: ${{ matrix.lane_id }}
@@ -556,6 +562,7 @@ jobs:
     uses: ./.github/workflows/_validation-lane-workflow.yml
     with:
       checkout_ref: ${{ needs.metadata.outputs.checkout_ref }}
+      checkout_fetch_depth: ${{ matrix.checkout_fetch_depth }}
       lane_id: ${{ matrix.lane_id }}
       lane_phase: downstream_lanes
       summary_title: ${{ matrix.lane_id }}
@@ -590,6 +597,7 @@ jobs:
     uses: ./.github/workflows/_validation-lane-node.yml
     with:
       checkout_ref: ${{ needs.metadata.outputs.checkout_ref }}
+      checkout_fetch_depth: ${{ matrix.checkout_fetch_depth }}
       lane_id: ${{ matrix.lane_id }}
       lane_phase: downstream_lanes
       summary_title: ${{ matrix.lane_id }}
@@ -624,6 +632,7 @@ jobs:
     uses: ./.github/workflows/_validation-lane-rust-minimal.yml
     with:
       checkout_ref: ${{ needs.metadata.outputs.checkout_ref }}
+      checkout_fetch_depth: ${{ matrix.checkout_fetch_depth }}
       lane_id: ${{ matrix.lane_id }}
       lane_phase: downstream_lanes
       summary_title: ${{ matrix.lane_id }}
@@ -642,6 +651,7 @@ jobs:
       needs_linux_build_deps: ${{ matrix.needs_linux_build_deps }}
       needs_dotslash: ${{ matrix.needs_dotslash }}
       needs_sccache: ${{ matrix.needs_sccache }}
+      cache_policy: ${{ inputs.supersession_mode != 'auto' && 'write-fallback' || 'restore-only' }}
 
   rust_integration_lanes:
     needs:
@@ -658,6 +668,7 @@ jobs:
     uses: ./.github/workflows/_validation-lane-rust-integration.yml
     with:
       checkout_ref: ${{ needs.metadata.outputs.checkout_ref }}
+      checkout_fetch_depth: ${{ matrix.checkout_fetch_depth }}
       lane_id: ${{ matrix.lane_id }}
       lane_phase: downstream_lanes
       summary_title: ${{ matrix.lane_id }}
@@ -693,6 +704,7 @@ jobs:
     uses: ./.github/workflows/_validation-lane-release.yml
     with:
       checkout_ref: ${{ needs.metadata.outputs.checkout_ref }}
+      checkout_fetch_depth: ${{ matrix.checkout_fetch_depth }}
       lane_id: ${{ matrix.lane_id }}
       lane_phase: downstream_lanes
       summary_title: ${{ matrix.lane_id }}
@@ -745,6 +757,7 @@ jobs:
     uses: ./.github/workflows/_validation-lane-release.yml
     with:
       checkout_ref: ${{ needs.metadata.outputs.checkout_ref }}
+      checkout_fetch_depth: 1
       lane_phase: artifact_build
       summary_title: Validation lab artifact build
       setup_class: release
