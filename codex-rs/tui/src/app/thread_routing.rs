@@ -263,7 +263,8 @@ impl App {
                     cwd: self
                         .thread_cwd(thread_id)
                         .await
-                        .unwrap_or_else(|| self.config.cwd.clone()),
+                        .unwrap_or_else(|| self.config.cwd.clone())
+                        .to_path_buf(),
                     changes: HashMap::new(),
                 }),
             ),

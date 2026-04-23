@@ -8,6 +8,10 @@ use crate::key_hint::KeyBinding;
 use codex_protocol::ThreadId;
 use codex_protocol::mcp::RequestId;
 use codex_protocol::models::PermissionProfile;
+use codex_protocol::permissions::FileSystemAccessMode;
+use codex_protocol::permissions::FileSystemPath;
+use codex_protocol::permissions::FileSystemSandboxEntry;
+use codex_protocol::permissions::FileSystemSpecialPath;
 use codex_protocol::protocol::ElicitationAction;
 use codex_protocol::protocol::FileChange;
 use codex_protocol::protocol::NetworkApprovalContext;
@@ -105,7 +109,16 @@ impl ApprovalRequest {
 #[derive(Clone)]
 pub(crate) enum ApprovalDecision {
     Review(ReviewDecision),
+    Permissions(PermissionsDecision),
     McpElicitation(ElicitationAction),
+}
+
+#[derive(Clone, Copy)]
+pub(crate) enum PermissionsDecision {
+    GrantForTurn,
+    GrantForTurnWithStrictAutoReview,
+    GrantForSession,
+    Deny,
 }
 
 #[derive(Clone)]
@@ -266,21 +279,32 @@ pub(crate) fn format_additional_permissions_rule(
         parts.push("network".to_string());
     }
     if let Some(file_system) = additional_permissions.file_system.as_ref() {
-        if let Some(read) = file_system.read.as_ref() {
-            let reads = read
+        let reads = format_file_system_entry_paths(
+            file_system
+                .entries
                 .iter()
-                .map(|path| format!("`{}`", path.display()))
-                .collect::<Vec<_>>()
-                .join(", ");
+                .filter(|entry| entry.access == FileSystemAccessMode::Read),
+        );
+        if !reads.is_empty() {
             parts.push(format!("read {reads}"));
         }
-        if let Some(write) = file_system.write.as_ref() {
-            let writes = write
+        let writes = format_file_system_entry_paths(
+            file_system
+                .entries
                 .iter()
-                .map(|path| format!("`{}`", path.display()))
-                .collect::<Vec<_>>()
-                .join(", ");
+                .filter(|entry| entry.access == FileSystemAccessMode::Write),
+        );
+        if !writes.is_empty() {
             parts.push(format!("write {writes}"));
+        }
+        let denied_reads = format_file_system_entry_paths(
+            file_system
+                .entries
+                .iter()
+                .filter(|entry| entry.access == FileSystemAccessMode::None),
+        );
+        if !denied_reads.is_empty() {
+            parts.push(format!("deny read {denied_reads}"));
         }
     }
     if parts.is_empty() {
@@ -294,6 +318,38 @@ pub(crate) fn format_requested_permissions_rule(
     permissions: &RequestPermissionProfile,
 ) -> Option<String> {
     format_additional_permissions_rule(&permissions.clone().into())
+}
+
+fn format_file_system_entry_paths<'a>(
+    entries: impl Iterator<Item = &'a FileSystemSandboxEntry>,
+) -> String {
+    entries
+        .map(|entry| match &entry.path {
+            FileSystemPath::Path { path } => format!("`{}`", path.display()),
+            FileSystemPath::GlobPattern { pattern } => format!("glob `{pattern}`"),
+            FileSystemPath::Special { value } => format!("`{}`", special_path_label(value)),
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn special_path_label(value: &FileSystemSpecialPath) -> String {
+    match value {
+        FileSystemSpecialPath::Root => ":root".to_string(),
+        FileSystemSpecialPath::Minimal => ":minimal".to_string(),
+        FileSystemSpecialPath::CurrentWorkingDirectory => ":cwd".to_string(),
+        FileSystemSpecialPath::ProjectRoots { subpath } => path_label(":project_roots", subpath),
+        FileSystemSpecialPath::Tmpdir => ":tmpdir".to_string(),
+        FileSystemSpecialPath::SlashTmp => "/tmp".to_string(),
+        FileSystemSpecialPath::Unknown { path, subpath } => path_label(path, subpath),
+    }
+}
+
+fn path_label(base: &str, subpath: &Option<PathBuf>) -> String {
+    match subpath {
+        Some(subpath) => format!("{base}/{}", subpath.display()),
+        None => base.to_string(),
+    }
 }
 
 fn patch_options() -> Vec<ApprovalOption> {
@@ -322,20 +378,28 @@ fn patch_options() -> Vec<ApprovalOption> {
 pub(crate) fn permissions_options() -> Vec<ApprovalOption> {
     vec![
         ApprovalOption {
-            label: "Yes, grant these permissions".to_string(),
-            decision: ApprovalDecision::Review(ReviewDecision::Approved),
+            label: "Yes, grant these permissions for this turn".to_string(),
+            decision: ApprovalDecision::Permissions(PermissionsDecision::GrantForTurn),
             display_shortcut: None,
             additional_shortcuts: vec![key_hint::plain(KeyCode::Char('y'))],
         },
         ApprovalOption {
+            label: "Yes, grant for this turn with strict auto review".to_string(),
+            decision: ApprovalDecision::Permissions(
+                PermissionsDecision::GrantForTurnWithStrictAutoReview,
+            ),
+            display_shortcut: None,
+            additional_shortcuts: vec![key_hint::plain(KeyCode::Char('r'))],
+        },
+        ApprovalOption {
             label: "Yes, grant these permissions for this session".to_string(),
-            decision: ApprovalDecision::Review(ReviewDecision::ApprovedForSession),
+            decision: ApprovalDecision::Permissions(PermissionsDecision::GrantForSession),
             display_shortcut: None,
             additional_shortcuts: vec![key_hint::plain(KeyCode::Char('a'))],
         },
         ApprovalOption {
             label: "No, continue without permissions".to_string(),
-            decision: ApprovalDecision::Review(ReviewDecision::Denied),
+            decision: ApprovalDecision::Permissions(PermissionsDecision::Deny),
             display_shortcut: None,
             additional_shortcuts: vec![key_hint::plain(KeyCode::Char('n'))],
         },

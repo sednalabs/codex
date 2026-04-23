@@ -83,7 +83,6 @@ use codex_protocol::protocol::SessionConfiguredEvent;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::user_input::UserInput;
 use codex_utils_absolute_path::AbsolutePathBuf;
-use codex_utils_absolute_path::canonicalize_existing_preserving_symlinks;
 use codex_utils_cli::SharedCliOptions;
 use codex_utils_oss::ensure_oss_provider_ready;
 use codex_utils_oss::get_default_model_for_oss_provider;
@@ -96,7 +95,6 @@ use std::io::IsTerminal;
 use std::io::Read;
 use std::path::Path;
 use std::path::PathBuf;
-use std::sync::Arc;
 use supports_color::Stream;
 use tokio::sync::mpsc;
 use tracing::Instrument;
@@ -252,13 +250,6 @@ pub async fn run_main(cli: Cli, arg0_paths: Arg0DispatchPaths) -> anyhow::Result
             std::process::exit(1);
         }
     };
-
-    let environment_manager = Arc::new(EnvironmentManager::from_env_with_runtime_paths(Some(
-        ExecServerRuntimePaths::from_optional_paths(
-            arg0_paths.codex_self_exe.clone(),
-            arg0_paths.codex_linux_sandbox_exe.clone(),
-        )?,
-    )));
 
     let resolved_cwd = cwd.clone();
     let config_cwd = match resolved_cwd.as_deref() {
@@ -2086,7 +2077,7 @@ mod tests {
         let config = ConfigBuilder::default()
             .codex_home(codex_home.path().to_path_buf())
             .harness_overrides(ConfigOverrides {
-                approvals_reviewer: Some(ApprovalsReviewer::GuardianSubagent),
+                approvals_reviewer: Some(ApprovalsReviewer::AutoReview),
                 ..Default::default()
             })
             .fallback_cwd(Some(cwd.path().to_path_buf()))
@@ -2098,7 +2089,7 @@ mod tests {
 
         assert_eq!(
             params.approvals_reviewer,
-            Some(codex_app_server_protocol::ApprovalsReviewer::GuardianSubagent)
+            Some(codex_app_server_protocol::ApprovalsReviewer::AutoReview)
         );
     }
 
@@ -2130,7 +2121,7 @@ mod tests {
             cwd: test_path_buf("/tmp").abs(),
             instruction_sources: Vec::new(),
             approval_policy: codex_app_server_protocol::AskForApproval::OnRequest,
-            approvals_reviewer: codex_app_server_protocol::ApprovalsReviewer::GuardianSubagent,
+            approvals_reviewer: codex_app_server_protocol::ApprovalsReviewer::AutoReview,
             sandbox: codex_app_server_protocol::SandboxPolicy::WorkspaceWrite {
                 writable_roots: vec![],
                 read_only_access: codex_app_server_protocol::ReadOnlyAccess::FullAccess,
@@ -2138,15 +2129,13 @@ mod tests {
                 exclude_tmpdir_env_var: false,
                 exclude_slash_tmp: false,
             },
+            permission_profile: None,
             reasoning_effort: None,
         };
 
         let event = session_configured_from_thread_start_response(&response)
             .expect("build bootstrap session configured event");
 
-        assert_eq!(
-            event.approvals_reviewer,
-            ApprovalsReviewer::GuardianSubagent
-        );
+        assert_eq!(event.approvals_reviewer, ApprovalsReviewer::AutoReview);
     }
 }

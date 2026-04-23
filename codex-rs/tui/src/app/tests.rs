@@ -4456,6 +4456,7 @@ async fn replace_chat_widget_reseeds_collab_agent_metadata_for_replay() {
                             prompt: None,
                             model: None,
                             reasoning_effort: None,
+                            timed_out: false,
                             agents_states: HashMap::new(),
                         },
                     },

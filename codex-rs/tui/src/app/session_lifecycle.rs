@@ -120,7 +120,7 @@ impl App {
             agent_role.clone(),
         );
         self.agent_navigation
-            .upsert(thread_id, agent_nickname, agent_role, is_closed);
+            .upsert(thread_id, agent_nickname, agent_role, is_closed, None, None);
         self.sync_active_agent_label();
     }
 

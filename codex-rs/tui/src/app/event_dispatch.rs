@@ -1474,7 +1474,11 @@ impl App {
             AppEvent::FullScreenApprovalRequest(request) => match request {
                 ApprovalRequest::ApplyPatch { cwd, changes, .. } => {
                     let _ = tui.enter_alt_screen();
-                    let diff_summary = DiffSummary::new(changes, cwd);
+                    let diff_summary = DiffSummary::new(
+                        changes,
+                        AbsolutePathBuf::from_absolute_path(cwd.as_path())
+                            .expect("approval cwd should be absolute"),
+                    );
                     self.overlay = Some(Overlay::new_static_with_renderables(
                         vec![diff_summary.into()],
                         "P A T C H".to_string(),
