@@ -119,8 +119,14 @@ impl App {
             agent_nickname.clone(),
             agent_role.clone(),
         );
-        self.agent_navigation
-            .upsert(thread_id, agent_nickname, agent_role, is_closed, None, None);
+        self.agent_navigation.upsert(
+            thread_id,
+            agent_nickname,
+            agent_role,
+            is_closed,
+            /*created_at*/ None,
+            /*updated_at*/ None,
+        );
         self.sync_active_agent_label();
     }
 
