@@ -1,4 +1,5 @@
 use crate::agent::AgentStatus;
+use crate::agent::status::is_final;
 use crate::config::Config;
 use crate::function_tool::FunctionCallError;
 use crate::session::session::Session;
@@ -17,6 +18,8 @@ use codex_protocol::openai_models::ReasoningEffort;
 use codex_protocol::openai_models::ReasoningEffortPreset;
 use codex_protocol::protocol::CollabAgentRef;
 use codex_protocol::protocol::CollabAgentStatusEntry;
+use codex_protocol::protocol::CollabWaitingCompletionReason;
+use codex_protocol::protocol::CollabWaitingEndEvent;
 use codex_protocol::protocol::Op;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::SubAgentSource;
@@ -122,6 +125,65 @@ pub(crate) fn build_wait_agent_statuses(
     extras.sort_by(|left, right| left.thread_id.to_string().cmp(&right.thread_id.to_string()));
     entries.extend(extras);
     entries
+}
+
+pub(crate) async fn collect_wait_statuses(
+    session: &Session,
+    receiver_thread_ids: &[ThreadId],
+) -> HashMap<ThreadId, AgentStatus> {
+    let mut statuses = HashMap::with_capacity(receiver_thread_ids.len());
+    for receiver_thread_id in receiver_thread_ids {
+        statuses.insert(
+            *receiver_thread_id,
+            session
+                .services
+                .agent_control
+                .get_status(*receiver_thread_id)
+                .await,
+        );
+    }
+    statuses
+}
+
+pub(crate) fn pending_wait_thread_ids(
+    receiver_thread_ids: &[ThreadId],
+    statuses: &HashMap<ThreadId, AgentStatus>,
+) -> Vec<ThreadId> {
+    receiver_thread_ids
+        .iter()
+        .filter(|thread_id| !is_final(statuses.get(thread_id).unwrap_or(&AgentStatus::NotFound)))
+        .copied()
+        .collect()
+}
+
+pub(crate) async fn send_wait_end_event(
+    session: &Session,
+    turn: &TurnContext,
+    call_id: String,
+    receiver_thread_ids: Vec<ThreadId>,
+    receiver_agents: &[CollabAgentRef],
+    pending_thread_ids: Vec<ThreadId>,
+    completion_reason: CollabWaitingCompletionReason,
+    timed_out: bool,
+    statuses: HashMap<ThreadId, AgentStatus>,
+) {
+    let agent_statuses = build_wait_agent_statuses(&statuses, receiver_agents);
+    session
+        .send_event(
+            turn,
+            CollabWaitingEndEvent {
+                sender_thread_id: session.conversation_id,
+                call_id,
+                receiver_thread_ids,
+                pending_thread_ids,
+                completion_reason,
+                timed_out,
+                agent_statuses,
+                statuses,
+            }
+            .into(),
+        )
+        .await;
 }
 
 pub(crate) fn collab_spawn_error(err: CodexErr) -> FunctionCallError {

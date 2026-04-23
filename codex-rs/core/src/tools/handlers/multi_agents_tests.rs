@@ -5,6 +5,7 @@ use crate::config::AgentRoleConfig;
 use crate::config::DEFAULT_AGENT_MAX_DEPTH;
 use crate::function_tool::FunctionCallError;
 use crate::session::tests::make_session_and_context;
+use crate::session::tests::make_session_and_context_with_rx;
 use crate::session_prefix::format_subagent_notification_message;
 use crate::state::TaskKind;
 use crate::tasks::SessionTask;
@@ -2515,6 +2516,56 @@ async fn wait_agent_rejects_empty_targets() {
 }
 
 #[tokio::test]
+async fn wait_agent_emits_end_event_when_status_subscription_fails() {
+    let (mut session, turn, rx) = make_session_and_context_with_rx().await;
+    let manager = thread_manager();
+    Arc::get_mut(&mut session)
+        .expect("test owns session")
+        .services
+        .agent_control = manager.agent_control();
+    drop(manager);
+
+    let agent_id = ThreadId::new();
+    let err = WaitAgentHandler
+        .handle(invocation(
+            session,
+            turn,
+            "wait_agent",
+            function_payload(json!({
+                "targets": [agent_id.to_string()],
+                "timeout_ms": 1000
+            })),
+        ))
+        .await
+        .expect_err("dropped manager should fail status subscription");
+    assert_eq!(
+        err,
+        FunctionCallError::RespondToModel("collab manager unavailable".to_string())
+    );
+
+    let begin = timeout(Duration::from_secs(1), rx.recv())
+        .await
+        .expect("begin event should be emitted")
+        .expect("event channel should be open");
+    assert!(matches!(begin.msg, EventMsg::CollabWaitingBegin(_)));
+    let end = timeout(Duration::from_secs(1), rx.recv())
+        .await
+        .expect("end event should be emitted before returning the error")
+        .expect("event channel should be open");
+    let end = match end.msg {
+        EventMsg::CollabWaitingEnd(end) => end,
+        other => panic!("expected wait end event, got {other:?}"),
+    };
+    assert_eq!(end.receiver_thread_ids, vec![agent_id]);
+    assert_eq!(end.pending_thread_ids, Vec::<ThreadId>::new());
+    assert_eq!(
+        end.completion_reason,
+        CollabWaitingCompletionReason::Terminal
+    );
+    assert_eq!(end.statuses.get(&agent_id), Some(&AgentStatus::NotFound));
+}
+
+#[tokio::test]
 async fn multi_agent_v2_wait_agent_rejects_empty_targets() {
     let (mut session, mut turn) = make_session_and_context().await;
     let manager = thread_manager();
@@ -2546,6 +2597,56 @@ async fn multi_agent_v2_wait_agent_rejects_empty_targets() {
         err,
         FunctionCallError::RespondToModel("agent targets must be non-empty".to_string())
     );
+}
+
+#[tokio::test]
+async fn multi_agent_v2_wait_agent_emits_end_event_when_status_subscription_fails() {
+    let (mut session, turn, rx) = make_session_and_context_with_rx().await;
+    let manager = thread_manager();
+    Arc::get_mut(&mut session)
+        .expect("test owns session")
+        .services
+        .agent_control = manager.agent_control();
+    drop(manager);
+
+    let agent_id = ThreadId::new();
+    let err = WaitAgentHandlerV2
+        .handle(invocation(
+            session,
+            turn,
+            "wait_agent",
+            function_payload(json!({
+                "targets": [agent_id.to_string()],
+                "timeout_ms": 1000
+            })),
+        ))
+        .await
+        .expect_err("dropped manager should fail status subscription");
+    assert_eq!(
+        err,
+        FunctionCallError::RespondToModel("collab manager unavailable".to_string())
+    );
+
+    let begin = timeout(Duration::from_secs(1), rx.recv())
+        .await
+        .expect("begin event should be emitted")
+        .expect("event channel should be open");
+    assert!(matches!(begin.msg, EventMsg::CollabWaitingBegin(_)));
+    let end = timeout(Duration::from_secs(1), rx.recv())
+        .await
+        .expect("end event should be emitted before returning the error")
+        .expect("event channel should be open");
+    let end = match end.msg {
+        EventMsg::CollabWaitingEnd(end) => end,
+        other => panic!("expected wait end event, got {other:?}"),
+    };
+    assert_eq!(end.receiver_thread_ids, vec![agent_id]);
+    assert_eq!(end.pending_thread_ids, Vec::<ThreadId>::new());
+    assert_eq!(
+        end.completion_reason,
+        CollabWaitingCompletionReason::Terminal
+    );
+    assert_eq!(end.statuses.get(&agent_id), Some(&AgentStatus::NotFound));
 }
 
 #[tokio::test]
