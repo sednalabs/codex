@@ -805,6 +805,7 @@ async fn slash_copy_state_tracks_turn_complete_final_reply() {
         msg: EventMsg::TurnComplete(TurnCompleteEvent {
             turn_id: "turn-1".to_string(),
             last_agent_message: Some("Final reply **markdown**".to_string()),
+            compaction_events_in_turn: 0,
             completed_at: None,
             duration_ms: None,
             time_to_first_token_ms: None,
@@ -838,6 +839,7 @@ async fn slash_copy_state_tracks_plan_item_completion() {
         msg: EventMsg::TurnComplete(TurnCompleteEvent {
             turn_id: "turn-1".to_string(),
             last_agent_message: None,
+            compaction_events_in_turn: 0,
             completed_at: None,
             duration_ms: None,
             time_to_first_token_ms: None,
@@ -925,6 +927,7 @@ async fn slash_copy_state_is_preserved_during_running_task() {
         msg: EventMsg::TurnComplete(TurnCompleteEvent {
             turn_id: "turn-1".to_string(),
             last_agent_message: Some("Previous completed reply".to_string()),
+            compaction_events_in_turn: 0,
             completed_at: None,
             duration_ms: None,
             time_to_first_token_ms: None,
@@ -956,6 +959,7 @@ async fn slash_copy_tracks_replayed_legacy_agent_message_when_turn_complete_omit
         msg: EventMsg::TurnComplete(TurnCompleteEvent {
             turn_id: "turn-1".to_string(),
             last_agent_message: None,
+            compaction_events_in_turn: 0,
             completed_at: None,
             duration_ms: None,
             time_to_first_token_ms: None,
@@ -994,6 +998,7 @@ async fn slash_copy_uses_agent_message_item_when_turn_complete_omits_final_text(
         msg: EventMsg::TurnComplete(TurnCompleteEvent {
             turn_id: "turn-1".to_string(),
             last_agent_message: None,
+            compaction_events_in_turn: 0,
             completed_at: None,
             duration_ms: None,
             time_to_first_token_ms: None,

@@ -684,6 +684,7 @@ async fn plan_implementation_popup_skips_replayed_turn_complete() {
     chat.replay_initial_messages(vec![EventMsg::TurnComplete(TurnCompleteEvent {
         turn_id: "turn-1".to_string(),
         last_agent_message: Some("Plan details".to_string()),
+        compaction_events_in_turn: 0,
         completed_at: None,
         duration_ms: None,
         time_to_first_token_ms: None,
@@ -711,6 +712,7 @@ async fn plan_implementation_popup_shows_once_when_replay_precedes_live_turn_com
     chat.replay_initial_messages(vec![EventMsg::TurnComplete(TurnCompleteEvent {
         turn_id: "turn-1".to_string(),
         last_agent_message: Some("Plan details".to_string()),
+        compaction_events_in_turn: 0,
         completed_at: None,
         duration_ms: None,
         time_to_first_token_ms: None,
@@ -726,6 +728,7 @@ async fn plan_implementation_popup_shows_once_when_replay_precedes_live_turn_com
         msg: EventMsg::TurnComplete(TurnCompleteEvent {
             turn_id: "turn-1".to_string(),
             last_agent_message: Some("Plan details".to_string()),
+            compaction_events_in_turn: 0,
             completed_at: None,
             duration_ms: None,
             time_to_first_token_ms: None,
@@ -750,6 +753,7 @@ async fn plan_implementation_popup_shows_once_when_replay_precedes_live_turn_com
         msg: EventMsg::TurnComplete(TurnCompleteEvent {
             turn_id: "turn-1".to_string(),
             last_agent_message: Some("Plan details".to_string()),
+            compaction_events_in_turn: 0,
             completed_at: None,
             duration_ms: None,
             time_to_first_token_ms: None,

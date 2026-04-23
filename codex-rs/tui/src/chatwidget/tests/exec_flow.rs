@@ -652,6 +652,7 @@ async fn unified_exec_wait_after_final_agent_message_snapshot() {
         msg: EventMsg::TurnComplete(TurnCompleteEvent {
             turn_id: "turn-1".to_string(),
             last_agent_message: Some("Final response.".into()),
+            compaction_events_in_turn: 0,
             completed_at: None,
             duration_ms: None,
             time_to_first_token_ms: None,
@@ -698,6 +699,7 @@ async fn unified_exec_wait_before_streamed_agent_message_snapshot() {
         msg: EventMsg::TurnComplete(TurnCompleteEvent {
             turn_id: "turn-1".to_string(),
             last_agent_message: None,
+            compaction_events_in_turn: 0,
             completed_at: None,
             duration_ms: None,
             time_to_first_token_ms: None,
@@ -766,6 +768,7 @@ async fn unified_exec_waiting_multiple_empty_snapshots() {
         msg: EventMsg::TurnComplete(TurnCompleteEvent {
             turn_id: "turn-1".to_string(),
             last_agent_message: None,
+            compaction_events_in_turn: 0,
             completed_at: None,
             duration_ms: None,
             time_to_first_token_ms: None,
@@ -847,6 +850,7 @@ async fn unified_exec_non_empty_then_empty_snapshots() {
         msg: EventMsg::TurnComplete(TurnCompleteEvent {
             turn_id: "turn-1".to_string(),
             last_agent_message: None,
+            compaction_events_in_turn: 0,
             completed_at: None,
             duration_ms: None,
             time_to_first_token_ms: None,
@@ -1074,6 +1078,7 @@ async fn user_message_during_user_shell_command_is_queued_not_steered() {
         msg: EventMsg::TurnComplete(TurnCompleteEvent {
             turn_id: "turn-1".to_string(),
             last_agent_message: Some("done".to_string()),
+            compaction_events_in_turn: 0,
             completed_at: None,
             duration_ms: None,
             time_to_first_token_ms: None,
@@ -1337,8 +1342,6 @@ async fn interrupt_preserves_unified_exec_processes() {
         msg: EventMsg::TurnAborted(codex_protocol::protocol::TurnAbortedEvent {
             turn_id: Some("turn-1".to_string()),
             reason: TurnAbortReason::Interrupted,
-            completed_at: None,
-            duration_ms: None,
         }),
     });
 
@@ -1385,8 +1388,6 @@ async fn interrupt_preserves_unified_exec_wait_streak_snapshot() {
         msg: EventMsg::TurnAborted(codex_protocol::protocol::TurnAbortedEvent {
             turn_id: Some("turn-1".to_string()),
             reason: TurnAbortReason::Interrupted,
-            completed_at: None,
-            duration_ms: None,
         }),
     });
 
@@ -1414,6 +1415,7 @@ async fn turn_complete_keeps_unified_exec_processes() {
         msg: EventMsg::TurnComplete(TurnCompleteEvent {
             turn_id: "turn-1".to_string(),
             last_agent_message: None,
+            compaction_events_in_turn: 0,
             completed_at: None,
             duration_ms: None,
             time_to_first_token_ms: None,
