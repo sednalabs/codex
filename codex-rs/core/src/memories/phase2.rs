@@ -173,9 +173,8 @@ pub(super) async fn run(session: &Arc<Session>, config: Arc<Config>) {
     let artifacts_not_before = SystemTime::now();
     let allow_existing_artifacts_without_rewrite =
         agent::can_reuse_existing_consolidation_artifacts(&selection);
-    let thread_id = match session
-        .services
-        .agent_control
+    let agent_control = session.services.agent_control.detached_registry();
+    let thread_id = match agent_control
         .spawn_agent(agent_config, prompt.into(), Some(source))
         .await
     {
@@ -222,6 +221,7 @@ pub(super) async fn run(session: &Arc<Session>, config: Arc<Config>) {
         artifacts_not_before,
         allow_existing_artifacts_without_rewrite,
         prepared_input_artifact_tree_sha256,
+        agent_control,
         phase_two_e2e_timer,
     );
 
@@ -423,6 +423,7 @@ pub(in crate::memories) mod agent {
         artifacts_not_before: SystemTime,
         allow_existing_artifacts_without_rewrite: bool,
         prepared_input_artifact_tree_sha256: String,
+        agent_control: crate::agent::AgentControl,
         phase_two_e2e_timer: Option<codex_otel::Timer>,
     ) {
         let Some(db) = session.services.state_db.clone() else {
@@ -432,7 +433,6 @@ pub(in crate::memories) mod agent {
 
         tokio::spawn(async move {
             let _phase_two_e2e_timer = phase_two_e2e_timer;
-            let agent_control = session.services.agent_control.clone();
 
             // TODO(jif) we might have a very small race here.
             let rx = match agent_control.subscribe_status(thread_id).await {

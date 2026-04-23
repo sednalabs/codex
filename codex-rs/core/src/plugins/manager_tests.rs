@@ -1639,7 +1639,13 @@ plugins = true
         Some(PluginDetailsUnavailableReason::InstallRequiredForRemoteSource)
     );
     assert!(!outcome.plugin.installed);
-    assert!(outcome.plugin.description.is_none());
+    let expected_description = format!(
+        "This is a cross-repo plugin. Install it to view more detailed information. The source of the plugin is {missing_remote_repo_url}, path `plugins/toolkit`."
+    );
+    assert_eq!(
+        outcome.plugin.description.as_deref(),
+        Some(expected_description.as_str())
+    );
     assert!(outcome.plugin.skills.is_empty());
     assert!(outcome.plugin.apps.is_empty());
     assert!(outcome.plugin.mcp_server_names.is_empty());
@@ -1791,9 +1797,6 @@ plugins = true
         curated_root.join(".agents/plugins/marketplace.json"),
         r#"{
   "name": "openai-curated",
-  "interface": {
-    "displayName": "ChatGPT Official"
-  },
   "plugins": [
     {
       "name": "linear",
@@ -1829,9 +1832,7 @@ plugins = true
             name: "openai-curated".to_string(),
             path: AbsolutePathBuf::try_from(curated_root.join(".agents/plugins/marketplace.json"))
                 .unwrap(),
-            interface: Some(MarketplaceInterface {
-                display_name: Some(OPENAI_CURATED_MARKETPLACE_DISPLAY_NAME.to_string()),
-            }),
+            interface: None,
             plugins: vec![ConfiguredMarketplacePlugin {
                 id: "linear@openai-curated".to_string(),
                 name: "linear".to_string(),

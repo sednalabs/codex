@@ -29,26 +29,32 @@ async fn interrupted_turn_restores_queued_messages_with_images_and_elements() {
     )];
     let existing_images = vec![PathBuf::from("/tmp/existing.png")];
 
-    chat.queued_user_messages.push_back(UserMessage {
-        text: first_text,
-        local_images: vec![LocalImageAttachment {
-            placeholder: first_placeholder.to_string(),
-            path: first_images[0].clone(),
-        }],
-        remote_image_urls: Vec::new(),
-        text_elements: first_elements,
-        mention_bindings: Vec::new(),
-    });
-    chat.queued_user_messages.push_back(UserMessage {
-        text: second_text,
-        local_images: vec![LocalImageAttachment {
-            placeholder: second_placeholder.to_string(),
-            path: second_images[0].clone(),
-        }],
-        remote_image_urls: Vec::new(),
-        text_elements: second_elements,
-        mention_bindings: Vec::new(),
-    });
+    chat.queued_user_messages.push_back(
+        UserMessage {
+            text: first_text,
+            local_images: vec![LocalImageAttachment {
+                placeholder: first_placeholder.to_string(),
+                path: first_images[0].clone(),
+            }],
+            remote_image_urls: Vec::new(),
+            text_elements: first_elements,
+            mention_bindings: Vec::new(),
+        }
+        .into(),
+    );
+    chat.queued_user_messages.push_back(
+        UserMessage {
+            text: second_text,
+            local_images: vec![LocalImageAttachment {
+                placeholder: second_placeholder.to_string(),
+                path: second_images[0].clone(),
+            }],
+            remote_image_urls: Vec::new(),
+            text_elements: second_elements,
+            mention_bindings: Vec::new(),
+        }
+        .into(),
+    );
     chat.refresh_pending_input_preview();
 
     chat.bottom_pane
@@ -61,6 +67,8 @@ async fn interrupted_turn_restores_queued_messages_with_images_and_elements() {
         msg: EventMsg::TurnAborted(codex_protocol::protocol::TurnAbortedEvent {
             turn_id: Some("turn-1".to_string()),
             reason: TurnAbortReason::Interrupted,
+            completed_at: None,
+            duration_ms: None,
         }),
     });
 
@@ -139,6 +147,80 @@ async fn entered_review_mode_defaults_to_current_changes_banner() {
 }
 
 #[tokio::test]
+async fn live_core_review_prompt_item_is_not_rendered() {
+    let (mut chat, mut rx, _ops) = make_chatwidget_manual(/*model_override*/ None).await;
+
+    chat.handle_codex_event(Event {
+        id: "review-start".into(),
+        msg: EventMsg::EnteredReviewMode(ReviewRequest {
+            target: ReviewTarget::BaseBranch {
+                branch: "main".to_string(),
+            },
+            user_facing_hint: Some("changes against 'main'".to_string()),
+        }),
+    });
+    let cells = drain_insert_history(&mut rx);
+    assert_eq!(cells.len(), 1);
+    assert!(lines_to_single_string(&cells[0]).contains("Code review started"));
+
+    complete_user_message(
+        &mut chat,
+        "review-prompt",
+        "Review the code changes against the base branch 'main'.",
+    );
+
+    assert!(drain_insert_history(&mut rx).is_empty());
+}
+
+#[tokio::test]
+async fn live_app_server_review_prompt_item_is_not_rendered() {
+    let (mut chat, mut rx, _ops) = make_chatwidget_manual(/*model_override*/ None).await;
+
+    let review_mode_item = AppServerThreadItem::EnteredReviewMode {
+        id: "review-start".to_string(),
+        review: "changes against 'main'".to_string(),
+    };
+    chat.handle_server_notification(
+        ServerNotification::ItemStarted(ItemStartedNotification {
+            thread_id: "thread-1".to_string(),
+            turn_id: "turn-1".to_string(),
+            item: review_mode_item.clone(),
+        }),
+        /*replay_kind*/ None,
+    );
+    let cells = drain_insert_history(&mut rx);
+    assert_eq!(cells.len(), 1);
+    assert!(lines_to_single_string(&cells[0]).contains("Code review started"));
+
+    chat.handle_server_notification(
+        ServerNotification::ItemCompleted(ItemCompletedNotification {
+            thread_id: "thread-1".to_string(),
+            turn_id: "turn-1".to_string(),
+            item: review_mode_item,
+        }),
+        /*replay_kind*/ None,
+    );
+    assert!(drain_insert_history(&mut rx).is_empty());
+
+    chat.handle_server_notification(
+        ServerNotification::ItemCompleted(ItemCompletedNotification {
+            thread_id: "thread-1".to_string(),
+            turn_id: "turn-1".to_string(),
+            item: AppServerThreadItem::UserMessage {
+                id: "review-prompt".to_string(),
+                content: vec![AppServerUserInput::Text {
+                    text: "Review the code changes against the base branch 'main'.".to_string(),
+                    text_elements: Vec::new(),
+                }],
+            },
+        }),
+        /*replay_kind*/ None,
+    );
+
+    assert!(drain_insert_history(&mut rx).is_empty());
+}
+
+#[tokio::test]
 async fn steer_rejection_queues_review_follow_up_before_existing_queued_messages() {
     let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
     chat.thread_id = Some(ThreadId::new());
@@ -146,9 +228,9 @@ async fn steer_rejection_queues_review_follow_up_before_existing_queued_messages
         id: "turn-start".into(),
         msg: EventMsg::TurnStarted(TurnStartedEvent {
             turn_id: "turn-1".to_string(),
+            started_at: None,
             model_context_window: None,
             collaboration_mode_kind: ModeKind::Default,
-            started_at: Some(2),
         }),
     });
     chat.handle_codex_event(Event {
@@ -162,7 +244,7 @@ async fn steer_rejection_queues_review_follow_up_before_existing_queued_messages
     });
     let _ = drain_insert_history(&mut rx);
     chat.queued_user_messages
-        .push_back(UserMessage::from("queued later"));
+        .push_back(UserMessage::from("queued later").into());
 
     chat.submit_user_message(UserMessage::from("review follow-up one"));
     chat.submit_user_message(UserMessage::from("review follow-up two"));
@@ -223,15 +305,17 @@ async fn steer_rejection_queues_review_follow_up_before_existing_queued_messages
         id: "review-exit".into(),
         msg: EventMsg::ExitedReviewMode(ExitedReviewModeEvent {
             review_output: None,
-            review_token_usage: None,
         }),
     });
     chat.handle_codex_event(Event {
         id: "turn-complete".into(),
-        msg: EventMsg::TurnComplete(test_turn_complete_event(
-            "turn-1",
-            /*last_agent_message*/ None::<String>,
-        )),
+        msg: EventMsg::TurnComplete(TurnCompleteEvent {
+            turn_id: "turn-1".to_string(),
+            last_agent_message: None,
+            completed_at: None,
+            duration_ms: None,
+            time_to_first_token_ms: None,
+        }),
     });
 
     match next_submit_op(&mut op_rx) {
@@ -247,10 +331,13 @@ async fn steer_rejection_queues_review_follow_up_before_existing_queued_messages
 
     chat.handle_codex_event(Event {
         id: "turn-complete-2".into(),
-        msg: EventMsg::TurnComplete(test_turn_complete_event(
-            "turn-2",
-            /*last_agent_message*/ None::<String>,
-        )),
+        msg: EventMsg::TurnComplete(TurnCompleteEvent {
+            turn_id: "turn-2".to_string(),
+            last_agent_message: None,
+            completed_at: None,
+            duration_ms: None,
+            time_to_first_token_ms: None,
+        }),
     });
 
     match next_submit_op(&mut op_rx) {
@@ -292,7 +379,7 @@ async fn live_agent_message_renders_during_review_mode() {
     assert!(lines_to_single_string(&inserted[0]).contains("Review progress update"));
 }
 
-/// Exiting review keeps review usage visible, then restores pre-review usage on next turn start.
+/// Exiting review restores the pre-review context window indicator.
 #[tokio::test]
 async fn review_restores_context_window_indicator() {
     let (mut chat, mut rx, _ops) = make_chatwidget_manual(/*model_override*/ None).await;
@@ -303,10 +390,10 @@ async fn review_restores_context_window_indicator() {
 
     chat.handle_codex_event(Event {
         id: "token-before".into(),
-        msg: EventMsg::TokenCount(test_token_count_event(
-            Some(make_token_info(pre_review_tokens, context_window)),
-            /*rate_limits*/ None,
-        )),
+        msg: EventMsg::TokenCount(TokenCountEvent {
+            info: Some(make_token_info(pre_review_tokens, context_window)),
+            rate_limits: None,
+        }),
     });
     assert_eq!(chat.bottom_pane.context_window_percent(), Some(30));
 
@@ -322,10 +409,10 @@ async fn review_restores_context_window_indicator() {
 
     chat.handle_codex_event(Event {
         id: "token-review".into(),
-        msg: EventMsg::TokenCount(test_token_count_event(
-            Some(make_token_info(review_tokens, context_window)),
-            /*rate_limits*/ None,
-        )),
+        msg: EventMsg::TokenCount(TokenCountEvent {
+            info: Some(make_token_info(review_tokens, context_window)),
+            rate_limits: None,
+        }),
     });
     assert_eq!(chat.bottom_pane.context_window_percent(), Some(97));
 
@@ -333,27 +420,12 @@ async fn review_restores_context_window_indicator() {
         id: "review-end".into(),
         msg: EventMsg::ExitedReviewMode(ExitedReviewModeEvent {
             review_output: None,
-            review_token_usage: None,
         }),
     });
     let _ = drain_insert_history(&mut rx);
 
-    // Keep the review-turn token usage visible at review completion.
-    assert_eq!(chat.bottom_pane.context_window_percent(), Some(97));
-    assert!(!chat.is_review_mode);
-
-    chat.handle_codex_event(Event {
-        id: "turn-start-after-review".into(),
-        msg: EventMsg::TurnStarted(TurnStartedEvent {
-            turn_id: "turn-2".to_string(),
-            model_context_window: Some(context_window),
-            collaboration_mode_kind: ModeKind::Default,
-            started_at: Some(2),
-        }),
-    });
-
-    // Restore the pre-review indicator when the next turn starts.
     assert_eq!(chat.bottom_pane.context_window_percent(), Some(30));
+    assert!(!chat.is_review_mode);
 }
 
 #[tokio::test]
@@ -364,13 +436,18 @@ async fn restore_thread_input_state_restores_pending_steers_without_downgrading_
     let mut rejected_steers_queue = VecDeque::new();
     rejected_steers_queue.push_back(UserMessage::from("already rejected"));
     let mut queued_user_messages = VecDeque::new();
-    queued_user_messages.push_back(UserMessage::from("queued draft"));
+    queued_user_messages.push_back(UserMessage::from("queued draft").into());
 
     chat.restore_thread_input_state(Some(ThreadInputState {
+        composer: None,
         pending_steers,
         rejected_steers_queue,
         queued_user_messages,
-        ..default_thread_input_state(&chat)
+        user_turn_pending_start: false,
+        current_collaboration_mode: chat.current_collaboration_mode.clone(),
+        active_collaboration_mask: chat.active_collaboration_mask.clone(),
+        task_running: false,
+        agent_turn_running: false,
     }));
 
     assert_eq!(
@@ -761,7 +838,7 @@ async fn esc_interrupt_sends_all_pending_steers_immediately_and_keeps_existing_d
     }
 
     chat.queued_user_messages
-        .push_back(UserMessage::from("queued draft".to_string()));
+        .push_back(UserMessage::from("queued draft".to_string()).into());
     chat.refresh_pending_input_preview();
     chat.bottom_pane
         .set_composer_text("still editing".to_string(), Vec::new(), Vec::new());
@@ -883,7 +960,7 @@ async fn manual_interrupt_restores_pending_steers_before_queued_messages() {
         .set_composer_text("pending steer".to_string(), Vec::new(), Vec::new());
     chat.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
     chat.queued_user_messages
-        .push_back(UserMessage::from("queued draft".to_string()));
+        .push_back(UserMessage::from("queued draft".to_string()).into());
     chat.refresh_pending_input_preview();
 
     match next_submit_op(&mut op_rx) {
@@ -925,7 +1002,7 @@ async fn replaced_turn_clears_pending_steers_but_keeps_queued_drafts() {
         .set_composer_text("pending steer".to_string(), Vec::new(), Vec::new());
     chat.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
     chat.queued_user_messages
-        .push_back(UserMessage::from("queued draft".to_string()));
+        .push_back(UserMessage::from("queued draft".to_string()).into());
     chat.refresh_pending_input_preview();
 
     match next_submit_op(&mut op_rx) {
@@ -945,6 +1022,8 @@ async fn replaced_turn_clears_pending_steers_but_keeps_queued_drafts() {
         msg: EventMsg::TurnAborted(codex_protocol::protocol::TurnAbortedEvent {
             turn_id: Some("turn-1".to_string()),
             reason: TurnAbortReason::Replaced,
+            completed_at: None,
+            duration_ms: None,
         }),
     });
 
@@ -1168,6 +1247,8 @@ async fn interrupt_exec_marks_failed_snapshot() {
         msg: EventMsg::TurnAborted(codex_protocol::protocol::TurnAbortedEvent {
             turn_id: Some("turn-1".to_string()),
             reason: TurnAbortReason::Interrupted,
+            completed_at: None,
+            duration_ms: None,
         }),
     });
 
@@ -1193,9 +1274,9 @@ async fn interrupted_turn_error_message_snapshot() {
         id: "task-1".into(),
         msg: EventMsg::TurnStarted(TurnStartedEvent {
             turn_id: "turn-1".to_string(),
+            started_at: None,
             model_context_window: None,
             collaboration_mode_kind: ModeKind::Default,
-            started_at: None,
         }),
     });
 
@@ -1205,6 +1286,8 @@ async fn interrupted_turn_error_message_snapshot() {
         msg: EventMsg::TurnAborted(codex_protocol::protocol::TurnAbortedEvent {
             turn_id: Some("turn-1".to_string()),
             reason: TurnAbortReason::Interrupted,
+            completed_at: None,
+            duration_ms: None,
         }),
     });
 
@@ -1231,9 +1314,9 @@ async fn interrupted_turn_pending_steers_message_snapshot() {
         id: "task-1".into(),
         msg: EventMsg::TurnStarted(TurnStartedEvent {
             turn_id: "turn-1".to_string(),
+            started_at: None,
             model_context_window: None,
             collaboration_mode_kind: ModeKind::Default,
-            started_at: None,
         }),
     });
 
@@ -1242,6 +1325,8 @@ async fn interrupted_turn_pending_steers_message_snapshot() {
         msg: EventMsg::TurnAborted(codex_protocol::protocol::TurnAbortedEvent {
             turn_id: Some("turn-1".to_string()),
             reason: TurnAbortReason::Interrupted,
+            completed_at: None,
+            duration_ms: None,
         }),
     });
 
@@ -1338,6 +1423,8 @@ async fn review_ended_keeps_unified_exec_processes() {
         msg: EventMsg::TurnAborted(codex_protocol::protocol::TurnAbortedEvent {
             turn_id: Some("turn-1".to_string()),
             reason: TurnAbortReason::ReviewEnded,
+            completed_at: None,
+            duration_ms: None,
         }),
     });
 
@@ -1370,9 +1457,9 @@ async fn enter_submits_steer_while_review_is_running() {
         id: "turn-start".into(),
         msg: EventMsg::TurnStarted(TurnStartedEvent {
             turn_id: "turn-1".to_string(),
+            started_at: None,
             model_context_window: None,
             collaboration_mode_kind: ModeKind::Default,
-            started_at: None,
         }),
     });
 
@@ -1419,9 +1506,9 @@ async fn review_queues_user_messages_snapshot() {
         id: "turn-start".into(),
         msg: EventMsg::TurnStarted(TurnStartedEvent {
             turn_id: "turn-1".to_string(),
+            started_at: None,
             model_context_window: None,
             collaboration_mode_kind: ModeKind::Default,
-            started_at: None,
         }),
     });
 

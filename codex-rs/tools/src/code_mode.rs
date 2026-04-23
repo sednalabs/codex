@@ -39,7 +39,7 @@ pub fn augment_tool_spec_for_code_mode(spec: ToolSpec) -> ToolSpec {
                         let (all_tools_name, all_tools_module) =
                             all_tools_metadata_for_name(&tool_name.display());
                         let definition = CodeModeToolDefinition {
-                            name: tool_name.display(),
+                            name: code_mode_name_for_tool_name(&tool_name),
                             tool_name,
                             all_tools_name,
                             all_tools_module,
@@ -220,7 +220,7 @@ fn code_mode_tool_definitions_for_spec(spec: &ToolSpec) -> Vec<CodeModeToolDefin
                     let (all_tools_name, all_tools_module) =
                         all_tools_metadata_for_name(&tool_name.display());
                     CodeModeToolDefinition {
-                        name: tool_name.display(),
+                        name: code_mode_name_for_tool_name(&tool_name),
                         tool_name,
                         all_tools_name,
                         all_tools_module,
@@ -254,6 +254,16 @@ fn all_tools_metadata_for_name(tool_name: &str) -> (Option<String>, Option<Strin
         Some(nested_name.to_string()),
         Some(format!("tools/mcp/{server}.js")),
     )
+}
+
+pub fn code_mode_name_for_tool_name(tool_name: &ToolName) -> String {
+    match tool_name.namespace.as_deref() {
+        Some(namespace) if namespace.ends_with('_') || tool_name.name.starts_with('_') => {
+            format!("{namespace}{}", tool_name.name)
+        }
+        Some(namespace) => format!("{namespace}_{}", tool_name.name),
+        None => tool_name.name.clone(),
+    }
 }
 
 #[cfg(test)]

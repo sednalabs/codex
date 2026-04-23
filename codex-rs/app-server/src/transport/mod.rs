@@ -105,6 +105,7 @@ impl FromStr for AppServerTransport {
 pub(crate) enum TransportEvent {
     ConnectionOpened {
         connection_id: ConnectionId,
+        origin: ConnectionOrigin,
         writer: mpsc::Sender<QueuedOutgoingMessage>,
         disconnect_sender: Option<CancellationToken>,
     },
@@ -123,6 +124,22 @@ fn next_connection_id() -> ConnectionId {
     ConnectionId(CONNECTION_ID_COUNTER.fetch_add(1, Ordering::Relaxed))
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ConnectionOrigin {
+    Stdio,
+    InProcess,
+    WebSocket,
+    RemoteControl,
+}
+
+impl ConnectionOrigin {
+    pub(crate) fn allows_device_key_requests(self) -> bool {
+        // Device-key endpoints are only for local connections that own the app-server instance.
+        // Do not include remote transports such as SSH or remote-control websocket connections.
+        matches!(self, Self::Stdio | Self::InProcess)
+    }
+}
+
 pub(crate) struct ConnectionState {
     pub(crate) outbound_initialized: Arc<AtomicBool>,
     pub(crate) outbound_experimental_api_enabled: Arc<AtomicBool>,
@@ -132,6 +149,7 @@ pub(crate) struct ConnectionState {
 
 impl ConnectionState {
     pub(crate) fn new(
+        origin: ConnectionOrigin,
         outbound_initialized: Arc<AtomicBool>,
         outbound_experimental_api_enabled: Arc<AtomicBool>,
         outbound_opted_out_notification_methods: Arc<RwLock<HashSet<String>>>,
@@ -140,7 +158,7 @@ impl ConnectionState {
             outbound_initialized,
             outbound_experimental_api_enabled,
             outbound_opted_out_notification_methods,
-            session: Arc::new(ConnectionSessionState::default()),
+            session: Arc::new(ConnectionSessionState::new(origin)),
         }
     }
 }
@@ -820,6 +838,8 @@ mod tests {
                                     codex_app_server_protocol::AdditionalFileSystemPermissions {
                                         read: Some(vec![absolute_path("/tmp/allowed")]),
                                         write: None,
+                                        glob_scan_max_depth: None,
+                                        entries: None,
                                     },
                                 ),
                             },
@@ -882,6 +902,8 @@ mod tests {
                                     codex_app_server_protocol::AdditionalFileSystemPermissions {
                                         read: Some(vec![absolute_path("/tmp/allowed")]),
                                         write: None,
+                                        glob_scan_max_depth: None,
+                                        entries: None,
                                     },
                                 ),
                             },

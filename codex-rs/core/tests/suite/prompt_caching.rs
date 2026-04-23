@@ -116,7 +116,7 @@ async fn prompt_tools_are_consistent_across_requests() -> anyhow::Result<()> {
     } = test_codex()
         .with_config(|config| {
             config.user_instructions = Some("be consistent and helpful".to_string());
-            config.model = Some("gpt-5.1-codex-max".to_string());
+            config.model = Some("gpt-5.2".to_string());
             // Keep tool expectations stable when the default web_search mode changes.
             config
                 .web_search_mode
@@ -143,6 +143,7 @@ async fn prompt_tools_are_consistent_across_requests() -> anyhow::Result<()> {
 
     codex
         .submit(Op::UserInput {
+            environments: None,
             items: vec![UserInput::Text {
                 text: "hello 1".into(),
                 text_elements: Vec::new(),
@@ -155,6 +156,7 @@ async fn prompt_tools_are_consistent_across_requests() -> anyhow::Result<()> {
 
     codex
         .submit(Op::UserInput {
+            environments: None,
             items: vec![UserInput::Text {
                 text: "hello 2".into(),
                 text_elements: Vec::new(),
@@ -256,13 +258,14 @@ async fn gpt_5_tools_without_apply_patch_append_apply_patch_instructions() -> an
                 .features
                 .enable(Feature::CollaborationModes)
                 .expect("test config should allow feature update");
-            config.model = Some("gpt-5".to_string());
+            config.model = Some("gpt-5.2".to_string());
         })
         .build(&server)
         .await?;
 
     codex
         .submit(Op::UserInput {
+            environments: None,
             items: vec![UserInput::Text {
                 text: "hello 1".into(),
                 text_elements: Vec::new(),
@@ -275,6 +278,7 @@ async fn gpt_5_tools_without_apply_patch_append_apply_patch_instructions() -> an
     wait_for_event(&codex, |ev| matches!(ev, EventMsg::TurnComplete(_))).await;
     codex
         .submit(Op::UserInput {
+            environments: None,
             items: vec![UserInput::Text {
                 text: "hello 2".into(),
                 text_elements: Vec::new(),
@@ -338,6 +342,7 @@ async fn prefixes_context_and_instructions_once_and_consistently_across_requests
 
     codex
         .submit(Op::UserInput {
+            environments: None,
             items: vec![UserInput::Text {
                 text: "hello 1".into(),
                 text_elements: Vec::new(),
@@ -350,6 +355,7 @@ async fn prefixes_context_and_instructions_once_and_consistently_across_requests
 
     codex
         .submit(Op::UserInput {
+            environments: None,
             items: vec![UserInput::Text {
                 text: "hello 2".into(),
                 text_elements: Vec::new(),
@@ -432,6 +438,7 @@ async fn overrides_turn_context_but_keeps_cached_prefix_and_key_constant() -> an
     // First turn
     codex
         .submit(Op::UserInput {
+            environments: None,
             items: vec![UserInput::Text {
                 text: "hello 1".into(),
                 text_elements: Vec::new(),
@@ -456,6 +463,7 @@ async fn overrides_turn_context_but_keeps_cached_prefix_and_key_constant() -> an
             approval_policy: Some(AskForApproval::Never),
             approvals_reviewer: None,
             sandbox_policy: Some(new_policy.clone()),
+            permission_profile: None,
             windows_sandbox_level: None,
             model: None,
             effort: Some(Some(ReasoningEffort::High)),
@@ -469,6 +477,7 @@ async fn overrides_turn_context_but_keeps_cached_prefix_and_key_constant() -> an
     // Second turn after overrides
     codex
         .submit(Op::UserInput {
+            environments: None,
             items: vec![UserInput::Text {
                 text: "hello 2".into(),
                 text_elements: Vec::new(),
@@ -528,7 +537,7 @@ async fn override_before_first_turn_emits_environment_context() -> anyhow::Resul
     let collaboration_mode = CollaborationMode {
         mode: ModeKind::Default,
         settings: Settings {
-            model: "gpt-5.1".to_string(),
+            model: "gpt-5.4".to_string(),
             reasoning_effort: Some(ReasoningEffort::High),
             developer_instructions: None,
         },
@@ -540,8 +549,9 @@ async fn override_before_first_turn_emits_environment_context() -> anyhow::Resul
             approval_policy: Some(AskForApproval::Never),
             approvals_reviewer: None,
             sandbox_policy: None,
+            permission_profile: None,
             windows_sandbox_level: None,
-            model: Some("gpt-5.1-codex".to_string()),
+            model: Some("gpt-5.4".to_string()),
             effort: Some(Some(ReasoningEffort::Low)),
             summary: None,
             service_tier: None,
@@ -552,6 +562,7 @@ async fn override_before_first_turn_emits_environment_context() -> anyhow::Resul
 
     codex
         .submit(Op::UserInput {
+            environments: None,
             items: vec![UserInput::Text {
                 text: "first message".into(),
                 text_elements: Vec::new(),
@@ -564,7 +575,7 @@ async fn override_before_first_turn_emits_environment_context() -> anyhow::Resul
     wait_for_event(&codex, |ev| matches!(ev, EventMsg::TurnComplete(_))).await;
 
     let body = req.single_request().body_json();
-    assert_eq!(body["model"].as_str(), Some("gpt-5.1"));
+    assert_eq!(body["model"].as_str(), Some("gpt-5.4"));
     assert_eq!(
         body.get("reasoning")
             .and_then(|reasoning| reasoning.get("effort"))
@@ -704,6 +715,7 @@ async fn per_turn_overrides_keep_cached_prefix_and_key_constant() -> anyhow::Res
     // First turn
     codex
         .submit(Op::UserInput {
+            environments: None,
             items: vec![UserInput::Text {
                 text: "hello 1".into(),
                 text_elements: Vec::new(),
@@ -726,6 +738,7 @@ async fn per_turn_overrides_keep_cached_prefix_and_key_constant() -> anyhow::Res
     };
     codex
         .submit(Op::UserTurn {
+            environments: None,
             items: vec![UserInput::Text {
                 text: "hello 2".into(),
                 text_elements: Vec::new(),
@@ -839,6 +852,7 @@ async fn send_user_turn_with_no_changes_does_not_send_environment_context() -> a
 
     codex
         .submit(Op::UserTurn {
+            environments: None,
             items: vec![UserInput::Text {
                 text: "hello 1".into(),
                 text_elements: Vec::new(),
@@ -860,6 +874,7 @@ async fn send_user_turn_with_no_changes_does_not_send_environment_context() -> a
 
     codex
         .submit(Op::UserTurn {
+            environments: None,
             items: vec![UserInput::Text {
                 text: "hello 2".into(),
                 text_elements: Vec::new(),
@@ -965,6 +980,7 @@ async fn send_user_turn_with_changes_sends_environment_context() -> anyhow::Resu
 
     codex
         .submit(Op::UserTurn {
+            environments: None,
             items: vec![UserInput::Text {
                 text: "hello 1".into(),
                 text_elements: Vec::new(),
@@ -986,6 +1002,7 @@ async fn send_user_turn_with_changes_sends_environment_context() -> anyhow::Resu
 
     codex
         .submit(Op::UserTurn {
+            environments: None,
             items: vec![UserInput::Text {
                 text: "hello 2".into(),
                 text_elements: Vec::new(),

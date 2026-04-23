@@ -1273,6 +1273,7 @@ impl McpServerElicitationOverlay {
             | InputResult::Queued {
                 text,
                 text_elements,
+                ..
             }
             | InputResult::QueuedFront {
                 text,

@@ -3,8 +3,8 @@
 use anyhow::Result;
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
-use codex_core::config::types::McpServerConfig;
-use codex_core::config::types::McpServerTransportConfig;
+use codex_config::types::McpServerConfig;
+use codex_config::types::McpServerTransportConfig;
 use codex_features::Feature;
 use codex_login::CodexAuth;
 use codex_models_manager::bundled_models_response;
@@ -18,7 +18,6 @@ use codex_protocol::protocol::SandboxPolicy;
 use codex_protocol::user_input::UserInput;
 use core_test_support::apps_test_server::AppsTestServer;
 use core_test_support::assert_regex_match;
-use core_test_support::path_node_satisfies_js_repl_requirement;
 use core_test_support::responses;
 use core_test_support::responses::ResponseMock;
 use core_test_support::responses::ResponsesRequest;
@@ -38,7 +37,6 @@ use serde_json::Value;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::fs;
-use std::panic::AssertUnwindSafe;
 use std::path::Path;
 use std::time::Duration;
 use std::time::Instant;
@@ -141,299 +139,18 @@ fn custom_tool_output_last_non_empty_text(req: &ResponsesRequest, call_id: &str)
     }
 }
 
-#[derive(Debug)]
-struct ParsedCodeModeDeclaration {
-    name: String,
-    input_name: String,
-    args: Vec<String>,
-    output: Vec<String>,
-}
-
-#[derive(Clone, Copy, Default)]
-struct CodeModeQuoteState {
-    in_single_quoted: bool,
-    in_double_quoted: bool,
-    in_template_literal: bool,
-    escaped: bool,
-}
-
-impl CodeModeQuoteState {
-    fn in_quote(self) -> bool {
-        self.in_single_quoted || self.in_double_quoted || self.in_template_literal
-    }
-}
-
-fn advance_code_mode_quote_state(ch: char, state: &mut CodeModeQuoteState) {
-    if state.escaped {
-        state.escaped = false;
-        return;
-    }
-
-    match ch {
-        '\\' if state.in_quote() => {
-            state.escaped = true;
-        }
-        '\'' if !state.in_double_quoted && !state.in_template_literal => {
-            state.in_single_quoted = !state.in_single_quoted;
-        }
-        '"' if !state.in_single_quoted && !state.in_template_literal => {
-            state.in_double_quoted = !state.in_double_quoted;
-        }
-        '`' if !state.in_single_quoted && !state.in_double_quoted => {
-            state.in_template_literal = !state.in_template_literal;
-        }
-        _ => {}
-    }
-}
-
-fn assert_code_mode_description(
-    description: &str,
-    prose: &str,
-    name: &str,
-    input_name: &str,
-    arg_fields: &[&str],
-    output_fields: &[&str],
-) {
-    let (actual_prose, _, trailing) = split_code_mode_description(description)
-        .expect("description should match code-mode description shape");
-    assert_eq!(actual_prose, prose);
-    assert_eq!(trailing, "");
-    assert_code_mode_declaration_fields(description, name, input_name, arg_fields, output_fields);
-}
-
-fn assert_code_mode_declaration_fields(
-    description: &str,
-    name: &str,
-    input_name: &str,
-    arg_fields: &[&str],
-    output_fields: &[&str],
-) {
-    let declaration = parse_code_mode_declaration(description)
-        .expect("description should include code-mode declaration");
-    assert_eq!(declaration.name, name);
-    assert_eq!(declaration.input_name, input_name);
-    assert_eq!(declaration.args, normalize_code_mode_field_set(arg_fields));
-    assert_eq!(
-        declaration.output,
-        normalize_code_mode_field_set(output_fields)
-    );
-}
-
-fn compact_type(typ: &str) -> String {
-    let mut compacted = String::with_capacity(typ.len());
-    let mut quote_state = CodeModeQuoteState::default();
-
-    for ch in typ.chars() {
-        let was_escaped = quote_state.escaped;
-        let was_in_quote = quote_state.in_quote();
-        advance_code_mode_quote_state(ch, &mut quote_state);
-
-        if was_escaped || was_in_quote || quote_state.in_quote() {
-            compacted.push(ch);
-            continue;
-        }
-
-        if !ch.is_whitespace() {
-            compacted.push(ch);
-        }
-    }
-
-    compacted
-}
-
-fn normalize_code_mode_field_set(fields: &[&str]) -> Vec<String> {
-    let mut fields = fields
-        .iter()
-        .map(|field| compact_type(field))
-        .collect::<Vec<_>>();
-    fields.sort_unstable();
-    fields
-}
-
-fn normalize_code_mode_type(ty: &str) -> Vec<String> {
-    let ty = ty.trim();
-    if ty.starts_with('{') && ty.ends_with('}') {
-        normalize_code_mode_fields(&split_code_mode_fields(&ty[1..ty.len() - 1]))
-    } else {
-        vec![compact_type(ty)]
-    }
-}
-
-fn normalize_code_mode_fields(fields: &[String]) -> Vec<String> {
-    let mut fields = fields
-        .iter()
-        .map(|field| compact_type(field))
-        .collect::<Vec<_>>();
-    fields.sort_unstable();
-    fields
-}
-
-fn split_code_mode_description(description: &str) -> Option<(&str, &str, &str)> {
-    let (prose, after_wrapper) = description.split_once("\n\nexec tool declaration:\n```ts\n")?;
-    let (declaration, trailing) = after_wrapper.split_once("\n```")?;
-    Some((prose, declaration, trailing))
-}
-
-fn parse_code_mode_declaration(description: &str) -> Option<ParsedCodeModeDeclaration> {
-    let declaration = split_code_mode_description(description)?.1.trim();
-    let body = declaration.split_once("declare const tools:")?.1.trim();
-    let body = body.strip_prefix("{")?.trim();
-    let body = body.strip_suffix("};")?.trim();
-
-    let open_paren = body.find('(')?;
-    let (name, args_and_return) = body.split_at(open_paren);
-    let args_and_return = &args_and_return[1..];
-    let close_call = matching_paren_end(args_and_return)?;
-    let (decl_input_name, args) = args_and_return[..close_call].split_once(':')?;
-    let mut output_tail = args_and_return[close_call + 1..].trim_start();
-    output_tail = output_tail.strip_prefix(":")?;
-    let output_tail = output_tail.trim_start();
-    let output_tail = output_tail.strip_prefix("Promise<")?;
-    let output_end = matching_generic_end(output_tail)?;
-
-    Some(ParsedCodeModeDeclaration {
-        name: compact_type(name),
-        input_name: compact_type(decl_input_name),
-        args: normalize_code_mode_type(args),
-        output: normalize_code_mode_type(&output_tail[..output_end]),
-    })
-}
-
-fn matching_paren_end(typ: &str) -> Option<usize> {
-    let mut depth = 1usize;
-    let mut quote_state = CodeModeQuoteState::default();
-
-    for (idx, ch) in typ.char_indices() {
-        let was_escaped = quote_state.escaped;
-        let was_in_quote = quote_state.in_quote();
-        advance_code_mode_quote_state(ch, &mut quote_state);
-        if was_escaped || was_in_quote {
-            continue;
-        }
-
-        match ch {
-            '(' => depth += 1,
-            ')' => {
-                depth -= 1;
-                if depth == 0 {
-                    return Some(idx);
-                }
-            }
-            _ => {}
-        }
-    }
-
-    None
-}
-
-fn matching_generic_end(typ: &str) -> Option<usize> {
-    let mut depth = 1usize;
-    let mut quote_state = CodeModeQuoteState::default();
-
-    for (idx, ch) in typ.char_indices() {
-        let was_escaped = quote_state.escaped;
-        let was_in_quote = quote_state.in_quote();
-        advance_code_mode_quote_state(ch, &mut quote_state);
-        if was_escaped || was_in_quote {
-            continue;
-        }
-
-        match ch {
-            '<' => depth += 1,
-            '>' => {
-                depth -= 1;
-                if depth == 0 {
-                    return Some(idx);
-                }
-            }
-            _ => {}
-        }
-    }
-
-    None
-}
-
-fn split_code_mode_fields(fields: &str) -> Vec<String> {
-    let mut parts = Vec::new();
-    let mut start = 0usize;
-    let mut brace_depth = 0usize;
-    let mut angle_depth = 0usize;
-    let mut square_depth = 0usize;
-    let mut paren_depth = 0usize;
-    let mut quote_state = CodeModeQuoteState::default();
-
-    for (idx, ch) in fields.char_indices() {
-        let was_escaped = quote_state.escaped;
-        let was_in_quote = quote_state.in_quote();
-        advance_code_mode_quote_state(ch, &mut quote_state);
-        if was_escaped || was_in_quote {
-            continue;
-        }
-
-        match ch {
-            '{' => brace_depth += 1,
-            '}' if brace_depth > 0 => brace_depth -= 1,
-            '<' => angle_depth += 1,
-            '>' if angle_depth > 0 => angle_depth -= 1,
-            '[' => square_depth += 1,
-            ']' if square_depth > 0 => square_depth -= 1,
-            '(' => paren_depth += 1,
-            ')' if paren_depth > 0 => paren_depth -= 1,
-            ';' if brace_depth == 0
-                && angle_depth == 0
-                && square_depth == 0
-                && paren_depth == 0 =>
-            {
-                parts.push(fields[start..idx].trim().to_string());
-                start = idx + 1;
-            }
-            _ => {}
-        }
-    }
-
-    if start < fields.len() {
-        let tail = fields[start..].trim();
-        if !tail.is_empty() {
-            parts.push(tail.to_string());
-        }
-    }
-
-    parts
-}
-
 async fn run_code_mode_turn(
     server: &MockServer,
     prompt: &str,
     code: &str,
     include_apply_patch: bool,
 ) -> Result<(TestCodex, ResponseMock)> {
-    run_code_mode_turn_with_model(
-        server,
-        prompt,
-        code,
-        include_apply_patch,
-        /*model*/ None,
-    )
-    .await
-}
-
-async fn run_code_mode_turn_with_model(
-    server: &MockServer,
-    prompt: &str,
-    code: &str,
-    include_apply_patch: bool,
-    model: Option<&str>,
-) -> Result<(TestCodex, ResponseMock)> {
-    let mut builder = test_codex();
-    if let Some(model) = model {
-        builder = builder.with_model(model);
-    }
-    builder = builder.with_config(move |config| {
-        let _ = config.features.enable(Feature::CodeMode);
-        config.include_apply_patch_tool = include_apply_patch;
-        // Keep code_mode tests hermetic instead of inheriting a host-pinned Node path.
-        config.js_repl_node_path = None;
-    });
+    let mut builder = test_codex()
+        .with_model("test-gpt-5.1-codex")
+        .with_config(move |config| {
+            let _ = config.features.enable(Feature::CodeMode);
+            config.include_apply_patch_tool = include_apply_patch;
+        });
     let test = builder.build(server).await?;
 
     responses::mount_sse_once(
@@ -518,10 +235,6 @@ async fn run_code_mode_turn_with_rmcp_config(
                 experimental_environment: None,
                 enabled: true,
                 required: false,
-                enable_elicitation: false,
-                read_only: false,
-                strict_tool_classification: false,
-                require_approval_for_mutating: false,
                 supports_parallel_tool_calls: false,
                 disabled_reason: None,
                 startup_timeout_sec: Some(Duration::from_secs(10)),
@@ -568,9 +281,6 @@ async fn run_code_mode_turn_with_rmcp_config(
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn code_mode_can_return_exec_command_output() -> Result<()> {
     skip_if_no_network!(Ok(()));
-    if !path_node_satisfies_js_repl_requirement() {
-        return Ok(());
-    }
 
     let server = responses::start_mock_server().await;
     let (_test, second_mock) = run_code_mode_turn(
@@ -703,16 +413,15 @@ if (!tool) {
                 .features
                 .enable(Feature::CodeModeOnly)
                 .expect("test config should allow feature update");
-            config.chatgpt_base_url = apps_base_url;
-            config.model = Some("gpt-5-codex".to_string());
-
             let mut model_catalog = bundled_models_response()
                 .unwrap_or_else(|err| panic!("bundled models.json should parse: {err}"));
             let model = model_catalog
                 .models
                 .iter_mut()
-                .find(|model| model.slug == "gpt-5-codex")
-                .expect("gpt-5-codex exists in bundled models.json");
+                .find(|model| model.slug == "gpt-5.4")
+                .expect("gpt-5.4 exists in bundled models.json");
+            config.chatgpt_base_url = apps_base_url;
+            config.model = Some("gpt-5.4".to_string());
             model.supports_search_tool = true;
             config.model_catalog = Some(model_catalog);
         });
@@ -926,7 +635,7 @@ text(JSON.stringify(results));
     let duration = start.elapsed();
 
     assert!(
-        duration < Duration::from_millis(/*millis*/ 1_600),
+        duration < Duration::from_millis(1_600),
         "expected nested tools to finish in parallel, got {duration:?}",
     );
 
@@ -944,9 +653,6 @@ text(JSON.stringify(results));
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn code_mode_can_truncate_final_result_with_configured_budget() -> Result<()> {
     skip_if_no_network!(Ok(()));
-    if !path_node_satisfies_js_repl_requirement() {
-        return Ok(());
-    }
 
     let server = responses::start_mock_server().await;
     let (_test, second_mock) = run_code_mode_turn(
@@ -987,9 +693,6 @@ Total\ output\ lines:\ 1\n
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn code_mode_returns_accumulated_output_when_script_fails() -> Result<()> {
     skip_if_no_network!(Ok(()));
-    if !path_node_satisfies_js_repl_requirement() {
-        return Ok(());
-    }
 
     let server = responses::start_mock_server().await;
     let (_test, second_mock) = run_code_mode_turn(
@@ -1118,42 +821,16 @@ text("phase 3");
 
     let first_request = first_completion.single_request();
     let first_items = custom_tool_output_items(&first_request, "call-1");
-    let (running_header, phase_text) = match first_items.as_slice() {
-        [header, phase] => (
-            header
-                .get("text")
-                .and_then(Value::as_str)
-                .expect("header item should be input_text")
-                .to_string(),
-            phase
-                .get("text")
-                .and_then(Value::as_str)
-                .expect("phase item should be input_text")
-                .to_string(),
-        ),
-        [combined] => {
-            let combined = combined
-                .get("text")
-                .and_then(Value::as_str)
-                .expect("combined item should be input_text");
-            let (header, phase) = combined
-                .split_once("Output:\n")
-                .expect("combined output should contain the running header");
-            (format!("{header}Output:\n"), phase.to_string())
-        }
-        _ => panic!("expected one or two text items, got {}", first_items.len()),
-    };
+    assert_eq!(first_items.len(), 2);
     assert_regex_match(
         concat!(
             r"(?s)\A",
             r"Script running with cell ID \d+\nWall time \d+\.\d seconds\nOutput:\n\z"
         ),
-        &running_header,
+        text_item(&first_items, /*index*/ 0),
     );
-    if !phase_text.is_empty() {
-        assert_eq!(phase_text, "phase 1");
-    }
-    let cell_id = extract_running_cell_id(&running_header);
+    assert_eq!(text_item(&first_items, /*index*/ 1), "phase 1");
+    let cell_id = extract_running_cell_id(text_item(&first_items, /*index*/ 0));
 
     responses::mount_sse_once(
         &server,
@@ -1277,49 +954,23 @@ while (true) {}
     .await;
 
     tokio::time::timeout(
-        Duration::from_secs(/*secs*/ 5),
+        Duration::from_secs(5),
         test.submit_turn("start the busy loop"),
     )
     .await??;
 
     let first_request = first_completion.single_request();
     let first_items = custom_tool_output_items(&first_request, "call-1");
-    let (running_header, phase_text) = match first_items.as_slice() {
-        [header, phase] => (
-            header
-                .get("text")
-                .and_then(Value::as_str)
-                .expect("header item should be input_text")
-                .to_string(),
-            phase
-                .get("text")
-                .and_then(Value::as_str)
-                .expect("phase item should be input_text")
-                .to_string(),
-        ),
-        [combined] => {
-            let combined = combined
-                .get("text")
-                .and_then(Value::as_str)
-                .expect("combined item should be input_text");
-            let (header, phase) = combined
-                .split_once("Output:\n")
-                .expect("combined output should contain the running header");
-            (format!("{header}Output:\n"), phase.to_string())
-        }
-        _ => panic!("expected one or two text items, got {}", first_items.len()),
-    };
+    assert_eq!(first_items.len(), 2);
     assert_regex_match(
         concat!(
             r"(?s)\A",
             r"Script running with cell ID \d+\nWall time \d+\.\d seconds\nOutput:\n\z"
         ),
-        &running_header,
+        text_item(&first_items, /*index*/ 0),
     );
-    if !phase_text.is_empty() {
-        assert_eq!(phase_text, "phase 1");
-    }
-    let cell_id = extract_running_cell_id(&running_header);
+    assert_eq!(text_item(&first_items, /*index*/ 1), "phase 1");
+    let cell_id = extract_running_cell_id(text_item(&first_items, /*index*/ 0));
 
     responses::mount_sse_once(
         &server,
@@ -1350,38 +1001,13 @@ while (true) {}
 
     let second_request = second_completion.single_request();
     let second_items = function_tool_output_items(&second_request, "call-2");
-    let terminated_header = match second_items.as_slice() {
-        [header] => header
-            .get("text")
-            .and_then(Value::as_str)
-            .expect("header item should be input_text")
-            .to_string(),
-        [header, trailing] => {
-            let trailing = trailing
-                .get("text")
-                .and_then(Value::as_str)
-                .expect("trailing item should be input_text");
-            assert!(
-                trailing.is_empty() || trailing == "phase 1",
-                "unexpected trailing termination output: {trailing}"
-            );
-            header
-                .get("text")
-                .and_then(Value::as_str)
-                .expect("header item should be input_text")
-                .to_string()
-        }
-        _ => panic!(
-            "expected one or two termination text items, got {}",
-            second_items.len()
-        ),
-    };
+    assert_eq!(second_items.len(), 1);
     assert_regex_match(
         concat!(
             r"(?s)\A",
             r"Script terminated\nWall time \d+\.\d seconds\nOutput:\n\z"
         ),
-        &terminated_header,
+        text_item(&second_items, /*index*/ 0),
     );
 
     Ok(())
@@ -1879,7 +1505,7 @@ text("session b done");
         if session_a_done_marker.exists() {
             break;
         }
-        tokio::time::sleep(Duration::from_millis(/*millis*/ 50)).await;
+        tokio::time::sleep(Duration::from_millis(50)).await;
     }
     assert!(session_a_done_marker.exists());
 
@@ -2133,9 +1759,6 @@ Total\ output\ lines:\ 1\n
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn code_mode_can_output_serialized_text_via_global_helper() -> Result<()> {
     skip_if_no_network!(Ok(()));
-    if !path_node_satisfies_js_repl_requirement() {
-        return Ok(());
-    }
 
     let server = responses::start_mock_server().await;
     let (_test, second_mock) = run_code_mode_turn(
@@ -2165,11 +1788,39 @@ text({ json: true });
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn code_mode_can_resume_after_set_timeout() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let server = responses::start_mock_server().await;
+    let (_test, second_mock) = run_code_mode_turn(
+        &server,
+        "use exec to wait for a timeout",
+        r#"
+await new Promise((resolve) => setTimeout(resolve, 10));
+text("timer done");
+"#,
+        /*include_apply_patch*/ false,
+    )
+    .await?;
+
+    let req = second_mock.single_request();
+    let (output, success) = custom_tool_output_body_and_success(&req, "call-1");
+    assert_ne!(
+        success,
+        Some(false),
+        "exec setTimeout call failed unexpectedly: {output}"
+    );
+    assert_eq!(output, "timer done");
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn code_mode_notify_injects_additional_exec_tool_output_into_active_context() -> Result<()> {
     skip_if_no_network!(Ok(()));
 
     let server = responses::start_mock_server().await;
-    let (_test, second_mock) = run_code_mode_turn_with_model(
+    let (_test, second_mock) = run_code_mode_turn(
         &server,
         "use exec notify helper",
         r#"
@@ -2178,7 +1829,6 @@ await tools.test_sync_tool({});
 text("done");
 "#,
         /*include_apply_patch*/ false,
-        Some("test-gpt-5.1-codex"),
     )
     .await?;
 
@@ -2188,17 +1838,11 @@ text("done");
         .iter()
         .any(|item| {
             item.get("call_id").and_then(serde_json::Value::as_str) == Some("call-1")
+                && item
+                    .get("output")
+                    .and_then(serde_json::Value::as_str)
+                    .is_some_and(|text| text.contains("code_mode_notify_marker"))
                 && item.get("name").and_then(serde_json::Value::as_str) == Some("exec")
-                && match item.get("output") {
-                    Some(Value::String(text)) => text.contains("code_mode_notify_marker"),
-                    Some(Value::Array(items)) => items.iter().any(|output_item| {
-                        output_item
-                            .get("text")
-                            .and_then(Value::as_str)
-                            .is_some_and(|text| text.contains("code_mode_notify_marker"))
-                    }),
-                    _ => false,
-                }
         });
     assert!(
         has_notify_output,
@@ -2251,9 +1895,6 @@ text("after");
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn code_mode_surfaces_text_stringify_errors() -> Result<()> {
     skip_if_no_network!(Ok(()));
-    if !path_node_satisfies_js_repl_requirement() {
-        return Ok(());
-    }
 
     let server = responses::start_mock_server().await;
     let (_test, second_mock) = run_code_mode_turn(
@@ -2295,9 +1936,6 @@ text(circular);
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn code_mode_can_output_images_via_global_helper() -> Result<()> {
     skip_if_no_network!(Ok(()));
-    if !path_node_satisfies_js_repl_requirement() {
-        return Ok(());
-    }
 
     let server = responses::start_mock_server().await;
     let (_test, second_mock) = run_code_mode_turn(
@@ -2331,14 +1969,16 @@ image("data:image/png;base64,AAA");
         items[1],
         serde_json::json!({
             "type": "input_image",
-            "image_url": "https://example.com/image.jpg"
+            "image_url": "https://example.com/image.jpg",
+            "detail": "high"
         }),
     );
     assert_eq!(
         items[2],
         serde_json::json!({
             "type": "input_image",
-            "image_url": "data:image/png;base64,AAA"
+            "image_url": "data:image/png;base64,AAA",
+            "detail": "high"
         }),
     );
 
@@ -2487,9 +2127,6 @@ image(imageItem);
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn code_mode_can_apply_patch_via_nested_tool() -> Result<()> {
     skip_if_no_network!(Ok(()));
-    if !path_node_satisfies_js_repl_requirement() {
-        return Ok(());
-    }
 
     let server = responses::start_mock_server().await;
     let file_name = "code_mode_apply_patch.txt";
@@ -2535,9 +2172,6 @@ async fn code_mode_can_apply_patch_via_nested_tool() -> Result<()> {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn code_mode_can_print_structured_mcp_tool_result_fields() -> Result<()> {
     skip_if_no_network!(Ok(()));
-    if !path_node_satisfies_js_repl_requirement() {
-        return Ok(());
-    }
 
     let server = responses::start_mock_server().await;
     let code = r#"
@@ -2606,39 +2240,39 @@ text(`echo=${result.structuredContent?.echo ?? "missing"}`);
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn code_mode_exposes_mcp_tools_on_global_tools_object() -> Result<()> {
     skip_if_no_network!(Ok(()));
-    if !path_node_satisfies_js_repl_requirement() {
-        return Ok(());
-    }
 
     let server = responses::start_mock_server().await;
     let code = r#"
-import { tools } from "tools.js";
-
-const { structuredContent, isError } = await tools["mcp__rmcp__echo"]({
+const { content, structuredContent, isError } = await tools.mcp__rmcp__echo({
   message: "ping",
 });
 text(
-  `echo=${structuredContent?.echo ?? "missing"}\n` +
-    `env=${structuredContent?.env ?? "missing"}\n` +
-    `isError=${String(isError)}`
+  `hasEcho=${String(Object.keys(tools).includes("mcp__rmcp__echo"))}\n` +
+    `echoType=${typeof tools.mcp__rmcp__echo}\n` +
+    `echo=${structuredContent?.echo ?? "missing"}\n` +
+    `isError=${String(isError)}\n` +
+    `contentLength=${content.length}`
 );
 "#;
 
     let (_test, second_mock) =
-        run_code_mode_turn_with_rmcp(&server, "use exec to run the rmcp echo tool", code).await?;
+        run_code_mode_turn_with_rmcp(&server, "use exec to inspect the global tools object", code)
+            .await?;
 
     let req = second_mock.single_request();
     let (output, success) = custom_tool_output_body_and_success(&req, "call-1");
     assert_ne!(
         success,
         Some(false),
-        "exec rmcp echo call failed unexpectedly: {output}"
+        "exec global rmcp access failed unexpectedly: {output}"
     );
     assert_eq!(
         output,
-        "echo=ECHOING: ping
-env=propagated-env
-isError=false"
+        "hasEcho=true
+echoType=function
+echo=ECHOING: ping
+isError=false
+contentLength=0"
     );
 
     Ok(())
@@ -2741,6 +2375,7 @@ text(JSON.stringify(Object.getOwnPropertyNames(globalThis).sort()));
         "BigInt64Array",
         "BigUint64Array",
         "Boolean",
+        "clearTimeout",
         "DataView",
         "Date",
         "DisposableStack",
@@ -2803,6 +2438,7 @@ text(JSON.stringify(Object.getOwnPropertyNames(globalThis).sort()));
         "notify",
         "parseFloat",
         "parseInt",
+        "setTimeout",
         "store",
         "text",
         "tools",
@@ -2823,9 +2459,6 @@ text(JSON.stringify(Object.getOwnPropertyNames(globalThis).sort()));
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn code_mode_exports_all_tools_metadata_for_builtin_tools() -> Result<()> {
     skip_if_no_network!(Ok(()));
-    if !path_node_satisfies_js_repl_requirement() {
-        return Ok(());
-    }
 
     let server = responses::start_mock_server().await;
     let code = r#"
@@ -2854,20 +2487,11 @@ text(JSON.stringify(tool));
             .expect("exec ALL_TOOLS lookup should emit JSON"),
     )?;
     assert_eq!(
-        parsed.get("name"),
-        Some(&Value::String("view_image".to_string()))
-    );
-    let description = parsed
-        .get("description")
-        .and_then(Value::as_str)
-        .expect("ALL_TOOLS entry should include description");
-    assert_code_mode_description(
-        description,
-        "View a local image from the filesystem (only use if given a full filepath by the user, and the image isn't already attached to the thread context within <image ...> tags).",
-        "view_image",
-        "args",
-        &["detail?: string", "path: string"],
-        &["detail: string | null", "image_url: string"],
+        parsed,
+        serde_json::json!({
+            "name": "view_image",
+            "description": "View a local image from the filesystem (only use if given a full filepath by the user, and the image isn't already attached to the thread context within <image ...> tags).\n\nexec tool declaration:\n```ts\ndeclare const tools: { view_image(args: {\n  // Local filesystem path to an image file\n  path: string;\n}): Promise<{\n  // Image detail hint returned by view_image. Returns `original` when original resolution is preserved, otherwise `null`.\n  detail: string | null;\n  // Data URL for the loaded image.\n  image_url: string;\n}>; };\n```",
+        })
     );
 
     Ok(())
@@ -2876,13 +2500,13 @@ text(JSON.stringify(tool));
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn code_mode_exports_all_tools_metadata_for_namespaced_mcp_tools() -> Result<()> {
     skip_if_no_network!(Ok(()));
-    if !path_node_satisfies_js_repl_requirement() {
-        return Ok(());
-    }
 
     let server = responses::start_mock_server().await;
     let code = r#"
-text(JSON.stringify(ALL_TOOLS));
+const tool = ALL_TOOLS.find(
+  ({ name }) => name === "mcp__rmcp__echo"
+);
+text(JSON.stringify(tool));
 "#;
 
     let (_test, second_mock) =
@@ -2900,31 +2524,19 @@ text(JSON.stringify(ALL_TOOLS));
         &custom_tool_output_last_non_empty_text(&req, "call-1")
             .expect("exec ALL_TOOLS MCP lookup should emit JSON"),
     )?;
-    let parsed = parsed
-        .as_array()
-        .and_then(|tools| {
-            tools.iter().find(|tool| {
-                tool.get("module") == Some(&Value::String("tools/mcp/rmcp.js".to_string()))
-                    && tool.get("name") == Some(&Value::String("echo".to_string()))
-            })
-        })
-        .cloned()
-        .expect("namespaced MCP tool metadata should be present");
     assert_eq!(
-        parsed.get("module"),
-        Some(&Value::String("tools/mcp/rmcp.js".to_string()))
-    );
-    assert_eq!(parsed.get("name"), Some(&Value::String("echo".to_string())));
-    assert_code_mode_description(
-        parsed
-            .get("description")
-            .and_then(Value::as_str)
-            .expect("ALL_TOOLS entry should include description"),
-        "Echo back the provided message and include environment data.",
-        "mcp__rmcp__echo",
-        "args",
-        &["env_var?: string", "message: string"],
-        &["CallToolResult<{ echo: string; env: string | null; }>"],
+        parsed,
+        serde_json::json!({
+            "name": "mcp__rmcp__echo",
+            "description": concat!(
+                "Echo back the provided message and include environment data.\n\n",
+                "exec tool declaration:\n",
+                "```ts\n",
+                "declare const tools: { mcp__rmcp__echo(args: { env_var?: string; message: string; }): ",
+                "Promise<CallToolResult<{ echo: string; env: string | null; }>>; };\n",
+                "```",
+            ),
+        })
     );
 
     Ok(())
@@ -2944,6 +2556,7 @@ async fn code_mode_can_call_hidden_dynamic_tools() -> Result<()> {
         .start_thread_with_tools(
             base_test.config.clone(),
             vec![DynamicToolSpec {
+                namespace: Some("codex_app".to_string()),
                 name: "hidden_dynamic_tool".to_string(),
                 description: "A hidden dynamic tool.".to_string(),
                 input_schema: serde_json::json!({
@@ -2955,8 +2568,6 @@ async fn code_mode_can_call_hidden_dynamic_tools() -> Result<()> {
                     "additionalProperties": false,
                 }),
                 defer_loading: true,
-                persist_on_resume: true,
-                capability: None,
             }],
             /*persist_extended_history*/ false,
         )
@@ -2966,8 +2577,8 @@ async fn code_mode_can_call_hidden_dynamic_tools() -> Result<()> {
     test.session_configured = new_thread.session_configured;
 
     let code = r#"
-const tool = ALL_TOOLS.find(({ name }) => name === "hidden_dynamic_tool");
-const out = await tools.hidden_dynamic_tool({ city: "Paris" });
+const tool = ALL_TOOLS.find(({ name }) => name === "codex_app_hidden_dynamic_tool");
+const out = await tools.codex_app_hidden_dynamic_tool({ city: "Paris" });
 text(
   JSON.stringify({
     name: tool?.name ?? null,
@@ -2998,6 +2609,7 @@ text(
 
     test.codex
         .submit(Op::UserTurn {
+            environments: None,
             items: vec![UserInput::Text {
                 text: "use exec to inspect and call hidden tools".into(),
                 text_elements: Vec::new(),
@@ -3026,6 +2638,7 @@ text(
         _ => None,
     })
     .await;
+    assert_eq!(request.namespace.as_deref(), Some("codex_app"));
     assert_eq!(request.tool, "hidden_dynamic_tool");
     assert_eq!(request.arguments, serde_json::json!({ "city": "Paris" }));
     test.codex
@@ -3059,139 +2672,29 @@ text(
     )?;
     assert_eq!(
         parsed.get("name"),
-        Some(&Value::String("hidden_dynamic_tool".to_string()))
+        Some(&Value::String("codex_app_hidden_dynamic_tool".to_string()))
     );
     assert_eq!(
         parsed.get("out"),
         Some(&Value::String("hidden-ok".to_string()))
     );
-    assert_code_mode_description(
+    assert!(
         parsed
             .get("description")
             .and_then(Value::as_str)
-            .expect("ALL_TOOLS entry should include description"),
-        "A hidden dynamic tool.",
-        "hidden_dynamic_tool",
-        "args",
-        &["city: string"],
-        &["unknown"],
+            .is_some_and(|description| {
+                description.contains("A hidden dynamic tool.")
+                    && description.contains("declare const tools:")
+                    && description.contains("codex_app_hidden_dynamic_tool(args:")
+            })
     );
 
     Ok(())
 }
 
-#[test]
-fn code_mode_declaration_normalization_is_layout_tolerant_and_semantically_strict() {
-    let description = r"Echo back the provided message and include environment data.
-
-exec tool declaration:
-```ts
-declare const tools: {
-  mcp__rmcp__echo (args: { message: string; env_var?: string; formatter: (message: string) => string; label: 'a;b'; }) : Promise<{ content : Array<unknown>; _meta?: unknown; isError?: boolean ; status: 'a>b' ; structuredContent?: unknown ; }>;
-};
-```";
-
-    assert_code_mode_description(
-        description,
-        "Echo back the provided message and include environment data.",
-        "mcp__rmcp__echo",
-        "args",
-        &[
-            "env_var?: string",
-            "formatter: (message: string) => string",
-            "label: 'a;b'",
-            "message: string",
-        ],
-        &[
-            "_meta?: unknown",
-            "content: Array<unknown>",
-            "status: 'a>b'",
-            "isError?: boolean",
-            "structuredContent?: unknown",
-        ],
-    );
-    assert!(
-        std::panic::catch_unwind(AssertUnwindSafe(|| {
-            assert_code_mode_declaration_fields(
-                description,
-                "mcp__rmcp__echo",
-                "args",
-                &[
-                    "env_var?: string",
-                    "formatter: (message: string) => string",
-                    "label: 'a;b'",
-                    "message: string",
-                ],
-                &[
-                    "_meta?: unknown",
-                    "content: Array<number>",
-                    "status: 'a>b'",
-                    "isError?: boolean",
-                    "structuredContent?: unknown",
-                ],
-            );
-        }))
-        .is_err(),
-        "semantic output drift should still fail"
-    );
-    assert!(
-        std::panic::catch_unwind(AssertUnwindSafe(|| {
-            assert_code_mode_declaration_fields(
-                description,
-                "mcp__rmcp__echo",
-                "args",
-                &[
-                    "env_var?: string",
-                    "formatter: (message: string) => string",
-                    "label: 'a;b'",
-                    "message: string",
-                ],
-                &[
-                    "_meta?: unknown",
-                    "content: Array<unknown>",
-                    "status: 'a>bx'",
-                    "isError?: boolean",
-                    "structuredContent?: unknown",
-                ],
-            );
-        }))
-        .is_err(),
-        "string-literal content drift should remain observable"
-    );
-    assert!(
-        std::panic::catch_unwind(AssertUnwindSafe(|| {
-            let with_trailing_prose = format!("{description}\nAdditional prose");
-            assert_code_mode_description(
-                &with_trailing_prose,
-                "Echo back the provided message and include environment data.",
-                "mcp__rmcp__echo",
-                "args",
-                &[
-                    "env_var?: string",
-                    "formatter: (message: string) => string",
-                    "label: 'a;b'",
-                    "message: string",
-                ],
-                &[
-                    "_meta?: unknown",
-                    "content: Array<unknown>",
-                    "status: 'a>b'",
-                    "isError?: boolean",
-                    "structuredContent?: unknown",
-                ],
-            );
-        }))
-        .is_err(),
-        "trailing prose drift should remain observable"
-    );
-}
-
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn code_mode_can_print_content_only_mcp_tool_result_fields() -> Result<()> {
     skip_if_no_network!(Ok(()));
-    if !path_node_satisfies_js_repl_requirement() {
-        return Ok(());
-    }
 
     let server = responses::start_mock_server().await;
     let code = r#"
@@ -3235,9 +2738,6 @@ isError=false"
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn code_mode_can_print_error_mcp_tool_result_fields() -> Result<()> {
     skip_if_no_network!(Ok(()));
-    if !path_node_satisfies_js_repl_requirement() {
-        return Ok(());
-    }
 
     let server = responses::start_mock_server().await;
     let code = r#"
@@ -3277,14 +2777,10 @@ structuredContent=null"
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn code_mode_can_store_and_load_values_across_turns() -> Result<()> {
     skip_if_no_network!(Ok(()));
-    if !path_node_satisfies_js_repl_requirement() {
-        return Ok(());
-    }
 
     let server = responses::start_mock_server().await;
     let mut builder = test_codex().with_config(move |config| {
         let _ = config.features.enable(Feature::CodeMode);
-        config.js_repl_node_path = None;
     });
     let test = builder.build(&server).await?;
 
@@ -3367,6 +2863,54 @@ text(JSON.stringify(load("nb")));
         loaded,
         serde_json::json!({ "title": "Notebook", "items": [1, true, null] })
     );
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn code_mode_can_compare_elapsed_time_around_set_timeout() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let server = responses::start_mock_server().await;
+    let (_test, second_mock) = run_code_mode_turn(
+        &server,
+        "measure elapsed time around setTimeout",
+        r#"
+const start_ms = Date.now();
+await new Promise((resolve) => setTimeout(resolve, 100));
+const end_ms = Date.now();
+text(JSON.stringify({
+  start_ms,
+  end_ms,
+  elapsed_ms: end_ms - start_ms,
+  waited_long_enough: end_ms - start_ms >= 100,
+}));
+"#,
+        /*include_apply_patch*/ false,
+    )
+    .await?;
+
+    let second_request = second_mock.single_request();
+    let (second_output, second_success) =
+        custom_tool_output_body_and_success(&second_request, "call-1");
+    assert_ne!(
+        second_success,
+        Some(false),
+        "exec compare time call failed unexpectedly: {second_output}"
+    );
+    let compared: Value = serde_json::from_str(
+        &custom_tool_output_last_non_empty_text(&second_request, "call-1")
+            .expect("exec compare time call should emit JSON"),
+    )?;
+    let elapsed_ms = compared
+        .get("elapsed_ms")
+        .and_then(Value::as_i64)
+        .expect("elapsed_ms should be an integer");
+    assert!(
+        elapsed_ms >= 100,
+        "expected elapsed_ms >= 100, got {elapsed_ms}"
+    );
+    assert_eq!(compared.get("waited_long_enough"), Some(&Value::Bool(true)));
 
     Ok(())
 }

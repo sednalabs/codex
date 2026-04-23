@@ -14,6 +14,11 @@ use codex_app_server_protocol::AuthMode;
 use codex_app_server_protocol::ClientRequest;
 use codex_app_server_protocol::ConfigBatchWriteParams;
 use codex_app_server_protocol::ConfigWriteResponse;
+use codex_app_server_protocol::ExternalAgentConfigDetectParams;
+use codex_app_server_protocol::ExternalAgentConfigDetectResponse;
+use codex_app_server_protocol::ExternalAgentConfigImportParams;
+use codex_app_server_protocol::ExternalAgentConfigImportResponse;
+use codex_app_server_protocol::ExternalAgentConfigMigrationItem;
 use codex_app_server_protocol::GetAccountParams;
 use codex_app_server_protocol::GetAccountRateLimitsResponse;
 use codex_app_server_protocol::GetAccountResponse;
@@ -30,12 +35,16 @@ use codex_app_server_protocol::ReviewStartResponse;
 use codex_app_server_protocol::SkillsListParams;
 use codex_app_server_protocol::SkillsListResponse;
 use codex_app_server_protocol::Thread;
+use codex_app_server_protocol::ThreadApproveGuardianDeniedActionParams;
+use codex_app_server_protocol::ThreadApproveGuardianDeniedActionResponse;
 use codex_app_server_protocol::ThreadBackgroundTerminalsCleanParams;
 use codex_app_server_protocol::ThreadBackgroundTerminalsCleanResponse;
 use codex_app_server_protocol::ThreadCompactStartParams;
 use codex_app_server_protocol::ThreadCompactStartResponse;
 use codex_app_server_protocol::ThreadForkParams;
 use codex_app_server_protocol::ThreadForkResponse;
+use codex_app_server_protocol::ThreadInjectItemsParams;
+use codex_app_server_protocol::ThreadInjectItemsResponse;
 use codex_app_server_protocol::ThreadListParams;
 use codex_app_server_protocol::ThreadListResponse;
 use codex_app_server_protocol::ThreadLoadedListParams;
@@ -64,6 +73,7 @@ use codex_app_server_protocol::ThreadShellCommandParams;
 use codex_app_server_protocol::ThreadShellCommandResponse;
 use codex_app_server_protocol::ThreadStartParams;
 use codex_app_server_protocol::ThreadStartResponse;
+use codex_app_server_protocol::ThreadStartSource;
 use codex_app_server_protocol::ThreadUnsubscribeParams;
 use codex_app_server_protocol::ThreadUnsubscribeResponse;
 use codex_app_server_protocol::Turn;
@@ -75,6 +85,8 @@ use codex_app_server_protocol::TurnSteerParams;
 use codex_app_server_protocol::TurnSteerResponse;
 use codex_otel::TelemetryAuthMode;
 use codex_protocol::ThreadId;
+use codex_protocol::models::PermissionProfile;
+use codex_protocol::models::ResponseItem;
 use codex_protocol::openai_models::ModelAvailabilityNux;
 use codex_protocol::openai_models::ModelPreset;
 use codex_protocol::openai_models::ModelUpgrade;
@@ -85,6 +97,7 @@ use codex_protocol::protocol::ConversationStartParams;
 use codex_protocol::protocol::ConversationStartTransport;
 use codex_protocol::protocol::ConversationTextParams;
 use codex_protocol::protocol::CreditsSnapshot;
+use codex_protocol::protocol::GuardianAssessmentEvent;
 use codex_protocol::protocol::RateLimitSnapshot;
 use codex_protocol::protocol::RateLimitWindow;
 use codex_protocol::protocol::ReviewRequest;
@@ -98,17 +111,25 @@ use color_eyre::eyre::WrapErr;
 use std::collections::HashMap;
 use std::path::PathBuf;
 
+/// Data collected during the TUI bootstrap phase that the main event loop
+/// needs to configure the UI, telemetry, and initial rate-limit prefetch.
+///
+/// Rate-limit snapshots are intentionally **not** included here; they are
+/// fetched asynchronously after bootstrap returns so that the TUI can render
+/// its first frame without waiting for the rate-limit round-trip.
 pub(crate) struct AppServerBootstrap {
-    pub(crate) account_auth_mode: Option<AuthMode>,
     pub(crate) account_email: Option<String>,
     pub(crate) auth_mode: Option<TelemetryAuthMode>,
     pub(crate) status_account_display: Option<StatusAccountDisplay>,
     pub(crate) plan_type: Option<codex_protocol::account::PlanType>,
+    /// Whether the configured model provider needs OpenAI-style auth. Combined
+    /// with `has_chatgpt_account` to decide if a startup rate-limit prefetch
+    /// should be fired.
+    pub(crate) requires_openai_auth: bool,
     pub(crate) default_model: String,
     pub(crate) feedback_audience: FeedbackAudience,
     pub(crate) has_chatgpt_account: bool,
     pub(crate) available_models: Vec<ModelPreset>,
-    pub(crate) rate_limit_snapshots: Vec<RateLimitSnapshot>,
 }
 
 pub(crate) struct AppServerSession {
@@ -121,13 +142,20 @@ pub(crate) struct AppServerSession {
 pub(crate) struct ThreadSessionState {
     pub(crate) thread_id: ThreadId,
     pub(crate) forked_from_id: Option<ThreadId>,
+    pub(crate) fork_parent_title: Option<String>,
     pub(crate) thread_name: Option<String>,
     pub(crate) model: String,
     pub(crate) model_provider_id: String,
     pub(crate) service_tier: Option<codex_protocol::config_types::ServiceTier>,
     pub(crate) approval_policy: AskForApproval,
     pub(crate) approvals_reviewer: codex_protocol::config_types::ApprovalsReviewer,
+    /// Legacy sandbox projection kept for compatibility. Use this only when
+    /// `permission_profile` is `None`.
     pub(crate) sandbox_policy: SandboxPolicy,
+    /// Canonical active permissions when available. Consumers should prefer
+    /// this over `sandbox_policy`; `None` means the session only has a legacy
+    /// sandbox projection or represents an external sandbox.
+    pub(crate) permission_profile: Option<PermissionProfile>,
     pub(crate) cwd: AbsolutePathBuf,
     pub(crate) instruction_source_paths: Vec<AbsolutePathBuf>,
     pub(crate) reasoning_effort: Option<codex_protocol::openai_models::ReasoningEffort>,
@@ -171,8 +199,8 @@ impl AppServerSession {
         self
     }
 
-    pub(crate) fn remote_cwd_override(&self) -> Option<&PathBuf> {
-        self.remote_cwd_override.as_ref()
+    pub(crate) fn remote_cwd_override(&self) -> Option<&std::path::Path> {
+        self.remote_cwd_override.as_deref()
     }
 
     pub(crate) fn is_remote(&self) -> bool {
@@ -180,17 +208,7 @@ impl AppServerSession {
     }
 
     pub(crate) async fn bootstrap(&mut self, config: &Config) -> Result<AppServerBootstrap> {
-        let account_request_id = self.next_request_id();
-        let account: GetAccountResponse = self
-            .client
-            .request_typed(ClientRequest::GetAccount {
-                request_id: account_request_id,
-                params: GetAccountParams {
-                    refresh_token: false,
-                },
-            })
-            .await
-            .wrap_err("account/read failed during TUI bootstrap")?;
+        let account = self.read_account().await?;
         let model_request_id = self.next_request_id();
         let models: ModelListResponse = self
             .client
@@ -222,7 +240,6 @@ impl AppServerSession {
             .wrap_err("model/list returned no models for TUI bootstrap")?;
 
         let (
-            account_auth_mode,
             account_email,
             auth_mode,
             status_account_display,
@@ -231,7 +248,6 @@ impl AppServerSession {
             has_chatgpt_account,
         ) = match account.account {
             Some(Account::ApiKey {}) => (
-                Some(AuthMode::ApiKey),
                 None,
                 Some(TelemetryAuthMode::ApiKey),
                 Some(StatusAccountDisplay::ApiKey),
@@ -246,7 +262,6 @@ impl AppServerSession {
                     FeedbackAudience::External
                 };
                 (
-                    Some(AuthMode::Chatgpt),
                     Some(email.clone()),
                     Some(TelemetryAuthMode::Chatgpt),
                     Some(StatusAccountDisplay::ChatGpt {
@@ -258,51 +273,25 @@ impl AppServerSession {
                     true,
                 )
             }
-            None => (
-                None,
-                None,
-                None,
-                None,
-                None,
-                FeedbackAudience::External,
-                false,
-            ),
+            None => (None, None, None, None, FeedbackAudience::External, false),
         };
-        let rate_limit_snapshots = if account.requires_openai_auth && has_chatgpt_account {
-            let rate_limit_request_id = self.next_request_id();
-            match self
-                .client
-                .request_typed(ClientRequest::GetAccountRateLimits {
-                    request_id: rate_limit_request_id,
-                    params: None,
-                })
-                .await
-            {
-                Ok(rate_limits) => app_server_rate_limit_snapshots_to_core(rate_limits),
-                Err(err) => {
-                    tracing::warn!("account/rateLimits/read failed during TUI bootstrap: {err}");
-                    Vec::new()
-                }
-            }
-        } else {
-            Vec::new()
-        };
-
         Ok(AppServerBootstrap {
-            account_auth_mode,
             account_email,
             auth_mode,
             status_account_display,
             plan_type,
+            requires_openai_auth: account.requires_openai_auth,
             default_model,
             feedback_audience,
             has_chatgpt_account,
             available_models,
-            rate_limit_snapshots,
         })
     }
 
     /// Fetches the current account info without refreshing the auth token.
+    ///
+    /// Used by both `bootstrap` (to populate the initial UI) and `get_login_status`
+    /// (to check auth mode without the overhead of a full bootstrap).
     pub(crate) async fn read_account(&mut self) -> Result<GetAccountResponse> {
         let account_request_id = self.next_request_id();
         self.client
@@ -316,17 +305,56 @@ impl AppServerSession {
             .wrap_err("account/read failed during TUI bootstrap")
     }
 
+    pub(crate) async fn external_agent_config_detect(
+        &mut self,
+        params: ExternalAgentConfigDetectParams,
+    ) -> Result<ExternalAgentConfigDetectResponse> {
+        let request_id = self.next_request_id();
+        self.client
+            .request_typed(ClientRequest::ExternalAgentConfigDetect { request_id, params })
+            .await
+            .wrap_err("externalAgentConfig/detect failed during TUI startup")
+    }
+
+    pub(crate) async fn external_agent_config_import(
+        &mut self,
+        migration_items: Vec<ExternalAgentConfigMigrationItem>,
+    ) -> Result<ExternalAgentConfigImportResponse> {
+        let request_id = self.next_request_id();
+        self.client
+            .request_typed(ClientRequest::ExternalAgentConfigImport {
+                request_id,
+                params: ExternalAgentConfigImportParams { migration_items },
+            })
+            .await
+            .wrap_err("externalAgentConfig/import failed during TUI startup")
+    }
+
     pub(crate) async fn next_event(&mut self) -> Option<AppServerEvent> {
         self.client.next_event().await
     }
 
     pub(crate) async fn start_thread(&mut self, config: &Config) -> Result<AppServerStartedThread> {
+        self.start_thread_with_session_start_source(config, /*session_start_source*/ None)
+            .await
+    }
+
+    pub(crate) async fn start_thread_with_session_start_source(
+        &mut self,
+        config: &Config,
+        session_start_source: Option<ThreadStartSource>,
+    ) -> Result<AppServerStartedThread> {
         let request_id = self.next_request_id();
         let response: ThreadStartResponse = self
             .client
             .request_typed(ClientRequest::ThreadStart {
                 request_id,
-                params: thread_start_params_from_config(config, self.thread_params_mode()),
+                params: thread_start_params_from_config(
+                    config,
+                    self.thread_params_mode(),
+                    self.remote_cwd_override.as_deref(),
+                    session_start_source,
+                ),
             })
             .await
             .wrap_err("thread/start failed during TUI bootstrap")?;
@@ -347,11 +375,17 @@ impl AppServerSession {
                     config.clone(),
                     thread_id,
                     self.thread_params_mode(),
+                    self.remote_cwd_override.as_deref(),
                 ),
             })
             .await
             .wrap_err("thread/resume failed during TUI bootstrap")?;
-        started_thread_from_resume_response(response, &config).await
+        let fork_parent_title = self
+            .fork_parent_title_from_app_server(response.thread.forked_from_id.as_deref())
+            .await;
+        let mut started = started_thread_from_resume_response(response, &config).await?;
+        started.session.fork_parent_title = fork_parent_title;
+        Ok(started)
     }
 
     pub(crate) async fn fork_thread(
@@ -368,17 +402,48 @@ impl AppServerSession {
                     config.clone(),
                     thread_id,
                     self.thread_params_mode(),
+                    self.remote_cwd_override.as_deref(),
                 ),
             })
             .await
             .wrap_err("thread/fork failed during TUI bootstrap")?;
-        started_thread_from_fork_response(response, &config).await
+        let fork_parent_title = self
+            .fork_parent_title_from_app_server(response.thread.forked_from_id.as_deref())
+            .await;
+        let mut started = started_thread_from_fork_response(response, &config).await?;
+        started.session.fork_parent_title = fork_parent_title;
+        Ok(started)
     }
 
     fn thread_params_mode(&self) -> ThreadParamsMode {
         match &self.client {
             AppServerClient::InProcess(_) => ThreadParamsMode::Embedded,
             AppServerClient::Remote(_) => ThreadParamsMode::Remote,
+        }
+    }
+
+    async fn fork_parent_title_from_app_server(
+        &mut self,
+        forked_from_id: Option<&str>,
+    ) -> Option<String> {
+        let forked_from_id = forked_from_id?;
+        let forked_from_id = match ThreadId::from_string(forked_from_id) {
+            Ok(thread_id) => thread_id,
+            Err(err) => {
+                tracing::warn!("Failed to parse fork parent thread id from app server: {err}");
+                return None;
+            }
+        };
+
+        match self
+            .thread_read(forked_from_id, /*include_turns*/ false)
+            .await
+        {
+            Ok(thread) => thread.name,
+            Err(err) => {
+                tracing::warn!("Failed to read fork parent metadata from app server: {err}");
+                None
+            }
         }
     }
 
@@ -429,6 +494,29 @@ impl AppServerSession {
         Ok(response.thread)
     }
 
+    pub(crate) async fn thread_inject_items(
+        &mut self,
+        thread_id: ThreadId,
+        items: Vec<ResponseItem>,
+    ) -> Result<ThreadInjectItemsResponse> {
+        let items = items
+            .into_iter()
+            .map(serde_json::to_value)
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .wrap_err("failed to encode thread/inject_items payload")?;
+        let request_id = self.next_request_id();
+        self.client
+            .request_typed(ClientRequest::ThreadInjectItems {
+                request_id,
+                params: ThreadInjectItemsParams {
+                    thread_id: thread_id.to_string(),
+                    items,
+                },
+            })
+            .await
+            .wrap_err("thread/inject_items failed during TUI side conversation setup")
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub(crate) async fn turn_start(
         &mut self,
@@ -447,6 +535,13 @@ impl AppServerSession {
         output_schema: Option<serde_json::Value>,
     ) -> Result<TurnStartResponse> {
         let request_id = self.next_request_id();
+        let sandbox_policy = if self.is_remote()
+            || matches!(sandbox_policy, SandboxPolicy::ExternalSandbox { .. })
+        {
+            Some(sandbox_policy.into())
+        } else {
+            None
+        };
         self.client
             .request_typed(ClientRequest::TurnStart {
                 request_id,
@@ -454,10 +549,15 @@ impl AppServerSession {
                     thread_id: thread_id.to_string(),
                     input: items.into_iter().map(Into::into).collect(),
                     responsesapi_client_metadata: None,
+                    environments: None,
                     cwd: Some(cwd),
                     approval_policy: Some(approval_policy.into()),
                     approvals_reviewer: Some(approvals_reviewer.into()),
-                    sandbox_policy: Some(sandbox_policy.into()),
+                    // Embedded sessions already installed their full profile
+                    // at thread start/resume/fork. Avoid sending a lossy
+                    // legacy projection until user turns carry profiles.
+                    sandbox_policy,
+                    permission_profile: None,
                     model: Some(model),
                     service_tier,
                     effort,
@@ -631,6 +731,27 @@ impl AppServerSession {
         Ok(())
     }
 
+    pub(crate) async fn thread_approve_guardian_denied_action(
+        &mut self,
+        thread_id: ThreadId,
+        event: &GuardianAssessmentEvent,
+    ) -> Result<()> {
+        let request_id = self.next_request_id();
+        let _: ThreadApproveGuardianDeniedActionResponse = self
+            .client
+            .request_typed(ClientRequest::ThreadApproveGuardianDeniedAction {
+                request_id,
+                params: ThreadApproveGuardianDeniedActionParams {
+                    thread_id: thread_id.to_string(),
+                    event: serde_json::to_value(event)
+                        .wrap_err("failed to serialize Guardian denial event")?,
+                },
+            })
+            .await
+            .wrap_err("thread/approveGuardianDeniedAction failed in TUI")?;
+        Ok(())
+    }
+
     pub(crate) async fn thread_background_terminals_clean(
         &mut self,
         thread_id: ThreadId,
@@ -730,6 +851,7 @@ impl AppServerSession {
                     output_modality: params.output_modality,
                     prompt: params.prompt,
                     session_id: params.session_id,
+                    voice: params.voice,
                     transport: params.transport.map(|transport| match transport {
                         ConversationStartTransport::Websocket => {
                             ThreadRealtimeStartTransport::Websocket
@@ -738,7 +860,6 @@ impl AppServerSession {
                             ThreadRealtimeStartTransport::Webrtc { sdp }
                         }
                     }),
-                    voice: params.voice,
                 },
             })
             .await
@@ -838,12 +959,12 @@ pub(crate) fn status_account_display_from_auth_mode(
 ) -> Option<StatusAccountDisplay> {
     match auth_mode {
         Some(AuthMode::ApiKey) => Some(StatusAccountDisplay::ApiKey),
-        Some(AuthMode::Chatgpt) | Some(AuthMode::ChatgptAuthTokens) => {
-            Some(StatusAccountDisplay::ChatGpt {
-                email: None,
-                plan: plan_type.map(plan_type_display_name),
-            })
-        }
+        Some(AuthMode::Chatgpt)
+        | Some(AuthMode::ChatgptAuthTokens)
+        | Some(AuthMode::AgentIdentity) => Some(StatusAccountDisplay::ChatGpt {
+            email: None,
+            plan: plan_type.map(plan_type_display_name),
+        }),
         None => None,
     }
 }
@@ -880,7 +1001,7 @@ fn model_preset_from_api_model(model: ApiModel) -> ModelPreset {
             })
             .collect(),
         supports_personality: model.supports_personality,
-        additional_speed_tiers: Vec::new(),
+        additional_speed_tiers: model.additional_speed_tiers,
         is_default: model.is_default,
         upgrade,
         show_in_picker: !model.hidden,
@@ -925,19 +1046,46 @@ fn sandbox_mode_from_policy(
     }
 }
 
+fn permission_profile_override_from_config(
+    config: &Config,
+    thread_params_mode: ThreadParamsMode,
+) -> Option<codex_app_server_protocol::PermissionProfile> {
+    if matches!(thread_params_mode, ThreadParamsMode::Remote) {
+        return None;
+    }
+
+    if matches!(
+        config.permissions.sandbox_policy.get(),
+        SandboxPolicy::ExternalSandbox { .. }
+    ) {
+        None
+    } else {
+        Some(config.permissions.permission_profile().into())
+    }
+}
+
 fn thread_start_params_from_config(
     config: &Config,
     thread_params_mode: ThreadParamsMode,
+    remote_cwd_override: Option<&std::path::Path>,
+    session_start_source: Option<ThreadStartSource>,
 ) -> ThreadStartParams {
+    let permission_profile = permission_profile_override_from_config(config, thread_params_mode);
+    let sandbox = permission_profile
+        .is_none()
+        .then(|| sandbox_mode_from_policy(config.permissions.sandbox_policy.get().clone()))
+        .flatten();
     ThreadStartParams {
         model: config.model.clone(),
         model_provider: thread_params_mode.model_provider_from_config(config),
-        cwd: thread_cwd_from_config(config, thread_params_mode),
+        cwd: thread_cwd_from_config(config, thread_params_mode, remote_cwd_override),
         approval_policy: Some(config.permissions.approval_policy.value().into()),
         approvals_reviewer: approvals_reviewer_override_from_config(config),
-        sandbox: sandbox_mode_from_policy(config.permissions.sandbox_policy.get().clone()),
+        sandbox,
+        permission_profile,
         config: config_request_overrides_from_config(config),
         ephemeral: Some(config.ephemeral),
+        session_start_source,
         persist_extended_history: true,
         ..ThreadStartParams::default()
     }
@@ -947,15 +1095,22 @@ fn thread_resume_params_from_config(
     config: Config,
     thread_id: ThreadId,
     thread_params_mode: ThreadParamsMode,
+    remote_cwd_override: Option<&std::path::Path>,
 ) -> ThreadResumeParams {
+    let permission_profile = permission_profile_override_from_config(&config, thread_params_mode);
+    let sandbox = permission_profile
+        .is_none()
+        .then(|| sandbox_mode_from_policy(config.permissions.sandbox_policy.get().clone()))
+        .flatten();
     ThreadResumeParams {
         thread_id: thread_id.to_string(),
         model: config.model.clone(),
         model_provider: thread_params_mode.model_provider_from_config(&config),
-        cwd: thread_cwd_from_config(&config, thread_params_mode),
+        cwd: thread_cwd_from_config(&config, thread_params_mode, remote_cwd_override),
         approval_policy: Some(config.permissions.approval_policy.value().into()),
         approvals_reviewer: approvals_reviewer_override_from_config(&config),
-        sandbox: sandbox_mode_from_policy(config.permissions.sandbox_policy.get().clone()),
+        sandbox,
+        permission_profile,
         config: config_request_overrides_from_config(&config),
         persist_extended_history: true,
         ..ThreadResumeParams::default()
@@ -966,26 +1121,41 @@ fn thread_fork_params_from_config(
     config: Config,
     thread_id: ThreadId,
     thread_params_mode: ThreadParamsMode,
+    remote_cwd_override: Option<&std::path::Path>,
 ) -> ThreadForkParams {
+    let permission_profile = permission_profile_override_from_config(&config, thread_params_mode);
+    let sandbox = permission_profile
+        .is_none()
+        .then(|| sandbox_mode_from_policy(config.permissions.sandbox_policy.get().clone()))
+        .flatten();
     ThreadForkParams {
         thread_id: thread_id.to_string(),
         model: config.model.clone(),
         model_provider: thread_params_mode.model_provider_from_config(&config),
-        cwd: thread_cwd_from_config(&config, thread_params_mode),
+        cwd: thread_cwd_from_config(&config, thread_params_mode, remote_cwd_override),
         approval_policy: Some(config.permissions.approval_policy.value().into()),
         approvals_reviewer: approvals_reviewer_override_from_config(&config),
-        sandbox: sandbox_mode_from_policy(config.permissions.sandbox_policy.get().clone()),
+        sandbox,
+        permission_profile,
         config: config_request_overrides_from_config(&config),
+        base_instructions: config.base_instructions.clone(),
+        developer_instructions: config.developer_instructions.clone(),
         ephemeral: config.ephemeral,
         persist_extended_history: true,
         ..ThreadForkParams::default()
     }
 }
 
-fn thread_cwd_from_config(config: &Config, thread_params_mode: ThreadParamsMode) -> Option<String> {
+fn thread_cwd_from_config(
+    config: &Config,
+    thread_params_mode: ThreadParamsMode,
+    remote_cwd_override: Option<&std::path::Path>,
+) -> Option<String> {
     match thread_params_mode {
         ThreadParamsMode::Embedded => Some(config.cwd.to_string_lossy().to_string()),
-        ThreadParamsMode::Remote => None,
+        ThreadParamsMode::Remote => {
+            remote_cwd_override.map(|cwd| cwd.to_string_lossy().to_string())
+        }
     }
 }
 
@@ -1034,8 +1204,8 @@ async fn thread_session_state_from_thread_start_response(
 ) -> Result<ThreadSessionState, String> {
     thread_session_state_from_thread_response(
         &response.thread.id,
+        response.thread.forked_from_id.clone(),
         response.thread.name.clone(),
-        /*forked_from_id*/ None,
         response.thread.path.clone(),
         response.model.clone(),
         response.model_provider.clone(),
@@ -1043,6 +1213,7 @@ async fn thread_session_state_from_thread_start_response(
         response.approval_policy.to_core(),
         response.approvals_reviewer.to_core(),
         response.sandbox.to_core(),
+        response.permission_profile.clone().map(Into::into),
         response.cwd.clone(),
         response.instruction_sources.clone(),
         response.reasoning_effort,
@@ -1057,8 +1228,8 @@ async fn thread_session_state_from_thread_resume_response(
 ) -> Result<ThreadSessionState, String> {
     thread_session_state_from_thread_response(
         &response.thread.id,
+        response.thread.forked_from_id.clone(),
         response.thread.name.clone(),
-        /*forked_from_id*/ None,
         response.thread.path.clone(),
         response.model.clone(),
         response.model_provider.clone(),
@@ -1066,6 +1237,7 @@ async fn thread_session_state_from_thread_resume_response(
         response.approval_policy.to_core(),
         response.approvals_reviewer.to_core(),
         response.sandbox.to_core(),
+        response.permission_profile.clone().map(Into::into),
         response.cwd.clone(),
         response.instruction_sources.clone(),
         response.reasoning_effort,
@@ -1080,14 +1252,8 @@ async fn thread_session_state_from_thread_fork_response(
 ) -> Result<ThreadSessionState, String> {
     thread_session_state_from_thread_response(
         &response.thread.id,
+        response.thread.forked_from_id.clone(),
         response.thread.name.clone(),
-        response
-            .thread
-            .forked_from_id
-            .as_deref()
-            .map(ThreadId::from_string)
-            .transpose()
-            .map_err(|err| format!("forked_from_id is invalid: {err}"))?,
         response.thread.path.clone(),
         response.model.clone(),
         response.model_provider.clone(),
@@ -1095,6 +1261,7 @@ async fn thread_session_state_from_thread_fork_response(
         response.approval_policy.to_core(),
         response.approvals_reviewer.to_core(),
         response.sandbox.to_core(),
+        response.permission_profile.clone().map(Into::into),
         response.cwd.clone(),
         response.instruction_sources.clone(),
         response.reasoning_effort,
@@ -1128,8 +1295,8 @@ fn review_target_to_app_server(
 )]
 async fn thread_session_state_from_thread_response(
     thread_id: &str,
+    forked_from_id: Option<String>,
     thread_name: Option<String>,
-    forked_from_id: Option<ThreadId>,
     rollout_path: Option<PathBuf>,
     model: String,
     model_provider_id: String,
@@ -1137,6 +1304,7 @@ async fn thread_session_state_from_thread_response(
     approval_policy: AskForApproval,
     approvals_reviewer: codex_protocol::config_types::ApprovalsReviewer,
     sandbox_policy: SandboxPolicy,
+    permission_profile: Option<PermissionProfile>,
     cwd: AbsolutePathBuf,
     instruction_source_paths: Vec<AbsolutePathBuf>,
     reasoning_effort: Option<codex_protocol::openai_models::ReasoningEffort>,
@@ -1144,12 +1312,18 @@ async fn thread_session_state_from_thread_response(
 ) -> Result<ThreadSessionState, String> {
     let thread_id = ThreadId::from_string(thread_id)
         .map_err(|err| format!("thread id `{thread_id}` is invalid: {err}"))?;
+    let forked_from_id = forked_from_id
+        .as_deref()
+        .map(ThreadId::from_string)
+        .transpose()
+        .map_err(|err| format!("forked_from_id is invalid: {err}"))?;
     let (history_log_id, history_entry_count) = message_history_metadata(config).await;
     let history_entry_count = u64::try_from(history_entry_count).unwrap_or(u64::MAX);
 
     Ok(ThreadSessionState {
         thread_id,
         forked_from_id,
+        fork_parent_title: None,
         thread_name,
         model,
         model_provider_id,
@@ -1157,6 +1331,7 @@ async fn thread_session_state_from_thread_response(
         approval_policy,
         approvals_reviewer,
         sandbox_policy,
+        permission_profile,
         cwd,
         instruction_source_paths,
         reasoning_effort,
@@ -1241,22 +1416,63 @@ mod tests {
         let temp_dir = tempfile::tempdir().expect("tempdir");
         let config = build_config(&temp_dir).await;
 
-        let params = thread_start_params_from_config(&config, ThreadParamsMode::Embedded);
+        let params = thread_start_params_from_config(
+            &config,
+            ThreadParamsMode::Embedded,
+            /*remote_cwd_override*/ None,
+            /*session_start_source*/ None,
+        );
 
         assert_eq!(params.cwd, Some(config.cwd.to_string_lossy().to_string()));
+        assert_eq!(params.sandbox, None);
+        assert_eq!(
+            params.permission_profile,
+            Some(config.permissions.permission_profile().into())
+        );
         assert_eq!(params.model_provider, Some(config.model_provider_id));
     }
 
     #[tokio::test]
-    async fn thread_lifecycle_params_omit_local_overrides_for_remote_sessions() {
+    async fn thread_start_params_can_mark_clear_source() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let config = build_config(&temp_dir).await;
+
+        let params = thread_start_params_from_config(
+            &config,
+            ThreadParamsMode::Embedded,
+            /*remote_cwd_override*/ None,
+            Some(ThreadStartSource::Clear),
+        );
+
+        assert_eq!(params.session_start_source, Some(ThreadStartSource::Clear));
+    }
+
+    #[tokio::test]
+    async fn thread_lifecycle_params_omit_cwd_without_remote_override_for_remote_sessions() {
         let temp_dir = tempfile::tempdir().expect("tempdir");
         let config = build_config(&temp_dir).await;
         let thread_id = ThreadId::new();
+        let expected_sandbox =
+            sandbox_mode_from_policy(config.permissions.sandbox_policy.get().clone());
 
-        let start = thread_start_params_from_config(&config, ThreadParamsMode::Remote);
-        let resume =
-            thread_resume_params_from_config(config.clone(), thread_id, ThreadParamsMode::Remote);
-        let fork = thread_fork_params_from_config(config, thread_id, ThreadParamsMode::Remote);
+        let start = thread_start_params_from_config(
+            &config,
+            ThreadParamsMode::Remote,
+            /*remote_cwd_override*/ None,
+            /*session_start_source*/ None,
+        );
+        let resume = thread_resume_params_from_config(
+            config.clone(),
+            thread_id,
+            ThreadParamsMode::Remote,
+            /*remote_cwd_override*/ None,
+        );
+        let fork = thread_fork_params_from_config(
+            config,
+            thread_id,
+            ThreadParamsMode::Remote,
+            /*remote_cwd_override*/ None,
+        );
 
         assert_eq!(start.cwd, None);
         assert_eq!(resume.cwd, None);
@@ -1264,6 +1480,76 @@ mod tests {
         assert_eq!(start.model_provider, None);
         assert_eq!(resume.model_provider, None);
         assert_eq!(fork.model_provider, None);
+        assert_eq!(start.sandbox, expected_sandbox);
+        assert_eq!(resume.sandbox, expected_sandbox);
+        assert_eq!(fork.sandbox, expected_sandbox);
+        assert_eq!(start.permission_profile, None);
+        assert_eq!(resume.permission_profile, None);
+        assert_eq!(fork.permission_profile, None);
+    }
+
+    #[tokio::test]
+    async fn thread_lifecycle_params_forward_explicit_remote_cwd_override_for_remote_sessions() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let config = build_config(&temp_dir).await;
+        let thread_id = ThreadId::new();
+        let remote_cwd = PathBuf::from("repo/on/server");
+        let expected_sandbox =
+            sandbox_mode_from_policy(config.permissions.sandbox_policy.get().clone());
+
+        let start = thread_start_params_from_config(
+            &config,
+            ThreadParamsMode::Remote,
+            Some(remote_cwd.as_path()),
+            /*session_start_source*/ None,
+        );
+        let resume = thread_resume_params_from_config(
+            config.clone(),
+            thread_id,
+            ThreadParamsMode::Remote,
+            Some(remote_cwd.as_path()),
+        );
+        let fork = thread_fork_params_from_config(
+            config,
+            thread_id,
+            ThreadParamsMode::Remote,
+            Some(remote_cwd.as_path()),
+        );
+
+        assert_eq!(start.cwd.as_deref(), Some("repo/on/server"));
+        assert_eq!(resume.cwd.as_deref(), Some("repo/on/server"));
+        assert_eq!(fork.cwd.as_deref(), Some("repo/on/server"));
+        assert_eq!(start.model_provider, None);
+        assert_eq!(resume.model_provider, None);
+        assert_eq!(fork.model_provider, None);
+        assert_eq!(start.sandbox, expected_sandbox);
+        assert_eq!(resume.sandbox, expected_sandbox);
+        assert_eq!(fork.sandbox, expected_sandbox);
+        assert_eq!(start.permission_profile, None);
+        assert_eq!(resume.permission_profile, None);
+        assert_eq!(fork.permission_profile, None);
+    }
+
+    #[tokio::test]
+    async fn thread_fork_params_forward_instruction_overrides() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let mut config = build_config(&temp_dir).await;
+        config.base_instructions = Some("Base override.".to_string());
+        config.developer_instructions = Some("Developer override.".to_string());
+        let thread_id = ThreadId::new();
+
+        let params = thread_fork_params_from_config(
+            config,
+            thread_id,
+            ThreadParamsMode::Embedded,
+            /*remote_cwd_override*/ None,
+        );
+
+        assert_eq!(params.base_instructions.as_deref(), Some("Base override."));
+        assert_eq!(
+            params.developer_instructions.as_deref(),
+            Some("Developer override.")
+        );
     }
 
     #[tokio::test]
@@ -1271,10 +1557,11 @@ mod tests {
         let temp_dir = tempfile::tempdir().expect("tempdir");
         let config = build_config(&temp_dir).await;
         let thread_id = ThreadId::new();
+        let forked_from_id = ThreadId::new();
         let response = ThreadResumeResponse {
             thread: codex_app_server_protocol::Thread {
                 id: thread_id.to_string(),
-                forked_from_id: None,
+                forked_from_id: Some(forked_from_id.to_string()),
                 preview: "hello".to_string(),
                 ephemeral: false,
                 model_provider: "openai".to_string(),
@@ -1321,12 +1608,28 @@ mod tests {
             approval_policy: codex_protocol::protocol::AskForApproval::Never.into(),
             approvals_reviewer: codex_app_server_protocol::ApprovalsReviewer::User,
             sandbox: codex_protocol::protocol::SandboxPolicy::new_read_only_policy().into(),
+            permission_profile: Some(
+                codex_protocol::models::PermissionProfile::from_legacy_sandbox_policy(
+                    &codex_protocol::protocol::SandboxPolicy::new_read_only_policy(),
+                    &test_path_buf("/tmp/project"),
+                )
+                .into(),
+            ),
             reasoning_effort: None,
         };
 
         let started = started_thread_from_resume_response(response.clone(), &config)
             .await
             .expect("resume response should map");
+        assert_eq!(started.session.forked_from_id, Some(forked_from_id));
+        assert_eq!(
+            started.session.instruction_source_paths,
+            response.instruction_sources
+        );
+        assert_eq!(
+            started.session.permission_profile,
+            response.permission_profile.clone().map(Into::into)
+        );
         assert_eq!(started.turns.len(), 1);
         assert_eq!(started.turns[0], response.thread.turns[0]);
     }
@@ -1346,8 +1649,8 @@ mod tests {
 
         let session = thread_session_state_from_thread_response(
             &thread_id.to_string(),
-            Some("restore".to_string()),
             /*forked_from_id*/ None,
+            Some("restore".to_string()),
             /*rollout_path*/ None,
             "gpt-5.4".to_string(),
             "openai".to_string(),
@@ -1355,6 +1658,10 @@ mod tests {
             AskForApproval::Never,
             codex_protocol::config_types::ApprovalsReviewer::User,
             SandboxPolicy::new_read_only_policy(),
+            Some(PermissionProfile::from_legacy_sandbox_policy(
+                &SandboxPolicy::new_read_only_policy(),
+                std::path::Path::new("/tmp/project"),
+            )),
             test_path_buf("/tmp/project").abs(),
             Vec::new(),
             /*reasoning_effort*/ None,
@@ -1377,7 +1684,7 @@ mod tests {
         let session = thread_session_state_from_thread_response(
             &thread_id.to_string(),
             Some(forked_from_id.to_string()),
-            Some(forked_from_id),
+            Some("restore".to_string()),
             /*rollout_path*/ None,
             "gpt-5.4".to_string(),
             "openai".to_string(),
@@ -1385,6 +1692,10 @@ mod tests {
             AskForApproval::Never,
             codex_protocol::config_types::ApprovalsReviewer::User,
             SandboxPolicy::new_read_only_policy(),
+            Some(PermissionProfile::from_legacy_sandbox_policy(
+                &SandboxPolicy::new_read_only_policy(),
+                std::path::Path::new("/tmp/project"),
+            )),
             test_path_buf("/tmp/project").abs(),
             Vec::new(),
             /*reasoning_effort*/ None,
@@ -1395,6 +1706,7 @@ mod tests {
 
         assert_eq!(session.forked_from_id, Some(forked_from_id));
     }
+
     #[test]
     fn status_account_display_from_auth_mode_uses_remapped_plan_labels() {
         let business = status_account_display_from_auth_mode(

@@ -68,6 +68,7 @@ fn invocation(
     ToolInvocation {
         session,
         turn,
+        cancellation_token: CancellationToken::new(),
         tracker: Arc::new(Mutex::new(TurnDiffTracker::default())),
         call_id: "call-1".to_string(),
         tool_name: codex_tools::ToolName::plain(tool_name),
@@ -430,7 +431,7 @@ async fn spawn_agent_fork_context_rejects_agent_type_override() {
     assert_eq!(
         err,
         FunctionCallError::RespondToModel(
-            "Full-history forked agents inherit the parent agent type, model, and reasoning effort; omit agent_type, model, and reasoning_effort, or spawn without fork_context/fork_turns=all.".to_string(),
+            "Full-history forked agents inherit the parent agent type, model, and reasoning effort; omit agent_type, model, and reasoning_effort, or spawn without a full-history fork.".to_string(),
         )
     );
 }
@@ -464,7 +465,7 @@ async fn spawn_agent_fork_context_rejects_child_model_overrides() {
     assert_eq!(
         err,
             FunctionCallError::RespondToModel(
-            "Full-history forked agents inherit the parent agent type, model, and reasoning effort; omit agent_type, model, and reasoning_effort, or spawn without fork_context/fork_turns=all.".to_string(),
+            "Full-history forked agents inherit the parent agent type, model, and reasoning effort; omit agent_type, model, and reasoning_effort, or spawn without a full-history fork.".to_string(),
         )
     );
 }
@@ -508,13 +509,13 @@ async fn multi_agent_v2_spawn_fork_turns_all_rejects_agent_type_override() {
     assert_eq!(
         err,
         FunctionCallError::RespondToModel(
-            "Full-history forked agents inherit the parent agent type, model, and reasoning effort; omit agent_type, model, and reasoning_effort, or spawn without fork_context/fork_turns=all.".to_string(),
+            "Full-history forked agents inherit the parent agent type, model, and reasoning effort; omit agent_type, model, and reasoning_effort, or spawn without a full-history fork.".to_string(),
         )
     );
 }
 
 #[tokio::test]
-async fn multi_agent_v2_spawn_fork_turns_rejects_child_model_overrides() {
+async fn multi_agent_v2_spawn_defaults_to_full_fork_and_rejects_child_model_overrides() {
     let (mut session, mut turn) = make_session_and_context().await;
     let manager = thread_manager();
     let root = manager
@@ -539,17 +540,16 @@ async fn multi_agent_v2_spawn_fork_turns_rejects_child_model_overrides() {
                 "message": "inspect this repo",
                 "task_name": "fork_context_v2",
                 "model": "gpt-5-child-override",
-                "reasoning_effort": "low",
-                "fork_turns": "all"
+                "reasoning_effort": "low"
             })),
         ))
         .await
-        .expect_err("forked spawn should reject child model overrides");
+        .expect_err("default full fork should reject child model overrides");
 
     assert_eq!(
         err,
             FunctionCallError::RespondToModel(
-            "Full-history forked agents inherit the parent agent type, model, and reasoning effort; omit agent_type, model, and reasoning_effort, or spawn without fork_context/fork_turns=all.".to_string(),
+            "Full-history forked agents inherit the parent agent type, model, and reasoning effort; omit agent_type, model, and reasoning_effort, or spawn without a full-history fork.".to_string(),
         )
     );
 }
@@ -1154,6 +1154,9 @@ async fn multi_agent_v2_list_agents_returns_completed_status_and_last_task_messa
                 turn_id: child_turn.sub_id.clone(),
                 last_agent_message: Some("done".to_string()),
                 compaction_events_in_turn: 0,
+                completed_at: None,
+                duration_ms: None,
+                time_to_first_token_ms: None,
             }),
         )
         .await;
@@ -1631,6 +1634,9 @@ async fn multi_agent_v2_followup_task_completion_notifies_parent_on_every_turn()
                 turn_id: first_turn.sub_id.clone(),
                 last_agent_message: Some("first done".to_string()),
                 compaction_events_in_turn: 0,
+                completed_at: None,
+                duration_ms: None,
+                time_to_first_token_ms: None,
             }),
         )
         .await;
@@ -1658,6 +1664,9 @@ async fn multi_agent_v2_followup_task_completion_notifies_parent_on_every_turn()
                 turn_id: second_turn.sub_id.clone(),
                 last_agent_message: Some("second done".to_string()),
                 compaction_events_in_turn: 0,
+                completed_at: None,
+                duration_ms: None,
+                time_to_first_token_ms: None,
             }),
         )
         .await;
@@ -2234,6 +2243,7 @@ async fn send_input_accepts_structured_items() {
         .expect("send_input should succeed");
 
     let expected = Op::UserInput {
+        environments: None,
         items: vec![
             UserInput::Mention {
                 name: "drive".to_string(),
@@ -2505,7 +2515,7 @@ async fn wait_agent_rejects_empty_targets() {
 }
 
 #[tokio::test]
-async fn multi_agent_v2_wait_agent_accepts_timeout_only_argument() {
+async fn multi_agent_v2_wait_agent_rejects_empty_targets() {
     let (mut session, mut turn) = make_session_and_context().await;
     let manager = thread_manager();
     let root = manager
@@ -2523,71 +2533,19 @@ async fn multi_agent_v2_wait_agent_accepts_timeout_only_argument() {
     let session = Arc::new(session);
     let turn = Arc::new(turn);
 
-    SpawnAgentHandlerV2
+    let err = WaitAgentHandlerV2
         .handle(invocation(
-            session.clone(),
-            turn.clone(),
-            "spawn_agent",
-            function_payload(json!({
-                "message": "boot worker",
-                "task_name": "worker"
-            })),
+            session,
+            turn,
+            "wait_agent",
+            function_payload(json!({"targets": [], "timeout_ms": 1000})),
         ))
         .await
-        .expect("spawn worker");
-    let agent_id = session
-        .services
-        .agent_control
-        .resolve_agent_reference(session.conversation_id, &turn.session_source, "worker")
-        .await
-        .expect("worker should resolve");
-    let worker_path = session
-        .services
-        .agent_control
-        .get_agent_metadata(agent_id)
-        .expect("worker metadata")
-        .agent_path
-        .expect("worker path");
-
-    let wait_task = tokio::spawn({
-        let session = session.clone();
-        let turn = turn.clone();
-        async move {
-            WaitAgentHandlerV2
-                .handle(invocation(
-                    session,
-                    turn,
-                    "wait_agent",
-                    function_payload(json!({"timeout_ms": 1000})),
-                ))
-                .await
-        }
-    });
-    tokio::task::yield_now().await;
-
-    session.enqueue_mailbox_communication(InterAgentCommunication::new(
-        worker_path,
-        AgentPath::root(),
-        Vec::new(),
-        "hello from worker".to_string(),
-        /*trigger_turn*/ false,
-    ));
-
-    let output = wait_task
-        .await
-        .expect("wait task should join")
-        .expect("timeout-only args should be accepted in v2 mode");
-    let (content, success) = expect_text_output(output);
-    let result: crate::tools::handlers::multi_agents_v2::wait::WaitAgentResult =
-        serde_json::from_str(&content).expect("wait_agent result should be json");
+        .expect_err("empty targets should be rejected in v2 mode");
     assert_eq!(
-        result,
-        crate::tools::handlers::multi_agents_v2::wait::WaitAgentResult {
-            message: "Wait completed.".to_string(),
-            timed_out: false,
-        }
+        err,
+        FunctionCallError::RespondToModel("agent targets must be non-empty".to_string())
     );
-    assert_eq!(success, None);
 }
 
 #[tokio::test]
@@ -2674,6 +2632,9 @@ async fn multi_agent_v2_wait_agent_honors_return_when_all() {
         result,
         crate::tools::handlers::multi_agents_v2::wait::WaitAgentResult {
             message: "Wait completed.".to_string(),
+            requested_ids: vec![agent_a_id, agent_b_id],
+            pending_ids: Vec::new(),
+            completion_reason: CollabWaitingCompletionReason::Terminal,
             timed_out: false,
         }
     );
@@ -2905,7 +2866,10 @@ async fn multi_agent_v2_wait_agent_returns_summary_for_mailbox_activity() {
                     session,
                     turn,
                     "wait_agent",
-                    function_payload(json!({"timeout_ms": 1000})),
+                    function_payload(json!({
+                        "targets": [agent_id.to_string()],
+                        "timeout_ms": 1000
+                    })),
                 ))
                 .await
         }
@@ -2930,7 +2894,10 @@ async fn multi_agent_v2_wait_agent_returns_summary_for_mailbox_activity() {
     assert_eq!(
         result,
         crate::tools::handlers::multi_agents_v2::wait::WaitAgentResult {
-            message: "Wait completed.".to_string(),
+            message: "Wait woke due to mailbox activity.".to_string(),
+            requested_ids: vec![agent_id],
+            pending_ids: vec![agent_id],
+            completion_reason: CollabWaitingCompletionReason::Mailbox,
             timed_out: false,
         }
     );
@@ -2938,7 +2905,7 @@ async fn multi_agent_v2_wait_agent_returns_summary_for_mailbox_activity() {
 }
 
 #[tokio::test]
-async fn multi_agent_v2_wait_agent_waits_for_new_mail_after_start() {
+async fn multi_agent_v2_wait_agent_returns_for_already_queued_mail() {
     let (mut session, mut turn) = make_session_and_context().await;
     let manager = thread_manager();
     let root = manager
@@ -2983,53 +2950,38 @@ async fn multi_agent_v2_wait_agent_waits_for_new_mail_after_start() {
         .expect("worker path");
 
     session.enqueue_mailbox_communication(InterAgentCommunication::new(
-        worker_path.clone(),
+        worker_path,
         AgentPath::root(),
         Vec::new(),
         "already queued".to_string(),
         /*trigger_turn*/ false,
     ));
 
-    let wait_task = tokio::spawn({
-        let session = session.clone();
-        let turn = turn.clone();
-        async move {
-            WaitAgentHandlerV2
-                .handle(invocation(
-                    session,
-                    turn,
-                    "wait_agent",
-                    function_payload(json!({"timeout_ms": 1000})),
-                ))
-                .await
-        }
-    });
-    tokio::task::yield_now().await;
-    tokio::time::sleep(Duration::from_millis(50)).await;
-    assert!(
-        !wait_task.is_finished(),
-        "mail already queued before wait should not wake wait_agent"
-    );
-
-    session.enqueue_mailbox_communication(InterAgentCommunication::new(
-        worker_path,
-        AgentPath::root(),
-        Vec::new(),
-        "new mail".to_string(),
-        /*trigger_turn*/ false,
-    ));
-
-    let output = wait_task
-        .await
-        .expect("wait task should join")
-        .expect("wait_agent should succeed");
+    let output = timeout(
+        Duration::from_millis(500),
+        WaitAgentHandlerV2.handle(invocation(
+            session,
+            turn,
+            "wait_agent",
+            function_payload(json!({
+                "targets": [agent_id.to_string()],
+                "timeout_ms": 1000
+            })),
+        )),
+    )
+    .await
+    .expect("already queued mail should complete wait_agent immediately")
+    .expect("wait_agent should succeed");
     let (content, success) = expect_text_output(output);
     let result: crate::tools::handlers::multi_agents_v2::wait::WaitAgentResult =
         serde_json::from_str(&content).expect("wait_agent result should be json");
     assert_eq!(
         result,
         crate::tools::handlers::multi_agents_v2::wait::WaitAgentResult {
-            message: "Wait completed.".to_string(),
+            message: "Wait woke due to mailbox activity.".to_string(),
+            requested_ids: vec![agent_id],
+            pending_ids: vec![agent_id],
+            completion_reason: CollabWaitingCompletionReason::Mailbox,
             timed_out: false,
         }
     );
@@ -3069,6 +3021,12 @@ async fn multi_agent_v2_wait_agent_wakes_on_any_mailbox_notification() {
             .await
             .expect("spawn worker");
     }
+    let worker_a_id = session
+        .services
+        .agent_control
+        .resolve_agent_reference(session.conversation_id, &turn.session_source, "worker_a")
+        .await
+        .expect("worker_a should resolve");
     let worker_b_id = session
         .services
         .agent_control
@@ -3092,7 +3050,10 @@ async fn multi_agent_v2_wait_agent_wakes_on_any_mailbox_notification() {
                     session,
                     turn,
                     "wait_agent",
-                    function_payload(json!({"timeout_ms": 1000})),
+                    function_payload(json!({
+                        "targets": [worker_a_id.to_string(), worker_b_id.to_string()],
+                        "timeout_ms": 1000
+                    })),
                 ))
                 .await
         }
@@ -3117,7 +3078,10 @@ async fn multi_agent_v2_wait_agent_wakes_on_any_mailbox_notification() {
     assert_eq!(
         result,
         crate::tools::handlers::multi_agents_v2::wait::WaitAgentResult {
-            message: "Wait completed.".to_string(),
+            message: "Wait woke due to mailbox activity.".to_string(),
+            requested_ids: vec![worker_a_id, worker_b_id],
+            pending_ids: vec![worker_a_id, worker_b_id],
+            completion_reason: CollabWaitingCompletionReason::Mailbox,
             timed_out: false,
         }
     );
@@ -3177,7 +3141,10 @@ async fn multi_agent_v2_wait_agent_does_not_return_completed_content() {
                     session,
                     turn,
                     "wait_agent",
-                    function_payload(json!({"timeout_ms": 1000})),
+                    function_payload(json!({
+                        "targets": [agent_id.to_string()],
+                        "timeout_ms": 1000
+                    })),
                 ))
                 .await
         }
@@ -3202,7 +3169,10 @@ async fn multi_agent_v2_wait_agent_does_not_return_completed_content() {
     assert_eq!(
         result,
         crate::tools::handlers::multi_agents_v2::wait::WaitAgentResult {
-            message: "Wait completed.".to_string(),
+            message: "Wait woke due to mailbox activity.".to_string(),
+            requested_ids: vec![agent_id],
+            pending_ids: vec![agent_id],
+            completion_reason: CollabWaitingCompletionReason::Mailbox,
             timed_out: false,
         }
     );

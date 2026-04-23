@@ -91,6 +91,17 @@ fn spawn_agent_tool_v2_requires_task_name_and_lists_visible_models() {
         panic!("spawn_agent should be a function tool");
     };
     let (properties, required) = expect_object_schema(&parameters);
+    assert_eq!(
+        parameters.schema_type,
+        Some(JsonSchemaType::Single(JsonSchemaPrimitiveType::Object))
+    );
+    assert!(description.contains("Spawns an agent to work on the specified task."));
+    assert!(description.contains("The spawned agent will have the same tools as you"));
+    assert!(description.contains(SPAWN_AGENT_INHERITED_MODEL_GUIDANCE));
+    assert!(
+        description
+            .contains("Available model overrides (optional; inherited parent model is preferred):")
+    );
     assert!(description.contains("visible display (`visible-model`)"));
     assert!(!description.contains("hidden display (`hidden-model`)"));
     assert!(properties.contains_key("task_name"));
@@ -100,6 +111,12 @@ fn spawn_agent_tool_v2_requires_task_name_and_lists_visible_models() {
             .get("agent_type")
             .and_then(|schema| schema.description.as_deref()),
         Some("role help")
+    );
+    assert_eq!(
+        properties
+            .get("model")
+            .and_then(|schema| schema.description.as_deref()),
+        Some(SPAWN_AGENT_MODEL_OVERRIDE_DESCRIPTION)
     );
     assert_eq!(
         required,
@@ -135,20 +152,33 @@ fn spawn_agent_tool_v2_lists_upgradeable_legacy_models() {
 
 #[test]
 fn spawn_agent_tool_v1_exposes_runtime_metadata_fields() {
-    let ToolSpec::Function(ResponsesApiTool { output_schema, .. }) =
-        create_spawn_agent_tool_v1(SpawnAgentToolOptions {
-            available_models: &[model_preset("visible", /*show_in_picker*/ true)],
-            agent_type_description: "role help".to_string(),
-            hide_agent_type_model_reasoning: false,
-            include_usage_hint: false,
-            usage_hint_text: None,
-        })
+    let ToolSpec::Function(ResponsesApiTool {
+        parameters,
+        output_schema,
+        ..
+    }) = create_spawn_agent_tool_v1(SpawnAgentToolOptions {
+        available_models: &[model_preset("visible", /*show_in_picker*/ true)],
+        agent_type_description: "role help".to_string(),
+        hide_agent_type_model_reasoning: false,
+        include_usage_hint: false,
+        usage_hint_text: None,
+    })
     else {
         panic!("spawn_agent should be a function tool");
     };
     assert_eq!(
         output_schema.expect("spawn_agent output schema")["required"],
         json!(["agent_id", "nickname"])
+    );
+    let (properties, _) = expect_object_schema(&parameters);
+
+    assert!(properties.contains_key("fork_context"));
+    assert!(!properties.contains_key("fork_turns"));
+    assert_eq!(
+        properties
+            .get("model")
+            .and_then(|schema| schema.description.as_deref()),
+        Some(SPAWN_AGENT_MODEL_OVERRIDE_DESCRIPTION)
     );
 }
 
@@ -188,18 +218,12 @@ fn wait_agent_tool_v1_exposes_return_when_and_summary_output() {
         panic!("wait_agent should be a function tool");
     };
     let (properties, required) = expect_object_schema(&parameters);
-    assert!(properties.contains_key("ids"));
+    assert!(properties.contains_key("targets"));
     assert!(!properties.contains_key("return_when"));
-    assert_eq!(required, None);
+    assert_eq!(required, Some(&vec!["targets".to_string()]));
     assert_eq!(
         output_schema.expect("wait output schema")["required"],
-        json!([
-            "message",
-            "requested_ids",
-            "pending_ids",
-            "completion_reason",
-            "timed_out"
-        ])
+        json!(["status", "timed_out"])
     );
 }
 
@@ -218,13 +242,19 @@ fn wait_agent_tool_v2_uses_task_targets_and_summary_output() {
         panic!("wait_agent should be a function tool");
     };
     let (properties, required) = expect_object_schema(&parameters);
-    assert!(!properties.contains_key("targets"));
-    assert!(!properties.contains_key("return_when"));
+    assert!(properties.contains_key("targets"));
+    assert!(properties.contains_key("return_when"));
     assert!(properties.contains_key("timeout_ms"));
-    assert_eq!(required, None);
+    assert_eq!(required, Some(&vec!["targets".to_string()]));
     assert_eq!(
-        output_schema.expect("wait output schema")["properties"]["message"]["description"],
-        json!("Brief wait summary without the agent's final content.")
+        output_schema.expect("wait output schema")["required"],
+        json!([
+            "message",
+            "requested_ids",
+            "pending_ids",
+            "completion_reason",
+            "timed_out"
+        ])
     );
 }
 
