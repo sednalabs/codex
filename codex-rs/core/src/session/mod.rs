@@ -780,6 +780,12 @@ fn should_restore_dynamic_tool_on_resume(
     tool: &codex_protocol::dynamic_tools::DynamicToolSpec,
 ) -> bool {
     tool.persist_on_resume
+        && !matches!(
+            tool.capability
+                .as_ref()
+                .and_then(|capability| capability.capability_scope.as_deref()),
+            Some("environment")
+        )
 }
 
 #[cfg(test)]
