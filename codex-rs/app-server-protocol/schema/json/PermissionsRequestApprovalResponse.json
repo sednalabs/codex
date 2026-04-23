@@ -8,7 +8,7 @@
       "properties": {
         "entries": {
           "items": {
-            "$ref": "#/definitions/FileSystemSandboxEntry"
+            "$ref": "#/$defs/FileSystemSandboxEntry"
           },
           "type": [
             "array",
@@ -17,7 +17,7 @@
         },
         "globScanMaxDepth": {
           "format": "uint",
-          "minimum": 1.0,
+          "minimum": 1,
           "type": [
             "integer",
             "null"
@@ -68,19 +68,17 @@
         {
           "properties": {
             "path": {
-              "$ref": "#/definitions/AbsolutePathBuf"
+              "$ref": "#/$defs/AbsolutePathBuf"
             },
             "type": {
-              "enum": [
-                "path"
-              ],
+              "const": "path",
               "title": "PathFileSystemPathType",
               "type": "string"
             }
           },
           "required": [
-            "path",
-            "type"
+            "type",
+            "path"
           ],
           "title": "PathFileSystemPath",
           "type": "object"
@@ -91,16 +89,14 @@
               "type": "string"
             },
             "type": {
-              "enum": [
-                "glob_pattern"
-              ],
+              "const": "glob_pattern",
               "title": "GlobPatternFileSystemPathType",
               "type": "string"
             }
           },
           "required": [
-            "pattern",
-            "type"
+            "type",
+            "pattern"
           ],
           "title": "GlobPatternFileSystemPath",
           "type": "object"
@@ -108,14 +104,12 @@
         {
           "properties": {
             "type": {
-              "enum": [
-                "special"
-              ],
+              "const": "special",
               "title": "SpecialFileSystemPathType",
               "type": "string"
             },
             "value": {
-              "$ref": "#/definitions/FileSystemSpecialPath"
+              "$ref": "#/$defs/FileSystemSpecialPath"
             }
           },
           "required": [
@@ -130,15 +124,15 @@
     "FileSystemSandboxEntry": {
       "properties": {
         "access": {
-          "$ref": "#/definitions/FileSystemAccessMode"
+          "$ref": "#/$defs/FileSystemAccessMode"
         },
         "path": {
-          "$ref": "#/definitions/FileSystemPath"
+          "$ref": "#/$defs/FileSystemPath"
         }
       },
       "required": [
-        "access",
-        "path"
+        "path",
+        "access"
       ],
       "type": "object"
     },
@@ -147,9 +141,7 @@
         {
           "properties": {
             "kind": {
-              "enum": [
-                "root"
-              ],
+              "const": "root",
               "type": "string"
             }
           },
@@ -162,9 +154,7 @@
         {
           "properties": {
             "kind": {
-              "enum": [
-                "minimal"
-              ],
+              "const": "minimal",
               "type": "string"
             }
           },
@@ -177,9 +167,7 @@
         {
           "properties": {
             "kind": {
-              "enum": [
-                "current_working_directory"
-              ],
+              "const": "current_working_directory",
               "type": "string"
             }
           },
@@ -192,9 +180,7 @@
         {
           "properties": {
             "kind": {
-              "enum": [
-                "project_roots"
-              ],
+              "const": "project_roots",
               "type": "string"
             },
             "subpath": {
@@ -213,9 +199,7 @@
         {
           "properties": {
             "kind": {
-              "enum": [
-                "tmpdir"
-              ],
+              "const": "tmpdir",
               "type": "string"
             }
           },
@@ -228,9 +212,7 @@
         {
           "properties": {
             "kind": {
-              "enum": [
-                "slash_tmp"
-              ],
+              "const": "slash_tmp",
               "type": "string"
             }
           },
@@ -243,9 +225,7 @@
         {
           "properties": {
             "kind": {
-              "enum": [
-                "unknown"
-              ],
+              "const": "unknown",
               "type": "string"
             },
             "path": {

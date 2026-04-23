@@ -101,6 +101,23 @@ fn test_absolute_path(path: &str) -> AbsolutePathBuf {
     AbsolutePathBuf::try_from(PathBuf::from(path)).expect("absolute test path")
 }
 
+fn upsert_agent_navigation_for_test(
+    app: &mut App,
+    thread_id: ThreadId,
+    agent_nickname: Option<String>,
+    agent_role: Option<String>,
+    is_closed: bool,
+) {
+    app.agent_navigation.upsert(
+        thread_id,
+        agent_nickname,
+        agent_role,
+        is_closed,
+        /*created_at*/ None,
+        /*updated_at*/ None,
+    );
+}
+
 #[tokio::test]
 async fn handle_mcp_inventory_result_clears_committed_loading_cell() {
     let mut app = make_test_app().await;
@@ -1236,6 +1253,7 @@ async fn open_agent_picker_keeps_missing_threads_for_replay() -> Result<()> {
             agent_nickname: None,
             agent_role: None,
             is_closed: true,
+            ..AgentPickerThreadEntry::default()
         })
     );
     assert_eq!(app.agent_navigation.ordered_thread_ids(), vec![thread_id]);
@@ -1251,7 +1269,8 @@ async fn open_agent_picker_preserves_cached_metadata_for_replay_threads() -> Res
     let thread_id = ThreadId::new();
     app.thread_event_channels
         .insert(thread_id, ThreadEventChannel::new(/*capacity*/ 1));
-    app.agent_navigation.upsert(
+    upsert_agent_navigation_for_test(
+        &mut app,
         thread_id,
         Some("Robie".to_string()),
         Some("explorer".to_string()),
@@ -1267,6 +1286,7 @@ async fn open_agent_picker_preserves_cached_metadata_for_replay_threads() -> Res
             agent_nickname: Some("Robie".to_string()),
             agent_role: Some("explorer".to_string()),
             is_closed: true,
+            ..AgentPickerThreadEntry::default()
         })
     );
     Ok(())
@@ -1279,7 +1299,8 @@ async fn open_agent_picker_prunes_terminal_metadata_only_threads() -> Result<()>
         .await
         .expect("embedded app server");
     let thread_id = ThreadId::new();
-    app.agent_navigation.upsert(
+    upsert_agent_navigation_for_test(
+        &mut app,
         thread_id,
         Some("Ghost".to_string()),
         Some("worker".to_string()),
@@ -1302,7 +1323,8 @@ async fn open_agent_picker_marks_terminal_read_errors_closed() -> Result<()> {
     let thread_id = ThreadId::new();
     app.thread_event_channels
         .insert(thread_id, ThreadEventChannel::new(/*capacity*/ 1));
-    app.agent_navigation.upsert(
+    upsert_agent_navigation_for_test(
+        &mut app,
         thread_id,
         Some("Robie".to_string()),
         Some("explorer".to_string()),
@@ -1317,6 +1339,7 @@ async fn open_agent_picker_marks_terminal_read_errors_closed() -> Result<()> {
             agent_nickname: Some("Robie".to_string()),
             agent_role: Some("explorer".to_string()),
             is_closed: true,
+            ..AgentPickerThreadEntry::default()
         })
     );
     Ok(())
@@ -1343,6 +1366,7 @@ async fn open_agent_picker_marks_loaded_threads_open() -> Result<()> {
             agent_nickname: None,
             agent_role: None,
             is_closed: false,
+            ..AgentPickerThreadEntry::default()
         })
     );
     Ok(())
@@ -1359,7 +1383,8 @@ async fn attach_live_thread_for_selection_rejects_empty_non_ephemeral_fallback_t
         .start_thread(app.chat_widget.config_ref())
         .await?;
     let thread_id = started.session.thread_id;
-    app.agent_navigation.upsert(
+    upsert_agent_navigation_for_test(
+        &mut app,
         thread_id,
         Some("Scout".to_string()),
         Some("worker".to_string()),
@@ -1389,7 +1414,8 @@ async fn attach_live_thread_for_selection_rejects_unmaterialized_fallback_thread
     ephemeral_config.ephemeral = true;
     let started = app_server.start_thread(&ephemeral_config).await?;
     let thread_id = started.session.thread_id;
-    app.agent_navigation.upsert(
+    upsert_agent_navigation_for_test(
+        &mut app,
         thread_id,
         Some("Scout".to_string()),
         Some("worker".to_string()),
@@ -1413,7 +1439,8 @@ async fn attach_live_thread_for_selection_rejects_unmaterialized_fallback_thread
 async fn should_attach_live_thread_for_selection_skips_closed_metadata_only_threads() {
     let mut app = make_test_app().await;
     let thread_id = ThreadId::new();
-    app.agent_navigation.upsert(
+    upsert_agent_navigation_for_test(
+        &mut app,
         thread_id,
         Some("Ghost".to_string()),
         Some("worker".to_string()),
@@ -1422,7 +1449,8 @@ async fn should_attach_live_thread_for_selection_skips_closed_metadata_only_thre
 
     assert!(!app.should_attach_live_thread_for_selection(thread_id));
 
-    app.agent_navigation.upsert(
+    upsert_agent_navigation_for_test(
+        &mut app,
         thread_id,
         Some("Ghost".to_string()),
         Some("worker".to_string()),
@@ -1442,7 +1470,8 @@ async fn refresh_agent_picker_thread_liveness_prunes_closed_metadata_only_thread
         .await
         .expect("embedded app server");
     let thread_id = ThreadId::new();
-    app.agent_navigation.upsert(
+    upsert_agent_navigation_for_test(
+        &mut app,
         thread_id,
         Some("Ghost".to_string()),
         Some("worker".to_string()),
@@ -2175,7 +2204,8 @@ async fn refresh_pending_thread_approvals_only_lists_inactive_threads() {
     }
     app.thread_event_channels
         .insert(agent_thread_id, agent_channel);
-    app.agent_navigation.upsert(
+    upsert_agent_navigation_for_test(
+        &mut app,
         agent_thread_id,
         Some("Robie".to_string()),
         Some("explorer".to_string()),
@@ -2222,7 +2252,8 @@ async fn inactive_thread_approval_bubbles_into_active_view() -> Result<()> {
             Vec::new(),
         ),
     );
-    app.agent_navigation.upsert(
+    upsert_agent_navigation_for_test(
+        &mut app,
         agent_thread_id,
         Some("Robie".to_string()),
         Some("explorer".to_string()),
@@ -2385,7 +2416,8 @@ async fn side_defers_subagent_approval_overlay_until_side_exits() -> Result<()> 
             Vec::new(),
         ),
     );
-    app.agent_navigation.upsert(
+    upsert_agent_navigation_for_test(
+        &mut app,
         agent_thread_id,
         Some("Robie".to_string()),
         Some("explorer".to_string()),
@@ -2611,7 +2643,8 @@ async fn inactive_thread_approval_badge_clears_after_turn_completion_notificatio
             Vec::new(),
         ),
     );
-    app.agent_navigation.upsert(
+    upsert_agent_navigation_for_test(
+        &mut app,
         agent_thread_id,
         Some("Robie".to_string()),
         Some("explorer".to_string()),
@@ -2757,6 +2790,7 @@ async fn inactive_thread_started_notification_initializes_replay_session() -> Re
             agent_nickname: Some("Robie".to_string()),
             agent_role: Some("explorer".to_string()),
             is_closed: false,
+            ..AgentPickerThreadEntry::default()
         })
     );
 
@@ -3305,7 +3339,8 @@ async fn discard_side_thread_removes_agent_navigation_entry() -> Result<()> {
     let side_thread_id = started.session.thread_id;
     app.side_threads
         .insert(side_thread_id, SideThreadState::new(ThreadId::new()));
-    app.agent_navigation.upsert(
+    upsert_agent_navigation_for_test(
+        &mut app,
         side_thread_id,
         Some("Side".to_string()),
         Some("side".to_string()),
@@ -3332,7 +3367,8 @@ async fn discard_side_thread_keeps_local_state_when_server_close_fails() -> Resu
     app.active_thread_id = Some(side_thread_id);
     app.side_threads
         .insert(side_thread_id, SideThreadState::new(parent_thread_id));
-    app.agent_navigation.upsert(
+    upsert_agent_navigation_for_test(
+        &mut app,
         side_thread_id,
         Some("Side".to_string()),
         Some("side".to_string()),
@@ -3365,7 +3401,8 @@ async fn discard_closed_side_thread_removes_local_state_without_server_rpc() {
         .insert(side_thread_id, SideThreadState::new(parent_thread_id));
     app.thread_event_channels
         .insert(side_thread_id, ThreadEventChannel::new(/*capacity*/ 4));
-    app.agent_navigation.upsert(
+    upsert_agent_navigation_for_test(
+        &mut app,
         side_thread_id,
         Some("Side".to_string()),
         Some("side".to_string()),
@@ -4410,7 +4447,8 @@ async fn replace_chat_widget_reseeds_collab_agent_metadata_for_replay() {
     let (mut app, mut app_event_rx, _op_rx) = make_test_app_with_channels().await;
     let receiver_thread_id =
         ThreadId::from_string("019cff70-2599-75e2-af72-b958ce5dc1cc").expect("valid thread");
-    app.agent_navigation.upsert(
+    upsert_agent_navigation_for_test(
+        &mut app,
         receiver_thread_id,
         Some("Robie".to_string()),
         Some("explorer".to_string()),

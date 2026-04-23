@@ -1,6 +1,5 @@
 {
-  "$schema": "http://json-schema.org/draft-07/schema#",
-  "definitions": {
+  "$defs": {
     "AddCreditsNudgeCreditType": {
       "enum": [
         "credits",
@@ -9,9 +8,10 @@
       "type": "string"
     }
   },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
   "properties": {
     "creditType": {
-      "$ref": "#/definitions/AddCreditsNudgeCreditType"
+      "$ref": "#/$defs/AddCreditsNudgeCreditType"
     }
   },
   "required": [

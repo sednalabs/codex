@@ -5,14 +5,16 @@
       "type": "string"
     },
     "threadId": {
-      "type": "string"
+      "type": [
+        "string",
+        "null"
+      ]
     },
     "uri": {
       "type": "string"
     }
   },
   "required": [
-    "threadId",
     "server",
     "uri"
   ],

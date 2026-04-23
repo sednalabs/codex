@@ -303,6 +303,7 @@ async fn steer_rejection_queues_review_follow_up_before_existing_queued_messages
         id: "review-exit".into(),
         msg: EventMsg::ExitedReviewMode(ExitedReviewModeEvent {
             review_output: None,
+            review_token_usage: None,
         }),
     });
     chat.handle_codex_event(Event {
@@ -424,6 +425,7 @@ async fn review_restores_context_window_indicator() {
         id: "review-end".into(),
         msg: EventMsg::ExitedReviewMode(ExitedReviewModeEvent {
             review_output: None,
+            review_token_usage: None,
         }),
     });
     let _ = drain_insert_history(&mut rx);

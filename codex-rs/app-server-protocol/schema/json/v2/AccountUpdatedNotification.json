@@ -19,10 +19,8 @@
           "type": "string"
         },
         {
+          "const": "agentIdentity",
           "description": "Programmatic Codex auth backed by a registered Agent Identity.",
-          "enum": [
-            "agentIdentity"
-          ],
           "type": "string"
         }
       ]
