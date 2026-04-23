@@ -70,8 +70,10 @@ Use the smallest validator that can answer the current question.
 For Linux release readiness, prefer `validation-lab` `profile=targeted` with
 `lane_set=release` when the question is narrow `--locked` release-build drift.
 That lane currently resolves to `sedna.release-linux-smoke`, which is a
-preflight check only; it does not publish a GitHub Release. Use artifact mode
-only when you also need a disposable preview package.
+preflight check only; it does not publish a GitHub Release. It is a plain
+locked Linux release build, so it keeps Linux build dependencies and `sccache`
+but does not install release-publish helpers such as DotSlash. Use artifact
+mode only when you also need a disposable preview package.
 
 ## Snapshot refs for exact-tree remote proof
 
@@ -90,6 +92,11 @@ For the concrete command helper and dispatch examples, use
 [`github-ci-offload.md`](github-ci-offload.md) (`validation-lab` dispatch rule
 and snapshot helper section).
 
+This remote-proof path is intentionally current-contract only. The validated
+ref must carry the current `.github/validation-lanes.json` schema plus the
+lane helper scripts the workflows call. Historical refs that predate the
+explicit lane contract are no longer supported by the lab planner.
+
 ## Fan-out and concurrency
 
 Use matrix fan-out when several lanes answer the same seam question.
@@ -99,7 +106,8 @@ Default validation-lab policy:
 
 - `targeted`: low fan-out
 - `frontier`: bounded fan-out with `fail-fast=false` and split setup-class
-  matrices so lighter seams can use higher concurrency than heavy Rust lanes
+  matrices so `workflow`, `node`, `rust_minimal`, `rust_integration`, and
+  `release` lanes can scale independently
 - `broad`: moderate fan-out
 - `full`: conservative fan-out
 
@@ -119,6 +127,46 @@ This is an intentional `validation-lab` use case, not a workaround. It reduces
 runner-minutes, wait time, and unnecessary compute while preserving hosted,
 attributable proof.
 
+## Lane catalog contract
+
+The validation planners now consume an explicit lane catalog rather than
+deriving execution behavior from an inline command string.
+
+Every lane row in `.github/validation-lanes.json` is expected to define:
+
+- `setup_class`
+- `working_directory`
+- `script_path`
+- `script_args`
+- `needs_just`
+- `needs_node`
+- `needs_nextest`
+- `needs_linux_build_deps`
+- `needs_dotslash`
+- `needs_sccache`
+
+When `needs_sccache` is true, the Rust-oriented reusable workflows first try the
+native GitHub Actions cache backend expected by current `sccache` releases.
+They only fall back to a workspace-local `.sccache` archive when the runner does
+not expose the GitHub cache-service environment that backend needs.
+Fallback `.sccache` archives are restore-only by default so validation runs do
+not keep minting run-id-keyed multi-gigabyte caches. `validation-lab` opts into
+fallback writes only for retained non-`auto` supersession modes such as
+comparison or milestone runs.
+
+Execution is script-backed:
+
+- reusable workflows fan out by `setup_class`
+- each lane runs the checked-in script referenced by `script_path`
+- the root `justfile` is a convenience layer, not the workflow source of truth
+- lanes that still rely on `just` now declare that explicitly via `needs_just`
+  and can call a small wrapper script instead of embedding `run_command` in the
+  catalog
+
+This keeps setup cost visible and makes it much harder for small lanes to
+silently inherit heavyweight Node, `apt`, DotSlash, `nextest`, or `sccache`
+preparation they do not actually need.
+
 ## Remote measurement and summaries
 
 `validation-lab` is expected to produce a compact workflow-level
@@ -131,6 +179,8 @@ That summary should identify:
 - the validated ref and head SHA
 - the selected profile and lanes
 - setup-class job results and started-lane counts
+- setup-versus-command timing totals so slow setup paths are visible separately
+  from the actual lane command time
 - the first strong blocker, if any
 - the frontier blocker queue when `profile=frontier`
 - one primary blocker per exercised summary family, rather than a raw duplicate
