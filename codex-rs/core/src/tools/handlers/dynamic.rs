@@ -94,22 +94,24 @@ impl ToolHandler for DynamicToolHandler {
         let tool_name = invocation.tool_name.display();
         Some(PreToolUsePayload {
             tool_name: HookToolName::new(tool_name.clone()),
-            command: dynamic_tool_command(&tool_name, arguments),
+            tool_input: json!({ "command": dynamic_tool_command(&tool_name, arguments) }),
         })
     }
 
     fn post_tool_use_payload(
         &self,
-        call_id: &str,
-        payload: &ToolPayload,
+        invocation: &ToolInvocation,
         result: &Self::Output,
     ) -> Option<PostToolUsePayload> {
+        let call_id = invocation.call_id.as_str();
+        let payload = &invocation.payload;
         let ToolPayload::Function { arguments } = payload else {
             return None;
         };
 
         let fallback_tool_name = "brokered_tool";
-        let fallback_command = dynamic_tool_command(fallback_tool_name, arguments);
+        let fallback_tool_input =
+            json!({ "command": dynamic_tool_command(fallback_tool_name, arguments) });
         match result.post_tool_use_response(call_id, payload) {
             Some(tool_response) => match tool_response
                 .as_object()
@@ -125,21 +127,23 @@ impl ToolHandler for DynamicToolHandler {
                     Some(PostToolUsePayload {
                         tool_name: HookToolName::new(tool_name.clone()),
                         tool_use_id: call_id.to_string(),
-                        command: dynamic_tool_command(&tool_name, arguments),
+                        tool_input: json!({
+                            "command": dynamic_tool_command(&tool_name, arguments)
+                        }),
                         tool_response,
                     })
                 }
                 None => Some(PostToolUsePayload {
                     tool_name: HookToolName::new(fallback_tool_name),
                     tool_use_id: call_id.to_string(),
-                    command: fallback_command,
+                    tool_input: fallback_tool_input,
                     tool_response,
                 }),
             },
             None => Some(PostToolUsePayload {
                 tool_name: HookToolName::new(fallback_tool_name),
                 tool_use_id: call_id.to_string(),
-                command: fallback_command,
+                tool_input: fallback_tool_input,
                 tool_response: result.code_mode_result(payload),
             }),
         }
@@ -400,7 +404,9 @@ mod tests {
             handler.pre_tool_use_payload(&invocation),
             Some(crate::tools::registry::PreToolUsePayload {
                 tool_name: HookToolName::new(ANDROID_OBSERVE_TOOL_NAME),
-                command: r#"android_observe {"scope":"screen_and_ui"}"#.to_string(),
+                tool_input: json!({
+                    "command": r#"android_observe {"scope":"screen_and_ui"}"#,
+                }),
             })
         );
         assert_eq!(
@@ -411,11 +417,13 @@ mod tests {
             }))
         );
         assert_eq!(
-            handler.post_tool_use_payload("call-2", &payload, &output),
+            handler.post_tool_use_payload(&invocation, &output),
             Some(crate::tools::registry::PostToolUsePayload {
                 tool_name: HookToolName::new(ANDROID_OBSERVE_TOOL_NAME),
                 tool_use_id: "call-2".to_string(),
-                command: r#"android_observe {"scope":"screen_and_ui"}"#.to_string(),
+                tool_input: json!({
+                    "command": r#"android_observe {"scope":"screen_and_ui"}"#,
+                }),
                 tool_response: json!({"ok": true}),
             })
         );
