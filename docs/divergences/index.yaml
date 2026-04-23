@@ -468,7 +468,9 @@
         ".codex/skills/sedna/sidecar-review-loop/agents/openai.yaml",
         ".codex/skills/sedna/subagent-session-tail/agents/openai.yaml",
         ".codex/skills/sedna/subagent-session-tail/scripts/inspect_subagent_tail.py",
-        ".codex/skills/"
+        ".codex/skills/",
+        "codex-rs/core-skills/src/manager.rs",
+        "codex-rs/core-skills/src/manager_tests.rs"
       ],
       "behavior": "Downstream publishes tailored skill templates and helpers that orchestrate babysitting, sidecar review loops, and subagent session tails.",
       "upstream_equivalent": false,
@@ -750,6 +752,7 @@
         "codex-rs/Cargo.toml",
         "codex-rs/Cargo.lock",
         "codex-rs/deny.toml",
+        "upstream.json",
         "tools/argument-comment-lint/Cargo.lock",
         "codex-rs/skills/src/assets/samples/skill-creator/scripts/init_skill.py"
       ],

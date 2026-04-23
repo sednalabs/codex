@@ -55,16 +55,20 @@ References to `carry/main` elsewhere in the repo are historical pre-cutover
 baselines and should be read as prior names for the maintained downstream
 branch.
 
-Current live baseline (validated on `2026-04-22`):
-- `upstream/main`: `be75785504ff152fa6333e380a2d50642f42fba0`
-- downstream branch `main` (`origin/main`):
-  `406c894a5f14e2a74e13ef364fd44d5a089f417a`
+Current integration baseline (validated on `2026-04-23`):
+- `upstream/main`: `d3b044938d245b519c1a5baefe880ef89e3a30c1`
+- downstream integration branch `origin/integration/upstream-main-sync-20260423-141625`:
+  `594bc6ee57817bfd874fb7415121b3b52d354c7b`
+- downstream branch `main` (`origin/main`) before merge:
+  `e2babb7d2bbbe92dd7f3d4ed807a0414e3dd5bc0`
 - mirror branch `upstream-main` (`origin/upstream-main`):
-  `fe7c959e90d46abb8311e4a0b369e6cb32bf337e`
-- divergence counts (`upstream/main...origin/main`): `126` upstream ahead,
-  `706` downstream ahead
-- mirror health (`upstream/main...origin/upstream-main`): `166` ahead / `0`
-  behind (`stale fast-forward-only mirror`)
+  `d3b044938d245b519c1a5baefe880ef89e3a30c1`
+- integration divergence counts (`upstream/main...origin/integration/upstream-main-sync-20260423-141625`):
+  `0` upstream ahead, `736` downstream ahead
+- pre-merge `main` divergence counts (`upstream/main...origin/main`):
+  `208` upstream ahead, `716` downstream ahead
+- mirror health (`upstream/main...origin/upstream-main`): `0` ahead / `0`
+  behind (`exact`)
 
 Supporting docs:
 - [`downstream-tool-surface-matrix.md`](downstream-tool-surface-matrix.md) captures the exact native tool-surface deltas that remain live on the downstream branch.
