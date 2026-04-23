@@ -77,6 +77,10 @@ on:
         required: false
         type: boolean
         default: false
+      cache_policy:
+        required: false
+        type: string
+        default: restore-only
       artifact_name:
         required: false
         type: string
@@ -101,7 +105,7 @@ jobs:
     timeout-minutes: 90
     env:
       CARGO_INCREMENTAL: "0"
-      SCCACHE_CACHE_SIZE: 10G
+      SCCACHE_CACHE_SIZE: 2G
     steps:
       - name: Record lane start
         id: lane_timing
@@ -203,6 +207,24 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          policy='${{ inputs.cache_policy }}'
+          case "${policy}" in
+            off|restore-only|write-fallback) ;;
+            *)
+              echo "::warning title=Unknown cache policy::${policy}; using restore-only"
+              policy="restore-only"
+              ;;
+          esac
+          echo "policy=${policy}" >> "$GITHUB_OUTPUT"
+          if [[ "${policy}" == "off" ]]; then
+            {
+              echo "SCCACHE_GHA_ENABLED=false"
+              echo "SCCACHE_DIR=${GITHUB_WORKSPACE}/.sccache"
+            } >> "$GITHUB_ENV"
+            echo "backend=off" >> "$GITHUB_OUTPUT"
+            echo "sccache disabled by cache policy"
+            exit 0
+          fi
           cache_url="${SCCACHE_GHA_CACHE_URL:-${ACTIONS_RESULTS_URL:-${ACTIONS_CACHE_URL:-}}}"
           if [[ -n "${cache_url}" && -n "${ACTIONS_RUNTIME_TOKEN:-}" ]]; then
             {
@@ -222,12 +244,13 @@ jobs:
           fi
 
       - name: Enable sccache wrapper
-        if: ${{ inputs.needs_sccache }}
+        if: ${{ inputs.needs_sccache && steps.sccache_backend.outputs.backend != 'off' }}
         shell: bash
         run: echo "RUSTC_WRAPPER=sccache" >> "$GITHUB_ENV"
 
       - name: Restore sccache cache (fallback)
         if: ${{ inputs.needs_sccache && steps.sccache_backend.outputs.backend == 'fallback' }}
+        id: cache_sccache_restore
         uses: actions/cache/restore@v5
         with:
           path: ${{ github.workspace }}/.sccache/
@@ -369,6 +392,9 @@ jobs:
           STARTED_AT_MS: ${{ steps.run_lane.outputs.started_at_ms }}
           FINISHED_AT_MS: ${{ steps.run_lane.outputs.finished_at_ms }}
           COMMAND_DURATION_MS: ${{ steps.run_lane.outputs.duration_ms }}
+          CACHE_POLICY: ${{ inputs.cache_policy }}
+          CACHE_BACKEND: ${{ steps.sccache_backend.outputs.backend }}
+          SCCACHE_CACHE_HIT: ${{ steps.cache_sccache_restore.outputs.cache-hit }}
         run: |
           set -euo pipefail
           lane_slug="$(printf '%s' "${LANE_ID}" | tr '[:upper:]' '[:lower:]' | tr -cs '[:alnum:]' '-' | sed 's/^-//;s/-$//' | cut -c1-48)"
@@ -383,6 +409,15 @@ jobs:
           total_duration_ms="$((FINISHED_AT_MS - JOB_STARTED_AT_MS))"
           if [[ "${total_duration_ms}" -lt 0 ]]; then
             total_duration_ms=0
+          fi
+          cache_backend="${CACHE_BACKEND:-not-applicable}"
+          sccache_restore_mode="not-applicable"
+          if [[ "${cache_backend}" == "fallback" ]]; then
+            if [[ "${SCCACHE_CACHE_HIT}" == "true" ]]; then
+              sccache_restore_mode="exact-hit"
+            else
+              sccache_restore_mode="restore-key-or-miss"
+            fi
           fi
           python3 .github/scripts/write_lane_summary.py \
             --lane-id "${LANE_ID}" \
@@ -406,6 +441,9 @@ jobs:
             --setup-duration-ms "${setup_duration_ms}" \
             --command-duration-ms "${COMMAND_DURATION_MS}" \
             --duration-ms "${total_duration_ms}" \
+            --cache-policy "${CACHE_POLICY}" \
+            --cache-backend "${cache_backend}" \
+            --sccache-restore-mode "${sccache_restore_mode}" \
             --artifact-name "${ARTIFACT_NAME}" \
             --output "${summary_file}"
           echo "lane_slug=${lane_slug}" >> "$GITHUB_OUTPUT"
@@ -459,7 +497,7 @@ jobs:
           key: cargo-home-linux-rust-${{ steps.lockhash.outputs.hash }}-${{ steps.lockhash.outputs.toolchain_hash }}
 
       - name: Save sccache cache (fallback)
-        if: ${{ always() && !cancelled() && inputs.needs_sccache && steps.sccache_backend.outputs.backend == 'fallback' && steps.disk_guard.outputs.skip_cache_save != 'true' }}
+        if: ${{ always() && !cancelled() && inputs.needs_sccache && steps.sccache_backend.outputs.backend == 'fallback' && steps.sccache_backend.outputs.policy == 'write-fallback' && steps.disk_guard.outputs.skip_cache_save != 'true' }}
         continue-on-error: true
         uses: actions/cache/save@v5
         with:
@@ -467,7 +505,7 @@ jobs:
           key: sccache-linux-rust-${{ steps.lockhash.outputs.hash }}-${{ steps.lockhash.outputs.toolchain_hash }}-${{ github.run_id }}
 
       - name: sccache stats
-        if: ${{ always() && inputs.needs_sccache }}
+        if: ${{ always() && inputs.needs_sccache && steps.sccache_backend.outputs.backend != 'off' }}
         continue-on-error: true
         shell: bash
         run: sccache --show-stats || true

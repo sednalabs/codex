@@ -502,6 +502,7 @@ jobs:
       needs_linux_build_deps: ${{ matrix.needs_linux_build_deps }}
       needs_dotslash: ${{ matrix.needs_dotslash }}
       needs_sccache: ${{ matrix.needs_sccache }}
+      cache_policy: ${{ inputs.supersession_mode != 'auto' && 'write-fallback' || 'restore-only' }}
 
   smoke_release_lanes:
     name: Validation-lab smoke gate (release)
@@ -538,6 +539,7 @@ jobs:
       needs_linux_build_deps: ${{ matrix.needs_linux_build_deps }}
       needs_dotslash: ${{ matrix.needs_dotslash }}
       needs_sccache: ${{ matrix.needs_sccache }}
+      cache_policy: ${{ inputs.supersession_mode != 'auto' && 'write-fallback' || 'restore-only' }}
 
   workflow_lanes:
     needs:
@@ -674,6 +676,7 @@ jobs:
       needs_linux_build_deps: ${{ matrix.needs_linux_build_deps }}
       needs_dotslash: ${{ matrix.needs_dotslash }}
       needs_sccache: ${{ matrix.needs_sccache }}
+      cache_policy: ${{ inputs.supersession_mode != 'auto' && 'write-fallback' || 'restore-only' }}
 
   release_lanes:
     needs:
@@ -708,6 +711,7 @@ jobs:
       needs_linux_build_deps: ${{ matrix.needs_linux_build_deps }}
       needs_dotslash: ${{ matrix.needs_dotslash }}
       needs_sccache: ${{ matrix.needs_sccache }}
+      cache_policy: ${{ inputs.supersession_mode != 'auto' && 'write-fallback' || 'restore-only' }}
 
   artifact:
     needs:
@@ -756,6 +760,7 @@ jobs:
       needs_linux_build_deps: false
       needs_dotslash: false
       needs_sccache: true
+      cache_policy: ${{ inputs.supersession_mode != 'auto' && 'write-fallback' || 'restore-only' }}
 
   summary:
     name: Validation-lab summary

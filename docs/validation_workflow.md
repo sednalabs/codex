@@ -149,6 +149,10 @@ When `needs_sccache` is true, the Rust-oriented reusable workflows first try the
 native GitHub Actions cache backend expected by current `sccache` releases.
 They only fall back to a workspace-local `.sccache` archive when the runner does
 not expose the GitHub cache-service environment that backend needs.
+Fallback `.sccache` archives are restore-only by default so validation runs do
+not keep minting run-id-keyed multi-gigabyte caches. `validation-lab` opts into
+fallback writes only for retained non-`auto` supersession modes such as
+comparison or milestone runs.
 
 Execution is script-backed:
 

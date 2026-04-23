@@ -28,6 +28,12 @@ artifacts.
   - trigger: scheduled hygiene sweeps and manual dispatch
   - purpose: heavyweight Linux `x86_64` Cargo-native checkpoint coverage when broad proof is
     actually needed
+  - cache policy: prefer the native `sccache` GitHub backend; fallback
+    `.sccache` archives are restore-only by default to avoid run-id-keyed cache
+    churn
+  - sccache versioning: use the current installer-managed `sccache` binary so
+    the workflow's GitHub cache-service backend setup and the binary's GHA
+    contract stay aligned
   - retention: ordinary workflow logs only
 - `sedna-heavy-tests`
   - trigger: manual dispatch, `ci:heavy` PR label, and merge-group checkpoints
@@ -35,6 +41,7 @@ artifacts.
     build factory
   - fanout: smoke and selected lanes now split by `setup_class` so light workflow/docs shards do
     not queue behind heavier Rust runners
+  - cache policy: same restore-only fallback archive policy as `rust-ci-full`
   - scopes: `protocol`, `tui`, `cli`, `core`, `workspace`
 - `sedna-release`
   - trigger: Sedna release tags or manual dispatch
@@ -229,6 +236,10 @@ The important fields are:
 - `needs_sccache` now prefers the GitHub-hosted `sccache` backend when the
   runner exposes the current cache-service environment, and only falls back to
   a local `.sccache` archive when that backend is unavailable
+- `cache_policy`: Rust-oriented reusable workflows default fallback archives to
+  `restore-only`; validation-lab only opts into `write-fallback` for retained
+  non-`auto` supersession modes where preserving comparison evidence is
+  deliberate
 - `frontier_default`: whether the lane belongs in the default `lane_set=all`
   frontier harvest
 - `frontier_lane_sets`: named frontier families for non-`all` frontier runs

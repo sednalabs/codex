@@ -20,6 +20,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--summary-title", required=True)
     parser.add_argument("--script-path", default="")
     parser.add_argument("--script-args-json", default="[]")
+    parser.add_argument("--run-command", default="")
     parser.add_argument("--status-class", default="active")
     parser.add_argument("--frontier-default", default="false")
     parser.add_argument("--setup-class", default="rust_minimal")
@@ -36,6 +37,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--setup-duration-ms", default="")
     parser.add_argument("--command-duration-ms", default="")
     parser.add_argument("--duration-ms", default="")
+    parser.add_argument("--cache-policy", default="")
+    parser.add_argument("--cache-backend", default="")
+    parser.add_argument("--sccache-restore-mode", default="")
     parser.add_argument("--artifact-name", default="")
     parser.add_argument("--output", required=True)
     return parser.parse_args()
@@ -102,7 +106,7 @@ def main() -> None:
         "lane_id": args.lane_id,
         "lane_phase": args.lane_phase or "downstream_lanes",
         "summary_title": args.summary_title,
-        "script_path": args.script_path or "",
+        "script_path": args.script_path or ("legacy-run-command" if args.run_command else ""),
         "script_args": script_args if isinstance(script_args, list) else [],
         "status_class": args.status_class or "active",
         "frontier_default": parse_bool(args.frontier_default),
@@ -119,6 +123,9 @@ def main() -> None:
         "setup_duration_ms": parse_u64(args.setup_duration_ms),
         "command_duration_ms": parse_u64(args.command_duration_ms),
         "duration_ms": parse_u64(args.duration_ms),
+        "cache_policy": args.cache_policy or "unspecified",
+        "cache_backend": args.cache_backend or "not-applicable",
+        "sccache_restore_mode": args.sccache_restore_mode or "not-applicable",
         "log_available": bool(lines),
         "primary_signal": primary_signal(error_lines, tail_lines),
         "artifact_name": args.artifact_name or "",

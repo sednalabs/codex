@@ -47,7 +47,7 @@
       ],
       "needs_just": true,
       "needs_node": false,
-      "needs_nextest": false,
+      "needs_nextest": true,
       "needs_linux_build_deps": true,
       "needs_dotslash": true,
       "needs_sccache": true
@@ -73,7 +73,7 @@
       ],
       "needs_just": true,
       "needs_node": false,
-      "needs_nextest": false,
+      "needs_nextest": true,
       "needs_linux_build_deps": true,
       "needs_dotslash": true,
       "needs_sccache": true
@@ -100,7 +100,7 @@
       ],
       "needs_just": true,
       "needs_node": false,
-      "needs_nextest": false,
+      "needs_nextest": true,
       "needs_linux_build_deps": true,
       "needs_dotslash": true,
       "needs_sccache": true
@@ -126,7 +126,7 @@
       ],
       "needs_just": true,
       "needs_node": false,
-      "needs_nextest": false,
+      "needs_nextest": true,
       "needs_linux_build_deps": true,
       "needs_dotslash": true,
       "needs_sccache": true
@@ -181,7 +181,7 @@
       ],
       "needs_just": true,
       "needs_node": false,
-      "needs_nextest": false,
+      "needs_nextest": true,
       "needs_linux_build_deps": true,
       "needs_dotslash": true,
       "needs_sccache": true
@@ -209,7 +209,7 @@
       ],
       "needs_just": true,
       "needs_node": false,
-      "needs_nextest": false,
+      "needs_nextest": true,
       "needs_linux_build_deps": true,
       "needs_dotslash": true,
       "needs_sccache": true
@@ -291,7 +291,7 @@
       ],
       "needs_just": true,
       "needs_node": false,
-      "needs_nextest": false,
+      "needs_nextest": true,
       "needs_linux_build_deps": false,
       "needs_dotslash": false,
       "needs_sccache": false
@@ -350,10 +350,28 @@
     },
     {
       "lane_id": "codex.tui-brokered-tool-replay-targeted",
-      "run_command": "just --justfile ../justfile tui-brokered-tool-replay-targeted",
-      "groups": ["ui_protocol"],
-      "lane_sets": ["all", "ui-protocol"],
-      "explicit_only": true
+      "groups": [
+        "ui_protocol"
+      ],
+      "lane_sets": [
+        "all",
+        "ui-protocol"
+      ],
+      "explicit_only": true,
+      "frontier_default": false,
+      "summary_family": "tui-brokered-tool-replay",
+      "setup_class": "rust_minimal",
+      "working_directory": ".",
+      "script_path": ".github/scripts/validation-lanes/run-just-recipe.sh",
+      "script_args": [
+        "tui-brokered-tool-replay-targeted"
+      ],
+      "needs_just": true,
+      "needs_node": false,
+      "needs_nextest": false,
+      "needs_linux_build_deps": false,
+      "needs_dotslash": false,
+      "needs_sccache": false
     },
     {
       "lane_id": "codex.tui-config-refresh-session-targeted",
@@ -608,7 +626,7 @@
       ],
       "needs_just": true,
       "needs_node": false,
-      "needs_nextest": false,
+      "needs_nextest": true,
       "needs_linux_build_deps": true,
       "needs_dotslash": true,
       "needs_sccache": true
@@ -856,7 +874,7 @@
       ],
       "needs_just": true,
       "needs_node": false,
-      "needs_nextest": false,
+      "needs_nextest": true,
       "needs_linux_build_deps": true,
       "needs_dotslash": true,
       "needs_sccache": true

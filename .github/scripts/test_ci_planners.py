@@ -69,6 +69,23 @@ def load_workflow_payload(workflow_path: Path) -> dict:
     return payload if isinstance(payload, dict) else {}
 
 
+def just_recipes_with_nextest(justfile_path: Path) -> set[str]:
+    recipes: dict[str, list[str]] = {}
+    current: str | None = None
+    current_body: list[str] = []
+    for line in justfile_path.read_text(encoding="utf-8").splitlines():
+        if line and not line.startswith((" ", "\t", "#")) and ":" in line:
+            if current is not None:
+                recipes[current] = current_body
+            current = line.split(":", 1)[0].strip().split()[0]
+            current_body = []
+        elif current is not None:
+            current_body.append(line)
+    if current is not None:
+        recipes[current] = current_body
+    return {name for name, body in recipes.items() if any("cargo nextest" in line for line in body)}
+
+
 class TempGitRepo:
     def __init__(self) -> None:
         self._tmpdir = tempfile.TemporaryDirectory()
@@ -506,6 +523,190 @@ class ValidationPlanScriptTests(unittest.TestCase):
             ],
         )
 
+    def test_run_just_recipe_lanes_declare_nextest_when_recipe_uses_nextest(self) -> None:
+        catalog = RESOLVE_VALIDATION_PLAN.load_catalog()
+        nextest_recipes = just_recipes_with_nextest(REPO_ROOT / "justfile")
+        missing: list[str] = []
+        for lane in catalog["lanes"]:
+            if lane.get("script_path") != ".github/scripts/validation-lanes/run-just-recipe.sh":
+                continue
+            script_args = lane.get("script_args") or []
+            recipe = script_args[0] if script_args else ""
+            if recipe in nextest_recipes and not lane.get("needs_nextest"):
+                missing.append(str(lane.get("lane_id")))
+
+        self.assertEqual(missing, [])
+
+    def test_validation_lab_passes_sccache_policy_only_to_sccache_lanes(self) -> None:
+        payload = load_workflow_payload(REPO_ROOT / ".github/workflows/validation-lab.yml")
+        jobs = payload.get("jobs") or {}
+        expected_policy = (
+            "${{ inputs.supersession_mode != 'auto' && "
+            "'write-fallback' || 'restore-only' }}"
+        )
+
+        sccache_jobs = [
+            "smoke_rust_integration_lanes",
+            "smoke_release_lanes",
+            "rust_integration_lanes",
+            "release_lanes",
+            "artifact",
+        ]
+        for job_name in sccache_jobs:
+            with self.subTest(job=job_name):
+                self.assertEqual(
+                    ((jobs.get(job_name) or {}).get("with") or {}).get("cache_policy"),
+                    expected_policy,
+                )
+
+        non_sccache_jobs = [
+            "smoke_workflow_lanes",
+            "smoke_node_lanes",
+            "smoke_rust_minimal_lanes",
+            "workflow_lanes",
+            "node_lanes",
+            "rust_minimal_lanes",
+        ]
+        for job_name in non_sccache_jobs:
+            with self.subTest(job=job_name):
+                self.assertNotIn("cache_policy", (jobs.get(job_name) or {}).get("with") or {})
+
+    def test_sedna_heavy_uses_restore_only_sccache_fallback_policy(self) -> None:
+        payload = load_workflow_payload(REPO_ROOT / ".github/workflows/sedna-heavy-tests.yml")
+        jobs = payload.get("jobs") or {}
+
+        for job_name in [
+            "smoke_rust_integration_lanes",
+            "smoke_release_lanes",
+            "rust_integration_lanes",
+            "release_lanes",
+        ]:
+            with self.subTest(job=job_name):
+                self.assertEqual(
+                    ((jobs.get(job_name) or {}).get("with") or {}).get("cache_policy"),
+                    "restore-only",
+                )
+
+    def test_reusable_sccache_workflows_require_explicit_fallback_writes(self) -> None:
+        for workflow_name in [
+            "_validation-lane-rust-integration.yml",
+            "_validation-lane-release.yml",
+            "_sedna-linux-rust.yml",
+        ]:
+            with self.subTest(workflow=workflow_name):
+                payload = load_workflow_payload(REPO_ROOT / ".github/workflows" / workflow_name)
+                inputs = (((payload.get("on") or {}).get("workflow_call") or {}).get("inputs") or {})
+                self.assertEqual((inputs.get("cache_policy") or {}).get("default"), "restore-only")
+
+                run_job = (payload.get("jobs") or {}).get("run") or {}
+                self.assertEqual((run_job.get("env") or {}).get("SCCACHE_CACHE_SIZE"), "2G")
+
+                save_step = next(
+                    step
+                    for step in run_job.get("steps") or []
+                    if step.get("name") == "Save sccache cache (fallback)"
+                )
+                self.assertIn(
+                    "steps.sccache_backend.outputs.policy == 'write-fallback'",
+                    save_step.get("if") or "",
+                )
+
+    def test_rust_ci_fallback_sccache_writes_are_disabled_by_default(self) -> None:
+        payload = load_workflow_payload(REPO_ROOT / ".github/workflows/rust-ci-full.yml")
+        jobs = payload.get("jobs") or {}
+
+        for job_name in ["lint_build", "tests"]:
+            with self.subTest(job=job_name):
+                job = jobs.get(job_name) or {}
+                env = job.get("env") or {}
+                self.assertEqual(env.get("SCCACHE_CACHE_SIZE"), "2G")
+                self.assertEqual(env.get("SCCACHE_FALLBACK_CACHE_POLICY"), "restore-only")
+
+                save_step = next(
+                    step
+                    for step in job.get("steps") or []
+                    if step.get("name") == "Save sccache cache (fallback)"
+                )
+                self.assertIn(
+                    "steps.sccache_backend.outputs.policy == 'write-fallback'",
+                    save_step.get("if") or "",
+                )
+                install_step = next(
+                    step for step in job.get("steps") or [] if step.get("name") == "Install sccache"
+                )
+                self.assertNotIn("version", install_step.get("with") or {})
+
+    def test_lane_summary_records_cache_telemetry_without_raw_command(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output = Path(tmpdir) / "summary.json"
+            subprocess.run(
+                [
+                    "python3",
+                    str(SCRIPTS_DIR / "write_lane_summary.py"),
+                    "--lane-id",
+                    "codex.example",
+                    "--summary-title",
+                    "example",
+                    "--run-command",
+                    "cargo test --locked",
+                    "--cache-policy",
+                    "restore-only",
+                    "--cache-backend",
+                    "fallback",
+                    "--sccache-restore-mode",
+                    "restore-key-or-miss",
+                    "--output",
+                    str(output),
+                ],
+                check=True,
+            )
+
+            summary = json.loads(output.read_text(encoding="utf-8"))
+
+        self.assertEqual(summary["script_path"], "legacy-run-command")
+        self.assertEqual(summary["cache_policy"], "restore-only")
+        self.assertEqual(summary["cache_backend"], "fallback")
+        self.assertEqual(summary["sccache_restore_mode"], "restore-key-or-miss")
+        self.assertNotIn("run_command", summary)
+
+    def test_lane_summary_records_script_metadata_and_cache_telemetry(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output = Path(tmpdir) / "summary.json"
+            subprocess.run(
+                [
+                    "python3",
+                    str(SCRIPTS_DIR / "write_lane_summary.py"),
+                    "--lane-id",
+                    "codex.example",
+                    "--summary-title",
+                    "example",
+                    "--script-path",
+                    ".github/scripts/validation-lanes/run-just-recipe.sh",
+                    "--script-args-json",
+                    '["blocking-waits-targeted"]',
+                    "--cache-policy",
+                    "restore-only",
+                    "--cache-backend",
+                    "gha",
+                    "--sccache-restore-mode",
+                    "not-applicable",
+                    "--output",
+                    str(output),
+                ],
+                check=True,
+            )
+
+            summary = json.loads(output.read_text(encoding="utf-8"))
+
+        self.assertEqual(
+            summary["script_path"], ".github/scripts/validation-lanes/run-just-recipe.sh"
+        )
+        self.assertEqual(summary["script_args"], ["blocking-waits-targeted"])
+        self.assertEqual(summary["cache_policy"], "restore-only")
+        self.assertEqual(summary["cache_backend"], "gha")
+        self.assertEqual(summary["sccache_restore_mode"], "not-applicable")
+        self.assertNotIn("run_command", summary)
+
     def test_validation_lab_frontier_all_widens_to_all_active_non_explicit_lanes(self) -> None:
         payload = run_script(
             SCRIPTS_DIR / "resolve_validation_plan.py",
@@ -559,10 +760,10 @@ class ValidationPlanScriptTests(unittest.TestCase):
         self.assertIn("downstream-ledger-seam", selected_lane_ids)
         self.assertEqual(payload["selected_workflow_lane_count"], 4)
         self.assertEqual(payload["selected_node_lane_count"], 1)
-        self.assertEqual(payload["selected_rust_minimal_lane_count"], 16)
+        self.assertEqual(payload["selected_rust_minimal_lane_count"], 17)
         self.assertEqual(payload["selected_rust_integration_lane_count"], 14)
         self.assertEqual(payload["selected_release_lane_count"], 1)
-        self.assertEqual(payload["rust_minimal_max_parallel"], "16")
+        self.assertEqual(payload["rust_minimal_max_parallel"], "17")
         self.assertEqual(payload["rust_integration_max_parallel"], "8")
 
     def test_validation_lab_frontier_all_excludes_smoke_gate_lanes_by_metadata(self) -> None:
@@ -644,7 +845,7 @@ class ValidationPlanScriptTests(unittest.TestCase):
         self.assertEqual(payload["continue_after_smoke_failure"], "true")
         self.assertEqual(payload["workflow_max_parallel"], "4")
         self.assertEqual(payload["node_max_parallel"], "1")
-        self.assertEqual(payload["rust_minimal_max_parallel"], "16")
+        self.assertEqual(payload["rust_minimal_max_parallel"], "17")
         self.assertEqual(payload["rust_integration_max_parallel"], "8")
         self.assertEqual(payload["release_max_parallel"], "1")
         planned_lane_ids = [lane["lane_id"] for lane in payload["planned_matrix"]["include"]]

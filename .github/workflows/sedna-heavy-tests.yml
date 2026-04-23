@@ -154,6 +154,7 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
+          PR_HEAD_REF: ${{ github.event.pull_request.head.ref }}
         run: |
           set -euo pipefail
 
@@ -173,7 +174,7 @@ jobs:
             display_ref='${{ inputs.ref }}'
           elif [[ '${{ github.event_name }}' == 'pull_request' ]]; then
             checkout_ref='${{ github.event.pull_request.head.sha }}'
-            display_ref='${{ github.event.pull_request.head.ref }}'
+            display_ref="${PR_HEAD_REF}"
           fi
 
           if [[ ! "${checkout_ref}" =~ ^[0-9a-f]{40}$ ]]; then
@@ -525,6 +526,7 @@ jobs:
       needs_linux_build_deps: ${{ matrix.needs_linux_build_deps }}
       needs_dotslash: ${{ matrix.needs_dotslash }}
       needs_sccache: ${{ matrix.needs_sccache }}
+      cache_policy: restore-only
 
   smoke_release_lanes:
     name: Heavy preflight smoke (release)
@@ -561,6 +563,7 @@ jobs:
       needs_linux_build_deps: ${{ matrix.needs_linux_build_deps }}
       needs_dotslash: ${{ matrix.needs_dotslash }}
       needs_sccache: ${{ matrix.needs_sccache }}
+      cache_policy: restore-only
 
   workflow_lanes:
     needs:
@@ -757,6 +760,7 @@ jobs:
       needs_linux_build_deps: ${{ matrix.needs_linux_build_deps }}
       needs_dotslash: ${{ matrix.needs_dotslash }}
       needs_sccache: ${{ matrix.needs_sccache }}
+      cache_policy: restore-only
 
   release_lanes:
     needs:
@@ -806,6 +810,7 @@ jobs:
       needs_linux_build_deps: ${{ matrix.needs_linux_build_deps }}
       needs_dotslash: ${{ matrix.needs_dotslash }}
       needs_sccache: ${{ matrix.needs_sccache }}
+      cache_policy: restore-only
 
   summary:
     name: Sedna heavy-tests summary
