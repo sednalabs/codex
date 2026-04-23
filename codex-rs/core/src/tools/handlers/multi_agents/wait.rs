@@ -100,27 +100,6 @@ impl ToolHandler for Handler {
                     final_statuses.insert(*id, AgentStatus::NotFound);
                 }
                 Err(err) => {
-                    let mut statuses = HashMap::with_capacity(1);
-                    statuses.insert(*id, session.services.agent_control.get_status(*id).await);
-                    session
-                        .send_event(
-                            &turn,
-                            CollabWaitingEndEvent {
-                                sender_thread_id: session.conversation_id,
-                                call_id: call_id.clone(),
-                                agent_statuses: build_wait_agent_statuses(
-                                    &statuses,
-                                    &receiver_agents,
-                                ),
-                                statuses,
-                                receiver_thread_ids: receiver_thread_ids.clone(),
-                                pending_thread_ids: Vec::new(),
-                                completion_reason: CollabWaitingCompletionReason::Terminal,
-                                timed_out: false,
-                            }
-                            .into(),
-                        )
-                        .await;
                     return Err(collab_agent_error(*id, err));
                 }
             }

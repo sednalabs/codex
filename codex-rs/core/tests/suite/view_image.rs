@@ -161,6 +161,7 @@ async fn assert_user_turn_local_image_resizes_to(
 
     codex
         .submit(Op::UserTurn {
+            environments: None,
             items: vec![UserInput::LocalImage {
                 path: abs_path.clone(),
             }],
@@ -280,6 +281,7 @@ async fn view_image_tool_attaches_local_image() -> anyhow::Result<()> {
 
     codex
         .submit(Op::UserTurn {
+            environments: None,
             items: vec![UserInput::Text {
                 text: "please add the screenshot".into(),
                 text_elements: Vec::new(),
@@ -411,6 +413,7 @@ async fn view_image_tool_can_preserve_original_resolution_when_requested_on_gpt5
 
     codex
         .submit(Op::UserTurn {
+            environments: None,
             items: vec![UserInput::Text {
                 text: "please add the original screenshot".into(),
                 text_elements: Vec::new(),
@@ -510,6 +513,7 @@ async fn view_image_tool_errors_clearly_for_unsupported_detail_values() -> anyho
 
     codex
         .submit(Op::UserTurn {
+            environments: None,
             items: vec![UserInput::Text {
                 text: "please attach the image at low detail".into(),
                 text_elements: Vec::new(),
@@ -600,6 +604,7 @@ async fn view_image_tool_treats_null_detail_as_omitted() -> anyhow::Result<()> {
 
     codex
         .submit(Op::UserTurn {
+            environments: None,
             items: vec![UserInput::Text {
                 text: "please attach the image with a null detail".into(),
                 text_elements: Vec::new(),
@@ -632,7 +637,10 @@ async fn view_image_tool_treats_null_detail_as_omitted() -> anyhow::Result<()> {
         .and_then(Value::as_array)
         .expect("function_call_output should be a content item array");
     assert_eq!(output_items.len(), 1);
-    assert_eq!(output_items[0].get("detail"), None);
+    assert_eq!(
+        output_items[0].get("detail").and_then(Value::as_str),
+        Some("high")
+    );
     let image_url = output_items[0]
         .get("image_url")
         .and_then(Value::as_str)
@@ -697,6 +705,7 @@ async fn view_image_tool_resizes_when_model_lacks_original_detail_support() -> a
 
     codex
         .submit(Op::UserTurn {
+            environments: None,
             items: vec![UserInput::Text {
                 text: "please add the screenshot".into(),
                 text_elements: Vec::new(),
@@ -729,7 +738,10 @@ async fn view_image_tool_resizes_when_model_lacks_original_detail_support() -> a
         .and_then(Value::as_array)
         .expect("function_call_output should be a content item array");
     assert_eq!(output_items.len(), 1);
-    assert_eq!(output_items[0].get("detail"), None);
+    assert_eq!(
+        output_items[0].get("detail").and_then(Value::as_str),
+        Some("high")
+    );
 
     let image_url = output_items[0]
         .get("image_url")
@@ -798,6 +810,7 @@ async fn view_image_tool_does_not_force_original_resolution_with_capability_only
 
     codex
         .submit(Op::UserTurn {
+            environments: None,
             items: vec![UserInput::Text {
                 text: "please add the screenshot".into(),
                 text_elements: Vec::new(),
@@ -830,7 +843,10 @@ async fn view_image_tool_does_not_force_original_resolution_with_capability_only
         .and_then(Value::as_array)
         .expect("function_call_output should be a content item array");
     assert_eq!(output_items.len(), 1);
-    assert_eq!(output_items[0].get("detail"), None);
+    assert_eq!(
+        output_items[0].get("detail").and_then(Value::as_str),
+        Some("high")
+    );
     let image_url = output_items[0]
         .get("image_url")
         .and_then(Value::as_str)
@@ -902,6 +918,7 @@ await codex.emitImage(out);
     let session_model = session_configured.model.clone();
     codex
         .submit(Op::UserTurn {
+            environments: None,
             items: vec![UserInput::Text {
                 text: "use js_repl to write an image and attach it".into(),
                 text_elements: Vec::new(),
@@ -1027,6 +1044,7 @@ console.log(out.type);
     let session_model = session_configured.model.clone();
     codex
         .submit(Op::UserTurn {
+            environments: None,
             items: vec![UserInput::Text {
                 text: "use js_repl to write an image but do not emit it".into(),
                 text_elements: Vec::new(),
@@ -1120,6 +1138,7 @@ async fn view_image_tool_errors_when_path_is_directory() -> anyhow::Result<()> {
 
     codex
         .submit(Op::UserTurn {
+            environments: None,
             items: vec![UserInput::Text {
                 text: "please attach the folder".into(),
                 text_elements: Vec::new(),
@@ -1201,6 +1220,7 @@ async fn view_image_tool_errors_for_non_image_files() -> anyhow::Result<()> {
 
     codex
         .submit(Op::UserTurn {
+            environments: None,
             items: vec![UserInput::Text {
                 text: "please use the view_image tool to read the json file".into(),
                 text_elements: Vec::new(),
@@ -1287,6 +1307,7 @@ async fn view_image_tool_errors_when_file_missing() -> anyhow::Result<()> {
 
     codex
         .submit(Op::UserTurn {
+            environments: None,
             items: vec![UserInput::Text {
                 text: "please attach the missing image".into(),
                 text_elements: Vec::new(),
@@ -1376,6 +1397,7 @@ async fn view_image_tool_returns_unsupported_message_for_text_only_model() -> an
         supports_parallel_tool_calls: false,
         supports_image_detail_original: false,
         context_window: Some(272_000),
+        max_context_window: None,
         auto_compact_token_limit: None,
         effective_context_window_percent: 95,
         experimental_supported_tools: Vec::new(),
@@ -1423,6 +1445,7 @@ async fn view_image_tool_returns_unsupported_message_for_text_only_model() -> an
 
     codex
         .submit(Op::UserTurn {
+            environments: None,
             items: vec![UserInput::Text {
                 text: "please attach the image".into(),
                 text_elements: Vec::new(),
@@ -1504,6 +1527,7 @@ async fn replaces_invalid_local_image_after_bad_request() -> anyhow::Result<()> 
 
     codex
         .submit(Op::UserTurn {
+            environments: None,
             items: vec![UserInput::LocalImage {
                 path: abs_path.clone(),
             }],

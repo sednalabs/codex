@@ -138,49 +138,6 @@ pub(super) fn test_model_catalog(config: &Config) -> Arc<ModelCatalog> {
     ))
 }
 
-pub(super) fn active_hook_cell(chat: &ChatWidget) -> Option<&crate::history_cell::HookCell> {
-    chat.active_cell.as_ref().and_then(|cell| {
-        cell.as_any()
-            .downcast_ref::<crate::history_cell::HookCell>()
-    })
-}
-
-pub(super) fn active_hook_blob(chat: &ChatWidget) -> String {
-    active_hook_cell(chat)
-        .map(|cell| lines_to_single_string(&cell.transcript_lines(/*width*/ 80)))
-        .unwrap_or_else(|| "<empty>\n".to_string())
-}
-
-pub(super) fn reveal_running_hooks(chat: &mut ChatWidget) {
-    let Some(cell) = chat.active_cell.as_mut().and_then(|cell| {
-        cell.as_any_mut()
-            .downcast_mut::<crate::history_cell::HookCell>()
-    }) else {
-        panic!("expected an active hook cell");
-    };
-    cell.reveal_running_runs_now_for_test();
-}
-
-pub(super) fn reveal_running_hooks_after_delayed_redraw(chat: &mut ChatWidget) {
-    let Some(cell) = chat.active_cell.as_mut().and_then(|cell| {
-        cell.as_any_mut()
-            .downcast_mut::<crate::history_cell::HookCell>()
-    }) else {
-        panic!("expected an active hook cell");
-    };
-    cell.reveal_running_runs_after_delayed_redraw_for_test();
-}
-
-pub(super) fn expire_quiet_hook_linger(chat: &mut ChatWidget) {
-    let Some(cell) = chat.active_cell.as_mut().and_then(|cell| {
-        cell.as_any_mut()
-            .downcast_mut::<crate::history_cell::HookCell>()
-    }) else {
-        panic!("expected an active hook cell");
-    };
-    cell.expire_quiet_runs_now_for_test();
-}
-
 // --- Helpers for tests that need direct construction and event draining ---
 pub(super) async fn make_chatwidget_manual(
     model_override: Option<&str>,
@@ -240,22 +197,24 @@ pub(super) async fn make_chatwidget_manual(
         initial_user_message: None,
         status_account_display: None,
         token_info: None,
-        session_total_token_usage: TokenUsage::default(),
         rate_limit_snapshots_by_limit_id: BTreeMap::new(),
         refreshing_status_outputs: Vec::new(),
         next_status_refresh_request_id: 0,
         plan_type: None,
+        codex_rate_limit_reached_type: None,
         rate_limit_warnings: RateLimitWarningState::default(),
         rate_limit_switch_prompt: RateLimitSwitchPromptState::default(),
+        add_credits_nudge_email_in_flight: None,
         adaptive_chunking: crate::streaming::chunking::AdaptiveChunkingPolicy::default(),
         stream_controller: None,
         plan_stream_controller: None,
+        clipboard_lease: None,
         pending_guardian_review_status: PendingGuardianReviewStatus::default(),
         terminal_title_status_kind: TerminalTitleStatusKind::Working,
-        compaction_turn_active: false,
-        last_copyable_output: None,
-        pending_turn_copyable_output: None,
         last_agent_markdown: None,
+        agent_turn_markdowns: Vec::new(),
+        visible_user_turn_count: 0,
+        copy_history_evicted_by_rollback: false,
         latest_proposed_plan_markdown: None,
         saw_copy_source_this_turn: false,
         running_commands: HashMap::new(),
@@ -264,7 +223,6 @@ pub(super) async fn make_chatwidget_manual(
         suppressed_exec_calls: HashSet::new(),
         skills_all: Vec::new(),
         skills_initial_state: None,
-        instruction_source_paths: Vec::new(),
         last_unified_wait: None,
         unified_exec_wait_streak: None,
         turn_sleep_inhibitor: SleepInhibitor::new(prevent_idle_sleep),
@@ -279,7 +237,6 @@ pub(super) async fn make_chatwidget_manual(
         mcp_startup_pending_next_round_saw_starting: false,
         connectors_cache: ConnectorsCacheState::default(),
         connectors_partial_snapshot: None,
-        clipboard_lease: None,
         plugin_install_apps_needing_auth: Vec::new(),
         plugin_install_auth_flow: None,
         plugins_active_tab_id: None,
@@ -291,19 +248,24 @@ pub(super) async fn make_chatwidget_manual(
         reasoning_buffer: String::new(),
         full_reasoning_buffer: String::new(),
         current_status: StatusIndicatorState::working(),
+        active_hook_cell: None,
         retry_status_header: None,
         pending_status_indicator_restore: false,
         suppress_queue_autosend: false,
         thread_id: None,
+        last_turn_id: None,
         thread_name: None,
+        thread_rename_block_message: None,
+        active_side_conversation: false,
+        normal_placeholder_text: "Ask Codex to do anything".to_string(),
+        side_placeholder_text: "Check recently modified functions for compatibility".to_string(),
         forked_from: None,
+        interrupted_turn_notice_mode: InterruptedTurnNoticeMode::Default,
         frame_requester: FrameRequester::test_dummy(),
         show_welcome_banner: true,
         startup_tooltip_override: None,
         queued_user_messages: VecDeque::new(),
-        queued_slash_commands: VecDeque::new(),
-        queued_follow_up_order: VecDeque::new(),
-        queued_follow_up_insert_order: VecDeque::new(),
+        user_turn_pending_start: false,
         rejected_steers_queue: VecDeque::new(),
         pending_steers: VecDeque::new(),
         submit_pending_steers_after_interrupt: false,
@@ -315,7 +277,6 @@ pub(super) async fn make_chatwidget_manual(
         quit_shortcut_key: None,
         is_review_mode: false,
         pre_review_token_info: None,
-        pending_pre_review_token_restore: false,
         needs_final_message_separator: false,
         had_work_activity: false,
         saw_plan_update_this_turn: false,
@@ -329,6 +290,7 @@ pub(super) async fn make_chatwidget_manual(
         feedback: codex_feedback::CodexFeedback::new(),
         current_rollout_path: None,
         current_cwd: None,
+        instruction_source_paths: Vec::new(),
         session_network_proxy: None,
         status_line_invalid_items_warned: Arc::new(AtomicBool::new(false)),
         terminal_title_invalid_items_warned: Arc::new(AtomicBool::new(false)),
@@ -397,22 +359,72 @@ pub(super) fn assert_no_submit_op(op_rx: &mut tokio::sync::mpsc::UnboundedReceiv
     }
 }
 
-pub(super) fn submit_composer_text(chat: &mut ChatWidget, text: &str) {
-    chat.bottom_pane
-        .set_composer_text(text.to_string(), Vec::new(), Vec::new());
-    chat.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
-}
-
-pub(super) fn recall_latest_after_clearing(chat: &mut ChatWidget) -> String {
-    chat.bottom_pane
-        .set_composer_text(String::new(), Vec::new(), Vec::new());
-    chat.handle_key_event(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
-    chat.bottom_pane.composer_text()
-}
-
 pub(crate) fn set_chatgpt_auth(chat: &mut ChatWidget) {
     chat.has_chatgpt_account = true;
     chat.model_catalog = test_model_catalog(&chat.config);
+}
+
+fn test_model_info(slug: &str, priority: i32, supports_fast_mode: bool) -> ModelInfo {
+    let additional_speed_tiers = if supports_fast_mode {
+        vec![codex_protocol::openai_models::SPEED_TIER_FAST]
+    } else {
+        Vec::new()
+    };
+    serde_json::from_value(json!({
+        "slug": slug,
+        "display_name": slug,
+        "description": format!("{slug} description"),
+        "default_reasoning_level": "medium",
+        "supported_reasoning_levels": [{"effort": "medium", "description": "medium"}],
+        "shell_type": "shell_command",
+        "visibility": "list",
+        "supported_in_api": true,
+        "priority": priority,
+        "additional_speed_tiers": additional_speed_tiers,
+        "availability_nux": null,
+        "upgrade": null,
+        "base_instructions": "base instructions",
+        "supports_reasoning_summaries": false,
+        "default_reasoning_summary": "none",
+        "support_verbosity": false,
+        "default_verbosity": null,
+        "apply_patch_tool_type": null,
+        "truncation_policy": {"mode": "bytes", "limit": 10_000},
+        "supports_parallel_tool_calls": false,
+        "supports_image_detail_original": false,
+        "context_window": 272_000,
+        "experimental_supported_tools": [],
+    }))
+    .expect("valid model info")
+}
+
+pub(crate) fn set_fast_mode_test_catalog(chat: &mut ChatWidget) {
+    let models: Vec<ModelPreset> = ModelsResponse {
+        models: vec![
+            test_model_info(
+                "gpt-5.4", /*priority*/ 0, /*supports_fast_mode*/ true,
+            ),
+            test_model_info(
+                "gpt-5.3-codex",
+                /*priority*/ 1,
+                /*supports_fast_mode*/ false,
+            ),
+        ],
+    }
+    .models
+    .into_iter()
+    .map(Into::into)
+    .collect();
+
+    chat.model_catalog = Arc::new(ModelCatalog::new(
+        models,
+        CollaborationModesConfig {
+            default_mode_request_user_input: chat
+                .config
+                .features
+                .enabled(Feature::DefaultModeRequestUserInput),
+        },
+    ));
 }
 
 pub(crate) async fn make_chatwidget_manual_with_sender() -> (
@@ -426,39 +438,20 @@ pub(crate) async fn make_chatwidget_manual_with_sender() -> (
     (widget, app_event_tx, rx, op_rx)
 }
 
-pub(super) struct DrainedAppEvents {
-    pub(super) history_cells: Vec<Vec<ratatui::text::Line<'static>>>,
-    pub(super) other_events: Vec<AppEvent>,
-}
-
-pub(super) fn drain_app_events(
-    rx: &mut tokio::sync::mpsc::UnboundedReceiver<AppEvent>,
-) -> DrainedAppEvents {
-    let mut history_cells = Vec::new();
-    let mut other_events = Vec::new();
-    while let Ok(ev) = rx.try_recv() {
-        match ev {
-            AppEvent::InsertHistoryCell(cell) => {
-                let mut lines = cell.display_lines(/*width*/ 80);
-                if !cell.is_stream_continuation() && !history_cells.is_empty() && !lines.is_empty()
-                {
-                    lines.insert(0, "".into());
-                }
-                history_cells.push(lines);
-            }
-            other => other_events.push(other),
-        }
-    }
-    DrainedAppEvents {
-        history_cells,
-        other_events,
-    }
-}
-
 pub(super) fn drain_insert_history(
     rx: &mut tokio::sync::mpsc::UnboundedReceiver<AppEvent>,
 ) -> Vec<Vec<ratatui::text::Line<'static>>> {
-    drain_app_events(rx).history_cells
+    let mut out = Vec::new();
+    while let Ok(ev) = rx.try_recv() {
+        if let AppEvent::InsertHistoryCell(cell) = ev {
+            let mut lines = cell.display_lines(/*width*/ 80);
+            if !cell.is_stream_continuation() && !out.is_empty() && !lines.is_empty() {
+                lines.insert(0, "".into());
+            }
+            out.push(lines)
+        }
+    }
+    out
 }
 
 pub(super) fn lines_to_single_string(lines: &[ratatui::text::Line<'static>]) -> String {
@@ -488,45 +481,6 @@ pub(super) fn make_token_info(total_tokens: i64, context_window: i64) -> TokenUs
         total_token_usage: usage(total_tokens),
         last_token_usage: usage(total_tokens),
         model_context_window: Some(context_window),
-    }
-}
-
-pub(super) fn test_token_count_event(
-    info: Option<TokenUsageInfo>,
-    rate_limits: Option<RateLimitSnapshot>,
-) -> TokenCountEvent {
-    TokenCountEvent {
-        info,
-        rate_limits,
-        provider: None,
-        model_used: None,
-    }
-}
-
-pub(super) fn test_turn_complete_event(
-    turn_id: impl Into<String>,
-    last_agent_message: Option<impl Into<String>>,
-) -> TurnCompleteEvent {
-    TurnCompleteEvent {
-        turn_id: turn_id.into(),
-        last_agent_message: last_agent_message.map(Into::into),
-        compaction_events_in_turn: 0,
-    }
-}
-
-pub(super) fn default_thread_input_state(chat: &ChatWidget) -> ThreadInputState {
-    ThreadInputState {
-        composer: None,
-        pending_steers: VecDeque::new(),
-        rejected_steers_queue: VecDeque::new(),
-        queued_user_messages: VecDeque::new(),
-        queued_slash_commands: VecDeque::new(),
-        queued_follow_up_order: VecDeque::new(),
-        queued_follow_up_insert_order: VecDeque::new(),
-        current_collaboration_mode: chat.current_collaboration_mode.clone(),
-        active_collaboration_mask: chat.active_collaboration_mask.clone(),
-        task_running: false,
-        agent_turn_running: false,
     }
 }
 
@@ -729,6 +683,35 @@ pub(super) fn active_blob(chat: &ChatWidget) -> String {
     lines_to_single_string(&lines)
 }
 
+pub(super) fn active_hook_blob(chat: &ChatWidget) -> String {
+    let Some(cell) = chat.active_hook_cell.as_ref() else {
+        return "<empty>\n".to_string();
+    };
+    let lines = cell.display_lines(/*width*/ 80);
+    lines_to_single_string(&lines)
+}
+
+pub(super) fn expire_quiet_hook_linger(chat: &mut ChatWidget) {
+    if let Some(cell) = chat.active_hook_cell.as_mut() {
+        cell.expire_quiet_runs_now_for_test();
+    }
+    chat.pre_draw_tick();
+}
+
+pub(super) fn reveal_running_hooks(chat: &mut ChatWidget) {
+    if let Some(cell) = chat.active_hook_cell.as_mut() {
+        cell.reveal_running_runs_now_for_test();
+    }
+    chat.pre_draw_tick();
+}
+
+pub(super) fn reveal_running_hooks_after_delayed_redraw(chat: &mut ChatWidget) {
+    if let Some(cell) = chat.active_hook_cell.as_mut() {
+        cell.reveal_running_runs_after_delayed_redraw_for_test();
+    }
+    chat.pre_draw_tick();
+}
+
 pub(super) fn get_available_model(chat: &ChatWidget, model: &str) -> ModelPreset {
     let models = chat
         .model_catalog
@@ -754,9 +737,9 @@ pub(super) async fn assert_shift_left_edits_most_recent_queued_message_for_termi
 
     // Seed two queued messages.
     chat.queued_user_messages
-        .push_back(UserMessage::from("first queued".to_string()));
+        .push_back(UserMessage::from("first queued".to_string()).into());
     chat.queued_user_messages
-        .push_back(UserMessage::from("second queued".to_string()));
+        .push_back(UserMessage::from("second queued".to_string()).into());
     chat.refresh_pending_input_preview();
 
     // Press Shift+Left to edit the most recent (last) queued message.
@@ -975,7 +958,7 @@ pub(super) fn plugins_test_detail(
 ) -> PluginDetail {
     PluginDetail {
         marketplace_name: "ChatGPT Marketplace".to_string(),
-        marketplace_path: plugins_test_absolute_path("marketplaces/chatgpt"),
+        marketplace_path: Some(plugins_test_absolute_path("marketplaces/chatgpt")),
         summary,
         description: description.map(str::to_string),
         skills: skills
@@ -985,7 +968,9 @@ pub(super) fn plugins_test_detail(
                 description: format!("{name} description"),
                 short_description: None,
                 interface: None,
-                path: plugins_test_absolute_path(&format!("skills/{name}/SKILL.md")),
+                path: Some(plugins_test_absolute_path(&format!(
+                    "skills/{name}/SKILL.md"
+                ))),
                 enabled: true,
             })
             .collect(),
@@ -1045,6 +1030,18 @@ pub(super) async fn assert_hook_events_snapshot(
             },
         }),
     });
+    assert!(
+        drain_insert_history(&mut rx).is_empty(),
+        "hook start should update the live hook cell instead of writing history"
+    );
+    reveal_running_hooks(&mut chat);
+    assert!(
+        active_hook_blob(&chat).contains(&format!(
+            "Running {} hook: {status_message}",
+            hook_event_label(event_name)
+        )),
+        "hook start should render in the live hook cell"
+    );
 
     chat.handle_codex_event(Event {
         id: "hook-1".into(),

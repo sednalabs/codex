@@ -933,6 +933,7 @@ impl RequestUserInputOverlay {
             | InputResult::Queued {
                 text,
                 text_elements,
+                ..
             }
             | InputResult::QueuedFront {
                 text,
