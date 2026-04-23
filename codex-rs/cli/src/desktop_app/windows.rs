@@ -6,6 +6,7 @@ use tokio::process::Command;
 const CODEX_WINDOWS_INSTALLER_URL: &str =
     "https://get.microsoft.com/installer/download/9PLM9XGG6VKS?cid=website_cta_psi";
 const CODEX_MICROSOFT_STORE_WEB_URL: &str = "https://apps.microsoft.com/detail/9plm9xgg6vks";
+const CODEX_WINDOWS_STORE_ID: &str = "9PLM9XGG6VKS";
 
 pub async fn run_windows_app_open_or_install(
     workspace: PathBuf,
@@ -36,10 +37,22 @@ pub async fn run_windows_app_open_or_install(
 }
 
 async fn find_codex_app_id() -> anyhow::Result<Option<String>> {
+    let script = format!(
+        r#"
+$apps = @(Get-StartApps | Where-Object {{ $_.Name -eq 'Codex' }})
+$preferred = $apps | Where-Object {{ $_.AppID -match '{store_id}' }} | Select-Object -First 1
+if ($preferred) {{
+    $preferred.AppID
+}} elseif ($apps.Count -eq 1) {{
+    $apps[0].AppID
+}}
+"#,
+        store_id = CODEX_WINDOWS_STORE_ID
+    );
     let output = Command::new("powershell.exe")
         .arg("-NoProfile")
         .arg("-Command")
-        .arg("Get-StartApps -Name 'Codex' | Select-Object -First 1 -ExpandProperty AppID")
+        .arg(script)
         .output()
         .await
         .context("failed to invoke `powershell.exe`")?;
