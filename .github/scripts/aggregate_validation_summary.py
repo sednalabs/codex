@@ -40,9 +40,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--run-smoke-gate", required=True)
     parser.add_argument("--smoke-gate-kind", default="")
     parser.add_argument("--smoke-gate-result", default="skipped")
-    parser.add_argument("--light-result", default="skipped")
-    parser.add_argument("--rust-result", default="skipped")
-    parser.add_argument("--heavy-result", default="skipped")
+    parser.add_argument("--workflow-result", default="skipped")
+    parser.add_argument("--node-result", default="skipped")
+    parser.add_argument("--rust-minimal-result", default="skipped")
+    parser.add_argument("--rust-integration-result", default="skipped")
+    parser.add_argument("--release-result", default="skipped")
     parser.add_argument("--run-artifact", required=True)
     parser.add_argument("--artifact-result", default="skipped")
     parser.add_argument("--matrix-fail-fast", default="false")
@@ -187,7 +189,9 @@ def build_results(
         lane_id = lane["lane_id"]
         payload = actual_by_lane.get(lane_id)
         if payload and payload.get("outcome") == "failure":
-            setup_class = str(lane.get("setup_class") or payload.get("setup_class") or "rust")
+            setup_class = str(
+                lane.get("setup_class") or payload.get("setup_class") or "rust_minimal"
+            )
             setup_class_has_failure_artifact[setup_class] = True
 
     results: list[dict] = []
@@ -202,7 +206,7 @@ def build_results(
                     else "missing"
                 )
             else:
-                setup_class = str(lane.get("setup_class") or "rust")
+                setup_class = str(lane.get("setup_class") or "rust_minimal")
                 job_result = setup_class_results.get(setup_class, "skipped")
                 cancelled_by_fail_fast = (
                     matrix_fail_fast
@@ -226,7 +230,7 @@ def build_results(
                     "log_available": False,
                     "lane_phase": lane.get("lane_phase", "downstream_lanes"),
                     "frontier_default": bool(lane.get("frontier_default", False)),
-                    "setup_class": lane.get("setup_class", "rust"),
+                    "setup_class": lane.get("setup_class", "rust_minimal"),
                     "frontier_role": lane.get("frontier_role", "sentinel"),
                     "summary_family": lane.get("summary_family", lane_id),
                     "cost_class": lane.get("cost_class", "medium"),
@@ -240,7 +244,7 @@ def build_results(
             lane.update(payload)
             lane.setdefault("status_class", lane.get("status_class", "active"))
             lane.setdefault("frontier_default", bool(lane.get("frontier_default", False)))
-            lane.setdefault("setup_class", lane.get("setup_class", "rust"))
+            lane.setdefault("setup_class", lane.get("setup_class", "rust_minimal"))
             lane.setdefault("frontier_role", lane.get("frontier_role", "sentinel"))
             lane.setdefault("summary_family", lane.get("summary_family", lane_id))
             lane.setdefault("cost_class", lane.get("cost_class", "medium"))
@@ -370,15 +374,24 @@ def derive_primary_and_secondary(
     return primary, secondary
 
 
-def summarize_runtime(results: list[dict]) -> tuple[int, dict[str, int], list[dict]]:
+def summarize_runtime(
+    results: list[dict],
+) -> tuple[int, dict[str, int], dict[str, int], list[dict]]:
     total_duration_ms = 0
     phase_runtime_ms: dict[str, int] = {}
+    timing_breakdown_ms: dict[str, int] = {"setup": 0, "command": 0}
     lanes_with_runtime: list[dict] = []
     for lane in results:
         duration_ms = lane.get("duration_ms")
         if not isinstance(duration_ms, int) or duration_ms < 0:
             continue
         total_duration_ms += duration_ms
+        setup_duration_ms = lane.get("setup_duration_ms")
+        if isinstance(setup_duration_ms, int) and setup_duration_ms >= 0:
+            timing_breakdown_ms["setup"] += setup_duration_ms
+        command_duration_ms = lane.get("command_duration_ms")
+        if isinstance(command_duration_ms, int) and command_duration_ms >= 0:
+            timing_breakdown_ms["command"] += command_duration_ms
         lane_phase = str(lane.get("lane_phase") or "downstream_lanes")
         phase_runtime_ms[lane_phase] = phase_runtime_ms.get(lane_phase, 0) + duration_ms
         lanes_with_runtime.append(
@@ -386,6 +399,8 @@ def summarize_runtime(results: list[dict]) -> tuple[int, dict[str, int], list[di
                 "lane_id": lane.get("lane_id"),
                 "lane_phase": lane_phase,
                 "duration_ms": duration_ms,
+                "setup_duration_ms": setup_duration_ms,
+                "command_duration_ms": command_duration_ms,
                 "outcome": lane.get("outcome"),
                 "setup_class": lane.get("setup_class"),
             }
@@ -393,6 +408,7 @@ def summarize_runtime(results: list[dict]) -> tuple[int, dict[str, int], list[di
     return (
         total_duration_ms,
         dict(sorted(phase_runtime_ms.items(), key=lambda item: item[1], reverse=True)),
+        timing_breakdown_ms,
         sorted(lanes_with_runtime, key=lambda lane: lane["duration_ms"], reverse=True)[:10],
     )
 
@@ -442,9 +458,11 @@ def main() -> None:
 
     actual_by_lane = load_lane_summaries(Path(args.lane_summary_dir))
     setup_class_results = {
-        "light": args.light_result,
-        "rust": args.rust_result,
-        "heavy": args.heavy_result,
+        "workflow": args.workflow_result,
+        "node": args.node_result,
+        "rust_minimal": args.rust_minimal_result,
+        "rust_integration": args.rust_integration_result,
+        "release": args.release_result,
     }
     matrix_fail_fast = parse_bool(args.matrix_fail_fast)
 
@@ -474,8 +492,19 @@ def main() -> None:
     primary = sorted(primary, key=blocker_sort_key)
     secondary = sorted(secondary, key=blocker_sort_key)
     queue = [*primary, *secondary]
-    total_duration_ms, phase_runtime_ms, top_slowest_lanes = summarize_runtime(results)
-    downstream_result = combined_result(args.light_result, args.rust_result, args.heavy_result)
+    (
+        total_duration_ms,
+        phase_runtime_ms,
+        timing_breakdown_ms,
+        top_slowest_lanes,
+    ) = summarize_runtime(results)
+    downstream_result = combined_result(
+        args.workflow_result,
+        args.node_result,
+        args.rust_minimal_result,
+        args.rust_integration_result,
+        args.release_result,
+    )
 
     lane_count = len(results)
     successful_lane_count = sum(1 for lane in results if lane["outcome"] in SUCCESS_OUTCOMES)
@@ -521,6 +550,7 @@ def main() -> None:
         "other_lane_count": other_lane_count,
         "total_duration_ms": total_duration_ms,
         "phase_runtime_ms": phase_runtime_ms,
+        "timing_breakdown_ms": timing_breakdown_ms,
         "top_slowest_lanes": top_slowest_lanes,
         "first_failure": queue[0] if queue else None,
         "failed_lanes": [
@@ -568,17 +598,29 @@ def main() -> None:
                 "kind": args.smoke_gate_kind,
                 "result": args.smoke_gate_result,
             },
-            "light_lanes": {
-                "planned": any(lane.get("setup_class") == "light" for lane in planned_matrix),
-                "result": args.light_result,
+            "workflow_lanes": {
+                "planned": any(lane.get("setup_class") == "workflow" for lane in planned_matrix),
+                "result": args.workflow_result,
             },
-            "rust_lanes": {
-                "planned": any(lane.get("setup_class") == "rust" for lane in planned_matrix),
-                "result": args.rust_result,
+            "node_lanes": {
+                "planned": any(lane.get("setup_class") == "node" for lane in planned_matrix),
+                "result": args.node_result,
             },
-            "heavy_lanes": {
-                "planned": any(lane.get("setup_class") == "heavy" for lane in planned_matrix),
-                "result": args.heavy_result,
+            "rust_minimal_lanes": {
+                "planned": any(
+                    lane.get("setup_class") == "rust_minimal" for lane in planned_matrix
+                ),
+                "result": args.rust_minimal_result,
+            },
+            "rust_integration_lanes": {
+                "planned": any(
+                    lane.get("setup_class") == "rust_integration" for lane in planned_matrix
+                ),
+                "result": args.rust_integration_result,
+            },
+            "release_lanes": {
+                "planned": any(lane.get("setup_class") == "release" for lane in planned_matrix),
+                "result": args.release_result,
             },
             "downstream_lanes": {
                 "planned": parse_bool(args.run_selected_lanes),
