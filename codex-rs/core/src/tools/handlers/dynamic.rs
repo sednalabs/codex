@@ -285,6 +285,7 @@ mod tests {
     use crate::tools::context::ToolInvocation;
     use crate::tools::context::ToolOutput;
     use crate::tools::context::ToolPayload;
+    use crate::tools::hook_names::HookToolName;
     use crate::tools::registry::ToolHandler;
     use crate::turn_diff_tracker::TurnDiffTracker;
     use codex_protocol::dynamic_tools::DynamicToolCapability;
@@ -294,6 +295,7 @@ mod tests {
     use serde_json::json;
     use std::sync::Arc;
     use tokio::sync::Mutex;
+    use tokio_util::sync::CancellationToken;
 
     #[test]
     fn dynamic_tool_command_uses_compact_json_arguments() {
@@ -319,6 +321,7 @@ mod tests {
                 .is_mutating(&ToolInvocation {
                     session: session.into(),
                     turn: turn.into(),
+                    cancellation_token: CancellationToken::new(),
                     tracker: Arc::new(Mutex::new(TurnDiffTracker::new())),
                     call_id: "call-1".to_string(),
                     tool_name: codex_tools::ToolName::plain(ANDROID_OBSERVE_TOOL_NAME),
@@ -356,6 +359,7 @@ mod tests {
                 .is_mutating(&ToolInvocation {
                     session: session.into(),
                     turn: turn.into(),
+                    cancellation_token: CancellationToken::new(),
                     tracker: Arc::new(Mutex::new(TurnDiffTracker::new())),
                     call_id: "call-3".to_string(),
                     tool_name: codex_tools::ToolName::plain("brokered_read"),
@@ -374,6 +378,7 @@ mod tests {
         let invocation = ToolInvocation {
             session: session.into(),
             turn: turn.into(),
+            cancellation_token: CancellationToken::new(),
             tracker: Arc::new(Mutex::new(TurnDiffTracker::new())),
             call_id: "call-2".to_string(),
             tool_name: codex_tools::ToolName::plain(ANDROID_OBSERVE_TOOL_NAME),

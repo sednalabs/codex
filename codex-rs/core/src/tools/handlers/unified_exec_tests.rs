@@ -26,6 +26,7 @@ use crate::turn_diff_tracker::TurnDiffTracker;
 use tokio::sync::Mutex;
 use tokio::time::Duration;
 use tokio::time::Instant;
+use tokio_util::sync::CancellationToken;
 
 fn invocation(
     session: Arc<crate::session::session::Session>,
@@ -36,6 +37,7 @@ fn invocation(
     ToolInvocation {
         session,
         turn,
+        cancellation_token: CancellationToken::new(),
         tracker: Arc::new(Mutex::new(TurnDiffTracker::default())),
         call_id: "call-unified-exec-test".to_string(),
         tool_name: codex_tools::ToolName::plain(tool_name),

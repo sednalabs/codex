@@ -107,10 +107,10 @@ mod tests {
             args.permissions,
             codex_protocol::request_permissions::RequestPermissionProfile::from(
                 PermissionProfile {
-                    file_system: Some(FileSystemPermissions {
-                        read: None,
-                        write: Some(vec![AbsolutePathBuf::try_from(expected_write)?]),
-                    }),
+                    file_system: Some(FileSystemPermissions::from_read_write_roots(
+                        None,
+                        Some(vec![AbsolutePathBuf::try_from(expected_write)?]),
+                    )),
                     ..Default::default()
                 }
             )

@@ -3106,6 +3106,9 @@ mod tests {
     use tokio::sync::Mutex;
     use tokio::sync::mpsc;
 
+    const TEST_TURN_COMPLETED_AT: i64 = 1_716_000_456;
+    const TEST_TURN_DURATION_MS: i64 = 1_234;
+
     fn new_thread_state() -> Arc<Mutex<ThreadState>> {
         Arc::new(Mutex::new(ThreadState::default()))
     }

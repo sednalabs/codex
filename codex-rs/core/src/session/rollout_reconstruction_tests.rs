@@ -151,6 +151,7 @@ async fn record_initial_history_resumed_hydrates_previous_turn_settings_from_lif
             codex_protocol::protocol::TurnCompleteEvent {
                 turn_id,
                 last_agent_message: None,
+                compaction_events_in_turn: 0,
                 completed_at: None,
                 duration_ms: None,
                 time_to_first_token_ms: None,
@@ -219,6 +220,7 @@ async fn reconstruct_history_rollback_keeps_history_and_metadata_in_sync_for_com
             codex_protocol::protocol::TurnCompleteEvent {
                 turn_id: first_turn_id,
                 last_agent_message: None,
+                compaction_events_in_turn: 0,
                 completed_at: None,
                 duration_ms: None,
                 time_to_first_token_ms: None,
@@ -247,6 +249,7 @@ async fn reconstruct_history_rollback_keeps_history_and_metadata_in_sync_for_com
             codex_protocol::protocol::TurnCompleteEvent {
                 turn_id: rolled_back_turn_id,
                 last_agent_message: None,
+                compaction_events_in_turn: 0,
                 completed_at: None,
                 duration_ms: None,
                 time_to_first_token_ms: None,
@@ -317,6 +320,7 @@ async fn reconstruct_history_rollback_keeps_history_and_metadata_in_sync_for_inc
             codex_protocol::protocol::TurnCompleteEvent {
                 turn_id: first_turn_id,
                 last_agent_message: None,
+                compaction_events_in_turn: 0,
                 completed_at: None,
                 duration_ms: None,
                 time_to_first_token_ms: None,
@@ -407,6 +411,7 @@ async fn reconstruct_history_rollback_skips_non_user_turns_for_history_and_metad
             codex_protocol::protocol::TurnCompleteEvent {
                 turn_id: first_turn_id,
                 last_agent_message: None,
+                compaction_events_in_turn: 0,
                 completed_at: None,
                 duration_ms: None,
                 time_to_first_token_ms: None,
@@ -434,6 +439,7 @@ async fn reconstruct_history_rollback_skips_non_user_turns_for_history_and_metad
             codex_protocol::protocol::TurnCompleteEvent {
                 turn_id: second_turn_id,
                 last_agent_message: None,
+                compaction_events_in_turn: 0,
                 completed_at: None,
                 duration_ms: None,
                 time_to_first_token_ms: None,
@@ -452,6 +458,7 @@ async fn reconstruct_history_rollback_skips_non_user_turns_for_history_and_metad
             codex_protocol::protocol::TurnCompleteEvent {
                 turn_id: standalone_turn_id,
                 last_agent_message: None,
+                compaction_events_in_turn: 0,
                 completed_at: None,
                 duration_ms: None,
                 time_to_first_token_ms: None,
@@ -525,6 +532,7 @@ async fn reconstruct_history_rollback_counts_inter_agent_assistant_turns() {
             codex_protocol::protocol::TurnCompleteEvent {
                 turn_id: first_turn_id,
                 last_agent_message: None,
+                compaction_events_in_turn: 0,
                 completed_at: None,
                 duration_ms: None,
                 time_to_first_token_ms: None,
@@ -545,6 +553,7 @@ async fn reconstruct_history_rollback_counts_inter_agent_assistant_turns() {
             codex_protocol::protocol::TurnCompleteEvent {
                 turn_id: assistant_turn_id,
                 last_agent_message: None,
+                compaction_events_in_turn: 0,
                 completed_at: None,
                 duration_ms: None,
                 time_to_first_token_ms: None,
@@ -613,6 +622,7 @@ async fn reconstruct_history_rollback_clears_history_and_metadata_when_exceeding
             codex_protocol::protocol::TurnCompleteEvent {
                 turn_id: only_turn_id,
                 last_agent_message: None,
+                compaction_events_in_turn: 0,
                 completed_at: None,
                 duration_ms: None,
                 time_to_first_token_ms: None,
@@ -663,6 +673,7 @@ async fn record_initial_history_resumed_rollback_skips_only_user_turns() {
             codex_protocol::protocol::TurnCompleteEvent {
                 turn_id: user_turn_id,
                 last_agent_message: None,
+                compaction_events_in_turn: 0,
                 completed_at: None,
                 duration_ms: None,
                 time_to_first_token_ms: None,
@@ -681,6 +692,7 @@ async fn record_initial_history_resumed_rollback_skips_only_user_turns() {
             codex_protocol::protocol::TurnCompleteEvent {
                 turn_id: standalone_turn_id,
                 last_agent_message: None,
+                compaction_events_in_turn: 0,
                 completed_at: None,
                 duration_ms: None,
                 time_to_first_token_ms: None,
@@ -735,6 +747,7 @@ async fn record_initial_history_resumed_rollback_drops_incomplete_user_turn_comp
             codex_protocol::protocol::TurnCompleteEvent {
                 turn_id: previous_turn_id,
                 last_agent_message: None,
+                compaction_events_in_turn: 0,
                 completed_at: None,
                 duration_ms: None,
                 time_to_first_token_ms: None,
@@ -892,6 +905,7 @@ async fn reconstruct_history_legacy_compaction_without_replacement_history_clear
             codex_protocol::protocol::TurnCompleteEvent {
                 turn_id: current_turn_id,
                 last_agent_message: None,
+                compaction_events_in_turn: 0,
                 completed_at: None,
                 duration_ms: None,
                 time_to_first_token_ms: None,
@@ -964,6 +978,7 @@ async fn record_initial_history_resumed_turn_context_after_compaction_reestablis
             codex_protocol::protocol::TurnCompleteEvent {
                 turn_id: previous_turn_id,
                 last_agent_message: None,
+                compaction_events_in_turn: 0,
                 completed_at: None,
                 duration_ms: None,
                 time_to_first_token_ms: None,
@@ -1070,6 +1085,7 @@ async fn record_initial_history_resumed_aborted_turn_without_id_clears_active_tu
             codex_protocol::protocol::TurnCompleteEvent {
                 turn_id: previous_turn_id,
                 last_agent_message: None,
+                compaction_events_in_turn: 0,
                 completed_at: None,
                 duration_ms: None,
                 time_to_first_token_ms: None,
@@ -1095,8 +1111,6 @@ async fn record_initial_history_resumed_aborted_turn_without_id_clears_active_tu
             codex_protocol::protocol::TurnAbortedEvent {
                 turn_id: None,
                 reason: TurnAbortReason::Interrupted,
-                completed_at: None,
-                duration_ms: None,
             },
         )),
         RolloutItem::Compacted(CompactedItem {
@@ -1180,6 +1194,7 @@ async fn record_initial_history_resumed_unmatched_abort_preserves_active_turn_fo
             codex_protocol::protocol::TurnCompleteEvent {
                 turn_id: previous_turn_id,
                 last_agent_message: None,
+                compaction_events_in_turn: 0,
                 completed_at: None,
                 duration_ms: None,
                 time_to_first_token_ms: None,
@@ -1205,8 +1220,6 @@ async fn record_initial_history_resumed_unmatched_abort_preserves_active_turn_fo
             codex_protocol::protocol::TurnAbortedEvent {
                 turn_id: Some(unmatched_abort_turn_id),
                 reason: TurnAbortReason::Interrupted,
-                completed_at: None,
-                duration_ms: None,
             },
         )),
         RolloutItem::TurnContext(current_context_item.clone()),
@@ -1214,6 +1227,7 @@ async fn record_initial_history_resumed_unmatched_abort_preserves_active_turn_fo
             codex_protocol::protocol::TurnCompleteEvent {
                 turn_id: current_turn_id,
                 last_agent_message: None,
+                compaction_events_in_turn: 0,
                 completed_at: None,
                 duration_ms: None,
                 time_to_first_token_ms: None,
@@ -1299,6 +1313,7 @@ async fn record_initial_history_resumed_trailing_incomplete_turn_compaction_clea
             codex_protocol::protocol::TurnCompleteEvent {
                 turn_id: previous_turn_id,
                 last_agent_message: None,
+                compaction_events_in_turn: 0,
                 completed_at: None,
                 duration_ms: None,
                 time_to_first_token_ms: None,
@@ -1452,6 +1467,7 @@ async fn record_initial_history_resumed_replaced_incomplete_compacted_turn_clear
             codex_protocol::protocol::TurnCompleteEvent {
                 turn_id: previous_turn_id,
                 last_agent_message: None,
+                compaction_events_in_turn: 0,
                 completed_at: None,
                 duration_ms: None,
                 time_to_first_token_ms: None,

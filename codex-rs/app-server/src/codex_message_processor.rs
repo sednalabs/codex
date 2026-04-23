@@ -2,6 +2,7 @@ use crate::bespoke_event_handling::apply_bespoke_event_handling;
 use crate::command_exec::CommandExecManager;
 use crate::command_exec::StartCommandExecParams;
 use crate::config_manager::ConfigManager;
+use crate::config_manager::apply_runtime_feature_enablement;
 use crate::error_code::INPUT_TOO_LARGE_ERROR_CODE;
 use crate::error_code::INTERNAL_ERROR_CODE;
 use crate::error_code::INVALID_PARAMS_ERROR_CODE;
@@ -239,6 +240,7 @@ use codex_core::config::edit::ConfigEditsBuilder;
 use codex_core::config::types::McpServerTransportConfig;
 use codex_core::config_loader::CloudRequirementsLoadError;
 use codex_core::config_loader::CloudRequirementsLoadErrorCode;
+use codex_core::config_loader::CloudRequirementsLoader;
 use codex_core::config_loader::project_trust_key;
 use codex_core::exec::ExecCapturePolicy;
 use codex_core::exec::ExecExpiration;
@@ -292,6 +294,7 @@ use codex_login::ServerOptions as LoginServerOptions;
 use codex_login::ShutdownHandle;
 use codex_login::auth::login_with_chatgpt_auth_tokens;
 use codex_login::complete_device_code_login;
+use codex_login::default_client::set_default_client_residency_requirement;
 use codex_login::login_with_api_key;
 use codex_login::request_device_code;
 use codex_login::run_login_server;
@@ -356,6 +359,7 @@ use codex_thread_store::ThreadStore;
 use codex_thread_store::ThreadStoreError;
 use codex_thread_store::UpdateThreadMetadataParams as StoreUpdateThreadMetadataParams;
 use codex_utils_absolute_path::AbsolutePathBuf;
+use codex_utils_json_to_toml::json_to_toml;
 use codex_utils_pty::DEFAULT_OUTPUT_BYTES_CAP;
 use codex_utils_version::RELEASE_VERSION;
 use std::collections::BTreeMap;
@@ -365,6 +369,7 @@ use std::io::Error as IoError;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::RwLock;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
@@ -10157,6 +10162,35 @@ fn parse_thread_turns_cursor(cursor: &str) -> Result<ThreadTurnsCursor, JSONRPCE
         message: format!("invalid cursor: {cursor}"),
         data: None,
     })
+}
+
+fn normalize_thread_list_cwd_filters(
+    cwd: Option<ThreadListCwdFilter>,
+) -> Result<Option<Vec<PathBuf>>, JSONRPCErrorError> {
+    let Some(cwd) = cwd else {
+        return Ok(None);
+    };
+
+    let raw_filters = match cwd {
+        ThreadListCwdFilter::One(path) => vec![path],
+        ThreadListCwdFilter::Many(paths) => paths,
+    };
+    let filters = raw_filters
+        .into_iter()
+        .map(|path| {
+            if path.trim().is_empty() {
+                Err(JSONRPCErrorError {
+                    code: INVALID_PARAMS_ERROR_CODE,
+                    message: "thread/list cwd filters must not be empty".to_string(),
+                    data: None,
+                })
+            } else {
+                Ok(PathBuf::from(path))
+            }
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+
+    Ok((!filters.is_empty()).then_some(filters))
 }
 
 fn reconstruct_thread_turns_from_rollout_items(

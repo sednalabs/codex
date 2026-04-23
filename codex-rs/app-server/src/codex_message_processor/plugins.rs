@@ -207,7 +207,7 @@ impl CodexMessageProcessor {
             }
         };
 
-        let plugin = match read_source {
+        let mut plugin = match read_source {
             Ok(marketplace_path) => {
                 let request = PluginReadRequest {
                     plugin_name,
