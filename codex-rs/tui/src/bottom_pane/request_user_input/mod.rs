@@ -934,10 +934,6 @@ impl RequestUserInputOverlay {
                 text,
                 text_elements,
                 ..
-            }
-            | InputResult::QueuedFront {
-                text,
-                text_elements,
             } => {
                 if self.has_options()
                     && matches!(self.focus, Focus::Notes)

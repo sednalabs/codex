@@ -724,6 +724,18 @@ pub(super) fn get_available_model(chat: &ChatWidget, model: &str) -> ModelPreset
         .unwrap_or_else(|| panic!("{model} preset not found"))
 }
 
+pub(super) trait ModelPresetTestExt {
+    fn supports_fast_mode(&self) -> bool;
+}
+
+impl ModelPresetTestExt for ModelPreset {
+    fn supports_fast_mode(&self) -> bool {
+        self.additional_speed_tiers
+            .iter()
+            .any(|tier| tier == codex_protocol::openai_models::SPEED_TIER_FAST)
+    }
+}
+
 pub(super) async fn assert_shift_left_edits_most_recent_queued_message_for_terminal(
     terminal_info: TerminalInfo,
 ) {

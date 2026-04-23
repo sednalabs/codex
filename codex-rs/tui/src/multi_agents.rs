@@ -984,7 +984,7 @@ mod tests {
                 reasoning_effort: Some(ReasoningEffortConfig::Medium),
                 task_name: Some("Investigate /agent picker metadata display".to_string()),
                 approval_policy: Some(AskForApproval::OnRequest),
-                approvals_reviewer: Some(ApprovalsReviewer::GuardianSubagent),
+                approvals_reviewer: Some(ApprovalsReviewer::AutoReview),
                 sandbox_policy: Some(SandboxPolicy::new_workspace_write_policy()),
                 ..AgentPickerThreadUsage::default()
             },

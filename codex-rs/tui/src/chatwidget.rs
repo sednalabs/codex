@@ -126,6 +126,8 @@ use codex_plugin::PluginCapabilitySummary;
 use codex_protocol::ThreadId;
 use codex_protocol::account::PlanType;
 use codex_protocol::approvals::ElicitationRequestEvent;
+use codex_protocol::approvals::GuardianAssessmentAction;
+use codex_protocol::approvals::GuardianAssessmentDecisionSource;
 use codex_protocol::config_types::CollaborationMode;
 use codex_protocol::config_types::CollaborationModeMask;
 use codex_protocol::config_types::ModeKind;
@@ -134,6 +136,7 @@ use codex_protocol::config_types::ServiceTier;
 use codex_protocol::config_types::Settings;
 #[cfg(target_os = "windows")]
 use codex_protocol::config_types::WindowsSandboxLevel;
+use codex_protocol::dynamic_tools::DynamicToolCallRequest;
 use codex_protocol::items::AgentMessageContent;
 use codex_protocol::items::AgentMessageItem;
 use codex_protocol::items::UserMessageItem;
@@ -166,6 +169,7 @@ use codex_protocol::protocol::CollabAgentSpawnBeginEvent;
 use codex_protocol::protocol::CollabAgentStatusEntry;
 use codex_protocol::protocol::CreditsSnapshot;
 use codex_protocol::protocol::DeprecationNoticeEvent;
+use codex_protocol::protocol::DynamicToolCallResponseEvent;
 #[cfg(test)]
 use codex_protocol::protocol::ErrorEvent;
 #[cfg(test)]
@@ -178,8 +182,6 @@ use codex_protocol::protocol::ExecCommandOutputDeltaEvent;
 use codex_protocol::protocol::ExecCommandSource;
 #[cfg(test)]
 use codex_protocol::protocol::ExitedReviewModeEvent;
-use codex_protocol::protocol::GuardianAssessmentAction;
-use codex_protocol::protocol::GuardianAssessmentDecisionSource;
 use codex_protocol::protocol::GuardianAssessmentEvent;
 use codex_protocol::protocol::GuardianAssessmentStatus;
 use codex_protocol::protocol::ImageGenerationBeginEvent;
@@ -4121,6 +4123,7 @@ impl ChatWidget {
             prompt,
             model,
             reasoning_effort,
+            timed_out,
             agents_states,
         } = item
         else {
@@ -4276,12 +4279,43 @@ impl ChatWidget {
                         &agents_states,
                         &self.collab_agent_metadata,
                     );
+                    let receiver_thread_ids: Vec<_> = receiver_thread_ids
+                        .iter()
+                        .filter_map(|thread_id| app_server_collab_thread_id_to_core(thread_id))
+                        .collect();
+                    let pending_thread_ids = if timed_out {
+                        receiver_thread_ids
+                            .iter()
+                            .copied()
+                            .filter(|thread_id| {
+                                !matches!(
+                                    statuses.get(thread_id),
+                                    Some(
+                                        AgentStatus::Completed(_)
+                                            | AgentStatus::Errored(_)
+                                            | AgentStatus::Shutdown
+                                            | AgentStatus::NotFound
+                                    )
+                                )
+                            })
+                            .collect()
+                    } else {
+                        Vec::new()
+                    };
                     self.on_collab_event(multi_agents::waiting_end(
                         codex_protocol::protocol::CollabWaitingEndEvent {
                             sender_thread_id,
                             call_id: id,
                             agent_statuses,
                             statuses,
+                            receiver_thread_ids,
+                            pending_thread_ids,
+                            completion_reason: if timed_out {
+                                codex_protocol::protocol::CollabWaitingCompletionReason::Timeout
+                            } else {
+                                codex_protocol::protocol::CollabWaitingCompletionReason::Terminal
+                            },
+                            timed_out,
                         },
                     ));
                 }
@@ -4856,7 +4890,7 @@ impl ChatWidget {
             id: ev.call_id,
             reason: ev.reason,
             changes: ev.changes.clone(),
-            cwd: self.config.cwd.clone(),
+            cwd: self.config.cwd.to_path_buf(),
         };
         self.bottom_pane
             .push_approval_request(request, &self.config.features);
@@ -5048,6 +5082,10 @@ impl ChatWidget {
         // Mark that actual work was done (MCP tool call)
         self.had_work_activity = true;
     }
+
+    pub(crate) fn handle_dynamic_tool_begin_now(&mut self, _ev: DynamicToolCallRequest) {}
+
+    pub(crate) fn handle_dynamic_tool_end_now(&mut self, _ev: DynamicToolCallResponseEvent) {}
 
     pub(crate) fn new_with_app_event(common: ChatWidgetInit) -> Self {
         Self::new_with_op_target(common, CodexOpTarget::AppEvent)
@@ -6364,6 +6402,7 @@ impl ChatWidget {
                 prompt,
                 model,
                 reasoning_effort,
+                timed_out,
                 agents_states,
             } => self.on_collab_agent_tool_call(ThreadItem::CollabAgentToolCall {
                 id,
@@ -6374,6 +6413,7 @@ impl ChatWidget {
                 prompt,
                 model,
                 reasoning_effort,
+                timed_out,
                 agents_states,
             }),
             ThreadItem::DynamicToolCall { .. } => {}
@@ -6838,6 +6878,7 @@ impl ChatWidget {
                 prompt,
                 model,
                 reasoning_effort,
+                timed_out,
                 agents_states,
             } => self.on_collab_agent_tool_call(ThreadItem::CollabAgentToolCall {
                 id,
@@ -6848,6 +6889,7 @@ impl ChatWidget {
                 prompt,
                 model,
                 reasoning_effort,
+                timed_out,
                 agents_states,
             }),
             ThreadItem::EnteredReviewMode { review, .. } => {
@@ -7586,8 +7628,6 @@ impl ChatWidget {
             .values()
             .cloned()
             .collect();
-        let agents_summary =
-            crate::status::compose_agents_summary(&self.config, &self.instruction_source_paths);
         let (cell, handle) = crate::status::new_status_output_with_rate_limits_handle(
             &self.config,
             self.status_account_display.as_ref(),
@@ -7602,7 +7642,6 @@ impl ChatWidget {
             self.model_display_name(),
             collaboration_mode,
             reasoning_effort_override,
-            agents_summary,
             refreshing_rate_limits,
         );
         if let Some(request_id) = request_id {
@@ -7737,6 +7776,10 @@ impl ChatWidget {
             .unwrap_or_default()
     }
 
+    fn status_line_session_total_usage(&self) -> TokenUsage {
+        self.status_line_total_usage()
+    }
+
     fn status_line_limit_display(
         &self,
         window: Option<&RateLimitWindowDisplay>,
@@ -7745,6 +7788,15 @@ impl ChatWidget {
         let window = window?;
         let remaining = (100.0f64 - window.used_percent).clamp(0.0f64, 100.0f64);
         Some(format!("{label} {remaining:.0}%"))
+    }
+
+    fn status_line_weekly_limit_display(
+        &self,
+        window: Option<&RateLimitWindowDisplay>,
+        _captured_at: Option<chrono::DateTime<Local>>,
+        label: &str,
+    ) -> Option<String> {
+        self.status_line_limit_display(window, label)
     }
 
     fn status_line_reasoning_effort_label(effort: Option<ReasoningEffortConfig>) -> &'static str {
@@ -10015,7 +10067,12 @@ impl ChatWidget {
                 models
                     .into_iter()
                     .find(|preset| preset.model == model)
-                    .map(|preset| preset.supports_fast_mode())
+                    .map(|preset| {
+                        preset
+                            .additional_speed_tiers
+                            .iter()
+                            .any(|tier| tier == codex_protocol::openai_models::SPEED_TIER_FAST)
+                    })
             })
             .unwrap_or(false)
     }
