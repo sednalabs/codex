@@ -2227,7 +2227,7 @@ impl CodexMessageProcessor {
             ExecCapturePolicy::ShellTool
         };
         let sandbox_cwd = if permission_profile.is_some() {
-            cwd.clone()
+            AbsolutePathBuf::try_from(cwd.clone()).expect("validated absolute cwd")
         } else {
             self.config.cwd.clone()
         };
