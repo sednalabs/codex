@@ -263,8 +263,8 @@ mod tests {
     use crate::session::tests::make_session_and_context_with_dynamic_tools_and_rx;
     use crate::tools::context::FunctionToolOutput;
     use crate::tools::context::ToolInvocation;
-    use crate::tools::context::ToolPayload;
     use crate::tools::context::ToolOutput;
+    use crate::tools::context::ToolPayload;
     use crate::tools::registry::ToolHandler;
     use crate::turn_diff_tracker::TurnDiffTracker;
     use codex_protocol::dynamic_tools::DynamicToolCapability;
