@@ -28,6 +28,12 @@ artifacts.
   - trigger: scheduled hygiene sweeps and manual dispatch
   - purpose: heavyweight Linux `x86_64` Cargo-native checkpoint coverage when broad proof is
     actually needed
+  - cache policy: prefer the native `sccache` GitHub backend; fallback
+    `.sccache` archives are restore-only by default to avoid run-id-keyed cache
+    churn
+  - sccache versioning: use the current installer-managed `sccache` binary so
+    the workflow's GitHub cache-service backend setup and the binary's GHA
+    contract stay aligned
   - retention: ordinary workflow logs only
 - `sedna-heavy-tests`
   - trigger: manual dispatch, `ci:heavy` PR label, and merge-group checkpoints
@@ -35,6 +41,7 @@ artifacts.
     build factory
   - fanout: smoke and selected lanes now split by `setup_class` so light workflow/docs shards do
     not queue behind heavier Rust runners
+  - cache policy: same restore-only fallback archive policy as `rust-ci-full`
   - scopes: `protocol`, `tui`, `cli`, `core`, `workspace`
 - `sedna-release`
   - trigger: Sedna release tags or manual dispatch
@@ -61,6 +68,8 @@ artifacts.
      the exact-route path stays trustworthy.
 7. Use `validation-lab` `profile=targeted` with `lane_set=release` when the question is Linux
    release-build dependency or lockfile readiness under `--locked`.
+   - `sedna.release-linux-smoke` is a plain locked release build preflight: it keeps
+     Linux build deps and `sccache`, but not DotSlash or release-publish steps.
 8. Use `sedna-heavy-tests` only when the change needs labeled PR heavy validation, merge-group
    heavy validation, or a named heavy lane.
 9. Use `rust-ci-full` only for scheduled/manual broad Cargo-native checkpoints,
@@ -95,9 +104,10 @@ artifacts.
      lower unnecessary compute, carbon, and wait time once the blocker is
      already known.
    - `profile=frontier` now derives a curated blocker-harvest bundle from lane
-     metadata and runs it by setup class (`light`, `rust`, `heavy`) so cheap
-     workflow/docs seams can fan out harder without letting heavier Rust lanes
-     monopolize the same runner budget.
+     metadata and runs it by setup class (`workflow`, `node`, `rust_minimal`,
+     `rust_integration`, `release`) so cheap workflow/docs seams can fan out
+     harder without letting heavier Rust lanes monopolize the same runner
+     budget.
 3. `validation-lab` broad/full only when the question is broader.
    - Use `profile=broad` or `profile=full` only when multiple seams are moving or you need a
      deliberate soak.
@@ -176,6 +186,10 @@ exact local tree remotely" and the branch is not yet in public-PR shape.
 Pair it with explicit `--lanes` whenever the blocker is already known so the
 snapshot rerun stays as small and cheap as possible.
 
+The target ref still needs to carry the current explicit lane schema and the
+lane helper scripts referenced by it. The lab planner no longer backfills the
+old implicit `run_command` contract for historical refs.
+
 ## Workflow replacement matrix
 
 | Workflow | Status | Sedna role |
@@ -212,19 +226,32 @@ snapshot rerun stays as small and cheap as possible.
 
 The important fields are:
 
+- `setup_class`: explicit execution bucket: `workflow`, `node`,
+  `rust_minimal`, `rust_integration`, or `release`
+- `working_directory`: repo-relative cwd for the lane script
+- `script_path`: repo-relative executable path used as the workflow truth
+- `script_args`: argv list for that script
+- `needs_just`, `needs_node`, `needs_nextest`, `needs_linux_build_deps`,
+  `needs_dotslash`, `needs_sccache`: explicit setup capabilities
+- `needs_sccache` now prefers the GitHub-hosted `sccache` backend when the
+  runner exposes the current cache-service environment, and only falls back to
+  a local `.sccache` archive when that backend is unavailable
+- `cache_policy`: Rust-oriented reusable workflows default fallback archives to
+  `restore-only`; validation-lab only opts into `write-fallback` for retained
+  non-`auto` supersession modes where preserving comparison evidence is
+  deliberate
 - `frontier_default`: whether the lane belongs in the default `lane_set=all`
   frontier harvest
 - `frontier_lane_sets`: named frontier families for non-`all` frontier runs
-- `setup_class`: runner-cost bucket used for split fanout and per-class
-  parallelism
 - `frontier_role`: whether the lane is a family sentinel or a deeper companion
 - `summary_family`: the family key used to collapse raw lane failures into one
   primary blocker per family
 - `cost_class`: a lightweight signal for relative runner cost
 
-When the requested validation target predates these fields, the host workflow
-derives them deterministically so dispatching `validation-lab` from downstream
-`main` can still validate older refs truthfully.
+`validation-lab` and `sedna-heavy-tests` both consume this explicit contract.
+The checked-in lane scripts are now the workflow source of truth; `just`
+remains a convenience layer that some scripts may call, not the planner's
+execution primitive.
 
 ## Summary artifact
 
@@ -233,6 +260,8 @@ The top-level `validation-summary` artifact is now family-aware.
 It records:
 
 - setup-class job results and started-lane counts
+- setup-versus-command timing totals so slow setup paths are visible at the
+  workflow summary layer
 - `primary_blockers`: one strongest active blocker per family, plus setup-class
   startup failures when no lanes in that class ever started
 - `secondary_findings`: the remaining cancelled or missing depth lanes
