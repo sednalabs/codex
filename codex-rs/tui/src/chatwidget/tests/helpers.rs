@@ -1,4 +1,5 @@
 use super::*;
+use codex_protocol::openai_models::SPEED_TIER_FAST;
 use pretty_assertions::assert_eq;
 
 pub(super) async fn test_config() -> Config {
@@ -366,7 +367,7 @@ pub(crate) fn set_chatgpt_auth(chat: &mut ChatWidget) {
 
 fn test_model_info(slug: &str, priority: i32, supports_fast_mode: bool) -> ModelInfo {
     let additional_speed_tiers = if supports_fast_mode {
-        vec![codex_protocol::openai_models::SPEED_TIER_FAST]
+        vec![SPEED_TIER_FAST]
     } else {
         Vec::new()
     };
@@ -732,7 +733,7 @@ impl ModelPresetTestExt for ModelPreset {
     fn supports_fast_mode(&self) -> bool {
         self.additional_speed_tiers
             .iter()
-            .any(|tier| tier == codex_protocol::openai_models::SPEED_TIER_FAST)
+            .any(|tier| tier == SPEED_TIER_FAST)
     }
 }
 
