@@ -1,6 +1,5 @@
 {
-  "$schema": "http://json-schema.org/draft-07/schema#",
-  "definitions": {
+  "$defs": {
     "DeviceKeySignPayload": {
       "description": "Structured payloads accepted by `device/key/sign`.",
       "oneOf": [
@@ -11,7 +10,7 @@
               "type": "string"
             },
             "audience": {
-              "$ref": "#/definitions/RemoteControlClientConnectionAudience"
+              "$ref": "#/$defs/RemoteControlClientConnectionAudience"
             },
             "clientId": {
               "type": "string"
@@ -48,25 +47,23 @@
               "type": "string"
             },
             "type": {
-              "enum": [
-                "remoteControlClientConnection"
-              ],
+              "const": "remoteControlClientConnection",
               "title": "RemoteControlClientConnectionDeviceKeySignPayloadType",
               "type": "string"
             }
           },
           "required": [
-            "accountUserId",
-            "audience",
-            "clientId",
+            "type",
             "nonce",
-            "scopes",
+            "audience",
             "sessionId",
             "targetOrigin",
             "targetPath",
+            "accountUserId",
+            "clientId",
             "tokenExpiresAt",
             "tokenSha256Base64url",
-            "type"
+            "scopes"
           ],
           "title": "RemoteControlClientConnectionDeviceKeySignPayload",
           "type": "object"
@@ -78,7 +75,7 @@
               "type": "string"
             },
             "audience": {
-              "$ref": "#/definitions/RemoteControlClientEnrollmentAudience"
+              "$ref": "#/$defs/RemoteControlClientEnrollmentAudience"
             },
             "challengeExpiresAt": {
               "description": "Enrollment challenge expiration as Unix seconds.",
@@ -108,24 +105,22 @@
               "type": "string"
             },
             "type": {
-              "enum": [
-                "remoteControlClientEnrollment"
-              ],
+              "const": "remoteControlClientEnrollment",
               "title": "RemoteControlClientEnrollmentDeviceKeySignPayloadType",
               "type": "string"
             }
           },
           "required": [
-            "accountUserId",
-            "audience",
-            "challengeExpiresAt",
-            "challengeId",
-            "clientId",
-            "deviceIdentitySha256Base64url",
+            "type",
             "nonce",
+            "audience",
+            "challengeId",
             "targetOrigin",
             "targetPath",
-            "type"
+            "accountUserId",
+            "clientId",
+            "deviceIdentitySha256Base64url",
+            "challengeExpiresAt"
           ],
           "title": "RemoteControlClientEnrollmentDeviceKeySignPayload",
           "type": "object"
@@ -147,13 +142,14 @@
       "type": "string"
     }
   },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
   "description": "Sign an accepted structured payload with a controller-local device key.",
   "properties": {
     "keyId": {
       "type": "string"
     },
     "payload": {
-      "$ref": "#/definitions/DeviceKeySignPayload"
+      "$ref": "#/$defs/DeviceKeySignPayload"
     }
   },
   "required": [

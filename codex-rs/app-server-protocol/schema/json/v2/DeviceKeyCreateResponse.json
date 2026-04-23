@@ -1,6 +1,5 @@
 {
-  "$schema": "http://json-schema.org/draft-07/schema#",
-  "definitions": {
+  "$defs": {
     "DeviceKeyAlgorithm": {
       "description": "Device-key algorithm reported at enrollment and signing boundaries.",
       "enum": [
@@ -18,16 +17,17 @@
       "type": "string"
     }
   },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
   "description": "Device-key metadata and public key returned by create/public APIs.",
   "properties": {
     "algorithm": {
-      "$ref": "#/definitions/DeviceKeyAlgorithm"
+      "$ref": "#/$defs/DeviceKeyAlgorithm"
     },
     "keyId": {
       "type": "string"
     },
     "protectionClass": {
-      "$ref": "#/definitions/DeviceKeyProtectionClass"
+      "$ref": "#/$defs/DeviceKeyProtectionClass"
     },
     "publicKeySpkiDerBase64": {
       "description": "SubjectPublicKeyInfo DER encoded as base64.",
@@ -35,10 +35,10 @@
     }
   },
   "required": [
-    "algorithm",
     "keyId",
-    "protectionClass",
-    "publicKeySpkiDerBase64"
+    "publicKeySpkiDerBase64",
+    "algorithm",
+    "protectionClass"
   ],
   "title": "DeviceKeyCreateResponse",
   "type": "object"

@@ -22,6 +22,12 @@
         },
         {
           "properties": {
+            "detail": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "imageUrl": {
               "type": "string"
             },

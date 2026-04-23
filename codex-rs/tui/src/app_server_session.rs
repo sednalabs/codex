@@ -1545,9 +1545,18 @@ mod tests {
             /*remote_cwd_override*/ None,
         );
 
-        assert_eq!(params.base_instructions.as_deref(), Some("Base override."));
         assert_eq!(
-            params.developer_instructions.as_deref(),
+            params
+                .base_instructions
+                .as_ref()
+                .and_then(|value| value.as_deref()),
+            Some("Base override.")
+        );
+        assert_eq!(
+            params
+                .developer_instructions
+                .as_ref()
+                .and_then(|value| value.as_deref()),
             Some("Developer override.")
         );
     }
