@@ -113,6 +113,13 @@
       "frontier_lane_sets": ["ui-protocol"]
     },
     {
+      "lane_id": "codex.tui-brokered-tool-replay-targeted",
+      "run_command": "just --justfile ../justfile tui-brokered-tool-replay-targeted",
+      "groups": ["ui_protocol"],
+      "lane_sets": ["all", "ui-protocol"],
+      "explicit_only": true
+    },
+    {
       "lane_id": "codex.tui-config-refresh-session-targeted",
       "run_command": "just --justfile ../justfile tui-config-refresh-session-targeted",
       "groups": ["ui_protocol"],
@@ -592,6 +599,31 @@
         "codex-rs/app-server/src/**",
         "codex-rs/app-server-protocol/src/**",
         "codex-rs/tui/src/app_server_session.rs"
+      ]
+    },
+    {
+      "route_id": "brokered-tool-replay",
+      "lane_ids": [
+        "codex.app-server-protocol-test",
+        "codex.tui-brokered-tool-replay-targeted"
+      ],
+      "allowed_paths": [
+        "codex-rs/core/src/tools/handlers/dynamic.rs",
+        "codex-rs/app-server/src/codex_message_processor.rs",
+        "codex-rs/app-server/tests/suite/v2/dynamic_tools.rs",
+        "codex-rs/tui/src/app/app_server_adapter.rs",
+        "codex-rs/tui/src/chatwidget/tests/app_server.rs",
+        "docs/downstream-regression-matrix.md",
+        "justfile",
+        ".github/validation-lanes.json",
+        ".github/workflows/sedna-heavy-tests.yml"
+      ],
+      "required_any_paths": [
+        "codex-rs/core/src/tools/handlers/dynamic.rs",
+        "codex-rs/app-server/src/codex_message_processor.rs",
+        "codex-rs/app-server/tests/suite/v2/dynamic_tools.rs",
+        "codex-rs/tui/src/app/app_server_adapter.rs",
+        "codex-rs/tui/src/chatwidget/tests/app_server.rs"
       ]
     },
     {
