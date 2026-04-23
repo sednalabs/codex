@@ -961,7 +961,10 @@ fn wait_agent_tool_parameters_v2(options: WaitAgentTimeoutOptions) -> JsonSchema
         (
             "return_when".to_string(),
             JsonSchema::string_enum(
-                vec!["any".to_string(), "all".to_string()],
+                vec![
+                    serde_json::Value::String("any".to_string()),
+                    serde_json::Value::String("all".to_string()),
+                ],
                 Some("Whether the wait completes when any requested agent reaches terminal status or only after all requested agents are terminal.".to_string()),
             ),
         ),
