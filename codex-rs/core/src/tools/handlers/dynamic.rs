@@ -286,6 +286,7 @@ mod tests {
     use crate::session::tests::make_session_and_context;
     use crate::session::tests::make_session_and_context_with_dynamic_tools_and_rx;
     use crate::tools::context::FunctionToolOutput;
+    use crate::tools::context::ToolCallSource;
     use crate::tools::context::ToolInvocation;
     use crate::tools::context::ToolOutput;
     use crate::tools::context::ToolPayload;
@@ -329,6 +330,7 @@ mod tests {
                     tracker: Arc::new(Mutex::new(TurnDiffTracker::new())),
                     call_id: "call-1".to_string(),
                     tool_name: codex_tools::ToolName::plain(ANDROID_OBSERVE_TOOL_NAME),
+                    source: ToolCallSource::Direct,
                     payload,
                 })
                 .await
@@ -367,6 +369,7 @@ mod tests {
                     tracker: Arc::new(Mutex::new(TurnDiffTracker::new())),
                     call_id: "call-3".to_string(),
                     tool_name: codex_tools::ToolName::plain("brokered_read"),
+                    source: ToolCallSource::Direct,
                     payload,
                 })
                 .await
@@ -405,6 +408,7 @@ mod tests {
                     tracker: Arc::new(Mutex::new(TurnDiffTracker::new())),
                     call_id: "call-4".to_string(),
                     tool_name: codex_tools::ToolName::namespaced("codex_app", "brokered_read",),
+                    source: ToolCallSource::Direct,
                     payload,
                 })
                 .await
@@ -424,6 +428,7 @@ mod tests {
             tracker: Arc::new(Mutex::new(TurnDiffTracker::new())),
             call_id: "call-2".to_string(),
             tool_name: codex_tools::ToolName::plain(ANDROID_OBSERVE_TOOL_NAME),
+            source: ToolCallSource::Direct,
             payload: payload.clone(),
         };
         let handler = DynamicToolHandler;

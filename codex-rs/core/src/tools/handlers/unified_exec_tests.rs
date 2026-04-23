@@ -42,6 +42,7 @@ fn invocation(
         tracker: Arc::new(Mutex::new(TurnDiffTracker::default())),
         call_id: "call-unified-exec-test".to_string(),
         tool_name: codex_tools::ToolName::plain(tool_name),
+        source: ToolCallSource::Direct,
         payload,
     }
 }
