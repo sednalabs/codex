@@ -264,6 +264,7 @@ mod tests {
     use crate::tools::context::FunctionToolOutput;
     use crate::tools::context::ToolInvocation;
     use crate::tools::context::ToolPayload;
+    use crate::tools::context::ToolOutput;
     use crate::tools::registry::ToolHandler;
     use crate::turn_diff_tracker::TurnDiffTracker;
     use codex_protocol::dynamic_tools::DynamicToolCapability;
