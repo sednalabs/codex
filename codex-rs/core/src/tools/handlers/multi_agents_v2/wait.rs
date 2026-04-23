@@ -143,6 +143,22 @@ impl ToolHandler for Handler {
                     final_statuses.insert(*id, AgentStatus::NotFound);
                 }
                 Err(err) => {
+                    let statuses =
+                        collect_wait_statuses(session.as_ref(), &receiver_thread_ids).await;
+                    let pending_thread_ids =
+                        pending_wait_thread_ids(&receiver_thread_ids, &statuses);
+                    send_wait_end_event(
+                        session.as_ref(),
+                        turn.as_ref(),
+                        call_id.clone(),
+                        receiver_thread_ids.clone(),
+                        &receiver_agents,
+                        pending_thread_ids,
+                        CollabWaitingCompletionReason::Terminal,
+                        false,
+                        statuses,
+                    )
+                    .await;
                     return Err(collab_agent_error(*id, err));
                 }
             }
@@ -189,43 +205,27 @@ impl ToolHandler for Handler {
             ));
         }
         let statuses_by_id = merge_wait_end_statuses(final_statuses.clone(), pending_statuses);
-        let agent_statuses = build_wait_agent_statuses(&statuses_by_id, &receiver_agents);
         let result = WaitAgentResult::new(
             receiver_thread_ids.clone(),
             pending_thread_ids.clone(),
             completion_reason,
         );
 
-        session
-            .send_event(
-                &turn,
-                CollabWaitingEndEvent {
-                    sender_thread_id: session.conversation_id,
-                    call_id,
-                    receiver_thread_ids,
-                    pending_thread_ids,
-                    completion_reason,
-                    timed_out: result.timed_out,
-                    agent_statuses,
-                    statuses: statuses_by_id,
-                }
-                .into(),
-            )
-            .await;
+        send_wait_end_event(
+            session.as_ref(),
+            turn.as_ref(),
+            call_id,
+            receiver_thread_ids,
+            &receiver_agents,
+            pending_thread_ids,
+            completion_reason,
+            result.timed_out,
+            statuses_by_id,
+        )
+        .await;
 
         Ok(result)
     }
-}
-
-fn pending_thread_ids_for_statuses(
-    receiver_thread_ids: &[ThreadId],
-    statuses: &HashMap<ThreadId, AgentStatus>,
-) -> Vec<ThreadId> {
-    receiver_thread_ids
-        .iter()
-        .filter(|id| !is_final(statuses.get(id).unwrap_or(&AgentStatus::NotFound)))
-        .copied()
-        .collect()
 }
 
 #[derive(Debug, Deserialize)]
@@ -462,7 +462,7 @@ mod tests {
                 AgentStatus::Errored("permission denied".to_string()),
             ),
         ]);
-        let pending_thread_ids = pending_thread_ids_for_statuses(&receiver_thread_ids, &statuses);
+        let pending_thread_ids = pending_wait_thread_ids(&receiver_thread_ids, &statuses);
 
         assert_eq!(pending_thread_ids, vec![running_id]);
         assert_eq!(statuses.get(&running_id), Some(&AgentStatus::Running));
