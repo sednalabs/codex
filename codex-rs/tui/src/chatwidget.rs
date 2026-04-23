@@ -6919,16 +6919,16 @@ impl ChatWidget {
             user_authorization: review.user_authorization.map(|user_authorization| {
                 match user_authorization {
                     codex_app_server_protocol::GuardianUserAuthorization::Unknown => {
-                        codex_protocol::protocol::GuardianUserAuthorization::Unknown
+                        codex_protocol::approvals::GuardianUserAuthorization::Unknown
                     }
                     codex_app_server_protocol::GuardianUserAuthorization::Low => {
-                        codex_protocol::protocol::GuardianUserAuthorization::Low
+                        codex_protocol::approvals::GuardianUserAuthorization::Low
                     }
                     codex_app_server_protocol::GuardianUserAuthorization::Medium => {
-                        codex_protocol::protocol::GuardianUserAuthorization::Medium
+                        codex_protocol::approvals::GuardianUserAuthorization::Medium
                     }
                     codex_app_server_protocol::GuardianUserAuthorization::High => {
-                        codex_protocol::protocol::GuardianUserAuthorization::High
+                        codex_protocol::approvals::GuardianUserAuthorization::High
                     }
                 }
             }),
