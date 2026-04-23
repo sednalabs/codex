@@ -67,8 +67,6 @@ async fn interrupted_turn_restores_queued_messages_with_images_and_elements() {
         msg: EventMsg::TurnAborted(codex_protocol::protocol::TurnAbortedEvent {
             turn_id: Some("turn-1".to_string()),
             reason: TurnAbortReason::Interrupted,
-            completed_at: None,
-            duration_ms: None,
         }),
     });
 
@@ -312,6 +310,7 @@ async fn steer_rejection_queues_review_follow_up_before_existing_queued_messages
         msg: EventMsg::TurnComplete(TurnCompleteEvent {
             turn_id: "turn-1".to_string(),
             last_agent_message: None,
+            compaction_events_in_turn: 0,
             completed_at: None,
             duration_ms: None,
             time_to_first_token_ms: None,
@@ -334,6 +333,7 @@ async fn steer_rejection_queues_review_follow_up_before_existing_queued_messages
         msg: EventMsg::TurnComplete(TurnCompleteEvent {
             turn_id: "turn-2".to_string(),
             last_agent_message: None,
+            compaction_events_in_turn: 0,
             completed_at: None,
             duration_ms: None,
             time_to_first_token_ms: None,
@@ -393,6 +393,8 @@ async fn review_restores_context_window_indicator() {
         msg: EventMsg::TokenCount(TokenCountEvent {
             info: Some(make_token_info(pre_review_tokens, context_window)),
             rate_limits: None,
+            provider: None,
+            model_used: None,
         }),
     });
     assert_eq!(chat.bottom_pane.context_window_percent(), Some(30));
@@ -412,6 +414,8 @@ async fn review_restores_context_window_indicator() {
         msg: EventMsg::TokenCount(TokenCountEvent {
             info: Some(make_token_info(review_tokens, context_window)),
             rate_limits: None,
+            provider: None,
+            model_used: None,
         }),
     });
     assert_eq!(chat.bottom_pane.context_window_percent(), Some(97));
@@ -1022,8 +1026,6 @@ async fn replaced_turn_clears_pending_steers_but_keeps_queued_drafts() {
         msg: EventMsg::TurnAborted(codex_protocol::protocol::TurnAbortedEvent {
             turn_id: Some("turn-1".to_string()),
             reason: TurnAbortReason::Replaced,
-            completed_at: None,
-            duration_ms: None,
         }),
     });
 
@@ -1247,8 +1249,6 @@ async fn interrupt_exec_marks_failed_snapshot() {
         msg: EventMsg::TurnAborted(codex_protocol::protocol::TurnAbortedEvent {
             turn_id: Some("turn-1".to_string()),
             reason: TurnAbortReason::Interrupted,
-            completed_at: None,
-            duration_ms: None,
         }),
     });
 
@@ -1286,8 +1286,6 @@ async fn interrupted_turn_error_message_snapshot() {
         msg: EventMsg::TurnAborted(codex_protocol::protocol::TurnAbortedEvent {
             turn_id: Some("turn-1".to_string()),
             reason: TurnAbortReason::Interrupted,
-            completed_at: None,
-            duration_ms: None,
         }),
     });
 
@@ -1325,8 +1323,6 @@ async fn interrupted_turn_pending_steers_message_snapshot() {
         msg: EventMsg::TurnAborted(codex_protocol::protocol::TurnAbortedEvent {
             turn_id: Some("turn-1".to_string()),
             reason: TurnAbortReason::Interrupted,
-            completed_at: None,
-            duration_ms: None,
         }),
     });
 
@@ -1423,8 +1419,6 @@ async fn review_ended_keeps_unified_exec_processes() {
         msg: EventMsg::TurnAborted(codex_protocol::protocol::TurnAbortedEvent {
             turn_id: Some("turn-1".to_string()),
             reason: TurnAbortReason::ReviewEnded,
-            completed_at: None,
-            duration_ms: None,
         }),
     });
 

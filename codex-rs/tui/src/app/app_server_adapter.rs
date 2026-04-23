@@ -499,6 +499,8 @@ fn server_notification_thread_events(
                         model_context_window: notification.token_usage.model_context_window,
                     }),
                     rate_limits: None,
+                    provider: None,
+                    model_used: None,
                 }),
             }],
         )),
@@ -784,6 +786,7 @@ fn append_terminal_turn_events(events: &mut Vec<Event>, turn: &Turn, include_fai
             msg: EventMsg::TurnComplete(TurnCompleteEvent {
                 turn_id: turn.id.clone(),
                 last_agent_message: None,
+                compaction_events_in_turn: 0,
                 completed_at: turn.completed_at,
                 duration_ms: turn.duration_ms,
                 time_to_first_token_ms: None,
@@ -794,8 +797,6 @@ fn append_terminal_turn_events(events: &mut Vec<Event>, turn: &Turn, include_fai
             msg: EventMsg::TurnAborted(TurnAbortedEvent {
                 turn_id: Some(turn.id.clone()),
                 reason: TurnAbortReason::Interrupted,
-                completed_at: turn.completed_at,
-                duration_ms: turn.duration_ms,
             }),
         }),
         TurnStatus::Failed => {
@@ -816,6 +817,7 @@ fn append_terminal_turn_events(events: &mut Vec<Event>, turn: &Turn, include_fai
                 msg: EventMsg::TurnComplete(TurnCompleteEvent {
                     turn_id: turn.id.clone(),
                     last_agent_message: None,
+                    compaction_events_in_turn: 0,
                     completed_at: turn.completed_at,
                     duration_ms: turn.duration_ms,
                     time_to_first_token_ms: None,
