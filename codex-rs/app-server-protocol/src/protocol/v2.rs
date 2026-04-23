@@ -101,15 +101,13 @@ use codex_protocol::user_input::TextElement as CoreTextElement;
 use codex_protocol::user_input::UserInput as CoreUserInput;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use schemars::JsonSchema;
-use schemars::r#gen::SchemaGenerator;
-use schemars::schema::InstanceType;
-use schemars::schema::Metadata;
-use schemars::schema::Schema;
-use schemars::schema::SchemaObject;
+use schemars::Schema;
+use schemars::SchemaGenerator;
 use serde::Deserialize;
 use serde::Serialize;
 use serde_json::Value as JsonValue;
 use serde_with::serde_as;
+use std::borrow::Cow;
 use thiserror::Error;
 use ts_rs::TS;
 
@@ -327,8 +325,8 @@ pub enum ApprovalsReviewer {
 }
 
 impl JsonSchema for ApprovalsReviewer {
-    fn schema_name() -> String {
-        "ApprovalsReviewer".to_string()
+    fn schema_name() -> Cow<'static, str> {
+        "ApprovalsReviewer".into()
     }
 
     fn json_schema(_generator: &mut SchemaGenerator) -> Schema {
@@ -340,21 +338,15 @@ impl JsonSchema for ApprovalsReviewer {
 }
 
 fn string_enum_schema_with_description(values: &[&str], description: &str) -> Schema {
-    let mut schema = SchemaObject {
-        instance_type: Some(InstanceType::String.into()),
-        metadata: Some(Box::new(Metadata {
-            description: Some(description.to_string()),
-            ..Default::default()
-        })),
-        ..Default::default()
-    };
-    schema.enum_values = Some(
-        values
-            .iter()
-            .map(|value| JsonValue::String((*value).to_string()))
-            .collect(),
-    );
-    Schema::Object(schema)
+    let enum_values = values
+        .iter()
+        .map(|value| JsonValue::String((*value).to_string()))
+        .collect::<Vec<_>>();
+    schemars::json_schema!({
+        "type": "string",
+        "description": description,
+        "enum": enum_values,
+    })
 }
 
 impl ApprovalsReviewer {
