@@ -69,20 +69,29 @@ def load_workflow_payload(workflow_path: Path) -> dict:
     return payload if isinstance(payload, dict) else {}
 
 
+def just_recipe_names(header: str) -> list[str]:
+    names: list[str] = []
+    for recipe_part in header.split(","):
+        tokens = recipe_part.strip().split()
+        if tokens:
+            names.append(tokens[0])
+    return names
+
+
 def just_recipe_bodies(justfile_path: Path) -> dict[str, list[str]]:
     recipes: dict[str, list[str]] = {}
-    current: str | None = None
+    current_names: list[str] = []
     current_body: list[str] = []
     for line in justfile_path.read_text(encoding="utf-8").splitlines():
         if line and not line.startswith((" ", "\t", "#")) and ":" in line:
-            if current is not None:
-                recipes[current] = current_body
-            current = line.split(":", 1)[0].strip().split()[0]
+            for name in current_names:
+                recipes[name] = current_body
+            current_names = just_recipe_names(line.split(":", 1)[0].strip())
             current_body = []
-        elif current is not None:
+        elif current_names:
             current_body.append(line)
-    if current is not None:
-        recipes[current] = current_body
+    for name in current_names:
+        recipes[name] = current_body
     return recipes
 
 
@@ -527,6 +536,30 @@ class ValidationPlanScriptTests(unittest.TestCase):
                 "artifact",
             ],
         )
+
+    def test_just_recipe_bodies_handles_comma_separated_recipe_names(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            justfile = Path(tmpdir) / "justfile"
+            justfile.write_text(
+                "\n".join(
+                    [
+                        "foo, bar:",
+                        "    cargo nextest run -p codex-core",
+                        "",
+                        "with-param target='default':",
+                        "    cargo test -p codex-tui",
+                        "",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            recipes = just_recipe_bodies(justfile)
+
+        self.assertEqual(recipes["foo"], ["    cargo nextest run -p codex-core", ""])
+        self.assertEqual(recipes["bar"], ["    cargo nextest run -p codex-core", ""])
+        self.assertEqual(recipes["with-param"], ["    cargo test -p codex-tui"])
+        self.assertNotIn("foo,", recipes)
 
     def test_run_just_recipe_lanes_declare_nextest_when_recipe_uses_nextest(self) -> None:
         catalog = RESOLVE_VALIDATION_PLAN.load_catalog()
