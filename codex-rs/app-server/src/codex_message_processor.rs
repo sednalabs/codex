@@ -9178,6 +9178,13 @@ fn validate_dynamic_tools(tools: &[ApiDynamicToolSpec]) -> Result<(), String> {
                 capability.lease_mode.as_deref(),
                 &["none", "shared_read", "exclusive_write"],
             )?;
+            if matches!(capability.capability_scope.as_deref(), Some("environment"))
+                && tool.persist_on_resume
+            {
+                return Err(format!(
+                    "dynamic tool {name} cannot set persistOnResume=true when capabilityScope=environment"
+                ));
+            }
         }
     }
     Ok(())
@@ -10216,6 +10223,30 @@ mod tests {
 
         let err = validate_dynamic_tools(&tools).expect_err("invalid capability metadata");
         assert!(err.contains("mutationClass"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn validate_dynamic_tools_rejects_persistent_environment_capability() {
+        let tools = vec![ApiDynamicToolSpec {
+            name: "android_observe".to_string(),
+            description: "observe android".to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {}
+            }),
+            defer_loading: false,
+            persist_on_resume: true,
+            capability: Some(codex_app_server_protocol::DynamicToolCapability {
+                family: Some("android".to_string()),
+                capability_scope: Some("environment".to_string()),
+                mutation_class: Some("read_only".to_string()),
+                lease_mode: Some("shared_read".to_string()),
+            }),
+        }];
+
+        let err = validate_dynamic_tools(&tools)
+            .expect_err("environment capability should not persist on resume");
+        assert!(err.contains("persistOnResume"), "unexpected error: {err}");
     }
 
     #[test]
