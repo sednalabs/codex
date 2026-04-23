@@ -55,7 +55,7 @@ References to `carry/main` elsewhere in the repo are historical pre-cutover
 baselines and should be read as prior names for the maintained downstream
 branch.
 
-Current integration baseline (validated on `2026-04-23`):
+Current integration code baseline (validated on `2026-04-23`):
 - `upstream/main`: `d3b044938d245b519c1a5baefe880ef89e3a30c1`
 - downstream integration branch `origin/integration/upstream-main-sync-20260423-141625`:
   `7dd5e0ebf3dab7c535a1402c97b3c5fc41e4ab18`
@@ -69,6 +69,9 @@ Current integration baseline (validated on `2026-04-23`):
   `208` upstream ahead, `716` downstream ahead
 - mirror health (`upstream/main...origin/upstream-main`): `0` ahead / `0`
   behind (`exact`)
+
+These counts intentionally anchor to the audited code tree before the
+docs-only refresh commit that records this snapshot.
 
 Supporting docs:
 - [`downstream-tool-surface-matrix.md`](downstream-tool-surface-matrix.md) captures the exact native tool-surface deltas that remain live on the downstream branch.
