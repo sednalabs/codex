@@ -7,6 +7,10 @@ on:
         required: false
         type: string
         default: ""
+      checkout_fetch_depth:
+        required: false
+        type: number
+        default: 1
       summary_title:
         required: true
         type: string
@@ -83,7 +87,7 @@ jobs:
     steps:
       - uses: actions/checkout@v6
         with:
-          fetch-depth: 0
+          fetch-depth: ${{ inputs.checkout_fetch_depth }}
           ref: ${{ inputs.checkout_ref != '' && inputs.checkout_ref || github.sha }}
 
       - name: Check out workflow helpers

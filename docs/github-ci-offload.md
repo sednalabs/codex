@@ -66,6 +66,10 @@ artifacts.
    guarded seam.
    - Workflow planning and route-map edits also run cheap planner fixtures so
      the exact-route path stays trustworthy.
+   - That light workflow-only route includes the reusable validation-lane
+     workflow files plus `.github/validation-lanes.json`, so small CI-only
+     follow-ups can stay on planner/workflow proof instead of broad Rust PR
+     gates.
 7. Use `validation-lab` `profile=targeted` with `lane_set=release` when the question is Linux
    release-build dependency or lockfile readiness under `--locked`.
    - `sedna.release-linux-smoke` is a plain locked release build preflight: it keeps
@@ -233,9 +237,19 @@ The important fields are:
 - `script_args`: argv list for that script
 - `needs_just`, `needs_node`, `needs_nextest`, `needs_linux_build_deps`,
   `needs_dotslash`, `needs_sccache`: explicit setup capabilities
+- reusable validation-lane workflows default repository checkout to
+  `fetch-depth: 1`; callers only widen that through the explicit
+  `checkout_fetch_depth` input when a lane genuinely needs deeper history
+- reusable validation-lane workflows also resolve shared helper scripts from a
+  separate `.workflow-src` checkout at the workflow ref, so older PR heads can
+  keep running under newer lane-helper contracts without carrying helper copies
+  in the tested checkout
 - `needs_sccache` now prefers the GitHub-hosted `sccache` backend when the
   runner exposes the current cache-service environment, and only falls back to
   a local `.sccache` archive when that backend is unavailable
+- `rust_minimal` now supports the same `sccache` contract as the heavier Rust
+  lane classes, but only the compile-heavy targeted lanes opt into it by
+  catalog metadata
 - `cache_policy`: Rust-oriented reusable workflows default fallback archives to
   `restore-only`; validation-lab only opts into `write-fallback` for retained
   non-`auto` supersession modes where preserving comparison evidence is

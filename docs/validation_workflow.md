@@ -135,6 +135,8 @@ deriving execution behavior from an inline command string.
 Every lane row in `.github/validation-lanes.json` is expected to define:
 
 - `setup_class`
+- `checkout_fetch_depth` (defaults to shallow checkout; widen only when the
+  lane truly needs more history)
 - `working_directory`
 - `script_path`
 - `script_args`
@@ -153,10 +155,15 @@ Fallback `.sccache` archives are restore-only by default so validation runs do
 not keep minting run-id-keyed multi-gigabyte caches. `validation-lab` opts into
 fallback writes only for retained non-`auto` supersession modes such as
 comparison or milestone runs.
+The compile-heavy `rust_minimal` lanes now use that same contract instead of
+stopping at cargo-home restore alone.
 
 Execution is script-backed:
 
 - reusable workflows fan out by `setup_class`
+- reusable workflows source shared helper scripts from a `.workflow-src`
+  checkout at the workflow ref so older checked-out PR heads stay compatible
+  with newer helper and summary-artifact contracts
 - each lane runs the checked-in script referenced by `script_path`
 - the root `justfile` is a convenience layer, not the workflow source of truth
 - lanes that still rely on `just` now declare that explicitly via `needs_just`
@@ -208,7 +215,9 @@ The summary should also state:
 For workflow/planner-only changes, prefer an exact light-weight route instead
 of broad product lanes. In this fork that means remote proof should stay on the
 workflow sanity and downstream docs lanes unless the diff also touches real
-runtime/product seams.
+runtime/product seams. That light route includes the reusable validation-lane
+workflow files and the explicit lane catalog when the diff stays inside those
+CI-only surfaces.
 
 ## Documentation boundaries
 
