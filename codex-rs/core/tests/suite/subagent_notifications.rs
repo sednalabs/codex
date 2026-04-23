@@ -523,7 +523,7 @@ async fn spawn_agent_requested_model_and_reasoning_override_inherited_settings_w
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn spawned_multi_agent_v2_child_receives_xml_tagged_developer_context() -> Result<()> {
+async fn spawned_multi_agent_v2_child_inherits_parent_developer_context() -> Result<()> {
     skip_if_no_network!(Ok(()));
 
     let server = start_mock_server().await;
@@ -544,9 +544,7 @@ async fn spawned_multi_agent_v2_child_receives_xml_tagged_developer_context() ->
 
     let _child_request_log = mount_sse_once_match(
         &server,
-        |req: &wiremock::Request| {
-            body_contains(req, CHILD_PROMPT) && body_contains(req, "<spawned_agent_context>")
-        },
+        |req: &wiremock::Request| body_contains(req, CHILD_PROMPT),
         sse(vec![
             ev_response_created("resp-child-1"),
             ev_completed("resp-child-1"),
@@ -557,9 +555,7 @@ async fn spawned_multi_agent_v2_child_receives_xml_tagged_developer_context() ->
     let _turn1_followup = mount_sse_once_match(
         &server,
         |req: &wiremock::Request| {
-            body_contains(req, "function_call_output")
-                && body_contains(req, "/root/worker")
-                && !body_contains(req, "<spawned_agent_context>")
+            body_contains(req, "function_call_output") && body_contains(req, "/root/worker")
         },
         sse(vec![
             ev_response_created("resp-turn1-2"),
@@ -592,9 +588,7 @@ async fn spawned_multi_agent_v2_child_receives_xml_tagged_developer_context() ->
             .unwrap_or_default()
             .into_iter()
             .find(|request| {
-                body_contains(request, CHILD_PROMPT)
-                    && body_contains(request, "<spawned_agent_context>")
-                    && body_contains(request, SPAWNED_AGENT_DEVELOPER_INSTRUCTIONS)
+                body_contains(request, CHILD_PROMPT) && !body_contains(request, SPAWN_CALL_ID)
             })
         {
             break request;
@@ -607,11 +601,6 @@ async fn spawned_multi_agent_v2_child_receives_xml_tagged_developer_context() ->
     assert!(body_contains(
         &child_request,
         "Parent developer instructions."
-    ));
-    assert!(body_contains(&child_request, "<spawned_agent_context>"));
-    assert!(body_contains(
-        &child_request,
-        SPAWNED_AGENT_DEVELOPER_INSTRUCTIONS
     ));
     assert!(body_contains(&child_request, CHILD_PROMPT));
 
@@ -640,9 +629,7 @@ async fn skills_toggle_skips_instructions_for_parent_and_spawned_child() -> Resu
 
     let _child_request_log = mount_sse_once_match(
         &server,
-        |req: &wiremock::Request| {
-            body_contains(req, CHILD_PROMPT) && body_contains(req, "<spawned_agent_context>")
-        },
+        |req: &wiremock::Request| body_contains(req, CHILD_PROMPT),
         sse(vec![
             ev_response_created("resp-child-1"),
             ev_completed("resp-child-1"),
@@ -653,9 +640,7 @@ async fn skills_toggle_skips_instructions_for_parent_and_spawned_child() -> Resu
     let _turn1_followup = mount_sse_once_match(
         &server,
         |req: &wiremock::Request| {
-            body_contains(req, "function_call_output")
-                && body_contains(req, "/root/worker")
-                && !body_contains(req, "<spawned_agent_context>")
+            body_contains(req, "function_call_output") && body_contains(req, "/root/worker")
         },
         sse(vec![
             ev_response_created("resp-turn1-2"),
@@ -697,8 +682,7 @@ async fn skills_toggle_skips_instructions_for_parent_and_spawned_child() -> Resu
             .unwrap_or_default()
             .into_iter()
             .find(|request| {
-                body_contains(request, CHILD_PROMPT)
-                    && body_contains(request, "<spawned_agent_context>")
+                body_contains(request, CHILD_PROMPT) && !body_contains(request, SPAWN_CALL_ID)
             })
         {
             break request;

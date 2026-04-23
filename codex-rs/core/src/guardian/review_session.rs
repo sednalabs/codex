@@ -693,6 +693,7 @@ async fn run_review_on_session(
             approval_policy: AskForApproval::Never,
             approvals_reviewer: None,
             sandbox_policy: SandboxPolicy::new_read_only_policy(),
+            permission_profile: None,
             model: params.model.clone(),
             effort: params.reasoning_effort,
             summary: Some(params.reasoning_summary),
@@ -752,8 +753,8 @@ async fn append_guardian_followup_reminder(review_session: &GuardianReviewSessio
 async fn load_rollout_items_for_fork(
     session: &Session,
 ) -> anyhow::Result<Option<Vec<RolloutItem>>> {
-    session.flush_rollout().await;
-    let Some(rollout_path) = session.current_rollout_path().await else {
+    session.flush_rollout().await?;
+    let Some(rollout_path) = session.current_rollout_path().await? else {
         return Ok(None);
     };
     let history = RolloutRecorder::get_rollout_history(rollout_path.as_path()).await?;
