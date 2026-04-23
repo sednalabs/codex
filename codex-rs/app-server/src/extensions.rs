@@ -355,8 +355,10 @@ mod tests {
         };
         let mut plugin = PluginDetail {
             marketplace_name: "test".into(),
-            marketplace_path: AbsolutePathBuf::try_from(PathBuf::from("/tmp/marketplace.json"))
-                .expect("absolute marketplace path"),
+            marketplace_path: Some(
+                AbsolutePathBuf::try_from(PathBuf::from("/tmp/marketplace.json"))
+                    .expect("absolute marketplace path"),
+            ),
             summary: codex_app_server_protocol::PluginSummary {
                 id: "plugin.one".into(),
                 name: "Plugin One".into(),
