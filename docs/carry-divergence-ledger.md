@@ -6,6 +6,9 @@ This document records the current live divergences of the downstream branch
 It is an audit ledger, not a changelog. Ahead-count alone is not evidence of a
 live divergence.
 
+The snapshot below intentionally anchors to the audited code tree before the
+docs-only refresh commit that records this snapshot.
+
 ## Audit Baseline
 
 - Audited on: `2026-04-23`
