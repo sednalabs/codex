@@ -206,7 +206,8 @@ jobs:
       # mixed-architecture archives under sccache.
       USE_SCCACHE: ${{ (startsWith(matrix.runner, 'windows') || (matrix.runner == 'macos-15' && matrix.target == 'x86_64-apple-darwin')) && 'false' || 'true' }}
       CARGO_INCREMENTAL: "0"
-      SCCACHE_CACHE_SIZE: 10G
+      SCCACHE_CACHE_SIZE: 2G
+      SCCACHE_FALLBACK_CACHE_POLICY: restore-only
       # In rust-ci, representative release-profile checks use thin LTO for faster feedback.
       CARGO_PROFILE_RELEASE_LTO: ${{ matrix.profile == 'release' && 'thin' || 'fat' }}
 
@@ -283,19 +284,46 @@ jobs:
         uses: taiki-e/install-action@58e862542551f667fa44c8a2a4a1d64ad477c96a # v2
         with:
           tool: sccache
-          version: 0.7.5
+
+      - name: Expose GitHub cache-service env for sccache
+        if: ${{ env.USE_SCCACHE == 'true' }}
+        uses: actions/github-script@v9
+        with:
+          script: |
+            core.exportVariable('ACTIONS_CACHE_SERVICE_V2', 'on');
+            core.exportVariable('ACTIONS_RESULTS_URL', process.env.ACTIONS_RESULTS_URL || '');
+            core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env.ACTIONS_RUNTIME_TOKEN || '');
 
       - name: Configure sccache backend
+        id: sccache_backend
         if: ${{ env.USE_SCCACHE == 'true' }}
         shell: bash
         run: |
           set -euo pipefail
-          if [[ -n "${ACTIONS_CACHE_URL:-}" && -n "${ACTIONS_RUNTIME_TOKEN:-}" ]]; then
-            echo "SCCACHE_GHA_ENABLED=true" >> "$GITHUB_ENV"
+          policy="${SCCACHE_FALLBACK_CACHE_POLICY:-restore-only}"
+          case "${policy}" in
+            restore-only|write-fallback) ;;
+            *)
+              echo "::warning title=Unknown sccache fallback policy::${policy}; using restore-only"
+              policy="restore-only"
+              ;;
+          esac
+          echo "policy=${policy}" >> "$GITHUB_OUTPUT"
+          cache_url="${SCCACHE_GHA_CACHE_URL:-${ACTIONS_RESULTS_URL:-${ACTIONS_CACHE_URL:-}}}"
+          if [[ -n "${cache_url}" && -n "${ACTIONS_RUNTIME_TOKEN:-}" ]]; then
+            {
+              echo "ACTIONS_CACHE_SERVICE_V2=on"
+              echo "SCCACHE_GHA_ENABLED=true"
+              echo "SCCACHE_GHA_CACHE_URL=${cache_url}"
+            } >> "$GITHUB_ENV"
+            echo "backend=gha" >> "$GITHUB_OUTPUT"
             echo "Using sccache GitHub backend"
           else
-            echo "SCCACHE_GHA_ENABLED=false" >> "$GITHUB_ENV"
-            echo "SCCACHE_DIR=${{ github.workspace }}/.sccache" >> "$GITHUB_ENV"
+            {
+              echo "SCCACHE_GHA_ENABLED=false"
+              echo "SCCACHE_DIR=${{ github.workspace }}/.sccache"
+            } >> "$GITHUB_ENV"
+            echo "backend=fallback" >> "$GITHUB_OUTPUT"
             echo "Using sccache local disk + actions/cache fallback"
           fi
 
@@ -305,7 +333,7 @@ jobs:
         run: echo "RUSTC_WRAPPER=sccache" >> "$GITHUB_ENV"
 
       - name: Restore sccache cache (fallback)
-        if: ${{ env.USE_SCCACHE == 'true' && env.SCCACHE_GHA_ENABLED != 'true' }}
+        if: ${{ env.USE_SCCACHE == 'true' && steps.sccache_backend.outputs.backend == 'fallback' }}
         id: cache_sccache_restore
         uses: actions/cache/restore@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5
         with:
@@ -464,7 +492,7 @@ jobs:
           key: cargo-home-${{ matrix.runner }}-${{ matrix.target }}-${{ matrix.profile }}-${{ steps.lockhash.outputs.hash }}-${{ steps.lockhash.outputs.toolchain_hash }}
 
       - name: Save sccache cache (fallback)
-        if: always() && !cancelled() && env.USE_SCCACHE == 'true' && env.SCCACHE_GHA_ENABLED != 'true'
+        if: always() && !cancelled() && env.USE_SCCACHE == 'true' && steps.sccache_backend.outputs.backend == 'fallback' && steps.sccache_backend.outputs.policy == 'write-fallback'
         continue-on-error: true
         uses: actions/cache/save@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5
         with:
@@ -514,7 +542,8 @@ jobs:
       # mixed-architecture archives under sccache.
       USE_SCCACHE: ${{ (startsWith(matrix.runner, 'windows') || (matrix.runner == 'macos-15' && matrix.target == 'x86_64-apple-darwin')) && 'false' || 'true' }}
       CARGO_INCREMENTAL: "0"
-      SCCACHE_CACHE_SIZE: 10G
+      SCCACHE_CACHE_SIZE: 2G
+      SCCACHE_FALLBACK_CACHE_POLICY: restore-only
 
     strategy:
       fail-fast: false
@@ -576,19 +605,46 @@ jobs:
         uses: taiki-e/install-action@58e862542551f667fa44c8a2a4a1d64ad477c96a # v2
         with:
           tool: sccache
-          version: 0.7.5
+
+      - name: Expose GitHub cache-service env for sccache
+        if: ${{ env.USE_SCCACHE == 'true' }}
+        uses: actions/github-script@v9
+        with:
+          script: |
+            core.exportVariable('ACTIONS_CACHE_SERVICE_V2', 'on');
+            core.exportVariable('ACTIONS_RESULTS_URL', process.env.ACTIONS_RESULTS_URL || '');
+            core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env.ACTIONS_RUNTIME_TOKEN || '');
 
       - name: Configure sccache backend
+        id: sccache_backend
         if: ${{ env.USE_SCCACHE == 'true' }}
         shell: bash
         run: |
           set -euo pipefail
-          if [[ -n "${ACTIONS_CACHE_URL:-}" && -n "${ACTIONS_RUNTIME_TOKEN:-}" ]]; then
-            echo "SCCACHE_GHA_ENABLED=true" >> "$GITHUB_ENV"
+          policy="${SCCACHE_FALLBACK_CACHE_POLICY:-restore-only}"
+          case "${policy}" in
+            restore-only|write-fallback) ;;
+            *)
+              echo "::warning title=Unknown sccache fallback policy::${policy}; using restore-only"
+              policy="restore-only"
+              ;;
+          esac
+          echo "policy=${policy}" >> "$GITHUB_OUTPUT"
+          cache_url="${SCCACHE_GHA_CACHE_URL:-${ACTIONS_RESULTS_URL:-${ACTIONS_CACHE_URL:-}}}"
+          if [[ -n "${cache_url}" && -n "${ACTIONS_RUNTIME_TOKEN:-}" ]]; then
+            {
+              echo "ACTIONS_CACHE_SERVICE_V2=on"
+              echo "SCCACHE_GHA_ENABLED=true"
+              echo "SCCACHE_GHA_CACHE_URL=${cache_url}"
+            } >> "$GITHUB_ENV"
+            echo "backend=gha" >> "$GITHUB_OUTPUT"
             echo "Using sccache GitHub backend"
           else
-            echo "SCCACHE_GHA_ENABLED=false" >> "$GITHUB_ENV"
-            echo "SCCACHE_DIR=${{ github.workspace }}/.sccache" >> "$GITHUB_ENV"
+            {
+              echo "SCCACHE_GHA_ENABLED=false"
+              echo "SCCACHE_DIR=${{ github.workspace }}/.sccache"
+            } >> "$GITHUB_ENV"
+            echo "backend=fallback" >> "$GITHUB_OUTPUT"
             echo "Using sccache local disk + actions/cache fallback"
           fi
 
@@ -598,7 +654,7 @@ jobs:
         run: echo "RUSTC_WRAPPER=sccache" >> "$GITHUB_ENV"
 
       - name: Restore sccache cache (fallback)
-        if: ${{ env.USE_SCCACHE == 'true' && env.SCCACHE_GHA_ENABLED != 'true' }}
+        if: ${{ env.USE_SCCACHE == 'true' && steps.sccache_backend.outputs.backend == 'fallback' }}
         id: cache_sccache_restore
         uses: actions/cache/restore@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5
         with:
@@ -630,6 +686,7 @@ jobs:
         run: |
           set -euo pipefail
           export CODEX_TEST_REMOTE_ENV_CONTAINER_NAME=codex-remote-test-env
+          # shellcheck source=/dev/null
           source "${GITHUB_WORKSPACE}/scripts/test-remote-env.sh"
           echo "CODEX_TEST_REMOTE_ENV=${CODEX_TEST_REMOTE_ENV}" >> "$GITHUB_ENV"
           echo "CODEX_TEST_REMOTE_EXEC_SERVER_URL=${CODEX_TEST_REMOTE_EXEC_SERVER_URL}" >> "$GITHUB_ENV"
@@ -663,7 +720,7 @@ jobs:
           key: cargo-home-${{ matrix.runner }}-${{ matrix.target }}-${{ matrix.profile }}-${{ steps.lockhash.outputs.hash }}-${{ steps.lockhash.outputs.toolchain_hash }}
 
       - name: Save sccache cache (fallback)
-        if: always() && !cancelled() && env.USE_SCCACHE == 'true' && env.SCCACHE_GHA_ENABLED != 'true'
+        if: always() && !cancelled() && env.USE_SCCACHE == 'true' && steps.sccache_backend.outputs.backend == 'fallback' && steps.sccache_backend.outputs.policy == 'write-fallback'
         continue-on-error: true
         uses: actions/cache/save@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5
         with:

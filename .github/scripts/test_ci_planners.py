@@ -69,6 +69,37 @@ def load_workflow_payload(workflow_path: Path) -> dict:
     return payload if isinstance(payload, dict) else {}
 
 
+def just_recipe_names(header: str) -> list[str]:
+    names: list[str] = []
+    for recipe_part in header.split(","):
+        tokens = recipe_part.strip().split()
+        if tokens:
+            names.append(tokens[0])
+    return names
+
+
+def just_recipe_bodies(justfile_path: Path) -> dict[str, list[str]]:
+    recipes: dict[str, list[str]] = {}
+    current_names: list[str] = []
+    current_body: list[str] = []
+    for line in justfile_path.read_text(encoding="utf-8").splitlines():
+        if line and not line.startswith((" ", "\t", "#")) and ":" in line:
+            for name in current_names:
+                recipes[name] = current_body
+            current_names = just_recipe_names(line.split(":", 1)[0].strip())
+            current_body = []
+        elif current_names:
+            current_body.append(line)
+    for name in current_names:
+        recipes[name] = current_body
+    return recipes
+
+
+def just_recipes_with_nextest(justfile_path: Path) -> set[str]:
+    recipes = just_recipe_bodies(justfile_path)
+    return {name for name, body in recipes.items() if any("cargo nextest" in line for line in body)}
+
+
 class TempGitRepo:
     def __init__(self) -> None:
         self._tmpdir = tempfile.TemporaryDirectory()
@@ -244,16 +275,18 @@ class RouteSelectionTests(unittest.TestCase):
             ["all", *expected_lane_ids],
         )
 
-    def test_workflow_ci_sanity_lane_uses_host_checkout_justfile(self) -> None:
+    def test_workflow_ci_sanity_lane_uses_direct_script_contract(self) -> None:
         lane = next(
             lane
             for lane in self.catalog["lanes"]
             if lane["lane_id"] == "codex.workflow-ci-sanity"
         )
         self.assertEqual(
-            lane["run_command"],
-            "just --justfile ../.workflow-src/justfile workflow-ci-sanity",
+            lane["script_path"],
+            ".github/scripts/validation-lanes/workflow-ci-sanity.sh",
         )
+        self.assertEqual(lane["script_args"], [])
+        self.assertFalse(lane["needs_just"])
 
 
 class ValidationPlanScriptTests(unittest.TestCase):
@@ -273,9 +306,13 @@ class ValidationPlanScriptTests(unittest.TestCase):
 
         self.assertEqual(payload["run_selected_lanes"], "true")
         self.assertEqual(payload["run_smoke_gate"], "false")
-        self.assertEqual(payload["selected_light_lane_count"], 0)
-        self.assertGreater(payload["selected_rust_lane_count"], 0)
-        self.assertGreater(payload["selected_heavy_lane_count"], 0)
+        self.assertEqual(payload["selected_workflow_lane_count"], 0)
+        self.assertEqual(payload["selected_node_lane_count"], 0)
+        self.assertEqual(payload["selected_rust_minimal_lane_count"], 12)
+        self.assertEqual(payload["selected_rust_integration_lane_count"], 3)
+        self.assertEqual(payload["selected_release_lane_count"], 0)
+        self.assertIn("codex.app-server-protocol-test", payload["selected_lane_ids"])
+        self.assertIn("codex.blocking-waits-targeted", payload["selected_lane_ids"])
 
     def test_lab_full_all_tolerates_null_groups_entries(self) -> None:
         catalog_path = REPO_ROOT / ".github/validation-lanes.json"
@@ -302,6 +339,8 @@ class ValidationPlanScriptTests(unittest.TestCase):
         self.assertEqual(payload["run_selected_lanes"], "true")
         self.assertIn("planned_matrix", payload)
         self.assertIn("selected_matrix", payload)
+        self.assertIn("selected_workflow_matrix", payload)
+        self.assertIn("smoke_workflow_matrix", payload)
 
     def test_heavy_plan_splits_selected_lanes_by_setup_class(self) -> None:
         payload = run_script(
@@ -333,12 +372,19 @@ class ValidationPlanScriptTests(unittest.TestCase):
             ),
         )
 
-        self.assertGreater(payload["selected_light_lane_count"], 0)
-        self.assertGreater(payload["selected_rust_lane_count"], 0)
-        self.assertGreater(payload["selected_heavy_lane_count"], 0)
-        self.assertEqual(payload["light_max_parallel"], "8")
-        self.assertEqual(payload["rust_max_parallel"], "4")
-        self.assertEqual(payload["heavy_max_parallel"], "2")
+        self.assertEqual(payload["run_smoke_gate"], "true")
+        self.assertEqual(payload["smoke_gate_kind"], "runtime")
+        self.assertEqual(payload["selected_workflow_lane_count"], 1)
+        self.assertEqual(payload["selected_node_lane_count"], 0)
+        self.assertEqual(payload["selected_rust_minimal_lane_count"], 15)
+        self.assertEqual(payload["selected_rust_integration_lane_count"], 12)
+        self.assertEqual(payload["selected_release_lane_count"], 1)
+        self.assertEqual(payload["smoke_rust_integration_lane_count"], 5)
+        self.assertEqual(payload["workflow_max_parallel"], "8")
+        self.assertEqual(payload["node_max_parallel"], "4")
+        self.assertEqual(payload["rust_minimal_max_parallel"], "6")
+        self.assertEqual(payload["rust_integration_max_parallel"], "2")
+        self.assertEqual(payload["release_max_parallel"], "1")
 
     def test_heavy_plan_route_uses_bounded_shared_spawn_surface(self) -> None:
         payload = run_script(
@@ -403,13 +449,17 @@ class ValidationPlanScriptTests(unittest.TestCase):
 
         self.assertEqual(payload["run_smoke_gate"], "false")
         self.assertEqual(payload["smoke_gate_kind"], "")
-        self.assertEqual(payload["smoke_heavy_lane_count"], 0)
+        self.assertEqual(payload["smoke_rust_integration_lane_count"], 0)
+        self.assertEqual(payload["selected_workflow_lane_count"], 0)
+        self.assertEqual(payload["selected_node_lane_count"], 0)
+        self.assertEqual(payload["selected_rust_minimal_lane_count"], 1)
+        self.assertEqual(payload["selected_rust_integration_lane_count"], 0)
         self.assertEqual(
             [lane["lane_id"] for lane in payload["selected_matrix"]["include"]],
             ["codex.tui-agent-picker-model-surface-targeted"],
         )
 
-    def test_heavy_plan_route_keeps_workflow_ci_changes_on_light_lanes(self) -> None:
+    def test_heavy_plan_route_keeps_workflow_ci_changes_on_workflow_lanes(self) -> None:
         payload = run_script(
             SCRIPTS_DIR / "resolve_validation_plan.py",
             "heavy",
@@ -441,9 +491,11 @@ class ValidationPlanScriptTests(unittest.TestCase):
         )
 
         self.assertEqual(payload["run_smoke_gate"], "false")
-        self.assertEqual(payload["selected_light_lane_count"], 2)
-        self.assertEqual(payload["selected_rust_lane_count"], 0)
-        self.assertEqual(payload["selected_heavy_lane_count"], 0)
+        self.assertEqual(payload["selected_workflow_lane_count"], 2)
+        self.assertEqual(payload["selected_node_lane_count"], 0)
+        self.assertEqual(payload["selected_rust_minimal_lane_count"], 0)
+        self.assertEqual(payload["selected_rust_integration_lane_count"], 0)
+        self.assertEqual(payload["selected_release_lane_count"], 0)
         self.assertEqual(
             [lane["lane_id"] for lane in payload["selected_matrix"]["include"]],
             [
@@ -456,52 +508,278 @@ class ValidationPlanScriptTests(unittest.TestCase):
         payload = load_workflow_payload(REPO_ROOT / ".github/workflows/validation-lab.yml")
         jobs = payload.get("jobs") or {}
 
-        self.assertEqual((jobs.get("light_lanes") or {}).get("needs"), ["metadata"])
-        self.assertEqual((jobs.get("rust_lanes") or {}).get("needs"), ["metadata"])
-        self.assertEqual((jobs.get("heavy_lanes") or {}).get("needs"), ["metadata"])
+        self.assertEqual((jobs.get("workflow_lanes") or {}).get("needs"), ["metadata"])
+        self.assertEqual((jobs.get("node_lanes") or {}).get("needs"), ["metadata"])
+        self.assertEqual((jobs.get("rust_minimal_lanes") or {}).get("needs"), ["metadata"])
+        self.assertEqual((jobs.get("rust_integration_lanes") or {}).get("needs"), ["metadata"])
+        self.assertEqual((jobs.get("release_lanes") or {}).get("needs"), ["metadata"])
 
-    def test_heavy_plan_route_keeps_workflow_ci_changes_on_light_lanes(self) -> None:
-        payload = run_script(
-            SCRIPTS_DIR / "resolve_validation_plan.py",
-            "heavy",
-            "--event-name",
-            "pull_request",
-            "--requested-lane",
-            "",
-            "--run-all-lanes",
-            "false",
-            "--run-core-family",
-            "false",
-            "--run-attestation-family",
-            "false",
-            "--run-workflow-family",
-            "true",
-            "--run-ui-protocol-family",
-            "false",
-            "--run-docs-family",
-            "true",
-            "--changed-files-json",
-            json.dumps(
-                [
-                    ".github/workflows/validation-lab.yml",
-                    ".github/scripts/resolve_validation_plan.py",
-                    "docs/validation_workflow.md",
-                    "justfile",
-                ]
-            ),
-        )
+    def test_validation_lab_summary_waits_for_smoke_and_selected_fanout(self) -> None:
+        payload = load_workflow_payload(REPO_ROOT / ".github/workflows/validation-lab.yml")
+        jobs = payload.get("jobs") or {}
+        summary = jobs.get("summary") or {}
 
-        self.assertEqual(payload["run_smoke_gate"], "false")
-        self.assertEqual(payload["selected_light_lane_count"], 2)
-        self.assertEqual(payload["selected_rust_lane_count"], 0)
-        self.assertEqual(payload["selected_heavy_lane_count"], 0)
         self.assertEqual(
-            [lane["lane_id"] for lane in payload["selected_matrix"]["include"]],
+            summary.get("needs"),
             [
-                "codex.workflow-ci-sanity",
-                "codex.downstream-docs-check",
+                "metadata",
+                "smoke_workflow_lanes",
+                "smoke_node_lanes",
+                "smoke_rust_minimal_lanes",
+                "smoke_rust_integration_lanes",
+                "smoke_release_lanes",
+                "workflow_lanes",
+                "node_lanes",
+                "rust_minimal_lanes",
+                "rust_integration_lanes",
+                "release_lanes",
+                "artifact",
             ],
         )
+
+    def test_just_recipe_bodies_handles_comma_separated_recipe_names(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            justfile = Path(tmpdir) / "justfile"
+            justfile.write_text(
+                "\n".join(
+                    [
+                        "foo, bar:",
+                        "    cargo nextest run -p codex-core",
+                        "",
+                        "with-param target='default':",
+                        "    cargo test -p codex-tui",
+                        "",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            recipes = just_recipe_bodies(justfile)
+
+        self.assertEqual(recipes["foo"], ["    cargo nextest run -p codex-core", ""])
+        self.assertEqual(recipes["bar"], ["    cargo nextest run -p codex-core", ""])
+        self.assertEqual(recipes["with-param"], ["    cargo test -p codex-tui"])
+        self.assertNotIn("foo,", recipes)
+
+    def test_run_just_recipe_lanes_declare_nextest_when_recipe_uses_nextest(self) -> None:
+        catalog = RESOLVE_VALIDATION_PLAN.load_catalog()
+        nextest_recipes = just_recipes_with_nextest(REPO_ROOT / "justfile")
+        missing: list[str] = []
+        for lane in catalog["lanes"]:
+            if lane.get("script_path") != ".github/scripts/validation-lanes/run-just-recipe.sh":
+                continue
+            script_args = lane.get("script_args") or []
+            recipe = script_args[0] if script_args else ""
+            if recipe in nextest_recipes and not lane.get("needs_nextest"):
+                missing.append(str(lane.get("lane_id")))
+
+        self.assertEqual(missing, [])
+
+    def test_run_just_recipe_lanes_declare_linux_build_deps_when_recipe_compiles_linux_sandbox(
+        self,
+    ) -> None:
+        catalog = RESOLVE_VALIDATION_PLAN.load_catalog()
+        recipe_bodies = just_recipe_bodies(REPO_ROOT / "justfile")
+        direct_linux_build_deps_recipes = {
+            name
+            for name, body in recipe_bodies.items()
+            if any(
+                command in line
+                for line in body
+                for command in ("cargo test", "cargo nextest", "cargo check", "cargo build")
+            )
+            and any("codex-core" in line or "codex-tui" in line for line in body)
+        }
+        nested_linux_build_deps_recipes = {
+            name
+            for name, body in recipe_bodies.items()
+            if any("just --justfile ../justfile" in line for line in body)
+            and any(
+                any(subrecipe in line for subrecipe in direct_linux_build_deps_recipes)
+                for line in body
+            )
+        }
+        linux_build_deps_recipes = direct_linux_build_deps_recipes | nested_linux_build_deps_recipes
+        missing: list[str] = []
+        for lane in catalog["lanes"]:
+            if lane.get("script_path") != ".github/scripts/validation-lanes/run-just-recipe.sh":
+                continue
+            script_args = lane.get("script_args") or []
+            recipe = script_args[0] if script_args else ""
+            if recipe in linux_build_deps_recipes and not lane.get("needs_linux_build_deps"):
+                missing.append(str(lane.get("lane_id")))
+
+        self.assertEqual(missing, [])
+
+    def test_validation_lab_passes_sccache_policy_only_to_sccache_lanes(self) -> None:
+        payload = load_workflow_payload(REPO_ROOT / ".github/workflows/validation-lab.yml")
+        jobs = payload.get("jobs") or {}
+        expected_policy = (
+            "${{ inputs.supersession_mode != 'auto' && "
+            "'write-fallback' || 'restore-only' }}"
+        )
+
+        sccache_jobs = [
+            "smoke_rust_integration_lanes",
+            "smoke_release_lanes",
+            "rust_integration_lanes",
+            "release_lanes",
+            "artifact",
+        ]
+        for job_name in sccache_jobs:
+            with self.subTest(job=job_name):
+                self.assertEqual(
+                    ((jobs.get(job_name) or {}).get("with") or {}).get("cache_policy"),
+                    expected_policy,
+                )
+
+        non_sccache_jobs = [
+            "smoke_workflow_lanes",
+            "smoke_node_lanes",
+            "smoke_rust_minimal_lanes",
+            "workflow_lanes",
+            "node_lanes",
+            "rust_minimal_lanes",
+        ]
+        for job_name in non_sccache_jobs:
+            with self.subTest(job=job_name):
+                self.assertNotIn("cache_policy", (jobs.get(job_name) or {}).get("with") or {})
+
+    def test_sedna_heavy_uses_restore_only_sccache_fallback_policy(self) -> None:
+        payload = load_workflow_payload(REPO_ROOT / ".github/workflows/sedna-heavy-tests.yml")
+        jobs = payload.get("jobs") or {}
+
+        for job_name in [
+            "smoke_rust_integration_lanes",
+            "smoke_release_lanes",
+            "rust_integration_lanes",
+            "release_lanes",
+        ]:
+            with self.subTest(job=job_name):
+                self.assertEqual(
+                    ((jobs.get(job_name) or {}).get("with") or {}).get("cache_policy"),
+                    "restore-only",
+                )
+
+    def test_reusable_sccache_workflows_require_explicit_fallback_writes(self) -> None:
+        for workflow_name in [
+            "_validation-lane-rust-integration.yml",
+            "_validation-lane-release.yml",
+            "_sedna-linux-rust.yml",
+        ]:
+            with self.subTest(workflow=workflow_name):
+                payload = load_workflow_payload(REPO_ROOT / ".github/workflows" / workflow_name)
+                inputs = (((payload.get("on") or {}).get("workflow_call") or {}).get("inputs") or {})
+                self.assertEqual((inputs.get("cache_policy") or {}).get("default"), "restore-only")
+
+                run_job = (payload.get("jobs") or {}).get("run") or {}
+                self.assertEqual((run_job.get("env") or {}).get("SCCACHE_CACHE_SIZE"), "2G")
+
+                save_step = next(
+                    step
+                    for step in run_job.get("steps") or []
+                    if step.get("name") == "Save sccache cache (fallback)"
+                )
+                self.assertIn(
+                    "steps.sccache_backend.outputs.policy == 'write-fallback'",
+                    save_step.get("if") or "",
+                )
+
+    def test_rust_ci_fallback_sccache_writes_are_disabled_by_default(self) -> None:
+        payload = load_workflow_payload(REPO_ROOT / ".github/workflows/rust-ci-full.yml")
+        jobs = payload.get("jobs") or {}
+
+        for job_name in ["lint_build", "tests"]:
+            with self.subTest(job=job_name):
+                job = jobs.get(job_name) or {}
+                env = job.get("env") or {}
+                self.assertEqual(env.get("SCCACHE_CACHE_SIZE"), "2G")
+                self.assertEqual(env.get("SCCACHE_FALLBACK_CACHE_POLICY"), "restore-only")
+
+                save_step = next(
+                    step
+                    for step in job.get("steps") or []
+                    if step.get("name") == "Save sccache cache (fallback)"
+                )
+                self.assertIn(
+                    "steps.sccache_backend.outputs.policy == 'write-fallback'",
+                    save_step.get("if") or "",
+                )
+                install_step = next(
+                    step for step in job.get("steps") or [] if step.get("name") == "Install sccache"
+                )
+                self.assertNotIn("version", install_step.get("with") or {})
+
+    def test_lane_summary_records_cache_telemetry_without_raw_command(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output = Path(tmpdir) / "summary.json"
+            subprocess.run(
+                [
+                    "python3",
+                    str(SCRIPTS_DIR / "write_lane_summary.py"),
+                    "--lane-id",
+                    "codex.example",
+                    "--summary-title",
+                    "example",
+                    "--run-command",
+                    "cargo test --locked",
+                    "--cache-policy",
+                    "restore-only",
+                    "--cache-backend",
+                    "fallback",
+                    "--sccache-restore-mode",
+                    "restore-key-or-miss",
+                    "--output",
+                    str(output),
+                ],
+                check=True,
+            )
+
+            summary = json.loads(output.read_text(encoding="utf-8"))
+
+        self.assertEqual(summary["script_path"], "legacy-run-command")
+        self.assertEqual(summary["cache_policy"], "restore-only")
+        self.assertEqual(summary["cache_backend"], "fallback")
+        self.assertEqual(summary["sccache_restore_mode"], "restore-key-or-miss")
+        self.assertNotIn("run_command", summary)
+
+    def test_lane_summary_records_script_metadata_and_cache_telemetry(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output = Path(tmpdir) / "summary.json"
+            subprocess.run(
+                [
+                    "python3",
+                    str(SCRIPTS_DIR / "write_lane_summary.py"),
+                    "--lane-id",
+                    "codex.example",
+                    "--summary-title",
+                    "example",
+                    "--script-path",
+                    ".github/scripts/validation-lanes/run-just-recipe.sh",
+                    "--script-args-json",
+                    '["blocking-waits-targeted"]',
+                    "--cache-policy",
+                    "restore-only",
+                    "--cache-backend",
+                    "gha",
+                    "--sccache-restore-mode",
+                    "not-applicable",
+                    "--output",
+                    str(output),
+                ],
+                check=True,
+            )
+
+            summary = json.loads(output.read_text(encoding="utf-8"))
+
+        self.assertEqual(
+            summary["script_path"], ".github/scripts/validation-lanes/run-just-recipe.sh"
+        )
+        self.assertEqual(summary["script_args"], ["blocking-waits-targeted"])
+        self.assertEqual(summary["cache_policy"], "restore-only")
+        self.assertEqual(summary["cache_backend"], "gha")
+        self.assertEqual(summary["sccache_restore_mode"], "not-applicable")
+        self.assertNotIn("run_command", summary)
 
     def test_validation_lab_frontier_all_widens_to_all_active_non_explicit_lanes(self) -> None:
         payload = run_script(
@@ -524,11 +802,16 @@ class ValidationPlanScriptTests(unittest.TestCase):
         self.assertIn("codex.tui-config-refresh-session-targeted", selected_lane_ids)
         self.assertIn("codex.spawn-agent-description-model-surface-targeted", selected_lane_ids)
         self.assertNotIn("codex.tui-agent-picker-model-surface-targeted", selected_lane_ids)
-        self.assertEqual(payload["selected_light_lane_count"], 5)
-        self.assertEqual(payload["selected_rust_lane_count"], 22)
-        self.assertEqual(payload["selected_heavy_lane_count"], 7)
-        self.assertEqual(payload["rust_max_parallel"], "22")
-        self.assertEqual(payload["heavy_max_parallel"], "7")
+        self.assertEqual(payload["selected_workflow_lane_count"], 4)
+        self.assertEqual(payload["selected_node_lane_count"], 1)
+        self.assertEqual(payload["selected_rust_minimal_lane_count"], 15)
+        self.assertEqual(payload["selected_rust_integration_lane_count"], 13)
+        self.assertEqual(payload["selected_release_lane_count"], 1)
+        self.assertEqual(payload["workflow_max_parallel"], "4")
+        self.assertEqual(payload["node_max_parallel"], "1")
+        self.assertEqual(payload["rust_minimal_max_parallel"], "15")
+        self.assertEqual(payload["rust_integration_max_parallel"], "8")
+        self.assertEqual(payload["release_max_parallel"], "1")
 
     def test_validation_lab_frontier_all_can_include_explicit_only_lanes(self) -> None:
         payload = run_script(
@@ -549,36 +832,54 @@ class ValidationPlanScriptTests(unittest.TestCase):
         selected_lane_ids = [lane["lane_id"] for lane in payload["selected_matrix"]["include"]]
         self.assertIn("codex.tui-agent-picker-model-surface-targeted", selected_lane_ids)
         self.assertIn("downstream-ledger-seam", selected_lane_ids)
-        self.assertEqual(payload["selected_light_lane_count"], 5)
-        self.assertEqual(payload["selected_rust_lane_count"], 25)
-        self.assertEqual(payload["selected_heavy_lane_count"], 7)
-        self.assertEqual(payload["rust_max_parallel"], "25")
-        self.assertEqual(payload["heavy_max_parallel"], "7")
+        self.assertEqual(payload["selected_workflow_lane_count"], 4)
+        self.assertEqual(payload["selected_node_lane_count"], 1)
+        self.assertEqual(payload["selected_rust_minimal_lane_count"], 17)
+        self.assertEqual(payload["selected_rust_integration_lane_count"], 14)
+        self.assertEqual(payload["selected_release_lane_count"], 1)
+        self.assertEqual(payload["rust_minimal_max_parallel"], "17")
+        self.assertEqual(payload["rust_integration_max_parallel"], "8")
 
     def test_validation_lab_frontier_all_excludes_smoke_gate_lanes_by_metadata(self) -> None:
         catalog = {
             "lanes": [
                 {
                     "lane_id": "codex.synthetic-runtime-gate",
-                    "run_command": "echo synthetic-gate",
                     "groups": ["core"],
                     "status_class": "active",
-                    "setup_class": "heavy",
+                    "setup_class": "rust_integration",
                     "frontier_role": "sentinel",
                     "summary_family": "synthetic-gate",
                     "cost_class": "high",
+                    "working_directory": ".",
+                    "script_path": ".github/scripts/validation-lanes/run-just-recipe.sh",
+                    "script_args": ["synthetic-runtime-gate"],
+                    "needs_just": True,
+                    "needs_node": False,
+                    "needs_nextest": False,
+                    "needs_linux_build_deps": True,
+                    "needs_dotslash": True,
+                    "needs_sccache": True,
                     "smoke_gate_only": True,
                     "smoke_gate_kinds": ["runtime"],
                 },
                 {
                     "lane_id": "codex.synthetic-real-lane",
-                    "run_command": "echo synthetic-real-lane",
                     "groups": ["core"],
                     "status_class": "active",
-                    "setup_class": "rust",
+                    "setup_class": "rust_minimal",
                     "frontier_role": "sentinel",
                     "summary_family": "synthetic-real-lane",
                     "cost_class": "medium",
+                    "working_directory": ".",
+                    "script_path": ".github/scripts/validation-lanes/run-just-recipe.sh",
+                    "script_args": ["synthetic-real-lane"],
+                    "needs_just": True,
+                    "needs_node": False,
+                    "needs_nextest": False,
+                    "needs_linux_build_deps": False,
+                    "needs_dotslash": False,
+                    "needs_sccache": False,
                 },
             ]
         }
@@ -616,9 +917,11 @@ class ValidationPlanScriptTests(unittest.TestCase):
 
         self.assertEqual(payload["matrix_fail_fast"], "false")
         self.assertEqual(payload["continue_after_smoke_failure"], "true")
-        self.assertEqual(payload["light_max_parallel"], "5")
-        self.assertEqual(payload["rust_max_parallel"], "25")
-        self.assertEqual(payload["heavy_max_parallel"], "12")
+        self.assertEqual(payload["workflow_max_parallel"], "4")
+        self.assertEqual(payload["node_max_parallel"], "1")
+        self.assertEqual(payload["rust_minimal_max_parallel"], "17")
+        self.assertEqual(payload["rust_integration_max_parallel"], "8")
+        self.assertEqual(payload["release_max_parallel"], "1")
         planned_lane_ids = [lane["lane_id"] for lane in payload["planned_matrix"]["include"]]
         selected_lane_ids = payload["selected_lane_ids"]
         self.assertEqual(
@@ -651,14 +954,18 @@ class ValidationPlanScriptTests(unittest.TestCase):
             "${{ steps.meta.outputs.selected_lane_ids }}",
         )
         self.assertEqual(
-            ((jobs.get("smoke_light_lanes") or {}).get("strategy") or {}).get("fail-fast"),
+            ((jobs.get("smoke_rust_integration_lanes") or {}).get("strategy") or {}).get(
+                "fail-fast"
+            ),
             "${{ fromJson(needs.metadata.outputs.matrix_fail_fast) }}",
         )
         self.assertEqual(
-            ((jobs.get("rust_lanes") or {}).get("strategy") or {}).get("fail-fast"),
+            ((jobs.get("rust_integration_lanes") or {}).get("strategy") or {}).get(
+                "fail-fast"
+            ),
             "${{ fromJson(needs.metadata.outputs.matrix_fail_fast) }}",
         )
-        rust_if = (jobs.get("rust_lanes") or {}).get("if") or ""
+        rust_if = (jobs.get("rust_integration_lanes") or {}).get("if") or ""
         self.assertIn("needs.metadata.outputs.continue_after_smoke_failure == 'true'", rust_if)
 
     def test_sedna_heavy_pr_triggers_keep_ready_for_review(self) -> None:
@@ -706,12 +1013,16 @@ class ValidationPlanScriptTests(unittest.TestCase):
             summary.get("needs"),
             [
                 "metadata",
-                "smoke_light_lanes",
-                "smoke_rust_lanes",
-                "smoke_heavy_lanes",
-                "light_lanes",
-                "rust_lanes",
-                "heavy_lanes",
+                "smoke_workflow_lanes",
+                "smoke_node_lanes",
+                "smoke_rust_minimal_lanes",
+                "smoke_rust_integration_lanes",
+                "smoke_release_lanes",
+                "workflow_lanes",
+                "node_lanes",
+                "rust_minimal_lanes",
+                "rust_integration_lanes",
+                "release_lanes",
             ],
         )
         summary_if = summary.get("if") or ""
@@ -732,6 +1043,14 @@ class ValidationPlanScriptTests(unittest.TestCase):
         )
         self.assertIn(
             '--head-sha "${{ needs.metadata.outputs.checkout_sha }}"',
+            (steps[2] or {}).get("run") or "",
+        )
+        self.assertIn(
+            '--workflow-result "${WORKFLOW_RESULT}"',
+            (steps[2] or {}).get("run") or "",
+        )
+        self.assertIn(
+            '--rust-minimal-result "${RUST_MINIMAL_RESULT}"',
             (steps[2] or {}).get("run") or "",
         )
         self.assertEqual((steps[3] or {}).get("uses"), "actions/upload-artifact@v7")

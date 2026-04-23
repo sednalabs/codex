@@ -10,11 +10,23 @@ from collections import Counter
 from collections import OrderedDict
 from pathlib import Path
 
-VALID_SETUP_CLASSES = {"light", "rust", "heavy"}
+VALID_SETUP_CLASSES = {
+    "workflow",
+    "node",
+    "rust_minimal",
+    "rust_integration",
+    "release",
+}
 VALID_FRONTIER_ROLES = {"sentinel", "depth"}
 VALID_STATUS_CLASSES = {"active", "legacy"}
 VALID_COST_CLASSES = {"low", "medium", "high"}
-ORDERED_SETUP_CLASSES = ["light", "rust", "heavy"]
+ORDERED_SETUP_CLASSES = [
+    "workflow",
+    "node",
+    "rust_minimal",
+    "rust_integration",
+    "release",
+]
 
 
 def catalog_path() -> Path:
@@ -55,38 +67,13 @@ def derive_summary_family(lane: dict) -> str:
     return normalized or lane_id or "validation-lane"
 
 
-def derive_setup_class(lane: dict) -> str:
-    groups = set(lane.get("groups") or [])
-    lane_id = str(lane.get("lane_id") or "")
-    lane_sets = set(lane.get("lane_sets", []))
-
-    if groups & {"workflow", "docs"}:
-        return "light"
-    if lane.get("install_nextest"):
-        return "heavy"
-    if lane.get("smoke_gate_kinds"):
-        return "heavy"
-    if "release" in lane_sets:
-        return "heavy"
-    if any(
-        token in lane_id
-        for token in (
-            "compile-smoke",
-            "core-smoke",
-            "ui-smoke",
-            "ledger-smoke",
-            "runtime-surface-smoke",
-        )
-    ):
-        return "heavy"
-    return "rust"
-
-
 def derive_cost_class(setup_class: str) -> str:
     return {
-        "light": "low",
-        "rust": "medium",
-        "heavy": "high",
+        "workflow": "low",
+        "node": "low",
+        "rust_minimal": "medium",
+        "rust_integration": "high",
+        "release": "high",
     }[setup_class]
 
 
@@ -102,7 +89,7 @@ def family_key_for_lane(lane: dict) -> tuple[str, str]:
 
 
 def normalize_catalog(catalog: dict) -> dict:
-    """Backfill derived lane metadata for older target refs."""
+    """Backfill non-execution metadata for the current catalog."""
 
     normalized_lanes: list[dict] = []
     family_sentinel_ids: dict[tuple[str, str], str] = {}
@@ -110,7 +97,6 @@ def normalize_catalog(catalog: dict) -> dict:
     for original in catalog["lanes"]:
         lane = dict(original)
         lane.setdefault("status_class", "active")
-        lane.setdefault("setup_class", derive_setup_class(lane))
         lane.setdefault("summary_family", derive_summary_family(lane))
         lane.setdefault("cost_class", derive_cost_class(lane["setup_class"]))
         lane.setdefault("frontier_default", False)
@@ -179,20 +165,52 @@ def validate_catalog(catalog: dict) -> None:
             valid = ", ".join(sorted(VALID_COST_CLASSES))
             raise SystemExit(f"lane {lane_id} must set cost_class to one of: {valid}")
 
+        working_directory = lane.get("working_directory")
+        if not isinstance(working_directory, str) or not working_directory:
+            raise SystemExit(f"lane {lane_id} must set working_directory")
+
+        script_path = lane.get("script_path")
+        if not isinstance(script_path, str) or not script_path:
+            raise SystemExit(f"lane {lane_id} must set script_path")
+
+        script_args = lane.get("script_args")
+        if not isinstance(script_args, list) or not all(
+            isinstance(arg, str) for arg in script_args
+        ):
+            raise SystemExit(f"lane {lane_id} must set script_args to a list of strings")
+
+        for field in (
+            "needs_just",
+            "needs_node",
+            "needs_nextest",
+            "needs_linux_build_deps",
+            "needs_dotslash",
+            "needs_sccache",
+        ):
+            if not isinstance(lane.get(field), bool):
+                raise SystemExit(f"lane {lane_id} must set {field} to true or false")
+
 
 def lane_payload(spec: dict, *, lane_phase: str) -> dict:
     return {
         "lane_id": spec["lane_id"],
         "lane_phase": lane_phase,
-        "run_command": spec["run_command"],
         "groups": spec.get("groups") or [],
-        "install_nextest": bool(spec.get("install_nextest", False)),
         "status_class": spec["status_class"],
         "frontier_default": bool(spec.get("frontier_default", False)),
         "setup_class": spec["setup_class"],
         "frontier_role": spec["frontier_role"],
         "summary_family": spec["summary_family"],
         "cost_class": spec["cost_class"],
+        "working_directory": spec["working_directory"],
+        "script_path": spec["script_path"],
+        "script_args": spec.get("script_args") or [],
+        "needs_just": bool(spec["needs_just"]),
+        "needs_node": bool(spec["needs_node"]),
+        "needs_nextest": bool(spec["needs_nextest"]),
+        "needs_linux_build_deps": bool(spec["needs_linux_build_deps"]),
+        "needs_dotslash": bool(spec["needs_dotslash"]),
+        "needs_sccache": bool(spec["needs_sccache"]),
     }
 
 
@@ -325,19 +343,35 @@ def setup_parallel_limits(profile: str, selected: list[dict] | None = None) -> d
     counts = Counter(lane["setup_class"] for lane in (selected or []))
     if profile == "frontier":
         return {
-            "light": max(1, min(counts.get("light", 0), 12)),
-            "rust": max(1, min(counts.get("rust", 0), 32)),
-            "heavy": max(1, min(counts.get("heavy", 0), 16)),
+            "workflow": max(1, min(counts.get("workflow", 0), 12)),
+            "node": max(1, min(counts.get("node", 0), 6)),
+            "rust_minimal": max(1, min(counts.get("rust_minimal", 0), 20)),
+            "rust_integration": max(1, min(counts.get("rust_integration", 0), 8)),
+            "release": max(1, min(counts.get("release", 0), 1)),
         }
     if profile in {"broad", "full"}:
         return {
-            "light": max(1, min(counts.get("light", 0), 10)),
-            "rust": max(1, min(counts.get("rust", 0), 24)),
-            "heavy": max(1, min(counts.get("heavy", 0), 10)),
+            "workflow": max(1, min(counts.get("workflow", 0), 10)),
+            "node": max(1, min(counts.get("node", 0), 4)),
+            "rust_minimal": max(1, min(counts.get("rust_minimal", 0), 12)),
+            "rust_integration": max(1, min(counts.get("rust_integration", 0), 6)),
+            "release": max(1, min(counts.get("release", 0), 1)),
         }
     if profile == "smoke":
-        return {"light": 6, "rust": 4, "heavy": 3}
-    return {"light": 8, "rust": 4, "heavy": 2}
+        return {
+            "workflow": 6,
+            "node": 3,
+            "rust_minimal": 4,
+            "rust_integration": 2,
+            "release": 1,
+        }
+    return {
+        "workflow": 8,
+        "node": 4,
+        "rust_minimal": 6,
+        "rust_integration": 2,
+        "release": 1,
+    }
 
 
 def determine_lab_matrix_policy(profile: str, selected: list[dict]) -> tuple[str, str, dict[str, int]]:
@@ -512,33 +546,30 @@ def lab_plan(args: argparse.Namespace) -> None:
     )
     planned_matrix = {"include": [*smoke_matrix, *selected]}
 
-    emit(
-        {
-            "profile_intent": profile_intent,
-            "profile_notes": profile_notes,
-            "lane_summary": lane_summary,
-            "selected_matrix": {"include": selected},
-            "planned_matrix": planned_matrix,
-            "selected_lane_ids": [lane["lane_id"] for lane in selected],
-            "smoke_matrix": {"include": smoke_matrix},
-            "run_selected_lanes": "true" if bool(selected) else "false",
-            "run_smoke_gate": "true" if run_smoke_gate else "false",
-            "smoke_gate_kind": smoke_gate_kind,
-            "run_artifact": "true" if run_artifact else "false",
-            "matrix_fail_fast": matrix_fail_fast,
-            "matrix_max_parallel": matrix_max_parallel,
-            "selected_setup_classes": selected_setup_classes,
-            "selected_light_matrix": {"include": grouped["light"]},
-            "selected_rust_matrix": {"include": grouped["rust"]},
-            "selected_heavy_matrix": {"include": grouped["heavy"]},
-            "selected_light_lane_count": len(grouped["light"]),
-            "selected_rust_lane_count": len(grouped["rust"]),
-            "selected_heavy_lane_count": len(grouped["heavy"]),
-            "light_max_parallel": str(parallel_limits["light"]),
-            "rust_max_parallel": str(parallel_limits["rust"]),
-            "heavy_max_parallel": str(parallel_limits["heavy"]),
-        }
-    )
+    payload = {
+        "profile_intent": profile_intent,
+        "profile_notes": profile_notes,
+        "lane_summary": lane_summary,
+        "selected_matrix": {"include": selected},
+        "planned_matrix": planned_matrix,
+        "selected_lane_ids": [lane["lane_id"] for lane in selected],
+        "smoke_matrix": {"include": smoke_matrix},
+        "run_selected_lanes": "true" if bool(selected) else "false",
+        "run_smoke_gate": "true" if run_smoke_gate else "false",
+        "smoke_gate_kind": smoke_gate_kind,
+        "run_artifact": "true" if run_artifact else "false",
+        "matrix_fail_fast": matrix_fail_fast,
+        "matrix_max_parallel": matrix_max_parallel,
+        "selected_setup_classes": selected_setup_classes,
+        "workflow_max_parallel": str(parallel_limits["workflow"]),
+        "node_max_parallel": str(parallel_limits["node"]),
+        "rust_minimal_max_parallel": str(parallel_limits["rust_minimal"]),
+        "rust_integration_max_parallel": str(parallel_limits["rust_integration"]),
+        "release_max_parallel": str(parallel_limits["release"]),
+    }
+    emit_grouped_setup_class_payload(payload, smoke_matrix, key_prefix="smoke")
+    emit_grouped_setup_class_payload(payload, selected, key_prefix="selected")
+    emit(payload)
 
 
 def heavy_plan(args: argparse.Namespace) -> None:
@@ -631,9 +662,11 @@ def heavy_plan(args: argparse.Namespace) -> None:
         "smoke_gate_kind": smoke_gate_kind,
         "matrix_fail_fast": "false" if manual_harvest else "true",
         "continue_after_smoke_failure": "true" if manual_harvest else "false",
-        "light_max_parallel": str(parallel_limits["light"]),
-        "rust_max_parallel": str(parallel_limits["rust"]),
-        "heavy_max_parallel": str(parallel_limits["heavy"]),
+        "workflow_max_parallel": str(parallel_limits["workflow"]),
+        "node_max_parallel": str(parallel_limits["node"]),
+        "rust_minimal_max_parallel": str(parallel_limits["rust_minimal"]),
+        "rust_integration_max_parallel": str(parallel_limits["rust_integration"]),
+        "release_max_parallel": str(parallel_limits["release"]),
     }
     emit_grouped_setup_class_payload(payload, selected, key_prefix="selected")
     emit_grouped_setup_class_payload(payload, smoke_matrix, key_prefix="smoke")
