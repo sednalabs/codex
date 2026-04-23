@@ -75,7 +75,7 @@ impl ToolHandler for DynamicToolHandler {
         let tool_name = invocation.tool_name.display();
         match invocation
             .session
-            .dynamic_tool_by_name(&tool_name)
+            .dynamic_tool_by_name(&invocation.tool_name)
             .await
             .and_then(|tool| tool.capability)
             .and_then(|capability| capability.mutation_class)
@@ -367,6 +367,44 @@ mod tests {
                     tracker: Arc::new(Mutex::new(TurnDiffTracker::new())),
                     call_id: "call-3".to_string(),
                     tool_name: codex_tools::ToolName::plain("brokered_read"),
+                    payload,
+                })
+                .await
+        );
+    }
+
+    #[tokio::test]
+    async fn namespaced_dynamic_tool_mutation_uses_capability_metadata_when_present() {
+        let (session, turn, _rx) =
+            make_session_and_context_with_dynamic_tools_and_rx(vec![DynamicToolSpec {
+                namespace: Some("codex_app".to_string()),
+                name: "brokered_read".to_string(),
+                description: "read from an environment-bound capability".to_string(),
+                input_schema: json!({"type": "object", "properties": {}}),
+                defer_loading: false,
+                persist_on_resume: false,
+                capability: Some(DynamicToolCapability {
+                    family: Some("android".to_string()),
+                    capability_scope: Some("environment".to_string()),
+                    mutation_class: Some("read_only".to_string()),
+                    lease_mode: Some("shared_read".to_string()),
+                }),
+            }])
+            .await;
+        let handler = DynamicToolHandler;
+        let payload = ToolPayload::Function {
+            arguments: json!({"scope": "screen"}).to_string(),
+        };
+
+        assert!(
+            !handler
+                .is_mutating(&ToolInvocation {
+                    session: session.into(),
+                    turn: turn.into(),
+                    cancellation_token: CancellationToken::new(),
+                    tracker: Arc::new(Mutex::new(TurnDiffTracker::new())),
+                    call_id: "call-4".to_string(),
+                    tool_name: codex_tools::ToolName::namespaced("codex_app", "brokered_read",),
                     payload,
                 })
                 .await
