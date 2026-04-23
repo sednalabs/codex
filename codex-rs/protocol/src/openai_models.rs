@@ -465,6 +465,18 @@ impl From<ModelInfo> for ModelPreset {
 }
 
 impl ModelPreset {
+    /// Whether this preset advertises the given service-speed tier.
+    pub fn supports_speed_tier(&self, speed_tier: &str) -> bool {
+        self.additional_speed_tiers
+            .iter()
+            .any(|tier| tier == speed_tier)
+    }
+
+    /// Whether this preset can use the fast-mode service tier.
+    pub fn supports_fast_mode(&self) -> bool {
+        self.supports_speed_tier(SPEED_TIER_FAST)
+    }
+
     /// Whether this preset should be shown in interactive picker-style surfaces.
     ///
     /// Some legacy models remain directly supported in the API and intentionally advertise an
