@@ -476,12 +476,15 @@ async fn dynamic_tool_call_round_trip_sends_content_items_to_model() -> Result<(
             detail: Some("original".to_string()),
         },
     ];
-    let content_items = response_content_items
-        .clone()
-        .into_iter()
-        .map(codex_protocol::dynamic_tools::DynamicToolCallOutputContentItem::from)
-        .map(FunctionCallOutputContentItem::from)
-        .collect::<Vec<FunctionCallOutputContentItem>>();
+    let expected_model_content_items = vec![
+        FunctionCallOutputContentItem::InputText {
+            text: "dynamic-ok".to_string(),
+        },
+        FunctionCallOutputContentItem::InputImage {
+            image_url: "data:image/png;base64,AAA".to_string(),
+            detail: None,
+        },
+    ];
     let response = DynamicToolCallResponse {
         content_items: response_content_items,
         success: true,
@@ -547,12 +550,12 @@ async fn dynamic_tool_call_round_trip_sends_content_items_to_model() -> Result<(
         .context("expected function_call_output in follow-up request")?;
     assert_eq!(
         payload.body,
-        FunctionCallOutputBody::ContentItems(content_items.clone())
+        FunctionCallOutputBody::ContentItems(expected_model_content_items.clone())
     );
     assert_eq!(payload.success, None);
     assert_eq!(
         serde_json::to_string(&payload)?,
-        serde_json::to_string(&content_items)?
+        serde_json::to_string(&expected_model_content_items)?
     );
 
     Ok(())

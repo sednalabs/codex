@@ -1084,8 +1084,18 @@ fn dynamic_tool_completed_event(turn_id: &str, item: &ThreadItem) -> Option<Vec<
 #[cfg(test)]
 fn dynamic_tool_snapshot_events(turn_id: &str, item: &ThreadItem) -> Option<Vec<Event>> {
     let mut events = dynamic_tool_started_event(turn_id, item)?;
-    if let Some(end_events) = dynamic_tool_completed_event(turn_id, item) {
-        events.extend(end_events);
+    let ThreadItem::DynamicToolCall { status, .. } = item else {
+        return Some(events);
+    };
+
+    if matches!(
+        status,
+        codex_app_server_protocol::DynamicToolCallStatus::Completed
+            | codex_app_server_protocol::DynamicToolCallStatus::Failed
+    ) {
+        if let Some(end_events) = dynamic_tool_completed_event(turn_id, item) {
+            events.extend(end_events);
+        }
     }
     Some(events)
 }
@@ -1244,6 +1254,58 @@ mod tests {
             }
             other => panic!("unexpected event: {other:?}"),
         }
+    }
+
+    #[test]
+    fn replays_in_progress_dynamic_tool_items_without_completion_event() {
+        let thread = Thread {
+            id: "019cee8c-b993-7e33-88c0-014d4e62612d".to_string(),
+            forked_from_id: None,
+            preview: String::new(),
+            ephemeral: false,
+            model_provider: "openai".to_string(),
+            created_at: 1,
+            updated_at: 1,
+            status: ThreadStatus::Idle,
+            path: None,
+            cwd: test_path_buf("/tmp").abs(),
+            cli_version: "test".to_string(),
+            source: SessionSource::Cli.into(),
+            agent_nickname: None,
+            agent_role: None,
+            git_info: None,
+            name: None,
+            turns: vec![Turn {
+                id: "turn-1".to_string(),
+                items: vec![ThreadItem::DynamicToolCall {
+                    id: "dyn-1".to_string(),
+                    tool: "android_observe".to_string(),
+                    arguments: serde_json::json!({"scope": "screen_and_ui"}),
+                    status: codex_app_server_protocol::DynamicToolCallStatus::InProgress,
+                    content_items: None,
+                    success: None,
+                    duration_ms: None,
+                }],
+                status: TurnStatus::InProgress,
+                error: None,
+                started_at: None,
+                completed_at: None,
+                duration_ms: None,
+            }],
+        };
+
+        let events = thread_snapshot_events(&thread, /*show_raw_agent_reasoning*/ false);
+        assert_eq!(events.len(), 2);
+        assert!(matches!(events[0].msg, EventMsg::TurnStarted(_)));
+        let EventMsg::DynamicToolCallRequest(request) = &events[1].msg else {
+            panic!("expected dynamic tool begin event");
+        };
+        assert_eq!(request.call_id, "dyn-1");
+        assert_eq!(request.tool, "android_observe");
+        assert_eq!(
+            request.arguments,
+            serde_json::json!({"scope": "screen_and_ui"})
+        );
     }
 
     #[test]

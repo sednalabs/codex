@@ -1,8 +1,11 @@
 use crate::function_tool::FunctionCallError;
+use crate::original_image_detail::can_request_original_image_detail;
+use crate::original_image_detail::sanitize_original_image_detail;
 use crate::session::session::Session;
 use crate::session::turn_context::TurnContext;
 use crate::tools::context::FunctionToolOutput;
 use crate::tools::context::ToolInvocation;
+use crate::tools::context::ToolOutput;
 use crate::tools::context::ToolPayload;
 use crate::tools::handlers::parse_arguments;
 use crate::tools::registry::PostToolUsePayload;
@@ -12,19 +15,55 @@ use crate::tools::registry::ToolKind;
 use codex_protocol::dynamic_tools::DynamicToolCallRequest;
 use codex_protocol::dynamic_tools::DynamicToolResponse;
 use codex_protocol::models::FunctionCallOutputContentItem;
+use codex_protocol::models::ResponseInputItem;
 use codex_protocol::protocol::DynamicToolCallResponseEvent;
 use codex_protocol::protocol::EventMsg;
 use serde_json::Value;
+use serde_json::json;
 use std::time::Instant;
 use tokio::sync::oneshot;
 use tracing::warn;
 
 pub struct DynamicToolHandler;
 
+pub struct DynamicToolOutput {
+    tool_name: String,
+    output: FunctionToolOutput,
+}
+
 const ANDROID_OBSERVE_TOOL_NAME: &str = "android_observe";
 
+impl ToolOutput for DynamicToolOutput {
+    fn log_preview(&self) -> String {
+        self.output.log_preview()
+    }
+
+    fn success_for_logging(&self) -> bool {
+        self.output.success_for_logging()
+    }
+
+    fn to_response_item(&self, call_id: &str, payload: &ToolPayload) -> ResponseInputItem {
+        self.output.to_response_item(call_id, payload)
+    }
+
+    fn post_tool_use_response(&self, call_id: &str, payload: &ToolPayload) -> Option<Value> {
+        let tool_response = self
+            .output
+            .post_tool_use_response(call_id, payload)
+            .unwrap_or_else(|| self.output.code_mode_result(payload));
+        Some(json!({
+            "tool_name": self.tool_name.as_str(),
+            "tool_response": tool_response,
+        }))
+    }
+
+    fn code_mode_result(&self, payload: &ToolPayload) -> Value {
+        self.output.code_mode_result(payload)
+    }
+}
+
 impl ToolHandler for DynamicToolHandler {
-    type Output = FunctionToolOutput;
+    type Output = DynamicToolOutput;
 
     fn kind(&self) -> ToolKind {
         ToolKind::Function
@@ -57,17 +96,42 @@ impl ToolHandler for DynamicToolHandler {
 
     fn post_tool_use_payload(
         &self,
-        _call_id: &str,
+        call_id: &str,
         payload: &ToolPayload,
-        result: &dyn crate::tools::context::ToolOutput,
+        result: &dyn ToolOutput,
     ) -> Option<PostToolUsePayload> {
         let ToolPayload::Function { arguments } = payload else {
             return None;
         };
-        Some(PostToolUsePayload {
-            command: dynamic_tool_command("brokered_tool", arguments),
-            tool_response: result.code_mode_result(payload),
-        })
+
+        let fallback_command = dynamic_tool_command("brokered_tool", arguments);
+        match result.post_tool_use_response(call_id, payload) {
+            Some(tool_response) => match tool_response
+                .as_object()
+                .and_then(|response| response.get("tool_name").and_then(Value::as_str))
+            {
+                Some(tool_name) => {
+                    let tool_name = tool_name.to_owned();
+                    let tool_response = tool_response
+                        .as_object()
+                        .and_then(|response| response.get("tool_response"))
+                        .cloned()
+                        .unwrap_or_else(|| tool_response.clone());
+                    Some(PostToolUsePayload {
+                        command: dynamic_tool_command(&tool_name, arguments),
+                        tool_response,
+                    })
+                }
+                None => Some(PostToolUsePayload {
+                    command: fallback_command,
+                    tool_response,
+                }),
+            },
+            None => Some(PostToolUsePayload {
+                command: fallback_command,
+                tool_response: result.code_mode_result(payload),
+            }),
+        }
     }
 
     async fn handle(&self, invocation: ToolInvocation) -> Result<Self::Output, FunctionCallError> {
@@ -103,11 +167,18 @@ impl ToolHandler for DynamicToolHandler {
             content_items,
             success,
         } = response;
-        let body = content_items
+        let mut body = content_items
             .into_iter()
             .map(FunctionCallOutputContentItem::from)
             .collect::<Vec<_>>();
-        Ok(FunctionToolOutput::from_content(body, Some(success)))
+        sanitize_original_image_detail(
+            can_request_original_image_detail(&turn.model_info),
+            &mut body,
+        );
+        Ok(DynamicToolOutput {
+            tool_name: tool_name.display(),
+            output: FunctionToolOutput::from_content(body, Some(success)),
+        })
     }
 }
 
@@ -186,6 +257,7 @@ async fn request_dynamic_tool(
 mod tests {
     use super::ANDROID_OBSERVE_TOOL_NAME;
     use super::DynamicToolHandler;
+    use super::DynamicToolOutput;
     use super::dynamic_tool_command;
     use crate::session::tests::make_session_and_context;
     use crate::session::tests::make_session_and_context_with_dynamic_tools_and_rx;
@@ -272,7 +344,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn dynamic_tool_pre_and_post_payloads_preserve_arguments() {
+    async fn dynamic_tool_pre_and_post_payloads_use_real_tool_name_and_custom_post_response() {
         let (session, turn) = make_session_and_context().await;
         let payload = ToolPayload::Function {
             arguments: json!({"scope": "screen_and_ui"}).to_string(),
@@ -286,12 +358,15 @@ mod tests {
             payload: payload.clone(),
         };
         let handler = DynamicToolHandler;
-        let output = FunctionToolOutput {
-            body: vec![FunctionCallOutputContentItem::InputText {
-                text: "screen summary".to_string(),
-            }],
-            success: Some(true),
-            post_tool_use_response: Some(json!({"ok": true})),
+        let output = DynamicToolOutput {
+            tool_name: ANDROID_OBSERVE_TOOL_NAME.to_string(),
+            output: FunctionToolOutput {
+                body: vec![FunctionCallOutputContentItem::InputText {
+                    text: "screen summary".to_string(),
+                }],
+                success: Some(true),
+                post_tool_use_response: Some(json!({"ok": true})),
+            },
         };
 
         assert_eq!(
@@ -301,10 +376,17 @@ mod tests {
             })
         );
         assert_eq!(
+            output.post_tool_use_response("call-2", &payload),
+            Some(json!({
+                "tool_name": ANDROID_OBSERVE_TOOL_NAME,
+                "tool_response": {"ok": true},
+            }))
+        );
+        assert_eq!(
             handler.post_tool_use_payload("call-2", &payload, &output),
             Some(crate::tools::registry::PostToolUsePayload {
-                command: r#"brokered_tool {"scope":"screen_and_ui"}"#.to_string(),
-                tool_response: json!("screen summary"),
+                command: r#"android_observe {"scope":"screen_and_ui"}"#.to_string(),
+                tool_response: json!({"ok": true}),
             })
         );
     }
