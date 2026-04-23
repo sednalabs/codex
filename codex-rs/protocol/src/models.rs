@@ -1222,12 +1222,18 @@ impl From<crate::dynamic_tools::DynamicToolCallOutputContentItem>
             crate::dynamic_tools::DynamicToolCallOutputContentItem::InputText { text } => {
                 Self::InputText { text }
             }
-            crate::dynamic_tools::DynamicToolCallOutputContentItem::InputImage { image_url } => {
-                Self::InputImage {
-                    image_url,
-                    detail: None,
-                }
-            }
+            crate::dynamic_tools::DynamicToolCallOutputContentItem::InputImage {
+                image_url,
+                detail,
+            } => Self::InputImage {
+                image_url,
+                detail: detail.and_then(|value| match value.as_str() {
+                    "low" => Some(ImageDetail::Low),
+                    "high" => Some(ImageDetail::High),
+                    "original" => Some(ImageDetail::Original),
+                    _ => None,
+                }),
+            },
         }
     }
 }

@@ -8,6 +8,7 @@ pub fn parse_dynamic_tool(tool: &DynamicToolSpec) -> Result<ToolDefinition, serd
         description,
         input_schema,
         defer_loading,
+        ..
     } = tool;
     Ok(ToolDefinition {
         name: name.clone(),

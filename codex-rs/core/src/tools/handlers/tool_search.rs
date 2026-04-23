@@ -220,6 +220,8 @@ mod tests {
                 "additionalProperties": false,
             }),
             defer_loading: true,
+            persist_on_resume: true,
+            capability: None,
         }];
         let handler = handler_from_tools(
             Some(&std::collections::HashMap::from([

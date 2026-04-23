@@ -193,5 +193,9 @@ for a removed crate path.
   small local checks first, then `validation-lab` `profile=smoke`,
   `targeted`, or `frontier`, and only then broader checkpoint runs when the
   question genuinely spans multiple seams.
+- When a broader targeted run identifies the failing seam, prefer rerunning
+  that exact seam with explicit `validation-lab` `lanes=...` rather than
+  repeating the whole lane family. That narrower hosted loop is the intended
+  carry-fix workflow.
 - Full builds are buildability or promotion checkpoints, not the default
   inner-loop validator for ordinary carry iteration.

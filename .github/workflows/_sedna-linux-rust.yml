@@ -149,8 +149,41 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          sudo apt-get update -y
-          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends pkg-config libcap-dev
+          packages=(pkg-config libcap-dev)
+
+          run_apt() {
+            local label="$1"
+            shift
+            local attempt
+            for attempt in 1 2 3; do
+              echo "::group::${label} (attempt ${attempt}/3)"
+              if timeout --signal=TERM 8m sudo "$@"; then
+                echo "::endgroup::"
+                return 0
+              fi
+              status=$?
+              echo "::endgroup::"
+              if [[ "${attempt}" -lt 3 ]]; then
+                echo "::warning title=${label} retry::${label} failed with exit ${status}; retrying after short backoff."
+                sleep $((attempt * 15))
+              else
+                echo "::error title=${label} failed::${label} failed after 3 attempts (last exit ${status})."
+                return "${status}"
+              fi
+            done
+          }
+
+          run_apt "apt-get update" \
+            apt-get \
+              -o Acquire::Retries=3 \
+              -o DPkg::Lock::Timeout=120 \
+              update -y
+          run_apt "apt-get install" \
+            env DEBIAN_FRONTEND=noninteractive \
+            apt-get \
+              -o Acquire::Retries=3 \
+              -o DPkg::Lock::Timeout=120 \
+              install -y --no-install-recommends "${packages[@]}"
 
       - name: Install DotSlash
         uses: facebook/install-dotslash@v2

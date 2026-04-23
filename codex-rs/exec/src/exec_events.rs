@@ -137,6 +137,9 @@ pub enum ThreadItemDetails {
     /// Represents a call to an MCP tool. The item starts when the invocation is
     /// dispatched and completes when the MCP server reports success or failure.
     McpToolCall(McpToolCallItem),
+    /// Represents a call to a brokered dynamic tool. The item starts when the
+    /// invocation is dispatched and completes when the client reports success or failure.
+    DynamicToolCall(DynamicToolCallItem),
     /// Represents a call to a collab tool. The item starts when the collab tool is
     /// invoked and completes when the collab tool reports success or failure.
     CollabToolCall(CollabToolCallItem),
@@ -219,6 +222,16 @@ pub enum PatchChangeKind {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default, TS)]
 #[serde(rename_all = "snake_case")]
 pub enum McpToolCallStatus {
+    #[default]
+    InProgress,
+    Completed,
+    Failed,
+}
+
+/// The status of a dynamic tool call.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum DynamicToolCallStatus {
     #[default]
     InProgress,
     Completed,
@@ -318,6 +331,21 @@ pub struct McpToolCallItem {
     pub result: Option<McpToolCallItemResult>,
     pub error: Option<McpToolCallItemError>,
     pub status: McpToolCallStatus,
+}
+
+/// A compact dynamic tool call item for exec JSON/JSONL output.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, TS)]
+pub struct DynamicToolCallItem {
+    pub tool: String,
+    #[serde(default)]
+    pub arguments: JsonValue,
+    pub status: DynamicToolCallStatus,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preview: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub success: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duration_ms: Option<i64>,
 }
 
 /// A web search request.

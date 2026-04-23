@@ -613,6 +613,27 @@ pub struct DynamicToolSpec {
     pub input_schema: JsonValue,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub defer_loading: bool,
+    #[serde(
+        default = "default_dynamic_tool_persist_on_resume",
+        skip_serializing_if = "is_true"
+    )]
+    pub persist_on_resume: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub capability: Option<DynamicToolCapability>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct DynamicToolCapability {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub family: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub capability_scope: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mutation_class: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lease_mode: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -622,7 +643,17 @@ struct DynamicToolSpecDe {
     description: String,
     input_schema: JsonValue,
     defer_loading: Option<bool>,
+    persist_on_resume: Option<bool>,
+    capability: Option<DynamicToolCapability>,
     expose_to_context: Option<bool>,
+}
+
+const fn default_dynamic_tool_persist_on_resume() -> bool {
+    true
+}
+
+fn is_true(value: &bool) -> bool {
+    *value
 }
 
 impl<'de> Deserialize<'de> for DynamicToolSpec {
@@ -635,6 +666,8 @@ impl<'de> Deserialize<'de> for DynamicToolSpec {
             description,
             input_schema,
             defer_loading,
+            persist_on_resume,
+            capability,
             expose_to_context,
         } = DynamicToolSpecDe::deserialize(deserializer)?;
 
@@ -644,6 +677,9 @@ impl<'de> Deserialize<'de> for DynamicToolSpec {
             input_schema,
             defer_loading: defer_loading
                 .unwrap_or_else(|| expose_to_context.map(|visible| !visible).unwrap_or(false)),
+            persist_on_resume: persist_on_resume
+                .unwrap_or(default_dynamic_tool_persist_on_resume()),
+            capability,
         })
     }
 }
@@ -6503,7 +6539,11 @@ pub enum DynamicToolCallOutputContentItem {
     #[serde(rename_all = "camelCase")]
     InputText { text: String },
     #[serde(rename_all = "camelCase")]
-    InputImage { image_url: String },
+    InputImage {
+        image_url: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        detail: Option<String>,
+    },
 }
 
 impl From<DynamicToolCallOutputContentItem>
@@ -6512,8 +6552,8 @@ impl From<DynamicToolCallOutputContentItem>
     fn from(item: DynamicToolCallOutputContentItem) -> Self {
         match item {
             DynamicToolCallOutputContentItem::InputText { text } => Self::InputText { text },
-            DynamicToolCallOutputContentItem::InputImage { image_url } => {
-                Self::InputImage { image_url }
+            DynamicToolCallOutputContentItem::InputImage { image_url, detail } => {
+                Self::InputImage { image_url, detail }
             }
         }
     }
@@ -8955,6 +8995,7 @@ mod tests {
                 },
                 DynamicToolCallOutputContentItem::InputImage {
                     image_url: "data:image/png;base64,AAA".to_string(),
+                    detail: None,
                 },
             ],
             success: true,
@@ -9007,6 +9048,8 @@ mod tests {
                     }
                 }),
                 defer_loading: true,
+                persist_on_resume: true,
+                capability: None,
             }
         );
     }
@@ -9026,6 +9069,37 @@ mod tests {
         let actual: DynamicToolSpec = serde_json::from_value(value).expect("deserialize");
 
         assert!(actual.defer_loading);
+        assert_eq!(actual.capability, None);
+    }
+
+    #[test]
+    fn dynamic_tool_spec_deserializes_capability_metadata() {
+        let value = json!({
+            "name": "android_observe",
+            "description": "observe android",
+            "inputSchema": {
+                "type": "object",
+                "properties": {}
+            },
+            "capability": {
+                "family": "android",
+                "capabilityScope": "environment",
+                "mutationClass": "read_only",
+                "leaseMode": "shared_read"
+            }
+        });
+
+        let actual: DynamicToolSpec = serde_json::from_value(value).expect("deserialize");
+
+        assert_eq!(
+            actual.capability,
+            Some(DynamicToolCapability {
+                family: Some("android".to_string()),
+                capability_scope: Some("environment".to_string()),
+                mutation_class: Some("read_only".to_string()),
+                lease_mode: Some("shared_read".to_string()),
+            })
+        );
     }
 
     #[test]

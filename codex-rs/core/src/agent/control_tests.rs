@@ -11,6 +11,8 @@ use codex_features::Feature;
 use codex_login::CodexAuth;
 use codex_protocol::AgentPath;
 use codex_protocol::config_types::ModeKind;
+use codex_protocol::dynamic_tools::DynamicToolCapability;
+use codex_protocol::dynamic_tools::DynamicToolSpec;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::MessagePhase;
 use codex_protocol::models::ResponseItem;
@@ -27,6 +29,7 @@ use codex_thread_store::ArchiveThreadParams;
 use codex_thread_store::LocalThreadStore;
 use codex_thread_store::ThreadStore;
 use pretty_assertions::assert_eq;
+use serde_json::json;
 use tempfile::TempDir;
 use tokio::time::Duration;
 use tokio::time::sleep;
@@ -758,6 +761,72 @@ async fn spawn_agent_fork_flushes_parent_rollout_before_loading_history() {
         .await
         .expect("child shutdown should submit");
     let _ = parent_thread
+        .submit(Op::Shutdown {})
+        .await
+        .expect("parent shutdown should submit");
+}
+
+#[tokio::test]
+async fn spawn_agent_does_not_inherit_environment_scoped_dynamic_tools() {
+    let harness = AgentControlHarness::new().await;
+    let android_tools = vec![DynamicToolSpec {
+        name: "android_observe".to_string(),
+        description: "observe Android screen".to_string(),
+        input_schema: json!({"type":"object"}),
+        defer_loading: false,
+        persist_on_resume: false,
+        capability: Some(DynamicToolCapability {
+            family: Some("android".to_string()),
+            capability_scope: Some("environment".to_string()),
+            mutation_class: Some("read_only".to_string()),
+            lease_mode: Some("shared_read".to_string()),
+        }),
+    }];
+    let parent = harness
+        .manager
+        .start_thread_with_tools(
+            harness.config.clone(),
+            android_tools.clone(),
+            /*persist_extended_history*/ false,
+        )
+        .await
+        .expect("parent thread should start");
+    let parent_turn = parent.thread.codex.session.new_default_turn().await;
+    assert_eq!(parent_turn.dynamic_tools, android_tools);
+
+    let child_thread_id = harness
+        .control
+        .spawn_agent_with_metadata(
+            harness.config.clone(),
+            text_input("child task"),
+            Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                parent_thread_id: parent.thread_id,
+                depth: 1,
+                agent_path: None,
+                agent_nickname: None,
+                agent_role: None,
+            })),
+            SpawnAgentOptions::default(),
+        )
+        .await
+        .expect("child agent should spawn")
+        .thread_id;
+
+    let child_thread = harness
+        .manager
+        .get_thread(child_thread_id)
+        .await
+        .expect("child thread should be registered");
+    let child_turn = child_thread.codex.session.new_default_turn().await;
+    assert_eq!(child_turn.dynamic_tools, Vec::new());
+
+    let _ = harness
+        .control
+        .shutdown_live_agent(child_thread_id)
+        .await
+        .expect("child shutdown should submit");
+    let _ = parent
+        .thread
         .submit(Op::Shutdown {})
         .await
         .expect("parent shutdown should submit");

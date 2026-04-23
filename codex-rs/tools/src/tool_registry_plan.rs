@@ -16,6 +16,7 @@ use crate::ToolSpec;
 use crate::ToolsConfig;
 use crate::ViewImageToolOptions;
 use crate::WebSearchToolOptions;
+use crate::canonical_android_dynamic_tool;
 use crate::collect_code_mode_exec_prompt_tool_definitions;
 use crate::collect_tool_search_source_infos;
 use crate::collect_tool_suggest_entries;
@@ -569,7 +570,10 @@ pub fn build_tool_registry_plan(
     }
 
     for tool in params.dynamic_tools {
-        match dynamic_tool_to_responses_api_tool(tool) {
+        match canonical_android_dynamic_tool(tool)
+            .map(Ok)
+            .unwrap_or_else(|| dynamic_tool_to_responses_api_tool(tool))
+        {
             Ok(converted_tool) => {
                 plan.push_spec(
                     ToolSpec::Function(converted_tool),

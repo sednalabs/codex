@@ -5,6 +5,8 @@ use codex_app_server_protocol::CollabAgentToolCallStatus as ApiCollabAgentToolCa
 use codex_app_server_protocol::CommandAction;
 use codex_app_server_protocol::CommandExecutionSource;
 use codex_app_server_protocol::CommandExecutionStatus as ApiCommandExecutionStatus;
+use codex_app_server_protocol::DynamicToolCallOutputContentItem as ApiDynamicToolCallOutputContentItem;
+use codex_app_server_protocol::DynamicToolCallStatus as ApiDynamicToolCallStatus;
 use codex_app_server_protocol::ErrorNotification;
 use codex_app_server_protocol::FileUpdateChange as ApiFileUpdateChange;
 use codex_app_server_protocol::ItemCompletedNotification;
@@ -48,6 +50,8 @@ use codex_exec::exec_events::CollabToolCallItem;
 use codex_exec::exec_events::CollabToolCallStatus;
 use codex_exec::exec_events::CommandExecutionItem;
 use codex_exec::exec_events::CommandExecutionStatus;
+use codex_exec::exec_events::DynamicToolCallItem;
+use codex_exec::exec_events::DynamicToolCallStatus;
 use codex_exec::exec_events::ErrorItem;
 use codex_exec::exec_events::FileChangeItem;
 use codex_exec::exec_events::FileUpdateChange as ExecFileUpdateChange;
@@ -235,6 +239,94 @@ fn command_execution_started_and_completed_translate_to_thread_events() {
                         aggregated_output: "a.txt\n".to_string(),
                         exit_code: Some(0),
                         status: CommandExecutionStatus::Completed,
+                    }),
+                },
+            })],
+            status: CodexStatus::Running,
+        }
+    );
+}
+
+#[test]
+fn dynamic_tool_started_and_completed_translate_to_thread_events() {
+    let mut processor = EventProcessorWithJsonOutput::new(/*last_message_path*/ None);
+
+    let started =
+        processor.collect_thread_events(ServerNotification::ItemStarted(ItemStartedNotification {
+            item: ThreadItem::DynamicToolCall {
+                id: "dyn-1".to_string(),
+                tool: "android_observe".to_string(),
+                arguments: json!({"scope": "screen_and_ui"}),
+                status: ApiDynamicToolCallStatus::InProgress,
+                content_items: None,
+                success: None,
+                duration_ms: None,
+            },
+            thread_id: "thread-1".to_string(),
+            turn_id: "turn-1".to_string(),
+        }));
+
+    assert_eq!(
+        started,
+        CollectedThreadEvents {
+            events: vec![ThreadEvent::ItemStarted(ItemStartedEvent {
+                thread_id: Some("thread-1".to_string()),
+                turn_id: Some("turn-1".to_string()),
+                item: ExecThreadItem {
+                    id: "item_0".to_string(),
+                    details: ThreadItemDetails::DynamicToolCall(DynamicToolCallItem {
+                        tool: "android_observe".to_string(),
+                        arguments: json!({"scope": "screen_and_ui"}),
+                        status: DynamicToolCallStatus::InProgress,
+                        preview: None,
+                        success: None,
+                        duration_ms: None,
+                    }),
+                },
+            })],
+            status: CodexStatus::Running,
+        }
+    );
+
+    let completed = processor.collect_thread_events(ServerNotification::ItemCompleted(
+        ItemCompletedNotification {
+            item: ThreadItem::DynamicToolCall {
+                id: "dyn-1".to_string(),
+                tool: "android_observe".to_string(),
+                arguments: json!({"scope": "screen_and_ui"}),
+                status: ApiDynamicToolCallStatus::Completed,
+                content_items: Some(vec![
+                    ApiDynamicToolCallOutputContentItem::InputText {
+                        text: "screen summary".to_string(),
+                    },
+                    ApiDynamicToolCallOutputContentItem::InputImage {
+                        image_url: "data:image/png;base64,AAA".to_string(),
+                        detail: Some("original".to_string()),
+                    },
+                ]),
+                success: Some(true),
+                duration_ms: Some(42),
+            },
+            thread_id: "thread-1".to_string(),
+            turn_id: "turn-1".to_string(),
+        },
+    ));
+
+    assert_eq!(
+        completed,
+        CollectedThreadEvents {
+            events: vec![ThreadEvent::ItemCompleted(ItemCompletedEvent {
+                thread_id: Some("thread-1".to_string()),
+                turn_id: Some("turn-1".to_string()),
+                item: ExecThreadItem {
+                    id: "item_0".to_string(),
+                    details: ThreadItemDetails::DynamicToolCall(DynamicToolCallItem {
+                        tool: "android_observe".to_string(),
+                        arguments: json!({"scope": "screen_and_ui"}),
+                        status: DynamicToolCallStatus::Completed,
+                        preview: Some("screen summary\n<1 image output>".to_string()),
+                        success: Some(true),
+                        duration_ms: Some(42),
                     }),
                 },
             })],

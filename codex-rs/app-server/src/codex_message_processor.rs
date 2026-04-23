@@ -2563,6 +2563,15 @@ impl CodexMessageProcessor {
                     description: tool.description,
                     input_schema: tool.input_schema,
                     defer_loading: tool.defer_loading,
+                    persist_on_resume: tool.persist_on_resume,
+                    capability: tool.capability.map(|capability| {
+                        codex_protocol::dynamic_tools::DynamicToolCapability {
+                            family: capability.family,
+                            capability_scope: capability.capability_scope,
+                            mutation_class: capability.mutation_class,
+                            lease_mode: capability.lease_mode,
+                        }
+                    }),
                 })
                 .collect()
         };
@@ -9140,8 +9149,66 @@ fn validate_dynamic_tools(tools: &[ApiDynamicToolSpec]) -> Result<(), String> {
                 "dynamic tool input schema is not supported for {name}: {err}"
             ));
         }
+
+        if let Some(capability) = tool.capability.as_ref() {
+            if capability
+                .family
+                .as_deref()
+                .is_some_and(|family| family.trim().is_empty())
+            {
+                return Err(format!(
+                    "dynamic tool capability family must not be empty for {name}"
+                ));
+            }
+            validate_dynamic_tool_capability_value(
+                name,
+                "capabilityScope",
+                capability.capability_scope.as_deref(),
+                &["session", "thread", "environment"],
+            )?;
+            validate_dynamic_tool_capability_value(
+                name,
+                "mutationClass",
+                capability.mutation_class.as_deref(),
+                &["read_only", "mutating"],
+            )?;
+            validate_dynamic_tool_capability_value(
+                name,
+                "leaseMode",
+                capability.lease_mode.as_deref(),
+                &["none", "shared_read", "exclusive_write"],
+            )?;
+            if tool.persist_on_resume
+                && !matches!(
+                    capability.capability_scope.as_deref(),
+                    Some("session") | Some("thread")
+                )
+            {
+                return Err(format!(
+                    "dynamic tool {name} cannot set persistOnResume=true unless capabilityScope is session or thread"
+                ));
+            }
+        }
     }
     Ok(())
+}
+
+fn validate_dynamic_tool_capability_value(
+    tool_name: &str,
+    field_name: &str,
+    value: Option<&str>,
+    allowed: &[&str],
+) -> Result<(), String> {
+    let Some(value) = value else {
+        return Ok(());
+    };
+    if allowed.contains(&value) {
+        return Ok(());
+    }
+    Err(format!(
+        "dynamic tool {field_name} must be one of [{}] for {tool_name}: {value}",
+        allowed.join(", ")
+    ))
 }
 
 fn replace_cloud_requirements_loader(
@@ -10097,6 +10164,8 @@ mod tests {
             description: "test".to_string(),
             input_schema: json!({"type": "null"}),
             defer_loading: false,
+            persist_on_resume: true,
+            capability: None,
         }];
         let err = validate_dynamic_tools(&tools).expect_err("invalid schema");
         assert!(err.contains("my_tool"), "unexpected error: {err}");
@@ -10110,6 +10179,8 @@ mod tests {
             // Missing `type` is common; core sanitizes these to a supported schema.
             input_schema: json!({"properties": {}}),
             defer_loading: false,
+            persist_on_resume: true,
+            capability: None,
         }];
         validate_dynamic_tools(&tools).expect("valid schema");
     }
@@ -10128,8 +10199,82 @@ mod tests {
                 "additionalProperties": false
             }),
             defer_loading: false,
+            persist_on_resume: true,
+            capability: None,
         }];
         validate_dynamic_tools(&tools).expect("valid schema");
+    }
+
+    #[test]
+    fn validate_dynamic_tools_rejects_invalid_capability_metadata() {
+        let tools = vec![ApiDynamicToolSpec {
+            name: "android_step".to_string(),
+            description: "drive android".to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {}
+            }),
+            defer_loading: false,
+            persist_on_resume: false,
+            capability: Some(codex_app_server_protocol::DynamicToolCapability {
+                family: Some("android".to_string()),
+                capability_scope: Some("environment".to_string()),
+                mutation_class: Some("risky".to_string()),
+                lease_mode: Some("exclusive_write".to_string()),
+            }),
+        }];
+
+        let err = validate_dynamic_tools(&tools).expect_err("invalid capability metadata");
+        assert!(err.contains("mutationClass"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn validate_dynamic_tools_rejects_persistent_environment_capability() {
+        let tools = vec![ApiDynamicToolSpec {
+            name: "android_observe".to_string(),
+            description: "observe android".to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {}
+            }),
+            defer_loading: false,
+            persist_on_resume: true,
+            capability: Some(codex_app_server_protocol::DynamicToolCapability {
+                family: Some("android".to_string()),
+                capability_scope: Some("environment".to_string()),
+                mutation_class: Some("read_only".to_string()),
+                lease_mode: Some("shared_read".to_string()),
+            }),
+        }];
+
+        let err = validate_dynamic_tools(&tools)
+            .expect_err("environment capability should not persist on resume");
+        assert!(err.contains("persistOnResume"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn validate_dynamic_tools_rejects_persistent_capability_without_scope() {
+        let tools = vec![ApiDynamicToolSpec {
+            name: "android_observe".to_string(),
+            description: "observe android".to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {}
+            }),
+            defer_loading: false,
+            persist_on_resume: true,
+            capability: Some(codex_app_server_protocol::DynamicToolCapability {
+                family: Some("android".to_string()),
+                capability_scope: None,
+                mutation_class: Some("read_only".to_string()),
+                lease_mode: Some("shared_read".to_string()),
+            }),
+        }];
+
+        let err = validate_dynamic_tools(&tools)
+            .expect_err("missing capability scope should not be treated as persistent");
+        assert!(err.contains("capabilityScope"), "unexpected error: {err}");
+        assert!(err.contains("persistOnResume"), "unexpected error: {err}");
     }
 
     #[test]
