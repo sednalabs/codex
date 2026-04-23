@@ -1830,6 +1830,7 @@ async fn js_repl_emit_image_rejects_mixed_content() -> anyhow::Result<()> {
             }),
             defer_loading: false,
             persist_on_resume: true,
+            capability: None,
         }])
         .await;
     if !turn
@@ -1931,6 +1932,7 @@ async fn js_repl_dynamic_tool_response_preserves_js_line_separator_text() -> any
                 }),
                 defer_loading: false,
                 persist_on_resume: true,
+                capability: None,
             }])
             .await;
 
@@ -2010,6 +2012,7 @@ async fn js_repl_can_call_hidden_dynamic_tools() -> anyhow::Result<()> {
             }),
             defer_loading: true,
             persist_on_resume: true,
+            capability: None,
         }])
         .await;
 

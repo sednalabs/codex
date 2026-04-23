@@ -1692,6 +1692,7 @@ fn search_tool_registers_for_deferred_dynamic_tools() {
         }),
         defer_loading: true,
         persist_on_resume: true,
+        capability: None,
     };
 
     let (tools, handlers) = build_specs(
@@ -1743,6 +1744,7 @@ fn android_dynamic_tools_use_canonical_codex_tool_definitions() {
         }),
         defer_loading: false,
         persist_on_resume: false,
+        capability: None,
     };
     let step_tool = DynamicToolSpec {
         name: "android_step".to_string(),
@@ -1755,6 +1757,7 @@ fn android_dynamic_tools_use_canonical_codex_tool_definitions() {
         }),
         defer_loading: true,
         persist_on_resume: false,
+        capability: None,
     };
 
     let (tools, handlers) = build_specs(

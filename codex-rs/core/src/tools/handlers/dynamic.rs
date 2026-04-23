@@ -31,7 +31,19 @@ impl ToolHandler for DynamicToolHandler {
     }
 
     async fn is_mutating(&self, invocation: &ToolInvocation) -> bool {
-        invocation.tool_name.display() != ANDROID_OBSERVE_TOOL_NAME
+        let tool_name = invocation.tool_name.display();
+        match invocation
+            .session
+            .dynamic_tool_by_name(&tool_name)
+            .await
+            .and_then(|tool| tool.capability)
+            .and_then(|capability| capability.mutation_class)
+            .as_deref()
+        {
+            Some("read_only") => false,
+            Some("mutating") => true,
+            _ => tool_name != ANDROID_OBSERVE_TOOL_NAME,
+        }
     }
 
     fn pre_tool_use_payload(&self, invocation: &ToolInvocation) -> Option<PreToolUsePayload> {
@@ -53,7 +65,7 @@ impl ToolHandler for DynamicToolHandler {
             return None;
         };
         Some(PostToolUsePayload {
-            command: dynamic_tool_command("dynamic_tool", arguments),
+            command: dynamic_tool_command("brokered_tool", arguments),
             tool_response: result.code_mode_result(payload),
         })
     }
@@ -176,11 +188,14 @@ mod tests {
     use super::DynamicToolHandler;
     use super::dynamic_tool_command;
     use crate::session::tests::make_session_and_context;
+    use crate::session::tests::make_session_and_context_with_dynamic_tools_and_rx;
     use crate::tools::context::FunctionToolOutput;
     use crate::tools::context::ToolInvocation;
     use crate::tools::context::ToolPayload;
     use crate::tools::registry::ToolHandler;
     use crate::turn_diff_tracker::TurnDiffTracker;
+    use codex_protocol::dynamic_tools::DynamicToolCapability;
+    use codex_protocol::dynamic_tools::DynamicToolSpec;
     use codex_protocol::models::FunctionCallOutputContentItem;
     use pretty_assertions::assert_eq;
     use serde_json::json;
@@ -221,6 +236,42 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn dynamic_tool_mutation_uses_capability_metadata_when_present() {
+        let (session, turn, _rx) =
+            make_session_and_context_with_dynamic_tools_and_rx(vec![DynamicToolSpec {
+                name: "brokered_read".to_string(),
+                description: "read from an environment-bound capability".to_string(),
+                input_schema: json!({"type": "object", "properties": {}}),
+                defer_loading: false,
+                persist_on_resume: false,
+                capability: Some(DynamicToolCapability {
+                    family: Some("android".to_string()),
+                    capability_scope: Some("environment".to_string()),
+                    mutation_class: Some("read_only".to_string()),
+                    lease_mode: Some("shared_read".to_string()),
+                }),
+            }])
+            .await;
+        let handler = DynamicToolHandler;
+        let payload = ToolPayload::Function {
+            arguments: json!({"scope": "screen"}).to_string(),
+        };
+
+        assert!(
+            !handler
+                .is_mutating(&ToolInvocation {
+                    session: session.into(),
+                    turn: turn.into(),
+                    tracker: Arc::new(Mutex::new(TurnDiffTracker::new())),
+                    call_id: "call-3".to_string(),
+                    tool_name: codex_tools::ToolName::plain("brokered_read"),
+                    payload,
+                })
+                .await
+        );
+    }
+
+    #[tokio::test]
     async fn dynamic_tool_pre_and_post_payloads_preserve_arguments() {
         let (session, turn) = make_session_and_context().await;
         let payload = ToolPayload::Function {
@@ -252,7 +303,7 @@ mod tests {
         assert_eq!(
             handler.post_tool_use_payload("call-2", &payload, &output),
             Some(crate::tools::registry::PostToolUsePayload {
-                command: r#"dynamic_tool {"scope":"screen_and_ui"}"#.to_string(),
+                command: r#"brokered_tool {"scope":"screen_and_ui"}"#.to_string(),
                 tool_response: json!("screen summary"),
             })
         );

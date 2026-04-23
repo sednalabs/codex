@@ -57,6 +57,7 @@ WHERE threads.id = ?
         let rows = sqlx::query(
             r#"
 SELECT name, description, input_schema, defer_loading, persist_on_resume
+     , capability_json
 FROM thread_dynamic_tools
 WHERE thread_id = ?
 ORDER BY position ASC
@@ -72,12 +73,18 @@ ORDER BY position ASC
         for row in rows {
             let input_schema: String = row.try_get("input_schema")?;
             let input_schema = serde_json::from_str::<Value>(input_schema.as_str())?;
+            let capability_json: Option<String> = row.try_get("capability_json")?;
+            let capability = capability_json
+                .as_deref()
+                .map(serde_json::from_str)
+                .transpose()?;
             tools.push(DynamicToolSpec {
                 name: row.try_get("name")?,
                 description: row.try_get("description")?,
                 input_schema,
                 defer_loading: row.try_get("defer_loading")?,
                 persist_on_resume: row.try_get("persist_on_resume")?,
+                capability,
             });
         }
         Ok(Some(tools))
@@ -763,6 +770,11 @@ ON CONFLICT(id) DO UPDATE SET
         for (idx, tool) in tools.iter().enumerate() {
             let position = i64::try_from(idx).unwrap_or(i64::MAX);
             let input_schema = serde_json::to_string(&tool.input_schema)?;
+            let capability_json = tool
+                .capability
+                .as_ref()
+                .map(serde_json::to_string)
+                .transpose()?;
             sqlx::query(
                 r#"
 INSERT INTO thread_dynamic_tools (
@@ -772,8 +784,9 @@ INSERT INTO thread_dynamic_tools (
     description,
     input_schema,
     defer_loading,
-    persist_on_resume
-) VALUES (?, ?, ?, ?, ?, ?, ?)
+    persist_on_resume,
+    capability_json
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(thread_id, position) DO NOTHING
                 "#,
             )
@@ -784,6 +797,7 @@ ON CONFLICT(thread_id, position) DO NOTHING
             .bind(input_schema)
             .bind(tool.defer_loading)
             .bind(tool.persist_on_resume)
+            .bind(capability_json)
             .execute(&mut *tx)
             .await?;
         }

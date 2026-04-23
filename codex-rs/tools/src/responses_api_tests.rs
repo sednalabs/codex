@@ -63,6 +63,7 @@ fn dynamic_tool_to_responses_api_tool_preserves_defer_loading() {
         }),
         defer_loading: true,
         persist_on_resume: true,
+        capability: None,
     };
 
     assert_eq!(

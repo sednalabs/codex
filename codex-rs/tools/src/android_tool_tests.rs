@@ -12,6 +12,7 @@ fn canonical_android_dynamic_tool_preserves_supported_android_tool_names() {
         input_schema: json!({ "type": "object" }),
         defer_loading: false,
         persist_on_resume: false,
+        capability: None,
     })
     .expect("canonical observe tool");
 
@@ -30,6 +31,7 @@ fn canonical_android_dynamic_tool_preserves_supported_android_tool_names() {
         input_schema: json!({ "type": "object" }),
         defer_loading: true,
         persist_on_resume: false,
+        capability: None,
     })
     .expect("canonical step tool");
 
@@ -53,6 +55,7 @@ fn canonical_android_dynamic_tool_ignores_non_android_tools() {
         input_schema: json!({ "type": "object" }),
         defer_loading: false,
         persist_on_resume: true,
+        capability: None,
     });
 
     assert!(tool.is_none());

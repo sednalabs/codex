@@ -15,6 +15,21 @@ pub struct DynamicToolSpec {
     pub defer_loading: bool,
     #[serde(default = "default_dynamic_tool_persist_on_resume")]
     pub persist_on_resume: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub capability: Option<DynamicToolCapability>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct DynamicToolCapability {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub family: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub capability_scope: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mutation_class: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lease_mode: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, JsonSchema, TS)]
@@ -55,6 +70,7 @@ struct DynamicToolSpecDe {
     input_schema: JsonValue,
     defer_loading: Option<bool>,
     persist_on_resume: Option<bool>,
+    capability: Option<DynamicToolCapability>,
     expose_to_context: Option<bool>,
 }
 
@@ -73,6 +89,7 @@ impl<'de> Deserialize<'de> for DynamicToolSpec {
             input_schema,
             defer_loading,
             persist_on_resume,
+            capability,
             expose_to_context,
         } = DynamicToolSpecDe::deserialize(deserializer)?;
 
@@ -84,12 +101,14 @@ impl<'de> Deserialize<'de> for DynamicToolSpec {
                 .unwrap_or_else(|| expose_to_context.map(|visible| !visible).unwrap_or(false)),
             persist_on_resume: persist_on_resume
                 .unwrap_or(default_dynamic_tool_persist_on_resume()),
+            capability,
         })
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use super::DynamicToolCapability;
     use super::DynamicToolSpec;
     use pretty_assertions::assert_eq;
     use serde_json::json;
@@ -123,6 +142,7 @@ mod tests {
                 }),
                 defer_loading: true,
                 persist_on_resume: true,
+                capability: None,
             }
         );
     }
@@ -143,6 +163,7 @@ mod tests {
 
         assert!(actual.defer_loading);
         assert!(actual.persist_on_resume);
+        assert_eq!(actual.capability, None);
     }
 
     #[test]
@@ -160,5 +181,36 @@ mod tests {
         let actual: DynamicToolSpec = serde_json::from_value(value).expect("deserialize");
 
         assert!(!actual.persist_on_resume);
+        assert_eq!(actual.capability, None);
+    }
+
+    #[test]
+    fn dynamic_tool_spec_deserializes_capability_metadata() {
+        let value = json!({
+            "name": "android_step",
+            "description": "drive android",
+            "inputSchema": {
+                "type": "object",
+                "properties": {}
+            },
+            "capability": {
+                "family": "android",
+                "capabilityScope": "environment",
+                "mutationClass": "mutating",
+                "leaseMode": "exclusive_write"
+            }
+        });
+
+        let actual: DynamicToolSpec = serde_json::from_value(value).expect("deserialize");
+
+        assert_eq!(
+            actual.capability,
+            Some(DynamicToolCapability {
+                family: Some("android".to_string()),
+                capability_scope: Some("environment".to_string()),
+                mutation_class: Some("mutating".to_string()),
+                lease_mode: Some("exclusive_write".to_string()),
+            })
+        );
     }
 }

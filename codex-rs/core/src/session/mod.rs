@@ -829,6 +829,19 @@ impl Session {
         }
     }
 
+    pub(crate) async fn dynamic_tool_by_name(
+        &self,
+        tool_name: &str,
+    ) -> Option<codex_protocol::dynamic_tools::DynamicToolSpec> {
+        let state = self.state.lock().await;
+        state
+            .session_configuration
+            .dynamic_tools
+            .iter()
+            .find(|tool| tool.name == tool_name)
+            .cloned()
+    }
+
     fn managed_network_proxy_active_for_sandbox_policy(sandbox_policy: &SandboxPolicy) -> bool {
         !matches!(sandbox_policy, SandboxPolicy::DangerFullAccess)
     }
