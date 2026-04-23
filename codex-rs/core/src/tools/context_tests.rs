@@ -168,6 +168,7 @@ fn mcp_tool_output_response_item_includes_wall_time() {
             is_error: Some(false),
             meta: None,
         },
+        tool_input: json!({}),
         wall_time: std::time::Duration::from_millis(1250),
         original_image_detail_supported: false,
     };
@@ -220,6 +221,7 @@ fn mcp_tool_output_response_item_preserves_content_items() {
             is_error: Some(false),
             meta: None,
         },
+        tool_input: json!({}),
         wall_time: std::time::Duration::from_millis(500),
         original_image_detail_supported: false,
     };
@@ -273,6 +275,7 @@ fn mcp_tool_output_code_mode_result_stays_raw_call_tool_result() {
             is_error: Some(false),
             meta: None,
         },
+        tool_input: json!({}),
         wall_time: std::time::Duration::from_millis(1250),
         original_image_detail_supported: false,
     };
