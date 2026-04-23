@@ -397,6 +397,7 @@ use codex_file_search::FileMatch;
 use codex_protocol::openai_models::InputModality;
 use codex_protocol::openai_models::ModelPreset;
 use codex_protocol::openai_models::ReasoningEffort as ReasoningEffortConfig;
+use codex_protocol::openai_models::SPEED_TIER_FAST;
 use codex_protocol::plan_tool::StepStatus;
 use codex_protocol::plan_tool::UpdatePlanArgs;
 use codex_protocol::protocol::AskForApproval;
@@ -10071,7 +10072,7 @@ impl ChatWidget {
                         preset
                             .additional_speed_tiers
                             .iter()
-                            .any(|tier| tier == codex_protocol::openai_models::SPEED_TIER_FAST)
+                            .any(|tier| tier == SPEED_TIER_FAST)
                     })
             })
             .unwrap_or(false)

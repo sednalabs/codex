@@ -21,6 +21,9 @@ use crate::config_types::Verbosity;
 
 const PERSONALITY_PLACEHOLDER: &str = "{{ personality }}";
 
+/// Additional speed-tier tag used by model metadata to advertise fast-mode availability.
+pub const SPEED_TIER_FAST: &str = "fast";
+
 /// See https://platform.openai.com/docs/guides/reasoning?api-mode=responses#get-started-with-reasoning
 #[derive(
     Debug,

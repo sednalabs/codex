@@ -232,6 +232,9 @@ impl App {
             AppEvent::Exit(mode) => {
                 return Ok(self.handle_exit_mode(app_server, mode).await);
             }
+            AppEvent::ConfirmSubagentExit | AppEvent::CancelSubagentExit => {
+                return Ok(AppRunControl::Continue);
+            }
             AppEvent::Logout => match app_server.logout_account().await {
                 Ok(()) => {
                     return Ok(self
@@ -512,6 +515,13 @@ impl App {
             }
             AppEvent::UpdateModel(model) => {
                 self.chat_widget.set_model(&model);
+            }
+            AppEvent::SelectModel { model, effort } => {
+                self.chat_widget.set_model(&model);
+                self.on_update_reasoning_effort(effort);
+                self.chat_widget.maybe_send_next_queued_input();
+                self.app_event_tx
+                    .send(AppEvent::PersistModelSelection { model, effort });
             }
             AppEvent::UpdateCollaborationMode(mask) => {
                 self.chat_widget.set_collaboration_mask(mask);
