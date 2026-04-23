@@ -1490,6 +1490,7 @@ mod tests {
             timezone: None,
             approval_policy: AskForApproval::Never,
             sandbox_policy: SandboxPolicy::new_read_only_policy(),
+            permission_profile: None,
             file_system_sandbox_policy: None,
             network: None,
             model: "gpt-5".to_string(),

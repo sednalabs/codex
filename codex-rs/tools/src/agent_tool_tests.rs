@@ -1,4 +1,6 @@
 use super::*;
+use crate::JsonSchemaPrimitiveType;
+use crate::JsonSchemaType;
 use codex_protocol::openai_models::ModelPreset;
 use codex_protocol::openai_models::ModelUpgrade;
 use codex_protocol::openai_models::ReasoningEffort;
