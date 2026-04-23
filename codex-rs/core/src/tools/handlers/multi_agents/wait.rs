@@ -112,7 +112,7 @@ impl ToolHandler for Handler {
                         &receiver_agents,
                         pending_thread_ids,
                         CollabWaitingCompletionReason::Terminal,
-                        false,
+                        /*timed_out*/ false,
                         statuses,
                     )
                     .await;
