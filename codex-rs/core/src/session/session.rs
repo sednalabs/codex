@@ -755,6 +755,8 @@ impl Session {
             code_mode_service: crate::tools::code_mode::CodeModeService::new(
                 config.js_repl_node_path.clone(),
             ),
+            usage_logger: None,
+            environment: environment_manager.default_environment(),
             environment_manager,
         };
         services

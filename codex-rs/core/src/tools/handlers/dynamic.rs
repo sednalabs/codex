@@ -8,6 +8,7 @@ use crate::tools::context::ToolInvocation;
 use crate::tools::context::ToolOutput;
 use crate::tools::context::ToolPayload;
 use crate::tools::handlers::parse_arguments;
+use crate::tools::hook_names::HookToolName;
 use crate::tools::registry::PostToolUsePayload;
 use crate::tools::registry::PreToolUsePayload;
 use crate::tools::registry::ToolHandler;
@@ -90,8 +91,10 @@ impl ToolHandler for DynamicToolHandler {
         let ToolPayload::Function { arguments } = &invocation.payload else {
             return None;
         };
+        let tool_name = invocation.tool_name.display();
         Some(PreToolUsePayload {
-            command: dynamic_tool_command(&invocation.tool_name.display(), arguments),
+            tool_name: HookToolName::new(tool_name.clone()),
+            command: dynamic_tool_command(&tool_name, arguments),
         })
     }
 
@@ -99,13 +102,14 @@ impl ToolHandler for DynamicToolHandler {
         &self,
         call_id: &str,
         payload: &ToolPayload,
-        result: &dyn ToolOutput,
+        result: &Self::Output,
     ) -> Option<PostToolUsePayload> {
         let ToolPayload::Function { arguments } = payload else {
             return None;
         };
 
-        let fallback_command = dynamic_tool_command("brokered_tool", arguments);
+        let fallback_tool_name = "brokered_tool";
+        let fallback_command = dynamic_tool_command(fallback_tool_name, arguments);
         match result.post_tool_use_response(call_id, payload) {
             Some(tool_response) => match tool_response
                 .as_object()
@@ -119,16 +123,22 @@ impl ToolHandler for DynamicToolHandler {
                         .cloned()
                         .unwrap_or_else(|| tool_response.clone());
                     Some(PostToolUsePayload {
+                        tool_name: HookToolName::new(tool_name.clone()),
+                        tool_use_id: call_id.to_string(),
                         command: dynamic_tool_command(&tool_name, arguments),
                         tool_response,
                     })
                 }
                 None => Some(PostToolUsePayload {
+                    tool_name: HookToolName::new(fallback_tool_name),
+                    tool_use_id: call_id.to_string(),
                     command: fallback_command,
                     tool_response,
                 }),
             },
             None => Some(PostToolUsePayload {
+                tool_name: HookToolName::new(fallback_tool_name),
+                tool_use_id: call_id.to_string(),
                 command: fallback_command,
                 tool_response: result.code_mode_result(payload),
             }),
@@ -155,6 +165,7 @@ impl ToolHandler for DynamicToolHandler {
         };
 
         let args: Value = parse_arguments(&arguments)?;
+        let output_tool_name = tool_name.display();
         let response = request_dynamic_tool(&session, turn.as_ref(), call_id, tool_name, args)
             .await
             .ok_or_else(|| {
@@ -176,7 +187,7 @@ impl ToolHandler for DynamicToolHandler {
             &mut body,
         );
         Ok(DynamicToolOutput {
-            tool_name: tool_name.display(),
+            tool_name: output_tool_name,
             output: FunctionToolOutput::from_content(body, Some(success)),
         })
     }
@@ -321,6 +332,7 @@ mod tests {
     async fn dynamic_tool_mutation_uses_capability_metadata_when_present() {
         let (session, turn, _rx) =
             make_session_and_context_with_dynamic_tools_and_rx(vec![DynamicToolSpec {
+                namespace: None,
                 name: "brokered_read".to_string(),
                 description: "read from an environment-bound capability".to_string(),
                 input_schema: json!({"type": "object", "properties": {}}),
@@ -382,6 +394,7 @@ mod tests {
         assert_eq!(
             handler.pre_tool_use_payload(&invocation),
             Some(crate::tools::registry::PreToolUsePayload {
+                tool_name: HookToolName::new(ANDROID_OBSERVE_TOOL_NAME),
                 command: r#"android_observe {"scope":"screen_and_ui"}"#.to_string(),
             })
         );
@@ -395,6 +408,8 @@ mod tests {
         assert_eq!(
             handler.post_tool_use_payload("call-2", &payload, &output),
             Some(crate::tools::registry::PostToolUsePayload {
+                tool_name: HookToolName::new(ANDROID_OBSERVE_TOOL_NAME),
+                tool_use_id: "call-2".to_string(),
                 command: r#"android_observe {"scope":"screen_and_ui"}"#.to_string(),
                 tool_response: json!({"ok": true}),
             })

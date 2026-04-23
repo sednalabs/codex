@@ -7,6 +7,7 @@ use serde_json::json;
 #[test]
 fn canonical_android_dynamic_tool_preserves_supported_android_tool_names() {
     let observe = canonical_android_dynamic_tool(&DynamicToolSpec {
+        namespace: None,
         name: ANDROID_OBSERVE_TOOL_NAME.to_string(),
         description: "custom observe description".to_string(),
         input_schema: json!({ "type": "object" }),
@@ -26,6 +27,7 @@ fn canonical_android_dynamic_tool_preserves_supported_android_tool_names() {
     assert!(observe_properties.contains_key("prompt"));
 
     let step = canonical_android_dynamic_tool(&DynamicToolSpec {
+        namespace: None,
         name: ANDROID_STEP_TOOL_NAME.to_string(),
         description: "custom step description".to_string(),
         input_schema: json!({ "type": "object" }),
@@ -50,6 +52,7 @@ fn canonical_android_dynamic_tool_preserves_supported_android_tool_names() {
 #[test]
 fn canonical_android_dynamic_tool_ignores_non_android_tools() {
     let tool = canonical_android_dynamic_tool(&DynamicToolSpec {
+        namespace: None,
         name: "other_tool".to_string(),
         description: "other".to_string(),
         input_schema: json!({ "type": "object" }),

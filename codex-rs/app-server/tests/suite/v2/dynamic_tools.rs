@@ -223,6 +223,8 @@ async fn thread_start_rejects_hidden_dynamic_tools_without_namespace() -> Result
             "additionalProperties": false,
         }),
         defer_loading: true,
+        persist_on_resume: true,
+        capability: None,
     };
 
     let thread_req = mcp

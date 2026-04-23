@@ -5,6 +5,7 @@ use crate::agent::control::render_input_preview;
 use crate::agent::next_thread_spawn_depth;
 use crate::agent::role::DEFAULT_ROLE_NAME;
 use crate::agent::role::apply_role_to_spawn_config;
+use crate::context::ContextualUserFragment;
 use crate::context::SpawnAgentInstructions;
 use codex_protocol::AgentPath;
 use codex_protocol::protocol::InterAgentCommunication;
