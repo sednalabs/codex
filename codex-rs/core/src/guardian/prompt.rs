@@ -1,8 +1,8 @@
 use std::collections::HashMap;
 
+use codex_protocol::approvals::GuardianUserAuthorization;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::GuardianRiskLevel;
-use codex_protocol::protocol::GuardianUserAuthorization;
 use codex_protocol::user_input::UserInput;
 use serde::Deserialize;
 use serde_json::Value;
