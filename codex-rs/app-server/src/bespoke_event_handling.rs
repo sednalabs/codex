@@ -1654,15 +1654,19 @@ pub(crate) async fn apply_bespoke_event_handling(
             }
         }
         EventMsg::PatchApplyUpdated(event) => {
-            let notification = FileChangePatchUpdatedNotification {
-                thread_id: conversation_id.to_string(),
-                turn_id: event_turn_id.clone(),
-                item_id: event.call_id,
-                changes: convert_patch_changes(&event.changes),
-            };
-            outgoing
-                .send_server_notification(ServerNotification::FileChangePatchUpdated(notification))
-                .await;
+            if let ApiVersion::V2 = api_version {
+                let notification = FileChangePatchUpdatedNotification {
+                    thread_id: conversation_id.to_string(),
+                    turn_id: event_turn_id.clone(),
+                    item_id: event.call_id,
+                    changes: convert_patch_changes(&event.changes),
+                };
+                outgoing
+                    .send_server_notification(ServerNotification::FileChangePatchUpdated(
+                        notification,
+                    ))
+                    .await;
+            }
         }
         EventMsg::PatchApplyEnd(patch_end_event) => {
             // Until we migrate the core to be aware of a first class FileChangeItem
@@ -2688,7 +2692,10 @@ fn request_permissions_response_from_client_result(
             codex_app_server_protocol::PermissionGrantScope::Session
         )
     {
-        error!("strict auto review is only supported for turn-scoped permission grants");
+        error!(
+            "strict auto review is only supported for turn-scoped permission grants; \
+             downgrade the permission grant scope to turn or disable strict auto review"
+        );
         return Some(CoreRequestPermissionsResponse {
             permissions: Default::default(),
             scope: CorePermissionGrantScope::Turn,
