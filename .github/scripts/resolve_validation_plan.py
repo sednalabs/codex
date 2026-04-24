@@ -99,6 +99,7 @@ def normalize_catalog(catalog: dict) -> dict:
         lane.setdefault("status_class", "active")
         lane.setdefault("summary_family", derive_summary_family(lane))
         lane.setdefault("cost_class", derive_cost_class(lane["setup_class"]))
+        lane.setdefault("checkout_fetch_depth", 1)
         lane.setdefault("frontier_default", False)
         lane.setdefault(
             "smoke_gate_only",
@@ -190,6 +191,24 @@ def validate_catalog(catalog: dict) -> None:
             if not isinstance(lane.get(field), bool):
                 raise SystemExit(f"lane {lane_id} must set {field} to true or false")
 
+        resolve_checkout_fetch_depth(lane)
+
+
+def resolve_checkout_fetch_depth(lane: dict, *, default: int | None = None) -> int:
+    lane_id = str(lane.get("lane_id") or "<unknown>")
+    checkout_fetch_depth = lane.get("checkout_fetch_depth", default)
+    if isinstance(checkout_fetch_depth, bool) or not isinstance(
+        checkout_fetch_depth, int
+    ):
+        raise SystemExit(
+            f"lane {lane_id} must set checkout_fetch_depth to a non-negative integer"
+        )
+    if checkout_fetch_depth < 0:
+        raise SystemExit(
+            f"lane {lane_id} must set checkout_fetch_depth to a non-negative integer"
+        )
+    return checkout_fetch_depth
+
 
 def lane_payload(spec: dict, *, lane_phase: str) -> dict:
     return {
@@ -202,6 +221,7 @@ def lane_payload(spec: dict, *, lane_phase: str) -> dict:
         "frontier_role": spec["frontier_role"],
         "summary_family": spec["summary_family"],
         "cost_class": spec["cost_class"],
+        "checkout_fetch_depth": resolve_checkout_fetch_depth(spec, default=1),
         "working_directory": spec["working_directory"],
         "script_path": spec["script_path"],
         "script_args": spec.get("script_args") or [],
@@ -362,7 +382,7 @@ def setup_parallel_limits(profile: str, selected: list[dict] | None = None) -> d
             "workflow": 6,
             "node": 3,
             "rust_minimal": 4,
-            "rust_integration": 2,
+            "rust_integration": 5,
             "release": 1,
         }
     return {
