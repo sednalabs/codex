@@ -1472,6 +1472,33 @@ class RustCiModeScriptTests(unittest.TestCase):
         self.assertEqual(outputs["validation_mode"], "full")
         self.assertEqual(outputs["run_incremental_validation"], "false")
 
+    def test_explicit_changed_files_rejects_malformed_json_cleanly(self) -> None:
+        proc = subprocess.run(
+            [
+                "python3",
+                str(SCRIPTS_DIR / "resolve_rust_ci_mode.py"),
+                "--repo-root",
+                str(self.repo.root),
+                "--event-name",
+                "pull_request",
+                "--event-action",
+                "opened",
+                "--base-sha",
+                "0" * 40,
+                "--head-sha",
+                "1" * 40,
+                "--primary-files-json",
+                "not-json",
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn("invalid JSON input for changed-files", proc.stderr)
+        self.assertNotIn("Traceback", proc.stderr)
+
     def test_light_initial_routes_small_openai_models_pr_to_exact_lane(self) -> None:
         outputs = self.run_rust_ci_mode(
             event_action="opened",

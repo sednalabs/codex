@@ -101,14 +101,17 @@ def diff_line_count(repo_root: Path, base: str, head: str) -> int:
 def parse_files_json(value: str) -> list[str] | None:
     if not value:
         return None
-    payload = json.loads(value)
+    try:
+        payload = json.loads(value)
+    except json.JSONDecodeError as exc:
+        raise SystemExit(f"invalid JSON input for changed-files: {exc}") from exc
     if not isinstance(payload, list) or not all(isinstance(item, str) for item in payload):
         raise SystemExit("changed-files JSON inputs must be arrays of strings")
     return payload
 
 
 def explicit_line_count(value: str) -> int | None:
-    if value == "":
+    if not value:
         return None
     try:
         parsed = int(value)
