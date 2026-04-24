@@ -1157,6 +1157,9 @@ async fn exec_command_reports_chunk_and_exit_metadata() -> Result<()> {
     let args = serde_json::json!({
         "cmd": "printf 'token one token two token three token four token five token six token seven'",
         "yield_time_ms": 500,
+        "wait_until_terminal": true,
+        "max_wait_ms": 5_000,
+        "heartbeat_interval_ms": 100,
         "max_output_tokens": 6,
     });
 
