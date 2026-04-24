@@ -34,7 +34,6 @@ use codex_protocol::protocol::Op;
 use codex_protocol::protocol::ReviewDecision;
 use codex_protocol::request_permissions::PermissionGrantScope;
 use codex_protocol::request_permissions::RequestPermissionProfile;
-use codex_utils_absolute_path::AbsolutePathBuf;
 use crossterm::event::KeyCode;
 use crossterm::event::KeyEvent;
 use crossterm::event::KeyEventKind;
@@ -576,6 +575,7 @@ fn build_header(request: &ApprovalRequest) -> Box<dyn Renderable> {
 mod tests {
     use super::*;
     use crate::app_event::AppEvent;
+    use codex_protocol::models::AdditionalPermissionProfile;
     use codex_protocol::models::FileSystemPermissions;
     use codex_protocol::models::NetworkPermissions;
     use codex_protocol::models::PermissionProfile;
@@ -947,7 +947,7 @@ mod tests {
 
     #[test]
     fn additional_permissions_exec_options_hide_execpolicy_amendment() {
-        let additional_permissions = PermissionProfile {
+        let additional_permissions = AdditionalPermissionProfile {
             file_system: Some(FileSystemPermissions::from_read_write_roots(
                 Some(vec![absolute_path("/tmp/readme.txt")]),
                 Some(vec![absolute_path("/tmp/out.txt")]),
@@ -989,7 +989,7 @@ mod tests {
 
     #[test]
     fn additional_permissions_rule_shows_non_path_file_system_entries() {
-        let additional_permissions = PermissionProfile {
+        let additional_permissions = AdditionalPermissionProfile {
             file_system: Some(FileSystemPermissions {
                 entries: vec![
                     FileSystemSandboxEntry {
@@ -1083,7 +1083,7 @@ mod tests {
             reason: None,
             available_decisions: vec![ReviewDecision::Approved, ReviewDecision::Abort],
             network_approval_context: None,
-            additional_permissions: Some(PermissionProfile {
+            additional_permissions: Some(AdditionalPermissionProfile {
                 network: Some(NetworkPermissions {
                     enabled: Some(true),
                 }),
@@ -1133,7 +1133,7 @@ mod tests {
             reason: Some("need filesystem access".into()),
             available_decisions: vec![ReviewDecision::Approved, ReviewDecision::Abort],
             network_approval_context: None,
-            additional_permissions: Some(PermissionProfile {
+            additional_permissions: Some(AdditionalPermissionProfile {
                 network: Some(NetworkPermissions {
                     enabled: Some(true),
                 }),
