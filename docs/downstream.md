@@ -55,18 +55,18 @@ References to `carry/main` elsewhere in the repo are historical pre-cutover
 baselines and should be read as prior names for the maintained downstream
 branch.
 
-Current integration code baseline (validated on `2026-04-23`):
-- `upstream/main`: `d3b044938d245b519c1a5baefe880ef89e3a30c1`
-- downstream integration branch `origin/integration/upstream-main-sync-20260423-141625`:
-  `7dd5e0ebf3dab7c535a1402c97b3c5fc41e4ab18`
+Current integration code baseline (validated on `2026-04-24`):
+- `upstream/main`: `6f87eb0479018f0dd93db3f9f7b89902aebedb50`
+- downstream integration branch `origin/integration/upstream-main-sync-20260424-164627`:
+  `210e4a112b0edd4353832552b4f921f6a47ac090`
 - downstream branch `main` (`origin/main`) before merge:
-  `e2babb7d2bbbe92dd7f3d4ed807a0414e3dd5bc0`
+  `9bf90e67f9e7597fb93bb888eb3d3f613d5ca37b`
 - mirror branch `upstream-main` (`origin/upstream-main`):
-  `d3b044938d245b519c1a5baefe880ef89e3a30c1`
-- integration divergence counts (`upstream/main...origin/integration/upstream-main-sync-20260423-141625`):
-  `0` upstream ahead, `738` downstream ahead
+  `6f87eb0479018f0dd93db3f9f7b89902aebedb50`
+- integration divergence counts (`upstream/main...origin/integration/upstream-main-sync-20260424-164627`):
+  `0` upstream ahead, `770` downstream ahead
 - pre-merge `main` divergence counts (`upstream/main...origin/main`):
-  `208` upstream ahead, `716` downstream ahead
+  `16` upstream ahead, `766` downstream ahead
 - mirror health (`upstream/main...origin/upstream-main`): `0` ahead / `0`
   behind (`exact`)
 
@@ -297,19 +297,6 @@ Why:
 User-visible behavior:
 - Auto approval mode continues to use per-session remembered approvals for matching MCP tool calls, including force-prompted calls.
 - Repeated calls can still be approved from the current session memory instead of always re-prompting.
-
-### Core: startup plugin sync uses a bounded race window and a curated-repo completion signal
-
-Why:
-- Upstream startup sync can miss curated marketplace reconciliation when the local curated repo finishes after process startup.
-- Downstream keeps the initial startup wait bounded to the curated-repo sync window, then parks the single-flight worker until curated-repo completion explicitly re-arms it.
-
-User-visible behavior:
-- Startup remote plugin sync waits up to 30 seconds for curated marketplace prerequisites during the startup race window.
-- If curated-repo sync finishes after that window, the existing worker is re-armed by a completion signal and resumes using the latest stored config/auth snapshot.
-- That completion signal now fires on both curated-repo success and failure paths.
-- Repeated startup/config-triggered sync attempts still collapse into a single in-process reconciliation per `codex_home`, so the remote sync does not run concurrently in duplicate.
-- If curated-repo sync has not completed yet, the worker stays parked waiting for completion instead of dropping the attempt and missing the eventual reconciliation.
 
 ### Core tests: unified_exec race-tolerant completed-process polling (test-only)
 
