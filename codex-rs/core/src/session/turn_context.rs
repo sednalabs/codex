@@ -117,7 +117,11 @@ impl TurnContext {
         self.features.apps_enabled_for_auth(uses_codex_backend)
     }
 
-    pub(crate) async fn with_model(&self, model: String, models_manager: &ModelsManager) -> Self {
+    pub(crate) async fn with_model(
+        &self,
+        model: String,
+        models_manager: &SharedModelsManager,
+    ) -> Self {
         let mut config = (*self.config).clone();
         config.model = Some(model.clone());
         let model_info = models_manager
@@ -381,7 +385,7 @@ impl Session {
         main_execve_wrapper_exe: Option<&PathBuf>,
         per_turn_config: Config,
         model_info: ModelInfo,
-        models_manager: &ModelsManager,
+        models_manager: &SharedModelsManager,
         network: Option<NetworkProxy>,
         environment: Option<Arc<Environment>>,
         environments: Vec<TurnEnvironment>,

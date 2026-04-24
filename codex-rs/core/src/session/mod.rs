@@ -66,10 +66,8 @@ use codex_mcp::McpConnectionManager;
 use codex_mcp::McpRuntimeEnvironment;
 use codex_mcp::ToolInfo;
 use codex_mcp::codex_apps_tools_cache_key;
-#[cfg(test)]
-use codex_models_manager::collaboration_mode_presets::CollaborationModesConfig;
-use codex_models_manager::manager::ModelsManager;
 use codex_models_manager::manager::RefreshStrategy;
+use codex_models_manager::manager::SharedModelsManager;
 use codex_network_proxy::NetworkProxy;
 use codex_network_proxy::NetworkProxyAuditMetadata;
 use codex_network_proxy::normalize_host;
@@ -391,7 +389,7 @@ pub struct CodexSpawnOk {
 pub(crate) struct CodexSpawnArgs {
     pub(crate) config: Config,
     pub(crate) auth_manager: Arc<AuthManager>,
-    pub(crate) models_manager: Arc<ModelsManager>,
+    pub(crate) models_manager: SharedModelsManager,
     pub(crate) environment_manager: Arc<EnvironmentManager>,
     pub(crate) skills_manager: Arc<SkillsManager>,
     pub(crate) plugins_manager: Arc<PluginsManager>,
