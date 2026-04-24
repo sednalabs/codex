@@ -3313,6 +3313,15 @@ pub struct ThreadStartParams {
     pub ephemeral: Option<bool>,
     #[ts(optional = nullable)]
     pub session_start_source: Option<ThreadStartSource>,
+    /// Optional sticky environments for this thread.
+    ///
+    /// Omitted selects the default environment when environment access is
+    /// enabled. Empty disables environment access for turns that do not
+    /// provide a turn override. Non-empty selects the first environment as the
+    /// current turn environment.
+    #[experimental("thread/start.environments")]
+    #[ts(optional = nullable)]
+    pub environments: Option<Vec<TurnEnvironmentParams>>,
     #[experimental("thread/start.dynamicTools")]
     #[ts(optional = nullable)]
     pub dynamic_tools: Option<Vec<DynamicToolSpec>>,
@@ -4993,7 +5002,11 @@ pub struct TurnStartParams {
     #[experimental("turn/start.responsesapiClientMetadata")]
     #[ts(optional = nullable)]
     pub responsesapi_client_metadata: Option<HashMap<String, String>>,
-    /// Optional turn-scoped environment selections.
+    /// Optional turn-scoped environments.
+    ///
+    /// Omitted uses the thread sticky environments. Empty disables
+    /// environment access for this turn. Non-empty selects the first
+    /// environment as the current turn environment for this turn.
     #[experimental("turn/start.environments")]
     #[ts(optional = nullable)]
     pub environments: Option<Vec<TurnEnvironmentParams>>,
