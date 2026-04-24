@@ -381,7 +381,7 @@
       "type": "boolean"
     },
     "excludeTurns": {
-      "description": "When true, return only thread metadata and live fork state without populating `thread.turns`. This is useful when the client plans to call `thread/turns/list` immediately after forking.",
+      "description": "When true, return only thread metadata and live fork state without\npopulating `thread.turns`. This is useful when the client plans to call\n`thread/turns/list` immediately after forking.",
       "type": "boolean"
     },
     "model": {
