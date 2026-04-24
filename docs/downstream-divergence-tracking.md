@@ -4,7 +4,9 @@ This note records the next-step maintenance model for downstream divergence
 tracking.
 
 Phase 1 is now implemented as the CI-backed `scripts/downstream-divergence-audit.py`
-runner plus the checked-in `docs/divergences/index.yaml` registry. The later
+runner plus the checked-in `docs/divergences/index.yaml` registry. The
+`codex.downstream-docs-check` validation lane runs that audit against PR heads,
+while `sedna-sync-upstream` runs it after mirror refreshes on `main`. The later
 generation phases below remain the forward path for ledger and regression
 projection.
 
