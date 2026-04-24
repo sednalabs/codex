@@ -766,7 +766,8 @@ fn spawn_agent_tool_description(
     let tool_description = format!(
         r#"
         {agent_role_guidance}
-        Spawn a sub-agent for a well-scoped task. {return_value_description} {SPAWN_AGENT_INHERITED_MODEL_GUIDANCE}"#
+        Spawn a sub-agent for a well-scoped task. {return_value_description} {SPAWN_AGENT_INHERITED_MODEL_GUIDANCE}
+Do not set the `model` field unless the user explicitly asks for a different model or there is a clear task-specific reason."#
     );
 
     if !include_usage_hint {
@@ -801,6 +802,7 @@ fn spawn_agent_tool_description_v2(
 You are then able to refer to this agent as `task_3` or `/root/task1/task_3` interchangeably. However an agent `/root/task2/task_3` would only be able to communicate with this agent via its canonical name `/root/task1/task_3`.
 The spawned agent will have the same tools as you and the ability to spawn its own subagents.
 {SPAWN_AGENT_INHERITED_MODEL_GUIDANCE}
+Do not set the `model` field unless the user explicitly asks for a different model or there is a clear task-specific reason.
 It will be able to send you and other running agents messages, and its final answer will be provided to you when it finishes.
 The new agent's canonical task name will be provided to it along with the message."#
     );

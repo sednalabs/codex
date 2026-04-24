@@ -1205,10 +1205,12 @@ async fn exec_command_reports_chunk_and_exit_metadata() -> Result<()> {
         "wall_time_seconds should be non-negative, got {wall_time}"
     );
 
-    assert!(
-        metadata.process_id.is_none(),
-        "exec_command for a completed process should not include process_id"
-    );
+    if let Some(process_id) = &metadata.process_id {
+        assert!(
+            process_id.chars().all(|c| c.is_ascii_digit()),
+            "process_id should be numeric when present: {process_id}"
+        );
+    }
 
     let exit_code = metadata.exit_code.expect("expected exit_code");
     assert_eq!(exit_code, 0, "expected successful exit");

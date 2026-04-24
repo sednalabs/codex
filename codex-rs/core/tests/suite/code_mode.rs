@@ -2482,7 +2482,7 @@ async fn code_mode_exports_all_tools_metadata_for_builtin_tools() -> Result<()> 
     let server = responses::start_mock_server().await;
     let code = r#"
 const tool = ALL_TOOLS.find(({ name }) => name === "view_image");
-text(JSON.stringify(tool ?? { missing: true, tools: ALL_TOOLS }));
+await text(JSON.stringify(tool ?? { missing: true, tools: ALL_TOOLS }));
 "#;
 
     let (_test, second_mock) = run_code_mode_turn_with_model(
@@ -2526,7 +2526,7 @@ async fn code_mode_exports_all_tools_metadata_for_namespaced_mcp_tools() -> Resu
 const tool = ALL_TOOLS.find(
   ({ name, module }) => name === "echo" && module === "tools/mcp/rmcp.js"
 );
-text(JSON.stringify(tool));
+await text(JSON.stringify(tool ?? { missing: true, tools: ALL_TOOLS }));
 "#;
 
     let (_test, second_mock) = run_code_mode_turn_with_rmcp_model(
