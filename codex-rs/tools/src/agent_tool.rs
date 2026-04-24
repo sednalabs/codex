@@ -832,7 +832,7 @@ fn default_spawn_agent_usage_hint(available_models_description: Option<&str>) ->
         })
         .unwrap_or_default();
     format!(
-        r#"This spawn_agent tool provides you access to smaller but more efficient sub-agents. A mini model can solve many tasks faster than the main model. You should follow the rules and guidelines below to use this tool.
+        r#"This spawn_agent tool provides access to sub-agents for bounded parallel work. You should follow the rules and guidelines below to use this tool.
 
 Only use `spawn_agent` if and only if the user explicitly asks for sub-agents, delegation, or parallel agent work.
 Requests for depth, thoroughness, research, investigation, or detailed codebase analysis do not count as permission to spawn.

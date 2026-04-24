@@ -139,6 +139,29 @@ fn custom_tool_output_last_non_empty_text(req: &ResponsesRequest, call_id: &str)
     }
 }
 
+fn custom_tool_output_json_value(req: &ResponsesRequest, call_id: &str) -> Result<Value> {
+    let mut raw = custom_tool_output_last_non_empty_text(req, call_id).unwrap_or_default();
+    if raw.trim().is_empty() {
+        raw = custom_tool_output_body_and_success(req, call_id).0;
+    }
+    let trimmed = raw.trim();
+    if let Ok(value) = serde_json::from_str::<Value>(trimmed) {
+        return Ok(value);
+    }
+    if let Some((_, after_output_header)) = trimmed.rsplit_once("Output:\n") {
+        if let Ok(value) = serde_json::from_str::<Value>(after_output_header.trim()) {
+            return Ok(value);
+        }
+    }
+    for line in trimmed.lines().rev() {
+        let line = line.trim();
+        if line.starts_with('{') || line.starts_with('[') {
+            return Ok(serde_json::from_str(line)?);
+        }
+    }
+    Ok(serde_json::from_str(trimmed)?)
+}
+
 async fn run_code_mode_turn(
     server: &MockServer,
     prompt: &str,
@@ -2502,10 +2525,7 @@ await text(JSON.stringify(tool ?? { missing: true, tools: ALL_TOOLS }));
         "exec ALL_TOOLS lookup failed unexpectedly: {output}"
     );
 
-    let parsed: Value = serde_json::from_str(
-        &custom_tool_output_last_non_empty_text(&req, "call-1")
-            .expect("exec ALL_TOOLS lookup should emit JSON"),
-    )?;
+    let parsed = custom_tool_output_json_value(&req, "call-1")?;
     assert_eq!(
         parsed,
         serde_json::json!({
@@ -2545,10 +2565,7 @@ await text(JSON.stringify(tool ?? { missing: true, tools: ALL_TOOLS }));
         "exec ALL_TOOLS MCP lookup failed unexpectedly: {output}"
     );
 
-    let parsed: Value = serde_json::from_str(
-        &custom_tool_output_last_non_empty_text(&req, "call-1")
-            .expect("exec ALL_TOOLS MCP lookup should emit JSON"),
-    )?;
+    let parsed = custom_tool_output_json_value(&req, "call-1")?;
     assert_eq!(
         parsed,
         serde_json::json!({
