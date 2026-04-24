@@ -1,4 +1,36 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-exec git diff --check -- docs/downstream.md docs/carry-divergence-ledger.md docs/downstream-regression-matrix.md docs/downstream-tool-surface-matrix.md docs/divergences/index.yaml
+if git remote get-url upstream >/dev/null 2>&1; then
+  git remote set-url upstream https://github.com/openai/codex.git
+else
+  git remote add upstream https://github.com/openai/codex.git
+fi
+
+git fetch --no-tags --prune origin upstream-main
+git fetch --no-tags --prune upstream main
+
+git diff --check refs/remotes/upstream/main...HEAD -- \
+  docs/downstream.md \
+  docs/carry-divergence-ledger.md \
+  docs/downstream-divergence-tracking.md \
+  docs/downstream-regression-matrix.md \
+  docs/downstream-tool-surface-matrix.md \
+  docs/divergences/index.yaml
+
+expected_mirror_sha="$(git rev-parse refs/remotes/upstream/main)"
+downstream_ref="$(git rev-parse HEAD)"
+
+python3 scripts/downstream-divergence-audit.py \
+  --repo "$PWD" \
+  --downstream-ref "${downstream_ref}" \
+  --mirror-remote origin \
+  --mirror-branch upstream-main \
+  --upstream-remote upstream \
+  --upstream-branch main \
+  --expected-mirror-sha "${expected_mirror_sha}" \
+  --registry-path docs/divergences/index.yaml \
+  --output-dir target/downstream-divergence-audit \
+  --format both \
+  --code-only \
+  --enforce-registry

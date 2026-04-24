@@ -34,9 +34,12 @@ class RemoteTip:
     remote: str
     branch: str
     sha: str
+    local_ref: str | None = None
 
     @property
     def local_tracking_ref(self) -> str:
+        if self.local_ref is not None:
+            return self.local_ref
         return f"refs/remotes/{self.remote}/{self.branch}"
 
 
@@ -81,6 +84,7 @@ def main() -> int:
         args.mirror_branch,
         args.upstream_remote,
         args.upstream_branch,
+        args.downstream_ref,
     )
     mirror_mismatch = bool(
         args.expected_mirror_sha and snapshot_1["mirror"].sha != args.expected_mirror_sha
@@ -120,6 +124,7 @@ def main() -> int:
         args.mirror_branch,
         args.upstream_remote,
         args.upstream_branch,
+        args.downstream_ref,
     )
 
     unstable = snapshot_changed(snapshot_1, snapshot_2)
@@ -198,6 +203,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--repo", default=".", help="Path to the repository root.")
     parser.add_argument("--downstream-remote", default="origin", help="Remote that hosts the downstream branch.")
     parser.add_argument("--downstream-branch", default="main", help="Downstream branch name.")
+    parser.add_argument(
+        "--downstream-ref",
+        help=(
+            "Local commit/ref to audit as downstream instead of resolving "
+            "--downstream-remote/--downstream-branch. Useful for PR-head CI."
+        ),
+    )
     parser.add_argument("--mirror-remote", default="origin", help="Remote that hosts the upstream mirror branch.")
     parser.add_argument("--mirror-branch", default="upstream-main", help="Mirror branch name.")
     parser.add_argument("--upstream-remote", default="upstream", help="Remote that hosts live upstream.")
@@ -259,8 +271,13 @@ def resolve_snapshot(
     mirror_branch: str,
     upstream_remote: str,
     upstream_branch: str,
+    downstream_ref: str | None = None,
 ) -> dict[str, RemoteTip]:
-    downstream = live_tip(repo, downstream_remote, downstream_branch)
+    downstream = (
+        local_tip(repo, "downstream-ref", downstream_ref)
+        if downstream_ref
+        else live_tip(repo, downstream_remote, downstream_branch)
+    )
     mirror = live_tip(repo, mirror_remote, mirror_branch)
     upstream = live_tip(repo, upstream_remote, upstream_branch)
     return {"downstream": downstream, "mirror": mirror, "upstream": upstream}
@@ -276,6 +293,12 @@ def live_tip(repo: Path, remote: str, branch: str) -> RemoteTip:
     )
     sha = parse_single_sha(result.stdout, remote, ref)
     return RemoteTip(remote=remote, branch=branch, sha=sha)
+
+
+def local_tip(repo: Path, remote_label: str, ref: str) -> RemoteTip:
+    result = run_git(repo, ["rev-parse", f"{ref}^{{commit}}"], capture_stdout=True)
+    sha = result.stdout.strip()
+    return RemoteTip(remote=remote_label, branch=ref, sha=sha, local_ref=sha)
 
 
 def normalize_branch_ref(branch: str) -> str:
@@ -297,6 +320,8 @@ def parse_single_sha(stdout: str, remote: str, ref: str) -> str:
 def fetch_live_refs(repo: Path, snapshot: dict[str, RemoteTip]) -> None:
     grouped: dict[str, list[RemoteTip]] = {}
     for tip in snapshot.values():
+        if tip.local_ref is not None:
+            continue
         grouped.setdefault(tip.remote, []).append(tip)
 
     for remote, tips in grouped.items():
