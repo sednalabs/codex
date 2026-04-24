@@ -418,7 +418,7 @@ impl CodexMessageProcessor {
                 let apps_needing_auth = self
                     .plugin_apps_needing_auth_for_install(
                         &config,
-                        auth.as_ref().is_some_and(CodexAuth::is_chatgpt_auth),
+                        auth.as_ref().is_some_and(CodexAuth::uses_codex_backend),
                         &result.plugin_id.as_key(),
                         &plugin_apps,
                     )
