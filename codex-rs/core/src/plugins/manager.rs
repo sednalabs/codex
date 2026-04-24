@@ -10,6 +10,7 @@ use codex_config::types::PluginConfig;
 use codex_core_plugins::OPENAI_CURATED_MARKETPLACE_NAME;
 use codex_core_plugins::installed_marketplaces::installed_marketplace_roots_from_layer_stack;
 use codex_core_plugins::loader::configured_curated_plugin_ids_from_codex_home;
+use codex_core_plugins::loader::curated_plugin_cache_version;
 use codex_core_plugins::loader::installed_plugin_telemetry_metadata;
 use codex_core_plugins::loader::load_plugin_apps;
 use codex_core_plugins::loader::load_plugin_mcp_servers;
@@ -567,13 +568,13 @@ impl PluginsManager {
         let auth_policy = resolved.policy.authentication;
         let plugin_version =
             if resolved.plugin_id.marketplace_name == OPENAI_CURATED_MARKETPLACE_NAME {
-                Some(
-                    read_curated_plugins_sha(self.codex_home.as_path()).ok_or_else(|| {
+                let curated_plugin_version = read_curated_plugins_sha(self.codex_home.as_path())
+                    .ok_or_else(|| {
                         PluginStoreError::Invalid(
                             "local curated marketplace sha is not available".to_string(),
                         )
-                    })?,
-                )
+                    })?;
+                Some(curated_plugin_cache_version(&curated_plugin_version))
             } else {
                 None
             };
@@ -725,6 +726,7 @@ impl PluginsManager {
                     "local curated marketplace sha is not available".to_string(),
                 )
             })?;
+        let cache_plugin_version = curated_plugin_cache_version(&curated_plugin_version);
         let mut local_plugins = Vec::<(
             String,
             PluginId,
@@ -835,11 +837,7 @@ impl PluginsManager {
             }
             if remote_installed_plugin_names.contains(&plugin_name) {
                 if !is_installed {
-                    installs.push((
-                        source_path,
-                        plugin_id.clone(),
-                        curated_plugin_version.clone(),
-                    ));
+                    installs.push((source_path, plugin_id.clone(), cache_plugin_version.clone()));
                 }
                 if !is_installed {
                     result.installed_plugin_ids.push(plugin_key.clone());
