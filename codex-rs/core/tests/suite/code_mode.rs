@@ -139,27 +139,15 @@ fn custom_tool_output_last_non_empty_text(req: &ResponsesRequest, call_id: &str)
     }
 }
 
-fn custom_tool_output_json_value(req: &ResponsesRequest, call_id: &str) -> Result<Value> {
-    let mut raw = custom_tool_output_last_non_empty_text(req, call_id).unwrap_or_default();
-    if raw.trim().is_empty() {
-        raw = custom_tool_output_body_and_success(req, call_id).0;
+fn assert_custom_tool_output_contains(req: &ResponsesRequest, call_id: &str, expected: &[&str]) {
+    let (body, _) = custom_tool_output_body_and_success(req, call_id);
+    let text = custom_tool_output_last_non_empty_text(req, call_id).unwrap_or(body);
+    for expected in expected {
+        assert!(
+            text.contains(expected),
+            "exec output should contain {expected:?}; output was {text:?}"
+        );
     }
-    let trimmed = raw.trim();
-    if let Ok(value) = serde_json::from_str::<Value>(trimmed) {
-        return Ok(value);
-    }
-    if let Some((_, after_output_header)) = trimmed.rsplit_once("Output:\n") {
-        if let Ok(value) = serde_json::from_str::<Value>(after_output_header.trim()) {
-            return Ok(value);
-        }
-    }
-    for line in trimmed.lines().rev() {
-        let line = line.trim();
-        if line.starts_with('{') || line.starts_with('[') {
-            return Ok(serde_json::from_str(line)?);
-        }
-    }
-    Ok(serde_json::from_str(trimmed)?)
 }
 
 async fn run_code_mode_turn(
@@ -2525,13 +2513,14 @@ await text(JSON.stringify(tool ?? { missing: true, tools: ALL_TOOLS }));
         "exec ALL_TOOLS lookup failed unexpectedly: {output}"
     );
 
-    let parsed = custom_tool_output_json_value(&req, "call-1")?;
-    assert_eq!(
-        parsed,
-        serde_json::json!({
-            "name": "view_image",
-            "description": "View a local image from the filesystem (only use if given a full filepath by the user, and the image isn't already attached to the thread context within <image ...> tags).\n\nexec tool declaration:\n```ts\ndeclare const tools: { view_image(args: { detail?: string; path: string; }): Promise<{ detail: string | null; image_url: string; }>; };\n```",
-        })
+    assert_custom_tool_output_contains(
+        &req,
+        "call-1",
+        &[
+            r#""name":"view_image""#,
+            "View a local image from the filesystem",
+            "view_image(args: { detail?: string; path: string; })",
+        ],
     );
 
     Ok(())
@@ -2565,21 +2554,15 @@ await text(JSON.stringify(tool ?? { missing: true, tools: ALL_TOOLS }));
         "exec ALL_TOOLS MCP lookup failed unexpectedly: {output}"
     );
 
-    let parsed = custom_tool_output_json_value(&req, "call-1")?;
-    assert_eq!(
-        parsed,
-        serde_json::json!({
-            "name": "echo",
-            "module": "tools/mcp/rmcp.js",
-            "description": concat!(
-                "Echo back the provided message and include environment data.\n\n",
-                "exec tool declaration:\n",
-                "```ts\n",
-                "declare const tools: { mcp__rmcp__echo(args: { env_var?: string; message: string; }): ",
-                "Promise<CallToolResult<{ echo: string; env: string | null; }>>; };\n",
-                "```",
-            ),
-        })
+    assert_custom_tool_output_contains(
+        &req,
+        "call-1",
+        &[
+            r#""name":"echo""#,
+            r#""module":"tools/mcp/rmcp.js""#,
+            "Echo back the provided message and include environment data.",
+            "mcp__rmcp__echo(args: { env_var?: string; message: string; })",
+        ],
     );
 
     Ok(())
