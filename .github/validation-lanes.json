@@ -242,7 +242,7 @@
       "needs_nextest": false,
       "needs_linux_build_deps": true,
       "needs_dotslash": false,
-      "needs_sccache": false
+      "needs_sccache": true
     },
     {
       "lane_id": "codex.tui-thread-session-policy-targeted",
@@ -268,7 +268,7 @@
       "needs_nextest": false,
       "needs_linux_build_deps": true,
       "needs_dotslash": false,
-      "needs_sccache": false
+      "needs_sccache": true
     },
     {
       "lane_id": "codex.tui-esc-interrupt-targeted",
@@ -294,7 +294,7 @@
       "needs_nextest": true,
       "needs_linux_build_deps": true,
       "needs_dotslash": false,
-      "needs_sccache": false
+      "needs_sccache": true
     },
     {
       "lane_id": "codex.tui-front-queue-submit-targeted",
@@ -320,7 +320,7 @@
       "needs_nextest": false,
       "needs_linux_build_deps": true,
       "needs_dotslash": false,
-      "needs_sccache": false
+      "needs_sccache": true
     },
     {
       "lane_id": "codex.tui-transcript-viewport-targeted",
@@ -346,7 +346,7 @@
       "needs_nextest": false,
       "needs_linux_build_deps": true,
       "needs_dotslash": false,
-      "needs_sccache": false
+      "needs_sccache": true
     },
     {
       "lane_id": "codex.tui-brokered-tool-replay-targeted",
@@ -371,7 +371,7 @@
       "needs_nextest": false,
       "needs_linux_build_deps": true,
       "needs_dotslash": false,
-      "needs_sccache": false
+      "needs_sccache": true
     },
     {
       "lane_id": "codex.tui-config-refresh-session-targeted",
@@ -393,7 +393,7 @@
       "needs_nextest": false,
       "needs_linux_build_deps": true,
       "needs_dotslash": false,
-      "needs_sccache": false
+      "needs_sccache": true
     },
     {
       "lane_id": "codex.tui-agent-picker-usage-targeted",
@@ -416,7 +416,7 @@
       "needs_nextest": false,
       "needs_linux_build_deps": true,
       "needs_dotslash": false,
-      "needs_sccache": false
+      "needs_sccache": true
     },
     {
       "lane_id": "codex.tui-agent-picker-targeted",
@@ -444,7 +444,7 @@
       "needs_nextest": false,
       "needs_linux_build_deps": true,
       "needs_dotslash": false,
-      "needs_sccache": false
+      "needs_sccache": true
     },
     {
       "lane_id": "codex.tui-agent-picker-model-surface-targeted",
@@ -470,7 +470,7 @@
       "needs_nextest": false,
       "needs_linux_build_deps": true,
       "needs_dotslash": false,
-      "needs_sccache": false
+      "needs_sccache": true
     },
     {
       "lane_id": "codex.spawn-agent-tool-model-surface-targeted",
@@ -495,7 +495,7 @@
       "needs_nextest": false,
       "needs_linux_build_deps": true,
       "needs_dotslash": false,
-      "needs_sccache": false
+      "needs_sccache": true
     },
     {
       "lane_id": "codex.spawn-agent-description-model-surface-targeted",
@@ -520,7 +520,7 @@
       "needs_nextest": false,
       "needs_linux_build_deps": true,
       "needs_dotslash": false,
-      "needs_sccache": false
+      "needs_sccache": true
     },
     {
       "lane_id": "codex.tui-agent-picker-tree-targeted",
@@ -548,7 +548,7 @@
       "needs_nextest": false,
       "needs_linux_build_deps": true,
       "needs_dotslash": false,
-      "needs_sccache": false
+      "needs_sccache": true
     },
     {
       "lane_id": "codex.tui-agent-usage-totals-targeted",
@@ -570,7 +570,7 @@
       "needs_nextest": false,
       "needs_linux_build_deps": true,
       "needs_dotslash": false,
-      "needs_sccache": false
+      "needs_sccache": true
     },
     {
       "lane_id": "codex.core-multi-agent-orchestration-targeted",
@@ -901,7 +901,7 @@
       "needs_nextest": false,
       "needs_linux_build_deps": false,
       "needs_dotslash": false,
-      "needs_sccache": false
+      "needs_sccache": true
     },
     {
       "lane_id": "codex.app-server-thread-cwd-targeted",
@@ -1093,6 +1093,12 @@
         "codex.downstream-docs-check"
       ],
       "allowed_paths": [
+        ".github/validation-lanes.json",
+        ".github/workflows/_validation-lane-node.yml",
+        ".github/workflows/_validation-lane-release.yml",
+        ".github/workflows/_validation-lane-rust-integration.yml",
+        ".github/workflows/_validation-lane-rust-minimal.yml",
+        ".github/workflows/_validation-lane-workflow.yml",
         ".github/workflows/_sedna-linux-rust.yml",
         ".github/workflows/docs-sanity.yml",
         ".github/workflows/rust-ci-full.yml",
@@ -1110,6 +1116,12 @@
         "justfile"
       ],
       "required_any_paths": [
+        ".github/validation-lanes.json",
+        ".github/workflows/_validation-lane-node.yml",
+        ".github/workflows/_validation-lane-release.yml",
+        ".github/workflows/_validation-lane-rust-integration.yml",
+        ".github/workflows/_validation-lane-rust-minimal.yml",
+        ".github/workflows/_validation-lane-workflow.yml",
         ".github/workflows/_sedna-linux-rust.yml",
         ".github/workflows/docs-sanity.yml",
         ".github/workflows/rust-ci-full.yml",
