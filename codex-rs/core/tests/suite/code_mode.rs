@@ -2518,7 +2518,7 @@ await text(JSON.stringify(tool ?? { missing: true, tools: ALL_TOOLS }));
         &[
             r#""name":"view_image""#,
             "View a local image from the filesystem",
-            "view_image(args: { detail?: string; path: string; })",
+            "view_image(args: { path: string; })",
         ],
     );
 
