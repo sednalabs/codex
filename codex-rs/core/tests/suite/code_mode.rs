@@ -145,12 +145,27 @@ async fn run_code_mode_turn(
     code: &str,
     include_apply_patch: bool,
 ) -> Result<(TestCodex, ResponseMock)> {
-    let mut builder = test_codex()
-        .with_model("test-gpt-5.1-codex")
-        .with_config(move |config| {
-            let _ = config.features.enable(Feature::CodeMode);
-            config.include_apply_patch_tool = include_apply_patch;
-        });
+    run_code_mode_turn_with_model(
+        server,
+        prompt,
+        code,
+        include_apply_patch,
+        "test-gpt-5.1-codex",
+    )
+    .await
+}
+
+async fn run_code_mode_turn_with_model(
+    server: &MockServer,
+    prompt: &str,
+    code: &str,
+    include_apply_patch: bool,
+    model: &'static str,
+) -> Result<(TestCodex, ResponseMock)> {
+    let mut builder = test_codex().with_model(model).with_config(move |config| {
+        let _ = config.features.enable(Feature::CodeMode);
+        config.include_apply_patch_tool = include_apply_patch;
+    });
     let test = builder.build(server).await?;
 
     responses::mount_sse_once(
@@ -2467,14 +2482,15 @@ async fn code_mode_exports_all_tools_metadata_for_builtin_tools() -> Result<()> 
     let server = responses::start_mock_server().await;
     let code = r#"
 const tool = ALL_TOOLS.find(({ name }) => name === "view_image");
-text(JSON.stringify(tool));
+text(JSON.stringify(tool ?? { missing: true, tools: ALL_TOOLS }));
 "#;
 
-    let (_test, second_mock) = run_code_mode_turn(
+    let (_test, second_mock) = run_code_mode_turn_with_model(
         &server,
         "use exec to inspect ALL_TOOLS",
         code,
         /*include_apply_patch*/ false,
+        "gpt-5.4",
     )
     .await?;
 
@@ -2494,7 +2510,7 @@ text(JSON.stringify(tool));
         parsed,
         serde_json::json!({
             "name": "view_image",
-            "description": "View a local image from the filesystem (only use if given a full filepath by the user, and the image isn't already attached to the thread context within <image ...> tags).\n\nexec tool declaration:\n```ts\ndeclare const tools: { view_image(args: { path: string; }): Promise<{ detail: string | null; image_url: string; }>; };\n```",
+            "description": "View a local image from the filesystem (only use if given a full filepath by the user, and the image isn't already attached to the thread context within <image ...> tags).\n\nexec tool declaration:\n```ts\ndeclare const tools: { view_image(args: { detail?: string; path: string; }): Promise<{ detail: string | null; image_url: string; }>; };\n```",
         })
     );
 
@@ -2513,8 +2529,13 @@ const tool = ALL_TOOLS.find(
 text(JSON.stringify(tool));
 "#;
 
-    let (_test, second_mock) =
-        run_code_mode_turn_with_rmcp(&server, "use exec to inspect ALL_TOOLS", code).await?;
+    let (_test, second_mock) = run_code_mode_turn_with_rmcp_model(
+        &server,
+        "use exec to inspect ALL_TOOLS",
+        code,
+        "gpt-5.4",
+    )
+    .await?;
 
     let req = second_mock.single_request();
     let (output, success) = custom_tool_output_body_and_success(&req, "call-1");
