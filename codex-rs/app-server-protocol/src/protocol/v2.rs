@@ -667,6 +667,7 @@ pub struct DynamicToolSpec {
     )]
     pub persist_on_resume: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     pub capability: Option<DynamicToolCapability>,
 }
 
@@ -675,12 +676,16 @@ pub struct DynamicToolSpec {
 #[ts(export_to = "v2/")]
 pub struct DynamicToolCapability {
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     pub family: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     pub capability_scope: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     pub mutation_class: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     pub lease_mode: Option<String>,
 }
 
@@ -7273,6 +7278,7 @@ pub enum DynamicToolCallOutputContentItem {
     InputImage {
         image_url: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
         detail: Option<String>,
     },
 }
