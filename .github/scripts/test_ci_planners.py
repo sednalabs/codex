@@ -1281,10 +1281,10 @@ class RustCiModeScriptTests(unittest.TestCase):
         head_files: dict[str, str],
         previous_green_required: str = "false",
         before_sha: str = "",
+        extra_args: list[str] | None = None,
     ) -> dict:
         head_sha = self.repo.commit("head", head_files)
-        return run_script(
-            SCRIPTS_DIR / "resolve_rust_ci_mode.py",
+        args = [
             "--repo-root",
             str(self.repo.root),
             "--event-name",
@@ -1299,7 +1299,178 @@ class RustCiModeScriptTests(unittest.TestCase):
             before_sha,
             "--previous-green-required",
             previous_green_required,
+        ]
+        if extra_args:
+            args.extend(extra_args)
+        return run_script(SCRIPTS_DIR / "resolve_rust_ci_mode.py", *args)
+
+    def test_rust_ci_changed_job_uses_pr_metadata_fast_path_with_git_fallback(self) -> None:
+        payload = load_workflow_payload(REPO_ROOT / ".github/workflows/rust-ci.yml")
+        changed = ((payload.get("jobs") or {}).get("changed") or {})
+        steps = changed.get("steps") or []
+        checkout = next(
+            step
+            for step in steps
+            if step.get("uses") == "actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd"
         )
+        self.assertEqual((checkout.get("with") or {}).get("fetch-depth"), "1")
+
+        metadata_step = next(
+            step for step in steps if step.get("name") == "Resolve PR changed files via API"
+        )
+        self.assertEqual(metadata_step.get("uses"), "actions/github-script@v9")
+        metadata_script = ((metadata_step.get("with") or {}).get("script") or "")
+        self.assertIn("github.paginate(github.rest.pulls.listFiles", metadata_script)
+        self.assertIn("github.rest.repos.compareCommitsWithBasehead", metadata_script)
+
+        fallback_step = next(
+            step for step in steps if step.get("name") == "Fetch history for git diff fallback"
+        )
+        self.assertIn(
+            "steps.pr_diff.outputs.needs_git_fallback == 'true'",
+            fallback_step.get("if") or "",
+        )
+
+        detect_step = next(
+            step for step in steps if step.get("name") == "Detect changed paths and rust-ci mode"
+        )
+        detect_run = detect_step.get("run") or ""
+        self.assertIn("--primary-files-json", detect_run)
+        self.assertIn("--primary-line-count", detect_run)
+        self.assertIn("--latest-delta-files-json", detect_run)
+        self.assertIn("--latest-delta-line-count", detect_run)
+
+    def test_explicit_primary_diff_inputs_route_without_git_history(self) -> None:
+        outputs = run_script(
+            SCRIPTS_DIR / "resolve_rust_ci_mode.py",
+            "--repo-root",
+            str(self.repo.root),
+            "--event-name",
+            "pull_request",
+            "--event-action",
+            "opened",
+            "--base-sha",
+            "0" * 40,
+            "--head-sha",
+            "1" * 40,
+            "--primary-files-json",
+            json.dumps(["codex-rs/protocol/src/openai_models.rs"]),
+            "--primary-line-count",
+            "2",
+        )
+
+        self.assertEqual(outputs["validation_mode"], "light_initial")
+        self.assertEqual(outputs["run_incremental_validation"], "true")
+        self.assertEqual(
+            outputs["incremental_lanes"],
+            ",".join(
+                [
+                    "codex.spawn-agent-tool-model-surface-targeted",
+                    "codex.spawn-agent-description-model-surface-targeted",
+                ]
+            ),
+        )
+
+    def test_explicit_latest_delta_inputs_route_green_followup_without_git_history(self) -> None:
+        outputs = run_script(
+            SCRIPTS_DIR / "resolve_rust_ci_mode.py",
+            "--repo-root",
+            str(self.repo.root),
+            "--event-name",
+            "pull_request",
+            "--event-action",
+            "synchronize",
+            "--base-sha",
+            "0" * 40,
+            "--head-sha",
+            "1" * 40,
+            "--before-sha",
+            "2" * 40,
+            "--previous-green-required",
+            "true",
+            "--primary-files-json",
+            json.dumps(["codex-rs/tools/src/agent_tool.rs"]),
+            "--primary-line-count",
+            "20",
+            "--latest-delta-files-json",
+            json.dumps(["codex-rs/tools/src/agent_tool.rs"]),
+            "--latest-delta-line-count",
+            "1",
+        )
+
+        self.assertEqual(outputs["validation_mode"], "light_followup")
+        self.assertEqual(outputs["run_incremental_validation"], "true")
+        self.assertEqual(
+            outputs["incremental_lanes"],
+            ",".join(
+                [
+                    "codex.spawn-agent-tool-model-surface-targeted",
+                    "codex.core-subagent-spawn-approval-targeted",
+                ]
+            ),
+        )
+
+    def test_explicit_workflow_catalog_diff_stays_on_workflow_lanes(self) -> None:
+        outputs = run_script(
+            SCRIPTS_DIR / "resolve_rust_ci_mode.py",
+            "--repo-root",
+            str(self.repo.root),
+            "--event-name",
+            "pull_request",
+            "--event-action",
+            "opened",
+            "--base-sha",
+            "0" * 40,
+            "--head-sha",
+            "1" * 40,
+            "--primary-files-json",
+            json.dumps(
+                [
+                    ".github/workflows/_validation-lane-rust-minimal.yml",
+                    ".github/workflows/validation-lab.yml",
+                    ".github/validation-lanes.json",
+                    ".github/scripts/test_ci_planners.py",
+                ]
+            ),
+            "--primary-line-count",
+            "40",
+        )
+
+        self.assertEqual(outputs["validation_mode"], "light_initial")
+        self.assertEqual(outputs["workflows"], "true")
+        self.assertEqual(outputs["run_general"], "false")
+        self.assertEqual(outputs["run_cargo_shear"], "false")
+        self.assertEqual(
+            outputs["incremental_lanes"],
+            ",".join(
+                [
+                    "codex.workflow-ci-sanity",
+                    "codex.downstream-docs-check",
+                ]
+            ),
+        )
+
+    def test_explicit_large_primary_diff_does_not_enter_light_route(self) -> None:
+        outputs = run_script(
+            SCRIPTS_DIR / "resolve_rust_ci_mode.py",
+            "--repo-root",
+            str(self.repo.root),
+            "--event-name",
+            "pull_request",
+            "--event-action",
+            "opened",
+            "--base-sha",
+            "0" * 40,
+            "--head-sha",
+            "1" * 40,
+            "--primary-files-json",
+            json.dumps(["codex-rs/core/src/review_prompts.rs"]),
+            "--primary-line-count",
+            "401",
+        )
+
+        self.assertEqual(outputs["validation_mode"], "full")
+        self.assertEqual(outputs["run_incremental_validation"], "false")
 
     def test_light_initial_routes_small_openai_models_pr_to_exact_lane(self) -> None:
         outputs = self.run_rust_ci_mode(
