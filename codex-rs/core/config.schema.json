@@ -2128,7 +2128,7 @@
     },
     "RawMcpServerConfig": {
       "additionalProperties": false,
-      "description": "Raw MCP config shape used for deserialization and JSON Schema generation. Keep `TryFrom<RawMcpServerConfig> for McpServerConfig` exhaustively destructuring this struct so new TOML fields cannot be added here without updating the validation/mapping logic that produces [`McpServerConfig`].",
+      "description": "Raw MCP config shape used for deserialization and supported-field JSON Schema generation. Fields that are accepted only to produce targeted validation errors should be skipped in the generated schema. Keep `TryFrom<RawMcpServerConfig> for McpServerConfig` exhaustively destructuring this struct so new TOML fields cannot be added here without updating the validation/mapping logic that produces [`McpServerConfig`].",
       "properties": {
         "args": {
           "default": null,
@@ -2137,12 +2137,6 @@
           },
           "type": [
             "array",
-            "null"
-          ]
-        },
-        "bearer_token": {
-          "type": [
-            "string",
             "null"
           ]
         },
@@ -3186,7 +3180,10 @@
     },
     "experimental_thread_config_endpoint": {
       "description": "Experimental / do not use. When set, app-server fetches thread-scoped config from a remote service at this endpoint.",
-      "type": "string"
+      "type": [
+        "string",
+        "null"
+      ]
     },
     "experimental_thread_store_endpoint": {
       "description": "Experimental / do not use. When set, app-server uses a remote thread store at this endpoint instead of the local filesystem/SQLite store.",
