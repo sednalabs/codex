@@ -2494,7 +2494,7 @@ text(JSON.stringify(tool));
         parsed,
         serde_json::json!({
             "name": "view_image",
-            "description": "View a local image from the filesystem (only use if given a full filepath by the user, and the image isn't already attached to the thread context within <image ...> tags).\n\nexec tool declaration:\n```ts\ndeclare const tools: { view_image(args: {\n  // Local filesystem path to an image file\n  path: string;\n}): Promise<{\n  // Image detail hint returned by view_image. Returns `original` when original resolution is preserved, otherwise `null`.\n  detail: string | null;\n  // Data URL for the loaded image.\n  image_url: string;\n}>; };\n```",
+            "description": "View a local image from the filesystem (only use if given a full filepath by the user, and the image isn't already attached to the thread context within <image ...> tags).\n\nexec tool declaration:\n```ts\ndeclare const tools: { view_image(args: { path: string; }): Promise<{ detail: string | null; image_url: string; }>; };\n```",
         })
     );
 
@@ -2508,7 +2508,7 @@ async fn code_mode_exports_all_tools_metadata_for_namespaced_mcp_tools() -> Resu
     let server = responses::start_mock_server().await;
     let code = r#"
 const tool = ALL_TOOLS.find(
-  ({ name }) => name === "mcp__rmcp__echo"
+  ({ name, module }) => name === "echo" && module === "tools/mcp/rmcp.js"
 );
 text(JSON.stringify(tool));
 "#;
@@ -2531,7 +2531,8 @@ text(JSON.stringify(tool));
     assert_eq!(
         parsed,
         serde_json::json!({
-            "name": "mcp__rmcp__echo",
+            "name": "echo",
+            "module": "tools/mcp/rmcp.js",
             "description": concat!(
                 "Echo back the provided message and include environment data.\n\n",
                 "exec tool declaration:\n",
