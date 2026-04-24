@@ -2403,7 +2403,7 @@ async fn token_count_includes_rate_limits_snapshot() {
                 "rate_limit_reached_type": null
             },
             "provider": "openai",
-            "model_used": "gpt-5.3-codex"
+            "model_used": "gpt-5.4"
         })
     );
 
@@ -2457,7 +2457,7 @@ async fn token_count_includes_rate_limits_snapshot() {
                 "rate_limit_reached_type": null
             },
             "provider": "openai",
-            "model_used": "gpt-5.3-codex"
+            "model_used": "gpt-5.4"
         })
     );
     let usage = final_payload
@@ -2557,7 +2557,7 @@ async fn usage_limit_error_emits_rate_limit_event() -> anyhow::Result<()> {
         event_json,
         json!({
             "info": null,
-            "model_used": "gpt-5.3-codex",
+            "model_used": "gpt-5.4",
             "provider": "openai",
             "rate_limits": expected_limits
         })
