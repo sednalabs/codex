@@ -1,6 +1,8 @@
 set working-directory := "codex-rs"
 set positional-arguments
 
+rust_min_stack := "8388608" # 8 MiB
+
 # Display help
 help:
     just -l
@@ -57,7 +59,7 @@ install:
 # Prefer this for routine local runs. Workspace crate features are banned, so
 # there should be no need to add `--all-features`.
 test:
-    cargo nextest run --no-fail-fast
+    RUST_MIN_STACK={{ rust_min_stack }} cargo nextest run --no-fail-fast
 
 # Compile-focused guardrail for high-churn core + sandbox seams.
 core-compile-smoke:

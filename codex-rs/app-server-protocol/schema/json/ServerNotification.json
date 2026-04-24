@@ -63,6 +63,59 @@
       },
       "type": "object"
     },
+    "AdditionalFileSystemPermissions": {
+      "properties": {
+        "entries": {
+          "items": {
+            "$ref": "#/$defs/FileSystemSandboxEntry"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "globScanMaxDepth": {
+          "format": "uint",
+          "minimum": 1,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "read": {
+          "description": "This will be removed in favor of `entries`.",
+          "items": {
+            "$ref": "#/$defs/AbsolutePathBuf"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "write": {
+          "description": "This will be removed in favor of `entries`.",
+          "items": {
+            "$ref": "#/$defs/AbsolutePathBuf"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "AdditionalNetworkPermissions": {
+      "properties": {
+        "enabled": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
     "AgentMessageDeltaNotification": {
       "properties": {
         "delta": {
@@ -375,6 +428,11 @@
           "const": "chatgptAuthTokens",
           "description": "[UNSTABLE] FOR OPENAI INTERNAL USE ONLY - DO NOT USE.\n\nChatGPT auth tokens are supplied by an external host app and are only\nstored in memory. Token refresh must be handled by the external host app.",
           "type": "string"
+        },
+        {
+          "const": "agentIdentity",
+          "description": "Programmatic Codex auth backed by a registered Agent Identity.",
+          "type": "string"
         }
       ]
     },
@@ -412,6 +470,7 @@
             "contextWindowExceeded",
             "usageLimitExceeded",
             "serverOverloaded",
+            "cyberPolicy",
             "internalServerError",
             "unauthorized",
             "badRequest",
@@ -836,6 +895,16 @@
         },
         {
           "properties": {
+            "detail": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/ImageDetail"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
             "image_url": {
               "type": "string"
             },
@@ -950,6 +1019,12 @@
         },
         {
           "properties": {
+            "detail": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "imageUrl": {
               "type": "string"
             },
@@ -1024,6 +1099,223 @@
         "delta"
       ],
       "type": "object"
+    },
+    "FileChangePatchUpdatedNotification": {
+      "properties": {
+        "changes": {
+          "items": {
+            "$ref": "#/$defs/FileUpdateChange"
+          },
+          "type": "array"
+        },
+        "itemId": {
+          "type": "string"
+        },
+        "threadId": {
+          "type": "string"
+        },
+        "turnId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "threadId",
+        "turnId",
+        "itemId",
+        "changes"
+      ],
+      "type": "object"
+    },
+    "FileSystemAccessMode": {
+      "enum": [
+        "read",
+        "write",
+        "none"
+      ],
+      "type": "string"
+    },
+    "FileSystemPath": {
+      "oneOf": [
+        {
+          "properties": {
+            "path": {
+              "$ref": "#/$defs/AbsolutePathBuf"
+            },
+            "type": {
+              "const": "path",
+              "title": "PathFileSystemPathType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "path"
+          ],
+          "title": "PathFileSystemPath",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "pattern": {
+              "type": "string"
+            },
+            "type": {
+              "const": "glob_pattern",
+              "title": "GlobPatternFileSystemPathType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "pattern"
+          ],
+          "title": "GlobPatternFileSystemPath",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "type": {
+              "const": "special",
+              "title": "SpecialFileSystemPathType",
+              "type": "string"
+            },
+            "value": {
+              "$ref": "#/$defs/FileSystemSpecialPath"
+            }
+          },
+          "required": [
+            "type",
+            "value"
+          ],
+          "title": "SpecialFileSystemPath",
+          "type": "object"
+        }
+      ]
+    },
+    "FileSystemSandboxEntry": {
+      "properties": {
+        "access": {
+          "$ref": "#/$defs/FileSystemAccessMode"
+        },
+        "path": {
+          "$ref": "#/$defs/FileSystemPath"
+        }
+      },
+      "required": [
+        "path",
+        "access"
+      ],
+      "type": "object"
+    },
+    "FileSystemSpecialPath": {
+      "oneOf": [
+        {
+          "properties": {
+            "kind": {
+              "const": "root",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "title": "RootFileSystemSpecialPath",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "kind": {
+              "const": "minimal",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "title": "MinimalFileSystemSpecialPath",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "kind": {
+              "const": "current_working_directory",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "title": "CurrentWorkingDirectoryFileSystemSpecialPath",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "kind": {
+              "const": "project_roots",
+              "type": "string"
+            },
+            "subpath": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "title": "KindFileSystemSpecialPath",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "kind": {
+              "const": "tmpdir",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "title": "TmpdirFileSystemSpecialPath",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "kind": {
+              "const": "slash_tmp",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "title": "SlashTmpFileSystemSpecialPath",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "kind": {
+              "const": "unknown",
+              "type": "string"
+            },
+            "path": {
+              "type": "string"
+            },
+            "subpath": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "kind",
+            "path"
+          ],
+          "type": "object"
+        }
+      ]
     },
     "FileUpdateChange": {
       "properties": {
@@ -1461,6 +1753,30 @@
           ],
           "title": "McpToolCallGuardianApprovalReviewAction",
           "type": "object"
+        },
+        {
+          "properties": {
+            "permissions": {
+              "$ref": "#/$defs/RequestPermissionProfile"
+            },
+            "reason": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "type": {
+              "const": "requestPermissions",
+              "title": "RequestPermissionsGuardianApprovalReviewActionType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "permissions"
+          ],
+          "title": "RequestPermissionsGuardianApprovalReviewAction",
+          "type": "object"
         }
       ]
     },
@@ -1501,6 +1817,23 @@
         "high"
       ],
       "type": "string"
+    },
+    "GuardianWarningNotification": {
+      "properties": {
+        "message": {
+          "description": "Concise guardian warning message for the user.",
+          "type": "string"
+        },
+        "threadId": {
+          "description": "Thread target for the guardian warning.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "threadId",
+        "message"
+      ],
+      "type": "object"
     },
     "HookCompletedNotification": {
       "properties": {
@@ -2111,6 +2444,34 @@
       ],
       "type": "object"
     },
+    "ModelVerification": {
+      "enum": [
+        "trustedAccessForCyber"
+      ],
+      "type": "string"
+    },
+    "ModelVerificationNotification": {
+      "properties": {
+        "threadId": {
+          "type": "string"
+        },
+        "turnId": {
+          "type": "string"
+        },
+        "verifications": {
+          "items": {
+            "$ref": "#/$defs/ModelVerification"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "threadId",
+        "turnId",
+        "verifications"
+      ],
+      "type": "object"
+    },
     "NetworkApprovalProtocol": {
       "enum": [
         "http",
@@ -2522,6 +2883,32 @@
           "type": "integer"
         }
       ]
+    },
+    "RequestPermissionProfile": {
+      "additionalProperties": false,
+      "properties": {
+        "fileSystem": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AdditionalFileSystemPermissions"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "network": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AdditionalNetworkPermissions"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "type": "object"
     },
     "ResponseItem": {
       "oneOf": [
@@ -3761,6 +4148,12 @@
             "id": {
               "type": "string"
             },
+            "namespace": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "status": {
               "$ref": "#/$defs/DynamicToolCallStatus"
             },
@@ -4712,6 +5105,25 @@
         }
       ]
     },
+    "WarningNotification": {
+      "properties": {
+        "message": {
+          "description": "Concise warning message for the user.",
+          "type": "string"
+        },
+        "threadId": {
+          "description": "Optional thread target when the warning applies to a specific thread.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "message"
+      ],
+      "type": "object"
+    },
     "WebSearchAction": {
       "oneOf": [
         {
@@ -5317,6 +5729,24 @@
     {
       "properties": {
         "method": {
+          "const": "item/fileChange/patchUpdated",
+          "title": "Item/fileChange/patchUpdatedNotificationMethod",
+          "type": "string"
+        },
+        "params": {
+          "$ref": "#/$defs/FileChangePatchUpdatedNotification"
+        }
+      },
+      "required": [
+        "method",
+        "params"
+      ],
+      "title": "Item/fileChange/patchUpdatedNotification",
+      "type": "object"
+    },
+    {
+      "properties": {
+        "method": {
           "const": "serverRequest/resolved",
           "title": "ServerRequest/resolvedNotificationMethod",
           "type": "string"
@@ -5565,6 +5995,60 @@
         "params"
       ],
       "title": "Model/reroutedNotification",
+      "type": "object"
+    },
+    {
+      "properties": {
+        "method": {
+          "const": "model/verification",
+          "title": "Model/verificationNotificationMethod",
+          "type": "string"
+        },
+        "params": {
+          "$ref": "#/$defs/ModelVerificationNotification"
+        }
+      },
+      "required": [
+        "method",
+        "params"
+      ],
+      "title": "Model/verificationNotification",
+      "type": "object"
+    },
+    {
+      "properties": {
+        "method": {
+          "const": "warning",
+          "title": "WarningNotificationMethod",
+          "type": "string"
+        },
+        "params": {
+          "$ref": "#/$defs/WarningNotification"
+        }
+      },
+      "required": [
+        "method",
+        "params"
+      ],
+      "title": "WarningNotification",
+      "type": "object"
+    },
+    {
+      "properties": {
+        "method": {
+          "const": "guardianWarning",
+          "title": "GuardianWarningNotificationMethod",
+          "type": "string"
+        },
+        "params": {
+          "$ref": "#/$defs/GuardianWarningNotification"
+        }
+      },
+      "required": [
+        "method",
+        "params"
+      ],
+      "title": "GuardianWarningNotification",
       "type": "object"
     },
     {

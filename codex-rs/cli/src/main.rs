@@ -28,6 +28,7 @@ use codex_tui::AppExitInfo;
 use codex_tui::Cli as TuiCli;
 use codex_tui::ExitReason;
 use codex_tui::UpdateAction;
+use codex_utils_absolute_path::AbsolutePathBuf;
 use codex_utils_cli::CliConfigOverrides;
 use codex_utils_version::DISPLAY_VERSION;
 use owo_colors::OwoColorize;
@@ -35,9 +36,9 @@ use std::io::IsTerminal;
 use std::path::PathBuf;
 use supports_color::Stream;
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 mod app_cmd;
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 mod desktop_app;
 mod marketplace_cmd;
 mod mcp_cmd;
@@ -50,6 +51,7 @@ use crate::mcp_cmd::McpCli;
 use crate::responses_cmd::ResponsesCommand;
 use crate::responses_cmd::run_responses_command;
 
+use codex_core::build_models_manager;
 use codex_core::clear_memory_roots_contents;
 use codex_core::config::Config;
 use codex_core::config::ConfigOverrides;
@@ -58,6 +60,10 @@ use codex_core::config::find_codex_home;
 use codex_features::FEATURES;
 use codex_features::Stage;
 use codex_features::is_known_feature_key;
+use codex_models_manager::AuthManager;
+use codex_models_manager::bundled_models_response;
+use codex_models_manager::collaboration_mode_presets::CollaborationModesConfig;
+use codex_models_manager::manager::RefreshStrategy;
 use codex_protocol::protocol::AskForApproval;
 use codex_protocol::user_input::UserInput;
 use codex_terminal_detection::TerminalName;
@@ -121,8 +127,8 @@ enum Subcommand {
     /// [experimental] Run the app server or related tooling.
     AppServer(AppServerCommand),
 
-    /// Launch the Codex desktop app (downloads the macOS installer if missing).
-    #[cfg(target_os = "macos")]
+    /// Launch the Codex desktop app (opens the app installer if missing).
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
     App(app_cmd::AppCommand),
 
     /// Generate shell completion scripts.
@@ -172,6 +178,7 @@ enum Subcommand {
 }
 
 #[derive(Debug, Parser)]
+#[command(bin_name = "codex plugin")]
 struct PluginCli {
     #[clap(flatten)]
     pub config_overrides: CliConfigOverrides,
@@ -201,6 +208,9 @@ struct DebugCommand {
 
 #[derive(Debug, clap::Subcommand)]
 enum DebugSubcommand {
+    /// Render the raw model catalog as JSON.
+    Models(DebugModelsCommand),
+
     /// Tooling: helps debug the app server.
     AppServer(DebugAppServerCommand),
 
@@ -239,6 +249,13 @@ struct DebugPromptInputCommand {
     /// Optional image(s) to attach to the user prompt.
     #[arg(long = "image", short = 'i', value_name = "FILE", value_delimiter = ',', num_args = 1..)]
     images: Vec<PathBuf>,
+}
+
+#[derive(Debug, Parser)]
+struct DebugModelsCommand {
+    /// Skip refresh and dump only the bundled catalog shipped with this binary.
+    #[arg(long = "bundled", default_value_t = false)]
+    bundled: bool,
 }
 
 #[derive(Debug, Parser)]
@@ -378,7 +395,7 @@ struct AppServerCommand {
     subcommand: Option<AppServerSubcommand>,
 
     /// Transport endpoint URL. Supported values: `stdio://` (default),
-    /// `ws://IP:PORT`, `off`.
+    /// `unix://`, `unix://PATH`, `ws://IP:PORT`, `off`.
     #[arg(
         long = "listen",
         value_name = "URL",
@@ -422,6 +439,9 @@ struct ExecServerCommand {
 #[derive(Debug, clap::Subcommand)]
 #[allow(clippy::enum_variant_names)]
 enum AppServerSubcommand {
+    /// Proxy stdio bytes to the running app-server control socket.
+    Proxy(AppServerProxyCommand),
+
     /// [experimental] Generate TypeScript bindings for the app server protocol.
     GenerateTs(GenerateTsCommand),
 
@@ -431,6 +451,13 @@ enum AppServerSubcommand {
     /// [internal] Generate internal JSON Schema artifacts for Codex tooling.
     #[clap(hide = true)]
     GenerateInternalJsonSchema(GenerateInternalJsonSchemaCommand),
+}
+
+#[derive(Debug, Args)]
+struct AppServerProxyCommand {
+    /// Path to the app-server Unix domain socket to connect to.
+    #[arg(long = "sock", value_name = "SOCKET_PATH", value_parser = parse_socket_path)]
+    socket_path: Option<AbsolutePathBuf>,
 }
 
 #[derive(Debug, Args)]
@@ -469,15 +496,19 @@ struct GenerateInternalJsonSchemaCommand {
 #[derive(Debug, Parser)]
 struct StdioToUdsCommand {
     /// Path to the Unix domain socket to connect to.
-    #[arg(value_name = "SOCKET_PATH")]
-    socket_path: PathBuf,
+    #[arg(value_name = "SOCKET_PATH", value_parser = parse_socket_path)]
+    socket_path: AbsolutePathBuf,
+}
+
+fn parse_socket_path(raw: &str) -> Result<AbsolutePathBuf, String> {
+    AbsolutePathBuf::relative_to_current_dir(raw)
+        .map_err(|err| format!("failed to resolve socket path `{raw}`: {err}"))
 }
 
 fn format_exit_messages(exit_info: AppExitInfo, color_enabled: bool) -> Vec<String> {
     let AppExitInfo {
         token_usage,
         thread_id: conversation_id,
-        thread_name,
         ..
     } = exit_info;
 
@@ -490,7 +521,7 @@ fn format_exit_messages(exit_info: AppExitInfo, color_enabled: bool) -> Vec<Stri
     }
 
     if let Some(resume_cmd) =
-        codex_core::util::resume_command(thread_name.as_deref(), conversation_id)
+        codex_core::util::resume_command(/*thread_name*/ None, conversation_id)
     {
         let command = if color_enabled {
             resume_cmd.cyan().to_string()
@@ -704,6 +735,9 @@ async fn cli_main(arg0_paths: Arg0DispatchPaths) -> anyhow::Result<()> {
                 root_remote_auth_token_env.as_deref(),
                 "exec",
             )?;
+            exec_cli
+                .shared
+                .inherit_exec_root_options(&interactive.shared);
             prepend_config_flags(
                 &mut exec_cli.config_overrides,
                 root_config_overrides.clone(),
@@ -787,6 +821,16 @@ async fn cli_main(arg0_paths: Arg0DispatchPaths) -> anyhow::Result<()> {
                     )
                     .await?;
                 }
+                Some(AppServerSubcommand::Proxy(proxy_cli)) => {
+                    let socket_path = match proxy_cli.socket_path {
+                        Some(socket_path) => socket_path,
+                        None => {
+                            let codex_home = find_codex_home()?;
+                            codex_app_server::app_server_control_socket_path(&codex_home)?
+                        }
+                    };
+                    codex_stdio_to_uds::run(socket_path.as_path()).await?;
+                }
                 Some(AppServerSubcommand::GenerateTs(gen_cli)) => {
                     let options = codex_app_server_protocol::GenerateTsOptions {
                         experimental_api: gen_cli.experimental,
@@ -809,7 +853,7 @@ async fn cli_main(arg0_paths: Arg0DispatchPaths) -> anyhow::Result<()> {
                 }
             }
         }
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", target_os = "windows"))]
         Some(Subcommand::App(app_cli)) => {
             reject_remote_mode_for_subcommand(
                 root_remote.as_deref(),
@@ -992,6 +1036,14 @@ async fn cli_main(arg0_paths: Arg0DispatchPaths) -> anyhow::Result<()> {
             }
         },
         Some(Subcommand::Debug(DebugCommand { subcommand })) => match subcommand {
+            DebugSubcommand::Models(cmd) => {
+                reject_remote_mode_for_subcommand(
+                    root_remote.as_deref(),
+                    root_remote_auth_token_env.as_deref(),
+                    "debug models",
+                )?;
+                run_debug_models_command(cmd, root_config_overrides).await?;
+            }
             DebugSubcommand::AppServer(cmd) => {
                 reject_remote_mode_for_subcommand(
                     root_remote.as_deref(),
@@ -1069,8 +1121,7 @@ async fn cli_main(arg0_paths: Arg0DispatchPaths) -> anyhow::Result<()> {
                 "stdio-to-uds",
             )?;
             let socket_path = cmd.socket_path;
-            tokio::task::spawn_blocking(move || codex_stdio_to_uds::run(socket_path.as_path()))
-                .await??;
+            codex_stdio_to_uds::run(socket_path.as_path()).await?;
         }
         Some(Subcommand::ExecServer(cmd)) => {
             reject_remote_mode_for_subcommand(
@@ -1221,6 +1272,7 @@ async fn run_debug_prompt_input_command(
     interactive: TuiCli,
     arg0_paths: Arg0DispatchPaths,
 ) -> anyhow::Result<()> {
+    let shared = interactive.shared.into_inner();
     let mut cli_kv_overrides = root_config_overrides
         .parse_overrides()
         .map_err(anyhow::Error::msg)?;
@@ -1231,38 +1283,38 @@ async fn run_debug_prompt_input_command(
         ));
     }
 
-    let approval_policy = if interactive.full_auto {
+    let approval_policy = if shared.full_auto {
         Some(AskForApproval::OnRequest)
-    } else if interactive.dangerously_bypass_approvals_and_sandbox {
+    } else if shared.dangerously_bypass_approvals_and_sandbox {
         Some(AskForApproval::Never)
     } else {
         interactive.approval_policy.map(Into::into)
     };
-    let sandbox_mode = if interactive.full_auto {
+    let sandbox_mode = if shared.full_auto {
         Some(codex_protocol::config_types::SandboxMode::WorkspaceWrite)
-    } else if interactive.dangerously_bypass_approvals_and_sandbox {
+    } else if shared.dangerously_bypass_approvals_and_sandbox {
         Some(codex_protocol::config_types::SandboxMode::DangerFullAccess)
     } else {
-        interactive.sandbox_mode.map(Into::into)
+        shared.sandbox_mode.map(Into::into)
     };
     let overrides = ConfigOverrides {
-        model: interactive.model,
-        config_profile: interactive.config_profile,
+        model: shared.model,
+        config_profile: shared.config_profile,
         approval_policy,
         sandbox_mode,
-        cwd: interactive.cwd,
+        cwd: shared.cwd,
         codex_self_exe: arg0_paths.codex_self_exe,
         codex_linux_sandbox_exe: arg0_paths.codex_linux_sandbox_exe,
         main_execve_wrapper_exe: arg0_paths.main_execve_wrapper_exe,
-        show_raw_agent_reasoning: interactive.oss.then_some(true),
+        show_raw_agent_reasoning: shared.oss.then_some(true),
         ephemeral: Some(true),
-        additional_writable_roots: interactive.add_dir,
+        additional_writable_roots: shared.add_dir,
         ..Default::default()
     };
     let config =
         Config::load_with_cli_overrides_and_harness_overrides(cli_kv_overrides, overrides).await?;
 
-    let mut input = interactive
+    let mut input = shared
         .images
         .into_iter()
         .chain(cmd.images)
@@ -1278,6 +1330,31 @@ async fn run_debug_prompt_input_command(
     let prompt_input = codex_core::build_prompt_input(config, input).await?;
     println!("{}", serde_json::to_string_pretty(&prompt_input)?);
 
+    Ok(())
+}
+
+async fn run_debug_models_command(
+    cmd: DebugModelsCommand,
+    root_config_overrides: CliConfigOverrides,
+) -> anyhow::Result<()> {
+    let catalog = if cmd.bundled {
+        bundled_models_response()?
+    } else {
+        let cli_overrides = root_config_overrides
+            .parse_overrides()
+            .map_err(anyhow::Error::msg)?;
+        let config = Config::load_with_cli_overrides(cli_overrides).await?;
+        let auth_manager =
+            AuthManager::shared_from_config(&config, /*enable_codex_api_key_env*/ true);
+        let models_manager =
+            build_models_manager(&config, auth_manager, CollaborationModesConfig::default());
+        models_manager
+            .raw_model_catalog(RefreshStrategy::OnlineIfUncached)
+            .await
+    };
+
+    serde_json::to_writer(std::io::stdout(), &catalog)?;
+    println!();
     Ok(())
 }
 
@@ -1358,6 +1435,7 @@ fn reject_remote_mode_for_app_server_subcommand(
 ) -> anyhow::Result<()> {
     let subcommand_name = match subcommand {
         None => "app-server",
+        Some(AppServerSubcommand::Proxy(_)) => "app-server proxy",
         Some(AppServerSubcommand::GenerateTs(_)) => "app-server generate-ts",
         Some(AppServerSubcommand::GenerateJsonSchema(_)) => "app-server generate-json-schema",
         Some(AppServerSubcommand::GenerateInternalJsonSchema(_)) => {
@@ -1508,40 +1586,24 @@ fn finalize_fork_interactive(
 /// root-level flags. Only overrides fields explicitly set on the subcommand-scoped
 /// CLI. Also appends `-c key=value` overrides with highest precedence.
 fn merge_interactive_cli_flags(interactive: &mut TuiCli, subcommand_cli: TuiCli) {
-    if let Some(model) = subcommand_cli.model {
-        interactive.model = Some(model);
-    }
-    if subcommand_cli.oss {
-        interactive.oss = true;
-    }
-    if let Some(profile) = subcommand_cli.config_profile {
-        interactive.config_profile = Some(profile);
-    }
-    if let Some(sandbox) = subcommand_cli.sandbox_mode {
-        interactive.sandbox_mode = Some(sandbox);
-    }
-    if let Some(approval) = subcommand_cli.approval_policy {
+    let TuiCli {
+        shared,
+        approval_policy,
+        web_search,
+        prompt,
+        config_overrides,
+        ..
+    } = subcommand_cli;
+    interactive
+        .shared
+        .apply_subcommand_overrides(shared.into_inner());
+    if let Some(approval) = approval_policy {
         interactive.approval_policy = Some(approval);
     }
-    if subcommand_cli.full_auto {
-        interactive.full_auto = true;
-    }
-    if subcommand_cli.dangerously_bypass_approvals_and_sandbox {
-        interactive.dangerously_bypass_approvals_and_sandbox = true;
-    }
-    if let Some(cwd) = subcommand_cli.cwd {
-        interactive.cwd = Some(cwd);
-    }
-    if subcommand_cli.web_search {
+    if web_search {
         interactive.web_search = true;
     }
-    if !subcommand_cli.images.is_empty() {
-        interactive.images = subcommand_cli.images;
-    }
-    if !subcommand_cli.add_dir.is_empty() {
-        interactive.add_dir.extend(subcommand_cli.add_dir);
-    }
-    if let Some(prompt) = subcommand_cli.prompt {
+    if let Some(prompt) = prompt {
         // Normalize CRLF/CR to LF so CLI-provided text can't leak `\r` into TUI state.
         interactive.prompt = Some(prompt.replace("\r\n", "\n").replace('\r', "\n"));
     }
@@ -1549,7 +1611,7 @@ fn merge_interactive_cli_flags(interactive: &mut TuiCli, subcommand_cli: TuiCli)
     interactive
         .config_overrides
         .raw_overrides
-        .extend(subcommand_cli.config_overrides.raw_overrides);
+        .extend(config_overrides.raw_overrides);
 }
 
 fn print_completion(cmd: CompletionCommand) {
@@ -1669,12 +1731,31 @@ mod tests {
         assert_eq!(args.prompt.as_deref(), Some("re-review"));
     }
 
+    #[test]
+    fn dangerous_bypass_conflicts_with_approval_policy() {
+        let err = MultitoolCli::try_parse_from([
+            "codex",
+            "--dangerously-bypass-approvals-and-sandbox",
+            "--ask-for-approval",
+            "on-request",
+        ])
+        .expect_err("conflicting permission flags should be rejected");
+
+        assert_eq!(err.kind(), clap::error::ErrorKind::ArgumentConflict);
+    }
+
     fn app_server_from_args(args: &[&str]) -> AppServerCommand {
         let cli = MultitoolCli::try_parse_from(args).expect("parse");
         let Subcommand::AppServer(app_server) = cli.subcommand.expect("app-server present") else {
             unreachable!()
         };
         app_server
+    }
+
+    fn default_app_server_socket_path() -> AbsolutePathBuf {
+        let codex_home = find_codex_home().expect("codex home");
+        codex_app_server::app_server_control_socket_path(&codex_home)
+            .expect("default app-server socket path")
     }
 
     #[test]
@@ -1704,12 +1785,51 @@ mod tests {
     }
 
     #[test]
+    fn debug_models_parses_bundled_flag() {
+        let cli =
+            MultitoolCli::try_parse_from(["codex", "debug", "models", "--bundled"]).expect("parse");
+
+        let Some(Subcommand::Debug(DebugCommand {
+            subcommand: DebugSubcommand::Models(cmd),
+        })) = cli.subcommand
+        else {
+            panic!("expected debug models subcommand");
+        };
+
+        assert!(cmd.bundled);
+    }
+
+    #[test]
     fn responses_subcommand_is_hidden_from_help_but_parses() {
         let help = MultitoolCli::command().render_help().to_string();
         assert!(!help.contains("responses"));
 
         let cli = MultitoolCli::try_parse_from(["codex", "responses"]).expect("parse");
         assert!(matches!(cli.subcommand, Some(Subcommand::Responses(_))));
+    }
+
+    fn help_from_args(args: &[&str]) -> String {
+        let err = MultitoolCli::try_parse_from(args).expect_err("help should short-circuit");
+        assert_eq!(err.kind(), clap::error::ErrorKind::DisplayHelp);
+        err.to_string()
+    }
+
+    #[test]
+    fn plugin_marketplace_help_uses_plugin_namespace() {
+        let help = help_from_args(&["codex", "plugin", "marketplace", "--help"]);
+        assert!(
+            help.contains("Usage: codex plugin marketplace [OPTIONS] <COMMAND>"),
+            "{help}"
+        );
+
+        for (subcommand, usage) in [
+            ("add", "Usage: codex plugin marketplace add"),
+            ("upgrade", "Usage: codex plugin marketplace upgrade"),
+            ("remove", "Usage: codex plugin marketplace remove"),
+        ] {
+            let help = help_from_args(&["codex", "plugin", "marketplace", subcommand, "--help"]);
+            assert!(help.contains(usage), "{help}");
+        }
     }
 
     #[test]
@@ -1731,6 +1851,15 @@ mod tests {
     }
 
     #[test]
+    fn plugin_marketplace_remove_parses_under_plugin() {
+        let cli =
+            MultitoolCli::try_parse_from(["codex", "plugin", "marketplace", "remove", "debug"])
+                .expect("parse");
+
+        assert!(matches!(cli.subcommand, Some(Subcommand::Plugin(_))));
+    }
+
+    #[test]
     fn marketplace_no_longer_parses_at_top_level() {
         let add_result =
             MultitoolCli::try_parse_from(["codex", "marketplace", "add", "owner/repo"]);
@@ -1739,6 +1868,10 @@ mod tests {
         let upgrade_result =
             MultitoolCli::try_parse_from(["codex", "marketplace", "upgrade", "debug"]);
         assert!(upgrade_result.is_err());
+
+        let remove_result =
+            MultitoolCli::try_parse_from(["codex", "marketplace", "remove", "debug"]);
+        assert!(remove_result.is_err());
     }
 
     fn sample_exit_info(conversation_id: Option<&str>, thread_name: Option<&str>) -> AppExitInfo {
@@ -1800,7 +1933,7 @@ mod tests {
     }
 
     #[test]
-    fn format_exit_messages_prefers_thread_name() {
+    fn format_exit_messages_uses_id_even_when_thread_has_name() {
         let exit_info = sample_exit_info(
             Some("123e4567-e89b-12d3-a456-426614174000"),
             Some("my-thread"),
@@ -1810,7 +1943,8 @@ mod tests {
             lines,
             vec![
                 "Token usage: total=2 input=0 output=2".to_string(),
-                "To continue this session, run codex resume my-thread".to_string(),
+                "To continue this session, run codex resume 123e4567-e89b-12d3-a456-426614174000"
+                    .to_string(),
             ]
         );
     }
@@ -2124,6 +2258,32 @@ mod tests {
     }
 
     #[test]
+    fn app_server_listen_unix_socket_url_parses() {
+        let app_server =
+            app_server_from_args(["codex", "app-server", "--listen", "unix://"].as_ref());
+        assert_eq!(
+            app_server.listen,
+            codex_app_server::AppServerTransport::UnixSocket {
+                socket_path: default_app_server_socket_path()
+            }
+        );
+    }
+
+    #[test]
+    fn app_server_listen_unix_socket_path_parses() {
+        let app_server = app_server_from_args(
+            ["codex", "app-server", "--listen", "unix:///tmp/codex.sock"].as_ref(),
+        );
+        assert_eq!(
+            app_server.listen,
+            codex_app_server::AppServerTransport::UnixSocket {
+                socket_path: AbsolutePathBuf::from_absolute_path("/tmp/codex.sock")
+                    .expect("absolute path should parse")
+            }
+        );
+    }
+
+    #[test]
     fn app_server_listen_off_parses() {
         let app_server = app_server_from_args(["codex", "app-server", "--listen", "off"].as_ref());
         assert_eq!(app_server.listen, codex_app_server::AppServerTransport::Off);
@@ -2134,6 +2294,45 @@ mod tests {
         let parse_result =
             MultitoolCli::try_parse_from(["codex", "app-server", "--listen", "http://foo"]);
         assert!(parse_result.is_err());
+    }
+
+    #[test]
+    fn app_server_proxy_subcommand_parses() {
+        let app_server = app_server_from_args(["codex", "app-server", "proxy"].as_ref());
+        assert!(matches!(
+            app_server.subcommand,
+            Some(AppServerSubcommand::Proxy(AppServerProxyCommand {
+                socket_path: None
+            }))
+        ));
+    }
+
+    #[test]
+    fn app_server_proxy_sock_path_parses() {
+        let app_server =
+            app_server_from_args(["codex", "app-server", "proxy", "--sock", "codex.sock"].as_ref());
+        let Some(AppServerSubcommand::Proxy(proxy)) = app_server.subcommand else {
+            panic!("expected proxy subcommand");
+        };
+        assert_eq!(
+            proxy.socket_path,
+            Some(
+                AbsolutePathBuf::relative_to_current_dir("codex.sock")
+                    .expect("relative path should resolve")
+            )
+        );
+    }
+
+    #[test]
+    fn reject_remote_auth_token_env_for_app_server_proxy() {
+        let subcommand = AppServerSubcommand::Proxy(AppServerProxyCommand { socket_path: None });
+        let err = reject_remote_mode_for_app_server_subcommand(
+            /*remote*/ None,
+            Some("CODEX_REMOTE_AUTH_TOKEN"),
+            Some(&subcommand),
+        )
+        .expect_err("app-server proxy should reject --remote-auth-token-env");
+        assert!(err.to_string().contains("app-server proxy"));
     }
 
     #[test]

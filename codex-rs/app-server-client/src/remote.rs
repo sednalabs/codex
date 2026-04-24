@@ -237,7 +237,6 @@ impl RemoteAppServerClient {
                                                 "remote app server at `{websocket_url}` write failed: {err_message}"
                                             ),
                                         },
-                                        &mut stream,
                                     )
                                     .await;
                                     break;
@@ -318,7 +317,6 @@ impl RemoteAppServerClient {
                                                 &event_tx,
                                                 &mut skipped_events,
                                                 event,
-                                                &mut stream,
                                             )
                                             .await
                                             {
@@ -335,7 +333,6 @@ impl RemoteAppServerClient {
                                                     &event_tx,
                                                     &mut skipped_events,
                                                     AppServerEvent::ServerRequest(request),
-                                                    &mut stream,
                                                 )
                                                 .await
                                                 {
@@ -370,7 +367,6 @@ impl RemoteAppServerClient {
                                                                 "remote app server at `{websocket_url}` write failed: {err_message}"
                                                             ),
                                                         },
-                                                        &mut stream,
                                                     )
                                                     .await;
                                                     break;
@@ -387,7 +383,6 @@ impl RemoteAppServerClient {
                                                     "remote app server at `{websocket_url}` sent invalid JSON-RPC: {err}"
                                                 ),
                                             },
-                                            &mut stream,
                                         )
                                         .await;
                                         break;
@@ -408,7 +403,6 @@ impl RemoteAppServerClient {
                                             "remote app server at `{websocket_url}` disconnected: {reason}"
                                         ),
                                     },
-                                    &mut stream,
                                 )
                                 .await;
                                 break;
@@ -426,7 +420,6 @@ impl RemoteAppServerClient {
                                             "remote app server at `{websocket_url}` transport failed: {err}"
                                         ),
                                     },
-                                    &mut stream,
                                 )
                                 .await;
                                 break;
@@ -440,7 +433,6 @@ impl RemoteAppServerClient {
                                             "remote app server at `{websocket_url}` closed the connection"
                                         ),
                                     },
-                                    &mut stream,
                                 )
                                 .await;
                                 break;
@@ -612,14 +604,9 @@ impl RemoteAppServerClient {
             .send(RemoteClientCommand::Shutdown { response_tx })
             .await
             .is_ok()
-            && let Ok(command_result) = timeout(SHUTDOWN_TIMEOUT, response_rx).await
+            && let Ok(Ok(close_result)) = timeout(SHUTDOWN_TIMEOUT, response_rx).await
         {
-            command_result.map_err(|_| {
-                IoError::new(
-                    ErrorKind::BrokenPipe,
-                    "remote app-server shutdown channel is closed",
-                )
-            })??;
+            close_result?;
         }
 
         if let Err(_elapsed) = timeout(SHUTDOWN_TIMEOUT, &mut worker_handle).await {
@@ -810,96 +797,66 @@ async fn deliver_event(
     event_tx: &mpsc::Sender<AppServerEvent>,
     skipped_events: &mut usize,
     event: AppServerEvent,
-    stream: &mut WebSocketStream<MaybeTlsStream<TcpStream>>,
 ) -> IoResult<()> {
     if *skipped_events > 0 {
-        if event_requires_delivery(&event) {
-            if event_tx
+        if remote_event_requires_delivery(&event) {
+            event_tx
                 .send(AppServerEvent::Lagged {
                     skipped: *skipped_events,
                 })
                 .await
-                .is_err()
-            {
-                return Err(IoError::new(
-                    ErrorKind::BrokenPipe,
-                    "remote app-server event consumer channel is closed",
-                ));
-            }
+                .map_err(|_| event_consumer_closed())?;
             *skipped_events = 0;
         } else {
             match event_tx.try_send(AppServerEvent::Lagged {
                 skipped: *skipped_events,
             }) {
-                Ok(()) => *skipped_events = 0,
+                Ok(()) => {
+                    *skipped_events = 0;
+                }
                 Err(mpsc::error::TrySendError::Full(_)) => {
-                    *skipped_events = (*skipped_events).saturating_add(1);
-                    reject_if_server_request_dropped(stream, &event).await?;
+                    *skipped_events = skipped_events.saturating_add(1);
+                    warn!("dropping remote app-server event because consumer queue is full");
                     return Ok(());
                 }
-                Err(mpsc::error::TrySendError::Closed(_)) => {
-                    return Err(IoError::new(
-                        ErrorKind::BrokenPipe,
-                        "remote app-server event consumer channel is closed",
-                    ));
-                }
+                Err(mpsc::error::TrySendError::Closed(_)) => return Err(event_consumer_closed()),
             }
         }
     }
 
-    if event_requires_delivery(&event) {
-        event_tx.send(event).await.map_err(|_| {
-            IoError::new(
-                ErrorKind::BrokenPipe,
-                "remote app-server event consumer channel is closed",
-            )
-        })?;
-        return Ok(());
-    }
-
-    match event_tx.try_send(event) {
-        Ok(()) => Ok(()),
-        Err(mpsc::error::TrySendError::Full(event)) => {
-            *skipped_events = (*skipped_events).saturating_add(1);
-            reject_if_server_request_dropped(stream, &event).await
+    if remote_event_requires_delivery(&event) {
+        event_tx
+            .send(event)
+            .await
+            .map_err(|_| event_consumer_closed())
+    } else {
+        match event_tx.try_send(event) {
+            Ok(()) => Ok(()),
+            Err(mpsc::error::TrySendError::Full(_)) => {
+                *skipped_events = skipped_events.saturating_add(1);
+                warn!("dropping remote app-server event because consumer queue is full");
+                Ok(())
+            }
+            Err(mpsc::error::TrySendError::Closed(_)) => Err(event_consumer_closed()),
         }
-        Err(mpsc::error::TrySendError::Closed(_)) => Err(IoError::new(
-            ErrorKind::BrokenPipe,
-            "remote app-server event consumer channel is closed",
-        )),
     }
 }
 
-async fn reject_if_server_request_dropped(
-    stream: &mut WebSocketStream<MaybeTlsStream<TcpStream>>,
-    event: &AppServerEvent,
-) -> IoResult<()> {
-    let AppServerEvent::ServerRequest(request) = event else {
-        return Ok(());
-    };
-    write_jsonrpc_message(
-        stream,
-        JSONRPCMessage::Error(JSONRPCError {
-            error: JSONRPCErrorError {
-                code: -32001,
-                message: "remote app-server event queue is full".to_string(),
-                data: None,
-            },
-            id: request.id().clone(),
-        }),
-        "<remote-app-server>",
-    )
-    .await
-}
-
-fn event_requires_delivery(event: &AppServerEvent) -> bool {
+fn remote_event_requires_delivery(event: &AppServerEvent) -> bool {
     match event {
+        AppServerEvent::Lagged { .. } => false,
         AppServerEvent::ServerNotification(notification) => {
             server_notification_requires_delivery(notification)
         }
-        AppServerEvent::Disconnected { .. } => true,
-        AppServerEvent::Lagged { .. } | AppServerEvent::ServerRequest(_) => false,
+        AppServerEvent::ServerRequest(_) | AppServerEvent::Disconnected { .. } => true,
     }
+}
+
+fn event_consumer_closed() -> IoError {
+    IoError::new(
+        ErrorKind::BrokenPipe,
+        "remote app-server event consumer channel is closed",
+    )
 }
 
 fn request_id_from_client_request(request: &ClientRequest) -> RequestId {
@@ -945,40 +902,27 @@ async fn write_jsonrpc_message(
             ))
         })
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    #[test]
-    fn event_requires_delivery_marks_transcript_and_disconnect_events() {
-        assert!(event_requires_delivery(
-            &AppServerEvent::ServerNotification(ServerNotification::AgentMessageDelta(
-                codex_app_server_protocol::AgentMessageDeltaNotification {
-                    thread_id: "thread".to_string(),
-                    turn_id: "turn".to_string(),
-                    item_id: "item".to_string(),
-                    delta: "hello".to_string(),
-                },
-            ),)
-        ));
-        assert!(event_requires_delivery(
-            &AppServerEvent::ServerNotification(ServerNotification::ItemCompleted(
-                codex_app_server_protocol::ItemCompletedNotification {
-                    thread_id: "thread".to_string(),
-                    turn_id: "turn".to_string(),
-                    item: codex_app_server_protocol::ThreadItem::Plan {
-                        id: "item".to_string(),
-                        text: "step".to_string(),
-                    },
-                }
-            ),)
-        ));
-        assert!(event_requires_delivery(&AppServerEvent::Disconnected {
-            message: "closed".to_string(),
-        }));
-        assert!(!event_requires_delivery(&AppServerEvent::Lagged {
-            skipped: 1
-        }));
+    #[tokio::test]
+    async fn shutdown_tolerates_worker_exit_after_command_is_queued() {
+        let (command_tx, mut command_rx) = mpsc::channel(1);
+        let (_event_tx, event_rx) = mpsc::channel::<AppServerEvent>(1);
+        let worker_handle = tokio::spawn(async move {
+            let _ = command_rx.recv().await;
+        });
+        let client = RemoteAppServerClient {
+            command_tx,
+            event_rx,
+            pending_events: VecDeque::new(),
+            worker_handle,
+        };
+
+        client
+            .shutdown()
+            .await
+            .expect("shutdown should complete when worker exits first");
     }
 }

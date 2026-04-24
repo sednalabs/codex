@@ -118,6 +118,13 @@ jobs:
         with:
           node-version-file: codex-rs/node-version.txt
 
+      - name: Bind js_repl Node runtime
+        if: ${{ inputs.needs_node }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "CODEX_JS_REPL_NODE_PATH=$(command -v node)" >> "$GITHUB_ENV"
+
       - name: Install Linux build dependencies
         if: ${{ inputs.needs_linux_build_deps }}
         shell: bash
@@ -259,7 +266,7 @@ jobs:
         run: exit 1
 
       - name: Prepare lane summary artifact
-        if: ${{ always() }}
+        if: ${{ always() && !cancelled() }}
         id: lane_summary
         shell: bash
         env:
@@ -326,7 +333,7 @@ jobs:
           echo "summary_file=${summary_file}" >> "$GITHUB_OUTPUT"
 
       - name: Upload lane summary artifact
-        if: ${{ always() }}
+        if: ${{ always() && !cancelled() }}
         uses: actions/upload-artifact@v7
         with:
           name: validation-lane-summary-${{ steps.lane_summary.outputs.lane_slug }}

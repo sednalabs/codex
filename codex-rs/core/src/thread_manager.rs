@@ -44,7 +44,11 @@ use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::TurnAbortReason;
 use codex_protocol::protocol::TurnAbortedEvent;
 use codex_protocol::protocol::W3cTraceContext;
+use codex_rollout::RolloutConfig;
 use codex_state::DirectionalThreadSpawnEdgeStatus;
+use codex_thread_store::LocalThreadStore;
+use codex_thread_store::RemoteThreadStore;
+use codex_thread_store::ThreadStore;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use futures::StreamExt;
 use futures::stream::FuturesUnordered;
@@ -217,6 +221,33 @@ pub(crate) struct ThreadManagerState {
     ops_log: Option<SharedCapturedOps>,
 }
 
+pub fn build_models_manager(
+    config: &Config,
+    auth_manager: Arc<AuthManager>,
+    collaboration_modes_config: CollaborationModesConfig,
+) -> Arc<ModelsManager> {
+    let openai_models_provider = config
+        .model_providers
+        .get(OPENAI_PROVIDER_ID)
+        .cloned()
+        .unwrap_or_else(|| ModelProviderInfo::create_openai_provider(/*base_url*/ None));
+
+    Arc::new(ModelsManager::new_with_provider(
+        config.codex_home.to_path_buf(),
+        auth_manager,
+        config.model_catalog.clone(),
+        collaboration_modes_config,
+        openai_models_provider,
+    ))
+}
+
+fn configured_thread_store(config: &Config) -> Arc<dyn ThreadStore> {
+    if let Some(endpoint) = config.experimental_thread_store_endpoint.as_deref() {
+        return Arc::new(RemoteThreadStore::new(endpoint));
+    }
+    Arc::new(LocalThreadStore::new(RolloutConfig::from_view(config)))
+}
+
 impl ThreadManager {
     pub fn new(
         config: &Config,
@@ -228,11 +259,6 @@ impl ThreadManager {
     ) -> Self {
         let codex_home = config.codex_home.clone();
         let restriction_product = session_source.restriction_product();
-        let openai_models_provider = config
-            .model_providers
-            .get(OPENAI_PROVIDER_ID)
-            .cloned()
-            .unwrap_or_else(|| ModelProviderInfo::create_openai_provider(/*base_url*/ None));
         let (thread_created_tx, _) = broadcast::channel(THREAD_CREATED_CHANNEL_CAPACITY);
         let plugins_manager = Arc::new(PluginsManager::new_with_restriction_product(
             codex_home.to_path_buf(),
@@ -240,7 +266,7 @@ impl ThreadManager {
         ));
         let mcp_manager = Arc::new(McpManager::new(Arc::clone(&plugins_manager)));
         let skills_manager = Arc::new(SkillsManager::new_with_restriction_product(
-            codex_home.clone(),
+            codex_home,
             config.bundled_skills_enabled(),
             restriction_product,
         ));
@@ -249,13 +275,11 @@ impl ThreadManager {
             state: Arc::new(ThreadManagerState {
                 threads: Arc::new(RwLock::new(HashMap::new())),
                 thread_created_tx,
-                models_manager: Arc::new(ModelsManager::new_with_provider(
-                    codex_home.to_path_buf(),
+                models_manager: build_models_manager(
+                    config,
                     auth_manager.clone(),
-                    config.model_catalog.clone(),
                     collaboration_modes_config,
-                    openai_models_provider,
-                )),
+                ),
                 environment_manager,
                 skills_manager,
                 plugins_manager,
@@ -288,7 +312,7 @@ impl ThreadManager {
             auth,
             provider,
             codex_home.clone(),
-            Arc::new(EnvironmentManager::new(/*exec_server_url*/ None)),
+            Arc::new(EnvironmentManager::default_for_tests()),
         );
         manager._test_codex_home_guard = Some(TempCodexHomeGuard { path: codex_home });
         manager
@@ -501,8 +525,10 @@ impl ThreadManager {
         metrics_service_name: Option<String>,
         parent_trace: Option<W3cTraceContext>,
     ) -> CodexResult<NewThread> {
+        let thread_store = configured_thread_store(&config);
         Box::pin(self.state.spawn_thread(
             config,
+            thread_store,
             initial_history,
             Arc::clone(&self.state.auth_manager),
             self.agent_control(),
@@ -541,8 +567,10 @@ impl ThreadManager {
         persist_extended_history: bool,
         parent_trace: Option<W3cTraceContext>,
     ) -> CodexResult<NewThread> {
+        let thread_store = configured_thread_store(&config);
         Box::pin(self.state.spawn_thread(
             config,
+            thread_store,
             initial_history,
             auth_manager,
             self.agent_control(),
@@ -560,8 +588,10 @@ impl ThreadManager {
         config: Config,
         user_shell_override: crate::shell::Shell,
     ) -> CodexResult<NewThread> {
+        let thread_store = configured_thread_store(&config);
         Box::pin(self.state.spawn_thread(
             config,
+            thread_store,
             InitialHistory::New,
             Arc::clone(&self.state.auth_manager),
             self.agent_control(),
@@ -582,8 +612,10 @@ impl ThreadManager {
         user_shell_override: crate::shell::Shell,
     ) -> CodexResult<NewThread> {
         let initial_history = RolloutRecorder::get_rollout_history(&rollout_path).await?;
+        let thread_store = configured_thread_store(&config);
         Box::pin(self.state.spawn_thread(
             config,
+            thread_store,
             initial_history,
             auth_manager,
             self.agent_control(),
@@ -690,8 +722,10 @@ impl ThreadManager {
                 }
             }
         };
+        let thread_store = configured_thread_store(&config);
         Box::pin(self.state.spawn_thread(
             config,
+            thread_store,
             history,
             Arc::clone(&self.state.auth_manager),
             self.agent_control(),
@@ -789,8 +823,10 @@ impl ThreadManagerState {
         inherited_shell_snapshot: Option<Arc<ShellSnapshot>>,
         inherited_exec_policy: Option<Arc<crate::exec_policy::ExecPolicyManager>>,
     ) -> CodexResult<NewThread> {
+        let thread_store = configured_thread_store(&config);
         Box::pin(self.spawn_thread_with_source(
             config,
+            thread_store,
             InitialHistory::New,
             Arc::clone(&self.auth_manager),
             agent_control,
@@ -816,8 +852,10 @@ impl ThreadManagerState {
         inherited_exec_policy: Option<Arc<crate::exec_policy::ExecPolicyManager>>,
     ) -> CodexResult<NewThread> {
         let initial_history = RolloutRecorder::get_rollout_history(&rollout_path).await?;
+        let thread_store = configured_thread_store(&config);
         Box::pin(self.spawn_thread_with_source(
             config,
+            thread_store,
             initial_history,
             Arc::clone(&self.auth_manager),
             agent_control,
@@ -844,8 +882,10 @@ impl ThreadManagerState {
         inherited_shell_snapshot: Option<Arc<ShellSnapshot>>,
         inherited_exec_policy: Option<Arc<crate::exec_policy::ExecPolicyManager>>,
     ) -> CodexResult<NewThread> {
+        let thread_store = configured_thread_store(&config);
         Box::pin(self.spawn_thread_with_source(
             config,
+            thread_store,
             initial_history,
             Arc::clone(&self.auth_manager),
             agent_control,
@@ -866,6 +906,7 @@ impl ThreadManagerState {
     pub(crate) async fn spawn_thread(
         &self,
         config: Config,
+        thread_store: Arc<dyn ThreadStore>,
         initial_history: InitialHistory,
         auth_manager: Arc<AuthManager>,
         agent_control: AgentControl,
@@ -877,6 +918,7 @@ impl ThreadManagerState {
     ) -> CodexResult<NewThread> {
         Box::pin(self.spawn_thread_with_source(
             config,
+            thread_store,
             initial_history,
             auth_manager,
             agent_control,
@@ -896,6 +938,7 @@ impl ThreadManagerState {
     pub(crate) async fn spawn_thread_with_source(
         &self,
         config: Config,
+        thread_store: Arc<dyn ThreadStore>,
         initial_history: InitialHistory,
         auth_manager: Arc<AuthManager>,
         agent_control: AgentControl,
@@ -908,11 +951,7 @@ impl ThreadManagerState {
         parent_trace: Option<W3cTraceContext>,
         user_shell_override: Option<crate::shell::Shell>,
     ) -> CodexResult<NewThread> {
-        let environment = self
-            .environment_manager
-            .current()
-            .await
-            .map_err(|err| CodexErr::Fatal(format!("failed to create environment: {err}")))?;
+        let environment = self.environment_manager.default_environment();
         let watch_registration = match environment.as_ref() {
             Some(environment) if !environment.is_remote() => {
                 self.skills_watcher
@@ -945,9 +984,11 @@ impl ThreadManagerState {
             metrics_service_name,
             inherited_shell_snapshot,
             inherited_exec_policy,
+            inherited_rollout_trace: codex_rollout_trace::RolloutTraceRecorder::disabled(),
             user_shell_override,
             parent_trace,
             analytics_events_client: self.analytics_events_client.clone(),
+            thread_store,
         })
         .await?;
         self.finalize_thread_spawn(codex, thread_id, watch_registration)

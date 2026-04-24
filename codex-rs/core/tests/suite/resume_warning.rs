@@ -1,7 +1,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-use codex_core::CodexAuth;
 use codex_core::NewThread;
+use codex_login::CodexAuth;
 use codex_protocol::ThreadId;
 use codex_protocol::config_types::ModeKind;
 use codex_protocol::config_types::ReasoningSummary;
@@ -33,6 +33,7 @@ fn resume_history(
         timezone: None,
         approval_policy: config.permissions.approval_policy.value(),
         sandbox_policy: config.permissions.sandbox_policy.get().clone(),
+        permission_profile: None,
         network: None,
         file_system_sandbox_policy: None,
         model: previous_model.to_string(),
@@ -54,7 +55,7 @@ fn resume_history(
         history: vec![
             RolloutItem::EventMsg(EventMsg::TurnStarted(TurnStartedEvent {
                 turn_id: turn_id.clone(),
-                started_at: Some(0),
+                started_at: None,
                 model_context_window: None,
                 collaboration_mode_kind: ModeKind::Default,
             })),
@@ -69,6 +70,9 @@ fn resume_history(
                 turn_id,
                 last_agent_message: None,
                 compaction_events_in_turn: 0,
+                completed_at: None,
+                duration_ms: None,
+                time_to_first_token_ms: None,
             })),
         ],
         rollout_path: rollout_path.to_path_buf(),

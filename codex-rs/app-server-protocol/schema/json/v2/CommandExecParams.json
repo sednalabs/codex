@@ -28,12 +28,261 @@
       ],
       "type": "object"
     },
+    "FileSystemAccessMode": {
+      "enum": [
+        "read",
+        "write",
+        "none"
+      ],
+      "type": "string"
+    },
+    "FileSystemPath": {
+      "oneOf": [
+        {
+          "properties": {
+            "path": {
+              "$ref": "#/$defs/AbsolutePathBuf"
+            },
+            "type": {
+              "const": "path",
+              "title": "PathFileSystemPathType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "path"
+          ],
+          "title": "PathFileSystemPath",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "pattern": {
+              "type": "string"
+            },
+            "type": {
+              "const": "glob_pattern",
+              "title": "GlobPatternFileSystemPathType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "pattern"
+          ],
+          "title": "GlobPatternFileSystemPath",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "type": {
+              "const": "special",
+              "title": "SpecialFileSystemPathType",
+              "type": "string"
+            },
+            "value": {
+              "$ref": "#/$defs/FileSystemSpecialPath"
+            }
+          },
+          "required": [
+            "type",
+            "value"
+          ],
+          "title": "SpecialFileSystemPath",
+          "type": "object"
+        }
+      ]
+    },
+    "FileSystemSandboxEntry": {
+      "properties": {
+        "access": {
+          "$ref": "#/$defs/FileSystemAccessMode"
+        },
+        "path": {
+          "$ref": "#/$defs/FileSystemPath"
+        }
+      },
+      "required": [
+        "path",
+        "access"
+      ],
+      "type": "object"
+    },
+    "FileSystemSpecialPath": {
+      "oneOf": [
+        {
+          "properties": {
+            "kind": {
+              "const": "root",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "title": "RootFileSystemSpecialPath",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "kind": {
+              "const": "minimal",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "title": "MinimalFileSystemSpecialPath",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "kind": {
+              "const": "current_working_directory",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "title": "CurrentWorkingDirectoryFileSystemSpecialPath",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "kind": {
+              "const": "project_roots",
+              "type": "string"
+            },
+            "subpath": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "title": "KindFileSystemSpecialPath",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "kind": {
+              "const": "tmpdir",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "title": "TmpdirFileSystemSpecialPath",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "kind": {
+              "const": "slash_tmp",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "title": "SlashTmpFileSystemSpecialPath",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "kind": {
+              "const": "unknown",
+              "type": "string"
+            },
+            "path": {
+              "type": "string"
+            },
+            "subpath": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "kind",
+            "path"
+          ],
+          "type": "object"
+        }
+      ]
+    },
     "NetworkAccess": {
       "enum": [
         "restricted",
         "enabled"
       ],
       "type": "string"
+    },
+    "PermissionProfile": {
+      "properties": {
+        "fileSystem": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PermissionProfileFileSystemPermissions"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "network": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PermissionProfileNetworkPermissions"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "PermissionProfileFileSystemPermissions": {
+      "properties": {
+        "entries": {
+          "items": {
+            "$ref": "#/$defs/FileSystemSandboxEntry"
+          },
+          "type": "array"
+        },
+        "globScanMaxDepth": {
+          "format": "uint",
+          "minimum": 1,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "entries"
+      ],
+      "type": "object"
+    },
+    "PermissionProfileNetworkPermissions": {
+      "properties": {
+        "enabled": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
     },
     "ReadOnlyAccess": {
       "oneOf": [
@@ -225,6 +474,17 @@
         "null"
       ]
     },
+    "permissionProfile": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/PermissionProfile"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Optional full permissions profile for this command.\n\nDefaults to the user's configured permissions when omitted. Cannot be\ncombined with `sandboxPolicy`."
+    },
     "processId": {
       "description": "Optional client-supplied, connection-scoped process id.\n\nRequired for `tty`, `streamStdin`, `streamStdoutStderr`, and follow-up\n`command/exec/write`, `command/exec/resize`, and\n`command/exec/terminate` calls. When omitted, buffered execution gets an\ninternal id that is not exposed to the client.",
       "type": [
@@ -241,7 +501,7 @@
           "type": "null"
         }
       ],
-      "description": "Optional sandbox policy for this command.\n\nUses the same shape as thread/turn execution sandbox configuration and\ndefaults to the user's configured policy when omitted."
+      "description": "Optional sandbox policy for this command.\n\nUses the same shape as thread/turn execution sandbox configuration and\ndefaults to the user's configured policy when omitted. Cannot be\ncombined with `permissionProfile`."
     },
     "size": {
       "anyOf": [

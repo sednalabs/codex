@@ -31,6 +31,7 @@
             "contextWindowExceeded",
             "usageLimitExceeded",
             "serverOverloaded",
+            "cyberPolicy",
             "internalServerError",
             "unauthorized",
             "badRequest",
@@ -352,6 +353,12 @@
         },
         {
           "properties": {
+            "detail": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "imageUrl": {
               "type": "string"
             },
@@ -948,6 +955,12 @@
             },
             "id": {
               "type": "string"
+            },
+            "namespace": {
+              "type": [
+                "string",
+                "null"
+              ]
             },
             "status": {
               "$ref": "#/$defs/DynamicToolCallStatus"

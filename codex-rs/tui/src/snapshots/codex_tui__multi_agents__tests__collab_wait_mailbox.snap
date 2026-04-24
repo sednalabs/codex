@@ -1,0 +1,11 @@
+---
+source: tui/src/multi_agents.rs
+expression: snapshot
+---
+• Waiting for 2 agents
+  └ Robie [explorer]
+    Bob [worker]
+
+• Mailbox update received
+  └ Robie [explorer]: Completed - 39916800
+    Still pending: 00000000-0000-0000-0000-000000000003

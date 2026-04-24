@@ -166,6 +166,7 @@ async fn submit_unified_exec_turn(
 
     test.codex
         .submit(Op::UserTurn {
+            environments: None,
             items: vec![UserInput::Text {
                 text: prompt.into(),
                 text_elements: Vec::new(),
@@ -175,6 +176,7 @@ async fn submit_unified_exec_turn(
             approval_policy: AskForApproval::Never,
             approvals_reviewer: None,
             sandbox_policy,
+            permission_profile: None,
             model: session_model,
             effort: None,
             summary: None,
@@ -250,6 +252,7 @@ async fn unified_exec_intercepts_apply_patch_exec_command() -> Result<()> {
 
     codex
         .submit(Op::UserTurn {
+            environments: None,
             items: vec![UserInput::Text {
                 text: "apply patch via unified exec".into(),
                 text_elements: Vec::new(),
@@ -259,6 +262,7 @@ async fn unified_exec_intercepts_apply_patch_exec_command() -> Result<()> {
             approval_policy: AskForApproval::Never,
             approvals_reviewer: None,
             sandbox_policy: SandboxPolicy::DangerFullAccess,
+            permission_profile: None,
             model: session_model,
             effort: None,
             summary: None,
@@ -345,7 +349,7 @@ async fn unified_exec_emits_exec_command_begin_event() -> Result<()> {
 
     let server = start_mock_server().await;
 
-    let mut builder = test_codex().with_model("gpt-5").with_config(|config| {
+    let mut builder = test_codex().with_model("gpt-5.2").with_config(|config| {
         config.use_experimental_unified_exec_tool = true;
         config
             .features
@@ -404,7 +408,7 @@ async fn unified_exec_resolves_relative_workdir() -> Result<()> {
 
     let server = start_mock_server().await;
 
-    let mut builder = test_codex().with_model("gpt-5").with_config(|config| {
+    let mut builder = test_codex().with_model("gpt-5.2").with_config(|config| {
         config.use_experimental_unified_exec_tool = true;
         config
             .features
@@ -473,7 +477,7 @@ async fn unified_exec_respects_workdir_override() -> Result<()> {
 
     let server = start_mock_server().await;
 
-    let mut builder = test_codex().with_model("gpt-5").with_config(|config| {
+    let mut builder = test_codex().with_model("gpt-5.2").with_config(|config| {
         config.use_experimental_unified_exec_tool = true;
         config
             .features
@@ -1153,6 +1157,9 @@ async fn exec_command_reports_chunk_and_exit_metadata() -> Result<()> {
     let args = serde_json::json!({
         "cmd": "printf 'token one token two token three token four token five token six token seven'",
         "yield_time_ms": 500,
+        "wait_until_terminal": true,
+        "max_wait_ms": 5_000,
+        "heartbeat_interval_ms": 100,
         "max_output_tokens": 6,
     });
 
@@ -1201,10 +1208,12 @@ async fn exec_command_reports_chunk_and_exit_metadata() -> Result<()> {
         "wall_time_seconds should be non-negative, got {wall_time}"
     );
 
-    assert!(
-        metadata.process_id.is_none(),
-        "exec_command for a completed process should not include process_id"
-    );
+    if let Some(process_id) = &metadata.process_id {
+        assert!(
+            process_id.chars().all(|c| c.is_ascii_digit()),
+            "process_id should be numeric when present: {process_id}"
+        );
+    }
 
     let exit_code = metadata.exit_code.expect("expected exit_code");
     assert_eq!(exit_code, 0, "expected successful exit");
@@ -1740,6 +1749,7 @@ async fn unified_exec_keeps_long_running_session_after_turn_end() -> Result<()> 
 
     codex
         .submit(Op::UserTurn {
+            environments: None,
             items: vec![UserInput::Text {
                 text: "keep unified exec process after turn end".into(),
                 text_elements: Vec::new(),
@@ -1749,6 +1759,7 @@ async fn unified_exec_keeps_long_running_session_after_turn_end() -> Result<()> 
             approval_policy: AskForApproval::Never,
             approvals_reviewer: None,
             sandbox_policy: SandboxPolicy::DangerFullAccess,
+            permission_profile: None,
             model: session_model,
             effort: None,
             summary: None,
@@ -1833,6 +1844,7 @@ async fn unified_exec_interrupt_preserves_long_running_session() -> Result<()> {
 
     codex
         .submit(Op::UserTurn {
+            environments: None,
             items: vec![UserInput::Text {
                 text: "interrupt long-running unified exec".into(),
                 text_elements: Vec::new(),
@@ -1842,6 +1854,7 @@ async fn unified_exec_interrupt_preserves_long_running_session() -> Result<()> {
             approval_policy: AskForApproval::Never,
             approvals_reviewer: None,
             sandbox_policy: SandboxPolicy::DangerFullAccess,
+            permission_profile: None,
             model: session_model,
             effort: None,
             summary: None,
@@ -2305,6 +2318,7 @@ async fn unified_exec_runs_under_sandbox() -> Result<()> {
 
     codex
         .submit(Op::UserTurn {
+            environments: None,
             items: vec![UserInput::Text {
                 text: "summarize large output".into(),
                 text_elements: Vec::new(),
@@ -2315,6 +2329,7 @@ async fn unified_exec_runs_under_sandbox() -> Result<()> {
             approvals_reviewer: None,
             // Important!
             sandbox_policy: SandboxPolicy::new_read_only_policy(),
+            permission_profile: None,
             model: session_model,
             effort: None,
             summary: None,
@@ -2414,6 +2429,7 @@ async fn unified_exec_enforces_glob_deny_read_policy() -> Result<()> {
     let session_model = session_configured.model.clone();
     codex
         .submit(Op::UserTurn {
+            environments: None,
             items: vec![UserInput::Text {
                 text: "read the fixture files".into(),
                 text_elements: Vec::new(),
@@ -2423,6 +2439,7 @@ async fn unified_exec_enforces_glob_deny_read_policy() -> Result<()> {
             approval_policy: AskForApproval::Never,
             approvals_reviewer: None,
             sandbox_policy: read_only_policy,
+            permission_profile: None,
             model: session_model,
             effort: None,
             summary: None,
@@ -2542,6 +2559,7 @@ async fn unified_exec_python_prompt_under_seatbelt() -> Result<()> {
 
     codex
         .submit(Op::UserTurn {
+            environments: None,
             items: vec![UserInput::Text {
                 text: "start python under seatbelt".into(),
                 text_elements: Vec::new(),
@@ -2551,6 +2569,7 @@ async fn unified_exec_python_prompt_under_seatbelt() -> Result<()> {
             approval_policy: AskForApproval::Never,
             approvals_reviewer: None,
             sandbox_policy: SandboxPolicy::new_read_only_policy(),
+            permission_profile: None,
             model: session_model,
             effort: None,
             summary: None,

@@ -48,6 +48,8 @@ use codex_app_server_protocol::JSONRPCResponse;
 use codex_app_server_protocol::ListMcpServerStatusParams;
 use codex_app_server_protocol::LoginAccountParams;
 use codex_app_server_protocol::MarketplaceAddParams;
+use codex_app_server_protocol::MarketplaceRemoveParams;
+use codex_app_server_protocol::MarketplaceUpgradeParams;
 use codex_app_server_protocol::McpResourceReadParams;
 use codex_app_server_protocol::McpServerToolCallParams;
 use codex_app_server_protocol::MockExperimentalMethodParams;
@@ -58,6 +60,7 @@ use codex_app_server_protocol::PluginReadParams;
 use codex_app_server_protocol::PluginUninstallParams;
 use codex_app_server_protocol::RequestId;
 use codex_app_server_protocol::ReviewStartParams;
+use codex_app_server_protocol::SendAddCreditsNudgeEmailParams;
 use codex_app_server_protocol::ServerRequest;
 use codex_app_server_protocol::SkillsListParams;
 use codex_app_server_protocol::ThreadArchiveParams;
@@ -305,6 +308,16 @@ impl McpProcess {
             .await
     }
 
+    /// Send an `account/sendAddCreditsNudgeEmail` JSON-RPC request.
+    pub async fn send_add_credits_nudge_email_request(
+        &mut self,
+        params: SendAddCreditsNudgeEmailParams,
+    ) -> anyhow::Result<i64> {
+        let params = Some(serde_json::to_value(params)?);
+        self.send_request("account/sendAddCreditsNudgeEmail", params)
+            .await
+    }
+
     /// Send an `account/read` JSON-RPC request.
     pub async fn send_get_account_request(
         &mut self,
@@ -542,6 +555,24 @@ impl McpProcess {
     ) -> anyhow::Result<i64> {
         let params = Some(serde_json::to_value(params)?);
         self.send_request("marketplace/add", params).await
+    }
+
+    /// Send a `marketplace/remove` JSON-RPC request.
+    pub async fn send_marketplace_remove_request(
+        &mut self,
+        params: MarketplaceRemoveParams,
+    ) -> anyhow::Result<i64> {
+        let params = Some(serde_json::to_value(params)?);
+        self.send_request("marketplace/remove", params).await
+    }
+
+    /// Send a `marketplace/upgrade` JSON-RPC request.
+    pub async fn send_marketplace_upgrade_request(
+        &mut self,
+        params: MarketplaceUpgradeParams,
+    ) -> anyhow::Result<i64> {
+        let params = Some(serde_json::to_value(params)?);
+        self.send_request("marketplace/upgrade", params).await
     }
 
     /// Send a `plugin/install` JSON-RPC request.

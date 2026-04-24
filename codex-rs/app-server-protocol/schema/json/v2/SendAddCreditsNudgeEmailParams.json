@@ -1,0 +1,22 @@
+{
+  "$defs": {
+    "AddCreditsNudgeCreditType": {
+      "enum": [
+        "credits",
+        "usage_limit"
+      ],
+      "type": "string"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "creditType": {
+      "$ref": "#/$defs/AddCreditsNudgeCreditType"
+    }
+  },
+  "required": [
+    "creditType"
+  ],
+  "title": "SendAddCreditsNudgeEmailParams",
+  "type": "object"
+}

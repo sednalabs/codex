@@ -184,6 +184,7 @@ impl AppServerClient {
                 source_kinds: None,
                 archived: None,
                 cwd: None,
+                use_state_db_only: false,
                 search_term: None,
             },
         };

@@ -17,6 +17,11 @@
           "const": "chatgptAuthTokens",
           "description": "[UNSTABLE] FOR OPENAI INTERNAL USE ONLY - DO NOT USE.\n\nChatGPT auth tokens are supplied by an external host app and are only\nstored in memory. Token refresh must be handled by the external host app.",
           "type": "string"
+        },
+        {
+          "const": "agentIdentity",
+          "description": "Programmatic Codex auth backed by a registered Agent Identity.",
+          "type": "string"
         }
       ]
     },
