@@ -150,6 +150,13 @@ jobs:
         with:
           node-version-file: codex-rs/node-version.txt
 
+      - name: Bind js_repl Node runtime
+        if: ${{ inputs.needs_node }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "CODEX_JS_REPL_NODE_PATH=$(command -v node)" >> "$GITHUB_ENV"
+
       - name: Install Linux build dependencies
         if: ${{ inputs.needs_linux_build_deps }}
         shell: bash
