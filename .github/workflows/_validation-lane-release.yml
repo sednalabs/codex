@@ -7,6 +7,10 @@ on:
         required: false
         type: string
         default: ""
+      checkout_fetch_depth:
+        required: false
+        type: number
+        default: 1
       summary_title:
         required: true
         type: string
@@ -114,8 +118,15 @@ jobs:
 
       - uses: actions/checkout@v6
         with:
-          fetch-depth: 0
+          fetch-depth: ${{ inputs.checkout_fetch_depth }}
           ref: ${{ inputs.checkout_ref != '' && inputs.checkout_ref || github.sha }}
+
+      - name: Check out workflow helpers
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 1
+          ref: ${{ github.sha }}
+          path: .workflow-src
 
       - name: Reclaim runner disk headroom
         if: ${{ runner.os == 'Linux' }}
@@ -316,7 +327,7 @@ jobs:
             if [[ "${attempt}" -gt 1 ]]; then
               printf '\n=== retry attempt %s/%s ===\n' "${attempt}" "${max_attempts}" | tee -a "${log_file}"
             fi
-            python3 .github/scripts/run_validation_lane.py \
+            python3 .workflow-src/.github/scripts/run_validation_lane.py \
               --repo-root "${GITHUB_WORKSPACE}" \
               --working-directory "${WORKING_DIRECTORY}" \
               --script-path "${SCRIPT_PATH}" \
@@ -426,7 +437,7 @@ jobs:
               sccache_restore_mode="restore-key-or-miss"
             fi
           fi
-          python3 .github/scripts/write_lane_summary.py \
+          python3 .workflow-src/.github/scripts/write_lane_summary.py \
             --lane-id "${LANE_ID}" \
             --lane-phase "${LANE_PHASE}" \
             --summary-title "${SUMMARY_TITLE}" \
