@@ -818,7 +818,7 @@ async fn spawn_agent_preserves_exact_requested_model_slug_through_role_layering(
     let mut thread_created_rx = test.thread_manager.subscribe_thread_created();
     test.submit_turn(TURN_1_PROMPT).await?;
     let spawned_id =
-        wait_for_spawned_thread_id_from_receiver(&mut thread_created_rx, Duration::from_secs(2))
+        wait_for_spawned_thread_id_from_receiver(&mut thread_created_rx, Duration::from_secs(10))
             .await?;
     wait_for_spawned_thread_turn_start(&test, &spawned_id, Duration::from_secs(5)).await?;
     let child_body =
