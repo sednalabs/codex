@@ -2909,7 +2909,11 @@ impl CodexMessageProcessor {
             permission_profile: permission_profile.map(Into::into),
             codex_linux_sandbox_exe: self.arg0_paths.codex_linux_sandbox_exe.clone(),
             main_execve_wrapper_exe: self.arg0_paths.main_execve_wrapper_exe.clone(),
-            base_instructions: base_instructions.flatten(),
+            base_instructions: match base_instructions {
+                Some(Some(instructions)) => Some(instructions),
+                Some(None) => Some(String::new()),
+                None => None,
+            },
             developer_instructions: developer_instructions.flatten(),
             personality,
             ..Default::default()
