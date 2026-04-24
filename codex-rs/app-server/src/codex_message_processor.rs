@@ -2291,7 +2291,7 @@ impl CodexMessageProcessor {
             match self.config.permissions.sandbox_policy.can_set(&policy) {
                 Ok(()) => {
                     let file_system_sandbox_policy =
-                        codex_protocol::permissions::FileSystemSandboxPolicy::from_legacy_sandbox_policy(&policy, &sandbox_cwd);
+                        codex_protocol::permissions::FileSystemSandboxPolicy::from_legacy_sandbox_policy_for_cwd(&policy, &sandbox_cwd);
                     let network_sandbox_policy =
                         codex_protocol::permissions::NetworkSandboxPolicy::from(&policy);
                     (policy, file_system_sandbox_policy, network_sandbox_policy)
@@ -10545,18 +10545,15 @@ mod tests {
 
     #[test]
     fn thread_response_permission_profile_preserves_enforcement() {
-        let cwd = test_path_buf("/tmp").abs();
         let full_access_profile =
             codex_protocol::models::PermissionProfile::from_legacy_sandbox_policy(
                 &SandboxPolicy::DangerFullAccess,
-                cwd.as_path(),
             );
         let external_profile =
             codex_protocol::models::PermissionProfile::from_legacy_sandbox_policy(
                 &SandboxPolicy::ExternalSandbox {
                     network_access: codex_protocol::protocol::NetworkAccess::Restricted,
                 },
-                cwd.as_path(),
             );
 
         assert_eq!(
@@ -10575,17 +10572,14 @@ mod tests {
         let full_access_profile =
             codex_protocol::models::PermissionProfile::from_legacy_sandbox_policy(
                 &SandboxPolicy::DangerFullAccess,
-                cwd.as_path(),
             );
         let workspace_write_profile =
             codex_protocol::models::PermissionProfile::from_legacy_sandbox_policy(
                 &SandboxPolicy::new_workspace_write_policy(),
-                cwd.as_path(),
             );
         let read_only_profile =
             codex_protocol::models::PermissionProfile::from_legacy_sandbox_policy(
                 &SandboxPolicy::new_read_only_policy(),
-                cwd.as_path(),
             );
 
         assert!(requested_permissions_trust_project(
@@ -10797,7 +10791,6 @@ mod tests {
             permission_profile:
                 codex_protocol::models::PermissionProfile::from_legacy_sandbox_policy(
                     &codex_protocol::protocol::SandboxPolicy::DangerFullAccess,
-                    cwd.as_path(),
                 ),
             cwd,
             ephemeral: false,
