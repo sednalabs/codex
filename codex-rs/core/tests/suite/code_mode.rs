@@ -2496,12 +2496,11 @@ const tool = ALL_TOOLS.find(({ name }) => name === "view_image");
 await text(JSON.stringify(tool ?? { missing: true, tools: ALL_TOOLS }));
 "#;
 
-    let (_test, second_mock) = run_code_mode_turn_with_model(
+    let (_test, second_mock) = run_code_mode_turn(
         &server,
         "use exec to inspect ALL_TOOLS",
         code,
         /*include_apply_patch*/ false,
-        "gpt-5.4",
     )
     .await?;
 
@@ -2538,13 +2537,8 @@ const tool = ALL_TOOLS.find(
 await text(JSON.stringify(tool ?? { missing: true, tools: ALL_TOOLS }));
 "#;
 
-    let (_test, second_mock) = run_code_mode_turn_with_rmcp_model(
-        &server,
-        "use exec to inspect ALL_TOOLS",
-        code,
-        "gpt-5.4",
-    )
-    .await?;
+    let (_test, second_mock) =
+        run_code_mode_turn_with_rmcp(&server, "use exec to inspect ALL_TOOLS", code).await?;
 
     let req = second_mock.single_request();
     let (output, success) = custom_tool_output_body_and_success(&req, "call-1");
