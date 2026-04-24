@@ -161,6 +161,9 @@ stopping at cargo-home restore alone.
 Execution is script-backed:
 
 - reusable workflows fan out by `setup_class`
+- validation-lab plans ordinary non-artifact runs from a shallow target
+  checkout and fetches full target history only when artifact versioning needs
+  merged Sedna tags
 - reusable workflows source shared helper scripts from a `.workflow-src`
   checkout at the workflow ref so older checked-out PR heads stay compatible
   with newer helper and summary-artifact contracts

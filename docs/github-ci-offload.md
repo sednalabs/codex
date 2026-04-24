@@ -240,6 +240,9 @@ The important fields are:
 - reusable validation-lane workflows default repository checkout to
   `fetch-depth: 1`; callers only widen that through the explicit
   `checkout_fetch_depth` input when a lane genuinely needs deeper history
+- validation-lab also keeps the target checkout shallow for ordinary
+  smoke/targeted/frontier runs; it only fetches full target history when
+  artifact mode needs merged Sedna tags for preview-version derivation
 - reusable validation-lane workflows also resolve shared helper scripts from a
   separate `.workflow-src` checkout at the workflow ref, so older PR heads can
   keep running under newer lane-helper contracts without carrying helper copies

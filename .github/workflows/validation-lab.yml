@@ -179,7 +179,7 @@ jobs:
       - name: Check out validation target
         uses: actions/checkout@v6
         with:
-          fetch-depth: 0
+          fetch-depth: ${{ (inputs.profile == 'artifact' || inputs.artifact_build) && '0' || '1' }}
           # This input is consumed by actions/checkout as a branch-or-tag selector.
           # If you need exact-SHA pinning for workflow_dispatch, pin the host run via
           # the dispatcher/watcher layer and pass the branch name here so checkout resolves.
@@ -209,14 +209,17 @@ jobs:
           fi
           head_sha="$(git -C "${target_checkout}" rev-parse HEAD)"
           short_sha="$(git -C "${target_checkout}" rev-parse --short=8 HEAD)"
-          latest_tag="$(git -C "${target_checkout}" tag --merged HEAD --list 'v*-sedna.*' --sort=-version:refname | head -n 1)"
-          if [[ -n "${latest_tag}" ]]; then
-            base_version="${latest_tag#v}"
+          display_slug="$(printf '%s' "${display_ref}" | tr '/:@ ' '-' | tr -cd '[:alnum:]._-' | cut -c1-48)"
+          if [[ "${LAB_PROFILE}" == "artifact" || "${LAB_ARTIFACT_BUILD}" == "true" ]]; then
+            latest_tag="$(git -C "${target_checkout}" tag --merged HEAD --list 'v*-sedna.*' --sort=-version:refname | head -n 1)"
+            if [[ -n "${latest_tag}" ]]; then
+              base_version="${latest_tag#v}"
+            else
+              base_version="0.0.0-sedna.0"
+            fi
           else
             base_version="0.0.0-sedna.0"
           fi
-
-          display_slug="$(printf '%s' "${display_ref}" | tr '/:@ ' '-' | tr -cd '[:alnum:]._-' | cut -c1-48)"
           preview_version="${base_version}-ci.${GITHUB_RUN_NUMBER}+g${short_sha}"
 
           selection_meta="$(python3 .github/scripts/resolve_validation_plan.py lab --profile "${LAB_PROFILE}" --lane-set "${LAB_LANE_SET}" --lanes "${LAB_LANES}" --artifact-build "${LAB_ARTIFACT_BUILD}" --include-explicit-lanes "${LAB_INCLUDE_EXPLICIT_LANES}" "${catalog_args[@]}")"

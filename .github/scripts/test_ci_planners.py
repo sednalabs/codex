@@ -609,6 +609,25 @@ class ValidationPlanScriptTests(unittest.TestCase):
             ],
         )
 
+    def test_validation_lab_only_fetches_target_history_for_artifact_versioning(self) -> None:
+        payload = load_workflow_payload(REPO_ROOT / ".github/workflows/validation-lab.yml")
+        metadata_steps = (((payload.get("jobs") or {}).get("metadata") or {}).get("steps") or [])
+        target_checkout = next(
+            step for step in metadata_steps if step.get("name") == "Check out validation target"
+        )
+
+        self.assertEqual(
+            (target_checkout.get("with") or {}).get("fetch-depth"),
+            "${{ (inputs.profile == 'artifact' || inputs.artifact_build) && '0' || '1' }}",
+        )
+
+        compute_plan = next(
+            step for step in metadata_steps if step.get("name") == "Compute validation-lab plan"
+        )
+        run_script = compute_plan.get("run") or ""
+        self.assertIn('if [[ "${LAB_PROFILE}" == "artifact"', run_script)
+        self.assertIn("git -C \"${target_checkout}\" tag --merged HEAD", run_script)
+
     def test_just_recipe_bodies_handles_comma_separated_recipe_names(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             justfile = Path(tmpdir) / "justfile"
