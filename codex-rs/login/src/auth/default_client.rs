@@ -8,6 +8,7 @@ use codex_client::BuildCustomCaTransportError;
 use codex_client::CodexHttpClient;
 pub use codex_client::CodexRequestBuilder;
 use codex_client::build_reqwest_client_with_custom_ca;
+use codex_client::with_chatgpt_cloudflare_cookie_store;
 use codex_terminal_detection::user_agent;
 use codex_utils_version::RELEASE_VERSION;
 use reqwest::header::HeaderMap;
@@ -202,7 +203,15 @@ pub fn create_client() -> CodexHttpClient {
 pub fn build_reqwest_client() -> reqwest::Client {
     try_build_reqwest_client().unwrap_or_else(|error| {
         tracing::warn!(error = %error, "failed to build default reqwest client");
-        reqwest::Client::new()
+        with_chatgpt_cloudflare_cookie_store(reqwest::Client::builder())
+            .build()
+            .unwrap_or_else(|fallback_error| {
+                tracing::warn!(
+                    error = %fallback_error,
+                    "failed to build fallback reqwest client with ChatGPT Cloudflare cookie store"
+                );
+                reqwest::Client::new()
+            })
     })
 }
 
@@ -220,6 +229,7 @@ pub fn try_build_reqwest_client() -> Result<reqwest::Client, BuildCustomCaTransp
     if is_sandboxed() {
         builder = builder.no_proxy();
     }
+    builder = with_chatgpt_cloudflare_cookie_store(builder);
 
     build_reqwest_client_with_custom_ca(builder)
 }

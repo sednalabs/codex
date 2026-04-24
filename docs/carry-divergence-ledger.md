@@ -6,15 +6,20 @@ This document records the current live divergences of the downstream branch
 It is an audit ledger, not a changelog. Ahead-count alone is not evidence of a
 live divergence.
 
+The snapshot below intentionally anchors to the audited code tree before the
+docs-only refresh commit that records this snapshot.
+
 ## Audit Baseline
 
-- Audited on: `2026-04-22`
-- `upstream/main`: `be75785504ff152fa6333e380a2d50642f42fba0`
-- downstream branch `main` (`origin/main`): `406c894a5f14e2a74e13ef364fd44d5a089f417a`
-- mirror branch `upstream-main` (`origin/upstream-main`): `fe7c959e90d46abb8311e4a0b369e6cb32bf337e`
-- `main` vs `upstream/main`: `706` ahead, `126` behind
-- Mirror vs `upstream/main`: `0` ahead, `166` behind (`stale_ff_only`)
-- Downstream-only commits at audit time: `621` unique, `1` patch-equivalent
+- Audited on: `2026-04-23`
+- `upstream/main`: `d3b044938d245b519c1a5baefe880ef89e3a30c1`
+- downstream integration branch (`origin/integration/upstream-main-sync-20260423-141625`): `7dd5e0ebf3dab7c535a1402c97b3c5fc41e4ab18`
+- downstream branch `main` (`origin/main`) before merge: `e2babb7d2bbbe92dd7f3d4ed807a0414e3dd5bc0`
+- mirror branch `upstream-main` (`origin/upstream-main`): `d3b044938d245b519c1a5baefe880ef89e3a30c1`
+- integration branch vs `upstream/main`: `738` ahead, `0` behind
+- pre-merge `main` vs `upstream/main`: `716` ahead, `208` behind
+- Mirror vs `upstream/main`: `0` ahead, `0` behind (`exact`)
+- Downstream-only commits at audit time: `652` unique, `0` patch-equivalent
 
 ## Audit Rules
 

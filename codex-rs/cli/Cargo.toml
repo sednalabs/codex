@@ -31,6 +31,7 @@ codex-utils-cli = { workspace = true }
 codex-utils-version = { workspace = true }
 codex-config = { workspace = true }
 codex-core = { workspace = true }
+codex-core-plugins = { workspace = true }
 codex-exec = { workspace = true }
 codex-exec-server = { workspace = true }
 codex-execpolicy = { workspace = true }
@@ -38,6 +39,7 @@ codex-features = { workspace = true }
 codex-login = { workspace = true }
 codex-mcp = { workspace = true }
 codex-mcp-server = { workspace = true }
+codex-models-manager = { workspace = true }
 codex-model-provider = { workspace = true }
 codex-protocol = { workspace = true }
 codex-responses-api-proxy = { workspace = true }

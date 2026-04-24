@@ -18,13 +18,16 @@ use tempfile::tempdir;
 use crate::session::tests::make_session_and_context;
 use crate::session::turn_context::TurnContext;
 use crate::tools::context::ExecCommandToolOutput;
+use crate::tools::context::ToolCallSource;
 use crate::tools::context::ToolInvocation;
 use crate::tools::context::ToolPayload;
+use crate::tools::hook_names::HookToolName;
 use crate::tools::registry::ToolHandler;
 use crate::turn_diff_tracker::TurnDiffTracker;
 use tokio::sync::Mutex;
 use tokio::time::Duration;
 use tokio::time::Instant;
+use tokio_util::sync::CancellationToken;
 
 fn invocation(
     session: Arc<crate::session::session::Session>,
@@ -35,9 +38,11 @@ fn invocation(
     ToolInvocation {
         session,
         turn,
+        cancellation_token: CancellationToken::new(),
         tracker: Arc::new(Mutex::new(TurnDiffTracker::default())),
         call_id: "call-unified-exec-test".to_string(),
         tool_name: codex_tools::ToolName::plain(tool_name),
+        source: ToolCallSource::Direct,
         payload,
     }
 }
@@ -57,6 +62,24 @@ async fn run_unified_exec(
     UnifiedExecHandler
         .handle(invocation(session, turn, tool_name, function_payload(args)))
         .await
+}
+
+async fn invocation_for_payload(
+    tool_name: &str,
+    call_id: &str,
+    payload: ToolPayload,
+) -> ToolInvocation {
+    let (session, turn) = make_session_and_context().await;
+    ToolInvocation {
+        session: session.into(),
+        turn: turn.into(),
+        cancellation_token: tokio_util::sync::CancellationToken::new(),
+        tracker: Arc::new(Mutex::new(TurnDiffTracker::new())),
+        call_id: call_id.to_string(),
+        tool_name: codex_tools::ToolName::plain(tool_name),
+        source: ToolCallSource::Direct,
+        payload,
+    }
 }
 
 #[test]
@@ -538,10 +561,10 @@ fn exec_command_args_resolve_relative_additional_permissions_against_workdir() -
     assert_eq!(
         args.additional_permissions,
         Some(PermissionProfile {
-            file_system: Some(FileSystemPermissions {
-                read: None,
-                write: Some(vec![expected_write.abs()]),
-            }),
+            file_system: Some(FileSystemPermissions::from_read_write_roots(
+                /*read*/ None,
+                Some(vec![expected_write.abs()]),
+            )),
             ..Default::default()
         })
     );
@@ -560,13 +583,16 @@ async fn exec_command_pre_tool_use_payload_uses_raw_command() {
         handler.pre_tool_use_payload(&ToolInvocation {
             session: session.into(),
             turn: turn.into(),
+            cancellation_token: tokio_util::sync::CancellationToken::new(),
             tracker: Arc::new(Mutex::new(TurnDiffTracker::new())),
             call_id: "call-43".to_string(),
             tool_name: codex_tools::ToolName::plain("exec_command"),
+            source: crate::tools::context::ToolCallSource::Direct,
             payload,
         }),
         Some(crate::tools::registry::PreToolUsePayload {
-            command: "printf exec command".to_string(),
+            tool_name: HookToolName::bash(),
+            tool_input: serde_json::json!({ "command": "printf exec command" }),
         })
     );
 }
@@ -583,22 +609,24 @@ async fn exec_command_pre_tool_use_payload_skips_write_stdin() {
         handler.pre_tool_use_payload(&ToolInvocation {
             session: session.into(),
             turn: turn.into(),
+            cancellation_token: tokio_util::sync::CancellationToken::new(),
             tracker: Arc::new(Mutex::new(TurnDiffTracker::new())),
             call_id: "call-44".to_string(),
             tool_name: codex_tools::ToolName::plain("write_stdin"),
+            source: crate::tools::context::ToolCallSource::Direct,
             payload,
         }),
         None
     );
 }
 
-#[test]
-fn exec_command_post_tool_use_payload_uses_output_for_noninteractive_one_shot_commands() {
+#[tokio::test]
+async fn exec_command_post_tool_use_payload_uses_output_for_noninteractive_one_shot_commands() {
     let payload = ToolPayload::Function {
         arguments: serde_json::json!({ "cmd": "echo three", "tty": false }).to_string(),
     };
     let output = ExecCommandToolOutput {
-        event_call_id: "event-43".to_string(),
+        event_call_id: "call-43".to_string(),
         chunk_id: "chunk-1".to_string(),
         wall_time: std::time::Duration::from_millis(498),
         raw_output: b"three".to_vec(),
@@ -606,29 +634,27 @@ fn exec_command_post_tool_use_payload_uses_output_for_noninteractive_one_shot_co
         process_id: None,
         exit_code: Some(0),
         original_token_count: None,
-        session_command: Some(vec![
-            "/bin/zsh".to_string(),
-            "-lc".to_string(),
-            "echo three".to_string(),
-        ]),
+        hook_command: Some("echo three".to_string()),
     };
-
+    let invocation = invocation_for_payload("exec_command", "call-43", payload).await;
     assert_eq!(
-        UnifiedExecHandler.post_tool_use_payload("call-43", &payload, &output),
+        UnifiedExecHandler.post_tool_use_payload(&invocation, &output),
         Some(crate::tools::registry::PostToolUsePayload {
-            command: "echo three".to_string(),
+            tool_name: HookToolName::bash(),
+            tool_use_id: "call-43".to_string(),
+            tool_input: serde_json::json!({ "command": "echo three" }),
             tool_response: serde_json::json!("three"),
         })
     );
 }
 
-#[test]
-fn exec_command_post_tool_use_payload_skips_interactive_exec() {
+#[tokio::test]
+async fn exec_command_post_tool_use_payload_uses_output_for_interactive_completion() {
     let payload = ToolPayload::Function {
         arguments: serde_json::json!({ "cmd": "echo three", "tty": true }).to_string(),
     };
     let output = ExecCommandToolOutput {
-        event_call_id: "event-44".to_string(),
+        event_call_id: "call-44".to_string(),
         chunk_id: "chunk-1".to_string(),
         wall_time: std::time::Duration::from_millis(498),
         raw_output: b"three".to_vec(),
@@ -636,21 +662,23 @@ fn exec_command_post_tool_use_payload_skips_interactive_exec() {
         process_id: None,
         exit_code: Some(0),
         original_token_count: None,
-        session_command: Some(vec![
-            "/bin/zsh".to_string(),
-            "-lc".to_string(),
-            "echo three".to_string(),
-        ]),
+        hook_command: Some("echo three".to_string()),
     };
+    let invocation = invocation_for_payload("exec_command", "call-44", payload).await;
 
     assert_eq!(
-        UnifiedExecHandler.post_tool_use_payload("call-44", &payload, &output),
-        None
+        UnifiedExecHandler.post_tool_use_payload(&invocation, &output),
+        Some(crate::tools::registry::PostToolUsePayload {
+            tool_name: HookToolName::bash(),
+            tool_use_id: "call-44".to_string(),
+            tool_input: serde_json::json!({ "command": "echo three" }),
+            tool_response: serde_json::json!("three"),
+        })
     );
 }
 
-#[test]
-fn exec_command_post_tool_use_payload_skips_running_sessions() {
+#[tokio::test]
+async fn exec_command_post_tool_use_payload_skips_running_sessions() {
     let payload = ToolPayload::Function {
         arguments: serde_json::json!({ "cmd": "echo three", "tty": false }).to_string(),
     };
@@ -663,15 +691,98 @@ fn exec_command_post_tool_use_payload_skips_running_sessions() {
         process_id: Some(45),
         exit_code: None,
         original_token_count: None,
-        session_command: Some(vec![
-            "/bin/zsh".to_string(),
-            "-lc".to_string(),
-            "echo three".to_string(),
-        ]),
+        hook_command: Some("echo three".to_string()),
     };
+    let invocation = invocation_for_payload("exec_command", "call-45", payload).await;
+    assert_eq!(
+        UnifiedExecHandler.post_tool_use_payload(&invocation, &output),
+        None
+    );
+}
+
+#[tokio::test]
+async fn write_stdin_post_tool_use_payload_uses_original_exec_call_id_and_command_on_completion() {
+    let payload = ToolPayload::Function {
+        arguments: serde_json::json!({
+            "session_id": 45,
+            "chars": "",
+        })
+        .to_string(),
+    };
+    let output = ExecCommandToolOutput {
+        event_call_id: "exec-call-45".to_string(),
+        chunk_id: "chunk-2".to_string(),
+        wall_time: std::time::Duration::from_millis(498),
+        raw_output: b"finished\n".to_vec(),
+        max_output_tokens: None,
+        process_id: None,
+        exit_code: Some(0),
+        original_token_count: None,
+        hook_command: Some("sleep 1; echo finished".to_string()),
+    };
+    let invocation = invocation_for_payload("write_stdin", "write-stdin-call", payload).await;
 
     assert_eq!(
-        UnifiedExecHandler.post_tool_use_payload("call-45", &payload, &output),
-        None
+        UnifiedExecHandler.post_tool_use_payload(&invocation, &output),
+        Some(crate::tools::registry::PostToolUsePayload {
+            tool_name: HookToolName::bash(),
+            tool_use_id: "exec-call-45".to_string(),
+            tool_input: serde_json::json!({ "command": "sleep 1; echo finished" }),
+            tool_response: serde_json::json!("finished\n"),
+        })
+    );
+}
+
+#[tokio::test]
+async fn write_stdin_post_tool_use_payload_keeps_parallel_session_metadata_separate() {
+    let payload = ToolPayload::Function {
+        arguments: serde_json::json!({ "session_id": 45, "chars": "" }).to_string(),
+    };
+    let output_a = ExecCommandToolOutput {
+        event_call_id: "exec-call-a".to_string(),
+        chunk_id: "chunk-a".to_string(),
+        wall_time: std::time::Duration::from_millis(498),
+        raw_output: b"alpha\n".to_vec(),
+        max_output_tokens: None,
+        process_id: None,
+        exit_code: Some(0),
+        original_token_count: None,
+        hook_command: Some("sleep 2; echo alpha".to_string()),
+    };
+    let output_b = ExecCommandToolOutput {
+        event_call_id: "exec-call-b".to_string(),
+        chunk_id: "chunk-b".to_string(),
+        wall_time: std::time::Duration::from_millis(498),
+        raw_output: b"beta\n".to_vec(),
+        max_output_tokens: None,
+        process_id: None,
+        exit_code: Some(0),
+        original_token_count: None,
+        hook_command: Some("sleep 1; echo beta".to_string()),
+    };
+    let invocation_b = invocation_for_payload("write_stdin", "write-call-b", payload.clone()).await;
+    let invocation_a = invocation_for_payload("write_stdin", "write-call-a", payload).await;
+
+    let payloads = [
+        UnifiedExecHandler.post_tool_use_payload(&invocation_b, &output_b),
+        UnifiedExecHandler.post_tool_use_payload(&invocation_a, &output_a),
+    ];
+
+    assert_eq!(
+        payloads,
+        [
+            Some(crate::tools::registry::PostToolUsePayload {
+                tool_name: HookToolName::bash(),
+                tool_use_id: "exec-call-b".to_string(),
+                tool_input: serde_json::json!({ "command": "sleep 1; echo beta" }),
+                tool_response: serde_json::json!("beta\n"),
+            }),
+            Some(crate::tools::registry::PostToolUsePayload {
+                tool_name: HookToolName::bash(),
+                tool_use_id: "exec-call-a".to_string(),
+                tool_input: serde_json::json!({ "command": "sleep 2; echo alpha" }),
+                tool_response: serde_json::json!("alpha\n"),
+            }),
+        ]
     );
 }

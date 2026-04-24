@@ -6,6 +6,9 @@ use serde_json::Value;
 use serde_json::json;
 use std::collections::BTreeMap;
 
+const SPAWN_AGENT_INHERITED_MODEL_GUIDANCE: &str = "Spawned agents inherit your current model by default. Omit `model` to use that preferred default; set `model` only when an explicit override is needed.";
+const SPAWN_AGENT_MODEL_OVERRIDE_DESCRIPTION: &str = "Optional model override for the new agent. Leave unset to inherit the same model as the parent, which is the preferred default. Only set this when the user explicitly asks for a different model or the task clearly requires one.";
+
 #[derive(Debug, Clone)]
 pub struct SpawnAgentToolOptions<'a> {
     pub available_models: &'a [ModelPreset],
@@ -214,7 +217,7 @@ pub fn create_wait_agent_tool_v1(options: WaitAgentTimeoutOptions) -> ToolSpec {
 pub fn create_wait_agent_tool_v2(options: WaitAgentTimeoutOptions) -> ToolSpec {
     ToolSpec::Function(ResponsesApiTool {
         name: "wait_agent".to_string(),
-        description: "Use this for blocking coordination while awaiting sub-agent completion. Waits for a mailbox update from any live agent, including queued messages and final-status notifications. Does not return the content; returns either a summary of which agents have updates (if any), or a timeout summary if no mailbox update arrives before the deadline. Prefer longer timeouts to avoid busy polling. When `return_when` is `any`, the call returns once one requested agent reaches terminal status. When `return_when` is `all`, it waits until every requested agent reaches terminal status."
+        description: "Use this for blocking coordination while awaiting sub-agent completion. Waits on the requested agents until the requested completion rule is satisfied, but may also wake early when the current agent receives new mailbox activity. When `return_when` is `any`, completion requires any requested agent to reach terminal status. When `return_when` is `all`, completion requires all requested agents to reach terminal status. Does not return mailbox content; returns an explicit completion reason plus the still-pending targets when applicable. Prefer longer timeouts to avoid busy polling."
             .to_string(),
         strict: false,
         defer_loading: None,
@@ -598,12 +601,31 @@ fn wait_output_schema_v2() -> Value {
                 "type": "string",
                 "description": "Brief wait summary without the agent's final content."
             },
+            "requested_ids": {
+                "type": "array",
+                "items": {
+                    "type": "string"
+                },
+                "description": "Agent ids requested by the wait call."
+            },
+            "pending_ids": {
+                "type": "array",
+                "items": {
+                    "type": "string"
+                },
+                "description": "Requested agent ids that were still non-terminal when the wait call returned."
+            },
+            "completion_reason": {
+                "type": "string",
+                "enum": ["terminal", "mailbox", "timeout"],
+                "description": "Why the wait call returned."
+            },
             "timed_out": {
                 "type": "boolean",
-                "description": "Whether the wait call returned because no mailbox update arrived before the timeout."
+                "description": "Whether the wait call returned because it hit the timeout."
             }
         },
-        "required": ["message", "timed_out"],
+        "required": ["message", "requested_ids", "pending_ids", "completion_reason", "timed_out"],
         "additionalProperties": false
     })
 }
@@ -681,8 +703,7 @@ fn spawn_agent_common_properties_v1(agent_type_description: &str) -> BTreeMap<St
         (
             "model".to_string(),
             JsonSchema::string(Some(
-                "Optional model override for the new agent. Replaces the inherited model."
-                    .to_string(),
+                SPAWN_AGENT_MODEL_OVERRIDE_DESCRIPTION.to_string(),
             )),
         ),
         (
@@ -715,8 +736,7 @@ fn spawn_agent_common_properties_v2(agent_type_description: &str) -> BTreeMap<St
         (
             "model".to_string(),
             JsonSchema::string(Some(
-                "Optional model override for the new agent. Replaces the inherited model."
-                    .to_string(),
+                SPAWN_AGENT_MODEL_OVERRIDE_DESCRIPTION.to_string(),
             )),
         ),
         (
@@ -746,7 +766,8 @@ fn spawn_agent_tool_description(
     let tool_description = format!(
         r#"
         {agent_role_guidance}
-        Spawn a sub-agent for a well-scoped task. {return_value_description}"#
+        Spawn a sub-agent for a well-scoped task. {return_value_description} {SPAWN_AGENT_INHERITED_MODEL_GUIDANCE}
+Do not set the `model` field unless the user explicitly asks for a different model or there is a clear task-specific reason."#
     );
 
     if !include_usage_hint {
@@ -780,6 +801,8 @@ fn spawn_agent_tool_description_v2(
         Spawns an agent to work on the specified task. If your current task is `/root/task1` and you spawn_agent with task_name "task_3" the agent will have canonical task name `/root/task1/task_3`.
 You are then able to refer to this agent as `task_3` or `/root/task1/task_3` interchangeably. However an agent `/root/task2/task_3` would only be able to communicate with this agent via its canonical name `/root/task1/task_3`.
 The spawned agent will have the same tools as you and the ability to spawn its own subagents.
+{SPAWN_AGENT_INHERITED_MODEL_GUIDANCE}
+Do not set the `model` field unless the user explicitly asks for a different model or there is a clear task-specific reason.
 It will be able to send you and other running agents messages, and its final answer will be provided to you when it finishes.
 The new agent's canonical task name will be provided to it along with the message."#
     );
@@ -809,7 +832,7 @@ fn default_spawn_agent_usage_hint(available_models_description: Option<&str>) ->
         })
         .unwrap_or_default();
     format!(
-        r#"This spawn_agent tool provides you access to smaller but more efficient sub-agents. A mini model can solve many tasks faster than the main model. You should follow the rules and guidelines below to use this tool.
+        r#"This spawn_agent tool provides access to sub-agents for bounded parallel work. You should follow the rules and guidelines below to use this tool.
 
 Only use `spawn_agent` if and only if the user explicitly asks for sub-agents, delegation, or parallel agent work.
 Requests for depth, thoroughness, research, investigation, or detailed codebase analysis do not count as permission to spawn.
@@ -862,10 +885,10 @@ fn spawn_agent_models_description(models: &[ModelPreset]) -> String {
         .filter(|model| model.show_in_interactive_picker())
         .collect();
     if visible_models.is_empty() {
-        return "No picker-visible models are currently loaded.".to_string();
+        return "No picker-visible model overrides are currently loaded.".to_string();
     }
 
-    visible_models
+    let model_descriptions = visible_models
         .into_iter()
         .map(|model| {
             let efforts = model
@@ -884,7 +907,10 @@ fn spawn_agent_models_description(models: &[ModelPreset]) -> String {
             )
         })
         .collect::<Vec<_>>()
-        .join("\n")
+        .join("\n");
+    format!(
+        "Available model overrides (optional; inherited parent model is preferred):\n{model_descriptions}"
+    )
 }
 
 fn wait_agent_tool_parameters_v1(options: WaitAgentTimeoutOptions) -> JsonSchema {
@@ -916,15 +942,41 @@ fn wait_agent_tool_parameters_v1(options: WaitAgentTimeoutOptions) -> JsonSchema
 }
 
 fn wait_agent_tool_parameters_v2(options: WaitAgentTimeoutOptions) -> JsonSchema {
-    let properties = BTreeMap::from([(
-        "timeout_ms".to_string(),
-        JsonSchema::number(Some(format!(
-            "Optional timeout in milliseconds. Defaults to {}, min {}, max {}.",
-            options.default_timeout_ms, options.min_timeout_ms, options.max_timeout_ms,
-        ))),
-    )]);
+    let properties = BTreeMap::from([
+        (
+            "targets".to_string(),
+            JsonSchema::array(
+                JsonSchema::string(/*description*/ None),
+                Some(
+                    "Agent ids or task-path references to wait on. Pass multiple targets to wait for whichever finishes first unless return_when=all."
+                        .to_string(),
+                ),
+            ),
+        ),
+        (
+            "timeout_ms".to_string(),
+            JsonSchema::number(Some(format!(
+                "Optional timeout in milliseconds. Defaults to {}, min {}, max {}. Prefer longer waits to avoid busy polling.",
+                options.default_timeout_ms, options.min_timeout_ms, options.max_timeout_ms,
+            ))),
+        ),
+        (
+            "return_when".to_string(),
+            JsonSchema::string_enum(
+                vec![
+                    serde_json::Value::String("any".to_string()),
+                    serde_json::Value::String("all".to_string()),
+                ],
+                Some("Whether the wait completes when any requested agent reaches terminal status or only after all requested agents are terminal.".to_string()),
+            ),
+        ),
+    ]);
 
-    JsonSchema::object(properties, /*required*/ None, Some(false.into()))
+    JsonSchema::object(
+        properties,
+        Some(vec!["targets".to_string()]),
+        Some(false.into()),
+    )
 }
 
 #[cfg(test)]

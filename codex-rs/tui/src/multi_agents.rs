@@ -433,6 +433,8 @@ pub(crate) fn waiting_end(ev: CollabWaitingEndEvent) -> PlainHistoryCell {
         } else {
             title_text("Waiting partially timed out")
         }
+    } else if matches!(completion_reason, CollabWaitingCompletionReason::Mailbox) {
+        title_text("Mailbox update received")
     } else {
         title_text("Finished waiting")
     };
@@ -441,6 +443,14 @@ pub(crate) fn waiting_end(ev: CollabWaitingEndEvent) -> PlainHistoryCell {
         #[allow(clippy::disallowed_methods)]
         details.push(Line::from(vec![
             Span::from("Pending: ").yellow(),
+            Span::from(format_thread_id_list(&pending_thread_ids)),
+        ]));
+    } else if matches!(completion_reason, CollabWaitingCompletionReason::Mailbox)
+        && !pending_thread_ids.is_empty()
+    {
+        #[allow(clippy::disallowed_methods)]
+        details.push(Line::from(vec![
+            Span::from("Still pending: ").yellow(),
             Span::from(format_thread_id_list(&pending_thread_ids)),
         ]));
     }
@@ -974,7 +984,7 @@ mod tests {
                 reasoning_effort: Some(ReasoningEffortConfig::Medium),
                 task_name: Some("Investigate /agent picker metadata display".to_string()),
                 approval_policy: Some(AskForApproval::OnRequest),
-                approvals_reviewer: Some(ApprovalsReviewer::GuardianSubagent),
+                approvals_reviewer: Some(ApprovalsReviewer::AutoReview),
                 sandbox_policy: Some(SandboxPolicy::new_workspace_write_policy()),
                 ..AgentPickerThreadUsage::default()
             },
@@ -1121,6 +1131,62 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n\n");
         assert_snapshot!("collab_wait_timeout", snapshot);
+    }
+
+    #[test]
+    fn collab_wait_mailbox_snapshot() {
+        let sender_thread_id = ThreadId::from_string("00000000-0000-0000-0000-000000000001")
+            .expect("valid sender thread id");
+        let robie_id = ThreadId::from_string("00000000-0000-0000-0000-000000000002")
+            .expect("valid robie thread id");
+        let bob_id = ThreadId::from_string("00000000-0000-0000-0000-000000000003")
+            .expect("valid bob thread id");
+
+        let waiting = waiting_begin(CollabWaitingBeginEvent {
+            sender_thread_id,
+            receiver_thread_ids: vec![robie_id, bob_id],
+            receiver_agents: vec![
+                CollabAgentRef {
+                    thread_id: robie_id,
+                    agent_nickname: Some("Robie".to_string()),
+                    agent_role: Some("explorer".to_string()),
+                },
+                CollabAgentRef {
+                    thread_id: bob_id,
+                    agent_nickname: Some("Bob".to_string()),
+                    agent_role: Some("worker".to_string()),
+                },
+            ],
+            call_id: "call-wait-mailbox".to_string(),
+        });
+
+        let mut statuses = HashMap::new();
+        statuses.insert(
+            robie_id,
+            AgentStatus::Completed(Some("39916800".to_string())),
+        );
+        let finished = waiting_end(CollabWaitingEndEvent {
+            sender_thread_id,
+            call_id: "call-wait-mailbox".to_string(),
+            agent_statuses: vec![CollabAgentStatusEntry {
+                thread_id: robie_id,
+                agent_nickname: Some("Robie".to_string()),
+                agent_role: Some("explorer".to_string()),
+                status: AgentStatus::Completed(Some("39916800".to_string())),
+            }],
+            statuses,
+            receiver_thread_ids: vec![robie_id, bob_id],
+            pending_thread_ids: vec![bob_id],
+            completion_reason: CollabWaitingCompletionReason::Mailbox,
+            timed_out: false,
+        });
+
+        let snapshot = [waiting, finished]
+            .iter()
+            .map(cell_to_text)
+            .collect::<Vec<_>>()
+            .join("\n\n");
+        assert_snapshot!("collab_wait_mailbox", snapshot);
     }
 
     #[test]

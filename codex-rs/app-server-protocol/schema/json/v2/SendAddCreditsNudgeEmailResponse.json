@@ -1,0 +1,22 @@
+{
+  "$defs": {
+    "AddCreditsNudgeEmailStatus": {
+      "enum": [
+        "sent",
+        "cooldown_active"
+      ],
+      "type": "string"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "status": {
+      "$ref": "#/$defs/AddCreditsNudgeEmailStatus"
+    }
+  },
+  "required": [
+    "status"
+  ],
+  "title": "SendAddCreditsNudgeEmailResponse",
+  "type": "object"
+}

@@ -119,6 +119,7 @@ fn session_configured_produces_thread_started_event() {
         approval_policy: AskForApproval::Never,
         approvals_reviewer: codex_protocol::config_types::ApprovalsReviewer::User,
         sandbox_policy: SandboxPolicy::new_read_only_policy(),
+        permission_profile: None,
         cwd: test_path_buf("/tmp/project").abs(),
         reasoning_effort: None,
         history_log_id: 0,
@@ -255,6 +256,7 @@ fn dynamic_tool_started_and_completed_translate_to_thread_events() {
         processor.collect_thread_events(ServerNotification::ItemStarted(ItemStartedNotification {
             item: ThreadItem::DynamicToolCall {
                 id: "dyn-1".to_string(),
+                namespace: None,
                 tool: "android_observe".to_string(),
                 arguments: json!({"scope": "screen_and_ui"}),
                 status: ApiDynamicToolCallStatus::InProgress,
@@ -292,6 +294,7 @@ fn dynamic_tool_started_and_completed_translate_to_thread_events() {
         ItemCompletedNotification {
             item: ThreadItem::DynamicToolCall {
                 id: "dyn-1".to_string(),
+                namespace: None,
                 tool: "android_observe".to_string(),
                 arguments: json!({"scope": "screen_and_ui"}),
                 status: ApiDynamicToolCallStatus::Completed,

@@ -59,6 +59,7 @@ pub struct HookPromptFragment {
 
 #[derive(Debug, Clone, Deserialize, Serialize, TS, JsonSchema, PartialEq, Eq)]
 pub struct SubagentNotificationItem {
+    #[serde(alias = "agent_path")]
     pub agent_id: String,
     pub status: AgentStatus,
 }

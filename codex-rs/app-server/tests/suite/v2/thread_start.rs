@@ -21,6 +21,7 @@ use codex_app_server_protocol::ThreadStatus;
 use codex_app_server_protocol::ThreadStatusChangedNotification;
 use codex_config::types::AuthCredentialsStoreMode;
 use codex_core::config::set_project_trust_level;
+use codex_core::config_loader::project_trust_key;
 use codex_exec_server::LOCAL_FS;
 use codex_git_utils::resolve_root_git_project_for_trust;
 use codex_login::REFRESH_TOKEN_URL_OVERRIDE_ENV_VAR;
@@ -63,7 +64,7 @@ async fn thread_start_creates_thread_and_emits_started() -> Result<()> {
     // Start a v2 thread with an explicit model override.
     let req_id = mcp
         .send_thread_start_request(ThreadStartParams {
-            model: Some("gpt-5.1".to_string()),
+            model: Some("gpt-5.2".to_string()),
             ..Default::default()
         })
         .await?;
@@ -413,7 +414,7 @@ async fn thread_start_ephemeral_remains_pathless() -> Result<()> {
 
     let req_id = mcp
         .send_thread_start_request(ThreadStartParams {
-            model: Some("gpt-5.1".to_string()),
+            model: Some("gpt-5.2".to_string()),
             ephemeral: Some(true),
             ..Default::default()
         })
@@ -722,7 +723,8 @@ model_reasoning_effort = "high"
     let trusted_root = resolve_root_git_project_for_trust(LOCAL_FS.as_ref(), &workspace_abs)
         .await
         .unwrap_or(workspace_abs);
-    assert!(config_toml.contains(&persisted_trust_path(trusted_root.as_path())));
+    let trusted_root_key = project_trust_key(trusted_root.as_path());
+    assert!(config_toml.contains(&trusted_root_key));
     assert!(config_toml.contains("trust_level = \"trusted\""));
 
     Ok(())
@@ -761,8 +763,10 @@ async fn thread_start_with_nested_git_cwd_trusts_repo_root() -> Result<()> {
     let trusted_root = resolve_root_git_project_for_trust(LOCAL_FS.as_ref(), &nested_abs)
         .await
         .expect("git root should resolve");
-    assert!(config_toml.contains(&persisted_trust_path(trusted_root.as_path())));
-    assert!(!config_toml.contains(&persisted_trust_path(&nested)));
+    let trusted_root_key = project_trust_key(trusted_root.as_path());
+    let nested_key = project_trust_key(&nested);
+    assert!(config_toml.contains(&trusted_root_key));
+    assert!(!config_toml.contains(&nested_key));
 
     Ok(())
 }
@@ -794,6 +798,44 @@ async fn thread_start_with_read_only_sandbox_does_not_persist_project_trust() ->
     let config_toml = std::fs::read_to_string(codex_home.path().join("config.toml"))?;
     assert!(!config_toml.contains("trust_level = \"trusted\""));
     assert!(!config_toml.contains(&workspace.path().display().to_string()));
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn thread_start_preserves_untrusted_project_trust() -> Result<()> {
+    let server = create_mock_responses_server_repeating_assistant("Done").await;
+
+    let codex_home = TempDir::new()?;
+    create_config_toml_without_approval_policy(codex_home.path(), &server.uri())?;
+
+    let workspace = TempDir::new()?;
+    let config_path = codex_home.path().join("config.toml");
+    let workspace_key = workspace.path().display().to_string();
+    let mut config_toml =
+        std::fs::read_to_string(&config_path)?.parse::<toml_edit::DocumentMut>()?;
+    config_toml["projects"][workspace_key.as_str()]["trust_level"] = toml_edit::value("untrusted");
+    std::fs::write(&config_path, config_toml.to_string())?;
+    let config_before = std::fs::read_to_string(&config_path)?;
+
+    let mut mcp = McpProcess::new(codex_home.path()).await?;
+    timeout(DEFAULT_READ_TIMEOUT, mcp.initialize()).await??;
+
+    let request_id = mcp
+        .send_thread_start_request(ThreadStartParams {
+            cwd: Some(workspace.path().display().to_string()),
+            sandbox: Some(SandboxMode::WorkspaceWrite),
+            ..Default::default()
+        })
+        .await?;
+    timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(request_id)),
+    )
+    .await??;
+
+    let config_after = std::fs::read_to_string(&config_path)?;
+    assert_eq!(config_after, config_before);
 
     Ok(())
 }
@@ -854,21 +896,6 @@ fn create_config_toml_without_approval_policy(
     create_config_toml_with_optional_approval_policy(
         codex_home, server_uri, /*approval_policy*/ None,
     )
-}
-
-fn persisted_trust_path(project_path: &Path) -> String {
-    let project_path =
-        std::fs::canonicalize(project_path).unwrap_or_else(|_| project_path.to_path_buf());
-    let project_path = project_path.display().to_string();
-
-    if let Some(project_path) = project_path.strip_prefix(r"\\?\UNC\") {
-        return format!(r"\\{project_path}");
-    }
-
-    project_path
-        .strip_prefix(r"\\?\")
-        .unwrap_or(&project_path)
-        .to_string()
 }
 
 fn create_config_toml_with_optional_approval_policy(

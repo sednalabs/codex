@@ -56,6 +56,7 @@ Use the canonical registry:
 - taxonomy choices
 - the decision that a change is a real divergence rather than derivative churn
 - lane ownership when the choice is subjective
+- The enforced audit command is `--code-only`, so docs-registry coverage is advisory unless a non-code audit path is run.
 
 ## Minimal Registry Shape
 

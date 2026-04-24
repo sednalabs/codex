@@ -637,9 +637,9 @@ async fn unified_exec_wait_after_final_agent_message_snapshot() {
         id: "turn-1".into(),
         msg: EventMsg::TurnStarted(TurnStartedEvent {
             turn_id: "turn-1".to_string(),
+            started_at: None,
             model_context_window: None,
             collaboration_mode_kind: ModeKind::Default,
-            started_at: None,
         }),
     });
 
@@ -649,7 +649,14 @@ async fn unified_exec_wait_after_final_agent_message_snapshot() {
     complete_assistant_message(&mut chat, "msg-1", "Final response.", /*phase*/ None);
     chat.handle_codex_event(Event {
         id: "turn-1".into(),
-        msg: EventMsg::TurnComplete(test_turn_complete_event("turn-1", Some("Final response."))),
+        msg: EventMsg::TurnComplete(TurnCompleteEvent {
+            turn_id: "turn-1".to_string(),
+            last_agent_message: Some("Final response.".into()),
+            compaction_events_in_turn: 0,
+            completed_at: None,
+            duration_ms: None,
+            time_to_first_token_ms: None,
+        }),
     });
 
     let cells = drain_insert_history(&mut rx);
@@ -667,9 +674,9 @@ async fn unified_exec_wait_before_streamed_agent_message_snapshot() {
         id: "turn-1".into(),
         msg: EventMsg::TurnStarted(TurnStartedEvent {
             turn_id: "turn-1".to_string(),
+            started_at: None,
             model_context_window: None,
             collaboration_mode_kind: ModeKind::Default,
-            started_at: None,
         }),
     });
 
@@ -689,10 +696,14 @@ async fn unified_exec_wait_before_streamed_agent_message_snapshot() {
     });
     chat.handle_codex_event(Event {
         id: "turn-1".into(),
-        msg: EventMsg::TurnComplete(test_turn_complete_event(
-            "turn-1",
-            /*last_agent_message*/ None::<String>,
-        )),
+        msg: EventMsg::TurnComplete(TurnCompleteEvent {
+            turn_id: "turn-1".to_string(),
+            last_agent_message: None,
+            compaction_events_in_turn: 0,
+            completed_at: None,
+            duration_ms: None,
+            time_to_first_token_ms: None,
+        }),
     });
 
     let cells = drain_insert_history(&mut rx);
@@ -754,10 +765,14 @@ async fn unified_exec_waiting_multiple_empty_snapshots() {
 
     chat.handle_codex_event(Event {
         id: "turn-wait-1".into(),
-        msg: EventMsg::TurnComplete(test_turn_complete_event(
-            "turn-1",
-            /*last_agent_message*/ None::<String>,
-        )),
+        msg: EventMsg::TurnComplete(TurnCompleteEvent {
+            turn_id: "turn-1".to_string(),
+            last_agent_message: None,
+            compaction_events_in_turn: 0,
+            completed_at: None,
+            duration_ms: None,
+            time_to_first_token_ms: None,
+        }),
     });
 
     let cells = drain_insert_history(&mut rx);
@@ -832,10 +847,14 @@ async fn unified_exec_non_empty_then_empty_snapshots() {
 
     chat.handle_codex_event(Event {
         id: "turn-wait-3".into(),
-        msg: EventMsg::TurnComplete(test_turn_complete_event(
-            "turn-1",
-            /*last_agent_message*/ None::<String>,
-        )),
+        msg: EventMsg::TurnComplete(TurnCompleteEvent {
+            turn_id: "turn-1".to_string(),
+            last_agent_message: None,
+            compaction_events_in_turn: 0,
+            completed_at: None,
+            duration_ms: None,
+            time_to_first_token_ms: None,
+        }),
     });
 
     let post_cells = drain_insert_history(&mut rx);
@@ -976,7 +995,7 @@ async fn user_shell_command_renders_output_not_exploring() {
 }
 
 #[tokio::test]
-async fn bang_shell_command_submits_run_user_shell_command_in_app_server_tui() {
+async fn bang_shell_enter_while_task_running_submits_run_user_shell_command() {
     let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
     let conversation_id = ThreadId::new();
     let rollout_file = NamedTempFile::new().unwrap();
@@ -990,6 +1009,7 @@ async fn bang_shell_command_submits_run_user_shell_command_in_app_server_tui() {
         approval_policy: AskForApproval::Never,
         approvals_reviewer: ApprovalsReviewer::User,
         sandbox_policy: SandboxPolicy::new_read_only_policy(),
+        permission_profile: None,
         cwd: test_path_buf("/home/user/project").abs(),
         reasoning_effort: Some(ReasoningEffortConfig::default()),
         history_log_id: 0,
@@ -1004,6 +1024,15 @@ async fn bang_shell_command_submits_run_user_shell_command_in_app_server_tui() {
     });
     drain_insert_history(&mut rx);
     while op_rx.try_recv().is_ok() {}
+    chat.handle_codex_event(Event {
+        id: "turn-start".into(),
+        msg: EventMsg::TurnStarted(TurnStartedEvent {
+            turn_id: "turn-1".to_string(),
+            started_at: None,
+            model_context_window: None,
+            collaboration_mode_kind: ModeKind::Default,
+        }),
+    });
 
     chat.bottom_pane
         .set_composer_text("!echo hi".to_string(), Vec::new(), Vec::new());
@@ -1017,68 +1046,76 @@ async fn bang_shell_command_submits_run_user_shell_command_in_app_server_tui() {
 }
 
 #[tokio::test]
-async fn model_slash_command_opens_picker_while_task_running() {
-    // Build a chat widget and simulate an active task
-    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
-    chat.thread_id = Some(ThreadId::new());
-    chat.bottom_pane.set_task_running(/*running*/ true);
-
-    // Dispatching /model while a task runs should open the picker immediately
-    // so the user can choose the exact model for queued follow-ups.
-    chat.dispatch_command(SlashCommand::Model);
-
-    // No queued-command history entry should be emitted for /model.
-    let cells = drain_insert_history(&mut rx);
-    assert!(
-        cells.is_empty(),
-        "expected /model to open picker instead of queueing a command message"
-    );
-
-    let area = Rect::new(0, 0, 80, chat.desired_height(/*width*/ 80));
-    let mut buf = ratatui::buffer::Buffer::empty(area);
-    chat.render(area, &mut buf);
-    let blob = format!("{buf:?}");
-    assert!(
-        blob.contains("Select Model"),
-        "expected model picker popup while task running, got {blob:?}"
-    );
-}
-
-#[tokio::test]
-async fn queued_follow_up_waits_for_model_picker_to_close() {
+async fn user_message_during_user_shell_command_is_queued_not_steered() {
     let (mut chat, _rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
     chat.thread_id = Some(ThreadId::new());
-    chat.bottom_pane.set_task_running(/*running*/ true);
-    chat.bottom_pane.set_composer_text(
-        "queued after model picker".to_string(),
-        Vec::new(),
-        Vec::new(),
+    chat.handle_codex_event(Event {
+        id: "turn-start".into(),
+        msg: EventMsg::TurnStarted(TurnStartedEvent {
+            turn_id: "turn-1".to_string(),
+            started_at: None,
+            model_context_window: None,
+            collaboration_mode_kind: ModeKind::Default,
+        }),
+    });
+    let begin = begin_exec_with_source(
+        &mut chat,
+        "user-shell-sleep",
+        "sleep 10",
+        ExecCommandSource::UserShell,
     );
+
+    assert!(chat.only_user_shell_commands_running());
+    chat.bottom_pane
+        .set_composer_text("hi".to_string(), Vec::new(), Vec::new());
     chat.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
 
-    chat.dispatch_command(SlashCommand::Model);
-    assert!(
-        chat.has_active_view(),
-        "expected model picker popup to be active"
-    );
+    assert_matches!(op_rx.try_recv(), Err(TryRecvError::Empty));
+    assert_eq!(chat.queued_user_message_texts(), vec!["hi".to_string()]);
 
-    chat.bottom_pane.set_task_running(/*running*/ false);
-    chat.maybe_send_next_queued_input();
+    end_exec(&mut chat, begin, "", "", /*exit_code*/ 0);
+    chat.handle_codex_event(Event {
+        id: "turn-complete".into(),
+        msg: EventMsg::TurnComplete(TurnCompleteEvent {
+            turn_id: "turn-1".to_string(),
+            last_agent_message: Some("done".to_string()),
+            compaction_events_in_turn: 0,
+            completed_at: None,
+            duration_ms: None,
+            time_to_first_token_ms: None,
+        }),
+    });
 
-    assert_no_submit_op(&mut op_rx);
-
-    chat.handle_key_event(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
-
-    match op_rx.try_recv() {
-        Ok(Op::UserTurn { items, .. }) => assert_eq!(
+    match next_submit_op(&mut op_rx) {
+        Op::UserTurn { items, .. } => assert_eq!(
             items,
             vec![UserInput::Text {
-                text: "queued after model picker".to_string(),
+                text: "hi".to_string(),
                 text_elements: Vec::new(),
             }]
         ),
-        other => panic!("expected queued user turn after closing model picker, got {other:?}"),
+        other => panic!("expected queued user message after shell completion, got {other:?}"),
     }
+    assert!(chat.queued_user_messages.is_empty());
+}
+
+#[tokio::test]
+async fn disabled_slash_command_while_task_running_snapshot() {
+    // Build a chat widget and simulate an active task
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.bottom_pane.set_task_running(/*running*/ true);
+
+    // Dispatch a command that is unavailable while a task runs (e.g., /model)
+    chat.dispatch_command(SlashCommand::Model);
+
+    // Drain history and snapshot the rendered error line(s)
+    let cells = drain_insert_history(&mut rx);
+    assert!(
+        !cells.is_empty(),
+        "expected an error message history cell to be emitted",
+    );
+    let blob = lines_to_single_string(cells.last().unwrap());
+    assert_chatwidget_snapshot!("disabled_slash_command_while_task_running_snapshot", blob);
 }
 
 //
@@ -1338,9 +1375,9 @@ async fn interrupt_preserves_unified_exec_wait_streak_snapshot() {
         id: "turn-1".into(),
         msg: EventMsg::TurnStarted(TurnStartedEvent {
             turn_id: "turn-1".to_string(),
+            started_at: None,
             model_context_window: None,
             collaboration_mode_kind: ModeKind::Default,
-            started_at: None,
         }),
     });
 
@@ -1376,10 +1413,14 @@ async fn turn_complete_keeps_unified_exec_processes() {
 
     chat.handle_codex_event(Event {
         id: "turn-1".into(),
-        msg: EventMsg::TurnComplete(test_turn_complete_event(
-            "turn-1",
-            /*last_agent_message*/ None::<String>,
-        )),
+        msg: EventMsg::TurnComplete(TurnCompleteEvent {
+            turn_id: "turn-1".to_string(),
+            last_agent_message: None,
+            compaction_events_in_turn: 0,
+            completed_at: None,
+            duration_ms: None,
+            time_to_first_token_ms: None,
+        }),
     });
 
     assert_eq!(chat.unified_exec_processes.len(), 2);

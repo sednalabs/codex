@@ -100,27 +100,22 @@ impl ToolHandler for Handler {
                     final_statuses.insert(*id, AgentStatus::NotFound);
                 }
                 Err(err) => {
-                    let mut statuses = HashMap::with_capacity(1);
-                    statuses.insert(*id, session.services.agent_control.get_status(*id).await);
-                    session
-                        .send_event(
-                            &turn,
-                            CollabWaitingEndEvent {
-                                sender_thread_id: session.conversation_id,
-                                call_id: call_id.clone(),
-                                agent_statuses: build_wait_agent_statuses(
-                                    &statuses,
-                                    &receiver_agents,
-                                ),
-                                statuses,
-                                receiver_thread_ids: receiver_thread_ids.clone(),
-                                pending_thread_ids: Vec::new(),
-                                completion_reason: CollabWaitingCompletionReason::Terminal,
-                                timed_out: false,
-                            }
-                            .into(),
-                        )
-                        .await;
+                    let statuses =
+                        collect_wait_statuses(session.as_ref(), &receiver_thread_ids).await;
+                    let pending_thread_ids =
+                        pending_wait_thread_ids(&receiver_thread_ids, &statuses);
+                    send_wait_end_event(
+                        session.as_ref(),
+                        turn.as_ref(),
+                        call_id.clone(),
+                        receiver_thread_ids.clone(),
+                        &receiver_agents,
+                        pending_thread_ids,
+                        CollabWaitingCompletionReason::Terminal,
+                        /*timed_out*/ false,
+                        statuses,
+                    )
+                    .await;
                     return Err(collab_agent_error(*id, err));
                 }
             }
@@ -166,9 +161,7 @@ impl ToolHandler for Handler {
         } else {
             CollabWaitingCompletionReason::Terminal
         };
-        let statuses_map = final_statuses.clone();
-        let statuses_by_id = statuses_map.clone();
-        let agent_statuses = build_wait_agent_statuses(&statuses_map, &receiver_agents);
+        let statuses_by_id = final_statuses.clone();
         let result = WaitAgentResult {
             message: if timed_out {
                 "Wait timed out.".to_string()
@@ -181,22 +174,18 @@ impl ToolHandler for Handler {
             timed_out,
         };
 
-        session
-            .send_event(
-                &turn,
-                CollabWaitingEndEvent {
-                    sender_thread_id: session.conversation_id,
-                    call_id,
-                    receiver_thread_ids,
-                    pending_thread_ids: pending_ids,
-                    completion_reason,
-                    timed_out,
-                    agent_statuses,
-                    statuses: statuses_by_id,
-                }
-                .into(),
-            )
-            .await;
+        send_wait_end_event(
+            session.as_ref(),
+            turn.as_ref(),
+            call_id,
+            receiver_thread_ids,
+            &receiver_agents,
+            pending_ids,
+            completion_reason,
+            timed_out,
+            statuses_by_id,
+        )
+        .await;
 
         Ok(result)
     }
