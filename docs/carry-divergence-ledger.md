@@ -11,15 +11,15 @@ docs-only refresh commit that records this snapshot.
 
 ## Audit Baseline
 
-- Audited on: `2026-04-23`
-- `upstream/main`: `d3b044938d245b519c1a5baefe880ef89e3a30c1`
-- downstream integration branch (`origin/integration/upstream-main-sync-20260423-141625`): `7dd5e0ebf3dab7c535a1402c97b3c5fc41e4ab18`
-- downstream branch `main` (`origin/main`) before merge: `e2babb7d2bbbe92dd7f3d4ed807a0414e3dd5bc0`
-- mirror branch `upstream-main` (`origin/upstream-main`): `d3b044938d245b519c1a5baefe880ef89e3a30c1`
-- integration branch vs `upstream/main`: `738` ahead, `0` behind
-- pre-merge `main` vs `upstream/main`: `716` ahead, `208` behind
+- Audited on: `2026-04-24`
+- `upstream/main`: `6f87eb0479018f0dd93db3f9f7b89902aebedb50`
+- downstream integration branch (`origin/integration/upstream-main-sync-20260424-164627`): `210e4a112b0edd4353832552b4f921f6a47ac090`
+- downstream branch `main` (`origin/main`) before merge: `9bf90e67f9e7597fb93bb888eb3d3f613d5ca37b`
+- mirror branch `upstream-main` (`origin/upstream-main`): `6f87eb0479018f0dd93db3f9f7b89902aebedb50`
+- integration branch vs `upstream/main`: `770` ahead, `0` behind
+- pre-merge `main` vs `upstream/main`: `766` ahead, `16` behind
 - Mirror vs `upstream/main`: `0` ahead, `0` behind (`exact`)
-- Downstream-only commits at audit time: `652` unique, `0` patch-equivalent
+- Downstream-only commits at audit time: `678` unique, `0` patch-equivalent
 
 ## Audit Rules
 
@@ -218,25 +218,6 @@ docs-only refresh commit that records this snapshot.
   - `docs/config.md`
   - `docs/downstream.md`
 
-### Startup Plugin Sync Bounded Wait And Curated-Repo Completion Re-Arm
-
-- Startup remote plugin sync keeps the initial curated-marketplace prerequisite
-  wait bounded to the startup race window, then parks the worker instead of
-  dropping the attempt when curated-repo sync is still in flight.
-- Curated-repo completion emits a signal that re-arms the parked worker so the
-  remote reconciliation resumes without a second concurrent sync; that wake now
-  happens on both success and failure paths.
-- While the worker is parked, repeated startup/config-triggered attempts still
-  collapse into a single in-process waiter, and they refresh the stored
-  config/auth snapshot that the eventual reconciliation will use.
-- The resumed reconciliation re-reads the latest snapshot before syncing, so
-  late config/auth updates made during the wait are still applied.
-- Primary files:
-  - `codex-rs/core/src/plugins/startup_sync.rs`
-  - `codex-rs/core/src/plugins/startup_sync_tests.rs`
-  - `docs/downstream.md`
-  - `docs/downstream-regression-matrix.md`
-
 ### TUI Session-State, Queue, Interrupt, And Usage Surfaces
 
 - Per-thread approval/sandbox/reviewer overrides survive thread switches.
@@ -317,6 +298,7 @@ docs-only refresh commit that records this snapshot.
   - TUI snapshot updates under `codex-rs/tui/src/**/snapshots/`
 - Structural test-only churn in large modules:
   - `codex-rs/core/src/plugins/manager.rs`
+  - startup plugin sync bounded wait and completion re-arm
   - `codex-rs/core/src/config/edit.rs`
   - `codex-rs/core/src/tools/spec.rs`
 

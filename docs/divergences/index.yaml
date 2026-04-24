@@ -328,7 +328,7 @@
     {
       "id": "startup-plugin-sync-bounded-wait",
       "title": "Startup plugin sync bounded wait and completion re-arm",
-      "status": "live",
+      "status": "upstream-equivalent",
       "category": "build-validation",
       "surface": [
         "startup sync wait",
@@ -339,10 +339,10 @@
         "codex-rs/core/src/plugins/startup_sync_tests.rs"
       ],
       "behavior": "Startup plugin sync waits only as long as the race window requires and re-arms after curated-repo completion.",
-      "upstream_equivalent": false,
+      "upstream_equivalent": true,
       "introduced_in": {
         "carry_commit": null,
-        "upstream_commit": null
+        "upstream_commit": "6f87eb0479018f0dd93db3f9f7b89902aebedb50"
       },
       "guardrail_lane": "codex.core-startup-sync-targeted",
       "tests": [
@@ -350,7 +350,7 @@
         "startup_remote_plugin_sync_rearms_after_curated_repo_completion_signal_uses_latest_config_and_auth_snapshot"
       ],
       "owner": "downstream",
-      "notes": "Keeps startup sync single-flight and bounded."
+      "notes": "No live code diff remains after the 2026-04-24 upstream sync; keep this as historical registry context only."
     },
     {
       "id": "tui-session-state-and-usage-surfaces",
