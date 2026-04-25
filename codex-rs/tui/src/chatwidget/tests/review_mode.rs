@@ -1403,8 +1403,6 @@ async fn direct_budget_limited_turn_uses_budget_message_snapshot() {
         msg: EventMsg::TurnAborted(codex_protocol::protocol::TurnAbortedEvent {
             turn_id: Some("turn-1".to_string()),
             reason: TurnAbortReason::BudgetLimited,
-            completed_at: None,
-            duration_ms: None,
         }),
     });
 
@@ -1434,8 +1432,6 @@ async fn budget_limited_turn_restores_queued_input_without_submitting() {
         msg: EventMsg::TurnAborted(codex_protocol::protocol::TurnAbortedEvent {
             turn_id: Some("turn-1".to_string()),
             reason: TurnAbortReason::BudgetLimited,
-            completed_at: None,
-            duration_ms: None,
         }),
     });
 
