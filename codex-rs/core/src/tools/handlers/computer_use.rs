@@ -25,8 +25,10 @@ use codex_tools::ToolName;
 use serde_json::Value;
 use serde_json::json;
 use std::sync::Arc;
+use std::time::Duration;
 use std::time::Instant;
 use tokio::sync::oneshot;
+use tokio::time::timeout;
 use tracing::warn;
 
 pub struct ComputerUseHandler;
@@ -37,6 +39,7 @@ pub struct ComputerUseOutput {
 }
 
 const ADAPTER_ANDROID: &str = "android";
+const DEFAULT_COMPUTER_USE_TIMEOUT: Duration = Duration::from_secs(120);
 
 impl ToolOutput for ComputerUseOutput {
     fn log_preview(&self) -> String {
@@ -161,13 +164,20 @@ impl ToolHandler for ComputerUseHandler {
 
         let args: Value = parse_arguments(&arguments)?;
         let output_tool_name = tool_name.display();
-        let response = request_computer_use(&session, turn.as_ref(), call_id, tool_name, args)
-            .await
-            .ok_or_else(|| {
-                FunctionCallError::RespondToModel(
-                    "computer-use call was cancelled before receiving a response".to_string(),
-                )
-            })?;
+        let response = request_computer_use(
+            &session,
+            turn.as_ref(),
+            call_id,
+            tool_name,
+            args,
+            DEFAULT_COMPUTER_USE_TIMEOUT,
+        )
+        .await
+        .ok_or_else(|| {
+            FunctionCallError::RespondToModel(
+                "computer-use call was cancelled before receiving a response".to_string(),
+            )
+        })?;
 
         let (mut body, success) = computer_use_response_content_for_model(response);
         sanitize_original_image_detail(
@@ -224,6 +234,7 @@ async fn request_computer_use(
     call_id: String,
     tool_name: ToolName,
     arguments: Value,
+    response_timeout: Duration,
 ) -> Option<ComputerUseResponse> {
     let tool = tool_name.name;
     let turn_id = turn_context.sub_id.clone();
@@ -285,7 +296,22 @@ async fn request_computer_use(
         .send_event(turn_context, EventMsg::ComputerUseCallRequest(request))
         .await;
 
-    let response = pending_response.await.ok();
+    let response = match timeout(response_timeout, pending_response).await {
+        Ok(Ok(response)) => Some(response),
+        Ok(Err(_)) => None,
+        Err(_) => {
+            let mut active = session.active_turn.lock().await;
+            if let Some(at) = active.as_mut() {
+                let mut ts = at.turn_state.lock().await;
+                ts.remove_pending_computer_use(&call_id);
+            }
+            let message = format!(
+                "computer-use call timed out after {} ms waiting for a client response",
+                response_timeout.as_millis()
+            );
+            Some(unavailable_response(&message))
+        }
+    };
 
     let response_event = match &response {
         Some(response) => EventMsg::ComputerUseCallResponse(ComputerUseCallResponseEvent {
@@ -348,6 +374,7 @@ mod tests {
     use crate::session::tests::make_session_and_context;
     use crate::session::tests::make_session_and_context_with_rx;
     use crate::session::turn_context::TurnEnvironment;
+    use crate::state::ActiveTurn;
     use crate::tools::context::ToolCallSource;
     use crate::tools::context::ToolInvocation;
     use crate::tools::context::ToolPayload;
@@ -497,6 +524,7 @@ mod tests {
             "call-no-env".to_string(),
             ToolName::plain(ANDROID_OBSERVE_TOOL_NAME),
             json!({ "scope": "screen_and_ui" }),
+            Duration::from_secs(1),
         )
         .await
         .expect("no-environment calls should return a local response");
@@ -524,6 +552,76 @@ mod tests {
                 .await
                 .is_err(),
             "no external ComputerUseCallRequest should be emitted"
+        );
+    }
+
+    #[tokio::test]
+    async fn computer_use_call_times_out_and_unregisters_pending_response() {
+        let (session, turn, rx) = make_session_and_context_with_rx().await;
+        *session.active_turn.lock().await = Some(ActiveTurn::default());
+
+        let response = request_computer_use(
+            &session,
+            &turn,
+            "call-timeout".to_string(),
+            ToolName::plain(ANDROID_OBSERVE_TOOL_NAME),
+            json!({ "scope": "screen_and_ui" }),
+            Duration::from_millis(1),
+        )
+        .await
+        .expect("timeout should return a structured failure response");
+
+        assert_eq!(
+            response,
+            ComputerUseResponse {
+                content_items: vec![ComputerUseOutputContentItem::InputText {
+                    text: "computer-use call timed out after 1 ms waiting for a client response"
+                        .to_string(),
+                }],
+                success: false,
+                error: Some(
+                    "computer-use call timed out after 1 ms waiting for a client response"
+                        .to_string(),
+                ),
+            }
+        );
+
+        let request_event = tokio::time::timeout(Duration::from_secs(1), rx.recv())
+            .await
+            .expect("computer-use request event should be emitted")
+            .expect("event channel should be open");
+        assert!(matches!(
+            request_event.msg,
+            EventMsg::ComputerUseCallRequest(request) if request.call_id == "call-timeout"
+        ));
+
+        let response_event = tokio::time::timeout(Duration::from_secs(1), rx.recv())
+            .await
+            .expect("computer-use timeout response event should be emitted")
+            .expect("event channel should be open");
+        let response_event = match response_event.msg {
+            EventMsg::ComputerUseCallResponse(response_event) => response_event,
+            other => panic!("expected computer-use response event, got {other:?}"),
+        };
+        assert_eq!(response_event.call_id, "call-timeout");
+        assert!(!response_event.success);
+        assert_eq!(response_event.error, response.error);
+
+        session
+            .notify_computer_use_response(
+                "call-timeout",
+                ComputerUseResponse {
+                    content_items: Vec::new(),
+                    success: true,
+                    error: None,
+                },
+            )
+            .await;
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), rx.recv())
+                .await
+                .is_err(),
+            "late client responses after timeout should not emit duplicate events"
         );
     }
 }
