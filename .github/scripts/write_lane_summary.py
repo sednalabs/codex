@@ -40,6 +40,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--cache-policy", default="")
     parser.add_argument("--cache-backend", default="")
     parser.add_argument("--sccache-restore-mode", default="")
+    parser.add_argument("--batch-id", default="")
+    parser.add_argument("--batch-index", default="")
+    parser.add_argument("--batch-lane-count", default="")
+    parser.add_argument("--batch-position", default="")
+    parser.add_argument("--batch-weight-seconds", default="")
+    parser.add_argument("--batch-setup-duration-ms", default="")
     parser.add_argument("--artifact-name", default="")
     parser.add_argument("--output", required=True)
     return parser.parse_args()
@@ -126,6 +132,12 @@ def main() -> None:
         "cache_policy": args.cache_policy or "unspecified",
         "cache_backend": args.cache_backend or "not-applicable",
         "sccache_restore_mode": args.sccache_restore_mode or "not-applicable",
+        "batch_id": args.batch_id or "",
+        "batch_index": parse_u64(args.batch_index),
+        "batch_lane_count": parse_u64(args.batch_lane_count),
+        "batch_position": parse_u64(args.batch_position),
+        "batch_weight_seconds": parse_u64(args.batch_weight_seconds),
+        "batch_setup_duration_ms": parse_u64(args.batch_setup_duration_ms),
         "log_available": bool(lines),
         "primary_signal": primary_signal(error_lines, tail_lines),
         "artifact_name": args.artifact_name or "",

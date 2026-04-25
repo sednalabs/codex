@@ -522,7 +522,7 @@
         "workflow sync job exports expected metadata"
       ],
       "owner": "downstream",
-      "notes": "Documents the downstream CI expansion that exercises extra lanes and housekeeping scripts. The sedna-sync-upstream job uses SEDNA_SYNC_UPSTREAM_PUSH_TOKEN (a PAT or machine-account token granted both contents:write and workflow:write) because the mirror updates workflow files."
+      "notes": "Documents the downstream CI expansion that exercises extra lanes and housekeeping scripts. The sedna-sync-upstream job mints a short-lived GitHub App installation token for the privileged upstream-main mirror write because that branch can include workflow files."
     },
     {
       "id": "codex-app-server-suite",
