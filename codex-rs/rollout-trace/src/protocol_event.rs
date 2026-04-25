@@ -11,6 +11,8 @@
 //! variants a compile-time prompt to decide whether the trace should capture
 //! them.
 
+use codex_protocol::computer_use::ComputerUseCallRequest;
+use codex_protocol::protocol::ComputerUseCallResponseEvent;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::ExecCommandBeginEvent;
 use codex_protocol::protocol::ExecCommandEndEvent;
@@ -102,6 +104,8 @@ pub(crate) enum ToolRuntimePayload<'a> {
     PatchApplyEnd(&'a PatchApplyEndEvent),
     McpToolCallBegin(&'a McpToolCallBeginEvent),
     McpToolCallEnd(&'a McpToolCallEndEvent),
+    ComputerUseCallRequest(&'a ComputerUseCallRequest),
+    ComputerUseCallResponse(&'a ComputerUseCallResponseEvent),
     CollabAgentSpawnBegin(&'a codex_protocol::protocol::CollabAgentSpawnBeginEvent),
     CollabAgentSpawnEnd(&'a codex_protocol::protocol::CollabAgentSpawnEndEvent),
     CollabAgentInteractionBegin(&'a codex_protocol::protocol::CollabAgentInteractionBeginEvent),
@@ -124,6 +128,8 @@ impl Serialize for ToolRuntimePayload<'_> {
             ToolRuntimePayload::PatchApplyEnd(event) => event.serialize(serializer),
             ToolRuntimePayload::McpToolCallBegin(event) => event.serialize(serializer),
             ToolRuntimePayload::McpToolCallEnd(event) => event.serialize(serializer),
+            ToolRuntimePayload::ComputerUseCallRequest(event) => event.serialize(serializer),
+            ToolRuntimePayload::ComputerUseCallResponse(event) => event.serialize(serializer),
             ToolRuntimePayload::CollabAgentSpawnBegin(event) => event.serialize(serializer),
             ToolRuntimePayload::CollabAgentSpawnEnd(event) => event.serialize(serializer),
             ToolRuntimePayload::CollabAgentInteractionBegin(event) => event.serialize(serializer),
@@ -172,6 +178,19 @@ pub(crate) fn tool_runtime_trace_event(event: &EventMsg) -> Option<ToolRuntimeTr
                 ExecutionStatus::Failed
             },
             payload: ToolRuntimePayload::McpToolCallEnd(event),
+        }),
+        EventMsg::ComputerUseCallRequest(event) => Some(ToolRuntimeTraceEvent::Started {
+            tool_call_id: &event.call_id,
+            payload: ToolRuntimePayload::ComputerUseCallRequest(event),
+        }),
+        EventMsg::ComputerUseCallResponse(event) => Some(ToolRuntimeTraceEvent::Ended {
+            tool_call_id: &event.call_id,
+            status: if event.success {
+                ExecutionStatus::Completed
+            } else {
+                ExecutionStatus::Failed
+            },
+            payload: ToolRuntimePayload::ComputerUseCallResponse(event),
         }),
         EventMsg::CollabAgentSpawnBegin(event) => Some(ToolRuntimeTraceEvent::Started {
             tool_call_id: &event.call_id,
@@ -323,6 +342,8 @@ pub(crate) fn wrapped_protocol_event_type(event: &EventMsg) -> Option<&'static s
         | EventMsg::McpStartupComplete(_)
         | EventMsg::McpToolCallBegin(_)
         | EventMsg::McpToolCallEnd(_)
+        | EventMsg::ComputerUseCallRequest(_)
+        | EventMsg::ComputerUseCallResponse(_)
         | EventMsg::WebSearchBegin(_)
         | EventMsg::WebSearchEnd(_)
         | EventMsg::ImageGenerationBegin(_)
@@ -409,5 +430,88 @@ fn execution_status_for_abort_reason(reason: &TurnAbortReason) -> ExecutionStatu
         | TurnAbortReason::Replaced
         | TurnAbortReason::ReviewEnded
         | TurnAbortReason::BudgetLimited => ExecutionStatus::Cancelled,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use codex_protocol::computer_use::ComputerUseOutputContentItem;
+    use pretty_assertions::assert_eq;
+    use serde_json::json;
+
+    use super::*;
+
+    #[test]
+    fn computer_use_call_request_is_tool_runtime_start() -> anyhow::Result<()> {
+        let request = ComputerUseCallRequest {
+            call_id: "call-1".to_string(),
+            turn_id: "turn-1".to_string(),
+            environment_id: Some("android-emulator".to_string()),
+            adapter: "android".to_string(),
+            tool: "android_observe".to_string(),
+            arguments: json!({ "scope": "screen_and_ui" }),
+        };
+        let event = EventMsg::ComputerUseCallRequest(request.clone());
+
+        let trace_event = tool_runtime_trace_event(&event).expect("tool runtime event");
+
+        match trace_event {
+            ToolRuntimeTraceEvent::Started {
+                tool_call_id,
+                payload,
+            } => {
+                assert_eq!(tool_call_id, "call-1");
+                assert_eq!(
+                    serde_json::to_value(&payload)?,
+                    serde_json::to_value(&request)?
+                );
+            }
+            ToolRuntimeTraceEvent::Ended { .. } => panic!("expected start event"),
+        }
+        assert_eq!(wrapped_protocol_event_type(&event), None);
+
+        Ok(())
+    }
+
+    #[test]
+    fn computer_use_call_response_is_tool_runtime_end() -> anyhow::Result<()> {
+        let response = ComputerUseCallResponseEvent {
+            call_id: "call-1".to_string(),
+            turn_id: "turn-1".to_string(),
+            environment_id: Some("android-emulator".to_string()),
+            adapter: "android".to_string(),
+            tool: "android_step".to_string(),
+            arguments: json!({ "action": "tap", "x": 10, "y": 20 }),
+            content_items: vec![ComputerUseOutputContentItem::InputText {
+                text: "Tapped button".to_string(),
+            }],
+            success: false,
+            error: Some("tap target unavailable".to_string()),
+            duration: Duration::from_millis(/*millis*/ 42),
+        };
+        let event = EventMsg::ComputerUseCallResponse(response.clone());
+
+        let trace_event = tool_runtime_trace_event(&event).expect("tool runtime event");
+
+        match trace_event {
+            ToolRuntimeTraceEvent::Ended {
+                tool_call_id,
+                status,
+                payload,
+            } => {
+                assert_eq!(tool_call_id, "call-1");
+                assert_eq!(status, ExecutionStatus::Failed);
+                assert_eq!(
+                    serde_json::to_value(&payload)?,
+                    serde_json::to_value(&response)?
+                );
+            }
+            ToolRuntimeTraceEvent::Started { .. } => panic!("expected end event"),
+        }
+        assert_eq!(wrapped_protocol_event_type(&event), None);
+
+        Ok(())
     }
 }
