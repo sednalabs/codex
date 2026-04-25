@@ -115,7 +115,9 @@ fn incompatible_split_policies_skip_legacy_landlock_flag() {
             access: FileSystemAccessMode::Write,
         },
         FileSystemSandboxEntry {
-            path: FileSystemPath::Path { path: nested },
+            path: FileSystemPath::Path {
+                path: nested.clone(),
+            },
             access: FileSystemAccessMode::Read,
         },
     ]);

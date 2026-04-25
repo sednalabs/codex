@@ -849,7 +849,7 @@ pub(crate) fn build_guardian_review_session_config(
     guardian_config.permissions.sandbox_policy =
         Constrained::allow_only(guardian_sandbox_policy.clone());
     guardian_config.permissions.file_system_sandbox_policy =
-        FileSystemSandboxPolicy::from_legacy_sandbox_policy(
+        FileSystemSandboxPolicy::from_legacy_sandbox_policy_for_cwd(
             &guardian_sandbox_policy,
             &guardian_config.cwd,
         );
@@ -1027,7 +1027,7 @@ mod tests {
         );
         assert_eq!(
             guardian_config.permissions.file_system_sandbox_policy,
-            FileSystemSandboxPolicy::from_legacy_sandbox_policy(
+            FileSystemSandboxPolicy::from_legacy_sandbox_policy_for_cwd(
                 &expected_sandbox_policy,
                 &guardian_config.cwd,
             )
