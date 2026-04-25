@@ -104,9 +104,10 @@
         "codex-rs/core/src/memories/phase2_attestation_tests.rs",
         "codex-rs/core/src/memories/tests.rs",
         "codex-rs/state/src/runtime/phase2_attestation.rs",
-        "codex-rs/state/migrations/0024_phase2_attestation_roots.sql"
+        "codex-rs/state/migrations/0024_phase2_attestation_roots.sql",
+        "codex-rs/state/migrations/0031_device_key_bindings.sql"
       ],
-      "behavior": "Downstream requires phase-2 attestation roots and fingerprints before consolidation can complete.",
+      "behavior": "Downstream requires phase-2 attestation roots and fingerprints before consolidation can complete, and preserves unique state migration versions when upstream migrations are replayed after downstream-only slots.",
       "upstream_equivalent": false,
       "introduced_in": {
         "carry_commit": null,
@@ -118,7 +119,7 @@
         "global_phase2_attestation_requirement_is_root_scoped"
       ],
       "owner": "downstream",
-      "notes": "Keeps the attestation gate coupled to the downstream state runtime."
+      "notes": "Keeps the attestation gate coupled to the downstream state runtime. Upstream device key bindings keep their SQL content but use the next free downstream migration version."
     },
     {
       "id": "cli-git-metadata-and-rebuild-triggers",
