@@ -187,6 +187,31 @@
       "needs_sccache": true
     },
     {
+      "lane_id": "codex.core-subagent-inspect-tree-fallback-targeted",
+      "groups": [
+        "core"
+      ],
+      "lane_sets": [
+        "all",
+        "subagents",
+        "core-carry"
+      ],
+      "setup_class": "rust_integration",
+      "summary_family": "subagent-surface",
+      "cost_class": "medium",
+      "working_directory": ".",
+      "script_path": ".github/scripts/validation-lanes/run-just-recipe.sh",
+      "script_args": [
+        "core-subagent-inspect-tree-fallback-targeted"
+      ],
+      "needs_just": true,
+      "needs_node": false,
+      "needs_nextest": false,
+      "needs_linux_build_deps": true,
+      "needs_dotslash": true,
+      "needs_sccache": true
+    },
+    {
       "lane_id": "codex.core-subagent-notification-contract-targeted",
       "groups": [
         "core"
