@@ -384,6 +384,8 @@ async fn run_codex_tool_session_inner(
                     | EventMsg::RequestPermissions(_)
                     | EventMsg::DynamicToolCallRequest(_)
                     | EventMsg::DynamicToolCallResponse(_)
+                    | EventMsg::ComputerUseCallRequest(_)
+                    | EventMsg::ComputerUseCallResponse(_)
                     | EventMsg::ContextCompacted(_)
                     | EventMsg::ModelReroute(_)
                     | EventMsg::ThreadRolledBack(_)
