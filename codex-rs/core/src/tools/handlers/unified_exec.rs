@@ -27,14 +27,16 @@ use crate::unified_exec::UnifiedExecError;
 use crate::unified_exec::UnifiedExecProcessManager;
 use crate::unified_exec::WriteStdinRequest;
 use crate::unified_exec::generate_chunk_id;
+use crate::unified_exec::resolve_max_tokens;
 use codex_features::Feature;
 use codex_otel::SessionTelemetry;
 use codex_otel::TOOL_CALL_UNIFIED_EXEC_METRIC;
-use codex_protocol::models::PermissionProfile;
+use codex_protocol::models::AdditionalPermissionProfile;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::TerminalInteractionEvent;
 use codex_shell_command::is_safe_command::is_known_safe_command;
 use codex_tools::UnifiedExecShellMode;
+use codex_utils_output_truncation::TruncationPolicy;
 use codex_utils_output_truncation::approx_token_count;
 use serde::Deserialize;
 use std::path::PathBuf;
@@ -68,7 +70,7 @@ pub(crate) struct ExecCommandArgs {
     #[serde(default)]
     sandbox_permissions: SandboxPermissions,
     #[serde(default)]
-    additional_permissions: Option<PermissionProfile>,
+    additional_permissions: Option<AdditionalPermissionProfile>,
     #[serde(default)]
     justification: Option<String>,
     #[serde(default)]
@@ -126,9 +128,9 @@ async fn complete_terminal_wait(
     heartbeat_interval_ms: Option<u64>,
     fallback_yield_time_ms: u64,
 ) -> Result<ExecCommandToolOutput, UnifiedExecError> {
-    let Some(process_id) = initial_response.process_id else {
+    if initial_response.process_id.is_none() {
         return Ok(initial_response);
-    };
+    }
 
     let started = Instant::now();
     let deadline = started + resolve_wait_budget(max_wait_ms);
@@ -164,6 +166,13 @@ async fn complete_terminal_wait(
     response.wall_time = wall_time;
     response.raw_output = raw_output;
     Ok(response)
+}
+
+fn effective_max_output_tokens(
+    max_output_tokens: Option<usize>,
+    truncation_policy: TruncationPolicy,
+) -> usize {
+    resolve_max_tokens(max_output_tokens).min(truncation_policy.token_budget())
 }
 
 impl ToolHandler for UnifiedExecHandler {
@@ -311,6 +320,8 @@ impl ToolHandler for UnifiedExecHandler {
                     prefix_rule,
                     ..
                 } = args;
+                let max_output_tokens =
+                    effective_max_output_tokens(max_output_tokens, turn.truncation_policy);
 
                 let exec_permission_approvals_enabled =
                     session.features().enabled(Feature::ExecPermissionApprovals);
@@ -391,7 +402,7 @@ impl ToolHandler for UnifiedExecHandler {
                         chunk_id: String::new(),
                         wall_time: std::time::Duration::ZERO,
                         raw_output: output.into_text().into_bytes(),
-                        max_output_tokens: None,
+                        max_output_tokens: Some(max_output_tokens),
                         process_id: None,
                         exit_code: None,
                         original_token_count: None,
@@ -407,7 +418,7 @@ impl ToolHandler for UnifiedExecHandler {
                             hook_command: hook_command.clone(),
                             process_id,
                             yield_time_ms,
-                            max_output_tokens,
+                            max_output_tokens: Some(max_output_tokens),
                             workdir,
                             network: context.turn.network.clone(),
                             tty,
@@ -432,7 +443,7 @@ impl ToolHandler for UnifiedExecHandler {
                             chunk_id: generate_chunk_id(),
                             wall_time: output.duration,
                             raw_output: output_text.into_bytes(),
-                            max_output_tokens,
+                            max_output_tokens: Some(max_output_tokens),
                             // Sandbox denial is terminal, so there is no live
                             // process for write_stdin to resume.
                             process_id: None,
@@ -474,12 +485,14 @@ impl ToolHandler for UnifiedExecHandler {
                     ));
                 }
 
+                let max_output_tokens =
+                    effective_max_output_tokens(args.max_output_tokens, turn.truncation_policy);
                 let response = manager
                     .write_stdin(WriteStdinRequest {
                         process_id: args.session_id,
                         input: &args.chars,
                         yield_time_ms: args.yield_time_ms,
-                        max_output_tokens: args.max_output_tokens,
+                        max_output_tokens: Some(max_output_tokens),
                     })
                     .await
                     .map_err(|err| {

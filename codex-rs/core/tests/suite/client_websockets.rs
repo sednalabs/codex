@@ -998,6 +998,7 @@ async fn responses_websocket_usage_limit_error_emits_rate_limit_event() {
         .build_with_websocket_server(&server)
         .await
         .expect("build websocket codex");
+    let session_model = test.session_configured.model.clone();
 
     let submission_id = test
         .codex
@@ -1024,7 +1025,7 @@ async fn responses_websocket_usage_limit_error_emits_rate_limit_event() {
         event_json,
         json!({
             "info": null,
-            "model_used": "gpt-5.4",
+            "model_used": session_model,
             "provider": "openai",
             "rate_limits": {
                 "limit_id": "codex",

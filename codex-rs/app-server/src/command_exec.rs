@@ -716,7 +716,6 @@ mod tests {
     use codex_protocol::config_types::WindowsSandboxLevel;
     use codex_protocol::permissions::FileSystemSandboxPolicy;
     use codex_protocol::permissions::NetworkSandboxPolicy;
-    use codex_protocol::protocol::ReadOnlyAccess;
     use codex_protocol::protocol::SandboxPolicy;
     use codex_utils_absolute_path::AbsolutePathBuf;
     use pretty_assertions::assert_eq;
@@ -735,7 +734,6 @@ mod tests {
 
     fn windows_sandbox_exec_request() -> ExecRequest {
         let sandbox_policy = SandboxPolicy::ReadOnly {
-            access: ReadOnlyAccess::FullAccess,
             network_access: false,
         };
         ExecRequest::new(
@@ -841,7 +839,6 @@ mod tests {
             request_id: codex_app_server_protocol::RequestId::Integer(100),
         };
         let sandbox_policy = SandboxPolicy::ReadOnly {
-            access: ReadOnlyAccess::FullAccess,
             network_access: false,
         };
 
@@ -1031,7 +1028,6 @@ mod tests {
         let (tx, rx) = mpsc::channel(2);
         let (response_tx, response_rx) = tokio::sync::oneshot::channel::<CommandExecResponse>();
         let sandbox_policy = SandboxPolicy::ReadOnly {
-            access: ReadOnlyAccess::FullAccess,
             network_access: false,
         };
         tokio::spawn({

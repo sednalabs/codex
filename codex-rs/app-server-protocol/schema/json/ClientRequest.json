@@ -1971,61 +1971,122 @@
       "type": "string"
     },
     "PermissionProfile": {
-      "properties": {
-        "fileSystem": {
-          "anyOf": [
-            {
+      "oneOf": [
+        {
+          "description": "Codex owns sandbox construction for this profile.",
+          "properties": {
+            "fileSystem": {
               "$ref": "#/$defs/PermissionProfileFileSystemPermissions"
             },
-            {
-              "type": "null"
-            }
-          ]
-        },
-        "network": {
-          "anyOf": [
-            {
+            "network": {
               "$ref": "#/$defs/PermissionProfileNetworkPermissions"
             },
-            {
-              "type": "null"
+            "type": {
+              "const": "managed",
+              "title": "ManagedPermissionProfileType",
+              "type": "string"
             }
-          ]
+          },
+          "required": [
+            "type",
+            "network",
+            "fileSystem"
+          ],
+          "title": "ManagedPermissionProfile",
+          "type": "object"
+        },
+        {
+          "description": "Do not apply an outer sandbox.",
+          "properties": {
+            "type": {
+              "const": "disabled",
+              "title": "DisabledPermissionProfileType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "title": "DisabledPermissionProfile",
+          "type": "object"
+        },
+        {
+          "description": "Filesystem isolation is enforced by an external caller.",
+          "properties": {
+            "network": {
+              "$ref": "#/$defs/PermissionProfileNetworkPermissions"
+            },
+            "type": {
+              "const": "external",
+              "title": "ExternalPermissionProfileType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "network"
+          ],
+          "title": "ExternalPermissionProfile",
+          "type": "object"
         }
-      },
-      "type": "object"
+      ]
     },
     "PermissionProfileFileSystemPermissions": {
-      "properties": {
-        "entries": {
-          "items": {
-            "$ref": "#/$defs/FileSystemSandboxEntry"
+      "oneOf": [
+        {
+          "properties": {
+            "entries": {
+              "items": {
+                "$ref": "#/$defs/FileSystemSandboxEntry"
+              },
+              "type": "array"
+            },
+            "globScanMaxDepth": {
+              "format": "uint",
+              "minimum": 1,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "type": {
+              "const": "restricted",
+              "title": "RestrictedPermissionProfileFileSystemPermissionsType",
+              "type": "string"
+            }
           },
-          "type": "array"
+          "required": [
+            "type",
+            "entries"
+          ],
+          "title": "RestrictedPermissionProfileFileSystemPermissions",
+          "type": "object"
         },
-        "globScanMaxDepth": {
-          "format": "uint",
-          "minimum": 1,
-          "type": [
-            "integer",
-            "null"
-          ]
+        {
+          "properties": {
+            "type": {
+              "const": "unrestricted",
+              "title": "UnrestrictedPermissionProfileFileSystemPermissionsType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "title": "UnrestrictedPermissionProfileFileSystemPermissions",
+          "type": "object"
         }
-      },
-      "required": [
-        "entries"
-      ],
-      "type": "object"
+      ]
     },
     "PermissionProfileNetworkPermissions": {
       "properties": {
         "enabled": {
-          "type": [
-            "boolean",
-            "null"
-          ]
+          "type": "boolean"
         }
       },
+      "required": [
+        "enabled"
+      ],
       "type": "object"
     },
     "Personality": {
@@ -2133,49 +2194,6 @@
         "pluginNames"
       ],
       "type": "object"
-    },
-    "ReadOnlyAccess": {
-      "oneOf": [
-        {
-          "properties": {
-            "includePlatformDefaults": {
-              "default": true,
-              "type": "boolean"
-            },
-            "readableRoots": {
-              "default": [],
-              "items": {
-                "$ref": "#/$defs/AbsolutePathBuf"
-              },
-              "type": "array"
-            },
-            "type": {
-              "const": "restricted",
-              "title": "RestrictedReadOnlyAccessType",
-              "type": "string"
-            }
-          },
-          "required": [
-            "type"
-          ],
-          "title": "RestrictedReadOnlyAccess",
-          "type": "object"
-        },
-        {
-          "properties": {
-            "type": {
-              "const": "fullAccess",
-              "title": "FullAccessReadOnlyAccessType",
-              "type": "string"
-            }
-          },
-          "required": [
-            "type"
-          ],
-          "title": "FullAccessReadOnlyAccess",
-          "type": "object"
-        }
-      ]
     },
     "RealtimeOutputModality": {
       "enum": [
@@ -3006,12 +3024,6 @@
         },
         {
           "properties": {
-            "access": {
-              "$ref": "#/$defs/ReadOnlyAccess",
-              "default": {
-                "type": "fullAccess"
-              }
-            },
             "networkAccess": {
               "default": false,
               "type": "boolean"
@@ -3059,12 +3071,6 @@
             "networkAccess": {
               "default": false,
               "type": "boolean"
-            },
-            "readOnlyAccess": {
-              "$ref": "#/$defs/ReadOnlyAccess",
-              "default": {
-                "type": "fullAccess"
-              }
             },
             "type": {
               "const": "workspaceWrite",
@@ -3414,6 +3420,71 @@
         "threadId"
       ],
       "type": "object"
+    },
+    "ThreadGoalClearParams": {
+      "properties": {
+        "threadId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "threadId"
+      ],
+      "type": "object"
+    },
+    "ThreadGoalGetParams": {
+      "properties": {
+        "threadId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "threadId"
+      ],
+      "type": "object"
+    },
+    "ThreadGoalSetParams": {
+      "properties": {
+        "objective": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "status": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ThreadGoalStatus"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "threadId": {
+          "type": "string"
+        },
+        "tokenBudget": {
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "threadId"
+      ],
+      "type": "object"
+    },
+    "ThreadGoalStatus": {
+      "enum": [
+        "active",
+        "paused",
+        "budgetLimited",
+        "complete"
+      ],
+      "type": "string"
     },
     "ThreadId": {
       "type": "string"
@@ -4099,6 +4170,16 @@
             "null"
           ]
         },
+        "environments": {
+          "description": "Optional sticky environments for this thread.\n\nOmitted selects the default environment when environment access is\nenabled. Empty disables environment access for turns that do not\nprovide a turn override. Non-empty selects the first environment as the\ncurrent turn environment.",
+          "items": {
+            "$ref": "#/$defs/TurnEnvironmentParams"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
         "ephemeral": {
           "type": [
             "boolean",
@@ -4345,7 +4426,7 @@
           "description": "Override the reasoning effort for this turn and subsequent turns."
         },
         "environments": {
-          "description": "Optional turn-scoped environment selections.",
+          "description": "Optional turn-scoped environments.\n\nOmitted uses the thread sticky environments. Empty disables\nenvironment access for this turn. Non-empty selects the first\nenvironment as the current turn environment for this turn.",
           "items": {
             "$ref": "#/$defs/TurnEnvironmentParams"
           },

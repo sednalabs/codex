@@ -3,6 +3,7 @@ use crate::config::ConfigBuilder;
 use crate::session::tests::make_session_and_context;
 use crate::session::tests::make_session_and_context_with_rx;
 use crate::state::ActiveTurn;
+use crate::test_support::models_manager_with_provider;
 use codex_config::CONFIG_TOML_FILE;
 use codex_config::config_toml::ConfigToml;
 use codex_config::types::AppConfig;
@@ -669,9 +670,13 @@ async fn mcp_tool_call_request_meta_includes_turn_metadata_for_custom_server() {
     )
     .expect("turn metadata json");
 
-    let meta =
-        build_mcp_tool_call_request_meta(&turn_context, "custom_server", /*metadata*/ None)
-            .expect("custom servers should receive turn metadata");
+    let meta = build_mcp_tool_call_request_meta(
+        &turn_context,
+        "custom_server",
+        "call-custom",
+        /*metadata*/ None,
+    )
+    .expect("custom servers should receive turn metadata");
 
     assert_eq!(
         meta,
@@ -716,14 +721,43 @@ async fn codex_apps_tool_call_request_meta_includes_turn_metadata_and_codex_apps
         build_mcp_tool_call_request_meta(
             &turn_context,
             CODEX_APPS_MCP_SERVER_NAME,
+            "call_abc123xyz789",
             Some(&metadata),
         ),
         Some(serde_json::json!({
             crate::X_CODEX_TURN_METADATA_HEADER: expected_turn_metadata,
             MCP_TOOL_CODEX_APPS_META_KEY: {
+                "call_id": "call_abc123xyz789",
                 "resource_uri": "connector://calendar/tools/calendar_create_event",
                 "contains_mcp_source": true,
                 "connector_id": "calendar",
+            },
+        }))
+    );
+}
+
+#[tokio::test]
+async fn codex_apps_tool_call_request_meta_includes_call_id_without_existing_codex_apps_meta() {
+    let (_, turn_context) = make_session_and_context().await;
+    let expected_turn_metadata = serde_json::from_str::<serde_json::Value>(
+        &turn_context
+            .turn_metadata_state
+            .current_header_value()
+            .expect("turn metadata header"),
+    )
+    .expect("turn metadata json");
+
+    assert_eq!(
+        build_mcp_tool_call_request_meta(
+            &turn_context,
+            CODEX_APPS_MCP_SERVER_NAME,
+            "call_abc123xyz789",
+            /*metadata*/ None,
+        ),
+        Some(serde_json::json!({
+            crate::X_CODEX_TURN_METADATA_HEADER: expected_turn_metadata,
+            MCP_TOOL_CODEX_APPS_META_KEY: {
+                "call_id": "call_abc123xyz789",
             },
         }))
     );
@@ -1492,11 +1526,11 @@ async fn guardian_mode_skips_auto_when_annotations_do_not_require_approval() {
     config.model_provider.base_url = Some(format!("{}/v1", server.uri()));
     config.approvals_reviewer = ApprovalsReviewer::AutoReview;
     let config = Arc::new(config);
-    let models_manager = Arc::new(crate::test_support::models_manager_with_provider(
+    let models_manager = models_manager_with_provider(
         config.codex_home.to_path_buf(),
         Arc::clone(&session.services.auth_manager),
         config.model_provider.clone(),
-    ));
+    );
     session.services.models_manager = models_manager;
     turn_context.config = Arc::clone(&config);
     turn_context.provider = create_model_provider(
@@ -1769,11 +1803,11 @@ async fn guardian_mode_mcp_denial_returns_rationale_message() {
     config.model_provider.base_url = Some(format!("{}/v1", server.uri()));
     config.approvals_reviewer = ApprovalsReviewer::AutoReview;
     let config = Arc::new(config);
-    let models_manager = Arc::new(crate::test_support::models_manager_with_provider(
+    let models_manager = models_manager_with_provider(
         config.codex_home.to_path_buf(),
         Arc::clone(&session.services.auth_manager),
         config.model_provider.clone(),
-    ));
+    );
     session.services.models_manager = models_manager;
     turn_context.config = Arc::clone(&config);
     turn_context.provider = create_model_provider(
@@ -2232,11 +2266,11 @@ async fn approve_mode_routes_arc_ask_user_to_guardian_when_guardian_reviewer_is_
     config.model_provider.base_url = Some(format!("{}/v1", server.uri()));
     config.approvals_reviewer = ApprovalsReviewer::AutoReview;
     let config = Arc::new(config);
-    let models_manager = Arc::new(crate::test_support::models_manager_with_provider(
+    let models_manager = models_manager_with_provider(
         config.codex_home.to_path_buf(),
         Arc::clone(&session.services.auth_manager),
         config.model_provider.clone(),
-    ));
+    );
     session.services.models_manager = models_manager;
     turn_context.config = Arc::clone(&config);
     turn_context.provider = create_model_provider(

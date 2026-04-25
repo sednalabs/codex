@@ -362,8 +362,6 @@ pub async fn run_main(cli: Cli, arg0_paths: Arg0DispatchPaths) -> anyhow::Result
         codex_self_exe: arg0_paths.codex_self_exe.clone(),
         codex_linux_sandbox_exe: arg0_paths.codex_linux_sandbox_exe.clone(),
         main_execve_wrapper_exe: arg0_paths.main_execve_wrapper_exe.clone(),
-        js_repl_node_path: None,
-        js_repl_node_module_dirs: None,
         zsh_path: None,
         base_instructions: None,
         developer_instructions: None,
@@ -2132,7 +2130,6 @@ mod tests {
             approvals_reviewer: codex_app_server_protocol::ApprovalsReviewer::AutoReview,
             sandbox: codex_app_server_protocol::SandboxPolicy::WorkspaceWrite {
                 writable_roots: vec![],
-                read_only_access: codex_app_server_protocol::ReadOnlyAccess::FullAccess,
                 network_access: false,
                 exclude_tmpdir_env_var: false,
                 exclude_slash_tmp: false,

@@ -17,6 +17,7 @@ use codex_execpolicy::RuleMatch;
 use codex_hooks::Hooks;
 use codex_hooks::HooksConfig;
 use codex_protocol::approvals::GuardianCommandSource;
+use codex_protocol::models::AdditionalPermissionProfile;
 use codex_protocol::models::FileSystemPermissions;
 use codex_protocol::models::PermissionProfile;
 use codex_protocol::permissions::FileSystemAccessMode;
@@ -27,7 +28,6 @@ use codex_protocol::permissions::FileSystemSpecialPath;
 use codex_protocol::permissions::NetworkSandboxPolicy;
 use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::GranularApprovalConfig;
-use codex_protocol::protocol::ReadOnlyAccess;
 use codex_protocol::protocol::SandboxPolicy;
 use codex_sandboxing::SandboxType;
 use codex_shell_escalation::EscalationExecution;
@@ -257,7 +257,7 @@ fn map_exec_result_preserves_stdout_and_stderr() {
 
 #[test]
 fn shell_request_escalation_execution_is_explicit() {
-    let requested_permissions = PermissionProfile {
+    let requested_permissions = AdditionalPermissionProfile {
         file_system: Some(FileSystemPermissions::from_read_write_roots(
             /*read*/ None,
             Some(vec![
@@ -268,7 +268,6 @@ fn shell_request_escalation_execution_is_explicit() {
     };
     let sandbox_policy = SandboxPolicy::WorkspaceWrite {
         writable_roots: vec![AbsolutePathBuf::from_absolute_path("/tmp/original/output").unwrap()],
-        read_only_access: ReadOnlyAccess::FullAccess,
         network_access: false,
         exclude_tmpdir_env_var: false,
         exclude_slash_tmp: false,

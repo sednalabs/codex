@@ -2,6 +2,9 @@ name: _validation-lane-workflow
 
 on:
   workflow_call:
+    secrets:
+      SEDNA_SYNC_UPSTREAM_PUSH_TOKEN:
+        required: false
     inputs:
       checkout_ref:
         required: false
@@ -139,6 +142,7 @@ jobs:
           WORKING_DIRECTORY: ${{ inputs.working_directory }}
           SCRIPT_PATH: ${{ inputs.script_path }}
           SCRIPT_ARGS_JSON: ${{ inputs.script_args_json }}
+          SYNC_UPSTREAM_PUSH_TOKEN: ${{ secrets.SEDNA_SYNC_UPSTREAM_PUSH_TOKEN }}
         run: |
           set -euo pipefail
           log_file="${RUNNER_TEMP}/validation-lane.log"

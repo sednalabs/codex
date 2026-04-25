@@ -1,5 +1,8 @@
 use super::*;
-use codex_protocol::protocol::ReadOnlyAccess;
+use codex_protocol::permissions::FileSystemAccessMode;
+use codex_protocol::permissions::FileSystemPath;
+use codex_protocol::permissions::FileSystemSandboxEntry;
+use codex_protocol::permissions::FileSystemSpecialPath;
 use codex_protocol::protocol::SandboxPolicy;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use pretty_assertions::assert_eq;
@@ -100,16 +103,24 @@ fn incompatible_split_policies_skip_legacy_landlock_flag() {
     let command_cwd = nested.as_path();
     let sandbox_policy = SandboxPolicy::WorkspaceWrite {
         writable_roots: vec![nested.clone()],
-        read_only_access: ReadOnlyAccess::Restricted {
-            include_platform_defaults: false,
-            readable_roots: vec![],
-        },
         network_access: false,
         exclude_tmpdir_env_var: true,
         exclude_slash_tmp: true,
     };
-    let file_system_sandbox_policy =
-        FileSystemSandboxPolicy::from_legacy_sandbox_policy(&sandbox_policy, cwd.path());
+    let file_system_sandbox_policy = FileSystemSandboxPolicy::restricted(vec![
+        FileSystemSandboxEntry {
+            path: FileSystemPath::Special {
+                value: FileSystemSpecialPath::CurrentWorkingDirectory,
+            },
+            access: FileSystemAccessMode::Write,
+        },
+        FileSystemSandboxEntry {
+            path: FileSystemPath::Path {
+                path: nested.clone(),
+            },
+            access: FileSystemAccessMode::Read,
+        },
+    ]);
     let network_sandbox_policy = NetworkSandboxPolicy::Restricted;
 
     let args = create_linux_sandbox_command_args_for_policies(

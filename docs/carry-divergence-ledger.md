@@ -11,15 +11,15 @@ docs-only refresh commit that records this snapshot.
 
 ## Audit Baseline
 
-- Audited on: `2026-04-23`
-- `upstream/main`: `d3b044938d245b519c1a5baefe880ef89e3a30c1`
-- downstream integration branch (`origin/integration/upstream-main-sync-20260423-141625`): `7dd5e0ebf3dab7c535a1402c97b3c5fc41e4ab18`
-- downstream branch `main` (`origin/main`) before merge: `e2babb7d2bbbe92dd7f3d4ed807a0414e3dd5bc0`
-- mirror branch `upstream-main` (`origin/upstream-main`): `d3b044938d245b519c1a5baefe880ef89e3a30c1`
-- integration branch vs `upstream/main`: `738` ahead, `0` behind
-- pre-merge `main` vs `upstream/main`: `716` ahead, `208` behind
+- Audited on: `2026-04-25`
+- `upstream/main`: `a2db6f97fb9353edfbcb82ea4fbb89c8346d1222`
+- downstream integration branch (`origin/integration/upstream-main-sync-20260424-164627`): `a96c652a5becca0c6ed97d31c232d418e115b893`
+- downstream branch `main` (`origin/main`) before merge: `a06b1bdb08c0c863b0f499589f096cd3cdd0c9f1`
+- mirror branch `upstream-main` (`origin/upstream-main`): `a2db6f97fb9353edfbcb82ea4fbb89c8346d1222`
+- integration branch vs `upstream/main`: `790` ahead, `0` behind
+- pre-merge `main` vs `upstream/main`: `769` ahead, `57` behind
 - Mirror vs `upstream/main`: `0` ahead, `0` behind (`exact`)
-- Downstream-only commits at audit time: `652` unique, `0` patch-equivalent
+- Downstream-only commits at audit time: `694` unique, `0` patch-equivalent
 
 ## Audit Rules
 
@@ -106,12 +106,22 @@ docs-only refresh commit that records this snapshot.
   reuse existing outputs while drifted or tampered artifacts are rejected.
 - This is an intentional downstream carry, not derivative test churn: losing
   the attestation runtime while keeping the attestation tests is a regression.
+- Because these downstream state migrations occupy slots that upstream did not
+  have at the time they were introduced, later upstream migrations may need to
+  be replayed into the next free downstream migration version while preserving
+  their SQL content. Current examples include upstream's device-key binding
+  table (`0028_device_key_bindings.sql` upstream, `0031_device_key_bindings.sql`
+  downstream) and upstream's thread-goals table (`0029_thread_goals.sql`
+  upstream, `0032_thread_goals.sql` downstream), avoiding collisions with the
+  already-shipped downstream `0028` through `0031` migration versions.
 - Primary files:
   - `codex-rs/core/src/memories/phase2.rs`
   - `codex-rs/core/src/memories/phase2_attestation_tests.rs`
   - `codex-rs/core/src/memories/tests.rs`
   - `codex-rs/state/src/runtime/phase2_attestation.rs`
   - `codex-rs/state/migrations/0024_phase2_attestation_roots.sql`
+  - `codex-rs/state/migrations/0031_device_key_bindings.sql`
+  - `codex-rs/state/migrations/0032_thread_goals.sql`
   - `docs/memories.md`
 
 ### Release Metadata And Rebuild Triggers
@@ -218,25 +228,6 @@ docs-only refresh commit that records this snapshot.
   - `docs/config.md`
   - `docs/downstream.md`
 
-### Startup Plugin Sync Bounded Wait And Curated-Repo Completion Re-Arm
-
-- Startup remote plugin sync keeps the initial curated-marketplace prerequisite
-  wait bounded to the startup race window, then parks the worker instead of
-  dropping the attempt when curated-repo sync is still in flight.
-- Curated-repo completion emits a signal that re-arms the parked worker so the
-  remote reconciliation resumes without a second concurrent sync; that wake now
-  happens on both success and failure paths.
-- While the worker is parked, repeated startup/config-triggered attempts still
-  collapse into a single in-process waiter, and they refresh the stored
-  config/auth snapshot that the eventual reconciliation will use.
-- The resumed reconciliation re-reads the latest snapshot before syncing, so
-  late config/auth updates made during the wait are still applied.
-- Primary files:
-  - `codex-rs/core/src/plugins/startup_sync.rs`
-  - `codex-rs/core/src/plugins/startup_sync_tests.rs`
-  - `docs/downstream.md`
-  - `docs/downstream-regression-matrix.md`
-
 ### TUI Session-State, Queue, Interrupt, And Usage Surfaces
 
 - Per-thread approval/sandbox/reviewer overrides survive thread switches.
@@ -317,6 +308,7 @@ docs-only refresh commit that records this snapshot.
   - TUI snapshot updates under `codex-rs/tui/src/**/snapshots/`
 - Structural test-only churn in large modules:
   - `codex-rs/core/src/plugins/manager.rs`
+  - startup plugin sync bounded wait and completion re-arm
   - `codex-rs/core/src/config/edit.rs`
   - `codex-rs/core/src/tools/spec.rs`
 

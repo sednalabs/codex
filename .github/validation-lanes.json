@@ -1027,6 +1027,7 @@
         "workflow_docs"
       ],
       "setup_class": "workflow",
+      "checkout_fetch_depth": 0,
       "working_directory": ".",
       "script_path": ".github/scripts/validation-lanes/downstream-docs-check.sh",
       "script_args": [],
@@ -1110,9 +1111,11 @@
         ".github/scripts/resolve_rust_ci_mode.py",
         ".github/scripts/resolve_validation_plan.py",
         ".github/scripts/test_ci_planners.py",
+        ".github/scripts/validation-lanes/downstream-docs-check.sh",
         "docs/downstream-regression-matrix.md",
         "docs/github-ci-offload.md",
         "docs/validation_workflow.md",
+        "scripts/downstream-divergence-audit.py",
         "justfile"
       ],
       "required_any_paths": [
@@ -1132,7 +1135,9 @@
         ".github/scripts/check_markdown_links.py",
         ".github/scripts/resolve_rust_ci_mode.py",
         ".github/scripts/resolve_validation_plan.py",
-        ".github/scripts/test_ci_planners.py"
+        ".github/scripts/test_ci_planners.py",
+        ".github/scripts/validation-lanes/downstream-docs-check.sh",
+        "scripts/downstream-divergence-audit.py"
       ]
     },
     {
@@ -1508,7 +1513,9 @@
         "docs/downstream.md",
         "docs/carry-divergence-ledger.md",
         "docs/downstream-regression-matrix.md",
-        "docs/downstream-tool-surface-matrix.md"
+        "docs/downstream-tool-surface-matrix.md",
+        "docs/downstream-divergence-tracking.md",
+        "docs/divergences/index.yaml"
       ]
     }
   ]

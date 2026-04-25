@@ -7,6 +7,7 @@ use crate::RequestId;
 use crate::protocol::common::AuthMode;
 use codex_experimental_api_macros::ExperimentalApi;
 use codex_protocol::account::PlanType;
+use codex_protocol::account::ProviderAccount;
 use codex_protocol::approvals::ElicitationRequest as CoreElicitationRequest;
 use codex_protocol::approvals::ExecPolicyAmendment as CoreExecPolicyAmendment;
 use codex_protocol::approvals::GuardianAssessmentAction as CoreGuardianAssessmentAction;
@@ -38,7 +39,9 @@ use codex_protocol::mcp::ResourceTemplate as McpResourceTemplate;
 use codex_protocol::mcp::Tool as McpTool;
 use codex_protocol::memory_citation::MemoryCitation as CoreMemoryCitation;
 use codex_protocol::memory_citation::MemoryCitationEntry as CoreMemoryCitationEntry;
+use codex_protocol::models::AdditionalPermissionProfile as CoreAdditionalPermissionProfile;
 use codex_protocol::models::FileSystemPermissions as CoreFileSystemPermissions;
+use codex_protocol::models::ManagedFileSystemPermissions as CoreManagedFileSystemPermissions;
 use codex_protocol::models::MessagePhase;
 use codex_protocol::models::NetworkPermissions as CoreNetworkPermissions;
 use codex_protocol::models::PermissionProfile as CorePermissionProfile;
@@ -52,6 +55,7 @@ use codex_protocol::permissions::FileSystemAccessMode as CoreFileSystemAccessMod
 use codex_protocol::permissions::FileSystemPath as CoreFileSystemPath;
 use codex_protocol::permissions::FileSystemSandboxEntry as CoreFileSystemSandboxEntry;
 use codex_protocol::permissions::FileSystemSpecialPath as CoreFileSystemSpecialPath;
+use codex_protocol::permissions::NetworkSandboxPolicy as CoreNetworkSandboxPolicy;
 use codex_protocol::plan_tool::PlanItemArg as CorePlanItemArg;
 use codex_protocol::plan_tool::StepStatus as CorePlanStepStatus;
 use codex_protocol::protocol::AgentStatus as CoreAgentStatus;
@@ -79,7 +83,6 @@ use codex_protocol::protocol::PatchApplyStatus as CorePatchApplyStatus;
 use codex_protocol::protocol::RateLimitReachedType as CoreRateLimitReachedType;
 use codex_protocol::protocol::RateLimitSnapshot as CoreRateLimitSnapshot;
 use codex_protocol::protocol::RateLimitWindow as CoreRateLimitWindow;
-use codex_protocol::protocol::ReadOnlyAccess as CoreReadOnlyAccess;
 use codex_protocol::protocol::RealtimeAudioFrame as CoreRealtimeAudioFrame;
 use codex_protocol::protocol::RealtimeConversationVersion;
 use codex_protocol::protocol::RealtimeOutputModality;
@@ -93,6 +96,7 @@ use codex_protocol::protocol::SkillMetadata as CoreSkillMetadata;
 use codex_protocol::protocol::SkillScope as CoreSkillScope;
 use codex_protocol::protocol::SkillToolDependency as CoreSkillToolDependency;
 use codex_protocol::protocol::SubAgentSource as CoreSubAgentSource;
+use codex_protocol::protocol::ThreadGoalStatus as CoreThreadGoalStatus;
 use codex_protocol::protocol::TokenUsage as CoreTokenUsage;
 use codex_protocol::protocol::TokenUsageInfo as CoreTokenUsageInfo;
 use codex_protocol::request_permissions::PermissionGrantScope as CorePermissionGrantScope;
@@ -837,10 +841,6 @@ const fn default_enabled() -> bool {
     true
 }
 
-const fn default_include_platform_defaults() -> bool {
-    true
-}
-
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS, ExperimentalApi)]
 #[serde(rename_all = "snake_case")]
 #[ts(export_to = "v2/")]
@@ -1387,7 +1387,7 @@ pub struct AdditionalNetworkPermissions {
 #[serde(rename_all = "camelCase")]
 #[ts(export_to = "v2/")]
 pub struct PermissionProfileNetworkPermissions {
-    pub enabled: Option<bool>,
+    pub enabled: bool,
 }
 
 impl From<CoreNetworkPermissions> for AdditionalNetworkPermissions {
@@ -1406,18 +1406,20 @@ impl From<AdditionalNetworkPermissions> for CoreNetworkPermissions {
     }
 }
 
-impl From<CoreNetworkPermissions> for PermissionProfileNetworkPermissions {
-    fn from(value: CoreNetworkPermissions) -> Self {
+impl From<CoreNetworkSandboxPolicy> for PermissionProfileNetworkPermissions {
+    fn from(value: CoreNetworkSandboxPolicy) -> Self {
         Self {
-            enabled: value.enabled,
+            enabled: value.is_enabled(),
         }
     }
 }
 
-impl From<PermissionProfileNetworkPermissions> for CoreNetworkPermissions {
+impl From<PermissionProfileNetworkPermissions> for CoreNetworkSandboxPolicy {
     fn from(value: PermissionProfileNetworkPermissions) -> Self {
-        Self {
-            enabled: value.enabled,
+        if value.enabled {
+            Self::Enabled
+        } else {
+            Self::Restricted
         }
     }
 }
@@ -1565,65 +1567,111 @@ impl From<FileSystemSandboxEntry> for CoreFileSystemSandboxEntry {
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
-#[serde(rename_all = "camelCase")]
+#[serde(tag = "type", rename_all = "camelCase")]
+#[ts(tag = "type")]
 #[ts(export_to = "v2/")]
-pub struct PermissionProfileFileSystemPermissions {
-    pub entries: Vec<FileSystemSandboxEntry>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
-    pub glob_scan_max_depth: Option<NonZeroUsize>,
+pub enum PermissionProfileFileSystemPermissions {
+    #[serde(rename_all = "camelCase")]
+    #[ts(rename_all = "camelCase")]
+    Restricted {
+        entries: Vec<FileSystemSandboxEntry>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        glob_scan_max_depth: Option<NonZeroUsize>,
+    },
+    Unrestricted,
 }
 
-impl From<CoreFileSystemPermissions> for PermissionProfileFileSystemPermissions {
-    fn from(value: CoreFileSystemPermissions) -> Self {
-        Self {
-            entries: value
-                .entries
-                .into_iter()
-                .map(FileSystemSandboxEntry::from)
-                .collect(),
-            glob_scan_max_depth: value.glob_scan_max_depth,
+impl From<CoreManagedFileSystemPermissions> for PermissionProfileFileSystemPermissions {
+    fn from(value: CoreManagedFileSystemPermissions) -> Self {
+        match value {
+            CoreManagedFileSystemPermissions::Restricted {
+                entries,
+                glob_scan_max_depth,
+            } => Self::Restricted {
+                entries: entries
+                    .into_iter()
+                    .map(FileSystemSandboxEntry::from)
+                    .collect(),
+                glob_scan_max_depth,
+            },
+            CoreManagedFileSystemPermissions::Unrestricted => Self::Unrestricted,
         }
     }
 }
 
-impl From<PermissionProfileFileSystemPermissions> for CoreFileSystemPermissions {
+impl From<PermissionProfileFileSystemPermissions> for CoreManagedFileSystemPermissions {
     fn from(value: PermissionProfileFileSystemPermissions) -> Self {
-        Self {
-            entries: value
-                .entries
-                .into_iter()
-                .map(CoreFileSystemSandboxEntry::from)
-                .collect(),
-            glob_scan_max_depth: value.glob_scan_max_depth,
+        match value {
+            PermissionProfileFileSystemPermissions::Restricted {
+                entries,
+                glob_scan_max_depth,
+            } => Self::Restricted {
+                entries: entries
+                    .into_iter()
+                    .map(CoreFileSystemSandboxEntry::from)
+                    .collect(),
+                glob_scan_max_depth,
+            },
+            PermissionProfileFileSystemPermissions::Unrestricted => Self::Unrestricted,
         }
     }
 }
 
-#[derive(Serialize, Deserialize, Debug, Default, Clone, PartialEq, Eq, JsonSchema, TS)]
-#[serde(rename_all = "camelCase")]
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
+#[serde(tag = "type", rename_all = "camelCase")]
+#[ts(tag = "type")]
 #[ts(export_to = "v2/")]
-pub struct PermissionProfile {
-    pub network: Option<PermissionProfileNetworkPermissions>,
-    pub file_system: Option<PermissionProfileFileSystemPermissions>,
+pub enum PermissionProfile {
+    /// Codex owns sandbox construction for this profile.
+    #[serde(rename_all = "camelCase")]
+    #[ts(rename_all = "camelCase")]
+    Managed {
+        network: PermissionProfileNetworkPermissions,
+        file_system: PermissionProfileFileSystemPermissions,
+    },
+    /// Do not apply an outer sandbox.
+    Disabled,
+    /// Filesystem isolation is enforced by an external caller.
+    #[serde(rename_all = "camelCase")]
+    #[ts(rename_all = "camelCase")]
+    External {
+        network: PermissionProfileNetworkPermissions,
+    },
 }
 
 impl From<CorePermissionProfile> for PermissionProfile {
     fn from(value: CorePermissionProfile) -> Self {
-        Self {
-            network: value.network.map(PermissionProfileNetworkPermissions::from),
-            file_system: value
-                .file_system
-                .map(PermissionProfileFileSystemPermissions::from),
+        match value {
+            CorePermissionProfile::Managed {
+                file_system,
+                network,
+            } => Self::Managed {
+                network: network.into(),
+                file_system: file_system.into(),
+            },
+            CorePermissionProfile::Disabled => Self::Disabled,
+            CorePermissionProfile::External { network } => Self::External {
+                network: network.into(),
+            },
         }
     }
 }
 
 impl From<PermissionProfile> for CorePermissionProfile {
     fn from(value: PermissionProfile) -> Self {
-        Self {
-            network: value.network.map(CoreNetworkPermissions::from),
-            file_system: value.file_system.map(CoreFileSystemPermissions::from),
+        match value {
+            PermissionProfile::Managed {
+                file_system,
+                network,
+            } => Self::Managed {
+                file_system: file_system.into(),
+                network: network.into(),
+            },
+            PermissionProfile::Disabled => Self::Disabled,
+            PermissionProfile::External { network } => Self::External {
+                network: network.into(),
+            },
         }
     }
 }
@@ -1632,12 +1680,13 @@ impl From<PermissionProfile> for CorePermissionProfile {
 #[serde(rename_all = "camelCase")]
 #[ts(export_to = "v2/")]
 pub struct AdditionalPermissionProfile {
+    /// Partial overlay used for per-command permission requests.
     pub network: Option<AdditionalNetworkPermissions>,
     pub file_system: Option<AdditionalFileSystemPermissions>,
 }
 
-impl From<CorePermissionProfile> for AdditionalPermissionProfile {
-    fn from(value: CorePermissionProfile) -> Self {
+impl From<CoreAdditionalPermissionProfile> for AdditionalPermissionProfile {
+    fn from(value: CoreAdditionalPermissionProfile) -> Self {
         Self {
             network: value.network.map(AdditionalNetworkPermissions::from),
             file_system: value.file_system.map(AdditionalFileSystemPermissions::from),
@@ -1645,7 +1694,7 @@ impl From<CorePermissionProfile> for AdditionalPermissionProfile {
     }
 }
 
-impl From<AdditionalPermissionProfile> for CorePermissionProfile {
+impl From<AdditionalPermissionProfile> for CoreAdditionalPermissionProfile {
     fn from(value: AdditionalPermissionProfile) -> Self {
         Self {
             network: value.network.map(CoreNetworkPermissions::from),
@@ -1666,7 +1715,7 @@ pub struct GrantedPermissionProfile {
     pub file_system: Option<AdditionalFileSystemPermissions>,
 }
 
-impl From<GrantedPermissionProfile> for CorePermissionProfile {
+impl From<GrantedPermissionProfile> for CoreAdditionalPermissionProfile {
     fn from(value: GrantedPermissionProfile) -> Self {
         Self {
             network: value.network.map(CoreNetworkPermissions::from),
@@ -1698,54 +1747,7 @@ pub enum NetworkAccess {
     Enabled,
 }
 
-#[derive(Serialize, Deserialize, Debug, Default, Clone, PartialEq, Eq, JsonSchema, TS)]
-#[serde(tag = "type", rename_all = "camelCase")]
-#[ts(tag = "type")]
-#[ts(export_to = "v2/")]
-pub enum ReadOnlyAccess {
-    #[serde(rename_all = "camelCase")]
-    #[ts(rename_all = "camelCase")]
-    Restricted {
-        #[serde(default = "default_include_platform_defaults")]
-        include_platform_defaults: bool,
-        #[serde(default)]
-        readable_roots: Vec<AbsolutePathBuf>,
-    },
-    #[default]
-    FullAccess,
-}
-
-impl ReadOnlyAccess {
-    pub fn to_core(&self) -> CoreReadOnlyAccess {
-        match self {
-            ReadOnlyAccess::Restricted {
-                include_platform_defaults,
-                readable_roots,
-            } => CoreReadOnlyAccess::Restricted {
-                include_platform_defaults: *include_platform_defaults,
-                readable_roots: readable_roots.clone(),
-            },
-            ReadOnlyAccess::FullAccess => CoreReadOnlyAccess::FullAccess,
-        }
-    }
-}
-
-impl From<CoreReadOnlyAccess> for ReadOnlyAccess {
-    fn from(value: CoreReadOnlyAccess) -> Self {
-        match value {
-            CoreReadOnlyAccess::Restricted {
-                include_platform_defaults,
-                readable_roots,
-            } => ReadOnlyAccess::Restricted {
-                include_platform_defaults,
-                readable_roots,
-            },
-            CoreReadOnlyAccess::FullAccess => ReadOnlyAccess::FullAccess,
-        }
-    }
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
+#[derive(Serialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
 #[serde(tag = "type", rename_all = "camelCase")]
 #[ts(tag = "type")]
 #[ts(export_to = "v2/")]
@@ -1754,8 +1756,6 @@ pub enum SandboxPolicy {
     #[serde(rename_all = "camelCase")]
     #[ts(rename_all = "camelCase")]
     ReadOnly {
-        #[serde(default)]
-        access: ReadOnlyAccess,
         #[serde(default)]
         network_access: bool,
     },
@@ -1771,7 +1771,36 @@ pub enum SandboxPolicy {
         #[serde(default)]
         writable_roots: Vec<AbsolutePathBuf>,
         #[serde(default)]
-        read_only_access: ReadOnlyAccess,
+        network_access: bool,
+        #[serde(default)]
+        exclude_tmpdir_env_var: bool,
+        #[serde(default)]
+        exclude_slash_tmp: bool,
+    },
+}
+
+#[derive(Deserialize)]
+#[serde(tag = "type", rename_all = "camelCase")]
+enum SandboxPolicyDeserialize {
+    DangerFullAccess,
+    #[serde(rename_all = "camelCase")]
+    ReadOnly {
+        #[serde(default)]
+        network_access: bool,
+        #[serde(default)]
+        access: Option<LegacyReadOnlyAccess>,
+    },
+    #[serde(rename_all = "camelCase")]
+    ExternalSandbox {
+        #[serde(default)]
+        network_access: NetworkAccess,
+    },
+    #[serde(rename_all = "camelCase")]
+    WorkspaceWrite {
+        #[serde(default)]
+        writable_roots: Vec<AbsolutePathBuf>,
+        #[serde(default)]
+        read_only_access: Option<LegacyReadOnlyAccess>,
         #[serde(default)]
         network_access: bool,
         #[serde(default)]
@@ -1781,19 +1810,68 @@ pub enum SandboxPolicy {
     },
 }
 
+#[derive(Deserialize)]
+#[serde(tag = "type", rename_all = "camelCase")]
+enum LegacyReadOnlyAccess {
+    FullAccess,
+    Restricted,
+}
+
+impl<'de> Deserialize<'de> for SandboxPolicy {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        match SandboxPolicyDeserialize::deserialize(deserializer)? {
+            SandboxPolicyDeserialize::DangerFullAccess => Ok(SandboxPolicy::DangerFullAccess),
+            SandboxPolicyDeserialize::ReadOnly {
+                network_access,
+                access,
+            } => {
+                if matches!(access, Some(LegacyReadOnlyAccess::Restricted)) {
+                    return Err(serde::de::Error::custom(
+                        "readOnly.access is no longer supported; use permissionProfile for restricted reads",
+                    ));
+                }
+                Ok(SandboxPolicy::ReadOnly { network_access })
+            }
+            SandboxPolicyDeserialize::ExternalSandbox { network_access } => {
+                Ok(SandboxPolicy::ExternalSandbox { network_access })
+            }
+            SandboxPolicyDeserialize::WorkspaceWrite {
+                writable_roots,
+                read_only_access,
+                network_access,
+                exclude_tmpdir_env_var,
+                exclude_slash_tmp,
+            } => {
+                if matches!(read_only_access, Some(LegacyReadOnlyAccess::Restricted)) {
+                    return Err(serde::de::Error::custom(
+                        "workspaceWrite.readOnlyAccess is no longer supported; use permissionProfile for restricted reads",
+                    ));
+                }
+                Ok(SandboxPolicy::WorkspaceWrite {
+                    writable_roots,
+                    network_access,
+                    exclude_tmpdir_env_var,
+                    exclude_slash_tmp,
+                })
+            }
+        }
+    }
+}
+
 impl SandboxPolicy {
     pub fn to_core(&self) -> codex_protocol::protocol::SandboxPolicy {
         match self {
             SandboxPolicy::DangerFullAccess => {
                 codex_protocol::protocol::SandboxPolicy::DangerFullAccess
             }
-            SandboxPolicy::ReadOnly {
-                access,
-                network_access,
-            } => codex_protocol::protocol::SandboxPolicy::ReadOnly {
-                access: access.to_core(),
-                network_access: *network_access,
-            },
+            SandboxPolicy::ReadOnly { network_access } => {
+                codex_protocol::protocol::SandboxPolicy::ReadOnly {
+                    network_access: *network_access,
+                }
+            }
             SandboxPolicy::ExternalSandbox { network_access } => {
                 codex_protocol::protocol::SandboxPolicy::ExternalSandbox {
                     network_access: match network_access {
@@ -1804,13 +1882,11 @@ impl SandboxPolicy {
             }
             SandboxPolicy::WorkspaceWrite {
                 writable_roots,
-                read_only_access,
                 network_access,
                 exclude_tmpdir_env_var,
                 exclude_slash_tmp,
             } => codex_protocol::protocol::SandboxPolicy::WorkspaceWrite {
                 writable_roots: writable_roots.clone(),
-                read_only_access: read_only_access.to_core(),
                 network_access: *network_access,
                 exclude_tmpdir_env_var: *exclude_tmpdir_env_var,
                 exclude_slash_tmp: *exclude_slash_tmp,
@@ -1825,13 +1901,9 @@ impl From<codex_protocol::protocol::SandboxPolicy> for SandboxPolicy {
             codex_protocol::protocol::SandboxPolicy::DangerFullAccess => {
                 SandboxPolicy::DangerFullAccess
             }
-            codex_protocol::protocol::SandboxPolicy::ReadOnly {
-                access,
-                network_access,
-            } => SandboxPolicy::ReadOnly {
-                access: ReadOnlyAccess::from(access),
-                network_access,
-            },
+            codex_protocol::protocol::SandboxPolicy::ReadOnly { network_access } => {
+                SandboxPolicy::ReadOnly { network_access }
+            }
             codex_protocol::protocol::SandboxPolicy::ExternalSandbox { network_access } => {
                 SandboxPolicy::ExternalSandbox {
                     network_access: match network_access {
@@ -1842,13 +1914,11 @@ impl From<codex_protocol::protocol::SandboxPolicy> for SandboxPolicy {
             }
             codex_protocol::protocol::SandboxPolicy::WorkspaceWrite {
                 writable_roots,
-                read_only_access,
                 network_access,
                 exclude_tmpdir_env_var,
                 exclude_slash_tmp,
             } => SandboxPolicy::WorkspaceWrite {
                 writable_roots,
-                read_only_access: ReadOnlyAccess::from(read_only_access),
                 network_access,
                 exclude_tmpdir_env_var,
                 exclude_slash_tmp,
@@ -2047,6 +2117,20 @@ pub enum Account {
     #[serde(rename = "chatgpt", rename_all = "camelCase")]
     #[ts(rename = "chatgpt", rename_all = "camelCase")]
     Chatgpt { email: String, plan_type: PlanType },
+
+    #[serde(rename = "amazonBedrock", rename_all = "camelCase")]
+    #[ts(rename = "amazonBedrock", rename_all = "camelCase")]
+    AmazonBedrock {},
+}
+
+impl From<ProviderAccount> for Account {
+    fn from(account: ProviderAccount) -> Self {
+        match account {
+            ProviderAccount::ApiKey => Self::ApiKey {},
+            ProviderAccount::Chatgpt { email, plan_type } => Self::Chatgpt { email, plan_type },
+            ProviderAccount::AmazonBedrock => Self::AmazonBedrock {},
+        }
+    }
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS, ExperimentalApi)]
@@ -3344,6 +3428,15 @@ pub struct ThreadStartParams {
     pub ephemeral: Option<bool>,
     #[ts(optional = nullable)]
     pub session_start_source: Option<ThreadStartSource>,
+    /// Optional sticky environments for this thread.
+    ///
+    /// Omitted selects the default environment when environment access is
+    /// enabled. Empty disables environment access for turns that do not
+    /// provide a turn override. Non-empty selects the first environment as the
+    /// current turn environment.
+    #[experimental("thread/start.environments")]
+    #[ts(optional = nullable)]
+    pub environments: Option<Vec<TurnEnvironmentParams>>,
     #[experimental("thread/start.dynamicTools")]
     #[ts(optional = nullable)]
     pub dynamic_tools: Option<Vec<DynamicToolSpec>>,
@@ -3401,9 +3494,7 @@ pub struct ThreadStartResponse {
     /// `permissionProfile` when present as the canonical active permissions
     /// view.
     pub sandbox: SandboxPolicy,
-    /// Canonical active permissions view for this thread when representable.
-    /// This is `null` for external sandbox policies because external
-    /// enforcement cannot be round-tripped as a `PermissionProfile`.
+    /// Canonical active permissions view for this thread.
     #[serde(default)]
     pub permission_profile: Option<PermissionProfile>,
     pub reasoning_effort: Option<ReasoningEffort>,
@@ -3519,9 +3610,7 @@ pub struct ThreadResumeResponse {
     /// `permissionProfile` when present as the canonical active permissions
     /// view.
     pub sandbox: SandboxPolicy,
-    /// Canonical active permissions view for this thread when representable.
-    /// This is `null` for external sandbox policies because external
-    /// enforcement cannot be round-tripped as a `PermissionProfile`.
+    /// Canonical active permissions view for this thread.
     #[serde(default)]
     pub permission_profile: Option<PermissionProfile>,
     pub reasoning_effort: Option<ReasoningEffort>,
@@ -3628,9 +3717,7 @@ pub struct ThreadForkResponse {
     /// `permissionProfile` when present as the canonical active permissions
     /// view.
     pub sandbox: SandboxPolicy,
-    /// Canonical active permissions view for this thread when representable.
-    /// This is `null` for external sandbox policies because external
-    /// enforcement cannot be round-tripped as a `PermissionProfile`.
+    /// Canonical active permissions view for this thread.
     #[serde(default)]
     pub permission_profile: Option<PermissionProfile>,
     pub reasoning_effort: Option<ReasoningEffort>,
@@ -3730,6 +3817,103 @@ pub struct ThreadUnarchiveParams {
 #[serde(rename_all = "camelCase")]
 #[ts(export_to = "v2/")]
 pub struct ThreadSetNameResponse {}
+
+v2_enum_from_core! {
+    pub enum ThreadGoalStatus from CoreThreadGoalStatus {
+        Active,
+        Paused,
+        BudgetLimited,
+        Complete,
+    }
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ThreadGoal {
+    pub thread_id: String,
+    pub objective: String,
+    pub status: ThreadGoalStatus,
+    #[ts(type = "number | null")]
+    pub token_budget: Option<i64>,
+    #[ts(type = "number")]
+    pub tokens_used: i64,
+    #[ts(type = "number")]
+    pub time_used_seconds: i64,
+    #[ts(type = "number")]
+    pub created_at: i64,
+    #[ts(type = "number")]
+    pub updated_at: i64,
+}
+
+impl From<codex_protocol::protocol::ThreadGoal> for ThreadGoal {
+    fn from(value: codex_protocol::protocol::ThreadGoal) -> Self {
+        Self {
+            thread_id: value.thread_id.to_string(),
+            objective: value.objective,
+            status: value.status.into(),
+            token_budget: value.token_budget,
+            tokens_used: value.tokens_used,
+            time_used_seconds: value.time_used_seconds,
+            created_at: value.created_at,
+            updated_at: value.updated_at,
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ThreadGoalSetParams {
+    pub thread_id: String,
+    #[ts(optional = nullable)]
+    pub objective: Option<String>,
+    #[ts(optional = nullable)]
+    pub status: Option<ThreadGoalStatus>,
+    #[serde(
+        default,
+        deserialize_with = "super::serde_helpers::deserialize_double_option",
+        serialize_with = "super::serde_helpers::serialize_double_option",
+        skip_serializing_if = "Option::is_none"
+    )]
+    #[ts(optional = nullable, type = "number | null")]
+    pub token_budget: Option<Option<i64>>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ThreadGoalSetResponse {
+    pub goal: ThreadGoal,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ThreadGoalGetParams {
+    pub thread_id: String,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ThreadGoalGetResponse {
+    pub goal: Option<ThreadGoal>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ThreadGoalClearParams {
+    pub thread_id: String,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ThreadGoalClearResponse {
+    pub cleared: bool,
+}
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
 #[serde(rename_all = "camelCase")]
@@ -5044,7 +5228,11 @@ pub struct TurnStartParams {
     #[experimental("turn/start.responsesapiClientMetadata")]
     #[ts(optional = nullable)]
     pub responsesapi_client_metadata: Option<HashMap<String, String>>,
-    /// Optional turn-scoped environment selections.
+    /// Optional turn-scoped environments.
+    ///
+    /// Omitted uses the thread sticky environments. Empty disables
+    /// environment access for this turn. Non-empty selects the first
+    /// environment as the current turn environment for this turn.
     #[experimental("turn/start.environments")]
     #[ts(optional = nullable)]
     pub environments: Option<Vec<TurnEnvironmentParams>>,
@@ -6243,6 +6431,22 @@ pub struct ThreadNameUpdatedNotification {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub thread_name: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ThreadGoalUpdatedNotification {
+    pub thread_id: String,
+    pub turn_id: Option<String>,
+    pub goal: ThreadGoal,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ThreadGoalClearedNotification {
+    pub thread_id: String,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
@@ -7582,7 +7786,6 @@ mod tests {
     use codex_protocol::items::WebSearchItem;
     use codex_protocol::models::WebSearchAction as CoreWebSearchAction;
     use codex_protocol::protocol::NetworkAccess as CoreNetworkAccess;
-    use codex_protocol::protocol::ReadOnlyAccess as CoreReadOnlyAccess;
     use codex_protocol::user_input::UserInput as CoreUserInput;
     use codex_utils_absolute_path::test_support::PathBufExt;
     use codex_utils_absolute_path::test_support::test_path_buf;
@@ -7946,7 +8149,7 @@ mod tests {
 
     #[test]
     fn permission_profile_file_system_permissions_preserves_glob_scan_depth() {
-        let core_permissions = CoreFileSystemPermissions {
+        let core_permissions = CoreManagedFileSystemPermissions::Restricted {
             entries: vec![CoreFileSystemSandboxEntry {
                 path: CoreFileSystemPath::GlobPattern {
                     pattern: "**/*.env".to_string(),
@@ -7960,7 +8163,7 @@ mod tests {
 
         assert_eq!(
             permissions,
-            PermissionProfileFileSystemPermissions {
+            PermissionProfileFileSystemPermissions::Restricted {
                 entries: vec![FileSystemSandboxEntry {
                     path: FileSystemPath::GlobPattern {
                         pattern: "**/*.env".to_string(),
@@ -7971,7 +8174,7 @@ mod tests {
             }
         );
         assert_eq!(
-            CoreFileSystemPermissions::from(permissions),
+            CoreManagedFileSystemPermissions::from(permissions),
             core_permissions
         );
     }
@@ -7979,6 +8182,7 @@ mod tests {
     #[test]
     fn permission_profile_file_system_permissions_rejects_zero_glob_scan_depth() {
         serde_json::from_value::<PermissionProfileFileSystemPermissions>(json!({
+            "type": "restricted",
             "entries": [],
             "globScanMaxDepth": 0,
         }))
@@ -8032,8 +8236,8 @@ mod tests {
         );
 
         assert_eq!(
-            CorePermissionProfile::from(response.permissions),
-            CorePermissionProfile {
+            CoreAdditionalPermissionProfile::from(response.permissions),
+            CoreAdditionalPermissionProfile {
                 network: Some(CoreNetworkPermissions {
                     enabled: Some(true),
                 }),
@@ -8787,13 +8991,8 @@ mod tests {
     }
 
     #[test]
-    fn sandbox_policy_round_trips_read_only_access() {
-        let readable_root = test_absolute_path();
+    fn sandbox_policy_round_trips_read_only_network_access() {
         let v2_policy = SandboxPolicy::ReadOnly {
-            access: ReadOnlyAccess::Restricted {
-                include_platform_defaults: false,
-                readable_roots: vec![readable_root.clone()],
-            },
             network_access: true,
         };
 
@@ -8801,10 +9000,6 @@ mod tests {
         assert_eq!(
             core_policy,
             codex_protocol::protocol::SandboxPolicy::ReadOnly {
-                access: CoreReadOnlyAccess::Restricted {
-                    include_platform_defaults: false,
-                    readable_roots: vec![readable_root],
-                },
                 network_access: true,
             }
         );
@@ -9428,14 +9623,9 @@ mod tests {
     }
 
     #[test]
-    fn sandbox_policy_round_trips_workspace_write_read_only_access() {
-        let readable_root = test_absolute_path();
+    fn sandbox_policy_round_trips_workspace_write_access() {
         let v2_policy = SandboxPolicy::WorkspaceWrite {
             writable_roots: vec![],
-            read_only_access: ReadOnlyAccess::Restricted {
-                include_platform_defaults: false,
-                readable_roots: vec![readable_root.clone()],
-            },
             network_access: true,
             exclude_tmpdir_env_var: false,
             exclude_slash_tmp: false,
@@ -9446,10 +9636,6 @@ mod tests {
             core_policy,
             codex_protocol::protocol::SandboxPolicy::WorkspaceWrite {
                 writable_roots: vec![],
-                read_only_access: CoreReadOnlyAccess::Restricted {
-                    include_platform_defaults: false,
-                    readable_roots: vec![readable_root],
-                },
                 network_access: true,
                 exclude_tmpdir_env_var: false,
                 exclude_slash_tmp: false,
@@ -9461,40 +9647,78 @@ mod tests {
     }
 
     #[test]
-    fn sandbox_policy_deserializes_legacy_read_only_without_access_field() {
-        let policy: SandboxPolicy = serde_json::from_value(json!({
-            "type": "readOnly"
+    fn sandbox_policy_deserializes_legacy_read_only_full_access_field() {
+        let policy = serde_json::from_value::<SandboxPolicy>(json!({
+            "type": "readOnly",
+            "access": {
+                "type": "fullAccess"
+            },
+            "networkAccess": true
         }))
-        .expect("read-only policy should deserialize");
+        .expect("read-only policy should ignore legacy fullAccess field");
         assert_eq!(
             policy,
             SandboxPolicy::ReadOnly {
-                access: ReadOnlyAccess::FullAccess,
-                network_access: false,
+                network_access: true
             }
         );
     }
 
     #[test]
-    fn sandbox_policy_deserializes_legacy_workspace_write_without_read_only_access_field() {
-        let policy: SandboxPolicy = serde_json::from_value(json!({
+    fn sandbox_policy_deserializes_legacy_workspace_write_full_access_field() {
+        let writable_root = absolute_path("/workspace");
+        let policy = serde_json::from_value::<SandboxPolicy>(json!({
+            "type": "workspaceWrite",
+            "writableRoots": [writable_root],
+            "readOnlyAccess": {
+                "type": "fullAccess"
+            },
+            "networkAccess": true,
+            "excludeTmpdirEnvVar": true,
+            "excludeSlashTmp": true
+        }))
+        .expect("workspace-write policy should ignore legacy fullAccess field");
+        assert_eq!(
+            policy,
+            SandboxPolicy::WorkspaceWrite {
+                writable_roots: vec![absolute_path("/workspace")],
+                network_access: true,
+                exclude_tmpdir_env_var: true,
+                exclude_slash_tmp: true,
+            }
+        );
+    }
+
+    #[test]
+    fn sandbox_policy_rejects_legacy_read_only_restricted_access_field() {
+        let err = serde_json::from_value::<SandboxPolicy>(json!({
+            "type": "readOnly",
+            "access": {
+                "type": "restricted",
+                "includePlatformDefaults": false,
+                "readableRoots": []
+            }
+        }))
+        .expect_err("read-only policy should reject removed restricted access field");
+        assert!(err.to_string().contains("readOnly.access"));
+    }
+
+    #[test]
+    fn sandbox_policy_rejects_legacy_workspace_write_restricted_read_access_field() {
+        let err = serde_json::from_value::<SandboxPolicy>(json!({
             "type": "workspaceWrite",
             "writableRoots": [],
+            "readOnlyAccess": {
+                "type": "restricted",
+                "includePlatformDefaults": false,
+                "readableRoots": []
+            },
             "networkAccess": false,
             "excludeTmpdirEnvVar": false,
             "excludeSlashTmp": false
         }))
-        .expect("workspace-write policy should deserialize");
-        assert_eq!(
-            policy,
-            SandboxPolicy::WorkspaceWrite {
-                writable_roots: vec![],
-                read_only_access: ReadOnlyAccess::FullAccess,
-                network_access: false,
-                exclude_tmpdir_env_var: false,
-                exclude_slash_tmp: false,
-            }
-        );
+        .expect_err("workspace-write policy should reject removed restricted readOnlyAccess field");
+        assert!(err.to_string().contains("workspaceWrite.readOnlyAccess"));
     }
 
     #[test]
