@@ -24,6 +24,7 @@ use codex_tools::ANDROID_OBSERVE_TOOL_NAME;
 use codex_tools::ToolName;
 use serde_json::Value;
 use serde_json::json;
+use std::sync::Arc;
 use std::time::Instant;
 use tokio::sync::oneshot;
 use tracing::warn;
@@ -168,15 +169,7 @@ impl ToolHandler for ComputerUseHandler {
                 )
             })?;
 
-        let ComputerUseResponse {
-            content_items,
-            success,
-            ..
-        } = response;
-        let mut body = content_items
-            .into_iter()
-            .map(FunctionCallOutputContentItem::from)
-            .collect::<Vec<_>>();
+        let (mut body, success) = computer_use_response_content_for_model(response);
         sanitize_original_image_detail(
             can_request_original_image_detail(&turn.model_info),
             &mut body,
@@ -186,6 +179,29 @@ impl ToolHandler for ComputerUseHandler {
             output: FunctionToolOutput::from_content(body, Some(success)),
         })
     }
+}
+
+fn computer_use_response_content_for_model(
+    response: ComputerUseResponse,
+) -> (Vec<FunctionCallOutputContentItem>, bool) {
+    let ComputerUseResponse {
+        mut content_items,
+        success,
+        error,
+    } = response;
+    if !success
+        && content_items.is_empty()
+        && let Some(error) = error
+    {
+        content_items.push(ComputerUseOutputContentItem::InputText { text: error });
+    }
+    (
+        content_items
+            .into_iter()
+            .map(FunctionCallOutputContentItem::from)
+            .collect(),
+        success,
+    )
 }
 
 fn computer_use_command(tool_name: &str, arguments: &str) -> String {
@@ -211,10 +227,7 @@ async fn request_computer_use(
 ) -> Option<ComputerUseResponse> {
     let tool = tool_name.name;
     let turn_id = turn_context.sub_id.clone();
-    let environment_id = turn_context
-        .environments
-        .first()
-        .map(|environment| environment.environment_id.clone());
+    let environment_id = selected_computer_use_environment_id(turn_context);
     let adapter = ADAPTER_ANDROID.to_string();
     let started_at = Instant::now();
     if environment_id.is_none() {
@@ -305,6 +318,15 @@ async fn request_computer_use(
     response
 }
 
+fn selected_computer_use_environment_id(turn_context: &TurnContext) -> Option<String> {
+    let primary_environment = turn_context.environment.as_ref()?;
+    turn_context
+        .environments
+        .iter()
+        .find(|environment| Arc::ptr_eq(&environment.environment, primary_environment))
+        .map(|environment| environment.environment_id.clone())
+}
+
 fn unavailable_response(message: &str) -> ComputerUseResponse {
     ComputerUseResponse {
         content_items: vec![ComputerUseOutputContentItem::InputText {
@@ -319,16 +341,21 @@ fn unavailable_response(message: &str) -> ComputerUseResponse {
 mod tests {
     use super::ComputerUseHandler;
     use super::computer_use_command;
+    use super::computer_use_response_content_for_model;
     use super::request_computer_use;
+    use super::selected_computer_use_environment_id;
     use super::unavailable_response;
     use crate::session::tests::make_session_and_context;
     use crate::session::tests::make_session_and_context_with_rx;
+    use crate::session::turn_context::TurnEnvironment;
     use crate::tools::context::ToolCallSource;
     use crate::tools::context::ToolInvocation;
     use crate::tools::context::ToolPayload;
     use crate::tools::registry::ToolHandler;
     use crate::turn_diff_tracker::TurnDiffTracker;
     use codex_protocol::computer_use::ComputerUseOutputContentItem;
+    use codex_protocol::computer_use::ComputerUseResponse;
+    use codex_protocol::models::FunctionCallOutputContentItem;
     use codex_protocol::protocol::EventMsg;
     use codex_tools::ANDROID_OBSERVE_TOOL_NAME;
     use codex_tools::ANDROID_STEP_TOOL_NAME;
@@ -406,6 +433,57 @@ mod tests {
                 success: false,
                 error: Some("no android environment".to_string()),
             }
+        );
+    }
+
+    #[test]
+    fn failed_empty_response_returns_error_text_to_model() {
+        assert_eq!(
+            computer_use_response_content_for_model(ComputerUseResponse {
+                content_items: Vec::new(),
+                success: false,
+                error: Some("android session disconnected".to_string()),
+            }),
+            (
+                vec![FunctionCallOutputContentItem::InputText {
+                    text: "android session disconnected".to_string(),
+                }],
+                false,
+            )
+        );
+    }
+
+    #[tokio::test]
+    async fn selected_computer_use_environment_uses_primary_environment() {
+        let (_session, turn_context, _rx) = make_session_and_context_with_rx().await;
+        let mut turn_context =
+            Arc::into_inner(turn_context).expect("turn context should have one owner");
+        let cwd = turn_context.cwd.clone();
+        let first_environment = Arc::new(
+            codex_exec_server::Environment::create_for_tests(/*exec_server_url*/ None)
+                .expect("create first environment"),
+        );
+        let second_environment = Arc::new(
+            codex_exec_server::Environment::create_for_tests(/*exec_server_url*/ None)
+                .expect("create second environment"),
+        );
+        turn_context.environment = Some(Arc::clone(&second_environment));
+        turn_context.environments = vec![
+            TurnEnvironment {
+                environment_id: "first".to_string(),
+                environment: first_environment,
+                cwd: cwd.clone(),
+            },
+            TurnEnvironment {
+                environment_id: "second".to_string(),
+                environment: second_environment,
+                cwd,
+            },
+        ];
+
+        assert_eq!(
+            selected_computer_use_environment_id(&turn_context),
+            Some("second".to_string())
         );
     }
 
