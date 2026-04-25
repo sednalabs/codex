@@ -1002,7 +1002,7 @@ class ValidationPlanScriptTests(unittest.TestCase):
                     "${{ matrix.needs_bazel }}",
                 )
 
-    def test_validation_lab_workflow_lanes_do_not_inherit_secrets(self) -> None:
+    def test_validation_lab_workflow_lanes_do_not_inherit_secrets_from_operator_refs(self) -> None:
         payload = load_workflow_payload(REPO_ROOT / ".github/workflows/validation-lab.yml")
         jobs = payload.get("jobs") or {}
 
@@ -1123,7 +1123,7 @@ class ValidationPlanScriptTests(unittest.TestCase):
                     summary_step.get("run") or "",
                 )
 
-    def test_validation_lane_workflow_keeps_secrets_out_of_target_scripts(self) -> None:
+    def test_validation_lane_workflow_keeps_secrets_out_of_target_controlled_scripts(self) -> None:
         payload = load_workflow_payload(REPO_ROOT / ".github/workflows/_validation-lane-workflow.yml")
         workflow_call = ((payload.get("on") or {}).get("workflow_call") or {})
         self.assertNotIn("secrets", workflow_call)
