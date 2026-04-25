@@ -189,6 +189,8 @@ tui-brokered-tool-replay-targeted:
     cargo test -p codex-tui replays_in_progress_dynamic_tool_items_without_completion_event --lib -- --exact --test-threads=1
     cargo test -p codex-tui live_app_server_dynamic_tool_item_start_clears_compaction_status_header --lib -- --exact --test-threads=1
     cargo test -p codex-tui active_dynamic_tool_call_renders_exact_arguments_and_preview --lib -- --exact --test-threads=1
+    cargo test -p codex-tui replays_computer_use_items_from_turn_snapshots --lib -- --exact --test-threads=1
+    cargo test -p codex-tui computer_use_unavailable_result_is_structured_failed_response --lib -- --exact --test-threads=1
 
 # Focused multi-agent orchestration slice covering wait semantics and tool guidance.
 core-multi-agent-orchestration-targeted:
