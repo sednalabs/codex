@@ -42,6 +42,9 @@ REPORT_ACTIONS_CACHE_OCCUPANCY = load_module(
 CHECK_MARKDOWN_LINKS = load_module(
     "check_markdown_links_module", SCRIPTS_DIR / "check_markdown_links.py"
 )
+CHECK_WORKFLOW_POLICY = load_module(
+    "check_workflow_policy_module", SCRIPTS_DIR / "check_workflow_policy.py"
+)
 SYNC_UPSTREAM_MIRROR = load_module(
     "sync_upstream_mirror_module", SCRIPTS_DIR / "sync_upstream_mirror.py"
 )
@@ -2122,6 +2125,71 @@ class RustCiModeScriptTests(unittest.TestCase):
 
 
 class HelperScriptTests(unittest.TestCase):
+    def test_repository_workflows_follow_static_policy(self) -> None:
+        self.assertEqual(CHECK_WORKFLOW_POLICY.collect_violations(REPO_ROOT), [])
+
+    def test_workflow_policy_rejects_missing_node_version_file(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            workflow = root / ".github/workflows/ci.yml"
+            workflow.parent.mkdir(parents=True)
+            workflow.write_text(
+                """
+name: ci
+on: push
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/setup-node@v6
+        with:
+          node-version-file: codex-rs/node-version.txt
+""".lstrip(),
+                encoding="utf-8",
+            )
+
+            violations = CHECK_WORKFLOW_POLICY.collect_violations(root)
+
+        self.assertEqual(
+            violations,
+            [
+                ".github/workflows/ci.yml: actions/setup-node references missing "
+                "node-version-file 'codex-rs/node-version.txt'; use node-version "
+                "when the version is repository policy."
+            ],
+        )
+
+    def test_workflow_policy_rejects_install_action_version_input(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            workflow = root / ".github/workflows/ci.yml"
+            workflow.parent.mkdir(parents=True)
+            workflow.write_text(
+                """
+name: ci
+on: push
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: nextest
+          version: 0.9.103
+""".lstrip(),
+                encoding="utf-8",
+            )
+
+            violations = CHECK_WORKFLOW_POLICY.collect_violations(root)
+
+        self.assertEqual(
+            violations,
+            [
+                ".github/workflows/ci.yml: taiki-e/install-action does not support "
+                "with.version; use tool: nextest@0.9.103 instead."
+            ],
+        )
+
     def test_configure_sccache_restore_only_uses_read_only_fallback(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
