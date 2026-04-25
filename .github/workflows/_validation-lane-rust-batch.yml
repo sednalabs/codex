@@ -110,7 +110,7 @@ jobs:
         if: ${{ inputs.needs_node }}
         uses: actions/setup-node@v6
         with:
-          node-version-file: codex-rs/node-version.txt
+          node-version: 22
 
       - name: Bind js_repl Node runtime
         if: ${{ inputs.needs_node }}
@@ -191,8 +191,7 @@ jobs:
       - uses: taiki-e/install-action@cf525cb33f51aca27cd6fa02034117ab963ff9f1 # v2
         if: ${{ inputs.needs_nextest }}
         with:
-          tool: nextest
-          version: 0.9.103
+          tool: nextest@0.9.103
 
       - uses: taiki-e/install-action@cf525cb33f51aca27cd6fa02034117ab963ff9f1 # v2
         if: ${{ inputs.needs_just }}
