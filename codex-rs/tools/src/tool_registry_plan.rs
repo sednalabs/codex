@@ -587,7 +587,7 @@ pub fn build_tool_registry_plan(
                 /*supports_parallel_tool_calls*/ false,
                 config.code_mode_enabled,
             );
-            plan.register_handler(tool.name.clone(), ToolHandlerKind::DynamicTool);
+            plan.register_handler(tool.name.clone(), ToolHandlerKind::ComputerUse);
             continue;
         }
 

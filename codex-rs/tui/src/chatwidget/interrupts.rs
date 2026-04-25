@@ -2,8 +2,10 @@ use std::collections::VecDeque;
 
 use crate::app::app_server_requests::ResolvedAppServerRequest;
 use codex_protocol::approvals::ElicitationRequestEvent;
+use codex_protocol::computer_use::ComputerUseCallRequest;
 use codex_protocol::dynamic_tools::DynamicToolCallRequest;
 use codex_protocol::protocol::ApplyPatchApprovalRequestEvent;
+use codex_protocol::protocol::ComputerUseCallResponseEvent;
 use codex_protocol::protocol::DynamicToolCallResponseEvent;
 use codex_protocol::protocol::ExecApprovalRequestEvent;
 use codex_protocol::protocol::ExecCommandBeginEvent;
@@ -29,6 +31,8 @@ pub(crate) enum QueuedInterrupt {
     McpEnd(McpToolCallEndEvent),
     DynamicToolBegin(DynamicToolCallRequest),
     DynamicToolEnd(DynamicToolCallResponseEvent),
+    ComputerUseBegin(ComputerUseCallRequest),
+    ComputerUseEnd(ComputerUseCallResponseEvent),
     PatchEnd(PatchApplyEndEvent),
 }
 
@@ -95,6 +99,14 @@ impl InterruptManager {
         self.queue.push_back(QueuedInterrupt::DynamicToolEnd(ev));
     }
 
+    pub(crate) fn push_computer_use_begin(&mut self, ev: ComputerUseCallRequest) {
+        self.queue.push_back(QueuedInterrupt::ComputerUseBegin(ev));
+    }
+
+    pub(crate) fn push_computer_use_end(&mut self, ev: ComputerUseCallResponseEvent) {
+        self.queue.push_back(QueuedInterrupt::ComputerUseEnd(ev));
+    }
+
     pub(crate) fn push_patch_end(&mut self, ev: PatchApplyEndEvent) {
         self.queue.push_back(QueuedInterrupt::PatchEnd(ev));
     }
@@ -120,6 +132,8 @@ impl InterruptManager {
                 QueuedInterrupt::McpEnd(ev) => chat.handle_mcp_end_now(ev),
                 QueuedInterrupt::DynamicToolBegin(ev) => chat.handle_dynamic_tool_begin_now(ev),
                 QueuedInterrupt::DynamicToolEnd(ev) => chat.handle_dynamic_tool_end_now(ev),
+                QueuedInterrupt::ComputerUseBegin(ev) => chat.handle_computer_use_begin_now(ev),
+                QueuedInterrupt::ComputerUseEnd(ev) => chat.handle_computer_use_end_now(ev),
                 QueuedInterrupt::PatchEnd(ev) => chat.handle_patch_apply_end_now(ev),
             }
         }
@@ -157,6 +171,8 @@ impl QueuedInterrupt {
             | QueuedInterrupt::McpEnd(_)
             | QueuedInterrupt::DynamicToolBegin(_)
             | QueuedInterrupt::DynamicToolEnd(_)
+            | QueuedInterrupt::ComputerUseBegin(_)
+            | QueuedInterrupt::ComputerUseEnd(_)
             | QueuedInterrupt::PatchEnd(_) => false,
         }
     }

@@ -176,6 +176,8 @@ mod tests {
     use crate::tools::tool_search_entry::build_tool_search_entries;
     use codex_mcp::ToolInfo;
     use codex_protocol::dynamic_tools::DynamicToolSpec;
+    use codex_tools::ANDROID_OBSERVE_TOOL_NAME;
+    use codex_tools::ANDROID_STEP_TOOL_NAME;
     use codex_tools::ResponsesApiNamespace;
     use codex_tools::ResponsesApiNamespaceTool;
     use codex_tools::ResponsesApiTool;
@@ -278,6 +280,68 @@ mod tests {
                     })],
                 }),
             ],
+        );
+    }
+
+    #[test]
+    fn android_dynamic_tools_do_not_reenter_deferred_dynamic_tool_search() {
+        let dynamic_tools = vec![
+            DynamicToolSpec {
+                namespace: None,
+                name: ANDROID_OBSERVE_TOOL_NAME.to_string(),
+                description: "Capture the Android screen.".to_string(),
+                input_schema: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "scope": { "type": "string" },
+                    },
+                    "additionalProperties": false,
+                }),
+                defer_loading: true,
+                persist_on_resume: true,
+                capability: None,
+            },
+            DynamicToolSpec {
+                namespace: None,
+                name: ANDROID_STEP_TOOL_NAME.to_string(),
+                description: "Perform Android actions.".to_string(),
+                input_schema: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "action": { "type": "string" },
+                    },
+                    "additionalProperties": false,
+                }),
+                defer_loading: true,
+                persist_on_resume: true,
+                capability: None,
+            },
+            DynamicToolSpec {
+                namespace: None,
+                name: "weather_lookup".to_string(),
+                description: "Look up weather.".to_string(),
+                input_schema: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "city": { "type": "string" },
+                    },
+                    "additionalProperties": false,
+                }),
+                defer_loading: true,
+                persist_on_resume: true,
+                capability: None,
+            },
+        ];
+
+        let handler = handler_from_tools(None, &dynamic_tools);
+
+        assert_eq!(
+            handler
+                .entries
+                .iter()
+                .map(|entry| entry.search_text.as_str())
+                .collect::<Vec<_>>(),
+            vec!["weather_lookup weather lookup Look up weather. city"]
         );
     }
 

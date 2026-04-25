@@ -5649,6 +5649,22 @@ pub enum ThreadItem {
     },
     #[serde(rename_all = "camelCase")]
     #[ts(rename_all = "camelCase")]
+    ComputerUseCall {
+        id: String,
+        environment_id: Option<String>,
+        adapter: String,
+        tool: String,
+        arguments: JsonValue,
+        status: ComputerUseCallStatus,
+        content_items: Option<Vec<ComputerUseCallOutputContentItem>>,
+        success: Option<bool>,
+        error: Option<String>,
+        /// The duration of the computer-use call in milliseconds.
+        #[ts(type = "number | null")]
+        duration_ms: Option<i64>,
+    },
+    #[serde(rename_all = "camelCase")]
+    #[ts(rename_all = "camelCase")]
     CollabAgentToolCall {
         /// Unique identifier for this collab tool call.
         id: String,
@@ -5724,6 +5740,7 @@ impl ThreadItem {
             | ThreadItem::FileChange { id, .. }
             | ThreadItem::McpToolCall { id, .. }
             | ThreadItem::DynamicToolCall { id, .. }
+            | ThreadItem::ComputerUseCall { id, .. }
             | ThreadItem::CollabAgentToolCall { id, .. }
             | ThreadItem::WebSearch { id, .. }
             | ThreadItem::ImageView { id, .. }
@@ -6286,6 +6303,16 @@ pub enum McpToolCallStatus {
 #[serde(rename_all = "camelCase")]
 #[ts(export_to = "v2/")]
 pub enum DynamicToolCallStatus {
+    InProgress,
+    Completed,
+    Failed,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub enum ComputerUseCallStatus {
     InProgress,
     Completed,
     Failed,
@@ -7432,6 +7459,19 @@ pub struct DynamicToolCallParams {
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export_to = "v2/")]
+pub struct ComputerUseCallParams {
+    pub thread_id: String,
+    pub turn_id: String,
+    pub call_id: String,
+    pub environment_id: Option<String>,
+    pub adapter: String,
+    pub tool: String,
+    pub arguments: JsonValue,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
 pub struct PermissionsRequestApprovalParams {
     pub thread_id: String,
     pub turn_id: String,
@@ -7469,6 +7509,59 @@ pub struct PermissionsRequestApprovalResponse {
 pub struct DynamicToolCallResponse {
     pub content_items: Vec<DynamicToolCallOutputContentItem>,
     pub success: bool,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ComputerUseCallResponse {
+    pub content_items: Vec<ComputerUseCallOutputContentItem>,
+    pub success: bool,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(tag = "type", rename_all = "camelCase")]
+#[ts(tag = "type")]
+#[ts(export_to = "v2/")]
+pub enum ComputerUseCallOutputContentItem {
+    #[serde(rename_all = "camelCase")]
+    InputText { text: String },
+    #[serde(rename_all = "camelCase")]
+    InputImage {
+        image_url: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        detail: Option<String>,
+    },
+}
+
+impl From<ComputerUseCallOutputContentItem>
+    for codex_protocol::computer_use::ComputerUseOutputContentItem
+{
+    fn from(item: ComputerUseCallOutputContentItem) -> Self {
+        match item {
+            ComputerUseCallOutputContentItem::InputText { text } => Self::InputText { text },
+            ComputerUseCallOutputContentItem::InputImage { image_url, detail } => {
+                Self::InputImage { image_url, detail }
+            }
+        }
+    }
+}
+
+impl From<codex_protocol::computer_use::ComputerUseOutputContentItem>
+    for ComputerUseCallOutputContentItem
+{
+    fn from(item: codex_protocol::computer_use::ComputerUseOutputContentItem) -> Self {
+        match item {
+            codex_protocol::computer_use::ComputerUseOutputContentItem::InputText { text } => {
+                Self::InputText { text }
+            }
+            codex_protocol::computer_use::ComputerUseOutputContentItem::InputImage {
+                image_url,
+                detail,
+            } => Self::InputImage { image_url, detail },
+        }
+    }
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]

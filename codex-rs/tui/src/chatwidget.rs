@@ -131,6 +131,7 @@ use codex_protocol::account::PlanType;
 use codex_protocol::approvals::ElicitationRequestEvent;
 use codex_protocol::approvals::GuardianAssessmentAction;
 use codex_protocol::approvals::GuardianAssessmentDecisionSource;
+use codex_protocol::computer_use::ComputerUseCallRequest;
 use codex_protocol::config_types::CollaborationMode;
 use codex_protocol::config_types::CollaborationModeMask;
 use codex_protocol::config_types::ModeKind;
@@ -170,6 +171,7 @@ use codex_protocol::protocol::CollabAgentRef;
 #[cfg(test)]
 use codex_protocol::protocol::CollabAgentSpawnBeginEvent;
 use codex_protocol::protocol::CollabAgentStatusEntry;
+use codex_protocol::protocol::ComputerUseCallResponseEvent;
 use codex_protocol::protocol::CreditsSnapshot;
 use codex_protocol::protocol::DeprecationNoticeEvent;
 use codex_protocol::protocol::DynamicToolCallResponseEvent;
@@ -4442,6 +4444,22 @@ impl ChatWidget {
         self.defer_or_handle(|q| q.push_mcp_end(ev), |s| s.handle_mcp_end_now(ev2));
     }
 
+    fn on_computer_use_call_begin(&mut self, ev: ComputerUseCallRequest) {
+        let ev2 = ev.clone();
+        self.defer_or_handle(
+            |q| q.push_computer_use_begin(ev),
+            |s| s.handle_computer_use_begin_now(ev2),
+        );
+    }
+
+    fn on_computer_use_call_end(&mut self, ev: ComputerUseCallResponseEvent) {
+        let ev2 = ev.clone();
+        self.defer_or_handle(
+            |q| q.push_computer_use_end(ev),
+            |s| s.handle_computer_use_end_now(ev2),
+        );
+    }
+
     fn on_web_search_begin(&mut self, ev: WebSearchBeginEvent) {
         self.flush_answer_stream_with_separator();
         self.flush_active_cell();
@@ -5469,6 +5487,70 @@ impl ChatWidget {
     pub(crate) fn handle_dynamic_tool_begin_now(&mut self, _ev: DynamicToolCallRequest) {}
 
     pub(crate) fn handle_dynamic_tool_end_now(&mut self, _ev: DynamicToolCallResponseEvent) {}
+
+    pub(crate) fn handle_computer_use_begin_now(&mut self, ev: ComputerUseCallRequest) {
+        self.flush_answer_stream_with_separator();
+        self.flush_active_cell();
+        self.active_cell = Some(Box::new(history_cell::new_active_dynamic_tool_call(
+            ev.call_id,
+            ev.tool,
+            ev.arguments,
+            self.config.animations,
+        )));
+        self.bump_active_cell_revision();
+        self.request_redraw();
+    }
+
+    pub(crate) fn handle_computer_use_end_now(&mut self, ev: ComputerUseCallResponseEvent) {
+        self.flush_answer_stream_with_separator();
+
+        let ComputerUseCallResponseEvent {
+            call_id,
+            tool,
+            arguments,
+            content_items,
+            success,
+            error,
+            duration,
+            ..
+        } = ev;
+
+        match self.active_cell.as_mut().and_then(|cell| {
+            cell.as_any_mut()
+                .downcast_mut::<history_cell::DynamicToolCallCell>()
+        }) {
+            Some(cell) if cell.call_id() == call_id => {
+                cell.complete(
+                    duration,
+                    content_items.into_iter().map(Into::into).collect(),
+                    success,
+                    error,
+                );
+                self.bump_active_cell_revision();
+            }
+            _ => {
+                self.flush_active_cell();
+                let mut cell = history_cell::new_active_dynamic_tool_call(
+                    call_id,
+                    tool,
+                    arguments,
+                    self.config.animations,
+                );
+                cell.complete(
+                    duration,
+                    content_items.into_iter().map(Into::into).collect(),
+                    success,
+                    error,
+                );
+                self.active_cell = Some(Box::new(cell));
+                self.bump_active_cell_revision();
+            }
+        }
+
+        self.flush_active_cell();
+        self.had_work_activity = true;
+        self.request_redraw();
+    }
 
     pub(crate) fn new_with_app_event(common: ChatWidgetInit) -> Self {
         Self::new_with_op_target(common, CodexOpTarget::AppEvent)
@@ -6837,6 +6919,56 @@ impl ChatWidget {
                     },
                 });
             }
+            ThreadItem::ComputerUseCall {
+                id,
+                environment_id,
+                adapter,
+                tool,
+                arguments,
+                status,
+                content_items,
+                success,
+                error,
+                duration_ms,
+            } => {
+                let request = ComputerUseCallRequest {
+                    call_id: id.clone(),
+                    turn_id: turn_id.clone(),
+                    environment_id: environment_id.clone(),
+                    adapter: adapter.clone(),
+                    tool: tool.clone(),
+                    arguments: arguments.clone(),
+                };
+                if matches!(
+                    &status,
+                    codex_app_server_protocol::ComputerUseCallStatus::InProgress
+                ) {
+                    self.on_computer_use_call_begin(request);
+                } else {
+                    self.on_computer_use_call_begin(request);
+                    self.on_computer_use_call_end(ComputerUseCallResponseEvent {
+                        call_id: id,
+                        turn_id,
+                        environment_id,
+                        adapter,
+                        tool,
+                        arguments,
+                        content_items: content_items
+                            .unwrap_or_default()
+                            .into_iter()
+                            .map(Into::into)
+                            .collect(),
+                        success: success.unwrap_or(matches!(
+                            &status,
+                            codex_app_server_protocol::ComputerUseCallStatus::Completed
+                        )),
+                        error,
+                        duration: Duration::from_millis(
+                            duration_ms.unwrap_or_default().max(0) as u64
+                        ),
+                    });
+                }
+            }
             ThreadItem::WebSearch { id, query, action } => {
                 self.on_web_search_begin(WebSearchBeginEvent {
                     call_id: id.clone(),
@@ -6943,6 +7075,7 @@ impl ChatWidget {
                 self.on_request_user_input(request_user_input_from_params(params));
             }
             ServerRequest::DynamicToolCall { .. }
+            | ServerRequest::ComputerUseCall { .. }
             | ServerRequest::ChatgptAuthTokensRefresh { .. }
             | ServerRequest::ApplyPatchApproval { .. }
             | ServerRequest::ExecCommandApproval { .. } => {
@@ -7366,6 +7499,23 @@ impl ChatWidget {
                     mcp_app_resource_uri,
                 });
             }
+            ThreadItem::ComputerUseCall {
+                id,
+                environment_id,
+                adapter,
+                tool,
+                arguments,
+                ..
+            } => {
+                self.on_computer_use_call_begin(ComputerUseCallRequest {
+                    call_id: id,
+                    turn_id: notification.turn_id,
+                    environment_id,
+                    adapter,
+                    tool,
+                    arguments,
+                });
+            }
             ThreadItem::WebSearch { id, .. } => {
                 self.on_web_search_begin(WebSearchBeginEvent { call_id: id });
             }
@@ -7733,6 +7883,8 @@ impl ChatWidget {
             EventMsg::ImageGenerationEnd(ev) => self.on_image_generation_end(ev),
             EventMsg::McpToolCallBegin(ev) => self.on_mcp_tool_call_begin(ev),
             EventMsg::McpToolCallEnd(ev) => self.on_mcp_tool_call_end(ev),
+            EventMsg::ComputerUseCallRequest(ev) => self.on_computer_use_call_begin(ev),
+            EventMsg::ComputerUseCallResponse(ev) => self.on_computer_use_call_end(ev),
             EventMsg::WebSearchBegin(ev) => self.on_web_search_begin(ev),
             EventMsg::WebSearchEnd(ev) => self.on_web_search_end(ev),
             EventMsg::GetHistoryEntryResponse(ev) => self.handle_history_entry_response(ev),

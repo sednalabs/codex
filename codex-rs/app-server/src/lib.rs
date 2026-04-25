@@ -71,6 +71,7 @@ mod app_server_tracing;
 mod bespoke_event_handling;
 mod codex_message_processor;
 mod command_exec;
+mod computer_use;
 mod config;
 mod config_api;
 mod config_manager;

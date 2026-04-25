@@ -1834,11 +1834,11 @@ fn android_dynamic_tools_use_canonical_codex_tool_definitions() {
 
     assert!(handlers.contains(&ToolHandlerSpec {
         name: ToolName::plain("android_observe"),
-        kind: ToolHandlerKind::DynamicTool,
+        kind: ToolHandlerKind::ComputerUse,
     }));
     assert!(handlers.contains(&ToolHandlerSpec {
         name: ToolName::plain("android_step"),
-        kind: ToolHandlerKind::DynamicTool,
+        kind: ToolHandlerKind::ComputerUse,
     }));
 }
 
