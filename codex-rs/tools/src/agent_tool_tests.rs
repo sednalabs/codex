@@ -167,6 +167,7 @@ fn spawn_agent_tool_v1_exposes_runtime_metadata_fields() {
         hide_agent_type_model_reasoning: false,
         include_usage_hint: false,
         usage_hint_text: None,
+        max_concurrent_threads_per_session: None,
     })
     else {
         panic!("spawn_agent should be a function tool");
