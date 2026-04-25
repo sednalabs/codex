@@ -7529,8 +7529,8 @@ pub struct DynamicToolCallResponse {
 pub struct ComputerUseCallResponse {
     pub content_items: Vec<ComputerUseCallOutputContentItem>,
     pub success: bool,
-    #[serde(default)]
-    #[ts(optional = nullable)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     pub error: Option<String>,
 }
 
