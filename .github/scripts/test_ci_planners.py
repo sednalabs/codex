@@ -38,6 +38,9 @@ AGGREGATE_VALIDATION_SUMMARY = load_module(
 CHECK_MARKDOWN_LINKS = load_module(
     "check_markdown_links_module", SCRIPTS_DIR / "check_markdown_links.py"
 )
+SYNC_UPSTREAM_MIRROR = load_module(
+    "sync_upstream_mirror_module", SCRIPTS_DIR / "sync_upstream_mirror.py"
+)
 
 
 def run_script(script: Path, *args: str) -> dict:
@@ -129,6 +132,140 @@ class TempGitRepo:
     def _git(self, *args: str) -> str:
         proc = subprocess.run(
             ["git", "-C", str(self.root), *args],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        return proc.stdout.strip()
+
+
+class SyncUpstreamMirrorTests(unittest.TestCase):
+    def test_read_only_fallback_uses_live_upstream_when_mirror_is_stale(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo, _origin_bare, upstream_bare, _old_sha, new_sha = self.create_fixture(
+                Path(tmpdir), mirror_state="stale"
+            )
+
+            result = SYNC_UPSTREAM_MIRROR.sync_upstream_mirror(
+                repo=repo,
+                mode="read-only-fallback",
+                upstream_url=str(upstream_bare),
+            )
+
+        self.assertEqual(
+            {
+                "audit_baseline": result["audit_baseline"],
+                "expected_mirror_sha": result["expected_mirror_sha"],
+                "mirror_audit_args": result["mirror_audit_args"],
+                "mirror_state": result["mirror_state"],
+                "wrote_mirror": result["wrote_mirror"],
+            },
+            {
+                "audit_baseline": "upstream-ref",
+                "expected_mirror_sha": new_sha,
+                "mirror_audit_args": ["--mirror-ref", "refs/remotes/upstream/main"],
+                "mirror_state": "stale_ff_only",
+                "wrote_mirror": False,
+            },
+        )
+
+    def test_required_write_requires_a_token_even_when_mirror_is_exact(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo, _origin_bare, upstream_bare, _old_sha, _new_sha = self.create_fixture(
+                Path(tmpdir), mirror_state="exact"
+            )
+
+            with self.assertRaisesRegex(
+                SYNC_UPSTREAM_MIRROR.MirrorSyncError,
+                "missing upstream sync token",
+            ):
+                SYNC_UPSTREAM_MIRROR.sync_upstream_mirror(
+                    repo=repo,
+                    mode="required-write",
+                    upstream_url=str(upstream_bare),
+                )
+
+    def test_required_write_fast_forwards_stale_mirror(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo, origin_bare, upstream_bare, _old_sha, new_sha = self.create_fixture(
+                Path(tmpdir), mirror_state="stale"
+            )
+
+            result = SYNC_UPSTREAM_MIRROR.sync_upstream_mirror(
+                repo=repo,
+                mode="required-write",
+                upstream_url=str(upstream_bare),
+                token="dummy-token",
+                mirror_push_url=str(origin_bare),
+            )
+            mirror_sha = self.git(
+                origin_bare,
+                "--git-dir",
+                str(origin_bare),
+                "rev-parse",
+                "refs/heads/upstream-main",
+            )
+
+        self.assertEqual(
+            {
+                "audit_baseline": result["audit_baseline"],
+                "expected_mirror_sha": result["expected_mirror_sha"],
+                "mirror_audit_args": result["mirror_audit_args"],
+                "mirror_sha": mirror_sha,
+                "mirror_state": result["mirror_state"],
+                "wrote_mirror": result["wrote_mirror"],
+            },
+            {
+                "audit_baseline": "origin-mirror",
+                "expected_mirror_sha": new_sha,
+                "mirror_audit_args": [
+                    "--mirror-remote",
+                    "origin",
+                    "--mirror-branch",
+                    "upstream-main",
+                ],
+                "mirror_sha": new_sha,
+                "mirror_state": "exact",
+                "wrote_mirror": True,
+            },
+        )
+
+    def create_fixture(
+        self, root: Path, *, mirror_state: str
+    ) -> tuple[Path, Path, Path, str, str]:
+        origin_bare = root / "origin.git"
+        upstream_bare = root / "upstream.git"
+        source = root / "source"
+        repo = root / "repo"
+
+        self.git(root, "init", "--bare", str(origin_bare))
+        self.git(root, "init", "--bare", str(upstream_bare))
+        self.git(root, "init", "--initial-branch=main", str(source))
+        self.git(source, "config", "user.name", "CI Planner Tests")
+        self.git(source, "config", "user.email", "ci-planner-tests@example.invalid")
+
+        (source / "payload.txt").write_text("old\n", encoding="utf-8")
+        self.git(source, "add", "payload.txt")
+        self.git(source, "commit", "-m", "old")
+        old_sha = self.git(source, "rev-parse", "HEAD")
+
+        (source / "payload.txt").write_text("new\n", encoding="utf-8")
+        self.git(source, "commit", "-am", "new")
+        new_sha = self.git(source, "rev-parse", "HEAD")
+
+        self.git(source, "push", str(upstream_bare), "main:refs/heads/main")
+        mirror_sha = new_sha if mirror_state == "exact" else old_sha
+        self.git(source, "push", str(origin_bare), f"{mirror_sha}:refs/heads/upstream-main")
+
+        self.git(root, "init", "--initial-branch=main", str(repo))
+        self.git(repo, "remote", "add", "origin", str(origin_bare))
+        self.git(repo, "remote", "add", "upstream", str(upstream_bare))
+        return repo, origin_bare, upstream_bare, old_sha, new_sha
+
+    def git(self, cwd: Path, *args: str) -> str:
+        proc = subprocess.run(
+            ["git", *args],
+            cwd=cwd,
             check=True,
             capture_output=True,
             text=True,
@@ -936,6 +1073,62 @@ class ValidationPlanScriptTests(unittest.TestCase):
                     ".workflow-src/.github/scripts/write_lane_summary.py",
                     summary_step.get("run") or "",
                 )
+
+    def test_validation_lane_workflow_keeps_upstream_sync_secret_out_of_pr_lanes(self) -> None:
+        payload = load_workflow_payload(REPO_ROOT / ".github/workflows/_validation-lane-workflow.yml")
+        workflow_call = ((payload.get("on") or {}).get("workflow_call") or {})
+        self.assertNotIn("secrets", workflow_call)
+
+        run_job = (payload.get("jobs") or {}).get("run") or {}
+        run_lane_step = next(
+            step
+            for step in run_job.get("steps") or []
+            if step.get("name") == "Run requested lane script"
+        )
+        self.assertNotIn("SYNC_UPSTREAM_PUSH_TOKEN", run_lane_step.get("env") or {})
+
+    def test_sedna_sync_upstream_uses_github_app_token_and_shared_helper(self) -> None:
+        payload = load_workflow_payload(REPO_ROOT / ".github/workflows/sedna-sync-upstream.yml")
+        sync_job = ((payload.get("jobs") or {}).get("sync") or {})
+        steps = sync_job.get("steps") or []
+
+        credential_step = next(
+            step
+            for step in steps
+            if step.get("name") == "Resolve upstream sync credential mode"
+        )
+        self.assertIn("SEDNA_SYNC_UPSTREAM_APP_CLIENT_ID", (credential_step.get("env") or {}).get("APP_CLIENT_ID", ""))
+        self.assertIn("SEDNA_SYNC_UPSTREAM_APP_PRIVATE_KEY", (credential_step.get("env") or {}).get("APP_PRIVATE_KEY", ""))
+
+        token_step = next(
+            step
+            for step in steps
+            if step.get("name") == "Generate upstream sync app token"
+        )
+        self.assertEqual(
+            token_step.get("if"),
+            "${{ steps.credential-mode.outputs.use_app_token == 'true' }}",
+        )
+        self.assertEqual(token_step.get("uses"), "actions/create-github-app-token@v3")
+        self.assertEqual(
+            token_step.get("with") or {},
+            {
+                "client-id": "${{ vars.SEDNA_SYNC_UPSTREAM_APP_CLIENT_ID }}",
+                "private-key": "${{ secrets.SEDNA_SYNC_UPSTREAM_APP_PRIVATE_KEY }}",
+                "permission-contents": "write",
+                "permission-workflows": "write",
+            },
+        )
+
+        sync_step = next(
+            step for step in steps if step.get("name") == "Fast-forward upstream mirror"
+        )
+        self.assertIn(".github/scripts/sync_upstream_mirror.py", sync_step.get("run") or "")
+        self.assertIn("--mode required-write", sync_step.get("run") or "")
+        self.assertEqual(
+            (sync_job.get("outputs") or {}).get("synced_upstream_main_sha"),
+            "${{ steps.sync-mirror.outputs.synced_upstream_main_sha }}",
+        )
 
     def test_rust_ci_fallback_sccache_writes_are_disabled_by_default(self) -> None:
         payload = load_workflow_payload(REPO_ROOT / ".github/workflows/rust-ci-full.yml")
