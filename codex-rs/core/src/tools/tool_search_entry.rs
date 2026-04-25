@@ -59,10 +59,11 @@ pub(crate) fn build_tool_search_entries(
 }
 
 fn is_native_computer_use_dynamic_tool(tool: &DynamicToolSpec) -> bool {
-    matches!(
-        tool.name.as_str(),
-        ANDROID_OBSERVE_TOOL_NAME | ANDROID_STEP_TOOL_NAME
-    )
+    tool.namespace.is_none()
+        && matches!(
+            tool.name.as_str(),
+            ANDROID_OBSERVE_TOOL_NAME | ANDROID_STEP_TOOL_NAME
+        )
 }
 
 fn mcp_tool_search_entry(info: &ToolInfo) -> Result<ToolSearchEntry, serde_json::Error> {

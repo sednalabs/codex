@@ -26,6 +26,10 @@ const STEP_ACTIONS: [&str; 12] = [
 ];
 
 pub fn canonical_android_dynamic_tool(tool: &DynamicToolSpec) -> Option<ResponsesApiTool> {
+    if tool.namespace.is_some() {
+        return None;
+    }
+
     match tool.name.as_str() {
         ANDROID_OBSERVE_TOOL_NAME => Some(create_android_observe_tool(tool.defer_loading)),
         ANDROID_STEP_TOOL_NAME => Some(create_android_step_tool(tool.defer_loading)),

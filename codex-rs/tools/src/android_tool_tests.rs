@@ -63,3 +63,18 @@ fn canonical_android_dynamic_tool_ignores_non_android_tools() {
 
     assert!(tool.is_none());
 }
+
+#[test]
+fn canonical_android_dynamic_tool_ignores_namespaced_android_names() {
+    let tool = canonical_android_dynamic_tool(&DynamicToolSpec {
+        namespace: Some("codex_app".to_string()),
+        name: ANDROID_OBSERVE_TOOL_NAME.to_string(),
+        description: "custom namespaced observe".to_string(),
+        input_schema: json!({ "type": "object" }),
+        defer_loading: false,
+        persist_on_resume: true,
+        capability: None,
+    });
+
+    assert!(tool.is_none());
+}

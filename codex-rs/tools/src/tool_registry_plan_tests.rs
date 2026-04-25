@@ -1843,6 +1843,121 @@ fn android_dynamic_tools_use_canonical_codex_tool_definitions() {
 }
 
 #[test]
+fn namespaced_android_dynamic_tool_names_remain_dynamic_tools() {
+    let model_info = model_info();
+    let features = Features::with_defaults();
+    let available_models = Vec::new();
+    let tools_config = ToolsConfig::new(&ToolsConfigParams {
+        model_info: &model_info,
+        available_models: &available_models,
+        features: &features,
+        image_generation_tool_auth_allowed: true,
+        web_search_mode: Some(WebSearchMode::Cached),
+        session_source: SessionSource::Cli,
+        sandbox_policy: &SandboxPolicy::DangerFullAccess,
+        windows_sandbox_level: WindowsSandboxLevel::Disabled,
+    });
+    let observe_tool = DynamicToolSpec {
+        namespace: Some("codex_app".to_string()),
+        name: "android_observe".to_string(),
+        description: "custom namespaced observe description".to_string(),
+        input_schema: json!({
+            "type": "object",
+            "properties": {
+                "scope": { "type": "string" }
+            }
+        }),
+        defer_loading: false,
+        persist_on_resume: false,
+        capability: None,
+    };
+
+    let (tools, handlers) = build_specs(
+        &tools_config,
+        /*mcp_tools*/ None,
+        /*deferred_mcp_tools*/ None,
+        &[observe_tool],
+    );
+
+    let observe_spec = find_namespace_function_tool(&tools, "codex_app", "android_observe");
+    assert_eq!(
+        observe_spec.description,
+        "custom namespaced observe description"
+    );
+    assert!(handlers.contains(&ToolHandlerSpec {
+        name: ToolName::namespaced("codex_app", "android_observe"),
+        kind: ToolHandlerKind::DynamicTool,
+    }));
+    assert!(!handlers.contains(&ToolHandlerSpec {
+        name: ToolName::plain("android_observe"),
+        kind: ToolHandlerKind::ComputerUse,
+    }));
+}
+
+#[test]
+fn duplicate_bare_android_dynamic_tools_register_native_handler_once() {
+    let model_info = model_info();
+    let features = Features::with_defaults();
+    let available_models = Vec::new();
+    let tools_config = ToolsConfig::new(&ToolsConfigParams {
+        model_info: &model_info,
+        available_models: &available_models,
+        features: &features,
+        image_generation_tool_auth_allowed: true,
+        web_search_mode: Some(WebSearchMode::Cached),
+        session_source: SessionSource::Cli,
+        sandbox_policy: &SandboxPolicy::DangerFullAccess,
+        windows_sandbox_level: WindowsSandboxLevel::Disabled,
+    });
+    let observe_tool = DynamicToolSpec {
+        namespace: None,
+        name: "android_observe".to_string(),
+        description: "custom observe description".to_string(),
+        input_schema: json!({ "type": "object" }),
+        defer_loading: false,
+        persist_on_resume: false,
+        capability: None,
+    };
+    let duplicate_observe_tool = DynamicToolSpec {
+        namespace: None,
+        name: "android_observe".to_string(),
+        description: "duplicate observe description".to_string(),
+        input_schema: json!({ "type": "object" }),
+        defer_loading: true,
+        persist_on_resume: false,
+        capability: None,
+    };
+
+    let (tools, handlers) = build_specs(
+        &tools_config,
+        /*mcp_tools*/ None,
+        /*deferred_mcp_tools*/ None,
+        &[observe_tool, duplicate_observe_tool],
+    );
+
+    assert_eq!(
+        tools
+            .iter()
+            .filter(|tool| tool.name() == "android_observe")
+            .count(),
+        1
+    );
+    assert_eq!(
+        handlers
+            .iter()
+            .filter(|handler| {
+                **handler
+                    == ToolHandlerSpec {
+                        name: ToolName::plain("android_observe"),
+                        kind: ToolHandlerKind::ComputerUse,
+                    }
+            })
+            .count(),
+        1
+    );
+}
+
+#[test]
 fn tool_suggest_is_not_registered_without_feature_flag() {
     let model_info = search_capable_model_info();
     let mut features = Features::with_defaults();

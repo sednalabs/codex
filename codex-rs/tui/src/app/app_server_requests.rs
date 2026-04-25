@@ -115,12 +115,7 @@ impl PendingAppServerRequests {
                     message: "Dynamic tool calls are not available in TUI yet.".to_string(),
                 })
             }
-            ServerRequest::ComputerUseCall { request_id, .. } => {
-                Some(UnsupportedAppServerRequest {
-                    request_id: request_id.clone(),
-                    message: "Computer-use calls are not available in TUI yet.".to_string(),
-                })
-            }
+            ServerRequest::ComputerUseCall { .. } => None,
             ServerRequest::ChatgptAuthTokensRefresh { .. } => None,
             ServerRequest::ApplyPatchApproval { request_id, .. } => {
                 Some(UnsupportedAppServerRequest {
@@ -694,10 +689,10 @@ mod tests {
     }
 
     #[test]
-    fn rejects_computer_use_calls_as_unsupported() {
+    fn does_not_mark_computer_use_calls_as_unsupported() {
         let mut pending = PendingAppServerRequests::default();
-        let unsupported = pending
-            .note_server_request(&ServerRequest::ComputerUseCall {
+        assert_eq!(
+            pending.note_server_request(&ServerRequest::ComputerUseCall {
                 request_id: AppServerRequestId::Integer(100),
                 params: codex_app_server_protocol::ComputerUseCallParams {
                     thread_id: "thread-1".to_string(),
@@ -708,13 +703,8 @@ mod tests {
                     tool: "android_observe".to_string(),
                     arguments: json!({ "scope": "screen_and_ui" }),
                 },
-            })
-            .expect("computer-use calls should be rejected");
-
-        assert_eq!(unsupported.request_id, AppServerRequestId::Integer(100));
-        assert_eq!(
-            unsupported.message,
-            "Computer-use calls are not available in TUI yet."
+            }),
+            None
         );
     }
 

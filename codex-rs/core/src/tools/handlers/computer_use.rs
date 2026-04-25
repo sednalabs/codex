@@ -217,6 +217,30 @@ async fn request_computer_use(
         .map(|environment| environment.environment_id.clone());
     let adapter = ADAPTER_ANDROID.to_string();
     let started_at = Instant::now();
+    if environment_id.is_none() {
+        let response = unavailable_response(
+            "Android computer-use environment is unavailable: no turn environment is selected.",
+        );
+        session
+            .send_event(
+                turn_context,
+                EventMsg::ComputerUseCallResponse(ComputerUseCallResponseEvent {
+                    call_id,
+                    turn_id,
+                    environment_id,
+                    adapter,
+                    tool,
+                    arguments,
+                    content_items: response.content_items.clone(),
+                    success: response.success,
+                    error: response.error.clone(),
+                    duration: started_at.elapsed(),
+                }),
+            )
+            .await;
+        return Some(response);
+    }
+
     let request = ComputerUseCallRequest {
         call_id: call_id.clone(),
         turn_id: turn_id.clone(),
@@ -226,37 +250,29 @@ async fn request_computer_use(
         arguments: arguments.clone(),
     };
 
-    let pending_response = match environment_id.as_deref() {
-        Some(_) => Some({
-            let (tx_response, rx_response) = oneshot::channel();
-            let prev_entry = {
-                let mut active = session.active_turn.lock().await;
-                match active.as_mut() {
-                    Some(at) => {
-                        let mut ts = at.turn_state.lock().await;
-                        ts.insert_pending_computer_use(call_id.clone(), tx_response)
-                    }
-                    None => None,
+    let pending_response = {
+        let (tx_response, rx_response) = oneshot::channel();
+        let prev_entry = {
+            let mut active = session.active_turn.lock().await;
+            match active.as_mut() {
+                Some(at) => {
+                    let mut ts = at.turn_state.lock().await;
+                    ts.insert_pending_computer_use(call_id.clone(), tx_response)
                 }
-            };
-            if prev_entry.is_some() {
-                warn!("Overwriting existing pending computer-use call for call_id: {call_id}");
+                None => None,
             }
-            rx_response
-        }),
-        None => None,
+        };
+        if prev_entry.is_some() {
+            warn!("Overwriting existing pending computer-use call for call_id: {call_id}");
+        }
+        rx_response
     };
 
     session
         .send_event(turn_context, EventMsg::ComputerUseCallRequest(request))
         .await;
 
-    let response = match pending_response {
-        Some(rx_response) => rx_response.await.ok(),
-        None => Some(unavailable_response(
-            "Android computer-use environment is unavailable: no turn environment is selected.",
-        )),
-    };
+    let response = pending_response.await.ok();
 
     let response_event = match &response {
         Some(response) => EventMsg::ComputerUseCallResponse(ComputerUseCallResponseEvent {
@@ -303,19 +319,24 @@ fn unavailable_response(message: &str) -> ComputerUseResponse {
 mod tests {
     use super::ComputerUseHandler;
     use super::computer_use_command;
+    use super::request_computer_use;
     use super::unavailable_response;
     use crate::session::tests::make_session_and_context;
+    use crate::session::tests::make_session_and_context_with_rx;
     use crate::tools::context::ToolCallSource;
     use crate::tools::context::ToolInvocation;
     use crate::tools::context::ToolPayload;
     use crate::tools::registry::ToolHandler;
     use crate::turn_diff_tracker::TurnDiffTracker;
     use codex_protocol::computer_use::ComputerUseOutputContentItem;
+    use codex_protocol::protocol::EventMsg;
     use codex_tools::ANDROID_OBSERVE_TOOL_NAME;
     use codex_tools::ANDROID_STEP_TOOL_NAME;
+    use codex_tools::ToolName;
     use pretty_assertions::assert_eq;
     use serde_json::json;
     use std::sync::Arc;
+    use std::time::Duration;
     use tokio::sync::Mutex;
     use tokio_util::sync::CancellationToken;
 
@@ -385,6 +406,46 @@ mod tests {
                 success: false,
                 error: Some("no android environment".to_string()),
             }
+        );
+    }
+
+    #[tokio::test]
+    async fn unavailable_environment_does_not_emit_external_computer_use_request() {
+        let (session, turn, rx) = make_session_and_context_with_rx().await;
+
+        let response = request_computer_use(
+            &session,
+            &turn,
+            "call-no-env".to_string(),
+            ToolName::plain(ANDROID_OBSERVE_TOOL_NAME),
+            json!({ "scope": "screen_and_ui" }),
+        )
+        .await
+        .expect("no-environment calls should return a local response");
+
+        assert!(!response.success);
+        let event = tokio::time::timeout(Duration::from_secs(1), rx.recv())
+            .await
+            .expect("computer-use response event should be emitted")
+            .expect("event channel should be open");
+        let response_event = match event.msg {
+            EventMsg::ComputerUseCallResponse(response_event) => response_event,
+            other => panic!("expected computer-use response event, got {other:?}"),
+        };
+        assert_eq!(response_event.call_id, "call-no-env");
+        assert!(response_event.environment_id.is_none());
+        assert!(!response_event.success);
+        assert_eq!(
+            response_event.error.as_deref(),
+            Some(
+                "Android computer-use environment is unavailable: no turn environment is selected."
+            )
+        );
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), rx.recv())
+                .await
+                .is_err(),
+            "no external ComputerUseCallRequest should be emitted"
         );
     }
 }
