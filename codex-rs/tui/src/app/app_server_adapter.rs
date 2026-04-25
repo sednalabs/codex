@@ -1300,6 +1300,7 @@ mod tests {
     use codex_app_server_protocol::ItemStartedNotification;
     use codex_app_server_protocol::ReasoningSummaryTextDeltaNotification;
     use codex_app_server_protocol::ServerNotification;
+    use codex_app_server_protocol::ServerRequest;
     use codex_app_server_protocol::Thread;
     use codex_app_server_protocol::ThreadItem;
     use codex_app_server_protocol::ThreadStatus;

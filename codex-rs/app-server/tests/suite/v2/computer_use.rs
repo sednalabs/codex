@@ -169,7 +169,7 @@ async fn computer_use_call_round_trip_sends_client_response_to_model() -> Result
         },
         ComputerUseCallOutputContentItem::InputImage {
             image_url: "data:image/png;base64,AAAA".to_string(),
-            detail: Some(DEFAULT_IMAGE_DETAIL.to_string()),
+            detail: Some(default_image_detail()),
         },
     ];
     let response = ComputerUseCallResponse {
@@ -228,7 +228,7 @@ async fn computer_use_call_round_trip_sends_client_response_to_model() -> Result
         },
         FunctionCallOutputContentItem::InputImage {
             image_url: "data:image/png;base64,AAAA".to_string(),
-            detail: Some(DEFAULT_IMAGE_DETAIL.to_string()),
+            detail: Some(default_image_detail()),
         },
     ]);
     assert_eq!(payload, expected_payload);
@@ -264,6 +264,14 @@ fn function_call_output_payload(body: &Value, call_id: &str) -> Option<FunctionC
         .and_then(|item| item.get("output"))
         .cloned()
         .and_then(|output| serde_json::from_value(output).ok())
+}
+
+fn default_image_detail() -> String {
+    serde_json::to_value(DEFAULT_IMAGE_DETAIL)
+        .expect("default image detail should serialize")
+        .as_str()
+        .expect("default image detail should serialize as a string")
+        .to_string()
 }
 
 async fn wait_for_computer_use_started(
