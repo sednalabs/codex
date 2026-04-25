@@ -26,6 +26,7 @@ on:
           - core-runtime-surface-smoke
           - codex.core-startup-sync-targeted
           - codex.core-subagent-surface-targeted
+          - codex.core-subagent-inspect-tree-fallback-targeted
           - codex.core-subagent-notification-contract-targeted
           - codex.core-subagent-notification-visibility-targeted
           - codex.tui-thread-session-policy-targeted
