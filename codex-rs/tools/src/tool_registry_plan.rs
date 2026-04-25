@@ -27,8 +27,10 @@ use crate::create_apply_patch_json_tool;
 use crate::create_close_agent_tool_v1;
 use crate::create_close_agent_tool_v2;
 use crate::create_code_mode_tool;
+use crate::create_create_goal_tool;
 use crate::create_exec_command_tool;
 use crate::create_followup_task_tool;
+use crate::create_get_goal_tool;
 use crate::create_image_generation_tool;
 use crate::create_inspect_agent_tree_tool;
 use crate::create_list_agents_tool;
@@ -51,6 +53,7 @@ use crate::create_spawn_agents_on_csv_tool;
 use crate::create_test_sync_tool;
 use crate::create_tool_search_tool;
 use crate::create_tool_suggest_tool;
+use crate::create_update_goal_tool;
 use crate::create_update_plan_tool;
 use crate::create_view_image_tool;
 use crate::create_wait_agent_tool_v1;
@@ -217,6 +220,26 @@ pub fn build_tool_registry_plan(
         config.code_mode_enabled,
     );
     plan.register_handler("update_plan", ToolHandlerKind::Plan);
+    if config.goal_tools {
+        plan.push_spec(
+            create_get_goal_tool(),
+            /*supports_parallel_tool_calls*/ false,
+            config.code_mode_enabled,
+        );
+        plan.register_handler("get_goal", ToolHandlerKind::Goal);
+        plan.push_spec(
+            create_create_goal_tool(),
+            /*supports_parallel_tool_calls*/ false,
+            config.code_mode_enabled,
+        );
+        plan.register_handler("create_goal", ToolHandlerKind::Goal);
+        plan.push_spec(
+            create_update_goal_tool(),
+            /*supports_parallel_tool_calls*/ false,
+            config.code_mode_enabled,
+        );
+        plan.register_handler("update_goal", ToolHandlerKind::Goal);
+    }
 
     plan.push_spec(
         create_request_user_input_tool(request_user_input_tool_description(

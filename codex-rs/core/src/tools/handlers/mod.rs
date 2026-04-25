@@ -1,6 +1,7 @@
 pub(crate) mod agent_jobs;
 pub(crate) mod apply_patch;
 mod dynamic;
+mod goal;
 mod inspect_agent_tree;
 mod list_dir;
 mod mcp;
@@ -37,6 +38,7 @@ pub use apply_patch::ApplyPatchHandler;
 use codex_protocol::models::AdditionalPermissionProfile;
 use codex_protocol::protocol::AskForApproval;
 pub use dynamic::DynamicToolHandler;
+pub use goal::GoalHandler;
 pub use inspect_agent_tree::InspectAgentTreeHandler;
 pub use list_dir::ListDirHandler;
 pub use mcp::McpHandler;

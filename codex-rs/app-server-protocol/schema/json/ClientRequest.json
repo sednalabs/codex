@@ -3437,6 +3437,15 @@
       ],
       "type": "object"
     },
+    "ThreadGoalStatus": {
+      "enum": [
+        "active",
+        "paused",
+        "budgetLimited",
+        "complete"
+      ],
+      "type": "string"
+    },
     "ThreadInjectItemsParams": {
       "properties": {
         "items": {
