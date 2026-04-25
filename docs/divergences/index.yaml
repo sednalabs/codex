@@ -626,6 +626,7 @@
         "codex-rs/responses-api-proxy/",
         "codex-rs/rmcp-client/",
         "codex-rs/rollout/",
+        "codex-rs/rollout-trace/src/protocol_event.rs",
         "codex-rs/rust-toolchain.toml",
         "codex-rs/sandboxing/",
         "codex-rs/state/",
