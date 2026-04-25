@@ -81,6 +81,7 @@ fn spawn_agent_tool_v2_requires_task_name_and_lists_visible_models() {
         hide_agent_type_model_reasoning: false,
         include_usage_hint: false,
         usage_hint_text: None,
+        max_concurrent_threads_per_session: Some(4),
     });
 
     let ToolSpec::Function(ResponsesApiTool {
@@ -99,6 +100,7 @@ fn spawn_agent_tool_v2_requires_task_name_and_lists_visible_models() {
     );
     assert!(description.contains("Spawns an agent to work on the specified task."));
     assert!(description.contains("The spawned agent will have the same tools as you"));
+    assert!(description.contains("`max_concurrent_threads_per_session = 4`"));
     assert!(description.contains(SPAWN_AGENT_INHERITED_MODEL_GUIDANCE));
     assert!(
         description
@@ -141,6 +143,7 @@ fn spawn_agent_tool_v2_lists_upgradeable_legacy_models() {
         hide_agent_type_model_reasoning: false,
         include_usage_hint: false,
         usage_hint_text: None,
+        max_concurrent_threads_per_session: None,
     });
 
     let ToolSpec::Function(ResponsesApiTool { description, .. }) = tool else {
