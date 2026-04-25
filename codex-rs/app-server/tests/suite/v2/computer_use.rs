@@ -228,7 +228,7 @@ async fn computer_use_call_round_trip_sends_client_response_to_model() -> Result
         },
         FunctionCallOutputContentItem::InputImage {
             image_url: "data:image/png;base64,AAAA".to_string(),
-            detail: Some(default_image_detail()),
+            detail: Some(DEFAULT_IMAGE_DETAIL),
         },
     ]);
     assert_eq!(payload, expected_payload);
