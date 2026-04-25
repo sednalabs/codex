@@ -8463,49 +8463,6 @@
       "title": "RawResponseItemCompletedNotification",
       "type": "object"
     },
-    "ReadOnlyAccess": {
-      "oneOf": [
-        {
-          "properties": {
-            "includePlatformDefaults": {
-              "default": true,
-              "type": "boolean"
-            },
-            "readableRoots": {
-              "default": [],
-              "items": {
-                "$ref": "#/definitions/AbsolutePathBuf"
-              },
-              "type": "array"
-            },
-            "type": {
-              "const": "restricted",
-              "title": "RestrictedReadOnlyAccessType",
-              "type": "string"
-            }
-          },
-          "required": [
-            "type"
-          ],
-          "title": "RestrictedReadOnlyAccess",
-          "type": "object"
-        },
-        {
-          "properties": {
-            "type": {
-              "const": "fullAccess",
-              "title": "FullAccessReadOnlyAccessType",
-              "type": "string"
-            }
-          },
-          "required": [
-            "type"
-          ],
-          "title": "FullAccessReadOnlyAccess",
-          "type": "object"
-        }
-      ]
-    },
     "RealtimeConversationVersion": {
       "enum": [
         "v1",
@@ -9660,12 +9617,6 @@
         },
         {
           "properties": {
-            "access": {
-              "$ref": "#/definitions/ReadOnlyAccess",
-              "default": {
-                "type": "fullAccess"
-              }
-            },
             "networkAccess": {
               "default": false,
               "type": "boolean"
@@ -9713,12 +9664,6 @@
             "networkAccess": {
               "default": false,
               "type": "boolean"
-            },
-            "readOnlyAccess": {
-              "$ref": "#/definitions/ReadOnlyAccess",
-              "default": {
-                "type": "fullAccess"
-              }
             },
             "type": {
               "const": "workspaceWrite",

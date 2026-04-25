@@ -43,6 +43,10 @@
     "AgentsToml": {
       "additionalProperties": false,
       "properties": {
+        "interrupt_message": {
+          "description": "Whether to record a model-visible message when an agent turn is interrupted. Defaults to true.",
+          "type": "boolean"
+        },
         "job_max_runtime_seconds": {
           "description": "Default maximum runtime in seconds for agent job workers.",
           "format": "uint64",
@@ -646,26 +650,6 @@
           "type": [
             "boolean",
             "null"
-          ]
-        },
-        "js_repl_node_module_dirs": {
-          "description": "Ordered list of directories to search for Node modules in `js_repl`.",
-          "items": {
-            "$ref": "#/definitions/AbsolutePathBuf"
-          },
-          "type": [
-            "array",
-            "null"
-          ]
-        },
-        "js_repl_node_path": {
-          "oneOf": [
-            {
-              "$ref": "#/definitions/AbsolutePathBuf"
-            },
-            {
-              "type": "null"
-            }
           ]
         },
         "model": {
@@ -2663,6 +2647,42 @@
       },
       "type": "object"
     },
+    "ThreadStoreToml": {
+      "oneOf": [
+        {
+          "properties": {
+            "type": {
+              "enum": [
+                "local"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "endpoint": {
+              "type": "string"
+            },
+            "type": {
+              "enum": [
+                "remote"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "endpoint",
+            "type"
+          ],
+          "type": "object"
+        }
+      ]
+    },
     "ToolSuggestConfig": {
       "additionalProperties": false,
       "properties": {
@@ -3185,6 +3205,14 @@
         "null"
       ]
     },
+    "experimental_thread_store": {
+      "allOf": [
+        {
+          "$ref": "#/definitions/ThreadStoreToml"
+        }
+      ],
+      "description": "Experimental / do not use. Selects the thread store implementation."
+    },
     "experimental_thread_store_endpoint": {
       "description": "Experimental / do not use. When set, app-server uses a remote thread store at this endpoint instead of the local filesystem/SQLite store.",
       "type": [
@@ -3544,27 +3572,6 @@
       "type": [
         "string",
         "null"
-      ]
-    },
-    "js_repl_node_module_dirs": {
-      "description": "Ordered list of directories to search for Node modules in `js_repl`.",
-      "items": {
-        "$ref": "#/definitions/AbsolutePathBuf"
-      },
-      "type": [
-        "array",
-        "null"
-      ]
-    },
-    "js_repl_node_path": {
-      "description": "Optional absolute path to the Node runtime used by `js_repl`.",
-      "oneOf": [
-        {
-          "$ref": "#/definitions/AbsolutePathBuf"
-        },
-        {
-          "type": "null"
-        }
       ]
     },
     "log_dir": {

@@ -1,5 +1,6 @@
 use crate::agents_md::DEFAULT_AGENTS_MD_FILENAME;
 use crate::agents_md::LOCAL_AGENTS_MD_FILENAME;
+use crate::config::ThreadStoreConfig;
 use crate::config::edit::ConfigEdit;
 use crate::config::edit::ConfigEditsBuilder;
 use crate::config::edit::apply_blocking;
@@ -62,7 +63,6 @@ use codex_protocol::permissions::FileSystemSandboxEntry;
 use codex_protocol::permissions::FileSystemSandboxPolicy;
 use codex_protocol::permissions::FileSystemSpecialPath;
 use codex_protocol::permissions::NetworkSandboxPolicy;
-use codex_protocol::protocol::ReadOnlyAccess;
 use codex_protocol::protocol::RealtimeVoice;
 use codex_protocol::protocol::SandboxPolicy;
 use serde::Deserialize;
@@ -818,10 +818,6 @@ async fn default_permissions_profile_populates_runtime_sandbox_policy() -> std::
         config.permissions.sandbox_policy.get(),
         &SandboxPolicy::WorkspaceWrite {
             writable_roots: vec![memories_root],
-            read_only_access: ReadOnlyAccess::Restricted {
-                include_platform_defaults: true,
-                readable_roots: vec![cwd.path().join("docs").abs(),],
-            },
             network_access: false,
             exclude_tmpdir_env_var: true,
             exclude_slash_tmp: true,
@@ -1179,10 +1175,6 @@ async fn permissions_profiles_allow_unknown_special_paths() -> std::io::Result<(
     assert_eq!(
         config.permissions.sandbox_policy.get(),
         &SandboxPolicy::ReadOnly {
-            access: ReadOnlyAccess::Restricted {
-                include_platform_defaults: false,
-                readable_roots: Vec::new(),
-            },
             network_access: false,
         }
     );
@@ -1248,10 +1240,6 @@ async fn permissions_profiles_allow_missing_filesystem_with_warning() -> std::io
     assert_eq!(
         config.permissions.sandbox_policy.get(),
         &SandboxPolicy::ReadOnly {
-            access: ReadOnlyAccess::Restricted {
-                include_platform_defaults: false,
-                readable_roots: Vec::new(),
-            },
             network_access: false,
         }
     );
@@ -1514,7 +1502,6 @@ trust_level = "trusted"
             resolution,
             SandboxPolicy::WorkspaceWrite {
                 writable_roots: vec![writable_root.clone()],
-                read_only_access: ReadOnlyAccess::FullAccess,
                 network_access: false,
                 exclude_tmpdir_env_var: true,
                 exclude_slash_tmp: true,
@@ -1555,7 +1542,6 @@ exclude_slash_tmp = true
             resolution,
             SandboxPolicy::WorkspaceWrite {
                 writable_roots: vec![writable_root],
-                read_only_access: ReadOnlyAccess::FullAccess,
                 network_access: false,
                 exclude_tmpdir_env_var: true,
                 exclude_slash_tmp: true,
@@ -1613,7 +1599,7 @@ exclude_slash_tmp = true
         let sandbox_policy = config.permissions.sandbox_policy.get();
         assert_eq!(
             config.permissions.file_system_sandbox_policy,
-            FileSystemSandboxPolicy::from_legacy_sandbox_policy(sandbox_policy, cwd.path()),
+            FileSystemSandboxPolicy::from_legacy_sandbox_policy_for_cwd(sandbox_policy, cwd.path()),
             "case `{name}` should preserve filesystem semantics from legacy config"
         );
         assert_eq!(
@@ -4031,6 +4017,7 @@ async fn load_config_rejects_missing_agent_role_config_file() -> std::io::Result
             max_threads: None,
             max_depth: None,
             job_max_runtime_seconds: None,
+            interrupt_message: None,
             roles: BTreeMap::from([(
                 "researcher".to_string(),
                 AgentRoleToml {
@@ -4947,6 +4934,29 @@ model = "gpt-5-mini"
 }
 
 #[tokio::test]
+async fn load_config_resolves_agent_interrupt_message() -> std::io::Result<()> {
+    let codex_home = TempDir::new()?;
+    let cfg = ConfigToml {
+        agents: Some(AgentsToml {
+            interrupt_message: Some(false),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+
+    let config = Config::load_from_base_config_with_overrides(
+        cfg,
+        ConfigOverrides::default(),
+        codex_home.abs(),
+    )
+    .await?;
+
+    assert!(!config.agent_interrupt_message_enabled);
+
+    Ok(())
+}
+
+#[tokio::test]
 async fn load_config_normalizes_agent_role_nickname_candidates() -> std::io::Result<()> {
     let codex_home = TempDir::new()?;
     let cfg = ConfigToml {
@@ -4954,6 +4964,7 @@ async fn load_config_normalizes_agent_role_nickname_candidates() -> std::io::Res
             max_threads: None,
             max_depth: None,
             job_max_runtime_seconds: None,
+            interrupt_message: None,
             roles: BTreeMap::from([(
                 "researcher".to_string(),
                 AgentRoleToml {
@@ -4996,6 +5007,7 @@ async fn load_config_rejects_empty_agent_role_nickname_candidates() -> std::io::
             max_threads: None,
             max_depth: None,
             job_max_runtime_seconds: None,
+            interrupt_message: None,
             roles: BTreeMap::from([(
                 "researcher".to_string(),
                 AgentRoleToml {
@@ -5032,6 +5044,7 @@ async fn load_config_rejects_duplicate_agent_role_nickname_candidates() -> std::
             max_threads: None,
             max_depth: None,
             job_max_runtime_seconds: None,
+            interrupt_message: None,
             roles: BTreeMap::from([(
                 "researcher".to_string(),
                 AgentRoleToml {
@@ -5068,6 +5081,7 @@ async fn load_config_rejects_unsafe_agent_role_nickname_candidates() -> std::io:
             max_threads: None,
             max_depth: None,
             job_max_runtime_seconds: None,
+            interrupt_message: None,
             roles: BTreeMap::from([(
                 "researcher".to_string(),
                 AgentRoleToml {
@@ -5324,6 +5338,7 @@ async fn test_precedence_fixture_with_o3_profile() -> std::io::Result<()> {
             agent_roles: BTreeMap::new(),
             memories: MemoriesConfig::default(),
             agent_job_max_runtime_seconds: DEFAULT_AGENT_JOB_MAX_RUNTIME_SECONDS,
+            agent_interrupt_message_enabled: true,
             codex_home: fixture.codex_home(),
             sqlite_home: fixture.codex_home().to_path_buf(),
             log_dir: fixture.codex_home().join("log").to_path_buf(),
@@ -5335,8 +5350,6 @@ async fn test_precedence_fixture_with_o3_profile() -> std::io::Result<()> {
             codex_self_exe: None,
             codex_linux_sandbox_exe: None,
             main_execve_wrapper_exe: None,
-            js_repl_node_path: None,
-            js_repl_node_module_dirs: Vec::new(),
             zsh_path: None,
             hide_agent_reasoning: false,
             show_raw_agent_reasoning: false,
@@ -5355,8 +5368,8 @@ async fn test_precedence_fixture_with_o3_profile() -> std::io::Result<()> {
             realtime: RealtimeConfig::default(),
             experimental_realtime_ws_backend_prompt: None,
             experimental_realtime_ws_startup_context: None,
-            experimental_thread_store_endpoint: None,
             experimental_thread_config_endpoint: None,
+            experimental_thread_store: ThreadStoreConfig::Local,
             base_instructions: None,
             developer_instructions: None,
             guardian_policy_config: None,
@@ -5521,6 +5534,7 @@ async fn test_precedence_fixture_with_gpt3_profile() -> std::io::Result<()> {
         agent_roles: BTreeMap::new(),
         memories: MemoriesConfig::default(),
         agent_job_max_runtime_seconds: DEFAULT_AGENT_JOB_MAX_RUNTIME_SECONDS,
+        agent_interrupt_message_enabled: true,
         codex_home: fixture.codex_home(),
         sqlite_home: fixture.codex_home().to_path_buf(),
         log_dir: fixture.codex_home().join("log").to_path_buf(),
@@ -5532,8 +5546,6 @@ async fn test_precedence_fixture_with_gpt3_profile() -> std::io::Result<()> {
         codex_self_exe: None,
         codex_linux_sandbox_exe: None,
         main_execve_wrapper_exe: None,
-        js_repl_node_path: None,
-        js_repl_node_module_dirs: Vec::new(),
         zsh_path: None,
         hide_agent_reasoning: false,
         show_raw_agent_reasoning: false,
@@ -5552,8 +5564,8 @@ async fn test_precedence_fixture_with_gpt3_profile() -> std::io::Result<()> {
         realtime: RealtimeConfig::default(),
         experimental_realtime_ws_backend_prompt: None,
         experimental_realtime_ws_startup_context: None,
-        experimental_thread_store_endpoint: None,
         experimental_thread_config_endpoint: None,
+        experimental_thread_store: ThreadStoreConfig::Local,
         base_instructions: None,
         developer_instructions: None,
         guardian_policy_config: None,
@@ -5672,6 +5684,7 @@ async fn test_precedence_fixture_with_zdr_profile() -> std::io::Result<()> {
         agent_roles: BTreeMap::new(),
         memories: MemoriesConfig::default(),
         agent_job_max_runtime_seconds: DEFAULT_AGENT_JOB_MAX_RUNTIME_SECONDS,
+        agent_interrupt_message_enabled: true,
         codex_home: fixture.codex_home(),
         sqlite_home: fixture.codex_home().to_path_buf(),
         log_dir: fixture.codex_home().join("log").to_path_buf(),
@@ -5683,8 +5696,6 @@ async fn test_precedence_fixture_with_zdr_profile() -> std::io::Result<()> {
         codex_self_exe: None,
         codex_linux_sandbox_exe: None,
         main_execve_wrapper_exe: None,
-        js_repl_node_path: None,
-        js_repl_node_module_dirs: Vec::new(),
         zsh_path: None,
         hide_agent_reasoning: false,
         show_raw_agent_reasoning: false,
@@ -5703,8 +5714,8 @@ async fn test_precedence_fixture_with_zdr_profile() -> std::io::Result<()> {
         realtime: RealtimeConfig::default(),
         experimental_realtime_ws_backend_prompt: None,
         experimental_realtime_ws_startup_context: None,
-        experimental_thread_store_endpoint: None,
         experimental_thread_config_endpoint: None,
+        experimental_thread_store: ThreadStoreConfig::Local,
         base_instructions: None,
         developer_instructions: None,
         guardian_policy_config: None,
@@ -5808,6 +5819,7 @@ async fn test_precedence_fixture_with_gpt5_profile() -> std::io::Result<()> {
         agent_roles: BTreeMap::new(),
         memories: MemoriesConfig::default(),
         agent_job_max_runtime_seconds: DEFAULT_AGENT_JOB_MAX_RUNTIME_SECONDS,
+        agent_interrupt_message_enabled: true,
         codex_home: fixture.codex_home(),
         sqlite_home: fixture.codex_home().to_path_buf(),
         log_dir: fixture.codex_home().join("log").to_path_buf(),
@@ -5819,8 +5831,6 @@ async fn test_precedence_fixture_with_gpt5_profile() -> std::io::Result<()> {
         codex_self_exe: None,
         codex_linux_sandbox_exe: None,
         main_execve_wrapper_exe: None,
-        js_repl_node_path: None,
-        js_repl_node_module_dirs: Vec::new(),
         zsh_path: None,
         hide_agent_reasoning: false,
         show_raw_agent_reasoning: false,
@@ -5839,8 +5849,8 @@ async fn test_precedence_fixture_with_gpt5_profile() -> std::io::Result<()> {
         realtime: RealtimeConfig::default(),
         experimental_realtime_ws_backend_prompt: None,
         experimental_realtime_ws_startup_context: None,
-        experimental_thread_store_endpoint: None,
         experimental_thread_config_endpoint: None,
+        experimental_thread_store: ThreadStoreConfig::Local,
         base_instructions: None,
         developer_instructions: None,
         guardian_policy_config: None,
