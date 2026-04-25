@@ -106,12 +106,20 @@ docs-only refresh commit that records this snapshot.
   reuse existing outputs while drifted or tampered artifacts are rejected.
 - This is an intentional downstream carry, not derivative test churn: losing
   the attestation runtime while keeping the attestation tests is a regression.
+- Because this downstream state migration occupies a slot that upstream did not
+  have at the time it was introduced, later upstream migrations may need to be
+  replayed into the next free downstream migration version while preserving
+  their SQL content. The current example is upstream's device-key binding table:
+  upstream names it `0028_device_key_bindings.sql`, while downstream carries
+  the same schema as `0031_device_key_bindings.sql` to avoid colliding with the
+  already-shipped downstream `0028` through `0030` migration versions.
 - Primary files:
   - `codex-rs/core/src/memories/phase2.rs`
   - `codex-rs/core/src/memories/phase2_attestation_tests.rs`
   - `codex-rs/core/src/memories/tests.rs`
   - `codex-rs/state/src/runtime/phase2_attestation.rs`
   - `codex-rs/state/migrations/0024_phase2_attestation_roots.sql`
+  - `codex-rs/state/migrations/0031_device_key_bindings.sql`
   - `docs/memories.md`
 
 ### Release Metadata And Rebuild Triggers
