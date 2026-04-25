@@ -1971,6 +1971,13 @@
           },
           "type": "array"
         },
+        "error": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "success": {
           "type": "boolean"
         }

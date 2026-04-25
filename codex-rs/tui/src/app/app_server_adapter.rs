@@ -400,8 +400,11 @@ fn computer_use_unavailable_result(
 ) -> Result<serde_json::Value, serde_json::Error> {
     let message = computer_use_provider_unavailable_message(params);
     serde_json::to_value(ComputerUseCallResponse {
-        content_items: vec![ComputerUseCallOutputContentItem::InputText { text: message }],
+        content_items: vec![ComputerUseCallOutputContentItem::InputText {
+            text: message.clone(),
+        }],
         success: false,
+        error: Some(message),
     })
 }
 
@@ -1672,6 +1675,7 @@ mod tests {
         assert!(text.contains("android computer-use provider is unavailable"));
         assert!(text.contains("android_observe"));
         assert!(text.contains("environment env-1"));
+        assert_eq!(response.error.as_deref(), Some(text.as_str()));
     }
 
     #[test]

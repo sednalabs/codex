@@ -284,7 +284,7 @@ mod tests {
     }
 
     #[test]
-    fn android_dynamic_tools_do_not_reenter_deferred_dynamic_tool_search() {
+    fn deferred_android_dynamic_tools_search_as_native_computer_use_tools() {
         let dynamic_tools = vec![
             DynamicToolSpec {
                 namespace: None,
@@ -357,10 +357,30 @@ mod tests {
                 .map(|entry| entry.search_text.as_str())
                 .collect::<Vec<_>>(),
             vec![
+                "android_observe android observe Capture the Android screen. scope",
+                "android_step android step Perform Android actions. action",
                 "weather_lookup weather lookup Look up weather. city",
                 "android_observe android observe Custom namespaced Android observer. codex_app scope",
             ]
         );
+
+        let first_tool = handler.entries[0].output.clone();
+        let LoadableToolSpec::Function(observe_spec) = first_tool else {
+            panic!("expected native android_observe function search result");
+        };
+        assert_eq!(observe_spec.name, ANDROID_OBSERVE_TOOL_NAME);
+        assert!(
+            observe_spec
+                .description
+                .contains("model-visible screenshot")
+        );
+
+        let second_tool = handler.entries[1].output.clone();
+        let LoadableToolSpec::Function(step_spec) = second_tool else {
+            panic!("expected native android_step function search result");
+        };
+        assert_eq!(step_spec.name, ANDROID_STEP_TOOL_NAME);
+        assert!(step_spec.description.contains("bounded Android actions"));
     }
 
     #[test]
