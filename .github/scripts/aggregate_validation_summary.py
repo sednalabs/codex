@@ -48,6 +48,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--run-artifact", required=True)
     parser.add_argument("--artifact-result", default="skipped")
     parser.add_argument("--matrix-fail-fast", default="false")
+    parser.add_argument("--rust-batching-mode", default="")
+    parser.add_argument("--rust-batching-reason", default="")
     parser.add_argument("--lane-summary-dir", required=True)
     parser.add_argument("--output", required=True)
     return parser.parse_args()
@@ -376,11 +378,12 @@ def derive_primary_and_secondary(
 
 def summarize_runtime(
     results: list[dict],
-) -> tuple[int, dict[str, int], dict[str, int], list[dict]]:
+) -> tuple[int, dict[str, int], dict[str, int], list[dict], list[dict]]:
     total_duration_ms = 0
     phase_runtime_ms: dict[str, int] = {}
     timing_breakdown_ms: dict[str, int] = {"setup": 0, "command": 0}
     lanes_with_runtime: list[dict] = []
+    batches: dict[str, dict] = {}
     for lane in results:
         duration_ms = lane.get("duration_ms")
         if not isinstance(duration_ms, int) or duration_ms < 0:
@@ -405,11 +408,31 @@ def summarize_runtime(
                 "setup_class": lane.get("setup_class"),
             }
         )
+        batch_id = str(lane.get("batch_id") or "")
+        if batch_id:
+            batch = batches.setdefault(
+                batch_id,
+                {
+                    "batch_id": batch_id,
+                    "setup_class": lane.get("setup_class"),
+                    "lane_ids": [],
+                    "duration_ms": 0,
+                    "command_duration_ms": 0,
+                    "setup_duration_ms": lane.get("batch_setup_duration_ms"),
+                    "outcomes": [],
+                },
+            )
+            batch["lane_ids"].append(lane.get("lane_id"))
+            batch["duration_ms"] += duration_ms
+            if isinstance(command_duration_ms, int) and command_duration_ms >= 0:
+                batch["command_duration_ms"] += command_duration_ms
+            batch["outcomes"].append(lane.get("outcome"))
     return (
         total_duration_ms,
         dict(sorted(phase_runtime_ms.items(), key=lambda item: item[1], reverse=True)),
         timing_breakdown_ms,
         sorted(lanes_with_runtime, key=lambda lane: lane["duration_ms"], reverse=True)[:10],
+        sorted(batches.values(), key=lambda batch: batch["duration_ms"], reverse=True)[:10],
     )
 
 
@@ -497,6 +520,7 @@ def main() -> None:
         phase_runtime_ms,
         timing_breakdown_ms,
         top_slowest_lanes,
+        top_slowest_batches,
     ) = summarize_runtime(results)
     downstream_result = combined_result(
         args.workflow_result,
@@ -510,6 +534,8 @@ def main() -> None:
     successful_lane_count = sum(1 for lane in results if lane["outcome"] in SUCCESS_OUTCOMES)
     raw_failed_lane_count = sum(1 for lane in results if lane["outcome"] in BLOCKER_OUTCOMES)
     other_lane_count = lane_count - successful_lane_count - raw_failed_lane_count
+    batched_lane_count = sum(1 for lane in results if lane.get("batch_id"))
+    batch_count = len({lane.get("batch_id") for lane in results if lane.get("batch_id")})
 
     candidate_next_slices: list[dict] = []
     for item in queue[:20]:
@@ -544,6 +570,8 @@ def main() -> None:
 
     summary = {
         "lane_count": lane_count,
+        "batch_count": batch_count,
+        "batched_lane_count": batched_lane_count,
         "successful_lane_count": successful_lane_count,
         "failed_lane_count": blocked_finding_count(primary, secondary),
         "raw_failed_lane_count": raw_failed_lane_count,
@@ -552,6 +580,7 @@ def main() -> None:
         "phase_runtime_ms": phase_runtime_ms,
         "timing_breakdown_ms": timing_breakdown_ms,
         "top_slowest_lanes": top_slowest_lanes,
+        "top_slowest_batches": top_slowest_batches,
         "first_failure": queue[0] if queue else None,
         "failed_lanes": [
             {
@@ -580,6 +609,8 @@ def main() -> None:
             "explicit_lanes_supplied": bool(explicit_lanes),
             "explicit_lane_count": len(explicit_lanes),
             "notes_supplied": parse_bool(args.notes_supplied),
+            "rust_batching_mode": args.rust_batching_mode or "",
+            "rust_batching_reason": args.rust_batching_reason or "",
             "baseline_required": args.profile == "frontier",
             "supersession": {
                 "mode": args.supersession_mode or "auto",
