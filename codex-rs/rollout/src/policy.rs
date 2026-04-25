@@ -130,7 +130,9 @@ fn event_msg_persistence_mode(ev: &EventMsg) -> Option<EventPersistenceMode> {
         | EventMsg::CollabCloseEnd(_)
         | EventMsg::CollabResumeEnd(_)
         | EventMsg::DynamicToolCallRequest(_)
-        | EventMsg::DynamicToolCallResponse(_) => Some(EventPersistenceMode::Extended),
+        | EventMsg::DynamicToolCallResponse(_)
+        | EventMsg::ComputerUseCallRequest(_)
+        | EventMsg::ComputerUseCallResponse(_) => Some(EventPersistenceMode::Extended),
         EventMsg::Warning(_)
         | EventMsg::GuardianWarning(_)
         | EventMsg::RealtimeConversationStarted(_)
@@ -193,9 +195,13 @@ mod tests {
     use super::EventPersistenceMode;
     use super::should_persist_event_msg;
     use codex_protocol::ThreadId;
+    use codex_protocol::computer_use::ComputerUseCallRequest;
+    use codex_protocol::computer_use::ComputerUseOutputContentItem;
+    use codex_protocol::protocol::ComputerUseCallResponseEvent;
     use codex_protocol::protocol::EventMsg;
     use codex_protocol::protocol::ImageGenerationEndEvent;
     use codex_protocol::protocol::ThreadNameUpdatedEvent;
+    use std::time::Duration;
 
     #[test]
     fn persists_image_generation_end_events_in_limited_mode() {
@@ -224,5 +230,41 @@ mod tests {
             &event,
             EventPersistenceMode::Limited
         ));
+    }
+
+    #[test]
+    fn persists_computer_use_events_in_extended_mode() {
+        let request = EventMsg::ComputerUseCallRequest(ComputerUseCallRequest {
+            call_id: "call-android-1".to_string(),
+            turn_id: "turn-1".to_string(),
+            environment_id: Some("env-1".to_string()),
+            adapter: "android".to_string(),
+            tool: "android_observe".to_string(),
+            arguments: serde_json::json!({"scope": "screen_and_ui"}),
+        });
+        let response = EventMsg::ComputerUseCallResponse(ComputerUseCallResponseEvent {
+            call_id: "call-android-1".to_string(),
+            turn_id: "turn-1".to_string(),
+            environment_id: Some("env-1".to_string()),
+            adapter: "android".to_string(),
+            tool: "android_observe".to_string(),
+            arguments: serde_json::json!({"scope": "screen_and_ui"}),
+            content_items: vec![ComputerUseOutputContentItem::InputText {
+                text: "screen summary".to_string(),
+            }],
+            success: true,
+            error: None,
+            duration: Duration::from_millis(12),
+        });
+
+        assert_eq!(
+            vec![
+                should_persist_event_msg(&request, EventPersistenceMode::Limited),
+                should_persist_event_msg(&response, EventPersistenceMode::Limited),
+                should_persist_event_msg(&request, EventPersistenceMode::Extended),
+                should_persist_event_msg(&response, EventPersistenceMode::Extended),
+            ],
+            vec![false, false, true, true]
+        );
     }
 }

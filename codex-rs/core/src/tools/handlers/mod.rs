@@ -1,5 +1,6 @@
 pub(crate) mod agent_jobs;
 pub(crate) mod apply_patch;
+mod computer_use;
 mod dynamic;
 mod goal;
 mod inspect_agent_tree;
@@ -37,6 +38,7 @@ pub(crate) use crate::tools::code_mode::CodeModeWaitHandler;
 pub use apply_patch::ApplyPatchHandler;
 use codex_protocol::models::AdditionalPermissionProfile;
 use codex_protocol::protocol::AskForApproval;
+pub use computer_use::ComputerUseHandler;
 pub use dynamic::DynamicToolHandler;
 pub use goal::GoalHandler;
 pub use inspect_agent_tree::InspectAgentTreeHandler;

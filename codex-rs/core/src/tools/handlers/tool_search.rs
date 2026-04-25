@@ -176,6 +176,8 @@ mod tests {
     use crate::tools::tool_search_entry::build_tool_search_entries;
     use codex_mcp::ToolInfo;
     use codex_protocol::dynamic_tools::DynamicToolSpec;
+    use codex_tools::ANDROID_OBSERVE_TOOL_NAME;
+    use codex_tools::ANDROID_STEP_TOOL_NAME;
     use codex_tools::ResponsesApiNamespace;
     use codex_tools::ResponsesApiNamespaceTool;
     use codex_tools::ResponsesApiTool;
@@ -279,6 +281,106 @@ mod tests {
                 }),
             ],
         );
+    }
+
+    #[test]
+    fn deferred_android_dynamic_tools_search_as_native_computer_use_tools() {
+        let dynamic_tools = vec![
+            DynamicToolSpec {
+                namespace: None,
+                name: ANDROID_OBSERVE_TOOL_NAME.to_string(),
+                description: "Capture the Android screen.".to_string(),
+                input_schema: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "scope": { "type": "string" },
+                    },
+                    "additionalProperties": false,
+                }),
+                defer_loading: true,
+                persist_on_resume: true,
+                capability: None,
+            },
+            DynamicToolSpec {
+                namespace: None,
+                name: ANDROID_STEP_TOOL_NAME.to_string(),
+                description: "Perform Android actions.".to_string(),
+                input_schema: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "action": { "type": "string" },
+                    },
+                    "additionalProperties": false,
+                }),
+                defer_loading: true,
+                persist_on_resume: true,
+                capability: None,
+            },
+            DynamicToolSpec {
+                namespace: None,
+                name: "weather_lookup".to_string(),
+                description: "Look up weather.".to_string(),
+                input_schema: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "city": { "type": "string" },
+                    },
+                    "additionalProperties": false,
+                }),
+                defer_loading: true,
+                persist_on_resume: true,
+                capability: None,
+            },
+            DynamicToolSpec {
+                namespace: Some("codex_app".to_string()),
+                name: ANDROID_OBSERVE_TOOL_NAME.to_string(),
+                description: "Custom namespaced Android observer.".to_string(),
+                input_schema: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "scope": { "type": "string" },
+                    },
+                    "additionalProperties": false,
+                }),
+                defer_loading: true,
+                persist_on_resume: true,
+                capability: None,
+            },
+        ];
+
+        let handler = handler_from_tools(/*mcp_tools*/ None, &dynamic_tools);
+
+        assert_eq!(
+            handler
+                .entries
+                .iter()
+                .map(|entry| entry.search_text.as_str())
+                .collect::<Vec<_>>(),
+            vec![
+                "android_observe android observe Capture the Android screen. scope",
+                "android_step android step Perform Android actions. action",
+                "weather_lookup weather lookup Look up weather. city",
+                "android_observe android observe Custom namespaced Android observer. codex_app scope",
+            ]
+        );
+
+        let first_tool = handler.entries[0].output.clone();
+        let LoadableToolSpec::Function(observe_spec) = first_tool else {
+            panic!("expected native android_observe function search result");
+        };
+        assert_eq!(observe_spec.name, ANDROID_OBSERVE_TOOL_NAME);
+        assert!(
+            observe_spec
+                .description
+                .contains("model-visible screenshot")
+        );
+
+        let second_tool = handler.entries[1].output.clone();
+        let LoadableToolSpec::Function(step_spec) = second_tool else {
+            panic!("expected native android_step function search result");
+        };
+        assert_eq!(step_spec.name, ANDROID_STEP_TOOL_NAME);
+        assert!(step_spec.description.contains("bounded Android actions"));
     }
 
     #[test]

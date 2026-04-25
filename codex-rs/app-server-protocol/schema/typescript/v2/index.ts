@@ -58,6 +58,10 @@ export type { CommandExecutionRequestApprovalParams } from "./CommandExecutionRe
 export type { CommandExecutionRequestApprovalResponse } from "./CommandExecutionRequestApprovalResponse";
 export type { CommandExecutionSource } from "./CommandExecutionSource";
 export type { CommandExecutionStatus } from "./CommandExecutionStatus";
+export type { ComputerUseCallOutputContentItem } from "./ComputerUseCallOutputContentItem";
+export type { ComputerUseCallParams } from "./ComputerUseCallParams";
+export type { ComputerUseCallResponse } from "./ComputerUseCallResponse";
+export type { ComputerUseCallStatus } from "./ComputerUseCallStatus";
 export type { Config } from "./Config";
 export type { ConfigBatchWriteParams } from "./ConfigBatchWriteParams";
 export type { ConfigEdit } from "./ConfigEdit";

@@ -131,6 +131,74 @@
         }
       ]
     },
+    "DynamicToolCapability": {
+      "properties": {
+        "capabilityScope": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "family": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "leaseMode": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "mutationClass": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "DynamicToolSpec": {
+      "properties": {
+        "capability": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/DynamicToolCapability"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "deferLoading": {
+          "type": "boolean"
+        },
+        "description": {
+          "type": "string"
+        },
+        "inputSchema": true,
+        "name": {
+          "type": "string"
+        },
+        "namespace": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "persistOnResume": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "name",
+        "description",
+        "inputSchema"
+      ],
+      "type": "object"
+    },
     "FileSystemAccessMode": {
       "enum": [
         "read",

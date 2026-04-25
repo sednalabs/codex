@@ -79,6 +79,7 @@ pub(crate) fn build_specs_with_discoverable_tools(
     use crate::tools::handlers::ApplyPatchHandler;
     use crate::tools::handlers::CodeModeExecuteHandler;
     use crate::tools::handlers::CodeModeWaitHandler;
+    use crate::tools::handlers::ComputerUseHandler;
     use crate::tools::handlers::DynamicToolHandler;
     use crate::tools::handlers::GoalHandler;
     use crate::tools::handlers::InspectAgentTreeHandler;
@@ -149,6 +150,7 @@ pub(crate) fn build_specs_with_discoverable_tools(
     let unified_exec_handler = Arc::new(UnifiedExecHandler);
     let plan_handler = Arc::new(PlanHandler);
     let apply_patch_handler = Arc::new(ApplyPatchHandler);
+    let computer_use_handler = Arc::new(ComputerUseHandler);
     let dynamic_tool_handler = Arc::new(DynamicToolHandler);
     let goal_handler = Arc::new(GoalHandler);
     let view_image_handler = Arc::new(ViewImageHandler);
@@ -204,6 +206,9 @@ pub(crate) fn build_specs_with_discoverable_tools(
             }
             ToolHandlerKind::CodeModeWait => {
                 builder.register_handler(handler.name, code_mode_wait_handler.clone());
+            }
+            ToolHandlerKind::ComputerUse => {
+                builder.register_handler(handler.name, computer_use_handler.clone());
             }
             ToolHandlerKind::DynamicTool => {
                 builder.register_handler(handler.name, dynamic_tool_handler.clone());

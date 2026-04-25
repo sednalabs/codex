@@ -601,6 +601,26 @@ impl ThreadManager {
         persist_extended_history: bool,
         parent_trace: Option<W3cTraceContext>,
     ) -> CodexResult<NewThread> {
+        Box::pin(self.resume_thread_with_history_and_tools(
+            config,
+            initial_history,
+            auth_manager,
+            Vec::new(),
+            persist_extended_history,
+            parent_trace,
+        ))
+        .await
+    }
+
+    pub async fn resume_thread_with_history_and_tools(
+        &self,
+        config: Config,
+        initial_history: InitialHistory,
+        auth_manager: Arc<AuthManager>,
+        dynamic_tools: Vec<codex_protocol::dynamic_tools::DynamicToolSpec>,
+        persist_extended_history: bool,
+        parent_trace: Option<W3cTraceContext>,
+    ) -> CodexResult<NewThread> {
         let thread_store = configured_thread_store(&config);
         let environments = default_thread_environment_selections(
             self.state.environment_manager.as_ref(),
@@ -612,7 +632,7 @@ impl ThreadManager {
             initial_history,
             auth_manager,
             self.agent_control(),
-            Vec::new(),
+            dynamic_tools,
             persist_extended_history,
             /*metrics_service_name*/ None,
             parent_trace,
@@ -752,10 +772,11 @@ impl ThreadManager {
     {
         let snapshot = snapshot.into();
         let history = RolloutRecorder::get_rollout_history(&path).await?;
-        self.fork_thread_from_history(
+        self.fork_thread_from_history_with_tools(
             snapshot,
             config,
             history,
+            Vec::new(),
             persist_extended_history,
             parent_trace,
         )
@@ -774,10 +795,36 @@ impl ThreadManager {
     where
         S: Into<ForkSnapshot>,
     {
+        self.fork_thread_from_history_with_tools(
+            snapshot,
+            config,
+            history,
+            Vec::new(),
+            persist_extended_history,
+            parent_trace,
+        )
+        .await
+    }
+
+    /// Fork an existing thread from already-loaded store history with
+    /// caller-supplied dynamic tools installed before the next turn.
+    pub async fn fork_thread_from_history_with_tools<S>(
+        &self,
+        snapshot: S,
+        config: Config,
+        history: InitialHistory,
+        dynamic_tools: Vec<codex_protocol::dynamic_tools::DynamicToolSpec>,
+        persist_extended_history: bool,
+        parent_trace: Option<W3cTraceContext>,
+    ) -> CodexResult<NewThread>
+    where
+        S: Into<ForkSnapshot>,
+    {
         self.fork_thread_with_initial_history(
             snapshot.into(),
             config,
             history,
+            dynamic_tools,
             persist_extended_history,
             parent_trace,
         )
@@ -789,6 +836,7 @@ impl ThreadManager {
         snapshot: ForkSnapshot,
         config: Config,
         history: InitialHistory,
+        dynamic_tools: Vec<codex_protocol::dynamic_tools::DynamicToolSpec>,
         persist_extended_history: bool,
         parent_trace: Option<W3cTraceContext>,
     ) -> CodexResult<NewThread> {
@@ -805,7 +853,7 @@ impl ThreadManager {
             history,
             Arc::clone(&self.state.auth_manager),
             self.agent_control(),
-            Vec::new(),
+            dynamic_tools,
             persist_extended_history,
             /*metrics_service_name*/ None,
             parent_trace,

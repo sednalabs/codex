@@ -8,6 +8,8 @@ use crate::protocol::v2::CollabAgentState;
 use crate::protocol::v2::CollabAgentTool;
 use crate::protocol::v2::CollabAgentToolCallStatus;
 use crate::protocol::v2::CommandExecutionStatus;
+use crate::protocol::v2::ComputerUseCallOutputContentItem;
+use crate::protocol::v2::ComputerUseCallStatus;
 use crate::protocol::v2::DynamicToolCallOutputContentItem;
 use crate::protocol::v2::DynamicToolCallStatus;
 use crate::protocol::v2::McpToolCallError;
@@ -27,6 +29,7 @@ use codex_protocol::protocol::AgentReasoningRawContentEvent;
 use codex_protocol::protocol::AgentStatus;
 use codex_protocol::protocol::ApplyPatchApprovalRequestEvent;
 use codex_protocol::protocol::CompactedItem;
+use codex_protocol::protocol::ComputerUseCallResponseEvent;
 use codex_protocol::protocol::ContextCompactedEvent;
 use codex_protocol::protocol::DynamicToolCallResponseEvent;
 use codex_protocol::protocol::ErrorEvent;
@@ -189,6 +192,12 @@ impl ThreadHistoryBuilder {
             }
             EventMsg::DynamicToolCallResponse(payload) => {
                 self.handle_dynamic_tool_call_response(payload)
+            }
+            EventMsg::ComputerUseCallRequest(payload) => {
+                self.handle_computer_use_call_request(payload)
+            }
+            EventMsg::ComputerUseCallResponse(payload) => {
+                self.handle_computer_use_call_response(payload)
             }
             EventMsg::McpToolCallBegin(payload) => self.handle_mcp_tool_call_begin(payload),
             EventMsg::McpToolCallEnd(payload) => self.handle_mcp_tool_call_end(payload),
@@ -501,6 +510,55 @@ impl ThreadHistoryBuilder {
             status,
             content_items: Some(convert_dynamic_tool_content_items(&payload.content_items)),
             success: Some(payload.success),
+            duration_ms,
+        };
+        if payload.turn_id.is_empty() {
+            self.upsert_item_in_current_turn(item);
+        } else {
+            self.upsert_item_in_turn_id(&payload.turn_id, item);
+        }
+    }
+
+    fn handle_computer_use_call_request(
+        &mut self,
+        payload: &codex_protocol::computer_use::ComputerUseCallRequest,
+    ) {
+        let item = ThreadItem::ComputerUseCall {
+            id: payload.call_id.clone(),
+            environment_id: payload.environment_id.clone(),
+            adapter: payload.adapter.clone(),
+            tool: payload.tool.clone(),
+            arguments: payload.arguments.clone(),
+            status: ComputerUseCallStatus::InProgress,
+            content_items: None,
+            success: None,
+            error: None,
+            duration_ms: None,
+        };
+        if payload.turn_id.is_empty() {
+            self.upsert_item_in_current_turn(item);
+        } else {
+            self.upsert_item_in_turn_id(&payload.turn_id, item);
+        }
+    }
+
+    fn handle_computer_use_call_response(&mut self, payload: &ComputerUseCallResponseEvent) {
+        let status = if payload.success {
+            ComputerUseCallStatus::Completed
+        } else {
+            ComputerUseCallStatus::Failed
+        };
+        let duration_ms = i64::try_from(payload.duration.as_millis()).ok();
+        let item = ThreadItem::ComputerUseCall {
+            id: payload.call_id.clone(),
+            environment_id: payload.environment_id.clone(),
+            adapter: payload.adapter.clone(),
+            tool: payload.tool.clone(),
+            arguments: payload.arguments.clone(),
+            status,
+            content_items: Some(convert_computer_use_content_items(&payload.content_items)),
+            success: Some(payload.success),
+            error: payload.error.clone(),
             duration_ms,
         };
         if payload.turn_id.is_empty() {
@@ -1120,6 +1178,16 @@ fn convert_dynamic_tool_content_items(
         .collect()
 }
 
+fn convert_computer_use_content_items(
+    items: &[codex_protocol::computer_use::ComputerUseOutputContentItem],
+) -> Vec<ComputerUseCallOutputContentItem> {
+    items
+        .iter()
+        .cloned()
+        .map(ComputerUseCallOutputContentItem::from)
+        .collect()
+}
+
 fn upsert_turn_item(items: &mut Vec<ThreadItem>, item: ThreadItem) {
     if let Some(existing_item) = items
         .iter_mut()
@@ -1194,6 +1262,7 @@ mod tests {
     use super::*;
     use crate::protocol::v2::CommandExecutionSource;
     use codex_protocol::ThreadId;
+    use codex_protocol::computer_use::ComputerUseOutputContentItem as CoreComputerUseOutputContentItem;
     use codex_protocol::dynamic_tools::DynamicToolCallOutputContentItem as CoreDynamicToolCallOutputContentItem;
     use codex_protocol::items::HookPromptFragment as CoreHookPromptFragment;
     use codex_protocol::items::TurnItem as CoreTurnItem;
@@ -2019,6 +2088,67 @@ mod tests {
                     text: "Ticket is open".into(),
                 }]),
                 success: Some(true),
+                duration_ms: Some(42),
+            }
+        );
+    }
+
+    #[test]
+    fn reconstructs_computer_use_items_from_request_and_response_events() {
+        let events = vec![
+            EventMsg::TurnStarted(TurnStartedEvent {
+                turn_id: "turn-1".into(),
+                model_context_window: None,
+                collaboration_mode_kind: Default::default(),
+                started_at: None,
+            }),
+            EventMsg::ComputerUseCallRequest(
+                codex_protocol::computer_use::ComputerUseCallRequest {
+                    call_id: "android-1".into(),
+                    turn_id: "turn-1".into(),
+                    environment_id: Some("local".into()),
+                    adapter: "android".into(),
+                    tool: "android_observe".into(),
+                    arguments: serde_json::json!({"scope":"screen_and_ui"}),
+                },
+            ),
+            EventMsg::ComputerUseCallResponse(ComputerUseCallResponseEvent {
+                call_id: "android-1".into(),
+                turn_id: "turn-1".into(),
+                environment_id: Some("local".into()),
+                adapter: "android".into(),
+                tool: "android_observe".into(),
+                arguments: serde_json::json!({"scope":"screen_and_ui"}),
+                content_items: vec![CoreComputerUseOutputContentItem::InputText {
+                    text: "screen summary".into(),
+                }],
+                success: true,
+                error: None,
+                duration: Duration::from_millis(42),
+            }),
+        ];
+
+        let items = events
+            .into_iter()
+            .map(RolloutItem::EventMsg)
+            .collect::<Vec<_>>();
+        let turns = build_turns_from_rollout_items(&items);
+        assert_eq!(turns.len(), 1);
+        assert_eq!(turns[0].items.len(), 1);
+        assert_eq!(
+            turns[0].items[0],
+            ThreadItem::ComputerUseCall {
+                id: "android-1".into(),
+                environment_id: Some("local".into()),
+                adapter: "android".into(),
+                tool: "android_observe".into(),
+                arguments: serde_json::json!({"scope":"screen_and_ui"}),
+                status: ComputerUseCallStatus::Completed,
+                content_items: Some(vec![ComputerUseCallOutputContentItem::InputText {
+                    text: "screen summary".into(),
+                }]),
+                success: Some(true),
+                error: None,
                 duration_ms: Some(42),
             }
         );

@@ -2,6 +2,7 @@ use super::ANDROID_OBSERVE_TOOL_NAME;
 use super::ANDROID_STEP_TOOL_NAME;
 use super::canonical_android_dynamic_tool;
 use codex_protocol::dynamic_tools::DynamicToolSpec;
+use pretty_assertions::assert_eq;
 use serde_json::json;
 
 #[test]
@@ -47,6 +48,59 @@ fn canonical_android_dynamic_tool_preserves_supported_android_tool_names() {
     assert!(step_properties.contains_key("actions"));
     assert!(step_properties.contains_key("view"));
     assert!(step_properties.contains_key("action"));
+
+    let action_schema = step_properties.get("action").expect("action schema");
+    let action_values = action_schema
+        .enum_values
+        .as_ref()
+        .expect("action enum values");
+    for value in [
+        "tap",
+        "type_text",
+        "key",
+        "swipe",
+        "click",
+        "zoom",
+        "reset_zoom",
+    ] {
+        assert!(
+            action_values.contains(&json!(value)),
+            "missing android_step action value {value}"
+        );
+    }
+
+    let actions_schema = step_properties.get("actions").expect("actions schema");
+    let action_item_properties = actions_schema
+        .items
+        .as_ref()
+        .and_then(|item| item.properties.as_ref())
+        .expect("actions[] item properties");
+    for property in ["type", "region", "frame", "key", "ms", "package"] {
+        assert!(
+            action_item_properties.contains_key(property),
+            "missing actions[] property {property}"
+        );
+    }
+
+    let view_properties = step_properties
+        .get("view")
+        .and_then(|schema| schema.properties.as_ref())
+        .expect("view properties");
+    for property in [
+        "deviceWidth",
+        "device_height",
+        "device",
+        "frameWidth",
+        "frame_height",
+        "frame",
+        "region",
+        "zoomed",
+    ] {
+        assert!(
+            view_properties.contains_key(property),
+            "missing view property {property}"
+        );
+    }
 }
 
 #[test]
@@ -55,6 +109,21 @@ fn canonical_android_dynamic_tool_ignores_non_android_tools() {
         namespace: None,
         name: "other_tool".to_string(),
         description: "other".to_string(),
+        input_schema: json!({ "type": "object" }),
+        defer_loading: false,
+        persist_on_resume: true,
+        capability: None,
+    });
+
+    assert!(tool.is_none());
+}
+
+#[test]
+fn canonical_android_dynamic_tool_ignores_namespaced_android_names() {
+    let tool = canonical_android_dynamic_tool(&DynamicToolSpec {
+        namespace: Some("codex_app".to_string()),
+        name: ANDROID_OBSERVE_TOOL_NAME.to_string(),
+        description: "custom namespaced observe".to_string(),
         input_schema: json!({ "type": "object" }),
         defer_loading: false,
         persist_on_resume: true,

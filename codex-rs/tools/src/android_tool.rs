@@ -10,8 +10,12 @@ pub const ANDROID_STEP_TOOL_NAME: &str = "android_step";
 const OBSERVE_SCOPE_SCREEN: &str = "screen";
 const OBSERVE_SCOPE_SCREEN_AND_UI: &str = "screen_and_ui";
 
-const STEP_ACTIONS: [&str; 12] = [
+const STEP_ACTIONS: [&str; 16] = [
     "launch_app",
+    "tap",
+    "type_text",
+    "key",
+    "swipe",
     "click",
     "double_click",
     "scroll",
@@ -26,6 +30,10 @@ const STEP_ACTIONS: [&str; 12] = [
 ];
 
 pub fn canonical_android_dynamic_tool(tool: &DynamicToolSpec) -> Option<ResponsesApiTool> {
+    if tool.namespace.is_some() {
+        return None;
+    }
+
     match tool.name.as_str() {
         ANDROID_OBSERVE_TOOL_NAME => Some(create_android_observe_tool(tool.defer_loading)),
         ANDROID_STEP_TOOL_NAME => Some(create_android_step_tool(tool.defer_loading)),
@@ -73,7 +81,7 @@ fn create_android_step_tool(defer_loading: bool) -> ResponsesApiTool {
         "action".to_string(),
         string_enum(
             &STEP_ACTIONS,
-            "Legacy single-action compatibility field. Prefer actions[] for new calls.",
+            "Single-action compatibility field. Prefer actions[] for new calls.",
         ),
     );
     properties.insert(
@@ -128,6 +136,12 @@ fn step_action_properties(include_type: bool) -> BTreeMap<String, JsonSchema> {
             )),
         ),
         (
+            "package".to_string(),
+            JsonSchema::string(Some(
+                "Compatibility alias for package_name.".to_string(),
+            )),
+        ),
+        (
             "activity".to_string(),
             JsonSchema::string(Some(
                 "Optional Android activity to launch or reuse as the default activity for this step."
@@ -171,6 +185,10 @@ fn step_action_properties(include_type: bool) -> BTreeMap<String, JsonSchema> {
             JsonSchema::number(Some("Vertical scroll delta for scroll actions.".to_string())),
         ),
         (
+            "key".to_string(),
+            JsonSchema::string(Some("Compatibility alias for keycode.".to_string())),
+        ),
+        (
             "keycode".to_string(),
             JsonSchema::string(Some("Legacy single-key compatibility field for keypress actions.".to_string())),
         ),
@@ -180,6 +198,10 @@ fn step_action_properties(include_type: bool) -> BTreeMap<String, JsonSchema> {
                 JsonSchema::string(Some("Key name or keycode.".to_string())),
                 Some("Ordered key sequence for keypress actions.".to_string()),
             ),
+        ),
+        (
+            "ms".to_string(),
+            JsonSchema::number(Some("Wait duration in milliseconds for wait actions.".to_string())),
         ),
         (
             "wait_ms".to_string(),
@@ -247,6 +269,32 @@ fn step_action_properties(include_type: bool) -> BTreeMap<String, JsonSchema> {
             "target".to_string(),
             permissive_object(Some("Optional semantic action target payload.".to_string())),
         ),
+        (
+            "region".to_string(),
+            region_schema(Some("Zoom region for zoom actions.".to_string())),
+        ),
+        (
+            "frame".to_string(),
+            frame_schema(Some(
+                "Optional frame metadata used to interpret view-space coordinates.".to_string(),
+            )),
+        ),
+        (
+            "frameWidth".to_string(),
+            JsonSchema::number(Some("Compatibility field for frame width.".to_string())),
+        ),
+        (
+            "frameHeight".to_string(),
+            JsonSchema::number(Some("Compatibility field for frame height.".to_string())),
+        ),
+        (
+            "frame_width".to_string(),
+            JsonSchema::number(Some("Compatibility field for frame width.".to_string())),
+        ),
+        (
+            "frame_height".to_string(),
+            JsonSchema::number(Some("Compatibility field for frame height.".to_string())),
+        ),
     ]);
 
     if include_type {
@@ -254,7 +302,7 @@ fn step_action_properties(include_type: bool) -> BTreeMap<String, JsonSchema> {
             "type".to_string(),
             string_enum(
                 &STEP_ACTIONS,
-                "Android action type. Use actions[] for new batched calls.",
+                "Android action type. Accepts legacy Android action names and computer-style action names.",
             ),
         );
     }
@@ -265,6 +313,79 @@ fn step_action_properties(include_type: bool) -> BTreeMap<String, JsonSchema> {
 fn view_schema(description: Option<String>) -> JsonSchema {
     let mut schema = JsonSchema::object(
         BTreeMap::from([
+            (
+                "deviceWidth".to_string(),
+                JsonSchema::number(Some("Device pixel width.".to_string())),
+            ),
+            (
+                "deviceHeight".to_string(),
+                JsonSchema::number(Some("Device pixel height.".to_string())),
+            ),
+            (
+                "device_width".to_string(),
+                JsonSchema::number(Some(
+                    "Compatibility field for device pixel width.".to_string(),
+                )),
+            ),
+            (
+                "device_height".to_string(),
+                JsonSchema::number(Some(
+                    "Compatibility field for device pixel height.".to_string(),
+                )),
+            ),
+            (
+                "device".to_string(),
+                JsonSchema::object(
+                    BTreeMap::from([
+                        (
+                            "width".to_string(),
+                            JsonSchema::number(Some("Device pixel width.".to_string())),
+                        ),
+                        (
+                            "height".to_string(),
+                            JsonSchema::number(Some("Device pixel height.".to_string())),
+                        ),
+                    ]),
+                    /*required*/ None,
+                    Some(false.into()),
+                ),
+            ),
+            (
+                "frameWidth".to_string(),
+                JsonSchema::number(Some("Current frame width.".to_string())),
+            ),
+            (
+                "frameHeight".to_string(),
+                JsonSchema::number(Some("Current frame height.".to_string())),
+            ),
+            (
+                "frame_width".to_string(),
+                JsonSchema::number(Some(
+                    "Compatibility field for current frame width.".to_string(),
+                )),
+            ),
+            (
+                "frame_height".to_string(),
+                JsonSchema::number(Some(
+                    "Compatibility field for current frame height.".to_string(),
+                )),
+            ),
+            (
+                "frame".to_string(),
+                frame_schema(Some("Current frame dimensions.".to_string())),
+            ),
+            (
+                "region".to_string(),
+                region_schema(Some(
+                    "Current zoom or crop region in device coordinates.".to_string(),
+                )),
+            ),
+            (
+                "zoomed".to_string(),
+                JsonSchema::boolean(Some(
+                    "Whether the current view is zoomed or cropped.".to_string(),
+                )),
+            ),
             (
                 "origin_x".to_string(),
                 JsonSchema::number(Some(
@@ -290,6 +411,52 @@ fn view_schema(description: Option<String>) -> JsonSchema {
                 JsonSchema::number(Some(
                     "Current zoom scale relative to device space.".to_string(),
                 )),
+            ),
+        ]),
+        /*required*/ None,
+        Some(false.into()),
+    );
+    schema.description = description;
+    schema
+}
+
+fn frame_schema(description: Option<String>) -> JsonSchema {
+    let mut schema = JsonSchema::object(
+        BTreeMap::from([
+            (
+                "width".to_string(),
+                JsonSchema::number(Some("Frame width.".to_string())),
+            ),
+            (
+                "height".to_string(),
+                JsonSchema::number(Some("Frame height.".to_string())),
+            ),
+        ]),
+        /*required*/ None,
+        Some(false.into()),
+    );
+    schema.description = description;
+    schema
+}
+
+fn region_schema(description: Option<String>) -> JsonSchema {
+    let mut schema = JsonSchema::object(
+        BTreeMap::from([
+            (
+                "left".to_string(),
+                JsonSchema::number(Some("Left coordinate in device space.".to_string())),
+            ),
+            (
+                "top".to_string(),
+                JsonSchema::number(Some("Top coordinate in device space.".to_string())),
+            ),
+            (
+                "width".to_string(),
+                JsonSchema::number(Some("Region width in device space.".to_string())),
+            ),
+            (
+                "height".to_string(),
+                JsonSchema::number(Some("Region height in device space.".to_string())),
             ),
         ]),
         /*required*/ None,

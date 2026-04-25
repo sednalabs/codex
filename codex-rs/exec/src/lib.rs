@@ -1463,6 +1463,18 @@ async fn handle_server_request(
             )
             .await
         }
+        ServerRequest::ComputerUseCall { request_id, params } => {
+            reject_server_request(
+                client,
+                request_id,
+                &method,
+                format!(
+                    "computer-use calls are not supported in exec mode for thread `{}`",
+                    params.thread_id
+                ),
+            )
+            .await
+        }
         ServerRequest::ChatgptAuthTokensRefresh { request_id, .. } => {
             reject_server_request(
                 client,
