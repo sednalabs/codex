@@ -243,12 +243,6 @@ impl App {
         app_server_client: &AppServerSession,
         request: ServerRequest,
     ) {
-        if let ServerRequest::ComputerUseCall { request_id, params } = request {
-            self.resolve_unavailable_computer_use_call(app_server_client, request_id, params)
-                .await;
-            return;
-        }
-
         if let Some(unsupported) = self
             .pending_app_server_requests
             .note_server_request(&request)
@@ -274,9 +268,36 @@ impl App {
         }
 
         let Some(thread_id) = server_request_thread_id(&request) else {
-            tracing::warn!("ignoring threadless app-server request");
+            if let ServerRequest::ComputerUseCall { request_id, .. } = request {
+                let reason = "Computer-use request has an invalid thread_id.".to_string();
+                tracing::warn!(
+                    request_id = ?request_id,
+                    "rejecting computer-use app-server request with invalid thread_id"
+                );
+                if let Err(err) = self
+                    .reject_app_server_request(app_server_client, request_id, reason)
+                    .await
+                {
+                    tracing::warn!("{err}");
+                }
+            } else {
+                tracing::warn!("ignoring threadless app-server request");
+            }
             return;
         };
+
+        if let ServerRequest::ComputerUseCall { request_id, params } = request {
+            let show_message =
+                should_show_computer_use_fallback_message(self.primary_thread_id, thread_id);
+            self.resolve_unavailable_computer_use_call(
+                app_server_client,
+                request_id,
+                params,
+                show_message,
+            )
+            .await;
+            return;
+        }
 
         let result =
             if self.primary_thread_id == Some(thread_id) || self.primary_thread_id.is_none() {
@@ -312,13 +333,16 @@ impl App {
         app_server_client: &AppServerSession,
         request_id: codex_app_server_protocol::RequestId,
         params: ComputerUseCallParams,
+        show_message: bool,
     ) {
         let message = computer_use_provider_unavailable_message(&params);
         let result = match computer_use_unavailable_result(&params) {
             Ok(result) => result,
             Err(err) => {
                 let reason = format!("failed to serialize computer-use fallback response: {err}");
-                self.chat_widget.add_error_message(reason.clone());
+                if show_message {
+                    self.chat_widget.add_error_message(reason.clone());
+                }
                 if let Err(reject_err) = self
                     .reject_app_server_request(app_server_client, request_id, reason)
                     .await
@@ -336,16 +360,27 @@ impl App {
             environment_id = params.environment_id.as_deref().unwrap_or("<none>"),
             "resolving computer-use request without a TUI provider"
         );
-        self.chat_widget.add_error_message(message);
+        if show_message {
+            self.chat_widget.add_error_message(message);
+        }
         if let Err(err) = app_server_client
             .resolve_server_request(request_id, result)
             .await
         {
-            self.chat_widget.add_error_message(format!(
-                "Failed to resolve computer-use app-server request: {err}"
-            ));
+            let message = format!("Failed to resolve computer-use app-server request: {err}");
+            tracing::warn!("{message}");
+            if show_message {
+                self.chat_widget.add_error_message(message);
+            }
         }
     }
+}
+
+fn should_show_computer_use_fallback_message(
+    primary_thread_id: Option<ThreadId>,
+    request_thread_id: ThreadId,
+) -> bool {
+    primary_thread_id == Some(request_thread_id) || primary_thread_id.is_none()
 }
 
 fn computer_use_provider_unavailable_message(params: &ComputerUseCallParams) -> String {
@@ -1246,6 +1281,8 @@ mod tests {
     use super::computer_use_unavailable_result;
     use super::server_notification_thread_events;
     use super::server_notification_thread_target;
+    use super::server_request_thread_id;
+    use super::should_show_computer_use_fallback_message;
     use super::thread_snapshot_events;
     use super::turn_snapshot_events;
     use codex_app_server_protocol::AgentMessageDeltaNotification;
@@ -1634,6 +1671,43 @@ mod tests {
         assert!(text.contains("android computer-use provider is unavailable"));
         assert!(text.contains("android_observe"));
         assert!(text.contains("environment env-1"));
+    }
+
+    #[test]
+    fn computer_use_fallback_message_only_shows_for_primary_thread() {
+        let primary_thread_id = ThreadId::new();
+        let background_thread_id = ThreadId::new();
+
+        assert!(should_show_computer_use_fallback_message(
+            Some(primary_thread_id),
+            primary_thread_id,
+        ));
+        assert!(!should_show_computer_use_fallback_message(
+            Some(primary_thread_id),
+            background_thread_id,
+        ));
+        assert!(should_show_computer_use_fallback_message(
+            None,
+            background_thread_id,
+        ));
+    }
+
+    #[test]
+    fn computer_use_request_thread_id_uses_normal_validation() {
+        let request = ServerRequest::ComputerUseCall {
+            request_id: codex_app_server_protocol::RequestId::Integer(7),
+            params: ComputerUseCallParams {
+                thread_id: "not-a-thread-id".to_string(),
+                turn_id: "turn-1".to_string(),
+                call_id: "android-1".to_string(),
+                environment_id: Some("env-1".to_string()),
+                adapter: "android".to_string(),
+                tool: "android_observe".to_string(),
+                arguments: serde_json::json!({ "scope": "screen_and_ui" }),
+            },
+        };
+
+        assert_eq!(server_request_thread_id(&request), None);
     }
 
     #[test]
