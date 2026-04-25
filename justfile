@@ -190,7 +190,7 @@ tui-brokered-tool-replay-targeted:
     cargo test -p codex-tui live_app_server_dynamic_tool_item_start_clears_compaction_status_header --lib -- --exact --test-threads=1
     cargo test -p codex-tui active_dynamic_tool_call_renders_exact_arguments_and_preview --lib -- --exact --test-threads=1
     cargo test -p codex-tui replays_computer_use_items_from_turn_snapshots --lib -- --exact --test-threads=1
-    cargo test -p codex-tui computer_use_unavailable_result_is_structured_failed_response --lib -- --exact --test-threads=1
+    cargo test -p codex-tui computer_use_fallback_message_only_shows_for_primary_thread --lib -- --exact --test-threads=1
 
 # Focused multi-agent orchestration slice covering wait semantics and tool guidance.
 core-multi-agent-orchestration-targeted:
@@ -267,6 +267,7 @@ native-computer-use-tool-registry-targeted:
     cargo test --locked -p codex-tools android_dynamic_tools_use_canonical_codex_tool_definitions --lib -- --exact --test-threads=1
     cargo test --locked -p codex-tools duplicate_bare_android_dynamic_tools_register_native_handler_once --lib -- --exact --test-threads=1
     cargo test --locked -p codex-core deferred_android_dynamic_tools_search_as_native_computer_use_tools --lib -- --exact --test-threads=1
+    cargo test --locked -p codex-core computer_use_call_times_out_and_unregisters_pending_response --lib -- --exact --test-threads=1
 
 # Focused downstream agent-workflow helper sanity slice.
 [no-cd]
