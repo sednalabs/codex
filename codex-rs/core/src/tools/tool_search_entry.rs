@@ -1,5 +1,7 @@
 use codex_mcp::ToolInfo;
 use codex_protocol::dynamic_tools::DynamicToolSpec;
+use codex_tools::ANDROID_OBSERVE_TOOL_NAME;
+use codex_tools::ANDROID_STEP_TOOL_NAME;
 use codex_tools::LoadableToolSpec;
 use codex_tools::ToolSearchResultSource;
 use codex_tools::dynamic_tool_to_loadable_tool_spec;
@@ -38,6 +40,10 @@ pub(crate) fn build_tool_search_entries(
     let mut dynamic_tools = dynamic_tools.iter().collect::<Vec<_>>();
     dynamic_tools.sort_by(|a, b| a.namespace.cmp(&b.namespace).then(a.name.cmp(&b.name)));
     for tool in dynamic_tools {
+        if is_native_computer_use_dynamic_tool(tool) {
+            continue;
+        }
+
         match dynamic_tool_search_entry(tool) {
             Ok(entry) => entries.push(entry),
             Err(error) => {
@@ -50,6 +56,13 @@ pub(crate) fn build_tool_search_entries(
     }
 
     entries
+}
+
+fn is_native_computer_use_dynamic_tool(tool: &DynamicToolSpec) -> bool {
+    matches!(
+        tool.name.as_str(),
+        ANDROID_OBSERVE_TOOL_NAME | ANDROID_STEP_TOOL_NAME
+    )
 }
 
 fn mcp_tool_search_entry(info: &ToolInfo) -> Result<ToolSearchEntry, serde_json::Error> {

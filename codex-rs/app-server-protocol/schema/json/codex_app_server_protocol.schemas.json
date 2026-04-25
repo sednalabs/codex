@@ -1925,6 +1925,63 @@
       "title": "CommandExecutionRequestApprovalResponse",
       "type": "object"
     },
+    "ComputerUseCallParams": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "properties": {
+        "adapter": {
+          "type": "string"
+        },
+        "arguments": true,
+        "callId": {
+          "type": "string"
+        },
+        "environmentId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "threadId": {
+          "type": "string"
+        },
+        "tool": {
+          "type": "string"
+        },
+        "turnId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "threadId",
+        "turnId",
+        "callId",
+        "adapter",
+        "tool",
+        "arguments"
+      ],
+      "title": "ComputerUseCallParams",
+      "type": "object"
+    },
+    "ComputerUseCallResponse": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "properties": {
+        "contentItems": {
+          "items": {
+            "$ref": "#/definitions/v2/ComputerUseCallOutputContentItem"
+          },
+          "type": "array"
+        },
+        "success": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "contentItems",
+        "success"
+      ],
+      "title": "ComputerUseCallResponse",
+      "type": "object"
+    },
     "DynamicToolCallParams": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "properties": {
@@ -4738,6 +4795,29 @@
           "type": "object"
         },
         {
+          "description": "Execute a native computer-use call on the client.",
+          "properties": {
+            "id": {
+              "$ref": "#/definitions/v2/RequestId"
+            },
+            "method": {
+              "const": "item/computerUse/call",
+              "title": "Item/computerUse/callRequestMethod",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/$defs/ComputerUseCallParams"
+            }
+          },
+          "required": [
+            "method",
+            "id",
+            "params"
+          ],
+          "title": "Item/computerUse/callRequest",
+          "type": "object"
+        },
+        {
           "properties": {
             "id": {
               "$ref": "#/definitions/v2/RequestId"
@@ -6466,6 +6546,60 @@
           "completed",
           "failed",
           "declined"
+        ],
+        "type": "string"
+      },
+      "ComputerUseCallOutputContentItem": {
+        "oneOf": [
+          {
+            "properties": {
+              "text": {
+                "type": "string"
+              },
+              "type": {
+                "const": "inputText",
+                "title": "InputTextComputerUseCallOutputContentItemType",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "text"
+            ],
+            "title": "InputTextComputerUseCallOutputContentItem",
+            "type": "object"
+          },
+          {
+            "properties": {
+              "detail": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "imageUrl": {
+                "type": "string"
+              },
+              "type": {
+                "const": "inputImage",
+                "title": "InputImageComputerUseCallOutputContentItemType",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "imageUrl"
+            ],
+            "title": "InputImageComputerUseCallOutputContentItem",
+            "type": "object"
+          }
+        ]
+      },
+      "ComputerUseCallStatus": {
+        "enum": [
+          "inProgress",
+          "completed",
+          "failed"
         ],
         "type": "string"
       },
@@ -14608,6 +14742,73 @@
               "status"
             ],
             "title": "DynamicToolCallThreadItem",
+            "type": "object"
+          },
+          {
+            "properties": {
+              "adapter": {
+                "type": "string"
+              },
+              "arguments": true,
+              "contentItems": {
+                "items": {
+                  "$ref": "#/definitions/v2/ComputerUseCallOutputContentItem"
+                },
+                "type": [
+                  "array",
+                  "null"
+                ]
+              },
+              "durationMs": {
+                "description": "The duration of the computer-use call in milliseconds.",
+                "format": "int64",
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "environmentId": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "error": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "id": {
+                "type": "string"
+              },
+              "status": {
+                "$ref": "#/definitions/v2/ComputerUseCallStatus"
+              },
+              "success": {
+                "type": [
+                  "boolean",
+                  "null"
+                ]
+              },
+              "tool": {
+                "type": "string"
+              },
+              "type": {
+                "const": "computerUseCall",
+                "title": "ComputerUseCallThreadItemType",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "id",
+              "adapter",
+              "tool",
+              "arguments",
+              "status"
+            ],
+            "title": "ComputerUseCallThreadItem",
             "type": "object"
           },
           {

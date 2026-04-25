@@ -29,6 +29,9 @@ use codex_app_server_protocol::CommandExecutionRequestApprovalParams;
 use codex_app_server_protocol::CommandExecutionRequestApprovalResponse;
 use codex_app_server_protocol::CommandExecutionSource;
 use codex_app_server_protocol::CommandExecutionStatus;
+use codex_app_server_protocol::ComputerUseCallOutputContentItem;
+use codex_app_server_protocol::ComputerUseCallParams;
+use codex_app_server_protocol::ComputerUseCallStatus;
 use codex_app_server_protocol::ContextCompactedNotification;
 use codex_app_server_protocol::DeprecationNoticeNotification;
 use codex_app_server_protocol::DynamicToolCallOutputContentItem;
@@ -1054,6 +1057,107 @@ pub(crate) async fn apply_bespoke_event_handling(
                             .collect(),
                     ),
                     success: Some(response.success),
+                    duration_ms,
+                };
+                let notification = ItemCompletedNotification {
+                    thread_id: conversation_id.to_string(),
+                    turn_id: response.turn_id,
+                    item,
+                };
+                outgoing
+                    .send_server_notification(ServerNotification::ItemCompleted(notification))
+                    .await;
+            }
+        }
+        EventMsg::ComputerUseCallRequest(request) => {
+            if matches!(api_version, ApiVersion::V2) {
+                let call_id = request.call_id;
+                let turn_id = request.turn_id;
+                let environment_id = request.environment_id;
+                let adapter = request.adapter;
+                let tool = request.tool;
+                let arguments = request.arguments;
+                let item = ThreadItem::ComputerUseCall {
+                    id: call_id.clone(),
+                    environment_id: environment_id.clone(),
+                    adapter: adapter.clone(),
+                    tool: tool.clone(),
+                    arguments: arguments.clone(),
+                    status: ComputerUseCallStatus::InProgress,
+                    content_items: None,
+                    success: None,
+                    error: None,
+                    duration_ms: None,
+                };
+                let notification = ItemStartedNotification {
+                    thread_id: conversation_id.to_string(),
+                    turn_id: turn_id.clone(),
+                    item,
+                };
+                outgoing
+                    .send_server_notification(ServerNotification::ItemStarted(notification))
+                    .await;
+                let params = ComputerUseCallParams {
+                    thread_id: conversation_id.to_string(),
+                    turn_id: turn_id.clone(),
+                    call_id: call_id.clone(),
+                    environment_id,
+                    adapter,
+                    tool,
+                    arguments,
+                };
+                let (_pending_request_id, rx) = outgoing
+                    .send_request(ServerRequestPayload::ComputerUseCall(params))
+                    .await;
+                tokio::spawn(async move {
+                    crate::computer_use::on_call_response(call_id, rx, conversation).await;
+                });
+            } else {
+                error!(
+                    "computer-use calls are only supported on api v2 (call_id: {})",
+                    request.call_id
+                );
+                let call_id = request.call_id;
+                let _ = conversation
+                    .submit(Op::ComputerUseResponse {
+                        id: call_id.clone(),
+                        response: codex_protocol::computer_use::ComputerUseResponse {
+                            content_items: vec![
+                                codex_protocol::computer_use::ComputerUseOutputContentItem::InputText {
+                                    text: "computer-use calls require api v2".to_string(),
+                                },
+                            ],
+                            success: false,
+                            error: Some("computer-use calls require api v2".to_string()),
+                        },
+                    })
+                    .await;
+            }
+        }
+        EventMsg::ComputerUseCallResponse(response) => {
+            if matches!(api_version, ApiVersion::V2) {
+                let status = if response.success {
+                    ComputerUseCallStatus::Completed
+                } else {
+                    ComputerUseCallStatus::Failed
+                };
+                let duration_ms = i64::try_from(response.duration.as_millis()).ok();
+                let item = ThreadItem::ComputerUseCall {
+                    id: response.call_id,
+                    environment_id: response.environment_id,
+                    adapter: response.adapter,
+                    tool: response.tool,
+                    arguments: response.arguments,
+                    status,
+                    content_items: Some(
+                        response
+                            .content_items
+                            .into_iter()
+                            .map(ComputerUseCallOutputContentItem::from)
+                            .collect(),
+                    ),
+                    success: Some(response.success),
+                    error: response.error,
                     duration_ms,
                 };
                 let notification = ItemCompletedNotification {

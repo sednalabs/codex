@@ -1,0 +1,68 @@
+{
+  "$defs": {
+    "ComputerUseCallOutputContentItem": {
+      "oneOf": [
+        {
+          "properties": {
+            "text": {
+              "type": "string"
+            },
+            "type": {
+              "const": "inputText",
+              "title": "InputTextComputerUseCallOutputContentItemType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "text"
+          ],
+          "title": "InputTextComputerUseCallOutputContentItem",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "imageUrl": {
+              "type": "string"
+            },
+            "type": {
+              "const": "inputImage",
+              "title": "InputImageComputerUseCallOutputContentItemType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "imageUrl"
+          ],
+          "title": "InputImageComputerUseCallOutputContentItem",
+          "type": "object"
+        }
+      ]
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "contentItems": {
+      "items": {
+        "$ref": "#/$defs/ComputerUseCallOutputContentItem"
+      },
+      "type": "array"
+    },
+    "success": {
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "contentItems",
+    "success"
+  ],
+  "title": "ComputerUseCallResponse",
+  "type": "object"
+}
