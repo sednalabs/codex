@@ -5,6 +5,7 @@ use crate::agent::agent_status_from_event;
 use crate::config::AgentRoleConfig;
 use crate::config::Config;
 use crate::config::ConfigBuilder;
+use crate::config::ConfigOverrides;
 use crate::context::ContextualUserFragment;
 use crate::context::SubagentNotification;
 use assert_matches::assert_matches;
@@ -51,6 +52,19 @@ async fn test_config() -> (TempDir, Config) {
     test_config_with_cli_overrides(Vec::new()).await
 }
 
+async fn test_config_with_harness_overrides(
+    harness_overrides: ConfigOverrides,
+) -> (TempDir, Config) {
+    let home = TempDir::new().expect("create temp dir");
+    let config = ConfigBuilder::without_managed_config_for_tests()
+        .codex_home(home.path().to_path_buf())
+        .harness_overrides(harness_overrides)
+        .build()
+        .await
+        .expect("load default test config");
+    (home, config)
+}
+
 fn text_input(text: &str) -> Op {
     vec![UserInput::Text {
         text: text.to_string(),
@@ -91,6 +105,15 @@ struct AgentControlHarness {
 impl AgentControlHarness {
     async fn new() -> Self {
         let (home, config) = test_config().await;
+        Self::from_config(home, config)
+    }
+
+    async fn new_with_harness_overrides(harness_overrides: ConfigOverrides) -> Self {
+        let (home, config) = test_config_with_harness_overrides(harness_overrides).await;
+        Self::from_config(home, config)
+    }
+
+    fn from_config(home: TempDir, config: Config) -> Self {
         let manager = ThreadManager::with_models_provider_and_home_for_tests(
             CodexAuth::from_api_key("dummy"),
             config.model_provider.clone(),
@@ -365,6 +388,38 @@ async fn get_status_returns_not_found_for_missing_thread() {
     let harness = AgentControlHarness::new().await;
     let status = harness.control.get_status(ThreadId::new()).await;
     assert_eq!(status, AgentStatus::NotFound);
+}
+
+#[tokio::test]
+async fn inspect_agent_tree_without_state_db_points_to_subagent_tail() {
+    let harness = AgentControlHarness::new_with_harness_overrides(ConfigOverrides {
+        ephemeral: Some(true),
+        ..Default::default()
+    })
+    .await;
+    let (thread_id, thread) = harness.start_thread().await;
+    assert!(thread.state_db().is_none());
+
+    let err = harness
+        .control
+        .inspect_agent_tree(
+            thread_id,
+            &SessionSource::Exec,
+            /*target*/ None,
+            /*agent_roots*/ None,
+            AgentTreeScope::All,
+            /*max_depth*/ 2,
+            /*max_agents*/ 25,
+        )
+        .await
+        .expect_err("stale inspection should explain the missing state db fallback");
+
+    assert_matches!(err, CodexErr::UnsupportedOperation(_));
+    let message = err.to_string();
+    assert!(message.contains("scope=\"live\""));
+    assert!(message.contains("$subagent-session-tail"));
+    assert!(message.contains("--child-thread-id <child-thread-id>"));
+    assert!(!message.contains("requires state_db"));
 }
 
 #[tokio::test]
