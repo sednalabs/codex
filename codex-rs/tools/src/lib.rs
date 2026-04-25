@@ -44,7 +44,7 @@ pub use agent_tool::create_wait_agent_tool_v1;
 pub use agent_tool::create_wait_agent_tool_v2;
 pub use android_tool::ANDROID_OBSERVE_TOOL_NAME;
 pub use android_tool::ANDROID_STEP_TOOL_NAME;
-pub(crate) use android_tool::canonical_android_dynamic_tool;
+pub use android_tool::canonical_android_dynamic_tool;
 pub use apply_patch_tool::ApplyPatchToolArgs;
 pub use apply_patch_tool::create_apply_patch_freeform_tool;
 pub use apply_patch_tool::create_apply_patch_json_tool;

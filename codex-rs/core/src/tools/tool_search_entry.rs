@@ -4,6 +4,7 @@ use codex_tools::ANDROID_OBSERVE_TOOL_NAME;
 use codex_tools::ANDROID_STEP_TOOL_NAME;
 use codex_tools::LoadableToolSpec;
 use codex_tools::ToolSearchResultSource;
+use codex_tools::canonical_android_dynamic_tool;
 use codex_tools::dynamic_tool_to_loadable_tool_spec;
 use codex_tools::tool_search_result_source_to_loadable_tool_spec;
 use std::collections::HashMap;
@@ -41,6 +42,9 @@ pub(crate) fn build_tool_search_entries(
     dynamic_tools.sort_by(|a, b| a.namespace.cmp(&b.namespace).then(a.name.cmp(&b.name)));
     for tool in dynamic_tools {
         if is_native_computer_use_dynamic_tool(tool) {
+            if let Some(entry) = native_computer_use_tool_search_entry(tool) {
+                entries.push(entry);
+            }
             continue;
         }
 
@@ -85,6 +89,14 @@ fn dynamic_tool_search_entry(tool: &DynamicToolSpec) -> Result<ToolSearchEntry, 
     Ok(ToolSearchEntry {
         search_text: build_dynamic_search_text(tool),
         output: dynamic_tool_to_loadable_tool_spec(tool)?,
+        limit_bucket: None,
+    })
+}
+
+fn native_computer_use_tool_search_entry(tool: &DynamicToolSpec) -> Option<ToolSearchEntry> {
+    Some(ToolSearchEntry {
+        search_text: build_dynamic_search_text(tool),
+        output: LoadableToolSpec::Function(canonical_android_dynamic_tool(tool)?),
         limit_bucket: None,
     })
 }

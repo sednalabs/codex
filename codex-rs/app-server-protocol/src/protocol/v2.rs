@@ -3578,6 +3578,12 @@ pub struct ThreadResumeParams {
     pub developer_instructions: Option<Option<String>>,
     #[ts(optional = nullable)]
     pub personality: Option<Personality>,
+    /// Additional tools to install into the resumed thread before the next
+    /// turn. Bare Android tool names are promoted to native computer-use
+    /// handlers by core.
+    #[experimental("thread/resume.dynamicTools")]
+    #[ts(optional = nullable)]
+    pub dynamic_tools: Option<Vec<DynamicToolSpec>>,
     /// When true, return only thread metadata and live-resume state without
     /// populating `thread.turns`. This is useful when the client plans to call
     /// `thread/turns/list` immediately after resuming.
@@ -3683,6 +3689,12 @@ pub struct ThreadForkParams {
     )]
     #[ts(optional = nullable)]
     pub developer_instructions: Option<Option<String>>,
+    /// Additional tools to install into the forked thread before the next turn.
+    /// Bare Android tool names are promoted to native computer-use handlers by
+    /// core.
+    #[experimental("thread/fork.dynamicTools")]
+    #[ts(optional = nullable)]
+    pub dynamic_tools: Option<Vec<DynamicToolSpec>>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub ephemeral: bool,
     /// When true, return only thread metadata and live fork state without
@@ -7517,6 +7529,9 @@ pub struct DynamicToolCallResponse {
 pub struct ComputerUseCallResponse {
     pub content_items: Vec<ComputerUseCallOutputContentItem>,
     pub success: bool,
+    #[serde(default)]
+    #[ts(optional = nullable)]
+    pub error: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
@@ -9440,10 +9455,38 @@ mod tests {
     }
 
     #[test]
+    fn client_request_thread_resume_dynamic_tools_is_marked_experimental() {
+        let reason = crate::experimental_api::ExperimentalApi::experimental_reason(
+            &crate::ClientRequest::ThreadResume {
+                request_id: crate::RequestId::Integer(3),
+                params: ThreadResumeParams {
+                    thread_id: "thr_123".to_string(),
+                    dynamic_tools: Some(vec![DynamicToolSpec {
+                        namespace: None,
+                        name: "android_observe".to_string(),
+                        description: "Observe Android state".to_string(),
+                        input_schema: serde_json::json!({
+                            "type": "object",
+                            "properties": {},
+                            "additionalProperties": false,
+                        }),
+                        defer_loading: false,
+                        persist_on_resume: true,
+                        capability: None,
+                    }]),
+                    ..Default::default()
+                },
+            },
+        );
+
+        assert_eq!(reason, Some("thread/resume.dynamicTools"));
+    }
+
+    #[test]
     fn client_request_thread_fork_granular_approval_policy_is_marked_experimental() {
         let reason = crate::experimental_api::ExperimentalApi::experimental_reason(
             &crate::ClientRequest::ThreadFork {
-                request_id: crate::RequestId::Integer(3),
+                request_id: crate::RequestId::Integer(4),
                 params: ThreadForkParams {
                     thread_id: "thr_456".to_string(),
                     approval_policy: Some(AskForApproval::Granular {
@@ -9462,10 +9505,38 @@ mod tests {
     }
 
     #[test]
+    fn client_request_thread_fork_dynamic_tools_is_marked_experimental() {
+        let reason = crate::experimental_api::ExperimentalApi::experimental_reason(
+            &crate::ClientRequest::ThreadFork {
+                request_id: crate::RequestId::Integer(5),
+                params: ThreadForkParams {
+                    thread_id: "thr_456".to_string(),
+                    dynamic_tools: Some(vec![DynamicToolSpec {
+                        namespace: None,
+                        name: "android_step".to_string(),
+                        description: "Act on Android state".to_string(),
+                        input_schema: serde_json::json!({
+                            "type": "object",
+                            "properties": {},
+                            "additionalProperties": false,
+                        }),
+                        defer_loading: false,
+                        persist_on_resume: true,
+                        capability: None,
+                    }]),
+                    ..Default::default()
+                },
+            },
+        );
+
+        assert_eq!(reason, Some("thread/fork.dynamicTools"));
+    }
+
+    #[test]
     fn client_request_turn_start_granular_approval_policy_is_marked_experimental() {
         let reason = crate::experimental_api::ExperimentalApi::experimental_reason(
             &crate::ClientRequest::TurnStart {
-                request_id: crate::RequestId::Integer(4),
+                request_id: crate::RequestId::Integer(6),
                 params: TurnStartParams {
                     thread_id: "thr_123".to_string(),
                     input: Vec::new(),

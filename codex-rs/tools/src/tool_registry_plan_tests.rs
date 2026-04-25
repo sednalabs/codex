@@ -1831,6 +1831,30 @@ fn android_dynamic_tools_use_canonical_codex_tool_definitions() {
     assert!(step_properties.contains_key("view"));
     assert!(step_properties.contains_key("action"));
     assert!(!step_properties.contains_key("ignored"));
+    let action_values = step_properties
+        .get("action")
+        .and_then(|schema| schema.enum_values.as_ref())
+        .expect("action enum values");
+    assert!(action_values.contains(&json!("tap")));
+    assert!(action_values.contains(&json!("type_text")));
+    assert!(action_values.contains(&json!("key")));
+    assert!(action_values.contains(&json!("swipe")));
+    assert!(action_values.contains(&json!("click")));
+    assert!(action_values.contains(&json!("zoom")));
+    let action_item_properties = step_properties
+        .get("actions")
+        .and_then(|schema| schema.items.as_ref())
+        .and_then(|item| item.properties.as_ref())
+        .expect("actions[] item properties");
+    assert!(action_item_properties.contains_key("region"));
+    assert!(action_item_properties.contains_key("frame"));
+    let view_properties = step_properties
+        .get("view")
+        .and_then(|schema| schema.properties.as_ref())
+        .expect("view properties");
+    assert!(view_properties.contains_key("deviceWidth"));
+    assert!(view_properties.contains_key("device_height"));
+    assert!(view_properties.contains_key("region"));
 
     assert!(handlers.contains(&ToolHandlerSpec {
         name: ToolName::plain("android_observe"),

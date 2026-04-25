@@ -15,15 +15,21 @@ use codex_app_server_protocol::JSONRPCNotification;
 use codex_app_server_protocol::JSONRPCResponse;
 use codex_app_server_protocol::RequestId;
 use codex_app_server_protocol::ServerRequest;
+use codex_app_server_protocol::ThreadForkParams;
+use codex_app_server_protocol::ThreadForkResponse;
 use codex_app_server_protocol::ThreadItem;
+use codex_app_server_protocol::ThreadResumeParams;
+use codex_app_server_protocol::ThreadResumeResponse;
 use codex_app_server_protocol::ThreadStartParams;
 use codex_app_server_protocol::ThreadStartResponse;
 use codex_app_server_protocol::TurnStartParams;
 use codex_app_server_protocol::TurnStartResponse;
 use codex_app_server_protocol::UserInput as V2UserInput;
+use codex_protocol::models::ContentItem;
 use codex_protocol::models::DEFAULT_IMAGE_DETAIL;
 use codex_protocol::models::FunctionCallOutputContentItem;
 use codex_protocol::models::FunctionCallOutputPayload;
+use codex_protocol::models::ResponseItem;
 use core_test_support::responses;
 use pretty_assertions::assert_eq;
 use serde_json::Value;
@@ -175,6 +181,7 @@ async fn computer_use_call_round_trip_sends_client_response_to_model() -> Result
     let response = ComputerUseCallResponse {
         content_items: response_items.clone(),
         success: true,
+        error: None,
     };
     mcp.send_response(request_id, serde_json::to_value(response)?)
         .await?;
@@ -236,6 +243,261 @@ async fn computer_use_call_round_trip_sends_client_response_to_model() -> Result
     Ok(())
 }
 
+#[tokio::test]
+async fn thread_resume_injects_native_android_tools_into_model_requests() -> Result<()> {
+    let responses = vec![create_final_assistant_message_sse_response("Done")?];
+    let server = create_mock_responses_server_sequence_unchecked(responses).await;
+
+    let codex_home = TempDir::new()?;
+    create_config_toml(codex_home.path(), &server.uri())?;
+
+    let mut mcp = McpProcess::new(codex_home.path()).await?;
+    timeout(DEFAULT_READ_TIMEOUT, mcp.initialize()).await??;
+
+    let resume_history = vec![ResponseItem::Message {
+        id: None,
+        role: "user".to_string(),
+        content: vec![ContentItem::InputText {
+            text: "Resume this thread".to_string(),
+        }],
+        end_turn: None,
+        phase: None,
+    }];
+
+    let resume_req = mcp
+        .send_thread_resume_request(ThreadResumeParams {
+            thread_id: "thread_resume_seed".to_string(),
+            history: Some(resume_history),
+            dynamic_tools: Some(vec![android_observe_tool()]),
+            ..Default::default()
+        })
+        .await?;
+    let resume_resp: JSONRPCResponse = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(resume_req)),
+    )
+    .await??;
+    let ThreadResumeResponse { thread, .. } = to_response::<ThreadResumeResponse>(resume_resp)?;
+
+    let turn_req = mcp
+        .send_turn_start_request(TurnStartParams {
+            thread_id: thread.id,
+            input: vec![V2UserInput::Text {
+                text: "Observe Android".to_string(),
+                text_elements: Vec::new(),
+            }],
+            ..Default::default()
+        })
+        .await?;
+    let turn_resp: JSONRPCResponse = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(turn_req)),
+    )
+    .await??;
+    let _turn: TurnStartResponse = to_response::<TurnStartResponse>(turn_resp)?;
+
+    timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_notification_message("turn/completed"),
+    )
+    .await??;
+
+    let bodies = responses_bodies(&server).await?;
+    let body = bodies
+        .last()
+        .context("expected a resumed turn responses request")?;
+    assert_native_android_tool(body, "android_observe")?;
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn thread_resume_replaces_loaded_thread_when_native_android_tools_are_requested() -> Result<()>
+{
+    let responses = vec![
+        create_final_assistant_message_sse_response("Seeded")?,
+        create_final_assistant_message_sse_response("Done")?,
+    ];
+    let server = create_mock_responses_server_sequence_unchecked(responses).await;
+
+    let codex_home = TempDir::new()?;
+    create_config_toml(codex_home.path(), &server.uri())?;
+
+    let mut mcp = McpProcess::new(codex_home.path()).await?;
+    timeout(DEFAULT_READ_TIMEOUT, mcp.initialize()).await??;
+
+    let thread_req = mcp
+        .send_thread_start_request(ThreadStartParams::default())
+        .await?;
+    let thread_resp: JSONRPCResponse = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(thread_req)),
+    )
+    .await??;
+    let ThreadStartResponse { thread, .. } = to_response::<ThreadStartResponse>(thread_resp)?;
+
+    let seed_turn_req = mcp
+        .send_turn_start_request(TurnStartParams {
+            thread_id: thread.id.clone(),
+            input: vec![V2UserInput::Text {
+                text: "Seed rollout storage".to_string(),
+                text_elements: Vec::new(),
+            }],
+            ..Default::default()
+        })
+        .await?;
+    let seed_turn_resp: JSONRPCResponse = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(seed_turn_req)),
+    )
+    .await??;
+    let _seed_turn: TurnStartResponse = to_response::<TurnStartResponse>(seed_turn_resp)?;
+
+    timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_notification_message("turn/completed"),
+    )
+    .await??;
+
+    let resume_req = mcp
+        .send_thread_resume_request(ThreadResumeParams {
+            thread_id: thread.id.clone(),
+            dynamic_tools: Some(vec![android_observe_tool()]),
+            ..Default::default()
+        })
+        .await?;
+    let resume_resp: JSONRPCResponse = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(resume_req)),
+    )
+    .await??;
+    let ThreadResumeResponse { thread, .. } = to_response::<ThreadResumeResponse>(resume_resp)?;
+
+    let turn_req = mcp
+        .send_turn_start_request(TurnStartParams {
+            thread_id: thread.id,
+            input: vec![V2UserInput::Text {
+                text: "Observe Android".to_string(),
+                text_elements: Vec::new(),
+            }],
+            ..Default::default()
+        })
+        .await?;
+    let turn_resp: JSONRPCResponse = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(turn_req)),
+    )
+    .await??;
+    let _turn: TurnStartResponse = to_response::<TurnStartResponse>(turn_resp)?;
+
+    timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_notification_message("turn/completed"),
+    )
+    .await??;
+
+    let bodies = responses_bodies(&server).await?;
+    let body = bodies
+        .last()
+        .context("expected a resumed turn responses request after replacing the loaded thread")?;
+    assert_native_android_tool(body, "android_observe")?;
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn thread_fork_injects_native_android_tools_into_model_requests() -> Result<()> {
+    let responses = vec![
+        create_final_assistant_message_sse_response("Seeded")?,
+        create_final_assistant_message_sse_response("Done")?,
+    ];
+    let server = create_mock_responses_server_sequence_unchecked(responses).await;
+
+    let codex_home = TempDir::new()?;
+    create_config_toml(codex_home.path(), &server.uri())?;
+
+    let mut mcp = McpProcess::new(codex_home.path()).await?;
+    timeout(DEFAULT_READ_TIMEOUT, mcp.initialize()).await??;
+
+    let thread_req = mcp
+        .send_thread_start_request(ThreadStartParams::default())
+        .await?;
+    let thread_resp: JSONRPCResponse = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(thread_req)),
+    )
+    .await??;
+    let ThreadStartResponse { thread, .. } = to_response::<ThreadStartResponse>(thread_resp)?;
+
+    let seed_turn_req = mcp
+        .send_turn_start_request(TurnStartParams {
+            thread_id: thread.id.clone(),
+            input: vec![V2UserInput::Text {
+                text: "Seed rollout storage".to_string(),
+                text_elements: Vec::new(),
+            }],
+            ..Default::default()
+        })
+        .await?;
+    let seed_turn_resp: JSONRPCResponse = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(seed_turn_req)),
+    )
+    .await??;
+    let _seed_turn: TurnStartResponse = to_response::<TurnStartResponse>(seed_turn_resp)?;
+
+    timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_notification_message("turn/completed"),
+    )
+    .await??;
+
+    let fork_req = mcp
+        .send_thread_fork_request(ThreadForkParams {
+            thread_id: thread.id,
+            dynamic_tools: Some(vec![android_step_tool()]),
+            ..Default::default()
+        })
+        .await?;
+    let fork_resp: JSONRPCResponse = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(fork_req)),
+    )
+    .await??;
+    let ThreadForkResponse { thread, .. } = to_response::<ThreadForkResponse>(fork_resp)?;
+
+    let turn_req = mcp
+        .send_turn_start_request(TurnStartParams {
+            thread_id: thread.id,
+            input: vec![V2UserInput::Text {
+                text: "Take an Android step".to_string(),
+                text_elements: Vec::new(),
+            }],
+            ..Default::default()
+        })
+        .await?;
+    let turn_resp: JSONRPCResponse = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(turn_req)),
+    )
+    .await??;
+    let _turn: TurnStartResponse = to_response::<TurnStartResponse>(turn_resp)?;
+
+    timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_notification_message("turn/completed"),
+    )
+    .await??;
+
+    let bodies = responses_bodies(&server).await?;
+    let body = bodies
+        .last()
+        .context("expected a forked turn responses request")?;
+    assert_native_android_tool(body, "android_step")?;
+
+    Ok(())
+}
+
 async fn responses_bodies(server: &MockServer) -> Result<Vec<Value>> {
     let requests = server
         .received_requests()
@@ -250,6 +512,95 @@ async fn responses_bodies(server: &MockServer) -> Result<Vec<Value>> {
                 .context("request body should be JSON")
         })
         .collect()
+}
+
+fn android_observe_tool() -> DynamicToolSpec {
+    DynamicToolSpec {
+        namespace: None,
+        name: "android_observe".to_string(),
+        description: "client-supplied observe description".to_string(),
+        input_schema: json!({
+            "type": "object",
+            "properties": {
+                "clientOnly": { "type": "string" }
+            },
+            "additionalProperties": false,
+        }),
+        defer_loading: false,
+        persist_on_resume: true,
+        capability: None,
+    }
+}
+
+fn android_step_tool() -> DynamicToolSpec {
+    DynamicToolSpec {
+        namespace: None,
+        name: "android_step".to_string(),
+        description: "client-supplied step description".to_string(),
+        input_schema: json!({
+            "type": "object",
+            "properties": {
+                "clientOnly": { "type": "string" }
+            },
+            "additionalProperties": false,
+        }),
+        defer_loading: false,
+        persist_on_resume: true,
+        capability: None,
+    }
+}
+
+fn assert_native_android_tool(body: &Value, name: &str) -> Result<()> {
+    let tool = find_tool(body, name).with_context(|| {
+        format!("expected native Android tool `{name}` to be injected into request")
+    })?;
+    assert_eq!(tool.get("type").and_then(Value::as_str), Some("function"));
+    let description = tool
+        .get("description")
+        .and_then(Value::as_str)
+        .context("native Android tool description should be present")?;
+    let parameters = tool
+        .get("parameters")
+        .and_then(|parameters| parameters.get("properties"))
+        .and_then(Value::as_object)
+        .context("native Android tool parameters should include object properties")?;
+    assert!(
+        !parameters.contains_key("clientOnly"),
+        "native Android tools should use the canonical schema, not the client-supplied dynamic schema"
+    );
+
+    match name {
+        "android_observe" => {
+            assert_eq!(
+                description,
+                "Capture the current Android screen as a model-visible screenshot, optionally with a compact UI digest."
+            );
+            assert!(parameters.contains_key("scope"));
+            assert!(parameters.contains_key("prompt"));
+        }
+        "android_step" => {
+            assert_eq!(
+                description,
+                "Perform one or more bounded Android actions, then return a fresh post-action screenshot, summary, and current view metadata."
+            );
+            assert!(parameters.contains_key("action"));
+            assert!(parameters.contains_key("actions"));
+            assert!(parameters.contains_key("view"));
+        }
+        other => panic!("unexpected Android tool name: {other}"),
+    }
+
+    Ok(())
+}
+
+fn find_tool<'a>(body: &'a Value, name: &str) -> Option<&'a Value> {
+    body.get("tools")
+        .and_then(Value::as_array)
+        .and_then(|tools| {
+            tools
+                .iter()
+                .find(|tool| tool.get("name").and_then(Value::as_str) == Some(name))
+        })
 }
 
 fn function_call_output_payload(body: &Value, call_id: &str) -> Option<FunctionCallOutputPayload> {

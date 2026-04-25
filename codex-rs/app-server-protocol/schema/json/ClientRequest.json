@@ -3349,6 +3349,16 @@
             "null"
           ]
         },
+        "dynamicTools": {
+          "description": "Additional tools to install into the forked thread before the next turn.\nBare Android tool names are promoted to native computer-use handlers by\ncore.",
+          "items": {
+            "$ref": "#/$defs/DynamicToolSpec"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
         "ephemeral": {
           "type": "boolean"
         },
@@ -3950,6 +3960,16 @@
         "developerInstructions": {
           "type": [
             "string",
+            "null"
+          ]
+        },
+        "dynamicTools": {
+          "description": "Additional tools to install into the resumed thread before the next\nturn. Bare Android tool names are promoted to native computer-use\nhandlers by core.",
+          "items": {
+            "$ref": "#/$defs/DynamicToolSpec"
+          },
+          "type": [
+            "array",
             "null"
           ]
         },

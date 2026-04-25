@@ -16,7 +16,7 @@ pub(crate) async fn on_call_response(
     conversation: Arc<CodexThread>,
 ) {
     let response = receiver.await;
-    let (response, response_error) = match response {
+    let response = match response {
         Ok(Ok(value)) => decode_response(value),
         Ok(Err(err)) if is_turn_transition_server_request_error(&err) => return,
         Ok(Err(err)) => {
@@ -32,6 +32,7 @@ pub(crate) async fn on_call_response(
     let ComputerUseCallResponse {
         content_items,
         success,
+        error,
     } = response;
     let core_response = CoreComputerUseResponse {
         content_items: content_items
@@ -39,7 +40,7 @@ pub(crate) async fn on_call_response(
             .map(codex_protocol::computer_use::ComputerUseOutputContentItem::from)
             .collect(),
         success,
-        error: response_error,
+        error,
     };
     if let Err(err) = conversation
         .submit(Op::ComputerUseResponse {
@@ -52,9 +53,9 @@ pub(crate) async fn on_call_response(
     }
 }
 
-fn decode_response(value: serde_json::Value) -> (ComputerUseCallResponse, Option<String>) {
+fn decode_response(value: serde_json::Value) -> ComputerUseCallResponse {
     match serde_json::from_value::<ComputerUseCallResponse>(value) {
-        Ok(response) => (response, None),
+        Ok(response) => response,
         Err(err) => {
             error!("failed to deserialize ComputerUseCallResponse: {err}");
             fallback_response("computer-use response was invalid")
@@ -62,14 +63,59 @@ fn decode_response(value: serde_json::Value) -> (ComputerUseCallResponse, Option
     }
 }
 
-fn fallback_response(message: &str) -> (ComputerUseCallResponse, Option<String>) {
-    (
-        ComputerUseCallResponse {
-            content_items: vec![ComputerUseCallOutputContentItem::InputText {
-                text: message.to_string(),
-            }],
-            success: false,
-        },
-        Some(message.to_string()),
-    )
+fn fallback_response(message: &str) -> ComputerUseCallResponse {
+    ComputerUseCallResponse {
+        content_items: vec![ComputerUseCallOutputContentItem::InputText {
+            text: message.to_string(),
+        }],
+        success: false,
+        error: Some(message.to_string()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ComputerUseCallOutputContentItem;
+    use super::ComputerUseCallResponse;
+    use super::decode_response;
+    use pretty_assertions::assert_eq;
+    use serde_json::json;
+
+    #[test]
+    fn decode_response_preserves_failure_error() {
+        assert_eq!(
+            decode_response(json!({
+                "contentItems": [
+                    {
+                        "type": "inputText",
+                        "text": "screen unavailable"
+                    }
+                ],
+                "success": false,
+                "error": "android session disconnected"
+            })),
+            ComputerUseCallResponse {
+                content_items: vec![ComputerUseCallOutputContentItem::InputText {
+                    text: "screen unavailable".to_string(),
+                }],
+                success: false,
+                error: Some("android session disconnected".to_string()),
+            }
+        );
+    }
+
+    #[test]
+    fn decode_response_accepts_legacy_response_without_error() {
+        assert_eq!(
+            decode_response(json!({
+                "contentItems": [],
+                "success": true
+            })),
+            ComputerUseCallResponse {
+                content_items: Vec::new(),
+                success: true,
+                error: None,
+            }
+        );
+    }
 }
