@@ -1,0 +1,504 @@
+name: _validation-lane-rust-batch
+
+on:
+  workflow_call:
+    inputs:
+      checkout_ref:
+        required: false
+        type: string
+        default: ""
+      checkout_fetch_depth:
+        required: false
+        type: number
+        default: 1
+      batch_id:
+        required: true
+        type: string
+      batch_index:
+        required: false
+        type: number
+        default: 0
+      setup_class:
+        required: true
+        type: string
+      lane_ids_json:
+        required: true
+        type: string
+      needs_just:
+        required: false
+        type: boolean
+        default: false
+      needs_node:
+        required: false
+        type: boolean
+        default: false
+      needs_nextest:
+        required: false
+        type: boolean
+        default: false
+      needs_linux_build_deps:
+        required: false
+        type: boolean
+        default: false
+      needs_dotslash:
+        required: false
+        type: boolean
+        default: false
+      needs_sccache:
+        required: false
+        type: boolean
+        default: false
+      cache_policy:
+        required: false
+        type: string
+        default: restore-only
+
+permissions:
+  contents: read
+
+jobs:
+  run:
+    name: ${{ inputs.batch_id }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      CARGO_INCREMENTAL: "0"
+      SCCACHE_CACHE_SIZE: 2G
+      SCCACHE_IDLE_TIMEOUT: "0"
+    steps:
+      - name: Record lane start
+        id: lane_timing
+        shell: bash
+        run: echo "job_started_at_ms=$(date +%s%3N)" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: ${{ inputs.checkout_fetch_depth }}
+          ref: ${{ inputs.checkout_ref != '' && inputs.checkout_ref || github.sha }}
+
+      - name: Check out workflow helpers
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 1
+          ref: ${{ github.sha }}
+          path: .workflow-src
+
+      - name: Reclaim runner disk headroom
+        if: ${{ runner.os == 'Linux' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          soft_threshold_bytes=$((12 * 1024 * 1024 * 1024))
+          hard_threshold_bytes=$((6 * 1024 * 1024 * 1024))
+          available_bytes() {
+            df --block-size=1 --output=avail "$GITHUB_WORKSPACE" | tail -n 1 | tr -d '[:space:]'
+          }
+          before_bytes="$(available_bytes)"
+          if [[ "${before_bytes}" -lt "${soft_threshold_bytes}" ]]; then
+            echo "::warning title=Low runner disk before batch setup::Available disk is $(numfmt --to=iec "${before_bytes}") before dependency setup; reclaiming headroom."
+            sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/share/boost /opt/hostedtoolcache/CodeQL || true
+            sudo apt-get clean || true
+            sudo rm -rf /var/lib/apt/lists/* || true
+          fi
+          after_bytes="$(available_bytes)"
+          if [[ "${after_bytes}" -lt "${hard_threshold_bytes}" ]]; then
+            echo "::error title=Insufficient runner disk::Available disk after cleanup is $(numfmt --to=iec "${after_bytes}"), below the 6 GiB safety floor for validation lanes."
+            exit 1
+          fi
+
+      - name: Set up Node.js for js_repl tests
+        if: ${{ inputs.needs_node }}
+        uses: actions/setup-node@v6
+        with:
+          node-version-file: codex-rs/node-version.txt
+
+      - name: Bind js_repl Node runtime
+        if: ${{ inputs.needs_node }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "CODEX_JS_REPL_NODE_PATH=$(command -v node)" >> "$GITHUB_ENV"
+
+      - name: Install Linux build dependencies
+        if: ${{ inputs.needs_linux_build_deps }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update -y
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends pkg-config libcap-dev
+
+      - name: Install DotSlash
+        if: ${{ inputs.needs_dotslash }}
+        uses: facebook/install-dotslash@v2
+
+      - uses: dtolnay/rust-toolchain@1.93.0
+        with:
+          targets: x86_64-unknown-linux-gnu
+
+      - name: Compute lockfile hash
+        id: lockhash
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "hash=$(sha256sum codex-rs/Cargo.lock | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+          echo "toolchain_hash=$(sha256sum codex-rs/rust-toolchain.toml | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+
+      - name: Restore cargo home cache
+        id: cache_cargo_home_restore
+        uses: actions/cache/restore@v5
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/.rusty_v8/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+          key: cargo-home-linux-rust-${{ steps.lockhash.outputs.hash }}-${{ steps.lockhash.outputs.toolchain_hash }}
+
+      - name: Install sccache
+        if: ${{ inputs.needs_sccache }}
+        uses: taiki-e/install-action@58e862542551f667fa44c8a2a4a1d64ad477c96a # v2
+        with:
+          tool: sccache
+
+      - name: Expose GitHub cache-service env for sccache
+        if: ${{ inputs.needs_sccache }}
+        uses: actions/github-script@v9
+        with:
+          script: |
+            core.exportVariable('ACTIONS_CACHE_SERVICE_V2', 'on');
+            core.exportVariable('ACTIONS_RESULTS_URL', process.env.ACTIONS_RESULTS_URL || '');
+            core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env.ACTIONS_RUNTIME_TOKEN || '');
+
+      - name: Configure sccache backend
+        id: sccache_backend
+        if: ${{ inputs.needs_sccache }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          policy='${{ inputs.cache_policy }}'
+          case "${policy}" in
+            off|restore-only|write-fallback) ;;
+            *)
+              echo "::warning title=Unknown cache policy::${policy}; using restore-only"
+              policy="restore-only"
+              ;;
+          esac
+          echo "policy=${policy}" >> "$GITHUB_OUTPUT"
+          if [[ "${policy}" == "off" ]]; then
+            {
+              echo "SCCACHE_GHA_ENABLED=false"
+              echo "SCCACHE_DIR=${GITHUB_WORKSPACE}/.sccache"
+            } >> "$GITHUB_ENV"
+            echo "backend=off" >> "$GITHUB_OUTPUT"
+            echo "sccache disabled by cache policy"
+            exit 0
+          fi
+          cache_url="${SCCACHE_GHA_CACHE_URL:-${ACTIONS_RESULTS_URL:-${ACTIONS_CACHE_URL:-}}}"
+          if [[ -n "${cache_url}" && -n "${ACTIONS_RUNTIME_TOKEN:-}" ]]; then
+            {
+              echo "ACTIONS_CACHE_SERVICE_V2=on"
+              echo "SCCACHE_GHA_ENABLED=true"
+              echo "SCCACHE_GHA_CACHE_URL=${cache_url}"
+            } >> "$GITHUB_ENV"
+            echo "backend=gha" >> "$GITHUB_OUTPUT"
+            echo "Using sccache GitHub backend"
+          else
+            {
+              echo "SCCACHE_GHA_ENABLED=false"
+              echo "SCCACHE_DIR=${GITHUB_WORKSPACE}/.sccache"
+            } >> "$GITHUB_ENV"
+            echo "backend=fallback" >> "$GITHUB_OUTPUT"
+            echo "Using sccache local disk + actions/cache fallback"
+          fi
+
+      - name: Enable sccache wrapper and reset stats
+        if: ${{ inputs.needs_sccache && steps.sccache_backend.outputs.backend != 'off' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          wrapper="$(command -v sccache)"
+          echo "RUSTC_WRAPPER=${wrapper}" >> "$GITHUB_ENV"
+          sccache --start-server || true
+          sccache --zero-stats || true
+
+      - name: Restore sccache cache (fallback)
+        if: ${{ inputs.needs_sccache && steps.sccache_backend.outputs.backend == 'fallback' }}
+        id: cache_sccache_restore
+        uses: actions/cache/restore@v5
+        with:
+          path: ${{ github.workspace }}/.sccache/
+          key: sccache-linux-rust-${{ steps.lockhash.outputs.hash }}-${{ steps.lockhash.outputs.toolchain_hash }}-${{ github.run_id }}
+          restore-keys: |
+            sccache-linux-rust-${{ steps.lockhash.outputs.hash }}-${{ steps.lockhash.outputs.toolchain_hash }}-
+            sccache-linux-rust-${{ steps.lockhash.outputs.hash }}-
+
+      - uses: taiki-e/install-action@58e862542551f667fa44c8a2a4a1d64ad477c96a # v2
+        if: ${{ inputs.needs_nextest }}
+        with:
+          tool: nextest
+          version: 0.9.103
+
+      - uses: taiki-e/install-action@58e862542551f667fa44c8a2a4a1d64ad477c96a # v2
+        if: ${{ inputs.needs_just }}
+        with:
+          tool: just
+
+      - name: Enable unprivileged user namespaces (Linux)
+        if: ${{ inputs.needs_nextest }}
+        shell: bash
+        run: |
+          sudo sysctl -w kernel.unprivileged_userns_clone=1
+          if sudo sysctl -a 2>/dev/null | grep -q '^kernel.apparmor_restrict_unprivileged_userns'; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
+
+      - name: Mark setup complete
+        id: setup_complete
+        shell: bash
+        run: echo "setup_finished_at_ms=$(date +%s%3N)" >> "$GITHUB_OUTPUT"
+
+      - name: Run requested lane batch
+        id: run_batch
+        shell: bash
+        continue-on-error: true
+        env:
+          BATCH_ID: ${{ inputs.batch_id }}
+          SETUP_CLASS: ${{ inputs.setup_class }}
+          LANE_IDS_JSON: ${{ inputs.lane_ids_json }}
+        run: |
+          set -euo pipefail
+          batch_output_dir="${RUNNER_TEMP}/validation-lane-batch-${BATCH_ID}"
+          mkdir -p "${batch_output_dir}"
+          started_at_ms="$(date +%s%3N)"
+          export CODEX_RELEASE_REPOSITORY='${{ github.repository }}'
+          export CODEX_RELEASE_TAG_PREFIX='v'
+          if [[ '${{ inputs.needs_sccache }}' == 'true' && '${{ steps.sccache_backend.outputs.backend }}' != 'off' ]]; then
+            export RUSTC_WRAPPER="${RUSTC_WRAPPER:-$(command -v sccache)}"
+          fi
+          set +e
+          python3 .workflow-src/.github/scripts/run_validation_lane_batch.py \
+            --repo-root "${GITHUB_WORKSPACE}" \
+            --workflow-src "${GITHUB_WORKSPACE}/.workflow-src" \
+            --setup-class "${SETUP_CLASS}" \
+            --batch-id "${BATCH_ID}" \
+            --lane-ids-json "${LANE_IDS_JSON}" \
+            --output-dir "${batch_output_dir}"
+          exit_code=$?
+          set -e
+          finished_at_ms="$(date +%s%3N)"
+          duration_ms="$((finished_at_ms - started_at_ms))"
+          if [[ "${duration_ms}" -lt 0 ]]; then
+            duration_ms=0
+          fi
+          {
+            echo "batch_output_dir=${batch_output_dir}"
+            echo "started_at_ms=${started_at_ms}"
+            echo "finished_at_ms=${finished_at_ms}"
+            echo "duration_ms=${duration_ms}"
+            echo "exit_code=${exit_code}"
+          } >> "$GITHUB_OUTPUT"
+          exit "${exit_code}"
+
+      - name: Prepare lane summary artifacts
+        if: ${{ always() && !cancelled() }}
+        id: lane_summary
+        shell: bash
+        env:
+          BATCH_ID: ${{ inputs.batch_id }}
+          BATCH_INDEX: ${{ inputs.batch_index }}
+          SETUP_CLASS: ${{ inputs.setup_class }}
+          BATCH_OUTPUT_DIR: ${{ steps.run_batch.outputs.batch_output_dir }}
+          JOB_STARTED_AT_MS: ${{ steps.lane_timing.outputs.job_started_at_ms }}
+          SETUP_FINISHED_AT_MS: ${{ steps.setup_complete.outputs.setup_finished_at_ms }}
+          CACHE_POLICY: ${{ inputs.cache_policy }}
+          CACHE_BACKEND: ${{ steps.sccache_backend.outputs.backend }}
+          SCCACHE_CACHE_HIT: ${{ steps.cache_sccache_restore.outputs.cache-hit }}
+        run: |
+          set -euo pipefail
+          summary_dir="${RUNNER_TEMP}/validation-lane-summaries-${BATCH_ID}"
+          mkdir -p "${summary_dir}"
+          batch_output_dir="${BATCH_OUTPUT_DIR:-${RUNNER_TEMP}/validation-lane-batch-${BATCH_ID}}"
+          results_file="${batch_output_dir}/batch-results.json"
+          if [[ ! -f "${results_file}" ]]; then
+            echo "::warning title=Missing batch results::No batch results file was produced for ${BATCH_ID}."
+            echo "summary_dir=${summary_dir}" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          python3 - <<'PY' "${results_file}" "${summary_dir}"
+          import json
+          import os
+          import subprocess
+          import sys
+          from pathlib import Path
+
+          results_file = Path(sys.argv[1])
+          summary_dir = Path(sys.argv[2])
+          payload = json.loads(results_file.read_text(encoding="utf-8"))
+          results = payload.get("results") or []
+          batch_lane_count = len(results)
+          job_started = int(os.environ["JOB_STARTED_AT_MS"])
+          setup_finished = int(os.environ["SETUP_FINISHED_AT_MS"])
+          setup_duration = max(0, setup_finished - job_started)
+          base_share = setup_duration // batch_lane_count if batch_lane_count else 0
+          remainder = setup_duration % batch_lane_count if batch_lane_count else 0
+          cache_backend = os.environ.get("CACHE_BACKEND") or "not-applicable"
+          sccache_restore_mode = "not-applicable"
+          if cache_backend == "fallback":
+            sccache_restore_mode = "exact-hit" if os.environ.get("SCCACHE_CACHE_HIT") == "true" else "restore-key-or-miss"
+          for index, result in enumerate(results):
+            lane_id = result["lane_id"]
+            lane_slug = "".join(ch.lower() if ch.isalnum() else "-" for ch in lane_id).strip("-")[:48] or "validation-lane"
+            setup_share = base_share + (1 if index < remainder else 0)
+            command_duration = int(result.get("command_duration_ms") or 0)
+            output = summary_dir / f"validation-lane-summary-{lane_slug}.json"
+            subprocess.run(
+                [
+                    "python3",
+                    ".workflow-src/.github/scripts/write_lane_summary.py",
+                    "--lane-id",
+                    lane_id,
+                    "--lane-phase",
+                    "downstream_lanes",
+                    "--summary-title",
+                    lane_id,
+                    "--script-path",
+                    result.get("script_path") or "",
+                    "--script-args-json",
+                    json.dumps(result.get("script_args") or [], separators=(",", ":")),
+                    "--status-class",
+                    result.get("status_class") or "active",
+                    "--frontier-default",
+                    "true" if result.get("frontier_default") else "false",
+                    "--setup-class",
+                    result.get("setup_class") or os.environ["SETUP_CLASS"],
+                    "--frontier-role",
+                    result.get("frontier_role") or "sentinel",
+                    "--summary-family",
+                    result.get("summary_family") or lane_id,
+                    "--cost-class",
+                    result.get("cost_class") or "medium",
+                    "--outcome",
+                    result.get("outcome") or "unknown",
+                    "--exit-code",
+                    str(result.get("exit_code") if result.get("exit_code") is not None else ""),
+                    "--log-file",
+                    result.get("log_file") or "",
+                    "--job-started-at-ms",
+                    os.environ["JOB_STARTED_AT_MS"],
+                    "--setup-finished-at-ms",
+                    os.environ["SETUP_FINISHED_AT_MS"],
+                    "--started-at-ms",
+                    str(result.get("started_at_ms") or ""),
+                    "--finished-at-ms",
+                    str(result.get("finished_at_ms") or ""),
+                    "--setup-duration-ms",
+                    str(setup_share),
+                    "--command-duration-ms",
+                    str(command_duration),
+                    "--duration-ms",
+                    str(setup_share + command_duration),
+                    "--cache-policy",
+                    os.environ.get("CACHE_POLICY") or "restore-only",
+                    "--cache-backend",
+                    cache_backend,
+                    "--sccache-restore-mode",
+                    sccache_restore_mode,
+                    "--batch-id",
+                    os.environ["BATCH_ID"],
+                    "--batch-index",
+                    os.environ["BATCH_INDEX"],
+                    "--batch-lane-count",
+                    str(batch_lane_count),
+                    "--batch-position",
+                    str(index + 1),
+                    "--batch-weight-seconds",
+                    str(result.get("batch_weight_seconds") or ""),
+                    "--batch-setup-duration-ms",
+                    str(setup_duration),
+                    "--output",
+                    str(output),
+                ],
+                check=True,
+            )
+          PY
+          echo "summary_dir=${summary_dir}" >> "$GITHUB_OUTPUT"
+
+      - name: Upload lane summary artifact
+        if: ${{ always() && !cancelled() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: validation-lane-summary-batch-${{ inputs.batch_id }}
+          path: ${{ steps.lane_summary.outputs.summary_dir }}/*.json
+          if-no-files-found: warn
+          overwrite: true
+          retention-days: 3
+
+      - name: Summarize batch failure
+        if: ${{ steps.run_batch.outcome == 'failure' }}
+        shell: bash
+        run: |
+          {
+            echo "### Downstream lane batch failed: ${{ inputs.batch_id }}"
+            echo
+            echo "- Exit code: ${{ steps.run_batch.outputs.exit_code }}"
+            echo "- Lane-specific summaries were uploaded for every lane that ran."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Verify requested batch passed
+        if: ${{ steps.run_batch.outcome == 'failure' }}
+        shell: bash
+        run: exit 1
+
+      - name: Check post-lane disk headroom
+        if: ${{ always() && !cancelled() && runner.os == 'Linux' }}
+        id: disk_guard
+        shell: bash
+        run: |
+          set -euo pipefail
+          save_floor_bytes=$((8 * 1024 * 1024 * 1024))
+          available_bytes="$(df --block-size=1 --output=avail "$GITHUB_WORKSPACE" | tail -n 1 | tr -d '[:space:]')"
+          {
+            echo "available_bytes=${available_bytes}"
+            if [[ "${available_bytes}" -lt "${save_floor_bytes}" ]]; then
+              echo "skip_cache_save=true"
+            else
+              echo "skip_cache_save=false"
+            fi
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Save cargo home cache
+        if: ${{ always() && !cancelled() && steps.cache_cargo_home_restore.outputs.cache-hit != 'true' && steps.disk_guard.outputs.skip_cache_save != 'true' }}
+        continue-on-error: true
+        uses: actions/cache/save@v5
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/.rusty_v8/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+          key: cargo-home-linux-rust-${{ steps.lockhash.outputs.hash }}-${{ steps.lockhash.outputs.toolchain_hash }}
+
+      - name: Save sccache cache (fallback)
+        if: ${{ always() && !cancelled() && inputs.needs_sccache && steps.sccache_backend.outputs.backend == 'fallback' && steps.sccache_backend.outputs.policy == 'write-fallback' && steps.disk_guard.outputs.skip_cache_save != 'true' }}
+        continue-on-error: true
+        uses: actions/cache/save@v5
+        with:
+          path: ${{ github.workspace }}/.sccache/
+          key: sccache-linux-rust-${{ steps.lockhash.outputs.hash }}-${{ steps.lockhash.outputs.toolchain_hash }}-${{ github.run_id }}
+
+      - name: sccache stats
+        if: ${{ always() && inputs.needs_sccache && steps.sccache_backend.outputs.backend != 'off' }}
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+          stats_file="${RUNNER_TEMP}/sccache-stats.txt"
+          : > "${stats_file}"
+          sccache --show-stats | tee "${stats_file}" || true
+          compile_requests="$(awk '/^Compile requests[[:space:]]/ { print $3; exit }' "${stats_file}")"
+          compile_requests="${compile_requests:-0}"
+          if [[ "${compile_requests}" == "0" ]]; then
+            echo "::warning title=sccache recorded no compile requests::${{ inputs.batch_id }} enabled sccache using backend '${{ steps.sccache_backend.outputs.backend }}', but sccache recorded zero compile requests. This batch may not be reusing compiler artifacts."
+          fi

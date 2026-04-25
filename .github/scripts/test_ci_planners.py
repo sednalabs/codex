@@ -448,8 +448,10 @@ class ValidationPlanScriptTests(unittest.TestCase):
         self.assertEqual(payload["smoke_gate_kind"], "runtime")
         self.assertEqual(payload["selected_workflow_lane_count"], 1)
         self.assertEqual(payload["selected_node_lane_count"], 0)
-        self.assertEqual(payload["selected_rust_minimal_lane_count"], 15)
-        self.assertEqual(payload["selected_rust_integration_lane_count"], 12)
+        self.assertEqual(payload["selected_rust_minimal_lane_count"], 2)
+        self.assertEqual(payload["selected_rust_minimal_batch_count"], 5)
+        self.assertEqual(payload["selected_rust_integration_lane_count"], 3)
+        self.assertEqual(payload["selected_rust_integration_batch_count"], 3)
         self.assertEqual(payload["selected_release_lane_count"], 1)
         self.assertEqual(payload["smoke_rust_integration_lane_count"], 5)
         self.assertEqual(payload["workflow_max_parallel"], "8")
@@ -457,6 +459,36 @@ class ValidationPlanScriptTests(unittest.TestCase):
         self.assertEqual(payload["rust_minimal_max_parallel"], "6")
         self.assertEqual(payload["rust_integration_max_parallel"], "2")
         self.assertEqual(payload["release_max_parallel"], "1")
+        self.assertEqual(payload["rust_batching_mode"], "auto")
+
+    def test_heavy_plan_can_disable_rust_batching(self) -> None:
+        payload = run_script(
+            SCRIPTS_DIR / "resolve_validation_plan.py",
+            "heavy",
+            "--event-name",
+            "workflow_dispatch",
+            "--requested-lane",
+            "all",
+            "--run-all-lanes",
+            "true",
+            "--run-core-family",
+            "false",
+            "--run-attestation-family",
+            "false",
+            "--run-workflow-family",
+            "false",
+            "--run-ui-protocol-family",
+            "false",
+            "--run-docs-family",
+            "false",
+            "--rust-batching",
+            "off",
+        )
+
+        self.assertEqual(payload["selected_rust_minimal_batch_count"], 0)
+        self.assertEqual(payload["selected_rust_integration_batch_count"], 0)
+        self.assertGreater(payload["selected_rust_minimal_lane_count"], 0)
+        self.assertGreater(payload["selected_rust_integration_lane_count"], 0)
 
     def test_heavy_plan_route_uses_bounded_shared_spawn_surface(self) -> None:
         payload = run_script(
@@ -764,22 +796,25 @@ class ValidationPlanScriptTests(unittest.TestCase):
             with self.subTest(job=job_name):
                 self.assertNotIn("cache_policy", (jobs.get(job_name) or {}).get("with") or {})
 
-    def test_sedna_heavy_uses_restore_only_sccache_fallback_policy(self) -> None:
+    def test_sedna_heavy_writes_fallback_cache_only_for_manual_dispatch(self) -> None:
         payload = load_workflow_payload(REPO_ROOT / ".github/workflows/sedna-heavy-tests.yml")
         jobs = payload.get("jobs") or {}
+        expected_policy = "${{ github.event_name == 'workflow_dispatch' && 'write-fallback' || 'restore-only' }}"
 
         for job_name in [
             "smoke_rust_minimal_lanes",
             "smoke_rust_integration_lanes",
             "smoke_release_lanes",
             "rust_minimal_lanes",
+            "rust_minimal_batches",
             "rust_integration_lanes",
+            "rust_integration_batches",
             "release_lanes",
         ]:
             with self.subTest(job=job_name):
                 self.assertEqual(
                     ((jobs.get(job_name) or {}).get("with") or {}).get("cache_policy"),
-                    "restore-only",
+                    expected_policy,
                 )
 
     def test_reusable_sccache_workflows_require_explicit_fallback_writes(self) -> None:
@@ -1230,7 +1265,9 @@ class ValidationPlanScriptTests(unittest.TestCase):
                 "workflow_lanes",
                 "node_lanes",
                 "rust_minimal_lanes",
+                "rust_minimal_batches",
                 "rust_integration_lanes",
+                "rust_integration_batches",
                 "release_lanes",
             ],
         )
@@ -1259,7 +1296,11 @@ class ValidationPlanScriptTests(unittest.TestCase):
             (steps[2] or {}).get("run") or "",
         )
         self.assertIn(
-            '--rust-minimal-result "${RUST_MINIMAL_RESULT}"',
+            '--rust-minimal-result "${rust_minimal_result}"',
+            (steps[2] or {}).get("run") or "",
+        )
+        self.assertIn(
+            '--rust-integration-result "${rust_integration_result}"',
             (steps[2] or {}).get("run") or "",
         )
         self.assertEqual((steps[3] or {}).get("uses"), "actions/upload-artifact@v7")
