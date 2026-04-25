@@ -242,6 +242,45 @@ class RouteSelectionTests(unittest.TestCase):
             ],
         )
 
+    def test_workflow_ci_route_accepts_downstream_audit_plumbing(self) -> None:
+        lanes = RESOLVE_VALIDATION_PLAN.select_followup_lanes(
+            [
+                ".github/scripts/validation-lanes/downstream-docs-check.sh",
+                "scripts/downstream-divergence-audit.py",
+            ],
+            self.routes,
+        )
+        self.assertEqual(
+            lanes,
+            [
+                "codex.workflow-ci-sanity",
+                "codex.downstream-docs-check",
+            ],
+        )
+
+    def test_downstream_docs_route_includes_registry_and_tracking_docs(self) -> None:
+        lanes = RESOLVE_VALIDATION_PLAN.select_followup_lanes(
+            [
+                "docs/divergences/index.yaml",
+                "docs/downstream-divergence-tracking.md",
+            ],
+            self.routes,
+        )
+        self.assertEqual(lanes, ["codex.downstream-docs-check"])
+
+    def test_downstream_docs_lane_runs_full_history_audit(self) -> None:
+        lane = next(
+            lane
+            for lane in self.catalog["lanes"]
+            if lane["lane_id"] == "codex.downstream-docs-check"
+        )
+        self.assertEqual(
+            lane["script_path"],
+            ".github/scripts/validation-lanes/downstream-docs-check.sh",
+        )
+        self.assertEqual(lane.get("checkout_fetch_depth"), 0)
+        self.assertFalse(lane["needs_just"])
+
     def test_app_server_followup_route_picks_full_carry_bundle(self) -> None:
         lanes = RESOLVE_VALIDATION_PLAN.select_followup_lanes(
             ["codex-rs/app-server/src/router.rs"],

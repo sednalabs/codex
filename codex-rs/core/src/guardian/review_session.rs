@@ -150,8 +150,6 @@ struct GuardianReviewSessionReuseKey {
     mcp_servers: Constrained<HashMap<String, McpServerConfig>>,
     codex_linux_sandbox_exe: Option<PathBuf>,
     main_execve_wrapper_exe: Option<PathBuf>,
-    js_repl_node_path: Option<PathBuf>,
-    js_repl_node_module_dirs: Vec<PathBuf>,
     zsh_path: Option<PathBuf>,
     features: ManagedFeatures,
     include_apply_patch_tool: bool,
@@ -177,8 +175,6 @@ impl GuardianReviewSessionReuseKey {
             mcp_servers: spawn_config.mcp_servers.clone(),
             codex_linux_sandbox_exe: spawn_config.codex_linux_sandbox_exe.clone(),
             main_execve_wrapper_exe: spawn_config.main_execve_wrapper_exe.clone(),
-            js_repl_node_path: spawn_config.js_repl_node_path.clone(),
-            js_repl_node_module_dirs: spawn_config.js_repl_node_module_dirs.clone(),
             zsh_path: spawn_config.zsh_path.clone(),
             features: spawn_config.features.clone(),
             include_apply_patch_tool: spawn_config.include_apply_patch_tool,
@@ -853,7 +849,7 @@ pub(crate) fn build_guardian_review_session_config(
     guardian_config.permissions.sandbox_policy =
         Constrained::allow_only(guardian_sandbox_policy.clone());
     guardian_config.permissions.file_system_sandbox_policy =
-        FileSystemSandboxPolicy::from_legacy_sandbox_policy(
+        FileSystemSandboxPolicy::from_legacy_sandbox_policy_for_cwd(
             &guardian_sandbox_policy,
             &guardian_config.cwd,
         );
@@ -1031,7 +1027,7 @@ mod tests {
         );
         assert_eq!(
             guardian_config.permissions.file_system_sandbox_policy,
-            FileSystemSandboxPolicy::from_legacy_sandbox_policy(
+            FileSystemSandboxPolicy::from_legacy_sandbox_policy_for_cwd(
                 &expected_sandbox_policy,
                 &guardian_config.cwd,
             )

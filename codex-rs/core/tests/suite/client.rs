@@ -1,3 +1,4 @@
+use codex_config::ConfigLayerStack;
 use codex_config::types::AuthCredentialsStoreMode;
 use codex_core::ModelClient;
 use codex_core::NewThread;
@@ -71,6 +72,7 @@ use std::io::Write;
 use std::num::NonZeroU64;
 use std::sync::Arc;
 use tempfile::TempDir;
+use toml::toml;
 use uuid::Uuid;
 use wiremock::Mock;
 use wiremock::MockServer;
@@ -1494,6 +1496,95 @@ async fn skills_append_to_developer_message() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn skills_use_aliases_in_developer_message_under_budget_pressure() {
+    skip_if_no_network!();
+    let server = MockServer::start().await;
+
+    let resp_mock = mount_sse_once(
+        &server,
+        sse(vec![ev_response_created("resp1"), ev_completed("resp1")]),
+    )
+    .await;
+
+    let codex_home_parent = TempDir::new().unwrap();
+    let long_home_parent = codex_home_parent
+        .path()
+        .join("codex-home-with-long-shared-prefix-for-skill-alias-budget-test");
+    std::fs::create_dir_all(&long_home_parent).expect("create long home parent");
+    let codex_home = Arc::new(TempDir::new_in(long_home_parent).unwrap());
+    let skill_root = codex_home.path().join("skills");
+    for index in 0..12 {
+        let skill_dir = skill_root.join(format!("s{index:02}"));
+        std::fs::create_dir_all(&skill_dir).expect("create skill dir");
+        std::fs::write(
+            skill_dir.join("SKILL.md"),
+            format!("---\nname: s{index:02}\ndescription: d\n---\n\n# body\n"),
+        )
+        .expect("write skill");
+    }
+
+    let codex_home_path = codex_home.path().to_path_buf();
+    let mut builder = test_codex()
+        .with_home(codex_home.clone())
+        .with_auth(CodexAuth::from_api_key("Test API Key"))
+        .with_config(move |config| {
+            config.cwd = codex_home_path.abs();
+            let user_config_path = codex_home_path.join("config.toml").abs();
+            config.config_layer_stack = ConfigLayerStack::default().with_user_config(
+                &user_config_path,
+                toml! { skills = { bundled = { enabled = false } } }.into(),
+            );
+            config.model_context_window = Some(12_000);
+        });
+    let codex = builder
+        .build(&server)
+        .await
+        .expect("create new conversation")
+        .codex;
+
+    codex
+        .submit(Op::UserInput {
+            environments: None,
+            items: vec![UserInput::Text {
+                text: "hello".into(),
+                text_elements: Vec::new(),
+            }],
+            final_output_json_schema: None,
+            responsesapi_client_metadata: None,
+        })
+        .await
+        .unwrap();
+
+    wait_for_event(&codex, |ev| matches!(ev, EventMsg::TurnComplete(_))).await;
+
+    let request = resp_mock.single_request();
+    let developer_messages = request.message_input_texts("developer");
+    let developer_text = developer_messages.join("\n\n");
+    let expected_root = normalize_path(skill_root).unwrap();
+    let expected_root_str = expected_root.to_string_lossy().replace('\\', "/");
+    assert!(
+        developer_text.contains("### Skill roots"),
+        "expected aliased skills root section: {developer_messages:?}"
+    );
+    assert!(
+        developer_text.contains(&format!("- `r0` = `{expected_root_str}`")),
+        "expected root alias for {expected_root_str}: {developer_messages:?}"
+    );
+    assert!(
+        developer_text.contains("- s00: d (file: r0/s00/SKILL.md)"),
+        "expected skill path to use root alias: {developer_messages:?}"
+    );
+    assert!(
+        developer_text.contains(
+            "expand the listed short `path` with the matching alias from `### Skill roots`"
+        ),
+        "expected alias-specific skill instructions: {developer_messages:?}"
+    );
+    let _codex_home_guard = codex_home;
+    let _codex_home_parent_guard = codex_home_parent;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn includes_configured_effort_in_request() -> anyhow::Result<()> {
     skip_if_no_network!(Ok(()));
     let server = MockServer::start().await;
@@ -1575,7 +1666,7 @@ async fn includes_no_effort_in_request() -> anyhow::Result<()> {
             .get("reasoning")
             .and_then(|t| t.get("effort"))
             .and_then(|v| v.as_str()),
-        Some("medium")
+        Some("xhigh")
     );
 
     Ok(())
@@ -1617,7 +1708,7 @@ async fn includes_default_reasoning_effort_in_request_when_defined_by_model_info
             .get("reasoning")
             .and_then(|t| t.get("effort"))
             .and_then(|v| v.as_str()),
-        Some("medium")
+        Some("xhigh")
     );
 
     Ok(())
@@ -2354,11 +2445,9 @@ async fn token_count_includes_rate_limits_snapshot() {
         .with_config(move |config| {
             config.model_provider = provider;
         });
-    let codex = builder
-        .build(&server)
-        .await
-        .expect("create conversation")
-        .codex;
+    let test = builder.build(&server).await.expect("create conversation");
+    let session_model = test.session_configured.model.clone();
+    let codex = test.codex;
 
     codex
         .submit(Op::UserInput {
@@ -2403,7 +2492,7 @@ async fn token_count_includes_rate_limits_snapshot() {
                 "rate_limit_reached_type": null
             },
             "provider": "openai",
-            "model_used": "gpt-5.4"
+            "model_used": session_model.clone()
         })
     );
 
@@ -2436,7 +2525,7 @@ async fn token_count_includes_rate_limits_snapshot() {
                     "reasoning_output_tokens": 0,
                     "total_tokens": 123
                 },
-                // Default model is gpt-5.4 in tests → 95% usable context window
+                // Default bundled models use a 95% usable context window.
                 "model_context_window": 258400
             },
             "rate_limits": {
@@ -2457,7 +2546,7 @@ async fn token_count_includes_rate_limits_snapshot() {
                 "rate_limit_reached_type": null
             },
             "provider": "openai",
-            "model_used": "gpt-5.4"
+            "model_used": session_model
         })
     );
     let usage = final_payload
@@ -2514,6 +2603,7 @@ async fn usage_limit_error_emits_rate_limit_event() -> anyhow::Result<()> {
 
     let mut builder = test_codex();
     let codex_fixture = builder.build(&server).await?;
+    let session_model = codex_fixture.session_configured.model.clone();
     let codex = codex_fixture.codex.clone();
 
     let expected_limits = json!({
@@ -2557,7 +2647,7 @@ async fn usage_limit_error_emits_rate_limit_event() -> anyhow::Result<()> {
         event_json,
         json!({
             "info": null,
-            "model_used": "gpt-5.4",
+            "model_used": session_model,
             "provider": "openai",
             "rate_limits": expected_limits
         })

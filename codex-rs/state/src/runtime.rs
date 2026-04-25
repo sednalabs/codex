@@ -23,6 +23,7 @@ use crate::migrations::LOGS_MIGRATOR;
 use crate::migrations::STATE_MIGRATOR;
 use crate::migrations::USAGE_MIGRATOR;
 use crate::model::AgentJobRow;
+use crate::model::ThreadGoalRow;
 use crate::model::ThreadRow;
 use crate::model::anchor_from_item;
 use crate::model::datetime_to_epoch_millis;
@@ -57,6 +58,10 @@ use tracing::warn;
 
 mod agent_jobs;
 mod backfill;
+mod device_key;
+#[cfg(test)]
+mod device_key_tests;
+mod goals;
 mod logs;
 mod memories;
 mod phase2_attestation;
@@ -66,6 +71,10 @@ mod test_support;
 mod threads;
 pub mod usage;
 
+pub use device_key::DeviceKeyBindingRecord;
+pub use goals::ThreadGoalAccountingMode;
+pub use goals::ThreadGoalAccountingOutcome;
+pub use goals::ThreadGoalUpdate;
 pub use remote_control::RemoteControlEnrollmentRecord;
 pub use threads::ThreadFilterOptions;
 

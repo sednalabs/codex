@@ -25,7 +25,8 @@
             {
               "type": "null"
             }
-          ]
+          ],
+          "description": "Partial overlay used for per-command permission requests."
         }
       },
       "type": "object"
@@ -3654,6 +3655,42 @@
         {
           "properties": {
             "method": {
+              "const": "thread/goal/updated",
+              "title": "Thread/goal/updatedNotificationMethod",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/definitions/v2/ThreadGoalUpdatedNotification"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "title": "Thread/goal/updatedNotification",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "thread/goal/cleared",
+              "title": "Thread/goal/clearedNotificationMethod",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/definitions/v2/ThreadGoalClearedNotification"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "title": "Thread/goal/clearedNotification",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
               "const": "thread/tokenUsage/updated",
               "title": "Thread/tokenUsage/updatedNotificationMethod",
               "type": "string"
@@ -4943,6 +4980,20 @@
               "planType"
             ],
             "title": "ChatgptAccount",
+            "type": "object"
+          },
+          {
+            "properties": {
+              "type": {
+                "const": "amazonBedrock",
+                "title": "AmazonBedrockAccountType",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "title": "AmazonBedrockAccount",
             "type": "object"
           }
         ]
@@ -10854,61 +10905,122 @@
         ]
       },
       "PermissionProfile": {
-        "properties": {
-          "fileSystem": {
-            "anyOf": [
-              {
+        "oneOf": [
+          {
+            "description": "Codex owns sandbox construction for this profile.",
+            "properties": {
+              "fileSystem": {
                 "$ref": "#/definitions/v2/PermissionProfileFileSystemPermissions"
               },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "network": {
-            "anyOf": [
-              {
+              "network": {
                 "$ref": "#/definitions/v2/PermissionProfileNetworkPermissions"
               },
-              {
-                "type": "null"
+              "type": {
+                "const": "managed",
+                "title": "ManagedPermissionProfileType",
+                "type": "string"
               }
-            ]
+            },
+            "required": [
+              "type",
+              "network",
+              "fileSystem"
+            ],
+            "title": "ManagedPermissionProfile",
+            "type": "object"
+          },
+          {
+            "description": "Do not apply an outer sandbox.",
+            "properties": {
+              "type": {
+                "const": "disabled",
+                "title": "DisabledPermissionProfileType",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "title": "DisabledPermissionProfile",
+            "type": "object"
+          },
+          {
+            "description": "Filesystem isolation is enforced by an external caller.",
+            "properties": {
+              "network": {
+                "$ref": "#/definitions/v2/PermissionProfileNetworkPermissions"
+              },
+              "type": {
+                "const": "external",
+                "title": "ExternalPermissionProfileType",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "network"
+            ],
+            "title": "ExternalPermissionProfile",
+            "type": "object"
           }
-        },
-        "type": "object"
+        ]
       },
       "PermissionProfileFileSystemPermissions": {
-        "properties": {
-          "entries": {
-            "items": {
-              "$ref": "#/definitions/v2/FileSystemSandboxEntry"
+        "oneOf": [
+          {
+            "properties": {
+              "entries": {
+                "items": {
+                  "$ref": "#/definitions/v2/FileSystemSandboxEntry"
+                },
+                "type": "array"
+              },
+              "globScanMaxDepth": {
+                "format": "uint",
+                "minimum": 1,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "type": {
+                "const": "restricted",
+                "title": "RestrictedPermissionProfileFileSystemPermissionsType",
+                "type": "string"
+              }
             },
-            "type": "array"
+            "required": [
+              "type",
+              "entries"
+            ],
+            "title": "RestrictedPermissionProfileFileSystemPermissions",
+            "type": "object"
           },
-          "globScanMaxDepth": {
-            "format": "uint",
-            "minimum": 1,
-            "type": [
-              "integer",
-              "null"
-            ]
+          {
+            "properties": {
+              "type": {
+                "const": "unrestricted",
+                "title": "UnrestrictedPermissionProfileFileSystemPermissionsType",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "title": "UnrestrictedPermissionProfileFileSystemPermissions",
+            "type": "object"
           }
-        },
-        "required": [
-          "entries"
-        ],
-        "type": "object"
+        ]
       },
       "PermissionProfileNetworkPermissions": {
         "properties": {
           "enabled": {
-            "type": [
-              "boolean",
-              "null"
-            ]
+            "type": "boolean"
           }
         },
+        "required": [
+          "enabled"
+        ],
         "type": "object"
       },
       "Personality": {
@@ -11718,49 +11830,6 @@
         ],
         "title": "RawResponseItemCompletedNotification",
         "type": "object"
-      },
-      "ReadOnlyAccess": {
-        "oneOf": [
-          {
-            "properties": {
-              "includePlatformDefaults": {
-                "default": true,
-                "type": "boolean"
-              },
-              "readableRoots": {
-                "default": [],
-                "items": {
-                  "$ref": "#/definitions/v2/AbsolutePathBuf"
-                },
-                "type": "array"
-              },
-              "type": {
-                "const": "restricted",
-                "title": "RestrictedReadOnlyAccessType",
-                "type": "string"
-              }
-            },
-            "required": [
-              "type"
-            ],
-            "title": "RestrictedReadOnlyAccess",
-            "type": "object"
-          },
-          {
-            "properties": {
-              "type": {
-                "const": "fullAccess",
-                "title": "FullAccessReadOnlyAccessType",
-                "type": "string"
-              }
-            },
-            "required": [
-              "type"
-            ],
-            "title": "FullAccessReadOnlyAccess",
-            "type": "object"
-          }
-        ]
       },
       "RealtimeConversationVersion": {
         "enum": [
@@ -12916,12 +12985,6 @@
           },
           {
             "properties": {
-              "access": {
-                "$ref": "#/definitions/v2/ReadOnlyAccess",
-                "default": {
-                  "type": "fullAccess"
-                }
-              },
               "networkAccess": {
                 "default": false,
                 "type": "boolean"
@@ -12969,12 +13032,6 @@
               "networkAccess": {
                 "default": false,
                 "type": "boolean"
-              },
-              "readOnlyAccess": {
-                "$ref": "#/definitions/v2/ReadOnlyAccess",
-                "default": {
-                  "type": "fullAccess"
-                }
               },
               "type": {
                 "const": "workspaceWrite",
@@ -14016,7 +14073,7 @@
               }
             ],
             "default": null,
-            "description": "Canonical active permissions view for this thread when representable.\nThis is `null` for external sandbox policies because external\nenforcement cannot be round-tripped as a `PermissionProfile`."
+            "description": "Canonical active permissions view for this thread."
           },
           "reasoningEffort": {
             "anyOf": [
@@ -14056,6 +14113,97 @@
           "sandbox"
         ],
         "title": "ThreadForkResponse",
+        "type": "object"
+      },
+      "ThreadGoal": {
+        "properties": {
+          "createdAt": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "objective": {
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/definitions/v2/ThreadGoalStatus"
+          },
+          "threadId": {
+            "type": "string"
+          },
+          "timeUsedSeconds": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "tokenBudget": {
+            "format": "int64",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "tokensUsed": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "updatedAt": {
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "threadId",
+          "objective",
+          "status",
+          "tokensUsed",
+          "timeUsedSeconds",
+          "createdAt",
+          "updatedAt"
+        ],
+        "type": "object"
+      },
+      "ThreadGoalClearedNotification": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "threadId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "threadId"
+        ],
+        "title": "ThreadGoalClearedNotification",
+        "type": "object"
+      },
+      "ThreadGoalStatus": {
+        "enum": [
+          "active",
+          "paused",
+          "budgetLimited",
+          "complete"
+        ],
+        "type": "string"
+      },
+      "ThreadGoalUpdatedNotification": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "goal": {
+            "$ref": "#/definitions/v2/ThreadGoal"
+          },
+          "threadId": {
+            "type": "string"
+          },
+          "turnId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "threadId",
+          "goal"
+        ],
+        "title": "ThreadGoalUpdatedNotification",
         "type": "object"
       },
       "ThreadId": {
@@ -15397,7 +15545,7 @@
               }
             ],
             "default": null,
-            "description": "Canonical active permissions view for this thread when representable.\nThis is `null` for external sandbox policies because external\nenforcement cannot be round-tripped as a `PermissionProfile`."
+            "description": "Canonical active permissions view for this thread."
           },
           "reasoningEffort": {
             "anyOf": [
@@ -15705,7 +15853,7 @@
               }
             ],
             "default": null,
-            "description": "Canonical active permissions view for this thread when representable.\nThis is `null` for external sandbox policies because external\nenforcement cannot be round-tripped as a `PermissionProfile`."
+            "description": "Canonical active permissions view for this thread."
           },
           "reasoningEffort": {
             "anyOf": [
