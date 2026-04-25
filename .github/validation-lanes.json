@@ -53,6 +53,27 @@
       "needs_sccache": true
     },
     {
+      "lane_id": "codex.nextest-archive-core-carry-pilot",
+      "groups": [
+        "core"
+      ],
+      "lane_sets": [
+        "nextest-archive-pilot"
+      ],
+      "explicit_only": true,
+      "pilot_only": true,
+      "setup_class": "rust_integration",
+      "working_directory": ".",
+      "script_path": ".github/scripts/validation-lanes/nextest-archive-core-carry-pilot.sh",
+      "script_args": [],
+      "needs_just": false,
+      "needs_node": true,
+      "needs_nextest": true,
+      "needs_linux_build_deps": true,
+      "needs_dotslash": true,
+      "needs_sccache": true
+    },
+    {
       "lane_id": "core-carry-ui-smoke",
       "groups": [
         "ui_protocol"
