@@ -348,7 +348,7 @@ mod tests {
             },
         ];
 
-        let handler = handler_from_tools(None, &dynamic_tools);
+        let handler = handler_from_tools(/*mcp_tools*/ None, &dynamic_tools);
 
         assert_eq!(
             handler
