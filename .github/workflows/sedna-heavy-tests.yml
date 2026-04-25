@@ -493,7 +493,7 @@ jobs:
       needs_linux_build_deps: ${{ matrix.needs_linux_build_deps }}
       needs_dotslash: ${{ matrix.needs_dotslash }}
       needs_sccache: ${{ matrix.needs_sccache }}
-      cache_policy: restore-only
+      cache_policy: ${{ github.event_name == 'workflow_dispatch' && 'write-fallback' || 'restore-only' }}
 
   smoke_rust_integration_lanes:
     name: Heavy preflight smoke (rust integration)
@@ -531,7 +531,7 @@ jobs:
       needs_linux_build_deps: ${{ matrix.needs_linux_build_deps }}
       needs_dotslash: ${{ matrix.needs_dotslash }}
       needs_sccache: ${{ matrix.needs_sccache }}
-      cache_policy: restore-only
+      cache_policy: ${{ github.event_name == 'workflow_dispatch' && 'write-fallback' || 'restore-only' }}
 
   smoke_release_lanes:
     name: Heavy preflight smoke (release)
@@ -569,7 +569,7 @@ jobs:
       needs_linux_build_deps: ${{ matrix.needs_linux_build_deps }}
       needs_dotslash: ${{ matrix.needs_dotslash }}
       needs_sccache: ${{ matrix.needs_sccache }}
-      cache_policy: restore-only
+      cache_policy: ${{ github.event_name == 'workflow_dispatch' && 'write-fallback' || 'restore-only' }}
 
   workflow_lanes:
     needs:
@@ -720,7 +720,7 @@ jobs:
       needs_linux_build_deps: ${{ matrix.needs_linux_build_deps }}
       needs_dotslash: ${{ matrix.needs_dotslash }}
       needs_sccache: ${{ matrix.needs_sccache }}
-      cache_policy: restore-only
+      cache_policy: ${{ github.event_name == 'workflow_dispatch' && 'write-fallback' || 'restore-only' }}
 
   rust_integration_lanes:
     needs:
@@ -771,7 +771,7 @@ jobs:
       needs_linux_build_deps: ${{ matrix.needs_linux_build_deps }}
       needs_dotslash: ${{ matrix.needs_dotslash }}
       needs_sccache: ${{ matrix.needs_sccache }}
-      cache_policy: restore-only
+      cache_policy: ${{ github.event_name == 'workflow_dispatch' && 'write-fallback' || 'restore-only' }}
 
   release_lanes:
     needs:
@@ -822,7 +822,7 @@ jobs:
       needs_linux_build_deps: ${{ matrix.needs_linux_build_deps }}
       needs_dotslash: ${{ matrix.needs_dotslash }}
       needs_sccache: ${{ matrix.needs_sccache }}
-      cache_policy: restore-only
+      cache_policy: ${{ github.event_name == 'workflow_dispatch' && 'write-fallback' || 'restore-only' }}
 
   summary:
     name: Sedna heavy-tests summary
