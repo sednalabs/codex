@@ -3812,7 +3812,7 @@
           "type": "string"
         },
         "status": {
-          "$ref": "#/definitions/ThreadGoalStatus"
+          "$ref": "#/$defs/ThreadGoalStatus"
         },
         "threadId": {
           "type": "string"
@@ -3838,12 +3838,12 @@
         }
       },
       "required": [
-        "createdAt",
+        "threadId",
         "objective",
         "status",
-        "threadId",
-        "timeUsedSeconds",
         "tokensUsed",
+        "timeUsedSeconds",
+        "createdAt",
         "updatedAt"
       ],
       "type": "object"
@@ -3871,7 +3871,7 @@
     "ThreadGoalUpdatedNotification": {
       "properties": {
         "goal": {
-          "$ref": "#/definitions/ThreadGoal"
+          "$ref": "#/$defs/ThreadGoal"
         },
         "threadId": {
           "type": "string"
@@ -3884,8 +3884,8 @@
         }
       },
       "required": [
-        "goal",
-        "threadId"
+        "threadId",
+        "goal"
       ],
       "type": "object"
     },
@@ -5508,14 +5508,12 @@
     {
       "properties": {
         "method": {
-          "enum": [
-            "thread/goal/updated"
-          ],
+          "const": "thread/goal/updated",
           "title": "Thread/goal/updatedNotificationMethod",
           "type": "string"
         },
         "params": {
-          "$ref": "#/definitions/ThreadGoalUpdatedNotification"
+          "$ref": "#/$defs/ThreadGoalUpdatedNotification"
         }
       },
       "required": [
@@ -5528,14 +5526,12 @@
     {
       "properties": {
         "method": {
-          "enum": [
-            "thread/goal/cleared"
-          ],
+          "const": "thread/goal/cleared",
           "title": "Thread/goal/clearedNotificationMethod",
           "type": "string"
         },
         "params": {
-          "$ref": "#/definitions/ThreadGoalClearedNotification"
+          "$ref": "#/$defs/ThreadGoalClearedNotification"
         }
       },
       "required": [
@@ -5548,9 +5544,7 @@
     {
       "properties": {
         "method": {
-          "enum": [
-            "thread/tokenUsage/updated"
-          ],
+          "const": "thread/tokenUsage/updated",
           "title": "Thread/tokenUsage/updatedNotificationMethod",
           "type": "string"
         },
