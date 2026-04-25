@@ -19,6 +19,7 @@ on:
 permissions:
   contents: read
   checks: read
+  pull-requests: read
 
 jobs:
   matrix_plan:
@@ -69,7 +70,7 @@ jobs:
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
-          fetch-depth: 0
+          fetch-depth: 1
       - name: Resolve comparison SHAs
         id: shas
         shell: bash
@@ -91,6 +92,116 @@ jobs:
             echo "head_sha=${head_sha}"
             echo "before_sha=${before_sha}"
           } >> "$GITHUB_OUTPUT"
+
+      - name: Resolve PR changed files via API
+        id: pr_diff
+        if: ${{ github.event_name == 'pull_request' }}
+        uses: actions/github-script@v9
+        env:
+          BEFORE_SHA: ${{ steps.shas.outputs.before_sha }}
+        with:
+          script: |
+            const beforeSha = process.env.BEFORE_SHA || "";
+            const pullNumber = context.payload.pull_request.number;
+
+            function normalizePathList(files) {
+              const paths = [];
+              for (const file of files) {
+                if (file.previous_filename) {
+                  paths.push(file.previous_filename);
+                }
+                if (file.filename) {
+                  paths.push(file.filename);
+                }
+              }
+              return [...new Set(paths)];
+            }
+
+            function lineCount(files) {
+              return files.reduce((total, file) => {
+                const additions = Number(file.additions);
+                const deletions = Number(file.deletions);
+                if (!Number.isFinite(additions) || !Number.isFinite(deletions)) {
+                  return 10000;
+                }
+                return total + additions + deletions;
+              }, 0);
+            }
+
+            function setJsonOutput(name, value) {
+              core.setOutput(name, JSON.stringify(value));
+            }
+
+            try {
+              const primaryFiles = await github.paginate(github.rest.pulls.listFiles, {
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                pull_number: pullNumber,
+                per_page: 100,
+              });
+              const expectedChangedFiles = context.payload.pull_request.changed_files;
+              if (
+                Number.isFinite(expectedChangedFiles) &&
+                primaryFiles.length !== expectedChangedFiles
+              ) {
+                core.setOutput("needs_git_fallback", "true");
+                core.setOutput(
+                  "fallback_reason",
+                  `pulls.listFiles returned ${primaryFiles.length} of ${expectedChangedFiles} files`,
+                );
+                return;
+              }
+
+              setJsonOutput("primary_files_json", normalizePathList(primaryFiles));
+              core.setOutput("primary_line_count", String(lineCount(primaryFiles)));
+
+              if (context.payload.action === "synchronize" && beforeSha) {
+                const basehead = `${beforeSha}...${context.payload.pull_request.head.sha}`;
+                const { data } = await github.rest.repos.compareCommitsWithBasehead({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  basehead,
+                  per_page: 100,
+                });
+                const deltaFiles = data.files || [];
+                if (deltaFiles.length >= 300) {
+                  core.setOutput("needs_git_fallback", "true");
+                  core.setOutput(
+                    "fallback_reason",
+                    "compare API returned the conservative file limit",
+                  );
+                  return;
+                }
+                setJsonOutput("latest_delta_files_json", normalizePathList(deltaFiles));
+                core.setOutput("latest_delta_line_count", String(lineCount(deltaFiles)));
+              } else {
+                setJsonOutput("latest_delta_files_json", []);
+                core.setOutput("latest_delta_line_count", "0");
+              }
+
+              core.setOutput("needs_git_fallback", "false");
+              core.setOutput("fallback_reason", "");
+            } catch (error) {
+              core.warning(`failed to resolve PR diff via GitHub API: ${error.message}`);
+              core.setOutput("needs_git_fallback", "true");
+              core.setOutput("fallback_reason", error.message);
+            }
+
+      - name: Fetch history for git diff fallback
+        if: ${{ steps.pr_diff.outputs.needs_git_fallback == 'true' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          base_sha='${{ steps.shas.outputs.base_sha }}'
+          head_sha='${{ steps.shas.outputs.head_sha }}'
+          head_repo='${{ github.event.pull_request.head.repo.clone_url }}'
+
+          git fetch --no-tags --depth=1 origin "${base_sha}" || true
+          git fetch --no-tags --depth=1 "${head_repo}" "${head_sha}" || true
+          if ! git rev-parse --verify "${base_sha}^{commit}" >/dev/null 2>&1 ||
+             ! git rev-parse --verify "${head_sha}^{commit}" >/dev/null 2>&1; then
+            git fetch --no-tags --prune --unshallow origin || git fetch --no-tags --prune origin
+          fi
 
       - name: Check previous required result on follow-up head
         id: previous_required
@@ -130,6 +241,10 @@ jobs:
         env:
           EVENT_ACTION: ${{ github.event.action || '' }}
           PREVIOUS_GREEN_REQUIRED: ${{ steps.previous_required.outputs.previous_green_required || 'false' }}
+          PRIMARY_FILES_JSON: ${{ steps.pr_diff.outputs.primary_files_json || '' }}
+          PRIMARY_LINE_COUNT: ${{ steps.pr_diff.outputs.primary_line_count || '' }}
+          LATEST_DELTA_FILES_JSON: ${{ steps.pr_diff.outputs.latest_delta_files_json || '' }}
+          LATEST_DELTA_LINE_COUNT: ${{ steps.pr_diff.outputs.latest_delta_line_count || '' }}
         run: |
           set -euo pipefail
 
@@ -140,7 +255,11 @@ jobs:
             --base-sha '${{ steps.shas.outputs.base_sha }}' \
             --head-sha '${{ steps.shas.outputs.head_sha }}' \
             --before-sha '${{ steps.shas.outputs.before_sha }}' \
-            --previous-green-required "${PREVIOUS_GREEN_REQUIRED}")"
+            --previous-green-required "${PREVIOUS_GREEN_REQUIRED}" \
+            --primary-files-json "${PRIMARY_FILES_JSON}" \
+            --primary-line-count "${PRIMARY_LINE_COUNT}" \
+            --latest-delta-files-json "${LATEST_DELTA_FILES_JSON}" \
+            --latest-delta-line-count "${LATEST_DELTA_LINE_COUNT}")"
 
           PLAN_JSON="${plan}" python3 - <<'PY' >> "$GITHUB_OUTPUT"
           import json
