@@ -125,6 +125,12 @@ fn tool_search_is_stable_and_enabled_by_default() {
 }
 
 #[test]
+fn unavailable_dummy_tools_is_stable_and_enabled_by_default() {
+    assert_eq!(Feature::UnavailableDummyTools.stage(), Stage::Stable);
+    assert_eq!(Feature::UnavailableDummyTools.default_enabled(), true);
+}
+
+#[test]
 fn browser_controls_are_stable_and_enabled_by_default() {
     assert_eq!(Feature::InAppBrowser.stage(), Stage::Stable);
     assert_eq!(Feature::InAppBrowser.default_enabled(), true);
