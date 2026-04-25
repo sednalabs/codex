@@ -333,6 +333,8 @@ mod tests {
     #[tokio::test]
     async fn android_observe_is_non_mutating_but_step_is_mutating() {
         let (session, turn) = make_session_and_context().await;
+        let session = Arc::new(session);
+        let turn = Arc::new(turn);
         let handler = ComputerUseHandler;
 
         let observe_payload = ToolPayload::Function {
@@ -341,8 +343,8 @@ mod tests {
         assert!(
             !handler
                 .is_mutating(&ToolInvocation {
-                    session: session.clone().into(),
-                    turn: turn.clone().into(),
+                    session: session.clone(),
+                    turn: turn.clone(),
                     cancellation_token: CancellationToken::new(),
                     tracker: Arc::new(Mutex::new(TurnDiffTracker::new())),
                     call_id: "call-observe".to_string(),
@@ -359,8 +361,8 @@ mod tests {
         assert!(
             handler
                 .is_mutating(&ToolInvocation {
-                    session: session.into(),
-                    turn: turn.into(),
+                    session,
+                    turn,
                     cancellation_token: CancellationToken::new(),
                     tracker: Arc::new(Mutex::new(TurnDiffTracker::new())),
                     call_id: "call-step".to_string(),
