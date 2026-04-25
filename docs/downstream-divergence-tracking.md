@@ -153,7 +153,14 @@ in the repository.
 
 ## Workflow write permission secret
 
-The `sedna-sync-upstream` job fast-forwards `origin/upstream-main`, which contains workflow definitions and scripts. GitHub's `GITHUB_TOKEN` lacks the `workflow: write` scope needed to modify workflow files, so the job depends on the `SEDNA_SYNC_UPSTREAM_PUSH_TOKEN` secret. This should hold a PAT or machine-account token with `repo` write access plus `workflow: write`, stored only in this repository's secrets and rotated per policy. The secret is only used by the sync job when pushing the mirrored ref.
+The `sedna-sync-upstream` job and the `codex.downstream-docs-check` validation
+lane fast-forward `origin/upstream-main`, which contains workflow definitions
+and scripts. GitHub's `GITHUB_TOKEN` lacks the `workflow: write` scope needed to
+modify workflow files, so these mirror-sync paths depend on the
+`SEDNA_SYNC_UPSTREAM_PUSH_TOKEN` secret. This should hold a PAT or
+machine-account token with `repo` write access plus `workflow: write`, stored
+only in this repository's secrets and rotated per policy. The secret is only
+used when pushing the mirrored ref.
 
 ## Phased Adoption
 
