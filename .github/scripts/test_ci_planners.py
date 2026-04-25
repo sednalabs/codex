@@ -383,8 +383,8 @@ class ValidationPlanScriptTests(unittest.TestCase):
         self.assertEqual(payload["run_smoke_gate"], "false")
         self.assertEqual(payload["selected_workflow_lane_count"], 0)
         self.assertEqual(payload["selected_node_lane_count"], 0)
-        self.assertEqual(payload["selected_rust_minimal_lane_count"], 12)
-        self.assertEqual(payload["selected_rust_integration_lane_count"], 3)
+        self.assertEqual(payload["selected_rust_minimal_lane_count"], 13)
+        self.assertEqual(payload["selected_rust_integration_lane_count"], 4)
         self.assertEqual(payload["selected_release_lane_count"], 0)
         self.assertTrue(
             all(
@@ -505,8 +505,8 @@ class ValidationPlanScriptTests(unittest.TestCase):
         self.assertEqual(payload["smoke_gate_kind"], "runtime")
         self.assertEqual(payload["selected_workflow_lane_count"], 1)
         self.assertEqual(payload["selected_node_lane_count"], 0)
-        self.assertEqual(payload["selected_rust_minimal_lane_count"], 15)
-        self.assertEqual(payload["selected_rust_integration_lane_count"], 12)
+        self.assertEqual(payload["selected_rust_minimal_lane_count"], 16)
+        self.assertEqual(payload["selected_rust_integration_lane_count"], 13)
         self.assertEqual(payload["selected_release_lane_count"], 1)
         self.assertEqual(payload["smoke_rust_integration_lane_count"], 5)
         self.assertEqual(payload["workflow_max_parallel"], "8")
@@ -770,6 +770,7 @@ class ValidationPlanScriptTests(unittest.TestCase):
             enabled,
             {
                 "codex.app-server-protocol-test",
+                "codex.native-computer-use-tool-registry-targeted",
                 "codex.core-subagent-notification-visibility-targeted",
                 "codex.spawn-agent-description-model-surface-targeted",
                 "codex.spawn-agent-tool-model-surface-targeted",
@@ -1061,12 +1062,12 @@ class ValidationPlanScriptTests(unittest.TestCase):
         self.assertNotIn("codex.tui-agent-picker-model-surface-targeted", selected_lane_ids)
         self.assertEqual(payload["selected_workflow_lane_count"], 4)
         self.assertEqual(payload["selected_node_lane_count"], 1)
-        self.assertEqual(payload["selected_rust_minimal_lane_count"], 15)
-        self.assertEqual(payload["selected_rust_integration_lane_count"], 13)
+        self.assertEqual(payload["selected_rust_minimal_lane_count"], 16)
+        self.assertEqual(payload["selected_rust_integration_lane_count"], 14)
         self.assertEqual(payload["selected_release_lane_count"], 1)
         self.assertEqual(payload["workflow_max_parallel"], "4")
         self.assertEqual(payload["node_max_parallel"], "1")
-        self.assertEqual(payload["rust_minimal_max_parallel"], "15")
+        self.assertEqual(payload["rust_minimal_max_parallel"], "16")
         self.assertEqual(payload["rust_integration_max_parallel"], "8")
         self.assertEqual(payload["release_max_parallel"], "1")
 
@@ -1092,10 +1093,10 @@ class ValidationPlanScriptTests(unittest.TestCase):
         self.assertIn("downstream-ledger-seam", selected_lane_ids)
         self.assertEqual(payload["selected_workflow_lane_count"], 5)
         self.assertEqual(payload["selected_node_lane_count"], 1)
-        self.assertEqual(payload["selected_rust_minimal_lane_count"], 17)
-        self.assertEqual(payload["selected_rust_integration_lane_count"], 14)
+        self.assertEqual(payload["selected_rust_minimal_lane_count"], 18)
+        self.assertEqual(payload["selected_rust_integration_lane_count"], 15)
         self.assertEqual(payload["selected_release_lane_count"], 1)
-        self.assertEqual(payload["rust_minimal_max_parallel"], "17")
+        self.assertEqual(payload["rust_minimal_max_parallel"], "18")
         self.assertEqual(payload["rust_integration_max_parallel"], "8")
 
     def test_validation_lab_frontier_all_excludes_smoke_gate_lanes_by_metadata(self) -> None:
@@ -1208,7 +1209,7 @@ class ValidationPlanScriptTests(unittest.TestCase):
         self.assertEqual(payload["continue_after_smoke_failure"], "true")
         self.assertEqual(payload["workflow_max_parallel"], "5")
         self.assertEqual(payload["node_max_parallel"], "1")
-        self.assertEqual(payload["rust_minimal_max_parallel"], "17")
+        self.assertEqual(payload["rust_minimal_max_parallel"], "18")
         self.assertEqual(payload["rust_integration_max_parallel"], "8")
         self.assertEqual(payload["release_max_parallel"], "1")
         planned_lane_ids = [lane["lane_id"] for lane in payload["planned_matrix"]["include"]]

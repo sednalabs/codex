@@ -53,6 +53,8 @@ on:
           - codex.state-spawn-lineage-contract-targeted
           - codex.code-mode-declaration-targeted
           - codex.app-server-protocol-test
+          - codex.app-server-computer-use-targeted
+          - codex.native-computer-use-tool-registry-targeted
           - codex.app-server-thread-cwd-targeted
           - codex.agent-workflow-sanity
           - codex.shell-tool-mcp-ci
