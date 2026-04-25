@@ -58,6 +58,7 @@ on:
           - codex.shell-tool-mcp-ci
           - codex.build-policy-sanity
           - codex.workflow-ci-sanity
+          - codex.argument-comment-lint
           - codex.downstream-docs-check
           - sedna.release-linux-smoke
           - downstream-ledger-seam
@@ -420,6 +421,7 @@ jobs:
       needs_linux_build_deps: ${{ matrix.needs_linux_build_deps }}
       needs_dotslash: ${{ matrix.needs_dotslash }}
       needs_sccache: ${{ matrix.needs_sccache }}
+      needs_bazel: ${{ matrix.needs_bazel }}
 
   smoke_node_lanes:
     name: Heavy preflight smoke (node)
@@ -622,6 +624,7 @@ jobs:
       needs_linux_build_deps: ${{ matrix.needs_linux_build_deps }}
       needs_dotslash: ${{ matrix.needs_dotslash }}
       needs_sccache: ${{ matrix.needs_sccache }}
+      needs_bazel: ${{ matrix.needs_bazel }}
 
   node_lanes:
     needs:

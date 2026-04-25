@@ -114,6 +114,9 @@ artifacts.
      repeating the whole family.
    - The workflow summary now records the profile intent, profile notes, and a
      compact lane-selection summary for operator handoff.
+   - Explicit lint lane: `codex.argument-comment-lint` runs the Bazel-backed
+     argument-comment check as a selectable hosted lane, so comment-lint
+     failures can be proven without broad local Rust validation.
    - Reason: best signal per runner-minute without polluting PR surfaces, and
      lower unnecessary compute, carbon, and wait time once the blocker is
      already known.
