@@ -345,6 +345,24 @@ class RouteSelectionTests(unittest.TestCase):
         self.assertEqual(lane["script_args"], [])
         self.assertFalse(lane["needs_just"])
 
+    def test_argument_comment_lint_lane_uses_bazel_setup_contract(self) -> None:
+        lane = next(
+            lane
+            for lane in self.catalog["lanes"]
+            if lane["lane_id"] == "codex.argument-comment-lint"
+        )
+        self.assertEqual(lane["setup_class"], "workflow")
+        self.assertTrue(lane["explicit_only"])
+        self.assertEqual(
+            lane["script_path"],
+            ".github/scripts/validation-lanes/argument-comment-lint.sh",
+        )
+        self.assertEqual(lane["script_args"], [])
+        self.assertTrue(lane["needs_bazel"])
+        self.assertTrue(lane["needs_linux_build_deps"])
+        self.assertTrue(lane["needs_dotslash"])
+        self.assertFalse(lane["needs_sccache"])
+
 
 class ValidationPlanScriptTests(unittest.TestCase):
     maxDiff = None
@@ -803,6 +821,17 @@ class ValidationPlanScriptTests(unittest.TestCase):
             with self.subTest(job=job_name):
                 self.assertNotIn("cache_policy", (jobs.get(job_name) or {}).get("with") or {})
 
+    def test_validation_lab_passes_bazel_setup_to_workflow_lanes(self) -> None:
+        payload = load_workflow_payload(REPO_ROOT / ".github/workflows/validation-lab.yml")
+        jobs = payload.get("jobs") or {}
+
+        for job_name in ["smoke_workflow_lanes", "workflow_lanes"]:
+            with self.subTest(job=job_name):
+                self.assertEqual(
+                    ((jobs.get(job_name) or {}).get("with") or {}).get("needs_bazel"),
+                    "${{ matrix.needs_bazel }}",
+                )
+
     def test_sedna_heavy_uses_restore_only_sccache_fallback_policy(self) -> None:
         payload = load_workflow_payload(REPO_ROOT / ".github/workflows/sedna-heavy-tests.yml")
         jobs = payload.get("jobs") or {}
@@ -819,6 +848,17 @@ class ValidationPlanScriptTests(unittest.TestCase):
                 self.assertEqual(
                     ((jobs.get(job_name) or {}).get("with") or {}).get("cache_policy"),
                     "restore-only",
+                )
+
+    def test_sedna_heavy_passes_bazel_setup_to_workflow_lanes(self) -> None:
+        payload = load_workflow_payload(REPO_ROOT / ".github/workflows/sedna-heavy-tests.yml")
+        jobs = payload.get("jobs") or {}
+
+        for job_name in ["smoke_workflow_lanes", "workflow_lanes"]:
+            with self.subTest(job=job_name):
+                self.assertEqual(
+                    ((jobs.get(job_name) or {}).get("with") or {}).get("needs_bazel"),
+                    "${{ matrix.needs_bazel }}",
                 )
 
     def test_reusable_sccache_workflows_require_explicit_fallback_writes(self) -> None:
@@ -1048,8 +1088,9 @@ class ValidationPlanScriptTests(unittest.TestCase):
 
         selected_lane_ids = [lane["lane_id"] for lane in payload["selected_matrix"]["include"]]
         self.assertIn("codex.tui-agent-picker-model-surface-targeted", selected_lane_ids)
+        self.assertIn("codex.argument-comment-lint", selected_lane_ids)
         self.assertIn("downstream-ledger-seam", selected_lane_ids)
-        self.assertEqual(payload["selected_workflow_lane_count"], 4)
+        self.assertEqual(payload["selected_workflow_lane_count"], 5)
         self.assertEqual(payload["selected_node_lane_count"], 1)
         self.assertEqual(payload["selected_rust_minimal_lane_count"], 17)
         self.assertEqual(payload["selected_rust_integration_lane_count"], 14)
@@ -1165,7 +1206,7 @@ class ValidationPlanScriptTests(unittest.TestCase):
 
         self.assertEqual(payload["matrix_fail_fast"], "false")
         self.assertEqual(payload["continue_after_smoke_failure"], "true")
-        self.assertEqual(payload["workflow_max_parallel"], "4")
+        self.assertEqual(payload["workflow_max_parallel"], "5")
         self.assertEqual(payload["node_max_parallel"], "1")
         self.assertEqual(payload["rust_minimal_max_parallel"], "17")
         self.assertEqual(payload["rust_integration_max_parallel"], "8")

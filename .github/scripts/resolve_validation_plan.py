@@ -101,6 +101,7 @@ def normalize_catalog(catalog: dict) -> dict:
         lane.setdefault("cost_class", derive_cost_class(lane["setup_class"]))
         lane.setdefault("checkout_fetch_depth", 1)
         lane.setdefault("frontier_default", False)
+        lane.setdefault("needs_bazel", False)
         lane.setdefault(
             "smoke_gate_only",
             bool(lane.get("smoke_gate_kinds"))
@@ -187,6 +188,7 @@ def validate_catalog(catalog: dict) -> None:
             "needs_linux_build_deps",
             "needs_dotslash",
             "needs_sccache",
+            "needs_bazel",
         ):
             if not isinstance(lane.get(field), bool):
                 raise SystemExit(f"lane {lane_id} must set {field} to true or false")
@@ -231,6 +233,7 @@ def lane_payload(spec: dict, *, lane_phase: str) -> dict:
         "needs_linux_build_deps": bool(spec["needs_linux_build_deps"]),
         "needs_dotslash": bool(spec["needs_dotslash"]),
         "needs_sccache": bool(spec["needs_sccache"]),
+        "needs_bazel": bool(spec.get("needs_bazel", False)),
     }
 
 
