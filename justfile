@@ -258,6 +258,14 @@ app-server-thread-cwd-targeted:
 app-server-computer-use-targeted:
     cargo test --locked -p codex-app-server --test all suite::v2::computer_use:: -- --test-threads=1
 
+# Focused native Android tool registry slice for canonical schema conversion
+# and deferred tool-search discovery.
+native-computer-use-tool-registry-targeted:
+    cargo test --locked -p codex-tools canonical_android_dynamic_tool --lib -- --test-threads=1
+    cargo test --locked -p codex-tools android_dynamic_tools_use_canonical_codex_tool_definitions --lib -- --exact --test-threads=1
+    cargo test --locked -p codex-tools duplicate_bare_android_dynamic_tools_register_native_handler_once --lib -- --exact --test-threads=1
+    cargo test --locked -p codex-core deferred_android_dynamic_tools_search_as_native_computer_use_tools --lib -- --exact --test-threads=1
+
 # Focused downstream agent-workflow helper sanity slice.
 [no-cd]
 agent-workflow-sanity:
