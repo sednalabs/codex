@@ -13,6 +13,18 @@ git fetch --no-tags --prune upstream main
 upstream_main_ref="refs/remotes/upstream/main"
 origin_mirror_ref="refs/remotes/origin/upstream-main"
 
+sync_origin_mirror() {
+  if [ -n "${SYNC_UPSTREAM_PUSH_TOKEN:-}" ]; then
+    git remote set-url origin "https://x-access-token:${SYNC_UPSTREAM_PUSH_TOKEN}@github.com/${GITHUB_REPOSITORY:-sednalabs/codex}.git"
+  elif [ "${GITHUB_ACTIONS:-}" = "true" ]; then
+    echo "origin/upstream-main is stale and this GitHub Actions lane has no SEDNA_SYNC_UPSTREAM_PUSH_TOKEN secret for mirror writes" >&2
+    exit 1
+  fi
+
+  git push origin "${upstream_main_ref}:refs/heads/upstream-main"
+  git fetch --no-tags --prune origin upstream-main
+}
+
 if git show-ref --verify --quiet "${origin_mirror_ref}"; then
   if ! git merge-base --is-ancestor "${origin_mirror_ref}" "${upstream_main_ref}"; then
     echo "origin/upstream-main is not an ancestor of upstream/main; refusing non-fast-forward mirror sync" >&2
@@ -20,12 +32,10 @@ if git show-ref --verify --quiet "${origin_mirror_ref}"; then
   fi
 
   if [ "$(git rev-parse "${origin_mirror_ref}")" != "$(git rev-parse "${upstream_main_ref}")" ]; then
-    git push origin "${upstream_main_ref}:refs/heads/upstream-main"
-    git fetch --no-tags --prune origin upstream-main
+    sync_origin_mirror
   fi
 else
-  git push origin "${upstream_main_ref}:refs/heads/upstream-main"
-  git fetch --no-tags --prune origin upstream-main
+  sync_origin_mirror
 fi
 
 git diff --check "${upstream_main_ref}...HEAD" -- \
