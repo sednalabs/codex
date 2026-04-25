@@ -10311,14 +10311,6 @@ pub(crate) fn summary_to_thread(
     }
 }
 
-async fn open_state_db_for_direct_thread_lookup(config: &Config) -> Option<StateDbHandle> {
-    codex_rollout::state_db::open_if_present(
-        config.codex_home.as_path(),
-        config.model_provider_id.as_str(),
-    )
-    .await
-}
-
 fn thread_backwards_cursor_for_sort_key(
     summary: &ConversationSummary,
     sort_key: StoreThreadSortKey,

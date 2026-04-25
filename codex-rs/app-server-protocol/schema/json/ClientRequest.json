@@ -3421,15 +3421,55 @@
       ],
       "type": "object"
     },
-    "ThreadId": {
-      "type": "string"
-    },
-    "ThreadIncrementElicitationParams": {
-      "description": "Parameters for `thread/increment_elicitation`.",
+    "ThreadGoalClearParams": {
       "properties": {
         "threadId": {
-          "description": "Thread whose out-of-band elicitation counter should be incremented.",
           "type": "string"
+        }
+      },
+      "required": [
+        "threadId"
+      ],
+      "type": "object"
+    },
+    "ThreadGoalGetParams": {
+      "properties": {
+        "threadId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "threadId"
+      ],
+      "type": "object"
+    },
+    "ThreadGoalSetParams": {
+      "properties": {
+        "objective": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "status": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ThreadGoalStatus"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "threadId": {
+          "type": "string"
+        },
+        "tokenBudget": {
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
         }
       },
       "required": [
@@ -3445,6 +3485,22 @@
         "complete"
       ],
       "type": "string"
+    },
+    "ThreadId": {
+      "type": "string"
+    },
+    "ThreadIncrementElicitationParams": {
+      "description": "Parameters for `thread/increment_elicitation`.",
+      "properties": {
+        "threadId": {
+          "description": "Thread whose out-of-band elicitation counter should be incremented.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "threadId"
+      ],
+      "type": "object"
     },
     "ThreadInjectItemsParams": {
       "properties": {

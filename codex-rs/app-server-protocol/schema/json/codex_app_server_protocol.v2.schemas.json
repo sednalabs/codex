@@ -9888,9 +9888,7 @@
         {
           "properties": {
             "method": {
-              "enum": [
-                "thread/goal/updated"
-              ],
+              "const": "thread/goal/updated",
               "title": "Thread/goal/updatedNotificationMethod",
               "type": "string"
             },
@@ -9908,9 +9906,7 @@
         {
           "properties": {
             "method": {
-              "enum": [
-                "thread/goal/cleared"
-              ],
+              "const": "thread/goal/cleared",
               "title": "Thread/goal/clearedNotificationMethod",
               "type": "string"
             },
@@ -9928,9 +9924,7 @@
         {
           "properties": {
             "method": {
-              "enum": [
-                "thread/tokenUsage/updated"
-              ],
+              "const": "thread/tokenUsage/updated",
               "title": "Thread/tokenUsage/updatedNotificationMethod",
               "type": "string"
             },
@@ -11881,18 +11875,18 @@
         }
       },
       "required": [
-        "createdAt",
+        "threadId",
         "objective",
         "status",
-        "threadId",
-        "timeUsedSeconds",
         "tokensUsed",
+        "timeUsedSeconds",
+        "createdAt",
         "updatedAt"
       ],
       "type": "object"
     },
     "ThreadGoalClearedNotification": {
-      "$schema": "http://json-schema.org/draft-07/schema#",
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
       "properties": {
         "threadId": {
           "type": "string"
@@ -11914,7 +11908,7 @@
       "type": "string"
     },
     "ThreadGoalUpdatedNotification": {
-      "$schema": "http://json-schema.org/draft-07/schema#",
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
       "properties": {
         "goal": {
           "$ref": "#/definitions/ThreadGoal"
@@ -11930,8 +11924,8 @@
         }
       },
       "required": [
-        "goal",
-        "threadId"
+        "threadId",
+        "goal"
       ],
       "title": "ThreadGoalUpdatedNotification",
       "type": "object"
