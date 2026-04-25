@@ -253,6 +253,11 @@ app-server-thread-cwd-targeted:
     cargo test --locked -p codex-app-server --test all suite::v2::turn_start::turn_start_honors_explicit_null_thread_instructions -- --exact --test-threads=1
     cargo test --locked -p codex-app-server --test all suite::v2::turn_start::turn_start_emits_spawn_agent_item_with_requested_model_metadata_when_role_layering_is_present_v2 -- --exact --test-threads=1
 
+# Focused native computer-use bridge slice for app-server protocol routing,
+# client response handling, and Android tool lifecycle injection.
+app-server-computer-use-targeted:
+    cargo test --locked -p codex-app-server --test all suite::v2::computer_use:: -- --test-threads=1
+
 # Focused downstream agent-workflow helper sanity slice.
 [no-cd]
 agent-workflow-sanity:
