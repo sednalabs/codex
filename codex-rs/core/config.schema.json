@@ -424,6 +424,9 @@
             "general_analytics": {
               "type": "boolean"
             },
+            "goals": {
+              "type": "boolean"
+            },
             "guardian_approval": {
               "type": "boolean"
             },
@@ -2614,6 +2617,9 @@
           "type": "boolean"
         },
         "general_analytics": {
+          "type": "boolean"
+        },
+        "goals": {
           "type": "boolean"
         },
         "guardian_approval": {
