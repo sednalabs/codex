@@ -85,6 +85,7 @@ def main() -> int:
         args.upstream_remote,
         args.upstream_branch,
         args.downstream_ref,
+        args.mirror_ref,
     )
     mirror_mismatch = bool(
         args.expected_mirror_sha and snapshot_1["mirror"].sha != args.expected_mirror_sha
@@ -125,6 +126,7 @@ def main() -> int:
         args.upstream_remote,
         args.upstream_branch,
         args.downstream_ref,
+        args.mirror_ref,
     )
 
     unstable = snapshot_changed(snapshot_1, snapshot_2)
@@ -212,6 +214,14 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--mirror-remote", default="origin", help="Remote that hosts the upstream mirror branch.")
     parser.add_argument("--mirror-branch", default="upstream-main", help="Mirror branch name.")
+    parser.add_argument(
+        "--mirror-ref",
+        help=(
+            "Local commit/ref to use as the mirror snapshot instead of resolving "
+            "--mirror-remote/--mirror-branch. Useful for read-only PR validation "
+            "when the live mirror can be refreshed only by a separate privileged job."
+        ),
+    )
     parser.add_argument("--upstream-remote", default="upstream", help="Remote that hosts live upstream.")
     parser.add_argument("--upstream-branch", default="main", help="Upstream branch name.")
     parser.add_argument("--expected-mirror-sha", help="Exact upstream SHA that the mirror should match after sync.")
@@ -272,13 +282,18 @@ def resolve_snapshot(
     upstream_remote: str,
     upstream_branch: str,
     downstream_ref: str | None = None,
+    mirror_ref: str | None = None,
 ) -> dict[str, RemoteTip]:
     downstream = (
         local_tip(repo, "downstream-ref", downstream_ref)
         if downstream_ref
         else live_tip(repo, downstream_remote, downstream_branch)
     )
-    mirror = live_tip(repo, mirror_remote, mirror_branch)
+    mirror = (
+        local_tip(repo, "mirror-ref", mirror_ref)
+        if mirror_ref
+        else live_tip(repo, mirror_remote, mirror_branch)
+    )
     upstream = live_tip(repo, upstream_remote, upstream_branch)
     return {"downstream": downstream, "mirror": mirror, "upstream": upstream}
 
