@@ -9413,6 +9413,26 @@ fn validate_dynamic_tools(tools: &[ApiDynamicToolSpec]) -> Result<(), String> {
     Ok(())
 }
 
+fn validate_dynamic_tool_capability_value(
+    name: &str,
+    field: &str,
+    value: Option<&str>,
+    allowed_values: &[&str],
+) -> Result<(), String> {
+    let Some(value) = value else {
+        return Ok(());
+    };
+
+    if allowed_values.contains(&value) {
+        return Ok(());
+    }
+
+    Err(format!(
+        "dynamic tool capability {field} must be one of {} for {name}: {value}",
+        allowed_values.join(", "),
+    ))
+}
+
 async fn read_summary_from_state_db_context_by_thread_id(
     state_db_ctx: Option<&StateDbHandle>,
     thread_id: ThreadId,

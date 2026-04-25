@@ -1028,7 +1028,6 @@ mod tests {
         let (tx, rx) = mpsc::channel(2);
         let (response_tx, response_rx) = tokio::sync::oneshot::channel::<CommandExecResponse>();
         let sandbox_policy = SandboxPolicy::ReadOnly {
-            access: ReadOnlyAccess::FullAccess,
             network_access: false,
         };
         tokio::spawn({
