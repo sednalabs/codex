@@ -11,15 +11,15 @@ docs-only refresh commit that records this snapshot.
 
 ## Audit Baseline
 
-- Audited on: `2026-04-24`
-- `upstream/main`: `6f87eb0479018f0dd93db3f9f7b89902aebedb50`
-- downstream integration branch (`origin/integration/upstream-main-sync-20260424-164627`): `210e4a112b0edd4353832552b4f921f6a47ac090`
-- downstream branch `main` (`origin/main`) before merge: `9bf90e67f9e7597fb93bb888eb3d3f613d5ca37b`
-- mirror branch `upstream-main` (`origin/upstream-main`): `6f87eb0479018f0dd93db3f9f7b89902aebedb50`
-- integration branch vs `upstream/main`: `770` ahead, `0` behind
-- pre-merge `main` vs `upstream/main`: `766` ahead, `16` behind
+- Audited on: `2026-04-25`
+- `upstream/main`: `a2db6f97fb9353edfbcb82ea4fbb89c8346d1222`
+- downstream integration branch (`origin/integration/upstream-main-sync-20260424-164627`): `a96c652a5becca0c6ed97d31c232d418e115b893`
+- downstream branch `main` (`origin/main`) before merge: `a06b1bdb08c0c863b0f499589f096cd3cdd0c9f1`
+- mirror branch `upstream-main` (`origin/upstream-main`): `a2db6f97fb9353edfbcb82ea4fbb89c8346d1222`
+- integration branch vs `upstream/main`: `790` ahead, `0` behind
+- pre-merge `main` vs `upstream/main`: `769` ahead, `57` behind
 - Mirror vs `upstream/main`: `0` ahead, `0` behind (`exact`)
-- Downstream-only commits at audit time: `678` unique, `0` patch-equivalent
+- Downstream-only commits at audit time: `694` unique, `0` patch-equivalent
 
 ## Audit Rules
 
