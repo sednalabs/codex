@@ -27,6 +27,12 @@ ORDERED_SETUP_CLASSES = [
     "rust_integration",
     "release",
 ]
+RUST_BATCH_SETUP_CLASSES = {"rust_minimal", "rust_integration"}
+RUST_BATCH_AUTO_MIN_LANES = 3
+RUST_BATCH_FORCE_MIN_LANES = 2
+RUST_BATCH_MAX_LANES = 3
+RUST_BATCH_TARGET_WEIGHT_SECONDS = 1200
+DEFAULT_RUST_BATCH_WEIGHT_SECONDS = 360
 
 
 def catalog_path() -> Path:
@@ -234,7 +240,24 @@ def lane_payload(spec: dict, *, lane_phase: str) -> dict:
         "needs_dotslash": bool(spec["needs_dotslash"]),
         "needs_sccache": bool(spec["needs_sccache"]),
         "needs_bazel": bool(spec.get("needs_bazel", False)),
+        "batch_group": str(spec.get("batch_group") or default_batch_group(spec)),
+        "batch_weight_seconds": resolve_batch_weight_seconds(spec),
     }
+
+
+def default_batch_group(spec: dict) -> str:
+    groups = spec.get("groups") or []
+    if not groups:
+        return "default"
+    return "+".join(str(group) for group in groups)
+
+
+def resolve_batch_weight_seconds(spec: dict) -> int:
+    raw = spec.get("batch_weight_seconds", DEFAULT_RUST_BATCH_WEIGHT_SECONDS)
+    lane_id = str(spec.get("lane_id") or "<unknown>")
+    if isinstance(raw, bool) or not isinstance(raw, int) or raw <= 0:
+        raise SystemExit(f"lane {lane_id} must set batch_weight_seconds to a positive integer")
+    return raw
 
 
 def select_exact(
@@ -360,6 +383,141 @@ def emit_grouped_setup_class_payload(payload: dict, lanes: list[dict], *, key_pr
     for setup_class, grouped_lanes in grouped.items():
         payload[f"{key_prefix}_{setup_class}_matrix"] = {"include": grouped_lanes}
         payload[f"{key_prefix}_{setup_class}_lane_count"] = len(grouped_lanes)
+
+
+def normalize_rust_batching_mode(raw: str) -> str:
+    mode = (raw or "auto").strip().lower()
+    if mode not in {"auto", "off", "force"}:
+        raise SystemExit("rust batching mode must be one of: auto, off, force")
+    return mode
+
+
+def effective_rust_batching_mode(requested: str, repo_override: str) -> tuple[str, str]:
+    requested_mode = normalize_rust_batching_mode(requested)
+    override = (repo_override or "").strip().lower()
+    if override and override not in {"auto", "off", "force"}:
+        return requested_mode, f"ignoring unknown repo override {override!r}"
+    if requested_mode == "force":
+        return "force", "forced by workflow input"
+    if override == "off":
+        return "off", "disabled by SEDNA_HEAVY_RUST_BATCHING"
+    if override == "force":
+        return "force", "forced by SEDNA_HEAVY_RUST_BATCHING"
+    if requested_mode == "off":
+        return "off", "disabled by workflow input"
+    return "auto", "auto"
+
+
+def split_rust_batch_execution_lanes(
+    selected: list[dict], *, mode: str
+) -> tuple[list[dict], dict[str, list[dict]], dict[str, str]]:
+    batched_by_setup_class: dict[str, list[dict]] = {name: [] for name in RUST_BATCH_SETUP_CLASSES}
+    selected_by_setup_class = group_lanes_by_setup_class(selected)
+    min_lanes = RUST_BATCH_FORCE_MIN_LANES if mode == "force" else RUST_BATCH_AUTO_MIN_LANES
+
+    if mode != "off":
+        for setup_class in sorted(RUST_BATCH_SETUP_CLASSES):
+            lanes = selected_by_setup_class.get(setup_class, [])
+            grouped: OrderedDict[str, list[dict]] = OrderedDict()
+            for lane in lanes:
+                grouped.setdefault(str(lane.get("batch_group") or "default"), []).append(lane)
+            batched_by_setup_class[setup_class] = [
+                lane
+                for grouped_lanes in grouped.values()
+                if len(grouped_lanes) >= min_lanes
+                for lane in grouped_lanes
+            ]
+
+    batched_lane_ids = {
+        lane["lane_id"]
+        for lanes in batched_by_setup_class.values()
+        for lane in lanes
+    }
+    single_lanes = [lane for lane in selected if lane["lane_id"] not in batched_lane_ids]
+    reasons = {}
+    for setup_class in sorted(RUST_BATCH_SETUP_CLASSES):
+        selected_count = len(selected_by_setup_class.get(setup_class, []))
+        batched_count = len(batched_by_setup_class[setup_class])
+        if mode == "off":
+            reasons[setup_class] = "batching disabled"
+        elif batched_count:
+            reasons[setup_class] = f"batched {batched_count} lanes"
+        else:
+            reasons[setup_class] = f"only {selected_count} lanes selected"
+    return single_lanes, batched_by_setup_class, reasons
+
+
+def batch_lane_matrix(lanes: list[dict], *, setup_class: str) -> list[dict]:
+    groups: OrderedDict[str, list[dict]] = OrderedDict()
+    for lane in lanes:
+        groups.setdefault(str(lane.get("batch_group") or "default"), []).append(lane)
+
+    batches: list[dict] = []
+    batch_index = 0
+    for batch_group, grouped_lanes in groups.items():
+        sorted_lanes = sorted(
+            grouped_lanes,
+            key=lambda lane: (-int(lane["batch_weight_seconds"]), str(lane["lane_id"])),
+        )
+        packed: list[dict] = []
+        for lane in sorted_lanes:
+            candidate_indexes = [
+                idx
+                for idx, batch in enumerate(packed)
+                if len(batch["lanes"]) < RUST_BATCH_MAX_LANES
+                and batch["estimated_weight_seconds"] + int(lane["batch_weight_seconds"])
+                <= RUST_BATCH_TARGET_WEIGHT_SECONDS
+            ]
+            if candidate_indexes:
+                target = min(
+                    candidate_indexes,
+                    key=lambda idx: (
+                        packed[idx]["estimated_weight_seconds"],
+                        len(packed[idx]["lanes"]),
+                        packed[idx]["batch_index"],
+                    ),
+                )
+                batch = packed[target]
+            else:
+                batch = {
+                    "batch_index": batch_index,
+                    "batch_group": batch_group,
+                    "lanes": [],
+                    "estimated_weight_seconds": 0,
+                }
+                packed.append(batch)
+                batch_index += 1
+            batch["lanes"].append(lane)
+            batch["estimated_weight_seconds"] += int(lane["batch_weight_seconds"])
+
+        for batch in packed:
+            batch_lanes = sorted(batch["lanes"], key=lambda lane: str(lane["lane_id"]))
+            lane_ids = [lane["lane_id"] for lane in batch_lanes]
+            batch_id = f"{setup_class}-{batch['batch_index'] + 1:02d}"
+            batches.append(
+                {
+                    "batch_id": batch_id,
+                    "setup_class": setup_class,
+                    "batch_index": batch["batch_index"],
+                    "batch_group": batch["batch_group"],
+                    "batch_lane_count": len(batch_lanes),
+                    "estimated_weight_seconds": batch["estimated_weight_seconds"],
+                    "lane_ids": lane_ids,
+                    "lane_ids_json": json.dumps(lane_ids, separators=(",", ":")),
+                    "checkout_fetch_depth": max(
+                        resolve_checkout_fetch_depth(lane, default=1) for lane in batch_lanes
+                    ),
+                    "needs_just": any(lane["needs_just"] for lane in batch_lanes),
+                    "needs_node": any(lane["needs_node"] for lane in batch_lanes),
+                    "needs_nextest": any(lane["needs_nextest"] for lane in batch_lanes),
+                    "needs_linux_build_deps": any(
+                        lane["needs_linux_build_deps"] for lane in batch_lanes
+                    ),
+                    "needs_dotslash": any(lane["needs_dotslash"] for lane in batch_lanes),
+                    "needs_sccache": any(lane["needs_sccache"] for lane in batch_lanes),
+                }
+            )
+    return sorted(batches, key=lambda batch: batch["batch_index"])
 
 
 def setup_parallel_limits(profile: str, selected: list[dict] | None = None) -> dict[str, int]:
@@ -674,10 +832,31 @@ def heavy_plan(args: argparse.Namespace) -> None:
     parallel_limits = setup_parallel_limits(
         "frontier" if manual_harvest else "targeted", [*smoke_matrix, *selected]
     )
+    rust_batching_mode, rust_batching_reason = effective_rust_batching_mode(
+        args.rust_batching, args.rust_batching_override
+    )
+    execution_selected, batched_by_setup_class, rust_batching_reasons = (
+        split_rust_batch_execution_lanes(selected, mode=rust_batching_mode)
+    )
+    rust_minimal_batch_matrix = batch_lane_matrix(
+        batched_by_setup_class["rust_minimal"], setup_class="rust_minimal"
+    )
+    rust_integration_batch_matrix = batch_lane_matrix(
+        batched_by_setup_class["rust_integration"], setup_class="rust_integration"
+    )
+    if not rust_minimal_batch_matrix and not rust_integration_batch_matrix:
+        rust_batching_reason = "; ".join(
+            [
+                rust_batching_reason,
+                rust_batching_reasons["rust_minimal"],
+                rust_batching_reasons["rust_integration"],
+            ]
+        )
     planned_matrix = {"include": [*smoke_matrix, *selected]}
     payload = {
         "planned_matrix": planned_matrix,
         "selected_matrix": {"include": selected},
+        "execution_selected_matrix": {"include": execution_selected},
         "selected_lane_ids": [lane["lane_id"] for lane in selected],
         "smoke_matrix": {"include": smoke_matrix},
         "run_selected_lanes": "true" if bool(selected) else "false",
@@ -690,8 +869,14 @@ def heavy_plan(args: argparse.Namespace) -> None:
         "rust_minimal_max_parallel": str(parallel_limits["rust_minimal"]),
         "rust_integration_max_parallel": str(parallel_limits["rust_integration"]),
         "release_max_parallel": str(parallel_limits["release"]),
+        "rust_batching_mode": rust_batching_mode,
+        "rust_batching_reason": rust_batching_reason,
+        "selected_rust_minimal_batch_matrix": {"include": rust_minimal_batch_matrix},
+        "selected_rust_minimal_batch_count": len(rust_minimal_batch_matrix),
+        "selected_rust_integration_batch_matrix": {"include": rust_integration_batch_matrix},
+        "selected_rust_integration_batch_count": len(rust_integration_batch_matrix),
     }
-    emit_grouped_setup_class_payload(payload, selected, key_prefix="selected")
+    emit_grouped_setup_class_payload(payload, execution_selected, key_prefix="selected")
     emit_grouped_setup_class_payload(payload, smoke_matrix, key_prefix="smoke")
     emit(payload)
 
@@ -719,6 +904,8 @@ def build_parser() -> argparse.ArgumentParser:
     heavy.add_argument("--run-ui-protocol-family", required=True)
     heavy.add_argument("--run-docs-family", required=True)
     heavy.add_argument("--changed-files-json", default="")
+    heavy.add_argument("--rust-batching", default="auto")
+    heavy.add_argument("--rust-batching-override", default="")
     heavy.set_defaults(func=heavy_plan)
 
     return parser

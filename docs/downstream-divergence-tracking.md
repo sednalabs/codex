@@ -151,16 +151,25 @@ in the repository.
 5. Keep historical upstream-equivalent items in the registry with
    `status: upstream-equivalent` instead of deleting them.
 
-## Workflow write permission secret
+## Workflow write credential
 
-The `sedna-sync-upstream` job and the `codex.downstream-docs-check` validation
-lane fast-forward `origin/upstream-main`, which contains workflow definitions
-and scripts. GitHub's `GITHUB_TOKEN` lacks the `workflow: write` scope needed to
-modify workflow files, so these mirror-sync paths depend on the
-`SEDNA_SYNC_UPSTREAM_PUSH_TOKEN` secret. This should hold a PAT or
-machine-account token with `repo` write access plus `workflow: write`, stored
-only in this repository's secrets and rotated per policy. The secret is only
-used when pushing the mirrored ref.
+The `sedna-sync-upstream` job is the only privileged mirror writer. It
+fast-forwards `origin/upstream-main`, which contains workflow definitions and
+scripts, and then runs the authoritative divergence audit against the exact
+synced SHA.
+
+GitHub's default `GITHUB_TOKEN` is not the right credential for this mirror
+write, so the workflow mints a short-lived GitHub App installation token from
+`SEDNA_SYNC_UPSTREAM_APP_CLIENT_ID` and
+`SEDNA_SYNC_UPSTREAM_APP_PRIVATE_KEY`. The app should be installed only on this
+repository and granted the narrow repository permissions needed to update the
+mirror ref, including contents write and workflows write. During migration the
+workflow may fall back to the legacy `SEDNA_SYNC_UPSTREAM_PUSH_TOKEN` secret,
+but that PAT path should be retired after the GitHub App proof run succeeds.
+
+Pull request validation is read-only. The `codex.downstream-docs-check` lane
+fetches live `upstream/main`; when the public mirror is stale it audits against
+that exact fetched snapshot and leaves mirror updates to `sedna-sync-upstream`.
 
 ## Phased Adoption
 

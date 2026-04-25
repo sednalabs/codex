@@ -66,6 +66,15 @@ on:
           - sedna.release-linux-smoke
           - downstream-ledger-seam
         default: all
+      rust_batching:
+        description: Batch downstream Rust lanes to reuse runner-local build artifacts
+        required: false
+        type: choice
+        options:
+          - auto
+          - off
+          - force
+        default: auto
   pull_request:
     types:
       - opened
@@ -132,12 +141,18 @@ jobs:
       selected_rust_minimal_matrix: ${{ steps.meta.outputs.selected_rust_minimal_matrix }}
       selected_rust_integration_matrix: ${{ steps.meta.outputs.selected_rust_integration_matrix }}
       selected_release_matrix: ${{ steps.meta.outputs.selected_release_matrix }}
+      selected_rust_minimal_batch_matrix: ${{ steps.meta.outputs.selected_rust_minimal_batch_matrix }}
+      selected_rust_integration_batch_matrix: ${{ steps.meta.outputs.selected_rust_integration_batch_matrix }}
       selected_lane_ids: ${{ steps.meta.outputs.selected_lane_ids }}
       selected_workflow_lane_count: ${{ steps.meta.outputs.selected_workflow_lane_count }}
       selected_node_lane_count: ${{ steps.meta.outputs.selected_node_lane_count }}
       selected_rust_minimal_lane_count: ${{ steps.meta.outputs.selected_rust_minimal_lane_count }}
       selected_rust_integration_lane_count: ${{ steps.meta.outputs.selected_rust_integration_lane_count }}
       selected_release_lane_count: ${{ steps.meta.outputs.selected_release_lane_count }}
+      selected_rust_minimal_batch_count: ${{ steps.meta.outputs.selected_rust_minimal_batch_count }}
+      selected_rust_integration_batch_count: ${{ steps.meta.outputs.selected_rust_integration_batch_count }}
+      rust_batching_mode: ${{ steps.meta.outputs.rust_batching_mode }}
+      rust_batching_reason: ${{ steps.meta.outputs.rust_batching_reason }}
       matrix_fail_fast: ${{ steps.meta.outputs.matrix_fail_fast }}
       continue_after_smoke_failure: ${{ steps.meta.outputs.continue_after_smoke_failure }}
       workflow_max_parallel: ${{ steps.meta.outputs.workflow_max_parallel }}
@@ -227,7 +242,7 @@ jobs:
           done
 
           files_json="$(printf '%s\n' "${files[@]}" | jq -R . | jq -sc .)"
-          selection_meta="$(python3 .github/scripts/resolve_validation_plan.py heavy --event-name '${{ github.event_name }}' --requested-lane '${{ inputs.lane }}' --run-all-lanes "${run_all_lanes}" --run-core-family "${run_core_family}" --run-attestation-family "${run_attestation_family}" --run-workflow-family "${run_workflow_family}" --run-ui-protocol-family "${run_ui_protocol_family}" --run-docs-family "${run_docs_family}" --changed-files-json "${files_json}")"
+          selection_meta="$(python3 .github/scripts/resolve_validation_plan.py heavy --event-name '${{ github.event_name }}' --requested-lane '${{ inputs.lane }}' --run-all-lanes "${run_all_lanes}" --run-core-family "${run_core_family}" --run-attestation-family "${run_attestation_family}" --run-workflow-family "${run_workflow_family}" --run-ui-protocol-family "${run_ui_protocol_family}" --run-docs-family "${run_docs_family}" --changed-files-json "${files_json}" --rust-batching '${{ inputs.rust_batching || 'auto' }}' --rust-batching-override '${{ vars.SEDNA_HEAVY_RUST_BATCHING }}')"
 
           parse_meta() {
             local field="$1"
@@ -261,6 +276,8 @@ jobs:
           selected_rust_minimal_json="$(SELECTION_META="${selection_meta}" parse_meta "selected_rust_minimal_matrix")"
           selected_rust_integration_json="$(SELECTION_META="${selection_meta}" parse_meta "selected_rust_integration_matrix")"
           selected_release_json="$(SELECTION_META="${selection_meta}" parse_meta "selected_release_matrix")"
+          selected_rust_minimal_batch_json="$(SELECTION_META="${selection_meta}" parse_meta "selected_rust_minimal_batch_matrix")"
+          selected_rust_integration_batch_json="$(SELECTION_META="${selection_meta}" parse_meta "selected_rust_integration_batch_matrix")"
           selected_lane_ids_json="$(SELECTION_META="${selection_meta}" parse_meta "selected_lane_ids")"
           smoke_workflow_lane_count="$(SELECTION_META="${selection_meta}" parse_meta "smoke_workflow_lane_count")"
           smoke_node_lane_count="$(SELECTION_META="${selection_meta}" parse_meta "smoke_node_lane_count")"
@@ -272,6 +289,10 @@ jobs:
           selected_rust_minimal_lane_count="$(SELECTION_META="${selection_meta}" parse_meta "selected_rust_minimal_lane_count")"
           selected_rust_integration_lane_count="$(SELECTION_META="${selection_meta}" parse_meta "selected_rust_integration_lane_count")"
           selected_release_lane_count="$(SELECTION_META="${selection_meta}" parse_meta "selected_release_lane_count")"
+          selected_rust_minimal_batch_count="$(SELECTION_META="${selection_meta}" parse_meta "selected_rust_minimal_batch_count")"
+          selected_rust_integration_batch_count="$(SELECTION_META="${selection_meta}" parse_meta "selected_rust_integration_batch_count")"
+          rust_batching_mode="$(SELECTION_META="${selection_meta}" parse_meta "rust_batching_mode")"
+          rust_batching_reason="$(SELECTION_META="${selection_meta}" parse_meta "rust_batching_reason")"
           workflow_max_parallel="$(SELECTION_META="${selection_meta}" parse_meta "workflow_max_parallel")"
           node_max_parallel="$(SELECTION_META="${selection_meta}" parse_meta "node_max_parallel")"
           rust_minimal_max_parallel="$(SELECTION_META="${selection_meta}" parse_meta "rust_minimal_max_parallel")"
@@ -317,6 +338,8 @@ jobs:
               selected_rust_minimal_json='{"include":[]}'
               selected_rust_integration_json='{"include":[]}'
               selected_release_json='{"include":[]}'
+              selected_rust_minimal_batch_json='{"include":[]}'
+              selected_rust_integration_batch_json='{"include":[]}'
               selected_lane_ids_json='[]'
               smoke_workflow_lane_count='0'
               smoke_node_lane_count='0'
@@ -328,6 +351,8 @@ jobs:
               selected_rust_minimal_lane_count='0'
               selected_rust_integration_lane_count='0'
               selected_release_lane_count='0'
+              selected_rust_minimal_batch_count='0'
+              selected_rust_integration_batch_count='0'
             fi
           fi
 
@@ -360,12 +385,18 @@ jobs:
             echo "selected_rust_minimal_matrix=${selected_rust_minimal_json}"
             echo "selected_rust_integration_matrix=${selected_rust_integration_json}"
             echo "selected_release_matrix=${selected_release_json}"
+            echo "selected_rust_minimal_batch_matrix=${selected_rust_minimal_batch_json}"
+            echo "selected_rust_integration_batch_matrix=${selected_rust_integration_batch_json}"
             echo "selected_lane_ids=${selected_lane_ids_json}"
             echo "selected_workflow_lane_count=${selected_workflow_lane_count}"
             echo "selected_node_lane_count=${selected_node_lane_count}"
             echo "selected_rust_minimal_lane_count=${selected_rust_minimal_lane_count}"
             echo "selected_rust_integration_lane_count=${selected_rust_integration_lane_count}"
             echo "selected_release_lane_count=${selected_release_lane_count}"
+            echo "selected_rust_minimal_batch_count=${selected_rust_minimal_batch_count}"
+            echo "selected_rust_integration_batch_count=${selected_rust_integration_batch_count}"
+            echo "rust_batching_mode=${rust_batching_mode}"
+            echo "rust_batching_reason=${rust_batching_reason}"
             echo "workflow_max_parallel=${workflow_max_parallel}"
             echo "node_max_parallel=${node_max_parallel}"
             echo "rust_minimal_max_parallel=${rust_minimal_max_parallel}"
@@ -382,6 +413,7 @@ jobs:
             echo "- Display ref: \`${display_ref}\`"
             echo "- Requested lane: \`${{ inputs.lane || 'auto' }}\`"
             echo "- Planner fingerprint: \`${planner_fingerprint}\`"
+            echo "- Rust batching: \`${rust_batching_mode}\` (${rust_batching_reason})"
             if [[ -n "${dedupe_reason}" ]]; then
               echo "- Dedupe: ${dedupe_reason}"
             fi
@@ -499,7 +531,7 @@ jobs:
       needs_linux_build_deps: ${{ matrix.needs_linux_build_deps }}
       needs_dotslash: ${{ matrix.needs_dotslash }}
       needs_sccache: ${{ matrix.needs_sccache }}
-      cache_policy: restore-only
+      cache_policy: ${{ github.event_name == 'workflow_dispatch' && 'write-fallback' || 'restore-only' }}
 
   smoke_rust_integration_lanes:
     name: Heavy preflight smoke (rust integration)
@@ -537,7 +569,7 @@ jobs:
       needs_linux_build_deps: ${{ matrix.needs_linux_build_deps }}
       needs_dotslash: ${{ matrix.needs_dotslash }}
       needs_sccache: ${{ matrix.needs_sccache }}
-      cache_policy: restore-only
+      cache_policy: ${{ github.event_name == 'workflow_dispatch' && 'write-fallback' || 'restore-only' }}
 
   smoke_release_lanes:
     name: Heavy preflight smoke (release)
@@ -575,7 +607,7 @@ jobs:
       needs_linux_build_deps: ${{ matrix.needs_linux_build_deps }}
       needs_dotslash: ${{ matrix.needs_dotslash }}
       needs_sccache: ${{ matrix.needs_sccache }}
-      cache_policy: restore-only
+      cache_policy: ${{ github.event_name == 'workflow_dispatch' && 'write-fallback' || 'restore-only' }}
 
   workflow_lanes:
     needs:
@@ -728,7 +760,50 @@ jobs:
       needs_linux_build_deps: ${{ matrix.needs_linux_build_deps }}
       needs_dotslash: ${{ matrix.needs_dotslash }}
       needs_sccache: ${{ matrix.needs_sccache }}
-      cache_policy: restore-only
+      cache_policy: ${{ github.event_name == 'workflow_dispatch' && 'write-fallback' || 'restore-only' }}
+
+  rust_minimal_batches:
+    needs:
+      - metadata
+      - smoke_workflow_lanes
+      - smoke_node_lanes
+      - smoke_rust_minimal_lanes
+      - smoke_rust_integration_lanes
+      - smoke_release_lanes
+    if: >-
+      ${{
+        always() &&
+        needs.metadata.result == 'success' &&
+        fromJson(needs.metadata.outputs.selected_rust_minimal_batch_count) > 0 &&
+        (
+          needs.metadata.outputs.continue_after_smoke_failure == 'true' ||
+          (needs.smoke_workflow_lanes.result == 'success' || needs.smoke_workflow_lanes.result == 'skipped') &&
+          (needs.smoke_node_lanes.result == 'success' || needs.smoke_node_lanes.result == 'skipped') &&
+          (needs.smoke_rust_minimal_lanes.result == 'success' || needs.smoke_rust_minimal_lanes.result == 'skipped') &&
+          (needs.smoke_rust_integration_lanes.result == 'success' || needs.smoke_rust_integration_lanes.result == 'skipped') &&
+          (needs.smoke_release_lanes.result == 'success' || needs.smoke_release_lanes.result == 'skipped')
+        ) &&
+        needs.metadata.outputs.run_selected_lanes == 'true'
+      }}
+    strategy:
+      fail-fast: false
+      max-parallel: ${{ fromJson(needs.metadata.outputs.rust_minimal_max_parallel) }}
+      matrix: ${{ fromJson(needs.metadata.outputs.selected_rust_minimal_batch_matrix) }}
+    uses: ./.github/workflows/_validation-lane-rust-batch.yml
+    with:
+      checkout_ref: ${{ needs.metadata.outputs.checkout_ref }}
+      checkout_fetch_depth: ${{ matrix.checkout_fetch_depth }}
+      batch_id: ${{ matrix.batch_id }}
+      batch_index: ${{ matrix.batch_index }}
+      setup_class: ${{ matrix.setup_class }}
+      lane_ids_json: ${{ matrix.lane_ids_json }}
+      needs_just: ${{ matrix.needs_just }}
+      needs_node: ${{ matrix.needs_node }}
+      needs_nextest: ${{ matrix.needs_nextest }}
+      needs_linux_build_deps: ${{ matrix.needs_linux_build_deps }}
+      needs_dotslash: ${{ matrix.needs_dotslash }}
+      needs_sccache: ${{ matrix.needs_sccache }}
+      cache_policy: ${{ github.event_name == 'workflow_dispatch' && 'write-fallback' || 'restore-only' }}
 
   rust_integration_lanes:
     needs:
@@ -779,7 +854,50 @@ jobs:
       needs_linux_build_deps: ${{ matrix.needs_linux_build_deps }}
       needs_dotslash: ${{ matrix.needs_dotslash }}
       needs_sccache: ${{ matrix.needs_sccache }}
-      cache_policy: restore-only
+      cache_policy: ${{ github.event_name == 'workflow_dispatch' && 'write-fallback' || 'restore-only' }}
+
+  rust_integration_batches:
+    needs:
+      - metadata
+      - smoke_workflow_lanes
+      - smoke_node_lanes
+      - smoke_rust_minimal_lanes
+      - smoke_rust_integration_lanes
+      - smoke_release_lanes
+    if: >-
+      ${{
+        always() &&
+        needs.metadata.result == 'success' &&
+        fromJson(needs.metadata.outputs.selected_rust_integration_batch_count) > 0 &&
+        (
+          needs.metadata.outputs.continue_after_smoke_failure == 'true' ||
+          (needs.smoke_workflow_lanes.result == 'success' || needs.smoke_workflow_lanes.result == 'skipped') &&
+          (needs.smoke_node_lanes.result == 'success' || needs.smoke_node_lanes.result == 'skipped') &&
+          (needs.smoke_rust_minimal_lanes.result == 'success' || needs.smoke_rust_minimal_lanes.result == 'skipped') &&
+          (needs.smoke_rust_integration_lanes.result == 'success' || needs.smoke_rust_integration_lanes.result == 'skipped') &&
+          (needs.smoke_release_lanes.result == 'success' || needs.smoke_release_lanes.result == 'skipped')
+        ) &&
+        needs.metadata.outputs.run_selected_lanes == 'true'
+      }}
+    strategy:
+      fail-fast: false
+      max-parallel: ${{ fromJson(needs.metadata.outputs.rust_integration_max_parallel) }}
+      matrix: ${{ fromJson(needs.metadata.outputs.selected_rust_integration_batch_matrix) }}
+    uses: ./.github/workflows/_validation-lane-rust-batch.yml
+    with:
+      checkout_ref: ${{ needs.metadata.outputs.checkout_ref }}
+      checkout_fetch_depth: ${{ matrix.checkout_fetch_depth }}
+      batch_id: ${{ matrix.batch_id }}
+      batch_index: ${{ matrix.batch_index }}
+      setup_class: ${{ matrix.setup_class }}
+      lane_ids_json: ${{ matrix.lane_ids_json }}
+      needs_just: ${{ matrix.needs_just }}
+      needs_node: ${{ matrix.needs_node }}
+      needs_nextest: ${{ matrix.needs_nextest }}
+      needs_linux_build_deps: ${{ matrix.needs_linux_build_deps }}
+      needs_dotslash: ${{ matrix.needs_dotslash }}
+      needs_sccache: ${{ matrix.needs_sccache }}
+      cache_policy: ${{ github.event_name == 'workflow_dispatch' && 'write-fallback' || 'restore-only' }}
 
   release_lanes:
     needs:
@@ -830,7 +948,7 @@ jobs:
       needs_linux_build_deps: ${{ matrix.needs_linux_build_deps }}
       needs_dotslash: ${{ matrix.needs_dotslash }}
       needs_sccache: ${{ matrix.needs_sccache }}
-      cache_policy: restore-only
+      cache_policy: ${{ github.event_name == 'workflow_dispatch' && 'write-fallback' || 'restore-only' }}
 
   summary:
     name: Sedna heavy-tests summary
@@ -844,7 +962,9 @@ jobs:
       - workflow_lanes
       - node_lanes
       - rust_minimal_lanes
+      - rust_minimal_batches
       - rust_integration_lanes
+      - rust_integration_batches
       - release_lanes
     if: >-
       ${{
@@ -880,13 +1000,17 @@ jobs:
           WORKFLOW_RESULT: ${{ needs.workflow_lanes.result || 'skipped' }}
           NODE_RESULT: ${{ needs.node_lanes.result || 'skipped' }}
           RUST_MINIMAL_RESULT: ${{ needs.rust_minimal_lanes.result || 'skipped' }}
+          RUST_MINIMAL_BATCH_RESULT: ${{ needs.rust_minimal_batches.result || 'skipped' }}
           RUST_INTEGRATION_RESULT: ${{ needs.rust_integration_lanes.result || 'skipped' }}
+          RUST_INTEGRATION_BATCH_RESULT: ${{ needs.rust_integration_batches.result || 'skipped' }}
           RELEASE_RESULT: ${{ needs.release_lanes.result || 'skipped' }}
           INPUT_LANE: ${{ inputs.lane }}
           RUN_SMOKE_GATE: ${{ needs.metadata.outputs.run_smoke_gate }}
           RUN_SELECTED_LANES: ${{ needs.metadata.outputs.run_selected_lanes }}
           SMOKE_GATE_KIND: ${{ needs.metadata.outputs.smoke_gate_kind }}
           MATRIX_FAIL_FAST: ${{ needs.metadata.outputs.matrix_fail_fast }}
+          RUST_BATCHING_MODE: ${{ needs.metadata.outputs.rust_batching_mode }}
+          RUST_BATCHING_REASON: ${{ needs.metadata.outputs.rust_batching_reason }}
           SUPERSESSION_KEY: ${{ inputs.ref || github.ref_name }}
         run: |
           set -euo pipefail
@@ -915,6 +1039,21 @@ jobs:
               smoke_gate_result="success"
             fi
           fi
+          combined_result() {
+            local first="$1"
+            local second="$2"
+            if [[ "${first}" == "failure" || "${second}" == "failure" ]]; then
+              echo "failure"
+            elif [[ "${first}" == "cancelled" || "${second}" == "cancelled" ]]; then
+              echo "cancelled"
+            elif [[ "${first}" == "success" || "${second}" == "success" ]]; then
+              echo "success"
+            else
+              echo "skipped"
+            fi
+          }
+          rust_minimal_result="$(combined_result "${RUST_MINIMAL_RESULT}" "${RUST_MINIMAL_BATCH_RESULT}")"
+          rust_integration_result="$(combined_result "${RUST_INTEGRATION_RESULT}" "${RUST_INTEGRATION_BATCH_RESULT}")"
           python3 .github/scripts/aggregate_validation_summary.py \
             --repo "${GITHUB_REPOSITORY}" \
             --host-ref "${{ github.ref_name }}" \
@@ -941,12 +1080,14 @@ jobs:
             --smoke-gate-result "${smoke_gate_result}" \
             --workflow-result "${WORKFLOW_RESULT}" \
             --node-result "${NODE_RESULT}" \
-            --rust-minimal-result "${RUST_MINIMAL_RESULT}" \
-            --rust-integration-result "${RUST_INTEGRATION_RESULT}" \
+            --rust-minimal-result "${rust_minimal_result}" \
+            --rust-integration-result "${rust_integration_result}" \
             --release-result "${RELEASE_RESULT}" \
             --run-artifact "false" \
             --artifact-result "skipped" \
             --matrix-fail-fast "${MATRIX_FAIL_FAST}" \
+            --rust-batching-mode "${RUST_BATCHING_MODE}" \
+            --rust-batching-reason "${RUST_BATCHING_REASON}" \
             --lane-summary-dir "${RUNNER_TEMP}/validation-lane-summaries" \
             --output "${summary_file}"
           echo "SUMMARY_FILE=${summary_file}" >> "$GITHUB_ENV"
@@ -985,6 +1126,7 @@ jobs:
           print(f"- Selected lane count: `{summary['lane_count']}`")
           print(f"- Total recorded lane runtime (ms): `{summary.get('total_duration_ms', 0)}`")
           print(f"- Failed lanes: `{summary['failed_lane_count']}`")
+          print(f"- Rust batching: `{payload['selection'].get('rust_batching_mode') or 'off'}`")
           print(f"- Primary blocker families: `{len(primary_blockers)}`")
           print(f"- Additional failing lanes: `{len(secondary_findings)}`")
           if setup_rows:
@@ -1008,6 +1150,14 @@ jobs:
               for phase, duration_ms in phase_runtime.items():
                   print(f"  - `{phase}`: `{duration_ms}`")
           top_slowest = summary.get("top_slowest_lanes") or []
+          top_batches = summary.get("top_slowest_batches") or []
+          if top_batches:
+              print(f"- Top slow batches (up to {len(top_batches)}):")
+              for batch in top_batches:
+                  print(
+                      f"  - `{batch.get('batch_id')}` (`{batch.get('setup_class')}`): "
+                      f"`{batch.get('duration_ms')}` ms, `{len(batch.get('lane_ids') or [])}` lanes"
+                  )
           if top_slowest:
               print(f"- Top slow lanes (up to {len(top_slowest)}):")
               for lane in top_slowest:
