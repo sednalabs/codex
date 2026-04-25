@@ -430,6 +430,7 @@ jobs:
       max-parallel: ${{ fromJson(needs.metadata.outputs.workflow_max_parallel) }}
       matrix: ${{ fromJson(needs.metadata.outputs.smoke_workflow_matrix) }}
     uses: ./.github/workflows/_validation-lane-workflow.yml
+    secrets: inherit
     with:
       checkout_ref: ${{ needs.metadata.outputs.checkout_ref }}
       checkout_fetch_depth: ${{ matrix.checkout_fetch_depth }}
@@ -631,6 +632,7 @@ jobs:
       max-parallel: ${{ fromJson(needs.metadata.outputs.workflow_max_parallel) }}
       matrix: ${{ fromJson(needs.metadata.outputs.selected_workflow_matrix) }}
     uses: ./.github/workflows/_validation-lane-workflow.yml
+    secrets: inherit
     with:
       checkout_ref: ${{ needs.metadata.outputs.checkout_ref }}
       checkout_fetch_depth: ${{ matrix.checkout_fetch_depth }}

@@ -7,7 +7,7 @@ use crate::key_hint;
 use crate::key_hint::KeyBinding;
 use codex_protocol::ThreadId;
 use codex_protocol::mcp::RequestId;
-use codex_protocol::models::PermissionProfile;
+use codex_protocol::models::AdditionalPermissionProfile;
 use codex_protocol::permissions::FileSystemAccessMode;
 use codex_protocol::permissions::FileSystemPath;
 use codex_protocol::permissions::FileSystemSandboxEntry;
@@ -31,7 +31,7 @@ pub(crate) enum ApprovalRequest {
         reason: Option<String>,
         available_decisions: Vec<ReviewDecision>,
         network_approval_context: Option<NetworkApprovalContext>,
-        additional_permissions: Option<PermissionProfile>,
+        additional_permissions: Option<AdditionalPermissionProfile>,
     },
     Permissions {
         thread_id: ThreadId,
@@ -178,7 +178,7 @@ pub(crate) fn build_approval_options(request: &ApprovalRequest) -> (Vec<Approval
 pub(crate) fn exec_options(
     available_decisions: &[ReviewDecision],
     network_approval_context: Option<&NetworkApprovalContext>,
-    additional_permissions: Option<&PermissionProfile>,
+    additional_permissions: Option<&AdditionalPermissionProfile>,
 ) -> Vec<ApprovalOption> {
     available_decisions
         .iter()
@@ -267,7 +267,7 @@ pub(crate) fn exec_options(
 }
 
 pub(crate) fn format_additional_permissions_rule(
-    additional_permissions: &PermissionProfile,
+    additional_permissions: &AdditionalPermissionProfile,
 ) -> Option<String> {
     let mut parts = Vec::new();
     if additional_permissions

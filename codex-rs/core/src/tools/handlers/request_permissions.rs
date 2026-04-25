@@ -76,7 +76,7 @@ impl ToolHandler for RequestPermissionsHandler {
 mod tests {
     use super::*;
     use codex_protocol::models::FileSystemPermissions;
-    use codex_protocol::models::PermissionProfile;
+    use codex_protocol::request_permissions::RequestPermissionProfile;
     use codex_utils_absolute_path::AbsolutePathBuf;
     use pretty_assertions::assert_eq;
     use tempfile::tempdir;
@@ -105,15 +105,13 @@ mod tests {
 
         assert_eq!(
             args.permissions,
-            codex_protocol::request_permissions::RequestPermissionProfile::from(
-                PermissionProfile {
-                    file_system: Some(FileSystemPermissions::from_read_write_roots(
-                        /*read*/ None,
-                        Some(vec![AbsolutePathBuf::try_from(expected_write)?]),
-                    )),
-                    ..Default::default()
-                }
-            )
+            RequestPermissionProfile {
+                file_system: Some(FileSystemPermissions::from_read_write_roots(
+                    /*read*/ None,
+                    Some(vec![AbsolutePathBuf::try_from(expected_write)?]),
+                )),
+                ..Default::default()
+            }
         );
         Ok(())
     }

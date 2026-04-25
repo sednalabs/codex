@@ -146,11 +146,11 @@ jobs:
             exit 1
           fi
 
-      - name: Set up Node.js for js_repl tests
+      - name: Set up Node.js
         if: ${{ inputs.setup_class != 'light' }}
         uses: actions/setup-node@v6
         with:
-          node-version-file: codex-rs/node-version.txt
+          node-version: 22
 
       - name: Install Linux build dependencies
         if: ${{ inputs.setup_class != 'light' }}

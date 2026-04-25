@@ -129,18 +129,11 @@ jobs:
           ref: ${{ github.sha }}
           path: .workflow-src
 
-      - name: Set up Node.js for js_repl tests
+      - name: Set up Node.js
         if: ${{ inputs.needs_node }}
         uses: actions/setup-node@v6
         with:
-          node-version-file: codex-rs/node-version.txt
-
-      - name: Bind js_repl Node runtime
-        if: ${{ inputs.needs_node }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          echo "CODEX_JS_REPL_NODE_PATH=$(command -v node)" >> "$GITHUB_ENV"
+          node-version: 22
 
       - name: Install Linux build dependencies
         if: ${{ inputs.needs_linux_build_deps }}
