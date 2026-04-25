@@ -229,56 +229,11 @@ jobs:
         with:
           tool: sccache
 
-      - name: Expose GitHub cache-service env for sccache
-        if: ${{ inputs.setup_class != 'light' }}
-        uses: actions/github-script@v9
-        with:
-          script: |
-            core.exportVariable('ACTIONS_CACHE_SERVICE_V2', 'on');
-            core.exportVariable('ACTIONS_RESULTS_URL', process.env.ACTIONS_RESULTS_URL || '');
-            core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env.ACTIONS_RUNTIME_TOKEN || '');
-
       - name: Configure sccache backend
         id: sccache_backend
         if: ${{ inputs.setup_class != 'light' }}
         shell: bash
-        run: |
-          set -euo pipefail
-          policy='${{ inputs.cache_policy }}'
-          case "${policy}" in
-            off|restore-only|write-fallback) ;;
-            *)
-              echo "::warning title=Unknown cache policy::${policy}; using restore-only"
-              policy="restore-only"
-              ;;
-          esac
-          echo "policy=${policy}" >> "$GITHUB_OUTPUT"
-          if [[ "${policy}" == "off" ]]; then
-            {
-              echo "SCCACHE_GHA_ENABLED=false"
-              echo "SCCACHE_DIR=${GITHUB_WORKSPACE}/.sccache"
-            } >> "$GITHUB_ENV"
-            echo "backend=off" >> "$GITHUB_OUTPUT"
-            echo "sccache disabled by cache policy"
-            exit 0
-          fi
-          cache_url="${SCCACHE_GHA_CACHE_URL:-${ACTIONS_RESULTS_URL:-${ACTIONS_CACHE_URL:-}}}"
-          if [[ -n "${cache_url}" && -n "${ACTIONS_RUNTIME_TOKEN:-}" ]]; then
-            {
-              echo "ACTIONS_CACHE_SERVICE_V2=on"
-              echo "SCCACHE_GHA_ENABLED=true"
-              echo "SCCACHE_GHA_CACHE_URL=${cache_url}"
-            } >> "$GITHUB_ENV"
-            echo "backend=gha" >> "$GITHUB_OUTPUT"
-            echo "Using sccache GitHub backend"
-          else
-            {
-              echo "SCCACHE_GHA_ENABLED=false"
-              echo "SCCACHE_DIR=${{ github.workspace }}/.sccache"
-            } >> "$GITHUB_ENV"
-            echo "backend=fallback" >> "$GITHUB_OUTPUT"
-            echo "Using sccache local disk + actions/cache fallback"
-          fi
+        run: bash .workflow-src/.github/scripts/configure_sccache_backend.sh '${{ inputs.cache_policy }}'
 
       - name: Enable sccache wrapper
         if: ${{ inputs.setup_class != 'light' && steps.sccache_backend.outputs.backend != 'off' }}
