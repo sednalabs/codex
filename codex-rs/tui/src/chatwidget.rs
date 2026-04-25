@@ -6948,7 +6948,7 @@ impl ChatWidget {
                     self.on_computer_use_call_begin(request);
                     self.on_computer_use_call_end(ComputerUseCallResponseEvent {
                         call_id: id,
-                        turn_id,
+                        turn_id: turn_id.clone(),
                         environment_id,
                         adapter,
                         tool,
