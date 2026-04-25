@@ -574,8 +574,6 @@ fn disabled_interrupted_fork_snapshot_appends_only_interrupt_event() {
             RolloutItem::EventMsg(EventMsg::TurnAborted(TurnAbortedEvent {
                 turn_id: None,
                 reason: TurnAbortReason::Interrupted,
-                completed_at: None,
-                duration_ms: None,
             })),
         ])
         .expect("serialize expected disabled interrupted fork history"),
@@ -594,8 +592,6 @@ fn disabled_interrupted_fork_snapshot_appends_only_interrupt_event() {
             TurnAbortedEvent {
                 turn_id: None,
                 reason: TurnAbortReason::Interrupted,
-                completed_at: None,
-                duration_ms: None,
             },
         ))])
         .expect("serialize expected disabled interrupted empty fork history"),
