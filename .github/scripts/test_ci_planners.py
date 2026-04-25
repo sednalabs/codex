@@ -1002,6 +1002,14 @@ class ValidationPlanScriptTests(unittest.TestCase):
                     "${{ matrix.needs_bazel }}",
                 )
 
+    def test_validation_lab_workflow_lanes_do_not_inherit_secrets(self) -> None:
+        payload = load_workflow_payload(REPO_ROOT / ".github/workflows/validation-lab.yml")
+        jobs = payload.get("jobs") or {}
+
+        for job_name in ["smoke_workflow_lanes", "workflow_lanes"]:
+            with self.subTest(job=job_name):
+                self.assertNotIn("secrets", jobs.get(job_name) or {})
+
     def test_sedna_heavy_writes_fallback_cache_only_for_manual_dispatch(self) -> None:
         payload = load_workflow_payload(REPO_ROOT / ".github/workflows/sedna-heavy-tests.yml")
         jobs = payload.get("jobs") or {}
@@ -1115,7 +1123,7 @@ class ValidationPlanScriptTests(unittest.TestCase):
                     summary_step.get("run") or "",
                 )
 
-    def test_validation_lane_workflow_keeps_upstream_sync_secret_out_of_pr_lanes(self) -> None:
+    def test_validation_lane_workflow_keeps_secrets_out_of_target_scripts(self) -> None:
         payload = load_workflow_payload(REPO_ROOT / ".github/workflows/_validation-lane-workflow.yml")
         workflow_call = ((payload.get("on") or {}).get("workflow_call") or {})
         self.assertNotIn("secrets", workflow_call)
@@ -1126,7 +1134,11 @@ class ValidationPlanScriptTests(unittest.TestCase):
             for step in run_job.get("steps") or []
             if step.get("name") == "Run requested lane script"
         )
-        self.assertNotIn("SYNC_UPSTREAM_PUSH_TOKEN", run_lane_step.get("env") or {})
+        run_lane_env = run_lane_step.get("env") or {}
+        for env_name, env_value in run_lane_env.items():
+            with self.subTest(env=env_name):
+                self.assertNotRegex(env_name, r"(API_KEY|PRIVATE_KEY|SECRET|TOKEN)")
+                self.assertNotIn("secrets.", str(env_value))
 
     def test_sedna_sync_upstream_uses_github_app_token_and_shared_helper(self) -> None:
         payload = load_workflow_payload(REPO_ROOT / ".github/workflows/sedna-sync-upstream.yml")
