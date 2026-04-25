@@ -6533,6 +6533,8 @@ impl ChatWidget {
                     notification.token_usage,
                 )));
             }
+            ServerNotification::ThreadGoalUpdated(_) => {}
+            ServerNotification::ThreadGoalCleared(_) => {}
             ServerNotification::ThreadNameUpdated(notification) => {
                 match ThreadId::from_string(&notification.thread_id) {
                     Ok(thread_id) => self.on_thread_name_updated(
@@ -7089,6 +7091,7 @@ impl ChatWidget {
         match msg {
             EventMsg::SessionConfigured(e) => self.on_session_configured(e),
             EventMsg::ThreadNameUpdated(e) => self.on_thread_name_updated(e),
+            EventMsg::ThreadGoalUpdated(_) => {}
             // NOTE: All three AgentMessage arms feed `record_agent_markdown` even
             // when the message is otherwise not rendered (thread-snapshot replay,
             // non-review live messages). This ensures the copy source stays
@@ -7198,6 +7201,9 @@ impl ChatWidget {
                     self.on_error("Turn aborted: replaced by a new task".to_owned())
                 }
                 TurnAbortReason::ReviewEnded => {
+                    self.on_interrupted_turn(ev.reason);
+                }
+                TurnAbortReason::BudgetLimited => {
                     self.on_interrupted_turn(ev.reason);
                 }
             },
