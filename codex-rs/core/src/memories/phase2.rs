@@ -931,13 +931,12 @@ pub(in crate::memories) mod agent {
                 Ok(path) => path,
                 Err(err) => panic!("memory root should be absolute: {err}"),
             }],
-            read_only_access: Default::default(),
             network_access: false,
             exclude_tmpdir_env_var: true,
             exclude_slash_tmp: true,
         };
         let file_system_sandbox_policy =
-            FileSystemSandboxPolicy::from_legacy_sandbox_policy(&sandbox_policy, root);
+            FileSystemSandboxPolicy::from_legacy_sandbox_policy_for_cwd(&sandbox_policy, root);
         let network_sandbox_policy = NetworkSandboxPolicy::from(&sandbox_policy);
         let fingerprint = ConsolidatorFingerprint {
             attestation_schema_version: CONSOLIDATION_ARTIFACT_ATTESTATION_SCHEMA_VERSION,
