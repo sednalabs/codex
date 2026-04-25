@@ -57,6 +57,7 @@ use crate::tasks::execute_user_shell_command;
 use crate::tools::ToolRouter;
 use crate::tools::context::ToolInvocation;
 use crate::tools::context::ToolPayload;
+use crate::tools::handlers::GoalHandler;
 use crate::tools::handlers::ShellHandler;
 use crate::tools::handlers::UnifiedExecHandler;
 use crate::tools::registry::ToolHandler;
@@ -101,6 +102,7 @@ use codex_protocol::protocol::ResumedHistory;
 use codex_protocol::protocol::RolloutItem;
 use codex_protocol::protocol::SkillScope;
 use codex_protocol::protocol::Submission;
+use codex_protocol::protocol::ThreadGoalStatus;
 use codex_protocol::protocol::ThreadRolledBackEvent;
 use codex_protocol::protocol::TokenCountEvent;
 use codex_protocol::protocol::TokenUsage;
@@ -3348,6 +3350,7 @@ pub(crate) async fn make_session_and_context() -> (Session, TurnContext) {
         session_configuration.cwd.clone(),
         "turn_id".to_string(),
         skills_outcome,
+        /*goal_tools_supported*/ true,
     );
 
     let (mailbox, mailbox_rx) = crate::agent::Mailbox::new();
@@ -4703,6 +4706,7 @@ pub(crate) async fn make_session_and_context_with_dynamic_tools_and_rx(
         session_configuration.cwd.clone(),
         "turn_id".to_string(),
         skills_outcome,
+        /*goal_tools_supported*/ true,
     ));
 
     let (mailbox, mailbox_rx) = crate::agent::Mailbox::new();
@@ -6850,6 +6854,222 @@ async fn sample_rollout(
         rollout_items,
         live_history.for_prompt(&reconstruction_turn.model_info.input_modalities),
     )
+}
+
+#[tokio::test]
+async fn create_goal_tool_rejects_existing_goal() {
+    let (mut session, turn_context) = make_session_and_context().await;
+    let _ = session.features.enable(Feature::Goals);
+    let session = Arc::new(session);
+    upsert_goal_tool_test_thread(session.as_ref()).await;
+    let turn_context = Arc::new(turn_context);
+    let tracker = Arc::new(tokio::sync::Mutex::new(TurnDiffTracker::new()));
+    let handler = GoalHandler;
+
+    handler
+        .handle(ToolInvocation {
+            session: Arc::clone(&session),
+            turn: Arc::clone(&turn_context),
+            cancellation_token: CancellationToken::new(),
+            tracker: Arc::clone(&tracker),
+            call_id: "create-goal-1".to_string(),
+            tool_name: codex_tools::ToolName::plain("create_goal"),
+            source: ToolCallSource::Direct,
+            payload: ToolPayload::Function {
+                arguments: serde_json::json!({
+                    "objective": "Keep the watcher alive",
+                    "token_budget": 123,
+                })
+                .to_string(),
+            },
+        })
+        .await
+        .expect("initial create_goal should succeed");
+
+    let response = handler
+        .handle(ToolInvocation {
+            session: Arc::clone(&session),
+            turn: Arc::clone(&turn_context),
+            cancellation_token: CancellationToken::new(),
+            tracker,
+            call_id: "create-goal-2".to_string(),
+            tool_name: codex_tools::ToolName::plain("create_goal"),
+            source: ToolCallSource::Direct,
+            payload: ToolPayload::Function {
+                arguments: serde_json::json!({
+                    "objective": "Replace the watcher",
+                    "token_budget": 456,
+                })
+                .to_string(),
+            },
+        })
+        .await;
+
+    let Err(FunctionCallError::RespondToModel(output)) = response else {
+        panic!("expected create_goal to reject an existing goal");
+    };
+    assert_eq!(
+        output,
+        "cannot create a new goal because this thread already has a goal; use update_goal only when the existing goal is complete"
+    );
+
+    let goal = session
+        .get_thread_goal()
+        .await
+        .expect("read thread goal")
+        .expect("goal should still exist");
+    assert_eq!(goal.objective, "Keep the watcher alive");
+    assert_eq!(goal.token_budget, Some(123));
+}
+
+#[tokio::test]
+async fn update_goal_tool_rejects_pausing_goal() {
+    let (mut session, turn_context) = make_session_and_context().await;
+    let _ = session.features.enable(Feature::Goals);
+    let session = Arc::new(session);
+    upsert_goal_tool_test_thread(session.as_ref()).await;
+    let turn_context = Arc::new(turn_context);
+    let tracker = Arc::new(tokio::sync::Mutex::new(TurnDiffTracker::new()));
+    let handler = GoalHandler;
+
+    handler
+        .handle(ToolInvocation {
+            session: Arc::clone(&session),
+            turn: Arc::clone(&turn_context),
+            cancellation_token: CancellationToken::new(),
+            tracker: Arc::clone(&tracker),
+            call_id: "create-goal".to_string(),
+            tool_name: codex_tools::ToolName::plain("create_goal"),
+            source: ToolCallSource::Direct,
+            payload: ToolPayload::Function {
+                arguments: serde_json::json!({
+                    "objective": "Keep the watcher alive",
+                    "token_budget": 123,
+                })
+                .to_string(),
+            },
+        })
+        .await
+        .expect("initial create_goal should succeed");
+
+    let response = handler
+        .handle(ToolInvocation {
+            session: Arc::clone(&session),
+            turn: Arc::clone(&turn_context),
+            cancellation_token: CancellationToken::new(),
+            tracker,
+            call_id: "pause-goal".to_string(),
+            tool_name: codex_tools::ToolName::plain("update_goal"),
+            source: ToolCallSource::Direct,
+            payload: ToolPayload::Function {
+                arguments: serde_json::json!({
+                    "status": "paused",
+                })
+                .to_string(),
+            },
+        })
+        .await;
+
+    let Err(FunctionCallError::RespondToModel(output)) = response else {
+        panic!("expected update_goal to reject pausing a goal");
+    };
+    assert_eq!(
+        output,
+        "update_goal can only mark the existing goal complete; pause, resume, and budget-limited status changes are controlled by the user or system"
+    );
+
+    let goal = session
+        .get_thread_goal()
+        .await
+        .expect("read thread goal")
+        .expect("goal should still exist");
+    assert_eq!(goal.status, ThreadGoalStatus::Active);
+}
+
+#[tokio::test]
+async fn update_goal_tool_marks_goal_complete() {
+    let (mut session, turn_context) = make_session_and_context().await;
+    let _ = session.features.enable(Feature::Goals);
+    let session = Arc::new(session);
+    upsert_goal_tool_test_thread(session.as_ref()).await;
+    let turn_context = Arc::new(turn_context);
+    let tracker = Arc::new(tokio::sync::Mutex::new(TurnDiffTracker::new()));
+    let handler = GoalHandler;
+
+    handler
+        .handle(ToolInvocation {
+            session: Arc::clone(&session),
+            turn: Arc::clone(&turn_context),
+            cancellation_token: CancellationToken::new(),
+            tracker: Arc::clone(&tracker),
+            call_id: "create-goal".to_string(),
+            tool_name: codex_tools::ToolName::plain("create_goal"),
+            source: ToolCallSource::Direct,
+            payload: ToolPayload::Function {
+                arguments: serde_json::json!({
+                    "objective": "Keep the watcher alive",
+                    "token_budget": 123,
+                })
+                .to_string(),
+            },
+        })
+        .await
+        .expect("initial create_goal should succeed");
+
+    handler
+        .handle(ToolInvocation {
+            session: Arc::clone(&session),
+            turn: Arc::clone(&turn_context),
+            cancellation_token: CancellationToken::new(),
+            tracker,
+            call_id: "complete-goal".to_string(),
+            tool_name: codex_tools::ToolName::plain("update_goal"),
+            source: ToolCallSource::Direct,
+            payload: ToolPayload::Function {
+                arguments: serde_json::json!({
+                    "status": "complete",
+                })
+                .to_string(),
+            },
+        })
+        .await
+        .expect("update_goal should mark the goal complete");
+
+    let goal = session
+        .get_thread_goal()
+        .await
+        .expect("read thread goal")
+        .expect("goal should still exist");
+    assert_eq!(goal.status, ThreadGoalStatus::Complete);
+}
+
+async fn upsert_goal_tool_test_thread(session: &Session) {
+    let config = session.get_config().await;
+    let state_db = codex_state::StateRuntime::init(
+        config.sqlite_home.clone(),
+        config.model_provider_id.clone(),
+    )
+    .await
+    .expect("state db should initialize");
+    let mut builder = codex_state::ThreadMetadataBuilder::new(
+        session.conversation_id,
+        config
+            .codex_home
+            .join("goal-tool-test-rollout.jsonl")
+            .to_path_buf(),
+        chrono::Utc::now(),
+        SessionSource::Exec,
+    );
+    builder.cwd = config.cwd.to_path_buf();
+    builder.model_provider = Some(config.model_provider_id.clone());
+    builder.cli_version = Some(env!("CARGO_PKG_VERSION").to_string());
+    builder.sandbox_policy = config.permissions.sandbox_policy.get().clone();
+    builder.approval_mode = config.permissions.approval_policy.value();
+    let metadata = builder.build(config.model_provider_id.as_str());
+    state_db
+        .upsert_thread(&metadata)
+        .await
+        .expect("thread metadata should be upserted");
 }
 
 #[tokio::test]
