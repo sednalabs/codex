@@ -47,6 +47,13 @@ const AGENT_NAMES: &str = include_str!("agent_names.txt");
 const FORKED_SPAWN_AGENT_OUTPUT_MESSAGE: &str = "You are the newly spawned agent. The prior conversation history was forked from your parent agent. Treat the next user message as your new task, and use the forked history only as background context.";
 pub(crate) const SUBAGENT_IDENTITY_SOURCE_THREAD_CONFIG_SNAPSHOT: &str = "thread_config_snapshot";
 const ROOT_LAST_TASK_MESSAGE: &str = "Main thread";
+const INSPECT_AGENT_TREE_STATE_DB_UNAVAILABLE_MESSAGE: &str = concat!(
+    "inspect_agent_tree cannot include stale descendants because this session has no configured ",
+    "state_db. Retry with scope=\"live\" for live-only inspection. For a completed sidecar, use ",
+    "$subagent-session-tail with the child thread id (`inspect_subagent_tail.py --child-thread-id ",
+    "<child-thread-id>`), or with parent thread id plus the exact agent_path if the child id is ",
+    "unavailable."
+);
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum SpawnAgentForkMode {
@@ -1076,9 +1083,7 @@ impl AgentControl {
         });
 
         if !matches!(scope, AgentTreeScope::Live) && state_db_ctx.is_none() {
-            return Err(CodexErr::UnsupportedOperation(
-                "agent tree inspection for stale descendants requires state_db".to_string(),
-            ));
+            return Err(inspect_agent_tree_state_db_unavailable());
         }
 
         let (tree_root_thread_id, tree_root_session_state) = match target_path.as_ref() {
@@ -1127,9 +1132,7 @@ impl AgentControl {
                 .unwrap_or_else(|| tree_root_thread_id.to_string()),
             AgentSessionState::Stale => {
                 let Some(state_db_ctx) = state_db_ctx.as_ref() else {
-                    return Err(CodexErr::UnsupportedOperation(
-                        "agent tree inspection for stale descendants requires state_db".to_string(),
-                    ));
+                    return Err(inspect_agent_tree_state_db_unavailable());
                 };
                 state_db_ctx
                     .get_thread(tree_root_thread_id)
@@ -1678,9 +1681,7 @@ impl AgentControl {
             }
             AgentSessionState::Stale => {
                 let Some(state_db_ctx) = state_db_ctx else {
-                    return Err(CodexErr::UnsupportedOperation(
-                        "agent tree inspection for stale descendants requires state_db".to_string(),
-                    ));
+                    return Err(inspect_agent_tree_state_db_unavailable());
                 };
                 let metadata = state_db_ctx
                     .get_thread(thread_id)
@@ -1728,9 +1729,7 @@ impl AgentControl {
 
         if !matches!(scope, AgentTreeScope::Live) {
             let Some(state_db_ctx) = state_db_ctx else {
-                return Err(CodexErr::UnsupportedOperation(
-                    "agent tree inspection for stale descendants requires state_db".to_string(),
-                ));
+                return Err(inspect_agent_tree_state_db_unavailable());
             };
             let closed_children = state_db_ctx
                 .list_thread_spawn_children_with_status(
@@ -1761,6 +1760,10 @@ fn thread_spawn_parent_thread_id(session_source: &SessionSource) -> Option<Threa
         }) => Some(*parent_thread_id),
         _ => None,
     }
+}
+
+fn inspect_agent_tree_state_db_unavailable() -> CodexErr {
+    CodexErr::UnsupportedOperation(INSPECT_AGENT_TREE_STATE_DB_UNAVAILABLE_MESSAGE.to_string())
 }
 
 fn agent_matches_prefix(agent_path: Option<&AgentPath>, prefix: &AgentPath) -> bool {
