@@ -59,18 +59,18 @@ References to `carry/main` elsewhere in the repo are historical pre-cutover
 baselines and should be read as prior names for the maintained downstream
 branch.
 
-Current integration code baseline (validated on `2026-04-24`):
-- `upstream/main`: `6f87eb0479018f0dd93db3f9f7b89902aebedb50`
+Current integration code baseline (validated on `2026-04-25`):
+- `upstream/main`: `a2db6f97fb9353edfbcb82ea4fbb89c8346d1222`
 - downstream integration branch `origin/integration/upstream-main-sync-20260424-164627`:
-  `210e4a112b0edd4353832552b4f921f6a47ac090`
+  `a96c652a5becca0c6ed97d31c232d418e115b893`
 - downstream branch `main` (`origin/main`) before merge:
-  `9bf90e67f9e7597fb93bb888eb3d3f613d5ca37b`
+  `a06b1bdb08c0c863b0f499589f096cd3cdd0c9f1`
 - mirror branch `upstream-main` (`origin/upstream-main`):
-  `6f87eb0479018f0dd93db3f9f7b89902aebedb50`
+  `a2db6f97fb9353edfbcb82ea4fbb89c8346d1222`
 - integration divergence counts (`upstream/main...origin/integration/upstream-main-sync-20260424-164627`):
-  `0` upstream ahead, `770` downstream ahead
+  `0` upstream ahead, `790` downstream ahead
 - pre-merge `main` divergence counts (`upstream/main...origin/main`):
-  `16` upstream ahead, `766` downstream ahead
+  `57` upstream ahead, `769` downstream ahead
 - mirror health (`upstream/main...origin/upstream-main`): `0` ahead / `0`
   behind (`exact`)
 
