@@ -433,6 +433,41 @@
       ],
       "type": "object"
     },
+    "ComputerUseCallParams": {
+      "properties": {
+        "adapter": {
+          "type": "string"
+        },
+        "arguments": true,
+        "callId": {
+          "type": "string"
+        },
+        "environmentId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "threadId": {
+          "type": "string"
+        },
+        "tool": {
+          "type": "string"
+        },
+        "turnId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "threadId",
+        "turnId",
+        "callId",
+        "adapter",
+        "tool",
+        "arguments"
+      ],
+      "type": "object"
+    },
     "DynamicToolCallParams": {
       "properties": {
         "arguments": true,
@@ -1842,6 +1877,29 @@
         "params"
       ],
       "title": "Item/tool/callRequest",
+      "type": "object"
+    },
+    {
+      "description": "Execute a native computer-use call on the client.",
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/RequestId"
+        },
+        "method": {
+          "const": "item/computerUse/call",
+          "title": "Item/computerUse/callRequestMethod",
+          "type": "string"
+        },
+        "params": {
+          "$ref": "#/$defs/ComputerUseCallParams"
+        }
+      },
+      "required": [
+        "method",
+        "id",
+        "params"
+      ],
+      "title": "Item/computerUse/callRequest",
       "type": "object"
     },
     {

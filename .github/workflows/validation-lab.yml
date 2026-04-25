@@ -376,6 +376,8 @@ jobs:
       fail-fast: true
       max-parallel: ${{ fromJson(needs.metadata.outputs.workflow_max_parallel) }}
       matrix: ${{ fromJson(needs.metadata.outputs.smoke_workflow_matrix) }}
+    # validation-lab validates operator-selected refs. Do not add
+    # `secrets: inherit` to generic workflow lanes.
     uses: ./.github/workflows/_validation-lane-workflow.yml
     with:
       checkout_ref: ${{ needs.metadata.outputs.checkout_ref }}
@@ -398,6 +400,7 @@ jobs:
       needs_linux_build_deps: ${{ matrix.needs_linux_build_deps }}
       needs_dotslash: ${{ matrix.needs_dotslash }}
       needs_sccache: ${{ matrix.needs_sccache }}
+      needs_bazel: ${{ matrix.needs_bazel }}
 
   smoke_node_lanes:
     name: Validation-lab smoke gate (node)
@@ -562,6 +565,8 @@ jobs:
       fail-fast: ${{ fromJson(needs.metadata.outputs.matrix_fail_fast) }}
       max-parallel: ${{ fromJson(needs.metadata.outputs.workflow_max_parallel) }}
       matrix: ${{ fromJson(needs.metadata.outputs.selected_workflow_matrix) }}
+    # validation-lab validates operator-selected refs. Do not add
+    # `secrets: inherit` to generic workflow lanes.
     uses: ./.github/workflows/_validation-lane-workflow.yml
     with:
       checkout_ref: ${{ needs.metadata.outputs.checkout_ref }}
@@ -584,6 +589,7 @@ jobs:
       needs_linux_build_deps: ${{ matrix.needs_linux_build_deps }}
       needs_dotslash: ${{ matrix.needs_dotslash }}
       needs_sccache: ${{ matrix.needs_sccache }}
+      needs_bazel: ${{ matrix.needs_bazel }}
 
   node_lanes:
     needs:

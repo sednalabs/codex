@@ -16,6 +16,9 @@ use std::time::Duration;
 use crate::AgentPath;
 use crate::ThreadId;
 use crate::approvals::ElicitationRequestEvent;
+use crate::computer_use::ComputerUseCallRequest;
+use crate::computer_use::ComputerUseOutputContentItem;
+use crate::computer_use::ComputerUseResponse;
 use crate::config_types::ApprovalsReviewer;
 use crate::config_types::CollaborationMode;
 use crate::config_types::ModeKind;
@@ -711,6 +714,14 @@ pub enum Op {
         response: DynamicToolResponse,
     },
 
+    /// Resolve a native computer-use call request.
+    ComputerUseResponse {
+        /// Call id for the in-flight request.
+        id: String,
+        /// Computer-use output payload.
+        response: ComputerUseResponse,
+    },
+
     /// Append an entry to the persistent cross-session message history.
     ///
     /// Note the entry is not guaranteed to be logged if the user has
@@ -892,6 +903,7 @@ impl Op {
             Self::UserInputAnswer { .. } => "user_input_answer",
             Self::RequestPermissionsResponse { .. } => "request_permissions_response",
             Self::DynamicToolResponse { .. } => "dynamic_tool_response",
+            Self::ComputerUseResponse { .. } => "computer_use_response",
             Self::AddToHistory { .. } => "add_to_history",
             Self::GetHistoryEntryRequest { .. } => "get_history_entry_request",
             Self::ListMcpTools => "list_mcp_tools",
@@ -1507,6 +1519,10 @@ pub enum EventMsg {
     DynamicToolCallRequest(DynamicToolCallRequest),
 
     DynamicToolCallResponse(DynamicToolCallResponseEvent),
+
+    ComputerUseCallRequest(ComputerUseCallRequest),
+
+    ComputerUseCallResponse(ComputerUseCallResponseEvent),
 
     ElicitationRequest(ElicitationRequestEvent),
 
@@ -2472,6 +2488,33 @@ pub struct DynamicToolCallResponseEvent {
     /// Optional error text when the tool call failed before producing a response.
     pub error: Option<String>,
     /// The duration of the dynamic tool call.
+    #[ts(type = "string")]
+    pub duration: Duration,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, TS, PartialEq)]
+pub struct ComputerUseCallResponseEvent {
+    /// Identifier for the corresponding ComputerUseCallRequest.
+    pub call_id: String,
+    /// Turn ID that this computer-use call belongs to.
+    pub turn_id: String,
+    /// Bound environment for this computer-use call, when available.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub environment_id: Option<String>,
+    /// Computer-use adapter family such as "android".
+    pub adapter: String,
+    /// Computer-use tool name.
+    pub tool: String,
+    /// Computer-use call arguments.
+    pub arguments: serde_json::Value,
+    /// Computer-use response content items.
+    pub content_items: Vec<ComputerUseOutputContentItem>,
+    /// Whether the tool call succeeded.
+    pub success: bool,
+    /// Optional error text when the tool call failed before producing a response.
+    pub error: Option<String>,
+    /// The duration of the computer-use call.
     #[ts(type = "string")]
     pub duration: Duration,
 }

@@ -2757,10 +2757,9 @@ impl CodexMessageProcessor {
                 .default_environment_selections(&config.cwd)
         });
         let dynamic_tools = dynamic_tools.unwrap_or_default();
-        let core_dynamic_tools = if dynamic_tools.is_empty() {
-            Vec::new()
-        } else {
-            if let Err(message) = validate_dynamic_tools(&dynamic_tools) {
+        let core_dynamic_tools = match convert_dynamic_tools(dynamic_tools) {
+            Ok(core_dynamic_tools) => core_dynamic_tools,
+            Err(message) => {
                 let error = JSONRPCErrorError {
                     code: INVALID_REQUEST_ERROR_CODE,
                     message,
@@ -2772,25 +2771,6 @@ impl CodexMessageProcessor {
                     .await;
                 return;
             }
-            dynamic_tools
-                .into_iter()
-                .map(|tool| CoreDynamicToolSpec {
-                    namespace: tool.namespace,
-                    name: tool.name,
-                    description: tool.description,
-                    input_schema: tool.input_schema,
-                    defer_loading: tool.defer_loading,
-                    persist_on_resume: tool.persist_on_resume,
-                    capability: tool.capability.map(|capability| {
-                        codex_protocol::dynamic_tools::DynamicToolCapability {
-                            family: capability.family,
-                            capability_scope: capability.capability_scope,
-                            mutation_class: capability.mutation_class,
-                            lease_mode: capability.lease_mode,
-                        }
-                    }),
-                })
-                .collect()
         };
         let core_dynamic_tool_count = core_dynamic_tools.len();
 
@@ -4557,6 +4537,23 @@ impl CodexMessageProcessor {
             return;
         }
 
+        let core_dynamic_tools =
+            match convert_dynamic_tools(params.dynamic_tools.clone().unwrap_or_default()) {
+                Ok(core_dynamic_tools) => core_dynamic_tools,
+                Err(message) => {
+                    self.send_invalid_request_error(request_id, message).await;
+                    return;
+                }
+            };
+        let dynamic_tools_requested = !core_dynamic_tools.is_empty();
+        if dynamic_tools_requested
+            && self
+                .prepare_loaded_thread_for_dynamic_tool_resume(request_id.clone(), &params)
+                .await
+        {
+            return;
+        }
+
         if self
             .resume_running_thread(request_id.clone(), &params)
             .await
@@ -4580,6 +4577,7 @@ impl CodexMessageProcessor {
             base_instructions,
             developer_instructions,
             personality,
+            dynamic_tools: _dynamic_tools,
             exclude_turns,
             persist_extended_history,
         } = params;
@@ -4649,10 +4647,11 @@ impl CodexMessageProcessor {
 
         match self
             .thread_manager
-            .resume_thread_with_history(
+            .resume_thread_with_history_and_tools(
                 config,
                 thread_history,
                 self.auth_manager.clone(),
+                core_dynamic_tools,
                 persist_extended_history,
                 self.request_trace_context(&request_id).await,
             )
@@ -4981,6 +4980,108 @@ impl CodexMessageProcessor {
         false
     }
 
+    async fn prepare_loaded_thread_for_dynamic_tool_resume(
+        &mut self,
+        request_id: ConnectionRequestId,
+        params: &ThreadResumeParams,
+    ) -> bool {
+        let Ok(existing_thread_id) = ThreadId::from_string(&params.thread_id) else {
+            return false;
+        };
+        let Ok(existing_thread) = self.thread_manager.get_thread(existing_thread_id).await else {
+            return false;
+        };
+
+        if params.history.is_some() {
+            return false;
+        }
+
+        if matches!(existing_thread.agent_status().await, AgentStatus::Running) {
+            self.send_invalid_request_error(
+                request_id,
+                format!(
+                    "cannot resume loaded thread {existing_thread_id} with dynamic tools while a turn is running; retry after the thread is idle or after app-server restart"
+                ),
+            )
+            .await;
+            return true;
+        }
+
+        let Some(source_thread) = self
+            .read_stored_thread_for_resume(
+                request_id.clone(),
+                &params.thread_id,
+                params.path.as_ref(),
+                /*include_history*/ false,
+            )
+            .await
+        else {
+            return true;
+        };
+        if source_thread.thread_id != existing_thread_id {
+            self.send_invalid_request_error(
+                request_id,
+                format!(
+                    "cannot resume loaded thread {existing_thread_id} with dynamic tools from source thread {}",
+                    source_thread.thread_id
+                ),
+            )
+            .await;
+            return true;
+        }
+
+        {
+            let mut pending_thread_unloads = self.pending_thread_unloads.lock().await;
+            if pending_thread_unloads.contains(&existing_thread_id) {
+                self.send_invalid_request_error(
+                    request_id,
+                    format!(
+                        "thread {existing_thread_id} is closing; retry thread/resume after the thread is closed"
+                    ),
+                )
+                .await;
+                return true;
+            }
+            pending_thread_unloads.insert(existing_thread_id);
+        }
+
+        match Self::wait_for_thread_shutdown(&existing_thread).await {
+            ThreadShutdownResult::Complete => {
+                self.thread_manager.remove_thread(&existing_thread_id).await;
+                self.finalize_thread_teardown(existing_thread_id).await;
+                false
+            }
+            ThreadShutdownResult::SubmitFailed => {
+                self.pending_thread_unloads
+                    .lock()
+                    .await
+                    .remove(&existing_thread_id);
+                self.send_invalid_request_error(
+                    request_id,
+                    format!(
+                        "failed to prepare loaded thread {existing_thread_id} for dynamic-tool resume; retry after app-server restart"
+                    ),
+                )
+                .await;
+                true
+            }
+            ThreadShutdownResult::TimedOut => {
+                self.pending_thread_unloads
+                    .lock()
+                    .await
+                    .remove(&existing_thread_id);
+                self.send_invalid_request_error(
+                    request_id,
+                    format!(
+                        "timed out waiting for loaded thread {existing_thread_id} to close before dynamic-tool resume; retry after the thread is closed or app-server restart"
+                    ),
+                )
+                .await;
+                true
+            }
+        }
+    }
+
     async fn resume_thread_from_history(
         &self,
         request_id: ConnectionRequestId,
@@ -5235,6 +5336,7 @@ impl CodexMessageProcessor {
             config: cli_overrides,
             base_instructions,
             developer_instructions,
+            dynamic_tools,
             ephemeral,
             exclude_turns,
             persist_extended_history,
@@ -5334,6 +5436,13 @@ impl CodexMessageProcessor {
         let fallback_model_provider = config.model_provider_id.clone();
         let instruction_sources = Self::instruction_sources_from_config(&config).await;
         let fork_thread_store = configured_thread_store(&config);
+        let core_dynamic_tools = match convert_dynamic_tools(dynamic_tools.unwrap_or_default()) {
+            Ok(core_dynamic_tools) => core_dynamic_tools,
+            Err(message) => {
+                self.send_invalid_request_error(request_id, message).await;
+                return;
+            }
+        };
 
         let NewThread {
             thread_id,
@@ -5342,7 +5451,7 @@ impl CodexMessageProcessor {
             ..
         } = match self
             .thread_manager
-            .fork_thread_from_history(
+            .fork_thread_from_history_with_tools(
                 ForkSnapshot::Interrupted,
                 config,
                 InitialHistory::Resumed(ResumedHistory {
@@ -5350,6 +5459,7 @@ impl CodexMessageProcessor {
                     history: history_items.clone(),
                     rollout_path: source_thread.rollout_path.clone(),
                 }),
+                core_dynamic_tools,
                 persist_extended_history,
                 self.request_trace_context(&request_id).await,
             )
@@ -9541,6 +9651,34 @@ fn validate_dynamic_tools(tools: &[ApiDynamicToolSpec]) -> Result<(), String> {
     Ok(())
 }
 
+fn convert_dynamic_tools(
+    tools: Vec<ApiDynamicToolSpec>,
+) -> Result<Vec<CoreDynamicToolSpec>, String> {
+    if tools.is_empty() {
+        return Ok(Vec::new());
+    }
+    validate_dynamic_tools(&tools)?;
+    Ok(tools
+        .into_iter()
+        .map(|tool| CoreDynamicToolSpec {
+            namespace: tool.namespace,
+            name: tool.name,
+            description: tool.description,
+            input_schema: tool.input_schema,
+            defer_loading: tool.defer_loading,
+            persist_on_resume: tool.persist_on_resume,
+            capability: tool.capability.map(|capability| {
+                codex_protocol::dynamic_tools::DynamicToolCapability {
+                    family: capability.family,
+                    capability_scope: capability.capability_scope,
+                    mutation_class: capability.mutation_class,
+                    lease_mode: capability.lease_mode,
+                }
+            }),
+        })
+        .collect())
+}
+
 fn validate_dynamic_tool_capability_value(
     name: &str,
     field: &str,
@@ -11057,6 +11195,7 @@ mod tests {
             base_instructions: None,
             developer_instructions: None,
             personality: None,
+            dynamic_tools: None,
             exclude_turns: false,
             persist_extended_history: false,
         };

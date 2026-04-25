@@ -114,6 +114,9 @@ artifacts.
      repeating the whole family.
    - The workflow summary now records the profile intent, profile notes, and a
      compact lane-selection summary for operator handoff.
+   - Explicit lint lane: `codex.argument-comment-lint` runs the Bazel-backed
+     argument-comment check as a selectable hosted lane, so comment-lint
+     failures can be proven without broad local Rust validation.
    - Reason: best signal per runner-minute without polluting PR surfaces, and
      lower unnecessary compute, carbon, and wait time once the blocker is
      already known.
@@ -279,6 +282,36 @@ The important fields are:
 The checked-in lane scripts are now the workflow source of truth; `just`
 remains a convenience layer that some scripts may call, not the planner's
 execution primitive.
+
+## Secret Boundary
+
+Reusable validation-lane workflows deliberately separate trusted workflow
+helpers from the target checkout being validated. Shared helper scripts come
+from the workflow ref through the `.workflow-src` checkout, while lane scripts
+come from the target ref selected by the PR, dispatch, or lab input.
+
+Because lane scripts are target-controlled, generic validation lanes must not
+receive repository or organization secrets. Keep the `Run requested lane
+script` environment limited to routing and execution inputs such as
+`WORKING_DIRECTORY`, `SCRIPT_PATH`, and `SCRIPT_ARGS_JSON`. Do not add
+`secrets.*`, secret-shaped environment variables, or `secrets: inherit` to the
+generic workflow-lane path.
+
+Credentialed integrations belong in one of these narrower places instead:
+
+- a trusted workflow-ref step that does not execute target-checkout scripts
+- a protected-branch, scheduled, or post-merge workflow
+- a purpose-built reusable workflow with explicit, reviewed secret inputs and a
+  trusted execution boundary
+
+For PR and validation-lab runs, prefer unauthenticated cache or service access
+over passing credentials into target scripts. Slower hosted validation is a
+better tradeoff than making scratch or PR code secret-bearing.
+
+The upstream mirror sync is the exception that proves the rule: only
+`sedna-sync-upstream` should receive the upstream mirror write credential, and
+validation lanes should audit against read-only refs or read-only fallback
+state.
 
 ## Summary artifact
 

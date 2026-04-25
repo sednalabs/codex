@@ -107,6 +107,7 @@ def normalize_catalog(catalog: dict) -> dict:
         lane.setdefault("cost_class", derive_cost_class(lane["setup_class"]))
         lane.setdefault("checkout_fetch_depth", 1)
         lane.setdefault("frontier_default", False)
+        lane.setdefault("needs_bazel", False)
         lane.setdefault(
             "smoke_gate_only",
             bool(lane.get("smoke_gate_kinds"))
@@ -193,9 +194,13 @@ def validate_catalog(catalog: dict) -> None:
             "needs_linux_build_deps",
             "needs_dotslash",
             "needs_sccache",
+            "needs_bazel",
         ):
             if not isinstance(lane.get(field), bool):
                 raise SystemExit(f"lane {lane_id} must set {field} to true or false")
+
+        if "pilot_only" in lane and not isinstance(lane.get("pilot_only"), bool):
+            raise SystemExit(f"lane {lane_id} must set pilot_only to true or false")
 
         resolve_checkout_fetch_depth(lane)
 
@@ -237,6 +242,7 @@ def lane_payload(spec: dict, *, lane_phase: str) -> dict:
         "needs_linux_build_deps": bool(spec["needs_linux_build_deps"]),
         "needs_dotslash": bool(spec["needs_dotslash"]),
         "needs_sccache": bool(spec["needs_sccache"]),
+        "needs_bazel": bool(spec.get("needs_bazel", False)),
         "batch_group": str(spec.get("batch_group") or default_batch_group(spec)),
         "batch_weight_seconds": resolve_batch_weight_seconds(spec),
     }
@@ -332,6 +338,7 @@ def select_frontier_all(catalog: dict, *, include_explicit_only: bool = False) -
         for spec in catalog["lanes"]
         if spec.get("status_class") in allowed_status_classes
         and (include_explicit_only or not spec.get("explicit_only"))
+        and not spec.get("pilot_only")
         and not is_smoke_gate_lane(spec)
     ]
 
@@ -802,6 +809,8 @@ def heavy_plan(args: argparse.Namespace) -> None:
                     continue
                 if not active_groups.intersection(spec.get("groups") or []):
                     continue
+            elif spec.get("pilot_only"):
+                continue
             if lane_id in seen:
                 continue
             seen.add(lane_id)
@@ -823,11 +832,9 @@ def heavy_plan(args: argparse.Namespace) -> None:
             if run_smoke_gate:
                 selected = exclude_smoke_gate_lanes(selected, smoke_matrix)
 
-    manual_harvest = explicit_requested_lane is False and (
-        args.event_name == "workflow_dispatch" and parse_bool(args.run_all_lanes)
-    )
+    full_heavy_harvest = explicit_requested_lane is False and parse_bool(args.run_all_lanes)
     parallel_limits = setup_parallel_limits(
-        "frontier" if manual_harvest else "targeted", [*smoke_matrix, *selected]
+        "frontier" if full_heavy_harvest else "targeted", [*smoke_matrix, *selected]
     )
     rust_batching_mode, rust_batching_reason = effective_rust_batching_mode(
         args.rust_batching, args.rust_batching_override
@@ -859,8 +866,9 @@ def heavy_plan(args: argparse.Namespace) -> None:
         "run_selected_lanes": "true" if bool(selected) else "false",
         "run_smoke_gate": "true" if run_smoke_gate else "false",
         "smoke_gate_kind": smoke_gate_kind,
-        "matrix_fail_fast": "false" if manual_harvest else "true",
-        "continue_after_smoke_failure": "true" if manual_harvest else "false",
+        "matrix_fail_fast": "false" if full_heavy_harvest else "true",
+        "continue_after_smoke_failure": "true" if full_heavy_harvest else "false",
+        "eager_release_lanes": "true" if full_heavy_harvest else "false",
         "workflow_max_parallel": str(parallel_limits["workflow"]),
         "node_max_parallel": str(parallel_limits["node"]),
         "rust_minimal_max_parallel": str(parallel_limits["rust_minimal"]),

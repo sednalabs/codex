@@ -50,6 +50,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--matrix-fail-fast", default="false")
     parser.add_argument("--rust-batching-mode", default="")
     parser.add_argument("--rust-batching-reason", default="")
+    parser.add_argument("--cache-occupancy-json", default="")
     parser.add_argument("--lane-summary-dir", required=True)
     parser.add_argument("--output", required=True)
     return parser.parse_args()
@@ -84,6 +85,19 @@ def load_lane_summaries(directory: Path) -> dict[str, dict]:
             continue
         summaries[str(lane_id)] = payload
     return summaries
+
+
+def load_optional_json(path: str) -> dict:
+    if not path.strip():
+        return {}
+    payload_path = Path(path)
+    if not payload_path.exists():
+        return {}
+    try:
+        payload = json.loads(payload_path.read_text(encoding="utf-8"))
+    except JSONDecodeError:
+        return {"available": False, "error": "cache occupancy JSON was malformed"}
+    return payload if isinstance(payload, dict) else {}
 
 
 def lane_status(lane: dict) -> str:
@@ -663,6 +677,7 @@ def main() -> None:
             },
         },
         "lanes": results,
+        "cache_occupancy": load_optional_json(args.cache_occupancy_json),
         "summary": summary,
     }
 

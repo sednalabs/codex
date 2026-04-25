@@ -193,6 +193,8 @@ tui-brokered-tool-replay-targeted:
     cargo test -p codex-tui replays_in_progress_dynamic_tool_items_without_completion_event --lib -- --exact --test-threads=1
     cargo test -p codex-tui live_app_server_dynamic_tool_item_start_clears_compaction_status_header --lib -- --exact --test-threads=1
     cargo test -p codex-tui active_dynamic_tool_call_renders_exact_arguments_and_preview --lib -- --exact --test-threads=1
+    cargo test -p codex-tui replays_computer_use_items_from_turn_snapshots --lib -- --exact --test-threads=1
+    cargo test -p codex-tui computer_use_fallback_message_only_shows_for_primary_thread --lib -- --exact --test-threads=1
 
 # Focused multi-agent orchestration slice covering wait semantics and tool guidance.
 core-multi-agent-orchestration-targeted:
@@ -256,6 +258,20 @@ app-server-thread-cwd-targeted:
     cargo test --locked -p codex-app-server --test all suite::v2::thread_fork::thread_fork_honors_explicit_null_thread_instructions -- --exact --test-threads=1
     cargo test --locked -p codex-app-server --test all suite::v2::turn_start::turn_start_honors_explicit_null_thread_instructions -- --exact --test-threads=1
     cargo test --locked -p codex-app-server --test all suite::v2::turn_start::turn_start_emits_spawn_agent_item_with_requested_model_metadata_when_role_layering_is_present_v2 -- --exact --test-threads=1
+
+# Focused native computer-use bridge slice for app-server protocol routing,
+# client response handling, and Android tool lifecycle injection.
+app-server-computer-use-targeted:
+    cargo test --locked -p codex-app-server --test all suite::v2::computer_use:: -- --test-threads=1
+
+# Focused native Android tool registry slice for canonical schema conversion
+# and deferred tool-search discovery.
+native-computer-use-tool-registry-targeted:
+    cargo test --locked -p codex-tools canonical_android_dynamic_tool --lib -- --test-threads=1
+    cargo test --locked -p codex-tools android_dynamic_tools_use_canonical_codex_tool_definitions --lib -- --exact --test-threads=1
+    cargo test --locked -p codex-tools duplicate_bare_android_dynamic_tools_register_native_handler_once --lib -- --exact --test-threads=1
+    cargo test --locked -p codex-core deferred_android_dynamic_tools_search_as_native_computer_use_tools --lib -- --exact --test-threads=1
+    cargo test --locked -p codex-core computer_use_call_times_out_and_unregisters_pending_response --lib -- --exact --test-threads=1
 
 # Focused downstream agent-workflow helper sanity slice.
 [no-cd]

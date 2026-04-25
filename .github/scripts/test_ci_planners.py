@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import subprocess
 import tempfile
 import unittest
@@ -34,6 +35,9 @@ RESOLVE_RUST_CI_MODE = load_module(
 )
 AGGREGATE_VALIDATION_SUMMARY = load_module(
     "aggregate_validation_summary_module", SCRIPTS_DIR / "aggregate_validation_summary.py"
+)
+REPORT_ACTIONS_CACHE_OCCUPANCY = load_module(
+    "report_actions_cache_occupancy_module", SCRIPTS_DIR / "report_actions_cache_occupancy.py"
 )
 CHECK_MARKDOWN_LINKS = load_module(
     "check_markdown_links_module", SCRIPTS_DIR / "check_markdown_links.py"
@@ -482,6 +486,24 @@ class RouteSelectionTests(unittest.TestCase):
         self.assertEqual(lane["script_args"], [])
         self.assertFalse(lane["needs_just"])
 
+    def test_argument_comment_lint_lane_uses_bazel_setup_contract(self) -> None:
+        lane = next(
+            lane
+            for lane in self.catalog["lanes"]
+            if lane["lane_id"] == "codex.argument-comment-lint"
+        )
+        self.assertEqual(lane["setup_class"], "workflow")
+        self.assertTrue(lane["explicit_only"])
+        self.assertEqual(
+            lane["script_path"],
+            ".github/scripts/validation-lanes/argument-comment-lint.sh",
+        )
+        self.assertEqual(lane["script_args"], [])
+        self.assertTrue(lane["needs_bazel"])
+        self.assertTrue(lane["needs_linux_build_deps"])
+        self.assertTrue(lane["needs_dotslash"])
+        self.assertFalse(lane["needs_sccache"])
+
 
 class ValidationPlanScriptTests(unittest.TestCase):
     maxDiff = None
@@ -502,8 +524,8 @@ class ValidationPlanScriptTests(unittest.TestCase):
         self.assertEqual(payload["run_smoke_gate"], "false")
         self.assertEqual(payload["selected_workflow_lane_count"], 0)
         self.assertEqual(payload["selected_node_lane_count"], 0)
-        self.assertEqual(payload["selected_rust_minimal_lane_count"], 12)
-        self.assertEqual(payload["selected_rust_integration_lane_count"], 3)
+        self.assertEqual(payload["selected_rust_minimal_lane_count"], 13)
+        self.assertEqual(payload["selected_rust_integration_lane_count"], 4)
         self.assertEqual(payload["selected_release_lane_count"], 0)
         self.assertTrue(
             all(
@@ -626,8 +648,8 @@ class ValidationPlanScriptTests(unittest.TestCase):
         self.assertEqual(payload["selected_node_lane_count"], 0)
         self.assertEqual(payload["selected_rust_minimal_lane_count"], 2)
         self.assertEqual(payload["selected_rust_minimal_batch_count"], 5)
-        self.assertEqual(payload["selected_rust_integration_lane_count"], 3)
-        self.assertEqual(payload["selected_rust_integration_batch_count"], 4)
+        self.assertEqual(payload["selected_rust_integration_lane_count"], 1)
+        self.assertEqual(payload["selected_rust_integration_batch_count"], 5)
         self.assertEqual(payload["selected_release_lane_count"], 1)
         self.assertEqual(payload["smoke_rust_integration_lane_count"], 5)
         self.assertEqual(payload["workflow_max_parallel"], "8")
@@ -921,6 +943,7 @@ class ValidationPlanScriptTests(unittest.TestCase):
             enabled,
             {
                 "codex.app-server-protocol-test",
+                "codex.native-computer-use-tool-registry-targeted",
                 "codex.core-subagent-notification-visibility-targeted",
                 "codex.spawn-agent-description-model-surface-targeted",
                 "codex.spawn-agent-tool-model-surface-targeted",
@@ -972,6 +995,25 @@ class ValidationPlanScriptTests(unittest.TestCase):
             with self.subTest(job=job_name):
                 self.assertNotIn("cache_policy", (jobs.get(job_name) or {}).get("with") or {})
 
+    def test_validation_lab_passes_bazel_setup_to_workflow_lanes(self) -> None:
+        payload = load_workflow_payload(REPO_ROOT / ".github/workflows/validation-lab.yml")
+        jobs = payload.get("jobs") or {}
+
+        for job_name in ["smoke_workflow_lanes", "workflow_lanes"]:
+            with self.subTest(job=job_name):
+                self.assertEqual(
+                    ((jobs.get(job_name) or {}).get("with") or {}).get("needs_bazel"),
+                    "${{ matrix.needs_bazel }}",
+                )
+
+    def test_validation_lab_workflow_lanes_do_not_inherit_secrets_from_operator_refs(self) -> None:
+        payload = load_workflow_payload(REPO_ROOT / ".github/workflows/validation-lab.yml")
+        jobs = payload.get("jobs") or {}
+
+        for job_name in ["smoke_workflow_lanes", "workflow_lanes"]:
+            with self.subTest(job=job_name):
+                self.assertNotIn("secrets", jobs.get(job_name) or {})
+
     def test_sedna_heavy_writes_fallback_cache_only_for_manual_dispatch(self) -> None:
         payload = load_workflow_payload(REPO_ROOT / ".github/workflows/sedna-heavy-tests.yml")
         jobs = payload.get("jobs") or {}
@@ -993,18 +1035,34 @@ class ValidationPlanScriptTests(unittest.TestCase):
                     expected_policy,
                 )
 
+    def test_sedna_heavy_passes_bazel_setup_to_workflow_lanes(self) -> None:
+        payload = load_workflow_payload(REPO_ROOT / ".github/workflows/sedna-heavy-tests.yml")
+        jobs = payload.get("jobs") or {}
+
+        for job_name in ["smoke_workflow_lanes", "workflow_lanes"]:
+            with self.subTest(job=job_name):
+                self.assertEqual(
+                    ((jobs.get(job_name) or {}).get("with") or {}).get("needs_bazel"),
+                    "${{ matrix.needs_bazel }}",
+                )
+
     def test_reusable_sccache_workflows_require_explicit_fallback_writes(self) -> None:
         for workflow_name in [
             "_validation-lane-rust-minimal.yml",
             "_validation-lane-rust-integration.yml",
+            "_validation-lane-rust-batch.yml",
             "_validation-lane-release.yml",
             "_sedna-linux-rust.yml",
         ]:
             with self.subTest(workflow=workflow_name):
-                payload = load_workflow_payload(REPO_ROOT / ".github/workflows" / workflow_name)
+                workflow_path = REPO_ROOT / ".github/workflows" / workflow_name
+                workflow_text = workflow_path.read_text(encoding="utf-8")
+                payload = load_workflow_payload(workflow_path)
                 inputs = (((payload.get("on") or {}).get("workflow_call") or {}).get("inputs") or {})
                 self.assertEqual((inputs.get("checkout_fetch_depth") or {}).get("default"), "1")
                 self.assertEqual((inputs.get("cache_policy") or {}).get("default"), "restore-only")
+                self.assertNotIn("ACTIONS_RUNTIME_TOKEN", workflow_text)
+                self.assertNotIn("SCCACHE_GHA_ENABLED=true", workflow_text)
 
                 run_job = (payload.get("jobs") or {}).get("run") or {}
                 checkout_step = next(
@@ -1017,6 +1075,18 @@ class ValidationPlanScriptTests(unittest.TestCase):
                     "${{ inputs.checkout_fetch_depth }}",
                 )
                 self.assertEqual((run_job.get("env") or {}).get("SCCACHE_CACHE_SIZE"), "2G")
+                self.assertFalse(
+                    any(
+                        step.get("name") == "Expose GitHub cache-service env for sccache"
+                        for step in run_job.get("steps") or []
+                    )
+                )
+                configure_step = next(
+                    step
+                    for step in run_job.get("steps") or []
+                    if step.get("name") == "Configure sccache backend"
+                )
+                self.assertIn("configure_sccache_backend.sh", configure_step.get("run") or "")
 
                 save_step = next(
                     step
@@ -1074,7 +1144,7 @@ class ValidationPlanScriptTests(unittest.TestCase):
                     summary_step.get("run") or "",
                 )
 
-    def test_validation_lane_workflow_keeps_upstream_sync_secret_out_of_pr_lanes(self) -> None:
+    def test_validation_lane_workflow_keeps_secrets_out_of_target_controlled_scripts(self) -> None:
         payload = load_workflow_payload(REPO_ROOT / ".github/workflows/_validation-lane-workflow.yml")
         workflow_call = ((payload.get("on") or {}).get("workflow_call") or {})
         self.assertNotIn("secrets", workflow_call)
@@ -1085,7 +1155,11 @@ class ValidationPlanScriptTests(unittest.TestCase):
             for step in run_job.get("steps") or []
             if step.get("name") == "Run requested lane script"
         )
-        self.assertNotIn("SYNC_UPSTREAM_PUSH_TOKEN", run_lane_step.get("env") or {})
+        run_lane_env = run_lane_step.get("env") or {}
+        for env_name, env_value in run_lane_env.items():
+            with self.subTest(env=env_name):
+                self.assertNotRegex(env_name, r"(API_KEY|PRIVATE_KEY|SECRET|TOKEN)")
+                self.assertNotIn("secrets.", str(env_value))
 
     def test_sedna_sync_upstream_uses_github_app_token_and_shared_helper(self) -> None:
         payload = load_workflow_payload(REPO_ROOT / ".github/workflows/sedna-sync-upstream.yml")
@@ -1137,9 +1211,14 @@ class ValidationPlanScriptTests(unittest.TestCase):
         for job_name in ["lint_build", "tests"]:
             with self.subTest(job=job_name):
                 job = jobs.get(job_name) or {}
+                workflow_text = (REPO_ROOT / ".github/workflows/rust-ci-full.yml").read_text(
+                    encoding="utf-8"
+                )
                 env = job.get("env") or {}
                 self.assertEqual(env.get("SCCACHE_CACHE_SIZE"), "2G")
                 self.assertEqual(env.get("SCCACHE_FALLBACK_CACHE_POLICY"), "restore-only")
+                self.assertNotIn("ACTIONS_RUNTIME_TOKEN", workflow_text)
+                self.assertNotIn("SCCACHE_GHA_ENABLED=true", workflow_text)
 
                 save_step = next(
                     step
@@ -1249,12 +1328,12 @@ class ValidationPlanScriptTests(unittest.TestCase):
         self.assertNotIn("codex.tui-agent-picker-model-surface-targeted", selected_lane_ids)
         self.assertEqual(payload["selected_workflow_lane_count"], 4)
         self.assertEqual(payload["selected_node_lane_count"], 1)
-        self.assertEqual(payload["selected_rust_minimal_lane_count"], 15)
-        self.assertEqual(payload["selected_rust_integration_lane_count"], 14)
+        self.assertEqual(payload["selected_rust_minimal_lane_count"], 16)
+        self.assertEqual(payload["selected_rust_integration_lane_count"], 15)
         self.assertEqual(payload["selected_release_lane_count"], 1)
         self.assertEqual(payload["workflow_max_parallel"], "4")
         self.assertEqual(payload["node_max_parallel"], "1")
-        self.assertEqual(payload["rust_minimal_max_parallel"], "15")
+        self.assertEqual(payload["rust_minimal_max_parallel"], "16")
         self.assertEqual(payload["rust_integration_max_parallel"], "8")
         self.assertEqual(payload["release_max_parallel"], "1")
 
@@ -1276,13 +1355,14 @@ class ValidationPlanScriptTests(unittest.TestCase):
 
         selected_lane_ids = [lane["lane_id"] for lane in payload["selected_matrix"]["include"]]
         self.assertIn("codex.tui-agent-picker-model-surface-targeted", selected_lane_ids)
+        self.assertIn("codex.argument-comment-lint", selected_lane_ids)
         self.assertIn("downstream-ledger-seam", selected_lane_ids)
-        self.assertEqual(payload["selected_workflow_lane_count"], 4)
+        self.assertEqual(payload["selected_workflow_lane_count"], 5)
         self.assertEqual(payload["selected_node_lane_count"], 1)
-        self.assertEqual(payload["selected_rust_minimal_lane_count"], 17)
-        self.assertEqual(payload["selected_rust_integration_lane_count"], 15)
+        self.assertEqual(payload["selected_rust_minimal_lane_count"], 18)
+        self.assertEqual(payload["selected_rust_integration_lane_count"], 16)
         self.assertEqual(payload["selected_release_lane_count"], 1)
-        self.assertEqual(payload["rust_minimal_max_parallel"], "17")
+        self.assertEqual(payload["rust_minimal_max_parallel"], "18")
         self.assertEqual(payload["rust_integration_max_parallel"], "8")
 
     def test_validation_lab_frontier_all_excludes_smoke_gate_lanes_by_metadata(self) -> None:
@@ -1393,9 +1473,10 @@ class ValidationPlanScriptTests(unittest.TestCase):
 
         self.assertEqual(payload["matrix_fail_fast"], "false")
         self.assertEqual(payload["continue_after_smoke_failure"], "true")
-        self.assertEqual(payload["workflow_max_parallel"], "4")
+        self.assertEqual(payload["eager_release_lanes"], "true")
+        self.assertEqual(payload["workflow_max_parallel"], "5")
         self.assertEqual(payload["node_max_parallel"], "1")
-        self.assertEqual(payload["rust_minimal_max_parallel"], "17")
+        self.assertEqual(payload["rust_minimal_max_parallel"], "18")
         self.assertEqual(payload["rust_integration_max_parallel"], "8")
         self.assertEqual(payload["release_max_parallel"], "1")
         planned_lane_ids = [lane["lane_id"] for lane in payload["planned_matrix"]["include"]]
@@ -1413,6 +1494,70 @@ class ValidationPlanScriptTests(unittest.TestCase):
         self.assertEqual(planned_lane_ids[5:], selected_lane_ids)
         self.assertIn("codex.core-startup-sync-targeted", selected_lane_ids)
         self.assertIn("codex.downstream-docs-check", selected_lane_ids)
+        self.assertNotIn("codex.nextest-archive-core-carry-pilot", selected_lane_ids)
+
+    def test_heavy_plan_ci_heavy_pr_uses_frontier_harvest_policy(self) -> None:
+        payload = run_script(
+            SCRIPTS_DIR / "resolve_validation_plan.py",
+            "heavy",
+            "--event-name",
+            "pull_request",
+            "--requested-lane",
+            "",
+            "--run-all-lanes",
+            "true",
+            "--run-core-family",
+            "false",
+            "--run-attestation-family",
+            "false",
+            "--run-workflow-family",
+            "false",
+            "--run-ui-protocol-family",
+            "false",
+            "--run-docs-family",
+            "false",
+            "--changed-files-json",
+            "[]",
+        )
+
+        self.assertEqual(payload["matrix_fail_fast"], "false")
+        self.assertEqual(payload["continue_after_smoke_failure"], "true")
+        self.assertEqual(payload["eager_release_lanes"], "true")
+        self.assertEqual(payload["rust_integration_max_parallel"], "8")
+        self.assertEqual(payload["release_max_parallel"], "1")
+        self.assertNotIn(
+            "codex.nextest-archive-core-carry-pilot",
+            payload["selected_lane_ids"],
+        )
+
+    def test_nextest_archive_pilot_is_explicit_only(self) -> None:
+        payload = run_script(
+            SCRIPTS_DIR / "resolve_validation_plan.py",
+            "heavy",
+            "--event-name",
+            "workflow_dispatch",
+            "--requested-lane",
+            "codex.nextest-archive-core-carry-pilot",
+            "--run-all-lanes",
+            "true",
+            "--run-core-family",
+            "false",
+            "--run-attestation-family",
+            "false",
+            "--run-workflow-family",
+            "false",
+            "--run-ui-protocol-family",
+            "false",
+            "--run-docs-family",
+            "false",
+            "--changed-files-json",
+            "[]",
+        )
+
+        self.assertEqual(payload["run_smoke_gate"], "false")
+        self.assertEqual(payload["selected_lane_ids"], ["codex.nextest-archive-core-carry-pilot"])
+        self.assertEqual(payload["matrix_fail_fast"], "true")
+        self.assertEqual(payload["eager_release_lanes"], "false")
 
     def test_sedna_heavy_manual_harvest_jobs_follow_metadata_fail_fast(self) -> None:
         payload = load_workflow_payload(REPO_ROOT / ".github/workflows/sedna-heavy-tests.yml")
@@ -1430,6 +1575,10 @@ class ValidationPlanScriptTests(unittest.TestCase):
             "${{ steps.meta.outputs.selected_lane_ids }}",
         )
         self.assertEqual(
+            metadata_outputs.get("eager_release_lanes"),
+            "${{ steps.meta.outputs.eager_release_lanes }}",
+        )
+        self.assertEqual(
             ((jobs.get("smoke_rust_integration_lanes") or {}).get("strategy") or {}).get(
                 "fail-fast"
             ),
@@ -1443,6 +1592,14 @@ class ValidationPlanScriptTests(unittest.TestCase):
         )
         rust_if = (jobs.get("rust_integration_lanes") or {}).get("if") or ""
         self.assertIn("needs.metadata.outputs.continue_after_smoke_failure == 'true'", rust_if)
+        release_eager = jobs.get("release_lanes_eager") or {}
+        self.assertEqual(release_eager.get("needs"), ["metadata"])
+        self.assertIn(
+            "needs.metadata.outputs.eager_release_lanes == 'true'",
+            release_eager.get("if") or "",
+        )
+        release_if = (jobs.get("release_lanes") or {}).get("if") or ""
+        self.assertIn("needs.metadata.outputs.eager_release_lanes != 'true'", release_if)
 
     def test_sedna_heavy_pr_triggers_keep_ready_for_review(self) -> None:
         trigger_types = parse_pull_request_types(
@@ -1500,6 +1657,7 @@ class ValidationPlanScriptTests(unittest.TestCase):
                 "rust_minimal_batches",
                 "rust_integration_lanes",
                 "rust_integration_batches",
+                "release_lanes_eager",
                 "release_lanes",
             ],
         )
@@ -1509,33 +1667,39 @@ class ValidationPlanScriptTests(unittest.TestCase):
         self.assertEqual(summary.get("runs-on"), "ubuntu-24.04")
 
         steps = summary.get("steps") or []
+        self.assertEqual((summary.get("permissions") or {}).get("actions"), "read")
         self.assertEqual((steps[0] or {}).get("uses"), "actions/checkout@v6")
         self.assertEqual((steps[1] or {}).get("uses"), "actions/download-artifact@v8")
+        self.assertEqual((steps[2] or {}).get("name"), "Record Actions cache occupancy")
         self.assertIn(
             "aggregate_validation_summary.py",
-            (steps[2] or {}).get("run") or "",
+            (steps[3] or {}).get("run") or "",
         )
         self.assertIn(
             '--planned-matrix-json \'${{ needs.metadata.outputs.planned_matrix }}\'',
-            (steps[2] or {}).get("run") or "",
+            (steps[3] or {}).get("run") or "",
+        )
+        self.assertIn(
+            "--cache-occupancy-json",
+            (steps[3] or {}).get("run") or "",
         )
         self.assertIn(
             '--head-sha "${{ needs.metadata.outputs.checkout_sha }}"',
-            (steps[2] or {}).get("run") or "",
+            (steps[3] or {}).get("run") or "",
         )
         self.assertIn(
             '--workflow-result "${WORKFLOW_RESULT}"',
-            (steps[2] or {}).get("run") or "",
+            (steps[3] or {}).get("run") or "",
         )
         self.assertIn(
             '--rust-minimal-result "${rust_minimal_result}"',
-            (steps[2] or {}).get("run") or "",
+            (steps[3] or {}).get("run") or "",
         )
         self.assertIn(
             '--rust-integration-result "${rust_integration_result}"',
-            (steps[2] or {}).get("run") or "",
+            (steps[3] or {}).get("run") or "",
         )
-        self.assertEqual((steps[3] or {}).get("uses"), "actions/upload-artifact@v7")
+        self.assertEqual((steps[4] or {}).get("uses"), "actions/upload-artifact@v7")
 
 class RustCiModeScriptTests(unittest.TestCase):
     maxDiff = None
@@ -1958,6 +2122,68 @@ class RustCiModeScriptTests(unittest.TestCase):
 
 
 class HelperScriptTests(unittest.TestCase):
+    def test_configure_sccache_restore_only_uses_read_only_fallback(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            github_output = root / "github-output"
+            github_env = root / "github-env"
+            workspace = root / "workspace"
+            workspace.mkdir()
+
+            subprocess.run(
+                [
+                    "bash",
+                    str(SCRIPTS_DIR / "configure_sccache_backend.sh"),
+                    "restore-only",
+                ],
+                check=True,
+                env={
+                    **os.environ,
+                    "GITHUB_OUTPUT": str(github_output),
+                    "GITHUB_ENV": str(github_env),
+                    "GITHUB_WORKSPACE": str(workspace),
+                },
+            )
+
+            output = github_output.read_text(encoding="utf-8")
+            env = github_env.read_text(encoding="utf-8")
+
+        self.assertIn("policy=restore-only", output)
+        self.assertIn("backend=fallback", output)
+        self.assertIn("SCCACHE_GHA_ENABLED=false", env)
+        self.assertIn(f"SCCACHE_DIR={workspace}/.sccache", env)
+        self.assertNotIn("SCCACHE_GHA_ENABLED=true", env)
+
+    def test_actions_cache_occupancy_summary_groups_refs_and_prefixes(self) -> None:
+        summary = REPORT_ACTIONS_CACHE_OCCUPANCY.summarize_caches(
+            [
+                {
+                    "key": "sccache/a/b/c",
+                    "ref": "refs/pull/164/merge",
+                    "size_in_bytes": 1024,
+                },
+                {
+                    "key": "cargo-home-linux-rust-hash",
+                    "ref": "refs/heads/main",
+                    "size_in_bytes": 2048,
+                },
+                {
+                    "key": "sccache/d/e/f",
+                    "ref": "refs/pull/164/merge",
+                    "size_in_bytes": 4096,
+                },
+            ]
+        )
+
+        self.assertEqual(summary["total_entries"], 3)
+        self.assertEqual(summary["total_size_bytes"], 7168)
+        self.assertEqual(
+            summary["by_prefix"][0],
+            {"name": "sccache", "entries": 2, "size_bytes": 5120},
+        )
+        self.assertEqual(summary["by_ref"][0]["name"], "refs/pull/164/merge")
+        self.assertEqual(summary["by_ref"][0]["entries"], 2)
+
     def test_build_results_tolerates_selected_lane_missing_from_matrix(self) -> None:
         results = AGGREGATE_VALIDATION_SUMMARY.build_results(
             planned_matrix=[],

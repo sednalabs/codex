@@ -21,6 +21,8 @@ use crate::app_server_session::status_account_display_from_auth_mode;
 use crate::exec_command::split_command_string;
 use codex_app_server_client::AppServerEvent;
 use codex_app_server_protocol::AuthMode;
+use codex_app_server_protocol::ComputerUseCallOutputContentItem;
+use codex_app_server_protocol::ComputerUseCallParams;
 use codex_app_server_protocol::JSONRPCErrorError;
 use codex_app_server_protocol::ServerNotification;
 use codex_app_server_protocol::ServerRequest;
@@ -265,9 +267,30 @@ impl App {
         }
 
         let Some(thread_id) = server_request_thread_id(&request) else {
-            tracing::warn!("ignoring threadless app-server request");
+            if let ServerRequest::ComputerUseCall { request_id, .. } = request {
+                let reason = "Computer-use request has an invalid thread_id.".to_string();
+                tracing::warn!(
+                    request_id = ?request_id,
+                    "rejecting computer-use app-server request with invalid thread_id"
+                );
+                if let Err(err) = self
+                    .reject_app_server_request(app_server_client, request_id, reason)
+                    .await
+                {
+                    tracing::warn!("{err}");
+                }
+            } else {
+                tracing::warn!("ignoring threadless app-server request");
+            }
             return;
         };
+
+        if let ServerRequest::ComputerUseCall { request_id, params } = request {
+            let show_message =
+                should_show_computer_use_fallback_message(self.primary_thread_id, thread_id);
+            self.note_unavailable_computer_use_call(request_id, params, show_message);
+            return;
+        }
 
         let result =
             if self.primary_thread_id == Some(thread_id) || self.primary_thread_id.is_none() {
@@ -297,6 +320,44 @@ impl App {
             .await
             .map_err(|err| format!("failed to reject app-server request: {err}"))
     }
+
+    fn note_unavailable_computer_use_call(
+        &mut self,
+        request_id: codex_app_server_protocol::RequestId,
+        params: ComputerUseCallParams,
+        show_message: bool,
+    ) {
+        let message = computer_use_provider_unavailable_message(&params);
+        tracing::warn!(
+            request_id = ?request_id,
+            adapter = params.adapter.as_str(),
+            tool = params.tool.as_str(),
+            environment_id = params.environment_id.as_deref().unwrap_or("<none>"),
+            "TUI has no computer-use provider; leaving request unresolved for a capable client or core timeout"
+        );
+        if show_message {
+            self.chat_widget.add_error_message(message);
+        }
+    }
+}
+
+fn should_show_computer_use_fallback_message(
+    primary_thread_id: Option<ThreadId>,
+    request_thread_id: ThreadId,
+) -> bool {
+    primary_thread_id == Some(request_thread_id) || primary_thread_id.is_none()
+}
+
+fn computer_use_provider_unavailable_message(params: &ComputerUseCallParams) -> String {
+    let environment = params
+        .environment_id
+        .as_deref()
+        .map(|environment_id| format!("environment {environment_id}"))
+        .unwrap_or_else(|| "no selected environment".to_string());
+    format!(
+        "{} computer-use provider is unavailable in this TUI session for {}; connect a native computer-use provider for {} to execute the request.",
+        params.adapter, params.tool, environment
+    )
 }
 
 fn server_request_thread_id(request: &ServerRequest) -> Option<ThreadId> {
@@ -317,6 +378,9 @@ fn server_request_thread_id(request: &ServerRequest) -> Option<ThreadId> {
             ThreadId::from_string(&params.thread_id).ok()
         }
         ServerRequest::DynamicToolCall { params, .. } => {
+            ThreadId::from_string(&params.thread_id).ok()
+        }
+        ServerRequest::ComputerUseCall { params, .. } => {
             ThreadId::from_string(&params.thread_id).ok()
         }
         ServerRequest::ChatgptAuthTokensRefresh { .. }
@@ -560,8 +624,9 @@ fn server_notification_thread_events(
         }
         ServerNotification::ItemStarted(notification) => Some((
             ThreadId::from_string(&notification.thread_id).ok()?,
-            command_execution_started_event(&notification.turn_id, &notification.item).or_else(
-                || {
+            command_execution_started_event(&notification.turn_id, &notification.item)
+                .or_else(|| computer_use_started_event(&notification.turn_id, &notification.item))
+                .or_else(|| {
                     Some(vec![Event {
                         id: String::new(),
                         msg: EventMsg::ItemStarted(ItemStartedEvent {
@@ -570,13 +635,13 @@ fn server_notification_thread_events(
                             item: thread_item_to_core(&notification.item)?,
                         }),
                     }])
-                },
-            )?,
+                })?,
         )),
         ServerNotification::ItemCompleted(notification) => Some((
             ThreadId::from_string(&notification.thread_id).ok()?,
-            command_execution_completed_event(&notification.turn_id, &notification.item).or_else(
-                || {
+            command_execution_completed_event(&notification.turn_id, &notification.item)
+                .or_else(|| computer_use_completed_event(&notification.turn_id, &notification.item))
+                .or_else(|| {
                     Some(vec![Event {
                         id: String::new(),
                         msg: EventMsg::ItemCompleted(ItemCompletedEvent {
@@ -585,8 +650,7 @@ fn server_notification_thread_events(
                             item: thread_item_to_core(&notification.item)?,
                         }),
                     }])
-                },
-            )?,
+                })?,
         )),
         ServerNotification::CommandExecutionOutputDelta(notification) => Some((
             ThreadId::from_string(&notification.thread_id).ok()?,
@@ -738,6 +802,10 @@ fn turn_snapshot_events(
     for item in &turn.items {
         if let Some(command_events) = command_execution_snapshot_events(&turn.id, item) {
             events.extend(command_events);
+            continue;
+        }
+        if let Some(computer_use_events) = computer_use_snapshot_events(&turn.id, item) {
+            events.extend(computer_use_events);
             continue;
         }
 
@@ -917,6 +985,7 @@ fn thread_item_to_core(item: &ThreadItem) -> Option<TurnItem> {
         | ThreadItem::FileChange { .. }
         | ThreadItem::McpToolCall { .. }
         | ThreadItem::DynamicToolCall { .. }
+        | ThreadItem::ComputerUseCall { .. }
         | ThreadItem::CollabAgentToolCall { .. }
         | ThreadItem::HookPrompt { .. }
         | ThreadItem::ImageView { .. }
@@ -1039,6 +1108,101 @@ fn command_execution_snapshot_events(turn_id: &str, item: &ThreadItem) -> Option
 }
 
 #[cfg(test)]
+fn computer_use_snapshot_events(turn_id: &str, item: &ThreadItem) -> Option<Vec<Event>> {
+    let mut events = computer_use_started_event(turn_id, item)?;
+    if let Some(response_events) = computer_use_completed_event(turn_id, item) {
+        events.extend(response_events);
+    }
+    Some(events)
+}
+
+#[cfg(test)]
+fn computer_use_started_event(turn_id: &str, item: &ThreadItem) -> Option<Vec<Event>> {
+    let ThreadItem::ComputerUseCall {
+        id,
+        environment_id,
+        adapter,
+        tool,
+        arguments,
+        ..
+    } = item
+    else {
+        return None;
+    };
+
+    Some(vec![Event {
+        id: String::new(),
+        msg: EventMsg::ComputerUseCallRequest(
+            codex_protocol::computer_use::ComputerUseCallRequest {
+                call_id: id.clone(),
+                turn_id: turn_id.to_string(),
+                environment_id: environment_id.clone(),
+                adapter: adapter.clone(),
+                tool: tool.clone(),
+                arguments: arguments.clone(),
+            },
+        ),
+    }])
+}
+
+#[cfg(test)]
+fn computer_use_completed_event(turn_id: &str, item: &ThreadItem) -> Option<Vec<Event>> {
+    let ThreadItem::ComputerUseCall {
+        id,
+        environment_id,
+        adapter,
+        tool,
+        arguments,
+        status,
+        content_items,
+        success,
+        error,
+        duration_ms,
+    } = item
+    else {
+        return None;
+    };
+
+    if matches!(
+        status,
+        codex_app_server_protocol::ComputerUseCallStatus::InProgress
+    ) {
+        return Some(Vec::new());
+    }
+
+    let duration = Duration::from_millis(
+        duration_ms
+            .and_then(|value| u64::try_from(value).ok())
+            .unwrap_or_default(),
+    );
+    Some(vec![Event {
+        id: String::new(),
+        msg: EventMsg::ComputerUseCallResponse(
+            codex_protocol::protocol::ComputerUseCallResponseEvent {
+                call_id: id.clone(),
+                turn_id: turn_id.to_string(),
+                environment_id: environment_id.clone(),
+                adapter: adapter.clone(),
+                tool: tool.clone(),
+                arguments: arguments.clone(),
+                content_items: content_items
+                    .clone()
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(Into::into)
+                    .collect(),
+                success: success.unwrap_or(matches!(
+                    status,
+                    codex_app_server_protocol::ComputerUseCallStatus::Completed
+                )),
+                error: error.clone(),
+                duration,
+            },
+        ),
+    }])
+}
+
+#[cfg(test)]
 fn app_server_web_search_action_to_core(
     action: codex_app_server_protocol::WebSearchAction,
 ) -> Option<codex_protocol::models::WebSearchAction> {
@@ -1071,6 +1235,8 @@ mod tests {
     use super::command_execution_started_event;
     use super::server_notification_thread_events;
     use super::server_notification_thread_target;
+    use super::server_request_thread_id;
+    use super::should_show_computer_use_fallback_message;
     use super::thread_snapshot_events;
     use super::turn_snapshot_events;
     use codex_app_server_protocol::AgentMessageDeltaNotification;
@@ -1079,11 +1245,15 @@ mod tests {
     use codex_app_server_protocol::CommandExecutionOutputDeltaNotification;
     use codex_app_server_protocol::CommandExecutionSource;
     use codex_app_server_protocol::CommandExecutionStatus;
+    use codex_app_server_protocol::ComputerUseCallOutputContentItem;
+    use codex_app_server_protocol::ComputerUseCallParams;
+    use codex_app_server_protocol::ComputerUseCallStatus;
     use codex_app_server_protocol::GuardianWarningNotification;
     use codex_app_server_protocol::ItemCompletedNotification;
     use codex_app_server_protocol::ItemStartedNotification;
     use codex_app_server_protocol::ReasoningSummaryTextDeltaNotification;
     use codex_app_server_protocol::ServerNotification;
+    use codex_app_server_protocol::ServerRequest;
     use codex_app_server_protocol::Thread;
     use codex_app_server_protocol::ThreadItem;
     use codex_app_server_protocol::ThreadStatus;
@@ -1375,6 +1545,97 @@ mod tests {
         assert_eq!(end.call_id, "cmd-1");
         assert_eq!(end.formatted_output, "hello world\n");
         assert!(matches!(events[3].msg, EventMsg::TurnComplete(_)));
+    }
+
+    #[test]
+    fn replays_computer_use_items_from_turn_snapshots() {
+        let events = turn_snapshot_events(
+            ThreadId::new(),
+            &Turn {
+                id: "turn-computer-use".to_string(),
+                items: vec![ThreadItem::ComputerUseCall {
+                    id: "android-1".to_string(),
+                    environment_id: Some("env-1".to_string()),
+                    adapter: "android".to_string(),
+                    tool: "android_observe".to_string(),
+                    arguments: serde_json::json!({"scope": "screen_and_ui"}),
+                    status: ComputerUseCallStatus::Failed,
+                    content_items: Some(vec![ComputerUseCallOutputContentItem::InputText {
+                        text: "screen unavailable".to_string(),
+                    }]),
+                    success: Some(false),
+                    error: Some("operation was canceled".to_string()),
+                    duration_ms: Some(9),
+                }],
+                status: TurnStatus::Completed,
+                error: None,
+                started_at: None,
+                completed_at: None,
+                duration_ms: None,
+            },
+            /*show_raw_agent_reasoning*/ false,
+        );
+
+        assert_eq!(events.len(), 4);
+        assert!(matches!(events[0].msg, EventMsg::TurnStarted(_)));
+        let EventMsg::ComputerUseCallRequest(request) = &events[1].msg else {
+            panic!("expected computer-use request replay");
+        };
+        assert_eq!(request.call_id, "android-1");
+        assert_eq!(request.environment_id.as_deref(), Some("env-1"));
+        let EventMsg::ComputerUseCallResponse(response) = &events[2].msg else {
+            panic!("expected computer-use response replay");
+        };
+        assert_eq!(response.call_id, "android-1");
+        assert!(!response.success);
+        assert_eq!(response.error.as_deref(), Some("operation was canceled"));
+        assert_eq!(response.duration.as_millis(), 9);
+        assert_eq!(
+            response.content_items,
+            vec![
+                codex_protocol::computer_use::ComputerUseOutputContentItem::InputText {
+                    text: "screen unavailable".to_string(),
+                },
+            ]
+        );
+        assert!(matches!(events[3].msg, EventMsg::TurnComplete(_)));
+    }
+
+    #[test]
+    fn computer_use_fallback_message_only_shows_for_primary_thread() {
+        let primary_thread_id = ThreadId::new();
+        let background_thread_id = ThreadId::new();
+
+        assert!(should_show_computer_use_fallback_message(
+            Some(primary_thread_id),
+            primary_thread_id,
+        ));
+        assert!(!should_show_computer_use_fallback_message(
+            Some(primary_thread_id),
+            background_thread_id,
+        ));
+        assert!(should_show_computer_use_fallback_message(
+            /*primary_thread_id*/ None,
+            background_thread_id,
+        ));
+    }
+
+    #[test]
+    fn computer_use_request_thread_id_uses_normal_validation() {
+        let request = ServerRequest::ComputerUseCall {
+            request_id: codex_app_server_protocol::RequestId::Integer(7),
+            params: ComputerUseCallParams {
+                thread_id: "not-a-thread-id".to_string(),
+                turn_id: "turn-1".to_string(),
+                call_id: "android-1".to_string(),
+                environment_id: Some("env-1".to_string()),
+                adapter: "android".to_string(),
+                tool: "android_observe".to_string(),
+                arguments: serde_json::json!({ "scope": "screen_and_ui" }),
+            },
+        };
+
+        assert_eq!(server_request_thread_id(&request), None);
     }
 
     #[test]

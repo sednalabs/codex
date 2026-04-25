@@ -1322,6 +1322,28 @@ impl From<crate::dynamic_tools::DynamicToolCallOutputContentItem>
     }
 }
 
+impl From<crate::computer_use::ComputerUseOutputContentItem> for FunctionCallOutputContentItem {
+    fn from(item: crate::computer_use::ComputerUseOutputContentItem) -> Self {
+        match item {
+            crate::computer_use::ComputerUseOutputContentItem::InputText { text } => {
+                Self::InputText { text }
+            }
+            crate::computer_use::ComputerUseOutputContentItem::InputImage { image_url, detail } => {
+                Self::InputImage {
+                    image_url,
+                    detail: match detail.as_deref() {
+                        None => Some(DEFAULT_IMAGE_DETAIL),
+                        Some("low") => Some(ImageDetail::Low),
+                        Some("high") => Some(ImageDetail::High),
+                        Some("original") => Some(ImageDetail::Original),
+                        _ => None,
+                    },
+                }
+            }
+        }
+    }
+}
+
 /// The payload we send back to OpenAI when reporting a tool call result.
 ///
 /// `body` serializes directly as the wire value for `function_call_output.output`.

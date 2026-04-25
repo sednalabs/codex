@@ -115,6 +115,7 @@ impl PendingAppServerRequests {
                     message: "Dynamic tool calls are not available in TUI yet.".to_string(),
                 })
             }
+            ServerRequest::ComputerUseCall { .. } => None,
             ServerRequest::ChatgptAuthTokensRefresh { .. } => None,
             ServerRequest::ApplyPatchApproval { request_id, .. } => {
                 Some(UnsupportedAppServerRequest {
@@ -333,6 +334,7 @@ impl PendingAppServerRequests {
                 .values()
                 .any(|pending_request_id| pending_request_id == request_id),
             ServerRequest::DynamicToolCall { .. }
+            | ServerRequest::ComputerUseCall { .. }
             | ServerRequest::ChatgptAuthTokensRefresh { .. }
             | ServerRequest::ApplyPatchApproval { .. }
             | ServerRequest::ExecCommandApproval { .. } => true,
@@ -683,6 +685,26 @@ mod tests {
         assert_eq!(
             unsupported.message,
             "Dynamic tool calls are not available in TUI yet."
+        );
+    }
+
+    #[test]
+    fn does_not_mark_computer_use_calls_as_unsupported() {
+        let mut pending = PendingAppServerRequests::default();
+        assert_eq!(
+            pending.note_server_request(&ServerRequest::ComputerUseCall {
+                request_id: AppServerRequestId::Integer(100),
+                params: codex_app_server_protocol::ComputerUseCallParams {
+                    thread_id: "thread-1".to_string(),
+                    turn_id: "turn-1".to_string(),
+                    call_id: "computer-1".to_string(),
+                    environment_id: Some("env-1".to_string()),
+                    adapter: "android".to_string(),
+                    tool: "android_observe".to_string(),
+                    arguments: json!({ "scope": "screen_and_ui" }),
+                },
+            }),
+            None
         );
     }
 

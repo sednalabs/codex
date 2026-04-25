@@ -285,47 +285,11 @@ jobs:
         with:
           tool: sccache
 
-      - name: Expose GitHub cache-service env for sccache
-        if: ${{ env.USE_SCCACHE == 'true' }}
-        uses: actions/github-script@v9
-        with:
-          script: |
-            core.exportVariable('ACTIONS_CACHE_SERVICE_V2', 'on');
-            core.exportVariable('ACTIONS_RESULTS_URL', process.env.ACTIONS_RESULTS_URL || '');
-            core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env.ACTIONS_RUNTIME_TOKEN || '');
-
       - name: Configure sccache backend
         id: sccache_backend
         if: ${{ env.USE_SCCACHE == 'true' }}
         shell: bash
-        run: |
-          set -euo pipefail
-          policy="${SCCACHE_FALLBACK_CACHE_POLICY:-restore-only}"
-          case "${policy}" in
-            restore-only|write-fallback) ;;
-            *)
-              echo "::warning title=Unknown sccache fallback policy::${policy}; using restore-only"
-              policy="restore-only"
-              ;;
-          esac
-          echo "policy=${policy}" >> "$GITHUB_OUTPUT"
-          cache_url="${SCCACHE_GHA_CACHE_URL:-${ACTIONS_RESULTS_URL:-${ACTIONS_CACHE_URL:-}}}"
-          if [[ -n "${cache_url}" && -n "${ACTIONS_RUNTIME_TOKEN:-}" ]]; then
-            {
-              echo "ACTIONS_CACHE_SERVICE_V2=on"
-              echo "SCCACHE_GHA_ENABLED=true"
-              echo "SCCACHE_GHA_CACHE_URL=${cache_url}"
-            } >> "$GITHUB_ENV"
-            echo "backend=gha" >> "$GITHUB_OUTPUT"
-            echo "Using sccache GitHub backend"
-          else
-            {
-              echo "SCCACHE_GHA_ENABLED=false"
-              echo "SCCACHE_DIR=${{ github.workspace }}/.sccache"
-            } >> "$GITHUB_ENV"
-            echo "backend=fallback" >> "$GITHUB_OUTPUT"
-            echo "Using sccache local disk + actions/cache fallback"
-          fi
+        run: bash .github/scripts/configure_sccache_backend.sh "${SCCACHE_FALLBACK_CACHE_POLICY:-restore-only}"
 
       - name: Enable sccache wrapper
         if: ${{ env.USE_SCCACHE == 'true' }}
@@ -602,47 +566,11 @@ jobs:
         with:
           tool: sccache
 
-      - name: Expose GitHub cache-service env for sccache
-        if: ${{ env.USE_SCCACHE == 'true' }}
-        uses: actions/github-script@v9
-        with:
-          script: |
-            core.exportVariable('ACTIONS_CACHE_SERVICE_V2', 'on');
-            core.exportVariable('ACTIONS_RESULTS_URL', process.env.ACTIONS_RESULTS_URL || '');
-            core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env.ACTIONS_RUNTIME_TOKEN || '');
-
       - name: Configure sccache backend
         id: sccache_backend
         if: ${{ env.USE_SCCACHE == 'true' }}
         shell: bash
-        run: |
-          set -euo pipefail
-          policy="${SCCACHE_FALLBACK_CACHE_POLICY:-restore-only}"
-          case "${policy}" in
-            restore-only|write-fallback) ;;
-            *)
-              echo "::warning title=Unknown sccache fallback policy::${policy}; using restore-only"
-              policy="restore-only"
-              ;;
-          esac
-          echo "policy=${policy}" >> "$GITHUB_OUTPUT"
-          cache_url="${SCCACHE_GHA_CACHE_URL:-${ACTIONS_RESULTS_URL:-${ACTIONS_CACHE_URL:-}}}"
-          if [[ -n "${cache_url}" && -n "${ACTIONS_RUNTIME_TOKEN:-}" ]]; then
-            {
-              echo "ACTIONS_CACHE_SERVICE_V2=on"
-              echo "SCCACHE_GHA_ENABLED=true"
-              echo "SCCACHE_GHA_CACHE_URL=${cache_url}"
-            } >> "$GITHUB_ENV"
-            echo "backend=gha" >> "$GITHUB_OUTPUT"
-            echo "Using sccache GitHub backend"
-          else
-            {
-              echo "SCCACHE_GHA_ENABLED=false"
-              echo "SCCACHE_DIR=${{ github.workspace }}/.sccache"
-            } >> "$GITHUB_ENV"
-            echo "backend=fallback" >> "$GITHUB_OUTPUT"
-            echo "Using sccache local disk + actions/cache fallback"
-          fi
+        run: bash .github/scripts/configure_sccache_backend.sh "${SCCACHE_FALLBACK_CACHE_POLICY:-restore-only}"
 
       - name: Enable sccache wrapper
         if: ${{ env.USE_SCCACHE == 'true' }}

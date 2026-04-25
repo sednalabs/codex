@@ -3578,6 +3578,12 @@ pub struct ThreadResumeParams {
     pub developer_instructions: Option<Option<String>>,
     #[ts(optional = nullable)]
     pub personality: Option<Personality>,
+    /// Additional tools to install into the resumed thread before the next
+    /// turn. Bare Android tool names are promoted to native computer-use
+    /// handlers by core.
+    #[experimental("thread/resume.dynamicTools")]
+    #[ts(optional = nullable)]
+    pub dynamic_tools: Option<Vec<DynamicToolSpec>>,
     /// When true, return only thread metadata and live-resume state without
     /// populating `thread.turns`. This is useful when the client plans to call
     /// `thread/turns/list` immediately after resuming.
@@ -3683,6 +3689,12 @@ pub struct ThreadForkParams {
     )]
     #[ts(optional = nullable)]
     pub developer_instructions: Option<Option<String>>,
+    /// Additional tools to install into the forked thread before the next turn.
+    /// Bare Android tool names are promoted to native computer-use handlers by
+    /// core.
+    #[experimental("thread/fork.dynamicTools")]
+    #[ts(optional = nullable)]
+    pub dynamic_tools: Option<Vec<DynamicToolSpec>>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub ephemeral: bool,
     /// When true, return only thread metadata and live fork state without
@@ -5649,6 +5661,22 @@ pub enum ThreadItem {
     },
     #[serde(rename_all = "camelCase")]
     #[ts(rename_all = "camelCase")]
+    ComputerUseCall {
+        id: String,
+        environment_id: Option<String>,
+        adapter: String,
+        tool: String,
+        arguments: JsonValue,
+        status: ComputerUseCallStatus,
+        content_items: Option<Vec<ComputerUseCallOutputContentItem>>,
+        success: Option<bool>,
+        error: Option<String>,
+        /// The duration of the computer-use call in milliseconds.
+        #[ts(type = "number | null")]
+        duration_ms: Option<i64>,
+    },
+    #[serde(rename_all = "camelCase")]
+    #[ts(rename_all = "camelCase")]
     CollabAgentToolCall {
         /// Unique identifier for this collab tool call.
         id: String,
@@ -5724,6 +5752,7 @@ impl ThreadItem {
             | ThreadItem::FileChange { id, .. }
             | ThreadItem::McpToolCall { id, .. }
             | ThreadItem::DynamicToolCall { id, .. }
+            | ThreadItem::ComputerUseCall { id, .. }
             | ThreadItem::CollabAgentToolCall { id, .. }
             | ThreadItem::WebSearch { id, .. }
             | ThreadItem::ImageView { id, .. }
@@ -6286,6 +6315,16 @@ pub enum McpToolCallStatus {
 #[serde(rename_all = "camelCase")]
 #[ts(export_to = "v2/")]
 pub enum DynamicToolCallStatus {
+    InProgress,
+    Completed,
+    Failed,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub enum ComputerUseCallStatus {
     InProgress,
     Completed,
     Failed,
@@ -7432,6 +7471,19 @@ pub struct DynamicToolCallParams {
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export_to = "v2/")]
+pub struct ComputerUseCallParams {
+    pub thread_id: String,
+    pub turn_id: String,
+    pub call_id: String,
+    pub environment_id: Option<String>,
+    pub adapter: String,
+    pub tool: String,
+    pub arguments: JsonValue,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
 pub struct PermissionsRequestApprovalParams {
     pub thread_id: String,
     pub turn_id: String,
@@ -7469,6 +7521,62 @@ pub struct PermissionsRequestApprovalResponse {
 pub struct DynamicToolCallResponse {
     pub content_items: Vec<DynamicToolCallOutputContentItem>,
     pub success: bool,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ComputerUseCallResponse {
+    pub content_items: Vec<ComputerUseCallOutputContentItem>,
+    pub success: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub error: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(tag = "type", rename_all = "camelCase")]
+#[ts(tag = "type")]
+#[ts(export_to = "v2/")]
+pub enum ComputerUseCallOutputContentItem {
+    #[serde(rename_all = "camelCase")]
+    InputText { text: String },
+    #[serde(rename_all = "camelCase")]
+    InputImage {
+        image_url: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        detail: Option<String>,
+    },
+}
+
+impl From<ComputerUseCallOutputContentItem>
+    for codex_protocol::computer_use::ComputerUseOutputContentItem
+{
+    fn from(item: ComputerUseCallOutputContentItem) -> Self {
+        match item {
+            ComputerUseCallOutputContentItem::InputText { text } => Self::InputText { text },
+            ComputerUseCallOutputContentItem::InputImage { image_url, detail } => {
+                Self::InputImage { image_url, detail }
+            }
+        }
+    }
+}
+
+impl From<codex_protocol::computer_use::ComputerUseOutputContentItem>
+    for ComputerUseCallOutputContentItem
+{
+    fn from(item: codex_protocol::computer_use::ComputerUseOutputContentItem) -> Self {
+        match item {
+            codex_protocol::computer_use::ComputerUseOutputContentItem::InputText { text } => {
+                Self::InputText { text }
+            }
+            codex_protocol::computer_use::ComputerUseOutputContentItem::InputImage {
+                image_url,
+                detail,
+            } => Self::InputImage { image_url, detail },
+        }
+    }
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
@@ -9347,10 +9455,38 @@ mod tests {
     }
 
     #[test]
+    fn client_request_thread_resume_dynamic_tools_is_marked_experimental() {
+        let reason = crate::experimental_api::ExperimentalApi::experimental_reason(
+            &crate::ClientRequest::ThreadResume {
+                request_id: crate::RequestId::Integer(3),
+                params: ThreadResumeParams {
+                    thread_id: "thr_123".to_string(),
+                    dynamic_tools: Some(vec![DynamicToolSpec {
+                        namespace: None,
+                        name: "android_observe".to_string(),
+                        description: "Observe Android state".to_string(),
+                        input_schema: serde_json::json!({
+                            "type": "object",
+                            "properties": {},
+                            "additionalProperties": false,
+                        }),
+                        defer_loading: false,
+                        persist_on_resume: true,
+                        capability: None,
+                    }]),
+                    ..Default::default()
+                },
+            },
+        );
+
+        assert_eq!(reason, Some("thread/resume.dynamicTools"));
+    }
+
+    #[test]
     fn client_request_thread_fork_granular_approval_policy_is_marked_experimental() {
         let reason = crate::experimental_api::ExperimentalApi::experimental_reason(
             &crate::ClientRequest::ThreadFork {
-                request_id: crate::RequestId::Integer(3),
+                request_id: crate::RequestId::Integer(4),
                 params: ThreadForkParams {
                     thread_id: "thr_456".to_string(),
                     approval_policy: Some(AskForApproval::Granular {
@@ -9369,10 +9505,38 @@ mod tests {
     }
 
     #[test]
+    fn client_request_thread_fork_dynamic_tools_is_marked_experimental() {
+        let reason = crate::experimental_api::ExperimentalApi::experimental_reason(
+            &crate::ClientRequest::ThreadFork {
+                request_id: crate::RequestId::Integer(5),
+                params: ThreadForkParams {
+                    thread_id: "thr_456".to_string(),
+                    dynamic_tools: Some(vec![DynamicToolSpec {
+                        namespace: None,
+                        name: "android_step".to_string(),
+                        description: "Act on Android state".to_string(),
+                        input_schema: serde_json::json!({
+                            "type": "object",
+                            "properties": {},
+                            "additionalProperties": false,
+                        }),
+                        defer_loading: false,
+                        persist_on_resume: true,
+                        capability: None,
+                    }]),
+                    ..Default::default()
+                },
+            },
+        );
+
+        assert_eq!(reason, Some("thread/fork.dynamicTools"));
+    }
+
+    #[test]
     fn client_request_turn_start_granular_approval_policy_is_marked_experimental() {
         let reason = crate::experimental_api::ExperimentalApi::experimental_reason(
             &crate::ClientRequest::TurnStart {
-                request_id: crate::RequestId::Integer(4),
+                request_id: crate::RequestId::Integer(6),
                 params: TurnStartParams {
                     thread_id: "thr_123".to_string(),
                     input: Vec::new(),

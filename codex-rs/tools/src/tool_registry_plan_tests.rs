@@ -1831,15 +1831,154 @@ fn android_dynamic_tools_use_canonical_codex_tool_definitions() {
     assert!(step_properties.contains_key("view"));
     assert!(step_properties.contains_key("action"));
     assert!(!step_properties.contains_key("ignored"));
+    let action_values = step_properties
+        .get("action")
+        .and_then(|schema| schema.enum_values.as_ref())
+        .expect("action enum values");
+    assert!(action_values.contains(&json!("tap")));
+    assert!(action_values.contains(&json!("type_text")));
+    assert!(action_values.contains(&json!("key")));
+    assert!(action_values.contains(&json!("swipe")));
+    assert!(action_values.contains(&json!("click")));
+    assert!(action_values.contains(&json!("zoom")));
+    let action_item_properties = step_properties
+        .get("actions")
+        .and_then(|schema| schema.items.as_ref())
+        .and_then(|item| item.properties.as_ref())
+        .expect("actions[] item properties");
+    assert!(action_item_properties.contains_key("region"));
+    assert!(action_item_properties.contains_key("frame"));
+    let view_properties = step_properties
+        .get("view")
+        .and_then(|schema| schema.properties.as_ref())
+        .expect("view properties");
+    assert!(view_properties.contains_key("deviceWidth"));
+    assert!(view_properties.contains_key("device_height"));
+    assert!(view_properties.contains_key("region"));
 
     assert!(handlers.contains(&ToolHandlerSpec {
         name: ToolName::plain("android_observe"),
-        kind: ToolHandlerKind::DynamicTool,
+        kind: ToolHandlerKind::ComputerUse,
     }));
     assert!(handlers.contains(&ToolHandlerSpec {
         name: ToolName::plain("android_step"),
+        kind: ToolHandlerKind::ComputerUse,
+    }));
+}
+
+#[test]
+fn namespaced_android_dynamic_tool_names_remain_dynamic_tools() {
+    let model_info = model_info();
+    let features = Features::with_defaults();
+    let available_models = Vec::new();
+    let tools_config = ToolsConfig::new(&ToolsConfigParams {
+        model_info: &model_info,
+        available_models: &available_models,
+        features: &features,
+        image_generation_tool_auth_allowed: true,
+        web_search_mode: Some(WebSearchMode::Cached),
+        session_source: SessionSource::Cli,
+        sandbox_policy: &SandboxPolicy::DangerFullAccess,
+        windows_sandbox_level: WindowsSandboxLevel::Disabled,
+    });
+    let observe_tool = DynamicToolSpec {
+        namespace: Some("codex_app".to_string()),
+        name: "android_observe".to_string(),
+        description: "custom namespaced observe description".to_string(),
+        input_schema: json!({
+            "type": "object",
+            "properties": {
+                "scope": { "type": "string" }
+            }
+        }),
+        defer_loading: false,
+        persist_on_resume: false,
+        capability: None,
+    };
+
+    let (tools, handlers) = build_specs(
+        &tools_config,
+        /*mcp_tools*/ None,
+        /*deferred_mcp_tools*/ None,
+        &[observe_tool],
+    );
+
+    let observe_spec = find_namespace_function_tool(&tools, "codex_app", "android_observe");
+    assert_eq!(
+        observe_spec.description,
+        "custom namespaced observe description"
+    );
+    assert!(handlers.contains(&ToolHandlerSpec {
+        name: ToolName::namespaced("codex_app", "android_observe"),
         kind: ToolHandlerKind::DynamicTool,
     }));
+    assert!(!handlers.contains(&ToolHandlerSpec {
+        name: ToolName::plain("android_observe"),
+        kind: ToolHandlerKind::ComputerUse,
+    }));
+}
+
+#[test]
+fn duplicate_bare_android_dynamic_tools_register_native_handler_once() {
+    let model_info = model_info();
+    let features = Features::with_defaults();
+    let available_models = Vec::new();
+    let tools_config = ToolsConfig::new(&ToolsConfigParams {
+        model_info: &model_info,
+        available_models: &available_models,
+        features: &features,
+        image_generation_tool_auth_allowed: true,
+        web_search_mode: Some(WebSearchMode::Cached),
+        session_source: SessionSource::Cli,
+        sandbox_policy: &SandboxPolicy::DangerFullAccess,
+        windows_sandbox_level: WindowsSandboxLevel::Disabled,
+    });
+    let observe_tool = DynamicToolSpec {
+        namespace: None,
+        name: "android_observe".to_string(),
+        description: "custom observe description".to_string(),
+        input_schema: json!({ "type": "object" }),
+        defer_loading: false,
+        persist_on_resume: false,
+        capability: None,
+    };
+    let duplicate_observe_tool = DynamicToolSpec {
+        namespace: None,
+        name: "android_observe".to_string(),
+        description: "duplicate observe description".to_string(),
+        input_schema: json!({ "type": "object" }),
+        defer_loading: true,
+        persist_on_resume: false,
+        capability: None,
+    };
+
+    let (tools, handlers) = build_specs(
+        &tools_config,
+        /*mcp_tools*/ None,
+        /*deferred_mcp_tools*/ None,
+        &[observe_tool, duplicate_observe_tool],
+    );
+
+    assert_eq!(
+        tools
+            .iter()
+            .filter(|tool| tool.name() == "android_observe")
+            .count(),
+        1
+    );
+    assert_eq!(
+        handlers
+            .iter()
+            .filter(|handler| {
+                **handler
+                    == ToolHandlerSpec {
+                        name: ToolName::plain("android_observe"),
+                        kind: ToolHandlerKind::ComputerUse,
+                    }
+            })
+            .count(),
+        1
+    );
 }
 
 #[test]

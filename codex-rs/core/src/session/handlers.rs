@@ -62,6 +62,7 @@ use codex_protocol::request_permissions::RequestPermissionsResponse;
 use codex_protocol::request_user_input::RequestUserInputResponse;
 
 use crate::context_manager::is_user_turn_boundary;
+use codex_protocol::computer_use::ComputerUseResponse;
 use codex_protocol::config_types::CollaborationMode;
 use codex_protocol::config_types::ModeKind;
 use codex_protocol::config_types::Settings;
@@ -468,6 +469,10 @@ pub async fn request_permissions_response(
 
 pub async fn dynamic_tool_response(sess: &Arc<Session>, id: String, response: DynamicToolResponse) {
     sess.notify_dynamic_tool_response(&id, response).await;
+}
+
+pub async fn computer_use_response(sess: &Arc<Session>, id: String, response: ComputerUseResponse) {
+    sess.notify_computer_use_response(&id, response).await;
 }
 
 pub async fn add_to_history(sess: &Arc<Session>, config: &Arc<Config>, text: String) {
@@ -1145,6 +1150,10 @@ pub(super) async fn submission_loop(
                 }
                 Op::DynamicToolResponse { id, response } => {
                     dynamic_tool_response(&sess, id, response).await;
+                    false
+                }
+                Op::ComputerUseResponse { id, response } => {
+                    computer_use_response(&sess, id, response).await;
                     false
                 }
                 Op::AddToHistory { text } => {

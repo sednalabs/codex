@@ -9,6 +9,7 @@ use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
 use tokio_util::task::AbortOnDropHandle;
 
+use codex_protocol::computer_use::ComputerUseResponse;
 use codex_protocol::dynamic_tools::DynamicToolResponse;
 use codex_protocol::models::ResponseInputItem;
 use codex_protocol::request_permissions::RequestPermissionProfile;
@@ -105,6 +106,7 @@ pub(crate) struct TurnState {
     pending_user_input: HashMap<String, oneshot::Sender<RequestUserInputResponse>>,
     pending_elicitations: HashMap<(String, RequestId), oneshot::Sender<ElicitationResponse>>,
     pending_dynamic_tools: HashMap<String, oneshot::Sender<DynamicToolResponse>>,
+    pending_computer_use: HashMap<String, oneshot::Sender<ComputerUseResponse>>,
     pending_input: Vec<ResponseInputItem>,
     mailbox_delivery_phase: MailboxDeliveryPhase,
     granted_permissions: Option<AdditionalPermissionProfile>,
@@ -143,6 +145,7 @@ impl TurnState {
         self.pending_user_input.clear();
         self.pending_elicitations.clear();
         self.pending_dynamic_tools.clear();
+        self.pending_computer_use.clear();
         self.pending_input.clear();
     }
 
@@ -209,6 +212,21 @@ impl TurnState {
         key: &str,
     ) -> Option<oneshot::Sender<DynamicToolResponse>> {
         self.pending_dynamic_tools.remove(key)
+    }
+
+    pub(crate) fn insert_pending_computer_use(
+        &mut self,
+        key: String,
+        tx: oneshot::Sender<ComputerUseResponse>,
+    ) -> Option<oneshot::Sender<ComputerUseResponse>> {
+        self.pending_computer_use.insert(key, tx)
+    }
+
+    pub(crate) fn remove_pending_computer_use(
+        &mut self,
+        key: &str,
+    ) -> Option<oneshot::Sender<ComputerUseResponse>> {
+        self.pending_computer_use.remove(key)
     }
 
     pub(crate) fn push_pending_input(&mut self, input: ResponseInputItem) {

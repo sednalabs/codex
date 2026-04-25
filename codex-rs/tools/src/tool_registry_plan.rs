@@ -70,6 +70,7 @@ use crate::tool_registry_plan_types::agent_type_description;
 use codex_protocol::openai_models::ApplyPatchToolType;
 use codex_protocol::openai_models::ConfigShellToolType;
 use std::collections::BTreeMap;
+use std::collections::BTreeSet;
 
 pub fn build_tool_registry_plan(
     config: &ToolsConfig,
@@ -580,14 +581,22 @@ pub fn build_tool_registry_plan(
     }
 
     let mut dynamic_tool_specs = Vec::new();
+    let mut native_android_tools = BTreeSet::new();
     for tool in params.dynamic_tools {
         if let Some(converted_tool) = canonical_android_dynamic_tool(tool) {
+            if !native_android_tools.insert(tool.name.clone()) {
+                tracing::warn!(
+                    tool_name = tool.name.as_str(),
+                    "skipping duplicate native Android computer-use tool"
+                );
+                continue;
+            }
             plan.push_spec(
                 ToolSpec::Function(converted_tool),
                 /*supports_parallel_tool_calls*/ false,
                 config.code_mode_enabled,
             );
-            plan.register_handler(tool.name.clone(), ToolHandlerKind::DynamicTool);
+            plan.register_handler(tool.name.clone(), ToolHandlerKind::ComputerUse);
             continue;
         }
 

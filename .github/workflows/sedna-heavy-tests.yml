@@ -21,6 +21,7 @@ on:
           - all
           - core-compile-smoke
           - core-carry-core-smoke
+          - codex.nextest-archive-core-carry-pilot
           - core-carry-ui-smoke
           - core-ledger-smoke
           - core-runtime-surface-smoke
@@ -54,11 +55,14 @@ on:
           - codex.state-spawn-lineage-contract-targeted
           - codex.code-mode-declaration-targeted
           - codex.app-server-protocol-test
+          - codex.app-server-computer-use-targeted
+          - codex.native-computer-use-tool-registry-targeted
           - codex.app-server-thread-cwd-targeted
           - codex.agent-workflow-sanity
           - codex.shell-tool-mcp-ci
           - codex.build-policy-sanity
           - codex.workflow-ci-sanity
+          - codex.argument-comment-lint
           - codex.downstream-docs-check
           - sedna.release-linux-smoke
           - downstream-ledger-seam
@@ -152,6 +156,7 @@ jobs:
       rust_batching_reason: ${{ steps.meta.outputs.rust_batching_reason }}
       matrix_fail_fast: ${{ steps.meta.outputs.matrix_fail_fast }}
       continue_after_smoke_failure: ${{ steps.meta.outputs.continue_after_smoke_failure }}
+      eager_release_lanes: ${{ steps.meta.outputs.eager_release_lanes }}
       workflow_max_parallel: ${{ steps.meta.outputs.workflow_max_parallel }}
       node_max_parallel: ${{ steps.meta.outputs.node_max_parallel }}
       rust_minimal_max_parallel: ${{ steps.meta.outputs.rust_minimal_max_parallel }}
@@ -290,6 +295,7 @@ jobs:
           selected_rust_integration_batch_count="$(SELECTION_META="${selection_meta}" parse_meta "selected_rust_integration_batch_count")"
           rust_batching_mode="$(SELECTION_META="${selection_meta}" parse_meta "rust_batching_mode")"
           rust_batching_reason="$(SELECTION_META="${selection_meta}" parse_meta "rust_batching_reason")"
+          eager_release_lanes="$(SELECTION_META="${selection_meta}" parse_meta "eager_release_lanes")"
           workflow_max_parallel="$(SELECTION_META="${selection_meta}" parse_meta "workflow_max_parallel")"
           node_max_parallel="$(SELECTION_META="${selection_meta}" parse_meta "node_max_parallel")"
           rust_minimal_max_parallel="$(SELECTION_META="${selection_meta}" parse_meta "rust_minimal_max_parallel")"
@@ -350,6 +356,7 @@ jobs:
               selected_release_lane_count='0'
               selected_rust_minimal_batch_count='0'
               selected_rust_integration_batch_count='0'
+              eager_release_lanes='false'
             fi
           fi
 
@@ -374,6 +381,7 @@ jobs:
             echo "run_smoke_gate=${run_smoke_gate}"
             echo "matrix_fail_fast=${matrix_fail_fast}"
             echo "continue_after_smoke_failure=${continue_after_smoke_failure}"
+            echo "eager_release_lanes=${eager_release_lanes}"
             echo "run_selected_lanes=${run_selected_lanes}"
             echo "planned_matrix=${planned_json}"
             echo "selected_matrix=${selected_json}"
@@ -411,6 +419,7 @@ jobs:
             echo "- Requested lane: \`${{ inputs.lane || 'auto' }}\`"
             echo "- Planner fingerprint: \`${planner_fingerprint}\`"
             echo "- Rust batching: \`${rust_batching_mode}\` (${rust_batching_reason})"
+            echo "- Eager release lanes: \`${eager_release_lanes}\`"
             if [[ -n "${dedupe_reason}" ]]; then
               echo "- Dedupe: ${dedupe_reason}"
             fi
@@ -453,6 +462,7 @@ jobs:
       needs_linux_build_deps: ${{ matrix.needs_linux_build_deps }}
       needs_dotslash: ${{ matrix.needs_dotslash }}
       needs_sccache: ${{ matrix.needs_sccache }}
+      needs_bazel: ${{ matrix.needs_bazel }}
 
   smoke_node_lanes:
     name: Heavy preflight smoke (node)
@@ -655,6 +665,7 @@ jobs:
       needs_linux_build_deps: ${{ matrix.needs_linux_build_deps }}
       needs_dotslash: ${{ matrix.needs_dotslash }}
       needs_sccache: ${{ matrix.needs_sccache }}
+      needs_bazel: ${{ matrix.needs_bazel }}
 
   node_lanes:
     needs:
@@ -894,6 +905,44 @@ jobs:
       needs_sccache: ${{ matrix.needs_sccache }}
       cache_policy: ${{ github.event_name == 'workflow_dispatch' && 'write-fallback' || 'restore-only' }}
 
+  release_lanes_eager:
+    needs:
+      - metadata
+    if: >-
+      ${{
+        needs.metadata.result == 'success' &&
+        needs.metadata.outputs.eager_release_lanes == 'true' &&
+        fromJson(needs.metadata.outputs.selected_release_lane_count) > 0 &&
+        needs.metadata.outputs.run_selected_lanes == 'true'
+      }}
+    strategy:
+      fail-fast: ${{ fromJson(needs.metadata.outputs.matrix_fail_fast) }}
+      max-parallel: ${{ fromJson(needs.metadata.outputs.release_max_parallel) }}
+      matrix: ${{ fromJson(needs.metadata.outputs.selected_release_matrix) }}
+    uses: ./.github/workflows/_validation-lane-release.yml
+    with:
+      checkout_ref: ${{ needs.metadata.outputs.checkout_ref }}
+      checkout_fetch_depth: ${{ matrix.checkout_fetch_depth }}
+      lane_id: ${{ matrix.lane_id }}
+      lane_phase: downstream_lanes
+      summary_title: ${{ matrix.lane_id }}
+      status_class: ${{ matrix.status_class }}
+      frontier_default: ${{ matrix.frontier_default }}
+      setup_class: ${{ matrix.setup_class }}
+      frontier_role: ${{ matrix.frontier_role }}
+      summary_family: ${{ matrix.summary_family }}
+      cost_class: ${{ matrix.cost_class }}
+      working_directory: ${{ matrix.working_directory }}
+      script_path: ${{ matrix.script_path }}
+      script_args_json: ${{ toJson(matrix.script_args) }}
+      needs_just: ${{ matrix.needs_just }}
+      needs_node: ${{ matrix.needs_node }}
+      needs_nextest: ${{ matrix.needs_nextest }}
+      needs_linux_build_deps: ${{ matrix.needs_linux_build_deps }}
+      needs_dotslash: ${{ matrix.needs_dotslash }}
+      needs_sccache: ${{ matrix.needs_sccache }}
+      cache_policy: ${{ github.event_name == 'workflow_dispatch' && 'write-fallback' || 'restore-only' }}
+
   release_lanes:
     needs:
       - metadata
@@ -907,6 +956,7 @@ jobs:
         always() &&
         needs.metadata.result == 'success' &&
         fromJson(needs.metadata.outputs.selected_release_lane_count) > 0 &&
+        needs.metadata.outputs.eager_release_lanes != 'true' &&
         (
           needs.metadata.outputs.continue_after_smoke_failure == 'true' ||
           (needs.smoke_workflow_lanes.result == 'success' || needs.smoke_workflow_lanes.result == 'skipped') &&
@@ -960,6 +1010,7 @@ jobs:
       - rust_minimal_batches
       - rust_integration_lanes
       - rust_integration_batches
+      - release_lanes_eager
       - release_lanes
     if: >-
       ${{
@@ -968,6 +1019,7 @@ jobs:
       }}
     runs-on: ubuntu-24.04
     permissions:
+      actions: read
       contents: read
     steps:
       - uses: actions/checkout@v6
@@ -982,6 +1034,21 @@ jobs:
           pattern: validation-lane-summary-*
           path: ${{ runner.temp }}/validation-lane-summaries
           merge-multiple: true
+
+      - name: Record Actions cache occupancy
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          cache_occupancy_file="${RUNNER_TEMP}/actions-cache-occupancy.json"
+          cache_occupancy_markdown="${RUNNER_TEMP}/actions-cache-occupancy.md"
+          python3 .github/scripts/report_actions_cache_occupancy.py \
+            --repo "${GITHUB_REPOSITORY}" \
+            --output "${cache_occupancy_file}" \
+            --markdown-output "${cache_occupancy_markdown}"
+          cat "${cache_occupancy_markdown}" >> "$GITHUB_STEP_SUMMARY"
+          echo "CACHE_OCCUPANCY_FILE=${cache_occupancy_file}" >> "$GITHUB_ENV"
 
       - name: Build heavy-test summary artifact
         shell: bash
@@ -998,6 +1065,7 @@ jobs:
           RUST_MINIMAL_BATCH_RESULT: ${{ needs.rust_minimal_batches.result || 'skipped' }}
           RUST_INTEGRATION_RESULT: ${{ needs.rust_integration_lanes.result || 'skipped' }}
           RUST_INTEGRATION_BATCH_RESULT: ${{ needs.rust_integration_batches.result || 'skipped' }}
+          RELEASE_EAGER_RESULT: ${{ needs.release_lanes_eager.result || 'skipped' }}
           RELEASE_RESULT: ${{ needs.release_lanes.result || 'skipped' }}
           INPUT_LANE: ${{ inputs.lane }}
           RUN_SMOKE_GATE: ${{ needs.metadata.outputs.run_smoke_gate }}
@@ -1049,6 +1117,7 @@ jobs:
           }
           rust_minimal_result="$(combined_result "${RUST_MINIMAL_RESULT}" "${RUST_MINIMAL_BATCH_RESULT}")"
           rust_integration_result="$(combined_result "${RUST_INTEGRATION_RESULT}" "${RUST_INTEGRATION_BATCH_RESULT}")"
+          release_result="$(combined_result "${RELEASE_RESULT}" "${RELEASE_EAGER_RESULT}")"
           python3 .github/scripts/aggregate_validation_summary.py \
             --repo "${GITHUB_REPOSITORY}" \
             --host-ref "${{ github.ref_name }}" \
@@ -1077,12 +1146,13 @@ jobs:
             --node-result "${NODE_RESULT}" \
             --rust-minimal-result "${rust_minimal_result}" \
             --rust-integration-result "${rust_integration_result}" \
-            --release-result "${RELEASE_RESULT}" \
+            --release-result "${release_result}" \
             --run-artifact "false" \
             --artifact-result "skipped" \
             --matrix-fail-fast "${MATRIX_FAIL_FAST}" \
             --rust-batching-mode "${RUST_BATCHING_MODE}" \
             --rust-batching-reason "${RUST_BATCHING_REASON}" \
+            --cache-occupancy-json "${CACHE_OCCUPANCY_FILE:-}" \
             --lane-summary-dir "${RUNNER_TEMP}/validation-lane-summaries" \
             --output "${summary_file}"
           echo "SUMMARY_FILE=${summary_file}" >> "$GITHUB_ENV"
