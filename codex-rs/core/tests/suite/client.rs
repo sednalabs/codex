@@ -2445,11 +2445,9 @@ async fn token_count_includes_rate_limits_snapshot() {
         .with_config(move |config| {
             config.model_provider = provider;
         });
-    let codex = builder
-        .build(&server)
-        .await
-        .expect("create conversation")
-        .codex;
+    let test = builder.build(&server).await.expect("create conversation");
+    let session_model = test.session_configured.model.clone();
+    let codex = test.codex;
 
     codex
         .submit(Op::UserInput {
@@ -2494,7 +2492,7 @@ async fn token_count_includes_rate_limits_snapshot() {
                 "rate_limit_reached_type": null
             },
             "provider": "openai",
-            "model_used": "gpt-5.4"
+            "model_used": session_model.clone()
         })
     );
 
@@ -2527,7 +2525,7 @@ async fn token_count_includes_rate_limits_snapshot() {
                     "reasoning_output_tokens": 0,
                     "total_tokens": 123
                 },
-                // Default model is gpt-5.4 in tests → 95% usable context window
+                // Default bundled models use a 95% usable context window.
                 "model_context_window": 258400
             },
             "rate_limits": {
@@ -2548,7 +2546,7 @@ async fn token_count_includes_rate_limits_snapshot() {
                 "rate_limit_reached_type": null
             },
             "provider": "openai",
-            "model_used": "gpt-5.4"
+            "model_used": session_model
         })
     );
     let usage = final_payload
@@ -2605,6 +2603,7 @@ async fn usage_limit_error_emits_rate_limit_event() -> anyhow::Result<()> {
 
     let mut builder = test_codex();
     let codex_fixture = builder.build(&server).await?;
+    let session_model = codex_fixture.session_configured.model.clone();
     let codex = codex_fixture.codex.clone();
 
     let expected_limits = json!({
@@ -2648,7 +2647,7 @@ async fn usage_limit_error_emits_rate_limit_event() -> anyhow::Result<()> {
         event_json,
         json!({
             "info": null,
-            "model_used": "gpt-5.4",
+            "model_used": session_model,
             "provider": "openai",
             "rate_limits": expected_limits
         })
