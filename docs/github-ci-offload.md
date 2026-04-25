@@ -35,6 +35,12 @@ artifacts.
     the workflow's GitHub cache-service backend setup and the binary's GHA
     contract stay aligned
   - retention: ordinary workflow logs only
+- `rust-ci`
+  - trigger: routine PRs, manual dispatch, and schedule
+  - purpose: required Rust promotion gate with path-aware routing
+  - diff source: PR runs use GitHub PR/compare metadata for changed-file
+    routing where safe, then fall back to git diff when metadata is unavailable
+    or ambiguous
 - `sedna-heavy-tests`
   - trigger: manual dispatch, `ci:heavy` PR label, and merge-group checkpoints
   - purpose: expensive Linux-heavy Rust validation without using the local development machine as the
@@ -64,6 +70,10 @@ artifacts.
    PR follow-up pushes may route to incremental targeted validation
    automatically when the relevant diff is small and maps cleanly to one
    guarded seam.
+   - PR changed-file routing uses GitHub's PR metadata as a fast path so the
+     always-on detector does not need a full repository checkout just to learn
+     the diff. Unsafe or incomplete metadata falls back to the git-diff path;
+     this is a runtime optimization only, not a coverage reduction.
    - Workflow planning and route-map edits also run cheap planner fixtures so
      the exact-route path stays trustworthy.
    - That light workflow-only route includes the reusable validation-lane
