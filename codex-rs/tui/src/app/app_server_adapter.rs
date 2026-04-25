@@ -1688,7 +1688,7 @@ mod tests {
             background_thread_id,
         ));
         assert!(should_show_computer_use_fallback_message(
-            None,
+            /*primary_thread_id*/ None,
             background_thread_id,
         ));
     }
