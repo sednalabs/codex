@@ -53,6 +53,7 @@ use codex_config::types::McpServerTransportConfig;
 use codex_mcp::qualified_mcp_tool_name_prefix;
 use codex_otel::RuntimeMetricsSummary;
 use codex_protocol::account::PlanType;
+use codex_protocol::computer_use::ComputerUseOutputContentItem;
 use codex_protocol::config_types::ServiceTier;
 use codex_protocol::dynamic_tools::DynamicToolCallOutputContentItem;
 #[cfg(test)]
@@ -1836,6 +1837,172 @@ pub(crate) fn new_active_dynamic_tool_call(
     DynamicToolCallCell::new(call_id, tool, arguments, animations_enabled)
 }
 
+#[derive(Debug)]
+pub(crate) struct ComputerUseCallCell {
+    call_id: String,
+    environment_id: Option<String>,
+    adapter: String,
+    tool: String,
+    arguments: serde_json::Value,
+    start_time: Instant,
+    duration: Option<Duration>,
+    content_items: Option<Vec<ComputerUseOutputContentItem>>,
+    success: Option<bool>,
+    error: Option<String>,
+    animations_enabled: bool,
+}
+
+impl ComputerUseCallCell {
+    pub(crate) fn new(
+        call_id: String,
+        environment_id: Option<String>,
+        adapter: String,
+        tool: String,
+        arguments: serde_json::Value,
+        animations_enabled: bool,
+    ) -> Self {
+        Self {
+            call_id,
+            environment_id,
+            adapter,
+            tool,
+            arguments,
+            start_time: Instant::now(),
+            duration: None,
+            content_items: None,
+            success: None,
+            error: None,
+            animations_enabled,
+        }
+    }
+
+    pub(crate) fn call_id(&self) -> &str {
+        &self.call_id
+    }
+
+    pub(crate) fn complete(
+        &mut self,
+        duration: Duration,
+        content_items: Vec<ComputerUseOutputContentItem>,
+        success: bool,
+        error: Option<String>,
+    ) {
+        self.duration = Some(duration);
+        self.content_items = Some(content_items);
+        self.success = Some(success);
+        self.error = error;
+    }
+
+    pub(crate) fn mark_failed(&mut self) {
+        self.duration = Some(self.start_time.elapsed());
+        self.success = Some(false);
+        self.error = Some("interrupted".to_string());
+    }
+}
+
+impl HistoryCell for ComputerUseCallCell {
+    fn display_lines(&self, width: u16) -> Vec<Line<'static>> {
+        let mut lines: Vec<Line<'static>> = Vec::new();
+        let bullet = match self.success {
+            Some(true) => "•".green().bold(),
+            Some(false) => "•".red().bold(),
+            None => spinner(Some(self.start_time), self.animations_enabled),
+        };
+        let header_text = if self.success.is_some() {
+            "Used computer"
+        } else {
+            "Using computer"
+        };
+        let invocation_line = line_to_static(&format_computer_use_invocation(
+            &self.adapter,
+            self.environment_id.as_deref(),
+            &self.tool,
+            &self.arguments,
+        ));
+        let mut compact_spans = vec![bullet.clone(), " ".into(), header_text.bold(), " ".into()];
+        let mut compact_header = Line::from(compact_spans.clone());
+        let reserved = compact_header.width();
+        let inline_invocation =
+            invocation_line.width() <= (width as usize).saturating_sub(reserved);
+
+        if inline_invocation {
+            compact_header.extend(invocation_line.spans.clone());
+            lines.push(compact_header);
+        } else {
+            compact_spans.pop();
+            lines.push(Line::from(compact_spans));
+
+            let opts = RtOptions::new((width as usize).saturating_sub(4))
+                .initial_indent("".into())
+                .subsequent_indent("    ".into());
+            let wrapped = adaptive_wrap_line(&invocation_line, opts);
+            let body_lines: Vec<Line<'static>> = wrapped.iter().map(line_to_static).collect();
+            lines.extend(prefix_lines(body_lines, "  └ ".dim(), "    ".into()));
+        }
+
+        let detail_wrap_width = (width as usize).saturating_sub(4).max(1);
+        let preview = match (&self.error, &self.content_items) {
+            (Some(error), _) => Some(format!("Error: {error}")),
+            (None, Some(content_items)) => computer_use_preview(content_items),
+            (None, None) => None,
+        };
+
+        if let Some(preview) = preview {
+            let detail_text =
+                format_and_truncate_tool_result(&preview, TOOL_CALL_MAX_LINES, detail_wrap_width);
+            let detail_lines: Vec<Line<'static>> = detail_text
+                .split('\n')
+                .flat_map(|segment| {
+                    let styled_line = Line::from(segment.to_string().dim());
+                    adaptive_wrap_line(
+                        &styled_line,
+                        RtOptions::new(detail_wrap_width)
+                            .initial_indent("".into())
+                            .subsequent_indent("    ".into()),
+                    )
+                    .into_iter()
+                    .map(|line| line_to_static(&line))
+                    .collect::<Vec<_>>()
+                })
+                .collect();
+
+            let initial_prefix: Span<'static> = if inline_invocation {
+                "  └ ".dim()
+            } else {
+                "    ".into()
+            };
+            lines.extend(prefix_lines(detail_lines, initial_prefix, "    ".into()));
+        }
+
+        lines
+    }
+
+    fn transcript_animation_tick(&self) -> Option<u64> {
+        if !self.animations_enabled || self.success.is_some() {
+            return None;
+        }
+        Some((self.start_time.elapsed().as_millis() / 50) as u64)
+    }
+}
+
+pub(crate) fn new_active_computer_use_call(
+    call_id: String,
+    environment_id: Option<String>,
+    adapter: String,
+    tool: String,
+    arguments: serde_json::Value,
+    animations_enabled: bool,
+) -> ComputerUseCallCell {
+    ComputerUseCallCell::new(
+        call_id,
+        environment_id,
+        adapter,
+        tool,
+        arguments,
+        animations_enabled,
+    )
+}
+
 fn web_search_header(completed: bool) -> &'static str {
     if completed {
         "Searched"
@@ -3073,6 +3240,26 @@ fn format_dynamic_tool_invocation<'a>(tool: &'a str, arguments: &serde_json::Val
     vec![tool.cyan(), " ".into(), args_str.dim()].into()
 }
 
+fn format_computer_use_invocation<'a>(
+    adapter: &'a str,
+    environment_id: Option<&'a str>,
+    tool: &'a str,
+    arguments: &serde_json::Value,
+) -> Line<'a> {
+    let args_str = serde_json::to_string(arguments).unwrap_or_else(|_| arguments.to_string());
+    let target = environment_id
+        .map(|environment_id| format!("{adapter}[{environment_id}]"))
+        .unwrap_or_else(|| adapter.to_string());
+    vec![
+        target.cyan(),
+        ".".into(),
+        tool.cyan(),
+        " ".into(),
+        args_str.dim(),
+    ]
+    .into()
+}
+
 fn dynamic_tool_preview(content_items: &[DynamicToolCallOutputContentItem]) -> Option<String> {
     let mut text_parts: Vec<&str> = Vec::new();
     let mut image_count = 0usize;
@@ -3084,6 +3271,40 @@ fn dynamic_tool_preview(content_items: &[DynamicToolCallOutputContentItem]) -> O
                 }
             }
             DynamicToolCallOutputContentItem::InputImage { .. } => {
+                image_count += 1;
+            }
+        }
+    }
+
+    let mut preview = text_parts.join("\n");
+    if image_count > 0 {
+        let image_summary = if image_count == 1 {
+            "<1 image output>".to_string()
+        } else {
+            format!("<{image_count} image outputs>")
+        };
+        if preview.is_empty() {
+            preview = image_summary;
+        } else {
+            preview.push('\n');
+            preview.push_str(&image_summary);
+        }
+    }
+
+    (!preview.is_empty()).then_some(preview)
+}
+
+fn computer_use_preview(content_items: &[ComputerUseOutputContentItem]) -> Option<String> {
+    let mut text_parts: Vec<&str> = Vec::new();
+    let mut image_count = 0usize;
+    for item in content_items {
+        match item {
+            ComputerUseOutputContentItem::InputText { text } => {
+                if !text.trim().is_empty() {
+                    text_parts.push(text.as_str());
+                }
+            }
+            ComputerUseOutputContentItem::InputImage { .. } => {
                 image_count += 1;
             }
         }
@@ -4028,6 +4249,39 @@ mod tests {
         let rendered = render_lines(&cell.transcript_lines(/*width*/ 80)).join("\n");
 
         assert!(rendered.contains(r#"android_observe {"scope":"screen_and_ui"}"#));
+        assert!(rendered.contains("screen summary"));
+        assert!(rendered.contains("<1 image output>"));
+    }
+
+    #[test]
+    fn active_computer_use_call_renders_native_adapter_and_preview() {
+        let mut cell = new_active_computer_use_call(
+            "call-1".into(),
+            Some("env-1".into()),
+            "android".into(),
+            "android_observe".into(),
+            json!({
+                "scope": "screen_and_ui",
+            }),
+            /*animations_enabled*/ false,
+        );
+        cell.complete(
+            Duration::from_millis(42),
+            vec![
+                ComputerUseOutputContentItem::InputText {
+                    text: "screen summary".to_string(),
+                },
+                ComputerUseOutputContentItem::InputImage {
+                    image_url: "data:image/png;base64,AAA".to_string(),
+                    detail: Some("original".to_string()),
+                },
+            ],
+            /*success*/ true,
+            /*error*/ None,
+        );
+        let rendered = render_lines(&cell.transcript_lines(/*width*/ 80)).join("\n");
+
+        assert!(rendered.contains(r#"android[env-1].android_observe {"scope":"screen_and_ui"}"#));
         assert!(rendered.contains("screen summary"));
         assert!(rendered.contains("<1 image output>"));
     }

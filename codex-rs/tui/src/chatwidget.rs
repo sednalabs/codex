@@ -5491,8 +5491,10 @@ impl ChatWidget {
     pub(crate) fn handle_computer_use_begin_now(&mut self, ev: ComputerUseCallRequest) {
         self.flush_answer_stream_with_separator();
         self.flush_active_cell();
-        self.active_cell = Some(Box::new(history_cell::new_active_dynamic_tool_call(
+        self.active_cell = Some(Box::new(history_cell::new_active_computer_use_call(
             ev.call_id,
+            ev.environment_id,
+            ev.adapter,
             ev.tool,
             ev.arguments,
             self.config.animations,
@@ -5506,6 +5508,8 @@ impl ChatWidget {
 
         let ComputerUseCallResponseEvent {
             call_id,
+            environment_id,
+            adapter,
             tool,
             arguments,
             content_items,
@@ -5517,7 +5521,7 @@ impl ChatWidget {
 
         match self.active_cell.as_mut().and_then(|cell| {
             cell.as_any_mut()
-                .downcast_mut::<history_cell::DynamicToolCallCell>()
+                .downcast_mut::<history_cell::ComputerUseCallCell>()
         }) {
             Some(cell) if cell.call_id() == call_id => {
                 cell.complete(
@@ -5530,8 +5534,10 @@ impl ChatWidget {
             }
             _ => {
                 self.flush_active_cell();
-                let mut cell = history_cell::new_active_dynamic_tool_call(
+                let mut cell = history_cell::new_active_computer_use_call(
                     call_id,
+                    environment_id,
+                    adapter,
                     tool,
                     arguments,
                     self.config.animations,
@@ -7074,8 +7080,8 @@ impl ChatWidget {
             ServerRequest::ToolRequestUserInput { params, .. } => {
                 self.on_request_user_input(request_user_input_from_params(params));
             }
+            ServerRequest::ComputerUseCall { .. } => {}
             ServerRequest::DynamicToolCall { .. }
-            | ServerRequest::ComputerUseCall { .. }
             | ServerRequest::ChatgptAuthTokensRefresh { .. }
             | ServerRequest::ApplyPatchApproval { .. }
             | ServerRequest::ExecCommandApproval { .. } => {
@@ -8187,6 +8193,11 @@ impl ChatWidget {
                 exec.mark_failed();
             } else if let Some(tool) = cell.as_any_mut().downcast_mut::<McpToolCallCell>() {
                 tool.mark_failed();
+            } else if let Some(computer_use) = cell
+                .as_any_mut()
+                .downcast_mut::<history_cell::ComputerUseCallCell>()
+            {
+                computer_use.mark_failed();
             }
             self.add_boxed_history(cell);
         }

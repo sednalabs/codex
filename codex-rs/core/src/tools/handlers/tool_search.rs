@@ -331,6 +331,21 @@ mod tests {
                 persist_on_resume: true,
                 capability: None,
             },
+            DynamicToolSpec {
+                namespace: Some("codex_app".to_string()),
+                name: ANDROID_OBSERVE_TOOL_NAME.to_string(),
+                description: "Custom namespaced Android observer.".to_string(),
+                input_schema: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "scope": { "type": "string" },
+                    },
+                    "additionalProperties": false,
+                }),
+                defer_loading: true,
+                persist_on_resume: true,
+                capability: None,
+            },
         ];
 
         let handler = handler_from_tools(None, &dynamic_tools);
@@ -341,7 +356,10 @@ mod tests {
                 .iter()
                 .map(|entry| entry.search_text.as_str())
                 .collect::<Vec<_>>(),
-            vec!["weather_lookup weather lookup Look up weather. city"]
+            vec![
+                "weather_lookup weather lookup Look up weather. city",
+                "android_observe android observe Custom namespaced Android observer. codex_app scope",
+            ]
         );
     }
 

@@ -21,6 +21,9 @@ use crate::app_server_session::status_account_display_from_auth_mode;
 use crate::exec_command::split_command_string;
 use codex_app_server_client::AppServerEvent;
 use codex_app_server_protocol::AuthMode;
+use codex_app_server_protocol::ComputerUseCallOutputContentItem;
+use codex_app_server_protocol::ComputerUseCallParams;
+use codex_app_server_protocol::ComputerUseCallResponse;
 use codex_app_server_protocol::JSONRPCErrorError;
 use codex_app_server_protocol::ServerNotification;
 use codex_app_server_protocol::ServerRequest;
@@ -240,6 +243,12 @@ impl App {
         app_server_client: &AppServerSession,
         request: ServerRequest,
     ) {
+        if let ServerRequest::ComputerUseCall { request_id, params } = request {
+            self.resolve_unavailable_computer_use_call(app_server_client, request_id, params)
+                .await;
+            return;
+        }
+
         if let Some(unsupported) = self
             .pending_app_server_requests
             .note_server_request(&request)
@@ -297,6 +306,68 @@ impl App {
             .await
             .map_err(|err| format!("failed to reject app-server request: {err}"))
     }
+
+    async fn resolve_unavailable_computer_use_call(
+        &mut self,
+        app_server_client: &AppServerSession,
+        request_id: codex_app_server_protocol::RequestId,
+        params: ComputerUseCallParams,
+    ) {
+        let message = computer_use_provider_unavailable_message(&params);
+        let result = match computer_use_unavailable_result(&params) {
+            Ok(result) => result,
+            Err(err) => {
+                let reason = format!("failed to serialize computer-use fallback response: {err}");
+                self.chat_widget.add_error_message(reason.clone());
+                if let Err(reject_err) = self
+                    .reject_app_server_request(app_server_client, request_id, reason)
+                    .await
+                {
+                    tracing::warn!("{reject_err}");
+                }
+                return;
+            }
+        };
+
+        tracing::warn!(
+            request_id = ?request_id,
+            adapter = params.adapter.as_str(),
+            tool = params.tool.as_str(),
+            environment_id = params.environment_id.as_deref().unwrap_or("<none>"),
+            "resolving computer-use request without a TUI provider"
+        );
+        self.chat_widget.add_error_message(message);
+        if let Err(err) = app_server_client
+            .resolve_server_request(request_id, result)
+            .await
+        {
+            self.chat_widget.add_error_message(format!(
+                "Failed to resolve computer-use app-server request: {err}"
+            ));
+        }
+    }
+}
+
+fn computer_use_provider_unavailable_message(params: &ComputerUseCallParams) -> String {
+    let environment = params
+        .environment_id
+        .as_deref()
+        .map(|environment_id| format!("environment {environment_id}"))
+        .unwrap_or_else(|| "no selected environment".to_string());
+    format!(
+        "{} computer-use provider is unavailable in this TUI session for {}; connect a native computer-use provider for {} to execute the request.",
+        params.adapter, params.tool, environment
+    )
+}
+
+fn computer_use_unavailable_result(
+    params: &ComputerUseCallParams,
+) -> Result<serde_json::Value, serde_json::Error> {
+    let message = computer_use_provider_unavailable_message(params);
+    serde_json::to_value(ComputerUseCallResponse {
+        content_items: vec![ComputerUseCallOutputContentItem::InputText { text: message }],
+        success: false,
+    })
 }
 
 fn server_request_thread_id(request: &ServerRequest) -> Option<ThreadId> {
@@ -1172,6 +1243,7 @@ fn app_server_codex_error_info_to_core(
 mod tests {
     use super::ServerNotificationThreadTarget;
     use super::command_execution_started_event;
+    use super::computer_use_unavailable_result;
     use super::server_notification_thread_events;
     use super::server_notification_thread_target;
     use super::thread_snapshot_events;
@@ -1183,6 +1255,8 @@ mod tests {
     use codex_app_server_protocol::CommandExecutionSource;
     use codex_app_server_protocol::CommandExecutionStatus;
     use codex_app_server_protocol::ComputerUseCallOutputContentItem;
+    use codex_app_server_protocol::ComputerUseCallParams;
+    use codex_app_server_protocol::ComputerUseCallResponse;
     use codex_app_server_protocol::ComputerUseCallStatus;
     use codex_app_server_protocol::GuardianWarningNotification;
     use codex_app_server_protocol::ItemCompletedNotification;
@@ -1534,6 +1608,32 @@ mod tests {
             ]
         );
         assert!(matches!(events[3].msg, EventMsg::TurnComplete(_)));
+    }
+
+    #[test]
+    fn computer_use_unavailable_result_is_structured_failed_response() {
+        let result = computer_use_unavailable_result(&ComputerUseCallParams {
+            thread_id: "thread-1".to_string(),
+            turn_id: "turn-1".to_string(),
+            call_id: "android-1".to_string(),
+            environment_id: Some("env-1".to_string()),
+            adapter: "android".to_string(),
+            tool: "android_observe".to_string(),
+            arguments: serde_json::json!({ "scope": "screen_and_ui" }),
+        })
+        .expect("fallback response should serialize");
+        let response: ComputerUseCallResponse =
+            serde_json::from_value(result).expect("fallback response should match protocol");
+
+        assert!(!response.success);
+        let [ComputerUseCallOutputContentItem::InputText { text }] =
+            response.content_items.as_slice()
+        else {
+            panic!("expected a single text response item");
+        };
+        assert!(text.contains("android computer-use provider is unavailable"));
+        assert!(text.contains("android_observe"));
+        assert!(text.contains("environment env-1"));
     }
 
     #[test]
