@@ -1266,8 +1266,8 @@ impl BottomPane {
         }
 
         let decision = if self.esc_interrupt_requires_double_press {
-            if self.pending_esc_interrupt_deadline.is_some() {
-                self.set_pending_esc_interrupt_deadline(/*deadline*/ None);
+            if self.pending_esc_interrupt_deadline.map_or(false, |d| Instant::now() < d) {
+                self.set_pending_esc_interrupt_deadline(None);
                 EscInterruptDecision::Interrupt
             } else {
                 self.set_pending_esc_interrupt_deadline(Some(
@@ -1277,6 +1277,7 @@ impl BottomPane {
                 EscInterruptDecision::AwaitingConfirmation
             }
         } else {
+            self.set_pending_esc_interrupt_deadline(None);
             EscInterruptDecision::Interrupt
         };
 
