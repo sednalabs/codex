@@ -1263,9 +1263,10 @@ class ValidationPlanScriptTests(unittest.TestCase):
 
         self.assertEqual(payload.get("permissions"), {"contents": "read"})
         self.assertEqual(audit_job.get("needs"), "sync")
-        self.assertNotIn("secrets.", json.dumps(audit_job, sort_keys=True))
-        self.assertNotIn("SYNC_UPSTREAM_APP_TOKEN", json.dumps(audit_job, sort_keys=True))
-        self.assertNotIn("SYNC_UPSTREAM_LEGACY_TOKEN", json.dumps(audit_job, sort_keys=True))
+        audit_job_json = json.dumps(audit_job, sort_keys=True)
+        self.assertNotIn("secrets.", audit_job_json)
+        self.assertNotIn("SYNC_UPSTREAM_APP_TOKEN", audit_job_json)
+        self.assertNotIn("SYNC_UPSTREAM_LEGACY_TOKEN", audit_job_json)
         self.assertIn("Generate upstream sync app token", json.dumps(sync_job, sort_keys=True))
 
     def test_rust_ci_full_fallback_sccache_writes_are_disabled_by_default(self) -> None:
