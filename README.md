@@ -49,6 +49,7 @@ You can also use Codex with an API key, but this requires [additional setup](htt
 
 - [**Sedna release policy**](./docs/sedna-release.md)
 - [**Downstream / fork notes**](./docs/downstream.md)
+- [**Native computer-use and Android tooling**](./docs/native-computer-use.md)
 - [**Codex Documentation**](https://developers.openai.com/codex)
 - [**Contributing**](./docs/contributing.md)
 - [**Installing & building**](./docs/install.md)

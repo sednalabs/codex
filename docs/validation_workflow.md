@@ -222,6 +222,19 @@ runtime/product seams. That light route includes the reusable validation-lane
 workflow files and the explicit lane catalog when the diff stays inside those
 CI-only surfaces.
 
+For native computer-use and Android observe/step work, choose validation by
+ownership boundary:
+
+- Codex protocol, app-server, TUI, rollout, and tool-registry changes should use
+  the Codex lanes `codex.app-server-protocol-test`,
+  `codex.app-server-computer-use-targeted`, and
+  `codex.native-computer-use-tool-registry-targeted`.
+- Android harness, emulator, device, screenshot, UI digest, and input execution
+  changes should be validated in the Android runtime provider or consumer app
+  that owns that behavior.
+- Solar Gravity Lab validation is appropriate when proving a consumer workflow,
+  not when the question is the generic Codex computer-use contract.
+
 ## Documentation boundaries
 
 Keep tracked repository docs contributor-safe and generalized.

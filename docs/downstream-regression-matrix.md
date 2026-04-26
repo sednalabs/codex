@@ -70,6 +70,8 @@ Validation workflow reference:
 Focused lane used for protocol/event-history seams:
 
 - `codex.app-server-protocol-test`
+- `codex.app-server-computer-use-targeted`
+- `codex.native-computer-use-tool-registry-targeted`
 - `codex.app-server-thread-cwd-targeted`
 
 GitHub Actions lane naming (`.github/workflows/sedna-heavy-tests.yml`):
@@ -159,6 +161,7 @@ GitHub Actions lane naming (`.github/workflows/sedna-heavy-tests.yml`):
 | Persisted sub-agent descendant status across close + rollout resume | `codex.core-persisted-subagent-descendants-targeted` | `thread_spawn_edges_track_directional_status` |
 | Code-mode declaration formatting + namespaced tool metadata | `codex.code-mode-declaration-targeted` | `augment_tool_spec_for_code_mode_*`; `tool_spec_to_code_mode_tool_definition_*`; `code_mode_declaration_normalization_is_layout_tolerant_and_semantically_strict`; `code_mode_exports_all_tools_metadata_for_builtin_tools`; `code_mode_exports_all_tools_metadata_for_namespaced_mcp_tools` |
 | Blocking waits across unified exec, agent joins, app-server command execution, and MCP task completion | `core-carry-core-smoke`; `codex.blocking-waits-targeted` | `exec_command_reports_chunk_and_exit_metadata`; `write_stdin_returns_exit_metadata_and_clears_session`; `multi_agent_v2_wait_agent_honors_return_when_all`; `command_execution_completion_precedes_turn_completion_and_preserves_process_id`; `shell_command_approval_emits_task_complete_before_tool_response`; `exec_command_tool_matches_expected_spec`; `write_stdin_tool_matches_expected_spec`; `unified_exec_tools_include_wait_until_terminal_contract_fields`; `exec_command_args_reject_invalid_wait_until_terminal_type`; `write_stdin_wait_until_terminal_requires_empty_chars` |
+| Native computer-use and first-party Android observe/step bridge | `codex.app-server-protocol-test`; `codex.app-server-computer-use-targeted`; `codex.native-computer-use-tool-registry-targeted` | `computer_use_call_round_trip_sends_client_response_to_model`; `thread_resume_injects_native_android_tools_into_model_requests`; `thread_resume_replaces_loaded_thread_when_native_android_tools_are_requested`; `thread_fork_injects_native_android_tools_into_model_requests`; `canonical_android_dynamic_tool_preserves_supported_android_tool_names`; `android_dynamic_tools_use_canonical_codex_tool_definitions`; `duplicate_bare_android_dynamic_tools_register_native_handler_once`; `deferred_android_dynamic_tools_search_as_native_computer_use_tools`; `computer_use_call_times_out_and_unregisters_pending_response`; `reconstructs_computer_use_items_from_request_and_response_events`; `computer_use_call_request_is_tool_runtime_start`; `computer_use_call_response_is_tool_runtime_end` |
 | Custom prompt discovery and review prompt flow | `codex.custom-prompts-targeted` | `custom_prompts::tests::*`; `review_prompts::tests::*`; `review_popup_custom_prompt_action_sends_event`; `custom_prompt_submit_sends_review_op`; `custom_prompt_enter_empty_does_not_send`; `review_custom_prompt_escape_navigates_back_then_dismisses` |
 | MCP server safety policy extensions and OAuth fallback hardening | `codex.mcp-safety-targeted` | `blocking_replace_mcp_servers_round_trips`; `blocking_replace_mcp_servers_serializes_tool_approval_overrides`; `write_value_supports_custom_mcp_server_default_tool_approval_mode`; `load_oauth_tokens_ignores_empty_fallback_file`; `load_oauth_tokens_auto_ignores_corrupt_fallback_when_keyring_errors` |
 | Agent-workflow helpers for PR babysitting, workflow dispatch/watch loops, and subagent tail inspection | `codex.agent-workflow-sanity` | `python3 -m py_compile` over `gh_pr_watch.py`, `gh_workflow_run_watch.py`, `gh_dispatch_and_watch.py`, and `inspect_subagent_tail.py`; `test_gh_workflow_run_watch.py`; `test_gh_dispatch_and_watch.py`; `inspect_subagent_tail.py --help` |
@@ -205,3 +208,7 @@ for a removed crate path.
   carry-fix workflow.
 - Full builds are buildability or promotion checkpoints, not the default
   inner-loop validator for ordinary carry iteration.
+- For native Android computer-use, use the Codex app-server/protocol and tool
+  registry lanes above for the generic contract. Use Android harness or
+  consumer-app validation only when the question is runtime capability or app
+  behavior outside Codex.
