@@ -19,7 +19,7 @@ concurrency:
 jobs:
   analyze:
     name: Analyze (${{ matrix.language }})
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       actions: read
       contents: read
@@ -45,6 +45,67 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Install Rust toolchains for CodeQL
+        if: ${{ matrix.language == 'rust' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import subprocess
+          import tomllib
+          from pathlib import Path
+
+          toolchains = {}
+          for path in sorted(Path(".").glob("**/rust-toolchain*")):
+              text = path.read_text(encoding="utf-8").strip()
+              if text.startswith("["):
+                  data = tomllib.loads(text)
+                  toolchain = data["toolchain"]
+                  channel = toolchain["channel"]
+                  components = set(toolchain.get("components", []))
+              else:
+                  channel = text
+                  components = set()
+              components.add("rust-src")
+              toolchains.setdefault(channel, set()).update(components)
+
+          for channel, components in sorted(toolchains.items()):
+              command = [
+                  "rustup",
+                  "toolchain",
+                  "install",
+                  channel,
+                  "--profile",
+                  "minimal",
+                  "--no-self-update",
+              ]
+              for component in sorted(components):
+                  command.extend(["--component", component])
+              subprocess.run(command, check=True)
+          PY
+
+      - name: Restore Rust dependency cache for CodeQL
+        if: ${{ matrix.language == 'rust' }}
+        id: cache_codeql_rust_cargo_home_restore
+        uses: actions/cache/restore@v5
+        with:
+          path: |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+          key: codeql-rust-cargo-home-v1-${{ runner.os }}-${{ hashFiles('codex-rs/Cargo.lock', 'codex-rs/rust-toolchain.toml', 'tools/argument-comment-lint/Cargo.lock', 'tools/argument-comment-lint/rust-toolchain') }}
+          restore-keys: |
+            codeql-rust-cargo-home-v1-${{ runner.os }}-
+
+      - name: Prefetch Rust dependencies for CodeQL
+        if: ${{ matrix.language == 'rust' }}
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo fetch --locked --manifest-path codex-rs/Cargo.toml
+          cargo fetch --locked --manifest-path tools/argument-comment-lint/Cargo.toml
+
       - name: Initialize CodeQL
         uses: github/codeql-action/init@v4
         with:
@@ -56,3 +117,14 @@ jobs:
         uses: github/codeql-action/analyze@v4
         with:
           category: "/language:${{ matrix.language }}"
+
+      - name: Save Rust dependency cache for CodeQL
+        if: ${{ always() && !cancelled() && matrix.language == 'rust' && steps.cache_codeql_rust_cargo_home_restore.outputs.cache-hit != 'true' && github.event_name != 'pull_request' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/upstream-main') }}
+        continue-on-error: true
+        uses: actions/cache/save@v5
+        with:
+          path: |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+          key: codeql-rust-cargo-home-v1-${{ runner.os }}-${{ hashFiles('codex-rs/Cargo.lock', 'codex-rs/rust-toolchain.toml', 'tools/argument-comment-lint/Cargo.lock', 'tools/argument-comment-lint/rust-toolchain') }}
