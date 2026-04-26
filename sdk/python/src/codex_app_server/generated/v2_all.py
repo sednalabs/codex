@@ -516,7 +516,6 @@ class CommandExecWriteParams(BaseModel):
 
 
 class CommandExecWriteResponse(BaseModel):
-    pass
     model_config = ConfigDict(
         populate_by_name=True,
     )
