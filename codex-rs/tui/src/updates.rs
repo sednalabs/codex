@@ -1,8 +1,13 @@
 #![cfg(not(debug_assertions))]
 
 use crate::legacy_core::config::Config;
+use crate::npm_registry;
+use crate::npm_registry::NpmPackageInfo;
 use crate::update_action;
 use crate::update_action::UpdateAction;
+use crate::update_versions::extract_version_from_latest_tag;
+use crate::update_versions::is_newer;
+use crate::update_versions::is_source_build_version;
 use chrono::DateTime;
 use chrono::Duration;
 use chrono::Utc;
@@ -13,15 +18,14 @@ use std::path::Path;
 use std::path::PathBuf;
 
 use crate::version::CODEX_CLI_VERSION;
-use crate::version::CODEX_RELEASE_TAG_PREFIX;
 use crate::version::latest_release_api_url;
-use semver::Version;
 
 pub fn get_upgrade_version(config: &Config) -> Option<String> {
     if !config.check_for_update_on_startup || is_source_build_version(CODEX_CLI_VERSION) {
         return None;
     }
 
+    let action = update_action::get_update_action();
     let version_file = version_filepath(config);
     let info = read_version_info(&version_file).ok();
 
@@ -33,7 +37,7 @@ pub fn get_upgrade_version(config: &Config) -> Option<String> {
         // isn’t blocked by a network call. The UI reads the previously cached
         // value (if any) for this run; the next run shows the banner if needed.
         tokio::spawn(async move {
-            check_for_update(&version_file)
+            check_for_update(&version_file, action)
                 .await
                 .inspect_err(|e| tracing::error!("Failed to update version: {e}"))
         });
@@ -80,8 +84,8 @@ fn read_version_info(version_file: &Path) -> anyhow::Result<VersionInfo> {
     Ok(serde_json::from_str(&contents)?)
 }
 
-async fn check_for_update(version_file: &Path) -> anyhow::Result<()> {
-    let latest_version = match update_action::get_update_action() {
+async fn check_for_update(version_file: &Path, action: Option<UpdateAction>) -> anyhow::Result<()> {
+    let latest_version = match action {
         Some(UpdateAction::BrewUpgrade) => {
             let HomebrewCaskInfo { version } = create_client()
                 .get(HOMEBREW_CASK_API_URL)
@@ -92,17 +96,20 @@ async fn check_for_update(version_file: &Path) -> anyhow::Result<()> {
                 .await?;
             version
         }
-        _ => {
-            let ReleaseInfo {
-                tag_name: latest_tag_name,
-            } = create_client()
-                .get(latest_release_api_url())
+        Some(UpdateAction::NpmGlobalLatest) | Some(UpdateAction::BunGlobalLatest) => {
+            let latest_version = fetch_latest_github_release_version().await?;
+            let package_info = create_client()
+                .get(npm_registry::PACKAGE_URL)
                 .send()
                 .await?
                 .error_for_status()?
-                .json::<ReleaseInfo>()
+                .json::<NpmPackageInfo>()
                 .await?;
-            extract_version_from_latest_tag(&latest_tag_name)?
+            npm_registry::ensure_version_ready(&package_info, &latest_version)?;
+            latest_version
+        }
+        Some(UpdateAction::StandaloneUnix) | Some(UpdateAction::StandaloneWindows) | None => {
+            fetch_latest_github_release_version().await?
         }
     };
 
@@ -122,19 +129,17 @@ async fn check_for_update(version_file: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn is_newer(latest: &str, current: &str) -> Option<bool> {
-    match (parse_version(latest), parse_version(current)) {
-        (Some(l), Some(c)) => Some(l > c),
-        _ => None,
-    }
-}
-
-fn extract_version_from_latest_tag(latest_tag_name: &str) -> anyhow::Result<String> {
-    [CODEX_RELEASE_TAG_PREFIX, "v", "rust-v"]
-        .into_iter()
-        .find_map(|prefix| latest_tag_name.strip_prefix(prefix))
-        .map(str::to_owned)
-        .ok_or_else(|| anyhow::anyhow!("Failed to parse latest tag name '{latest_tag_name}'"))
+async fn fetch_latest_github_release_version() -> anyhow::Result<String> {
+    let ReleaseInfo {
+        tag_name: latest_tag_name,
+    } = create_client()
+        .get(latest_release_api_url())
+        .send()
+        .await?
+        .error_for_status()?
+        .json::<ReleaseInfo>()
+        .await?;
+    extract_version_from_latest_tag(&latest_tag_name)
 }
 
 /// Returns the latest version to show in a popup, if it should be shown.
@@ -170,86 +175,4 @@ pub async fn dismiss_version(config: &Config, version: &str) -> anyhow::Result<(
     }
     tokio::fs::write(version_file, json_line).await?;
     Ok(())
-}
-
-fn parse_version(v: &str) -> Option<Version> {
-    Version::parse(v.trim()).ok()
-}
-
-fn is_source_build_version(version: &str) -> bool {
-    parse_version(version) == Some(Version::new(0, 0, 0))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn extract_version_from_brew_api_json() {
-        //
-        // https://formulae.brew.sh/api/cask/codex.json
-        let cask_json = r#"{
-            "token": "codex",
-            "full_token": "codex",
-            "tap": "homebrew/cask",
-            "version": "0.96.0",
-        }"#;
-        let HomebrewCaskInfo { version } = serde_json::from_str::<HomebrewCaskInfo>(cask_json)
-            .expect("failed to parse version from cask json");
-        assert_eq!(version, "0.96.0");
-    }
-
-    #[test]
-    fn extracts_version_from_latest_tag() {
-        assert_eq!(
-            extract_version_from_latest_tag("rust-v1.5.0").expect("failed to parse version"),
-            "1.5.0"
-        );
-        assert_eq!(
-            extract_version_from_latest_tag("v1.5.0-sedna.1").expect("failed to parse version"),
-            "1.5.0-sedna.1"
-        );
-        assert_eq!(
-            extract_version_from_latest_tag("v0.119.0-sedna.2").expect("failed to parse version"),
-            "0.119.0-sedna.2"
-        );
-    }
-
-    #[test]
-    fn latest_tag_without_version_prefix_is_invalid() {
-        assert!(extract_version_from_latest_tag("release-1.5.0").is_err());
-    }
-
-    #[test]
-    fn prerelease_version_is_not_considered_newer() {
-        assert_eq!(is_newer("0.11.0-beta.1", "0.11.0"), Some(false));
-        assert_eq!(is_newer("1.0.0-rc.1", "1.0.0"), Some(false));
-    }
-
-    #[test]
-    fn fork_release_suffixes_compare_correctly() {
-        assert_eq!(is_newer("0.117.0-sedna.2", "0.117.0-sedna.1"), Some(true));
-        assert_eq!(is_newer("0.117.0-sedna.1", "0.117.0+abcdef12"), Some(false));
-        assert_eq!(
-            is_newer("0.119.0-sedna.2", "0.119.0-alpha.2-sedna.1"),
-            Some(true)
-        );
-    }
-
-    #[test]
-    fn plain_semver_comparisons_work() {
-        assert_eq!(is_newer("0.11.1", "0.11.0"), Some(true));
-        assert_eq!(is_newer("0.11.0", "0.11.1"), Some(false));
-        assert_eq!(is_newer("1.0.0", "0.9.9"), Some(true));
-        assert_eq!(is_newer("0.9.9", "1.0.0"), Some(false));
-    }
-
-    #[test]
-    fn whitespace_is_ignored() {
-        assert_eq!(
-            parse_version(" 1.2.3 \n"),
-            Some(Version::parse("1.2.3").expect("valid semver"))
-        );
-        assert_eq!(is_newer(" 1.2.3 ", "1.2.2"), Some(true));
-    }
 }
