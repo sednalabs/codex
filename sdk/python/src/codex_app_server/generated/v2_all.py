@@ -3347,7 +3347,6 @@ class ThreadCompactStartParams(BaseModel):
 
 
 class ThreadCompactStartResponse(BaseModel):
-    pass
     model_config = ConfigDict(
         populate_by_name=True,
     )
