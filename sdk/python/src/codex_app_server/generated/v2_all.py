@@ -3405,7 +3405,6 @@ class ThreadInjectItemsParams(BaseModel):
 
 
 class ThreadInjectItemsResponse(BaseModel):
-    pass
     model_config = ConfigDict(
         populate_by_name=True,
     )
