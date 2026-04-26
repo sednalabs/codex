@@ -511,6 +511,7 @@
         ".github/scripts/",
         ".github/validation-lanes.json",
         ".github/workflows/",
+        "scripts/resolve_sedna_release_version",
         "scripts/dispatch-frontier-max-wave.sh",
         "scripts/dispatch-validation-lab-snapshot.sh",
         "scripts/start-codex-exec.sh"
@@ -542,7 +543,10 @@
       "files": [
         "codex-rs/app-server/",
         "codex-rs/app-server-protocol/",
-        "codex-rs/app-server-client/"
+        "codex-rs/app-server-client/",
+        "sdk/python/examples/06_thread_lifecycle_and_controls/async.py",
+        "sdk/python/examples/06_thread_lifecycle_and_controls/sync.py",
+        "sdk/python/src/codex_app_server/generated/v2_all.py"
       ],
       "behavior": "Downstream now tracks upstream on the core app-server contract and replay surfaces, while preserving a narrow app-server-specific carry around protocol event history, rollout cwd portability, and thread list/read/resume summary surfaces. Neighboring carries such as blocking waits, MCP safety, and startup/plugin-sync follow-up are tracked separately.",
       "upstream_equivalent": false,
