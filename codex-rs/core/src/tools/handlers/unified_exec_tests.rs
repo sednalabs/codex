@@ -264,7 +264,7 @@ fn write_stdin_args_parse_execution_fields() -> anyhow::Result<()> {
 #[test]
 fn wait_until_terminal_uses_two_hour_default_cap() {
     assert_eq!(
-        resolve_wait_budget(None),
+        resolve_wait_budget(/*max_wait_ms*/ None),
         Duration::from_millis(MAX_TERMINAL_WAIT_MS),
         "wait_until_terminal should be provider-gated for the full two-hour ceiling by default"
     );
@@ -273,7 +273,7 @@ fn wait_until_terminal_uses_two_hour_default_cap() {
 #[test]
 fn wait_until_terminal_caps_requested_budget_at_two_hours() {
     assert_eq!(
-        resolve_wait_budget(Some(MAX_TERMINAL_WAIT_MS + 1_000)),
+        resolve_wait_budget(/*max_wait_ms*/ Some(MAX_TERMINAL_WAIT_MS + 1_000)),
         Duration::from_millis(MAX_TERMINAL_WAIT_MS),
         "wait_until_terminal must not expose an uncapped provider-blocking wait"
     );
