@@ -964,8 +964,34 @@ class ValidationPlanScriptTests(unittest.TestCase):
                 "codex.tui-front-queue-submit-targeted",
                 "codex.tui-thread-session-policy-targeted",
                 "codex.tui-transcript-viewport-targeted",
+                "codex.tui-weekly-pacing-status-line-targeted",
             },
         )
+
+    def test_tui_weekly_pacing_lane_pins_live_status_line_contract(self) -> None:
+        catalog = RESOLVE_VALIDATION_PLAN.load_catalog()
+        lane = next(
+            lane
+            for lane in catalog["lanes"]
+            if lane["lane_id"] == "codex.tui-weekly-pacing-status-line-targeted"
+        )
+        self.assertEqual(
+            lane["script_path"], ".github/scripts/validation-lanes/run-just-recipe.sh"
+        )
+        self.assertEqual(lane["script_args"], ["tui-weekly-pacing-status-line-targeted"])
+
+        recipe = "\n".join(
+            just_recipe_bodies(REPO_ROOT / "justfile")[
+                "tui-weekly-pacing-status-line-targeted"
+            ]
+        )
+        self.assertIn("--exact", recipe)
+        for test_name in [
+            "status_line_weekly_limit_renders_pacing_suffixes_from_live_status_line",
+            "status_line_weekly_limit_renders_stale_suffix_over_pace_details",
+            "status_line_weekly_limit_omits_pacing_when_inputs_are_missing",
+        ]:
+            self.assertIn(test_name, recipe)
 
     def test_validation_lab_passes_sccache_policy_only_to_sccache_lanes(self) -> None:
         payload = load_workflow_payload(REPO_ROOT / ".github/workflows/validation-lab.yml")
