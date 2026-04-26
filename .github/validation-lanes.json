@@ -1275,19 +1275,23 @@
         ".github/workflows/docs-sanity.yml",
         ".github/workflows/rust-ci-full.yml",
         ".github/workflows/rust-ci.yml",
+        ".github/workflows/sedna-release.yml",
         ".github/workflows/sedna-heavy-tests.yml",
         ".github/workflows/validation-lab.yml",
         ".github/scripts/aggregate_validation_summary.py",
         ".github/scripts/check_markdown_links.py",
         ".github/scripts/resolve_rust_ci_mode.py",
+        ".github/scripts/resolve_sedna_release_version.py",
         ".github/scripts/resolve_validation_plan.py",
         ".github/scripts/test_ci_planners.py",
         ".github/scripts/validation-lanes/downstream-docs-check.sh",
         "docs/native-computer-use.md",
         "docs/downstream-regression-matrix.md",
+        "docs/sedna-release.md",
         "docs/github-ci-offload.md",
         "docs/validation_workflow.md",
         "scripts/downstream-divergence-audit.py",
+        "scripts/resolve_sedna_release_version",
         "justfile"
       ],
       "required_any_paths": [
@@ -1301,15 +1305,18 @@
         ".github/workflows/docs-sanity.yml",
         ".github/workflows/rust-ci-full.yml",
         ".github/workflows/rust-ci.yml",
+        ".github/workflows/sedna-release.yml",
         ".github/workflows/sedna-heavy-tests.yml",
         ".github/workflows/validation-lab.yml",
         ".github/scripts/aggregate_validation_summary.py",
         ".github/scripts/check_markdown_links.py",
         ".github/scripts/resolve_rust_ci_mode.py",
+        ".github/scripts/resolve_sedna_release_version.py",
         ".github/scripts/resolve_validation_plan.py",
         ".github/scripts/test_ci_planners.py",
         ".github/scripts/validation-lanes/downstream-docs-check.sh",
-        "scripts/downstream-divergence-audit.py"
+        "scripts/downstream-divergence-audit.py",
+        "scripts/resolve_sedna_release_version"
       ]
     },
     {

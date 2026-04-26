@@ -7,6 +7,7 @@ import importlib.util
 import json
 import os
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -23,6 +24,7 @@ def load_module(name: str, path: Path):
     if spec is None or spec.loader is None:
         raise RuntimeError(f"unable to load module from {path}")
     module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
     spec.loader.exec_module(module)
     return module
 
@@ -53,6 +55,10 @@ SKIP_DUPLICATE_WORKFLOW_RUN = load_module(
 )
 SYNC_UPSTREAM_MIRROR = load_module(
     "sync_upstream_mirror_module", SCRIPTS_DIR / "sync_upstream_mirror.py"
+)
+RESOLVE_SEDNA_RELEASE_VERSION = load_module(
+    "resolve_sedna_release_version_module",
+    SCRIPTS_DIR / "resolve_sedna_release_version.py",
 )
 
 
@@ -2939,6 +2945,139 @@ jobs:
                 CHECK_MARKDOWN_LINKS.ROOT = original_root
 
         self.assertEqual(resolved, readme.resolve())
+
+
+class SednaReleaseVersionResolverTests(unittest.TestCase):
+    def create_fixture(
+        self,
+        marker: str | None = "Sedna-Release: prerelease",
+    ) -> tuple[TempGitRepo, str, str]:
+        repo = TempGitRepo()
+        old_upstream = repo.commit("upstream stable", {"upstream.txt": "stable\n"})
+        repo._git("tag", "rust-v0.124.0", old_upstream)
+        repo._git("tag", "rust-vv9.999.0", old_upstream)
+        upstream = repo.commit("upstream alpha", {"upstream.txt": "alpha\n"})
+        repo._git("tag", "rust-v0.126.0-alpha.3", upstream)
+        repo._git("update-ref", "refs/remotes/origin/upstream-main", upstream)
+
+        message = "downstream release"
+        if marker is not None:
+            message = f"{message}\n\n{marker}"
+        downstream = repo.commit(message, {"downstream.txt": "release\n"})
+        repo._git("update-ref", "refs/remotes/origin/main", downstream)
+        return repo, upstream, downstream
+
+    def resolve(
+        self,
+        repo: TempGitRepo,
+        target: str,
+        *,
+        channel: str = "prerelease",
+        release_tag: str | None = None,
+        current_release_tag: str | None = None,
+        require_marker: bool = False,
+    ) -> dict:
+        return RESOLVE_SEDNA_RELEASE_VERSION.resolve_release(
+            repo=repo.root,
+            target_sha=target,
+            main_ref="refs/remotes/origin/main",
+            upstream_ref="refs/remotes/origin/upstream-main",
+            repository="",
+            channel=channel,
+            release_tag=release_tag,
+            current_release_tag=current_release_tag,
+            require_marker=require_marker,
+            github_releases="off",
+        )
+
+    def test_prerelease_marker_computes_next_sedna_ordinal(self) -> None:
+        repo, _upstream, downstream = self.create_fixture()
+        try:
+            repo._git("tag", "v0.126.0-alpha.3-sedna.1", downstream)
+            result = self.resolve(repo, downstream, channel="auto", require_marker=True)
+        finally:
+            repo.cleanup()
+
+        self.assertEqual(
+            {
+                "release_requested": result["release_requested"],
+                "release_channel": result["release_channel"],
+                "release_tag": result["release_tag"],
+                "release_version": result["release_version"],
+                "github_prerelease": result["github_prerelease"],
+                "upstream_track": result["upstream_track"],
+                "upstream_base_tag": result["upstream_base_tag"],
+            },
+            {
+                "release_requested": True,
+                "release_channel": "prerelease",
+                "release_tag": "v0.126.0-alpha.3-sedna.2",
+                "release_version": "0.126.0-alpha.3-sedna.2",
+                "github_prerelease": True,
+                "upstream_track": "0.126.0-alpha.3",
+                "upstream_base_tag": "rust-v0.126.0-alpha.3",
+            },
+        )
+
+    def test_stable_channel_rejects_upstream_prerelease_track(self) -> None:
+        repo, _upstream, downstream = self.create_fixture("Sedna-Release: stable")
+        try:
+            with self.assertRaisesRegex(
+                RESOLVE_SEDNA_RELEASE_VERSION.ReleaseVersionError,
+                "stable Sedna releases cannot use prerelease upstream track",
+            ):
+                self.resolve(repo, downstream, channel="auto", require_marker=True)
+        finally:
+            repo.cleanup()
+
+    def test_missing_release_marker_is_clean_noop_for_main_pushes(self) -> None:
+        repo, _upstream, downstream = self.create_fixture(marker=None)
+        try:
+            result = self.resolve(repo, downstream, channel="auto", require_marker=True)
+        finally:
+            repo.cleanup()
+
+        self.assertEqual(
+            result,
+            {
+                "release_requested": False,
+                "skip_reason": "missing_sedna_release_marker",
+                "target_commit": downstream,
+                "version_policy": "sedna-upstream-track-v1",
+            },
+        )
+
+    def test_supplied_tag_must_match_computed_tag(self) -> None:
+        repo, _upstream, downstream = self.create_fixture()
+        try:
+            with self.assertRaisesRegex(
+                RESOLVE_SEDNA_RELEASE_VERSION.ReleaseVersionError,
+                "does not match computed tag v0.126.0-alpha.3-sedna.1",
+            ):
+                self.resolve(
+                    repo,
+                    downstream,
+                    channel="prerelease",
+                    release_tag="v0.126.0-alpha.3-sedna.2",
+                )
+        finally:
+            repo.cleanup()
+
+    def test_current_tag_is_ignored_for_tag_push_validation(self) -> None:
+        repo, _upstream, downstream = self.create_fixture()
+        try:
+            repo._git("tag", "v0.126.0-alpha.3-sedna.1", downstream)
+            result = self.resolve(
+                repo,
+                downstream,
+                channel="auto",
+                release_tag="v0.126.0-alpha.3-sedna.1",
+                current_release_tag="v0.126.0-alpha.3-sedna.1",
+            )
+        finally:
+            repo.cleanup()
+
+        self.assertEqual(result["release_tag"], "v0.126.0-alpha.3-sedna.1")
 
 
 if __name__ == "__main__":
