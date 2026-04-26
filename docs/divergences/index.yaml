@@ -665,6 +665,7 @@
         "analytics, CLI, cloud, code-mode, config, and MCP extensions"
       ],
       "files": [
+        "codex-rs/agent-identity/",
         "codex-rs/analytics/",
         "codex-rs/backend-client/",
         "codex-rs/chatgpt/",
