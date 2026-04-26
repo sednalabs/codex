@@ -66,7 +66,8 @@ artifacts.
   - release visibility: the only lane that may publish a GitHub Release
 - `sedna-sync-upstream`
   - trigger: manual dispatch and scheduled sync
-  - purpose: fast-forward `upstream-main` from `upstream/main` and run the authoritative downstream divergence audit from the exact synced SHA
+  - purpose: fast-forward `upstream-main` from `upstream/main` and run the
+    authoritative downstream divergence audit from the exact synced SHA
   - credential boundary: keep the divergence audit in its own read-only job
     unless a future change deliberately trades that boundary for lower wall
     clock time
