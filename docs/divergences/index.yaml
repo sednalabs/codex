@@ -233,6 +233,10 @@
       },
       "guardrail_lane": "codex.blocking-waits-targeted",
       "tests": [
+        "exec_command_wait_until_terminal_defers_provider_resume_until_exit",
+        "exec_command_wait_until_terminal_timeout_is_not_clamped_to_background_poll_minimum",
+        "wait_until_terminal_uses_two_hour_default_cap",
+        "wait_until_terminal_caps_requested_budget_at_two_hours",
         "exec_command_reports_chunk_and_exit_metadata",
         "write_stdin_returns_exit_metadata_and_clears_session",
         "multi_agent_v2_wait_agent_honors_return_when_all",

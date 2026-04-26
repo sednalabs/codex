@@ -262,6 +262,24 @@ fn write_stdin_args_parse_execution_fields() -> anyhow::Result<()> {
 }
 
 #[test]
+fn wait_until_terminal_uses_two_hour_default_cap() {
+    assert_eq!(
+        resolve_wait_budget(None),
+        Duration::from_millis(MAX_TERMINAL_WAIT_MS),
+        "wait_until_terminal should be provider-gated for the full two-hour ceiling by default"
+    );
+}
+
+#[test]
+fn wait_until_terminal_caps_requested_budget_at_two_hours() {
+    assert_eq!(
+        resolve_wait_budget(Some(MAX_TERMINAL_WAIT_MS + 1_000)),
+        Duration::from_millis(MAX_TERMINAL_WAIT_MS),
+        "wait_until_terminal must not expose an uncapped provider-blocking wait"
+    );
+}
+
+#[test]
 fn exec_command_args_reject_invalid_wait_until_terminal_type() {
     let json = r#"{
         "cmd": "echo hello",
@@ -467,6 +485,56 @@ async fn exec_command_wait_until_terminal_respects_max_wait_timeout() -> anyhow:
         !output
             .truncated_output()
             .contains("WAIT_UNTIL_TERMINAL_TIMEOUT_TOO_LATE"),
+        "timed-out wait should not include output emitted after the wait window"
+    );
+    assert!(
+        output.process_id.is_some(),
+        "timed-out wait should keep a resumable session alive"
+    );
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn exec_command_wait_until_terminal_timeout_is_not_clamped_to_background_poll_minimum()
+-> anyhow::Result<()> {
+    skip_if_sandbox!(Ok(()));
+    if cfg!(windows) {
+        return Ok(());
+    }
+
+    let (session, turn) = make_session_and_context().await;
+    let session = Arc::new(session);
+    let turn = Arc::new(turn);
+
+    let started = Instant::now();
+    let output = run_unified_exec(
+        Arc::clone(&session),
+        Arc::clone(&turn),
+        "exec_command",
+        serde_json::json!({
+            "cmd": "sleep 10 && echo WAIT_UNTIL_TERMINAL_BACKGROUND_MINIMUM_TOO_LATE",
+            "yield_time_ms": 250,
+            "wait_until_terminal": true,
+            "max_wait_ms": 750,
+            "heartbeat_interval_ms": 100
+        }),
+    )
+    .await
+    .map_err(|err| anyhow::anyhow!("exec_command call failed: {err}"))?;
+
+    let elapsed = started.elapsed();
+    assert!(
+        elapsed >= Duration::from_millis(650),
+        "terminal wait should honor the requested wait budget; got {elapsed:?}",
+    );
+    assert!(
+        elapsed < Duration::from_secs(2),
+        "terminal wait heartbeat should not inherit the 5s empty-poll minimum; got {elapsed:?}",
+    );
+    assert!(
+        !output
+            .truncated_output()
+            .contains("WAIT_UNTIL_TERMINAL_BACKGROUND_MINIMUM_TOO_LATE"),
         "timed-out wait should not include output emitted after the wait window"
     );
     assert!(

@@ -195,6 +195,7 @@ async fn write_stdin(
             process_id,
             input,
             yield_time_ms,
+            empty_input_min_yield_time_ms: MIN_EMPTY_YIELD_TIME_MS,
             max_output_tokens: None,
         })
         .await
