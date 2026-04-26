@@ -91,7 +91,9 @@ artifacts.
 6. Let `rust-ci` handle routine PR gating; tiny initial PRs and already-green
    PR follow-up pushes may route to incremental targeted validation
    automatically when the relevant diff is small and maps cleanly to one
-   guarded seam.
+   guarded seam (a pre-mapped, narrow change boundary the planner can verify
+   safely in isolation, such as docs-only, workflow/planner-only, or one
+   component seam).
    - PR changed-file routing uses GitHub's PR metadata as a fast path so the
      always-on detector does not need a full repository checkout just to learn
      the diff. Unsafe or incomplete metadata falls back to the git-diff path;
