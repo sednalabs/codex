@@ -72,6 +72,7 @@ use crate::status::StatusAccountDisplay;
 use crate::status::StatusHistoryHandle;
 use crate::status::format_directory_display;
 use crate::status::format_tokens_compact;
+use crate::status::is_snapshot_stale;
 use crate::status::rate_limit_snapshot_display_for_limit;
 use crate::terminal_title::SetTerminalTitleResult;
 use crate::terminal_title::clear_terminal_title;
@@ -408,6 +409,7 @@ use crate::streaming::commit_tick::run_commit_tick;
 use crate::streaming::controller::PlanStreamController;
 use crate::streaming::controller::StreamController;
 
+use chrono::DateTime;
 use chrono::Local;
 use codex_file_search::FileMatch;
 use codex_protocol::openai_models::InputModality;
@@ -493,6 +495,24 @@ fn is_standard_tool_call(parsed_cmd: &[ParsedCommand]) -> bool {
 const RATE_LIMIT_WARNING_THRESHOLDS: [f64; 3] = [75.0, 90.0, 95.0];
 const NUDGE_MODEL_SLUG: &str = "gpt-5.4-mini";
 const RATE_LIMIT_SWITCH_PROMPT_THRESHOLD: f64 = 90.0;
+const WEEKLY_PACE_ON_TRACK_EPSILON_PERCENT: f64 = 3.0;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum WeeklyPacingSignal {
+    OnPace,
+    Over { abs_delta_pct: i64 },
+    Under { abs_delta_pct: i64 },
+}
+
+impl WeeklyPacingSignal {
+    fn label(self) -> String {
+        match self {
+            Self::OnPace => "on pace".to_string(),
+            Self::Over { abs_delta_pct } => format!("over {abs_delta_pct}%"),
+            Self::Under { abs_delta_pct } => format!("under {abs_delta_pct}%"),
+        }
+    }
+}
 const MAX_AGENT_COPY_HISTORY: usize = 32;
 
 #[derive(Debug)]
@@ -8514,10 +8534,51 @@ impl ChatWidget {
     fn status_line_weekly_limit_display(
         &self,
         window: Option<&RateLimitWindowDisplay>,
-        _captured_at: Option<chrono::DateTime<Local>>,
+        captured_at: Option<DateTime<Local>>,
         label: &str,
     ) -> Option<String> {
-        self.status_line_limit_display(window, label)
+        let base = self.status_line_limit_display(window, label)?;
+        let Some(window) = window else {
+            return Some(base);
+        };
+        let Some(captured_at) = captured_at else {
+            return Some(base);
+        };
+        if is_snapshot_stale(captured_at, Local::now()) {
+            return Some(format!("{base} (stale)"));
+        }
+        let Some(signal) = Self::status_line_weekly_pace_signal(window, captured_at) else {
+            return Some(base);
+        };
+        Some(format!("{base} ({})", signal.label()))
+    }
+
+    fn status_line_weekly_pace_signal(
+        window: &RateLimitWindowDisplay,
+        captured_at: DateTime<Local>,
+    ) -> Option<WeeklyPacingSignal> {
+        let resets_at_unix_seconds = window.resets_at_unix_seconds?;
+        let window_seconds = window.window_minutes?.checked_mul(60)?;
+        if window_seconds <= 0 {
+            return None;
+        }
+
+        let usage_remaining_pct = (100.0f64 - window.used_percent).clamp(0.0f64, 100.0f64);
+        let seconds_remaining = resets_at_unix_seconds.checked_sub(captured_at.timestamp())?;
+        let time_remaining_pct =
+            ((seconds_remaining as f64 / window_seconds as f64) * 100.0f64).clamp(0.0f64, 100.0f64);
+        let pace_delta = usage_remaining_pct - time_remaining_pct;
+
+        if pace_delta.abs() <= WEEKLY_PACE_ON_TRACK_EPSILON_PERCENT {
+            return Some(WeeklyPacingSignal::OnPace);
+        }
+
+        let abs_delta_pct = pace_delta.abs().ceil() as i64;
+        if pace_delta < 0.0 {
+            Some(WeeklyPacingSignal::Over { abs_delta_pct })
+        } else {
+            Some(WeeklyPacingSignal::Under { abs_delta_pct })
+        }
     }
 
     fn status_line_reasoning_effort_label(effort: Option<ReasoningEffortConfig>) -> &'static str {
