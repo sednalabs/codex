@@ -55,6 +55,9 @@ contract today.
   Keep the checked-in workflow authoritative so language coverage, query
   selection, permissions, and scheduling remain reviewable with the rest of the
   workflow catalog.
+- Pull request and push triggers ignore docs-only changes so markdown and
+  divergence-registry maintenance do not fan out the full CodeQL matrix. The
+  scheduled and manual-dispatch paths remain available for checkpoint scans.
 - The matrix intentionally analyzes Actions, C/C++, JavaScript/TypeScript,
   Python, and Rust with `build-mode: none`. This keeps coverage over the
   vendored C sandbox code and Rust sources without relying on CodeQL autobuild,
