@@ -1236,7 +1236,6 @@ class FsWriteFileParams(BaseModel):
 
 
 class FsWriteFileResponse(BaseModel):
-    pass
     model_config = ConfigDict(
         populate_by_name=True,
     )
