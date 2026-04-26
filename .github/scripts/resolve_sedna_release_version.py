@@ -318,10 +318,23 @@ def resolve_release(
     }
 
 
+def resolve_safe_output_path(path: str, workspace: Path) -> Path:
+    workspace_resolved = workspace.resolve()
+    candidate = Path(path).expanduser().resolve()
+    try:
+        candidate.relative_to(workspace_resolved)
+    except ValueError as exc:
+        raise ReleaseVersionError(
+            f"github output path must be within workspace: {workspace_resolved}"
+        ) from exc
+    return candidate
+
+
 def write_github_output(payload: dict[str, object], path: str | None) -> None:
     if not path:
         return
-    with Path(path).open("a", encoding="utf-8") as handle:
+    safe_path = resolve_safe_output_path(path, Path.cwd())
+    with safe_path.open("a", encoding="utf-8") as handle:
         for key, value in payload.items():
             if isinstance(value, bool):
                 rendered = "true" if value else "false"
