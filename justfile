@@ -463,4 +463,8 @@ argument-comment-lint-from-source *args:
 
 # Tail logs from the state SQLite database
 log *args:
-    if [ "${1:-}" = "--" ]; then shift; fi; cargo run -p codex-state --bin logs_client -- "$@"
+    # Allow `just log -- <logs_client args>` by dropping just's argument delimiter.
+    if [ "${1:-}" = "--" ]; then
+      shift
+    fi
+    cargo run -p codex-state --bin logs_client -- "$@"
