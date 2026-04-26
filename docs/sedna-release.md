@@ -85,3 +85,14 @@ Current workflow characteristics:
 - Local non-release builds may still show the workspace placeholder version when
   `CODEX_RELEASE_VERSION` is not set; published releases should come from CI so the embedded release
   metadata is consistent
+
+### Release install workflow
+
+`sedna-release-install` verifies and installs already published Sedna release assets on a
+repo-scoped self-hosted runner labelled `sedna-release-installer`.
+
+- Automatic installs run only for `release.published` events in `sednalabs/codex`
+- Manual `workflow_dispatch` runs default to `dry_run=true`
+- The installer verifies the tag shape, release metadata, `SHA256SUMS.txt`, and executable payload
+  before updating the user-level standalone install
+- Drafts and prereleases are refused by the automatic path

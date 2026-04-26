@@ -1,0 +1,114 @@
+name: sedna-release-install
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Sedna release tag to install
+        required: true
+        type: string
+      dry_run:
+        description: Verify assets without changing the installed binary
+        required: false
+        default: true
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sedna-release-install
+  cancel-in-progress: false
+
+jobs:
+  install:
+    name: Install published Sedna release
+    runs-on: [self-hosted, linux, x64, sedna-release-installer]
+    timeout-minutes: 10
+
+    steps:
+      - name: Check out installer
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event_name == 'release' && github.event.repository.default_branch || github.ref }}
+
+      - name: Resolve requested release
+        id: request
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          EVENT_REPOSITORY: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          RELEASE_DRAFT: ${{ github.event.release.draft }}
+          RELEASE_PRERELEASE: ${{ github.event.release.prerelease }}
+          INPUT_RELEASE_TAG: ${{ inputs.release_tag }}
+          INPUT_DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          set -euo pipefail
+
+          if [[ "${EVENT_REPOSITORY,,}" != "sednalabs/codex" ]]; then
+            echo "This workflow only installs sednalabs/codex releases."
+            exit 1
+          fi
+
+          if [[ "${EVENT_NAME}" == "release" ]]; then
+            release_tag="${RELEASE_TAG}"
+            dry_run="false"
+            if [[ "${RELEASE_DRAFT}" == "true" ]]; then
+              echo "Refusing draft release ${release_tag}."
+              exit 1
+            fi
+            if [[ "${RELEASE_PRERELEASE}" == "true" ]]; then
+              echo "Refusing prerelease ${release_tag}."
+              exit 1
+            fi
+          else
+            release_tag="${INPUT_RELEASE_TAG}"
+            dry_run="${INPUT_DRY_RUN}"
+          fi
+
+          if [[ ! "${release_tag}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([-.][0-9A-Za-z.]+)*-sedna\.[0-9]+$ ]]; then
+            echo "Release tag must look like v0.124.0-sedna.2; got ${release_tag}."
+            exit 1
+          fi
+
+          {
+            echo "release_tag=${release_tag}"
+            echo "dry_run=${dry_run}"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Install release assets
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ steps.request.outputs.release_tag }}
+          DRY_RUN: ${{ steps.request.outputs.dry_run }}
+        run: |
+          set -euo pipefail
+
+          dry_run_arg=()
+          if [[ "${DRY_RUN}" == "true" ]]; then
+            dry_run_arg+=(--dry-run)
+          fi
+
+          scripts/install_sedna_release_asset \
+            --repository "${GITHUB_REPOSITORY}" \
+            --release-tag "${RELEASE_TAG}" \
+            "${dry_run_arg[@]}"
+
+      - name: Summarize
+        if: ${{ always() }}
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ steps.request.outputs.release_tag }}
+          DRY_RUN: ${{ steps.request.outputs.dry_run }}
+        run: |
+          {
+            echo "## Sedna release install"
+            echo
+            echo "- Release tag: ${RELEASE_TAG:-unknown}"
+            echo "- Dry run: ${DRY_RUN:-unknown}"
+            echo "- Runner label: sedna-release-installer"
+          } >> "$GITHUB_STEP_SUMMARY"
