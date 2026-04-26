@@ -168,6 +168,12 @@ tui-agent-usage-totals-targeted:
     cargo test -p codex-tui chatwidget::tests::status_and_layout::status_line_combined_used_tokens_footer_snapshot --lib -- --exact --test-threads=1
     cargo test -p codex-tui status::tests::status_snapshot_distinguishes_session_and_thread_token_usage --lib -- --exact --test-threads=1
 
+# Focused TUI weekly usage pacing status-line slice.
+tui-weekly-pacing-status-line-targeted:
+    cargo test -p codex-tui chatwidget::tests::status_and_layout::status_line_weekly_limit_renders_pacing_suffixes_from_live_status_line --lib -- --exact --test-threads=1
+    cargo test -p codex-tui chatwidget::tests::status_and_layout::status_line_weekly_limit_renders_stale_suffix_over_pace_details --lib -- --exact --test-threads=1
+    cargo test -p codex-tui chatwidget::tests::status_and_layout::status_line_weekly_limit_omits_pacing_when_inputs_are_missing --lib -- --exact --test-threads=1
+
 # Focused TUI interrupt confirmation slice for Alt/meta-safe Esc handling.
 tui-esc-interrupt-targeted:
     cargo nextest run -p codex-tui --no-fail-fast -- bottom_pane::tests::esc_requires_double_press_for_interrupt_when_running_task_by_default bottom_pane::tests::first_esc_renders_again_to_interrupt_hint bottom_pane::tests::esc_release_does_not_confirm_interrupt bottom_pane::tests::esc_with_alt_does_not_interrupt_running_task bottom_pane::tests::esc_single_press_interrupts_when_double_press_disabled --exact
