@@ -2261,7 +2261,6 @@ class PluginUninstallParams(BaseModel):
 
 
 class PluginUninstallResponse(BaseModel):
-    model_config = ConfigDict(
         populate_by_name=True,
     )
 
