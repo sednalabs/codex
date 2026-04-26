@@ -54,6 +54,25 @@ pub fn create_exec_command_tool(options: CommandToolOptions) -> ToolSpec {
                 "Maximum number of tokens to return. Excess output will be truncated.".to_string(),
             )),
         ),
+        (
+            "wait_until_terminal".to_string(),
+            JsonSchema::boolean(Some(
+                "When true, block until the process exits or max_wait_ms elapses, capped at 7200000 ms.".to_string(),
+            )),
+        ),
+        (
+            "max_wait_ms".to_string(),
+            JsonSchema::number(Some(
+                "Maximum total wait window for wait_until_terminal, in milliseconds.".to_string(),
+            )),
+        ),
+        (
+            "heartbeat_interval_ms".to_string(),
+            JsonSchema::number(Some(
+                "Heartbeat cadence while wait_until_terminal is active, in milliseconds."
+                    .to_string(),
+            )),
+        ),
     ]);
     if options.allow_login_shell {
         properties.insert(
@@ -113,6 +132,25 @@ pub fn create_write_stdin_tool() -> ToolSpec {
             "max_output_tokens".to_string(),
             JsonSchema::number(Some(
                 "Maximum number of tokens to return. Excess output will be truncated.".to_string(),
+            )),
+        ),
+        (
+            "wait_until_terminal".to_string(),
+            JsonSchema::boolean(Some(
+                "When true, block until the process exits or max_wait_ms elapses, capped at 7200000 ms.".to_string(),
+            )),
+        ),
+        (
+            "max_wait_ms".to_string(),
+            JsonSchema::number(Some(
+                "Maximum total wait window for wait_until_terminal, in milliseconds.".to_string(),
+            )),
+        ),
+        (
+            "heartbeat_interval_ms".to_string(),
+            JsonSchema::number(Some(
+                "Heartbeat cadence while wait_until_terminal is active, in milliseconds."
+                    .to_string(),
             )),
         ),
     ]);
