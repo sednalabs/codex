@@ -967,6 +967,37 @@ class ValidationPlanScriptTests(unittest.TestCase):
             },
         )
 
+    def test_tui_esc_interrupt_lane_pins_user_visible_regressions(self) -> None:
+        catalog = RESOLVE_VALIDATION_PLAN.load_catalog()
+        lane = next(
+            lane
+            for lane in catalog["lanes"]
+            if lane["lane_id"] == "codex.tui-esc-interrupt-targeted"
+        )
+        self.assertEqual(
+            lane["script_path"],
+            ".github/scripts/validation-lanes/run-just-recipe.sh",
+        )
+        self.assertEqual(lane["script_args"], ["tui-esc-interrupt-targeted"])
+
+        recipe = "\n".join(
+            just_recipe_bodies(REPO_ROOT / "justfile")["tui-esc-interrupt-targeted"]
+        )
+        expected_tests = [
+            "bottom_pane::tests::esc_requires_double_press_for_interrupt_when_running_task_by_default",
+            "bottom_pane::tests::first_esc_renders_again_to_interrupt_hint",
+            "bottom_pane::tests::esc_release_does_not_confirm_interrupt",
+            "bottom_pane::tests::esc_with_alt_does_not_interrupt_running_task",
+            "bottom_pane::tests::esc_single_press_interrupts_when_double_press_disabled",
+            "chatwidget::tests::review_mode::esc_interrupt_with_queued_messages_requires_confirmation",
+            "chatwidget::tests::review_mode::esc_interrupt_with_pending_steers_requires_confirmation_and_keeps_existing_draft",
+            "chatwidget::tests::review_mode::esc_with_pending_steers_overrides_agent_command_interrupt_behavior",
+        ]
+        for test_name in expected_tests:
+            with self.subTest(test_name=test_name):
+                self.assertIn(test_name, recipe)
+        self.assertIn("--exact", recipe)
+
     def test_validation_lab_passes_sccache_policy_only_to_sccache_lanes(self) -> None:
         payload = load_workflow_payload(REPO_ROOT / ".github/workflows/validation-lab.yml")
         jobs = payload.get("jobs") or {}

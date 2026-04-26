@@ -181,6 +181,17 @@ If you don’t have the tool:
 - Tests should use pretty_assertions::assert_eq for clearer diffs. Import this at the top of the test module if it isn't already.
 - Prefer deep equals comparisons whenever possible. Perform `assert_eq!()` on entire objects, rather than individual fields.
 - Avoid mutating process environment in tests; prefer passing environment-derived flags or dependencies from above.
+- Regression tests should pin the end-user outcome, not just the nearest helper or incidental
+  internal state. For UI/input behavior, drive the same public-ish event path a user exercises
+  (for example `ChatWidget::handle_key_event`) and assert the observable result at the natural
+  boundary: rendered text or snapshot, queued/composer contents, emitted app/core events on the
+  actual channel used by that path, and absence of the destructive action on the first guarded
+  keypress. Add lower-level unit coverage only as support for a state machine, not as the sole
+  proof of a user-visible guarantee.
+- When a regression involves routing across layers, make the test fail if a future refactor moves
+  the behavior to another channel or bypasses the guarded path. Prefer assertions that would have
+  caught the reported user experience over assertions that merely preserve the current
+  implementation shape.
 
 ### Spawning workspace binaries in tests (Cargo vs Bazel)
 

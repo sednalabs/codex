@@ -161,6 +161,19 @@ pub(crate) enum CancellationEvent {
     NotHandled,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum EscInterruptContext {
+    ComposerInput { is_agent_command: bool },
+    PendingSteers,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum EscInterruptDecision {
+    NotHandled,
+    AwaitingConfirmation,
+    Interrupt,
+}
+
 fn esc_interrupt_requires_double_press_from_env() -> Option<bool> {
     std::env::var(DOUBLE_ESC_INTERRUPT_ENV_VAR)
         .ok()
@@ -537,33 +550,13 @@ impl BottomPane {
 
             // If a task is running and a status line is visible, allow Esc to
             // send an interrupt even while the composer has focus.
-            // When a popup is active, prefer dismissing it over interrupting the task.
-            if key_event.code == KeyCode::Esc
-                && key_event.kind == KeyEventKind::Press
-                && key_event.modifiers.is_empty()
-                && self.is_task_running
-                && !is_agent_command
-                && !self.composer.popup_active()
-                && self.status.is_some()
-            {
-                let should_interrupt = if self.esc_interrupt_requires_double_press {
-                    if self.pending_esc_interrupt_deadline.is_some() {
-                        self.set_pending_esc_interrupt_deadline(/*deadline*/ None);
-                        true
-                    } else {
-                        self.set_pending_esc_interrupt_deadline(Some(
-                            Instant::now() + ESC_INTERRUPT_CONFIRM_TIMEOUT,
-                        ));
-                        self.request_redraw_in(ESC_INTERRUPT_CONFIRM_TIMEOUT);
-                        false
-                    }
-                } else {
-                    true
-                };
-                if should_interrupt && let Some(status) = self.status.as_mut() {
-                    status.interrupt();
-                }
-                self.request_redraw();
+            if !matches!(
+                self.handle_esc_interrupt_for_running_task(
+                    key_event,
+                    EscInterruptContext::ComposerInput { is_agent_command },
+                ),
+                EscInterruptDecision::NotHandled
+            ) {
                 return InputResult::None;
             }
             let (input_result, needs_redraw) = self.composer.handle_key_event(key_event);
@@ -908,6 +901,24 @@ impl BottomPane {
         }
     }
 
+    pub(crate) fn handle_esc_interrupt_for_running_task(
+        &mut self,
+        key_event: KeyEvent,
+        context: EscInterruptContext,
+    ) -> EscInterruptDecision {
+        match context {
+            EscInterruptContext::ComposerInput {
+                is_agent_command: true,
+            } => EscInterruptDecision::NotHandled,
+            EscInterruptContext::ComposerInput {
+                is_agent_command: false,
+            }
+            | EscInterruptContext::PendingSteers => {
+                self.handle_interrupt_confirmation_key(key_event)
+            }
+        }
+    }
+
     pub(crate) fn set_interrupt_hint_visible(&mut self, visible: bool) {
         if let Some(status) = self.status.as_mut() {
             status.set_interrupt_hint_visible(visible);
@@ -1240,6 +1251,42 @@ impl BottomPane {
 
     pub(crate) fn request_redraw_in(&self, dur: Duration) {
         self.frame_requester.schedule_frame_in(dur);
+    }
+
+    fn handle_interrupt_confirmation_key(&mut self, key_event: KeyEvent) -> EscInterruptDecision {
+        // When a popup is active, prefer dismissing it over interrupting the task.
+        if key_event.code != KeyCode::Esc
+            || key_event.kind != KeyEventKind::Press
+            || !key_event.modifiers.is_empty()
+            || !self.is_task_running
+            || self.composer.popup_active()
+            || self.status.is_none()
+        {
+            return EscInterruptDecision::NotHandled;
+        }
+
+        let decision = if self.esc_interrupt_requires_double_press {
+            if self.pending_esc_interrupt_deadline.is_some() {
+                self.set_pending_esc_interrupt_deadline(/*deadline*/ None);
+                EscInterruptDecision::Interrupt
+            } else {
+                self.set_pending_esc_interrupt_deadline(Some(
+                    Instant::now() + ESC_INTERRUPT_CONFIRM_TIMEOUT,
+                ));
+                self.request_redraw_in(ESC_INTERRUPT_CONFIRM_TIMEOUT);
+                EscInterruptDecision::AwaitingConfirmation
+            }
+        } else {
+            EscInterruptDecision::Interrupt
+        };
+
+        if decision == EscInterruptDecision::Interrupt
+            && let Some(status) = self.status.as_mut()
+        {
+            status.interrupt();
+        }
+        self.request_redraw();
+        decision
     }
 
     fn set_pending_esc_interrupt_deadline(&mut self, deadline: Option<Instant>) {
