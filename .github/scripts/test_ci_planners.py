@@ -533,7 +533,7 @@ class ValidationPlanScriptTests(unittest.TestCase):
         self.assertEqual(payload["run_smoke_gate"], "false")
         self.assertEqual(payload["selected_workflow_lane_count"], 0)
         self.assertEqual(payload["selected_node_lane_count"], 0)
-        self.assertEqual(payload["selected_rust_minimal_lane_count"], 14)
+        self.assertEqual(payload["selected_rust_minimal_lane_count"], 15)
         self.assertEqual(payload["selected_rust_integration_lane_count"], 4)
         self.assertEqual(payload["selected_release_lane_count"], 0)
         self.assertTrue(
@@ -656,7 +656,7 @@ class ValidationPlanScriptTests(unittest.TestCase):
         self.assertEqual(payload["selected_workflow_lane_count"], 1)
         self.assertEqual(payload["selected_node_lane_count"], 0)
         self.assertEqual(payload["selected_rust_minimal_lane_count"], 2)
-        self.assertEqual(payload["selected_rust_minimal_batch_count"], 5)
+        self.assertEqual(payload["selected_rust_minimal_batch_count"], 6)
         self.assertEqual(payload["selected_rust_integration_lane_count"], 1)
         self.assertEqual(payload["selected_rust_integration_batch_count"], 5)
         self.assertEqual(payload["selected_release_lane_count"], 1)
@@ -972,8 +972,32 @@ class ValidationPlanScriptTests(unittest.TestCase):
             },
         )
 
-    def test_tui_esc_interrupt_lane_pins_user_visible_regressions(self) -> None:
     def test_tui_weekly_pacing_lane_pins_live_status_line_contract(self) -> None:
+        catalog = RESOLVE_VALIDATION_PLAN.load_catalog()
+        lane = next(
+            lane
+            for lane in catalog["lanes"]
+            if lane["lane_id"] == "codex.tui-weekly-pacing-status-line-targeted"
+        )
+        self.assertEqual(
+            lane["script_path"], ".github/scripts/validation-lanes/run-just-recipe.sh"
+        )
+        self.assertEqual(lane["script_args"], ["tui-weekly-pacing-status-line-targeted"])
+
+        recipe = "\n".join(
+            just_recipe_bodies(REPO_ROOT / "justfile")[
+                "tui-weekly-pacing-status-line-targeted"
+            ]
+        )
+        self.assertIn("--exact", recipe)
+        for test_name in [
+            "status_line_weekly_limit_renders_pacing_suffixes_from_live_status_line",
+            "status_line_weekly_limit_renders_stale_suffix_over_pace_details",
+            "status_line_weekly_limit_omits_pacing_when_inputs_are_missing",
+        ]:
+            self.assertIn(test_name, recipe)
+
+    def test_tui_esc_interrupt_lane_pins_user_visible_regressions(self) -> None:
         catalog = RESOLVE_VALIDATION_PLAN.load_catalog()
         lane = next(
             lane
@@ -1003,25 +1027,6 @@ class ValidationPlanScriptTests(unittest.TestCase):
             with self.subTest(test_name=test_name):
                 self.assertIn(test_name, recipe)
         self.assertIn("--exact", recipe)
-            if lane["lane_id"] == "codex.tui-weekly-pacing-status-line-targeted"
-        )
-        self.assertEqual(
-            lane["script_path"], ".github/scripts/validation-lanes/run-just-recipe.sh"
-        )
-        self.assertEqual(lane["script_args"], ["tui-weekly-pacing-status-line-targeted"])
-
-        recipe = "\n".join(
-            just_recipe_bodies(REPO_ROOT / "justfile")[
-                "tui-weekly-pacing-status-line-targeted"
-            ]
-        )
-        self.assertIn("--exact", recipe)
-        for test_name in [
-            "status_line_weekly_limit_renders_pacing_suffixes_from_live_status_line",
-            "status_line_weekly_limit_renders_stale_suffix_over_pace_details",
-            "status_line_weekly_limit_omits_pacing_when_inputs_are_missing",
-        ]:
-            self.assertIn(test_name, recipe)
 
     def test_validation_lab_passes_sccache_policy_only_to_sccache_lanes(self) -> None:
         payload = load_workflow_payload(REPO_ROOT / ".github/workflows/validation-lab.yml")
@@ -1884,12 +1889,12 @@ class ValidationPlanScriptTests(unittest.TestCase):
         self.assertNotIn("codex.tui-agent-picker-model-surface-targeted", selected_lane_ids)
         self.assertEqual(payload["selected_workflow_lane_count"], 4)
         self.assertEqual(payload["selected_node_lane_count"], 1)
-        self.assertEqual(payload["selected_rust_minimal_lane_count"], 17)
+        self.assertEqual(payload["selected_rust_minimal_lane_count"], 18)
         self.assertEqual(payload["selected_rust_integration_lane_count"], 15)
         self.assertEqual(payload["selected_release_lane_count"], 1)
         self.assertEqual(payload["workflow_max_parallel"], "4")
         self.assertEqual(payload["node_max_parallel"], "1")
-        self.assertEqual(payload["rust_minimal_max_parallel"], "17")
+        self.assertEqual(payload["rust_minimal_max_parallel"], "18")
         self.assertEqual(payload["rust_integration_max_parallel"], "8")
         self.assertEqual(payload["release_max_parallel"], "1")
 
@@ -1915,10 +1920,10 @@ class ValidationPlanScriptTests(unittest.TestCase):
         self.assertIn("downstream-ledger-seam", selected_lane_ids)
         self.assertEqual(payload["selected_workflow_lane_count"], 5)
         self.assertEqual(payload["selected_node_lane_count"], 1)
-        self.assertEqual(payload["selected_rust_minimal_lane_count"], 19)
+        self.assertEqual(payload["selected_rust_minimal_lane_count"], 20)
         self.assertEqual(payload["selected_rust_integration_lane_count"], 16)
         self.assertEqual(payload["selected_release_lane_count"], 1)
-        self.assertEqual(payload["rust_minimal_max_parallel"], "19")
+        self.assertEqual(payload["rust_minimal_max_parallel"], "20")
         self.assertEqual(payload["rust_integration_max_parallel"], "8")
 
     def test_validation_lab_frontier_all_excludes_smoke_gate_lanes_by_metadata(self) -> None:
@@ -2032,7 +2037,7 @@ class ValidationPlanScriptTests(unittest.TestCase):
         self.assertEqual(payload["eager_release_lanes"], "true")
         self.assertEqual(payload["workflow_max_parallel"], "5")
         self.assertEqual(payload["node_max_parallel"], "1")
-        self.assertEqual(payload["rust_minimal_max_parallel"], "19")
+        self.assertEqual(payload["rust_minimal_max_parallel"], "20")
         self.assertEqual(payload["rust_integration_max_parallel"], "8")
         self.assertEqual(payload["release_max_parallel"], "1")
         planned_lane_ids = [lane["lane_id"] for lane in payload["planned_matrix"]["include"]]
