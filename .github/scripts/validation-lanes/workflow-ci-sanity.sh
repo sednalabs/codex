@@ -7,6 +7,7 @@ python3 -m py_compile \
   .github/scripts/check_workflow_policy.py \
   .github/scripts/report_actions_cache_occupancy.py \
   .github/scripts/resolve_rust_ci_mode.py \
+  .github/scripts/resolve_sedna_release_version.py \
   .github/scripts/resolve_validation_plan.py \
   .github/scripts/run_validation_lane.py \
   .github/scripts/skip_duplicate_workflow_run.py \
