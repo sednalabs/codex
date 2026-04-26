@@ -172,7 +172,8 @@ def fetch_github_api(path: str, *, token: str, accept: str = "application/vnd.gi
     if token:
         headers["Authorization"] = f"Bearer {token}"
 
-    # codeql[py/partial-ssrf] Callers build GitHub API paths from a fixed repository plus validated tag or numeric asset id.
+    # Callers build GitHub API paths from a fixed repository plus validated tag or numeric asset id.
+    # codeql[py/partial-ssrf]
     request = urllib.request.Request(url, headers=headers)
     try:
         with urllib.request.urlopen(request, timeout=60) as response:
@@ -239,16 +240,19 @@ def stage_or_reuse_release(paths: InstallPaths, tag: str, assets: ReleaseAssets,
     with tempfile.TemporaryDirectory(prefix="sedna-release-install-") as temp_root:
         staged = Path(temp_root) / tag
 
-        # codeql[py/path-injection] The release tag is validated to exclude path separators before this path is built.
+        # The release tag is validated to exclude path separators before this path is built.
+        # codeql[py/path-injection]
         staged.mkdir()
         extract_archive_safely(assets.archive_bytes, staged)
         require_executable(staged / "codex")
         require_executable(staged / "codex-responses-api-proxy")
 
-        # codeql[py/path-injection] The destination directory is derived from a validated release tag.
+        # The destination directory is derived from a validated release tag.
+        # codeql[py/path-injection]
         (staged / "RELEASE-METADATA.json").write_bytes(assets.metadata)
 
-        # codeql[py/path-injection] The destination directory is derived from a validated release tag.
+        # The destination directory is derived from a validated release tag.
+        # codeql[py/path-injection]
         (staged / "SHA256SUMS.txt").write_bytes(assets.checksums)
 
         if dry_run:
@@ -259,7 +263,8 @@ def stage_or_reuse_release(paths: InstallPaths, tag: str, assets: ReleaseAssets,
         if tmp_release.exists():
             shutil.rmtree(tmp_release)
 
-        # codeql[py/path-injection] Both source and target live under fixed install roots using a validated release tag.
+        # Both source and target live under fixed install roots using a validated release tag.
+        # codeql[py/path-injection]
         shutil.copytree(staged, tmp_release, symlinks=False)
         os.replace(tmp_release, release_dir)
         return release_dir
@@ -294,11 +299,13 @@ def extract_archive_safely(archive_bytes: bytes, destination: Path) -> None:
                 if source is None:
                     raise InstallError(f"failed to read archive member {member.name!r}")
 
-                # codeql[py/path-injection] Archive members are allowlisted to exact root executable names.
+                # Archive members are allowlisted to exact root executable names.
+                # codeql[py/path-injection]
                 with source, target.open("wb") as output:
                     shutil.copyfileobj(source, output)
 
-                # codeql[py/path-injection] Archive members are allowlisted to exact root executable names.
+                # Archive members are allowlisted to exact root executable names.
+                # codeql[py/path-injection]
                 os.chmod(target, member.mode & 0o777)
 
 
@@ -318,11 +325,13 @@ def safe_member_name(name: str) -> str:
 
 
 def require_executable(path: Path) -> None:
-    # codeql[py/path-injection] Callers pass fixed executable names under validated release directories.
+    # Callers pass fixed executable names under validated release directories.
+    # codeql[py/path-injection]
     if not path.is_file():
         raise InstallError(f"required executable is missing: {path}")
 
-    # codeql[py/path-injection] Callers pass fixed executable names under validated release directories.
+    # Callers pass fixed executable names under validated release directories.
+    # codeql[py/path-injection]
     mode = path.stat().st_mode
     if not mode & (stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH):
         raise InstallError(f"required executable is not executable: {path}")
