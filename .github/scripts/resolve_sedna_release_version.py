@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import re
 import shutil
 import subprocess
@@ -188,6 +187,7 @@ def github_release_tags(repository: str, mode: str) -> set[str]:
     if gh is None:
         if mode == "required":
             raise ReleaseVersionError("gh is required to check existing GitHub releases")
+        print("warning: gh not found; skipping remote release check", file=sys.stderr)
         return set()
     proc = subprocess.run(
         [
@@ -207,7 +207,10 @@ def github_release_tags(repository: str, mode: str) -> set[str]:
             raise ReleaseVersionError(
                 f"failed to list GitHub releases for {repository}: {proc.stderr.strip()}"
             )
-        print(f"warning: failed to list GitHub releases for {repository}: {proc.stderr.strip()}", file=sys.stderr)
+        print(
+            f"warning: failed to list GitHub releases for {repository}: {proc.stderr.strip()}",
+            file=sys.stderr,
+        )
         return set()
     return {line.strip() for line in proc.stdout.splitlines() if line.strip()}
 
@@ -319,31 +322,6 @@ def resolve_release(
     }
 
 
-def resolve_safe_output_path(path: str, workspace: Path) -> Path:
-    workspace_resolved = workspace.resolve()
-    candidate = Path(path).expanduser().resolve()
-    try:
-        candidate.relative_to(workspace_resolved)
-    except ValueError as exc:
-        raise ReleaseVersionError(
-            f"github output path must be within workspace: {workspace_resolved}"
-        ) from exc
-    return candidate
-
-
-def write_github_output(payload: dict[str, object], path: str | None) -> None:
-    if not path:
-        return
-    safe_path = resolve_safe_output_path(path, Path.cwd())
-    with safe_path.open("a", encoding="utf-8") as handle:
-        for key, value in payload.items():
-            if isinstance(value, bool):
-                rendered = "true" if value else "false"
-            else:
-                rendered = str(value)
-            handle.write(f"{key}={rendered}\n")
-
-
 def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--repo", type=Path, default=Path.cwd())
@@ -365,7 +343,6 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         default="best-effort",
     )
     parser.add_argument("--format", choices=("json",), default="json")
-    parser.add_argument("--github-output", default=os.environ.get("GITHUB_OUTPUT"))
     return parser.parse_args(argv)
 
 
@@ -388,7 +365,6 @@ def main(argv: list[str]) -> int:
         print(f"error: {exc}", file=sys.stderr)
         return 1
 
-    write_github_output(payload, args.github_output)
     print(json.dumps(payload, indent=2, sort_keys=True))
     return 0
 

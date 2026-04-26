@@ -511,6 +511,7 @@
         ".github/scripts/",
         ".github/validation-lanes.json",
         ".github/workflows/",
+        "scripts/resolve_sedna_release_version",
         "scripts/dispatch-frontier-max-wave.sh",
         "scripts/dispatch-validation-lab-snapshot.sh",
         "scripts/start-codex-exec.sh"

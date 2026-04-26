@@ -110,7 +110,9 @@ jobs:
             } >> "${GITHUB_OUTPUT}"
           fi
 
-          python3 .github/scripts/resolve_sedna_release_version.py "${args[@]}"
+          meta_json="${RUNNER_TEMP}/sedna-release-metadata.json"
+          python3 .github/scripts/resolve_sedna_release_version.py "${args[@]}" | tee "${meta_json}"
+          jq -r 'to_entries[] | "\(.key)=\(.value)"' "${meta_json}" >> "${GITHUB_OUTPUT}"
 
       - name: Install Linux build dependencies
         if: ${{ steps.meta.outputs.release_requested == 'true' }}
