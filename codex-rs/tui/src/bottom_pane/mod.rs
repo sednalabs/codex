@@ -913,7 +913,7 @@ impl BottomPane {
 
         if !is_interrupt_confirmation_attempt {
             if self.pending_esc_interrupt_deadline.is_some() {
-                self.set_pending_esc_interrupt_deadline(None);
+                self.set_pending_esc_interrupt_deadline(/*deadline*/ None);
                 self.request_redraw();
             }
             return EscInterruptDecision::NotHandled;
@@ -1283,7 +1283,7 @@ impl BottomPane {
                 .pending_esc_interrupt_deadline
                 .map_or(false, |d| Instant::now() < d)
             {
-                self.set_pending_esc_interrupt_deadline(None);
+                self.set_pending_esc_interrupt_deadline(/*deadline*/ None);
                 EscInterruptDecision::Interrupt
             } else {
                 self.set_pending_esc_interrupt_deadline(Some(
@@ -1293,7 +1293,7 @@ impl BottomPane {
                 EscInterruptDecision::AwaitingConfirmation
             }
         } else {
-            self.set_pending_esc_interrupt_deadline(None);
+            self.set_pending_esc_interrupt_deadline(/*deadline*/ None);
             EscInterruptDecision::Interrupt
         };
 
