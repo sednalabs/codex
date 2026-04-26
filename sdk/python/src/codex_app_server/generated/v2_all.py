@@ -825,7 +825,6 @@ class ExternalAgentConfigDetectParams(BaseModel):
 
 
 class ExternalAgentConfigImportCompletedNotification(BaseModel):
-    pass
     model_config = ConfigDict(
         populate_by_name=True,
     )
