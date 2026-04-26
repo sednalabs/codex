@@ -1454,8 +1454,8 @@ async fn status_line_weekly_limit_renders_stale_suffix_over_pace_details() {
     set_weekly_status_line_snapshot(
         &mut chat,
         chrono::Local::now() - chrono::Duration::minutes(16),
-        56.0,
-        50.0,
+        /*used_percent*/ 56.0,
+        /*time_remaining_pct*/ 50.0,
     );
 
     chat.refresh_status_line();
