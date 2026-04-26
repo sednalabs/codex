@@ -8,7 +8,6 @@ import contextlib
 import hashlib
 import json
 import os
-import re
 import shutil
 import stat
 import subprocess
@@ -21,12 +20,15 @@ import urllib.parse
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable
 
 
+REPOSITORY = "sednalabs/codex"
+API_ROOT = f"https://api.github.com/repos/{REPOSITORY}"
+INSTALL_ROOT = Path.home() / ".codex/packages/standalone"
+BIN_DIR = Path.home() / ".local/bin"
 TARGET = "x86_64-unknown-linux-gnu"
-TAG_RE = re.compile(r"^v[0-9]+\.[0-9]+\.[0-9]+([-.][0-9A-Za-z.]+)*-sedna\.[0-9]+$")
 REQUIRED_ASSET_NAMES = ("SHA256SUMS.txt", "RELEASE-METADATA.json")
+ARCHIVE_EXECUTABLES = frozenset(("codex", "codex-responses-api-proxy"))
 
 
 class InstallError(RuntimeError):
@@ -67,18 +69,14 @@ def main(argv: list[str]) -> int:
     args = parse_args(argv)
     tag = validate_tag(args.release_tag)
     repository = args.repository.strip()
-    if repository.lower() != "sednalabs/codex":
+    if repository.lower() != REPOSITORY:
         raise InstallError(f"repository must be sednalabs/codex, got {repository!r}")
 
     paths = InstallPaths(
-        install_root=Path(args.install_root).expanduser(),
-        bin_dir=Path(args.bin_dir).expanduser(),
+        install_root=INSTALL_ROOT,
+        bin_dir=BIN_DIR,
     )
-    assets = (
-        load_assets_from_dir(Path(args.asset_dir), tag)
-        if args.asset_dir
-        else download_release_assets(repository, tag, allow_prerelease=args.allow_prerelease)
-    )
+    assets = download_release_assets(repository, tag, allow_prerelease=args.allow_prerelease)
     verify_assets(repository, tag, assets)
     release_dir = stage_or_reuse_release(paths, tag, assets, dry_run=args.dry_run)
     if args.dry_run:
@@ -96,9 +94,6 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--repository", default=os.environ.get("GITHUB_REPOSITORY", ""))
     parser.add_argument("--release-tag", required=True)
-    parser.add_argument("--install-root", default="~/.codex/packages/standalone")
-    parser.add_argument("--bin-dir", default="~/.local/bin")
-    parser.add_argument("--asset-dir", help="Use already downloaded assets instead of GitHub API")
     parser.add_argument("--allow-prerelease", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
     return parser.parse_args(argv)
@@ -106,7 +101,20 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
 
 def validate_tag(tag: str) -> str:
     tag = tag.strip()
-    if not TAG_RE.fullmatch(tag):
+    if len(tag) > 80 or not tag.startswith("v") or "-sedna." not in tag:
+        raise InstallError(f"release tag must look like v0.124.0-sedna.2, got {tag!r}")
+    version, sedna_suffix = tag[1:].rsplit("-sedna.", 1)
+    if not sedna_suffix.isdecimal():
+        raise InstallError(f"release tag must look like v0.124.0-sedna.2, got {tag!r}")
+    parts = version.split(".")
+    if len(parts) < 3 or not all(part for part in parts[:3]):
+        raise InstallError(f"release tag must look like v0.124.0-sedna.2, got {tag!r}")
+    if not all(part.isdecimal() for part in parts[:3]):
+        raise InstallError(f"release tag must look like v0.124.0-sedna.2, got {tag!r}")
+    allowed = set("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789.-")
+    if any(char not in allowed for char in version):
+        raise InstallError(f"release tag must look like v0.124.0-sedna.2, got {tag!r}")
+    if ".." in version or version.endswith((".", "-")):
         raise InstallError(f"release tag must look like v0.124.0-sedna.2, got {tag!r}")
     return tag
 
@@ -121,8 +129,9 @@ def expected_archive_name(tag: str) -> str:
 
 def download_release_assets(repository: str, tag: str, *, allow_prerelease: bool) -> ReleaseAssets:
     token = os.environ.get("GITHUB_TOKEN", "").strip()
-    api_url = f"https://api.github.com/repos/{repository}/releases/tags/{urllib.parse.quote(tag)}"
-    release = json.loads(fetch_url(api_url, token=token).decode("utf-8"))
+    if repository.lower() != REPOSITORY:
+        raise InstallError(f"repository must be sednalabs/codex, got {repository!r}")
+    release = json.loads(fetch_github_api(f"/releases/tags/{urllib.parse.quote(tag, safe='')}", token=token).decode("utf-8"))
     if release.get("draft"):
         raise InstallError(f"refusing draft release {tag}")
     if release.get("prerelease") and not allow_prerelease:
@@ -139,15 +148,25 @@ def download_release_assets(repository: str, tag: str, *, allow_prerelease: bool
 
     return ReleaseAssets(
         archive_name=archive_name,
-        archive_bytes=fetch_url(assets_by_name[archive_name]["browser_download_url"], token=token),
-        checksums=fetch_url(assets_by_name["SHA256SUMS.txt"]["browser_download_url"], token=token),
-        metadata=fetch_url(assets_by_name["RELEASE-METADATA.json"]["browser_download_url"], token=token),
+        archive_bytes=download_release_asset(assets_by_name[archive_name], token=token),
+        checksums=download_release_asset(assets_by_name["SHA256SUMS.txt"], token=token),
+        metadata=download_release_asset(assets_by_name["RELEASE-METADATA.json"], token=token),
     )
 
 
-def fetch_url(url: str, *, token: str) -> bytes:
+def download_release_asset(asset: dict[str, object], *, token: str) -> bytes:
+    asset_id = asset.get("id")
+    if not isinstance(asset_id, int):
+        raise InstallError(f"release asset {asset.get('name')!r} has no numeric id")
+    return fetch_github_api(f"/releases/assets/{asset_id}", token=token, accept="application/octet-stream")
+
+
+def fetch_github_api(path: str, *, token: str, accept: str = "application/vnd.github+json") -> bytes:
+    if not path.startswith("/"):
+        raise InstallError(f"internal GitHub API path must start with /: {path!r}")
+    url = f"{API_ROOT}{path}"
     headers = {
-        "Accept": "application/vnd.github+json",
+        "Accept": accept,
         "User-Agent": "sedna-release-install",
     }
     if token:
@@ -161,20 +180,6 @@ def fetch_url(url: str, *, token: str) -> bytes:
         raise InstallError(f"GET {url} returned HTTP {exc.code}: {body[:500]}") from exc
     except urllib.error.URLError as exc:
         raise InstallError(f"GET {url} failed: {exc}") from exc
-
-
-def load_assets_from_dir(asset_dir: Path, tag: str) -> ReleaseAssets:
-    archive_name = expected_archive_name(tag)
-    required = (archive_name, *REQUIRED_ASSET_NAMES)
-    missing = [name for name in required if not (asset_dir / name).is_file()]
-    if missing:
-        raise InstallError(f"{asset_dir} is missing required assets: {', '.join(missing)}")
-    return ReleaseAssets(
-        archive_name=archive_name,
-        archive_bytes=(asset_dir / archive_name).read_bytes(),
-        checksums=(asset_dir / "SHA256SUMS.txt").read_bytes(),
-        metadata=(asset_dir / "RELEASE-METADATA.json").read_bytes(),
-    )
 
 
 def verify_assets(repository: str, tag: str, assets: ReleaseAssets) -> None:
@@ -211,7 +216,7 @@ def parse_sha256sums(contents: bytes) -> dict[str, str]:
         if len(parts) < 2:
             raise InstallError(f"invalid SHA256SUMS line: {line!r}")
         digest, name = parts[0], parts[1]
-        if not re.fullmatch(r"[0-9a-fA-F]{64}", digest):
+        if len(digest) != 64 or any(char not in "0123456789abcdefABCDEF" for char in digest):
             raise InstallError(f"invalid SHA256 digest in SHA256SUMS: {digest!r}")
         checksums[normalize_checksum_name(name)] = digest.lower()
     if not checksums:
@@ -269,14 +274,13 @@ def extract_archive_safely(archive_bytes: bytes, destination: Path) -> None:
             for member in archive.getmembers():
                 if member.name in ("", ".", "./"):
                     continue
-                relative = safe_member_path(member.name)
+                relative = safe_member_name(member.name)
                 target = destination / relative
                 if member.isdir():
-                    target.mkdir(parents=True, exist_ok=True)
+                    raise InstallError(f"refusing unexpected archive directory {member.name!r}")
                     continue
                 if not member.isfile():
                     raise InstallError(f"refusing unsafe archive member {member.name!r}")
-                target.parent.mkdir(parents=True, exist_ok=True)
                 source = archive.extractfile(member)
                 if source is None:
                     raise InstallError(f"failed to read archive member {member.name!r}")
@@ -285,20 +289,19 @@ def extract_archive_safely(archive_bytes: bytes, destination: Path) -> None:
                 os.chmod(target, member.mode & 0o777)
 
 
-def safe_member_path(name: str) -> Path:
-    path = Path(name)
-    if path.is_absolute():
+def safe_member_name(name: str) -> str:
+    if name.startswith("/"):
         raise InstallError(f"refusing absolute archive path {name!r}")
-    parts = []
-    for part in path.parts:
+    parts: list[str] = []
+    for part in name.split("/"):
         if part in ("", "."):
             continue
         if part == "..":
             raise InstallError(f"refusing parent traversal archive path {name!r}")
         parts.append(part)
-    if not parts:
-        raise InstallError("refusing empty archive path")
-    return Path(*parts)
+    if len(parts) != 1 or parts[0] not in ARCHIVE_EXECUTABLES:
+        raise InstallError(f"refusing unexpected archive member {name!r}")
+    return parts[0]
 
 
 def require_executable(path: Path) -> None:

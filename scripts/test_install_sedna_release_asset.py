@@ -6,7 +6,6 @@ import hashlib
 import importlib.util
 import io
 import json
-import os
 import stat
 import sys
 import tarfile
@@ -25,11 +24,11 @@ SPEC.loader.exec_module(installer)
 
 class InstallSednaReleaseAssetTest(unittest.TestCase):
     def test_safe_member_path_rejects_unsafe_paths(self) -> None:
-        self.assertEqual(installer.safe_member_path("./codex"), Path("codex"))
-        for unsafe in ("../codex", "/codex", "nested/../../codex"):
+        self.assertEqual(installer.safe_member_name("./codex"), "codex")
+        for unsafe in ("../codex", "/codex", "nested/../../codex", "nested/codex", "README.md"):
             with self.subTest(unsafe=unsafe):
                 with self.assertRaises(installer.InstallError):
-                    installer.safe_member_path(unsafe)
+                    installer.safe_member_name(unsafe)
 
     def test_parse_sha256sums_normalizes_names(self) -> None:
         parsed = installer.parse_sha256sums(
