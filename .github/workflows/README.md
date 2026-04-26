@@ -13,6 +13,9 @@ deliberate schedule/manual checkpoints instead of re-running after every merge.
   - `cargo shear`
   - `argument-comment-lint` on Linux `x86_64`
   - `tools/argument-comment-lint` package tests when the lint or its workflow wiring changes
+  Its scheduled run first checks for an already-successful `rust-ci` run on
+  the same branch and commit. When one exists, the required summary job exits
+  green and the expensive Rust jobs stay skipped.
 
 The downstream PR workflow intentionally stays on Linux `x86_64` only. Historical non-Linux paths
 remain in the repository for future re-enablement, but they are not part of the active Sedna CI
@@ -34,15 +37,47 @@ contract today.
   - Linux `x86_64` release-profile Cargo builds
   - Linux `x86_64` `argument-comment-lint`
   - Linux `x86_64` remote-env tests
-  The scheduled path deliberately reuses the fast scheduled `rust-ci` run
-  instead of racing it on a second cron. For scheduled full runs, duplicate
-  fast checks such as format, shear, and argument-comment-lint are skipped
-  once `rust-ci` has already passed; manual dispatch still runs the whole
-  broad checkpoint directly. The normal and remote-env nextest lanes both
-  consume the same uploaded nextest archive so the workflow can compare normal
-  and Docker-backed remote behavior without compiling the same test binaries
+  The scheduled path deliberately follows the fast scheduled `rust-ci` run
+  instead of racing it on a second cron. It also checks for an already-green
+  `rust-ci-full` run on the same branch and commit before starting heavy Cargo
+  work. For scheduled full runs that do proceed, duplicate fast checks such as
+  format, shear, and argument-comment-lint are skipped once `rust-ci` has
+  already passed; manual dispatch still runs the whole broad checkpoint
+  directly. The normal and remote-env nextest lanes both consume the same
+  uploaded nextest archive so the workflow can compare normal and
+  Docker-backed remote behavior without compiling the same test binaries
   twice. The result job
   uploads a compact `rust-ci-full-summary` JSON artifact for failure triage.
+
+## Security Scanning
+
+- `codeql.yml` is the maintained advanced CodeQL setup for this repository.
+  Keep the checked-in workflow authoritative so language coverage, query
+  selection, permissions, and scheduling remain reviewable with the rest of the
+  workflow catalog.
+- The matrix intentionally analyzes Actions, C/C++, JavaScript/TypeScript,
+  Python, and Rust with `build-mode: none`. This keeps coverage over the
+  vendored C sandbox code and Rust sources without relying on CodeQL autobuild,
+  which has no useful build system to discover in this repository.
+- The workflow uses `.github/codeql/codeql-config.yml` for shared CodeQL
+  settings. Add query packs or path filters there instead of duplicating
+  configuration across matrix entries.
+- The CodeQL config deliberately uses the broad `security-and-quality` suite
+  and the local threat model. This is noisier than the default or
+  `security-extended` suite, but it is the maintained built-in shape that gives
+  this project the widest CodeQL signal, including local files, command-line
+  arguments, environment variables, and standard input as taint sources where
+  CodeQL supports them.
+- Rust CodeQL currently uses no-build analysis through `rust-analyzer`. The
+  workflow prepares that lane by installing every checked-in Rust toolchain,
+  restoring Cargo registry/git caches, and prefetching the Rust workspaces
+  before CodeQL initializes. Do not try to pass normal Cargo `target/`, test
+  binaries, or nextest archives into CodeQL; they are compiled outputs, not the
+  source extraction data CodeQL needs.
+- If GitHub creates a generated CodeQL/default setup workflow, disable that
+  duplicate after this advanced workflow is green. Running both creates
+  confusing check surfaces and can hide which CodeQL configuration is actually
+  producing alerts.
 
 ## Rule Of Thumb
 
@@ -50,3 +85,17 @@ contract today.
 - Keep `rust-ci.yml` fast enough that it usually does not dominate PR latency.
 - Reserve `rust-ci-full.yml` for heavyweight Cargo-native coverage that Bazel
   does not replace yet, not for routine post-merge reruns.
+
+## Maintenance Workflows
+
+- `sync-models-json.yml` keeps the normal no-op scheduled path read-only. Its
+  `check` job fetches and compares upstream metadata with `contents: read`;
+  the `create_pr` job receives `contents: write` and `pull-requests: write`
+  only when a changed payload needs an automated PR.
+- `sedna-sync-upstream.yml` intentionally keeps mirror synchronization and the
+  downstream divergence audit in separate jobs. That costs a second checkout,
+  but it preserves a smaller credential boundary: the audit job does not
+  receive the upstream mirror write token.
+- CodeQL code scanning should run through the checked-in advanced workflow.
+  Treat generated/default CodeQL workflows as duplicates once `codeql.yml` is
+  enabled and green.

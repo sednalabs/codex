@@ -9,6 +9,7 @@ python3 -m py_compile \
   .github/scripts/resolve_rust_ci_mode.py \
   .github/scripts/resolve_validation_plan.py \
   .github/scripts/run_validation_lane.py \
+  .github/scripts/skip_duplicate_workflow_run.py \
   .github/scripts/summarize_rust_ci_full.py \
   .github/scripts/sync_upstream_mirror.py \
   .github/scripts/test_ci_planners.py
