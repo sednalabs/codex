@@ -2249,6 +2249,18 @@ class ValidationPlanScriptTests(unittest.TestCase):
             (steps[3] or {}).get("run") or "",
         )
         self.assertIn(
+            '--base-sha "${{ needs.metadata.outputs.base_sha }}"',
+            (steps[3] or {}).get("run") or "",
+        )
+        self.assertIn(
+            '--effective-changed-files-source "${{ needs.metadata.outputs.effective_changed_files_source }}"',
+            (steps[3] or {}).get("run") or "",
+        )
+        self.assertIn(
+            "--prior-evidence-reused",
+            (steps[3] or {}).get("run") or "",
+        )
+        self.assertIn(
             '--workflow-result "${WORKFLOW_RESULT}"',
             (steps[3] or {}).get("run") or "",
         )
@@ -2261,6 +2273,32 @@ class ValidationPlanScriptTests(unittest.TestCase):
             (steps[3] or {}).get("run") or "",
         )
         self.assertEqual((steps[4] or {}).get("uses"), "actions/upload-artifact@v7")
+
+    def test_sedna_heavy_reuses_only_same_pr_prior_head_summary_evidence(self) -> None:
+        payload = load_workflow_payload(REPO_ROOT / ".github/workflows/sedna-heavy-tests.yml")
+        metadata = ((payload.get("jobs") or {}).get("metadata") or {})
+        outputs = metadata.get("outputs") or {}
+        run = ((metadata.get("steps") or [])[1] or {}).get("run") or ""
+
+        self.assertEqual(outputs.get("prior_evidence_reused"), "${{ steps.meta.outputs.prior_evidence_reused }}")
+        self.assertIn('github.event.action }}\' == \'synchronize\'', run)
+        self.assertIn('select(any(.pull_requests[]?; .number == (', run)
+        self.assertIn('select(.head_sha == "\'"${BEFORE_SHA}"\'")', run)
+        self.assertIn('--name validation-summary', run)
+        self.assertIn('.summary.overall_conclusion == "success"', run)
+        self.assertIn('.run.head_sha == $before_sha', run)
+        self.assertIn('.run.base_sha == $base_sha', run)
+        self.assertIn('effective_changed_files_source="latest_delta"', run)
+        self.assertIn('Merge checkpoint: full heavy validation is still required', run)
+
+    def test_sedna_heavy_merge_group_and_ci_heavy_keep_full_planning(self) -> None:
+        payload = load_workflow_payload(REPO_ROOT / ".github/workflows/sedna-heavy-tests.yml")
+        metadata_run = (((payload.get("jobs") or {}).get("metadata") or {}).get("steps") or [])[1].get("run") or ""
+
+        self.assertIn("merge_group", payload.get("on") or payload.get(True) or {})
+        self.assertIn("else\n  run_all_lanes=true", metadata_run)
+        self.assertIn('contains(github.event.pull_request.labels.*.name, \'ci:heavy\')', metadata_run)
+        self.assertIn('if [[ "${run_all_lanes}" != "true"', metadata_run)
 
 class RustCiModeScriptTests(unittest.TestCase):
     maxDiff = None
@@ -2337,6 +2375,26 @@ class RustCiModeScriptTests(unittest.TestCase):
         self.assertIn("--primary-line-count", detect_run)
         self.assertIn("--latest-delta-files-json", detect_run)
         self.assertIn("--latest-delta-line-count", detect_run)
+        self.assertIn("--previous-planner-fixtures", detect_run)
+        self.assertIn("--previous-argument-comment-lint-prebuilt", detect_run)
+
+        previous_step = next(
+            step for step in steps if step.get("name") == "Check previous required result on follow-up head"
+        )
+        previous_script = ((previous_step.get("with") or {}).get("script") or "")
+        self.assertIn("passed(\"Rust CI required gate\")", previous_script)
+        self.assertIn("previous_planner_fixtures", previous_script)
+        self.assertIn("previous_argument_comment_lint_prebuilt", previous_script)
+
+        jobs = payload.get("jobs") or {}
+        self.assertEqual(
+            (jobs.get("planner_fixtures") or {}).get("if"),
+            "${{ needs.changed.outputs.run_planner_fixtures == 'true' }}",
+        )
+        self.assertEqual(
+            (jobs.get("argument_comment_lint_package") or {}).get("if"),
+            "${{ needs.changed.outputs.run_argument_comment_lint_package == 'true' }}",
+        )
 
     def test_explicit_primary_diff_inputs_route_without_git_history(self) -> None:
         outputs = run_script(
@@ -2398,6 +2456,7 @@ class RustCiModeScriptTests(unittest.TestCase):
 
         self.assertEqual(outputs["validation_mode"], "light_followup")
         self.assertEqual(outputs["run_incremental_validation"], "true")
+        self.assertEqual(outputs["run_planner_fixtures"], "false")
         self.assertEqual(
             outputs["incremental_lanes"],
             ",".join(
@@ -2545,6 +2604,7 @@ class RustCiModeScriptTests(unittest.TestCase):
 
         self.assertEqual(outputs["validation_mode"], "light_followup")
         self.assertEqual(outputs["run_incremental_validation"], "true")
+        self.assertEqual(outputs["run_planner_fixtures"], "false")
         self.assertEqual(
             outputs["incremental_lanes"],
             ",".join(
@@ -2598,6 +2658,120 @@ class RustCiModeScriptTests(unittest.TestCase):
                 ]
             ),
         )
+
+    def test_evidence_followup_reruns_only_unproven_previous_surfaces_plus_delta(self) -> None:
+        outputs = run_script(
+            SCRIPTS_DIR / "resolve_rust_ci_mode.py",
+            "--repo-root",
+            str(self.repo.root),
+            "--event-name",
+            "pull_request",
+            "--event-action",
+            "synchronize",
+            "--base-sha",
+            "0" * 40,
+            "--head-sha",
+            "1" * 40,
+            "--before-sha",
+            "2" * 40,
+            "--previous-green-required",
+            "false",
+            "--previous-general",
+            "true",
+            "--previous-cargo-shear",
+            "true",
+            "--previous-argument-comment-lint-prebuilt",
+            "true",
+            "--primary-files-json",
+            json.dumps(
+                [
+                    ".github/scripts/test_ci_planners.py",
+                    "codex-rs/tui/src/chatwidget.rs",
+                    "justfile",
+                ]
+            ),
+            "--primary-line-count",
+            "300",
+            "--latest-delta-files-json",
+            json.dumps([".github/scripts/test_ci_planners.py"]),
+            "--latest-delta-line-count",
+            "20",
+        )
+
+        self.assertEqual(outputs["validation_mode"], "evidence_followup")
+        self.assertEqual(outputs["run_planner_fixtures"], "true")
+        self.assertEqual(outputs["run_general"], "false")
+        self.assertEqual(outputs["run_cargo_shear"], "false")
+        self.assertEqual(outputs["run_argument_comment_lint_prebuilt"], "false")
+        self.assertEqual(outputs["run_incremental_validation"], "true")
+        self.assertEqual(
+            outputs["incremental_lanes"],
+            "codex.workflow-ci-sanity,codex.downstream-docs-check",
+        )
+
+    def test_evidence_followup_repeats_unproven_previous_surfaces(self) -> None:
+        outputs = run_script(
+            SCRIPTS_DIR / "resolve_rust_ci_mode.py",
+            "--repo-root",
+            str(self.repo.root),
+            "--event-name",
+            "pull_request",
+            "--event-action",
+            "synchronize",
+            "--base-sha",
+            "0" * 40,
+            "--head-sha",
+            "1" * 40,
+            "--before-sha",
+            "2" * 40,
+            "--previous-green-required",
+            "false",
+            "--previous-general",
+            "false",
+            "--previous-cargo-shear",
+            "false",
+            "--primary-files-json",
+            json.dumps(
+                [
+                    ".github/scripts/test_ci_planners.py",
+                    "codex-rs/tui/src/chatwidget.rs",
+                    "justfile",
+                ]
+            ),
+            "--primary-line-count",
+            "300",
+            "--latest-delta-files-json",
+            json.dumps([".github/scripts/test_ci_planners.py"]),
+            "--latest-delta-line-count",
+            "20",
+        )
+
+        self.assertEqual(outputs["validation_mode"], "evidence_followup")
+        self.assertEqual(outputs["run_general"], "true")
+        self.assertEqual(outputs["run_cargo_shear"], "true")
+        self.assertEqual(outputs["run_argument_comment_lint_prebuilt"], "true")
+
+    def test_merge_group_forces_full_rust_ci_outputs(self) -> None:
+        outputs = run_script(
+            SCRIPTS_DIR / "resolve_rust_ci_mode.py",
+            "--repo-root",
+            str(self.repo.root),
+            "--event-name",
+            "merge_group",
+            "--event-action",
+            "",
+            "--previous-green-required",
+            "true",
+            "--latest-delta-files-json",
+            json.dumps([".github/scripts/test_ci_planners.py"]),
+            "--latest-delta-line-count",
+            "1",
+        )
+
+        self.assertEqual(outputs["validation_mode"], "full")
+        self.assertEqual(outputs["run_general"], "true")
+        self.assertEqual(outputs["run_cargo_shear"], "true")
+        self.assertEqual(outputs["run_planner_fixtures"], "true")
 
     def test_workflow_only_pr_skips_rust_compile_gates(self) -> None:
         outputs = self.run_rust_ci_mode(
