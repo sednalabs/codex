@@ -119,6 +119,15 @@ jobs:
           python3 .github/scripts/resolve_sedna_release_version.py "${args[@]}" | tee "${meta_json}"
           jq -r 'to_entries[] | "\(.key)=\(.value)"' "${meta_json}" >> "${GITHUB_OUTPUT}"
 
+      - name: Check out release target
+        if: ${{ steps.meta.outputs.release_requested == 'true' }}
+        shell: bash
+        env:
+          TARGET_COMMIT: ${{ steps.meta.outputs.target_commit }}
+        run: |
+          set -euo pipefail
+          git checkout --detach "${TARGET_COMMIT}"
+
       - name: Install Linux build dependencies
         if: ${{ steps.meta.outputs.release_requested == 'true' }}
         shell: bash

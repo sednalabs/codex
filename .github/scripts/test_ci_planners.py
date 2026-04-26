@@ -3079,6 +3079,39 @@ class SednaReleaseVersionResolverTests(unittest.TestCase):
 
         self.assertEqual(result["release_tag"], "v0.126.0-alpha.3-sedna.1")
 
+    def test_existing_supplied_tag_for_target_can_be_released(self) -> None:
+        repo, _upstream, downstream = self.create_fixture()
+        try:
+            repo._git("tag", "v0.126.0-alpha.3-sedna.1", downstream)
+            result = self.resolve(
+                repo,
+                downstream,
+                channel="prerelease",
+                release_tag="v0.126.0-alpha.3-sedna.1",
+            )
+        finally:
+            repo.cleanup()
+
+        self.assertEqual(result["release_tag"], "v0.126.0-alpha.3-sedna.1")
+
+    def test_existing_supplied_tag_must_point_at_target(self) -> None:
+        repo, _upstream, downstream = self.create_fixture()
+        try:
+            other = repo.commit("other downstream", {"downstream.txt": "other\n"})
+            repo._git("tag", "v0.126.0-alpha.3-sedna.1", other)
+            with self.assertRaisesRegex(
+                RESOLVE_SEDNA_RELEASE_VERSION.ReleaseVersionError,
+                "not target commit",
+            ):
+                self.resolve(
+                    repo,
+                    downstream,
+                    channel="prerelease",
+                    release_tag="v0.126.0-alpha.3-sedna.1",
+                )
+        finally:
+            repo.cleanup()
+
 
 if __name__ == "__main__":
     unittest.main()
