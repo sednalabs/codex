@@ -264,6 +264,11 @@ app-server-thread-cwd-targeted:
 app-server-computer-use-targeted:
     cargo test --locked -p codex-app-server --test all suite::v2::computer_use:: -- --test-threads=1
 
+# Focused native computer-use TUI projection slice for chat history and the
+# Ctrl+T transcript overlay.
+tui-native-computer-use-targeted:
+    cargo test --locked -p codex-tui app::tests::native_android_computer_use_events_render_in_transcript_and_overlay --lib -- --exact --test-threads=1
+
 # Focused native Android tool registry slice for canonical schema conversion
 # and deferred tool-search discovery.
 native-computer-use-tool-registry-targeted:
