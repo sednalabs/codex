@@ -6,12 +6,17 @@ on:
     - cron: "0 */6 * * *"
 
 permissions:
-  contents: write
-  pull-requests: write
+  contents: read
 
 jobs:
-  sync:
+  check:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      changed: ${{ steps.diff.outputs.changed }}
+      upstream_sha: ${{ steps.upstream.outputs.upstream_sha }}
+      upstream_short_sha: ${{ steps.upstream.outputs.upstream_short_sha }}
     env:
       MODELS_JSON_PATH: codex-rs/models-manager/models.json
 
@@ -36,8 +41,6 @@ jobs:
 
           upstream_sha="$(jq -r '.sha' < upstream.json)"
           upstream_short_sha="${upstream_sha:0:12}"
-          echo "upstream_sha=${upstream_sha}" >> "$GITHUB_ENV"
-          echo "upstream_short_sha=${upstream_short_sha}" >> "$GITHUB_ENV"
           echo "upstream_sha=${upstream_sha}" >> "$GITHUB_OUTPUT"
           echo "upstream_short_sha=${upstream_short_sha}" >> "$GITHUB_OUTPUT"
 
@@ -56,11 +59,13 @@ jobs:
 
       - name: Generate PR body
         if: steps.diff.outputs.changed == 'true'
+        env:
+          UPSTREAM_SHA: ${{ steps.upstream.outputs.upstream_sha }}
         run: |
           {
             echo 'Automated sync from upstream.'
             echo
-            echo "Upstream SHA: ${upstream_sha}"
+            echo "Upstream SHA: ${UPSTREAM_SHA}"
             echo
             echo 'Source:'
             echo "https://github.com/openai/codex/blob/main/${MODELS_JSON_PATH}"
@@ -71,16 +76,43 @@ jobs:
             echo '```'
           } > summary.md
 
-      - name: Update file
+      - name: Upload sync payload
         if: steps.diff.outputs.changed == 'true'
-        run: mv upstream-models.json "${MODELS_JSON_PATH}"
+        uses: actions/upload-artifact@v7
+        with:
+          name: sync-models-json-update
+          path: |
+            upstream-models.json
+            summary.md
+          if-no-files-found: error
+
+  create_pr:
+    needs: check
+    if: needs.check.outputs.changed == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    env:
+      MODELS_JSON_PATH: codex-rs/models-manager/models.json
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Download sync payload
+        uses: actions/download-artifact@v8
+        with:
+          name: sync-models-json-update
+          path: sync-models-json-update
+
+      - name: Update file
+        run: mv sync-models-json-update/upstream-models.json "${MODELS_JSON_PATH}"
 
       - name: Create PR
-        if: steps.diff.outputs.changed == 'true'
         uses: peter-evans/create-pull-request@v8
         with:
-          branch: bot/sync-models-json-${{ steps.upstream.outputs.upstream_short_sha }}
+          branch: bot/sync-models-json-${{ needs.check.outputs.upstream_short_sha }}
           delete-branch: true
           commit-message: "Sync models.json from upstream"
           title: "Sync models.json from openai/codex"
-          body-path: summary.md
+          body-path: sync-models-json-update/summary.md

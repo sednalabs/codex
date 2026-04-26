@@ -61,6 +61,16 @@ artifacts.
 - `sedna-sync-upstream`
   - trigger: manual dispatch and scheduled sync
   - purpose: fast-forward `upstream-main` from `upstream/main` and run the authoritative downstream divergence audit from the exact synced SHA
+  - credential boundary: keep the divergence audit in its own read-only job
+    unless a future change deliberately trades that boundary for lower wall
+    clock time
+- `sync-models-json`
+  - trigger: manual dispatch and scheduled sync
+  - purpose: keep the local models catalog aligned with upstream when it
+    changes
+  - credential boundary: normal scheduled comparisons run with `contents: read`;
+    write and pull-request permissions are granted only to the PR-creation job
+    after the read-only check detects a change
 
 ## Operating model
 
