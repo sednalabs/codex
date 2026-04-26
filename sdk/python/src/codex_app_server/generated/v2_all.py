@@ -1193,7 +1193,6 @@ class FsUnwatchParams(BaseModel):
 
 
 class FsUnwatchResponse(BaseModel):
-    model_config = ConfigDict(
         populate_by_name=True,
     )
 
