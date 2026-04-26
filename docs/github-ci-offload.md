@@ -233,6 +233,11 @@ The target ref still needs to carry the current explicit lane schema and the
 lane helper scripts referenced by it. The lab planner no longer backfills the
 old implicit `run_command` contract for historical refs.
 
+In earlier revisions, the planner could infer a default command when lane
+metadata was missing; that compatibility path has been removed. If you're
+replaying an older ref, migrate it to the explicit lane schema used on `main`
+(including the referenced lane helper scripts) before dispatching.
+
 ## Workflow replacement matrix
 
 | Workflow | Status | Sedna role |
