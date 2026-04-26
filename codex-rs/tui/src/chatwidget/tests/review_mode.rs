@@ -879,7 +879,7 @@ async fn esc_interrupt_with_pending_steers_requires_confirmation_and_keeps_exist
         .set_composer_text("still editing".to_string(), Vec::new(), Vec::new());
 
     chat.handle_key_event(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
-    assert_matches!(op_rx.try_recv(), Err(TryRecvError::Empty));
+    assert_no_submit_or_interrupt_op(&mut op_rx);
     assert!(
         render_bottom_first_row(&chat, /*width*/ 80).contains("again to interrupt"),
         "first Esc should render the confirmation hint"
@@ -941,7 +941,7 @@ async fn esc_with_pending_steers_overrides_agent_command_interrupt_behavior() {
     chat.bottom_pane
         .set_composer_text("/agent ".to_string(), Vec::new(), Vec::new());
     chat.handle_key_event(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
-    assert_matches!(op_rx.try_recv(), Err(TryRecvError::Empty));
+    assert_no_submit_or_interrupt_op(&mut op_rx);
     assert!(
         render_bottom_first_row(&chat, /*width*/ 80).contains("again to interrupt"),
         "first Esc should render the confirmation hint"

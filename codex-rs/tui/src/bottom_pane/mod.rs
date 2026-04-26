@@ -913,8 +913,11 @@ impl BottomPane {
 
         if !is_interrupt_confirmation_attempt {
             if self.pending_esc_interrupt_deadline.is_some() {
-                self.set_pending_esc_interrupt_deadline(/*deadline*/ None);
-                self.request_redraw();
+                let should_reset_deadline = key_event.kind == KeyEventKind::Press;
+                if should_reset_deadline {
+                    self.set_pending_esc_interrupt_deadline(/*deadline*/ None);
+                    self.request_redraw();
+                }
             }
             return EscInterruptDecision::NotHandled;
         }
