@@ -451,11 +451,15 @@ _run-bazel-argument-comment-lint:
 
 [no-cd]
 argument-comment-lint *args:
-    if [ "$#" -eq 0 ]; then \
-      bazel build --config=argument-comment-lint -- $({{ justfile_directory() }}/tools/argument-comment-lint/list-bazel-targets.sh); \
-    else \
-      {{ justfile_directory() }}/tools/argument-comment-lint/run-prebuilt-linter.py "$@"; \
-    fi
+    if [ "$#" -eq 0 ]; then just argument-comment-lint-default; else just argument-comment-lint-with-args "$@"; fi
+
+[no-cd]
+argument-comment-lint-default:
+    bazel build --config=argument-comment-lint -- $({{ justfile_directory() }}/tools/argument-comment-lint/list-bazel-targets.sh)
+
+[no-cd]
+argument-comment-lint-with-args *args:
+    {{ justfile_directory() }}/tools/argument-comment-lint/run-prebuilt-linter.py "$@"
 
 [no-cd]
 argument-comment-lint-from-source *args:
