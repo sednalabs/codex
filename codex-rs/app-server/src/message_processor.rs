@@ -95,7 +95,6 @@ use tokio::time::timeout;
 use tracing::Instrument;
 
 const EXTERNAL_AUTH_REFRESH_TIMEOUT: Duration = Duration::from_secs(10);
-
 #[derive(Clone)]
 struct ExternalAuthRefreshBridge {
     outgoing: Arc<OutgoingMessageSender>,
@@ -260,6 +259,7 @@ pub(crate) struct MessageProcessorArgs {
     pub(crate) auth_manager: Arc<AuthManager>,
     pub(crate) rpc_transport: AppServerRpcTransport,
     pub(crate) remote_control_handle: Option<RemoteControlHandle>,
+    pub(crate) plugin_startup_tasks: crate::PluginStartupTasks,
 }
 
 impl MessageProcessor {
@@ -279,6 +279,7 @@ impl MessageProcessor {
             auth_manager,
             rpc_transport,
             remote_control_handle,
+            plugin_startup_tasks,
         } = args;
         auth_manager.set_external_auth(Arc::new(ExternalAuthRefreshBridge {
             outgoing: outgoing.clone(),
@@ -315,11 +316,13 @@ impl MessageProcessor {
             feedback,
             log_db,
         });
-        // Keep plugin startup warmups aligned at app-server startup.
-        // TODO(xl): Move into PluginManager once this no longer depends on config feature gating.
-        thread_manager
-            .plugins_manager()
-            .maybe_start_plugin_startup_tasks_for_config(&config, auth_manager.clone());
+        if matches!(plugin_startup_tasks, crate::PluginStartupTasks::Start) {
+            // Keep plugin startup warmups aligned at app-server startup.
+            // TODO(xl): Move into PluginManager once this no longer depends on config feature gating.
+            thread_manager
+                .plugins_manager()
+                .maybe_start_plugin_startup_tasks_for_config(&config, auth_manager.clone());
+        }
         let config_api = ConfigApi::new(
             config_manager,
             thread_manager.clone(),

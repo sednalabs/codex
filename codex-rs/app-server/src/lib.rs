@@ -362,6 +362,25 @@ pub async fn run_main(
     .await
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PluginStartupTasks {
+    Start,
+    Skip,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AppServerRuntimeOptions {
+    pub plugin_startup_tasks: PluginStartupTasks,
+}
+
+impl Default for AppServerRuntimeOptions {
+    fn default() -> Self {
+        Self {
+            plugin_startup_tasks: PluginStartupTasks::Start,
+        }
+    }
+}
+
 pub async fn run_main_with_transport(
     arg0_paths: Arg0DispatchPaths,
     cli_config_overrides: CliConfigOverrides,
@@ -370,6 +389,30 @@ pub async fn run_main_with_transport(
     transport: AppServerTransport,
     session_source: SessionSource,
     auth: AppServerWebsocketAuthSettings,
+) -> IoResult<()> {
+    run_main_with_transport_options(
+        arg0_paths,
+        cli_config_overrides,
+        loader_overrides,
+        default_analytics_enabled,
+        transport,
+        session_source,
+        auth,
+        AppServerRuntimeOptions::default(),
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+pub async fn run_main_with_transport_options(
+    arg0_paths: Arg0DispatchPaths,
+    cli_config_overrides: CliConfigOverrides,
+    loader_overrides: LoaderOverrides,
+    default_analytics_enabled: bool,
+    transport: AppServerTransport,
+    session_source: SessionSource,
+    auth: AppServerWebsocketAuthSettings,
+    runtime_options: AppServerRuntimeOptions,
 ) -> IoResult<()> {
     let environment_manager = Arc::new(EnvironmentManager::new(EnvironmentManagerArgs::from_env(
         ExecServerRuntimePaths::from_optional_paths(
@@ -683,6 +726,7 @@ pub async fn run_main_with_transport(
             auth_manager,
             rpc_transport: analytics_rpc_transport(&transport),
             remote_control_handle: Some(remote_control_handle),
+            plugin_startup_tasks: runtime_options.plugin_startup_tasks,
         }));
         let mut thread_created_rx = processor.thread_created_receiver();
         let mut running_turn_count_rx = processor.subscribe_running_assistant_turn_count();
