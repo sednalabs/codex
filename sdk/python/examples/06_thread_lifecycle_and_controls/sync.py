@@ -38,7 +38,6 @@ with Codex(config=runtime_config()) as codex:
     except Exception as exc:
         resumed_info = f"skipped({type(exc).__name__})"
 
-    forked_info = "n/a"
     try:
         forked = codex.thread_fork(unarchived.id, model="gpt-5.4")
         forked_result = forked.turn(TextInput("Take a different angle in one short sentence.")).run()
