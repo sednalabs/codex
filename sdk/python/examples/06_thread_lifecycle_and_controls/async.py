@@ -29,7 +29,6 @@ async def main() -> None:
         listing_archived = await codex.thread_list(limit=20, archived=True)
         unarchived = await codex.thread_unarchive(reopened.id)
 
-        resumed_info = "n/a"
         try:
             resumed = await codex.thread_resume(
                 unarchived.id,
