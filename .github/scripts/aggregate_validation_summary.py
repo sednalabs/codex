@@ -22,11 +22,17 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--display-ref", required=True)
     parser.add_argument("--checkout-ref", required=True)
     parser.add_argument("--head-sha", required=True)
+    parser.add_argument("--base-sha", default="")
     parser.add_argument("--profile", required=True)
     parser.add_argument("--lane-set", required=True)
     parser.add_argument("--profile-intent", default="")
     parser.add_argument("--profile-notes", default="")
     parser.add_argument("--lane-summary", default="")
+    parser.add_argument("--effective-changed-files-source", default="")
+    parser.add_argument("--prior-evidence-reused", default="false")
+    parser.add_argument("--prior-evidence-sha", default="")
+    parser.add_argument("--prior-evidence-run-url", default="")
+    parser.add_argument("--prior-evidence-reason", default="")
     parser.add_argument("--planned-matrix-json", default="")
     parser.add_argument("--selected-lane-ids-json", default="")
     parser.add_argument("--explicit-lanes", default="")
@@ -620,12 +626,21 @@ def main() -> None:
             "profile_notes": args.profile_notes or "",
             "lane_set": args.lane_set,
             "lane_summary": args.lane_summary or "",
+            "effective_changed_files_source": args.effective_changed_files_source or "",
             "explicit_lanes_supplied": bool(explicit_lanes),
             "explicit_lane_count": len(explicit_lanes),
             "notes_supplied": parse_bool(args.notes_supplied),
             "rust_batching_mode": args.rust_batching_mode or "",
             "rust_batching_reason": args.rust_batching_reason or "",
             "baseline_required": args.profile == "frontier",
+            "evidence_reuse": {
+                "reused": parse_bool(args.prior_evidence_reused),
+                "sha": args.prior_evidence_sha or "",
+                "run_url": args.prior_evidence_run_url or "",
+                "reason": args.prior_evidence_reason or "",
+                "scope": "same-pr-immediate-prior-head",
+                "merge_checkpoint_required": parse_bool(args.prior_evidence_reused),
+            },
             "supersession": {
                 "mode": args.supersession_mode or "auto",
                 "key": args.supersession_key or "",
@@ -636,6 +651,8 @@ def main() -> None:
             "run_id": args.run_id,
             "run_attempt": args.run_attempt,
             "url": args.run_url,
+            "base_sha": args.base_sha,
+            "head_sha": args.head_sha,
         },
         "jobs": {
             "smoke_gate": {

@@ -225,6 +225,7 @@ def forced_full_outputs() -> dict[str, str]:
         "argument_comment_lint_package": "true",
         "workflows": "true",
         "has_relevant_changes": "true",
+        "run_planner_fixtures": "true",
         "run_general": "true",
         "run_cargo_shear": "true",
         "run_argument_comment_lint_package": "true",
@@ -240,6 +241,10 @@ def as_output(value: bool) -> str:
     return "true" if value else "false"
 
 
+def parse_output_bool(value: str) -> bool:
+    return value.strip().lower() == "true"
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--repo-root", required=True)
@@ -249,6 +254,11 @@ def main() -> None:
     parser.add_argument("--head-sha", default="")
     parser.add_argument("--before-sha", default="")
     parser.add_argument("--previous-green-required", default="false")
+    parser.add_argument("--previous-planner-fixtures", default="false")
+    parser.add_argument("--previous-general", default="false")
+    parser.add_argument("--previous-cargo-shear", default="false")
+    parser.add_argument("--previous-argument-comment-lint-package", default="false")
+    parser.add_argument("--previous-argument-comment-lint-prebuilt", default="false")
     parser.add_argument("--primary-files-json", default="")
     parser.add_argument("--primary-line-count", default="")
     parser.add_argument("--latest-delta-files-json", default="")
@@ -303,6 +313,15 @@ def main() -> None:
 
     followup_lanes = select_followup_lanes(latest_delta_files, routes)
     followup_light_workflow_route = route_lanes_are_light_workflow_only(followup_lanes, catalog)
+    mapped_followup = (
+        args.event_name == "pull_request"
+        and args.event_action == "synchronize"
+        and bool(latest_delta_files)
+        and len(latest_delta_files) <= FOLLOWUP_ROUTE_MAX_FILES
+        and latest_delta_lines <= FOLLOWUP_ROUTE_MAX_LINES
+        and (not latest_delta["high_risk"] or followup_light_workflow_route)
+        and bool(followup_lanes)
+    )
     light_initial = (
         args.event_name == "pull_request"
         and args.event_action in INITIAL_ROUTE_ACTIONS
@@ -313,15 +332,10 @@ def main() -> None:
         and bool(primary_lanes)
     )
     light_followup = (
-        args.event_name == "pull_request"
-        and args.event_action == "synchronize"
+        mapped_followup
         and args.previous_green_required == "true"
-        and bool(latest_delta_files)
-        and len(latest_delta_files) <= FOLLOWUP_ROUTE_MAX_FILES
-        and latest_delta_lines <= FOLLOWUP_ROUTE_MAX_LINES
-        and (not latest_delta["high_risk"] or followup_light_workflow_route)
-        and bool(followup_lanes)
     )
+    reuse_followup = mapped_followup and not light_followup
 
     if light_followup:
         outputs = {
@@ -333,6 +347,7 @@ def main() -> None:
             "has_relevant_changes": as_output(primary["has_relevant_changes"]),
             # Once a PR head is already green, tiny mapped follow-ups should
             # prove the exact seam instead of re-running the whole fast bundle.
+            "run_planner_fixtures": as_output(latest_delta["workflows"]),
             "run_general": "false",
             "run_cargo_shear": "false",
             "run_argument_comment_lint_package": "false",
@@ -352,6 +367,7 @@ def main() -> None:
             "has_relevant_changes": as_output(primary["has_relevant_changes"]),
             # For small initial PRs that map cleanly to one guarded seam, prove
             # the exact route first instead of broadening to the full fast bundle.
+            "run_planner_fixtures": as_output(primary["workflows"]),
             "run_general": "false",
             "run_cargo_shear": "false",
             "run_argument_comment_lint_package": "false",
@@ -361,6 +377,48 @@ def main() -> None:
             "incremental_lane_set": "all",
             "incremental_lanes": ",".join(primary_lanes),
         }
+    elif reuse_followup:
+        outputs = {
+            "validation_mode": "evidence_followup",
+            "codex": as_output(primary["codex"]),
+            "argument_comment_lint": as_output(primary["argument_comment_lint"]),
+            "argument_comment_lint_package": as_output(primary["argument_comment_lint_package"]),
+            "workflows": as_output(primary["workflows"]),
+            "has_relevant_changes": as_output(primary["has_relevant_changes"]),
+            "run_planner_fixtures": as_output(
+                latest_delta["workflows"]
+                or (
+                    primary["workflows"]
+                    and not parse_output_bool(args.previous_planner_fixtures)
+                )
+            ),
+            "run_general": as_output(
+                latest_delta["codex"]
+                or (primary["codex"] and not parse_output_bool(args.previous_general))
+            ),
+            "run_cargo_shear": as_output(
+                latest_delta["codex"]
+                or (primary["codex"] and not parse_output_bool(args.previous_cargo_shear))
+            ),
+            "run_argument_comment_lint_package": as_output(
+                latest_delta["argument_comment_lint_package"]
+                or (
+                    primary["argument_comment_lint_package"]
+                    and not parse_output_bool(args.previous_argument_comment_lint_package)
+                )
+            ),
+            "run_argument_comment_lint_prebuilt": as_output(
+                latest_delta["argument_comment_lint"]
+                or (
+                    primary["argument_comment_lint"]
+                    and not parse_output_bool(args.previous_argument_comment_lint_prebuilt)
+                )
+            ),
+            "run_incremental_validation": "true",
+            "incremental_profile": "targeted",
+            "incremental_lane_set": "all",
+            "incremental_lanes": ",".join(followup_lanes),
+        }
     else:
         outputs = {
             "validation_mode": "full",
@@ -369,6 +427,7 @@ def main() -> None:
             "argument_comment_lint_package": as_output(primary["argument_comment_lint_package"]),
             "workflows": as_output(primary["workflows"]),
             "has_relevant_changes": as_output(primary["has_relevant_changes"]),
+            "run_planner_fixtures": as_output(primary["workflows"]),
             "run_general": as_output(primary["codex"]),
             "run_cargo_shear": as_output(primary["codex"]),
             "run_argument_comment_lint_package": as_output(primary["argument_comment_lint_package"]),

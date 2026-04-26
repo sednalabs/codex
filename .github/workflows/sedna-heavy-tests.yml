@@ -121,6 +121,12 @@ jobs:
       checkout_ref: ${{ steps.meta.outputs.checkout_ref }}
       checkout_sha: ${{ steps.meta.outputs.checkout_sha }}
       display_ref: ${{ steps.meta.outputs.display_ref }}
+      base_sha: ${{ steps.meta.outputs.base_sha }}
+      effective_changed_files_source: ${{ steps.meta.outputs.effective_changed_files_source }}
+      prior_evidence_reused: ${{ steps.meta.outputs.prior_evidence_reused }}
+      prior_evidence_sha: ${{ steps.meta.outputs.prior_evidence_sha }}
+      prior_evidence_run_url: ${{ steps.meta.outputs.prior_evidence_run_url }}
+      prior_evidence_reason: ${{ steps.meta.outputs.prior_evidence_reason }}
       planner_fingerprint: ${{ steps.meta.outputs.planner_fingerprint }}
       dedupe_reason: ${{ steps.meta.outputs.dedupe_reason }}
       smoke_gate_kind: ${{ steps.meta.outputs.smoke_gate_kind }}
@@ -184,6 +190,7 @@ jobs:
           checkout_ref='${{ github.sha }}'
           checkout_sha='${{ github.sha }}'
           display_ref='${{ github.ref_name }}'
+          base_sha=""
           run_all_lanes=false
           run_core_family=false
           run_attestation_family=false
@@ -191,6 +198,12 @@ jobs:
           run_ui_protocol_family=false
           run_docs_family=false
           files=()
+          latest_files=()
+          effective_changed_files_source="primary"
+          prior_evidence_reused=false
+          prior_evidence_sha=""
+          prior_evidence_run_url=""
+          prior_evidence_reason=""
 
           if [[ '${{ github.event_name }}' == 'workflow_dispatch' && -n '${{ inputs.ref }}' ]]; then
             checkout_ref='${{ inputs.ref }}'
@@ -212,7 +225,51 @@ jobs:
 
             BASE_SHA='${{ github.event.pull_request.base.sha }}'
             HEAD_SHA='${{ github.event.pull_request.head.sha }}'
+            BEFORE_SHA="$(jq -r '.before // ""' "${GITHUB_EVENT_PATH}")"
+            base_sha="${BASE_SHA}"
             mapfile -t files < <(git diff --name-only --no-renames "$BASE_SHA...$HEAD_SHA")
+            if [[ "${run_all_lanes}" != "true" && '${{ github.event.action }}' == 'synchronize' && -n "${BEFORE_SHA}" && "${BEFORE_SHA}" != "null" ]]; then
+              mapfile -t latest_files < <(git diff --name-only --no-renames "$BEFORE_SHA...$HEAD_SHA" || printf '%s\n' "${files[@]}")
+              candidate_run_json="$(
+                gh api \
+                  -H 'Accept: application/vnd.github+json' \
+                  "/repos/${GITHUB_REPOSITORY}/actions/workflows/sedna-heavy-tests.yml/runs?event=pull_request&per_page=100" \
+                  --jq '
+                    first(
+                      .workflow_runs[]
+                      | select(.id != ('"${GITHUB_RUN_ID}"' | tonumber))
+                      | select(.head_sha == "'"${BEFORE_SHA}"'")
+                      | select(any(.pull_requests[]?; .number == ('"${{ github.event.pull_request.number }}"' | tonumber)))
+                      | select(.status == "completed")
+                      | select(.conclusion == "success")
+                      | {id, html_url, head_sha}
+                    ) // {}
+                  '
+              )"
+              candidate_run_id="$(jq -r '.id // ""' <<<"${candidate_run_json}")"
+              if [[ -n "${candidate_run_id}" ]]; then
+                candidate_summary_dir="$(mktemp -d)"
+                if gh run download "${candidate_run_id}" --repo "${GITHUB_REPOSITORY}" --name validation-summary --dir "${candidate_summary_dir}" >/dev/null 2>&1; then
+                  candidate_summary_file="$(find "${candidate_summary_dir}" -name '*.json' -print -quit)"
+                  if [[ -n "${candidate_summary_file}" ]] && jq -e \
+                    --arg base_sha "${BASE_SHA}" \
+                    --arg before_sha "${BEFORE_SHA}" \
+                    '.summary.overall_conclusion == "success" and .run.head_sha == $before_sha and .run.base_sha == $base_sha' \
+                    "${candidate_summary_file}" >/dev/null; then
+                    prior_evidence_reused=true
+                    prior_evidence_sha="${BEFORE_SHA}"
+                    prior_evidence_run_url="$(jq -r '.html_url // ""' <<<"${candidate_run_json}")"
+                    prior_evidence_reason="previous heavy run succeeded for the same PR, same base, and immediate prior head"
+                    effective_changed_files_source="latest_delta"
+                    files=("${latest_files[@]}")
+                  else
+                    prior_evidence_reason="candidate previous heavy run did not have matching successful validation-summary evidence"
+                  fi
+                else
+                  prior_evidence_reason="candidate previous heavy run did not expose a validation-summary artifact"
+                fi
+              fi
+            fi
           else
             run_all_lanes=true
           fi
@@ -366,6 +423,12 @@ jobs:
             echo "checkout_ref=${checkout_ref}"
             echo "checkout_sha=${checkout_sha}"
             echo "display_ref=${display_ref}"
+            echo "base_sha=${base_sha}"
+            echo "effective_changed_files_source=${effective_changed_files_source}"
+            echo "prior_evidence_reused=${prior_evidence_reused}"
+            echo "prior_evidence_sha=${prior_evidence_sha}"
+            echo "prior_evidence_run_url=${prior_evidence_run_url}"
+            echo "prior_evidence_reason=${prior_evidence_reason}"
             echo "planner_fingerprint=${planner_fingerprint}"
             echo "dedupe_reason=${dedupe_reason}"
             echo "smoke_gate_kind=${smoke_gate_kind}"
@@ -422,6 +485,13 @@ jobs:
             echo "- Planner fingerprint: \`${planner_fingerprint}\`"
             echo "- Rust batching: \`${rust_batching_mode}\` (${rust_batching_reason})"
             echo "- Eager release lanes: \`${eager_release_lanes}\`"
+            echo "- Effective changed files: \`${effective_changed_files_source}\`"
+            if [[ "${prior_evidence_reused}" == "true" ]]; then
+              echo "- Prior evidence reused: \`${prior_evidence_sha}\` (${prior_evidence_run_url})"
+              echo "- Merge checkpoint: full heavy validation is still required on merge-group/default-branch runs; PR-local evidence reuse never satisfies that final checkpoint."
+            elif [[ -n "${prior_evidence_reason}" ]]; then
+              echo "- Prior evidence not reused: ${prior_evidence_reason}"
+            fi
             if [[ -n "${dedupe_reason}" ]]; then
               echo "- Dedupe: ${dedupe_reason}"
             fi
@@ -1126,11 +1196,17 @@ jobs:
             --display-ref "${{ needs.metadata.outputs.display_ref }}" \
             --checkout-ref "${{ needs.metadata.outputs.checkout_ref }}" \
             --head-sha "${{ needs.metadata.outputs.checkout_sha }}" \
+            --base-sha "${{ needs.metadata.outputs.base_sha }}" \
             --profile "heavy" \
             --lane-set "${lane_set}" \
             --profile-intent "heavy downstream validation" \
             --profile-notes "sedna-heavy-tests workflow summary" \
             --lane-summary "${lane_summary}" \
+            --effective-changed-files-source "${{ needs.metadata.outputs.effective_changed_files_source }}" \
+            --prior-evidence-reused "${{ needs.metadata.outputs.prior_evidence_reused }}" \
+            --prior-evidence-sha "${{ needs.metadata.outputs.prior_evidence_sha }}" \
+            --prior-evidence-run-url "${{ needs.metadata.outputs.prior_evidence_run_url }}" \
+            --prior-evidence-reason "${{ needs.metadata.outputs.prior_evidence_reason }}" \
             --planned-matrix-json '${{ needs.metadata.outputs.planned_matrix }}' \
             --selected-lane-ids-json '${{ needs.metadata.outputs.selected_lane_ids }}' \
             --explicit-lanes "${explicit_lanes}" \
