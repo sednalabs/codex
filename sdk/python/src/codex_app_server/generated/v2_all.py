@@ -483,7 +483,6 @@ class CommandExecTerminateParams(BaseModel):
 
 
 class CommandExecTerminateResponse(BaseModel):
-    pass
     model_config = ConfigDict(
         populate_by_name=True,
     )
