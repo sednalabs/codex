@@ -2544,6 +2544,44 @@ class HelperScriptTests(unittest.TestCase):
             )
         )
 
+    def test_duplicate_workflow_script_fails_open_for_bad_current_run_id(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output = Path(tmpdir) / "outputs"
+            proc = subprocess.run(
+                [
+                    "python3",
+                    str(SCRIPTS_DIR / "skip_duplicate_workflow_run.py"),
+                    "--repo",
+                    "sednalabs/codex",
+                    "--workflow",
+                    "rust-ci.yml",
+                    "--branch",
+                    "main",
+                    "--head-sha",
+                    "abc123",
+                    "--current-run-id",
+                    "not-an-int",
+                    "--github-output",
+                    str(output),
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+
+            payload = json.loads(proc.stdout)
+            output_lines = dict(
+                line.split("=", 1)
+                for line in output.read_text(encoding="utf-8").splitlines()
+            )
+
+        self.assertEqual(payload["should_skip"], "false")
+        self.assertEqual(payload["should_run"], "true")
+        self.assertEqual(payload["reason"], "lookup_failed_run_conservatively")
+        self.assertEqual(output_lines["should_skip"], "false")
+        self.assertEqual(output_lines["should_run"], "true")
+        self.assertEqual(output_lines["reason"], "lookup_failed_run_conservatively")
+
     def test_repository_workflows_follow_static_policy(self) -> None:
         self.assertEqual(CHECK_WORKFLOW_POLICY.collect_violations(REPO_ROOT), [])
 

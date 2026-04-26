@@ -20,7 +20,7 @@ def parse_run_id(value: str | int | None) -> int | None:
     try:
         return int(value)
     except (TypeError, ValueError) as exc:
-        raise SystemExit(f"run ids must be integers: {value!r}") from exc
+        raise ValueError(f"run ids must be integers: {value!r}") from exc
 
 
 def write_outputs(path: str | None, outputs: dict[str, str]) -> None:
@@ -147,9 +147,9 @@ def main() -> None:
     args = parser.parse_args()
 
     allowed_events = {event for event in args.allowed_events.split(",") if event}
-    current_run_id = parse_run_id(args.current_run_id)
 
     try:
+        current_run_id = parse_run_id(args.current_run_id)
         runs = fetch_successful_runs(
             api_url=args.api_url,
             repo=args.repo,
