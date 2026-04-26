@@ -1769,7 +1769,6 @@ class McpServerOauthLoginResponse(BaseModel):
 
 
 class McpServerRefreshResponse(BaseModel):
-    )
 
 
 class McpServerStartupState(Enum):
