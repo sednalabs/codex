@@ -66,7 +66,8 @@ artifacts.
   - release visibility: the only lane that may publish a GitHub Release
 - `sedna-sync-upstream`
   - trigger: manual dispatch and scheduled sync
-  - purpose: fast-forward `upstream-main` from `upstream/main` and run the authoritative downstream divergence audit from the exact synced SHA
+  - purpose: fast-forward `upstream-main` from `upstream/main` and run the
+    authoritative downstream divergence audit from the exact synced SHA
   - credential boundary: keep the divergence audit in its own read-only job
     unless a future change deliberately trades that boundary for lower wall
     clock time
@@ -334,9 +335,9 @@ over passing credentials into target scripts. Slower hosted validation is a
 better tradeoff than making scratch or PR code secret-bearing.
 
 The upstream mirror sync is the exception that proves the rule: only
-`sedna-sync-upstream` should receive the upstream mirror write credential, and
-validation lanes should audit against read-only refs or read-only fallback
-state.
+`sedna-sync-upstream` should receive the upstream mirror write credential,
+as defined in `.github/workflows/sedna-sync-upstream.yml`; validation
+lanes should audit against read-only refs or read-only fallback state.
 
 ## Summary artifact
 
