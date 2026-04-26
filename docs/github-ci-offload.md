@@ -28,6 +28,10 @@ artifacts.
   - trigger: successful scheduled `rust-ci` workflow completion and manual dispatch
   - purpose: heavyweight Linux `x86_64` Cargo-native checkpoint coverage when broad proof is
     actually needed
+  - scheduled dedupe: before heavy jobs start, the workflow checks for a prior
+    successful `rust-ci-full` run on the same branch and commit; if found, the
+    summary gate reports success and reuses that result instead of rerunning
+    the checkpoint
   - artifact reuse: builds one nextest archive for the Linux `x86_64` dev
     profile, then reuses that archive for both the normal all-features test
     lane and the full Docker-backed remote-env lane
@@ -43,6 +47,8 @@ artifacts.
 - `rust-ci`
   - trigger: routine PRs, manual dispatch, and schedule
   - purpose: required Rust promotion gate with path-aware routing
+  - scheduled dedupe: scheduled runs skip the expensive Rust jobs when a prior
+    successful `rust-ci` run already exists on the same branch and commit
   - diff source: PR runs use GitHub PR/compare metadata for changed-file
     routing where safe, then fall back to git diff when metadata is unavailable
     or ambiguous
@@ -93,8 +99,10 @@ artifacts.
    heavy validation, or a named heavy lane.
 9. Use `rust-ci-full` only for scheduled/manual broad Cargo-native checkpoints,
    not as a routine post-merge rerun. Its scheduled path follows the scheduled
-   `rust-ci` run and starts only if that upstream gate passed on `main`, so it
-   should not duplicate fast format/shear/lint work that already succeeded.
+   `rust-ci` run and starts only if that upstream gate passed on `main`. Both
+   scheduled Rust workflows skip when an equivalent same-branch, same-commit
+   success already exists, so idle branches do not spend runner time proving
+   the same SHA again.
 10. Use `sedna-branch-build` only when you intentionally want a preview binary.
 11. Use `sedna-release` only for official releases.
 
