@@ -139,9 +139,9 @@ def release_marker_channel(message: str) -> str | None:
     return channel
 
 
-def well_formed_upstream_tags(repo: Path, upstream_base_commit: str) -> list[tuple[SemVer, str]]:
+def well_formed_upstream_tags(repo: Path) -> list[tuple[SemVer, str]]:
     tags: list[tuple[SemVer, str]] = []
-    for tag in git(repo, "tag", "--merged", upstream_base_commit, "--list", "rust-v*").splitlines():
+    for tag in git(repo, "tag", "--list", "rust-v*").splitlines():
         match = UPSTREAM_TAG_RE.match(tag)
         if not match:
             continue
@@ -150,11 +150,9 @@ def well_formed_upstream_tags(repo: Path, upstream_base_commit: str) -> list[tup
 
 
 def select_upstream_tag(repo: Path, upstream_base_commit: str) -> tuple[SemVer, str, int, bool]:
-    candidates = well_formed_upstream_tags(repo, upstream_base_commit)
+    candidates = well_formed_upstream_tags(repo)
     if not candidates:
-        raise ReleaseVersionError(
-            f"no well-formed rust-v<semver> tag is reachable from {upstream_base_commit}"
-        )
+        raise ReleaseVersionError("no well-formed rust-v<semver> tags available locally")
     version, tag = max(candidates, key=lambda item: item[0])
     distance = int(git(repo, "rev-list", "--count", f"{tag}..{upstream_base_commit}"))
     exact = resolve_commit(repo, tag) == upstream_base_commit
