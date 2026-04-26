@@ -277,8 +277,6 @@ def resolve_release(
 
     local_existing_tags = local_sedna_tags(repo)
     release_existing_tags = github_release_tags(repository, github_releases)
-    if current_release_tag:
-        local_existing_tags.discard(current_release_tag)
     if release_tag and release_tag in local_existing_tags:
         release_tag_commit = resolve_commit(repo, release_tag)
         if release_tag_commit != target_commit:
@@ -288,6 +286,8 @@ def resolve_release(
             )
         local_existing_tags.discard(release_tag)
     existing_tags = local_existing_tags | release_existing_tags
+    if current_release_tag:
+        existing_tags.discard(current_release_tag)
     ordinal = next_sedna_ordinal(existing_tags, upstream_track)
     computed_release_tag = f"v{upstream_track}-sedna.{ordinal}"
 

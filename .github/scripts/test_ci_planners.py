@@ -10,6 +10,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
 import yaml
@@ -3111,6 +3112,26 @@ class SednaReleaseVersionResolverTests(unittest.TestCase):
                 )
         finally:
             repo.cleanup()
+
+    def test_current_release_tag_is_ignored_after_remote_release_union(self) -> None:
+        repo, _upstream, downstream = self.create_fixture()
+        try:
+            with mock.patch.object(
+                RESOLVE_SEDNA_RELEASE_VERSION,
+                "github_release_tags",
+                return_value={"v0.126.0-alpha.3-sedna.1"},
+            ):
+                result = self.resolve(
+                    repo,
+                    downstream,
+                    channel="auto",
+                    release_tag="v0.126.0-alpha.3-sedna.1",
+                    current_release_tag="v0.126.0-alpha.3-sedna.1",
+                )
+        finally:
+            repo.cleanup()
+
+        self.assertEqual(result["release_tag"], "v0.126.0-alpha.3-sedna.1")
 
 
 if __name__ == "__main__":
