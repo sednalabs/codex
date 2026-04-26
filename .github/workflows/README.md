@@ -49,6 +49,24 @@ contract today.
   twice. The result job
   uploads a compact `rust-ci-full-summary` JSON artifact for failure triage.
 
+## Security Scanning
+
+- `codeql.yml` is the maintained advanced CodeQL setup for this repository.
+  Keep the checked-in workflow authoritative so language coverage, query
+  selection, permissions, and scheduling remain reviewable with the rest of the
+  workflow catalog.
+- The matrix intentionally analyzes Actions, C/C++, JavaScript/TypeScript,
+  Python, and Rust with `build-mode: none`. This keeps coverage over the
+  vendored C sandbox code and Rust sources without relying on CodeQL autobuild,
+  which has no useful build system to discover in this repository.
+- The workflow uses `.github/codeql/codeql-config.yml` for shared CodeQL
+  settings. Add query packs or path filters there instead of duplicating
+  configuration across matrix entries.
+- If GitHub creates a generated CodeQL/default setup workflow, disable that
+  duplicate after this advanced workflow is green. Running both creates
+  confusing check surfaces and can hide which CodeQL configuration is actually
+  producing alerts.
+
 ## Rule Of Thumb
 
 - If a build/test/clippy check can be expressed in Bazel, prefer putting the PR-time version in `bazel.yml`.
@@ -66,6 +84,6 @@ contract today.
   downstream divergence audit in separate jobs. That costs a second checkout,
   but it preserves a smaller credential boundary: the audit job does not
   receive the upstream mirror write token.
-- GitHub code scanning currently runs through the repository's active CodeQL
-  setup in GitHub. If a checked-in advanced CodeQL workflow is disabled, treat
-  it as non-authoritative until it is deliberately re-enabled or removed.
+- CodeQL code scanning should run through the checked-in advanced workflow.
+  Treat generated/default CodeQL workflows as duplicates once `codeql.yml` is
+  enabled and green.
