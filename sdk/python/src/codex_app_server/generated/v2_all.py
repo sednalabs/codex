@@ -3180,7 +3180,6 @@ class SkillToolDependency(BaseModel):
 
 
 class SkillsChangedNotification(BaseModel):
-    model_config = ConfigDict(
         populate_by_name=True,
     )
 
