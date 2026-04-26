@@ -207,6 +207,7 @@ def github_release_tags(repository: str, mode: str) -> set[str]:
             raise ReleaseVersionError(
                 f"failed to list GitHub releases for {repository}: {proc.stderr.strip()}"
             )
+        print(f"warning: failed to list GitHub releases for {repository}: {proc.stderr.strip()}", file=sys.stderr)
         return set()
     return {line.strip() for line in proc.stdout.splitlines() if line.strip()}
 
