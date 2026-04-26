@@ -1041,7 +1041,6 @@ class FsCreateDirectoryParams(BaseModel):
 
 
 class FsCreateDirectoryResponse(BaseModel):
-        populate_by_name=True,
     )
 
 
