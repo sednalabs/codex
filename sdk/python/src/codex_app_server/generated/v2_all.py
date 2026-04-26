@@ -3879,7 +3879,6 @@ class ThreadShellCommandParams(BaseModel):
 
 
 class ThreadShellCommandResponse(BaseModel):
-    pass
     model_config = ConfigDict(
         populate_by_name=True,
     )
