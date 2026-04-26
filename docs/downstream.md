@@ -80,6 +80,7 @@ docs-only refresh commit that records this snapshot.
 Supporting docs:
 - [`downstream-tool-surface-matrix.md`](downstream-tool-surface-matrix.md) captures the exact native tool-surface deltas that remain live on the downstream branch.
 - [`downstream-divergence-tracking.md`](downstream-divergence-tracking.md) sketches the next-step registry and generation model for keeping these notes current as the fork grows.
+- [`native-computer-use.md`](native-computer-use.md) documents the first-party computer-use and Android tool contract, including app-server, TUI, rollout, and validation boundaries.
 
 ### Core + protocol: blocking wait for unified exec, stable wait output, and compaction turn-count metadata
 
@@ -102,6 +103,22 @@ User-visible behavior:
 - Sub-agent delegate forwarding continues to emit `TokenCount` events back to the parent session, ensuring the downstream token accounting and provider/model metadata remain accurate even if upstream-native structures eventually rehost this carry.
 - This pairs cleanly with other blocking coordination primitives such as `wait_agent` and helper-backed `*_and_wait` flows, so agents can wait on real state transitions instead of spinning on repeated status polls.
 - This downstream blocking MCP tool pattern predates fully operational task support and exists specifically so the tool layer, not the transcript, absorbs the wait.
+
+### Core + app-server: native computer-use and first-party Android bridge
+
+Why:
+- Preserve native computer-use as a Codex-owned transcript and tool contract instead of treating Android observe/step as ordinary ad hoc dynamic tools.
+- Let Android providers supply runtime capability while Codex owns the canonical model-facing schema, protocol events, app-server requests, TUI projection, rollout persistence, and rollout-trace runtime boundaries.
+- Keep Solar Gravity Lab positioned as a proving and consumer app rather than the generic owner of Codex Android tooling.
+
+User-visible behavior:
+- Bare `android_observe` and `android_step` dynamic tools are promoted to canonical Codex function tools and handled by `ToolHandlerKind::ComputerUse`.
+- Namespaced Android-like tools remain normal dynamic tools.
+- `android_observe` is non-mutating; `android_step` is mutating and supports both compatibility single-action fields and preferred batched `actions[]`.
+- App-server API v2 sends `item/computerUse/call` requests to capable clients and records `ThreadItem::ComputerUseCall` start/completion items.
+- Responses can include `inputText` and `inputImage` content items plus `success` and optional `error`.
+- Computer-use events persist in extended rollout mode and appear in rollout-trace as tool-runtime start/end events.
+- See [`native-computer-use.md`](native-computer-use.md) for the full contract and validation guidance.
 
 ### Usage ledger: first-party local `usage.sqlite`
 

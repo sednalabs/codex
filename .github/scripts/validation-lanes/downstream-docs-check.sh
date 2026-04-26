@@ -17,6 +17,7 @@ mapfile -t mirror_audit_args < <(
 
 git diff --check "${upstream_main_ref}...HEAD" -- \
   docs/downstream.md \
+  docs/native-computer-use.md \
   docs/carry-divergence-ledger.md \
   docs/downstream-divergence-tracking.md \
   docs/downstream-regression-matrix.md \

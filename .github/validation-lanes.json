@@ -1235,6 +1235,7 @@
         ".github/scripts/resolve_validation_plan.py",
         ".github/scripts/test_ci_planners.py",
         ".github/scripts/validation-lanes/downstream-docs-check.sh",
+        "docs/native-computer-use.md",
         "docs/downstream-regression-matrix.md",
         "docs/github-ci-offload.md",
         "docs/validation_workflow.md",
@@ -1666,6 +1667,7 @@
       ],
       "allowed_paths": [
         "docs/downstream.md",
+        "docs/native-computer-use.md",
         "docs/carry-divergence-ledger.md",
         "docs/downstream-regression-matrix.md",
         "docs/downstream-tool-surface-matrix.md",

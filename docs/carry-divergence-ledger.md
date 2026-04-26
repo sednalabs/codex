@@ -203,6 +203,41 @@ docs-only refresh commit that records this snapshot.
   - `docs/downstream.md`
   - `docs/downstream-regression-matrix.md`
 
+### Native Computer-Use And Android Observe/Step Bridge
+
+- Downstream promotes bare `android_observe` and `android_step` dynamic tools
+  into first-party native computer-use function tools with Codex-owned schemas.
+- Namespaced Android-like tools remain ordinary dynamic tools so
+  app-specific providers can keep their own tool surfaces without taking over
+  the native Codex contract.
+- `codex-core` owns `ComputerUseCallRequest` and
+  `ComputerUseCallResponse` events, pending response registration, timeout
+  cleanup, success/error projection, mutating classification, and hook payload
+  formatting.
+- App-server API v2 owns `item/computerUse/call`, response forwarding, and
+  `ThreadItem::ComputerUseCall` start/completion projection.
+- TUI and thread-history surfaces replay native computer-use items from
+  protocol events and snapshots.
+- Rollout persistence keeps computer-use events in extended mode, and
+  rollout-trace maps those events to tool-runtime start/end boundaries.
+- Runtime providers own Android sessions, screenshots, UI digests, and input
+  execution. Solar Gravity Lab is a proving and consumer app, not the generic
+  owner of Codex computer-use tooling.
+- Primary files:
+  - `codex-rs/protocol/src/computer_use.rs`
+  - `codex-rs/protocol/src/protocol.rs`
+  - `codex-rs/tools/src/android_tool.rs`
+  - `codex-rs/tools/src/tool_registry_plan.rs`
+  - `codex-rs/core/src/tools/handlers/computer_use.rs`
+  - `codex-rs/core/src/tools/tool_search_entry.rs`
+  - `codex-rs/app-server/src/computer_use.rs`
+  - `codex-rs/app-server/src/bespoke_event_handling.rs`
+  - `codex-rs/app-server-protocol/src/protocol/thread_history.rs`
+  - `codex-rs/tui/src/app/app_server_adapter.rs`
+  - `codex-rs/rollout/src/policy.rs`
+  - `codex-rs/rollout-trace/src/protocol_event.rs`
+  - `docs/native-computer-use.md`
+
 ### Review And History Accounting Alignment
 
 - Review and history token summaries use a stable unavailable fallback string
