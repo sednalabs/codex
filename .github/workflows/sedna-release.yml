@@ -57,8 +57,7 @@ jobs:
         run: |
           set -euo pipefail
           git fetch origin \
-            +refs/heads/main:refs/remotes/origin/main \
-            --tags
+            +refs/heads/main:refs/remotes/origin/main
           if ! git remote get-url upstream >/dev/null 2>&1; then
             git remote add upstream https://github.com/openai/codex.git
           fi
