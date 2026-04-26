@@ -1167,6 +1167,51 @@ class ValidationPlanScriptTests(unittest.TestCase):
                 self.assertNotRegex(env_name, r"(API_KEY|PRIVATE_KEY|SECRET|TOKEN)")
                 self.assertNotIn("secrets.", str(env_value))
 
+    def test_sync_models_json_splits_read_check_from_write_pr_creation(self) -> None:
+        payload = load_workflow_payload(REPO_ROOT / ".github/workflows/sync-models-json.yml")
+        jobs = payload.get("jobs") or {}
+        check_job = jobs.get("check") or {}
+        create_pr_job = jobs.get("create_pr") or {}
+
+        self.assertEqual(payload.get("permissions"), {"contents": "read"})
+        self.assertEqual(check_job.get("permissions"), {"contents": "read"})
+        self.assertEqual(
+            create_pr_job.get("permissions"),
+            {"contents": "write", "pull-requests": "write"},
+        )
+        self.assertEqual(create_pr_job.get("needs"), "check")
+        self.assertEqual(create_pr_job.get("if"), "needs.check.outputs.changed == 'true'")
+        self.assertEqual(
+            (check_job.get("outputs") or {}).get("changed"),
+            "${{ steps.diff.outputs.changed }}",
+        )
+        self.assertEqual(
+            (check_job.get("outputs") or {}).get("upstream_short_sha"),
+            "${{ steps.upstream.outputs.upstream_short_sha }}",
+        )
+
+        check_steps = check_job.get("steps") or []
+        upload_step = next(
+            step for step in check_steps if step.get("name") == "Upload sync payload"
+        )
+        self.assertEqual(upload_step.get("if"), "steps.diff.outputs.changed == 'true'")
+        self.assertEqual(upload_step.get("uses"), "actions/upload-artifact@v7")
+
+        create_steps = create_pr_job.get("steps") or []
+        download_step = next(
+            step for step in create_steps if step.get("name") == "Download sync payload"
+        )
+        self.assertEqual(download_step.get("uses"), "actions/download-artifact@v8")
+        create_step = next(step for step in create_steps if step.get("name") == "Create PR")
+        self.assertIn(
+            "needs.check.outputs.upstream_short_sha",
+            (create_step.get("with") or {}).get("branch", ""),
+        )
+        self.assertEqual(
+            (create_step.get("with") or {}).get("body-path"),
+            "sync-models-json-update/summary.md",
+        )
+
     def test_sedna_sync_upstream_uses_github_app_token_and_shared_helper(self) -> None:
         payload = load_workflow_payload(REPO_ROOT / ".github/workflows/sedna-sync-upstream.yml")
         sync_job = ((payload.get("jobs") or {}).get("sync") or {})
@@ -1209,6 +1254,20 @@ class ValidationPlanScriptTests(unittest.TestCase):
             (sync_job.get("outputs") or {}).get("synced_upstream_main_sha"),
             "${{ steps.sync-mirror.outputs.synced_upstream_main_sha }}",
         )
+
+    def test_sedna_sync_upstream_keeps_audit_in_separate_read_only_job(self) -> None:
+        payload = load_workflow_payload(REPO_ROOT / ".github/workflows/sedna-sync-upstream.yml")
+        jobs = payload.get("jobs") or {}
+        sync_job = jobs.get("sync") or {}
+        audit_job = jobs.get("audit") or {}
+
+        self.assertEqual(payload.get("permissions"), {"contents": "read"})
+        self.assertEqual(audit_job.get("needs"), "sync")
+        audit_job_json = json.dumps(audit_job, sort_keys=True)
+        self.assertNotIn("secrets.", audit_job_json)
+        self.assertNotIn("SYNC_UPSTREAM_APP_TOKEN", audit_job_json)
+        self.assertNotIn("SYNC_UPSTREAM_LEGACY_TOKEN", audit_job_json)
+        self.assertIn("Generate upstream sync app token", json.dumps(sync_job, sort_keys=True))
 
     def test_rust_ci_full_fallback_sccache_writes_are_disabled_by_default(self) -> None:
         payload = load_workflow_payload(REPO_ROOT / ".github/workflows/rust-ci-full.yml")

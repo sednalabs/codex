@@ -50,3 +50,17 @@ contract today.
 - Keep `rust-ci.yml` fast enough that it usually does not dominate PR latency.
 - Reserve `rust-ci-full.yml` for heavyweight Cargo-native coverage that Bazel
   does not replace yet, not for routine post-merge reruns.
+
+## Maintenance Workflows
+
+- `sync-models-json.yml` keeps the normal no-op scheduled path read-only. Its
+  `check` job fetches and compares upstream metadata with `contents: read`;
+  the `create_pr` job receives `contents: write` and `pull-requests: write`
+  only when a changed payload needs an automated PR.
+- `sedna-sync-upstream.yml` intentionally keeps mirror synchronization and the
+  downstream divergence audit in separate jobs. That costs a second checkout,
+  but it preserves a smaller credential boundary: the audit job does not
+  receive the upstream mirror write token.
+- GitHub code scanning currently runs through the repository's active CodeQL
+  setup in GitHub. If a checked-in advanced CodeQL workflow is disabled, treat
+  it as non-authoritative until it is deliberately re-enabled or removed.
