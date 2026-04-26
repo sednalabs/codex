@@ -507,6 +507,7 @@
       ],
       "files": [
         ".github/actions/",
+        ".github/codeql/",
         ".github/scripts/",
         ".github/validation-lanes.json",
         ".github/workflows/",
