@@ -93,7 +93,7 @@ jobs:
             dry_run_arg+=(--dry-run)
           fi
 
-          python3 scripts/install_sedna_release_asset.py \
+          scripts/install_sedna_release_asset \
             --repository "${GITHUB_REPOSITORY}" \
             --release-tag "${RELEASE_TAG}" \
             "${dry_run_arg[@]}"
