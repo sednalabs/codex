@@ -9,8 +9,17 @@ on:
         options:
           - linux-x86_64-only
         default: linux-x86_64-only
-  schedule:
-    - cron: "15 18 * * *"
+  workflow_run:
+    workflows: ["rust-ci"]
+    types: [completed]
+
+permissions:
+  actions: read
+  contents: read
+
+env:
+  RUST_CI_FULL_CHECKOUT_REF: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
+  RUST_CI_FULL_SOURCE_EVENT: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.event || github.event_name }}
 
 # CI builds in debug (dev) for faster signal.
 
@@ -18,10 +27,20 @@ jobs:
   matrix_plan:
     name: Rust CI lane planner (informational)
     runs-on: ubuntu-24.04
+    if: >-
+      ${{
+        github.event_name != 'workflow_run' ||
+        (
+          github.event.workflow_run.event == 'schedule' &&
+          github.event.workflow_run.conclusion == 'success' &&
+          github.event.workflow_run.head_branch == 'main'
+        )
+      }}
     outputs:
       argument_comment_lint_matrix: ${{ steps.plan.outputs.argument_comment_lint_matrix }}
       lint_build_matrix: ${{ steps.plan.outputs.lint_build_matrix }}
       tests_matrix: ${{ steps.plan.outputs.tests_matrix }}
+      remote_tests_matrix: ${{ steps.plan.outputs.remote_tests_matrix }}
     steps:
       - name: Compute platform matrices
         id: plan
@@ -52,7 +71,13 @@ jobs:
                   "runner": "ubuntu-24.04",
                   "target": "x86_64-unknown-linux-gnu",
                   "profile": "dev",
-                  "remote_env": "true",
+              }
+          ]
+          linux_x86_64_remote_tests = [
+              {
+                  "runner": "ubuntu-24.04",
+                  "target": "x86_64-unknown-linux-gnu",
+                  "profile": "dev",
               }
           ]
 
@@ -64,17 +89,21 @@ jobs:
           emit("argument_comment_lint_matrix", linux_x86_64_arg_comment_lint)
           emit("lint_build_matrix", linux_x86_64_lint_build)
           emit("tests_matrix", linux_x86_64_tests)
+          emit("remote_tests_matrix", linux_x86_64_remote_tests)
           PY
 
   # --- CI that doesn't need specific targets ---------------------------------
   general:
     name: Format / etc
+    if: ${{ github.event_name != 'workflow_run' }}
     runs-on: ubuntu-24.04
     defaults:
       run:
         working-directory: codex-rs
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          ref: ${{ env.RUST_CI_FULL_CHECKOUT_REF }}
       - uses: dtolnay/rust-toolchain@a0b273b48ed29de4470960879e8381ff45632f26 # 1.93.0
         with:
           components: rustfmt
@@ -83,12 +112,15 @@ jobs:
 
   cargo_shear:
     name: cargo shear
+    if: ${{ github.event_name != 'workflow_run' }}
     runs-on: ubuntu-24.04
     defaults:
       run:
         working-directory: codex-rs
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          ref: ${{ env.RUST_CI_FULL_CHECKOUT_REF }}
       - uses: dtolnay/rust-toolchain@a0b273b48ed29de4470960879e8381ff45632f26 # 1.93.0
       - uses: taiki-e/install-action@cf525cb33f51aca27cd6fa02034117ab963ff9f1 # v2
         with:
@@ -98,12 +130,15 @@ jobs:
 
   argument_comment_lint_package:
     name: Argument comment lint package
+    if: ${{ github.event_name != 'workflow_run' }}
     runs-on: ubuntu-24.04
     env:
       CARGO_DYLINT_VERSION: 5.0.0
       DYLINT_LINK_VERSION: 5.0.0
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          ref: ${{ env.RUST_CI_FULL_CHECKOUT_REF }}
       - uses: dtolnay/rust-toolchain@a0b273b48ed29de4470960879e8381ff45632f26 # 1.93.0
         with:
           toolchain: nightly-2025-09-18
@@ -137,6 +172,7 @@ jobs:
 
   argument_comment_lint_prebuilt:
     name: Argument comment lint - ${{ matrix.name }}
+    if: ${{ github.event_name != 'workflow_run' }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 30
     needs: matrix_plan
@@ -145,6 +181,8 @@ jobs:
       matrix: ${{ fromJson(needs.matrix_plan.outputs.argument_comment_lint_matrix) }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          ref: ${{ env.RUST_CI_FULL_CHECKOUT_REF }}
       - uses: ./.github/actions/setup-bazel-ci
         with:
           target: ${{ runner.os }}
@@ -216,6 +254,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          ref: ${{ env.RUST_CI_FULL_CHECKOUT_REF }}
       - name: Install Linux build dependencies
         if: ${{ runner.os == 'Linux' }}
         shell: bash
@@ -425,7 +465,31 @@ jobs:
           cargo chef cook --recipe-path "$RECIPE" --target ${{ matrix.target }} --release --all-features
 
       - name: cargo clippy
-        run: cargo clippy --target ${{ matrix.target }} --all-features --tests --profile ${{ matrix.profile }} --timings -- -D warnings
+        id: clippy
+        shell: bash
+        run: |
+          set +e
+          cargo clippy --target ${{ matrix.target }} --all-features --tests --profile ${{ matrix.profile }} --timings -- -D warnings 2>&1 | tee "${RUNNER_TEMP}/clippy.log"
+          status=${PIPESTATUS[0]}
+          echo "exit_status=${status}" >> "$GITHUB_OUTPUT"
+          exit "${status}"
+
+      - name: Summarize clippy failure
+        if: always()
+        shell: bash
+        run: |
+          python3 .github/scripts/summarize_rust_ci_full.py extract-clippy \
+            --log "${RUNNER_TEMP}/clippy.log" \
+            --suite "clippy-${{ matrix.target }}-${{ matrix.profile }}" \
+            --output "${RUNNER_TEMP}/rust-ci-full-clippy-summary.json"
+
+      - name: Upload clippy summary
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: rust-ci-full-clippy-summary-${{ matrix.target }}-${{ matrix.profile }}
+          path: ${{ runner.temp }}/rust-ci-full-clippy-summary.json
+          if-no-files-found: warn
 
       - name: Upload Cargo timings (clippy)
         if: always()
@@ -487,21 +551,15 @@ jobs:
             /var/cache/apt
           key: apt-${{ matrix.runner }}-${{ matrix.target }}-v1
 
-  tests:
-    name: Tests — ${{ matrix.runner }} - ${{ matrix.target }}${{ matrix.remote_env == 'true' && ' (remote)' || '' }}
+  nextest_archive:
+    name: Nextest archive — ${{ matrix.runner }} - ${{ matrix.target }}
     runs-on: ${{ matrix.runner }}
     needs: matrix_plan
-    # Perhaps we can bring this back down to 30m once we finish the cutover
-    # from tui_app_server/ to tui/. Incidentally, windows-arm64 was the main
-    # offender for exceeding the timeout.
     timeout-minutes: 45
     defaults:
       run:
         working-directory: codex-rs
     env:
-      # Speed up repeated builds across CI runs by caching compiled objects, except on
-      # arm64 macOS runners cross-targeting x86_64 where ring/cc-rs can produce
-      # mixed-architecture archives under sccache.
       USE_SCCACHE: ${{ (startsWith(matrix.runner, 'windows') || (matrix.runner == 'macos-15' && matrix.target == 'x86_64-apple-darwin')) && 'false' || 'true' }}
       CARGO_INCREMENTAL: "0"
       SCCACHE_CACHE_SIZE: 2G
@@ -513,6 +571,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          ref: ${{ env.RUST_CI_FULL_CHECKOUT_REF }}
       - name: Install Linux build dependencies
         if: ${{ runner.os == 'Linux' }}
         shell: bash
@@ -590,43 +650,24 @@ jobs:
         with:
           tool: nextest@0.9.103
 
-      - name: Enable unprivileged user namespaces (Linux)
-        if: runner.os == 'Linux'
-        run: |
-          # Required for bubblewrap to work on Linux CI runners.
-          sudo sysctl -w kernel.unprivileged_userns_clone=1
-          # Ubuntu 24.04+ can additionally gate unprivileged user namespaces
-          # behind AppArmor.
-          if sudo sysctl -a 2>/dev/null | grep -q '^kernel.apparmor_restrict_unprivileged_userns'; then
-            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
-          fi
-
-      - name: Set up remote test env (Docker)
-        if: ${{ runner.os == 'Linux' && matrix.remote_env == 'true' }}
+      - name: Build nextest archive
         shell: bash
         run: |
           set -euo pipefail
-          export CODEX_TEST_REMOTE_ENV_CONTAINER_NAME=codex-remote-test-env
-          # shellcheck source=/dev/null
-          source "${GITHUB_WORKSPACE}/scripts/test-remote-env.sh"
-          echo "CODEX_TEST_REMOTE_ENV=${CODEX_TEST_REMOTE_ENV}" >> "$GITHUB_ENV"
-          echo "CODEX_TEST_REMOTE_EXEC_SERVER_URL=${CODEX_TEST_REMOTE_EXEC_SERVER_URL}" >> "$GITHUB_ENV"
+          archive_file="${RUNNER_TEMP}/rust-ci-full-nextest-${{ matrix.target }}-${{ matrix.profile }}.tar.zst"
+          cargo nextest archive \
+            --all-features \
+            --target ${{ matrix.target }} \
+            --cargo-profile ci-test \
+            --archive-file "${archive_file}"
+          du -h "${archive_file}"
 
-      - name: tests
-        id: test
-        run: cargo nextest run --all-features --no-fail-fast --target ${{ matrix.target }} --cargo-profile ci-test --timings
-        env:
-          RUST_BACKTRACE: 1
-          RUST_MIN_STACK: "8388608" # 8 MiB
-          NEXTEST_STATUS_LEVEL: leak
-
-      - name: Upload Cargo timings (nextest)
-        if: always()
+      - name: Upload nextest archive
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
-          name: cargo-timings-rust-ci-nextest-${{ matrix.target }}-${{ matrix.profile }}
-          path: codex-rs/target/**/cargo-timings/cargo-timing.html
-          if-no-files-found: warn
+          name: rust-ci-full-nextest-archive-${{ matrix.target }}-${{ matrix.profile }}
+          path: ${{ runner.temp }}/rust-ci-full-nextest-${{ matrix.target }}-${{ matrix.profile }}.tar.zst
+          if-no-files-found: error
 
       - name: Save cargo home cache
         if: always() && !cancelled() && steps.cache_cargo_home_restore.outputs.cache-hit != 'true'
@@ -658,15 +699,186 @@ jobs:
         shell: bash
         run: |
           {
-            echo "### sccache stats — ${{ matrix.target }} (tests)";
+            echo "### sccache stats — ${{ matrix.target }} (nextest archive)";
             echo;
             echo '```';
             sccache --show-stats || true;
             echo '```';
           } >> "$GITHUB_STEP_SUMMARY"
 
+  tests:
+    name: Tests — ${{ matrix.runner }} - ${{ matrix.target }}
+    runs-on: ${{ matrix.runner }}
+    needs: [matrix_plan, nextest_archive]
+    timeout-minutes: 45
+    defaults:
+      run:
+        working-directory: codex-rs
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.matrix_plan.outputs.tests_matrix) }}
+
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          ref: ${{ env.RUST_CI_FULL_CHECKOUT_REF }}
+      - name: Install Linux build dependencies
+        if: ${{ runner.os == 'Linux' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if command -v apt-get >/dev/null 2>&1; then
+            sudo apt-get update -y
+            sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends pkg-config libcap-dev
+          fi
+
+      - name: Install DotSlash
+        uses: facebook/install-dotslash@1e4e7b3e07eaca387acb98f1d4720e0bee8dbb6a # v2
+
+      - uses: dtolnay/rust-toolchain@a0b273b48ed29de4470960879e8381ff45632f26 # 1.93.0
+
+      - uses: taiki-e/install-action@cf525cb33f51aca27cd6fa02034117ab963ff9f1 # v2
+        with:
+          tool: nextest@0.9.103
+
+      - name: Download nextest archive
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: rust-ci-full-nextest-archive-${{ matrix.target }}-${{ matrix.profile }}
+          path: ${{ runner.temp }}/nextest-archive
+
+      - name: Enable unprivileged user namespaces (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          # Required for bubblewrap to work on Linux CI runners.
+          sudo sysctl -w kernel.unprivileged_userns_clone=1
+          # Ubuntu 24.04+ can additionally gate unprivileged user namespaces
+          # behind AppArmor.
+          if sudo sysctl -a 2>/dev/null | grep -q '^kernel.apparmor_restrict_unprivileged_userns'; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
+
+      - name: tests
+        id: test
+        shell: bash
+        run: |
+          set +e
+          archive_file="${RUNNER_TEMP}/nextest-archive/rust-ci-full-nextest-${{ matrix.target }}-${{ matrix.profile }}.tar.zst"
+          cargo nextest run \
+            --archive-file "${archive_file}" \
+            --workspace-remap "${PWD}" \
+            --no-fail-fast 2>&1 | tee "${RUNNER_TEMP}/nextest-normal.log"
+          status=${PIPESTATUS[0]}
+          echo "exit_status=${status}" >> "$GITHUB_OUTPUT"
+          exit "${status}"
+        env:
+          RUST_BACKTRACE: 1
+          RUST_MIN_STACK: "8388608" # 8 MiB
+          NEXTEST_STATUS_LEVEL: leak
+
+      - name: Summarize nextest failures
+        if: always()
+        shell: bash
+        run: |
+          python3 .github/scripts/summarize_rust_ci_full.py extract-nextest \
+            --log "${RUNNER_TEMP}/nextest-normal.log" \
+            --suite "nextest-${{ matrix.target }}-${{ matrix.profile }}" \
+            --output "${RUNNER_TEMP}/rust-ci-full-nextest-summary.json"
+
+      - name: Upload nextest summary
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: rust-ci-full-nextest-summary-${{ matrix.target }}-${{ matrix.profile }}
+          path: ${{ runner.temp }}/rust-ci-full-nextest-summary.json
+          if-no-files-found: warn
+
+      - name: verify tests passed
+        if: steps.test.outcome == 'failure'
+        run: |
+          echo "Tests failed. See logs for details."
+          exit 1
+
+  remote_tests:
+    name: Remote tests — ${{ matrix.runner }} - ${{ matrix.target }}
+    runs-on: ${{ matrix.runner }}
+    needs: [matrix_plan, nextest_archive]
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: codex-rs
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.matrix_plan.outputs.remote_tests_matrix) }}
+
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          ref: ${{ env.RUST_CI_FULL_CHECKOUT_REF }}
+      - name: Install Linux build dependencies
+        if: ${{ runner.os == 'Linux' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if command -v apt-get >/dev/null 2>&1; then
+            sudo apt-get update -y
+            sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends pkg-config libcap-dev
+          fi
+
+      - name: Install DotSlash
+        uses: facebook/install-dotslash@1e4e7b3e07eaca387acb98f1d4720e0bee8dbb6a # v2
+
+      - uses: dtolnay/rust-toolchain@a0b273b48ed29de4470960879e8381ff45632f26 # 1.93.0
+
+      - uses: taiki-e/install-action@cf525cb33f51aca27cd6fa02034117ab963ff9f1 # v2
+        with:
+          tool: nextest@0.9.103
+
+      - name: Download nextest archive
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: rust-ci-full-nextest-archive-${{ matrix.target }}-${{ matrix.profile }}
+          path: ${{ runner.temp }}/nextest-archive
+
+      - name: Enable unprivileged user namespaces (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo sysctl -w kernel.unprivileged_userns_clone=1
+          if sudo sysctl -a 2>/dev/null | grep -q '^kernel.apparmor_restrict_unprivileged_userns'; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
+
+      - name: Set up remote test env (Docker)
+        if: ${{ runner.os == 'Linux' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          export CODEX_TEST_REMOTE_ENV_CONTAINER_NAME=codex-remote-test-env
+          # shellcheck source=/dev/null
+          source "${GITHUB_WORKSPACE}/scripts/test-remote-env.sh"
+          echo "CODEX_TEST_REMOTE_ENV=${CODEX_TEST_REMOTE_ENV}" >> "$GITHUB_ENV"
+          echo "CODEX_TEST_REMOTE_EXEC_SERVER_URL=${CODEX_TEST_REMOTE_EXEC_SERVER_URL}" >> "$GITHUB_ENV"
+
+      - name: remote tests
+        id: test
+        shell: bash
+        run: |
+          set +e
+          archive_file="${RUNNER_TEMP}/nextest-archive/rust-ci-full-nextest-${{ matrix.target }}-${{ matrix.profile }}.tar.zst"
+          cargo nextest run \
+            --archive-file "${archive_file}" \
+            --workspace-remap "${PWD}" \
+            --no-fail-fast 2>&1 | tee "${RUNNER_TEMP}/nextest-remote.log"
+          status=${PIPESTATUS[0]}
+          echo "exit_status=${status}" >> "$GITHUB_OUTPUT"
+          exit "${status}"
+        env:
+          RUST_BACKTRACE: 1
+          RUST_MIN_STACK: "8388608" # 8 MiB
+          NEXTEST_STATUS_LEVEL: leak
+
       - name: Tear down remote test env
-        if: ${{ always() && runner.os == 'Linux' && matrix.remote_env == 'true' }}
+        if: ${{ always() && runner.os == 'Linux' }}
         shell: bash
         run: |
           set +e
@@ -674,6 +886,23 @@ jobs:
             docker logs codex-remote-test-env || true
           fi
           docker rm -f codex-remote-test-env >/dev/null 2>&1 || true
+
+      - name: Summarize remote nextest failures
+        if: always()
+        shell: bash
+        run: |
+          python3 .github/scripts/summarize_rust_ci_full.py extract-nextest \
+            --log "${RUNNER_TEMP}/nextest-remote.log" \
+            --suite "remote-nextest-${{ matrix.target }}-${{ matrix.profile }}" \
+            --output "${RUNNER_TEMP}/rust-ci-full-remote-nextest-summary.json"
+
+      - name: Upload remote nextest summary
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: rust-ci-full-remote-nextest-summary-${{ matrix.target }}-${{ matrix.profile }}
+          path: ${{ runner.temp }}/rust-ci-full-remote-nextest-summary.json
+          if-no-files-found: warn
 
       - name: verify tests passed
         if: steps.test.outcome == 'failure'
@@ -692,26 +921,135 @@ jobs:
         argument_comment_lint_package,
         argument_comment_lint_prebuilt,
         lint_build,
+        nextest_archive,
         tests,
+        remote_tests,
       ]
-    if: always()
+    if: >-
+      ${{
+        always() &&
+        (
+          github.event_name != 'workflow_run' ||
+          (
+            github.event.workflow_run.event == 'schedule' &&
+            github.event.workflow_run.conclusion == 'success' &&
+            github.event.workflow_run.head_branch == 'main'
+          )
+        )
+      }}
     runs-on: ubuntu-24.04
     steps:
-      - name: Summarize
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          ref: ${{ env.RUST_CI_FULL_CHECKOUT_REF }}
+
+      - name: Download failure summaries
+        if: always()
+        continue-on-error: true
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          pattern: rust-ci-full-*-summary-*
+          merge-multiple: true
+          path: ${{ runner.temp }}/rust-ci-full-summaries
+
+      - name: Build structured summary
+        if: always()
         shell: bash
         run: |
-          echo "argpkg : ${{ needs.argument_comment_lint_package.result }}"
-          echo "arglint: ${{ needs.argument_comment_lint_prebuilt.result }}"
-          echo "general: ${{ needs.general.result }}"
-          echo "shear  : ${{ needs.cargo_shear.result }}"
-          echo "lint   : ${{ needs.lint_build.result }}"
-          echo "tests  : ${{ needs.tests.result }}"
-          [[ '${{ needs.argument_comment_lint_package.result }}' == 'success' ]] || { echo 'argument_comment_lint_package failed'; exit 1; }
-          [[ '${{ needs.argument_comment_lint_prebuilt.result }}' == 'success' ]] || { echo 'argument_comment_lint_prebuilt failed'; exit 1; }
-          [[ '${{ needs.general.result }}' == 'success' ]] || { echo 'general failed'; exit 1; }
-          [[ '${{ needs.cargo_shear.result }}' == 'success' ]] || { echo 'cargo_shear failed'; exit 1; }
-          [[ '${{ needs.lint_build.result }}' == 'success' ]] || { echo 'lint_build failed'; exit 1; }
-          [[ '${{ needs.tests.result }}' == 'success' ]] || { echo 'tests failed'; exit 1; }
+          set -euo pipefail
+          needs_json_file="${RUNNER_TEMP}/rust-ci-full-needs.json"
+          summary_file="${RUNNER_TEMP}/rust-ci-full-summary.json"
+          cat > "${needs_json_file}" <<'JSON'
+          ${{ toJson(needs) }}
+          JSON
+
+          python3 .github/scripts/summarize_rust_ci_full.py aggregate \
+            --needs-json "$(cat "${needs_json_file}")" \
+            --summary-dir "${RUNNER_TEMP}/rust-ci-full-summaries" \
+            --checkout-ref "${RUST_CI_FULL_CHECKOUT_REF}" \
+            --source-event "${RUST_CI_FULL_SOURCE_EVENT}" \
+            --output "${summary_file}"
+
+          python3 - "${summary_file}" >> "$GITHUB_STEP_SUMMARY" <<'PY'
+          import json
+          import sys
+          from pathlib import Path
+
+          payload = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+          print("### rust-ci-full checkpoint summary")
+          print()
+          print(f"- Checkout ref: `{payload.get('checkout_ref', '')}`")
+          print(f"- Source event: `{payload.get('source_event', '')}`")
+          print("- Job results:")
+          for job, result in sorted(payload.get("jobs", {}).items()):
+              print(f"  - `{job}`: `{result}`")
+          blockers = payload.get("primary_blockers") or []
+          print(f"- Primary blockers: `{len(blockers)}`")
+          for blocker in blockers[:10]:
+              print(f"  - `{blocker.get('type')}`: `{json.dumps(blocker, sort_keys=True)}`")
+          if len(blockers) > 10:
+              print(f"  - `{len(blockers) - 10}` more blockers recorded in the summary artifact")
+          PY
+
+      - name: Upload full CI summary
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: rust-ci-full-summary
+          path: ${{ runner.temp }}/rust-ci-full-summary.json
+          if-no-files-found: warn
+
+      - name: Verify full CI result
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          require_success() {
+            local job="$1"
+            local result="$2"
+            [[ "${result}" == "success" ]] || {
+              echo "${job} failed: ${result}"
+              exit 1
+            }
+          }
+
+          require_success_or_skipped() {
+            local job="$1"
+            local result="$2"
+            [[ "${result}" == "success" || "${result}" == "skipped" ]] || {
+              echo "${job} failed: ${result}"
+              exit 1
+            }
+          }
+
+          echo "source event: ${RUST_CI_FULL_SOURCE_EVENT}"
+          echo "argpkg      : ${{ needs.argument_comment_lint_package.result }}"
+          echo "arglint     : ${{ needs.argument_comment_lint_prebuilt.result }}"
+          echo "general     : ${{ needs.general.result }}"
+          echo "shear       : ${{ needs.cargo_shear.result }}"
+          echo "matrix_plan : ${{ needs.matrix_plan.result }}"
+          echo "lint        : ${{ needs.lint_build.result }}"
+          echo "archive     : ${{ needs.nextest_archive.result }}"
+          echo "tests       : ${{ needs.tests.result }}"
+          echo "remote tests: ${{ needs.remote_tests.result }}"
+
+          if [[ "${GITHUB_EVENT_NAME}" == "workflow_run" ]]; then
+            require_success_or_skipped "argument_comment_lint_package" "${{ needs.argument_comment_lint_package.result }}"
+            require_success_or_skipped "argument_comment_lint_prebuilt" "${{ needs.argument_comment_lint_prebuilt.result }}"
+            require_success_or_skipped "general" "${{ needs.general.result }}"
+            require_success_or_skipped "cargo_shear" "${{ needs.cargo_shear.result }}"
+          else
+            require_success "argument_comment_lint_package" "${{ needs.argument_comment_lint_package.result }}"
+            require_success "argument_comment_lint_prebuilt" "${{ needs.argument_comment_lint_prebuilt.result }}"
+            require_success "general" "${{ needs.general.result }}"
+            require_success "cargo_shear" "${{ needs.cargo_shear.result }}"
+          fi
+
+          require_success "matrix_plan" "${{ needs.matrix_plan.result }}"
+          require_success "lint_build" "${{ needs.lint_build.result }}"
+          require_success "nextest_archive" "${{ needs.nextest_archive.result }}"
+          require_success "tests" "${{ needs.tests.result }}"
+          require_success "remote_tests" "${{ needs.remote_tests.result }}"
 
       - name: sccache summary note
         if: always()

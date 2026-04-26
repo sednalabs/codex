@@ -45,6 +45,9 @@ CHECK_MARKDOWN_LINKS = load_module(
 CHECK_WORKFLOW_POLICY = load_module(
     "check_workflow_policy_module", SCRIPTS_DIR / "check_workflow_policy.py"
 )
+SUMMARIZE_RUST_CI_FULL = load_module(
+    "summarize_rust_ci_full_module", SCRIPTS_DIR / "summarize_rust_ci_full.py"
+)
 SYNC_UPSTREAM_MIRROR = load_module(
     "sync_upstream_mirror_module", SCRIPTS_DIR / "sync_upstream_mirror.py"
 )
@@ -1207,11 +1210,11 @@ class ValidationPlanScriptTests(unittest.TestCase):
             "${{ steps.sync-mirror.outputs.synced_upstream_main_sha }}",
         )
 
-    def test_rust_ci_fallback_sccache_writes_are_disabled_by_default(self) -> None:
+    def test_rust_ci_full_fallback_sccache_writes_are_disabled_by_default(self) -> None:
         payload = load_workflow_payload(REPO_ROOT / ".github/workflows/rust-ci-full.yml")
         jobs = payload.get("jobs") or {}
 
-        for job_name in ["lint_build", "tests"]:
+        for job_name in ["lint_build", "nextest_archive"]:
             with self.subTest(job=job_name):
                 job = jobs.get(job_name) or {}
                 workflow_text = (REPO_ROOT / ".github/workflows/rust-ci-full.yml").read_text(
@@ -1236,6 +1239,257 @@ class ValidationPlanScriptTests(unittest.TestCase):
                     step for step in job.get("steps") or [] if step.get("name") == "Install sccache"
                 )
                 self.assertNotIn("version", install_step.get("with") or {})
+
+    def test_rust_ci_full_runs_after_successful_scheduled_rust_ci_only(self) -> None:
+        payload = load_workflow_payload(REPO_ROOT / ".github/workflows/rust-ci-full.yml")
+        trigger = payload.get("on") or {}
+        jobs = payload.get("jobs") or {}
+
+        self.assertEqual(
+            ((trigger.get("workflow_run") or {}).get("workflows") or []),
+            ["rust-ci"],
+        )
+        self.assertNotIn("schedule", trigger)
+        self.assertEqual(payload.get("permissions"), {"actions": "read", "contents": "read"})
+
+        gate = (jobs.get("matrix_plan") or {}).get("if") or ""
+        self.assertIn("github.event.workflow_run.event == 'schedule'", gate)
+        self.assertIn("github.event.workflow_run.conclusion == 'success'", gate)
+        self.assertIn("github.event.workflow_run.head_branch == 'main'", gate)
+
+        result_gate = (jobs.get("results") or {}).get("if") or ""
+        self.assertIn("always()", result_gate)
+        self.assertIn("github.event.workflow_run.event == 'schedule'", result_gate)
+        self.assertIn("github.event.workflow_run.conclusion == 'success'", result_gate)
+
+    def test_rust_ci_full_results_understands_archive_and_remote_test_jobs(self) -> None:
+        payload = load_workflow_payload(REPO_ROOT / ".github/workflows/rust-ci-full.yml")
+        jobs = payload.get("jobs") or {}
+        results = jobs.get("results") or {}
+        steps = results.get("steps") or []
+
+        self.assertEqual(
+            results.get("needs"),
+            [
+                "general",
+                "cargo_shear",
+                "matrix_plan",
+                "argument_comment_lint_package",
+                "argument_comment_lint_prebuilt",
+                "lint_build",
+                "nextest_archive",
+                "tests",
+                "remote_tests",
+            ],
+        )
+        self.assertIn("remote_tests_matrix", (jobs.get("matrix_plan") or {}).get("outputs") or {})
+        self.assertEqual((jobs.get("tests") or {}).get("needs"), ["matrix_plan", "nextest_archive"])
+        self.assertEqual(
+            (jobs.get("remote_tests") or {}).get("needs"), ["matrix_plan", "nextest_archive"]
+        )
+
+        download_step = next(
+            step for step in steps if step.get("name") == "Download failure summaries"
+        )
+        self.assertEqual(
+            download_step.get("uses"),
+            "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c",
+        )
+        self.assertEqual((download_step.get("with") or {}).get("pattern"), "rust-ci-full-*-summary-*")
+        self.assertEqual((download_step.get("with") or {}).get("merge-multiple"), "true")
+
+        aggregate_step = next(
+            step for step in steps if step.get("name") == "Build structured summary"
+        )
+        self.assertIn("summarize_rust_ci_full.py aggregate", aggregate_step.get("run") or "")
+        verify_step = next(step for step in steps if step.get("name") == "Verify full CI result")
+        verify_run = verify_step.get("run") or ""
+        self.assertIn("require_success \"nextest_archive\"", verify_run)
+        self.assertIn("require_success \"remote_tests\"", verify_run)
+
+    def test_rust_ci_full_archive_test_and_results_jobs_do_not_receive_secrets(self) -> None:
+        payload = load_workflow_payload(REPO_ROOT / ".github/workflows/rust-ci-full.yml")
+        jobs = payload.get("jobs") or {}
+
+        for job_name in ["lint_build", "nextest_archive", "tests", "remote_tests", "results"]:
+            with self.subTest(job=job_name):
+                job = jobs.get(job_name) or {}
+                self.assertNotIn("secrets", job)
+                self.assertNotIn("secrets.", json.dumps(job, sort_keys=True))
+                self.assertNotIn("ACTIONS_RUNTIME_TOKEN", json.dumps(job, sort_keys=True))
+                self.assertNotIn("SCCACHE_GHA_ENABLED=true", json.dumps(job, sort_keys=True))
+
+    def test_rust_ci_full_nextest_archive_is_reused_by_test_families(self) -> None:
+        payload = load_workflow_payload(REPO_ROOT / ".github/workflows/rust-ci-full.yml")
+        jobs = payload.get("jobs") or {}
+
+        archive_steps = (jobs.get("nextest_archive") or {}).get("steps") or []
+        archive_run = next(
+            step for step in archive_steps if step.get("name") == "Build nextest archive"
+        ).get("run") or ""
+        self.assertIn("cargo nextest archive", archive_run)
+        self.assertIn("--archive-file", archive_run)
+
+        for job_name in ["tests", "remote_tests"]:
+            with self.subTest(job=job_name):
+                steps = (jobs.get(job_name) or {}).get("steps") or []
+                download_step = next(
+                    step for step in steps if step.get("name") == "Download nextest archive"
+                )
+                self.assertEqual(
+                    (download_step.get("with") or {}).get("name"),
+                    "rust-ci-full-nextest-archive-${{ matrix.target }}-${{ matrix.profile }}",
+                )
+                run_step = next(
+                    step
+                    for step in steps
+                    if step.get("name") in {"tests", "remote tests"}
+                )
+                self.assertIn("cargo nextest run", run_step.get("run") or "")
+                self.assertIn("--archive-file", run_step.get("run") or "")
+
+        remote_matrix = (
+            (jobs.get("matrix_plan") or {})
+            .get("outputs", {})
+            .get("remote_tests_matrix", "")
+        )
+        self.assertEqual(
+            remote_matrix,
+            "${{ steps.plan.outputs.remote_tests_matrix }}",
+        )
+        plan_run = (
+            ((jobs.get("matrix_plan") or {}).get("steps") or [])[0].get("run") or ""
+        )
+        self.assertNotIn('"filter"', plan_run)
+        remote_run = next(
+            step
+            for step in (jobs.get("remote_tests") or {}).get("steps") or []
+            if step.get("name") == "remote tests"
+        ).get("run") or ""
+        self.assertNotIn(" -E ", remote_run)
+
+    def test_rust_ci_full_summary_parser_extracts_compact_blockers(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            nextest_log = root / "nextest.log"
+            nextest_log.write_text(
+                "\n".join(
+                    [
+                        "Starting 3 tests across 2 binaries (1 tests skipped)",
+                        "        FAIL [   0.042s] (1/3) codex_core::remote_env::fails_cleanly",
+                        "     TIMEOUT [  60.000s] (2/3) codex_core::remote_exec_server::hangs",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            clippy_log = root / "clippy.log"
+            clippy_log.write_text(
+                "\n".join(
+                    [
+                        "error: this expression creates a reference",
+                        "  --> codex-rs/core/src/lib.rs:12:34",
+                        "error: could not compile `codex-core` due to 1 previous error",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            nextest = SUMMARIZE_RUST_CI_FULL.nextest_summary(nextest_log, "nextest-linux")
+            clippy = SUMMARIZE_RUST_CI_FULL.clippy_summary(clippy_log, "clippy-linux")
+
+        self.assertEqual(
+            nextest,
+            {
+                "type": "nextest",
+                "suite": "nextest-linux",
+                "log_missing": False,
+                "started": {"tests": 3, "binaries": 2, "skipped": 1},
+                "failure_signal_count": 2,
+                "unique_failure_count": 2,
+                "status_counts": {"FAIL": 1, "TIMEOUT": 1},
+                "failures": [
+                    {
+                        "status": "fail",
+                        "duration": "0.042s",
+                        "test": "codex_core::remote_env::fails_cleanly",
+                    },
+                    {
+                        "status": "timeout",
+                        "duration": "60.000s",
+                        "test": "codex_core::remote_exec_server::hangs",
+                    },
+                ],
+                "truncated": False,
+            },
+        )
+        self.assertEqual(
+            clippy,
+            {
+                "type": "clippy",
+                "suite": "clippy-linux",
+                "log_missing": False,
+                "error_count": 1,
+                "errors": [
+                    {
+                        "message": "this expression creates a reference",
+                        "location": "codex-rs/core/src/lib.rs:12:34",
+                    }
+                ],
+                "truncated": False,
+            },
+        )
+
+    def test_rust_ci_full_summary_aggregate_keeps_skips_non_blocking(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            summary_dir = root / "summaries"
+            summary_dir.mkdir()
+            (summary_dir / "nextest.json").write_text(
+                json.dumps(
+                    {
+                        "type": "nextest",
+                        "suite": "nextest-linux",
+                        "failures": [{"status": "fail", "test": "a::test"}],
+                        "unique_failure_count": 1,
+                    }
+                ),
+                encoding="utf-8",
+            )
+            output = root / "summary.json"
+            SUMMARIZE_RUST_CI_FULL.aggregate_summary(
+                needs_json=json.dumps(
+                    {
+                        "general": {"result": "skipped"},
+                        "tests": {"result": "failure"},
+                        "remote_tests": {"result": "success"},
+                    }
+                ),
+                summary_dir=summary_dir,
+                checkout_ref="abc123",
+                source_event="schedule",
+                output=output,
+            )
+            payload = json.loads(output.read_text(encoding="utf-8"))
+
+        self.assertEqual(payload["checkout_ref"], "abc123")
+        self.assertEqual(payload["source_event"], "schedule")
+        self.assertEqual(
+            payload["jobs"],
+            {"general": "skipped", "remote_tests": "success", "tests": "failure"},
+        )
+        self.assertEqual(
+            payload["primary_blockers"],
+            [
+                {"type": "job", "job": "tests", "result": "failure"},
+                {
+                    "type": "nextest",
+                    "suite": "nextest-linux",
+                    "status": "fail",
+                    "test": "a::test",
+                    "unique_failure_count": 1,
+                },
+            ],
+        )
 
     def test_lane_summary_records_cache_telemetry_without_raw_command(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
