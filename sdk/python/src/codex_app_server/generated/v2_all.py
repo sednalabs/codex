@@ -1769,7 +1769,6 @@ class McpServerOauthLoginResponse(BaseModel):
 
 
 class McpServerRefreshResponse(BaseModel):
-    model_config = ConfigDict(
         populate_by_name=True,
     )
 
