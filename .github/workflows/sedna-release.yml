@@ -261,6 +261,7 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
           RELEASE_DRAFT: ${{ steps.meta.outputs.draft }}
           RELEASE_PRERELEASE: ${{ steps.meta.outputs.github_prerelease }}
           RELEASE_TAG: ${{ steps.meta.outputs.release_tag }}
@@ -270,7 +271,7 @@ jobs:
           set -euo pipefail
           shopt -s nullglob
 
-          if gh release view "${RELEASE_TAG}" >/dev/null 2>&1; then
+          if gh release view "${RELEASE_TAG}" --repo "${GH_REPO}" >/dev/null 2>&1; then
             echo "Release ${RELEASE_TAG} already exists; refusing to clobber official assets."
             exit 1
           fi
@@ -292,6 +293,7 @@ jobs:
           fi
 
           gh release create "${RELEASE_TAG}" "${assets[@]}" \
+            --repo "${GH_REPO}" \
             --title "Codex Sedna ${RELEASE_VERSION}" \
             --generate-notes \
             --target "${TARGET_COMMIT}" \
