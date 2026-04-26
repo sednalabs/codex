@@ -906,6 +906,19 @@ impl BottomPane {
         key_event: KeyEvent,
         context: EscInterruptContext,
     ) -> EscInterruptDecision {
+        let is_interrupt_confirmation_attempt = key_event.kind == KeyEventKind::Press
+            && key_event.code == KeyCode::Esc
+            && key_event.modifiers.is_empty()
+            && !self.composer.popup_active();
+
+        if !is_interrupt_confirmation_attempt {
+            if self.pending_esc_interrupt_deadline.is_some() {
+                self.set_pending_esc_interrupt_deadline(None);
+                self.request_redraw();
+            }
+            return EscInterruptDecision::NotHandled;
+        }
+
         match context {
             EscInterruptContext::ComposerInput {
                 is_agent_command: true,
@@ -2332,6 +2345,69 @@ mod tests {
             matches!(rx.try_recv(), Ok(AppEvent::CodexOp(Op::Interrupt))),
             "second Esc after modal dismiss should send Op::Interrupt"
         );
+    }
+
+    #[test]
+    fn esc_confirmation_resets_when_non_esc_key_pressed() {
+        let (tx_raw, mut rx) = unbounded_channel::<AppEvent>();
+        let tx = AppEventSender::new(tx_raw);
+        let mut pane = BottomPane::new(BottomPaneParams {
+            app_event_tx: tx,
+            frame_requester: FrameRequester::test_dummy(),
+            has_input_focus: true,
+            enhanced_keys_supported: false,
+            placeholder_text: "Ask Codex to do anything".to_string(),
+            disable_paste_burst: false,
+            animations_enabled: true,
+            skills: Some(Vec::new()),
+        });
+        pane.set_task_running(/*running*/ true);
+
+        assert_eq!(
+            pane.handle_esc_interrupt_for_running_task(
+                KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
+                EscInterruptContext::ComposerInput {
+                    is_agent_command: false
+                },
+            ),
+            EscInterruptDecision::AwaitingConfirmation,
+        );
+        assert!(pane.pending_esc_interrupt_deadline.is_some());
+
+        assert_eq!(
+            pane.handle_esc_interrupt_for_running_task(
+                KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE),
+                EscInterruptContext::ComposerInput {
+                    is_agent_command: false
+                },
+            ),
+            EscInterruptDecision::NotHandled,
+        );
+        assert!(pane.pending_esc_interrupt_deadline.is_none());
+        assert!(rx.try_recv().is_err());
+
+        assert_eq!(
+            pane.handle_esc_interrupt_for_running_task(
+                KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
+                EscInterruptContext::ComposerInput {
+                    is_agent_command: false
+                },
+            ),
+            EscInterruptDecision::AwaitingConfirmation,
+        );
+        assert!(pane.pending_esc_interrupt_deadline.is_some());
+        assert!(rx.try_recv().is_err());
+
+        assert_eq!(
+            pane.handle_esc_interrupt_for_running_task(
+                KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
+                EscInterruptContext::ComposerInput {
+                    is_agent_command: false
+                },
+            ),
+            EscInterruptDecision::Interrupt,
+        );
+        assert!(rx.try_recv().is_ok());
     }
 
     #[test]
