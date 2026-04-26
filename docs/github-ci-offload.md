@@ -91,7 +91,9 @@ artifacts.
 6. Let `rust-ci` handle routine PR gating; tiny initial PRs and already-green
    PR follow-up pushes may route to incremental targeted validation
    automatically when the relevant diff is small and maps cleanly to one
-   guarded seam.
+   guarded seam (a pre-mapped, narrow change boundary the planner can verify
+   safely in isolation, such as docs-only, workflow/planner-only, or one
+   component seam).
    - PR changed-file routing uses GitHub's PR metadata as a fast path so the
      always-on detector does not need a full repository checkout just to learn
      the diff. Unsafe or incomplete metadata falls back to the git-diff path;
@@ -141,8 +143,9 @@ artifacts.
    - The workflow summary now records the profile intent, profile notes, and a
      compact lane-selection summary for operator handoff.
    - Explicit lint lane: `codex.argument-comment-lint` runs the Bazel-backed
-     argument-comment check as a selectable hosted lane, so comment-lint
-     failures can be proven without broad local Rust validation.
+     argument-comment check (it verifies required explanatory comments for
+     command arguments) as a selectable hosted lane, so comment-lint failures
+     can be proven without broad local Rust validation.
    - Reason: best signal per runner-minute without polluting PR surfaces, and
      lower unnecessary compute, carbon, and wait time once the blocker is
      already known.
@@ -232,6 +235,11 @@ snapshot rerun stays as small and cheap as possible.
 The target ref still needs to carry the current explicit lane schema and the
 lane helper scripts referenced by it. The lab planner no longer backfills the
 old implicit `run_command` contract for historical refs.
+
+In earlier revisions, the planner could infer a default command when lane
+metadata was missing; that compatibility path has been removed. If you're
+replaying an older ref, migrate it to the explicit lane schema used on `main`
+(including the referenced lane helper scripts) before dispatching.
 
 ## Workflow replacement matrix
 
