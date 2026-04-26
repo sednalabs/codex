@@ -228,6 +228,7 @@ ownership boundary:
 - Codex protocol, app-server, TUI, rollout, and tool-registry changes should use
   the Codex lanes `codex.app-server-protocol-test`,
   `codex.app-server-computer-use-targeted`, and
+  `codex.tui-native-computer-use-targeted` for transcript visibility, plus
   `codex.native-computer-use-tool-registry-targeted`.
 - Android harness, emulator, device, screenshot, UI digest, and input execution
   changes should be validated in the Android runtime provider or consumer app

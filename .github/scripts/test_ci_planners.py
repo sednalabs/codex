@@ -48,6 +48,9 @@ CHECK_WORKFLOW_POLICY = load_module(
 SUMMARIZE_RUST_CI_FULL = load_module(
     "summarize_rust_ci_full_module", SCRIPTS_DIR / "summarize_rust_ci_full.py"
 )
+SKIP_DUPLICATE_WORKFLOW_RUN = load_module(
+    "skip_duplicate_workflow_run_module", SCRIPTS_DIR / "skip_duplicate_workflow_run.py"
+)
 SYNC_UPSTREAM_MIRROR = load_module(
     "sync_upstream_mirror_module", SCRIPTS_DIR / "sync_upstream_mirror.py"
 )
@@ -530,7 +533,7 @@ class ValidationPlanScriptTests(unittest.TestCase):
         self.assertEqual(payload["run_smoke_gate"], "false")
         self.assertEqual(payload["selected_workflow_lane_count"], 0)
         self.assertEqual(payload["selected_node_lane_count"], 0)
-        self.assertEqual(payload["selected_rust_minimal_lane_count"], 13)
+        self.assertEqual(payload["selected_rust_minimal_lane_count"], 14)
         self.assertEqual(payload["selected_rust_integration_lane_count"], 4)
         self.assertEqual(payload["selected_release_lane_count"], 0)
         self.assertTrue(
@@ -962,12 +965,15 @@ class ValidationPlanScriptTests(unittest.TestCase):
                 "codex.tui-config-refresh-session-targeted",
                 "codex.tui-esc-interrupt-targeted",
                 "codex.tui-front-queue-submit-targeted",
+                "codex.tui-native-computer-use-targeted",
                 "codex.tui-thread-session-policy-targeted",
                 "codex.tui-transcript-viewport-targeted",
+                "codex.tui-weekly-pacing-status-line-targeted",
             },
         )
 
     def test_tui_esc_interrupt_lane_pins_user_visible_regressions(self) -> None:
+    def test_tui_weekly_pacing_lane_pins_live_status_line_contract(self) -> None:
         catalog = RESOLVE_VALIDATION_PLAN.load_catalog()
         lane = next(
             lane
@@ -997,6 +1003,25 @@ class ValidationPlanScriptTests(unittest.TestCase):
             with self.subTest(test_name=test_name):
                 self.assertIn(test_name, recipe)
         self.assertIn("--exact", recipe)
+            if lane["lane_id"] == "codex.tui-weekly-pacing-status-line-targeted"
+        )
+        self.assertEqual(
+            lane["script_path"], ".github/scripts/validation-lanes/run-just-recipe.sh"
+        )
+        self.assertEqual(lane["script_args"], ["tui-weekly-pacing-status-line-targeted"])
+
+        recipe = "\n".join(
+            just_recipe_bodies(REPO_ROOT / "justfile")[
+                "tui-weekly-pacing-status-line-targeted"
+            ]
+        )
+        self.assertIn("--exact", recipe)
+        for test_name in [
+            "status_line_weekly_limit_renders_pacing_suffixes_from_live_status_line",
+            "status_line_weekly_limit_renders_stale_suffix_over_pace_details",
+            "status_line_weekly_limit_omits_pacing_when_inputs_are_missing",
+        ]:
+            self.assertIn(test_name, recipe)
 
     def test_validation_lab_passes_sccache_policy_only_to_sccache_lanes(self) -> None:
         payload = load_workflow_payload(REPO_ROOT / ".github/workflows/validation-lab.yml")
@@ -1198,6 +1223,155 @@ class ValidationPlanScriptTests(unittest.TestCase):
                 self.assertNotRegex(env_name, r"(API_KEY|PRIVATE_KEY|SECRET|TOKEN)")
                 self.assertNotIn("secrets.", str(env_value))
 
+    def test_sync_models_json_splits_read_check_from_write_pr_creation(self) -> None:
+        payload = load_workflow_payload(REPO_ROOT / ".github/workflows/sync-models-json.yml")
+        jobs = payload.get("jobs") or {}
+        check_job = jobs.get("check") or {}
+        create_pr_job = jobs.get("create_pr") or {}
+
+        self.assertEqual(payload.get("permissions"), {"contents": "read"})
+        self.assertEqual(check_job.get("permissions"), {"contents": "read"})
+        self.assertEqual(
+            create_pr_job.get("permissions"),
+            {"contents": "write", "pull-requests": "write"},
+        )
+        self.assertEqual(create_pr_job.get("needs"), "check")
+        self.assertEqual(create_pr_job.get("if"), "needs.check.outputs.changed == 'true'")
+        self.assertEqual(
+            (check_job.get("outputs") or {}).get("changed"),
+            "${{ steps.diff.outputs.changed }}",
+        )
+        self.assertEqual(
+            (check_job.get("outputs") or {}).get("upstream_short_sha"),
+            "${{ steps.upstream.outputs.upstream_short_sha }}",
+        )
+
+        check_steps = check_job.get("steps") or []
+        upload_step = next(
+            step for step in check_steps if step.get("name") == "Upload sync payload"
+        )
+        self.assertEqual(upload_step.get("if"), "steps.diff.outputs.changed == 'true'")
+        self.assertEqual(upload_step.get("uses"), "actions/upload-artifact@v7")
+
+        create_steps = create_pr_job.get("steps") or []
+        download_step = next(
+            step for step in create_steps if step.get("name") == "Download sync payload"
+        )
+        self.assertEqual(download_step.get("uses"), "actions/download-artifact@v8")
+        create_step = next(step for step in create_steps if step.get("name") == "Create PR")
+        self.assertIn(
+            "needs.check.outputs.upstream_short_sha",
+            (create_step.get("with") or {}).get("branch", ""),
+        )
+        self.assertEqual(
+            (create_step.get("with") or {}).get("body-path"),
+            "sync-models-json-update/summary.md",
+        )
+
+    def test_codeql_advanced_workflow_is_authoritative_hardened_setup(self) -> None:
+        payload = load_workflow_payload(REPO_ROOT / ".github/workflows/codeql.yml")
+        trigger = payload.get("on") or {}
+        analyze_job = ((payload.get("jobs") or {}).get("analyze") or {})
+        steps = analyze_job.get("steps") or []
+
+        self.assertIn("workflow_dispatch", trigger)
+        self.assertEqual(payload.get("permissions"), {"contents": "read"})
+        self.assertEqual(analyze_job.get("runs-on"), "ubuntu-24.04")
+        self.assertEqual(
+            analyze_job.get("permissions") or {},
+            {
+                "actions": "read",
+                "contents": "read",
+                "packages": "read",
+                "security-events": "write",
+            },
+        )
+        self.assertEqual(
+            (((analyze_job.get("strategy") or {}).get("matrix") or {}).get("include") or []),
+            [
+                {"language": "actions", "build-mode": "none"},
+                {"language": "c-cpp", "build-mode": "none"},
+                {"language": "javascript-typescript", "build-mode": "none"},
+                {"language": "python", "build-mode": "none"},
+                {"language": "rust", "build-mode": "none"},
+            ],
+        )
+
+        workflow_json = json.dumps(payload, sort_keys=True)
+        self.assertNotIn("autobuild", workflow_json)
+        self.assertNotIn("manual", workflow_json)
+
+        checkout_step = next(step for step in steps if step.get("name") == "Checkout repository")
+        self.assertEqual(checkout_step.get("uses"), "actions/checkout@v6")
+        self.assertEqual((checkout_step.get("with") or {}).get("persist-credentials"), "false")
+
+        install_rust_step = next(
+            step for step in steps if step.get("name") == "Install Rust toolchains for CodeQL"
+        )
+        self.assertEqual(install_rust_step.get("if"), "${{ matrix.language == 'rust' }}")
+        install_rust_run = install_rust_step.get("run") or ""
+        self.assertIn("rust-toolchain*", install_rust_run)
+        self.assertIn('"--component"', install_rust_run)
+        self.assertIn('"rust-src"', install_rust_run)
+        self.assertIn("subprocess.run(command, check=True)", install_rust_run)
+
+        restore_rust_cache_step = next(
+            step for step in steps if step.get("name") == "Restore Rust dependency cache for CodeQL"
+        )
+        self.assertEqual(restore_rust_cache_step.get("if"), "${{ matrix.language == 'rust' }}")
+        self.assertEqual(restore_rust_cache_step.get("uses"), "actions/cache/restore@v5")
+        restore_cache_with = restore_rust_cache_step.get("with") or {}
+        self.assertIn("~/.cargo/registry/cache/", restore_cache_with.get("path") or "")
+        self.assertIn("~/.cargo/git/db/", restore_cache_with.get("path") or "")
+        self.assertIn("codeql-rust-cargo-home-v1-", restore_cache_with.get("key") or "")
+
+        prefetch_rust_step = next(
+            step for step in steps if step.get("name") == "Prefetch Rust dependencies for CodeQL"
+        )
+        self.assertEqual(prefetch_rust_step.get("if"), "${{ matrix.language == 'rust' }}")
+        self.assertEqual(prefetch_rust_step.get("continue-on-error"), "true")
+        prefetch_run = prefetch_rust_step.get("run") or ""
+        self.assertIn("cargo fetch --locked --manifest-path codex-rs/Cargo.toml", prefetch_run)
+        self.assertIn(
+            "cargo fetch --locked --manifest-path tools/argument-comment-lint/Cargo.toml",
+            prefetch_run,
+        )
+
+        init_step = next(step for step in steps if step.get("name") == "Initialize CodeQL")
+        self.assertEqual(init_step.get("uses"), "github/codeql-action/init@v4")
+        self.assertEqual(
+            init_step.get("with") or {},
+            {
+                "languages": "${{ matrix.language }}",
+                "build-mode": "${{ matrix.build-mode }}",
+                "config-file": "./.github/codeql/codeql-config.yml",
+            },
+        )
+
+        save_rust_cache_step = next(
+            step for step in steps if step.get("name") == "Save Rust dependency cache for CodeQL"
+        )
+        self.assertEqual(save_rust_cache_step.get("continue-on-error"), "true")
+        self.assertEqual(save_rust_cache_step.get("uses"), "actions/cache/save@v5")
+        self.assertIn("matrix.language == 'rust'", save_rust_cache_step.get("if") or "")
+        self.assertIn("github.event_name != 'pull_request'", save_rust_cache_step.get("if") or "")
+        self.assertIn("refs/heads/main", save_rust_cache_step.get("if") or "")
+        self.assertIn("refs/heads/upstream-main", save_rust_cache_step.get("if") or "")
+        self.assertNotIn("target/", (save_rust_cache_step.get("with") or {}).get("path") or "")
+
+        config = yaml.load(
+            (REPO_ROOT / ".github/codeql/codeql-config.yml").read_text(encoding="utf-8"),
+            Loader=yaml.BaseLoader,
+        )
+        self.assertEqual(
+            config,
+            {
+                "name": "codex-codeql-advanced",
+                "queries": [{"uses": "security-and-quality"}],
+                "threat-models": "local",
+            },
+        )
+
     def test_sedna_sync_upstream_uses_github_app_token_and_shared_helper(self) -> None:
         payload = load_workflow_payload(REPO_ROOT / ".github/workflows/sedna-sync-upstream.yml")
         sync_job = ((payload.get("jobs") or {}).get("sync") or {})
@@ -1241,6 +1415,20 @@ class ValidationPlanScriptTests(unittest.TestCase):
             "${{ steps.sync-mirror.outputs.synced_upstream_main_sha }}",
         )
 
+    def test_sedna_sync_upstream_keeps_audit_in_separate_read_only_job(self) -> None:
+        payload = load_workflow_payload(REPO_ROOT / ".github/workflows/sedna-sync-upstream.yml")
+        jobs = payload.get("jobs") or {}
+        sync_job = jobs.get("sync") or {}
+        audit_job = jobs.get("audit") or {}
+
+        self.assertEqual(payload.get("permissions"), {"contents": "read"})
+        self.assertEqual(audit_job.get("needs"), "sync")
+        audit_job_json = json.dumps(audit_job, sort_keys=True)
+        self.assertNotIn("secrets.", audit_job_json)
+        self.assertNotIn("SYNC_UPSTREAM_APP_TOKEN", audit_job_json)
+        self.assertNotIn("SYNC_UPSTREAM_LEGACY_TOKEN", audit_job_json)
+        self.assertIn("Generate upstream sync app token", json.dumps(sync_job, sort_keys=True))
+
     def test_rust_ci_full_fallback_sccache_writes_are_disabled_by_default(self) -> None:
         payload = load_workflow_payload(REPO_ROOT / ".github/workflows/rust-ci-full.yml")
         jobs = payload.get("jobs") or {}
@@ -1275,6 +1463,7 @@ class ValidationPlanScriptTests(unittest.TestCase):
         payload = load_workflow_payload(REPO_ROOT / ".github/workflows/rust-ci-full.yml")
         trigger = payload.get("on") or {}
         jobs = payload.get("jobs") or {}
+        schedule_gate = jobs.get("schedule_gate") or {}
 
         self.assertEqual(
             ((trigger.get("workflow_run") or {}).get("workflows") or []),
@@ -1283,15 +1472,84 @@ class ValidationPlanScriptTests(unittest.TestCase):
         self.assertNotIn("schedule", trigger)
         self.assertEqual(payload.get("permissions"), {"actions": "read", "contents": "read"})
 
-        gate = (jobs.get("matrix_plan") or {}).get("if") or ""
+        gate = schedule_gate.get("if") or ""
         self.assertIn("github.event.workflow_run.event == 'schedule'", gate)
         self.assertIn("github.event.workflow_run.conclusion == 'success'", gate)
         self.assertIn("github.event.workflow_run.head_branch == 'main'", gate)
+
+        self.assertEqual((jobs.get("matrix_plan") or {}).get("needs"), "schedule_gate")
+        self.assertIn(
+            "needs.schedule_gate.outputs.should_run == 'true'",
+            (jobs.get("matrix_plan") or {}).get("if") or "",
+        )
+        dedupe_step = next(
+            step
+            for step in schedule_gate.get("steps") or []
+            if step.get("name") == "Check duplicate scheduled rust-ci-full success"
+        )
+        dedupe_run = dedupe_step.get("run") or ""
+        self.assertIn("skip_duplicate_workflow_run.py", dedupe_run)
+        self.assertIn("--workflow rust-ci-full.yml", dedupe_run)
+        self.assertIn("github.event.workflow_run.head_sha", dedupe_run)
 
         result_gate = (jobs.get("results") or {}).get("if") or ""
         self.assertIn("always()", result_gate)
         self.assertIn("github.event.workflow_run.event == 'schedule'", result_gate)
         self.assertIn("github.event.workflow_run.conclusion == 'success'", result_gate)
+
+    def test_rust_ci_schedule_reuses_equivalent_same_sha_success(self) -> None:
+        payload = load_workflow_payload(REPO_ROOT / ".github/workflows/rust-ci.yml")
+        jobs = payload.get("jobs") or {}
+        changed = jobs.get("changed") or {}
+        outputs = changed.get("outputs") or {}
+        steps = changed.get("steps") or []
+
+        self.assertEqual(
+            outputs.get("scheduled_duplicate_skip"),
+            "${{ steps.schedule_duplicate.outputs.should_skip || 'false' }}",
+        )
+        self.assertIn(
+            "steps.scheduled_skip_plan.outputs.validation_mode",
+            outputs.get("validation_mode") or "",
+        )
+
+        dedupe_step = next(
+            step
+            for step in steps
+            if step.get("name") == "Check duplicate scheduled rust-ci success"
+        )
+        self.assertEqual(dedupe_step.get("if"), "${{ github.event_name == 'schedule' }}")
+        dedupe_run = dedupe_step.get("run") or ""
+        self.assertIn("skip_duplicate_workflow_run.py", dedupe_run)
+        self.assertIn("--workflow rust-ci.yml", dedupe_run)
+        self.assertIn("--head-sha \"${{ github.sha }}\"", dedupe_run)
+
+        detect_step = next(
+            step for step in steps if step.get("name") == "Detect changed paths and rust-ci mode"
+        )
+        self.assertIn(
+            "steps.schedule_duplicate.outputs.should_skip != 'true'",
+            detect_step.get("if") or "",
+        )
+        skip_step = next(
+            step for step in steps if step.get("name") == "Emit duplicate scheduled skip plan"
+        )
+        self.assertEqual(
+            skip_step.get("if"),
+            "${{ steps.schedule_duplicate.outputs.should_skip == 'true' }}",
+        )
+        self.assertIn("validation_mode=scheduled_duplicate", skip_step.get("run") or "")
+
+        results_run = (
+            next(
+                step
+                for step in (jobs.get("results") or {}).get("steps") or []
+                if step.get("name") == "Summarize"
+            ).get("run")
+            or ""
+        )
+        self.assertIn("scheduled_duplicate_skip", results_run)
+        self.assertIn("Equivalent rust-ci run already passed", results_run)
 
     def test_rust_ci_full_results_understands_archive_and_remote_test_jobs(self) -> None:
         payload = load_workflow_payload(REPO_ROOT / ".github/workflows/rust-ci-full.yml")
@@ -1304,6 +1562,7 @@ class ValidationPlanScriptTests(unittest.TestCase):
             [
                 "general",
                 "cargo_shear",
+                "schedule_gate",
                 "matrix_plan",
                 "argument_comment_lint_package",
                 "argument_comment_lint_prebuilt",
@@ -1335,6 +1594,8 @@ class ValidationPlanScriptTests(unittest.TestCase):
         self.assertIn("summarize_rust_ci_full.py aggregate", aggregate_step.get("run") or "")
         verify_step = next(step for step in steps if step.get("name") == "Verify full CI result")
         verify_run = verify_step.get("run") or ""
+        self.assertIn("needs.schedule_gate.outputs.should_skip", verify_run)
+        self.assertIn("Equivalent rust-ci-full run already passed", verify_run)
         self.assertIn("require_success \"nextest_archive\"", verify_run)
         self.assertIn("require_success \"remote_tests\"", verify_run)
 
@@ -1342,7 +1603,14 @@ class ValidationPlanScriptTests(unittest.TestCase):
         payload = load_workflow_payload(REPO_ROOT / ".github/workflows/rust-ci-full.yml")
         jobs = payload.get("jobs") or {}
 
-        for job_name in ["lint_build", "nextest_archive", "tests", "remote_tests", "results"]:
+        for job_name in [
+            "schedule_gate",
+            "lint_build",
+            "nextest_archive",
+            "tests",
+            "remote_tests",
+            "results",
+        ]:
             with self.subTest(job=job_name):
                 job = jobs.get(job_name) or {}
                 self.assertNotIn("secrets", job)
@@ -1616,12 +1884,12 @@ class ValidationPlanScriptTests(unittest.TestCase):
         self.assertNotIn("codex.tui-agent-picker-model-surface-targeted", selected_lane_ids)
         self.assertEqual(payload["selected_workflow_lane_count"], 4)
         self.assertEqual(payload["selected_node_lane_count"], 1)
-        self.assertEqual(payload["selected_rust_minimal_lane_count"], 16)
+        self.assertEqual(payload["selected_rust_minimal_lane_count"], 17)
         self.assertEqual(payload["selected_rust_integration_lane_count"], 15)
         self.assertEqual(payload["selected_release_lane_count"], 1)
         self.assertEqual(payload["workflow_max_parallel"], "4")
         self.assertEqual(payload["node_max_parallel"], "1")
-        self.assertEqual(payload["rust_minimal_max_parallel"], "16")
+        self.assertEqual(payload["rust_minimal_max_parallel"], "17")
         self.assertEqual(payload["rust_integration_max_parallel"], "8")
         self.assertEqual(payload["release_max_parallel"], "1")
 
@@ -1647,10 +1915,10 @@ class ValidationPlanScriptTests(unittest.TestCase):
         self.assertIn("downstream-ledger-seam", selected_lane_ids)
         self.assertEqual(payload["selected_workflow_lane_count"], 5)
         self.assertEqual(payload["selected_node_lane_count"], 1)
-        self.assertEqual(payload["selected_rust_minimal_lane_count"], 18)
+        self.assertEqual(payload["selected_rust_minimal_lane_count"], 19)
         self.assertEqual(payload["selected_rust_integration_lane_count"], 16)
         self.assertEqual(payload["selected_release_lane_count"], 1)
-        self.assertEqual(payload["rust_minimal_max_parallel"], "18")
+        self.assertEqual(payload["rust_minimal_max_parallel"], "19")
         self.assertEqual(payload["rust_integration_max_parallel"], "8")
 
     def test_validation_lab_frontier_all_excludes_smoke_gate_lanes_by_metadata(self) -> None:
@@ -1764,7 +2032,7 @@ class ValidationPlanScriptTests(unittest.TestCase):
         self.assertEqual(payload["eager_release_lanes"], "true")
         self.assertEqual(payload["workflow_max_parallel"], "5")
         self.assertEqual(payload["node_max_parallel"], "1")
-        self.assertEqual(payload["rust_minimal_max_parallel"], "18")
+        self.assertEqual(payload["rust_minimal_max_parallel"], "19")
         self.assertEqual(payload["rust_integration_max_parallel"], "8")
         self.assertEqual(payload["release_max_parallel"], "1")
         planned_lane_ids = [lane["lane_id"] for lane in payload["planned_matrix"]["include"]]
@@ -2410,6 +2678,126 @@ class RustCiModeScriptTests(unittest.TestCase):
 
 
 class HelperScriptTests(unittest.TestCase):
+    def test_duplicate_workflow_finder_matches_same_branch_sha_success(self) -> None:
+        runs = [
+            {
+                "id": 12,
+                "head_branch": "main",
+                "head_sha": "abc123",
+                "status": "completed",
+                "conclusion": "success",
+                "event": "schedule",
+                "html_url": "https://example.test/runs/12",
+            },
+            {
+                "id": 11,
+                "head_branch": "main",
+                "head_sha": "abc123",
+                "status": "completed",
+                "conclusion": "success",
+                "event": "workflow_dispatch",
+                "html_url": "https://example.test/runs/11",
+            },
+        ]
+
+        match = SKIP_DUPLICATE_WORKFLOW_RUN.find_equivalent_success(
+            runs,
+            branch="main",
+            head_sha="abc123",
+            current_run_id=12,
+            allowed_events=set(),
+        )
+
+        self.assertEqual(match["id"], 11)
+        self.assertEqual(
+            SKIP_DUPLICATE_WORKFLOW_RUN.result_from_match(match),
+            {
+                "should_skip": "true",
+                "should_run": "false",
+                "reason": "equivalent_success_found",
+                "matched_run_id": "11",
+                "matched_run_url": "https://example.test/runs/11",
+                "matched_run_event": "workflow_dispatch",
+                "matched_run_created_at": "",
+            },
+        )
+
+    def test_duplicate_workflow_finder_ignores_wrong_sha_branch_or_failed_runs(self) -> None:
+        runs = [
+            {
+                "id": 21,
+                "head_branch": "main",
+                "head_sha": "other",
+                "status": "completed",
+                "conclusion": "success",
+                "event": "schedule",
+            },
+            {
+                "id": 22,
+                "head_branch": "feature",
+                "head_sha": "abc123",
+                "status": "completed",
+                "conclusion": "success",
+                "event": "schedule",
+            },
+            {
+                "id": 23,
+                "head_branch": "main",
+                "head_sha": "abc123",
+                "status": "completed",
+                "conclusion": "failure",
+                "event": "schedule",
+            },
+        ]
+
+        self.assertIsNone(
+            SKIP_DUPLICATE_WORKFLOW_RUN.find_equivalent_success(
+                runs,
+                branch="main",
+                head_sha="abc123",
+                current_run_id=None,
+                allowed_events=set(),
+            )
+        )
+
+    def test_duplicate_workflow_script_fails_open_for_bad_current_run_id(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output = Path(tmpdir) / "outputs"
+            proc = subprocess.run(
+                [
+                    "python3",
+                    str(SCRIPTS_DIR / "skip_duplicate_workflow_run.py"),
+                    "--repo",
+                    "sednalabs/codex",
+                    "--workflow",
+                    "rust-ci.yml",
+                    "--branch",
+                    "main",
+                    "--head-sha",
+                    "abc123",
+                    "--current-run-id",
+                    "not-an-int",
+                    "--github-output",
+                    str(output),
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+
+            payload = json.loads(proc.stdout)
+            output_lines = dict(
+                line.split("=", 1)
+                for line in output.read_text(encoding="utf-8").splitlines()
+            )
+
+        self.assertEqual(payload["should_skip"], "false")
+        self.assertEqual(payload["should_run"], "true")
+        self.assertEqual(payload["reason"], "lookup_failed_run_conservatively")
+        self.assertEqual(output_lines["should_skip"], "false")
+        self.assertEqual(output_lines["should_run"], "true")
+        self.assertEqual(output_lines["reason"], "lookup_failed_run_conservatively")
+
     def test_repository_workflows_follow_static_policy(self) -> None:
         self.assertEqual(CHECK_WORKFLOW_POLICY.collect_violations(REPO_ROOT), [])
 
