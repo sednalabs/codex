@@ -41,7 +41,6 @@ async def main() -> None:
         except Exception as exc:
             resumed_info = f"skipped({type(exc).__name__})"
 
-        forked_info = "n/a"
         try:
             forked = await codex.thread_fork(unarchived.id, model="gpt-5.4")
             forked_result = await (await forked.turn(TextInput("Take a different angle in one short sentence."))).run()
