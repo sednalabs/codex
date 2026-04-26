@@ -334,9 +334,9 @@ over passing credentials into target scripts. Slower hosted validation is a
 better tradeoff than making scratch or PR code secret-bearing.
 
 The upstream mirror sync is the exception that proves the rule: only
-`sedna-sync-upstream` should receive the upstream mirror write credential, and
-validation lanes should audit against read-only refs or read-only fallback
-state.
+`sedna-sync-upstream` should receive the upstream mirror write credential,
+configured only in `.github/workflows/sedna-sync-upstream.yml`; validation
+lanes should audit against read-only refs or read-only fallback state.
 
 ## Summary artifact
 
