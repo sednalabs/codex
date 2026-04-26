@@ -137,8 +137,8 @@ spawn-agent-description-model-surface-targeted:
 # intentionally avoids compiling codex-tui while app-server drift contaminates
 # small mapped picker-model runs.
 tui-agent-picker-model-surface-targeted:
-    just --justfile ../justfile spawn-agent-tool-model-surface-targeted
-    just --justfile ../justfile spawn-agent-description-model-surface-targeted
+    just --justfile "{{ justfile_directory() }}/justfile" spawn-agent-tool-model-surface-targeted
+    just --justfile "{{ justfile_directory() }}/justfile" spawn-agent-description-model-surface-targeted
 
 # Focused /agent picker hierarchy visibility slice.
 tui-agent-picker-tree-targeted:
