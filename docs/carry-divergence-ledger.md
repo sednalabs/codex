@@ -232,10 +232,18 @@ docs-only refresh commit that records this snapshot.
   - `codex-rs/core/src/tools/tool_search_entry.rs`
   - `codex-rs/app-server/src/computer_use.rs`
   - `codex-rs/app-server/src/bespoke_event_handling.rs`
+  - `codex-rs/app-server-protocol/src/protocol/common.rs`
+  - `codex-rs/app-server-protocol/src/protocol/v2.rs`
   - `codex-rs/app-server-protocol/src/protocol/thread_history.rs`
   - `codex-rs/tui/src/app/app_server_adapter.rs`
+  - `codex-rs/tui/src/chatwidget.rs`
+  - `codex-rs/tui/src/chatwidget/interrupts.rs`
+  - `codex-rs/tui/src/history_cell.rs`
   - `codex-rs/rollout/src/policy.rs`
   - `codex-rs/rollout-trace/src/protocol_event.rs`
+  - `codex-rs/app-server/tests/suite/v2/computer_use.rs`
+  - `codex-rs/tools/src/android_tool_tests.rs`
+  - `codex-rs/tools/src/tool_registry_plan_tests.rs`
   - `docs/native-computer-use.md`
 
 ### Review And History Accounting Alignment
