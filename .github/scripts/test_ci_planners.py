@@ -48,6 +48,9 @@ CHECK_WORKFLOW_POLICY = load_module(
 SUMMARIZE_RUST_CI_FULL = load_module(
     "summarize_rust_ci_full_module", SCRIPTS_DIR / "summarize_rust_ci_full.py"
 )
+SKIP_DUPLICATE_WORKFLOW_RUN = load_module(
+    "skip_duplicate_workflow_run_module", SCRIPTS_DIR / "skip_duplicate_workflow_run.py"
+)
 SYNC_UPSTREAM_MIRROR = load_module(
     "sync_upstream_mirror_module", SCRIPTS_DIR / "sync_upstream_mirror.py"
 )
@@ -1303,6 +1306,7 @@ class ValidationPlanScriptTests(unittest.TestCase):
         payload = load_workflow_payload(REPO_ROOT / ".github/workflows/rust-ci-full.yml")
         trigger = payload.get("on") or {}
         jobs = payload.get("jobs") or {}
+        schedule_gate = jobs.get("schedule_gate") or {}
 
         self.assertEqual(
             ((trigger.get("workflow_run") or {}).get("workflows") or []),
@@ -1311,15 +1315,84 @@ class ValidationPlanScriptTests(unittest.TestCase):
         self.assertNotIn("schedule", trigger)
         self.assertEqual(payload.get("permissions"), {"actions": "read", "contents": "read"})
 
-        gate = (jobs.get("matrix_plan") or {}).get("if") or ""
+        gate = schedule_gate.get("if") or ""
         self.assertIn("github.event.workflow_run.event == 'schedule'", gate)
         self.assertIn("github.event.workflow_run.conclusion == 'success'", gate)
         self.assertIn("github.event.workflow_run.head_branch == 'main'", gate)
+
+        self.assertEqual((jobs.get("matrix_plan") or {}).get("needs"), "schedule_gate")
+        self.assertIn(
+            "needs.schedule_gate.outputs.should_run == 'true'",
+            (jobs.get("matrix_plan") or {}).get("if") or "",
+        )
+        dedupe_step = next(
+            step
+            for step in schedule_gate.get("steps") or []
+            if step.get("name") == "Check duplicate scheduled rust-ci-full success"
+        )
+        dedupe_run = dedupe_step.get("run") or ""
+        self.assertIn("skip_duplicate_workflow_run.py", dedupe_run)
+        self.assertIn("--workflow rust-ci-full.yml", dedupe_run)
+        self.assertIn("github.event.workflow_run.head_sha", dedupe_run)
 
         result_gate = (jobs.get("results") or {}).get("if") or ""
         self.assertIn("always()", result_gate)
         self.assertIn("github.event.workflow_run.event == 'schedule'", result_gate)
         self.assertIn("github.event.workflow_run.conclusion == 'success'", result_gate)
+
+    def test_rust_ci_schedule_reuses_equivalent_same_sha_success(self) -> None:
+        payload = load_workflow_payload(REPO_ROOT / ".github/workflows/rust-ci.yml")
+        jobs = payload.get("jobs") or {}
+        changed = jobs.get("changed") or {}
+        outputs = changed.get("outputs") or {}
+        steps = changed.get("steps") or []
+
+        self.assertEqual(
+            outputs.get("scheduled_duplicate_skip"),
+            "${{ steps.schedule_duplicate.outputs.should_skip || 'false' }}",
+        )
+        self.assertIn(
+            "steps.scheduled_skip_plan.outputs.validation_mode",
+            outputs.get("validation_mode") or "",
+        )
+
+        dedupe_step = next(
+            step
+            for step in steps
+            if step.get("name") == "Check duplicate scheduled rust-ci success"
+        )
+        self.assertEqual(dedupe_step.get("if"), "${{ github.event_name == 'schedule' }}")
+        dedupe_run = dedupe_step.get("run") or ""
+        self.assertIn("skip_duplicate_workflow_run.py", dedupe_run)
+        self.assertIn("--workflow rust-ci.yml", dedupe_run)
+        self.assertIn("--head-sha \"${{ github.sha }}\"", dedupe_run)
+
+        detect_step = next(
+            step for step in steps if step.get("name") == "Detect changed paths and rust-ci mode"
+        )
+        self.assertIn(
+            "steps.schedule_duplicate.outputs.should_skip != 'true'",
+            detect_step.get("if") or "",
+        )
+        skip_step = next(
+            step for step in steps if step.get("name") == "Emit duplicate scheduled skip plan"
+        )
+        self.assertEqual(
+            skip_step.get("if"),
+            "${{ steps.schedule_duplicate.outputs.should_skip == 'true' }}",
+        )
+        self.assertIn("validation_mode=scheduled_duplicate", skip_step.get("run") or "")
+
+        results_run = (
+            next(
+                step
+                for step in (jobs.get("results") or {}).get("steps") or []
+                if step.get("name") == "Summarize"
+            ).get("run")
+            or ""
+        )
+        self.assertIn("scheduled_duplicate_skip", results_run)
+        self.assertIn("Equivalent rust-ci run already passed", results_run)
 
     def test_rust_ci_full_results_understands_archive_and_remote_test_jobs(self) -> None:
         payload = load_workflow_payload(REPO_ROOT / ".github/workflows/rust-ci-full.yml")
@@ -1332,6 +1405,7 @@ class ValidationPlanScriptTests(unittest.TestCase):
             [
                 "general",
                 "cargo_shear",
+                "schedule_gate",
                 "matrix_plan",
                 "argument_comment_lint_package",
                 "argument_comment_lint_prebuilt",
@@ -1363,6 +1437,8 @@ class ValidationPlanScriptTests(unittest.TestCase):
         self.assertIn("summarize_rust_ci_full.py aggregate", aggregate_step.get("run") or "")
         verify_step = next(step for step in steps if step.get("name") == "Verify full CI result")
         verify_run = verify_step.get("run") or ""
+        self.assertIn("needs.schedule_gate.outputs.should_skip", verify_run)
+        self.assertIn("Equivalent rust-ci-full run already passed", verify_run)
         self.assertIn("require_success \"nextest_archive\"", verify_run)
         self.assertIn("require_success \"remote_tests\"", verify_run)
 
@@ -1370,7 +1446,14 @@ class ValidationPlanScriptTests(unittest.TestCase):
         payload = load_workflow_payload(REPO_ROOT / ".github/workflows/rust-ci-full.yml")
         jobs = payload.get("jobs") or {}
 
-        for job_name in ["lint_build", "nextest_archive", "tests", "remote_tests", "results"]:
+        for job_name in [
+            "schedule_gate",
+            "lint_build",
+            "nextest_archive",
+            "tests",
+            "remote_tests",
+            "results",
+        ]:
             with self.subTest(job=job_name):
                 job = jobs.get(job_name) or {}
                 self.assertNotIn("secrets", job)
@@ -2438,6 +2521,126 @@ class RustCiModeScriptTests(unittest.TestCase):
 
 
 class HelperScriptTests(unittest.TestCase):
+    def test_duplicate_workflow_finder_matches_same_branch_sha_success(self) -> None:
+        runs = [
+            {
+                "id": 12,
+                "head_branch": "main",
+                "head_sha": "abc123",
+                "status": "completed",
+                "conclusion": "success",
+                "event": "schedule",
+                "html_url": "https://example.test/runs/12",
+            },
+            {
+                "id": 11,
+                "head_branch": "main",
+                "head_sha": "abc123",
+                "status": "completed",
+                "conclusion": "success",
+                "event": "workflow_dispatch",
+                "html_url": "https://example.test/runs/11",
+            },
+        ]
+
+        match = SKIP_DUPLICATE_WORKFLOW_RUN.find_equivalent_success(
+            runs,
+            branch="main",
+            head_sha="abc123",
+            current_run_id=12,
+            allowed_events=set(),
+        )
+
+        self.assertEqual(match["id"], 11)
+        self.assertEqual(
+            SKIP_DUPLICATE_WORKFLOW_RUN.result_from_match(match),
+            {
+                "should_skip": "true",
+                "should_run": "false",
+                "reason": "equivalent_success_found",
+                "matched_run_id": "11",
+                "matched_run_url": "https://example.test/runs/11",
+                "matched_run_event": "workflow_dispatch",
+                "matched_run_created_at": "",
+            },
+        )
+
+    def test_duplicate_workflow_finder_ignores_wrong_sha_branch_or_failed_runs(self) -> None:
+        runs = [
+            {
+                "id": 21,
+                "head_branch": "main",
+                "head_sha": "other",
+                "status": "completed",
+                "conclusion": "success",
+                "event": "schedule",
+            },
+            {
+                "id": 22,
+                "head_branch": "feature",
+                "head_sha": "abc123",
+                "status": "completed",
+                "conclusion": "success",
+                "event": "schedule",
+            },
+            {
+                "id": 23,
+                "head_branch": "main",
+                "head_sha": "abc123",
+                "status": "completed",
+                "conclusion": "failure",
+                "event": "schedule",
+            },
+        ]
+
+        self.assertIsNone(
+            SKIP_DUPLICATE_WORKFLOW_RUN.find_equivalent_success(
+                runs,
+                branch="main",
+                head_sha="abc123",
+                current_run_id=None,
+                allowed_events=set(),
+            )
+        )
+
+    def test_duplicate_workflow_script_fails_open_for_bad_current_run_id(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output = Path(tmpdir) / "outputs"
+            proc = subprocess.run(
+                [
+                    "python3",
+                    str(SCRIPTS_DIR / "skip_duplicate_workflow_run.py"),
+                    "--repo",
+                    "sednalabs/codex",
+                    "--workflow",
+                    "rust-ci.yml",
+                    "--branch",
+                    "main",
+                    "--head-sha",
+                    "abc123",
+                    "--current-run-id",
+                    "not-an-int",
+                    "--github-output",
+                    str(output),
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+
+            payload = json.loads(proc.stdout)
+            output_lines = dict(
+                line.split("=", 1)
+                for line in output.read_text(encoding="utf-8").splitlines()
+            )
+
+        self.assertEqual(payload["should_skip"], "false")
+        self.assertEqual(payload["should_run"], "true")
+        self.assertEqual(payload["reason"], "lookup_failed_run_conservatively")
+        self.assertEqual(output_lines["should_skip"], "false")
+        self.assertEqual(output_lines["should_run"], "true")
+        self.assertEqual(output_lines["reason"], "lookup_failed_run_conservatively")
+
     def test_repository_workflows_follow_static_policy(self) -> None:
         self.assertEqual(CHECK_WORKFLOW_POLICY.collect_violations(REPO_ROOT), [])
 

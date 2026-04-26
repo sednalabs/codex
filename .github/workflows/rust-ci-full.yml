@@ -24,8 +24,8 @@ env:
 # CI builds in debug (dev) for faster signal.
 
 jobs:
-  matrix_plan:
-    name: Rust CI lane planner (informational)
+  schedule_gate:
+    name: Scheduled duplicate gate
     runs-on: ubuntu-24.04
     if: >-
       ${{
@@ -35,6 +35,50 @@ jobs:
           github.event.workflow_run.conclusion == 'success' &&
           github.event.workflow_run.head_branch == 'main'
         )
+      }}
+    outputs:
+      should_run: ${{ steps.manual.outputs.should_run || steps.dedupe.outputs.should_run || 'false' }}
+      should_skip: ${{ steps.manual.outputs.should_skip || steps.dedupe.outputs.should_skip || 'false' }}
+      reason: ${{ steps.manual.outputs.reason || steps.dedupe.outputs.reason || '' }}
+      matched_run_url: ${{ steps.dedupe.outputs.matched_run_url || '' }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          ref: ${{ env.RUST_CI_FULL_CHECKOUT_REF }}
+
+      - name: Allow deliberate manual checkpoint
+        id: manual
+        if: ${{ github.event_name != 'workflow_run' }}
+        shell: bash
+        run: |
+          {
+            echo "should_run=true"
+            echo "should_skip=false"
+            echo "reason=manual_checkpoint"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Check duplicate scheduled rust-ci-full success
+        id: dedupe
+        if: ${{ github.event_name == 'workflow_run' }}
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          python3 .github/scripts/skip_duplicate_workflow_run.py \
+            --repo "${{ github.repository }}" \
+            --workflow rust-ci-full.yml \
+            --branch "${{ github.event.workflow_run.head_branch }}" \
+            --head-sha "${{ github.event.workflow_run.head_sha }}" \
+            --current-run-id "${{ github.run_id }}" \
+            --github-output "${GITHUB_OUTPUT}"
+
+  matrix_plan:
+    name: Rust CI lane planner (informational)
+    runs-on: ubuntu-24.04
+    needs: schedule_gate
+    if: >-
+      ${{
+        needs.schedule_gate.outputs.should_run == 'true'
       }}
     outputs:
       argument_comment_lint_matrix: ${{ steps.plan.outputs.argument_comment_lint_matrix }}
@@ -917,6 +961,7 @@ jobs:
       [
         general,
         cargo_shear,
+        schedule_gate,
         matrix_plan,
         argument_comment_lint_package,
         argument_comment_lint_prebuilt,
@@ -1023,6 +1068,9 @@ jobs:
           }
 
           echo "source event: ${RUST_CI_FULL_SOURCE_EVENT}"
+          echo "dedupe     : ${{ needs.schedule_gate.outputs.should_skip }}"
+          echo "reason     : ${{ needs.schedule_gate.outputs.reason }}"
+          echo "reuse      : ${{ needs.schedule_gate.outputs.matched_run_url }}"
           echo "argpkg      : ${{ needs.argument_comment_lint_package.result }}"
           echo "arglint     : ${{ needs.argument_comment_lint_prebuilt.result }}"
           echo "general     : ${{ needs.general.result }}"
@@ -1032,6 +1080,12 @@ jobs:
           echo "archive     : ${{ needs.nextest_archive.result }}"
           echo "tests       : ${{ needs.tests.result }}"
           echo "remote tests: ${{ needs.remote_tests.result }}"
+
+          if [[ "${{ needs.schedule_gate.outputs.should_skip }}" == "true" ]]; then
+            echo "Equivalent rust-ci-full run already passed for this branch and commit."
+            echo "Reused run: ${{ needs.schedule_gate.outputs.matched_run_url }}"
+            exit 0
+          fi
 
           if [[ "${GITHUB_EVENT_NAME}" == "workflow_run" ]]; then
             require_success_or_skipped "argument_comment_lint_package" "${{ needs.argument_comment_lint_package.result }}"
