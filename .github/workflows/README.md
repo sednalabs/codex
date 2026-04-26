@@ -25,7 +25,7 @@ contract today.
 - `rust-ci-full.yml` is the full Cargo-native verification workflow.
   It keeps the heavier checks off the PR path and runs only on deliberate
   checkpoints:
-  - scheduled hygiene sweeps
+  - chained scheduled hygiene sweeps after the scheduled `rust-ci` gate succeeds
   - manual dispatch when a broad Cargo-native proof is actually needed
   - not every ordinary push to `main`
   It still covers:
@@ -34,6 +34,15 @@ contract today.
   - Linux `x86_64` release-profile Cargo builds
   - Linux `x86_64` `argument-comment-lint`
   - Linux `x86_64` remote-env tests
+  The scheduled path deliberately reuses the fast scheduled `rust-ci` run
+  instead of racing it on a second cron. For scheduled full runs, duplicate
+  fast checks such as format, shear, and argument-comment-lint are skipped
+  once `rust-ci` has already passed; manual dispatch still runs the whole
+  broad checkpoint directly. The normal and remote-env nextest lanes both
+  consume the same uploaded nextest archive so the workflow can compare normal
+  and Docker-backed remote behavior without compiling the same test binaries
+  twice. The result job
+  uploads a compact `rust-ci-full-summary` JSON artifact for failure triage.
 
 ## Rule Of Thumb
 

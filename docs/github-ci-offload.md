@@ -25,12 +25,17 @@ artifacts.
   - retention: 3 days
   - release visibility: never published as a GitHub Release
 - `rust-ci-full`
-  - trigger: scheduled hygiene sweeps and manual dispatch
+  - trigger: successful scheduled `rust-ci` workflow completion and manual dispatch
   - purpose: heavyweight Linux `x86_64` Cargo-native checkpoint coverage when broad proof is
     actually needed
-  - cache policy: prefer the native `sccache` GitHub backend; fallback
-    `.sccache` archives are restore-only by default to avoid run-id-keyed cache
-    churn
+  - artifact reuse: builds one nextest archive for the Linux `x86_64` dev
+    profile, then reuses that archive for both the normal all-features test
+    lane and the full Docker-backed remote-env lane
+  - result signal: uploads a compact `rust-ci-full-summary` JSON artifact with
+    job results plus first clippy/nextest blockers
+  - cache policy: keep the `sccache` GitHub backend disabled and use explicit
+    `.sccache` restore/save steps instead; fallback archives are restore-only
+    by default to avoid run-id-keyed cache churn and implicit token writes
   - sccache versioning: use the current installer-managed `sccache` binary so
     the workflow's GitHub cache-service backend setup and the binary's GHA
     contract stay aligned
@@ -87,7 +92,9 @@ artifacts.
 8. Use `sedna-heavy-tests` only when the change needs labeled PR heavy validation, merge-group
    heavy validation, or a named heavy lane.
 9. Use `rust-ci-full` only for scheduled/manual broad Cargo-native checkpoints,
-   not as a routine post-merge rerun.
+   not as a routine post-merge rerun. Its scheduled path follows the scheduled
+   `rust-ci` run and starts only if that upstream gate passed on `main`, so it
+   should not duplicate fast format/shear/lint work that already succeeded.
 10. Use `sedna-branch-build` only when you intentionally want a preview binary.
 11. Use `sedna-release` only for official releases.
 
