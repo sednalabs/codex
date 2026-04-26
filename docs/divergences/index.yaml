@@ -557,6 +557,66 @@
       "notes": "The old remote-control omission story was stale. The current app-server divergence is narrower: upstream-faithful protocol/runtime parity plus intentional downstream carry, with B.2 extracting policy/lifecycle seams into codex-rs/app-server/src/extensions.rs. Follow-up route selection for app-server paths now bundles the protocol, thread-surface, and blocking-waits lanes instead of a stale single-lane placeholder."
     },
     {
+      "id": "codex-native-computer-use-android",
+      "title": "Native computer-use and Android observe/step bridge",
+      "status": "live",
+      "category": "core-protocol",
+      "surface_type": "agent-facing",
+      "surface": [
+        "native computer-use protocol events",
+        "Android observe/step function tools",
+        "app-server computer-use client bridge",
+        "TUI and rollout projection"
+      ],
+      "files": [
+        "codex-rs/protocol/src/computer_use.rs",
+        "codex-rs/protocol/src/protocol.rs",
+        "codex-rs/protocol/src/dynamic_tools.rs",
+        "codex-rs/tools/src/android_tool.rs",
+        "codex-rs/tools/src/tool_registry_plan.rs",
+        "codex-rs/core/src/tools/handlers/computer_use.rs",
+        "codex-rs/core/src/tools/tool_search_entry.rs",
+        "codex-rs/app-server/src/computer_use.rs",
+        "codex-rs/app-server/src/bespoke_event_handling.rs",
+        "codex-rs/app-server-protocol/src/protocol/common.rs",
+        "codex-rs/app-server-protocol/src/protocol/v2.rs",
+        "codex-rs/app-server-protocol/src/protocol/thread_history.rs",
+        "codex-rs/tui/src/app/app_server_adapter.rs",
+        "codex-rs/tui/src/chatwidget.rs",
+        "codex-rs/tui/src/chatwidget/interrupts.rs",
+        "codex-rs/tui/src/history_cell.rs",
+        "codex-rs/rollout/src/policy.rs",
+        "codex-rs/rollout-trace/src/protocol_event.rs",
+        "codex-rs/app-server/tests/suite/v2/computer_use.rs",
+        "codex-rs/tools/src/android_tool_tests.rs",
+        "codex-rs/tools/src/tool_registry_plan_tests.rs",
+        "docs/native-computer-use.md"
+      ],
+      "behavior": "Bare android_observe and android_step dynamic tools are promoted to canonical Codex native computer-use handlers. Codex owns the transcript, app-server, TUI, rollout, and trace semantics while Android runtime providers supply device capability.",
+      "upstream_equivalent": false,
+      "introduced_in": {
+        "carry_commit": null,
+        "upstream_commit": null
+      },
+      "guardrail_lane": "codex.app-server-computer-use-targeted",
+      "tests": [
+        "computer_use_call_round_trip_sends_client_response_to_model",
+        "thread_resume_injects_native_android_tools_into_model_requests",
+        "thread_resume_replaces_loaded_thread_when_native_android_tools_are_requested",
+        "thread_fork_injects_native_android_tools_into_model_requests",
+        "canonical_android_dynamic_tool_preserves_supported_android_tool_names",
+        "android_dynamic_tools_use_canonical_codex_tool_definitions",
+        "duplicate_bare_android_dynamic_tools_register_native_handler_once",
+        "deferred_android_dynamic_tools_search_as_native_computer_use_tools",
+        "computer_use_call_times_out_and_unregisters_pending_response",
+        "reconstructs_computer_use_items_from_request_and_response_events",
+        "computer_use_call_request_is_tool_runtime_start",
+        "computer_use_call_response_is_tool_runtime_end"
+      ],
+      "owner": "downstream",
+      "notes": "Runtime provider capability is supplied by Android tooling outside Codex. Solar Gravity Lab is a proving and consumer app, not the generic owner of this Codex protocol/tool contract."
+    },
+    {
       "id": "codex-tui-session-surfaces",
       "title": "TUI session-state, queue, and usage surfaces",
       "status": "live",
