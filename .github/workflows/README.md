@@ -62,6 +62,18 @@ contract today.
 - The workflow uses `.github/codeql/codeql-config.yml` for shared CodeQL
   settings. Add query packs or path filters there instead of duplicating
   configuration across matrix entries.
+- The CodeQL config deliberately uses the broad `security-and-quality` suite
+  and the local threat model. This is noisier than the default or
+  `security-extended` suite, but it is the maintained built-in shape that gives
+  this project the widest CodeQL signal, including local files, command-line
+  arguments, environment variables, and standard input as taint sources where
+  CodeQL supports them.
+- Rust CodeQL currently uses no-build analysis through `rust-analyzer`. The
+  workflow prepares that lane by installing every checked-in Rust toolchain,
+  restoring Cargo registry/git caches, and prefetching the Rust workspaces
+  before CodeQL initializes. Do not try to pass normal Cargo `target/`, test
+  binaries, or nextest archives into CodeQL; they are compiled outputs, not the
+  source extraction data CodeQL needs.
 - If GitHub creates a generated CodeQL/default setup workflow, disable that
   duplicate after this advanced workflow is green. Running both creates
   confusing check surfaces and can hide which CodeQL configuration is actually

@@ -1215,7 +1215,7 @@ class ValidationPlanScriptTests(unittest.TestCase):
             "sync-models-json-update/summary.md",
         )
 
-    def test_codeql_advanced_workflow_is_authoritative_buildless_setup(self) -> None:
+    def test_codeql_advanced_workflow_is_authoritative_hardened_setup(self) -> None:
         payload = load_workflow_payload(REPO_ROOT / ".github/workflows/codeql.yml")
         trigger = payload.get("on") or {}
         analyze_job = ((payload.get("jobs") or {}).get("analyze") or {})
@@ -1223,7 +1223,7 @@ class ValidationPlanScriptTests(unittest.TestCase):
 
         self.assertIn("workflow_dispatch", trigger)
         self.assertEqual(payload.get("permissions"), {"contents": "read"})
-        self.assertEqual(analyze_job.get("runs-on"), "ubuntu-latest")
+        self.assertEqual(analyze_job.get("runs-on"), "ubuntu-24.04")
         self.assertEqual(
             analyze_job.get("permissions") or {},
             {
@@ -1252,6 +1252,38 @@ class ValidationPlanScriptTests(unittest.TestCase):
         self.assertEqual(checkout_step.get("uses"), "actions/checkout@v6")
         self.assertEqual((checkout_step.get("with") or {}).get("persist-credentials"), "false")
 
+        install_rust_step = next(
+            step for step in steps if step.get("name") == "Install Rust toolchains for CodeQL"
+        )
+        self.assertEqual(install_rust_step.get("if"), "${{ matrix.language == 'rust' }}")
+        install_rust_run = install_rust_step.get("run") or ""
+        self.assertIn("rust-toolchain*", install_rust_run)
+        self.assertIn('"--component"', install_rust_run)
+        self.assertIn('"rust-src"', install_rust_run)
+        self.assertIn("subprocess.run(command, check=True)", install_rust_run)
+
+        restore_rust_cache_step = next(
+            step for step in steps if step.get("name") == "Restore Rust dependency cache for CodeQL"
+        )
+        self.assertEqual(restore_rust_cache_step.get("if"), "${{ matrix.language == 'rust' }}")
+        self.assertEqual(restore_rust_cache_step.get("uses"), "actions/cache/restore@v5")
+        restore_cache_with = restore_rust_cache_step.get("with") or {}
+        self.assertIn("~/.cargo/registry/cache/", restore_cache_with.get("path") or "")
+        self.assertIn("~/.cargo/git/db/", restore_cache_with.get("path") or "")
+        self.assertIn("codeql-rust-cargo-home-v1-", restore_cache_with.get("key") or "")
+
+        prefetch_rust_step = next(
+            step for step in steps if step.get("name") == "Prefetch Rust dependencies for CodeQL"
+        )
+        self.assertEqual(prefetch_rust_step.get("if"), "${{ matrix.language == 'rust' }}")
+        self.assertEqual(prefetch_rust_step.get("continue-on-error"), "true")
+        prefetch_run = prefetch_rust_step.get("run") or ""
+        self.assertIn("cargo fetch --locked --manifest-path codex-rs/Cargo.toml", prefetch_run)
+        self.assertIn(
+            "cargo fetch --locked --manifest-path tools/argument-comment-lint/Cargo.toml",
+            prefetch_run,
+        )
+
         init_step = next(step for step in steps if step.get("name") == "Initialize CodeQL")
         self.assertEqual(init_step.get("uses"), "github/codeql-action/init@v4")
         self.assertEqual(
@@ -1263,6 +1295,17 @@ class ValidationPlanScriptTests(unittest.TestCase):
             },
         )
 
+        save_rust_cache_step = next(
+            step for step in steps if step.get("name") == "Save Rust dependency cache for CodeQL"
+        )
+        self.assertEqual(save_rust_cache_step.get("continue-on-error"), "true")
+        self.assertEqual(save_rust_cache_step.get("uses"), "actions/cache/save@v5")
+        self.assertIn("matrix.language == 'rust'", save_rust_cache_step.get("if") or "")
+        self.assertIn("github.event_name != 'pull_request'", save_rust_cache_step.get("if") or "")
+        self.assertIn("refs/heads/main", save_rust_cache_step.get("if") or "")
+        self.assertIn("refs/heads/upstream-main", save_rust_cache_step.get("if") or "")
+        self.assertNotIn("target/", (save_rust_cache_step.get("with") or {}).get("path") or "")
+
         config = yaml.load(
             (REPO_ROOT / ".github/codeql/codeql-config.yml").read_text(encoding="utf-8"),
             Loader=yaml.BaseLoader,
@@ -1271,8 +1314,8 @@ class ValidationPlanScriptTests(unittest.TestCase):
             config,
             {
                 "name": "codex-codeql-advanced",
-                "queries": [{"uses": "security-extended"}],
-                "threat-models": "remote",
+                "queries": [{"uses": "security-and-quality"}],
+                "threat-models": "local",
             },
         )
 
