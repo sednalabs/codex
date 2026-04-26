@@ -1215,6 +1215,67 @@ class ValidationPlanScriptTests(unittest.TestCase):
             "sync-models-json-update/summary.md",
         )
 
+    def test_codeql_advanced_workflow_is_authoritative_buildless_setup(self) -> None:
+        payload = load_workflow_payload(REPO_ROOT / ".github/workflows/codeql.yml")
+        trigger = payload.get("on") or {}
+        analyze_job = ((payload.get("jobs") or {}).get("analyze") or {})
+        steps = analyze_job.get("steps") or []
+
+        self.assertIn("workflow_dispatch", trigger)
+        self.assertEqual(payload.get("permissions"), {"contents": "read"})
+        self.assertEqual(analyze_job.get("runs-on"), "ubuntu-latest")
+        self.assertEqual(
+            analyze_job.get("permissions") or {},
+            {
+                "actions": "read",
+                "contents": "read",
+                "packages": "read",
+                "security-events": "write",
+            },
+        )
+        self.assertEqual(
+            (((analyze_job.get("strategy") or {}).get("matrix") or {}).get("include") or []),
+            [
+                {"language": "actions", "build-mode": "none"},
+                {"language": "c-cpp", "build-mode": "none"},
+                {"language": "javascript-typescript", "build-mode": "none"},
+                {"language": "python", "build-mode": "none"},
+                {"language": "rust", "build-mode": "none"},
+            ],
+        )
+
+        workflow_json = json.dumps(payload, sort_keys=True)
+        self.assertNotIn("autobuild", workflow_json)
+        self.assertNotIn("manual", workflow_json)
+
+        checkout_step = next(step for step in steps if step.get("name") == "Checkout repository")
+        self.assertEqual(checkout_step.get("uses"), "actions/checkout@v6")
+        self.assertEqual((checkout_step.get("with") or {}).get("persist-credentials"), "false")
+
+        init_step = next(step for step in steps if step.get("name") == "Initialize CodeQL")
+        self.assertEqual(init_step.get("uses"), "github/codeql-action/init@v4")
+        self.assertEqual(
+            init_step.get("with") or {},
+            {
+                "languages": "${{ matrix.language }}",
+                "build-mode": "${{ matrix.build-mode }}",
+                "config-file": "./.github/codeql/codeql-config.yml",
+            },
+        )
+
+        config = yaml.load(
+            (REPO_ROOT / ".github/codeql/codeql-config.yml").read_text(encoding="utf-8"),
+            Loader=yaml.BaseLoader,
+        )
+        self.assertEqual(
+            config,
+            {
+                "name": "codex-codeql-advanced",
+                "queries": [{"uses": "security-extended"}],
+                "threat-models": "remote",
+            },
+        )
+
     def test_sedna_sync_upstream_uses_github_app_token_and_shared_helper(self) -> None:
         payload = load_workflow_payload(REPO_ROOT / ".github/workflows/sedna-sync-upstream.yml")
         sync_job = ((payload.get("jobs") or {}).get("sync") or {})

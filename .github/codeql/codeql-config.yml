@@ -1,0 +1,6 @@
+name: codex-codeql-advanced
+
+queries:
+  - uses: security-extended
+
+threat-models: remote
