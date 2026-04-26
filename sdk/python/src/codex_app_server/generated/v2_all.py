@@ -832,7 +832,6 @@ class ExternalAgentConfigImportCompletedNotification(BaseModel):
 
 
 class ExternalAgentConfigImportResponse(BaseModel):
-    model_config = ConfigDict(
         populate_by_name=True,
     )
 
