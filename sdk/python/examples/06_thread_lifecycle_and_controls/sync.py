@@ -26,7 +26,6 @@ with Codex(config=runtime_config()) as codex:
     listing_archived = codex.thread_list(limit=20, archived=True)
     unarchived = codex.thread_unarchive(reopened.id)
 
-    resumed_info = "n/a"
     try:
         resumed = codex.thread_resume(
             unarchived.id,
