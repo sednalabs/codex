@@ -113,6 +113,14 @@ protocol events, and app-server turn snapshots replay the same
 live and replayed computer-use cells, including fallback messaging when the TUI
 session has no native computer-use provider for the request.
 
+Transcript visibility depends on the native computer-use event path. Android
+operations are expected to enter Codex as `ComputerUseCallRequest` and
+`ComputerUseCallResponse` events after bare `android_observe` or `android_step`
+tool names are promoted to `ToolHandlerKind::ComputerUse`. Calls injected by an
+outer host environment or compatibility bridge are useful runtime probes, but
+they do not prove TUI or `Ctrl+T` transcript visibility unless they are bridged
+back into those native Codex events.
+
 ## Rollout and Trace Semantics
 
 Computer-use request and response events are persisted in extended rollout
@@ -142,6 +150,9 @@ The focused lanes are:
 
 - `codex.app-server-computer-use-targeted`: app-server v2 routing, client
   response handling, and thread start/resume/fork injection.
+- `codex.tui-native-computer-use-targeted`: native request/response events
+  render as transcript-visible computer-use cells and can be inserted into the
+  live `Ctrl+T` transcript overlay.
 - `codex.native-computer-use-tool-registry-targeted`: canonical Android schema
   conversion, duplicate handling, deferred tool search, and core timeout
   cleanup.
@@ -152,6 +163,7 @@ The local just recipes behind those lanes are:
 
 ```bash
 just app-server-computer-use-targeted
+just tui-native-computer-use-targeted
 just native-computer-use-tool-registry-targeted
 ```
 

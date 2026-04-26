@@ -604,6 +604,7 @@
         "thread_resume_injects_native_android_tools_into_model_requests",
         "thread_resume_replaces_loaded_thread_when_native_android_tools_are_requested",
         "thread_fork_injects_native_android_tools_into_model_requests",
+        "native_android_computer_use_events_render_in_transcript_and_overlay",
         "canonical_android_dynamic_tool_preserves_supported_android_tool_names",
         "android_dynamic_tools_use_canonical_codex_tool_definitions",
         "duplicate_bare_android_dynamic_tools_register_native_handler_once",

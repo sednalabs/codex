@@ -57,6 +57,8 @@ use codex_app_server_protocol::UserInput as AppServerUserInput;
 use codex_app_server_protocol::WarningNotification;
 use codex_otel::SessionTelemetry;
 use codex_protocol::ThreadId;
+use codex_protocol::computer_use::ComputerUseCallRequest;
+use codex_protocol::computer_use::ComputerUseOutputContentItem;
 use codex_protocol::config_types::CollaborationMode;
 use codex_protocol::config_types::CollaborationModeMask;
 use codex_protocol::config_types::ModeKind;
@@ -66,6 +68,7 @@ use codex_protocol::models::FileSystemPermissions;
 use codex_protocol::models::NetworkPermissions;
 use codex_protocol::models::PermissionProfile;
 use codex_protocol::protocol::AskForApproval;
+use codex_protocol::protocol::ComputerUseCallResponseEvent;
 use codex_protocol::protocol::Event;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::NetworkApprovalContext;
@@ -4627,6 +4630,80 @@ async fn queued_rollback_syncs_overlay_and_clears_deferred_history() {
         })
         .collect();
     assert_eq!(user_messages, vec!["first".to_string()]);
+    let overlay_cell_count = match app.overlay.as_ref() {
+        Some(Overlay::Transcript(t)) => t.committed_cell_count(),
+        _ => panic!("expected transcript overlay"),
+    };
+    assert_eq!(overlay_cell_count, app.transcript_cells.len());
+}
+
+#[tokio::test]
+async fn native_android_computer_use_events_render_in_transcript_and_overlay() {
+    let (mut app, mut app_event_rx, _op_rx) = make_test_app_with_channels().await;
+    app.overlay = Some(Overlay::new_transcript(app.transcript_cells.clone()));
+
+    let request = ComputerUseCallRequest {
+        call_id: "android-call-1".to_string(),
+        turn_id: "turn-1".to_string(),
+        environment_id: Some("emulator-5554".to_string()),
+        adapter: "android".to_string(),
+        tool: "android_observe".to_string(),
+        arguments: serde_json::json!({
+            "scope": "screen_and_ui",
+        }),
+    };
+
+    app.chat_widget
+        .handle_computer_use_begin_now(request.clone());
+    let active_transcript = lines_to_single_string(
+        &app.chat_widget
+            .active_cell_transcript_lines(/*width*/ 120)
+            .expect("active computer-use cell transcript"),
+    );
+    assert!(active_transcript.contains("Using computer"));
+    assert!(
+        active_transcript
+            .contains(r#"android[emulator-5554].android_observe {"scope":"screen_and_ui"}"#)
+    );
+
+    app.chat_widget
+        .handle_computer_use_end_now(ComputerUseCallResponseEvent {
+            call_id: request.call_id,
+            turn_id: request.turn_id,
+            environment_id: request.environment_id,
+            adapter: request.adapter,
+            tool: request.tool,
+            arguments: request.arguments,
+            content_items: vec![ComputerUseOutputContentItem::InputText {
+                text: "Solar Gravity Lab foregrounded; JD(TDB) 2451545.25000".to_string(),
+            }],
+            success: true,
+            error: None,
+            duration: std::time::Duration::from_millis(42),
+        });
+
+    let AppEvent::InsertHistoryCell(cell) = app_event_rx
+        .try_recv()
+        .expect("completed computer-use cell should be inserted")
+    else {
+        panic!("expected completed computer-use history cell");
+    };
+
+    let transcript = lines_to_single_string(&cell.transcript_lines(/*width*/ 120));
+    assert!(transcript.contains("Used computer"));
+    assert!(
+        transcript.contains(r#"android[emulator-5554].android_observe {"scope":"screen_and_ui"}"#)
+    );
+    assert!(transcript.contains("Solar Gravity Lab foregrounded"));
+
+    let cell: Arc<dyn HistoryCell> = cell.into();
+    if let Some(Overlay::Transcript(transcript_overlay)) = &mut app.overlay {
+        transcript_overlay.insert_cell(cell.clone());
+    } else {
+        panic!("expected transcript overlay");
+    }
+    app.transcript_cells.push(cell);
+
     let overlay_cell_count = match app.overlay.as_ref() {
         Some(Overlay::Transcript(t)) => t.committed_cell_count(),
         _ => panic!("expected transcript overlay"),
