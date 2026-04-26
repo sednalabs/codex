@@ -24,6 +24,7 @@ use crate::tools::context::ToolPayload;
 use crate::tools::hook_names::HookToolName;
 use crate::tools::registry::ToolHandler;
 use crate::turn_diff_tracker::TurnDiffTracker;
+use codex_utils_output_truncation::approx_token_count;
 use tokio::sync::Mutex;
 use tokio::time::Duration;
 use tokio::time::Instant;
@@ -541,6 +542,53 @@ async fn exec_command_wait_until_terminal_timeout_is_not_clamped_to_background_p
         output.process_id.is_some(),
         "timed-out wait should keep a resumable session alive"
     );
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn exec_command_wait_until_terminal_reports_aggregated_original_token_count()
+-> anyhow::Result<()> {
+    skip_if_sandbox!(Ok(()));
+    if cfg!(windows) {
+        return Ok(());
+    }
+
+    let (session, turn) = make_session_and_context().await;
+    let session = Arc::new(session);
+    let turn = Arc::new(turn);
+
+    let output = run_unified_exec(
+        Arc::clone(&session),
+        Arc::clone(&turn),
+        "exec_command",
+        serde_json::json!({
+            "cmd": "printf 'alpha beta gamma delta epsilon\\n'; sleep 1; printf 'zeta eta theta iota kappa lambda\\n'",
+            "yield_time_ms": 250,
+            "wait_until_terminal": true,
+            "max_wait_ms": 5_000,
+            "heartbeat_interval_ms": 100,
+            "max_output_tokens": 4
+        }),
+    )
+    .await
+    .map_err(|err| anyhow::anyhow!("exec_command call failed: {err}"))?;
+
+    let raw_output = String::from_utf8_lossy(&output.raw_output);
+    assert_eq!(
+        raw_output,
+        "alpha beta gamma delta epsilon\nzeta eta theta iota kappa lambda\n"
+    );
+    assert_eq!(output.exit_code, Some(0));
+    assert!(
+        output.process_id.is_none(),
+        "terminal wait should finish the process"
+    );
+    assert_eq!(
+        output.original_token_count,
+        Some(approx_token_count(&raw_output)),
+        "terminal wait metadata should describe the final aggregated output"
+    );
+
     Ok(())
 }
 

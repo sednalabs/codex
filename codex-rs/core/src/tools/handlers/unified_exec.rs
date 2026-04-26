@@ -172,6 +172,8 @@ async fn complete_terminal_wait(
 
     response.wall_time = wall_time;
     response.raw_output = raw_output;
+    let output_text = String::from_utf8_lossy(&response.raw_output);
+    response.original_token_count = Some(approx_token_count(&output_text));
     Ok(response)
 }
 
@@ -499,7 +501,11 @@ impl ToolHandler for UnifiedExecHandler {
                         process_id: args.session_id,
                         input: &args.chars,
                         yield_time_ms: args.yield_time_ms,
-                        empty_input_min_yield_time_ms: if args.wait_until_terminal { MIN_YIELD_TIME_MS } else { MIN_EMPTY_YIELD_TIME_MS },
+                        empty_input_min_yield_time_ms: if args.wait_until_terminal {
+                            MIN_YIELD_TIME_MS
+                        } else {
+                            MIN_EMPTY_YIELD_TIME_MS
+                        },
                         max_output_tokens: Some(max_output_tokens),
                     })
                     .await
