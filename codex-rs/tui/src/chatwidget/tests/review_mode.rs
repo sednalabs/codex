@@ -811,7 +811,33 @@ async fn manual_interrupt_restores_pending_steers_to_composer() {
 }
 
 #[tokio::test]
-async fn esc_interrupt_sends_all_pending_steers_immediately_and_keeps_existing_draft() {
+async fn esc_interrupt_with_queued_messages_requires_confirmation() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.thread_id = Some(ThreadId::new());
+    chat.on_task_started();
+
+    chat.queued_user_messages
+        .push_back(UserMessage::from("queued draft".to_string()).into());
+    chat.refresh_pending_input_preview();
+
+    chat.handle_key_event(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    assert_matches!(rx.try_recv(), Err(TryRecvError::Empty));
+    assert!(
+        render_bottom_first_row(&chat, /*width*/ 80).contains("again to interrupt"),
+        "first Esc should render the confirmation hint"
+    );
+    assert_eq!(chat.queued_user_messages.len(), 1);
+    assert_eq!(
+        chat.queued_user_messages.front().unwrap().text,
+        "queued draft"
+    );
+
+    chat.handle_key_event(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    assert_matches!(rx.try_recv(), Ok(AppEvent::CodexOp(Op::Interrupt)));
+}
+
+#[tokio::test]
+async fn esc_interrupt_with_pending_steers_requires_confirmation_and_keeps_existing_draft() {
     let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
     chat.thread_id = Some(ThreadId::new());
     chat.on_task_started();
@@ -851,6 +877,15 @@ async fn esc_interrupt_sends_all_pending_steers_immediately_and_keeps_existing_d
     chat.refresh_pending_input_preview();
     chat.bottom_pane
         .set_composer_text("still editing".to_string(), Vec::new(), Vec::new());
+
+    chat.handle_key_event(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    assert_matches!(op_rx.try_recv(), Err(TryRecvError::Empty));
+    assert!(
+        render_bottom_first_row(&chat, /*width*/ 80).contains("again to interrupt"),
+        "first Esc should render the confirmation hint"
+    );
+    assert_eq!(chat.pending_steers.len(), 2);
+    assert_eq!(chat.bottom_pane.composer_text(), "still editing");
 
     chat.handle_key_event(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
     next_interrupt_op(&mut op_rx);
@@ -906,7 +941,14 @@ async fn esc_with_pending_steers_overrides_agent_command_interrupt_behavior() {
     chat.bottom_pane
         .set_composer_text("/agent ".to_string(), Vec::new(), Vec::new());
     chat.handle_key_event(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    assert_matches!(op_rx.try_recv(), Err(TryRecvError::Empty));
+    assert!(
+        render_bottom_first_row(&chat, /*width*/ 80).contains("again to interrupt"),
+        "first Esc should render the confirmation hint"
+    );
+    assert_eq!(chat.bottom_pane.composer_text(), "/agent ");
 
+    chat.handle_key_event(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
     next_interrupt_op(&mut op_rx);
     assert_eq!(chat.bottom_pane.composer_text(), "/agent ");
 }
