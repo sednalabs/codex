@@ -139,7 +139,11 @@ def build_command(route: JsonObject, payload: JsonObject, context: JsonObject) -
     command = route.get("command")
     if not isinstance(command, list) or not command or not all(isinstance(part, str) for part in command):
         raise WebhookError("matched route must contain a non-empty string command array")
-    return [expand_token(part, payload, context) for part in command]
+    expanded_command = [expand_token(part, payload, context) for part in command]
+    return [
+        validate_untrusted_command_value(value, f"command[{index}]")
+        for index, value in enumerate(expanded_command)
+    ]
 
 
 def run_with_optional_lock(config: ReceiverConfig, command: list[str], cwd: str | None) -> int:
