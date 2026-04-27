@@ -102,7 +102,7 @@ impl ApprovalRequest {
         }
     }
 
-    fn matches_resolved_request(&self, request: &ResolvedAppServerRequest) -> bool {
+    pub(super) fn matches_resolved_request(&self, request: &ResolvedAppServerRequest) -> bool {
         match (self, request) {
             (
                 ApprovalRequest::Exec { id, .. },
