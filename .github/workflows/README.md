@@ -88,6 +88,11 @@ contract today.
   protected branch or scheduled runs. Do not cache Rust toolchain executables or
   pass normal Cargo `target/`, test binaries, or nextest archives into CodeQL;
   they are compiled outputs, not the source extraction data CodeQL needs.
+- When a pull request closes, `cancel-pr-runs.yml` cancels active PR-scoped
+  workflow runs for that PR. Merged PRs still get the authoritative post-merge
+  CodeQL scan from the `main` push; the canceller deliberately leaves protected
+  branch push runs alone so the branch-tip result is not hidden by stale PR
+  evidence.
 - If GitHub creates a generated CodeQL/default setup workflow, disable that
   duplicate after this advanced workflow is green. Running both creates
   confusing check surfaces and can hide which CodeQL configuration is actually
@@ -116,6 +121,10 @@ contract today.
   downstream divergence audit in separate jobs. That costs a second checkout,
   but it preserves a smaller credential boundary: the audit job does not
   receive the upstream mirror write token.
+- `cancel-pr-runs.yml` is the closed-PR cleanup hook. It cancels active
+  `pull_request` runs associated with the closed PR, plus same-repository
+  push runs for the PR head branch when that branch is not a protected branch.
+  It does not cancel post-merge `main` or `upstream-main` push runs.
 - CodeQL code scanning should run through the checked-in advanced workflow.
   Treat generated/default CodeQL workflows as duplicates once `codeql.yml` is
   enabled and green.
