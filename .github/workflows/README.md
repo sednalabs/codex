@@ -55,10 +55,22 @@ contract today.
   Keep the checked-in workflow authoritative so language coverage, query
   selection, permissions, and scheduling remain reviewable with the rest of the
   workflow catalog.
-- The matrix intentionally analyzes Actions, C/C++, JavaScript/TypeScript,
-  Python, and Rust with `build-mode: none`. This keeps coverage over the
-  vendored C sandbox code and Rust sources without relying on CodeQL autobuild,
-  which has no useful build system to discover in this repository.
+- Protected branch pushes, scheduled runs, and manual dispatch analyze Actions,
+  C/C++, JavaScript/TypeScript, Python, and Rust with `build-mode: none`. This
+  keeps coverage over the vendored C sandbox code and Rust sources without
+  relying on CodeQL autobuild, which has no useful build system to discover in
+  this repository.
+- Pull requests route the language matrix through
+  `.github/scripts/resolve_codeql_plan.py`. The planner checkout uses the base
+  commit and the PR diff comes from GitHub's pull-request files API, so the
+  privileged planning job does not fetch a contributor-controlled head
+  repository. The workflow still starts and ends in a required gate, but
+  docs-only or unrelated changes can skip analysis, and language-local changes
+  analyze only the relevant CodeQL languages. Unavailable PR metadata and edits
+  to the CodeQL workflow, config, router, or planner fixtures fall back to the
+  full matrix. If the trusted base checkout does not yet contain the planner,
+  the workflow bootstraps with a full matrix instead of reading planner code
+  from the PR head.
 - The workflow uses `.github/codeql/codeql-config.yml` for shared CodeQL
   settings. Add query packs or path filters there instead of duplicating
   configuration across matrix entries.
@@ -69,15 +81,23 @@ contract today.
   arguments, environment variables, and standard input as taint sources where
   CodeQL supports them.
 - Rust CodeQL currently uses no-build analysis through `rust-analyzer`. The
-  workflow prepares that lane by installing every checked-in Rust toolchain,
-  restoring Cargo registry/git caches, and prefetching the Rust workspaces
-  before CodeQL initializes. Do not try to pass normal Cargo `target/`, test
-  binaries, or nextest archives into CodeQL; they are compiled outputs, not the
-  source extraction data CodeQL needs.
+  workflow prepares that lane by installing the checked-in Rust toolchain
+  channels with only `rust-src`, restoring Cargo registry/git caches, and
+  prefetching the Rust workspaces before CodeQL initializes. CodeQL's native
+  dependency cache runs in restore-only mode on PRs and restore/store mode on
+  protected branch or scheduled runs. Do not cache Rust toolchain executables or
+  pass normal Cargo `target/`, test binaries, or nextest archives into CodeQL;
+  they are compiled outputs, not the source extraction data CodeQL needs.
 - If GitHub creates a generated CodeQL/default setup workflow, disable that
   duplicate after this advanced workflow is green. Running both creates
   confusing check surfaces and can hide which CodeQL configuration is actually
   producing alerts.
+- GitHub Code Quality is a separate public-preview product that may appear as
+  a dynamic `CodeQL` / `Code Quality` workflow at
+  `dynamic/github-code-scanning/codeql`. That workflow is controlled from the
+  repository's Code quality settings, not by this checked-in workflow. Disable
+  or narrow it there if it duplicates the maintained advanced CodeQL setup or
+  spends runner minutes unexpectedly.
 
 ## Rule Of Thumb
 
