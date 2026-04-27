@@ -218,6 +218,7 @@ async fn run_action(
             } else {
                 let args = input_args(action, &["x", "y"]);
                 client.call_tool("android.input.tap", args.clone()).await?;
+                tokio::time::sleep(Duration::from_millis(100)).await;
                 client.call_tool("android.input.tap", args).await?;
             }
             Ok(format!(
