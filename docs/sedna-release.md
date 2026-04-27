@@ -44,9 +44,9 @@ Use the `sedna-release` workflow for fork-owned GitHub releases.
 - Push to `main` with an exact commit trailer to request an automatic official release:
   - `Sedna-Release: stable`
   - `Sedna-Release: prerelease`
-- `main` pushes are first handled by `sedna-release-router`, which dispatches `sedna-release`
-  only when the head commit has a valid release trailer. Ordinary `main` pushes without a
-  trailer are a router-only no-op, so the heavyweight publisher workflow is not started.
+- `main` pushes first run a lightweight route job inside `sedna-release`; the release build job
+  runs only when the head commit has a valid release trailer. Ordinary `main` pushes without a
+  trailer skip the heavyweight publisher job while keeping the Actions run tied to the push commit.
 - `Sedna-Release: stable` refuses upstream prerelease tracks such as `0.126.0-alpha.3`,
   publishes a full GitHub Release, and dispatches public asset verification for that exact tag.
 - `Sedna-Release: prerelease` allows upstream prerelease tracks and publishes the GitHub Release as
