@@ -547,8 +547,9 @@
         "sdk/python/scripts/update_sdk_artifacts.py",
         "sdk/python/examples/06_thread_lifecycle_and_controls/async.py",
         "sdk/python/examples/06_thread_lifecycle_and_controls/sync.py",
-        "sdk/python/tests/test_contract_generation.py",
-        "sdk/python/src/codex_app_server/generated/v2_all.py"
+        "sdk/python/scripts/update_sdk_artifacts.py",
+        "sdk/python/src/codex_app_server/generated/v2_all.py",
+        "sdk/python/tests/test_contract_generation.py"
       ],
       "behavior": "Downstream now tracks upstream on the core app-server contract and replay surfaces, while preserving a narrow app-server-specific carry around protocol event history, rollout cwd portability, and thread list/read/resume summary surfaces. Neighboring carries such as blocking waits, MCP safety, and startup/plugin-sync follow-up are tracked separately.",
       "upstream_equivalent": false,

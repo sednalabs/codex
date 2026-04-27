@@ -1422,6 +1422,41 @@ class ValidationPlanScriptTests(unittest.TestCase):
             },
         )
 
+    def test_closed_pr_run_canceller_preserves_post_merge_branch_runs(self) -> None:
+        payload = load_workflow_payload(REPO_ROOT / ".github/workflows/cancel-pr-runs.yml")
+        trigger = payload.get("on") or {}
+        job = ((payload.get("jobs") or {}).get("cancel") or {})
+        steps = job.get("steps") or []
+
+        self.assertEqual(
+            ((trigger.get("pull_request_target") or {}).get("types") or []),
+            ["closed"],
+        )
+        self.assertEqual(payload.get("permissions"), {"actions": "write", "contents": "read"})
+        self.assertEqual(job.get("permissions") or {}, {})
+        self.assertEqual(job.get("runs-on"), "ubuntu-latest")
+
+        workflow_json = json.dumps(payload, sort_keys=True)
+        self.assertNotIn("actions/checkout", workflow_json)
+        self.assertNotIn("github.event.pull_request.head.repo.clone_url", workflow_json)
+
+        cancel_step = next(
+            step for step in steps if step.get("name") == "Cancel stale runs for the closed PR"
+        )
+        self.assertEqual(cancel_step.get("uses"), "actions/github-script@v9")
+        script = (cancel_step.get("with") or {}).get("script") or ""
+
+        self.assertIn("github.rest.actions.listWorkflowRunsForRepo", script)
+        self.assertIn("event: 'pull_request'", script)
+        self.assertIn("run.pull_requests.some((pr) => pr.number === prNumber)", script)
+        self.assertIn("github.rest.actions.cancelWorkflowRun", script)
+        self.assertIn("headRepo === currentRepo", script)
+        self.assertIn("!protectedBranches.has(headBranch)", script)
+        self.assertIn("'main'", script)
+        self.assertIn("'upstream-main'", script)
+        self.assertIn("mayCancelHeadPushRuns &&", script)
+        self.assertIn("Post-merge push runs on ${baseBranch}", script)
+
     def test_codeql_plan_routes_rust_only_prs_to_rust(self) -> None:
         plan = run_script(
             SCRIPTS_DIR / "resolve_codeql_plan.py",
