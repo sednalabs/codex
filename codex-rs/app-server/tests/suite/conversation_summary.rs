@@ -156,6 +156,7 @@ async fn get_conversation_summary_by_relative_rollout_path_resolves_from_codex_h
     .await??;
     let received: GetConversationSummaryResponse = to_response(response)?;
 
-    assert_eq!(normalized_summary_path(received.summary)?, expected);
+    let received = normalized_summary_path(received.summary)?;
+    assert_eq!(received, expected);
     Ok(())
 }
