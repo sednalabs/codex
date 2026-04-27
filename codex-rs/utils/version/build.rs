@@ -45,13 +45,19 @@ fn main() {
     let upstream_track = env_or_empty("CODEX_UPSTREAM_TRACK");
     let upstream_base_commit = env_or_empty("CODEX_UPSTREAM_BASE_COMMIT");
     let upstream_base_tag = env_or_empty("CODEX_UPSTREAM_BASE_TAG");
+    let upstream_distance_from_tag = env_or_empty("CODEX_UPSTREAM_DISTANCE_FROM_TAG");
     let downstream_commit = env_or_default(
         "CODEX_DOWNSTREAM_COMMIT",
         short_sha.as_deref().unwrap_or("unknown"),
     );
 
     let build_provenance = if !upstream_base_commit.is_empty() && !downstream_commit.is_empty() {
-        format!("up:{upstream_base_commit} down:{downstream_commit}")
+        let upstream_position = upstream_position_label(
+            &upstream_base_tag,
+            &upstream_distance_from_tag,
+            &upstream_base_commit,
+        );
+        format!("up:{upstream_position} down:{downstream_commit}")
     } else if git_sha != "unknown" {
         format!("git:{git_sha}")
     } else {
@@ -100,6 +106,7 @@ fn emit_git_rerun_hints() {
     println!("cargo:rerun-if-env-changed=CODEX_UPSTREAM_TRACK");
     println!("cargo:rerun-if-env-changed=CODEX_UPSTREAM_BASE_COMMIT");
     println!("cargo:rerun-if-env-changed=CODEX_UPSTREAM_BASE_TAG");
+    println!("cargo:rerun-if-env-changed=CODEX_UPSTREAM_DISTANCE_FROM_TAG");
     println!("cargo:rerun-if-env-changed=CODEX_DOWNSTREAM_COMMIT");
     println!("cargo:rerun-if-env-changed=GIT_DIR");
     println!("cargo:rerun-if-env-changed=GIT_WORK_TREE");
@@ -122,6 +129,17 @@ fn emit_git_rerun_hints() {
         if path.exists() {
             println!("cargo:rerun-if-changed={}", path.display());
         }
+    }
+}
+
+fn upstream_position_label(tag: &str, distance_from_tag: &str, commit: &str) -> String {
+    if tag.is_empty() {
+        return commit.to_string();
+    }
+
+    match distance_from_tag.parse::<u32>() {
+        Ok(0) | Err(_) => format!("{tag}@{commit}"),
+        Ok(distance) => format!("{tag}+{distance}@{commit}"),
     }
 }
 
