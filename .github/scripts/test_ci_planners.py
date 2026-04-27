@@ -64,6 +64,9 @@ RESOLVE_SEDNA_RELEASE_VERSION = load_module(
     "resolve_sedna_release_version_module",
     SCRIPTS_DIR / "resolve_sedna_release_version.py",
 )
+ROUTE_SEDNA_RELEASE = load_module(
+    "route_sedna_release_module", SCRIPTS_DIR / "route_sedna_release.py"
+)
 
 
 def run_script(script: Path, *args: str) -> dict:
@@ -3086,6 +3089,87 @@ class HelperScriptTests(unittest.TestCase):
                 "options": ["auto", "stable", "prerelease"],
             },
         )
+
+    def test_sedna_release_main_pushes_are_routed_before_publisher(self) -> None:
+        release_payload = load_workflow_payload(
+            REPO_ROOT / ".github/workflows/sedna-release.yml"
+        )
+        router_payload = load_workflow_payload(
+            REPO_ROOT / ".github/workflows/sedna-release-router.yml"
+        )
+        release_push = ((release_payload.get("on") or {}).get("push") or {})
+        router_push = ((router_payload.get("on") or {}).get("push") or {})
+        router_steps = (
+            ((router_payload.get("jobs") or {}).get("route") or {}).get("steps") or []
+        )
+        named_steps = {step.get("name"): step for step in router_steps if "name" in step}
+
+        self.assertNotIn("branches", release_push)
+        self.assertEqual(release_push.get("tags"), ["v*-sedna.*"])
+        self.assertEqual(router_push.get("branches"), ["main"])
+        self.assertEqual((router_payload.get("permissions") or {}).get("actions"), "write")
+        self.assertIn(
+            "route_sedna_release.py",
+            named_steps["Resolve release request"].get("run") or "",
+        )
+        self.assertIn(
+            "gh workflow run sedna-release.yml",
+            named_steps["Dispatch Sedna release"].get("run") or "",
+        )
+        self.assertIn(
+            "steps.route.outputs.release_requested == 'true'",
+            named_steps["Dispatch Sedna release"].get("if") or "",
+        )
+
+    def test_sedna_release_router_detects_release_marker(self) -> None:
+        event = {
+            "ref": "refs/heads/main",
+            "after": "abc123",
+            "head_commit": {
+                "message": "release commit\n\nSedna-Release: prerelease\n",
+            },
+        }
+
+        self.assertEqual(
+            ROUTE_SEDNA_RELEASE.route_event(event),
+            {
+                "release_requested": "true",
+                "reason": "release_marker",
+                "target_sha": "abc123",
+                "channel": "prerelease",
+            },
+        )
+
+    def test_sedna_release_router_skips_unmarked_main_pushes(self) -> None:
+        event = {
+            "ref": "refs/heads/main",
+            "after": "abc123",
+            "head_commit": {
+                "message": "ordinary maintenance commit",
+            },
+        }
+
+        self.assertEqual(
+            ROUTE_SEDNA_RELEASE.route_event(event),
+            {
+                "release_requested": "false",
+                "reason": "missing_sedna_release_marker",
+                "target_sha": "abc123",
+                "channel": "",
+            },
+        )
+
+    def test_sedna_release_router_rejects_invalid_release_marker(self) -> None:
+        event = {
+            "ref": "refs/heads/main",
+            "after": "abc123",
+            "head_commit": {
+                "message": "release commit\n\nSedna-Release: beta\n",
+            },
+        }
+
+        with self.assertRaises(ROUTE_SEDNA_RELEASE.ReleaseVersionError):
+            ROUTE_SEDNA_RELEASE.route_event(event)
 
     def test_sedna_release_uses_synced_upstream_mirror_as_version_base(self) -> None:
         workflow = (REPO_ROOT / ".github/workflows/sedna-release.yml").read_text(

@@ -1,0 +1,66 @@
+name: sedna-release-router
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  actions: write
+  contents: read
+
+concurrency:
+  group: sedna-release-router-${{ github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  route:
+    name: Route Sedna release request
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 1
+
+      - name: Resolve release request
+        id: route
+        shell: bash
+        run: python3 .github/scripts/route_sedna_release.py
+
+      - name: Dispatch Sedna release
+        if: ${{ steps.route.outputs.release_requested == 'true' }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_CHANNEL: ${{ steps.route.outputs.channel }}
+          TARGET_SHA: ${{ steps.route.outputs.target_sha }}
+        run: |
+          set -euo pipefail
+          gh workflow run sedna-release.yml \
+            --repo "${GH_REPO}" \
+            --ref main \
+            -f "target_sha=${TARGET_SHA}" \
+            -f "channel=${RELEASE_CHANNEL}" \
+            -f "draft=false"
+
+      - name: Summarize routing decision
+        if: ${{ always() }}
+        shell: bash
+        env:
+          RELEASE_REQUESTED: ${{ steps.route.outputs.release_requested }}
+          RELEASE_CHANNEL: ${{ steps.route.outputs.channel }}
+          ROUTE_REASON: ${{ steps.route.outputs.reason }}
+          TARGET_SHA: ${{ steps.route.outputs.target_sha }}
+        run: |
+          {
+            echo "## Sedna release router"
+            echo
+            echo "- Release requested: ${RELEASE_REQUESTED:-unknown}"
+            echo "- Route reason: ${ROUTE_REASON:-unknown}"
+            if [[ "${RELEASE_REQUESTED:-false}" == "true" ]]; then
+              echo "- Release channel: ${RELEASE_CHANNEL}"
+              echo "- Target commit: ${TARGET_SHA}"
+            fi
+          } >> "${GITHUB_STEP_SUMMARY}"
