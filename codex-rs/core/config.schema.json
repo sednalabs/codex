@@ -1589,6 +1589,11 @@
             "null"
           ]
         },
+        "max_concurrent_threads_per_session": {
+          "format": "uint",
+          "minimum": 1.0,
+          "type": "integer"
+        },
         "usage_hint_enabled": {
           "type": [
             "boolean",
