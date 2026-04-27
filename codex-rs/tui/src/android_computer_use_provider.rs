@@ -85,7 +85,7 @@ async fn observe(
                 arguments,
                 "Android observation",
                 &err,
-                false,
+                /*action_already_executed*/ false,
             )
             .await
         }
@@ -124,7 +124,7 @@ async fn step(
                 arguments,
                 "Android post-action observation",
                 &err,
-                true,
+                /*action_already_executed*/ true,
             )
             .await?
         }
@@ -217,7 +217,7 @@ async fn screenshot_fallback_response(
     if tools.contains("android.capture_screenshot") {
         let mut args = json!({});
         copy_if_present(arguments, &mut args, "serial");
-        copy_rename_if_present(arguments, &mut args, "screenshot_filename", "filename");
+        copy_inspect_screenshot_filename_for_capture(arguments, &mut args);
         match client.call_tool("android.capture_screenshot", args).await {
             Ok(capture) => {
                 if let Some(serial) = capture.get("serial").and_then(Value::as_str) {
@@ -237,7 +237,7 @@ async fn screenshot_fallback_response(
     }
 
     let mut response = observation_response(client, tools, observation, &lines.join("\n")).await?;
-    response.success = action_already_executed || response.content_items.len() > 1;
+    response.success = action_already_executed || response_includes_native_image(&response);
     if !response.success {
         response.error = Some(observe_error.to_string());
     }
@@ -858,15 +858,17 @@ fn copy_if_present(source: &Value, target: &mut Value, field: &str) -> bool {
     }
 }
 
-fn copy_rename_if_present(
-    source: &Value,
-    target: &mut Value,
-    source_field: &str,
-    target_field: &str,
-) {
-    if let Some(value) = source.get(source_field) {
-        target[target_field] = value.clone();
+fn copy_inspect_screenshot_filename_for_capture(source: &Value, target: &mut Value) {
+    if let Some(value) = source.get("screenshot_filename") {
+        target["filename"] = value.clone();
     }
+}
+
+fn response_includes_native_image(response: &ComputerUseCallResponse) -> bool {
+    response
+        .content_items
+        .iter()
+        .any(|item| matches!(item, ComputerUseCallOutputContentItem::InputImage { .. }))
 }
 
 fn has_xy(value: &Value) -> bool {
@@ -975,6 +977,25 @@ mod tests {
     fn artifact_bytes_decodes_known_shapes() {
         let bytes = artifact_bytes(&json!({"base64": "aGVsbG8="})).expect("decode base64");
         assert_eq!(bytes, b"hello");
+    }
+
+    #[test]
+    fn response_includes_native_image_detects_image_content() {
+        let response = ComputerUseCallResponse {
+            content_items: vec![
+                ComputerUseCallOutputContentItem::InputText {
+                    text: "summary".to_string(),
+                },
+                ComputerUseCallOutputContentItem::InputImage {
+                    image_url: "data:image/png;base64,AAAA".to_string(),
+                    detail: Some("high".to_string()),
+                },
+            ],
+            success: true,
+            error: None,
+        };
+
+        assert!(response_includes_native_image(&response));
     }
 
     #[test]
