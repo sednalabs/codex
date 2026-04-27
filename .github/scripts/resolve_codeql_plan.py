@@ -198,6 +198,11 @@ def main() -> None:
     parser.add_argument("--base-sha", default="")
     parser.add_argument("--head-sha", default="")
     parser.add_argument("--changed-files-json", default="")
+    parser.add_argument(
+        "--allow-git-diff-fallback",
+        action="store_true",
+        help="Allow local git history to be used when trusted PR metadata is unavailable.",
+    )
     args = parser.parse_args()
 
     if args.event_name != "pull_request":
@@ -206,10 +211,15 @@ def main() -> None:
 
     explicit_files = parse_files_json(args.changed_files_json)
     files = explicit_files
-    if files is None:
+    if files is None and args.allow_git_diff_fallback:
         files = diff_files(Path(args.repo_root), args.base_sha, args.head_sha)
     if files is None:
-        print(json.dumps(full_plan("unable to determine changed files"), separators=(",", ":")))
+        print(
+            json.dumps(
+                full_plan("unable to determine changed files from trusted PR metadata"),
+                separators=(",", ":"),
+            )
+        )
         return
 
     print(json.dumps(plan_for_files(files), separators=(",", ":")))

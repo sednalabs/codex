@@ -26,10 +26,12 @@ artifacts.
   - PR routing: the language router keeps the workflow-level check alive while
     selecting only the CodeQL languages touched by the diff; docs-only or
     unrelated PRs report success through the required gate without starting
-    analysis jobs
+    analysis jobs; PR planning uses the base checkout plus GitHub PR file
+    metadata instead of fetching contributor-controlled head repositories
   - full-scan fallback: protected branch pushes, schedules, manual dispatch,
-    ambiguous diffs, and edits to CodeQL workflow/config/router fixtures run
-    the full Actions, C/C++, JavaScript/TypeScript, Python, and Rust matrix
+    unavailable PR metadata, and edits to CodeQL workflow/config/router
+    fixtures run the full Actions, C/C++, JavaScript/TypeScript, Python, and
+    Rust matrix
   - not covered: GitHub Code Quality's public-preview dynamic workflow is a
     separate repository setting and may still consume Actions minutes unless it
     is disabled or narrowed in GitHub's Code quality settings

@@ -33,6 +33,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v6
         with:
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.sha }}
           fetch-depth: 1
           persist-credentials: false
 
@@ -88,38 +89,19 @@ jobs:
               });
               const expectedChangedFiles = context.payload.pull_request.changed_files;
               if (Number.isFinite(expectedChangedFiles) && files.length !== expectedChangedFiles) {
-                core.setOutput("needs_git_fallback", "true");
                 core.setOutput(
-                  "fallback_reason",
+                  "metadata_reason",
                   `pulls.listFiles returned ${files.length} of ${expectedChangedFiles} files`,
                 );
                 return;
               }
 
               setJsonOutput("changed_files_json", normalizePathList(files));
-              core.setOutput("needs_git_fallback", "false");
-              core.setOutput("fallback_reason", "");
+              core.setOutput("metadata_reason", "");
             } catch (error) {
               core.warning(`failed to resolve PR diff via GitHub API: ${error.message}`);
-              core.setOutput("needs_git_fallback", "true");
-              core.setOutput("fallback_reason", error.message);
+              core.setOutput("metadata_reason", error.message);
             }
-
-      - name: Fetch history for git diff fallback
-        if: ${{ steps.pr_diff.outputs.needs_git_fallback == 'true' }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          base_sha='${{ steps.shas.outputs.base_sha }}'
-          head_sha='${{ steps.shas.outputs.head_sha }}'
-          head_repo='${{ github.event.pull_request.head.repo.clone_url }}'
-
-          git fetch --no-tags --depth=1 origin "${base_sha}" || true
-          git fetch --no-tags --depth=1 "${head_repo}" "${head_sha}" || true
-          if ! git rev-parse --verify "${base_sha}^{commit}" >/dev/null 2>&1 ||
-             ! git rev-parse --verify "${head_sha}^{commit}" >/dev/null 2>&1; then
-            git fetch --no-tags --prune --unshallow origin || git fetch --no-tags --prune origin
-          fi
 
       - name: Compute CodeQL language plan
         id: plan

@@ -1272,6 +1272,16 @@ class ValidationPlanScriptTests(unittest.TestCase):
             "${{ steps.plan.outputs.matrix }}",
         )
         plan_steps = plan_job.get("steps") or []
+        checkout_step = next(
+            step for step in plan_steps if step.get("name") == "Checkout repository"
+        )
+        self.assertEqual(
+            (checkout_step.get("with") or {}).get("ref"),
+            "${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.sha }}",
+        )
+        plan_json = json.dumps(plan_job, sort_keys=True)
+        self.assertNotIn("github.event.pull_request.head.repo.clone_url", plan_json)
+        self.assertNotIn("Fetch history for git diff fallback", plan_json)
         self.assertTrue(
             any(step.get("name") == "Resolve PR changed files via API" for step in plan_steps)
         )
@@ -1468,6 +1478,26 @@ class ValidationPlanScriptTests(unittest.TestCase):
         self.assertEqual(schedule_plan["run_all_languages"], "true")
         self.assertEqual(router_change_plan["languages"], full_languages)
         self.assertEqual(router_change_plan["run_all_languages"], "true")
+
+    def test_codeql_plan_uses_full_scan_when_pr_metadata_is_unavailable(self) -> None:
+        plan = run_script(
+            SCRIPTS_DIR / "resolve_codeql_plan.py",
+            "--repo-root",
+            str(REPO_ROOT),
+            "--event-name",
+            "pull_request",
+            "--base-sha",
+            "0" * 40,
+            "--head-sha",
+            "1" * 40,
+        )
+
+        self.assertEqual(plan["languages"], "actions,c-cpp,javascript-typescript,python,rust")
+        self.assertEqual(plan["run_all_languages"], "true")
+        self.assertEqual(
+            plan["reason"],
+            "unable to determine changed files from trusted PR metadata",
+        )
 
     def test_sedna_sync_upstream_uses_github_app_token_and_shared_helper(self) -> None:
         payload = load_workflow_payload(REPO_ROOT / ".github/workflows/sedna-sync-upstream.yml")

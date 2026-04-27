@@ -61,11 +61,14 @@ contract today.
   relying on CodeQL autobuild, which has no useful build system to discover in
   this repository.
 - Pull requests route the language matrix through
-  `.github/scripts/resolve_codeql_plan.py`. The workflow still starts and ends
-  in a required gate, but docs-only or unrelated changes can skip analysis, and
-  language-local changes analyze only the relevant CodeQL languages. Ambiguous
-  diffs and edits to the CodeQL workflow, config, router, or planner fixtures
-  fall back to the full matrix.
+  `.github/scripts/resolve_codeql_plan.py`. The planner checkout uses the base
+  commit and the PR diff comes from GitHub's pull-request files API, so the
+  privileged planning job does not fetch a contributor-controlled head
+  repository. The workflow still starts and ends in a required gate, but
+  docs-only or unrelated changes can skip analysis, and language-local changes
+  analyze only the relevant CodeQL languages. Unavailable PR metadata and edits
+  to the CodeQL workflow, config, router, or planner fixtures fall back to the
+  full matrix.
 - The workflow uses `.github/codeql/codeql-config.yml` for shared CodeQL
   settings. Add query packs or path filters there instead of duplicating
   configuration across matrix entries.
