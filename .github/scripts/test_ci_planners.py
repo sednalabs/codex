@@ -157,7 +157,16 @@ class TempGitRepo:
         if env is not None:
             git_env.update(env)
         proc = subprocess.run(
-            ["git", "-C", str(self.root), *args],
+            [
+                "git",
+                "-c",
+                "commit.gpgSign=false",
+                "-c",
+                "tag.gpgSign=false",
+                "-C",
+                str(self.root),
+                *args,
+            ],
             check=True,
             capture_output=True,
             env=git_env,
@@ -3103,12 +3112,57 @@ class HelperScriptTests(unittest.TestCase):
         self.assertIn('-f "dry_run=true"', release_workflow)
         self.assertNotIn('-f "dry_run=false"', release_workflow)
         self.assertEqual(install_job.get("runs-on"), "ubuntu-24.04")
-
         workflow_json = json.dumps(install_payload, sort_keys=True)
         self.assertNotIn("self-hosted", workflow_json)
         self.assertIn("public workflow requires true", workflow_json)
         self.assertIn("--dry-run", workflow_json)
         self.assertIn("private deployment path", workflow_json)
+
+    def test_sedna_release_reuses_caches_without_reusing_smoke_artifacts(self) -> None:
+        payload = load_workflow_payload(REPO_ROOT / ".github/workflows/sedna-release.yml")
+        release_job = ((payload.get("jobs") or {}).get("release-linux") or {})
+        steps = release_job.get("steps") or []
+        named_steps = {step.get("name"): step for step in steps if "name" in step}
+
+        self.assertEqual(
+            {
+                "cargo_home_restore": named_steps["Restore cargo home cache"].get("uses"),
+                "sccache_install": named_steps["Install sccache"].get("uses"),
+                "sccache_configure_run": named_steps["Configure sccache backend"].get("run"),
+                "sccache_restore": named_steps["Restore sccache cache (fallback)"].get("uses"),
+                "cargo_home_save": named_steps["Save cargo home cache"].get("uses"),
+                "sccache_save": named_steps["Save sccache cache (fallback)"].get("uses"),
+            },
+            {
+                "cargo_home_restore": "actions/cache/restore@v5",
+                "sccache_install": "taiki-e/install-action@cf525cb33f51aca27cd6fa02034117ab963ff9f1",
+                "sccache_configure_run": "bash .github/scripts/configure_sccache_backend.sh write-fallback",
+                "sccache_restore": "actions/cache/restore@v5",
+                "cargo_home_save": "actions/cache/save@v5",
+                "sccache_save": "actions/cache/save@v5",
+            },
+        )
+
+        self.assertIn(
+            "steps.build_release.outcome == 'success'",
+            named_steps["Save cargo home cache"].get("if") or "",
+        )
+        self.assertIn(
+            "steps.build_release.outcome == 'success'",
+            named_steps["Save sccache cache (fallback)"].get("if") or "",
+        )
+        self.assertIn(
+            "steps.sccache_backend.outputs.policy == 'write-fallback'",
+            named_steps["Save sccache cache (fallback)"].get("if") or "",
+        )
+        self.assertIn(
+            "SCCACHE_BASEDIRS=${GITHUB_WORKSPACE}",
+            named_steps["Enable sccache wrapper and reset stats"].get("run") or "",
+        )
+        self.assertEqual(named_steps["Build release binaries"].get("id"), "build_release")
+        self.assertFalse(
+            any(step.get("uses", "").startswith("actions/download-artifact") for step in steps)
+        )
 
     def test_workflow_policy_rejects_missing_node_version_file(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
