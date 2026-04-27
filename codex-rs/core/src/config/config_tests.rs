@@ -2538,7 +2538,6 @@ async fn managed_config_overrides_oauth_store_mode() -> anyhow::Result<()> {
         overrides,
         CloudRequirementsLoader::default(),
         &codex_config::NoopThreadConfigLoader,
-        /*host_name*/ None,
     )
     .await?;
     let cfg =
@@ -2674,7 +2673,6 @@ async fn managed_config_wins_over_cli_overrides() -> anyhow::Result<()> {
         overrides,
         CloudRequirementsLoader::default(),
         &codex_config::NoopThreadConfigLoader,
-        /*host_name*/ None,
     )
     .await?;
 

@@ -601,7 +601,6 @@ pub async fn list_skills(sess: &Session, sub_id: String, cwds: Vec<PathBuf>, for
             LoaderOverrides::default(),
             CloudRequirementsLoader::default(),
             &codex_config::NoopThreadConfigLoader,
-            /*host_name*/ None,
         )
         .await
         {
