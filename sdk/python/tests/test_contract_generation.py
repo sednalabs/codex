@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import os
 import subprocess
 import sys
@@ -50,3 +51,12 @@ def test_generated_files_are_up_to_date():
 
     after = _snapshot_targets(ROOT)
     assert before == after, "Generated files drifted after regeneration"
+
+
+def test_generated_v2_all_has_no_redundant_pass_before_model_config():
+    source = (ROOT / "src/codex_app_server/generated/v2_all.py").read_text()
+    assert not re.search(
+        r"^class [A-Za-z_][A-Za-z0-9_]*\(.*BaseModel\):\n    pass\n    model_config = ConfigDict\(",
+        source,
+        re.MULTILINE,
+    ), "Generated BaseModel classes should not include redundant pass before model_config"
