@@ -159,7 +159,16 @@ class TempGitRepo:
         if env is not None:
             git_env.update(env)
         proc = subprocess.run(
-            ["git", "-C", str(self.root), *args],
+            [
+                "git",
+                "-c",
+                "commit.gpgSign=false",
+                "-c",
+                "tag.gpgSign=false",
+                "-C",
+                str(self.root),
+                *args,
+            ],
             check=True,
             capture_output=True,
             env=git_env,
@@ -1381,7 +1390,7 @@ class ValidationPlanScriptTests(unittest.TestCase):
             {
                 "languages": "${{ matrix.language }}",
                 "build-mode": "${{ matrix.build-mode }}",
-                "config-file": "./.github/codeql/codeql-config.yml",
+                "config-file": "${{ matrix.config_file }}",
                 "dependency-caching": "${{ github.event_name == 'pull_request' && 'restore' || 'full' }}",
             },
         )
@@ -1421,6 +1430,17 @@ class ValidationPlanScriptTests(unittest.TestCase):
             {
                 "name": "codex-codeql-advanced",
                 "queries": [{"uses": "security-and-quality"}],
+                "threat-models": "local",
+            },
+        )
+        pr_config = yaml.load(
+            (REPO_ROOT / ".github/codeql/codeql-rust-pr.yml").read_text(encoding="utf-8"),
+            Loader=yaml.BaseLoader,
+        )
+        self.assertEqual(
+            pr_config,
+            {
+                "name": "codex-codeql-rust-pr",
                 "threat-models": "local",
             },
         )
@@ -1475,7 +1495,15 @@ class ValidationPlanScriptTests(unittest.TestCase):
             plan,
             {
                 "matrix": json.dumps(
-                    {"include": [{"language": "rust", "build-mode": "none"}]},
+                    {
+                        "include": [
+                            {
+                                "language": "rust",
+                                "build-mode": "none",
+                                "config_file": "./.github/codeql/codeql-rust-pr.yml",
+                            }
+                        ]
+                    },
                     separators=(",", ":"),
                 ),
                 "languages": "rust",
@@ -1501,8 +1529,16 @@ class ValidationPlanScriptTests(unittest.TestCase):
             json.loads(plan["matrix"]),
             {
                 "include": [
-                    {"language": "actions", "build-mode": "none"},
-                    {"language": "python", "build-mode": "none"},
+                    {
+                        "language": "actions",
+                        "build-mode": "none",
+                        "config_file": "./.github/codeql/codeql-config.yml",
+                    },
+                    {
+                        "language": "python",
+                        "build-mode": "none",
+                        "config_file": "./.github/codeql/codeql-config.yml",
+                    },
                 ]
             },
         )
@@ -1544,8 +1580,34 @@ class ValidationPlanScriptTests(unittest.TestCase):
 
         self.assertEqual(schedule_plan["languages"], full_languages)
         self.assertEqual(schedule_plan["run_all_languages"], "true")
+        self.assertEqual(
+            {
+                entry["language"]: entry["config_file"]
+                for entry in json.loads(schedule_plan["matrix"])["include"]
+            },
+            {
+                "actions": "./.github/codeql/codeql-config.yml",
+                "c-cpp": "./.github/codeql/codeql-config.yml",
+                "javascript-typescript": "./.github/codeql/codeql-config.yml",
+                "python": "./.github/codeql/codeql-config.yml",
+                "rust": "./.github/codeql/codeql-config.yml",
+            },
+        )
         self.assertEqual(router_change_plan["languages"], full_languages)
         self.assertEqual(router_change_plan["run_all_languages"], "true")
+        self.assertEqual(
+            {
+                entry["language"]: entry["config_file"]
+                for entry in json.loads(router_change_plan["matrix"])["include"]
+            },
+            {
+                "actions": "./.github/codeql/codeql-config.yml",
+                "c-cpp": "./.github/codeql/codeql-config.yml",
+                "javascript-typescript": "./.github/codeql/codeql-config.yml",
+                "python": "./.github/codeql/codeql-config.yml",
+                "rust": "./.github/codeql/codeql-rust-pr.yml",
+            },
+        )
 
     def test_codeql_plan_uses_full_scan_when_pr_metadata_is_unavailable(self) -> None:
         plan = run_script(
@@ -1562,6 +1624,19 @@ class ValidationPlanScriptTests(unittest.TestCase):
 
         self.assertEqual(plan["languages"], "actions,c-cpp,javascript-typescript,python,rust")
         self.assertEqual(plan["run_all_languages"], "true")
+        self.assertEqual(
+            {
+                entry["language"]: entry["config_file"]
+                for entry in json.loads(plan["matrix"])["include"]
+            },
+            {
+                "actions": "./.github/codeql/codeql-config.yml",
+                "c-cpp": "./.github/codeql/codeql-config.yml",
+                "javascript-typescript": "./.github/codeql/codeql-config.yml",
+                "python": "./.github/codeql/codeql-config.yml",
+                "rust": "./.github/codeql/codeql-rust-pr.yml",
+            },
+        )
         self.assertEqual(
             plan["reason"],
             "unable to determine changed files from trusted PR metadata",
@@ -3045,12 +3120,57 @@ class HelperScriptTests(unittest.TestCase):
         self.assertIn('-f "dry_run=true"', release_workflow)
         self.assertNotIn('-f "dry_run=false"', release_workflow)
         self.assertEqual(install_job.get("runs-on"), "ubuntu-24.04")
-
         workflow_json = json.dumps(install_payload, sort_keys=True)
         self.assertNotIn("self-hosted", workflow_json)
         self.assertIn("public workflow requires true", workflow_json)
         self.assertIn("--dry-run", workflow_json)
         self.assertIn("private deployment path", workflow_json)
+
+    def test_sedna_release_reuses_caches_without_reusing_smoke_artifacts(self) -> None:
+        payload = load_workflow_payload(REPO_ROOT / ".github/workflows/sedna-release.yml")
+        release_job = ((payload.get("jobs") or {}).get("release-linux") or {})
+        steps = release_job.get("steps") or []
+        named_steps = {step.get("name"): step for step in steps if "name" in step}
+
+        self.assertEqual(
+            {
+                "cargo_home_restore": named_steps["Restore cargo home cache"].get("uses"),
+                "sccache_install": named_steps["Install sccache"].get("uses"),
+                "sccache_configure_run": named_steps["Configure sccache backend"].get("run"),
+                "sccache_restore": named_steps["Restore sccache cache (fallback)"].get("uses"),
+                "cargo_home_save": named_steps["Save cargo home cache"].get("uses"),
+                "sccache_save": named_steps["Save sccache cache (fallback)"].get("uses"),
+            },
+            {
+                "cargo_home_restore": "actions/cache/restore@v5",
+                "sccache_install": "taiki-e/install-action@cf525cb33f51aca27cd6fa02034117ab963ff9f1",
+                "sccache_configure_run": "bash .github/scripts/configure_sccache_backend.sh write-fallback",
+                "sccache_restore": "actions/cache/restore@v5",
+                "cargo_home_save": "actions/cache/save@v5",
+                "sccache_save": "actions/cache/save@v5",
+            },
+        )
+
+        self.assertIn(
+            "steps.build_release.outcome == 'success'",
+            named_steps["Save cargo home cache"].get("if") or "",
+        )
+        self.assertIn(
+            "steps.build_release.outcome == 'success'",
+            named_steps["Save sccache cache (fallback)"].get("if") or "",
+        )
+        self.assertIn(
+            "steps.sccache_backend.outputs.policy == 'write-fallback'",
+            named_steps["Save sccache cache (fallback)"].get("if") or "",
+        )
+        self.assertIn(
+            "SCCACHE_BASEDIRS=${GITHUB_WORKSPACE}",
+            named_steps["Enable sccache wrapper and reset stats"].get("run") or "",
+        )
+        self.assertEqual(named_steps["Build release binaries"].get("id"), "build_release")
+        self.assertFalse(
+            any(step.get("uses", "").startswith("actions/download-artifact") for step in steps)
+        )
 
     def test_workflow_policy_rejects_missing_node_version_file(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

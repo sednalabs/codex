@@ -10,6 +10,9 @@ import subprocess
 from pathlib import Path
 
 
+ADVANCED_CONFIG_FILE = "./.github/codeql/codeql-config.yml"
+RUST_PR_CONFIG_FILE = "./.github/codeql/codeql-rust-pr.yml"
+
 LANGUAGES = [
     ("actions", "none"),
     ("c-cpp", "none"),
@@ -136,20 +139,30 @@ def diff_files(repo_root: Path, base: str, head: str) -> list[str] | None:
     return [line for line in output.splitlines() if line]
 
 
-def matrix_for(languages: list[str]) -> dict[str, list[dict[str, str]]]:
+def config_file_for(language: str, event_name: str) -> str:
+    if language == "rust" and event_name == "pull_request":
+        return RUST_PR_CONFIG_FILE
+    return ADVANCED_CONFIG_FILE
+
+
+def matrix_for(languages: list[str], event_name: str) -> dict[str, list[dict[str, str]]]:
     build_mode_by_language = dict(LANGUAGES)
     return {
         "include": [
-            {"language": language, "build-mode": build_mode_by_language[language]}
+            {
+                "language": language,
+                "build-mode": build_mode_by_language[language],
+                "config_file": config_file_for(language, event_name),
+            }
             for language in languages
         ]
     }
 
 
-def full_plan(reason: str) -> dict[str, str]:
+def full_plan(reason: str, event_name: str) -> dict[str, str]:
     languages = [language for language, _build_mode in LANGUAGES]
     return {
-        "matrix": json.dumps(matrix_for(languages), separators=(",", ":")),
+        "matrix": json.dumps(matrix_for(languages, event_name), separators=(",", ":")),
         "languages": ",".join(languages),
         "has_codeql_relevant_changes": "true",
         "run_all_languages": "true",
@@ -167,12 +180,12 @@ def no_scan_plan(reason: str) -> dict[str, str]:
     }
 
 
-def plan_for_files(files: list[str]) -> dict[str, str]:
+def plan_for_files(files: list[str], event_name: str) -> dict[str, str]:
     if not files:
         return no_scan_plan("no CodeQL-relevant changed files")
 
     if any_path_matches(files, FULL_SCAN_PATTERNS):
-        return full_plan("CodeQL workflow or planner changed")
+        return full_plan("CodeQL workflow or planner changed", event_name)
 
     selected = [
         language
@@ -183,7 +196,7 @@ def plan_for_files(files: list[str]) -> dict[str, str]:
         return no_scan_plan("no CodeQL-relevant changed files")
 
     return {
-        "matrix": json.dumps(matrix_for(selected), separators=(",", ":")),
+        "matrix": json.dumps(matrix_for(selected, event_name), separators=(",", ":")),
         "languages": ",".join(selected),
         "has_codeql_relevant_changes": "true",
         "run_all_languages": "false",
@@ -206,7 +219,7 @@ def main() -> None:
     args = parser.parse_args()
 
     if args.event_name != "pull_request":
-        print(json.dumps(full_plan(f"{args.event_name} requires full CodeQL scan"), separators=(",", ":")))
+        print(json.dumps(full_plan(f"{args.event_name} requires full CodeQL scan", args.event_name), separators=(",", ":")))
         return
 
     explicit_files = parse_files_json(args.changed_files_json)
@@ -216,13 +229,16 @@ def main() -> None:
     if files is None:
         print(
             json.dumps(
-                full_plan("unable to determine changed files from trusted PR metadata"),
+                full_plan(
+                    "unable to determine changed files from trusted PR metadata",
+                    args.event_name,
+                ),
                 separators=(",", ":"),
             )
         )
         return
 
-    print(json.dumps(plan_for_files(files), separators=(",", ":")))
+    print(json.dumps(plan_for_files(files, args.event_name), separators=(",", ":")))
 
 
 if __name__ == "__main__":

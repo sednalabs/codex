@@ -65,6 +65,8 @@ Use the `sedna-release` workflow for fork-owned GitHub releases.
 Current workflow characteristics:
 
 - GitHub-hosted Linux `x86_64` release build
+- Cargo home and `sccache` restore/save around the official release build to reduce duplicate
+  compilation when prior release smoke runs warmed matching caches
 - Keyless Sigstore signing for Linux binaries
 - GitHub Release assets named with the Sedna release identity
 - Exact upstream/downstream provenance recorded in release metadata assets
@@ -86,6 +88,9 @@ changes can be detected explicitly instead of inferred from tag shape alone.
   release dispatch is the first full release build
 - keep that path separate from official release publication so operators can prove a ref is
   releasable without mutating GitHub Releases
+- release smoke runs may warm dependency and compiler caches for the official publisher, but
+  `sedna-release` still performs the authoritative build, signing, metadata, checksum, and
+  publication steps itself
 - `sedna-branch-build` produces disposable preview binaries only when manually dispatched
 - `sedna-heavy-tests` runs expensive remote validation without using the local development machine as the
   build factory
