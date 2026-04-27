@@ -13,31 +13,47 @@ from upstream OpenAI releases.
 
 - Release tags use `v<upstream-track>-sedna.<n>`
 - Example: `v0.119.0-sedna.2`
+- `scripts/resolve_sedna_release_version` is the authoritative version resolver for official
+  releases. Humans mark release intent; the resolver chooses and validates the tag.
 - Sedna public tags stay human-readable and monotonic. Exact upstream provenance is recorded in
   release metadata instead of being overloaded into the public tag.
 - Artifact names include `sedna` so they are not confused with upstream binaries
 - Release builds embed `CODEX_RELEASE_VERSION` as the canonical SemVer and add a compact
   provenance label to `codex --version`
 - Release artifacts include both `RELEASE-METADATA.txt` and `RELEASE-METADATA.json` with:
-  `upstream_track`, `upstream_base_commit`, `upstream_base_tag` when exact, `downstream_commit`,
-  and the compact `build_provenance` / `version_display` strings
+  `version_policy`, `release_channel`, `release_marker`, `upstream_track`,
+  `upstream_base_commit`, `upstream_base_tag`, `upstream_base_tag_exact`,
+  `upstream_distance_from_tag`, `downstream_commit`, `target_commit`, and the compact
+  `build_provenance` / `version_display` strings
 - Linux `x86_64` is the only supported Sedna release target today. Other upstream platform
   packaging remains parked in the repository and may be revived later, but it is not part of the
   current downstream release contract.
 
-The upstream track is the release line this fork is closest to. It does not need to be numerically
-greater than upstream, and it does not claim that Sedna is synced to the latest upstream prerelease
-tag on that line.
+The upstream track is the newest well-formed `rust-v<semver>` upstream tag reachable from the
+target commit's merge-base with `origin/upstream-main`. It is not guessed from the globally latest
+upstream tag, and malformed double-prefixed upstream tags are ignored. If the merge-base is ahead
+of the selected upstream tag, the release metadata records the commit distance instead of pretending
+the base was an exact upstream tag.
 
 ### GitHub Actions
 
 Use the `sedna-release` workflow for fork-owned GitHub releases.
 
-- Push a tag like `v0.119.0-sedna.2` to publish immediately
-- Or run `sedna-release` manually with a `release_tag` input to build from the selected ref and let
-  GitHub create the tag/release for that commit
-- If you want a GitHub prerelease, use the workflow-dispatch `prerelease=true` input. The public
-  Sedna tag itself stays on the plain downstream release line.
+- Push to `main` with an exact commit trailer to request an automatic official release:
+  - `Sedna-Release: stable`
+  - `Sedna-Release: prerelease`
+- Ordinary `main` pushes without a `Sedna-Release` trailer are a clean no-op in the release
+  workflow.
+- `Sedna-Release: stable` refuses upstream prerelease tracks such as `0.126.0-alpha.3`.
+- `Sedna-Release: prerelease` allows upstream prerelease tracks and publishes the GitHub Release as
+  a prerelease. The production installer refuses prereleases automatically.
+- Pushing a tag like `v0.119.0-sedna.2` remains supported, but the workflow validates that the tag
+  matches the resolver's computed version for the target commit before publishing.
+- Manual `workflow_dispatch` accepts an optional `target_sha`, `channel`, and optional
+  `release_tag`. If `release_tag` is supplied, it is an assertion checked against the resolver, not
+  the source of truth.
+- Existing release tags are immutable in normal release flow. Rerolls use the next trailing
+  `sedna.<n>` value rather than clobbering published assets.
 
 Current workflow characteristics:
 
@@ -46,6 +62,9 @@ Current workflow characteristics:
 - GitHub Release assets named with the Sedna release identity
 - Exact upstream/downstream provenance recorded in release metadata assets
 - No dependency on upstream runner groups or upstream release tags
+
+The resolver writes `version_policy=sedna-upstream-track-v1` into release metadata so future policy
+changes can be detected explicitly instead of inferred from tag shape alone.
 
 ### Branch artifacts and heavy validation
 
@@ -81,7 +100,19 @@ Current workflow characteristics:
 - GitHub-hosted branch builds remain useful when the actual question is preview artifact
   buildability
 - GitHub-hosted release builds are the authoritative public release artifacts
-- GitHub prereleases are intentionally opt-in and are not the updater's default candidate path
+- GitHub prereleases are intentionally opt-in through the `Sedna-Release: prerelease` marker or
+  manual prerelease channel and are not the updater's default candidate path
 - Local non-release builds may still show the workspace placeholder version when
   `CODEX_RELEASE_VERSION` is not set; published releases should come from CI so the embedded release
   metadata is consistent
+
+### Release install workflow
+
+`sedna-release-install` verifies and installs already published Sedna release assets on a
+repo-scoped self-hosted runner labelled `sedna-release-installer`.
+
+- Automatic installs run only for `release.published` events in `sednalabs/codex`
+- Manual `workflow_dispatch` runs default to `dry_run=true`
+- The installer verifies the tag shape, release metadata, `SHA256SUMS.txt`, and executable payload
+  before updating the user-level standalone install
+- Drafts and prereleases are refused by the automatic path

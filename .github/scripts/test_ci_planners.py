@@ -7,8 +7,10 @@ import importlib.util
 import json
 import os
 import subprocess
+import sys
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
 import yaml
@@ -23,6 +25,7 @@ def load_module(name: str, path: Path):
     if spec is None or spec.loader is None:
         raise RuntimeError(f"unable to load module from {path}")
     module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
     spec.loader.exec_module(module)
     return module
 
@@ -53,6 +56,10 @@ SKIP_DUPLICATE_WORKFLOW_RUN = load_module(
 )
 SYNC_UPSTREAM_MIRROR = load_module(
     "sync_upstream_mirror_module", SCRIPTS_DIR / "sync_upstream_mirror.py"
+)
+RESOLVE_SEDNA_RELEASE_VERSION = load_module(
+    "resolve_sedna_release_version_module",
+    SCRIPTS_DIR / "resolve_sedna_release_version.py",
 )
 
 
@@ -533,7 +540,7 @@ class ValidationPlanScriptTests(unittest.TestCase):
         self.assertEqual(payload["run_smoke_gate"], "false")
         self.assertEqual(payload["selected_workflow_lane_count"], 0)
         self.assertEqual(payload["selected_node_lane_count"], 0)
-        self.assertEqual(payload["selected_rust_minimal_lane_count"], 13)
+        self.assertEqual(payload["selected_rust_minimal_lane_count"], 15)
         self.assertEqual(payload["selected_rust_integration_lane_count"], 4)
         self.assertEqual(payload["selected_release_lane_count"], 0)
         self.assertTrue(
@@ -656,7 +663,7 @@ class ValidationPlanScriptTests(unittest.TestCase):
         self.assertEqual(payload["selected_workflow_lane_count"], 1)
         self.assertEqual(payload["selected_node_lane_count"], 0)
         self.assertEqual(payload["selected_rust_minimal_lane_count"], 2)
-        self.assertEqual(payload["selected_rust_minimal_batch_count"], 5)
+        self.assertEqual(payload["selected_rust_minimal_batch_count"], 6)
         self.assertEqual(payload["selected_rust_integration_lane_count"], 1)
         self.assertEqual(payload["selected_rust_integration_batch_count"], 5)
         self.assertEqual(payload["selected_release_lane_count"], 1)
@@ -965,10 +972,37 @@ class ValidationPlanScriptTests(unittest.TestCase):
                 "codex.tui-config-refresh-session-targeted",
                 "codex.tui-esc-interrupt-targeted",
                 "codex.tui-front-queue-submit-targeted",
+                "codex.tui-native-computer-use-targeted",
                 "codex.tui-thread-session-policy-targeted",
                 "codex.tui-transcript-viewport-targeted",
+                "codex.tui-weekly-pacing-status-line-targeted",
             },
         )
+
+    def test_tui_weekly_pacing_lane_pins_live_status_line_contract(self) -> None:
+        catalog = RESOLVE_VALIDATION_PLAN.load_catalog()
+        lane = next(
+            lane
+            for lane in catalog["lanes"]
+            if lane["lane_id"] == "codex.tui-weekly-pacing-status-line-targeted"
+        )
+        self.assertEqual(
+            lane["script_path"], ".github/scripts/validation-lanes/run-just-recipe.sh"
+        )
+        self.assertEqual(lane["script_args"], ["tui-weekly-pacing-status-line-targeted"])
+
+        recipe = "\n".join(
+            just_recipe_bodies(REPO_ROOT / "justfile")[
+                "tui-weekly-pacing-status-line-targeted"
+            ]
+        )
+        self.assertIn("--exact", recipe)
+        for test_name in [
+            "status_line_weekly_limit_renders_pacing_suffixes_from_live_status_line",
+            "status_line_weekly_limit_renders_stale_suffix_over_pace_details",
+            "status_line_weekly_limit_omits_pacing_when_inputs_are_missing",
+        ]:
+            self.assertIn(test_name, recipe)
 
     def test_validation_lab_passes_sccache_policy_only_to_sccache_lanes(self) -> None:
         payload = load_workflow_payload(REPO_ROOT / ".github/workflows/validation-lab.yml")
@@ -1831,12 +1865,12 @@ class ValidationPlanScriptTests(unittest.TestCase):
         self.assertNotIn("codex.tui-agent-picker-model-surface-targeted", selected_lane_ids)
         self.assertEqual(payload["selected_workflow_lane_count"], 4)
         self.assertEqual(payload["selected_node_lane_count"], 1)
-        self.assertEqual(payload["selected_rust_minimal_lane_count"], 16)
+        self.assertEqual(payload["selected_rust_minimal_lane_count"], 18)
         self.assertEqual(payload["selected_rust_integration_lane_count"], 15)
         self.assertEqual(payload["selected_release_lane_count"], 1)
         self.assertEqual(payload["workflow_max_parallel"], "4")
         self.assertEqual(payload["node_max_parallel"], "1")
-        self.assertEqual(payload["rust_minimal_max_parallel"], "16")
+        self.assertEqual(payload["rust_minimal_max_parallel"], "18")
         self.assertEqual(payload["rust_integration_max_parallel"], "8")
         self.assertEqual(payload["release_max_parallel"], "1")
 
@@ -1862,10 +1896,10 @@ class ValidationPlanScriptTests(unittest.TestCase):
         self.assertIn("downstream-ledger-seam", selected_lane_ids)
         self.assertEqual(payload["selected_workflow_lane_count"], 5)
         self.assertEqual(payload["selected_node_lane_count"], 1)
-        self.assertEqual(payload["selected_rust_minimal_lane_count"], 18)
+        self.assertEqual(payload["selected_rust_minimal_lane_count"], 20)
         self.assertEqual(payload["selected_rust_integration_lane_count"], 16)
         self.assertEqual(payload["selected_release_lane_count"], 1)
-        self.assertEqual(payload["rust_minimal_max_parallel"], "18")
+        self.assertEqual(payload["rust_minimal_max_parallel"], "20")
         self.assertEqual(payload["rust_integration_max_parallel"], "8")
 
     def test_validation_lab_frontier_all_excludes_smoke_gate_lanes_by_metadata(self) -> None:
@@ -1979,7 +2013,7 @@ class ValidationPlanScriptTests(unittest.TestCase):
         self.assertEqual(payload["eager_release_lanes"], "true")
         self.assertEqual(payload["workflow_max_parallel"], "5")
         self.assertEqual(payload["node_max_parallel"], "1")
-        self.assertEqual(payload["rust_minimal_max_parallel"], "18")
+        self.assertEqual(payload["rust_minimal_max_parallel"], "20")
         self.assertEqual(payload["rust_integration_max_parallel"], "8")
         self.assertEqual(payload["release_max_parallel"], "1")
         planned_lane_ids = [lane["lane_id"] for lane in payload["planned_matrix"]["include"]]
@@ -2912,6 +2946,192 @@ jobs:
                 CHECK_MARKDOWN_LINKS.ROOT = original_root
 
         self.assertEqual(resolved, readme.resolve())
+
+
+class SednaReleaseVersionResolverTests(unittest.TestCase):
+    def create_fixture(
+        self,
+        marker: str | None = "Sedna-Release: prerelease",
+    ) -> tuple[TempGitRepo, str, str]:
+        repo = TempGitRepo()
+        old_upstream = repo.commit("upstream stable", {"upstream.txt": "stable\n"})
+        repo._git("tag", "rust-v0.124.0", old_upstream)
+        repo._git("tag", "rust-vv9.999.0", old_upstream)
+        upstream = repo.commit("upstream alpha", {"upstream.txt": "alpha\n"})
+        repo._git("tag", "rust-v0.126.0-alpha.3", upstream)
+        repo._git("update-ref", "refs/remotes/origin/upstream-main", upstream)
+
+        message = "downstream release"
+        if marker is not None:
+            message = f"{message}\n\n{marker}"
+        downstream = repo.commit(message, {"downstream.txt": "release\n"})
+        repo._git("update-ref", "refs/remotes/origin/main", downstream)
+        return repo, upstream, downstream
+
+    def resolve(
+        self,
+        repo: TempGitRepo,
+        target: str,
+        *,
+        channel: str = "prerelease",
+        release_tag: str | None = None,
+        current_release_tag: str | None = None,
+        require_marker: bool = False,
+    ) -> dict:
+        return RESOLVE_SEDNA_RELEASE_VERSION.resolve_release(
+            repo=repo.root,
+            target_sha=target,
+            main_ref="refs/remotes/origin/main",
+            upstream_ref="refs/remotes/origin/upstream-main",
+            repository="",
+            channel=channel,
+            release_tag=release_tag,
+            current_release_tag=current_release_tag,
+            require_marker=require_marker,
+            github_releases="off",
+        )
+
+    def test_prerelease_marker_computes_next_sedna_ordinal(self) -> None:
+        repo, _upstream, downstream = self.create_fixture()
+        try:
+            repo._git("tag", "v0.126.0-alpha.3-sedna.1", downstream)
+            result = self.resolve(repo, downstream, channel="auto", require_marker=True)
+        finally:
+            repo.cleanup()
+
+        self.assertEqual(
+            {
+                "release_requested": result["release_requested"],
+                "release_channel": result["release_channel"],
+                "release_tag": result["release_tag"],
+                "release_version": result["release_version"],
+                "github_prerelease": result["github_prerelease"],
+                "upstream_track": result["upstream_track"],
+                "upstream_base_tag": result["upstream_base_tag"],
+            },
+            {
+                "release_requested": True,
+                "release_channel": "prerelease",
+                "release_tag": "v0.126.0-alpha.3-sedna.2",
+                "release_version": "0.126.0-alpha.3-sedna.2",
+                "github_prerelease": True,
+                "upstream_track": "0.126.0-alpha.3",
+                "upstream_base_tag": "rust-v0.126.0-alpha.3",
+            },
+        )
+
+    def test_stable_channel_rejects_upstream_prerelease_track(self) -> None:
+        repo, _upstream, downstream = self.create_fixture("Sedna-Release: stable")
+        try:
+            with self.assertRaisesRegex(
+                RESOLVE_SEDNA_RELEASE_VERSION.ReleaseVersionError,
+                "stable Sedna releases cannot use prerelease upstream track",
+            ):
+                self.resolve(repo, downstream, channel="auto", require_marker=True)
+        finally:
+            repo.cleanup()
+
+    def test_missing_release_marker_is_clean_noop_for_main_pushes(self) -> None:
+        repo, _upstream, downstream = self.create_fixture(marker=None)
+        try:
+            result = self.resolve(repo, downstream, channel="auto", require_marker=True)
+        finally:
+            repo.cleanup()
+
+        self.assertEqual(
+            result,
+            {
+                "release_requested": False,
+                "skip_reason": "missing_sedna_release_marker",
+                "target_commit": downstream,
+                "version_policy": "sedna-upstream-track-v1",
+            },
+        )
+
+    def test_supplied_tag_must_match_computed_tag(self) -> None:
+        repo, _upstream, downstream = self.create_fixture()
+        try:
+            with self.assertRaisesRegex(
+                RESOLVE_SEDNA_RELEASE_VERSION.ReleaseVersionError,
+                "does not match computed tag v0.126.0-alpha.3-sedna.1",
+            ):
+                self.resolve(
+                    repo,
+                    downstream,
+                    channel="prerelease",
+                    release_tag="v0.126.0-alpha.3-sedna.2",
+                )
+        finally:
+            repo.cleanup()
+
+    def test_current_tag_is_ignored_for_tag_push_validation(self) -> None:
+        repo, _upstream, downstream = self.create_fixture()
+        try:
+            repo._git("tag", "v0.126.0-alpha.3-sedna.1", downstream)
+            result = self.resolve(
+                repo,
+                downstream,
+                channel="auto",
+                release_tag="v0.126.0-alpha.3-sedna.1",
+                current_release_tag="v0.126.0-alpha.3-sedna.1",
+            )
+        finally:
+            repo.cleanup()
+
+        self.assertEqual(result["release_tag"], "v0.126.0-alpha.3-sedna.1")
+
+    def test_existing_supplied_tag_for_target_can_be_released(self) -> None:
+        repo, _upstream, downstream = self.create_fixture()
+        try:
+            repo._git("tag", "v0.126.0-alpha.3-sedna.1", downstream)
+            result = self.resolve(
+                repo,
+                downstream,
+                channel="prerelease",
+                release_tag="v0.126.0-alpha.3-sedna.1",
+            )
+        finally:
+            repo.cleanup()
+
+        self.assertEqual(result["release_tag"], "v0.126.0-alpha.3-sedna.1")
+
+    def test_existing_supplied_tag_must_point_at_target(self) -> None:
+        repo, _upstream, downstream = self.create_fixture()
+        try:
+            other = repo.commit("other downstream", {"downstream.txt": "other\n"})
+            repo._git("tag", "v0.126.0-alpha.3-sedna.1", other)
+            with self.assertRaisesRegex(
+                RESOLVE_SEDNA_RELEASE_VERSION.ReleaseVersionError,
+                "not target commit",
+            ):
+                self.resolve(
+                    repo,
+                    downstream,
+                    channel="prerelease",
+                    release_tag="v0.126.0-alpha.3-sedna.1",
+                )
+        finally:
+            repo.cleanup()
+
+    def test_current_release_tag_is_ignored_after_remote_release_union(self) -> None:
+        repo, _upstream, downstream = self.create_fixture()
+        try:
+            with mock.patch.object(
+                RESOLVE_SEDNA_RELEASE_VERSION,
+                "github_release_tags",
+                return_value={"v0.126.0-alpha.3-sedna.1"},
+            ):
+                result = self.resolve(
+                    repo,
+                    downstream,
+                    channel="auto",
+                    release_tag="v0.126.0-alpha.3-sedna.1",
+                    current_release_tag="v0.126.0-alpha.3-sedna.1",
+                )
+        finally:
+            repo.cleanup()
+
+        self.assertEqual(result["release_tag"], "v0.126.0-alpha.3-sedna.1")
 
 
 if __name__ == "__main__":

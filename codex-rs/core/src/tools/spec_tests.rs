@@ -692,76 +692,100 @@ async fn test_build_specs_default_shell_present() {
 #[tokio::test]
 async fn unified_exec_tools_include_wait_until_terminal_contract_fields() {
     let config = test_config().await;
-    let model_info = construct_model_info_offline("o3", &config);
+    let response = bundled_models_response()
+        .unwrap_or_else(|err| panic!("bundled models.json should parse: {err}"));
+    let mut model_infos = vec![construct_model_info_offline("o3", &config)];
+    for slug in ["gpt-5.4", "gpt-5.5"] {
+        if let Some(model) = response
+            .models
+            .iter()
+            .find(|candidate| candidate.slug == slug)
+            .cloned()
+        {
+            model_infos.push(with_config_overrides(
+                model,
+                &config.to_models_manager_config(),
+            ));
+        }
+    }
+    assert!(
+        model_infos.len() >= 2,
+        "expected at least one bundled GPT-5 model to verify the unified exec contract"
+    );
+
     let mut features = Features::with_defaults();
     features.enable(Feature::UnifiedExec);
+    let available_models = Vec::new();
 
-    let tools_config = ToolsConfig::new(&ToolsConfigParams {
-        model_info: &model_info,
-        available_models: &Vec::new(),
-        features: &features,
-        image_generation_tool_auth_allowed: true,
-        web_search_mode: Some(WebSearchMode::Cached),
-        session_source: SessionSource::Cli,
-        sandbox_policy: &SandboxPolicy::DangerFullAccess,
-        windows_sandbox_level: WindowsSandboxLevel::Disabled,
-    });
-    let (tools, _) = build_specs(
-        &tools_config,
-        /*mcp_tools*/ None,
-        /*deferred_mcp_tools*/ None,
-        &[],
-    )
-    .build();
+    for model_info in model_infos {
+        let model_slug = model_info.slug.clone();
+        let tools_config = ToolsConfig::new(&ToolsConfigParams {
+            model_info: &model_info,
+            available_models: &available_models,
+            features: &features,
+            image_generation_tool_auth_allowed: true,
+            web_search_mode: Some(WebSearchMode::Cached),
+            session_source: SessionSource::Cli,
+            sandbox_policy: &SandboxPolicy::DangerFullAccess,
+            windows_sandbox_level: WindowsSandboxLevel::Disabled,
+        });
+        let (tools, _) = build_specs(
+            &tools_config,
+            /*mcp_tools*/ None,
+            /*deferred_mcp_tools*/ None,
+            &[],
+        )
+        .build();
 
-    for tool_name in ["exec_command", "write_stdin"] {
-        let function = find_function_tool(&tools, tool_name);
-        let Some(properties) = function.parameters.properties.as_ref() else {
-            panic!("{tool_name} should expose object properties");
-        };
-        let expected_fields = [
-            (
-                "wait_until_terminal",
-                JsonSchema::boolean(Some(
-                    "When true, block until the process exits or max_wait_ms elapses.".to_string(),
-                )),
-            ),
-            (
-                "max_wait_ms",
-                JsonSchema::number(Some(
-                    "Maximum total wait window for wait_until_terminal, in milliseconds."
-                        .to_string(),
-                )),
-            ),
-            (
-                "heartbeat_interval_ms",
-                JsonSchema::number(Some(
-                    "Heartbeat cadence while wait_until_terminal is active, in milliseconds."
-                        .to_string(),
-                )),
-            ),
-        ];
+        for tool_name in ["exec_command", "write_stdin"] {
+            let function = find_function_tool(&tools, tool_name);
+            let Some(properties) = function.parameters.properties.as_ref() else {
+                panic!("{model_slug}.{tool_name} should expose object properties");
+            };
+            let expected_fields = [
+                (
+                    "wait_until_terminal",
+                    JsonSchema::boolean(Some(
+                        "When true, block until the process exits or max_wait_ms elapses, capped at 7200000 ms.".to_string(),
+                    )),
+                ),
+                (
+                    "max_wait_ms",
+                    JsonSchema::number(Some(
+                        "Maximum total wait window for wait_until_terminal, in milliseconds."
+                            .to_string(),
+                    )),
+                ),
+                (
+                    "heartbeat_interval_ms",
+                    JsonSchema::number(Some(
+                        "Heartbeat cadence while wait_until_terminal is active, in milliseconds."
+                            .to_string(),
+                    )),
+                ),
+            ];
 
-        for (field, expected_schema) in &expected_fields {
-            assert!(
-                properties.contains_key(*field),
-                "{tool_name} is missing required wait contract field `{field}`"
-            );
-            assert_eq!(
-                properties
-                    .get(*field)
-                    .unwrap_or_else(|| panic!("{tool_name} missing `{field}`")),
-                expected_schema,
-                "{tool_name}.{field} schema drifted from the published wait contract"
-            );
-        }
-
-        if let Some(required_fields) = function.parameters.required.as_ref() {
-            for (field, _) in &expected_fields {
+            for (field, expected_schema) in &expected_fields {
                 assert!(
-                    !required_fields.iter().any(|required| required == field),
-                    "{tool_name}.{field} should stay optional"
+                    properties.contains_key(*field),
+                    "{model_slug}.{tool_name} is missing required wait contract field `{field}`"
                 );
+                assert_eq!(
+                    properties
+                        .get(*field)
+                        .unwrap_or_else(|| panic!("{model_slug}.{tool_name} missing `{field}`")),
+                    expected_schema,
+                    "{model_slug}.{tool_name}.{field} schema drifted from the published wait contract"
+                );
+            }
+
+            if let Some(required_fields) = function.parameters.required.as_ref() {
+                for (field, _) in &expected_fields {
+                    assert!(
+                        !required_fields.iter().any(|required| required == field),
+                        "{model_slug}.{tool_name}.{field} should stay optional"
+                    );
+                }
             }
         }
     }

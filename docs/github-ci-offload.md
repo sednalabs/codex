@@ -66,7 +66,8 @@ artifacts.
   - release visibility: the only lane that may publish a GitHub Release
 - `sedna-sync-upstream`
   - trigger: manual dispatch and scheduled sync
-  - purpose: fast-forward `upstream-main` from `upstream/main` and run the authoritative downstream divergence audit from the exact synced SHA
+  - purpose: fast-forward `upstream-main` from `upstream/main` and run the
+    authoritative downstream divergence audit from the exact synced SHA
   - credential boundary: keep the divergence audit in its own read-only job
     unless a future change deliberately trades that boundary for lower wall
     clock time
@@ -90,7 +91,9 @@ artifacts.
 6. Let `rust-ci` handle routine PR gating; tiny initial PRs and already-green
    PR follow-up pushes may route to incremental targeted validation
    automatically when the relevant diff is small and maps cleanly to one
-   guarded seam.
+   guarded seam (a pre-mapped, narrow change boundary the planner can verify
+   safely in isolation, such as docs-only, workflow/planner-only, or one
+   component seam).
    - PR changed-file routing uses GitHub's PR metadata as a fast path so the
      always-on detector does not need a full repository checkout just to learn
      the diff. Unsafe or incomplete metadata falls back to the git-diff path;
@@ -140,8 +143,9 @@ artifacts.
    - The workflow summary now records the profile intent, profile notes, and a
      compact lane-selection summary for operator handoff.
    - Explicit lint lane: `codex.argument-comment-lint` runs the Bazel-backed
-     argument-comment check as a selectable hosted lane, so comment-lint
-     failures can be proven without broad local Rust validation.
+     argument-comment check (it verifies required explanatory comments for
+     command arguments) as a selectable hosted lane, so comment-lint failures
+     can be proven without broad local Rust validation.
    - Reason: best signal per runner-minute without polluting PR surfaces, and
      lower unnecessary compute, carbon, and wait time once the blocker is
      already known.
@@ -231,6 +235,11 @@ snapshot rerun stays as small and cheap as possible.
 The target ref still needs to carry the current explicit lane schema and the
 lane helper scripts referenced by it. The lab planner no longer backfills the
 old implicit `run_command` contract for historical refs.
+
+In earlier revisions, the planner could infer a default command when lane
+metadata was missing; that compatibility path has been removed. If you're
+replaying an older ref, migrate it to the explicit lane schema used on `main`
+(including the referenced lane helper scripts) before dispatching.
 
 ## Workflow replacement matrix
 
@@ -334,9 +343,9 @@ over passing credentials into target scripts. Slower hosted validation is a
 better tradeoff than making scratch or PR code secret-bearing.
 
 The upstream mirror sync is the exception that proves the rule: only
-`sedna-sync-upstream` should receive the upstream mirror write credential, and
-validation lanes should audit against read-only refs or read-only fallback
-state.
+`sedna-sync-upstream` should receive the upstream mirror write credential,
+as defined in `.github/workflows/sedna-sync-upstream.yml`; validation
+lanes should audit against read-only refs or read-only fallback state.
 
 ## Summary artifact
 

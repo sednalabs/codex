@@ -137,7 +137,6 @@ class AppToolConfig(BaseModel):
 
 
 class AppToolsConfig(BaseModel):
-    pass
     model_config = ConfigDict(
         populate_by_name=True,
     )
@@ -514,7 +513,6 @@ class CommandExecWriteParams(BaseModel):
 
 
 class CommandExecWriteResponse(BaseModel):
-    pass
     model_config = ConfigDict(
         populate_by_name=True,
     )
@@ -828,8 +826,6 @@ class ExternalAgentConfigImportCompletedNotification(BaseModel):
 
 
 class ExternalAgentConfigImportResponse(BaseModel):
-    pass
-    model_config = ConfigDict(
         populate_by_name=True,
     )
 
@@ -1015,8 +1011,6 @@ class FsCopyParams(BaseModel):
 
 
 class FsCopyResponse(BaseModel):
-    pass
-    model_config = ConfigDict(
         populate_by_name=True,
     )
 
@@ -1037,9 +1031,6 @@ class FsCreateDirectoryParams(BaseModel):
 
 
 class FsCreateDirectoryResponse(BaseModel):
-    pass
-    model_config = ConfigDict(
-        populate_by_name=True,
     )
 
 
@@ -1169,7 +1160,6 @@ class FsRemoveParams(BaseModel):
 
 
 class FsRemoveResponse(BaseModel):
-    pass
     model_config = ConfigDict(
         populate_by_name=True,
     )
@@ -1665,7 +1655,6 @@ class LoginAccountResponse(
 
 
 class LogoutAccountResponse(BaseModel):
-    pass
     model_config = ConfigDict(
         populate_by_name=True,
     )
@@ -1763,10 +1752,6 @@ class McpServerOauthLoginResponse(BaseModel):
 
 
 class McpServerRefreshResponse(BaseModel):
-    pass
-    model_config = ConfigDict(
-        populate_by_name=True,
-    )
 
 
 class McpServerStartupState(Enum):
@@ -3311,7 +3296,6 @@ class ThreadArchiveParams(BaseModel):
 
 
 class ThreadArchiveResponse(BaseModel):
-    pass
     model_config = ConfigDict(
         populate_by_name=True,
     )
@@ -3870,7 +3854,6 @@ class ThreadShellCommandParams(BaseModel):
 
 
 class ThreadShellCommandResponse(BaseModel):
-    pass
     model_config = ConfigDict(
         populate_by_name=True,
     )
@@ -4048,7 +4031,6 @@ class TurnInterruptParams(BaseModel):
 
 
 class TurnInterruptResponse(BaseModel):
-    pass
     model_config = ConfigDict(
         populate_by_name=True,
     )

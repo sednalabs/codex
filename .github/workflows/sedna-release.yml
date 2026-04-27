@@ -2,27 +2,36 @@ name: sedna-release
 
 on:
   push:
+    branches:
+      - main
     tags:
       - "v*-sedna.*"
   workflow_dispatch:
     inputs:
-      release_tag:
-        description: Sedna release tag, for example v0.119.0-sedna.2
+      target_sha:
+        description: Commit to release. Defaults to the selected ref.
+        required: false
+        type: string
+      channel:
+        description: Release channel for resolver validation.
         required: true
+        default: stable
+        type: choice
+        options:
+          - stable
+          - prerelease
+      release_tag:
+        description: Optional expected Sedna release tag. The resolver must compute the same tag.
+        required: false
         type: string
       draft:
-        description: Create the GitHub release as a draft
-        required: false
-        default: true
-        type: boolean
-      prerelease:
-        description: Mark the GitHub release as a prerelease
+        description: Create the GitHub release as a draft. Manual/debug use only.
         required: false
         default: false
         type: boolean
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.ref_name }}
+  group: ${{ github.workflow }}-${{ github.event_name == 'workflow_dispatch' && (inputs.release_tag || inputs.target_sha || github.sha) || github.ref_name }}
   cancel-in-progress: false
 
 permissions:
@@ -35,9 +44,6 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     environment: release
-    defaults:
-      run:
-        working-directory: codex-rs
     env:
       TARGET: x86_64-unknown-linux-gnu
 
@@ -46,56 +52,84 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Resolve release metadata
-        id: meta
+      - name: Fetch release refs
         shell: bash
         run: |
           set -euo pipefail
+          git fetch origin \
+            +refs/heads/main:refs/remotes/origin/main
+          if ! git remote get-url upstream >/dev/null 2>&1; then
+            git remote add upstream https://github.com/openai/codex.git
+          fi
+          git fetch upstream \
+            +refs/heads/main:refs/remotes/upstream/main \
+            --tags
 
-          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
-            release_tag="${{ inputs.release_tag }}"
-            draft="${{ inputs.draft }}"
-            prerelease="${{ inputs.prerelease }}"
+      - name: Resolve release metadata
+        id: meta
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT_NAME: ${{ github.event_name }}
+          REF_NAME: ${{ github.ref_name }}
+          REF_TYPE: ${{ github.ref_type }}
+          INPUT_TARGET_SHA: ${{ inputs.target_sha }}
+          INPUT_CHANNEL: ${{ inputs.channel }}
+          INPUT_RELEASE_TAG: ${{ inputs.release_tag }}
+          INPUT_DRAFT: ${{ inputs.draft }}
+        run: |
+          set -euo pipefail
+
+          args=(
+            --repo "${GITHUB_WORKSPACE}"
+            --repository "${GITHUB_REPOSITORY}"
+            --main-ref refs/remotes/origin/main
+            --upstream-ref refs/remotes/upstream/main
+            --github-releases required
+            --format json
+          )
+
+          if [[ "${EVENT_NAME}" == "workflow_dispatch" ]]; then
+            target_sha="${INPUT_TARGET_SHA:-${GITHUB_SHA}}"
+            args+=(--target-sha "${target_sha}" --channel "${INPUT_CHANNEL}")
+            if [[ -n "${INPUT_RELEASE_TAG}" ]]; then
+              args+=(--release-tag "${INPUT_RELEASE_TAG}")
+            fi
+            {
+              echo "draft=${INPUT_DRAFT}"
+            } >> "${GITHUB_OUTPUT}"
+          elif [[ "${REF_TYPE}" == "tag" ]]; then
+            args+=(
+              --target-sha "${GITHUB_SHA}"
+              --channel auto
+              --release-tag "${REF_NAME}"
+              --current-release-tag "${REF_NAME}"
+            )
+            {
+              echo "draft=false"
+            } >> "${GITHUB_OUTPUT}"
           else
-            release_tag="${GITHUB_REF_NAME}"
-            draft="false"
-            prerelease="false"
+            args+=(--target-sha "${GITHUB_SHA}" --channel auto --require-marker)
+            {
+              echo "draft=false"
+            } >> "${GITHUB_OUTPUT}"
           fi
 
-          if [[ ! "${release_tag}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([-.][0-9A-Za-z.]+)*-sedna\.[0-9]+$ ]]; then
-            echo "Release tag must look like v0.119.0-sedna.2"
-            echo "Got: ${release_tag}"
-            exit 1
-          fi
+          meta_json="${RUNNER_TEMP}/sedna-release-metadata.json"
+          python3 .github/scripts/resolve_sedna_release_version.py "${args[@]}" | tee "${meta_json}"
+          jq -r 'to_entries[] | "\(.key)=\(.value)"' "${meta_json}" >> "${GITHUB_OUTPUT}"
 
-          release_version="${release_tag#v}"
-          upstream_line="${release_version%-sedna.*}"
-          upstream_track="${upstream_line%%-*}"
-          git fetch origin upstream-main --tags
-          downstream_commit_full="$(git rev-parse "${GITHUB_SHA}^{commit}")"
-          downstream_commit_short="$(git rev-parse --short=8 "${downstream_commit_full}")"
-          upstream_base_commit_full="$(git merge-base "${downstream_commit_full}" refs/remotes/origin/upstream-main)"
-          upstream_base_commit_short="$(git rev-parse --short=8 "${upstream_base_commit_full}")"
-          upstream_base_tag="$(git describe --tags --exact-match --match 'rust-v*' "${upstream_base_commit_full}" 2>/dev/null || true)"
-          build_provenance="up:${upstream_base_commit_short} down:${downstream_commit_short}"
-          version_display="${release_version} (${build_provenance})"
-
-          {
-            echo "release_tag=${release_tag}"
-            echo "release_version=${release_version}"
-            echo "upstream_track=${upstream_track}"
-            echo "upstream_base_commit_full=${upstream_base_commit_full}"
-            echo "upstream_base_commit_short=${upstream_base_commit_short}"
-            echo "upstream_base_tag=${upstream_base_tag}"
-            echo "downstream_commit_full=${downstream_commit_full}"
-            echo "downstream_commit_short=${downstream_commit_short}"
-            echo "build_provenance=${build_provenance}"
-            echo "version_display=${version_display}"
-            echo "draft=${draft}"
-            echo "prerelease=${prerelease}"
-          } >> "$GITHUB_OUTPUT"
+      - name: Check out release target
+        if: ${{ steps.meta.outputs.release_requested == 'true' }}
+        shell: bash
+        env:
+          TARGET_COMMIT: ${{ steps.meta.outputs.target_commit }}
+        run: |
+          set -euo pipefail
+          git checkout --detach "${TARGET_COMMIT}"
 
       - name: Install Linux build dependencies
+        if: ${{ steps.meta.outputs.release_requested == 'true' }}
         shell: bash
         run: |
           set -euo pipefail
@@ -103,11 +137,14 @@ jobs:
           sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends pkg-config libcap-dev
 
       - uses: dtolnay/rust-toolchain@1.93.0
+        if: ${{ steps.meta.outputs.release_requested == 'true' }}
         with:
           targets: ${{ env.TARGET }}
 
       - name: Build release binaries
+        if: ${{ steps.meta.outputs.release_requested == 'true' }}
         shell: bash
+        working-directory: codex-rs
         env:
           CODEX_RELEASE_REPOSITORY: ${{ github.repository }}
           CODEX_RELEASE_TAG_PREFIX: v
@@ -121,23 +158,32 @@ jobs:
           cargo build --locked --target "${TARGET}" --release --bin codex --bin codex-responses-api-proxy
 
       - name: Sign Linux binaries
+        if: ${{ steps.meta.outputs.release_requested == 'true' }}
         uses: ./.github/actions/linux-code-sign
         with:
           target: ${{ env.TARGET }}
           artifacts-dir: ${{ github.workspace }}/codex-rs/target/${{ env.TARGET }}/release
 
       - name: Stage release assets
+        if: ${{ steps.meta.outputs.release_requested == 'true' }}
         shell: bash
+        working-directory: codex-rs
         env:
           BUILD_PROVENANCE: ${{ steps.meta.outputs.build_provenance }}
-          DOWNSTREAM_COMMIT_FULL: ${{ steps.meta.outputs.downstream_commit_full }}
+          DOWNSTREAM_COMMIT_FULL: ${{ steps.meta.outputs.downstream_commit }}
+          RELEASE_CHANNEL: ${{ steps.meta.outputs.release_channel }}
+          RELEASE_MARKER: ${{ steps.meta.outputs.release_marker }}
           RELEASE_TAG: ${{ steps.meta.outputs.release_tag }}
           RELEASE_VERSION: ${{ steps.meta.outputs.release_version }}
           REPOSITORY: ${{ github.repository }}
-          UPSTREAM_BASE_COMMIT_FULL: ${{ steps.meta.outputs.upstream_base_commit_full }}
+          TARGET_COMMIT: ${{ steps.meta.outputs.target_commit }}
+          UPSTREAM_BASE_COMMIT_FULL: ${{ steps.meta.outputs.upstream_base_commit }}
           UPSTREAM_BASE_TAG: ${{ steps.meta.outputs.upstream_base_tag }}
+          UPSTREAM_BASE_TAG_EXACT: ${{ steps.meta.outputs.upstream_base_tag_exact }}
+          UPSTREAM_DISTANCE_FROM_TAG: ${{ steps.meta.outputs.upstream_distance_from_tag }}
           UPSTREAM_TRACK: ${{ steps.meta.outputs.upstream_track }}
           VERSION_DISPLAY: ${{ steps.meta.outputs.version_display }}
+          VERSION_POLICY: ${{ steps.meta.outputs.version_policy }}
         run: |
           set -euo pipefail
 
@@ -157,15 +203,21 @@ jobs:
           tar -C "${stage_dir}" -czf "${dist_dir}/${archive_base}.tar.gz" .
 
           cat > "${dist_dir}/RELEASE-METADATA.txt" <<EOF
-          release_tag=${{ steps.meta.outputs.release_tag }}
+          release_tag=${RELEASE_TAG}
           release_version=${RELEASE_VERSION}
+          version_policy=${VERSION_POLICY}
           version_display=${VERSION_DISPLAY}
           build_provenance=${BUILD_PROVENANCE}
+          release_channel=${RELEASE_CHANNEL}
+          release_marker=${RELEASE_MARKER}
           upstream_track=${UPSTREAM_TRACK}
           upstream_base_commit=${UPSTREAM_BASE_COMMIT_FULL}
           upstream_base_tag=${UPSTREAM_BASE_TAG}
+          upstream_base_tag_exact=${UPSTREAM_BASE_TAG_EXACT}
+          upstream_distance_from_tag=${UPSTREAM_DISTANCE_FROM_TAG}
           downstream_commit=${DOWNSTREAM_COMMIT_FULL}
-          repository=${{ github.repository }}
+          target_commit=${TARGET_COMMIT}
+          repository=${REPOSITORY}
           target=${TARGET}
           git_describe=$(git describe --tags --always)
           EOF
@@ -178,12 +230,18 @@ jobs:
               {
                   "release_tag": os.environ["RELEASE_TAG"],
                   "release_version": os.environ["RELEASE_VERSION"],
+                  "version_policy": os.environ["VERSION_POLICY"],
                   "version_display": os.environ["VERSION_DISPLAY"],
                   "build_provenance": os.environ["BUILD_PROVENANCE"],
+                  "release_channel": os.environ["RELEASE_CHANNEL"],
+                  "release_marker": os.environ["RELEASE_MARKER"] or None,
                   "upstream_track": os.environ["UPSTREAM_TRACK"],
                   "upstream_base_commit": os.environ["UPSTREAM_BASE_COMMIT_FULL"],
                   "upstream_base_tag": os.environ["UPSTREAM_BASE_TAG"] or None,
+                  "upstream_base_tag_exact": os.environ["UPSTREAM_BASE_TAG_EXACT"] == "true",
+                  "upstream_distance_from_tag": int(os.environ["UPSTREAM_DISTANCE_FROM_TAG"]),
                   "downstream_commit": os.environ["DOWNSTREAM_COMMIT_FULL"],
+                  "target_commit": os.environ["TARGET_COMMIT"],
                   "repository": os.environ["REPOSITORY"],
                   "target": os.environ["TARGET"],
               },
@@ -200,23 +258,32 @@ jobs:
           )
 
       - name: Upload workflow artifacts
+        if: ${{ steps.meta.outputs.release_requested == 'true' }}
         uses: actions/upload-artifact@v7
         with:
           name: sedna-release-linux
           path: ${{ github.workspace }}/dist/*
           retention-days: 3
 
-      - name: Create or update GitHub release
+      - name: Create GitHub release
+        if: ${{ steps.meta.outputs.release_requested == 'true' }}
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_DRAFT: ${{ steps.meta.outputs.draft }}
+          RELEASE_PRERELEASE: ${{ steps.meta.outputs.github_prerelease }}
           RELEASE_TAG: ${{ steps.meta.outputs.release_tag }}
           RELEASE_VERSION: ${{ steps.meta.outputs.release_version }}
-          RELEASE_DRAFT: ${{ steps.meta.outputs.draft }}
-          RELEASE_PRERELEASE: ${{ steps.meta.outputs.prerelease }}
+          TARGET_COMMIT: ${{ steps.meta.outputs.target_commit }}
         run: |
           set -euo pipefail
           shopt -s nullglob
+
+          if gh release view "${RELEASE_TAG}" --repo "${GH_REPO}" >/dev/null 2>&1; then
+            echo "Release ${RELEASE_TAG} already exists; refusing to clobber official assets."
+            exit 1
+          fi
 
           assets=("${GITHUB_WORKSPACE}"/dist/*)
           if ((${#assets[@]} == 0)); then
@@ -234,13 +301,37 @@ jobs:
             prerelease_flag+=(--prerelease)
           fi
 
-          if gh release view "${RELEASE_TAG}" >/dev/null 2>&1; then
-            gh release upload "${RELEASE_TAG}" "${assets[@]}" --clobber
-          else
-            gh release create "${RELEASE_TAG}" "${assets[@]}" \
-              --title "Codex Sedna ${RELEASE_VERSION}" \
-              --generate-notes \
-              --target "${GITHUB_SHA}" \
-              "${prerelease_flag[@]}" \
-              "${draft_flag[@]}"
-          fi
+          gh release create "${RELEASE_TAG}" "${assets[@]}" \
+            --repo "${GH_REPO}" \
+            --title "Codex Sedna ${RELEASE_VERSION}" \
+            --generate-notes \
+            --target "${TARGET_COMMIT}" \
+            "${prerelease_flag[@]}" \
+            "${draft_flag[@]}"
+
+      - name: Summarize release decision
+        if: ${{ always() }}
+        shell: bash
+        env:
+          RELEASE_REQUESTED: ${{ steps.meta.outputs.release_requested }}
+          RELEASE_TAG: ${{ steps.meta.outputs.release_tag }}
+          RELEASE_VERSION: ${{ steps.meta.outputs.release_version }}
+          SKIP_REASON: ${{ steps.meta.outputs.skip_reason }}
+          TARGET_COMMIT: ${{ steps.meta.outputs.target_commit }}
+          UPSTREAM_BASE_TAG: ${{ steps.meta.outputs.upstream_base_tag }}
+          UPSTREAM_DISTANCE_FROM_TAG: ${{ steps.meta.outputs.upstream_distance_from_tag }}
+        run: |
+          {
+            echo "## Sedna release"
+            echo
+            echo "- Release requested: ${RELEASE_REQUESTED:-unknown}"
+            if [[ "${RELEASE_REQUESTED:-false}" == "true" ]]; then
+              echo "- Release tag: ${RELEASE_TAG}"
+              echo "- Release version: ${RELEASE_VERSION}"
+              echo "- Target commit: ${TARGET_COMMIT}"
+              echo "- Upstream base tag: ${UPSTREAM_BASE_TAG}"
+              echo "- Upstream distance from tag: ${UPSTREAM_DISTANCE_FROM_TAG}"
+            else
+              echo "- Skip reason: ${SKIP_REASON:-unknown}"
+            fi
+          } >> "${GITHUB_STEP_SUMMARY}"

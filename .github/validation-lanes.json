@@ -619,6 +619,28 @@
       "needs_sccache": true
     },
     {
+      "lane_id": "codex.tui-weekly-pacing-status-line-targeted",
+      "groups": [
+        "ui_protocol"
+      ],
+      "lane_sets": [
+        "all",
+        "ui-protocol"
+      ],
+      "setup_class": "rust_minimal",
+      "working_directory": ".",
+      "script_path": ".github/scripts/validation-lanes/run-just-recipe.sh",
+      "script_args": [
+        "tui-weekly-pacing-status-line-targeted"
+      ],
+      "needs_just": true,
+      "needs_node": false,
+      "needs_nextest": false,
+      "needs_linux_build_deps": true,
+      "needs_dotslash": false,
+      "needs_sccache": true
+    },
+    {
       "lane_id": "codex.core-multi-agent-orchestration-targeted",
       "groups": [
         "core"
@@ -976,6 +998,32 @@
       "needs_sccache": true
     },
     {
+      "lane_id": "codex.tui-native-computer-use-targeted",
+      "groups": [
+        "ui_protocol"
+      ],
+      "lane_sets": [
+        "all",
+        "ui-protocol"
+      ],
+      "frontier_default": true,
+      "frontier_lane_sets": [
+        "ui-protocol"
+      ],
+      "setup_class": "rust_minimal",
+      "working_directory": ".",
+      "script_path": ".github/scripts/validation-lanes/run-just-recipe.sh",
+      "script_args": [
+        "tui-native-computer-use-targeted"
+      ],
+      "needs_just": true,
+      "needs_node": false,
+      "needs_nextest": false,
+      "needs_linux_build_deps": true,
+      "needs_dotslash": false,
+      "needs_sccache": true
+    },
+    {
       "lane_id": "codex.native-computer-use-tool-registry-targeted",
       "groups": [
         "ui_protocol"
@@ -1227,19 +1275,23 @@
         ".github/workflows/docs-sanity.yml",
         ".github/workflows/rust-ci-full.yml",
         ".github/workflows/rust-ci.yml",
+        ".github/workflows/sedna-release.yml",
         ".github/workflows/sedna-heavy-tests.yml",
         ".github/workflows/validation-lab.yml",
         ".github/scripts/aggregate_validation_summary.py",
         ".github/scripts/check_markdown_links.py",
         ".github/scripts/resolve_rust_ci_mode.py",
+        ".github/scripts/resolve_sedna_release_version.py",
         ".github/scripts/resolve_validation_plan.py",
         ".github/scripts/test_ci_planners.py",
         ".github/scripts/validation-lanes/downstream-docs-check.sh",
         "docs/native-computer-use.md",
         "docs/downstream-regression-matrix.md",
+        "docs/sedna-release.md",
         "docs/github-ci-offload.md",
         "docs/validation_workflow.md",
         "scripts/downstream-divergence-audit.py",
+        "scripts/resolve_sedna_release_version",
         "justfile"
       ],
       "required_any_paths": [
@@ -1253,15 +1305,18 @@
         ".github/workflows/docs-sanity.yml",
         ".github/workflows/rust-ci-full.yml",
         ".github/workflows/rust-ci.yml",
+        ".github/workflows/sedna-release.yml",
         ".github/workflows/sedna-heavy-tests.yml",
         ".github/workflows/validation-lab.yml",
         ".github/scripts/aggregate_validation_summary.py",
         ".github/scripts/check_markdown_links.py",
         ".github/scripts/resolve_rust_ci_mode.py",
+        ".github/scripts/resolve_sedna_release_version.py",
         ".github/scripts/resolve_validation_plan.py",
         ".github/scripts/test_ci_planners.py",
         ".github/scripts/validation-lanes/downstream-docs-check.sh",
-        "scripts/downstream-divergence-audit.py"
+        "scripts/downstream-divergence-audit.py",
+        "scripts/resolve_sedna_release_version"
       ]
     },
     {
@@ -1488,6 +1543,7 @@
       "lane_ids": [
         "codex.app-server-protocol-test",
         "codex.app-server-computer-use-targeted",
+        "codex.tui-native-computer-use-targeted",
         "codex.native-computer-use-tool-registry-targeted"
       ],
       "allowed_paths": [
@@ -1505,7 +1561,12 @@
         "codex-rs/tools/src/lib.rs",
         "codex-rs/tools/src/tool_registry_plan_tests.rs",
         "codex-rs/tui/src/app/app_server_adapter.rs",
+        "codex-rs/tui/src/app/tests.rs",
         "justfile",
+        "docs/native-computer-use.md",
+        "docs/downstream-regression-matrix.md",
+        "docs/validation_workflow.md",
+        "docs/divergences/index.yaml",
         ".github/validation-lanes.json"
       ],
       "required_any_paths": [

@@ -168,6 +168,12 @@ tui-agent-usage-totals-targeted:
     cargo test -p codex-tui chatwidget::tests::status_and_layout::status_line_combined_used_tokens_footer_snapshot --lib -- --exact --test-threads=1
     cargo test -p codex-tui status::tests::status_snapshot_distinguishes_session_and_thread_token_usage --lib -- --exact --test-threads=1
 
+# Focused TUI weekly usage pacing status-line slice.
+tui-weekly-pacing-status-line-targeted:
+    cargo test -p codex-tui chatwidget::tests::status_and_layout::status_line_weekly_limit_renders_pacing_suffixes_from_live_status_line --lib -- --exact --test-threads=1
+    cargo test -p codex-tui chatwidget::tests::status_and_layout::status_line_weekly_limit_renders_stale_suffix_over_pace_details --lib -- --exact --test-threads=1
+    cargo test -p codex-tui chatwidget::tests::status_and_layout::status_line_weekly_limit_omits_pacing_when_inputs_are_missing --lib -- --exact --test-threads=1
+
 # Focused TUI interrupt confirmation slice for Alt/meta-safe Esc handling.
 tui-esc-interrupt-targeted:
     cargo nextest run -p codex-tui --no-fail-fast -- bottom_pane::tests::esc_requires_double_press_for_interrupt_when_running_task_by_default bottom_pane::tests::first_esc_renders_again_to_interrupt_hint bottom_pane::tests::esc_release_does_not_confirm_interrupt bottom_pane::tests::esc_with_alt_does_not_interrupt_running_task bottom_pane::tests::esc_single_press_interrupts_when_double_press_disabled --exact
@@ -263,6 +269,11 @@ app-server-thread-cwd-targeted:
 # client response handling, and Android tool lifecycle injection.
 app-server-computer-use-targeted:
     cargo test --locked -p codex-app-server --test all suite::v2::computer_use:: -- --test-threads=1
+
+# Focused native computer-use TUI projection slice for chat history and the
+# Ctrl+T transcript overlay.
+tui-native-computer-use-targeted:
+    cargo test --locked -p codex-tui app::tests::native_android_computer_use_events_render_in_transcript_and_overlay --lib -- --exact --test-threads=1
 
 # Focused native Android tool registry slice for canonical schema conversion
 # and deferred tool-search discovery.
@@ -366,9 +377,9 @@ downstream-docs-check:
 
 [no-cd]
 workflow-ci-sanity:
-    cd "{{justfile_directory()}}" && python3 -m py_compile .github/scripts/aggregate_validation_summary.py .github/scripts/check_markdown_links.py .github/scripts/resolve_rust_ci_mode.py .github/scripts/resolve_validation_plan.py .github/scripts/test_ci_planners.py
+    cd "{{justfile_directory()}}" && python3 -m py_compile .github/scripts/aggregate_validation_summary.py .github/scripts/check_markdown_links.py .github/scripts/resolve_rust_ci_mode.py .github/scripts/resolve_sedna_release_version.py .github/scripts/resolve_validation_plan.py .github/scripts/test_ci_planners.py
     cd "{{justfile_directory()}}" && python3 -m unittest discover -s .github/scripts -p 'test_ci_planners.py'
-    cd "{{justfile_directory()}}" && ruby -e 'require "yaml"; %w[.github/workflows/_sedna-linux-rust.yml .github/workflows/docs-sanity.yml .github/workflows/rust-ci-full.yml .github/workflows/rust-ci.yml .github/workflows/sedna-heavy-tests.yml .github/workflows/validation-lab.yml].each { |path| YAML.load_file(path) }; puts "yaml-ok"'
+    cd "{{justfile_directory()}}" && ruby -e 'require "yaml"; %w[.github/workflows/_sedna-linux-rust.yml .github/workflows/docs-sanity.yml .github/workflows/rust-ci-full.yml .github/workflows/rust-ci.yml .github/workflows/sedna-heavy-tests.yml .github/workflows/sedna-release.yml .github/workflows/validation-lab.yml].each { |path| YAML.load_file(path) }; puts "yaml-ok"'
 
 [no-cd]
 downstream-divergence-audit:
