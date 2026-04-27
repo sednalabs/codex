@@ -157,7 +157,16 @@ class TempGitRepo:
         if env is not None:
             git_env.update(env)
         proc = subprocess.run(
-            ["git", "-C", str(self.root), *args],
+            [
+                "git",
+                "-c",
+                "commit.gpgSign=false",
+                "-c",
+                "tag.gpgSign=false",
+                "-C",
+                str(self.root),
+                *args,
+            ],
             check=True,
             capture_output=True,
             env=git_env,
