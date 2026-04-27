@@ -64,9 +64,6 @@ RESOLVE_SEDNA_RELEASE_VERSION = load_module(
     "resolve_sedna_release_version_module",
     SCRIPTS_DIR / "resolve_sedna_release_version.py",
 )
-ROUTE_SEDNA_RELEASE = load_module(
-    "route_sedna_release_module", SCRIPTS_DIR / "route_sedna_release.py"
-)
 
 
 def run_script(script: Path, *args: str) -> dict:
@@ -96,6 +93,77 @@ def parse_pull_request_types(workflow_path: Path) -> list[str]:
 def load_workflow_payload(workflow_path: Path) -> dict:
     payload = yaml.load(workflow_path.read_text(encoding="utf-8"), Loader=yaml.BaseLoader)
     return payload if isinstance(payload, dict) else {}
+
+
+def parse_github_output_file(output_path: Path) -> dict[str, str]:
+    outputs: dict[str, str] = {}
+    lines = output_path.read_text(encoding="utf-8").splitlines()
+    index = 0
+    while index < len(lines):
+        line = lines[index]
+        index += 1
+        if not line:
+            continue
+        if "<<" in line:
+            key, delimiter = line.split("<<", 1)
+            if not key or not delimiter:
+                continue
+            value_lines: list[str] = []
+            while index < len(lines) and lines[index] != delimiter:
+                value_lines.append(lines[index])
+                index += 1
+            if index < len(lines):
+                index += 1
+            outputs[key] = "\n".join(value_lines)
+            continue
+        if "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        if key:
+            outputs[key] = value
+    return outputs
+
+
+def workflow_step_by_name(workflow_path: Path, job_name: str, step_name: str) -> dict:
+    payload = load_workflow_payload(workflow_path)
+    steps = (((payload.get("jobs") or {}).get(job_name) or {}).get("steps") or [])
+    for step in steps:
+        if step.get("name") == step_name:
+            return step
+    raise AssertionError(f"missing step {step_name!r} in {workflow_path}")
+
+
+def run_workflow_step_script(
+    script: str, event: dict, *, event_name: str = "push"
+) -> tuple[subprocess.CompletedProcess, dict]:
+    with tempfile.TemporaryDirectory() as tmpdir:
+        root = Path(tmpdir)
+        event_path = root / "event.json"
+        output_path = root / "github-output.txt"
+        event_path.write_text(json.dumps(event), encoding="utf-8")
+        output_path.write_text("", encoding="utf-8")
+        env = {
+            **os.environ,
+            "EVENT_AFTER": str(event.get("after") or ""),
+            "GITHUB_EVENT_NAME": event_name,
+            "GITHUB_EVENT_PATH": str(event_path),
+            "GITHUB_OUTPUT": str(output_path),
+            "GITHUB_SHA": str(event.get("after") or "abc123"),
+            "EVENT_NAME": event_name,
+            "EVENT_REF": str(event.get("ref") or ""),
+            "EVENT_SHA": str(event.get("after") or "abc123"),
+            "HEAD_MESSAGE": str((event.get("head_commit") or {}).get("message") or "")
+            if isinstance(event.get("head_commit"), dict)
+            else "",
+        }
+        proc = subprocess.run(
+            ["bash", "-c", f"set -euo pipefail\n{script}"],
+            check=False,
+            capture_output=True,
+            text=True,
+            env=env,
+        )
+        return proc, parse_github_output_file(output_path)
 
 
 def just_recipe_names(header: str) -> list[str]:
@@ -3064,10 +3132,7 @@ class HelperScriptTests(unittest.TestCase):
             )
 
             payload = json.loads(proc.stdout)
-            output_lines = dict(
-                line.split("=", 1)
-                for line in output.read_text(encoding="utf-8").splitlines()
-            )
+            output_lines = parse_github_output_file(output)
 
         self.assertEqual(payload["should_skip"], "false")
         self.assertEqual(payload["should_run"], "true")
@@ -3075,6 +3140,36 @@ class HelperScriptTests(unittest.TestCase):
         self.assertEqual(output_lines["should_skip"], "false")
         self.assertEqual(output_lines["should_run"], "true")
         self.assertEqual(output_lines["reason"], "lookup_failed_run_conservatively")
+
+    def test_github_output_parser_tolerates_malformed_and_multiline_entries(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output = Path(tmpdir) / "github-output.txt"
+            output.write_text(
+                "\n".join(
+                    [
+                        "plain=value",
+                        "malformed",
+                        "empty_key_is_ignored",
+                        "=missing-key",
+                        "multi<<EOF",
+                        "line one",
+                        "line two",
+                        "EOF",
+                        "later=still parsed",
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            self.assertEqual(
+                parse_github_output_file(output),
+                {
+                    "plain": "value",
+                    "multi": "line one\nline two",
+                    "later": "still parsed",
+                },
+            )
 
     def test_repository_workflows_follow_static_policy(self) -> None:
         self.assertEqual(CHECK_WORKFLOW_POLICY.collect_violations(REPO_ROOT), [])
@@ -3102,34 +3197,46 @@ class HelperScriptTests(unittest.TestCase):
         release_payload = load_workflow_payload(
             REPO_ROOT / ".github/workflows/sedna-release.yml"
         )
-        router_payload = load_workflow_payload(
-            REPO_ROOT / ".github/workflows/sedna-release-router.yml"
-        )
         release_push = ((release_payload.get("on") or {}).get("push") or {})
-        router_push = ((router_payload.get("on") or {}).get("push") or {})
+        jobs = release_payload.get("jobs") or {}
+        route_job = jobs.get("route") or {}
         router_steps = (
-            ((router_payload.get("jobs") or {}).get("route") or {}).get("steps") or []
+            (route_job.get("steps") or [])
         )
         named_steps = {step.get("name"): step for step in router_steps if "name" in step}
+        release_job = jobs.get("release-linux") or {}
 
-        self.assertNotIn("branches", release_push)
+        self.assertIn("main release gate", release_payload.get("run-name") or "")
+        self.assertEqual(route_job.get("name"), "Release request gate")
+        self.assertEqual(route_job.get("runs-on"), "ubuntu-slim")
+        self.assertEqual(release_push.get("branches"), ["main"])
         self.assertEqual(release_push.get("tags"), ["v*-sedna.*"])
-        self.assertEqual(router_push.get("branches"), ["main"])
-        self.assertEqual((router_payload.get("permissions") or {}).get("actions"), "write")
+        self.assertEqual(release_payload.get("permissions"), {})
+        self.assertEqual(route_job.get("permissions"), {})
+        self.assertFalse(any("uses" in step for step in router_steps))
+        self.assertIn("HEAD_MESSAGE", named_steps["Resolve release request"].get("env") or {})
+        self.assertIn("^Sedna-Release:", named_steps["Resolve release request"].get("run") or "")
         self.assertIn(
-            "route_sedna_release.py",
-            named_steps["Resolve release request"].get("run") or "",
+            "Publisher job: ${publisher_job}",
+            named_steps["Summarize release gate"].get("run") or "",
         )
+        self.assertEqual(release_job.get("name"), "Publish Linux release")
+        self.assertEqual(release_job.get("needs"), "route")
         self.assertIn(
-            "gh workflow run sedna-release.yml",
-            named_steps["Dispatch Sedna release"].get("run") or "",
+            "needs.route.outputs.release_requested == 'true'",
+            release_job.get("if") or "",
         )
-        self.assertIn(
-            "steps.route.outputs.release_requested == 'true'",
-            named_steps["Dispatch Sedna release"].get("if") or "",
+        self.assertEqual(
+            release_job.get("permissions"),
+            {"actions": "write", "contents": "write", "id-token": "write"},
         )
 
     def test_sedna_release_router_detects_release_marker(self) -> None:
+        script = workflow_step_by_name(
+            REPO_ROOT / ".github/workflows/sedna-release.yml",
+            "route",
+            "Resolve release request",
+        )["run"]
         event = {
             "ref": "refs/heads/main",
             "after": "abc123",
@@ -3138,8 +3245,11 @@ class HelperScriptTests(unittest.TestCase):
             },
         }
 
+        proc, outputs = run_workflow_step_script(script, event)
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertEqual(
-            ROUTE_SEDNA_RELEASE.route_event(event),
+            outputs,
             {
                 "release_requested": "true",
                 "reason": "release_marker",
@@ -3149,6 +3259,11 @@ class HelperScriptTests(unittest.TestCase):
         )
 
     def test_sedna_release_router_skips_unmarked_main_pushes(self) -> None:
+        script = workflow_step_by_name(
+            REPO_ROOT / ".github/workflows/sedna-release.yml",
+            "route",
+            "Resolve release request",
+        )["run"]
         event = {
             "ref": "refs/heads/main",
             "after": "abc123",
@@ -3157,8 +3272,11 @@ class HelperScriptTests(unittest.TestCase):
             },
         }
 
+        proc, outputs = run_workflow_step_script(script, event)
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertEqual(
-            ROUTE_SEDNA_RELEASE.route_event(event),
+            outputs,
             {
                 "release_requested": "false",
                 "reason": "missing_sedna_release_marker",
@@ -3168,6 +3286,11 @@ class HelperScriptTests(unittest.TestCase):
         )
 
     def test_sedna_release_router_rejects_invalid_release_marker(self) -> None:
+        script = workflow_step_by_name(
+            REPO_ROOT / ".github/workflows/sedna-release.yml",
+            "route",
+            "Resolve release request",
+        )["run"]
         event = {
             "ref": "refs/heads/main",
             "after": "abc123",
@@ -3176,8 +3299,14 @@ class HelperScriptTests(unittest.TestCase):
             },
         }
 
-        with self.assertRaises(ROUTE_SEDNA_RELEASE.ReleaseVersionError):
-            ROUTE_SEDNA_RELEASE.route_event(event)
+        proc, outputs = run_workflow_step_script(script, event)
+
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertEqual(outputs, {})
+        self.assertIn(
+            "Sedna-Release marker must be either 'stable' or 'prerelease'",
+            proc.stderr,
+        )
 
     def test_sedna_release_uses_synced_upstream_mirror_as_version_base(self) -> None:
         workflow = (REPO_ROOT / ".github/workflows/sedna-release.yml").read_text(
