@@ -249,9 +249,9 @@ class TempGitRepo:
 
 
 class SyncUpstreamMirrorTests(unittest.TestCase):
-    def test_read_only_fallback_uses_live_upstream_when_mirror_is_stale(self) -> None:
+    def test_read_only_fallback_uses_stale_mirror_for_pr_audit(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
-            repo, _origin_bare, upstream_bare, _old_sha, new_sha = self.create_fixture(
+            repo, _origin_bare, upstream_bare, old_sha, _new_sha = self.create_fixture(
                 Path(tmpdir), mirror_state="stale"
             )
 
@@ -270,9 +270,18 @@ class SyncUpstreamMirrorTests(unittest.TestCase):
                 "wrote_mirror": result["wrote_mirror"],
             },
             {
-                "audit_baseline": "upstream-ref",
-                "expected_mirror_sha": new_sha,
-                "mirror_audit_args": ["--mirror-ref", "refs/remotes/upstream/main"],
+                "audit_baseline": "origin-mirror",
+                "expected_mirror_sha": old_sha,
+                "mirror_audit_args": [
+                    "--upstream-remote",
+                    "origin",
+                    "--upstream-branch",
+                    "upstream-main",
+                    "--mirror-remote",
+                    "origin",
+                    "--mirror-branch",
+                    "upstream-main",
+                ],
                 "mirror_state": "stale_ff_only",
                 "wrote_mirror": False,
             },
@@ -3228,8 +3237,89 @@ class HelperScriptTests(unittest.TestCase):
         )
         self.assertEqual(
             release_job.get("permissions"),
-            {"actions": "write", "contents": "write", "id-token": "write"},
+            {"contents": "read", "id-token": "write"},
         )
+
+    def test_sedna_release_uses_dedicated_github_app_for_publication(self) -> None:
+        payload = load_workflow_payload(REPO_ROOT / ".github/workflows/sedna-release.yml")
+        release_job = ((payload.get("jobs") or {}).get("release-linux") or {})
+        steps = release_job.get("steps") or []
+        named_steps = {step.get("name"): step for step in steps if "name" in step}
+
+        config_step = named_steps["Check release publisher app configuration"]
+        self.assertEqual(
+            {
+                "APP_CLIENT_ID": (
+                    (config_step.get("env") or {}).get("APP_CLIENT_ID")
+                ),
+                "APP_PRIVATE_KEY": (
+                    (config_step.get("env") or {}).get("APP_PRIVATE_KEY")
+                ),
+            },
+            {
+                "APP_CLIENT_ID": "${{ vars.SEDNA_RELEASE_PUBLISHER_APP_CLIENT_ID }}",
+                "APP_PRIVATE_KEY": "${{ secrets.SEDNA_RELEASE_PUBLISHER_APP_PRIVATE_KEY }}",
+            },
+        )
+        self.assertIn(
+            "Missing release publisher GitHub App configuration",
+            config_step.get("run") or "",
+        )
+
+        token_step = named_steps["Generate release publisher app token"]
+        self.assertEqual(token_step.get("id"), "release_publisher_token")
+        self.assertEqual(
+            token_step.get("uses"),
+            "actions/create-github-app-token@1b10c78c7865c340bc4f6099eb2f838309f1e8c3",
+        )
+        self.assertEqual(
+            token_step.get("with") or {},
+            {
+                "client-id": "${{ vars.SEDNA_RELEASE_PUBLISHER_APP_CLIENT_ID }}",
+                "private-key": "${{ secrets.SEDNA_RELEASE_PUBLISHER_APP_PRIVATE_KEY }}",
+                "permission-actions": "write",
+                "permission-contents": "write",
+            },
+        )
+
+        for step_name in ("Create GitHub release", "Dispatch release asset verifier"):
+            self.assertEqual(
+                (named_steps[step_name].get("env") or {}).get("GH_TOKEN"),
+                "${{ steps.release_publisher_token.outputs.token }}",
+            )
+
+    def test_sedna_release_verifier_checks_staged_binary_version_in_dry_run(self) -> None:
+        installer = (REPO_ROOT / "scripts/install_sedna_release_asset").read_text(
+            encoding="utf-8"
+        )
+        dry_run_index = installer.index('if [[ "$dry_run" == "true" ]]')
+        version_check_index = installer.index(
+            'staged_version_output="$("$staged/codex" --version 2>&1)"'
+        )
+
+        self.assertLess(version_check_index, dry_run_index)
+        self.assertIn(
+            'staged codex --version did not report ${release_version@Q}',
+            installer,
+        )
+        self.assertIn('echo "$staged_version_output"', installer)
+
+    def test_sedna_release_verifier_tag_grammar_matches_resolver_shape(self) -> None:
+        install_workflow = (
+            REPO_ROOT / ".github/workflows/sedna-release-install.yml"
+        ).read_text(encoding="utf-8")
+        installer = (REPO_ROOT / "scripts/install_sedna_release_asset").read_text(
+            encoding="utf-8"
+        )
+        shared_tail = (
+            r"(-[0-9A-Za-z]+(\.[0-9A-Za-z]+)*)?-sedna\.[0-9]+"
+            r"(\+upstream\.[0-9]+)?"
+        )
+
+        self.assertIn(shared_tail, install_workflow)
+        self.assertIn(shared_tail, installer)
+        self.assertNotIn("([-.][0-9A-Za-z.]+)*-sedna", install_workflow)
+        self.assertNotIn("([-.][0-9A-Za-z]+)*-sedna", installer)
 
     def test_sedna_release_router_detects_release_marker(self) -> None:
         script = workflow_step_by_name(
@@ -3379,6 +3469,22 @@ class HelperScriptTests(unittest.TestCase):
         self.assertIn(
             "SCCACHE_BASEDIRS=${GITHUB_WORKSPACE}",
             named_steps["Enable sccache wrapper and reset stats"].get("run") or "",
+        )
+        self.assertEqual(
+            (
+                (named_steps["Build release binaries"].get("env") or {}).get(
+                    "CODEX_UPSTREAM_DISTANCE_FROM_TAG"
+                )
+            ),
+            "${{ steps.meta.outputs.upstream_distance_from_tag }}",
+        )
+        self.assertIn(
+            "upstream_position=${UPSTREAM_POSITION}",
+            named_steps["Stage release assets"].get("run") or "",
+        )
+        self.assertIn(
+            '"upstream_position": os.environ["UPSTREAM_POSITION"]',
+            named_steps["Stage release assets"].get("run") or "",
         )
         self.assertEqual(named_steps["Build release binaries"].get("id"), "build_release")
         self.assertFalse(
@@ -3623,7 +3729,7 @@ class SednaReleaseVersionResolverTests(unittest.TestCase):
         )
 
     def test_prerelease_marker_computes_next_sedna_ordinal(self) -> None:
-        repo, _upstream, downstream = self.create_fixture()
+        repo, upstream, downstream = self.create_fixture()
         try:
             repo._git("tag", "v0.126.0-alpha.3-sedna.1", downstream)
             result = self.resolve(repo, downstream, channel="auto", require_marker=True)
@@ -3639,6 +3745,8 @@ class SednaReleaseVersionResolverTests(unittest.TestCase):
                 "github_prerelease": result["github_prerelease"],
                 "upstream_track": result["upstream_track"],
                 "upstream_base_tag": result["upstream_base_tag"],
+                "upstream_position": result["upstream_position"],
+                "build_provenance": result["build_provenance"],
             },
             {
                 "release_requested": True,
@@ -3648,7 +3756,44 @@ class SednaReleaseVersionResolverTests(unittest.TestCase):
                 "github_prerelease": True,
                 "upstream_track": "0.126.0-alpha.3",
                 "upstream_base_tag": "rust-v0.126.0-alpha.3",
+                "upstream_position": f"rust-v0.126.0-alpha.3@{upstream[:8]}",
+                "build_provenance": f"up:rust-v0.126.0-alpha.3@{upstream[:8]} down:{downstream[:8]}",
             },
+        )
+
+    def test_upstream_position_marks_commits_after_upstream_tag(self) -> None:
+        repo = TempGitRepo()
+        tagged_upstream = repo.commit("upstream alpha tag", {"upstream.txt": "alpha\n"})
+        repo._git("tag", "rust-v0.126.0-alpha.3", tagged_upstream)
+        upstream_plus_one = repo.commit(
+            "upstream alpha follow-up",
+            {"upstream.txt": "alpha\nfollow-up\n"},
+        )
+        repo._git("update-ref", "refs/remotes/origin/upstream-main", upstream_plus_one)
+        downstream = repo.commit(
+            "downstream release\n\nSedna-Release: prerelease",
+            {"downstream.txt": "release\n"},
+        )
+        repo._git("update-ref", "refs/remotes/origin/main", downstream)
+        try:
+            result = self.resolve(repo, downstream, channel="auto", require_marker=True)
+        finally:
+            repo.cleanup()
+
+        self.assertEqual(result["upstream_distance_from_tag"], 1)
+        self.assertEqual(result["upstream_base_tag_exact"], False)
+        self.assertEqual(
+            result["upstream_position"],
+            f"rust-v0.126.0-alpha.3+1@{upstream_plus_one[:8]}",
+        )
+        self.assertEqual(
+            result["release_tag"],
+            "v0.126.0-alpha.3-sedna.1+upstream.1",
+        )
+        self.assertEqual(
+            result["version_display"],
+            "0.126.0-alpha.3-sedna.1+upstream.1 "
+            f"(up:rust-v0.126.0-alpha.3+1@{upstream_plus_one[:8]} down:{downstream[:8]})",
         )
 
     def test_manual_auto_channel_infers_prerelease_from_upstream_track(self) -> None:
@@ -3773,7 +3918,7 @@ class SednaReleaseVersionResolverTests(unittest.TestCase):
                 "release_requested": False,
                 "skip_reason": "missing_sedna_release_marker",
                 "target_commit": downstream,
-                "version_policy": "sedna-upstream-track-v1",
+                "version_policy": "sedna-upstream-track-v2",
             },
         )
 

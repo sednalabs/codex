@@ -2437,7 +2437,6 @@ dependencies = [
  "serde_json",
  "serial_test",
  "sha1",
- "sha2",
  "shlex",
  "similar",
  "tempfile",
@@ -2458,7 +2457,6 @@ dependencies = [
  "walkdir",
  "which 8.0.0",
  "whoami",
- "windows-sys 0.61.2",
  "wiremock",
  "zstd 0.13.3",
 ]

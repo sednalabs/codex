@@ -20,10 +20,10 @@ UPSTREAM_TAG_RE = re.compile(
     r"^rust-v(?P<version>[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z]+(?:\.[0-9A-Za-z]+)*)?)$"
 )
 SEDNA_TAG_RE = re.compile(
-    r"^v(?P<track>[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z]+(?:\.[0-9A-Za-z]+)*)?)-sedna\.(?P<ordinal>[0-9]+)$"
+    r"^v(?P<track>[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z]+(?:\.[0-9A-Za-z]+)*)?)-sedna\.(?P<ordinal>[0-9]+)(?:\+upstream\.(?P<upstream_distance>[0-9]+))?$"
 )
 RELEASE_MARKER_RE = re.compile(r"^Sedna-Release:\s*(?P<channel>[A-Za-z0-9_.-]+)\s*$")
-VERSION_POLICY = "sedna-upstream-track-v1"
+VERSION_POLICY = "sedna-upstream-track-v2"
 
 
 class ReleaseVersionError(RuntimeError):
@@ -252,6 +252,18 @@ def next_sedna_ordinal(existing_tags: Iterable[str], upstream_track: str) -> int
     return max(ordinals, default=0) + 1
 
 
+def upstream_position_label(tag: str, distance_from_tag: int, commit_short: str) -> str:
+    tag_position = tag if distance_from_tag == 0 else f"{tag}+{distance_from_tag}"
+    return f"{tag_position}@{commit_short}"
+
+
+def sedna_release_tag(upstream_track: str, ordinal: int, upstream_distance: int) -> str:
+    tag = f"v{upstream_track}-sedna.{ordinal}"
+    if upstream_distance > 0:
+        tag = f"{tag}+upstream.{upstream_distance}"
+    return tag
+
+
 def resolve_release(
     *,
     repo: Path,
@@ -320,7 +332,7 @@ def resolve_release(
     if current_release_tag:
         existing_tags.discard(current_release_tag)
     ordinal = next_sedna_ordinal(existing_tags, upstream_track)
-    computed_release_tag = f"v{upstream_track}-sedna.{ordinal}"
+    computed_release_tag = sedna_release_tag(upstream_track, ordinal, upstream_distance)
 
     if release_tag:
         parsed = parse_sedna_tag(release_tag)
@@ -336,7 +348,12 @@ def resolve_release(
     release_version = computed_release_tag.removeprefix("v")
     downstream_short = git(repo, "rev-parse", "--short=8", target_commit)
     upstream_short = git(repo, "rev-parse", "--short=8", upstream_base_commit)
-    build_provenance = f"up:{upstream_short} down:{downstream_short}"
+    upstream_position = upstream_position_label(
+        upstream_tag,
+        upstream_distance,
+        upstream_short,
+    )
+    build_provenance = f"up:{upstream_position} down:{downstream_short}"
 
     return {
         "release_requested": True,
@@ -353,6 +370,7 @@ def resolve_release(
         "upstream_base_tag": upstream_tag,
         "upstream_base_tag_exact": upstream_exact,
         "upstream_distance_from_tag": upstream_distance,
+        "upstream_position": upstream_position,
         "downstream_commit": target_commit,
         "downstream_commit_short": downstream_short,
         "target_commit": target_commit,
