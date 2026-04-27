@@ -2,8 +2,6 @@ name: sedna-release
 
 on:
   push:
-    branches:
-      - main
     tags:
       - "v*-sedna.*"
   workflow_dispatch:
