@@ -226,14 +226,14 @@ if metadata.get("release_tag") != expected_tag:
 PY
   for executable in codex codex-responses-api-proxy; do
     if [[ ! -x "$release_dir/$executable" ]]; then
-      echo "error: existing release is missing executable: $release_dir/$executable" >&2
+      echo "error: existing release is missing required executable: $executable" >&2
       exit 1
     fi
   done
 fi
 
 if [[ "$dry_run" == "true" ]]; then
-  echo "dry-run: verified sednalabs/codex@${release_tag}; would install to ${release_dir}"
+  echo "dry-run: verified sednalabs/codex@${release_tag} for ${target}"
   exit 0
 fi
 
@@ -258,7 +258,7 @@ if [[ -e "$visible_codex" && ! -L "$visible_codex" ]]; then
   mkdir -p "${install_root}/backups"
   backup="${install_root}/backups/codex.$(date +%s)"
   mv "$visible_codex" "$backup"
-  echo "backed up previous codex binary to $backup"
+  echo "backed up previous codex binary"
 fi
 
 codex_tmp="${bin_dir}/.codex.tmp.$$"
@@ -271,5 +271,5 @@ if [[ "$version_output" != *"$release_version"* ]]; then
   exit 1
 fi
 
-echo "installed sednalabs/codex@${release_tag} into ${release_dir}"
+echo "installed sednalabs/codex@${release_tag}"
 echo "$version_output"

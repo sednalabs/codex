@@ -310,7 +310,7 @@ jobs:
             "${prerelease_flag[@]}" \
             "${draft_flag[@]}"
 
-      - name: Dispatch release installer
+      - name: Dispatch release asset verifier
         if: ${{ steps.meta.outputs.release_requested == 'true' && steps.meta.outputs.draft != 'true' }}
         shell: bash
         env:
@@ -325,7 +325,7 @@ jobs:
             --repo "${GH_REPO}" \
             --ref main \
             -f "release_tag=${RELEASE_TAG}" \
-            -f "dry_run=false" \
+            -f "dry_run=true" \
             -f "allow_prerelease=${RELEASE_PRERELEASE}"
 
       - name: Summarize release decision

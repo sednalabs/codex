@@ -45,12 +45,26 @@ def is_action_ref(uses: Any, action: str) -> bool:
     return isinstance(uses, str) and uses.startswith(f"{action}@")
 
 
+def uses_self_hosted_runner(runs_on: Any) -> bool:
+    if isinstance(runs_on, str):
+        return runs_on == "self-hosted"
+    if isinstance(runs_on, list):
+        return "self-hosted" in runs_on
+    return False
+
+
 def collect_violations(root: Path = REPO_ROOT) -> list[str]:
     violations: list[str] = []
     for path in workflow_paths(root):
         relative_path = path.relative_to(root)
         payload = load_workflow(path)
         for node in walk_mappings(payload):
+            if uses_self_hosted_runner(node.get("runs-on")):
+                violations.append(
+                    f"{relative_path}: public workflows must not use self-hosted runners; "
+                    "use private deployment infrastructure for host-local operations."
+                )
+
             uses = node.get("uses")
             inputs = node.get("with") if isinstance(node.get("with"), dict) else {}
 

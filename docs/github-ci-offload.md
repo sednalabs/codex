@@ -29,6 +29,28 @@ artifacts.
     branch-tip proof and surfaces CodeQL findings through repository code
     scanning rather than as live PR feedback
   - retention: ordinary workflow logs only
+- `codeql`
+  - trigger: PRs, protected branch pushes, schedule, and manual dispatch
+  - purpose: authoritative CodeQL code scanning through the checked-in advanced
+    setup
+  - PR routing: the language router keeps the workflow-level check alive while
+    selecting only the CodeQL languages touched by the diff; docs-only or
+    unrelated PRs report success through the required gate without starting
+    analysis jobs; PR planning uses the base checkout plus GitHub PR file
+    metadata instead of fetching contributor-controlled head repositories
+  - full-scan fallback: protected branch pushes, schedules, manual dispatch,
+    unavailable PR metadata, and edits to CodeQL workflow/config/router
+    fixtures run the full Actions, C/C++, JavaScript/TypeScript, Python, and
+    Rust matrix; if the base checkout does not yet contain the router script,
+    the workflow emits that full matrix directly
+  - cache policy: use CodeQL native dependency caching in restore-only mode for
+    PRs and restore/store mode for protected branch or scheduled runs; keep
+    manual Rust caches limited to Cargo registry/git data and do not cache
+    toolchain executables in the security scanning workflow
+  - not covered: GitHub Code Quality's public-preview dynamic workflow is a
+    separate repository setting and may still consume Actions minutes unless it
+    is disabled or narrowed in GitHub's Code quality settings
+  - retention: ordinary workflow logs plus code-scanning results
 - `sedna-branch-build`
   - trigger: manual dispatch only
   - purpose: disposable preview binaries when buildability is the actual question

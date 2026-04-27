@@ -36,6 +36,9 @@ RESOLVE_VALIDATION_PLAN = load_module(
 RESOLVE_RUST_CI_MODE = load_module(
     "resolve_rust_ci_mode_module", SCRIPTS_DIR / "resolve_rust_ci_mode.py"
 )
+RESOLVE_CODEQL_PLAN = load_module(
+    "resolve_codeql_plan_module", SCRIPTS_DIR / "resolve_codeql_plan.py"
+)
 AGGREGATE_VALIDATION_SUMMARY = load_module(
     "aggregate_validation_summary_module", SCRIPTS_DIR / "aggregate_validation_summary.py"
 )
@@ -1256,11 +1259,48 @@ class ValidationPlanScriptTests(unittest.TestCase):
     def test_codeql_advanced_workflow_is_authoritative_hardened_setup(self) -> None:
         payload = load_workflow_payload(REPO_ROOT / ".github/workflows/codeql.yml")
         trigger = payload.get("on") or {}
+        plan_job = ((payload.get("jobs") or {}).get("plan") or {})
         analyze_job = ((payload.get("jobs") or {}).get("analyze") or {})
+        results_job = ((payload.get("jobs") or {}).get("results") or {})
         steps = analyze_job.get("steps") or []
 
         self.assertIn("workflow_dispatch", trigger)
         self.assertEqual(payload.get("permissions"), {"contents": "read"})
+        self.assertEqual(plan_job.get("runs-on"), "ubuntu-24.04")
+        self.assertEqual(
+            plan_job.get("permissions") or {},
+            {"contents": "read", "pull-requests": "read"},
+        )
+        self.assertEqual(
+            (plan_job.get("outputs") or {}).get("matrix"),
+            "${{ steps.plan.outputs.matrix }}",
+        )
+        plan_steps = plan_job.get("steps") or []
+        checkout_step = next(
+            step for step in plan_steps if step.get("name") == "Checkout repository"
+        )
+        self.assertEqual(
+            (checkout_step.get("with") or {}).get("ref"),
+            "${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.sha }}",
+        )
+        plan_json = json.dumps(plan_job, sort_keys=True)
+        self.assertNotIn("github.event.pull_request.head.repo.clone_url", plan_json)
+        self.assertNotIn("Fetch history for git diff fallback", plan_json)
+        self.assertTrue(
+            any(step.get("name") == "Resolve PR changed files via API" for step in plan_steps)
+        )
+        compute_plan_step = next(
+            step for step in plan_steps if step.get("name") == "Compute CodeQL language plan"
+        )
+        compute_run = compute_plan_step.get("run") or ""
+        self.assertIn(".github/scripts/resolve_codeql_plan.py", compute_run)
+        self.assertIn("trusted base checkout does not include CodeQL planner", compute_run)
+
+        self.assertEqual(analyze_job.get("needs"), "plan")
+        self.assertEqual(
+            analyze_job.get("if"),
+            "${{ needs.plan.outputs.has_codeql_relevant_changes == 'true' }}",
+        )
         self.assertEqual(analyze_job.get("runs-on"), "ubuntu-24.04")
         self.assertEqual(
             analyze_job.get("permissions") or {},
@@ -1272,14 +1312,8 @@ class ValidationPlanScriptTests(unittest.TestCase):
             },
         )
         self.assertEqual(
-            (((analyze_job.get("strategy") or {}).get("matrix") or {}).get("include") or []),
-            [
-                {"language": "actions", "build-mode": "none"},
-                {"language": "c-cpp", "build-mode": "none"},
-                {"language": "javascript-typescript", "build-mode": "none"},
-                {"language": "python", "build-mode": "none"},
-                {"language": "rust", "build-mode": "none"},
-            ],
+            ((analyze_job.get("strategy") or {}).get("matrix")),
+            "${{ fromJSON(needs.plan.outputs.matrix) }}",
         )
 
         workflow_json = json.dumps(payload, sort_keys=True)
@@ -1298,6 +1332,11 @@ class ValidationPlanScriptTests(unittest.TestCase):
         self.assertIn("rust-toolchain*", install_rust_run)
         self.assertIn('"--component"', install_rust_run)
         self.assertIn('"rust-src"', install_rust_run)
+        self.assertNotIn("toolchain.get(\"components\"", install_rust_run)
+        self.assertNotIn('"clippy"', install_rust_run)
+        self.assertNotIn('"rustfmt"', install_rust_run)
+        self.assertNotIn('"rustc-dev"', install_rust_run)
+        self.assertNotIn('"llvm-tools-preview"', install_rust_run)
         self.assertIn("subprocess.run(command, check=True)", install_rust_run)
 
         restore_rust_cache_step = next(
@@ -1309,6 +1348,16 @@ class ValidationPlanScriptTests(unittest.TestCase):
         self.assertIn("~/.cargo/registry/cache/", restore_cache_with.get("path") or "")
         self.assertIn("~/.cargo/git/db/", restore_cache_with.get("path") or "")
         self.assertIn("codeql-rust-cargo-home-v1-", restore_cache_with.get("key") or "")
+        workflow_json = json.dumps(payload, sort_keys=True)
+        self.assertNotIn("~/.rustup/toolchains", workflow_json)
+
+        telemetry_step = next(
+            step for step in steps if step.get("name") == "Record Rust cache telemetry for CodeQL"
+        )
+        self.assertEqual(telemetry_step.get("if"), "${{ matrix.language == 'rust' }}")
+        telemetry_run = telemetry_step.get("run") or ""
+        self.assertIn("CodeQL Rust cache telemetry", telemetry_run)
+        self.assertIn("cache_codeql_rust_cargo_home_restore.outputs.cache-hit", telemetry_run)
 
         prefetch_rust_step = next(
             step for step in steps if step.get("name") == "Prefetch Rust dependencies for CodeQL"
@@ -1330,6 +1379,7 @@ class ValidationPlanScriptTests(unittest.TestCase):
                 "languages": "${{ matrix.language }}",
                 "build-mode": "${{ matrix.build-mode }}",
                 "config-file": "./.github/codeql/codeql-config.yml",
+                "dependency-caching": "${{ github.event_name == 'pull_request' && 'restore' || 'full' }}",
             },
         )
 
@@ -1343,6 +1393,21 @@ class ValidationPlanScriptTests(unittest.TestCase):
         self.assertIn("refs/heads/main", save_rust_cache_step.get("if") or "")
         self.assertIn("refs/heads/upstream-main", save_rust_cache_step.get("if") or "")
         self.assertNotIn("target/", (save_rust_cache_step.get("with") or {}).get("path") or "")
+
+        self.assertEqual(results_job.get("name"), "CodeQL required gate")
+        self.assertEqual(results_job.get("needs"), ["plan", "analyze"])
+        self.assertEqual(results_job.get("if"), "always()")
+        self.assertEqual(results_job.get("permissions") or {}, {"actions": "read"})
+        timing_step = next(
+            step for step in results_job.get("steps") or [] if step.get("name") == "Report CodeQL timing"
+        )
+        timing_run = timing_step.get("run") or ""
+        self.assertIn("CodeQL timing", timing_run)
+        self.assertIn("actions/runs/${{ github.run_id }}/jobs", timing_run)
+        self.assertIn("Analyze \\\\(", timing_run)
+        results_run = "\n".join(step.get("run") or "" for step in results_job.get("steps") or [])
+        self.assertIn("No CodeQL-relevant changes", results_run)
+        self.assertIn("CodeQL analysis failed", results_run)
 
         config = yaml.load(
             (REPO_ROOT / ".github/codeql/codeql-config.yml").read_text(encoding="utf-8"),
@@ -1391,6 +1456,113 @@ class ValidationPlanScriptTests(unittest.TestCase):
         self.assertIn("'upstream-main'", script)
         self.assertIn("mayCancelHeadPushRuns &&", script)
         self.assertIn("Post-merge push runs on ${baseBranch}", script)
+
+    def test_codeql_plan_routes_rust_only_prs_to_rust(self) -> None:
+        plan = run_script(
+            SCRIPTS_DIR / "resolve_codeql_plan.py",
+            "--repo-root",
+            str(REPO_ROOT),
+            "--event-name",
+            "pull_request",
+            "--changed-files-json",
+            json.dumps(["codex-rs/core/src/config.rs"]),
+        )
+
+        self.assertEqual(
+            plan,
+            {
+                "matrix": json.dumps(
+                    {"include": [{"language": "rust", "build-mode": "none"}]},
+                    separators=(",", ":"),
+                ),
+                "languages": "rust",
+                "has_codeql_relevant_changes": "true",
+                "run_all_languages": "false",
+                "reason": "matched changed paths for rust",
+            },
+        )
+
+    def test_codeql_plan_routes_mixed_workflow_and_python_prs(self) -> None:
+        plan = run_script(
+            SCRIPTS_DIR / "resolve_codeql_plan.py",
+            "--repo-root",
+            str(REPO_ROOT),
+            "--event-name",
+            "pull_request",
+            "--changed-files-json",
+            json.dumps([".github/workflows/docs-sanity.yml", ".github/scripts/check_markdown_links.py"]),
+        )
+
+        self.assertEqual(plan["languages"], "actions,python")
+        self.assertEqual(
+            json.loads(plan["matrix"]),
+            {
+                "include": [
+                    {"language": "actions", "build-mode": "none"},
+                    {"language": "python", "build-mode": "none"},
+                ]
+            },
+        )
+        self.assertEqual(plan["run_all_languages"], "false")
+
+    def test_codeql_plan_skips_docs_only_prs(self) -> None:
+        plan = run_script(
+            SCRIPTS_DIR / "resolve_codeql_plan.py",
+            "--repo-root",
+            str(REPO_ROOT),
+            "--event-name",
+            "pull_request",
+            "--changed-files-json",
+            json.dumps(["docs/github-ci-offload.md"]),
+        )
+
+        self.assertEqual(plan["has_codeql_relevant_changes"], "false")
+        self.assertEqual(plan["languages"], "")
+        self.assertEqual(json.loads(plan["matrix"]), {"include": []})
+
+    def test_codeql_plan_uses_full_scan_for_protected_events_and_router_changes(self) -> None:
+        full_languages = "actions,c-cpp,javascript-typescript,python,rust"
+        schedule_plan = run_script(
+            SCRIPTS_DIR / "resolve_codeql_plan.py",
+            "--repo-root",
+            str(REPO_ROOT),
+            "--event-name",
+            "schedule",
+        )
+        router_change_plan = run_script(
+            SCRIPTS_DIR / "resolve_codeql_plan.py",
+            "--repo-root",
+            str(REPO_ROOT),
+            "--event-name",
+            "pull_request",
+            "--changed-files-json",
+            json.dumps([".github/scripts/resolve_codeql_plan.py"]),
+        )
+
+        self.assertEqual(schedule_plan["languages"], full_languages)
+        self.assertEqual(schedule_plan["run_all_languages"], "true")
+        self.assertEqual(router_change_plan["languages"], full_languages)
+        self.assertEqual(router_change_plan["run_all_languages"], "true")
+
+    def test_codeql_plan_uses_full_scan_when_pr_metadata_is_unavailable(self) -> None:
+        plan = run_script(
+            SCRIPTS_DIR / "resolve_codeql_plan.py",
+            "--repo-root",
+            str(REPO_ROOT),
+            "--event-name",
+            "pull_request",
+            "--base-sha",
+            "0" * 40,
+            "--head-sha",
+            "1" * 40,
+        )
+
+        self.assertEqual(plan["languages"], "actions,c-cpp,javascript-typescript,python,rust")
+        self.assertEqual(plan["run_all_languages"], "true")
+        self.assertEqual(
+            plan["reason"],
+            "unable to determine changed files from trusted PR metadata",
+        )
 
     def test_sedna_sync_upstream_uses_github_app_token_and_shared_helper(self) -> None:
         payload = load_workflow_payload(REPO_ROOT / ".github/workflows/sedna-sync-upstream.yml")
@@ -2852,6 +3024,26 @@ class HelperScriptTests(unittest.TestCase):
         self.assertIn("--upstream-ref refs/remotes/origin/upstream-main", workflow)
         self.assertNotIn("--upstream-ref refs/remotes/upstream/main", workflow)
 
+    def test_sedna_release_dispatches_public_asset_verification_only(self) -> None:
+        release_workflow = (REPO_ROOT / ".github/workflows/sedna-release.yml").read_text(
+            encoding="utf-8"
+        )
+        install_payload = load_workflow_payload(
+            REPO_ROOT / ".github/workflows/sedna-release-install.yml"
+        )
+        install_job = ((install_payload.get("jobs") or {}).get("install") or {})
+
+        self.assertIn("Dispatch release asset verifier", release_workflow)
+        self.assertIn('-f "dry_run=true"', release_workflow)
+        self.assertNotIn('-f "dry_run=false"', release_workflow)
+        self.assertEqual(install_job.get("runs-on"), "ubuntu-24.04")
+
+        workflow_json = json.dumps(install_payload, sort_keys=True)
+        self.assertNotIn("self-hosted", workflow_json)
+        self.assertIn("public workflow requires true", workflow_json)
+        self.assertIn("--dry-run", workflow_json)
+        self.assertIn("private deployment path", workflow_json)
+
     def test_workflow_policy_rejects_missing_node_version_file(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
@@ -2911,6 +3103,34 @@ jobs:
             [
                 ".github/workflows/ci.yml: taiki-e/install-action does not support "
                 "with.version; use tool: nextest@0.9.103 instead."
+            ],
+        )
+
+    def test_workflow_policy_rejects_self_hosted_runners_in_public_workflows(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            workflow = root / ".github/workflows/deploy.yml"
+            workflow.parent.mkdir(parents=True)
+            workflow.write_text(
+                """
+name: deploy
+on: workflow_dispatch
+jobs:
+  install:
+    runs-on: [self-hosted, linux, x64, example-runner]
+    steps:
+      - run: true
+""".lstrip(),
+                encoding="utf-8",
+            )
+
+            violations = CHECK_WORKFLOW_POLICY.collect_violations(root)
+
+        self.assertEqual(
+            violations,
+            [
+                ".github/workflows/deploy.yml: public workflows must not use self-hosted "
+                "runners; use private deployment infrastructure for host-local operations."
             ],
         )
 
