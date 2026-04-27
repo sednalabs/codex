@@ -1665,7 +1665,6 @@ class LoginAccountResponse(
 
 
 class LogoutAccountResponse(BaseModel):
-    pass
     model_config = ConfigDict(
         populate_by_name=True,
     )
