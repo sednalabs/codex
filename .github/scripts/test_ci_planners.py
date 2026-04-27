@@ -1288,7 +1288,9 @@ class ValidationPlanScriptTests(unittest.TestCase):
         compute_plan_step = next(
             step for step in plan_steps if step.get("name") == "Compute CodeQL language plan"
         )
-        self.assertIn(".github/scripts/resolve_codeql_plan.py", compute_plan_step.get("run") or "")
+        compute_run = compute_plan_step.get("run") or ""
+        self.assertIn(".github/scripts/resolve_codeql_plan.py", compute_run)
+        self.assertIn("trusted base checkout does not include CodeQL planner", compute_run)
 
         self.assertEqual(analyze_job.get("needs"), "plan")
         self.assertEqual(

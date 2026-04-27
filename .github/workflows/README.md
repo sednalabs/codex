@@ -68,7 +68,9 @@ contract today.
   docs-only or unrelated changes can skip analysis, and language-local changes
   analyze only the relevant CodeQL languages. Unavailable PR metadata and edits
   to the CodeQL workflow, config, router, or planner fixtures fall back to the
-  full matrix.
+  full matrix. If the trusted base checkout does not yet contain the planner,
+  the workflow bootstraps with a full matrix instead of reading planner code
+  from the PR head.
 - The workflow uses `.github/codeql/codeql-config.yml` for shared CodeQL
   settings. Add query packs or path filters there instead of duplicating
   configuration across matrix entries.

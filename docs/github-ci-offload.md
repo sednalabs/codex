@@ -31,7 +31,8 @@ artifacts.
   - full-scan fallback: protected branch pushes, schedules, manual dispatch,
     unavailable PR metadata, and edits to CodeQL workflow/config/router
     fixtures run the full Actions, C/C++, JavaScript/TypeScript, Python, and
-    Rust matrix
+    Rust matrix; if the base checkout does not yet contain the router script,
+    the workflow emits that full matrix directly
   - not covered: GitHub Code Quality's public-preview dynamic workflow is a
     separate repository setting and may still consume Actions minutes unless it
     is disabled or narrowed in GitHub's Code quality settings

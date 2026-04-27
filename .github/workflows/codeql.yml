@@ -111,12 +111,16 @@ jobs:
         run: |
           set -euo pipefail
 
-          plan="$(python3 .github/scripts/resolve_codeql_plan.py \
-            --repo-root "${GITHUB_WORKSPACE}" \
-            --event-name '${{ github.event_name }}' \
-            --base-sha '${{ steps.shas.outputs.base_sha }}' \
-            --head-sha '${{ steps.shas.outputs.head_sha }}' \
-            --changed-files-json "${CHANGED_FILES_JSON}")"
+          if [[ -f .github/scripts/resolve_codeql_plan.py ]]; then
+            plan="$(python3 .github/scripts/resolve_codeql_plan.py \
+              --repo-root "${GITHUB_WORKSPACE}" \
+              --event-name '${{ github.event_name }}' \
+              --base-sha '${{ steps.shas.outputs.base_sha }}' \
+              --head-sha '${{ steps.shas.outputs.head_sha }}' \
+              --changed-files-json "${CHANGED_FILES_JSON}")"
+          else
+            plan='{"matrix":"{\"include\":[{\"language\":\"actions\",\"build-mode\":\"none\"},{\"language\":\"c-cpp\",\"build-mode\":\"none\"},{\"language\":\"javascript-typescript\",\"build-mode\":\"none\"},{\"language\":\"python\",\"build-mode\":\"none\"},{\"language\":\"rust\",\"build-mode\":\"none\"}]}","languages":"actions,c-cpp,javascript-typescript,python,rust","has_codeql_relevant_changes":"true","run_all_languages":"true","reason":"trusted base checkout does not include CodeQL planner"}'
+          fi
 
           PLAN_JSON="${plan}" python3 - <<'PY' >> "$GITHUB_OUTPUT"
           import json
