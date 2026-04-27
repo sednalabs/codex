@@ -22,7 +22,6 @@ use crate::app_server_session::status_account_display_from_auth_mode;
 use crate::exec_command::split_command_string;
 use codex_app_server_client::AppServerEvent;
 use codex_app_server_protocol::AuthMode;
-use codex_app_server_protocol::ComputerUseCallOutputContentItem;
 use codex_app_server_protocol::ComputerUseCallParams;
 use codex_app_server_protocol::JSONRPCErrorError;
 use codex_app_server_protocol::ServerNotification;
@@ -295,13 +294,14 @@ impl App {
                         .map_err(|err| format!("failed to serialize computer-use response: {err}"));
                     match result {
                         Ok(result) => {
+                            let request_id_for_log = request_id.clone();
                             if let Err(err) = app_server_client
                                 .resolve_server_request(request_id, result)
                                 .await
                             {
                                 tracing::warn!(
                                     error = %err,
-                                    request_id = ?request_id,
+                                    request_id = ?request_id_for_log,
                                     "failed to resolve native computer-use app-server request"
                                 );
                             }
