@@ -1015,8 +1015,6 @@ class FsCopyParams(BaseModel):
 
 
 class FsCopyResponse(BaseModel):
-    pass
-    model_config = ConfigDict(
         populate_by_name=True,
     )
 
