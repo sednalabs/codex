@@ -81,11 +81,13 @@ contract today.
   arguments, environment variables, and standard input as taint sources where
   CodeQL supports them.
 - Rust CodeQL currently uses no-build analysis through `rust-analyzer`. The
-  workflow prepares that lane by installing every checked-in Rust toolchain,
-  restoring Cargo registry/git caches, and prefetching the Rust workspaces
-  before CodeQL initializes. Do not try to pass normal Cargo `target/`, test
-  binaries, or nextest archives into CodeQL; they are compiled outputs, not the
-  source extraction data CodeQL needs.
+  workflow prepares that lane by installing the checked-in Rust toolchain
+  channels with only `rust-src`, restoring Cargo registry/git caches, and
+  prefetching the Rust workspaces before CodeQL initializes. CodeQL's native
+  dependency cache runs in restore-only mode on PRs and restore/store mode on
+  protected branch or scheduled runs. Do not cache Rust toolchain executables or
+  pass normal Cargo `target/`, test binaries, or nextest archives into CodeQL;
+  they are compiled outputs, not the source extraction data CodeQL needs.
 - If GitHub creates a generated CodeQL/default setup workflow, disable that
   duplicate after this advanced workflow is green. Running both creates
   confusing check surfaces and can hide which CodeQL configuration is actually

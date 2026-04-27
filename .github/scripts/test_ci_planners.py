@@ -1328,6 +1328,11 @@ class ValidationPlanScriptTests(unittest.TestCase):
         self.assertIn("rust-toolchain*", install_rust_run)
         self.assertIn('"--component"', install_rust_run)
         self.assertIn('"rust-src"', install_rust_run)
+        self.assertNotIn("toolchain.get(\"components\"", install_rust_run)
+        self.assertNotIn('"clippy"', install_rust_run)
+        self.assertNotIn('"rustfmt"', install_rust_run)
+        self.assertNotIn('"rustc-dev"', install_rust_run)
+        self.assertNotIn('"llvm-tools-preview"', install_rust_run)
         self.assertIn("subprocess.run(command, check=True)", install_rust_run)
 
         restore_rust_cache_step = next(
@@ -1339,6 +1344,16 @@ class ValidationPlanScriptTests(unittest.TestCase):
         self.assertIn("~/.cargo/registry/cache/", restore_cache_with.get("path") or "")
         self.assertIn("~/.cargo/git/db/", restore_cache_with.get("path") or "")
         self.assertIn("codeql-rust-cargo-home-v1-", restore_cache_with.get("key") or "")
+        workflow_json = json.dumps(payload, sort_keys=True)
+        self.assertNotIn("~/.rustup/toolchains", workflow_json)
+
+        telemetry_step = next(
+            step for step in steps if step.get("name") == "Record Rust cache telemetry for CodeQL"
+        )
+        self.assertEqual(telemetry_step.get("if"), "${{ matrix.language == 'rust' }}")
+        telemetry_run = telemetry_step.get("run") or ""
+        self.assertIn("CodeQL Rust cache telemetry", telemetry_run)
+        self.assertIn("cache_codeql_rust_cargo_home_restore.outputs.cache-hit", telemetry_run)
 
         prefetch_rust_step = next(
             step for step in steps if step.get("name") == "Prefetch Rust dependencies for CodeQL"
@@ -1360,6 +1375,7 @@ class ValidationPlanScriptTests(unittest.TestCase):
                 "languages": "${{ matrix.language }}",
                 "build-mode": "${{ matrix.build-mode }}",
                 "config-file": "./.github/codeql/codeql-config.yml",
+                "dependency-caching": "${{ github.event_name == 'pull_request' && 'restore' || 'full' }}",
             },
         )
 
@@ -1377,6 +1393,14 @@ class ValidationPlanScriptTests(unittest.TestCase):
         self.assertEqual(results_job.get("name"), "CodeQL required gate")
         self.assertEqual(results_job.get("needs"), ["plan", "analyze"])
         self.assertEqual(results_job.get("if"), "always()")
+        self.assertEqual(results_job.get("permissions") or {}, {"actions": "read"})
+        timing_step = next(
+            step for step in results_job.get("steps") or [] if step.get("name") == "Report CodeQL timing"
+        )
+        timing_run = timing_step.get("run") or ""
+        self.assertIn("CodeQL timing", timing_run)
+        self.assertIn("actions/runs/${{ github.run_id }}/jobs", timing_run)
+        self.assertIn("Analyze \\\\(", timing_run)
         results_run = "\n".join(step.get("run") or "" for step in results_job.get("steps") or [])
         self.assertIn("No CodeQL-relevant changes", results_run)
         self.assertIn("CodeQL analysis failed", results_run)

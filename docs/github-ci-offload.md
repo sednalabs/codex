@@ -33,6 +33,10 @@ artifacts.
     fixtures run the full Actions, C/C++, JavaScript/TypeScript, Python, and
     Rust matrix; if the base checkout does not yet contain the router script,
     the workflow emits that full matrix directly
+  - cache policy: use CodeQL native dependency caching in restore-only mode for
+    PRs and restore/store mode for protected branch or scheduled runs; keep
+    manual Rust caches limited to Cargo registry/git data and do not cache
+    toolchain executables in the security scanning workflow
   - not covered: GitHub Code Quality's public-preview dynamic workflow is a
     separate repository setting and may still consume Actions minutes unless it
     is disabled or narrowed in GitHub's Code quality settings

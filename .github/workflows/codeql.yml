@@ -167,12 +167,9 @@ jobs:
                   data = tomllib.loads(text)
                   toolchain = data["toolchain"]
                   channel = toolchain["channel"]
-                  components = set(toolchain.get("components", []))
               else:
                   channel = text
-                  components = set()
-              components.add("rust-src")
-              toolchains.setdefault(channel, set()).update(components)
+              toolchains.setdefault(channel, set()).add("rust-src")
 
           for channel, components in sorted(toolchains.items()):
               command = [
@@ -202,6 +199,17 @@ jobs:
           restore-keys: |
             codeql-rust-cargo-home-v1-${{ runner.os }}-
 
+      - name: Record Rust cache telemetry for CodeQL
+        if: ${{ matrix.language == 'rust' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          {
+            echo "### CodeQL Rust cache telemetry"
+            echo "- Cargo cache hit: ${{ steps.cache_codeql_rust_cargo_home_restore.outputs.cache-hit || 'false' }}"
+            echo "- Cargo cache key: \`codeql-rust-cargo-home-v1-${{ runner.os }}-${{ hashFiles('codex-rs/Cargo.lock', 'codex-rs/rust-toolchain.toml', 'tools/argument-comment-lint/Cargo.lock', 'tools/argument-comment-lint/rust-toolchain') }}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
       - name: Prefetch Rust dependencies for CodeQL
         if: ${{ matrix.language == 'rust' }}
         continue-on-error: true
@@ -217,6 +225,7 @@ jobs:
           languages: ${{ matrix.language }}
           build-mode: ${{ matrix.build-mode }}
           config-file: ./.github/codeql/codeql-config.yml
+          dependency-caching: ${{ github.event_name == 'pull_request' && 'restore' || 'full' }}
 
       - name: Perform CodeQL Analysis
         uses: github/codeql-action/analyze@v4
@@ -241,7 +250,23 @@ jobs:
       - analyze
     if: always()
     runs-on: ubuntu-24.04
+    permissions:
+      actions: read
     steps:
+      - name: Report CodeQL timing
+        if: always()
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          echo "### CodeQL timing" >> "$GITHUB_STEP_SUMMARY"
+          gh api "repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/jobs?per_page=100" \
+            --jq '.jobs[]
+              | select(.name | test("^(CodeQL language router|Analyze \\(|CodeQL required gate)"))
+              | "- \(.name): \(.status)/\(.conclusion // "") started=\(.started_at) completed=\(.completed_at // "")"' \
+            >> "$GITHUB_STEP_SUMMARY"
+
       - name: Summarize
         shell: bash
         run: |
