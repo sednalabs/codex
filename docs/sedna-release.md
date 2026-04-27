@@ -44,9 +44,11 @@ Use the `sedna-release` workflow for fork-owned GitHub releases.
   - `Sedna-Release: prerelease`
 - Ordinary `main` pushes without a `Sedna-Release` trailer are a clean no-op in the release
   workflow.
-- `Sedna-Release: stable` refuses upstream prerelease tracks such as `0.126.0-alpha.3`.
+- `Sedna-Release: stable` refuses upstream prerelease tracks such as `0.126.0-alpha.3`,
+  publishes a full GitHub Release, and dispatches the production installer for that exact tag.
 - `Sedna-Release: prerelease` allows upstream prerelease tracks and publishes the GitHub Release as
-  a prerelease. The production installer refuses prereleases automatically.
+  a prerelease. The release workflow dispatches the production installer with an explicit
+  prerelease allowance for that exact tag.
 - Pushing a tag like `v0.119.0-sedna.2` remains supported, but the workflow validates that the tag
   matches the resolver's computed version for the target commit before publishing.
 - Manual `workflow_dispatch` accepts an optional `target_sha`, `channel`, and optional
@@ -111,8 +113,11 @@ changes can be detected explicitly instead of inferred from tag shape alone.
 `sedna-release-install` verifies and installs already published Sedna release assets on a
 repo-scoped self-hosted runner labelled `sedna-release-installer`.
 
-- Automatic installs run only for `release.published` events in `sednalabs/codex`
+- Official release installs are explicitly dispatched by `sedna-release` after publishing a
+  non-draft GitHub Release. This avoids relying on implicit follow-on workflow events from the
+  release publisher token.
 - Manual `workflow_dispatch` runs default to `dry_run=true`
+- Prerelease installs require `allow_prerelease=true` on `workflow_dispatch`
 - The installer verifies the tag shape, release metadata, `SHA256SUMS.txt`, and executable payload
   before updating the user-level standalone install
-- Drafts and prereleases are refused by the automatic path
+- Drafts are not installed, and prereleases are refused unless an explicit dispatch allows them
