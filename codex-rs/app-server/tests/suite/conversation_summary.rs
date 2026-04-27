@@ -88,7 +88,8 @@ async fn get_conversation_summary_by_thread_id_reads_rollout() -> Result<()> {
     .await??;
     let received: GetConversationSummaryResponse = to_response(response)?;
 
-    assert_eq!(normalized_summary_path(received.summary)?, expected);
+    let received = normalized_summary_path(received.summary)?;
+    assert_eq!(received, expected);
     Ok(())
 }
 
@@ -138,7 +139,7 @@ async fn get_conversation_summary_by_relative_rollout_path_resolves_from_codex_h
     let thread_id = ThreadId::from_string(&conversation_id)?;
     let rollout_path = rollout_path(codex_home.path(), FILENAME_TS, &conversation_id);
     let relative_path = rollout_path.strip_prefix(codex_home.path())?.to_path_buf();
-    let expected = expected_summary(thread_id, normalized_canonical_path(rollout_path)?);
+    let expected = expected_summary(thread_id, normalized_canonical_path(rollout_path)?)?;
 
     let mut mcp = McpProcess::new(codex_home.path()).await?;
     timeout(DEFAULT_READ_TIMEOUT, mcp.initialize()).await??;
@@ -155,6 +156,7 @@ async fn get_conversation_summary_by_relative_rollout_path_resolves_from_codex_h
     .await??;
     let received: GetConversationSummaryResponse = to_response(response)?;
 
-    assert_eq!(normalized_summary_path(received.summary)?, expected);
+    let received = normalized_summary_path(received.summary)?;
+    assert_eq!(received, expected);
     Ok(())
 }

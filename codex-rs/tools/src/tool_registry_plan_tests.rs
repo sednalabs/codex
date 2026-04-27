@@ -1758,7 +1758,7 @@ fn android_dynamic_tools_use_canonical_codex_tool_definitions() {
         image_generation_tool_auth_allowed: true,
         web_search_mode: Some(WebSearchMode::Cached),
         session_source: SessionSource::Cli,
-        sandbox_policy: &SandboxPolicy::DangerFullAccess,
+        permission_profile: &PermissionProfile::Disabled,
         windows_sandbox_level: WindowsSandboxLevel::Disabled,
     });
     let observe_tool = DynamicToolSpec {
@@ -1878,7 +1878,7 @@ fn namespaced_android_dynamic_tool_names_remain_dynamic_tools() {
         image_generation_tool_auth_allowed: true,
         web_search_mode: Some(WebSearchMode::Cached),
         session_source: SessionSource::Cli,
-        sandbox_policy: &SandboxPolicy::DangerFullAccess,
+        permission_profile: &PermissionProfile::Disabled,
         windows_sandbox_level: WindowsSandboxLevel::Disabled,
     });
     let observe_tool = DynamicToolSpec {
@@ -1930,7 +1930,7 @@ fn duplicate_bare_android_dynamic_tools_register_native_handler_once() {
         image_generation_tool_auth_allowed: true,
         web_search_mode: Some(WebSearchMode::Cached),
         session_source: SessionSource::Cli,
-        sandbox_policy: &SandboxPolicy::DangerFullAccess,
+        permission_profile: &PermissionProfile::Disabled,
         windows_sandbox_level: WindowsSandboxLevel::Disabled,
     });
     let observe_tool = DynamicToolSpec {
