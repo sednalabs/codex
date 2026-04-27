@@ -1,0 +1,19 @@
+<!DOCTYPE qhelp SYSTEM "qhelp.dtd">
+<qhelp>
+  <overview>
+    <p>
+      GitHub masks exact secret values that it already knows about, but derived
+      values, generated tokens, decoded PEM files, and release credentials can
+      still be exposed when workflow scripts print them before registering an
+      explicit mask.
+    </p>
+  </overview>
+  <recommendation>
+    <p>
+      Register the exact value with <code>::add-mask::</code> before the first
+      log-visible use. Prefer writing credentials to files with stdout
+      redirected, avoid <code>set -x</code> around credential-bearing commands,
+      and write only non-secret metadata to <code>GITHUB_STEP_SUMMARY</code>.
+    </p>
+  </recommendation>
+</qhelp>

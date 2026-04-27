@@ -119,19 +119,21 @@ jobs:
               --head-sha '${{ steps.shas.outputs.head_sha }}' \
               --changed-files-json "${CHANGED_FILES_JSON}")"
           else
+            actions_config="./.codeql-runtime/codeql-actions.yml"
             rust_config="./.github/codeql/codeql-config.yml"
             if [[ '${{ github.event_name }}' == 'pull_request' ]]; then
               rust_config="./.github/codeql/codeql-rust-pr.yml"
             fi
-            plan="$(RUST_CONFIG="${rust_config}" python3 - <<'PY'
+            plan="$(ACTIONS_CONFIG="${actions_config}" RUST_CONFIG="${rust_config}" python3 - <<'PY'
           import json
           import os
 
+          actions_config = os.environ["ACTIONS_CONFIG"]
           advanced_config = "./.github/codeql/codeql-config.yml"
           rust_config = os.environ["RUST_CONFIG"]
           matrix = {
               "include": [
-                  {"language": "actions", "build-mode": "none", "config_file": advanced_config},
+                  {"language": "actions", "build-mode": "none", "config_file": actions_config},
                   {"language": "c-cpp", "build-mode": "none", "config_file": advanced_config},
                   {"language": "javascript-typescript", "build-mode": "none", "config_file": advanced_config},
                   {"language": "python", "build-mode": "none", "config_file": advanced_config},
@@ -245,6 +247,39 @@ jobs:
           set -euo pipefail
           cargo fetch --locked --manifest-path codex-rs/Cargo.toml
           cargo fetch --locked --manifest-path tools/argument-comment-lint/Cargo.toml
+
+      - name: Prepare Actions CodeQL query pack config
+        if: ${{ matrix.language == 'actions' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          mkdir -p .codeql-runtime
+          pack_path="./.github/codeql/actions-log-exposure"
+
+          if [[ '${{ github.event_name }}' == 'pull_request' ]]; then
+            trusted_root="${GITHUB_WORKSPACE}/.codeql-runtime/trusted-base"
+            trusted_pack="./.codeql-runtime/trusted-base/.github/codeql/actions-log-exposure"
+            mkdir -p "${trusted_root}"
+
+            if git fetch --no-tags --depth=1 origin '${{ github.event.pull_request.base.sha }}' &&
+              git archive '${{ github.event.pull_request.base.sha }}' .github/codeql/actions-log-exposure |
+                tar -x -C "${trusted_root}"; then
+              pack_path="${trusted_pack}"
+            else
+              echo "::warning title=CodeQL Actions query pack bootstrap::Trusted base query pack was unavailable; using the checked-out pack for this run."
+            fi
+          fi
+
+          {
+            echo "name: codex-codeql-actions-runtime"
+            echo
+            echo "queries:"
+            echo "  - uses: security-and-quality"
+            echo "  - uses: ${pack_path}"
+            echo
+            echo "threat-models: local"
+          } > .codeql-runtime/codeql-actions.yml
 
       - name: Initialize CodeQL
         uses: github/codeql-action/init@v4

@@ -1454,6 +1454,16 @@ class ValidationPlanScriptTests(unittest.TestCase):
             prefetch_run,
         )
 
+        actions_config_step = next(
+            step for step in steps if step.get("name") == "Prepare Actions CodeQL query pack config"
+        )
+        self.assertEqual(actions_config_step.get("if"), "${{ matrix.language == 'actions' }}")
+        actions_config_run = actions_config_step.get("run") or ""
+        self.assertIn(".github/codeql/actions-log-exposure", actions_config_run)
+        self.assertIn("github.event.pull_request.base.sha", actions_config_run)
+        self.assertIn("security-and-quality", actions_config_run)
+        self.assertIn(".codeql-runtime/codeql-actions.yml", actions_config_run)
+
         init_step = next(step for step in steps if step.get("name") == "Initialize CodeQL")
         self.assertEqual(init_step.get("uses"), "github/codeql-action/init@v4")
         self.assertEqual(
@@ -1503,6 +1513,46 @@ class ValidationPlanScriptTests(unittest.TestCase):
                 "queries": [{"uses": "security-and-quality"}],
                 "threat-models": "local",
             },
+        )
+        actions_config = yaml.load(
+            (REPO_ROOT / ".github/codeql/codeql-actions.yml").read_text(encoding="utf-8"),
+            Loader=yaml.BaseLoader,
+        )
+        self.assertEqual(
+            actions_config,
+            {
+                "name": "codex-codeql-actions",
+                "queries": [
+                    {"uses": "security-and-quality"},
+                    {"uses": "./.github/codeql/actions-log-exposure"},
+                ],
+                "threat-models": "local",
+            },
+        )
+        actions_pack = yaml.load(
+            (REPO_ROOT / ".github/codeql/actions-log-exposure/qlpack.yml").read_text(
+                encoding="utf-8"
+            ),
+            Loader=yaml.BaseLoader,
+        )
+        self.assertEqual(actions_pack.get("extractor"), "actions")
+        self.assertEqual(actions_pack.get("dependencies"), {"codeql/actions-all": "*"})
+        self.assertEqual(actions_pack.get("defaultSuiteFile"), "suites/actions-log-exposure.qls")
+        self.assertIn(
+            "@id actions/sensitive-workflow-value-to-log",
+            (REPO_ROOT / ".github/codeql/actions-log-exposure/SensitiveWorkflowValueToLog.ql")
+            .read_text(encoding="utf-8"),
+        )
+        self.assertIn(
+            "@id actions/sensitive-workflow-value-to-verbose-tool",
+            (REPO_ROOT / ".github/codeql/actions-log-exposure/SensitiveWorkflowValueToVerboseTool.ql")
+            .read_text(encoding="utf-8"),
+        )
+        self.assertIn(
+            "getAWriteToGitHubEnv",
+            (REPO_ROOT / ".github/codeql/actions-log-exposure/LogExposure.qll").read_text(
+                encoding="utf-8"
+            ),
         )
         pr_config = yaml.load(
             (REPO_ROOT / ".github/codeql/codeql-rust-pr.yml").read_text(encoding="utf-8"),
@@ -1603,7 +1653,7 @@ class ValidationPlanScriptTests(unittest.TestCase):
                     {
                         "language": "actions",
                         "build-mode": "none",
-                        "config_file": "./.github/codeql/codeql-config.yml",
+                        "config_file": "./.codeql-runtime/codeql-actions.yml",
                     },
                     {
                         "language": "python",
@@ -1657,7 +1707,7 @@ class ValidationPlanScriptTests(unittest.TestCase):
                 for entry in json.loads(schedule_plan["matrix"])["include"]
             },
             {
-                "actions": "./.github/codeql/codeql-config.yml",
+                "actions": "./.codeql-runtime/codeql-actions.yml",
                 "c-cpp": "./.github/codeql/codeql-config.yml",
                 "javascript-typescript": "./.github/codeql/codeql-config.yml",
                 "python": "./.github/codeql/codeql-config.yml",
@@ -1672,7 +1722,7 @@ class ValidationPlanScriptTests(unittest.TestCase):
                 for entry in json.loads(router_change_plan["matrix"])["include"]
             },
             {
-                "actions": "./.github/codeql/codeql-config.yml",
+                "actions": "./.codeql-runtime/codeql-actions.yml",
                 "c-cpp": "./.github/codeql/codeql-config.yml",
                 "javascript-typescript": "./.github/codeql/codeql-config.yml",
                 "python": "./.github/codeql/codeql-config.yml",
@@ -1701,7 +1751,7 @@ class ValidationPlanScriptTests(unittest.TestCase):
                 for entry in json.loads(plan["matrix"])["include"]
             },
             {
-                "actions": "./.github/codeql/codeql-config.yml",
+                "actions": "./.codeql-runtime/codeql-actions.yml",
                 "c-cpp": "./.github/codeql/codeql-config.yml",
                 "javascript-typescript": "./.github/codeql/codeql-config.yml",
                 "python": "./.github/codeql/codeql-config.yml",
