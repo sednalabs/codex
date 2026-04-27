@@ -119,7 +119,34 @@ jobs:
               --head-sha '${{ steps.shas.outputs.head_sha }}' \
               --changed-files-json "${CHANGED_FILES_JSON}")"
           else
-            plan='{"matrix":"{\"include\":[{\"language\":\"actions\",\"build-mode\":\"none\"},{\"language\":\"c-cpp\",\"build-mode\":\"none\"},{\"language\":\"javascript-typescript\",\"build-mode\":\"none\"},{\"language\":\"python\",\"build-mode\":\"none\"},{\"language\":\"rust\",\"build-mode\":\"none\"}]}","languages":"actions,c-cpp,javascript-typescript,python,rust","has_codeql_relevant_changes":"true","run_all_languages":"true","reason":"trusted base checkout does not include CodeQL planner"}'
+            rust_config="./.github/codeql/codeql-config.yml"
+            if [[ '${{ github.event_name }}' == 'pull_request' ]]; then
+              rust_config="./.github/codeql/codeql-rust-pr.yml"
+            fi
+            plan="$(RUST_CONFIG="${rust_config}" python3 - <<'PY'
+          import json
+          import os
+
+          advanced_config = "./.github/codeql/codeql-config.yml"
+          rust_config = os.environ["RUST_CONFIG"]
+          matrix = {
+              "include": [
+                  {"language": "actions", "build-mode": "none", "config_file": advanced_config},
+                  {"language": "c-cpp", "build-mode": "none", "config_file": advanced_config},
+                  {"language": "javascript-typescript", "build-mode": "none", "config_file": advanced_config},
+                  {"language": "python", "build-mode": "none", "config_file": advanced_config},
+                  {"language": "rust", "build-mode": "none", "config_file": rust_config},
+              ],
+          }
+          print(json.dumps({
+              "matrix": json.dumps(matrix, separators=(",", ":")),
+              "languages": "actions,c-cpp,javascript-typescript,python,rust",
+              "has_codeql_relevant_changes": "true",
+              "run_all_languages": "true",
+              "reason": "trusted base checkout does not include CodeQL planner",
+          }, separators=(",", ":")))
+          PY
+          )"
           fi
 
           PLAN_JSON="${plan}" python3 - <<'PY' >> "$GITHUB_OUTPUT"
@@ -224,7 +251,7 @@ jobs:
         with:
           languages: ${{ matrix.language }}
           build-mode: ${{ matrix.build-mode }}
-          config-file: ./.github/codeql/codeql-config.yml
+          config-file: ${{ matrix.config_file }}
           dependency-caching: ${{ github.event_name == 'pull_request' && 'restore' || 'full' }}
 
       - name: Perform CodeQL Analysis
