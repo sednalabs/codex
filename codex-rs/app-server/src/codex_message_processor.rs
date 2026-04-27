@@ -540,7 +540,6 @@ struct ListenerTaskContext {
     outgoing: Arc<OutgoingMessageSender>,
     pending_thread_unloads: Arc<Mutex<HashSet<ThreadId>>>,
     analytics_events_client: AnalyticsEventsClient,
-    general_analytics_enabled: bool,
     thread_watch_manager: ThreadWatchManager,
     fallback_model_provider: String,
     codex_home: PathBuf,
@@ -727,14 +726,12 @@ impl CodexMessageProcessor {
         error: &JSONRPCErrorError,
         error_type: Option<AnalyticsJsonRpcError>,
     ) {
-        if self.config.features.enabled(Feature::GeneralAnalytics) {
-            self.analytics_events_client.track_error_response(
-                request_id.connection_id.0,
-                request_id.request_id.clone(),
-                error.clone(),
-                error_type,
-            );
-        }
+        self.analytics_events_client.track_error_response(
+            request_id.connection_id.0,
+            request_id.request_id.clone(),
+            error.clone(),
+            error_type,
+        );
     }
 
     async fn load_thread(
@@ -2410,7 +2407,6 @@ impl CodexMessageProcessor {
             outgoing: Arc::clone(&self.outgoing),
             pending_thread_unloads: Arc::clone(&self.pending_thread_unloads),
             analytics_events_client: self.analytics_events_client.clone(),
-            general_analytics_enabled: self.config.features.enabled(Feature::GeneralAnalytics),
             thread_watch_manager: self.thread_watch_manager.clone(),
             fallback_model_provider: self.config.model_provider_id.clone(),
             codex_home: self.config.codex_home.to_path_buf(),
@@ -2749,17 +2745,15 @@ impl CodexMessageProcessor {
                     permission_profile,
                     reasoning_effort: config_snapshot.reasoning_effort,
                 };
-                if listener_task_context.general_analytics_enabled {
-                    listener_task_context
-                        .analytics_events_client
-                        .track_response(
-                            request_id.connection_id.0,
-                            ClientResponse::ThreadStart {
-                                request_id: request_id.request_id.clone(),
-                                response: response.clone(),
-                            },
-                        );
-                }
+                listener_task_context
+                    .analytics_events_client
+                    .track_response(
+                        request_id.connection_id.0,
+                        ClientResponse::ThreadStart {
+                            request_id: request_id.request_id.clone(),
+                            response: response.clone(),
+                        },
+                    );
 
                 listener_task_context
                     .outgoing
@@ -4565,15 +4559,13 @@ impl CodexMessageProcessor {
                     permission_profile,
                     reasoning_effort: session_configured.reasoning_effort,
                 };
-                if self.config.features.enabled(Feature::GeneralAnalytics) {
-                    self.analytics_events_client.track_response(
-                        request_id.connection_id.0,
-                        ClientResponse::ThreadResume {
-                            request_id: request_id.request_id.clone(),
-                            response: response.clone(),
-                        },
-                    );
-                }
+                self.analytics_events_client.track_response(
+                    request_id.connection_id.0,
+                    ClientResponse::ThreadResume {
+                        request_id: request_id.request_id.clone(),
+                        response: response.clone(),
+                    },
+                );
 
                 let connection_id = request_id.connection_id;
                 let token_usage_thread = include_turns.then(|| response.thread.clone());
@@ -5296,15 +5288,13 @@ impl CodexMessageProcessor {
             permission_profile,
             reasoning_effort: session_configured.reasoning_effort,
         };
-        if self.config.features.enabled(Feature::GeneralAnalytics) {
-            self.analytics_events_client.track_response(
-                request_id.connection_id.0,
-                ClientResponse::ThreadFork {
-                    request_id: request_id.request_id.clone(),
-                    response: response.clone(),
-                },
-            );
-        }
+        self.analytics_events_client.track_response(
+            request_id.connection_id.0,
+            ClientResponse::ThreadFork {
+                request_id: request_id.request_id.clone(),
+                response: response.clone(),
+            },
+        );
 
         let connection_id = request_id.connection_id;
         let token_usage_thread = include_turns.then(|| response.thread.clone());
@@ -7038,15 +7028,13 @@ impl CodexMessageProcessor {
                 };
 
                 let response = TurnStartResponse { turn };
-                if self.config.features.enabled(Feature::GeneralAnalytics) {
-                    self.analytics_events_client.track_response(
-                        request_id.connection_id.0,
-                        ClientResponse::TurnStart {
-                            request_id: request_id.request_id.clone(),
-                            response: response.clone(),
-                        },
-                    );
-                }
+                self.analytics_events_client.track_response(
+                    request_id.connection_id.0,
+                    ClientResponse::TurnStart {
+                        request_id: request_id.request_id.clone(),
+                        response: response.clone(),
+                    },
+                );
                 self.outgoing.send_response(request_id, response).await;
             }
             Err(err) => {
@@ -7172,15 +7160,13 @@ impl CodexMessageProcessor {
         {
             Ok(turn_id) => {
                 let response = TurnSteerResponse { turn_id };
-                if self.config.features.enabled(Feature::GeneralAnalytics) {
-                    self.analytics_events_client.track_response(
-                        request_id.connection_id.0,
-                        ClientResponse::TurnSteer {
-                            request_id: request_id.request_id.clone(),
-                            response: response.clone(),
-                        },
-                    );
-                }
+                self.analytics_events_client.track_response(
+                    request_id.connection_id.0,
+                    ClientResponse::TurnSteer {
+                        request_id: request_id.request_id.clone(),
+                        response: response.clone(),
+                    },
+                );
                 self.outgoing.send_response(request_id, response).await;
             }
             Err(err) => {
@@ -7813,7 +7799,6 @@ impl CodexMessageProcessor {
                 outgoing: Arc::clone(&self.outgoing),
                 pending_thread_unloads: Arc::clone(&self.pending_thread_unloads),
                 analytics_events_client: self.analytics_events_client.clone(),
-                general_analytics_enabled: self.config.features.enabled(Feature::GeneralAnalytics),
                 thread_watch_manager: self.thread_watch_manager.clone(),
                 fallback_model_provider: self.config.model_provider_id.clone(),
                 codex_home: self.config.codex_home.to_path_buf(),
@@ -7931,7 +7916,6 @@ impl CodexMessageProcessor {
                 outgoing: Arc::clone(&self.outgoing),
                 pending_thread_unloads: Arc::clone(&self.pending_thread_unloads),
                 analytics_events_client: self.analytics_events_client.clone(),
-                general_analytics_enabled: self.config.features.enabled(Feature::GeneralAnalytics),
                 thread_watch_manager: self.thread_watch_manager.clone(),
                 fallback_model_provider: self.config.model_provider_id.clone(),
                 codex_home: self.config.codex_home.to_path_buf(),
@@ -7980,7 +7964,6 @@ impl CodexMessageProcessor {
             thread_state_manager,
             pending_thread_unloads,
             analytics_events_client: _,
-            general_analytics_enabled: _,
             thread_watch_manager,
             fallback_model_provider,
             codex_home,
@@ -8056,9 +8039,7 @@ impl CodexMessageProcessor {
                             conversation_id,
                             conversation.clone(),
                             thread_manager.clone(),
-                            listener_task_context
-                                .general_analytics_enabled
-                                .then(|| listener_task_context.analytics_events_client.clone()),
+                            Some(listener_task_context.analytics_events_client.clone()),
                             thread_outgoing,
                             thread_state.clone(),
                             thread_watch_manager.clone(),
