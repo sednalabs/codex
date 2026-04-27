@@ -6415,7 +6415,9 @@ impl ChatWidget {
             items,
             self.config.cwd.to_path_buf(),
             self.config.permissions.approval_policy.value(),
-            self.config.permissions.sandbox_policy.get().clone(),
+            self.config
+                .permissions
+                .legacy_sandbox_policy(self.config.cwd.as_path()),
             permission_profile,
             effective_mode.model().to_string(),
             effective_mode.reasoning_effort(),
@@ -9466,7 +9468,10 @@ impl ChatWidget {
     pub(crate) fn open_permissions_popup(&mut self) {
         let include_read_only = cfg!(target_os = "windows");
         let current_approval = self.config.permissions.approval_policy.value();
-        let current_sandbox = self.config.permissions.sandbox_policy.get();
+        let current_sandbox = self
+            .config
+            .permissions
+            .legacy_sandbox_policy(self.config.cwd.as_path());
         let guardian_approval_enabled = self.config.features.enabled(Feature::GuardianApproval);
         let current_review_policy = self.config.approvals_reviewer;
         let mut items: Vec<SelectionItem> = Vec::new();
@@ -9600,7 +9605,11 @@ impl ChatWidget {
                     name: base_name.clone(),
                     description: base_description.clone(),
                     is_current: current_review_policy == ApprovalsReviewer::User
-                        && Self::preset_matches_current(current_approval, current_sandbox, &preset),
+                        && Self::preset_matches_current(
+                            current_approval,
+                            &current_sandbox,
+                            &preset,
+                        ),
                     actions: default_actions,
                     dismiss_on_select: true,
                     disabled_reason: default_disabled_reason,
@@ -9617,7 +9626,7 @@ impl ChatWidget {
                         is_current: current_review_policy == ApprovalsReviewer::AutoReview
                             && Self::preset_matches_current(
                                 current_approval,
-                                current_sandbox,
+                                &current_sandbox,
                                 &preset,
                             ),
                         actions: Self::approval_preset_actions(
@@ -9638,7 +9647,7 @@ impl ChatWidget {
                     description: base_description,
                     is_current: Self::preset_matches_current(
                         current_approval,
-                        current_sandbox,
+                        &current_sandbox,
                         &preset,
                     ),
                     actions: default_actions,
@@ -9774,7 +9783,10 @@ impl ChatWidget {
             self.config.codex_home.as_path(),
             cwd.as_path(),
             &env_map,
-            self.config.permissions.sandbox_policy.get(),
+            &self
+                .config
+                .permissions
+                .legacy_sandbox_policy(self.config.cwd.as_path()),
             Some(self.config.codex_home.as_path()),
         ) {
             Ok(_) => None,
@@ -9892,7 +9904,14 @@ impl ChatWidget {
         let mode_label = preset
             .as_ref()
             .map(|p| describe_policy(&p.sandbox))
-            .unwrap_or_else(|| describe_policy(self.config.permissions.sandbox_policy.get()));
+            .unwrap_or_else(|| {
+                describe_policy(
+                    &self
+                        .config
+                        .permissions
+                        .legacy_sandbox_policy(self.config.cwd.as_path()),
+                )
+            });
         let info_line = if failed_scan {
             Line::from(vec![
                 "We couldn't complete the world-writable scan, so protections cannot be verified. "

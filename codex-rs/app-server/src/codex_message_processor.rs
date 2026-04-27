@@ -2307,7 +2307,11 @@ impl CodexMessageProcessor {
                 }
             }
         } else if let Some(policy) = sandbox_policy.map(|policy| policy.to_core()) {
-            match self.config.permissions.sandbox_policy.can_set(&policy) {
+            match self
+                .config
+                .permissions
+                .can_set_legacy_sandbox_policy(&policy, &sandbox_cwd)
+            {
                 Ok(()) => {
                     let file_system_sandbox_policy =
                         codex_protocol::permissions::FileSystemSandboxPolicy::from_legacy_sandbox_policy_for_cwd(&policy, &sandbox_cwd);
@@ -8705,7 +8709,9 @@ impl CodexMessageProcessor {
                 Ok(config) => {
                     let setup_request = WindowsSandboxSetupRequest {
                         mode,
-                        policy: config.permissions.sandbox_policy.get().clone(),
+                        policy: config
+                            .permissions
+                            .legacy_sandbox_policy(config.cwd.as_path()),
                         policy_cwd: config.cwd.to_path_buf(),
                         command_cwd,
                         env_map: std::env::vars().collect(),

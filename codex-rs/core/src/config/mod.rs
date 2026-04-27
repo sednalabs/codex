@@ -237,6 +237,37 @@ impl Permissions {
         self.permission_profile.get().network_sandbox_policy()
     }
 
+    /// Legacy compatibility projection derived from the canonical profile.
+    pub fn legacy_sandbox_policy(&self, cwd: &Path) -> SandboxPolicy {
+        let permission_profile = self.permission_profile.get();
+        let file_system_sandbox_policy = permission_profile.file_system_sandbox_policy();
+        compatibility_sandbox_policy_for_permission_profile(
+            permission_profile,
+            &file_system_sandbox_policy,
+            permission_profile.network_sandbox_policy(),
+            cwd,
+        )
+    }
+
+    /// Check whether a legacy sandbox policy can be applied to this permission
+    /// set under both legacy and canonical profile constraints.
+    pub fn can_set_legacy_sandbox_policy(
+        &self,
+        sandbox_policy: &SandboxPolicy,
+        cwd: &Path,
+    ) -> ConstraintResult<()> {
+        self.sandbox_policy.can_set(sandbox_policy)?;
+        let file_system_sandbox_policy =
+            FileSystemSandboxPolicy::from_legacy_sandbox_policy_for_cwd(sandbox_policy, cwd);
+        let network_sandbox_policy = NetworkSandboxPolicy::from(sandbox_policy);
+        let permission_profile = PermissionProfile::from_runtime_permissions_with_enforcement(
+            SandboxEnforcement::from_legacy_sandbox_policy(sandbox_policy),
+            &file_system_sandbox_policy,
+            network_sandbox_policy,
+        );
+        self.permission_profile.can_set(&permission_profile)
+    }
+
     /// Replace permissions from a legacy sandbox policy and keep every
     /// permission projection in sync.
     pub fn set_legacy_sandbox_policy(
@@ -244,7 +275,7 @@ impl Permissions {
         sandbox_policy: SandboxPolicy,
         cwd: &Path,
     ) -> ConstraintResult<()> {
-        self.sandbox_policy.can_set(&sandbox_policy)?;
+        self.can_set_legacy_sandbox_policy(&sandbox_policy, cwd)?;
         let file_system_sandbox_policy =
             FileSystemSandboxPolicy::from_legacy_sandbox_policy_for_cwd(&sandbox_policy, cwd);
         let network_sandbox_policy = NetworkSandboxPolicy::from(&sandbox_policy);
@@ -253,7 +284,6 @@ impl Permissions {
             &file_system_sandbox_policy,
             network_sandbox_policy,
         );
-        self.permission_profile.can_set(&permission_profile)?;
 
         self.sandbox_policy.set(sandbox_policy)?;
         self.permission_profile.set(permission_profile)?;
