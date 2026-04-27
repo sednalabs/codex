@@ -1766,10 +1766,6 @@ class McpServerOauthLoginResponse(BaseModel):
 
 
 class McpServerRefreshResponse(BaseModel):
-    pass
-    model_config = ConfigDict(
-        populate_by_name=True,
-    )
 
 
 class McpServerStartupState(Enum):
