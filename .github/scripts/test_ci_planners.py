@@ -1364,6 +1364,7 @@ class ValidationPlanScriptTests(unittest.TestCase):
             ["closed"],
         )
         self.assertEqual(payload.get("permissions"), {"actions": "write", "contents": "read"})
+        self.assertEqual(job.get("permissions") or {}, {})
         self.assertEqual(job.get("runs-on"), "ubuntu-latest")
 
         workflow_json = json.dumps(payload, sort_keys=True)
@@ -1382,6 +1383,8 @@ class ValidationPlanScriptTests(unittest.TestCase):
         self.assertIn("github.rest.actions.cancelWorkflowRun", script)
         self.assertIn("headRepo === currentRepo", script)
         self.assertIn("!protectedBranches.has(headBranch)", script)
+        self.assertIn("'main'", script)
+        self.assertIn("'upstream-main'", script)
         self.assertIn("mayCancelHeadPushRuns &&", script)
         self.assertIn("Post-merge push runs on ${baseBranch}", script)
 

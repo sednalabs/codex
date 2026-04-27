@@ -546,7 +546,9 @@
         "codex-rs/app-server-client/",
         "sdk/python/examples/06_thread_lifecycle_and_controls/async.py",
         "sdk/python/examples/06_thread_lifecycle_and_controls/sync.py",
-        "sdk/python/src/codex_app_server/generated/v2_all.py"
+        "sdk/python/scripts/update_sdk_artifacts.py",
+        "sdk/python/src/codex_app_server/generated/v2_all.py",
+        "sdk/python/tests/test_contract_generation.py"
       ],
       "behavior": "Downstream now tracks upstream on the core app-server contract and replay surfaces, while preserving a narrow app-server-specific carry around protocol event history, rollout cwd portability, and thread list/read/resume summary surfaces. Neighboring carries such as blocking waits, MCP safety, and startup/plugin-sync follow-up are tracked separately.",
       "upstream_equivalent": false,
@@ -560,7 +562,8 @@
         "get_conversation_summary_by_*",
         "thread_list_*",
         "thread_read_returns_summary_without_turns",
-        "thread_resume_returns_rollout_history"
+        "thread_resume_returns_rollout_history",
+        "test_generated_v2_all_has_no_redundant_pass_before_model_config"
       ],
       "owner": "downstream",
       "notes": "The old remote-control omission story was stale. The current app-server divergence is narrower: upstream-faithful protocol/runtime parity plus intentional downstream carry, with B.2 extracting policy/lifecycle seams into codex-rs/app-server/src/extensions.rs. Follow-up route selection for app-server paths now bundles the protocol, thread-surface, and blocking-waits lanes instead of a stale single-lane placeholder."
