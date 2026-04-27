@@ -34,11 +34,11 @@ use tokio::sync::mpsc;
 use tokio::sync::oneshot;
 use tokio::sync::watch;
 
-use crate::extensions::NotificationDispatchKind;
-use crate::extensions::dispatch_notification_to_connection;
 use crate::error_code::internal_error;
 use crate::error_code::invalid_params;
 use crate::error_code::invalid_request;
+use crate::extensions::NotificationDispatchKind;
+use crate::extensions::dispatch_notification_to_connection;
 use crate::outgoing_message::ConnectionId;
 use crate::outgoing_message::ConnectionRequestId;
 use crate::outgoing_message::OutgoingMessageSender;
