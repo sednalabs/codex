@@ -515,7 +515,6 @@ mod tests {
             content: vec![ContentItem::InputText {
                 text: format!("<SUBAGENT_NOTIFICATION>{payload}</subagent_notification>"),
             }],
-            end_turn: None,
             phase: None,
         };
 
@@ -541,7 +540,6 @@ mod tests {
             content: vec![ContentItem::InputText {
                 text: format!("<subagent_notification>{payload}</subagent_notification>"),
             }],
-            end_turn: None,
             phase: None,
         };
 
@@ -562,7 +560,6 @@ mod tests {
             content: vec![ContentItem::InputText {
                 text: "hello world".to_string(),
             }],
-            end_turn: None,
             phase: None,
         };
 

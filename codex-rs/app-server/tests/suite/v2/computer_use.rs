@@ -260,7 +260,6 @@ async fn thread_resume_injects_native_android_tools_into_model_requests() -> Res
         content: vec![ContentItem::InputText {
             text: "Resume this thread".to_string(),
         }],
-        end_turn: None,
         phase: None,
     }];
 

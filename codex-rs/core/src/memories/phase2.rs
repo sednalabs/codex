@@ -16,6 +16,8 @@ use crate::session::session::Session;
 use codex_config::Constrained;
 use codex_features::Feature;
 use codex_protocol::ThreadId;
+use codex_protocol::permissions::FileSystemSandboxPolicy;
+use codex_protocol::permissions::NetworkSandboxPolicy;
 use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::SandboxPolicy;
 use codex_protocol::protocol::SessionSource;

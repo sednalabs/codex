@@ -72,8 +72,10 @@ For Linux release readiness, prefer `validation-lab` `profile=targeted` with
 That lane currently resolves to `sedna.release-linux-smoke`, which is a
 preflight check only; it does not publish a GitHub Release. It is a plain
 locked Linux release build, so it keeps Linux build dependencies and `sccache`
-but does not install release-publish helpers such as DotSlash. Use artifact
-mode only when you also need a disposable preview package.
+but does not install release-publish helpers such as DotSlash. The same lane is
+part of the `sedna-heavy-tests` runtime smoke gate for core changes, which keeps
+release-mode compile drift from first surfacing in the official publisher. Use
+artifact mode only when you also need a disposable preview package.
 
 ## Snapshot refs for exact-tree remote proof
 

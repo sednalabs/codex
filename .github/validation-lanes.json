@@ -1217,6 +1217,9 @@
       "lane_sets": [
         "release"
       ],
+      "smoke_gate_kinds": [
+        "runtime"
+      ],
       "frontier_default": false,
       "frontier_lane_sets": [
         "release"

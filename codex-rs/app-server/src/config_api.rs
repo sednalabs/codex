@@ -464,8 +464,6 @@ mod tests {
     use crate::config_manager::apply_runtime_feature_enablement;
     use codex_analytics::AnalyticsEventsClient;
     use codex_arg0::Arg0DispatchPaths;
-    use codex_core::AuthManager;
-    use codex_core::CodexAuth;
     use codex_config::CloudRequirementsLoader;
     use codex_config::LoaderOverrides;
     use codex_config::NetworkDomainPermissionToml as CoreNetworkDomainPermissionToml;
@@ -473,6 +471,8 @@ mod tests {
     use codex_config::NetworkRequirementsToml as CoreNetworkRequirementsToml;
     use codex_config::NetworkUnixSocketPermissionToml as CoreNetworkUnixSocketPermissionToml;
     use codex_config::NetworkUnixSocketPermissionsToml as CoreNetworkUnixSocketPermissionsToml;
+    use codex_core::AuthManager;
+    use codex_core::CodexAuth;
     use codex_features::Feature;
     use codex_protocol::protocol::AskForApproval as CoreAskForApproval;
     use pretty_assertions::assert_eq;

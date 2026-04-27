@@ -15,8 +15,8 @@ use codex_protocol::models::PermissionProfile;
 use codex_protocol::num_format::format_with_separators;
 use codex_protocol::permissions::NetworkSandboxPolicy;
 use codex_protocol::protocol::SessionConfiguredEvent;
-use codex_utils_version::DISPLAY_VERSION;
 use codex_utils_absolute_path::canonicalize_preserving_symlinks;
+use codex_utils_version::DISPLAY_VERSION;
 use owo_colors::OwoColorize;
 use owo_colors::Style;
 
