@@ -14,6 +14,11 @@ on:
         required: false
         default: true
         type: boolean
+      allow_prerelease:
+        description: Permit installing a GitHub prerelease when explicitly dispatched
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -45,6 +50,7 @@ jobs:
           RELEASE_PRERELEASE: ${{ github.event.release.prerelease }}
           INPUT_RELEASE_TAG: ${{ inputs.release_tag }}
           INPUT_DRY_RUN: ${{ inputs.dry_run }}
+          INPUT_ALLOW_PRERELEASE: ${{ inputs.allow_prerelease }}
         run: |
           set -euo pipefail
 
@@ -53,6 +59,7 @@ jobs:
             exit 1
           fi
 
+          allow_prerelease="false"
           if [[ "${EVENT_NAME}" == "release" ]]; then
             release_tag="${RELEASE_TAG}"
             dry_run="false"
@@ -67,6 +74,7 @@ jobs:
           else
             release_tag="${INPUT_RELEASE_TAG}"
             dry_run="${INPUT_DRY_RUN}"
+            allow_prerelease="${INPUT_ALLOW_PRERELEASE:-false}"
           fi
 
           if [[ ! "${release_tag}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([-.][0-9A-Za-z.]+)*-sedna\.[0-9]+$ ]]; then
@@ -77,6 +85,7 @@ jobs:
           {
             echo "release_tag=${release_tag}"
             echo "dry_run=${dry_run}"
+            echo "allow_prerelease=${allow_prerelease}"
           } >> "$GITHUB_OUTPUT"
 
       - name: Install release assets
@@ -85,6 +94,7 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ steps.request.outputs.release_tag }}
           DRY_RUN: ${{ steps.request.outputs.dry_run }}
+          ALLOW_PRERELEASE: ${{ steps.request.outputs.allow_prerelease }}
         run: |
           set -euo pipefail
 
@@ -92,11 +102,16 @@ jobs:
           if [[ "${DRY_RUN}" == "true" ]]; then
             dry_run_arg+=(--dry-run)
           fi
+          allow_prerelease_arg=()
+          if [[ "${ALLOW_PRERELEASE}" == "true" ]]; then
+            allow_prerelease_arg+=(--allow-prerelease)
+          fi
 
           scripts/install_sedna_release_asset \
             --repository "${GITHUB_REPOSITORY}" \
             --release-tag "${RELEASE_TAG}" \
-            "${dry_run_arg[@]}"
+            "${dry_run_arg[@]}" \
+            "${allow_prerelease_arg[@]}"
 
       - name: Summarize
         if: ${{ always() }}
@@ -104,11 +119,13 @@ jobs:
         env:
           RELEASE_TAG: ${{ steps.request.outputs.release_tag }}
           DRY_RUN: ${{ steps.request.outputs.dry_run }}
+          ALLOW_PRERELEASE: ${{ steps.request.outputs.allow_prerelease }}
         run: |
           {
             echo "## Sedna release install"
             echo
             echo "- Release tag: ${RELEASE_TAG:-unknown}"
             echo "- Dry run: ${DRY_RUN:-unknown}"
+            echo "- Allow prerelease: ${ALLOW_PRERELEASE:-unknown}"
             echo "- Runner label: sedna-release-installer"
           } >> "$GITHUB_STEP_SUMMARY"

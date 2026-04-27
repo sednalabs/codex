@@ -35,6 +35,7 @@ concurrency:
   cancel-in-progress: false
 
 permissions:
+  actions: write
   contents: write
   id-token: write
 
@@ -308,6 +309,24 @@ jobs:
             --target "${TARGET_COMMIT}" \
             "${prerelease_flag[@]}" \
             "${draft_flag[@]}"
+
+      - name: Dispatch release installer
+        if: ${{ steps.meta.outputs.release_requested == 'true' && steps.meta.outputs.draft != 'true' }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_PRERELEASE: ${{ steps.meta.outputs.github_prerelease }}
+          RELEASE_TAG: ${{ steps.meta.outputs.release_tag }}
+        run: |
+          set -euo pipefail
+
+          gh workflow run sedna-release-install.yml \
+            --repo "${GH_REPO}" \
+            --ref main \
+            -f "release_tag=${RELEASE_TAG}" \
+            -f "dry_run=false" \
+            -f "allow_prerelease=${RELEASE_PRERELEASE}"
 
       - name: Summarize release decision
         if: ${{ always() }}
