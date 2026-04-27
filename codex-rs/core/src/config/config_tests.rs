@@ -1636,7 +1636,7 @@ network_access = false  # This should be ignored.
             /*profile_sandbox_mode*/ None,
             WindowsSandboxLevel::Disabled,
             /*active_project*/ None,
-            /*sandbox_policy_constraint*/ None,
+            /*permission_profile_constraint*/ None,
         )
         .await;
     assert_eq!(resolution, SandboxPolicy::DangerFullAccess);
@@ -1657,7 +1657,7 @@ network_access = true  # This should be ignored.
             /*profile_sandbox_mode*/ None,
             WindowsSandboxLevel::Disabled,
             /*active_project*/ None,
-            /*sandbox_policy_constraint*/ None,
+            /*permission_profile_constraint*/ None,
         )
         .await;
     assert_eq!(resolution, SandboxPolicy::new_read_only_policy());
@@ -1689,7 +1689,7 @@ trust_level = "trusted"
             /*profile_sandbox_mode*/ None,
             WindowsSandboxLevel::Disabled,
             /*active_project*/ None,
-            /*sandbox_policy_constraint*/ None,
+            /*permission_profile_constraint*/ None,
         )
         .await;
     if cfg!(target_os = "windows") {
@@ -1729,7 +1729,7 @@ exclude_slash_tmp = true
             /*profile_sandbox_mode*/ None,
             WindowsSandboxLevel::Disabled,
             /*active_project*/ None,
-            /*sandbox_policy_constraint*/ None,
+            /*permission_profile_constraint*/ None,
         )
         .await;
     if cfg!(target_os = "windows") {
@@ -6316,7 +6316,7 @@ trust_level = "untrusted"
             /*profile_sandbox_mode*/ None,
             WindowsSandboxLevel::Disabled,
             Some(&active_project),
-            /*sandbox_policy_constraint*/ None,
+            /*permission_profile_constraint*/ None,
         )
         .await;
 
@@ -6337,8 +6337,8 @@ trust_level = "untrusted"
 }
 
 #[tokio::test]
-async fn derive_sandbox_policy_falls_back_to_constraint_value_for_implicit_defaults()
--> anyhow::Result<()> {
+async fn derive_sandbox_policy_falls_back_to_read_only_for_implicit_defaults() -> anyhow::Result<()>
+{
     let project_dir = TempDir::new()?;
     let project_path = project_dir.path().to_path_buf();
     let project_key = project_path.to_string_lossy().to_string();
@@ -6354,14 +6354,14 @@ async fn derive_sandbox_policy_falls_back_to_constraint_value_for_implicit_defau
     let active_project = ProjectConfig {
         trust_level: Some(TrustLevel::Trusted),
     };
-    let constrained = Constrained::new(SandboxPolicy::DangerFullAccess, |candidate| {
-        if matches!(candidate, SandboxPolicy::DangerFullAccess) {
+    let constrained = Constrained::new(PermissionProfile::read_only(), |candidate| {
+        if candidate == &PermissionProfile::read_only() {
             Ok(())
         } else {
             Err(ConstraintError::InvalidValue {
                 field_name: "sandbox_mode",
                 candidate: format!("{candidate:?}"),
-                allowed: "[DangerFullAccess]".to_string(),
+                allowed: "[ReadOnly]".to_string(),
                 requirement_source: RequirementSource::Unknown,
             })
         }
@@ -6377,7 +6377,7 @@ async fn derive_sandbox_policy_falls_back_to_constraint_value_for_implicit_defau
         )
         .await;
 
-    assert_eq!(resolution, SandboxPolicy::DangerFullAccess);
+    assert_eq!(resolution, SandboxPolicy::new_read_only_policy());
     Ok(())
 }
 
@@ -6399,18 +6399,29 @@ async fn derive_sandbox_policy_preserves_windows_downgrade_for_unsupported_fallb
     let active_project = ProjectConfig {
         trust_level: Some(TrustLevel::Trusted),
     };
-    let constrained = Constrained::new(SandboxPolicy::new_workspace_write_policy(), |candidate| {
-        if matches!(candidate, SandboxPolicy::WorkspaceWrite { .. }) {
-            Ok(())
-        } else {
-            Err(ConstraintError::InvalidValue {
-                field_name: "sandbox_mode",
-                candidate: format!("{candidate:?}"),
-                allowed: "[WorkspaceWrite]".to_string(),
-                requirement_source: RequirementSource::Unknown,
-            })
-        }
-    })?;
+    let constrained = Constrained::new(
+        PermissionProfile::from_legacy_sandbox_policy(&SandboxPolicy::new_workspace_write_policy()),
+        |candidate| {
+            if matches!(
+                candidate,
+                PermissionProfile::Managed {
+                    file_system: ManagedFileSystemPermissions::Restricted { entries, .. },
+                    ..
+                } if entries
+                        .iter()
+                        .any(|entry| entry.access.can_write())
+            ) {
+                Ok(())
+            } else {
+                Err(ConstraintError::InvalidValue {
+                    field_name: "sandbox_mode",
+                    candidate: format!("{candidate:?}"),
+                    allowed: "[WorkspaceWrite]".to_string(),
+                    requirement_source: RequirementSource::Unknown,
+                })
+            }
+        },
+    )?;
 
     let resolution = cfg
         .derive_sandbox_policy(

@@ -19,6 +19,7 @@ use codex_config::LoaderOverrides;
 use codex_config::McpServerIdentity;
 use codex_config::McpServerRequirement;
 use codex_config::ResidencyRequirement;
+use codex_config::SandboxModeRequirement;
 use codex_config::Sourced;
 use codex_config::ThreadConfigLoader;
 use codex_config::config_toml::ConfigToml;
@@ -30,6 +31,7 @@ use codex_config::config_toml::validate_model_providers;
 use codex_config::loader::load_config_layers_state;
 use codex_config::loader::project_trust_key;
 use codex_config::profile_toml::ConfigProfile;
+use codex_config::sandbox_mode_requirement_for_permission_profile;
 use codex_config::types::ApprovalsReviewer;
 use codex_config::types::AuthCredentialsStoreMode;
 use codex_config::types::DEFAULT_OTEL_ENVIRONMENT;
@@ -293,25 +295,6 @@ impl Permissions {
         self.permission_profile.set(permission_profile)?;
         Ok(())
     }
-}
-
-fn constrained_permission_profile_from_sandbox_projection(
-    initial_value: PermissionProfile,
-    sandbox_constraint: Constrained<SandboxPolicy>,
-    cwd: AbsolutePathBuf,
-) -> std::io::Result<Constrained<PermissionProfile>> {
-    Constrained::new(initial_value, move |candidate| {
-        let (file_system_sandbox_policy, network_sandbox_policy) =
-            candidate.to_runtime_permissions();
-        let sandbox_policy = compatibility_sandbox_policy_for_permission_profile(
-            candidate,
-            &file_system_sandbox_policy,
-            network_sandbox_policy,
-            cwd.as_path(),
-        );
-        sandbox_constraint.can_set(&sandbox_policy)
-    })
-    .map_err(std::io::Error::from)
 }
 
 /// Configured thread persistence backend.
@@ -1709,7 +1692,7 @@ impl Config {
         let ConfigRequirements {
             approval_policy: mut constrained_approval_policy,
             approvals_reviewer: mut constrained_approvals_reviewer,
-            sandbox_policy: mut constrained_sandbox_policy,
+            permission_profile: mut constrained_permission_profile,
             web_search_mode: mut constrained_web_search_mode,
             feature_requirements,
             managed_hooks: _,
@@ -1881,9 +1864,7 @@ impl Config {
         let (
             configured_network_proxy_config,
             permission_profile,
-            sandbox_policy,
             file_system_sandbox_policy,
-            network_sandbox_policy,
         ) = if let Some(mut permission_profile) = permission_profile {
             let (mut file_system_sandbox_policy, network_sandbox_policy) =
                 permission_profile.to_runtime_permissions();
@@ -1910,7 +1891,7 @@ impl Config {
                 } else {
                     NetworkProxyConfig::default()
                 };
-            let mut sandbox_policy = compatibility_sandbox_policy_for_permission_profile(
+            let sandbox_policy = compatibility_sandbox_policy_for_permission_profile(
                 &permission_profile,
                 &file_system_sandbox_policy,
                 network_sandbox_policy,
@@ -1927,19 +1908,11 @@ impl Config {
                     &file_system_sandbox_policy,
                     network_sandbox_policy,
                 );
-                sandbox_policy = compatibility_sandbox_policy_for_permission_profile(
-                    &permission_profile,
-                    &file_system_sandbox_policy,
-                    network_sandbox_policy,
-                    resolved_cwd.as_path(),
-                );
             }
             (
                 configured_network_proxy_config,
                 permission_profile,
-                sandbox_policy,
                 file_system_sandbox_policy,
-                network_sandbox_policy,
             )
         } else if profiles_are_active {
             let permissions = cfg.permissions.as_ref().ok_or_else(|| {
@@ -1968,7 +1941,7 @@ impl Config {
                 &file_system_sandbox_policy,
                 network_sandbox_policy,
             );
-            let mut sandbox_policy = compatibility_sandbox_policy_for_permission_profile(
+            let sandbox_policy = compatibility_sandbox_policy_for_permission_profile(
                 &permission_profile,
                 &file_system_sandbox_policy,
                 network_sandbox_policy,
@@ -1984,19 +1957,11 @@ impl Config {
                     &file_system_sandbox_policy,
                     network_sandbox_policy,
                 );
-                sandbox_policy = compatibility_sandbox_policy_for_permission_profile(
-                    &permission_profile,
-                    &file_system_sandbox_policy,
-                    network_sandbox_policy,
-                    resolved_cwd.as_path(),
-                );
             }
             (
                 configured_network_proxy_config,
                 permission_profile,
-                sandbox_policy,
                 file_system_sandbox_policy,
-                network_sandbox_policy,
             )
         } else {
             let configured_network_proxy_config = NetworkProxyConfig::default();
@@ -2006,7 +1971,7 @@ impl Config {
                     config_profile.sandbox_mode,
                     windows_sandbox_level,
                     Some(&active_project),
-                    Some(&constrained_sandbox_policy),
+                    Some(&constrained_permission_profile),
                 )
                 .await;
             if let SandboxPolicy::WorkspaceWrite { writable_roots, .. } = &mut sandbox_policy {
@@ -2030,9 +1995,7 @@ impl Config {
             (
                 configured_network_proxy_config,
                 permission_profile,
-                sandbox_policy,
                 file_system_sandbox_policy,
-                network_sandbox_policy,
             )
         };
         let approval_policy_was_explicit = approval_policy_override.is_some()
@@ -2324,8 +2287,7 @@ impl Config {
             .map(AbsolutePathBuf::to_path_buf)
             .or_else(|| resolve_sqlite_home_env(&resolved_cwd))
             .unwrap_or_else(|| codex_home.to_path_buf());
-        let original_sandbox_policy = sandbox_policy.clone();
-
+        let original_permission_profile = permission_profile.clone();
         apply_requirement_constrained_value(
             "approval_policy",
             approval_policy,
@@ -2339,17 +2301,22 @@ impl Config {
             && !filesystem_requirements.deny_read.is_empty()
         {
             let requirement_source = filesystem_requirements_source.clone();
-            constrained_sandbox_policy
+            constrained_permission_profile
                 .value
-                .add_validator(move |policy| match policy {
-                    SandboxPolicy::ReadOnly { .. } | SandboxPolicy::WorkspaceWrite { .. } => Ok(()),
-                    SandboxPolicy::DangerFullAccess | SandboxPolicy::ExternalSandbox { .. } => {
-                        Err(ConstraintError::InvalidValue {
-                            field_name: "sandbox_mode",
-                            candidate: policy.to_string(),
-                            allowed: "[read-only, workspace-write]".to_string(),
-                            requirement_source: requirement_source.clone(),
-                        })
+                .add_validator(move |permission_profile| {
+                    let mode = sandbox_mode_requirement_for_permission_profile(permission_profile);
+                    match mode {
+                        SandboxModeRequirement::ReadOnly
+                        | SandboxModeRequirement::WorkspaceWrite => Ok(()),
+                        SandboxModeRequirement::DangerFullAccess
+                        | SandboxModeRequirement::ExternalSandbox => {
+                            Err(ConstraintError::InvalidValue {
+                                field_name: "sandbox_mode",
+                                candidate: format!("{mode:?}"),
+                                allowed: "[read-only, workspace-write]".to_string(),
+                                requirement_source: requirement_source.clone(),
+                            })
+                        }
                     }
                 })
                 .map_err(std::io::Error::from)?;
@@ -2367,9 +2334,9 @@ impl Config {
             &mut startup_warnings,
         )?;
         apply_requirement_constrained_value(
-            "sandbox_mode",
-            sandbox_policy,
-            &mut constrained_sandbox_policy,
+            "permission_profile",
+            permission_profile,
+            &mut constrained_permission_profile,
             &mut startup_warnings,
         )?;
         apply_requirement_constrained_value(
@@ -2387,13 +2354,7 @@ impl Config {
             None => (None, None),
         };
         let has_network_requirements = network_requirements.is_some();
-        let network_permission_profile = if *constrained_sandbox_policy.get()
-            == original_sandbox_policy
-        {
-            permission_profile.clone()
-        } else {
-            PermissionProfile::from_legacy_sandbox_policy(constrained_sandbox_policy.get())
-        };
+        let network_permission_profile = constrained_permission_profile.get().clone();
         let network = NetworkProxySpec::from_config_and_constraints(
             configured_network_proxy_config,
             network_requirements,
@@ -2419,17 +2380,13 @@ impl Config {
             zsh_path.as_ref(),
             main_execve_wrapper_exe.as_ref(),
         );
-        let effective_sandbox_policy = constrained_sandbox_policy.value.get().clone();
-        let mut effective_file_system_sandbox_policy =
-            if effective_sandbox_policy == original_sandbox_policy {
-                file_system_sandbox_policy
-            } else {
-                FileSystemSandboxPolicy::from_legacy_sandbox_policy_preserving_deny_entries(
-                    &effective_sandbox_policy,
-                    resolved_cwd.as_path(),
-                    &file_system_sandbox_policy,
-                )
-            };
+        let effective_permission_profile = constrained_permission_profile.value.get().clone();
+        let (mut effective_file_system_sandbox_policy, effective_network_sandbox_policy) =
+            effective_permission_profile.to_runtime_permissions();
+        if effective_permission_profile != original_permission_profile {
+            effective_file_system_sandbox_policy
+                .preserve_deny_read_restrictions_from(&file_system_sandbox_policy);
+        }
         if let Some(Sourced {
             value: filesystem_requirements,
             ..
@@ -2442,28 +2399,15 @@ impl Config {
         }
         let effective_file_system_sandbox_policy = effective_file_system_sandbox_policy
             .with_additional_readable_roots(resolved_cwd.as_path(), &helper_readable_roots);
-        let effective_network_sandbox_policy =
-            if effective_sandbox_policy == original_sandbox_policy {
-                network_sandbox_policy
-            } else {
-                NetworkSandboxPolicy::from(&effective_sandbox_policy)
-            };
-        let effective_enforcement = if effective_sandbox_policy == original_sandbox_policy {
-            permission_profile.enforcement()
-        } else {
-            SandboxEnforcement::from_legacy_sandbox_policy(&effective_sandbox_policy)
-        };
         let effective_permission_profile = PermissionProfile::from_runtime_permissions_with_enforcement(
-            effective_enforcement,
+            effective_permission_profile.enforcement(),
             &effective_file_system_sandbox_policy,
             effective_network_sandbox_policy,
         );
-        let constrained_permission_profile =
-            constrained_permission_profile_from_sandbox_projection(
-                effective_permission_profile,
-                constrained_sandbox_policy.value.clone(),
-                resolved_cwd.clone(),
-            )?;
+        constrained_permission_profile
+            .value
+            .set(effective_permission_profile)
+            .map_err(std::io::Error::from)?;
         let config = Self {
             model,
             service_tier,
@@ -2476,7 +2420,7 @@ impl Config {
             startup_warnings,
             permissions: Permissions {
                 approval_policy: constrained_approval_policy.value,
-                permission_profile: constrained_permission_profile,
+                permission_profile: constrained_permission_profile.value,
                 network,
                 allow_login_shell,
                 shell_environment_policy,

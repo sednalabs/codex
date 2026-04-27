@@ -27,8 +27,8 @@ use codex_config::version_for_toml;
 use codex_exec_server::LOCAL_FS;
 use codex_protocol::config_types::TrustLevel;
 use codex_protocol::config_types::WebSearchMode;
+use codex_protocol::models::PermissionProfile;
 use codex_protocol::protocol::AskForApproval;
-#[cfg(target_os = "macos")]
 use codex_protocol::protocol::SandboxPolicy;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use pretty_assertions::assert_eq;
@@ -577,8 +577,8 @@ allowed_sandbox_modes = ["read-only"]
         AskForApproval::Never
     );
     assert_eq!(
-        *state.requirements().sandbox_policy.get(),
-        SandboxPolicy::new_read_only_policy()
+        state.requirements().permission_profile.get(),
+        &PermissionProfile::read_only()
     );
     assert!(
         state
@@ -590,13 +590,15 @@ allowed_sandbox_modes = ["read-only"]
     assert!(
         state
             .requirements()
-            .sandbox_policy
-            .can_set(&SandboxPolicy::WorkspaceWrite {
-                writable_roots: Vec::new(),
-                network_access: false,
-                exclude_tmpdir_env_var: false,
-                exclude_slash_tmp: false,
-            })
+            .permission_profile
+            .can_set(&PermissionProfile::from_legacy_sandbox_policy(
+                &SandboxPolicy::WorkspaceWrite {
+                    writable_roots: Vec::new(),
+                    network_access: false,
+                    exclude_tmpdir_env_var: false,
+                    exclude_slash_tmp: false,
+                },
+            ))
             .is_err()
     );
 
@@ -868,6 +870,55 @@ allowed_approval_policies = ["on-request"]
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn system_remote_sandbox_config_keeps_cloud_sandbox_modes() -> anyhow::Result<()> {
+    let tmp = tempdir()?;
+    let requirements_file = tmp.path().join("requirements.toml");
+    tokio::fs::write(
+        &requirements_file,
+        r#"
+[[remote_sandbox_config]]
+hostname_patterns = ["*"]
+allowed_sandbox_modes = ["read-only", "workspace-write"]
+"#,
+    )
+    .await?;
+
+    let cloud_source = RequirementSource::CloudRequirements;
+    let mut config_requirements_toml = ConfigRequirementsWithSources::default();
+    config_requirements_toml.merge_unset_fields(
+        cloud_source.clone(),
+        toml::from_str(
+            r#"
+allowed_sandbox_modes = ["read-only"]
+"#,
+        )?,
+    );
+    load_requirements_toml(
+        LOCAL_FS.as_ref(),
+        &mut config_requirements_toml,
+        &AbsolutePathBuf::try_from(requirements_file)?,
+    )
+    .await?;
+    let config_requirements: ConfigRequirements = config_requirements_toml.try_into()?;
+
+    assert_eq!(
+        config_requirements.permission_profile.can_set(
+            &PermissionProfile::from_legacy_sandbox_policy(
+                &SandboxPolicy::new_workspace_write_policy()
+            )
+        ),
+        Err(ConstraintError::InvalidValue {
+            field_name: "sandbox_mode",
+            candidate: "WorkspaceWrite".into(),
+            allowed: "[ReadOnly]".into(),
+            requirement_source: cloud_source,
+        })
+    );
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn load_requirements_toml_resolves_deny_read_against_parent() -> anyhow::Result<()> {
     let tmp = tempdir()?;
     let requirements_dir = tmp.path().join("managed");
@@ -1083,6 +1134,54 @@ async fn load_config_layers_includes_cloud_hook_requirements() -> anyhow::Result
             .as_ref()
             .map(|hooks| hooks.source.clone()),
         Some(Some(RequirementSource::CloudRequirements))
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn load_config_layers_applies_matching_remote_sandbox_config() -> anyhow::Result<()> {
+    let tmp = tempdir()?;
+    let codex_home = tmp.path().join("home");
+    tokio::fs::create_dir_all(&codex_home).await?;
+    let cwd = AbsolutePathBuf::from_absolute_path(tmp.path())?;
+
+    let requirements: ConfigRequirementsToml = toml::from_str(
+        r#"
+            allowed_sandbox_modes = ["read-only"]
+
+            [[remote_sandbox_config]]
+            hostname_patterns = ["*"]
+            allowed_sandbox_modes = ["read-only", "workspace-write"]
+        "#,
+    )?;
+    let cloud_requirements = CloudRequirementsLoader::new(async move { Ok(Some(requirements)) });
+    let layers = load_config_layers_state(
+        LOCAL_FS.as_ref(),
+        &codex_home,
+        Some(cwd),
+        &[] as &[(String, TomlValue)],
+        LoaderOverrides::default(),
+        cloud_requirements,
+        &codex_config::NoopThreadConfigLoader,
+    )
+    .await?;
+
+    assert_eq!(
+        layers.requirements_toml().allowed_sandbox_modes,
+        Some(vec![
+            codex_config::SandboxModeRequirement::ReadOnly,
+            codex_config::SandboxModeRequirement::WorkspaceWrite,
+        ])
+    );
+    assert!(
+        layers
+            .requirements()
+            .permission_profile
+            .can_set(&PermissionProfile::from_legacy_sandbox_policy(
+                &SandboxPolicy::new_workspace_write_policy()
+            ))
+            .is_ok()
     );
 
     Ok(())
