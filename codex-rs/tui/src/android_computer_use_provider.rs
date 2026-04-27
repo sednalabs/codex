@@ -657,17 +657,43 @@ fn tool_text(value: &Value) -> Option<String> {
 }
 
 fn parse_event_stream_json(text: &str) -> Result<Value, String> {
-    let mut data = String::new();
-    for line in text.lines() {
-        if let Some(rest) = line.strip_prefix("data:") {
-            data.push_str(rest.trim_start());
+    let mut final_json = None;
+    let mut event_data = Vec::new();
+
+    fn finish_event(event_data: &mut Vec<String>, final_json: &mut Option<Value>) {
+        if event_data.is_empty() {
+            return;
+        }
+
+        let payload = event_data.join("\n");
+        event_data.clear();
+
+        let trimmed = payload.trim();
+        if trimmed.is_empty() || trimmed == "[DONE]" {
+            return;
+        }
+
+        if let Ok(value) = serde_json::from_str::<Value>(trimmed) {
+            *final_json = Some(value);
         }
     }
-    if data.is_empty() {
-        return Err("Android provider event stream omitted data payload".to_string());
+
+    for line in text.lines() {
+        if line.trim().is_empty() {
+            finish_event(&mut event_data, &mut final_json);
+            continue;
+        }
+        if let Some(rest) = line.strip_prefix("data:") {
+            event_data.push(rest.trim_start().to_string());
+        }
     }
-    serde_json::from_str(&data)
-        .map_err(|err| format!("failed to parse Android provider event stream JSON: {err}"))
+
+    finish_event(&mut event_data, &mut final_json);
+
+    let Some(value) = final_json else {
+        return Err("Android provider event stream omitted data payload".to_string());
+    };
+    Ok(value)
 }
 
 fn failed_response(error: String) -> ComputerUseCallResponse {
@@ -807,6 +833,27 @@ mod tests {
             "event: message\ndata: {\"jsonrpc\":\"2.0\",\"result\":{\"ok\":true}}\n\n",
         )
         .expect("event stream should parse");
+        assert_eq!(parsed["result"]["ok"], true);
+    }
+
+    #[test]
+    fn parse_event_stream_json_uses_final_json_event() {
+        let parsed = parse_event_stream_json(
+            "event: progress\ndata: {\"progress\":0.5}\n\n\
+             event: message\ndata: {\"jsonrpc\":\"2.0\",\"result\":{\"ok\":true}}\n\n",
+        )
+        .expect("event stream should parse final JSON-RPC event");
+        assert_eq!(parsed["result"]["ok"], true);
+    }
+
+    #[test]
+    fn parse_event_stream_json_joins_multiline_data_event() {
+        let parsed = parse_event_stream_json(
+            "event: message\n\
+             data: {\"jsonrpc\":\"2.0\",\n\
+             data: \"result\":{\"ok\":true}}\n\n",
+        )
+        .expect("event stream should parse multiline event data");
         assert_eq!(parsed["result"]["ok"], true);
     }
 
