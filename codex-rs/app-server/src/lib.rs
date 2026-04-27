@@ -518,7 +518,7 @@ pub async fn run_main_with_transport_options(
         });
     }
     if let Some(warning) =
-        codex_core::config::system_bwrap_warning(config.permissions.sandbox_policy.get())
+        codex_core::config::system_bwrap_warning(config.permissions.permission_profile.get())
     {
         config_warnings.push(ConfigWarningNotification {
             summary: warning,
