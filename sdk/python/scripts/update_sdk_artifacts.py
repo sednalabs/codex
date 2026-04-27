@@ -520,6 +520,33 @@ def generate_v2_all() -> None:
             cwd=sdk_root(),
         )
     _normalize_generated_timestamps(out_path)
+    _strip_redundant_model_config_passes(out_path)
+
+
+def _strip_redundant_model_config_passes(out_path: Path) -> None:
+    lines = out_path.read_text().splitlines()
+    class_decl = re.compile(r"^class [A-Za-z_][A-Za-z0-9_]*\(.*BaseModel\):$")
+    output: list[str] = []
+    i = 0
+
+    while i < len(lines):
+        line = lines[i]
+        if (
+            line == "    pass"
+            and output
+            and class_decl.match(output[-1])
+            and i + 1 < len(lines)
+            and lines[i + 1].startswith("    model_config = ConfigDict(")
+        ):
+            i += 1
+            continue
+
+        output.append(line)
+        i += 1
+
+    updated = "\n".join(output) + "\n"
+    if updated != out_path.read_text():
+        out_path.write_text(updated)
 
 
 def _notification_specs() -> list[tuple[str, str]]:
