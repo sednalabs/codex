@@ -1984,8 +1984,10 @@ async fn guardian_review_session_config_preserves_parent_network_proxy() {
         Constrained::allow_only(AskForApproval::Never)
     );
     assert_eq!(
-        guardian_config.permissions.sandbox_policy,
-        Constrained::allow_only(SandboxPolicy::new_read_only_policy())
+        guardian_config.permissions.permission_profile,
+        Constrained::allow_only(PermissionProfile::from_legacy_sandbox_policy(
+            &SandboxPolicy::new_read_only_policy(),
+        ))
     );
 }
 

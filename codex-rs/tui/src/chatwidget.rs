@@ -141,8 +141,12 @@ use codex_protocol::items::AgentMessageContent;
 use codex_protocol::items::AgentMessageItem;
 use codex_protocol::items::UserMessageItem;
 use codex_protocol::models::MessagePhase;
+use codex_protocol::models::PermissionProfile;
+use codex_protocol::models::SandboxEnforcement;
 use codex_protocol::models::local_image_label_text;
 use codex_protocol::parse_command::ParsedCommand;
+use codex_protocol::permissions::FileSystemSandboxPolicy;
+use codex_protocol::permissions::NetworkSandboxPolicy;
 use codex_protocol::plan_tool::PlanItemArg as UpdatePlanItemArg;
 use codex_protocol::plan_tool::StepStatus as UpdatePlanItemStatus;
 #[cfg(test)]
@@ -2376,7 +2380,7 @@ impl ChatWidget {
             Some(permission_profile) => self
                 .config
                 .permissions
-                .set_permission_profile(permission_profile, event.cwd.as_path()),
+                .set_permission_profile(permission_profile),
             None => self
                 .config
                 .permissions
@@ -2384,11 +2388,16 @@ impl ChatWidget {
         };
         if let Err(err) = permission_sync {
             tracing::warn!(%err, "failed to sync permissions from SessionConfigured");
-            self.config.permissions.sandbox_policy =
-                Constrained::allow_only(event.sandbox_policy.clone());
             let permission_profile = event.permission_profile.clone().unwrap_or_else(|| {
-                codex_protocol::models::PermissionProfile::from_legacy_sandbox_policy(
-                    &event.sandbox_policy,
+                let file_system_sandbox_policy =
+                    FileSystemSandboxPolicy::from_legacy_sandbox_policy_for_cwd(
+                        &event.sandbox_policy,
+                        event.cwd.as_path(),
+                    );
+                PermissionProfile::from_runtime_permissions_with_enforcement(
+                    SandboxEnforcement::from_legacy_sandbox_policy(&event.sandbox_policy),
+                    &file_system_sandbox_policy,
+                    NetworkSandboxPolicy::from(&event.sandbox_policy),
                 )
             });
             self.config.permissions.permission_profile =
