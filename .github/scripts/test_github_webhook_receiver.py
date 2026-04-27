@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import email.message
 import hashlib
 import hmac
 import importlib.util
@@ -47,7 +48,7 @@ class GitHubWebhookReceiverTests(unittest.TestCase):
         self.assertFalse(receiver.route_matches(route, "push", "published", "sednalabs/codex"))
         self.assertFalse(receiver.route_matches(route, "release", "published", "example/repo"))
 
-    def test_command_expansion_allows_only_context_and_payload_fields(self) -> None:
+    def test_command_is_static_and_payload_values_expand_to_environment(self) -> None:
         payload = {
             "repository": {"full_name": "sednalabs/codex"},
             "release": {"tag_name": "v0.126.0-alpha.4-sedna.1"},
@@ -62,11 +63,15 @@ class GitHubWebhookReceiverTests(unittest.TestCase):
             "command": [
                 "scripts/install_sedna_release_asset",
                 "--repository",
-                "{repository}",
+                "sednalabs/codex",
                 "--release-tag",
-                "{payload.release.tag_name}",
+                "latest",
                 "--allow-prerelease",
             ],
+            "environment": {
+                "RELEASE_TAG": "{payload.release.tag_name}",
+                "DELIVERY_ID": "{delivery}",
+            },
         }
 
         self.assertEqual(
@@ -76,18 +81,59 @@ class GitHubWebhookReceiverTests(unittest.TestCase):
                 "--repository",
                 "sednalabs/codex",
                 "--release-tag",
-                "v0.126.0-alpha.4-sedna.1",
+                "latest",
                 "--allow-prerelease",
             ],
         )
+        self.assertEqual(
+            receiver.build_environment(route, payload, context),
+            {
+                "GITHUB_WEBHOOK_EVENT": "release",
+                "GITHUB_WEBHOOK_ACTION": "published",
+                "GITHUB_WEBHOOK_DELIVERY": "delivery-id",
+                "GITHUB_WEBHOOK_REPOSITORY": "sednalabs/codex",
+                "RELEASE_TAG": "v0.126.0-alpha.4-sedna.1",
+                "DELIVERY_ID": "delivery-id",
+            },
+        )
         with self.assertRaisesRegex(receiver.WebhookError, "unsupported command placeholder"):
             receiver.expand_token("{HOME}", payload, context)
+        with self.assertRaisesRegex(receiver.WebhookError, "command arrays must be static"):
+            receiver.build_command({"command": ["echo", "{payload.release.tag_name}"]}, payload, context)
+        with self.assertRaisesRegex(receiver.WebhookError, "unsafe environment characters"):
+            receiver.build_environment(
+                {"environment": {"RELEASE_TAG": "{payload.release.body}"}},
+                {"repository": {"full_name": "sednalabs/codex"}, "release": {"body": "hello world"}},
+                context,
+            )
 
-    def test_config_loads_secret_from_file_and_lock_path(self) -> None:
+    def test_content_length_is_validated_before_reading_body(self) -> None:
+        headers = email.message.Message()
+        headers["Content-Length"] = "12"
+        self.assertEqual(receiver.content_length(headers), 12)
+
+        headers.replace_header("Content-Length", "-1")
+        with self.assertRaisesRegex(receiver.WebhookError, "invalid or excessive Content-Length"):
+            receiver.content_length(headers)
+
+        headers.replace_header("Content-Length", "nope")
+        with self.assertRaisesRegex(receiver.WebhookError, "invalid Content-Length"):
+            receiver.content_length(headers)
+
+        headers.replace_header("Content-Length", str(receiver.MAX_BODY_BYTES + 1))
+        with self.assertRaisesRegex(receiver.WebhookError, "invalid or excessive Content-Length"):
+            receiver.content_length(headers)
+
+    def test_decode_payload_reports_malformed_json_as_webhook_error(self) -> None:
+        self.assertEqual(receiver.decode_payload(b'{"ok": true}'), {"ok": True})
+        with self.assertRaisesRegex(receiver.WebhookError, "invalid JSON payload"):
+            receiver.decode_payload(b"{")
+        with self.assertRaisesRegex(receiver.WebhookError, "payload must be a JSON object"):
+            receiver.decode_payload(b"[]")
+
+    def test_config_loads_secret_from_environment_and_lock_path(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
-            secret_path = root / "secret"
-            secret_path.write_text("top-secret\n", encoding="utf-8")
             config_path = root / "config.json"
             config_path.write_text(
                 """
@@ -107,18 +153,15 @@ class GitHubWebhookReceiverTests(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            old_secret = os.environ.pop("GITHUB_WEBHOOK_SECRET", None)
-            old_secret_file = os.environ.get("GITHUB_WEBHOOK_SECRET_FILE")
-            os.environ["GITHUB_WEBHOOK_SECRET_FILE"] = str(secret_path)
+            old_secret = os.environ.get("GITHUB_WEBHOOK_SECRET")
+            os.environ["GITHUB_WEBHOOK_SECRET"] = "top-secret"
             try:
                 config = receiver.load_config(config_path)
             finally:
                 if old_secret is not None:
                     os.environ["GITHUB_WEBHOOK_SECRET"] = old_secret
-                if old_secret_file is not None:
-                    os.environ["GITHUB_WEBHOOK_SECRET_FILE"] = old_secret_file
                 else:
-                    os.environ.pop("GITHUB_WEBHOOK_SECRET_FILE", None)
+                    os.environ.pop("GITHUB_WEBHOOK_SECRET", None)
 
         self.assertEqual(config.secret, b"top-secret")
         self.assertEqual(config.timeout_seconds, 42)

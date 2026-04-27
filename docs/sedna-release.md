@@ -45,9 +45,9 @@ Use the `sedna-release` workflow for fork-owned GitHub releases.
 - Ordinary `main` pushes without a `Sedna-Release` trailer are a clean no-op in the release
   workflow.
 - `Sedna-Release: stable` refuses upstream prerelease tracks such as `0.126.0-alpha.3`,
-  publishes a full GitHub Release, and dispatches the production installer for that exact tag.
+  publishes a full GitHub Release, and dispatches public asset verification for that exact tag.
 - `Sedna-Release: prerelease` allows upstream prerelease tracks and publishes the GitHub Release as
-  a prerelease. The release workflow dispatches the production installer with an explicit
+  a prerelease. The release workflow dispatches asset verification with an explicit
   prerelease allowance for that exact tag.
 - Pushing a tag like `v0.119.0-sedna.2` remains supported, but the workflow validates that the tag
   matches the resolver's computed version for the target commit before publishing.
