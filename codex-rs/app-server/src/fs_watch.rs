@@ -1,7 +1,7 @@
 use crate::extensions::NotificationDispatchKind;
 use crate::extensions::app_server_hooks;
 use crate::extensions::dispatch_notification_to_connection;
-use crate::fs_api::invalid_request;
+use crate::error_code::invalid_request;
 use crate::outgoing_message::ConnectionId;
 use crate::outgoing_message::OutgoingMessageSender;
 use codex_app_server_protocol::FsChangedNotification;
@@ -30,7 +30,6 @@ use tokio::sync::mpsc;
 use tokio::sync::oneshot;
 use tokio::time::Instant;
 use tracing::warn;
-use uuid::Uuid;
 
 const FS_CHANGED_NOTIFICATION_DEBOUNCE: Duration = Duration::from_millis(200);
 
@@ -131,7 +130,7 @@ impl FsWatchManager {
         connection_id: ConnectionId,
         params: FsWatchParams,
     ) -> Result<FsWatchResponse, JSONRPCErrorError> {
-        let watch_id = Uuid::now_v7().to_string();
+        let watch_id = params.watch_id;
         let outgoing = self.outgoing.clone();
         let (subscriber, rx) = self.file_watcher.add_subscriber();
         let watch_root = params.path.clone();
@@ -246,7 +245,6 @@ mod tests {
     use pretty_assertions::assert_eq;
     use tempfile::TempDir;
     use tokio::time::timeout;
-    use uuid::Version;
 
     fn absolute_path(path: PathBuf) -> AbsolutePathBuf {
         assert!(
@@ -274,7 +272,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn watch_returns_a_v7_id_and_tracks_the_owner_scoped_entry() {
+    async fn watch_uses_client_id_and_tracks_the_owner_scoped_entry() {
         let temp_dir = TempDir::new().expect("temp dir");
         let head_path = temp_dir.path().join("HEAD");
         std::fs::write(&head_path, "ref: refs/heads/main\n").expect("write HEAD");
@@ -287,8 +285,7 @@ mod tests {
             .expect("watch should succeed");
 
         assert_eq!(response.path, path);
-        let watch_id = Uuid::parse_str(&response.watch_id).expect("watch id should be a UUID");
-        assert_eq!(watch_id.get_version(), Some(Version::SortRand));
+        assert_eq!(response.watch_id, "watch-1");
 
         let state = manager.state.lock().await;
         assert_eq!(
