@@ -994,9 +994,7 @@ mod tests {
     async fn streamed_command_output_does_not_wait_for_transport_write_completion() {
         let (tx, rx) = mpsc::channel(2);
         let (response_tx, response_rx) = tokio::sync::oneshot::channel::<CommandExecResponse>();
-        let sandbox_policy = SandboxPolicy::ReadOnly {
-            network_access: false,
-        };
+        let permission_profile = PermissionProfile::read_only();
         tokio::spawn({
             let mut write_complete_sentinels = Vec::<tokio::sync::oneshot::Sender<()>>::new();
             let mut rx = rx;
@@ -1044,9 +1042,7 @@ mod tests {
                     SandboxType::None,
                     WindowsSandboxLevel::Disabled,
                     /*windows_sandbox_private_desktop*/ false,
-                    sandbox_policy.clone(),
-                    FileSystemSandboxPolicy::from(&sandbox_policy),
-                    NetworkSandboxPolicy::from(&sandbox_policy),
+                    permission_profile,
                     /*arg0*/ None,
                 ),
                 started_network_proxy: None,

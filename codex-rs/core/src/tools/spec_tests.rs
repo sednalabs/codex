@@ -726,7 +726,7 @@ async fn unified_exec_tools_include_wait_until_terminal_contract_fields() {
             image_generation_tool_auth_allowed: true,
             web_search_mode: Some(WebSearchMode::Cached),
             session_source: SessionSource::Cli,
-            sandbox_policy: &SandboxPolicy::DangerFullAccess,
+            permission_profile: &PermissionProfile::Disabled,
             windows_sandbox_level: WindowsSandboxLevel::Disabled,
         });
         let (tools, _) = build_specs(

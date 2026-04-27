@@ -88,7 +88,8 @@ async fn get_conversation_summary_by_thread_id_reads_rollout() -> Result<()> {
     .await??;
     let received: GetConversationSummaryResponse = to_response(response)?;
 
-    assert_eq!(normalized_summary_path(received.summary)?, expected);
+    let received = normalized_summary_path(received.summary)?;
+    assert_eq!(received, expected);
     Ok(())
 }
 

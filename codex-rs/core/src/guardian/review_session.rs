@@ -1023,18 +1023,20 @@ mod tests {
         let expected_sandbox_policy = SandboxPolicy::new_read_only_policy();
 
         assert_eq!(
-            guardian_config.permissions.sandbox_policy.get().clone(),
+            guardian_config
+                .permissions
+                .legacy_sandbox_policy(guardian_config.cwd.as_path()),
             expected_sandbox_policy
         );
         assert_eq!(
-            guardian_config.permissions.file_system_sandbox_policy,
+            guardian_config.permissions.file_system_sandbox_policy(),
             FileSystemSandboxPolicy::from_legacy_sandbox_policy_for_cwd(
                 &expected_sandbox_policy,
                 &guardian_config.cwd,
             )
         );
         assert_eq!(
-            guardian_config.permissions.network_sandbox_policy,
+            guardian_config.permissions.network_sandbox_policy(),
             NetworkSandboxPolicy::from(&expected_sandbox_policy)
         );
     }
