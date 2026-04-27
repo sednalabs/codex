@@ -8,7 +8,7 @@ on:
         required: true
         type: string
       dry_run:
-        description: Verify assets without changing the installed binary
+        description: Verify assets without changing the installed binary; public workflow requires true
         required: false
         default: true
         type: boolean
@@ -27,8 +27,8 @@ concurrency:
 
 jobs:
   install:
-    name: Install published Sedna release
-    runs-on: [self-hosted, linux, x64, sedna-release-installer]
+    name: Verify published Sedna release assets
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
 
     steps:
@@ -55,6 +55,11 @@ jobs:
           dry_run="${INPUT_DRY_RUN}"
           allow_prerelease="${INPUT_ALLOW_PRERELEASE:-false}"
 
+          if [[ "${dry_run}" != "true" ]]; then
+            echo "This public workflow verifies release assets only; production installs must run from private deployment infrastructure."
+            exit 1
+          fi
+
           if [[ ! "${release_tag}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([-.][0-9A-Za-z.]+)*-sedna\.[0-9]+$ ]]; then
             echo "Release tag must look like v0.124.0-sedna.2; got ${release_tag}."
             exit 1
@@ -66,7 +71,7 @@ jobs:
             echo "allow_prerelease=${allow_prerelease}"
           } >> "$GITHUB_OUTPUT"
 
-      - name: Install release assets
+      - name: Verify release assets
         shell: bash
         env:
           GITHUB_TOKEN: ${{ github.token }}
@@ -88,7 +93,7 @@ jobs:
           scripts/install_sedna_release_asset \
             --repository "${GITHUB_REPOSITORY}" \
             --release-tag "${RELEASE_TAG}" \
-            "${dry_run_arg[@]}" \
+            --dry-run \
             "${allow_prerelease_arg[@]}"
 
       - name: Summarize
@@ -103,7 +108,7 @@ jobs:
             echo "## Sedna release install"
             echo
             echo "- Release tag: ${RELEASE_TAG:-unknown}"
-            echo "- Dry run: ${DRY_RUN:-unknown}"
+            echo "- Mode: public asset verification"
             echo "- Allow prerelease: ${ALLOW_PRERELEASE:-unknown}"
-            echo "- Runner label: sedna-release-installer"
+            echo "- Production install: private deployment path"
           } >> "$GITHUB_STEP_SUMMARY"

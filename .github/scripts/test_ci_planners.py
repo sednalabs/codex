@@ -2817,6 +2817,26 @@ class HelperScriptTests(unittest.TestCase):
         self.assertIn("--upstream-ref refs/remotes/origin/upstream-main", workflow)
         self.assertNotIn("--upstream-ref refs/remotes/upstream/main", workflow)
 
+    def test_sedna_release_dispatches_public_asset_verification_only(self) -> None:
+        release_workflow = (REPO_ROOT / ".github/workflows/sedna-release.yml").read_text(
+            encoding="utf-8"
+        )
+        install_payload = load_workflow_payload(
+            REPO_ROOT / ".github/workflows/sedna-release-install.yml"
+        )
+        install_job = ((install_payload.get("jobs") or {}).get("install") or {})
+
+        self.assertIn("Dispatch release asset verifier", release_workflow)
+        self.assertIn('-f "dry_run=true"', release_workflow)
+        self.assertNotIn('-f "dry_run=false"', release_workflow)
+        self.assertEqual(install_job.get("runs-on"), "ubuntu-24.04")
+
+        workflow_json = json.dumps(install_payload, sort_keys=True)
+        self.assertNotIn("self-hosted", workflow_json)
+        self.assertIn("public workflow requires true", workflow_json)
+        self.assertIn("--dry-run", workflow_json)
+        self.assertIn("private deployment path", workflow_json)
+
     def test_workflow_policy_rejects_missing_node_version_file(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
@@ -2876,6 +2896,34 @@ jobs:
             [
                 ".github/workflows/ci.yml: taiki-e/install-action does not support "
                 "with.version; use tool: nextest@0.9.103 instead."
+            ],
+        )
+
+    def test_workflow_policy_rejects_self_hosted_runners_in_public_workflows(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            workflow = root / ".github/workflows/deploy.yml"
+            workflow.parent.mkdir(parents=True)
+            workflow.write_text(
+                """
+name: deploy
+on: workflow_dispatch
+jobs:
+  install:
+    runs-on: [self-hosted, linux, x64, example-runner]
+    steps:
+      - run: true
+""".lstrip(),
+                encoding="utf-8",
+            )
+
+            violations = CHECK_WORKFLOW_POLICY.collect_violations(root)
+
+        self.assertEqual(
+            violations,
+            [
+                ".github/workflows/deploy.yml: public workflows must not use self-hosted "
+                "runners; use private deployment infrastructure for host-local operations."
             ],
         )
 
