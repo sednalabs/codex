@@ -89,7 +89,7 @@ LANGUAGE_PATTERNS = {
 
 
 def path_matches(path: str, pattern: str) -> bool:
-    return fnmatch.fnmatch(path, pattern)
+    return fnmatch.fnmatchcase(path, pattern)
 
 
 def any_path_matches(paths: list[str], patterns: list[str]) -> bool:
