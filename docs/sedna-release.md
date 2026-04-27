@@ -29,11 +29,13 @@ from upstream OpenAI releases.
   packaging remains parked in the repository and may be revived later, but it is not part of the
   current downstream release contract.
 
-The upstream track is the newest well-formed `rust-v<semver>` upstream tag reachable from the
-target commit's merge-base with `origin/upstream-main`. It is not guessed from the globally latest
-upstream tag, and malformed double-prefixed upstream tags are ignored. If the merge-base is ahead
-of the selected upstream tag, the release metadata records the commit distance instead of pretending
-the base was an exact upstream tag.
+The upstream track is resolved from the target commit's merge-base with `origin/upstream-main`.
+That merge-base is the upstream reference point for the release, even if `origin/upstream-main`
+has advanced by the time the release runs. The resolver chooses the newest well-formed
+`rust-v<semver>` upstream tag whose tag timestamp is at or before that merge-base commit, and
+malformed double-prefixed upstream tags are ignored. If the merge-base is ahead of the selected
+upstream tag, the release metadata records the commit distance instead of pretending the base was
+an exact upstream tag.
 
 ### GitHub Actions
 
@@ -54,6 +56,9 @@ Use the `sedna-release` workflow for fork-owned GitHub releases.
 - Manual `workflow_dispatch` accepts an optional `target_sha`, `channel`, and optional
   `release_tag`. If `release_tag` is supplied, it is an assertion checked against the resolver, not
   the source of truth.
+- A supplied `release_tag` must match the upstream track computed from the target commit's
+  merge-base. Supplying a tag from a newer upstream track fails instead of moving the release onto
+  that newer track.
 - Existing release tags are immutable in normal release flow. Rerolls use the next trailing
   `sedna.<n>` value rather than clobbering published assets.
 
