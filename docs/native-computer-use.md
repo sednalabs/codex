@@ -28,9 +28,17 @@ Codex recognizes two bare Android dynamic tool names as native computer-use
 handlers:
 
 - `android_observe`: captures the current Android screen as model-visible
-  output, optionally paired with a compact UI digest.
+  image output, optionally paired with a compact UI digest.
 - `android_step`: performs one or more bounded Android actions, then returns a
   fresh post-action observation.
+
+The North Star is that screenshots are delivered to the model as native
+`inputImage` content items in the computer-use response. Provider artifact paths
+may exist for audit, replay, and diagnostics, but they are not the primary
+model-facing visual channel and should not be exposed as instructions for the
+model to fetch local files. If screenshot inlining fails, the response may
+include a concise diagnostic that names the provider artifact involved; that is
+an error breadcrumb, not the normal contract.
 
 These tools are installed from dynamic thread tools supplied through app-server
 thread start, resume, or fork requests. When the tool has no namespace and the
@@ -82,8 +90,11 @@ definition rather than the provider's raw dynamic schema.
 4. App-server API v2 projects the event to a `computerUseCall` thread item and
    sends `item/computerUse/call` to the connected client.
 5. The capable client executes the Android operation and returns
-   `ComputerUseCallResponse` with text and/or image content items, `success`,
-   and optional `error`.
+   `ComputerUseCallResponse` with text plus native image content items,
+   `success`, and optional `error`. For `android_observe` and post-action
+   `android_step` observations, screenshots should be returned as `inputImage`
+   data URLs or another Codex-supported image reference, not as model-facing
+   local artifact paths.
 6. Codex submits the response back into the active turn, emits
    `ComputerUseCallResponse`, and passes the resulting content to the model as
    function-call output.
