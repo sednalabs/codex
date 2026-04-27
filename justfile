@@ -176,7 +176,7 @@ tui-weekly-pacing-status-line-targeted:
 
 # Focused TUI interrupt confirmation slice for Alt/meta-safe Esc handling.
 tui-esc-interrupt-targeted:
-    cargo nextest run -p codex-tui --no-fail-fast -- bottom_pane::tests::esc_requires_double_press_for_interrupt_when_running_task_by_default bottom_pane::tests::first_esc_renders_again_to_interrupt_hint bottom_pane::tests::esc_release_does_not_confirm_interrupt bottom_pane::tests::esc_with_alt_does_not_interrupt_running_task bottom_pane::tests::esc_single_press_interrupts_when_double_press_disabled --exact
+    cargo nextest run -p codex-tui --no-fail-fast -- bottom_pane::tests::esc_requires_double_press_for_interrupt_when_running_task_by_default bottom_pane::tests::first_esc_renders_again_to_interrupt_hint bottom_pane::tests::esc_release_does_not_confirm_interrupt bottom_pane::tests::esc_with_alt_does_not_interrupt_running_task bottom_pane::tests::esc_single_press_interrupts_when_double_press_disabled chatwidget::tests::review_mode::esc_interrupt_with_queued_messages_requires_confirmation chatwidget::tests::review_mode::esc_interrupt_with_pending_steers_requires_confirmation_and_keeps_existing_draft chatwidget::tests::review_mode::esc_with_pending_steers_overrides_agent_command_interrupt_behavior --exact
 
 # Focused TUI queued-follow-up front-insert slice.
 tui-front-queue-submit-targeted:
