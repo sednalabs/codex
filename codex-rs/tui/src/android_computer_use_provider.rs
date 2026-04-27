@@ -74,8 +74,22 @@ async fn observe(
     tools: &BTreeSet<String>,
     arguments: &Value,
 ) -> Result<ComputerUseCallResponse, String> {
-    let observation = inspect_ui(client, arguments).await?;
-    observation_response(client, tools, observation, "Android observation").await
+    match inspect_ui(client, arguments).await {
+        Ok(observation) => {
+            observation_response(client, tools, observation, "Android observation").await
+        }
+        Err(err) => {
+            screenshot_fallback_response(
+                client,
+                tools,
+                arguments,
+                "Android observation",
+                &err,
+                /*action_already_executed*/ false,
+            )
+            .await
+        }
+    }
 }
 
 async fn step(
@@ -93,14 +107,28 @@ async fn step(
         summaries.push(run_action(client, tools, &action).await?);
     }
 
-    let observation = inspect_ui(client, arguments).await?;
-    let mut response = observation_response(
-        client,
-        tools,
-        observation,
-        "Android post-action observation",
-    )
-    .await?;
+    let mut response = match inspect_ui(client, arguments).await {
+        Ok(observation) => {
+            observation_response(
+                client,
+                tools,
+                observation,
+                "Android post-action observation",
+            )
+            .await?
+        }
+        Err(err) => {
+            screenshot_fallback_response(
+                client,
+                tools,
+                arguments,
+                "Android post-action observation",
+                &err,
+                /*action_already_executed*/ true,
+            )
+            .await?
+        }
+    };
     if let Some(ComputerUseCallOutputContentItem::InputText { text }) =
         response.content_items.first_mut()
     {
@@ -143,18 +171,20 @@ async fn observation_response(
             .await
             .and_then(|value| artifact_bytes(&value))
         {
-            Ok(bytes) => items.push(ComputerUseCallOutputContentItem::InputImage {
-                image_url: format!("data:image/png;base64,{}", BASE64_STANDARD.encode(bytes)),
-                detail: Some("high".to_string()),
-            }),
+            Ok(bytes) => {
+                append_text(&mut items, "\nscreenshot: included as native image output");
+                items.push(ComputerUseCallOutputContentItem::InputImage {
+                    image_url: format!("data:image/png;base64,{}", BASE64_STANDARD.encode(bytes)),
+                    detail: Some("high".to_string()),
+                });
+            }
             Err(err) => {
-                if let Some(ComputerUseCallOutputContentItem::InputText { text }) =
-                    items.first_mut()
-                {
-                    text.push_str(&format!(
-                        "\n\nScreenshot artifact could not be inlined: {err}"
-                    ));
-                }
+                append_text(
+                    &mut items,
+                    &format!(
+                        "\n\nScreenshot could not be included as native image output from provider artifact `{path}`: {err}"
+                    ),
+                );
             }
         }
     }
@@ -164,6 +194,54 @@ async fn observation_response(
         success: true,
         error: None,
     })
+}
+
+async fn screenshot_fallback_response(
+    client: &mut AndroidRuntimeClient,
+    tools: &BTreeSet<String>,
+    arguments: &Value,
+    title: &str,
+    observe_error: &str,
+    action_already_executed: bool,
+) -> Result<ComputerUseCallResponse, String> {
+    let mut lines = vec![
+        format!("{title} degraded"),
+        format!("UI digest unavailable: {observe_error}"),
+    ];
+
+    let mut observation = json!({
+        "node_count": 0_u64,
+        "nodes": [],
+    });
+
+    if tools.contains("android.capture_screenshot") {
+        let mut args = json!({});
+        copy_if_present(arguments, &mut args, "serial");
+        copy_inspect_screenshot_filename_for_capture(arguments, &mut args);
+        match client.call_tool("android.capture_screenshot", args).await {
+            Ok(capture) => {
+                if let Some(serial) = capture.get("serial").and_then(Value::as_str) {
+                    observation["serial"] = Value::String(serial.to_string());
+                }
+                if let Some(path) = screenshot_path(&capture) {
+                    observation["artifacts"] = json!({ "screenshot_path": path });
+                    lines.push("native screenshot fallback captured".to_string());
+                }
+            }
+            Err(err) => {
+                lines.push(format!("native screenshot fallback failed: {err}"));
+            }
+        }
+    } else {
+        lines.push("native screenshot fallback unavailable from provider".to_string());
+    }
+
+    let mut response = observation_response(client, tools, observation, &lines.join("\n")).await?;
+    response.success = action_already_executed || response_includes_native_image(&response);
+    if !response.success {
+        response.error = Some(observe_error.to_string());
+    }
+    Ok(response)
 }
 
 async fn run_action(
@@ -583,10 +661,13 @@ fn summarize_observation(title: &str, observation: &Value) -> String {
         lines.push("visible_ui:".to_string());
         lines.extend(labels.into_iter().map(|label| format!("- {label}")));
     }
-    if let Some(path) = screenshot_path(observation) {
-        lines.push(format!("screenshot_artifact: {path}"));
-    }
     lines.join("\n")
+}
+
+fn append_text(items: &mut [ComputerUseCallOutputContentItem], extra: &str) {
+    if let Some(ComputerUseCallOutputContentItem::InputText { text }) = items.first_mut() {
+        text.push_str(extra);
+    }
 }
 
 fn observation_labels(observation: &Value) -> Vec<String> {
@@ -777,6 +858,19 @@ fn copy_if_present(source: &Value, target: &mut Value, field: &str) -> bool {
     }
 }
 
+fn copy_inspect_screenshot_filename_for_capture(source: &Value, target: &mut Value) {
+    if let Some(value) = source.get("screenshot_filename") {
+        target["filename"] = value.clone();
+    }
+}
+
+fn response_includes_native_image(response: &ComputerUseCallResponse) -> bool {
+    response
+        .content_items
+        .iter()
+        .any(|item| matches!(item, ComputerUseCallOutputContentItem::InputImage { .. }))
+}
+
 fn has_xy(value: &Value) -> bool {
     value.get("x").is_some() && value.get("y").is_some()
 }
@@ -859,7 +953,7 @@ mod tests {
     }
 
     #[test]
-    fn summarize_observation_includes_ui_and_artifact() {
+    fn summarize_observation_keeps_artifact_paths_internal() {
         let summary = summarize_observation(
             "Android observation",
             &json!({
@@ -875,13 +969,33 @@ mod tests {
         );
         assert!(summary.contains("serial: emulator-5554"));
         assert!(summary.contains("Launch"));
-        assert!(summary.contains("screenshot_artifact: /tmp/screen.png"));
+        assert!(!summary.contains("screenshot_artifact"));
+        assert!(!summary.contains("/tmp/screen.png"));
     }
 
     #[test]
     fn artifact_bytes_decodes_known_shapes() {
         let bytes = artifact_bytes(&json!({"base64": "aGVsbG8="})).expect("decode base64");
         assert_eq!(bytes, b"hello");
+    }
+
+    #[test]
+    fn response_includes_native_image_detects_image_content() {
+        let response = ComputerUseCallResponse {
+            content_items: vec![
+                ComputerUseCallOutputContentItem::InputText {
+                    text: "summary".to_string(),
+                },
+                ComputerUseCallOutputContentItem::InputImage {
+                    image_url: "data:image/png;base64,AAAA".to_string(),
+                    detail: Some("high".to_string()),
+                },
+            ],
+            success: true,
+            error: None,
+        };
+
+        assert!(response_includes_native_image(&response));
     }
 
     #[test]
