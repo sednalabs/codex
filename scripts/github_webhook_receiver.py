@@ -104,24 +104,23 @@ def validate_untrusted_command_value(value: str, field: str) -> str:
 
 
 def expand_token(token: str, payload: JsonObject, context: JsonObject) -> str:
-    replacements = {
-        "event": context["event"],
-        "action": context["action"],
-        "delivery": context["delivery"],
-        "repository": context["repository"],
-    }
-    for name, value in replacements.items():
-        token = token.replace("{" + name + "}", stringify(value))
-    while "{" in token and "}" in token:
-        start = token.index("{")
+def expand_token(token: str, payload: JsonObject, context: JsonObject) -> str:
+    result = []
+    last_end = 0
+    while "{" in token[last_end:] and "}" in token[last_end:]:
+        start = token.index("{", last_end)
         end = token.index("}", start)
+        result.append(token[last_end:start])
         field = token[start + 1 : end]
-        if not field.startswith("payload."):
+        if field in context:
+            result.append(stringify(context[field]))
+        elif field.startswith("payload."):
+            result.append(stringify(dotted_get(payload, field.removeprefix("payload."))))
+        else:
             raise WebhookError(f"unsupported command placeholder: {field}")
-        value = stringify(dotted_get(payload, field.removeprefix("payload.")))
-        value = validate_untrusted_command_value(value, field)
-        token = token[:start] + value + token[end + 1 :]
-    return token
+        last_end = end + 1
+    result.append(token[last_end:])
+    return "".join(result)
 
 
 def route_matches(route: JsonObject, event: str, action: str, repository: str) -> bool:
