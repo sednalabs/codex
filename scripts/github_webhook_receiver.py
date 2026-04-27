@@ -41,12 +41,12 @@ def load_secret() -> bytes:
     if secret and secret_file:
         raise WebhookError("set only one of GITHUB_WEBHOOK_SECRET or GITHUB_WEBHOOK_SECRET_FILE")
     if secret_file:
-        allowed_secret_dir = Path(os.environ.get("GITHUB_WEBHOOK_SECRET_DIR", "/run/secrets")).expanduser().resolve()
+        allowed_secret_dir = Path("/run/secrets").expanduser().resolve()
         secret_path = Path(secret_file).expanduser().resolve()
         try:
             secret_path.relative_to(allowed_secret_dir)
         except ValueError as exc:
-            raise WebhookError("GITHUB_WEBHOOK_SECRET_FILE must be within GITHUB_WEBHOOK_SECRET_DIR") from exc
+            raise WebhookError("GITHUB_WEBHOOK_SECRET_FILE must be within /run/secrets") from exc
         secret = secret_path.read_text(encoding="utf-8").strip()
     if not secret:
         raise WebhookError("missing GITHUB_WEBHOOK_SECRET or GITHUB_WEBHOOK_SECRET_FILE")
