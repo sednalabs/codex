@@ -1976,8 +1976,13 @@ impl Config {
             )
         } else {
             let configured_network_proxy_config = NetworkProxyConfig::default();
-            let mut sandbox_policy = cfg
-                .derive_sandbox_policy(
+            // No named `[permissions]` profile is active, but permissions
+            // should still flow through the canonical profile representation.
+            // Derive the old `sandbox_mode` defaults as a profile first, then
+            // keep a legacy-compatible projection only for the remaining code
+            // paths that still speak `SandboxPolicy`.
+            let mut permission_profile = cfg
+                .derive_permission_profile(
                     sandbox_mode,
                     config_profile.sandbox_mode,
                     windows_sandbox_level,
@@ -1985,24 +1990,46 @@ impl Config {
                     Some(&constrained_permission_profile),
                 )
                 .await;
-            if let SandboxPolicy::WorkspaceWrite { writable_roots, .. } = &mut sandbox_policy {
-                for path in &additional_writable_roots {
-                    if !writable_roots.iter().any(|existing| existing == path) {
-                        writable_roots.push(path.clone());
-                    }
-                }
+            // The legacy-derived profiles above are expected to be
+            // representable as `SandboxPolicy`. This guard keeps the old safe
+            // fallback behavior if future changes make this branch derive a
+            // profile with split-only filesystem semantics, such as root write
+            // with carveouts or writes that are not expressible as
+            // workspace-write roots.
+            if let Err(err) = permission_profile.to_legacy_sandbox_policy(resolved_cwd.as_path()) {
+                tracing::warn!(
+                    error = %err,
+                    "derived permission profile cannot be represented as a legacy sandbox policy; falling back to read-only"
+                );
+                permission_profile = PermissionProfile::read_only();
             }
-            let file_system_sandbox_policy =
-                FileSystemSandboxPolicy::from_legacy_sandbox_policy_for_cwd(
-                &sandbox_policy,
-                resolved_cwd.as_path(),
-            );
-            let network_sandbox_policy = NetworkSandboxPolicy::from(&sandbox_policy);
-            let permission_profile = PermissionProfile::from_runtime_permissions_with_enforcement(
-                SandboxEnforcement::from_legacy_sandbox_policy(&sandbox_policy),
-                &file_system_sandbox_policy,
-                network_sandbox_policy,
-            );
+            let (mut file_system_sandbox_policy, network_sandbox_policy) =
+                permission_profile.to_runtime_permissions();
+            // `additional_writable_roots` is a legacy workspace-write knob. It
+            // only applies when the derived managed profile has workspace-style
+            // write access to the project roots; read-only, disabled, external,
+            // and future non-workspace profiles must not silently grow extra
+            // write access.
+            if matches!(permission_profile.enforcement(), SandboxEnforcement::Managed)
+                && file_system_sandbox_policy.can_write_path_with_cwd(
+                    resolved_cwd.as_path(),
+                    resolved_cwd.as_path(),
+                )
+                && !file_system_sandbox_policy.has_full_disk_write_access()
+            {
+                // Keep legacy behavior for extra writable roots while storing
+                // the result as the canonical permission profile. Explicit
+                // extra roots are concrete paths, so their metadata carveouts
+                // are also concrete rather than symbolic `:project_roots`
+                // entries.
+                file_system_sandbox_policy = file_system_sandbox_policy
+                    .with_additional_legacy_workspace_writable_roots(&additional_writable_roots);
+                permission_profile = PermissionProfile::from_runtime_permissions_with_enforcement(
+                    permission_profile.enforcement(),
+                    &file_system_sandbox_policy,
+                    network_sandbox_policy,
+                );
+            }
             (
                 configured_network_proxy_config,
                 permission_profile,
