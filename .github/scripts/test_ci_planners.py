@@ -133,6 +133,8 @@ class TempGitRepo:
         self._git("init", "--initial-branch=main")
         self._git("config", "user.name", "CI Planner Tests")
         self._git("config", "user.email", "ci-planner-tests@example.invalid")
+        self._git("config", "commit.gpgSign", "false")
+        self._git("config", "tag.gpgSign", "false")
 
     def cleanup(self) -> None:
         self._tmpdir.cleanup()
@@ -673,8 +675,9 @@ class ValidationPlanScriptTests(unittest.TestCase):
         self.assertEqual(payload["selected_rust_minimal_batch_count"], 6)
         self.assertEqual(payload["selected_rust_integration_lane_count"], 1)
         self.assertEqual(payload["selected_rust_integration_batch_count"], 5)
-        self.assertEqual(payload["selected_release_lane_count"], 1)
+        self.assertEqual(payload["selected_release_lane_count"], 0)
         self.assertEqual(payload["smoke_rust_integration_lane_count"], 5)
+        self.assertEqual(payload["smoke_release_lane_count"], 1)
         self.assertEqual(payload["workflow_max_parallel"], "8")
         self.assertEqual(payload["node_max_parallel"], "4")
         self.assertEqual(payload["rust_minimal_max_parallel"], "6")
@@ -2230,18 +2233,20 @@ class ValidationPlanScriptTests(unittest.TestCase):
         planned_lane_ids = [lane["lane_id"] for lane in payload["planned_matrix"]["include"]]
         selected_lane_ids = payload["selected_lane_ids"]
         self.assertEqual(
-            planned_lane_ids[:5],
+            planned_lane_ids[:6],
             [
                 "core-compile-smoke",
                 "core-carry-core-smoke",
                 "core-carry-ui-smoke",
                 "core-ledger-smoke",
                 "core-runtime-surface-smoke",
+                "sedna.release-linux-smoke",
             ],
         )
-        self.assertEqual(planned_lane_ids[5:], selected_lane_ids)
+        self.assertEqual(planned_lane_ids[6:], selected_lane_ids)
         self.assertIn("codex.core-startup-sync-targeted", selected_lane_ids)
         self.assertIn("codex.downstream-docs-check", selected_lane_ids)
+        self.assertNotIn("sedna.release-linux-smoke", selected_lane_ids)
         self.assertNotIn("codex.nextest-archive-core-carry-pilot", selected_lane_ids)
 
     def test_heavy_plan_ci_heavy_pr_uses_frontier_harvest_policy(self) -> None:
@@ -2273,10 +2278,13 @@ class ValidationPlanScriptTests(unittest.TestCase):
         self.assertEqual(payload["eager_release_lanes"], "true")
         self.assertEqual(payload["rust_integration_max_parallel"], "8")
         self.assertEqual(payload["release_max_parallel"], "1")
+        self.assertEqual(payload["smoke_release_lane_count"], 1)
+        self.assertEqual(payload["selected_release_lane_count"], 0)
         self.assertNotIn(
             "codex.nextest-archive-core-carry-pilot",
             payload["selected_lane_ids"],
         )
+        self.assertNotIn("sedna.release-linux-smoke", payload["selected_lane_ids"])
 
     def test_nextest_archive_pilot_is_explicit_only(self) -> None:
         payload = run_script(

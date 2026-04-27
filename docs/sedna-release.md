@@ -81,9 +81,11 @@ changes can be detected explicitly instead of inferred from tag shape alone.
 - `validation-lab` `profile=targeted` with `lane_set=release` is the preferred early Linux
   release-build smoke path when the question is dependency or lockfile drift under
   `cargo build --locked`
-- the concrete preflight lane is `sedna.release-linux-smoke`; keep that path separate from
-  official release publication so operators can prove a ref is releasable without mutating
-  GitHub Releases
+- the concrete preflight lane is `sedna.release-linux-smoke`; it also runs as a runtime smoke gate
+  for core-heavy PR validation so release-mode compile breaks are caught before an official
+  release dispatch is the first full release build
+- keep that path separate from official release publication so operators can prove a ref is
+  releasable without mutating GitHub Releases
 - `sedna-branch-build` produces disposable preview binaries only when manually dispatched
 - `sedna-heavy-tests` runs expensive remote validation without using the local development machine as the
   build factory
