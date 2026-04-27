@@ -1459,7 +1459,7 @@ class ValidationPlanScriptTests(unittest.TestCase):
         )
         self.assertEqual(actions_config_step.get("if"), "${{ matrix.language == 'actions' }}")
         actions_config_run = actions_config_step.get("run") or ""
-        self.assertIn(".github/codeql/actions-log-exposure", actions_config_run)
+        self.assertIn(".github/codeql/actions-workflow-security", actions_config_run)
         self.assertIn("github.event.pull_request.base.sha", actions_config_run)
         self.assertIn("security-and-quality", actions_config_run)
         self.assertIn(".codeql-runtime/codeql-actions.yml", actions_config_run)
@@ -1524,36 +1524,58 @@ class ValidationPlanScriptTests(unittest.TestCase):
                 "name": "codex-codeql-actions",
                 "queries": [
                     {"uses": "security-and-quality"},
-                    {"uses": "./.github/codeql/actions-log-exposure"},
+                    {"uses": "./.github/codeql/actions-workflow-security"},
                 ],
                 "threat-models": "local",
             },
         )
         actions_pack = yaml.load(
-            (REPO_ROOT / ".github/codeql/actions-log-exposure/qlpack.yml").read_text(
+            (REPO_ROOT / ".github/codeql/actions-workflow-security/qlpack.yml").read_text(
                 encoding="utf-8"
             ),
             Loader=yaml.BaseLoader,
         )
+        self.assertEqual(actions_pack.get("name"), "sednalabs/actions-workflow-security")
         self.assertEqual(actions_pack.get("extractor"), "actions")
         self.assertEqual(actions_pack.get("dependencies"), {"codeql/actions-all": "*"})
-        self.assertEqual(actions_pack.get("defaultSuiteFile"), "suites/actions-log-exposure.qls")
+        self.assertEqual(actions_pack.get("defaultSuiteFile"), "suites/actions-workflow-security.qls")
         self.assertIn(
             "@id actions/sensitive-workflow-value-to-log",
-            (REPO_ROOT / ".github/codeql/actions-log-exposure/SensitiveWorkflowValueToLog.ql")
+            (REPO_ROOT / ".github/codeql/actions-workflow-security/SensitiveWorkflowValueToLog.ql")
             .read_text(encoding="utf-8"),
         )
         self.assertIn(
             "@id actions/sensitive-workflow-value-to-verbose-tool",
-            (REPO_ROOT / ".github/codeql/actions-log-exposure/SensitiveWorkflowValueToVerboseTool.ql")
+            (REPO_ROOT / ".github/codeql/actions-workflow-security/SensitiveWorkflowValueToVerboseTool.ql")
             .read_text(encoding="utf-8"),
         )
+        for query_id in [
+            "actions/unsafe-release-publishing-path",
+            "actions/release-publisher-with-untrusted-input",
+            "actions/overbroad-workflow-permissions",
+            "actions/write-token-on-untrusted-trigger",
+            "actions/artifact-published-without-provenance",
+            "actions/repo-security-invariant-violation",
+        ]:
+            self.assertTrue(
+                any(
+                    f"@id {query_id}" in path.read_text(encoding="utf-8")
+                    for path in (REPO_ROOT / ".github/codeql/actions-workflow-security").glob("*.ql")
+                ),
+                query_id,
+            )
         self.assertIn(
             "getAWriteToGitHubEnv",
-            (REPO_ROOT / ".github/codeql/actions-log-exposure/LogExposure.qll").read_text(
+            (REPO_ROOT / ".github/codeql/actions-workflow-security/LogExposure.qll").read_text(
                 encoding="utf-8"
             ),
         )
+        workflow_security = (
+            REPO_ROOT / ".github/codeql/actions-workflow-security/WorkflowSecurity.qll"
+        ).read_text(encoding="utf-8")
+        self.assertIn("jobHasPublishingSink", workflow_security)
+        self.assertIn("jobEffectiveWritePermission", workflow_security)
+        self.assertIn("jobHasRepoApprovedProvenance", workflow_security)
         pr_config = yaml.load(
             (REPO_ROOT / ".github/codeql/codeql-rust-pr.yml").read_text(encoding="utf-8"),
             Loader=yaml.BaseLoader,
@@ -3524,6 +3546,126 @@ jobs:
                 "runners; use private deployment infrastructure for host-local operations."
             ],
         )
+
+    def test_workflow_policy_rejects_write_all_permissions(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            workflow = root / ".github/workflows/ci.yml"
+            workflow.parent.mkdir(parents=True)
+            workflow.write_text(
+                """
+name: ci
+on: push
+permissions: write-all
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - run: true
+""".lstrip(),
+                encoding="utf-8",
+            )
+
+            violations = CHECK_WORKFLOW_POLICY.collect_violations(root)
+
+        self.assertEqual(
+            violations,
+            [
+                ".github/workflows/ci.yml: permissions must not use write-all; "
+                "use job-scoped least privilege instead."
+            ],
+        )
+
+    def test_workflow_policy_rejects_pull_request_target_checkout(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            workflow = root / ".github/workflows/pr.yml"
+            workflow.parent.mkdir(parents=True)
+            workflow.write_text(
+                """
+name: pr
+on: pull_request_target
+permissions:
+  contents: read
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+""".lstrip(),
+                encoding="utf-8",
+            )
+
+            violations = CHECK_WORKFLOW_POLICY.collect_violations(root)
+
+        self.assertEqual(
+            violations,
+            [
+                ".github/workflows/pr.yml: pull_request_target jobs must not checkout "
+                "repository code; split trusted writes from untrusted PR context."
+            ],
+        )
+
+    def test_workflow_policy_rejects_unscoped_direct_release_create(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            workflow = root / ".github/workflows/release.yml"
+            workflow.parent.mkdir(parents=True)
+            workflow.write_text(
+                """
+name: release
+on: workflow_dispatch
+permissions:
+  contents: read
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - run: gh release create "$TAG" dist/*
+""".lstrip(),
+                encoding="utf-8",
+            )
+
+            violations = CHECK_WORKFLOW_POLICY.collect_violations(root)
+
+        self.assertEqual(
+            violations,
+            [
+                ".github/workflows/release.yml: job 'publish' creates a GitHub release "
+                "without the release environment.",
+                ".github/workflows/release.yml: job 'publish' creates a GitHub release "
+                "without contents: write scoped to the publishing job.",
+                ".github/workflows/release.yml: job 'publish' creates a GitHub release "
+                "without id-token: write for release signing or provenance.",
+            ],
+        )
+
+    def test_workflow_policy_accepts_guarded_direct_release_create(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            workflow = root / ".github/workflows/release.yml"
+            workflow.parent.mkdir(parents=True)
+            workflow.write_text(
+                """
+name: release
+on: workflow_dispatch
+permissions: {}
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    environment: release
+    permissions:
+      contents: write
+      id-token: write
+    steps:
+      - run: gh release create "$TAG" dist/*
+""".lstrip(),
+                encoding="utf-8",
+            )
+
+            violations = CHECK_WORKFLOW_POLICY.collect_violations(root)
+
+        self.assertEqual(violations, [])
 
     def test_configure_sccache_restore_only_uses_read_only_fallback(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

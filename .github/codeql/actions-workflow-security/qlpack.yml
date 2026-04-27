@@ -1,4 +1,4 @@
-name: sednalabs/actions-log-exposure
+name: sednalabs/actions-workflow-security
 version: 0.0.0
 groups:
   - actions
@@ -6,5 +6,5 @@ groups:
 extractor: actions
 dependencies:
   codeql/actions-all: "*"
-defaultSuiteFile: suites/actions-log-exposure.qls
+defaultSuiteFile: suites/actions-workflow-security.qls
 warnOnImplicitThis: true

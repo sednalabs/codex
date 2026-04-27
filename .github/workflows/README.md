@@ -74,7 +74,7 @@ contract today.
 - The workflow uses `.github/codeql/codeql-config.yml` for shared CodeQL
   settings and `.github/codeql/codeql-actions.yml` for Actions-only query
   additions. The Actions lane prepares a runtime config so pull-request scans
-  can use the trusted-base copy of `.github/codeql/actions-log-exposure` when
+  can use the trusted-base copy of `.github/codeql/actions-workflow-security` when
   it is available, while other languages continue to use the shared config.
   Add Actions workflow policy queries to the Actions pack, and add
   language-neutral CodeQL settings to the shared config.

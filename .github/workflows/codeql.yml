@@ -255,15 +255,15 @@ jobs:
           set -euo pipefail
 
           mkdir -p .codeql-runtime
-          pack_path="./.github/codeql/actions-log-exposure"
+          pack_path="./.github/codeql/actions-workflow-security"
 
           if [[ '${{ github.event_name }}' == 'pull_request' ]]; then
             trusted_root="${GITHUB_WORKSPACE}/.codeql-runtime/trusted-base"
-            trusted_pack="./.codeql-runtime/trusted-base/.github/codeql/actions-log-exposure"
+            trusted_pack="./.codeql-runtime/trusted-base/.github/codeql/actions-workflow-security"
             mkdir -p "${trusted_root}"
 
             if git fetch --no-tags --depth=1 origin '${{ github.event.pull_request.base.sha }}' &&
-              git archive '${{ github.event.pull_request.base.sha }}' .github/codeql/actions-log-exposure |
+              git archive '${{ github.event.pull_request.base.sha }}' .github/codeql/actions-workflow-security |
                 tar -x -C "${trusted_root}"; then
               pack_path="${trusted_pack}"
             else

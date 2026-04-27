@@ -2,6 +2,6 @@ name: codex-codeql-actions
 
 queries:
   - uses: security-and-quality
-  - uses: ./.github/codeql/actions-log-exposure
+  - uses: ./.github/codeql/actions-workflow-security
 
 threat-models: local
