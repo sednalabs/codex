@@ -10,6 +10,7 @@ import hmac
 import http.server
 import json
 import os
+import re
 import signal
 import subprocess
 import sys
@@ -83,12 +84,23 @@ def dotted_get(payload: JsonObject, path: str) -> Any:
     return value
 
 
+_SAFE_ARG_PATTERN = re.compile(r"^[A-Za-z0-9._/@:+,=-]+$")
+
+
 def stringify(value: Any) -> str:
     if isinstance(value, bool):
         return "true" if value else "false"
     if value is None:
         return ""
     return str(value)
+
+
+def validate_untrusted_command_value(value: str, field: str) -> str:
+    if not value:
+        raise WebhookError(f"payload field expands to empty command value: {field}")
+    if not _SAFE_ARG_PATTERN.fullmatch(value):
+        raise WebhookError(f"payload field contains unsafe command characters: {field}")
+    return value
 
 
 def expand_token(token: str, payload: JsonObject, context: JsonObject) -> str:
@@ -107,6 +119,7 @@ def expand_token(token: str, payload: JsonObject, context: JsonObject) -> str:
         if not field.startswith("payload."):
             raise WebhookError(f"unsupported command placeholder: {field}")
         value = stringify(dotted_get(payload, field.removeprefix("payload.")))
+        value = validate_untrusted_command_value(value, field)
         token = token[:start] + value + token[end + 1 :]
     return token
 
