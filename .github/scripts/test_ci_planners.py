@@ -249,9 +249,9 @@ class TempGitRepo:
 
 
 class SyncUpstreamMirrorTests(unittest.TestCase):
-    def test_read_only_fallback_uses_live_upstream_when_mirror_is_stale(self) -> None:
+    def test_read_only_fallback_uses_stale_mirror_for_pr_audit(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
-            repo, _origin_bare, upstream_bare, _old_sha, new_sha = self.create_fixture(
+            repo, _origin_bare, upstream_bare, old_sha, _new_sha = self.create_fixture(
                 Path(tmpdir), mirror_state="stale"
             )
 
@@ -270,9 +270,18 @@ class SyncUpstreamMirrorTests(unittest.TestCase):
                 "wrote_mirror": result["wrote_mirror"],
             },
             {
-                "audit_baseline": "upstream-ref",
-                "expected_mirror_sha": new_sha,
-                "mirror_audit_args": ["--mirror-ref", "refs/remotes/upstream/main"],
+                "audit_baseline": "origin-mirror",
+                "expected_mirror_sha": old_sha,
+                "mirror_audit_args": [
+                    "--upstream-remote",
+                    "origin",
+                    "--upstream-branch",
+                    "upstream-main",
+                    "--mirror-remote",
+                    "origin",
+                    "--mirror-branch",
+                    "upstream-main",
+                ],
                 "mirror_state": "stale_ff_only",
                 "wrote_mirror": False,
             },

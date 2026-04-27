@@ -138,8 +138,14 @@ fn upstream_position_label(tag: &str, distance_from_tag: &str, commit: &str) -> 
     }
 
     match distance_from_tag.parse::<u32>() {
-        Ok(0) | Err(_) => format!("{tag}@{commit}"),
+        Ok(0) => format!("{tag}@{commit}"),
         Ok(distance) => format!("{tag}+{distance}@{commit}"),
+        Err(error) => {
+            println!(
+                "cargo:warning=Ignoring invalid CODEX_UPSTREAM_DISTANCE_FROM_TAG={distance_from_tag:?}: {error}"
+            );
+            format!("{tag}@{commit}")
+        }
     }
 }
 

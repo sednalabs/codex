@@ -34,6 +34,8 @@ runs:
 
     - name: Set up Bazel
       uses: bazelbuild/setup-bazelisk@b39c379c82683a5f25d34f0d062761f62693e0b2 # v3
+      with:
+        bazelisk-version: v1.28.1
 
     - name: Configure Bazel repository cache
       id: configure_bazel_repository_cache
