@@ -1,7 +1,15 @@
 name: sedna-release
+run-name: >-
+  ${{
+    github.event_name == 'workflow_dispatch' && 'manual release request' ||
+    github.ref_type == 'tag' && format('tag release {0}', github.ref_name) ||
+    'main release gate'
+  }}
 
 on:
   push:
+    branches:
+      - main
     tags:
       - "v*-sedna.*"
   workflow_dispatch:
@@ -33,17 +41,146 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.event_name == 'workflow_dispatch' && (inputs.release_tag || inputs.target_sha || github.sha) || github.ref_name }}
   cancel-in-progress: false
 
-permissions:
-  actions: write
-  contents: write
-  id-token: write
+permissions: {}
 
 jobs:
+  route:
+    name: Release request gate
+    runs-on: ubuntu-slim
+    timeout-minutes: 5
+    permissions: {}
+    outputs:
+      release_requested: ${{ steps.route.outputs.release_requested }}
+      reason: ${{ steps.route.outputs.reason }}
+      channel: ${{ steps.route.outputs.channel }}
+      target_sha: ${{ steps.route.outputs.target_sha }}
+    steps:
+      - name: Resolve release request
+        id: route
+        shell: bash
+        env:
+          EVENT_AFTER: ${{ github.event.after || '' }}
+          EVENT_NAME: ${{ github.event_name }}
+          EVENT_REF: ${{ github.ref }}
+          EVENT_SHA: ${{ github.sha }}
+          HEAD_MESSAGE: ${{ github.event.head_commit.message || '' }}
+        run: |
+          set -euo pipefail
+
+          emit() {
+            {
+              echo "release_requested=$1"
+              echo "reason=$2"
+              echo "target_sha=$3"
+              echo "channel=$4"
+            } >> "$GITHUB_OUTPUT"
+
+            echo "release_requested=$1"
+            echo "reason=$2"
+            echo "target_sha=$3"
+            echo "channel=$4"
+          }
+
+          if [[ "${EVENT_NAME}" != "push" ]]; then
+            emit true "${EVENT_NAME}" "${EVENT_SHA}" ""
+            exit 0
+          fi
+
+          if [[ "${EVENT_REF}" == refs/tags/* ]]; then
+            emit true tag "${EVENT_SHA}" ""
+            exit 0
+          fi
+          if [[ "${EVENT_REF}" != "refs/heads/main" ]]; then
+            emit false unsupported_ref "" ""
+            exit 0
+          fi
+          if [[ -z "${EVENT_AFTER}" || "${EVENT_AFTER}" =~ ^0+$ ]]; then
+            emit false deleted_ref "" ""
+            exit 0
+          fi
+
+          markers=()
+          while IFS= read -r line || [[ -n "${line}" ]]; do
+            if [[ "${line}" =~ ^Sedna-Release:[[:space:]]*([A-Za-z0-9_.-]+)[[:space:]]*$ ]]; then
+              markers+=("${BASH_REMATCH[1],,}")
+            fi
+          done <<< "${HEAD_MESSAGE}"
+
+          if [[ "${#markers[@]}" -eq 0 ]]; then
+            emit false missing_sedna_release_marker "${EVENT_AFTER}" ""
+            exit 0
+          fi
+          if [[ "${#markers[@]}" -gt 1 ]]; then
+            echo "commit has more than one Sedna-Release marker" >&2
+            exit 1
+          fi
+
+          channel="${markers[0]}"
+          if [[ "${channel}" != "stable" && "${channel}" != "prerelease" ]]; then
+            echo "Sedna-Release marker must be either 'stable' or 'prerelease'" >&2
+            exit 1
+          fi
+
+          emit true release_marker "${EVENT_AFTER}" "${channel}"
+
+      - name: Summarize release gate
+        if: ${{ always() }}
+        shell: bash
+        env:
+          RELEASE_REQUESTED: ${{ steps.route.outputs.release_requested }}
+          RELEASE_CHANNEL: ${{ steps.route.outputs.channel }}
+          ROUTE_REASON: ${{ steps.route.outputs.reason }}
+          TARGET_SHA: ${{ steps.route.outputs.target_sha }}
+        run: |
+          if [[ "${RELEASE_REQUESTED:-false}" == "true" ]]; then
+            decision="publish"
+            publisher_job="will run"
+          else
+            decision="skip"
+            publisher_job="skipped"
+          fi
+
+          case "${ROUTE_REASON:-unknown}" in
+            release_marker)
+              reason_label="release marker"
+              ;;
+            missing_sedna_release_marker)
+              reason_label="no release marker"
+              ;;
+            workflow_dispatch)
+              reason_label="manual dispatch"
+              ;;
+            tag)
+              reason_label="release tag"
+              ;;
+            *)
+              reason_label="${ROUTE_REASON:-unknown}"
+              ;;
+          esac
+
+          {
+            echo "## Sedna release gate"
+            echo
+            echo "- Decision: ${decision}"
+            echo "- Reason: ${reason_label}"
+            echo "- Publisher job: ${publisher_job}"
+            if [[ "${RELEASE_REQUESTED:-false}" == "true" ]]; then
+              echo "- Release channel: ${RELEASE_CHANNEL:-auto}"
+              echo "- Target commit: ${TARGET_SHA}"
+            fi
+          } >> "${GITHUB_STEP_SUMMARY}"
+
   release-linux:
-    name: Release Linux
+    name: Publish Linux release
+    needs: route
+    if: ${{ needs.route.outputs.release_requested == 'true' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     environment: release
+    permissions:
+      actions: write
+      contents: write
+      id-token: write
     env:
       CARGO_INCREMENTAL: "0"
       SCCACHE_CACHE_SIZE: 2G
