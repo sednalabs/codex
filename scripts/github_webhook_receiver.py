@@ -173,7 +173,7 @@ class GitHubWebhookHandler(http.server.BaseHTTPRequestHandler):
             self.log_message("rejected webhook: %s", exc)
             self.send_error(400, "bad webhook")
         except Exception as exc:  # noqa: BLE001
-            self.log_message("webhook handler error: %s", exc.__class__.__name__)
+            self.log_message("webhook handler error: %s: %s", exc.__class__.__name__, exc)
             self.send_error(500, "webhook handler error")
 
     def handle_github_post(self) -> None:
