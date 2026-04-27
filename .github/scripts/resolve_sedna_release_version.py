@@ -10,6 +10,7 @@ import shutil
 import subprocess
 import sys
 from dataclasses import dataclass
+from datetime import datetime
 from functools import total_ordering
 from pathlib import Path
 from typing import Iterable
@@ -121,6 +122,26 @@ def commit_message(repo: Path, commit: str) -> str:
     return git(repo, "log", "-1", "--format=%B", commit)
 
 
+def parse_git_timestamp(value: str) -> datetime:
+    return datetime.fromisoformat(value.replace("Z", "+00:00"))
+
+
+def commit_timestamp(repo: Path, commit: str) -> datetime:
+    return parse_git_timestamp(git(repo, "log", "-1", "--format=%cI", commit))
+
+
+def tag_timestamp(repo: Path, tag: str) -> datetime:
+    tagger_date = git(
+        repo,
+        "for-each-ref",
+        f"refs/tags/{tag}",
+        "--format=%(taggerdate:iso-strict)",
+    )
+    if tagger_date:
+        return parse_git_timestamp(tagger_date)
+    return commit_timestamp(repo, resolve_commit(repo, tag))
+
+
 def release_marker_channel(message: str) -> str | None:
     found: list[str] = []
     for line in message.splitlines():
@@ -149,10 +170,19 @@ def well_formed_upstream_tags(repo: Path) -> list[tuple[SemVer, str]]:
     return tags
 
 
-def select_upstream_tag(repo: Path, upstream_base_commit: str) -> tuple[SemVer, str, int, bool]:
-    candidates = well_formed_upstream_tags(repo)
+def select_upstream_tag(
+    repo: Path, upstream_base_commit: str, not_after_commit: str
+) -> tuple[SemVer, str, int, bool]:
+    upper_bound = commit_timestamp(repo, not_after_commit)
+    candidates = [
+        (version, tag)
+        for version, tag in well_formed_upstream_tags(repo)
+        if tag_timestamp(repo, tag) <= upper_bound
+    ]
     if not candidates:
-        raise ReleaseVersionError("no well-formed rust-v<semver> tags available locally")
+        raise ReleaseVersionError(
+            f"no well-formed rust-v<semver> tags at or before {not_after_commit}"
+        )
     version, tag = max(candidates, key=lambda item: item[0])
     distance = int(git(repo, "rev-list", "--count", f"{tag}..{upstream_base_commit}"))
     exact = resolve_commit(repo, tag) == upstream_base_commit
@@ -259,16 +289,17 @@ def resolve_release(
             if SemVer.parse(parsed_release_tag.track).is_prerelease
             else "stable"
         )
-    if effective_channel == "auto":
-        raise ReleaseVersionError("release channel could not be inferred")
-    if effective_channel not in {"stable", "prerelease"}:
+    if effective_channel not in {"stable", "prerelease", "auto"}:
         raise ReleaseVersionError("release channel must be stable, prerelease, or auto")
 
     upstream_base_commit = resolve_commit(repo, upstream_ref)
     upstream_version, upstream_tag, upstream_distance, upstream_exact = select_upstream_tag(
-        repo, upstream_base_commit
+        repo, upstream_base_commit, upstream_base_commit
     )
     upstream_track = str(upstream_version)
+
+    if effective_channel == "auto":
+        effective_channel = "prerelease" if upstream_version.is_prerelease else "stable"
 
     if effective_channel == "stable" and upstream_version.is_prerelease:
         raise ReleaseVersionError(
