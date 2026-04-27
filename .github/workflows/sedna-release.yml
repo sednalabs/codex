@@ -178,8 +178,7 @@ jobs:
     timeout-minutes: 60
     environment: release
     permissions:
-      actions: write
-      contents: write
+      contents: read
       id-token: write
     env:
       CARGO_INCREMENTAL: "0"
@@ -267,6 +266,28 @@ jobs:
           set -euo pipefail
           git checkout --detach "${TARGET_COMMIT}"
 
+      - name: Check release publisher app configuration
+        if: ${{ steps.meta.outputs.release_requested == 'true' }}
+        shell: bash
+        env:
+          APP_CLIENT_ID: ${{ vars.SEDNA_RELEASE_PUBLISHER_APP_CLIENT_ID }}
+          APP_PRIVATE_KEY: ${{ secrets.SEDNA_RELEASE_PUBLISHER_APP_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+
+          missing=()
+          if [[ -z "${APP_CLIENT_ID}" ]]; then
+            missing+=("SEDNA_RELEASE_PUBLISHER_APP_CLIENT_ID")
+          fi
+          if [[ -z "${APP_PRIVATE_KEY}" ]]; then
+            missing+=("SEDNA_RELEASE_PUBLISHER_APP_PRIVATE_KEY")
+          fi
+
+          if ((${#missing[@]} > 0)); then
+            printf 'Missing release publisher GitHub App configuration: %s\n' "${missing[*]}" >&2
+            exit 1
+          fi
+
       - name: Install Linux build dependencies
         if: ${{ steps.meta.outputs.release_requested == 'true' }}
         shell: bash
@@ -348,6 +369,7 @@ jobs:
           CODEX_UPSTREAM_TRACK: ${{ steps.meta.outputs.upstream_track }}
           CODEX_UPSTREAM_BASE_COMMIT: ${{ steps.meta.outputs.upstream_base_commit_short }}
           CODEX_UPSTREAM_BASE_TAG: ${{ steps.meta.outputs.upstream_base_tag }}
+          CODEX_UPSTREAM_DISTANCE_FROM_TAG: ${{ steps.meta.outputs.upstream_distance_from_tag }}
           CODEX_DOWNSTREAM_COMMIT: ${{ steps.meta.outputs.downstream_commit_short }}
         run: |
           set -euo pipefail
@@ -447,6 +469,7 @@ jobs:
           UPSTREAM_BASE_TAG: ${{ steps.meta.outputs.upstream_base_tag }}
           UPSTREAM_BASE_TAG_EXACT: ${{ steps.meta.outputs.upstream_base_tag_exact }}
           UPSTREAM_DISTANCE_FROM_TAG: ${{ steps.meta.outputs.upstream_distance_from_tag }}
+          UPSTREAM_POSITION: ${{ steps.meta.outputs.upstream_position }}
           UPSTREAM_TRACK: ${{ steps.meta.outputs.upstream_track }}
           VERSION_DISPLAY: ${{ steps.meta.outputs.version_display }}
           VERSION_POLICY: ${{ steps.meta.outputs.version_policy }}
@@ -481,6 +504,7 @@ jobs:
           upstream_base_tag=${UPSTREAM_BASE_TAG}
           upstream_base_tag_exact=${UPSTREAM_BASE_TAG_EXACT}
           upstream_distance_from_tag=${UPSTREAM_DISTANCE_FROM_TAG}
+          upstream_position=${UPSTREAM_POSITION}
           downstream_commit=${DOWNSTREAM_COMMIT_FULL}
           target_commit=${TARGET_COMMIT}
           repository=${REPOSITORY}
@@ -506,6 +530,7 @@ jobs:
                   "upstream_base_tag": os.environ["UPSTREAM_BASE_TAG"] or None,
                   "upstream_base_tag_exact": os.environ["UPSTREAM_BASE_TAG_EXACT"] == "true",
                   "upstream_distance_from_tag": int(os.environ["UPSTREAM_DISTANCE_FROM_TAG"]),
+                  "upstream_position": os.environ["UPSTREAM_POSITION"],
                   "downstream_commit": os.environ["DOWNSTREAM_COMMIT_FULL"],
                   "target_commit": os.environ["TARGET_COMMIT"],
                   "repository": os.environ["REPOSITORY"],
@@ -531,11 +556,21 @@ jobs:
           path: ${{ github.workspace }}/dist/*
           retention-days: 3
 
+      - name: Generate release publisher app token
+        if: ${{ steps.meta.outputs.release_requested == 'true' }}
+        id: release_publisher_token
+        uses: actions/create-github-app-token@1b10c78c7865c340bc4f6099eb2f838309f1e8c3 # v3.1.1
+        with:
+          client-id: ${{ vars.SEDNA_RELEASE_PUBLISHER_APP_CLIENT_ID }}
+          private-key: ${{ secrets.SEDNA_RELEASE_PUBLISHER_APP_PRIVATE_KEY }}
+          permission-actions: write
+          permission-contents: write
+
       - name: Create GitHub release
         if: ${{ steps.meta.outputs.release_requested == 'true' }}
         shell: bash
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ steps.release_publisher_token.outputs.token }}
           GH_REPO: ${{ github.repository }}
           RELEASE_DRAFT: ${{ steps.meta.outputs.draft }}
           RELEASE_PRERELEASE: ${{ steps.meta.outputs.github_prerelease }}
@@ -579,7 +614,7 @@ jobs:
         if: ${{ steps.meta.outputs.release_requested == 'true' && steps.meta.outputs.draft != 'true' }}
         shell: bash
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ steps.release_publisher_token.outputs.token }}
           GH_REPO: ${{ github.repository }}
           RELEASE_PRERELEASE: ${{ steps.meta.outputs.github_prerelease }}
           RELEASE_TAG: ${{ steps.meta.outputs.release_tag }}
