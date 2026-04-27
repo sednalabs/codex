@@ -4008,7 +4008,7 @@ mod tests {
             file_system: Some(CoreFileSystemPermissions {
                 entries: vec![FileSystemSandboxEntry {
                     path: FileSystemPath::Special {
-                        value: FileSystemSpecialPath::CurrentWorkingDirectory,
+                        value: FileSystemSpecialPath::project_roots(/*subpath*/ None),
                     },
                     access: FileSystemAccessMode::Write,
                 }],
@@ -4054,7 +4054,7 @@ mod tests {
             file_system: Some(CoreFileSystemPermissions {
                 entries: vec![FileSystemSandboxEntry {
                     path: FileSystemPath::Special {
-                        value: FileSystemSpecialPath::CurrentWorkingDirectory,
+                        value: FileSystemSpecialPath::project_roots(/*subpath*/ None),
                     },
                     access: FileSystemAccessMode::Write,
                 }],
@@ -4104,7 +4104,8 @@ mod tests {
                             "path": {
                                 "type": "special",
                                 "value": {
-                                    "kind": "current_working_directory"
+                                    "kind": "project_roots",
+                                    "subpath": null
                                 }
                             },
                             "access": "write"
