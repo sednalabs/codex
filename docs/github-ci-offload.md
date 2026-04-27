@@ -19,6 +19,21 @@ artifacts.
   - trigger: pushes and PRs that touch `README.md`, `docs/**`, or its own checker wiring
   - purpose: cheap markdown-link proof whenever documentation moves, without widening into validation-lab
   - retention: ordinary workflow logs only
+- `codeql`
+  - trigger: PRs, protected branch pushes, schedule, and manual dispatch
+  - purpose: authoritative CodeQL code scanning through the checked-in advanced
+    setup
+  - PR routing: the language router keeps the workflow-level check alive while
+    selecting only the CodeQL languages touched by the diff; docs-only or
+    unrelated PRs report success through the required gate without starting
+    analysis jobs
+  - full-scan fallback: protected branch pushes, schedules, manual dispatch,
+    ambiguous diffs, and edits to CodeQL workflow/config/router fixtures run
+    the full Actions, C/C++, JavaScript/TypeScript, Python, and Rust matrix
+  - not covered: GitHub Code Quality's public-preview dynamic workflow is a
+    separate repository setting and may still consume Actions minutes unless it
+    is disabled or narrowed in GitHub's Code quality settings
+  - retention: ordinary workflow logs plus code-scanning results
 - `sedna-branch-build`
   - trigger: manual dispatch only
   - purpose: disposable preview binaries when buildability is the actual question
