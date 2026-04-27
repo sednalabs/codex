@@ -149,11 +149,15 @@ class TempGitRepo:
     def rev_parse(self, ref: str) -> str:
         return self._git("rev-parse", ref)
 
-    def _git(self, *args: str) -> str:
+    def _git(self, *args: str, env: dict[str, str] | None = None) -> str:
+        git_env = os.environ.copy()
+        if env is not None:
+            git_env.update(env)
         proc = subprocess.run(
             ["git", "-C", str(self.root), *args],
             check=True,
             capture_output=True,
+            env=git_env,
             text=True,
         )
         return proc.stdout.strip()
@@ -2817,6 +2821,37 @@ class HelperScriptTests(unittest.TestCase):
     def test_repository_workflows_follow_static_policy(self) -> None:
         self.assertEqual(CHECK_WORKFLOW_POLICY.collect_violations(REPO_ROOT), [])
 
+    def test_sedna_release_manual_dispatch_defaults_to_auto_channel(self) -> None:
+        payload = load_workflow_payload(REPO_ROOT / ".github/workflows/sedna-release.yml")
+        channel_input = (
+            (((payload.get("on") or {}).get("workflow_dispatch") or {}).get("inputs") or {})
+            .get("channel")
+            or {}
+        )
+
+        self.assertEqual(
+            {
+                "default": channel_input.get("default"),
+                "options": channel_input.get("options"),
+            },
+            {
+                "default": "auto",
+                "options": ["auto", "stable", "prerelease"],
+            },
+        )
+
+    def test_sedna_release_uses_synced_upstream_mirror_as_version_base(self) -> None:
+        workflow = (REPO_ROOT / ".github/workflows/sedna-release.yml").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn(
+            "+refs/heads/upstream-main:refs/remotes/origin/upstream-main",
+            workflow,
+        )
+        self.assertIn("--upstream-ref refs/remotes/origin/upstream-main", workflow)
+        self.assertNotIn("--upstream-ref refs/remotes/upstream/main", workflow)
+
     def test_workflow_policy_rejects_missing_node_version_file(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
@@ -3050,6 +3085,55 @@ class SednaReleaseVersionResolverTests(unittest.TestCase):
                 "release_tag": "v0.126.0-alpha.3-sedna.2",
                 "release_version": "0.126.0-alpha.3-sedna.2",
                 "github_prerelease": True,
+                "upstream_track": "0.126.0-alpha.3",
+                "upstream_base_tag": "rust-v0.126.0-alpha.3",
+            },
+        )
+
+    def test_manual_auto_channel_infers_prerelease_from_upstream_track(self) -> None:
+        repo, _upstream, downstream = self.create_fixture(marker=None)
+        try:
+            result = self.resolve(repo, downstream, channel="auto")
+        finally:
+            repo.cleanup()
+
+        self.assertEqual(
+            {
+                "release_channel": result["release_channel"],
+                "release_tag": result["release_tag"],
+                "github_prerelease": result["github_prerelease"],
+            },
+            {
+                "release_channel": "prerelease",
+                "release_tag": "v0.126.0-alpha.3-sedna.1",
+                "github_prerelease": True,
+            },
+        )
+
+    def test_future_upstream_tag_is_not_used_for_older_synced_upstream_base(self) -> None:
+        repo, upstream, downstream = self.create_fixture(marker=None)
+        try:
+            repo._git(
+                "tag",
+                "-a",
+                "rust-v0.127.0-alpha.1",
+                upstream,
+                "-m",
+                "Release 0.127.0-alpha.1",
+                env={"GIT_COMMITTER_DATE": "2099-01-01T00:00:00+00:00"},
+            )
+            result = self.resolve(repo, downstream, channel="auto")
+        finally:
+            repo.cleanup()
+
+        self.assertEqual(
+            {
+                "release_tag": result["release_tag"],
+                "upstream_track": result["upstream_track"],
+                "upstream_base_tag": result["upstream_base_tag"],
+            },
+            {
+                "release_tag": "v0.126.0-alpha.3-sedna.1",
                 "upstream_track": "0.126.0-alpha.3",
                 "upstream_base_tag": "rust-v0.126.0-alpha.3",
             },

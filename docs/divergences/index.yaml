@@ -544,6 +544,7 @@
         "codex-rs/app-server/",
         "codex-rs/app-server-protocol/",
         "codex-rs/app-server-client/",
+        "sdk/python/scripts/update_sdk_artifacts.py",
         "sdk/python/examples/06_thread_lifecycle_and_controls/async.py",
         "sdk/python/examples/06_thread_lifecycle_and_controls/sync.py",
         "sdk/python/scripts/update_sdk_artifacts.py",

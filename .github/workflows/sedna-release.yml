@@ -15,9 +15,10 @@ on:
       channel:
         description: Release channel for resolver validation.
         required: true
-        default: stable
+        default: auto
         type: choice
         options:
+          - auto
           - stable
           - prerelease
       release_tag:
@@ -58,13 +59,12 @@ jobs:
         run: |
           set -euo pipefail
           git fetch origin \
-            +refs/heads/main:refs/remotes/origin/main
+            +refs/heads/main:refs/remotes/origin/main \
+            +refs/heads/upstream-main:refs/remotes/origin/upstream-main
           if ! git remote get-url upstream >/dev/null 2>&1; then
             git remote add upstream https://github.com/openai/codex.git
           fi
-          git fetch upstream \
-            +refs/heads/main:refs/remotes/upstream/main \
-            --tags
+          git fetch upstream --tags
 
       - name: Resolve release metadata
         id: meta
@@ -85,7 +85,7 @@ jobs:
             --repo "${GITHUB_WORKSPACE}"
             --repository "${GITHUB_REPOSITORY}"
             --main-ref refs/remotes/origin/main
-            --upstream-ref refs/remotes/upstream/main
+            --upstream-ref refs/remotes/origin/upstream-main
             --github-releases required
             --format json
           )
