@@ -292,7 +292,7 @@ def resolve_release(
     if effective_channel not in {"stable", "prerelease", "auto"}:
         raise ReleaseVersionError("release channel must be stable, prerelease, or auto")
 
-    upstream_base_commit = resolve_commit(repo, upstream_ref)
+    upstream_base_commit = git(repo, "merge-base", target_commit, upstream_ref).split()[0]
     upstream_version, upstream_tag, upstream_distance, upstream_exact = select_upstream_tag(
         repo, upstream_base_commit, upstream_base_commit
     )

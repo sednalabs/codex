@@ -3279,6 +3279,16 @@ class SednaReleaseVersionResolverTests(unittest.TestCase):
         repo, _upstream, downstream = self.create_fixture(marker=None)
         try:
             result = self.resolve(repo, downstream, channel="auto")
+            with self.assertRaisesRegex(
+                RESOLVE_SEDNA_RELEASE_VERSION.ReleaseVersionError,
+                "does not match computed tag v0.126.0-alpha.3-sedna.1",
+            ):
+                self.resolve(
+                    repo,
+                    downstream,
+                    channel="prerelease",
+                    release_tag="v0.126.0-alpha.4-sedna.1",
+                )
         finally:
             repo.cleanup()
 
@@ -3320,6 +3330,45 @@ class SednaReleaseVersionResolverTests(unittest.TestCase):
             {
                 "release_tag": "v0.126.0-alpha.3-sedna.1",
                 "upstream_track": "0.126.0-alpha.3",
+                "upstream_base_tag": "rust-v0.126.0-alpha.3",
+            },
+        )
+
+    def test_upstream_mirror_ahead_of_target_does_not_advance_release_track(self) -> None:
+        repo, upstream, downstream = self.create_fixture(marker=None)
+        try:
+            repo._git("checkout", "-B", "upstream-main-fixture", upstream)
+            future_upstream = repo.commit(
+                "upstream newer alpha",
+                {"upstream.txt": "newer alpha\n"},
+            )
+            repo._git(
+                "tag",
+                "-a",
+                "rust-v0.126.0-alpha.4",
+                future_upstream,
+                "-m",
+                "Release 0.126.0-alpha.4",
+                env={"GIT_COMMITTER_DATE": "2099-01-01T00:00:00+00:00"},
+            )
+            repo._git("update-ref", "refs/remotes/origin/upstream-main", future_upstream)
+            repo._git("checkout", "main")
+
+            result = self.resolve(repo, downstream, channel="auto")
+        finally:
+            repo.cleanup()
+
+        self.assertEqual(
+            {
+                "release_tag": result["release_tag"],
+                "upstream_track": result["upstream_track"],
+                "upstream_base_commit": result["upstream_base_commit"],
+                "upstream_base_tag": result["upstream_base_tag"],
+            },
+            {
+                "release_tag": "v0.126.0-alpha.3-sedna.1",
+                "upstream_track": "0.126.0-alpha.3",
+                "upstream_base_commit": upstream,
                 "upstream_base_tag": "rust-v0.126.0-alpha.3",
             },
         )
