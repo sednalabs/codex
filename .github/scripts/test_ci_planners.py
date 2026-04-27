@@ -3161,7 +3161,7 @@ class HelperScriptTests(unittest.TestCase):
         )
         self.assertEqual(named_steps["Build release binaries"].get("id"), "build_release")
         self.assertFalse(
-            any(step.get("uses") == "actions/download-artifact@v8" for step in steps)
+            any(step.get("uses", "").startswith("actions/download-artifact") for step in steps)
         )
 
     def test_workflow_policy_rejects_missing_node_version_file(self) -> None:
