@@ -44,7 +44,8 @@ Use the `sedna-release` workflow for fork-owned GitHub releases.
   - `Sedna-Release: prerelease`
 - Ordinary `main` pushes without a `Sedna-Release` trailer are a clean no-op in the release
   workflow.
-- `Sedna-Release: stable` refuses upstream prerelease tracks such as `0.126.0-alpha.3`.
+- `Sedna-Release: stable` refuses upstream prerelease tracks such as `0.126.0-alpha.3`,
+  publishes a full GitHub Release, and dispatches the production installer for that exact tag.
 - `Sedna-Release: prerelease` allows upstream prerelease tracks and publishes the GitHub Release as
   a prerelease. The release workflow dispatches the production installer with an explicit
   prerelease allowance for that exact tag.
@@ -115,7 +116,6 @@ repo-scoped self-hosted runner labelled `sedna-release-installer`.
 - Official release installs are explicitly dispatched by `sedna-release` after publishing a
   non-draft GitHub Release. This avoids relying on implicit follow-on workflow events from the
   release publisher token.
-- `release.published` events remain supported for stable releases in `sednalabs/codex`
 - Manual `workflow_dispatch` runs default to `dry_run=true`
 - Prerelease installs require `allow_prerelease=true` on `workflow_dispatch`
 - The installer verifies the tag shape, release metadata, `SHA256SUMS.txt`, and executable payload

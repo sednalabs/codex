@@ -1,8 +1,6 @@
 name: sedna-release-install
 
 on:
-  release:
-    types: [published]
   workflow_dispatch:
     inputs:
       release_tag:
@@ -36,18 +34,12 @@ jobs:
     steps:
       - name: Check out installer
         uses: actions/checkout@v6
-        with:
-          ref: ${{ github.event_name == 'release' && github.event.repository.default_branch || github.ref }}
 
       - name: Resolve requested release
         id: request
         shell: bash
         env:
-          EVENT_NAME: ${{ github.event_name }}
           EVENT_REPOSITORY: ${{ github.repository }}
-          RELEASE_TAG: ${{ github.event.release.tag_name }}
-          RELEASE_DRAFT: ${{ github.event.release.draft }}
-          RELEASE_PRERELEASE: ${{ github.event.release.prerelease }}
           INPUT_RELEASE_TAG: ${{ inputs.release_tag }}
           INPUT_DRY_RUN: ${{ inputs.dry_run }}
           INPUT_ALLOW_PRERELEASE: ${{ inputs.allow_prerelease }}
@@ -59,23 +51,9 @@ jobs:
             exit 1
           fi
 
-          allow_prerelease="false"
-          if [[ "${EVENT_NAME}" == "release" ]]; then
-            release_tag="${RELEASE_TAG}"
-            dry_run="false"
-            if [[ "${RELEASE_DRAFT}" == "true" ]]; then
-              echo "Refusing draft release ${release_tag}."
-              exit 1
-            fi
-            if [[ "${RELEASE_PRERELEASE}" == "true" ]]; then
-              echo "Refusing prerelease ${release_tag}."
-              exit 1
-            fi
-          else
-            release_tag="${INPUT_RELEASE_TAG}"
-            dry_run="${INPUT_DRY_RUN}"
-            allow_prerelease="${INPUT_ALLOW_PRERELEASE:-false}"
-          fi
+          release_tag="${INPUT_RELEASE_TAG}"
+          dry_run="${INPUT_DRY_RUN}"
+          allow_prerelease="${INPUT_ALLOW_PRERELEASE:-false}"
 
           if [[ ! "${release_tag}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([-.][0-9A-Za-z.]+)*-sedna\.[0-9]+$ ]]; then
             echo "Release tag must look like v0.124.0-sedna.2; got ${release_tag}."
