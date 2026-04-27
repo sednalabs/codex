@@ -19,6 +19,16 @@ artifacts.
   - trigger: pushes and PRs that touch `README.md`, `docs/**`, or its own checker wiring
   - purpose: cheap markdown-link proof whenever documentation moves, without widening into validation-lab
   - retention: ordinary workflow logs only
+- `cancel-pr-runs`
+  - trigger: closed pull requests
+  - purpose: cancel stale PR-scoped workflow runs after a PR is merged or
+    closed so long-running checks such as Rust CodeQL do not keep spending
+    minutes after their pre-merge decision point has passed
+  - protected branch handoff: the cleanup leaves `main` and `upstream-main`
+    push runs alone; after a merge, the `main` push run is the authoritative
+    branch-tip proof and surfaces CodeQL findings through repository code
+    scanning rather than as live PR feedback
+  - retention: ordinary workflow logs only
 - `sedna-branch-build`
   - trigger: manual dispatch only
   - purpose: disposable preview binaries when buildability is the actual question
