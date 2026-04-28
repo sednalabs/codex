@@ -3163,7 +3163,7 @@ pub struct CommandExecTerminalSize {
 /// The final `command/exec` response is deferred until the process exits and is
 /// sent only after all `command/exec/outputDelta` notifications for that
 /// connection have been emitted.
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS, ExperimentalApi)]
 #[serde(rename_all = "camelCase")]
 #[ts(export_to = "v2/")]
 pub struct CommandExecParams {
@@ -3242,6 +3242,7 @@ pub struct CommandExecParams {
     ///
     /// Defaults to the user's configured permissions when omitted. Cannot be
     /// combined with `sandboxPolicy`.
+    #[experimental("command/exec.permissionProfile")]
     #[ts(optional = nullable)]
     pub permission_profile: Option<PermissionProfile>,
 }
@@ -3364,6 +3365,7 @@ pub struct ThreadStartParams {
     pub sandbox: Option<SandboxMode>,
     /// Full permissions override for this thread. Cannot be combined with
     /// `sandbox`.
+    #[experimental("thread/start.permissionProfile")]
     #[ts(optional = nullable)]
     pub permission_profile: Option<PermissionProfile>,
     #[ts(optional = nullable)]
@@ -3447,6 +3449,7 @@ pub struct ThreadStartResponse {
     /// view.
     pub sandbox: SandboxPolicy,
     /// Canonical active permissions view for this thread.
+    #[experimental("thread/start.permissionProfile")]
     #[serde(default)]
     pub permission_profile: Option<PermissionProfile>,
     pub reasoning_effort: Option<ReasoningEffort>,
@@ -3508,6 +3511,7 @@ pub struct ThreadResumeParams {
     pub sandbox: Option<SandboxMode>,
     /// Full permissions override for the resumed thread. Cannot be combined
     /// with `sandbox`.
+    #[experimental("thread/resume.permissionProfile")]
     #[ts(optional = nullable)]
     pub permission_profile: Option<PermissionProfile>,
     #[ts(optional = nullable)]
@@ -3551,6 +3555,7 @@ pub struct ThreadResumeResponse {
     /// view.
     pub sandbox: SandboxPolicy,
     /// Canonical active permissions view for this thread.
+    #[experimental("thread/resume.permissionProfile")]
     #[serde(default)]
     pub permission_profile: Option<PermissionProfile>,
     pub reasoning_effort: Option<ReasoningEffort>,
@@ -3603,6 +3608,7 @@ pub struct ThreadForkParams {
     pub sandbox: Option<SandboxMode>,
     /// Full permissions override for the forked thread. Cannot be combined
     /// with `sandbox`.
+    #[experimental("thread/fork.permissionProfile")]
     #[ts(optional = nullable)]
     pub permission_profile: Option<PermissionProfile>,
     #[ts(optional = nullable)]
@@ -3646,6 +3652,7 @@ pub struct ThreadForkResponse {
     /// view.
     pub sandbox: SandboxPolicy,
     /// Canonical active permissions view for this thread.
+    #[experimental("thread/fork.permissionProfile")]
     #[serde(default)]
     pub permission_profile: Option<PermissionProfile>,
     pub reasoning_effort: Option<ReasoningEffort>,
@@ -5184,6 +5191,7 @@ pub struct TurnStartParams {
     pub sandbox_policy: Option<SandboxPolicy>,
     /// Override the full permissions profile for this turn and subsequent
     /// turns. Cannot be combined with `sandboxPolicy`.
+    #[experimental("turn/start.permissionProfile")]
     #[ts(optional = nullable)]
     pub permission_profile: Option<PermissionProfile>,
     /// Override the model for this turn and subsequent turns.
