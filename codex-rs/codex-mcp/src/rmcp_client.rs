@@ -60,6 +60,7 @@ use rmcp::model::Implementation;
 use rmcp::model::InitializeRequestParams;
 use rmcp::model::ProtocolVersion;
 use tokio_util::sync::CancellationToken;
+use tracing::warn;
 
 /// MCP server capability indicating that Codex should include [`SandboxState`]
 /// in tool-call request `_meta` under this key.
@@ -115,6 +116,7 @@ pub(crate) struct AsyncManagedClient {
     pub(crate) startup_snapshot: Option<Vec<ToolInfo>>,
     pub(crate) startup_complete: Arc<AtomicBool>,
     pub(crate) tool_plugin_provenance: Arc<ToolPluginProvenance>,
+    pub(crate) cancel_token: CancellationToken,
 }
 
 impl AsyncManagedClient {
@@ -142,8 +144,9 @@ impl AsyncManagedClient {
         let startup_tool_filter = tool_filter;
         let startup_complete = Arc::new(AtomicBool::new(false));
         let startup_complete_for_fut = Arc::clone(&startup_complete);
+        let cancel_token_for_fut = cancel_token.clone();
         let fut = async move {
-            let outcome = async {
+            let outcome = match async {
                 if let Err(error) = validate_mcp_server_name(&server_name) {
                     return Err(error.into());
                 }
@@ -158,7 +161,7 @@ impl AsyncManagedClient {
                     )
                     .await?,
                 );
-                match start_server_task(
+                start_server_task(
                     server_name,
                     client,
                     StartServerTaskParams {
@@ -172,14 +175,14 @@ impl AsyncManagedClient {
                         codex_apps_tools_cache_context,
                     },
                 )
-                .or_cancel(&cancel_token)
                 .await
-                {
-                    Ok(result) => result,
-                    Err(CancelErr::Cancelled) => Err(StartupOutcomeError::Cancelled),
-                }
             }
-            .await;
+            .or_cancel(&cancel_token_for_fut)
+            .await
+            {
+                Ok(result) => result,
+                Err(CancelErr::Cancelled) => Err(StartupOutcomeError::Cancelled),
+            };
 
             startup_complete_for_fut.store(true, Ordering::Release);
             outcome
@@ -197,11 +200,23 @@ impl AsyncManagedClient {
             startup_snapshot,
             startup_complete,
             tool_plugin_provenance,
+            cancel_token,
         }
     }
 
     pub(crate) async fn client(&self) -> Result<ManagedClient, StartupOutcomeError> {
         self.client.clone().await
+    }
+
+    pub(crate) async fn shutdown(&self) {
+        self.cancel_token.cancel();
+        match self.client().await {
+            Ok(client) => client.client.shutdown().await,
+            Err(StartupOutcomeError::Cancelled) => {}
+            Err(error) => {
+                warn!("failed to initialize MCP client during shutdown: {error:#}");
+            }
+        }
     }
 
     fn startup_snapshot_while_initializing(&self) -> Option<Vec<ToolInfo>> {
