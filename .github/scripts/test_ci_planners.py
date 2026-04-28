@@ -64,6 +64,10 @@ RESOLVE_SEDNA_RELEASE_VERSION = load_module(
     "resolve_sedna_release_version_module",
     SCRIPTS_DIR / "resolve_sedna_release_version.py",
 )
+DOWNSTREAM_DIVERGENCE_AUDIT = load_module(
+    "downstream_divergence_audit_module",
+    REPO_ROOT / "scripts" / "downstream-divergence-audit.py",
+)
 
 
 def run_script(script: Path, *args: str) -> dict:
@@ -617,6 +621,82 @@ class RouteSelectionTests(unittest.TestCase):
         self.assertTrue(lane["needs_linux_build_deps"])
         self.assertTrue(lane["needs_dotslash"])
         self.assertFalse(lane["needs_sccache"])
+
+
+class DownstreamDivergenceAuditTests(unittest.TestCase):
+    def run_git(self, repo: Path, *args: str) -> str:
+        result = subprocess.run(
+            ["git", "-C", str(repo), *args],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        return result.stdout.strip()
+
+    def commit_all(self, repo: Path, message: str) -> str:
+        self.run_git(repo, "add", ".")
+        self.run_git(repo, "commit", "-m", message)
+        return self.run_git(repo, "rev-parse", "HEAD")
+
+    def test_registry_gate_uses_downstream_carry_not_upstream_ahead_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            self.run_git(repo, "init", "-b", "main")
+            self.run_git(repo, "config", "user.email", "ci@example.invalid")
+            self.run_git(repo, "config", "user.name", "CI")
+
+            (repo / "shared.py").write_text("print('base')\n", encoding="utf-8")
+            base_sha = self.commit_all(repo, "base")
+
+            self.run_git(repo, "checkout", "-b", "upstream")
+            (repo / "upstream_only.py").write_text("print('upstream')\n", encoding="utf-8")
+            upstream_sha = self.commit_all(repo, "upstream")
+
+            self.run_git(repo, "checkout", "-b", "downstream", base_sha)
+            (repo / "downstream_only.py").write_text("print('downstream')\n", encoding="utf-8")
+            downstream_sha = self.commit_all(repo, "downstream")
+
+            all_items = DOWNSTREAM_DIVERGENCE_AUDIT.diff_items_between(
+                repo,
+                upstream_sha,
+                downstream_sha,
+            )
+            all_code_items = [item for item in all_items if item.is_code]
+            all_paths = sorted({path for item in all_code_items for path in item.paths})
+            self.assertEqual(all_paths, ["downstream_only.py", "upstream_only.py"])
+
+            merge_base = DOWNSTREAM_DIVERGENCE_AUDIT.merge_base_sha(
+                repo,
+                upstream_sha,
+                downstream_sha,
+            )
+            carry_items = DOWNSTREAM_DIVERGENCE_AUDIT.diff_items_between(
+                repo,
+                merge_base,
+                downstream_sha,
+            )
+            carry_code_items = [item for item in carry_items if item.is_code]
+            registry = {
+                "_path": "docs/divergences/index.yaml",
+                "divergences": [
+                    {
+                        "id": "downstream-only",
+                        "status": "live",
+                        "files": ["downstream_only.py"],
+                    }
+                ],
+            }
+
+            registry_state = DOWNSTREAM_DIVERGENCE_AUDIT.reconcile_registry(
+                registry,
+                carry_code_items,
+            )
+
+            self.assertEqual(registry_state["uncovered_code_paths"], [])
+            self.assertEqual(
+                registry_state["path_registry_ids"],
+                {"downstream_only.py": ["downstream-only"]},
+            )
 
 
 class ValidationPlanScriptTests(unittest.TestCase):
