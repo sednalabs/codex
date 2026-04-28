@@ -855,6 +855,7 @@ impl InterAgentCommunication {
             content: vec![ContentItem::OutputText {
                 text: serde_json::to_string(self).unwrap_or_default(),
             }],
+            phase: Some(MessagePhase::Commentary),
         }
     }
 
