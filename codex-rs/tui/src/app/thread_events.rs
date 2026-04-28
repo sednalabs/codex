@@ -351,7 +351,7 @@ mod tests {
             approval_policy: AskForApproval::Never,
             approvals_reviewer: ApprovalsReviewer::User,
             sandbox_policy: SandboxPolicy::new_read_only_policy(),
-            permission_profile: Some(PermissionProfile::read_only()),
+            permission_profile: PermissionProfile::read_only(),
             cwd: cwd.abs(),
             instruction_source_paths: Vec::new(),
             reasoning_effort: None,

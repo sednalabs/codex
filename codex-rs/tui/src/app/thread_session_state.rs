@@ -3,6 +3,8 @@ use crate::app_server_session::ThreadSessionState;
 use crate::read_session_model;
 use codex_app_server_protocol::Thread;
 use codex_protocol::ThreadId;
+use codex_protocol::models::PermissionProfile;
+use codex_protocol::protocol::SandboxPolicy;
 
 impl App {
     pub(super) async fn sync_active_thread_permission_settings_to_cached_session(&mut self) {
@@ -16,12 +18,11 @@ impl App {
             .config
             .permissions
             .legacy_sandbox_policy(self.config.cwd.as_path());
-        let permission_profile = Some(
-            self.chat_widget
-                .config_ref()
-                .permissions
-                .permission_profile(),
-        );
+        let permission_profile = self
+            .chat_widget
+            .config_ref()
+            .permissions
+            .permission_profile();
         let update_session = |session: &mut ThreadSessionState| {
             session.approval_policy = approval_policy;
             session.approvals_reviewer = approvals_reviewer;
@@ -48,10 +49,8 @@ impl App {
         thread_id: ThreadId,
         thread: &Thread,
     ) -> ThreadSessionState {
-        let sandbox_policy = self
-            .config
-            .permissions
-            .legacy_sandbox_policy(self.config.cwd.as_path());
+        let sandbox_policy = self.active_legacy_sandbox_policy_for_cwd(thread.cwd.as_path());
+        let permission_profile = self.active_permission_profile();
         let mut session = self
             .primary_session_configured
             .clone()
@@ -65,8 +64,8 @@ impl App {
                 service_tier: self.chat_widget.current_service_tier(),
                 approval_policy: self.config.permissions.approval_policy.value(),
                 approvals_reviewer: self.config.approvals_reviewer,
-                sandbox_policy,
-                permission_profile: None,
+                sandbox_policy: sandbox_policy.clone(),
+                permission_profile: permission_profile.clone(),
                 cwd: thread.cwd.clone(),
                 instruction_source_paths: Vec::new(),
                 reasoning_effort: self.chat_widget.current_reasoning_effort(),
@@ -79,7 +78,8 @@ impl App {
         session.thread_name = thread.name.clone();
         session.model_provider_id = thread.model_provider.clone();
         session.cwd = thread.cwd.clone();
-        session.permission_profile = None;
+        session.sandbox_policy = sandbox_policy;
+        session.permission_profile = permission_profile;
         session.instruction_source_paths = Vec::new();
         session.rollout_path = thread.path.clone();
         if let Some(model) =
@@ -92,6 +92,20 @@ impl App {
         session.history_log_id = 0;
         session.history_entry_count = 0;
         session
+    }
+
+    fn active_permission_profile(&self) -> PermissionProfile {
+        self.chat_widget
+            .config_ref()
+            .permissions
+            .permission_profile()
+    }
+
+    fn active_legacy_sandbox_policy_for_cwd(&self, cwd: &std::path::Path) -> SandboxPolicy {
+        self.chat_widget
+            .config_ref()
+            .permissions
+            .legacy_sandbox_policy(cwd)
     }
 }
 
@@ -128,7 +142,7 @@ mod tests {
             approval_policy: AskForApproval::Never,
             approvals_reviewer: ApprovalsReviewer::User,
             sandbox_policy: SandboxPolicy::new_read_only_policy(),
-            permission_profile: None,
+            permission_profile: PermissionProfile::read_only(),
             cwd: cwd.abs(),
             instruction_source_paths: Vec::new(),
             reasoning_effort: None,
@@ -202,7 +216,7 @@ mod tests {
             approval_policy: AskForApproval::OnRequest,
             approvals_reviewer: ApprovalsReviewer::AutoReview,
             sandbox_policy: expected_sandbox_policy,
-            permission_profile: Some(expected_permission_profile),
+            permission_profile: expected_permission_profile,
             ..main_session
         };
         assert_eq!(
@@ -256,7 +270,7 @@ mod tests {
             NetworkSandboxPolicy::Restricted,
         );
         let session = ThreadSessionState {
-            permission_profile: Some(profile.clone()),
+            permission_profile: profile.clone(),
             ..test_thread_session(thread_id, test_path_buf("/tmp/main"))
         };
 
@@ -276,7 +290,7 @@ mod tests {
 
         let expected_session = ThreadSessionState {
             approval_policy: AskForApproval::OnRequest,
-            permission_profile: Some(profile),
+            permission_profile: profile,
             ..session
         };
         assert_eq!(
@@ -294,5 +308,63 @@ mod tests {
             .session
             .clone();
         assert_eq!(store_session, Some(expected_session));
+    }
+
+    #[tokio::test]
+    async fn thread_read_fallback_uses_active_permission_settings() {
+        let mut app = make_test_app().await;
+        let primary_thread_id =
+            ThreadId::from_string("00000000-0000-0000-0000-000000000404").expect("valid thread");
+        let read_thread_id =
+            ThreadId::from_string("00000000-0000-0000-0000-000000000405").expect("valid thread");
+        let primary_session = ThreadSessionState {
+            permission_profile: PermissionProfile::workspace_write(),
+            ..test_thread_session(primary_thread_id, test_path_buf("/tmp/primary"))
+        };
+        let read_thread = Thread {
+            id: read_thread_id.to_string(),
+            forked_from_id: None,
+            preview: "read thread".to_string(),
+            ephemeral: false,
+            model_provider: "read-provider".to_string(),
+            created_at: 1,
+            updated_at: 2,
+            status: codex_app_server_protocol::ThreadStatus::Idle,
+            path: None,
+            cwd: test_path_buf("/tmp/read").abs(),
+            cli_version: "0.0.0".to_string(),
+            source: codex_app_server_protocol::SessionSource::Unknown,
+            agent_nickname: None,
+            agent_role: None,
+            git_info: None,
+            name: Some("read thread".to_string()),
+            turns: Vec::new(),
+        };
+
+        app.primary_session_configured = Some(primary_session.clone());
+        app.chat_widget.handle_thread_session(primary_session);
+
+        let session = app
+            .session_state_for_thread_read(read_thread_id, &read_thread)
+            .await;
+
+        let expected_sandbox_policy = app
+            .chat_widget
+            .config_ref()
+            .permissions
+            .legacy_sandbox_policy(read_thread.cwd.as_path());
+        let expected_permission_profile = app
+            .chat_widget
+            .config_ref()
+            .permissions
+            .permission_profile();
+        assert_eq!(session.sandbox_policy, expected_sandbox_policy);
+        assert_eq!(session.permission_profile, expected_permission_profile);
+        assert_ne!(
+            session.permission_profile,
+            app.config.permissions.permission_profile(),
+            "thread/read fallback must use the active widget permissions rather than stale app \
+             config defaults"
+        );
     }
 }

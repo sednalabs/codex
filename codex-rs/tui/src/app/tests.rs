@@ -2212,7 +2212,7 @@ async fn inactive_thread_approval_bubbles_into_active_view() -> Result<()> {
             ThreadSessionState {
                 approval_policy: AskForApproval::OnRequest,
                 sandbox_policy: SandboxPolicy::new_workspace_write_policy(),
-                permission_profile: Some(PermissionProfile::workspace_write()),
+                permission_profile: PermissionProfile::workspace_write(),
                 rollout_path: Some(test_path_buf("/tmp/agent-rollout.jsonl")),
                 ..test_thread_session(agent_thread_id, test_path_buf("/tmp/agent"))
             },
@@ -2372,7 +2372,7 @@ async fn side_defers_subagent_approval_overlay_until_side_exits() -> Result<()> 
             ThreadSessionState {
                 approval_policy: AskForApproval::OnRequest,
                 sandbox_policy: SandboxPolicy::new_workspace_write_policy(),
-                permission_profile: Some(PermissionProfile::workspace_write()),
+                permission_profile: PermissionProfile::workspace_write(),
                 rollout_path: Some(test_path_buf("/tmp/agent-rollout.jsonl")),
                 ..test_thread_session(agent_thread_id, test_path_buf("/tmp/agent"))
             },
@@ -2664,7 +2664,7 @@ async fn inactive_thread_approval_badge_clears_after_turn_completion_notificatio
             ThreadSessionState {
                 approval_policy: AskForApproval::OnRequest,
                 sandbox_policy: SandboxPolicy::new_workspace_write_policy(),
-                permission_profile: Some(PermissionProfile::workspace_write()),
+                permission_profile: PermissionProfile::workspace_write(),
                 rollout_path: Some(test_path_buf("/tmp/agent-rollout.jsonl")),
                 ..test_thread_session(agent_thread_id, test_path_buf("/tmp/agent"))
             },
@@ -2718,7 +2718,7 @@ async fn inactive_thread_started_notification_initializes_replay_session() -> Re
     let primary_session = ThreadSessionState {
         approval_policy: AskForApproval::OnRequest,
         sandbox_policy: SandboxPolicy::new_workspace_write_policy(),
-        permission_profile: Some(PermissionProfile::workspace_write()),
+        permission_profile: PermissionProfile::workspace_write(),
         ..test_thread_session(main_thread_id, test_path_buf("/tmp/main"))
     };
 
@@ -2831,7 +2831,7 @@ async fn inactive_thread_started_notification_preserves_primary_model_when_path_
     let primary_session = ThreadSessionState {
         approval_policy: AskForApproval::OnRequest,
         sandbox_policy: SandboxPolicy::new_workspace_write_policy(),
-        permission_profile: Some(PermissionProfile::workspace_write()),
+        permission_profile: PermissionProfile::workspace_write(),
         ..test_thread_session(main_thread_id, test_path_buf("/tmp/main"))
     };
 
@@ -2887,9 +2887,9 @@ async fn inactive_thread_started_notification_preserves_primary_model_when_path_
     Ok(())
 }
 
-/// `thread/read` is metadata/replay hydration and does not return an
-/// authoritative runtime `PermissionProfile`, so it must not reuse the active
-/// primary session profile after swapping in the read thread's cwd.
+/// `thread/read` is metadata/replay hydration and does not return a fresh
+/// server-authored `PermissionProfile`, so it must not reuse the cached primary
+/// session profile after swapping in the read thread's cwd.
 #[tokio::test]
 async fn thread_read_session_state_does_not_reuse_primary_permission_profile() {
     let mut app = make_test_app().await;
@@ -2900,7 +2900,7 @@ async fn thread_read_session_state_does_not_reuse_primary_permission_profile() {
     let primary_session = ThreadSessionState {
         approval_policy: AskForApproval::OnRequest,
         sandbox_policy: SandboxPolicy::new_workspace_write_policy(),
-        permission_profile: Some(PermissionProfile::workspace_write()),
+        permission_profile: PermissionProfile::workspace_write(),
         ..test_thread_session(main_thread_id, test_path_buf("/tmp/main"))
     };
     app.primary_session_configured = Some(primary_session);
@@ -2931,10 +2931,15 @@ async fn thread_read_session_state_does_not_reuse_primary_permission_profile() {
 
     assert_eq!(session.thread_id, read_thread_id);
     assert_eq!(session.cwd.as_path(), test_path_buf("/tmp/read").as_path());
+    let expected_permission_profile = app
+        .chat_widget
+        .config_ref()
+        .permissions
+        .permission_profile();
     assert_eq!(
-        session.permission_profile, None,
-        "thread/read does not return an authoritative permission profile; reusing the primary \
-         session profile would reinterpret cwd-bound entries against the read thread cwd"
+        session.permission_profile, expected_permission_profile,
+        "thread/read does not return fresh server permissions; the fallback profile must use the \
+         active widget permissions rather than reusing the cached primary session profile"
     );
 }
 
@@ -3800,7 +3805,7 @@ fn test_thread_session(thread_id: ThreadId, cwd: PathBuf) -> ThreadSessionState 
         approval_policy: AskForApproval::Never,
         approvals_reviewer: ApprovalsReviewer::User,
         sandbox_policy: SandboxPolicy::new_read_only_policy(),
-        permission_profile: Some(PermissionProfile::read_only()),
+        permission_profile: PermissionProfile::read_only(),
         cwd: cwd.abs(),
         instruction_source_paths: Vec::new(),
         reasoning_effort: None,
