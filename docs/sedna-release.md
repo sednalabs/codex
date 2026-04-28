@@ -57,9 +57,13 @@ Use the `sedna-release` workflow for fork-owned GitHub releases.
 - Push to `main` with an exact commit trailer to request an automatic official release:
   - `Sedna-Release: stable`
   - `Sedna-Release: prerelease`
-- `main` pushes first run a lightweight route job inside `sedna-release`; the release build job
-  runs only when the head commit has a valid release trailer. Ordinary `main` pushes without a
-  trailer skip the heavyweight publisher job while keeping the Actions run tied to the push commit.
+- `main` pushes first run a lightweight route job inside `sedna-release`; ordinary `main` pushes
+  without a trailer skip before release metadata resolution or heavyweight publication.
+- Release requests then resolve the exact tag, version, upstream position, channel, and target
+  commit in a separate metadata job before any release build starts.
+- Release publisher concurrency is keyed by the resolved release tag, not by `main`. Two different
+  resolved release tags may build in parallel, while duplicate attempts for the same tag serialize
+  and re-check that the GitHub Release still does not exist before spending build minutes.
 - `Sedna-Release: stable` refuses upstream prerelease tracks such as `0.126.0-alpha.3`,
   publishes a full GitHub Release, and dispatches public asset verification for that exact tag.
 - `Sedna-Release: prerelease` allows upstream prerelease tracks and publishes the GitHub Release as
@@ -70,9 +74,14 @@ Use the `sedna-release` workflow for fork-owned GitHub releases.
 - Manual `workflow_dispatch` accepts an optional `target_sha`, `channel`, and optional
   `release_tag`. If `release_tag` is supplied, it is an assertion checked against the resolver, not
   the source of truth.
+- Manual `workflow_dispatch` without `release_tag` requires the target commit to contain a valid
+  `Sedna-Release:` trailer. Markerless manual releases must supply the expected tag explicitly.
 - A supplied `release_tag` must match the upstream track computed from the target commit's
   merge-base. Supplying a tag from a newer upstream track fails instead of moving the release onto
   that newer track.
+- Automatic trailer releases allocate Sedna ordinals from the first-parent `main` release-marker
+  ledger for the resolved upstream track. This keeps back-to-back release commits deterministic
+  even when their workflow runs resolve before either GitHub Release has been published.
 - Existing release tags are immutable in normal release flow. Rerolls use the next trailing
   `sedna.<n>` value rather than clobbering published assets.
 
