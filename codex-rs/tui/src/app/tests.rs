@@ -2211,7 +2211,6 @@ async fn inactive_thread_approval_bubbles_into_active_view() -> Result<()> {
             /*capacity*/ 1,
             ThreadSessionState {
                 approval_policy: AskForApproval::OnRequest,
-                sandbox_policy: SandboxPolicy::new_workspace_write_policy(),
                 permission_profile: PermissionProfile::workspace_write(),
                 rollout_path: Some(test_path_buf("/tmp/agent-rollout.jsonl")),
                 ..test_thread_session(agent_thread_id, test_path_buf("/tmp/agent"))
@@ -2371,7 +2370,6 @@ async fn side_defers_subagent_approval_overlay_until_side_exits() -> Result<()> 
             /*capacity*/ 4,
             ThreadSessionState {
                 approval_policy: AskForApproval::OnRequest,
-                sandbox_policy: SandboxPolicy::new_workspace_write_policy(),
                 permission_profile: PermissionProfile::workspace_write(),
                 rollout_path: Some(test_path_buf("/tmp/agent-rollout.jsonl")),
                 ..test_thread_session(agent_thread_id, test_path_buf("/tmp/agent"))
@@ -2663,7 +2661,6 @@ async fn inactive_thread_approval_badge_clears_after_turn_completion_notificatio
             /*capacity*/ 4,
             ThreadSessionState {
                 approval_policy: AskForApproval::OnRequest,
-                sandbox_policy: SandboxPolicy::new_workspace_write_policy(),
                 permission_profile: PermissionProfile::workspace_write(),
                 rollout_path: Some(test_path_buf("/tmp/agent-rollout.jsonl")),
                 ..test_thread_session(agent_thread_id, test_path_buf("/tmp/agent"))
@@ -2717,7 +2714,6 @@ async fn inactive_thread_started_notification_initializes_replay_session() -> Re
         ThreadId::from_string("00000000-0000-0000-0000-000000000202").expect("valid thread");
     let primary_session = ThreadSessionState {
         approval_policy: AskForApproval::OnRequest,
-        sandbox_policy: SandboxPolicy::new_workspace_write_policy(),
         permission_profile: PermissionProfile::workspace_write(),
         ..test_thread_session(main_thread_id, test_path_buf("/tmp/main"))
     };
@@ -2742,7 +2738,7 @@ async fn inactive_thread_started_notification_initializes_replay_session() -> Re
         current_date: None,
         timezone: None,
         approval_policy: primary_session.approval_policy,
-        sandbox_policy: primary_session.sandbox_policy.clone(),
+        sandbox_policy: SandboxPolicy::new_workspace_write_policy(),
         permission_profile: None,
         network: None,
         file_system_sandbox_policy: None,
@@ -2830,7 +2826,6 @@ async fn inactive_thread_started_notification_preserves_primary_model_when_path_
         ThreadId::from_string("00000000-0000-0000-0000-000000000302").expect("valid thread");
     let primary_session = ThreadSessionState {
         approval_policy: AskForApproval::OnRequest,
-        sandbox_policy: SandboxPolicy::new_workspace_write_policy(),
         permission_profile: PermissionProfile::workspace_write(),
         ..test_thread_session(main_thread_id, test_path_buf("/tmp/main"))
     };
@@ -2899,7 +2894,6 @@ async fn thread_read_session_state_does_not_reuse_primary_permission_profile() {
         ThreadId::from_string("00000000-0000-0000-0000-000000000402").expect("valid thread");
     let primary_session = ThreadSessionState {
         approval_policy: AskForApproval::OnRequest,
-        sandbox_policy: SandboxPolicy::new_workspace_write_policy(),
         permission_profile: PermissionProfile::workspace_write(),
         ..test_thread_session(main_thread_id, test_path_buf("/tmp/main"))
     };
@@ -3803,7 +3797,6 @@ fn test_thread_session(thread_id: ThreadId, cwd: PathBuf) -> ThreadSessionState 
         service_tier: None,
         approval_policy: AskForApproval::Never,
         approvals_reviewer: ApprovalsReviewer::User,
-        sandbox_policy: SandboxPolicy::new_read_only_policy(),
         permission_profile: PermissionProfile::read_only(),
         cwd: cwd.abs(),
         instruction_source_paths: Vec::new(),
