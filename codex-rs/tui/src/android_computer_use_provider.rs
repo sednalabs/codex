@@ -153,7 +153,6 @@ async fn inspect_ui(client: &mut AndroidRuntimeClient, arguments: &Value) -> Res
     copy_if_present(arguments, &mut inspect_args, "screenshot_filename");
     copy_if_present(arguments, &mut inspect_args, "hierarchy_filename");
 
-    let mut last_error: Option<String> = None;
     for attempt in 0..INSPECT_UI_MAX_ATTEMPTS {
         match client
             .call_tool("android.inspect_ui", inspect_args.clone())
@@ -163,15 +162,13 @@ async fn inspect_ui(client: &mut AndroidRuntimeClient, arguments: &Value) -> Res
             Err(err)
                 if attempt + 1 < INSPECT_UI_MAX_ATTEMPTS && should_retry_inspect_ui_error(&err) =>
             {
-                last_error = Some(err);
                 tokio::time::sleep(INSPECT_UI_RETRY_DELAY).await;
             }
             Err(err) => return Err(err),
         }
     }
 
-    Err(last_error
-        .unwrap_or_else(|| "android.inspect_ui failed without a captured error".to_string()))
+    Err("android.inspect_ui failed after maximum retry attempts".to_string())
 }
 
 fn should_retry_inspect_ui_error(error: &str) -> bool {
