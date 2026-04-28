@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-upstream_main_ref="refs/remotes/upstream/main"
+bash .github/scripts/validation-lanes/downstream-docs-check.sh
+
 mirror_state_json="$(
   python3 .github/scripts/sync_upstream_mirror.py \
     --repo "$PWD" \
@@ -14,15 +15,6 @@ mapfile -t mirror_audit_args < <(
   python3 -c 'import json, sys; [print(arg) for arg in json.load(sys.stdin)["mirror_audit_args"]]' \
     <<< "${mirror_state_json}"
 )
-
-git diff --check "${upstream_main_ref}...HEAD" -- \
-  docs/downstream.md \
-  docs/native-computer-use.md \
-  docs/carry-divergence-ledger.md \
-  docs/downstream-divergence-tracking.md \
-  docs/downstream-regression-matrix.md \
-  docs/downstream-tool-surface-matrix.md \
-  docs/divergences/index.yaml
 
 downstream_ref="$(git rev-parse HEAD)"
 
